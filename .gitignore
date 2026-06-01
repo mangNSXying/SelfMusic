@@ -179,3 +179,5 @@ google-services.json
 # Android Profiling
 *.hprof
 
+# 部分信息
+.env

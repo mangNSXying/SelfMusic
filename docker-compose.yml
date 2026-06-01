@@ -1,0 +1,22 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: selfmusic-backend
+    ports:
+      - "18088:8080"
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_NAME: ${DB_NAME:-selfmusic}
+      DB_USERNAME: ${DB_USERNAME:-shamiko}
+      DB_PASSWORD: ${DB_PASSWORD}
+      TZ: Asia/Shanghai
+    volumes:
+      - ./backend/src:/app/src
+      - backend-maven-repo:/root/.m2
+    restart: unless-stopped
+
+volumes:
+  backend-maven-repo:
