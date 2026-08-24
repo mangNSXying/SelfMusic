@@ -3,8 +3,8 @@ CREATE DATABASE IF NOT EXISTS selfmusic
     DEFAULT COLLATE utf8mb4_unicode_ci;
 
 -- CREATE USER IF NOT EXISTS 'selfmusic_user'@'%' IDENTIFIED BY '${DB_PASSWORD}';
-GRANT ALL PRIVILEGES ON selfmusic.* TO 'shamiko'@'%';
-FLUSH PRIVILEGES;
+-- GRANT ALL PRIVILEGES ON selfmusic.* TO 'shamiko'@'%';
+-- FLUSH PRIVILEGES;
 
 USE selfmusic;
 

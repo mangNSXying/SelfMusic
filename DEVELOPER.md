@@ -1,0 +1,248 @@
+# SelfMusic 开发者文档
+
+本文档面向项目开发者，介绍日常开发流程、调试方法与常见问题排查。
+
+环境搭建与快速启动请参考 [README.md](README.md)。
+
+---
+
+## 目录
+
+- [环境要求](#环境要求)
+- [项目结构](#项目结构)
+- [后端开发](#后端开发)
+- [前端开发](#前端开发)
+- [数据库规范](#数据库规范)
+- [API 规范](#api-规范)
+- [配置说明](#配置说明)
+- [常见问题排查](#常见问题排查)
+
+---
+
+## 环境要求
+
+| 依赖 | 版本 | 用途 |
+|------|------|------|
+| JDK | 21 | 后端编译运行（宿主机与容器保持一致） |
+| Maven | 3.9+ | 后端构建 |
+| Docker + Compose | 任意近期版本 | 后端容器化运行 |
+| MySQL | 8.0 | 宿主机已有实例 |
+| Flutter SDK | 3.6+（Dart ^3.6.0） | 前端开发，需装在宿主机 |
+| Android SDK / Android Studio | 最新稳定版 | Android 构建调试 |
+| Visual Studio 2022 | 含"使用 C++ 的桌面开发"负载 | Windows 桌面构建 |
+
+> 鸿蒙（OpenHarmony）：Flutter 官方不支持，后续通过 `openharmony-sig/flutter_flutter` 三方分支适配，当前不阻塞开发。
+
+---
+
+## 项目结构
+
+```
+selfmusic/
+├── backend/                          # Spring Boot 后端
+│   ├── Dockerfile                    # 多阶段构建：maven:temurin-21 编译 → temurin-21-jre 运行
+│   ├── pom.xml
+│   └── src/main/
+│       ├── java/com/selfmusic/backend/
+│       │   ├── SelfMusicApplication.java
+│       │   ├── config/               # 配置类（CORS 等）
+│       │   ├── controller/           # REST 控制器
+│       │   ├── service/              # 业务层（按需创建）
+│       │   ├── repository/           # JPA 数据访问（按需创建）
+│       │   └── entity/               # JPA 实体（按需创建）
+│       └── resources/application.yml
+├── frontend/                         # Flutter 前端
+│   ├── lib/main.dart                 # 入口
+│   ├── android/ windows/ web/        # 各平台壳工程
+│   └── pubspec.yaml
+├── scripts/init.sql                  # 数据库初始化脚本
+├── nginx/selfmusic.conf              # Nginx 反代模板（部署到宿主机）
+├── docker-compose.yml                # 仅 backend 服务
+└── .env                              # 数据库连接等敏感配置（不入库）
+```
+
+**分层约定**：`Controller → Service → Repository`，Controller 只做参数校验和响应封装，业务逻辑放 Service。
+
+---
+
+## 后端开发
+
+### 本地运行（不走 Docker，迭代最快）
+
+```bash
+# 1. 导出数据库连接环境变量（值与 .env 一致）
+export DB_HOST=192.168.x.x DB_PORT=3306 DB_NAME=selfmusic \
+       DB_USERNAME=<你的用户名> DB_PASSWORD='<密码>'
+
+# 2. 启动（devtools 已启用热重载，改 Java 代码后自动重启）
+mvn spring-boot:run -f backend/pom.xml
+```
+
+### 容器内运行（模拟生产）
+
+```bash
+docker compose up -d --build
+docker compose logs -f backend     # 看日志
+docker compose restart backend     # 重启
+docker compose down                # 停止并移除
+```
+
+注意：Compose 将容器端口映射为 **18088**（避免与宿主机冲突），本地直跑时是 8080。
+
+### 常用命令
+
+```bash
+mvn compile -f backend/pom.xml                   # 仅编译
+mvn test -f backend/pom.xml                      # 跑测试
+mvn clean package -f backend/pom.xml             # 打包 → target/selfmusic-backend.jar
+mvn dependency:go-offline -f backend/pom.xml     # 预拉全部依赖
+```
+
+### 新增一个接口的标准流程
+
+1. 在 `entity/` 建 JPA 实体（对应 `scripts/init.sql` 中已存在的表）
+2. 在 `repository/` 建接口继承 `JpaRepository`
+3. 在 `service/` 写业务逻辑
+4. 在 `controller/` 暴露 REST 接口，路径以 `/api/` 开头（CORS 只放行该前缀）
+5. 写测试到 `src/test/java`
+
+---
+
+## 前端开发
+
+```bash
+cd frontend
+flutter pub get                # 安装依赖
+flutter run -d <device>        # 运行：windows / android / chrome
+flutter analyze                # 静态检查
+flutter test                   # 单元测试
+flutter build apk --release    # Android 出包
+flutter build windows --release # Windows 出包
+```
+
+### API 地址配置
+
+`lib/main.dart` 通过编译期常量注入后端地址：
+
+```bash
+# 连接本机直跑的后端（8080）
+flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:8080
+
+# 连接 Docker 容器后端
+flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
+
+# Android 真机不能用 localhost，必须用宿主机局域网 IP
+```
+
+### 技术选型（pubspec.yaml 已引入）
+
+| 包 | 用途 |
+|----|------|
+| dio | HTTP 客户端 |
+| provider | 状态管理 |
+| just_audio | 音频播放 |
+| cached_network_image | 图片缓存 |
+| flutter_secure_storage | 敏感数据安全存储 |
+
+---
+
+## 数据库规范
+
+- 表结构变更：**修改 `scripts/init.sql` 并同步提交**，同时更新对应 JPA 实体；`application.yml` 中 `ddl-auto: validate` 会校验实体与表结构一致性，不一致启动即报错
+- 字符集统一 `utf8mb4`
+- 所有表带 `id BIGINT AUTO_INCREMENT PRIMARY KEY`、`created_at`、`updated_at`
+- 初始化脚本中的用户创建语句已注释（由管理员手工管理账号），执行前确认账号存在且对 `selfmusic.*` 有权限
+
+---
+
+## API 规范
+
+- 路径前缀 `/api/`，资源名用复数：`/api/songs`、`/api/playlists`
+- 动作语义：GET 查询 / POST 创建 / PUT 全量更新 / PATCH 局部更新 / DELETE 删除
+- 统一响应包一层：
+
+```json
+{ "code": 0, "message": "ok", "data": { } }
+```
+
+- 错误码：`0` 成功，`4xx` 客户端错误，`5xx` 服务端错误
+- 健康检查：`GET /api/health`
+
+---
+
+## 配置说明
+
+### .env（Docker Compose 读取，勿提交真实密码到公共仓库）
+
+| 变量 | 说明 | 默认 |
+|------|------|------|
+| `DB_HOST` | MySQL 所在宿主机内网 IP | 无 |
+| `DB_PORT` | MySQL 端口 | 3306 |
+| `DB_NAME` | 库名 | selfmusic |
+| `DB_USERNAME` | 数据库用户 | shamiko |
+| `DB_PASSWORD` | 数据库密码 | 无 |
+
+### application.yml 关键项
+
+- 容器内应用监听 8080，对外经 Compose 映射为 18088
+- Hikari 连接池：最大 20、最小空闲 5
+- devtools 热重载已开启，监控 `src/main/java`
+
+### Nginx
+
+`nginx/selfmusic.conf` 为模板：`api.selfmusic.local` → `127.0.0.1:8080`。
+若走容器后端请把 `proxy_pass` 改为 `127.0.0.1:18088`。修改后：
+
+```bash
+sudo nginx -t && sudo nginx -s reload
+```
+
+---
+
+## 常见问题排查
+
+### 1. IDE 报 "Failed to init ct.sym ... jrt-fs.jar"
+
+JDK 版本与项目 `java.version` 不一致导致。本项目已统一为 **21**：
+确认 IDE 使用 JDK 21（VS Code: `java.jdt.ls.javahome` / Java 扩展运行时设置），然后刷新 Maven 项目。
+
+### 2. "Maven Dependencies references non existing library ..."
+
+依赖没下载全。执行：
+
+```bash
+mvn dependency:go-offline -f backend/pom.xml
+```
+
+然后在 IDE 里 reload Maven project。若 `.m2` 有损坏的缓存，删除对应目录后重试。
+
+### 3. Docker build 拉取镜像超时（dial tcp ... i/o timeout）
+
+Docker Hub 网络不通。解决方案任选：
+- 配置国内镜像加速器（`/etc/docker/daemon.json` 的 `registry-mirrors`）
+- 或使用代理：`systemctl edit docker` 设置 `HTTP_PROXY/HTTPS_PROXY` 后 `systemctl restart docker`
+
+### 4. 容器连不上宿主机 MySQL
+
+依次检查：
+1. `.env` 的 `DB_HOST` 是否为宿主机**内网 IP**（不是 localhost）
+2. MySQL 是否监听外网：`bind-address` 需为 `0.0.0.0` 或内网 IP
+3. 用户授权范围需含 `%` 或 Docker 网段：`SELECT host FROM mysql.user WHERE user='xxx';`
+4. 防火墙是否放行 3306：`sudo ufw status`
+
+### 5. 端口冲突
+
+- 宿主机 8080 被占用？Compose 已改用 18088，无需处理
+- 本地直跑想换端口：`SERVER_PORT=9090 mvn spring-boot:run`
+
+### 6. JPA 启动报 validate 校验失败
+
+实体字段与表结构不一致。核对 `scripts/init.sql` 与 entity 类的字段名/类型/可空性，或临时用 `ddl-auto: none` 启动排查。
+
+---
+
+## Git 约定
+
+- 分支：`main`（稳定）、`dev`（集成）、`feature/xxx` 功能分支
+- 提交信息：`feat: 新增歌单接口` / `fix: 修复播放进度丢失` / `chore: 升级依赖`
+- 不要提交：`.env.local`、`build/`、`.dart_tool/`、IDE 私有配置（`.gitignore` 已覆盖大部分）

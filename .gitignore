@@ -1,3 +1,6 @@
+*.txt
+*.lst
+
 # ---> Flutter
 # Miscellaneous
 *.class
