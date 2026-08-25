@@ -14,8 +14,33 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       TZ: Asia/Shanghai
     volumes:
-      - ./backend/src:/app/src
       - backend-maven-repo:/root/.m2
+    restart: unless-stopped
+
+  backend-dev:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: selfmusic-backend-dev
+    profiles: ["dev"]
+    ports:
+      - "18089:8080"
+    user: "1000:1000"
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_NAME: ${DB_NAME:-selfmusic}
+      DB_USERNAME: ${DB_USERNAME:-shamiko}
+      DB_PASSWORD: ${DB_PASSWORD}
+      TZ: Asia/Shanghai
+    command:
+      - "/bin/sh"
+      - "-c"
+      - "mvn -B -Dmaven.repo.local=/home/ubuntu/.m2/repository spring-boot:run"
+    volumes:
+      - ./backend/pom.xml:/home/ubuntu/app/pom.xml
+      - ./backend/src:/home/ubuntu/app/src
+      - ${HOME}/.m2:/home/ubuntu/.m2
     restart: unless-stopped
 
 volumes:
