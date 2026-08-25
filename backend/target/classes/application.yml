@@ -23,13 +23,11 @@ spring:
     open-in-view: false
     properties:
       hibernate:
-        dialect: org.hibernate.dialect.MySQLDialect
         format_sql: true
 
   devtools:
     restart:
       enabled: true
-      additional-paths: src/main/java
 
 selfmusic:
   local:

@@ -106,8 +106,8 @@ selfmusic/
 
 | 方式 | 改代码后做什么 | 反馈速度 | 适用场景 |
 |------|--------------|---------|---------|
-| A. 容器 dev 模式 | 什么都不做，保存即自动重启（devtools） | ⚡ 秒级 | **推荐日常**，环境隔离且免维护 |
-| B. 本地直跑 | 同上（devtools） | ⚡ 秒级 | 不想用 Docker / 深入调试 JVM |
+| A. 容器 dev 模式 | 容器内执行一条编译命令（见下） | ⚡ 秒级 | **推荐日常**，环境隔离且免维护 |
+| B. 本地直跑 | 保存即自动重启（devtools 监听 classpath） | ⚡ 秒级 | 不想用 Docker / 深入调试 JVM |
 | C. 生产镜像 | `docker compose up -d --build` | 🐢 1~3 分钟 | 发布前最终验证 |
 
 ### 方式 A：Dev 容器（推荐日常开发，默认用这个）
@@ -117,11 +117,14 @@ selfmusic/
 docker compose --env-file .env up -d backend-dev
 docker compose --env-file .env logs -f backend-dev   # 看日志
 docker compose --env-file .env stop backend-dev      # 停止
+
+# 改完 Java 代码后触发重编译+热重启（devtools 只监听编译产物 target/classes）
+docker compose --env-file .env exec backend-dev \
+    mvn -f /home/ubuntu/app/pom.xml -B -o -q compile
 ```
 
 原理：容器里跑 `mvn spring-boot:run`，你的 `backend/src` 和 `~/.m2` 直接挂载进容器
-（UID 1000 一致，读写权限无障碍），devtools 在容器内检测文件变化自动重启。
-**改完代码不需要重新 build 镜像**；只有换 JDK/Maven 版本或新增依赖才需要
+（UID 1000 一致，读写权限无障碍）。**改完代码不需要重新 build 镜像**；只有换 JDK/Maven 版本或新增依赖才需要
 `docker compose --env-file .env build backend-dev` 重建。
 
 ### 方式 B：本地直跑
