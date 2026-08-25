@@ -30,3 +30,19 @@ spring:
     restart:
       enabled: true
       additional-paths: src/main/java
+
+selfmusic:
+  local:
+    root: ${LOCAL_MUSIC_ROOT:/opt/music}
+  webdav:
+    base-url: ${WEBDAV_BASE_URL:}
+    username: ${WEBDAV_USER:}
+    password: ${WEBDAV_PASS:}
+  smb:
+    host: ${SMB_HOST:}
+    port: ${SMB_PORT:445}
+    share: ${SMB_SHARE:}
+    username: ${SMB_USER:}
+    password: ${SMB_PASS:}
+  transcode:
+    max-concurrency: 2

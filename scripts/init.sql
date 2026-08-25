@@ -16,7 +16,7 @@ SET NAMES utf8mb4;
 CREATE TABLE IF NOT EXISTS covers (
     id            BIGINT AUTO_INCREMENT PRIMARY KEY,
     storage_ref   VARCHAR(500) NOT NULL COMMENT '服务端落盘相对路径',
-    content_hash  CHAR(64) NOT NULL,
+    content_hash  VARCHAR(64) NOT NULL,
     width         INT DEFAULT 0,
     height        INT DEFAULT 0,
     size_bytes    BIGINT DEFAULT 0,
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS songs (
     source_ref      VARCHAR(500) NOT NULL COMMENT '源内相对路径/URL路径',
     file_size       BIGINT NOT NULL DEFAULT 0,
     file_mtime      DATETIME NULL COMMENT '增量扫描依据',
-    checksum        CHAR(32) NULL COMMENT '预留 MD5',
+    checksum        VARCHAR(32) NULL COMMENT '预留 MD5',
     format          VARCHAR(20) NULL,
 
     cover_id        BIGINT NULL,
@@ -164,10 +164,10 @@ CREATE TABLE IF NOT EXISTS settings (
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS devices (
     id           BIGINT AUTO_INCREMENT PRIMARY KEY,
-    client_id    CHAR(36) NOT NULL COMMENT 'UUID',
+    client_id    VARCHAR(36) NOT NULL COMMENT 'UUID',
     name         VARCHAR(100) NOT NULL,
     platform     VARCHAR(50) NULL COMMENT 'android/windows/harmony...',
-    token_hash   CHAR(64) NOT NULL COMMENT 'SHA-256(device_token)',
+    token_hash   VARCHAR(64) NOT NULL COMMENT 'SHA-256(device_token)',
     revoked      BOOLEAN DEFAULT FALSE,
     paired_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_seen_at DATETIME NULL,
