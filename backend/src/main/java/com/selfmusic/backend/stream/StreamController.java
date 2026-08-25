@@ -1,25 +1,18 @@
 package com.selfmusic.backend.stream;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.time.LocalDateTime;
-
-import org.springframework.http.HttpRange;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestMethod;
-import org.springframework.web.bind.annotation.RestController;
-
 import com.selfmusic.backend.common.BizException;
 import com.selfmusic.backend.domain.entity.Song;
 import com.selfmusic.backend.domain.repository.SongRepository;
-
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpRange;
+import org.springframework.web.bind.annotation.*;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1/stream")
@@ -36,53 +29,55 @@ public class StreamController {
         Song song = songRepository.findById(id)
                 .orElseThrow(() -> new BizException(40401, "song not found"));
 
-        // 更新播放统计
-        song.setPlayCount(song.getPlayCount() + 1);
-        song.setLastPlayedAt(LocalDateTime.now());
-        songRepository.save(song);
+        // 注意：播放次数/last_played 不在此处更新——一次播放会产生多个 Range 分段请求，
+        // 在流接口里计数会严重灌水。统计由阶段 2 的播放事件上报 API（complete/skip）驱动。
 
         long fileSize = sourceProxy.getFileSize(song);
-        String ct = sourceProxy.getContentType(song);
+        response.setContentType(sourceProxy.getContentType(song));
+        response.setHeader("Accept-Ranges", "bytes");
 
-        response.setContentType(ct);
+        long start = 0;
+        long end = fileSize - 1;
+        boolean isPartial = false;
 
-        // Range 请求处理
         String rangeHeader = request.getHeader("Range");
-        if (rangeHeader != null && rangeHeader.startsWith("bytes=")) {
-            HttpRange range = HttpRange.parseRanges(rangeHeader).get(0);
-            long start = range.getRangeStart(0);
-            long end   = range.getRangeEnd(fileSize - 1);
-            long len   = end - start + 1;
+        if (rangeHeader != null && !rangeHeader.isBlank()) {
+            List<HttpRange> ranges;
+            try {
+                ranges = HttpRange.parseRanges(rangeHeader);
+            } catch (IllegalArgumentException e) {
+                send416(response, fileSize);
+                return;
+            }
+            if (ranges.isEmpty()) {
+                send416(response, fileSize);
+                return;
+            }
+            HttpRange range = ranges.get(0); // 多段 Range 只取第一段（音频场景足够）
+            start = range.getRangeStart(0);
+            if (start >= fileSize) {
+                send416(response, fileSize);
+                return;
+            }
+            end = Math.min(range.getRangeEnd(fileSize - 1), fileSize - 1);
+            isPartial = true;
+        }
 
+        long len = end - start + 1;
+        if (isPartial) {
             response.setStatus(206);
-            response.setHeader("Content-Range",
-                    "bytes " + start + "-" + end + "/" + fileSize);
-            response.setHeader("Content-Length", String.valueOf(len));
+            response.setHeader("Content-Range", "bytes " + start + "-" + end + "/" + fileSize);
+        }
+        response.setHeader("Content-Length", String.valueOf(len));
 
-            try (InputStream in = sourceProxy.open(song, start, len);
-                 OutputStream out = response.getOutputStream()) {
-                in.transferTo(out);
-            }
-        } else {
-            response.setHeader("Content-Length", String.valueOf(fileSize));
-            response.setHeader("Accept-Ranges", "bytes");
-
-            try (InputStream in = sourceProxy.open(song, 0, fileSize);
-                 OutputStream out = response.getOutputStream()) {
-                in.transferTo(out);
-            }
+        try (InputStream in = sourceProxy.open(song, start, len);
+             OutputStream out = response.getOutputStream()) {
+            in.transferTo(out);
         }
     }
 
-    @RequestMapping(value = "/{id}", method = RequestMethod.HEAD)
-    public ResponseEntity<Void> head(@PathVariable Long id) {
-        Song song = songRepository.findById(id)
-                .orElseThrow(() -> new BizException(40401, "song not found"));
-        long size = sourceProxy.getFileSize(song);
-        return ResponseEntity.ok()
-                .header("Accept-Ranges", "bytes")
-                .header("Content-Length", String.valueOf(size))
-                .header("Content-Type", sourceProxy.getContentType(song))
-                .build();
+    private void send416(HttpServletResponse response, long fileSize) throws IOException {
+        response.setStatus(416);
+        response.setHeader("Content-Range", "bytes */" + fileSize);
     }
 }

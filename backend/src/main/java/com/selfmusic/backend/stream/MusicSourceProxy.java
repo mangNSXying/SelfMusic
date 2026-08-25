@@ -3,16 +3,16 @@ package com.selfmusic.backend.stream;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Service;
+import java.util.Base64;
 
 import com.selfmusic.backend.common.BizException;
 import com.selfmusic.backend.domain.entity.Song;
-
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
 
 /**
  * 统一读取三类源的音频流：local / webdav / smb。
@@ -22,8 +22,20 @@ import lombok.extern.slf4j.Slf4j;
 @Service
 public class MusicSourceProxy {
 
+    /** 全进程共享，支持 HTTP/2 连接复用；HttpClient 线程安全 */
+    private static final java.net.http.HttpClient HTTP = java.net.http.HttpClient.newHttpClient();
+
     @Value("${selfmusic.local.root:}")
     private String localRoot;
+
+    @Value("${selfmusic.webdav.base-url:}")
+    private String webdavBaseUrl;
+
+    @Value("${selfmusic.webdav.username:}")
+    private String webdavUsername;
+
+    @Value("${selfmusic.webdav.password:}")
+    private String webdavPassword;
 
     /**
      * 以指定 offset + length 打开音频流
@@ -39,8 +51,7 @@ public class MusicSourceProxy {
     public long getFileSize(Song song) {
         return switch (song.getSource()) {
             case local  -> {
-                Path p = localPath(song);
-                try { yield Files.size(p); }
+                try { yield Files.size(localPath(song)); }
                 catch (IOException e) { yield song.getFileSize(); }
             }
             case webdav -> song.getFileSize(); // 后续用 HEAD 探测
@@ -49,7 +60,7 @@ public class MusicSourceProxy {
     }
 
     public String getContentType(Song song) {
-        return switch (song.getFormat()) {
+        return switch (song.getFormat() == null ? "" : song.getFormat()) {
             case "mp3"  -> "audio/mpeg";
             case "flac" -> "audio/flac";
             case "m4a", "aac" -> "audio/mp4";
@@ -61,9 +72,21 @@ public class MusicSourceProxy {
 
     private InputStream openLocal(Song song, long offset, long length) throws IOException {
         Path p = localPath(song);
+        // RandomAccessFile 经 FileChannel 包装为流；关闭流会连带关闭 channel 与文件句柄
         java.io.RandomAccessFile raf = new java.io.RandomAccessFile(p.toFile(), "r");
-        raf.seek(offset);
-        InputStream raw = java.nio.channels.Channels.newInputStream(raf.getChannel());
+        boolean seekOk = false;
+        try {
+            raf.seek(offset);
+            seekOk = true;
+            InputStream raw = java.nio.channels.Channels.newInputStream(raf.getChannel());
+            return limit(raw, length);
+        } finally {
+            if (!seekOk) raf.close();
+        }
+    }
+
+    /** 限制读取长度到 len 字节 */
+    private static InputStream limit(InputStream raw, long length) {
         return new FilterInputStream(raw) {
             private long remaining = length;
             @Override
@@ -81,30 +104,38 @@ public class MusicSourceProxy {
                 if (n > 0) remaining -= n;
                 return n;
             }
-            @Override
-            public void close() throws IOException {
-                try {
-                    super.close();
-                } finally {
-                    raf.close();
-                }
-            }
         };
     }
 
     private InputStream openWebdav(Song song, long offset, long length) throws IOException {
-        String url = song.getSourceRef();
+        String ref = song.getSourceRef();
+        String url = ref.startsWith("http://") || ref.startsWith("https://")
+                ? ref
+                : webdavBaseUrl + (webdavBaseUrl.endsWith("/") || ref.startsWith("/") ? "" : "/") + ref;
+        if (url.isBlank() || url.equals("/")) {
+            throw new BizException(50002, "WebDAV base-url not configured");
+        }
+
+        java.net.http.HttpRequest.Builder builder;
         try {
-            java.net.http.HttpClient client = java.net.http.HttpClient.newHttpClient();
-            java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
+            builder = java.net.http.HttpRequest.newBuilder()
                     .uri(java.net.URI.create(url))
                     .header("Range", "bytes=" + offset + "-" + (offset + length - 1))
-                    .GET()
-                    .build();
+                    .GET();
+        } catch (IllegalArgumentException e) {
+            throw new BizException(50202, "invalid WebDAV url: " + url);
+        }
+        if (!webdavUsername.isBlank()) {
+            String cred = Base64.getEncoder().encodeToString(
+                    (webdavUsername + ":" + webdavPassword).getBytes(StandardCharsets.UTF_8));
+            builder.header("Authorization", "Basic " + cred);
+        }
+
+        try {
             java.net.http.HttpResponse<InputStream> resp =
-                    client.send(req, java.net.http.HttpResponse.BodyHandlers.ofInputStream());
+                    HTTP.send(builder.build(), java.net.http.HttpResponse.BodyHandlers.ofInputStream());
             if (resp.statusCode() != 206 && resp.statusCode() != 200) {
-                throw new BizException(50201, "WebDAV fetch failed: " + resp.statusCode());
+                throw new BizException(50201, "WebDAV fetch failed: HTTP " + resp.statusCode());
             }
             return resp.body();
         } catch (InterruptedException e) {
@@ -113,7 +144,19 @@ public class MusicSourceProxy {
         }
     }
 
+    /**
+     * 解析本地路径并做穿越校验：解析后的绝对路径必须仍位于 localRoot 内。
+     */
     private Path localPath(Song song) {
-        return Path.of(localRoot, song.getSourceRef()).toAbsolutePath().normalize();
+        if (localRoot == null || localRoot.isBlank()) {
+            throw new BizException(50003, "local music root not configured");
+        }
+        Path root = Path.of(localRoot).toAbsolutePath().normalize();
+        Path resolved = root.resolve(song.getSourceRef()).normalize();
+        if (!resolved.startsWith(root)) {
+            log.warn("Blocked path traversal attempt: sourceRef={}", song.getSourceRef());
+            throw new BizException(40301, "invalid source reference");
+        }
+        return resolved;
     }
 }
