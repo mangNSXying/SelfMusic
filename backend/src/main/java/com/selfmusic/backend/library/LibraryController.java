@@ -73,7 +73,17 @@ public class LibraryController {
     public ApiResponse<Map<String, Object>> albumDetail(@PathVariable Long id) {
         Album a = albumRepository.findById(id)
                 .orElseThrow(() -> new BizException(40401, "album not found"));
-        return ApiResponse.ok(Map.of("album", a, "songs", a.getSongs()));
+        // open-in-view=false：不能在 Jackson 阶段触碰懒加载集合，
+        // 这里显式取歌曲并把专辑拆成标量字段组装
+        Map<String, Object> albumMap = new java.util.LinkedHashMap<>();
+        albumMap.put("id", a.getId());
+        albumMap.put("artist", a.getArtist());
+        albumMap.put("album", a.getAlbum());
+        albumMap.put("year", a.getYear());
+        albumMap.put("genre", a.getGenre());
+        albumMap.put("trackCount", a.getTrackCount());
+        albumMap.put("totalDuration", a.getTotalDuration());
+        return ApiResponse.ok(Map.of("album", albumMap, "songs", songRepository.findByAlbumId(id)));
     }
 
     @GetMapping("/favorites")
