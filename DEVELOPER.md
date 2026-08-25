@@ -40,7 +40,8 @@
 ```
 selfmusic/
 ├── backend/                          # Spring Boot 后端
-│   ├── Dockerfile                    # 多阶段构建：maven:temurin-21 编译 → temurin-21-jre 运行
+│   ├── Dockerfile                    # 生产镜像：多阶段构建 → temurin-21-jre 运行
+│   ├── Dockerfile.dev                # Dev 镜像：JDK 21 + Maven（容器内跑 spring-boot:run）
 │   ├── pom.xml
 │   └── src/main/
 │       ├── java/com/selfmusic/backend/
@@ -67,7 +68,29 @@ selfmusic/
 
 ## 后端开发
 
-### 本地运行（不走 Docker，迭代最快）
+### 三种运行方式对比
+
+| 方式 | 改代码后做什么 | 反馈速度 | 适用场景 |
+|------|--------------|---------|---------|
+| A. 容器 dev 模式 | 什么都不做，保存即自动重启（devtools） | ⚡ 秒级 | **推荐日常**，环境隔离且免维护 |
+| B. 本地直跑 | 同上（devtools） | ⚡ 秒级 | 不想用 Docker / 深入调试 JVM |
+| C. 生产镜像 | `docker compose up -d --build` | 🐢 1~3 分钟 | 发布前最终验证 |
+
+### 方式 A：Dev 容器（推荐日常开发，默认用这个）
+
+```bash
+# 启动（profile: dev，端口 18089）
+docker compose --env-file .env up -d backend-dev
+docker compose --env-file .env logs -f backend-dev   # 看日志
+docker compose --env-file .env stop backend-dev      # 停止
+```
+
+原理：容器里跑 `mvn spring-boot:run`，你的 `backend/src` 和 `~/.m2` 直接挂载进容器
+（UID 1000 一致，读写权限无障碍），devtools 在容器内检测文件变化自动重启。
+**改完代码不需要重新 build 镜像**；只有换 JDK/Maven 版本或新增依赖才需要
+`docker compose --env-file .env build backend-dev` 重建。
+
+### 方式 B：本地直跑
 
 ```bash
 # 1. 导出数据库连接环境变量（值与 .env 一致）
@@ -78,7 +101,7 @@ export DB_HOST=192.168.x.x DB_PORT=3306 DB_NAME=selfmusic \
 mvn spring-boot:run -f backend/pom.xml
 ```
 
-### 容器内运行（模拟生产）
+### 方式 C：生产镜像（验证用）
 
 ```bash
 docker compose up -d --build
@@ -87,7 +110,15 @@ docker compose restart backend     # 重启
 docker compose down                # 停止并移除
 ```
 
-注意：Compose 将容器端口映射为 **18088**（避免与宿主机冲突），本地直跑时是 8080。
+### 端口汇总
+
+| 服务 | 宿主机端口 | 说明 |
+|------|-----------|------|
+| backend-dev | **18089** | Dev 容器，日常开发 |
+| backend | **18088** | 生产镜像 |
+| 本地直跑 | **8080** | 宿主机直接运行 |
+
+前端联调时 `--dart-define=API_BASE_URL` 指向对应端口。
 
 ### 常用命令
 
@@ -125,10 +156,13 @@ flutter build windows --release # Windows 出包
 `lib/main.dart` 通过编译期常量注入后端地址：
 
 ```bash
-# 连接本机直跑的后端（8080）
+# 连接本地直跑的后端（8080）
 flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:8080
 
-# 连接 Docker 容器后端
+# 连接 Dev 容器后端（日常开发，18089）
+flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18089
+
+# 连接生产镜像后端（18088）
 flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 
 # Android 真机不能用 localhost，必须用宿主机局域网 IP
