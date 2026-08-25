@@ -1,15 +1,18 @@
 package com.selfmusic.backend.stream;
 
-import java.io.*;
-import java.nio.file.*;
-import java.util.Map;
+import java.io.FilterInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
-import com.selfmusic.backend.common.BizException;
-import com.selfmusic.backend.common.MusicSource;
-import com.selfmusic.backend.domain.entity.Song;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+
+import com.selfmusic.backend.common.BizException;
+import com.selfmusic.backend.domain.entity.Song;
+
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * 统一读取三类源的音频流：local / webdav / smb。
@@ -77,6 +80,14 @@ public class MusicSourceProxy {
                 int n = super.read(buf, off, toRead);
                 if (n > 0) remaining -= n;
                 return n;
+            }
+            @Override
+            public void close() throws IOException {
+                try {
+                    super.close();
+                } finally {
+                    raf.close();
+                }
             }
         };
     }
