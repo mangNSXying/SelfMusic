@@ -306,6 +306,9 @@ TokenFilter (OncePerRequestFilter)
 lib/
 ├── app/                 入口、路由、主题
 ├── core/                dio 封装、常量、工具
+├── platform/            ★ 平台抽象收口层：Platform.isXxx 判断与平台能力探测只允许出现在这里
+│   ├── capabilities.dart  统一暴露：SMB 策略/文件路径策略/后台播放能力等，运行时注入对应实现
+│   └── <os>/             android/ windows/ linux/ harmonyos/ 条件导入(conditional import)实现
 ├── data/
 │   ├── models/          Song / Album / Playlist / PlayState / DeviceInfo
 │   ├── api/             §4 API 客户端（含 PairingApi）
@@ -321,6 +324,8 @@ lib/
 │   ├── library/  player/  playlists/  admin/(含设备管理页)
 └── state/               PlayerProvider / LibraryProvider / SyncEngine / SettingsStore
 ```
+
+> **为什么要有 `platform/` 层**：鸿蒙走的是三方 Flutter 分支而非官方 target，`Platform.isXxx` 行为、原生插件实现均可能与官方平台不一致。业务代码禁止直接写 `Platform.isAndroid` 之类判断，一律询问 `capabilities`；鸿蒙加入时只需在 `platform/harmonyos/` 提供一套实现，不动上层。
 
 ### 6.2 Source 抽象层（双模式的基石）
 
@@ -424,7 +429,7 @@ frozen=true                              → factor 恒为 1.0
 
 ### 阶段 4：全平台 SMB 直连（~1–2 周，风险最高）
 
-- Windows UNC 通路（先行，半天）；Android smbj 平台通道 PoC（1 天硬门槛）→ 正式实现；鸿蒙验证
+- Windows UNC 通路（先行，半天）；Android smbj 平台通道 PoC（1 天硬门槛）→ 正式实现；鸿蒙验证（三方分支 + 核心依赖 just_audio/path_provider/drift 的鸿蒙可用性逐项核查，同时此阶段才搭建 DevEco 环境）
 - 验收：Android 真机直连 NAS 播放 SMB 歌曲，seek/断点正常；鸿蒙给出可行/降级结论
 
 ### 阶段 5：多设备状态同步（~1 周）
@@ -444,7 +449,7 @@ frozen=true                              → factor 恒为 1.0
 | # | 风险 | 影响 | 缓解 |
 |---|------|------|------|
 | R1 | smbj×Android 平台通道（性能/稳定性未知） | 阶段 4 可能返工 | PoC 硬门槛前置；备选 jSMB/系统 smbclient 子进程；最坏降级"移动端直连仅 WebDAV" |
-| R2 | 鸿蒙三方 Flutter 分支的平台通道兼容性 | 鸿蒙直连受限 | 阶段 4 明确验证节点；降级路径清晰（仅 WebDAV） |
+| R2 | 鸿蒙三方 Flutter 分支的平台通道兼容性，以及 **pub 插件生态缺口**（path_provider/file_picker/audio_session 等常用包在鸿蒙分支可能无实现） | 鸿蒙直连受限、依赖选型受约束 | 阶段 4 明确验证节点：逐个核对核心依赖的鸿蒙实现，无实现则找替代或自行补通道；选型期优先纯 Dart 包；降级路径清晰（仅 WebDAV） |
 | R3 | WebDAV 服务端差异（PROPFIND 深度/鉴权/限流） | 个别云盘不可用 | 连接测试按钮 + 超时重试封装；适配名单维护在文档 |
 | R4 | 直连扫描耗流量/电量 | 用户感知差 | 仅 Wi-Fi 扫描开关；头部探测严格 Range；单源上限 |
 | R5 | ffmpeg 容器 CPU 占用 | 多设备并发卡顿 | 全局并发上限默认 2；超限降级透传 |

@@ -27,11 +27,42 @@
 | Maven | 3.9+ | 后端构建 |
 | Docker + Compose | 任意近期版本 | 后端容器化运行 |
 | MySQL | 8.0 | 宿主机已有实例 |
-| Flutter SDK | 3.6+（Dart ^3.6.0） | 前端开发，需装在宿主机 |
+| Flutter SDK | 3.6+（Dart ^3.6.0） | 前端开发，经 **FVM** 安装管理（见下） |
+| FVM | 最新稳定版 | Flutter 版本管理，多项目/长期项目防版本漂移 |
 | Android SDK / Android Studio | 最新稳定版 | Android 构建调试 |
-| Visual Studio 2022 | 含"使用 C++ 的桌面开发"负载 | Windows 桌面构建 |
+| Visual Studio 2022 | 含"使用 C++ 的桌面开发"负载 | Windows 桌面构建（在 Windows 机器上） |
 
-> 鸿蒙（OpenHarmony）：Flutter 官方不支持，后续通过 `openharmony-sig/flutter_flutter` 三方分支适配，当前不阻塞开发。
+> 注意区分：**Visual Studio 2022**（Windows 原生编译工具链，MSVC + Windows SDK + CMake/Ninja）≠ **VS Code**（日常写 Dart/Java 的编辑器）。Flutter 官方 Windows Desktop 构建依赖前者。
+>
+> 鸿蒙（OpenHarmony/HarmonyOS NEXT）：Flutter 官方不支持，后续通过 `openharmony-sig/flutter_flutter` 三方分支适配，当前不阻塞开发。
+
+### 多平台构建矩阵
+
+不同平台的最终产物必须在对应操作系统上构建，一台 Ubuntu 无法完成全部：
+
+| 目标平台 | 构建环境 | 状态 |
+|---------|---------|------|
+| Android | 本机 Ubuntu（Android Studio + SDK） | ✅ 就绪 |
+| Linux Desktop | 本机 Ubuntu（clang + GTK + cmake + ninja） | ✅ 就绪 |
+| Web | 不做 | ❌ 明确排除 |
+| Windows Desktop | 需要 Windows 环境：Flutter + FVM + VS Code + **Visual Studio 2022**（C++ 桌面负载） | ⏳ 后置 |
+| HarmonyOS | 需要 DevEco Studio + HarmonyOS SDK + 鸿蒙真机，配合三方 Flutter 分支 | ⏳ 后置（阶段 4 再投入） |
+
+### 环境搭建顺序
+
+**现在（本机 Ubuntu）：**
+1. Flutter（经 FVM 安装）+ Linux toolchain
+2. Android Studio + Android SDK + 接受 license
+3. VS Code + Flutter/Dart 扩展
+4. Git（项目已纳入 git 管理）
+5. FVM：`fvm use stable` 后生成 `.fvmrc` 入库
+
+**暂时不需要：**
+- Chrome / Web SDK（不做 Web）
+
+**之后准备（按路线图触发）：**
+- 阶段 1 收尾前后 → Windows 机器（或 VM）+ Visual Studio 2022，用于 Windows Desktop 出包
+- 阶段 4 开始前 → 鸿蒙开发环境（DevEco Studio + SDK + 真机）；**不要提前把鸿蒙 SDK 装进 Ubuntu**
 
 ---
 
@@ -46,19 +77,22 @@ selfmusic/
 │   └── src/main/
 │       ├── java/com/selfmusic/backend/
 │       │   ├── SelfMusicApplication.java
-│       │   ├── config/               # 配置类（CORS 等）
-│       │   ├── controller/           # REST 控制器
-│       │   ├── service/              # 业务层（按需创建）
-│       │   ├── repository/           # JPA 数据访问（按需创建）
-│       │   └── entity/               # JPA 实体（按需创建）
+│       │   ├── common/               # ApiResponse / BizException / MusicSource 枚举 / 全局异常
+│       │   ├── config/               # FirstBootInitializer 等启动配置
+│       │   ├── auth/                 # SecurityConfig / TokenFilter / 配对与设备管理 API
+│       │   ├── library/              # 曲库 API（songs/albums/favorites）
+│       │   ├── stream/               # 流媒体 API + MusicSourceProxy（local/webdav/smb）
+│       │   └── domain/
+│       │       ├── entity/           # JPA 实体（纯手写 getter/setter，不用 Lombok）
+│       │       └── repository/       # Spring Data JPA 接口
 │       └── resources/application.yml
 ├── frontend/                         # Flutter 前端
 │   ├── lib/main.dart                 # 入口
 │   ├── android/ windows/ web/        # 各平台壳工程
 │   └── pubspec.yaml
-├── scripts/init.sql                  # 数据库初始化脚本
+├── scripts/init.sql                  # 数据库初始化脚本（v2 schema）
 ├── nginx/selfmusic.conf              # Nginx 反代模板（部署到宿主机）
-├── docker-compose.yml                # 仅 backend 服务
+├── docker-compose.yml                # backend（18088）+ backend-dev（18089，profile: dev）
 └── .env                              # 数据库连接等敏感配置（不入库）
 ```
 
@@ -131,24 +165,46 @@ mvn dependency:go-offline -f backend/pom.xml     # 预拉全部依赖
 
 ### 新增一个接口的标准流程
 
-1. 在 `entity/` 建 JPA 实体（对应 `scripts/init.sql` 中已存在的表）
-2. 在 `repository/` 建接口继承 `JpaRepository`
+1. 在 `domain/entity/` 建 JPA 实体（对应 `scripts/init.sql` 中已存在的表；**手写 getter/setter**，equals/hashCode 基于 id）
+2. 在 `domain/repository/` 建接口继承 `JpaRepository`
 3. 在 `service/` 写业务逻辑
-4. 在 `controller/` 暴露 REST 接口，路径以 `/api/` 开头（CORS 只放行该前缀）
+4. 在对应功能包（`auth/`、`library/`、`stream/`…）暴露 REST 接口，路径以 `/api/v1/` 开头
 5. 写测试到 `src/test/java`
 
 ---
 
 ## 前端开发
 
+### Flutter 版本管理（FVM）
+
+项目使用 **FVM** 锁定 Flutter SDK 版本，避免全局版本漂移：
+
 ```bash
-cd frontend
+# 首次：安装指定版本并生成 .fvmrc（提交入库，团队成员自动对齐）
+cd frontend && fvm use 3.x.x   # 以 pubspec environment 约定的版本为准
+
+# 之后所有 flutter 命令经 fvm 调用：
+fvm flutter pub get
+fvm flutter run -d <device>
+fvm flutter analyze
+fvm flutter test
+fvm flutter build apk --release
+fvm flutter build windows --release
+
+# IDE：VS Code 中执行 "FVM: Change SDK" 或把 .fvm/flutter_sdk 加入 dart.sdkPath
+```
+
+`.fvm/` 目录不入库（`.gitignore` 已覆盖），`.fvmrc` 必须入库。
+
+### 常用命令
+
+```bash
 flutter pub get                # 安装依赖
-flutter run -d <device>        # 运行：windows / android / chrome
+flutter run -d <device>        # 运行：windows / android / linux
 flutter analyze                # 静态检查
 flutter test                   # 单元测试
 flutter build apk --release    # Android 出包
-flutter build windows --release # Windows 出包
+flutter build windows --release # Windows 出包（需 Windows 环境，见"多平台构建矩阵"）
 ```
 
 ### API 地址配置
@@ -191,8 +247,9 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 
 ## API 规范
 
-- 路径前缀 `/api/`，资源名用复数：`/api/songs`、`/api/playlists`
+- 路径前缀 `/api/v1/`，资源名用复数：`/api/v1/library/songs`、`/api/v1/playlists`
 - 动作语义：GET 查询 / POST 创建 / PUT 全量更新 / PATCH 局部更新 / DELETE 删除
+- 认证：除 `/api/v1/health` 与 `/api/v1/auth/**` 外全部要求 `Authorization: Bearer <device_token>`
 - 统一响应包一层：
 
 ```json
@@ -200,7 +257,7 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 ```
 
 - 错误码：`0` 成功，`4xx` 客户端错误，`5xx` 服务端错误
-- 健康检查：`GET /api/health`
+- 健康检查：`GET /api/v1/health`
 
 ---
 
@@ -279,4 +336,5 @@ Docker Hub 网络不通。解决方案任选：
 
 - 分支：`main`（稳定）、`dev`（集成）、`feature/xxx` 功能分支
 - 提交信息：`feat: 新增歌单接口` / `fix: 修复播放进度丢失` / `chore: 升级依赖`
-- 不要提交：`.env.local`、`build/`、`.dart_tool/`、IDE 私有配置（`.gitignore` 已覆盖大部分）
+- 不要提交：`.env.local`、`build/`、`.dart_tool/`、`.fvm/`、IDE 私有配置（`.gitignore` 已覆盖大部分）
+- 远端：推荐推送至自建 **Gitea**（局域网私有仓库），四端代码同仓管理；`.fvmrc` 入库保证各构建机 Flutter 版本一致

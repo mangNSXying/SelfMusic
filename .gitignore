@@ -1,5 +1,6 @@
 *.txt
 *.lst
+*.md
 
 # ---> Flutter
 # Miscellaneous
