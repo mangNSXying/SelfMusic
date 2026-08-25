@@ -32,7 +32,8 @@ public class TokenFilter extends OncePerRequestFilter {
                                     HttpServletResponse response,
                                     FilterChain chain) throws ServletException, IOException {
         String path = request.getRequestURI();
-        if (path.startsWith("/api/v1/health") || path.startsWith("/api/v1/auth")) {
+        // 仅配对接口匿名；unpair 等其余 auth 接口需要 Bearer token 识别设备身份
+        if (path.startsWith("/api/v1/auth/pair")) {
             chain.doFilter(request, response);
             return;
         }

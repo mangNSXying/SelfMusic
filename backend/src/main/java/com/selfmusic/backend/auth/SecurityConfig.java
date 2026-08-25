@@ -21,10 +21,10 @@ public class SecurityConfig {
         http
             .csrf(csrf -> csrf.disable())
             .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/v1/health", "/api/v1/auth/**").permitAll()
-                .anyRequest().authenticated()
-            )
+                .authorizeHttpRequests(auth -> auth
+                    .requestMatchers("/api/v1/health", "/api/v1/auth/pair").permitAll()
+                    .anyRequest().authenticated()
+                )
             .addFilterBefore(tokenFilter, UsernamePasswordAuthenticationFilter.class)
             .exceptionHandling(ex -> ex.authenticationEntryPoint((req, res, e) -> {
                 res.setStatus(401);
