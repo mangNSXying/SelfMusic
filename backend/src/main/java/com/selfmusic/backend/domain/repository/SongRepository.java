@@ -27,4 +27,6 @@ public interface SongRepository extends JpaRepository<Song, Long> {
     long countBySourceAndHiddenFalse(MusicSource source);
 
     List<Song> findByFavoriteTrueAndHiddenFalse();
+
+    List<Song> findByAlbumId(Long albumId);
 }
