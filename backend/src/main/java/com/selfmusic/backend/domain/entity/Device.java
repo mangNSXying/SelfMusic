@@ -1,5 +1,6 @@
 package com.selfmusic.backend.domain.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
@@ -18,6 +19,7 @@ public class Device {
     @Column(length = 50)
     private String platform;
 
+    @JsonIgnore
     @Column(name = "token_hash", nullable = false, length = 64)
     private String tokenHash;
 

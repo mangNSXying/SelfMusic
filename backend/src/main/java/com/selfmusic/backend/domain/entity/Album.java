@@ -1,5 +1,6 @@
 package com.selfmusic.backend.domain.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -30,6 +31,7 @@ public class Album {
     @Column(name = "total_duration")
     private Integer totalDuration = 0;
 
+    @JsonIgnore
     @OneToMany(mappedBy = "album")
     private List<Song> songs = new ArrayList<>();
 

@@ -1,5 +1,6 @@
 package com.selfmusic.backend.domain.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
@@ -10,6 +11,7 @@ public class PlayState {
     @Column(name = "playlist_id")
     private Long playlistId;
 
+    @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "song_id")
     private Song song;
