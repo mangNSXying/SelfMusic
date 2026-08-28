@@ -1,5 +1,15 @@
 import 'package:flutter/material.dart';
-import 'package:dio/dio.dart';
+import 'package:provider/provider.dart';
+import 'services/api_client.dart';
+import 'data/sources/server_proxy_source.dart';
+import 'providers/auth_provider.dart';
+import 'providers/library_provider.dart';
+import 'providers/player_provider.dart';
+import 'providers/navigation_provider.dart';
+import 'theme/theme_provider.dart';
+import 'screens/pairing_screen.dart';
+import 'screens/library_screen.dart';
+import 'layout/app_shell.dart';
 
 void main() {
   runApp(const SelfMusicApp());
@@ -10,67 +20,97 @@ class SelfMusicApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'SelfMusic',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorSchemeSeed: Colors.deepPurple,
-        brightness: Brightness.dark,
-        useMaterial3: true,
+    final api = ApiClient();
+    final auth = AuthProvider(api);
+    // 播放流式取 token 依赖 Auth（懒读）。
+    final lib = LibraryProvider(
+      ServerProxySource(
+        dio: api.dio,
+        baseUrl: api.baseUrl,
+        tokenProvider: () => auth.token ?? '',
       ),
-      home: const HomePage(),
+    );
+    final nav = NavigationProvider();
+
+    return MultiProvider(
+      providers: [
+        Provider<ApiClient>.value(value: api),
+        ChangeNotifierProvider<ThemeProvider>.value(value: ThemeProvider()),
+        ChangeNotifierProvider<AuthProvider>.value(value: auth),
+        ChangeNotifierProvider<LibraryProvider>.value(value: lib),
+        ChangeNotifierProvider<PlayerProvider>(create: (_) => PlayerProvider()),
+        ChangeNotifierProvider<NavigationProvider>.value(value: nav),
+      ],
+      child: const _ThemedApp(),
     );
   }
 }
 
-class HomePage extends StatefulWidget {
-  const HomePage({super.key});
-
-  @override
-  State<HomePage> createState() => _HomePageState();
-}
-
-class _HomePageState extends State<HomePage> {
-  String _status = 'Checking server...';
-
-  @override
-  void initState() {
-    super.initState();
-    _checkServer();
-  }
-
-  Future<void> _checkServer() async {
-    try {
-      final dio = Dio(BaseOptions(
-        baseUrl: const String.fromEnvironment('API_BASE_URL',
-            defaultValue: 'http://localhost:8080'),
-        connectTimeout: const Duration(seconds: 5),
-      ));
-      final response = await dio.get('/api/health');
-      setState(() => _status = 'Server: ${response.data['status']}');
-    } catch (e) {
-      setState(() => _status = 'Server unavailable: $e');
-    }
-  }
+class _ThemedApp extends StatelessWidget {
+  const _ThemedApp();
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('SelfMusic')),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(_status, style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 24),
-            Icon(Icons.music_note, size: 64, color: Theme.of(context).colorScheme.primary),
-            const SizedBox(height: 16),
-            Text(
-              'Welcome to SelfMusic',
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-          ],
-        ),
+    final theme = context.watch<ThemeProvider>();
+    return MaterialApp(
+      title: 'SelfMusic',
+      debugShowCheckedModeBanner: false,
+      theme: theme.themeData,
+      home: const Root(),
+    );
+  }
+}
+
+class Root extends StatefulWidget {
+  const Root({super.key});
+  @override
+  State<Root> createState() => _RootState();
+}
+
+class _RootState extends State<Root> {
+  bool _expiryDialogShown = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final auth = context.watch<AuthProvider>();
+
+    if (!auth.bootstrapped) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    if (auth.sessionExpired && !_expiryDialogShown) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _showExpiryDialog(context, auth);
+      });
+    }
+    if (!auth.isPaired || auth.sessionExpired) {
+      return const PairingScreen();
+    }
+
+    // 播放页作为内容区的一种视图：导航到“歌曲”后从列表进入播放页时，
+    // 通过 PlayerProvider 会话状态在内容区切换展示。
+    return const AppShell(
+      content: AppContent(),
+    );
+  }
+
+  void _showExpiryDialog(BuildContext context, AuthProvider auth) {
+    _expiryDialogShown = true;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('会话已过期'),
+        content: const Text('登录已过期，请重新配对后继续使用。'),
+        actions: [
+          TextButton(
+            onPressed: () {
+              auth.acceptSessionExpired();
+              setState(() => _expiryDialogShown = false);
+              Navigator.of(ctx).pop();
+            },
+            child: const Text('重新配对'),
+          ),
+        ],
       ),
     );
   }
