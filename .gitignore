@@ -2,6 +2,10 @@
 *.lst
 *.md
 
+backend/target/
+scripts/
+*test*
+
 # ---> Flutter
 # Miscellaneous
 *.class
