@@ -1,5 +1,7 @@
 package com.selfmusic.backend.auth;
 
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.UUID;
 
@@ -19,6 +21,9 @@ import org.springframework.web.bind.annotation.*;
 @RequiredArgsConstructor
 public class AuthController {
 
+    private static final Duration ACCESS_TTL = Duration.ofHours(24);
+    private static final Duration REFRESH_TTL = Duration.ofDays(30);
+
     private final DeviceRepository deviceRepository;
     private final SettingRepository settingRepository;
 
@@ -33,22 +38,64 @@ public class AuthController {
             throw new BizException(40100, "invalid pairing token");
         }
 
+        LocalDateTime now = LocalDateTime.now();
         String client = UUID.randomUUID().toString();
         String deviceToken = UUID.randomUUID().toString();
+        String refreshToken = UUID.randomUUID().toString();
         String tokenHash = TokenFilter.sha256(deviceToken);
+        String refreshHash = TokenFilter.sha256(refreshToken);
 
         Device device = new Device();
         device.setClientId(client);
         device.setName(req.device_name());
         device.setPlatform(req.platform());
         device.setTokenHash(tokenHash);
+        device.setRefreshTokenHash(refreshHash);
+        device.setTokenExpiresAt(now.plus(ACCESS_TTL));
+        device.setRefreshExpiresAt(now.plus(REFRESH_TTL));
         device.setRevoked(false);
-        device.setPairedAt(java.time.LocalDateTime.now());
+        device.setPairedAt(now);
+        device.setRenewedAt(now);
         deviceRepository.save(device);
 
         return ApiResponse.ok(Map.of(
                 "client_id", client,
-                "device_token", deviceToken
+                "device_token", deviceToken,
+                "access_token", deviceToken,
+                "refresh_token", refreshToken,
+                "expires_in", String.valueOf(ACCESS_TTL.toSeconds()),
+                "refresh_expires_in", String.valueOf(REFRESH_TTL.toSeconds())
+        ));
+    }
+
+    // 匿名端点：用 refresh_token 换发新的 access_token + refresh_token（轮换式）
+    @PostMapping("/refresh")
+    public ApiResponse<Map<String, String>> refresh(@RequestBody RefreshRequest req) {
+        String refreshHash = TokenFilter.sha256(req.refresh_token());
+        Device device = deviceRepository.findByRefreshTokenHashAndRevokedFalse(refreshHash)
+                .orElseThrow(() -> new BizException(40102, "refresh token invalid or revoked"));
+
+        LocalDateTime now = LocalDateTime.now();
+        if (device.getRefreshExpiresAt() == null || device.getRefreshExpiresAt().isBefore(now)) {
+            throw new BizException(40102, "refresh token expired");
+        }
+
+        String newAccess = UUID.randomUUID().toString();
+        String newRefresh = UUID.randomUUID().toString();
+        device.setTokenHash(TokenFilter.sha256(newAccess));
+        device.setRefreshTokenHash(TokenFilter.sha256(newRefresh));
+        device.setTokenExpiresAt(now.plus(ACCESS_TTL));
+        device.setRefreshExpiresAt(now.plus(REFRESH_TTL));
+        device.setRenewedAt(now);
+        deviceRepository.save(device);
+
+        return ApiResponse.ok(Map.of(
+                "client_id", device.getClientId(),
+                "device_token", newAccess,
+                "access_token", newAccess,
+                "refresh_token", newRefresh,
+                "expires_in", String.valueOf(ACCESS_TTL.toSeconds()),
+                "refresh_expires_in", String.valueOf(REFRESH_TTL.toSeconds())
         ));
     }
 
@@ -74,4 +121,5 @@ public class AuthController {
     }
 
     public record PairRequest(String pairing_token, String device_name, String platform) {}
+    public record RefreshRequest(String refresh_token) {}
 }

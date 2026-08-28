@@ -22,7 +22,7 @@ public class SecurityConfig {
             .csrf(csrf -> csrf.disable())
             .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                    .requestMatchers("/api/v1/health", "/api/v1/auth/pair").permitAll()
+                    .requestMatchers("/api/v1/health", "/api/v1/auth/pair", "/api/v1/auth/refresh").permitAll()
                     .anyRequest().authenticated()
                 )
             .addFilterBefore(tokenFilter, UsernamePasswordAuthenticationFilter.class)

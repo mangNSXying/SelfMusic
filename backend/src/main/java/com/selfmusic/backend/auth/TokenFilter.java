@@ -42,18 +42,27 @@ public class TokenFilter extends OncePerRequestFilter {
         if (header != null && header.startsWith("Bearer ")) {
             String token = header.substring(7);
             String hash = sha256(token);
-            deviceRepository.findByTokenHashAndRevokedFalse(hash).ifPresent(device -> {
-                var auth = new UsernamePasswordAuthenticationToken(
-                        device.getClientId(), null,
-                        List.of(new SimpleGrantedAuthority("ROLE_USER")));
-                SecurityContextHolder.getContext().setAuthentication(auth);
+            java.util.Optional<com.selfmusic.backend.domain.entity.Device> found =
+                    deviceRepository.findByTokenHashAndRevokedFalse(hash);
+            if (found.isPresent()) {
+                var device = found.get();
+                // access token 已过期：不放行认证，并用响应头告知前端可走刷新
+                if (device.getTokenExpiresAt() != null
+                        && device.getTokenExpiresAt().isBefore(LocalDateTime.now())) {
+                    response.setHeader("X-Token-Expired", "true");
+                } else {
+                    var auth = new UsernamePasswordAuthenticationToken(
+                            device.getClientId(), null,
+                            List.of(new SimpleGrantedAuthority("ROLE_USER")));
+                    SecurityContextHolder.getContext().setAuthentication(auth);
+                }
                 // 节流刷新 last_seen_at（最多 60s 一次）
                 if (device.getLastSeenAt() == null
                         || device.getLastSeenAt().isBefore(LocalDateTime.now().minusSeconds(60))) {
                     device.setLastSeenAt(LocalDateTime.now());
                     deviceRepository.save(device);
                 }
-            });
+            }
         }
 
         chain.doFilter(request, response);

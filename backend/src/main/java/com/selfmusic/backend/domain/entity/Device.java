@@ -31,6 +31,22 @@ public class Device {
     @Column(name = "last_seen_at")
     private LocalDateTime lastSeenAt;
 
+    @JsonIgnore
+    @Column(name = "token_expires_at")
+    private LocalDateTime tokenExpiresAt;
+
+    @JsonIgnore
+    @Column(name = "refresh_token_hash")
+    private String refreshTokenHash;
+
+    @JsonIgnore
+    @Column(name = "refresh_expires_at")
+    private LocalDateTime refreshExpiresAt;
+
+    @JsonIgnore
+    @Column(name = "renewed_at")
+    private LocalDateTime renewedAt;
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
 
@@ -54,6 +70,18 @@ public class Device {
 
     public LocalDateTime getLastSeenAt() { return lastSeenAt; }
     public void setLastSeenAt(LocalDateTime lastSeenAt) { this.lastSeenAt = lastSeenAt; }
+
+    public LocalDateTime getTokenExpiresAt() { return tokenExpiresAt; }
+    public void setTokenExpiresAt(LocalDateTime tokenExpiresAt) { this.tokenExpiresAt = tokenExpiresAt; }
+
+    public String getRefreshTokenHash() { return refreshTokenHash; }
+    public void setRefreshTokenHash(String refreshTokenHash) { this.refreshTokenHash = refreshTokenHash; }
+
+    public LocalDateTime getRefreshExpiresAt() { return refreshExpiresAt; }
+    public void setRefreshExpiresAt(LocalDateTime refreshExpiresAt) { this.refreshExpiresAt = refreshExpiresAt; }
+
+    public LocalDateTime getRenewedAt() { return renewedAt; }
+    public void setRenewedAt(LocalDateTime renewedAt) { this.renewedAt = renewedAt; }
 
     @Override
     public boolean equals(Object o) {
