@@ -29,6 +29,7 @@
 | MySQL | 8.0 | 宿主机已有实例 |
 | Flutter SDK | 3.6+（Dart ^3.6.0） | 前端开发，经 **FVM** 安装管理（见下） |
 | FVM | 最新稳定版 | Flutter 版本管理，多项目/长期项目防版本漂移 |
+| mpv + libmpv-dev | 0.37+ | Linux 桌面音频后端（`just_audio_mpv` 依赖，见"Linux 桌面音频依赖"） |
 | Android SDK / Android Studio | 最新稳定版 | Android 构建调试 |
 | Visual Studio 2022 | 含"使用 C++ 的桌面开发"负载 | Windows 桌面构建（在 Windows 机器上） |
 
@@ -87,8 +88,15 @@ selfmusic/
 │       │       └── repository/       # Spring Data JPA 接口
 │       └── resources/application.yml
 ├── frontend/                         # Flutter 前端
-│   ├── lib/main.dart                 # 入口
-│   ├── android/ windows/ web/        # 各平台壳工程
+│   ├── lib/
+│   │   ├── main.dart                 # 入口 + Provider 装配 / Root
+│   │   ├── theme/                    # 可配置主题（app_theme / theme_provider）
+│   │   ├── layout/                   # 自适应布局（app_shell / sidebar / top_bar / queue_panel / mini_player_bar）
+│   │   ├── providers/                # 状态（auth / library / player / navigation）
+│   │   ├── services/                 # dio+懒刷新拦截器(ApiClient)、AuthService
+│   │   ├── data/sources/             # MusicSource 抽象 + ServerProxy
+│   │   └── screens/                  # 内容区/设置/配对/播放页
+│   ├── android/ linux/ windows/ web/ # 各平台壳工程
 │   └── pubspec.yaml
 ├── scripts/init.sql                  # 数据库初始化脚本（v2 schema）
 ├── nginx/selfmusic.conf              # Nginx 反代模板（部署到宿主机）
@@ -212,13 +220,13 @@ flutter build windows --release # Windows 出包（需 Windows 环境，见"多�
 
 ### API 地址配置
 
-`lib/main.dart` 通过编译期常量注入后端地址：
+`lib/services/api_client.dart` 通过编译期常量 `String.fromEnvironment('API_BASE_URL')` 注入后端地址（默认 `http://192.168.3.25:18089`）：
 
 ```bash
 # 连接本地直跑的后端（8080）
 flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:8080
 
-# 连接 Dev 容器后端（日常开发，18089）
+# 连接 Dev 容器后端（日常开发，18089，也是默认值）
 flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18089
 
 # 连接生产镜像后端（18088）
@@ -227,15 +235,39 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 # Android 真机不能用 localhost，必须用宿主机局域网 IP
 ```
 
+### 常用 Flutter 命令
+
+```bash
+fvm flutter pub get
+fvm flutter run -d linux      # Linux 桌面（默认）
+fvm flutter run -d android    # Android
+fvm flutter analyze
+fvm flutter test
+fvm flutter build linux --release
+fvm flutter build apk --release
+```
+
 ### 技术选型（pubspec.yaml 已引入）
 
 | 包 | 用途 |
 |----|------|
-| dio | HTTP 客户端 |
+| dio | HTTP 客户端（含懒刷新拦截器） |
 | provider | 状态管理 |
-| just_audio | 音频播放 |
+| just_audio | 音频播放抽象 |
+| just_audio_mpv | Linux 音频后端（联邦 Dart 插件，走系统 mpv/libmpv） |
 | cached_network_image | 图片缓存 |
-| flutter_secure_storage | 敏感数据安全存储 |
+| flutter_secure_storage | 敏感数据安全存储（token、主题偏好） |
+
+### Linux 桌面音频依赖（mpv）
+
+`just_audio` 在 Linux 上需要 mpv 后端（`just_audio_mpv`），因此本机需安装 mpv 及开发库：
+
+```bash
+sudo apt install -y mpv libmpv-dev
+ldconfig -p | grep libmpv   # 应看到 libmpv.so / libmpv.so.2
+```
+
+> 插件以 `dartPluginClass` 联邦方式自动注册到 `JustAudioPlatform.instance`，无需手动初始化；`mpv_dart` 通过 FFI 按名 dlopen `libmpv`。
 
 ---
 
@@ -252,7 +284,7 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 
 - 路径前缀 `/api/v1/`，资源名用复数：`/api/v1/library/songs`、`/api/v1/playlists`
 - 动作语义：GET 查询 / POST 创建 / PUT 全量更新 / PATCH 局部更新 / DELETE 删除
-- 认证：除 `/api/v1/health` 与 `/api/v1/auth/**` 外全部要求 `Authorization: Bearer <device_token>`
+- 认证：除 `/api/v1/health`、`/api/v1/auth/pair`、`/api/v1/auth/refresh` 外全部要求 `Authorization: Bearer <access_token>`；access 过期返回 `401 + X-Token-Expired: true`，客户端懒刷新
 - 统一响应包一层：
 
 ```json

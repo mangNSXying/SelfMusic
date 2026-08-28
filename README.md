@@ -11,7 +11,9 @@
 
 | 层级 | 技术 | 备注 |
 |------|------|------|
-| 前端 | Flutter 3.6+ / Dart | 支持 Android、Windows，计划支持 OpenHarmony |
+| 前端 | Flutter 3.6+ / Dart | 支持 Linux、Android、Windows；计划支持 OpenHarmony |
+
+**音频后端（Linux 桌面需安装 mpv）**：`just_audio` 在 Linux 依赖 `just_audio_mpv`，需 `sudo apt install -y mpv libmpv-dev`。
 | 后端 | Spring Boot 3.4.4 / JDK 21 | REST API |
 | 构建 | Maven | |
 | 数据库 | MySQL 8.0 | 宿主机已有实例，容器内应用直连 |
@@ -58,14 +60,18 @@ curl http://localhost:18088/api/health   # 生产模式
 # 返回 {"status":"UP","service":"SelfMusic API",...}
 ```
 
-### 4. 启动前端（需要 Flutter SDK）
+### 4. 启动前端（需要 Flutter SDK + Linux 需先装 mpv）
 
 ```bash
+sudo apt install -y mpv libmpv-dev   # Linux 桌面音频后端（仅首次）
 cd frontend
 flutter pub get
-flutter run -d windows   # Windows 桌面
+flutter run -d linux     # Linux 桌面（默认）
 flutter run -d android   # Android
+flutter run -d windows   # Windows 桌面（需 Windows 机器）
 ```
+
+> 前端 UI 为**可换主题的自适应框架**：侧边栏设置分区可改背景/强调色、切换明暗并持久化；桌面为侧边栏+顶栏+右队列面板，窄屏自动变抽屉。
 
 ### 5. 配置 Nginx（可选）
 
@@ -87,10 +93,16 @@ selfmusic/
 │       ├── SelfMusicApplication.java
 │       ├── config/WebConfig.java
 │       └── controller/HealthController.java
-├── frontend/                    # Flutter 前端
+├── frontend/                    # Flutter 前端（可换主题自适应 UI）
 │   ├── pubspec.yaml
-│   ├── lib/main.dart
-│   └── assets/{images,icons}/
+│   └── lib/
+│       ├── main.dart            # 入口 + Provider 装配 / Root
+│       ├── theme/               # 可配置主题（app_theme / theme_provider）
+│       ├── layout/              # 自适应布局（app_shell/sidebar/top_bar/queue_panel/mini_player_bar）
+│       ├── providers/           # 状态（auth/library/player/navigation）
+│       ├── services/            # ApiClient（含懒刷新拦截器）/ AuthService
+│       ├── data/sources/        # MusicSource 抽象 + ServerProxy
+│       └── screens/             # 内容区 / 设置 / 配对 / 播放页
 ├── scripts/
 │   └── init.sql                 # MySQL 建库建表
 ├── nginx/

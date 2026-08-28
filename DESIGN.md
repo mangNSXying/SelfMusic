@@ -1,6 +1,6 @@
 # SelfMusic 整体设计文档
 
-> 状态：设计稿 **v2**（待实施）
+> 状态：设计稿 **v2**（阶段 1 骨架 + 阶段 1 认证已落地，其余待实施）
 > 定位：**去中心化的个人音乐服务器 + 双模式客户端**
 > 上游约束：`开发思路.txt`（无中心账号 / 本地+SMB+WebDAV 曲库 / 加权播放 / 喜欢歌自动缓存）
 
@@ -89,7 +89,7 @@
 - 一台服务器 = 一个主人（自建自用）。没有注册/登录体系，但有明确的归属和准入控制。
 - 去中心化：各人部署各自的服务器，互不联通；App 可保存多个服务器配置。
 
-### 2.2 令牌模型
+### 2.2 令牌模型（OAuth2 风格：access + refresh）
 
 ```
 主配对令牌 (pairing_token)
@@ -97,13 +97,22 @@
   · 仅用于 /auth/pair 配对一次，不用于日常请求
   · 以明文存储（需要展示成二维码），泄露可随时重置
 
-设备令牌 (device_token)
-  · 配对成功后由服务端签发，每台设备一枚，仅存哈希
-  · App 所有后续请求携带 Authorization: Bearer <device_token>
-  · 单台吊销不影响其他设备
+访问令牌 (access_token / device_token)
+  · pair 成功后签发，TTL = 24h（expires_in=86400），仅存哈希（token_hash）
+  · 日常请求携带 Authorization: Bearer <access_token>
+  · 过期 → 请求被拒（HTTP 401 + 响应头 X-Token-Expired: true）
+
+刷新令牌 (refresh_token)
+  · TTL = 30d（refresh_expires_in=2592000），仅存哈希（refresh_token_hash）
+  · 仅用于 POST /auth/refresh 换发新的一套 access+refresh
+  · **轮换式**：用过的 refresh_token 立即作废，同一套 token 只能换一次
+
+吊销 / 过期语义
+  · 单台吊销不影响其他设备；吊销的设备 access/refresh 均失效
+  · refresh 也过期 → App 回到"会话过期"，提示重新配对
 ```
 
-### 2.3 配对流程
+### 2.3 配对与续签流程
 
 ```
 ┌────────┐                          ┌──────────┐
@@ -111,16 +120,23 @@
 │        │ ─── POST /auth/pair ────► │           │
 │        │    {pairing_token,        │ 校验令牌    │
 │        │     device_name,platform} │ 注册设备    │
-│        │ ◄── {client_id,           │ 签发token  │
-│        │      device_token}        │           │
+│        │ ◄── {client_id,           │ 签发      │
+│        │      access_token,        │  access+   │
+│        │      refresh_token,       │  refresh   │
+│        │      expires_in,          │           │
+│        │      refresh_expires_in}  │           │
 │ 保存到  │                           │           │
-│ 安全存储│  ②日常请求带 Bearer token   │           │
+│ 安全存储│  ②日常请求带 Bearer access  │           │
+│        │  ③access 过期 → 懒刷新     │  POST     │
+│        │ ─── POST /auth/refresh ──►│ /refresh  │
+│        │ ◄── 新 access+refresh     │ (轮换,匿名)│
 └────────┘                          └──────────┘
 ```
 
 - 二维码内容：`selfmusic://pair?host=xxx&port=18089&token=xxxx`
+- **懒刷新（lazy refresh）**：不做定时器；仅当某请求命中 `401 + X-Token-Expired` 时，客户端才用 refresh_token 换发新 token，并对原请求重放一次（并发请求以"单飞 single-flight"共享一次刷新，避免重复轮换）
+- 刷新失败（refresh 失效/过期）→ 客户端清空令牌，进入"会话过期"弹窗，引导重新配对
 - 重置主令牌：旧令牌立即失效，已配对设备不受影响
-- 吊销设备：该 device_token 立即失效（服务端内存缓存 + 定期刷新）
 
 ---
 
@@ -145,15 +161,20 @@
 #### devices
 
 ```
-id            BIGINT PK
-client_id     CHAR(36) UNIQUE      -- UUID，配对时生成
-name          VARCHAR(100)         -- 设备昵称，可改
-platform      VARCHAR(50)          -- android/windows/harmony/...
-token_hash    CHAR(64)             -- SHA-256(device_token)，仅存哈希
-revoked       BOOLEAN DEFAULT FALSE
-paired_at     TIMESTAMP
-last_seen_at  DATETIME NULL
+id                   BIGINT PK
+client_id            CHAR(36) UNIQUE         -- UUID，配对时生成
+name                 VARCHAR(100)            -- 设备昵称，可改
+platform             VARCHAR(50)             -- linux/android/windows/harmony/...
+token_hash           CHAR(64)                -- SHA-256(access_token 初值)，仅存哈希
+token_expires_at     DATETIME                -- access 过期时间（24h）
+refresh_token_hash   CHAR(64)                -- SHA-256(refresh_token)，仅存哈希
+refresh_expires_at   DATETIME                -- refresh 过期时间（30d）
+renewed_at           DATETIME                -- 最近一次 refresh 时间
+revoked              BOOLEAN DEFAULT FALSE
+paired_at            TIMESTAMP
+last_seen_at         DATETIME NULL
 INDEX idx_token(token_hash)
+INDEX idx_refresh(refresh_token_hash)
 ```
 
 #### settings 键清单
@@ -194,7 +215,7 @@ INDEX idx_token(token_hash)
 
 - 前缀 `/api/v1`
 - 响应包：`{ "code": 0, "message": "ok", "data": ... }`
-- **认证**：除 `/health` 与 `/auth/*` 外全部要求 `Authorization: Bearer <device_token>`；无效/吊销返回 `code=40101`
+- **认证**：除 `/health`、`/auth/pair`、`/auth/refresh`（匿名）外全部要求 `Authorization: Bearer <access_token>`；无效/吊销返回 `code=40101`；**access 过期返回 `HTTP 401` + 响应头 `X-Token-Expired: true`**
 - 设备识别头 `X-Client-Id` 必带（与 devices.client_id 对应）
 - 分页：`page`（1 起）、`size`（默认 50，≤500）；响应含 `total`
 
@@ -203,7 +224,8 @@ INDEX idx_token(token_hash)
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/health` | 免认证存活检查 |
-| POST | `/auth/pair` | `{pairing_token, device_name, platform}` → `{client_id, device_token}`；主令牌错误返回 `code=40100` |
+| POST | `/auth/pair` | `{pairing_token, device_name, platform}` → `{client_id, access_token, refresh_token, expires_in=86400, refresh_expires_in=2592000}`；主令牌错误返回 `code=40100` |
+| POST | `/auth/refresh` | 匿名白名单；`{refresh_token}` → 轮换式换发新 `{access_token, refresh_token, ...}`；无效/过期返回 `code=40102` |
 | POST | `/auth/unpair` | 自我注销（吊销当前设备） |
 | GET | `/meta/server` | 版本、ffmpeg 可用性、源概况（需认证） |
 
@@ -281,9 +303,10 @@ common/       ApiResponse, GlobalExceptionHandler, PageResult
 
 ```
 TokenFilter (OncePerRequestFilter)
-  ├─ 白名单: /api/v1/health, /api/v1/auth/**
+  ├─ 白名单: /api/v1/health, /api/v1/auth/pair, /api/v1/auth/refresh
   ├─ 解析 Bearer → SHA-256 → 查 devices(token_hash, revoked=false)
-  ├─ 命中: 注入 DeviceContext(client_id)，刷新 last_seen_at（节流 60s）
+  ├─ 命中且 access 未过期: 注入 DeviceContext(client_id)，刷新 last_seen_at（节流 60s）
+  ├─ 命中但 access 已过期: 设响应头 X-Token-Expired: true，且不放行（→ 前端触发懒刷新）
   └─ 未命中: 401 {code:40101}
 ```
 
@@ -300,30 +323,32 @@ TokenFilter (OncePerRequestFilter)
 
 ## 6. Flutter 客户端设计
 
-### 6.1 目录规划
+### 6.1 目录规划（已落地的可换主题自适应结构）
 
 ```
 lib/
-├── app/                 入口、路由、主题
-├── core/                dio 封装、常量、工具
-├── platform/            ★ 平台抽象收口层：Platform.isXxx 判断与平台能力探测只允许出现在这里
-│   ├── capabilities.dart  统一暴露：SMB 策略/文件路径策略/后台播放能力等，运行时注入对应实现
-│   └── <os>/             android/ windows/ linux/ harmonyos/ 条件导入(conditional import)实现
-├── data/
-│   ├── models/          Song / Album / Playlist / PlayState / DeviceInfo
-│   ├── api/             §4 API 客户端（含 PairingApi）
-│   ├── sources/         ★ Source 抽象层
-│   │   ├── music_source.dart        抽象接口
-│   │   ├── local_source.dart
-│   │   ├── webdav_direct_source.dart
-│   │   ├── smb_direct_source.dart   平台通道桥接
-│   │   ├── smb_platform_bridge.dart MethodChannel/Pigeon 封装
-│   │   └── server_proxy_source.dart
-│   └── local/           drift 库：§3.2 全部表
-├── features/
-│   ├── library/  player/  playlists/  admin/(含设备管理页)
-└── state/               PlayerProvider / LibraryProvider / SyncEngine / SettingsStore
+├── main.dart              入口 + Provider 装配（Theme/Auth/Library/Player/Navigation）
+├── theme/                 ★ 可配置主题核心
+│   ├── app_theme.dart      语义化颜色 token + AppTheme.build()（亮/暗、自定义强调色/背景色）
+│   └── theme_provider.dart 主题状态：运行时切换 + secure_storage 持久化
+├── layout/                ★ 自适应模块化布局框架
+│   ├── app_shell.dart      顶层壳：桌面[侧边栏|内容|队列面板]，窄屏抽屉
+│   ├── sidebar.dart        侧边栏：设置分区(常规/播放/界面/歌曲/通知)+底部(明暗/退出)
+│   ├── top_bar.dart        顶栏：上层汉堡+搜索，下层导航(播放列表/喜欢/播放源/歌曲/专辑/歌手)
+│   ├── queue_panel.dart    右侧播放队列面板
+│   └── mini_player_bar.dart 底部"正在播放"条
+├── providers/            ★ 状态
+│   ├── navigation_provider.dart  分区/设置/播放页视图切换
+│   ├── player_provider.dart      全局播放(AudioPlayer+队列)，播放页/队列/迷你条共享
+│   ├── library_provider.dart     曲库
+│   └── auth_provider.dart        配对 + 会话过期态
+├── services/             dio 封装(ApiClient 含懒刷新拦截器)、AuthService
+├── data/sources/         ★ Source 抽象层 (ServerProxy / Local / Webdav / Smb)
+├── models/               Song / Album ...
+└── screens/              AppContent(内容区) / settings(界面主题设置) / player / pairing
 ```
+
+> **platform 收口层**（§6.3 的 `capabilities`）与 **drift 本地库** 尚未落地，属路线图后续阶段。
 
 > **为什么要有 `platform/` 层**：鸿蒙走的是三方 Flutter 分支而非官方 target，`Platform.isXxx` 行为、原生插件实现均可能与官方平台不一致。业务代码禁止直接写 `Platform.isAndroid` 之类判断，一律询问 `capabilities`；鸿蒙加入时只需在 `platform/harmonyos/` 提供一套实现，不动上层。
 
@@ -366,6 +391,7 @@ abstract class MusicSource {
 ### 6.5 网络与离线
 
 - `dio`：API 超时 5s、指数退避重试 3 次；流式请求超时 ∞
+- **懒刷新拦截器（ApiClient）**：`onRequest` 自动带 `Bearer access`；`onError` 命中 `401 + X-Token-Expired` 时用 `refresh_token` **单飞（single-flight）**换发新 token 并对原请求重放一次；刷新失败清空令牌并触发 `onSessionExpired` → "会话过期"弹窗重新配对。
 - 断网判定：连续失败 → 进"离线模式"，UI 顶栏提示；播放范围收缩为 `cache_meta` 命中项
 - 恢复网络：SyncEngine 自动恢复，先推 outbox 再拉增量
 
@@ -412,8 +438,10 @@ frozen=true                              → factor 恒为 1.0
 
 ### 阶段 1：双模式骨架 + 服务器核心（~1.5 周）
 
-- 后端：SecurityConfig+TokenFilter+devices/auth API；MusicSource 抽象+Smb/Webdav/Local 实现；扫描入库；`/library/**`、`/stream/**`；镜像加 ffmpeg
-- App：Source 层四实现骨架（ServerProxy 完整可用）、曲库浏览四页、基础播放器（顺序播放）、配对页
+> **状态：主体已完成✅** —— 认证（access/refresh 轮换 + 过期懒刷新）、可换主题的自适应 UI 框架、全局播放器（mpv 后端）均已落地；SMB/WebDAV 直连源、本地索引与后台扫描仍待实施。
+
+- 后端：SecurityConfig+TokenFilter(**含过期校验/X-Token-Expired**) + devices/auth API(**pair + refresh 轮换**)；MusicSource 抽象+Smb/Webdav/Local 实现(**ServerProxy 完整可用**)；扫描入库；`/library/**`、`/stream/**`；镜像加 ffmpeg
+- App：Source 层四实现骨架（ServerProxy 完整可用）、**可换主题自适应 UI 框架（theme/layout/providers)**、基础播放器（顺序播放）、配对页
 - 验收：配对一台真机 → 浏览三源曲目 → 任选一首流式播放；未带 token 的请求被拒
 
 ### 阶段 2：加权播放 + 歌单 + 喜欢歌缓存（~1 周，蓝图核心）
