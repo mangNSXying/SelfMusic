@@ -41,10 +41,12 @@
 
 不同平台的最终产物必须在对应操作系统上构建，一台 Ubuntu 无法完成全部：
 
+> **平台开发原则**：**Linux 与 Android 同步开发、进度对齐**。`lib/` 全部代码为跨平台 Dart，特性落地时必须同时给出 Linux + Android 的平台配套（音频后端/权限/生命周期用条件导入或平台插件收口）。详见 `DESIGN.md §8`。
+
 | 目标平台 | 构建环境 | 状态 |
 |---------|---------|------|
-| Android | 本机 Ubuntu（Android Studio + SDK） | ✅ 就绪 |
-| Linux Desktop | 本机 Ubuntu（clang + GTK + cmake + ninja） | ✅ 就绪 |
+| Android | 本机 Ubuntu（Android Studio + SDK） | ✅ 环境就绪；🔧 **壳工程尚未重建**（`android/` 为空壳，见 DESIGN.md §8 阶段 0，实现暂缓) |
+| Linux Desktop | 本机 Ubuntu（clang + GTK + cmake + ninja） | ✅ 当前主力平台（UI/主题/播放器/鉴权已落地） |
 | Web | 不做 | ❌ 明确排除 |
 | Windows Desktop | 需要 Windows 环境：Flutter + FVM + VS Code + **Visual Studio 2022**（C++ 桌面负载） | ⏳ 后置 |
 | HarmonyOS | 需要 DevEco Studio + HarmonyOS SDK + 鸿蒙真机，配合三方 Flutter 分支 | ⏳ 后置（阶段 4 再投入） |

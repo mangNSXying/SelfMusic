@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
+import '../utils/platform_info.dart';
 
 class PairingScreen extends StatefulWidget {
   const PairingScreen({super.key});
@@ -10,7 +11,7 @@ class PairingScreen extends StatefulWidget {
 
 class _PairingScreenState extends State<PairingScreen> {
   final _tokenCtrl = TextEditingController();
-  final _nameCtrl = TextEditingController(text: 'linux-desktop');
+  final _nameCtrl = TextEditingController(text: PlatformInfo.defaultDeviceName);
 
   @override
   void dispose() {

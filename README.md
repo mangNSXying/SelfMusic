@@ -11,14 +11,16 @@
 
 | 层级 | 技术 | 备注 |
 |------|------|------|
-| 前端 | Flutter 3.6+ / Dart | 支持 Linux、Android、Windows；计划支持 OpenHarmony |
-
-**音频后端（Linux 桌面需安装 mpv）**：`just_audio` 在 Linux 依赖 `just_audio_mpv`，需 `sudo apt install -y mpv libmpv-dev`。
+| 前端 | Flutter 3.6+ / Dart | **同步开发 Linux + Android**（`lib/` 全为跨平台 Dart）；Windows 计划；OpenHarmony 计划 |
 | 后端 | Spring Boot 3.4.4 / JDK 21 | REST API |
 | 构建 | Maven | |
 | 数据库 | MySQL 8.0 | 宿主机已有实例，容器内应用直连 |
 | 反向代理 | Nginx | 宿主机已有实例 |
 | 容器 | Docker + Docker Compose | 仅后端容器化 |
+
+> **平台开发原则**：Linux 桌面与 Android **同步开发、进度对齐**。`frontend/lib/` 的 UI/主题/播放器/鉴权/状态层均为跨平台 Dart，任何特性的落地同时给出双平台平台配套（音频后端/权限/生命周期差异用条件导入收口）。Android 平台对齐计划见 `DESIGN.md` §8「阶段 0」（实现暂缓）。
+
+**音频后端**：`just_audio` 在 Linux 依赖 `just_audio_mpv`（需 `sudo apt install -y mpv libmpv-dev`），在 Android 使用默认 ExoPlayer 后端。
 
 ## 快速开始
 
@@ -60,18 +62,18 @@ curl http://localhost:18088/api/health   # 生产模式
 # 返回 {"status":"UP","service":"SelfMusic API",...}
 ```
 
-### 4. 启动前端（需要 Flutter SDK + Linux 需先装 mpv）
+### 4. 启动前端（Flutter SDK；Linux 首次需装 mpv）
 
 ```bash
 sudo apt install -y mpv libmpv-dev   # Linux 桌面音频后端（仅首次）
 cd frontend
 flutter pub get
-flutter run -d linux     # Linux 桌面（默认）
-flutter run -d android   # Android
-flutter run -d windows   # Windows 桌面（需 Windows 机器）
+flutter run -d linux     # Linux 桌面（默认，当前主力平台）
+flutter run -d android   # Android（⚠️ 需先创建安卓壳工程，见 DESIGN.md §8 阶段 0）
 ```
 
-> 前端 UI 为**可换主题的自适应框架**：侧边栏设置分区可改背景/强调色、切换明暗并持久化；桌面为侧边栏+顶栏+右队列面板，窄屏自动变抽屉。
+> **同步开发提示**：`frontend/lib/` 为跨平台 Dart 代码，同一份逻辑可同时在 Linux 与 Android 跑；音频后端按平台自动选择（Linux=mpv，Android=ExoPlayer）。
+> Android 壳工程当前为空壳，落地计划见 `DESIGN.md §8 阶段 0`（实现暂缓）。
 
 ### 5. 配置 Nginx（可选）
 
@@ -93,8 +95,10 @@ selfmusic/
 │       ├── SelfMusicApplication.java
 │       ├── config/WebConfig.java
 │       └── controller/HealthController.java
-├── frontend/                    # Flutter 前端（可换主题自适应 UI）
+├── frontend/                    # Flutter 前端（可换主题自适应 UI，跨平台 Dart）
 │   ├── pubspec.yaml
+│   ├── linux/                   # Linux 壳工程（当前主力，完整）
+│   ├── android/                 # Android 壳工程（⚠️ 空壳，落地见 DESIGN.md §8 阶段 0）
 │   └── lib/
 │       ├── main.dart            # 入口 + Provider 装配 / Root
 │       ├── theme/               # 可配置主题（app_theme / theme_provider）

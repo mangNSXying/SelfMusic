@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import '../utils/platform_info.dart';
 
 class AuthService {
   final Dio dio;
@@ -7,12 +8,13 @@ class AuthService {
   Future<Map<String, String>> pair({
     required String pairingToken,
     required String deviceName,
-    String platform = 'linux',
+    String? platform,
   }) async {
+    final String effectivePlatform = platform ?? PlatformInfo.platform;
     final resp = await dio.post('/api/v1/auth/pair', data: {
       'pairing_token': pairingToken,
       'device_name': deviceName,
-      'platform': platform,
+      'platform': effectivePlatform,
     });
     final data = resp.data['data'] as Map<String, dynamic>;
     return {

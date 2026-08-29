@@ -435,6 +435,50 @@ frozen=true                              → factor 恒为 1.0
 ## 8. 分阶段路线图
 
 > 每阶段独立可交付；估时按单人业余投入。
+>
+> **平台开发原则（约定）**：**Linux 桌面与 Android 同步开发，双平台进度对齐**。
+> `lib/` 下的 UI/主题/播放器/鉴权/状态层均为跨平台 Dart 代码，演进时不另起分支；
+> 任何特性在落地时必须有 Linux + Android 双平台的平台层配套（音频后端/权限/生命周期差异分别用条件导入或平台插件收口），
+> 以"两个平台都能跑通验收项"作为阶段完成的判定标准，避免出现平台壳长期空缺、进度脱节。
+
+### 阶段 0：Android 平台对齐
+
+> **状态：规划完成，实现暂缓** —— 当前 Linux 桌面主体已完成但 `frontend/android/` 仅为空壳（缺 build.gradle / AndroidManifest / MainActivity），
+> Android 与 Linux 进度脱节。本阶段负责补齐安卓壳工程并使两条平台线回到同一"功能基准线"，完成后后续所有阶段都按 §8 顶部约定双平台同步推进。
+
+#### 目标：Android 对齐现有 Linux 进度
+
+> 以下为**待执行计划**（按「同步开发」原则立项，但**当前不实现**，仅作为对齐抓手纳入文档）：
+> 需将 Linux 当前全部能力迁移到 Android，使双端功能与验收标准一致。
+
+**版本对照（Linux 已落地 → Android 待对齐）：**
+
+| 能力 | Linux（当前） | Android（目标） |
+|------|--------------|----------------|
+| 平台壳工程 | ✅ `linux/` 完整 | ❌ 空壳 → 需 `flutter create --platforms android .` 重建 |
+| 主题框架（theme/ + layout/ + providers/） | ✅ 跨平台 Dart | ✅ 复用（同一 `lib/`） |
+| 可换主题 / 明暗 / 持久化(secure_storage) | ✅ | ✅ 复用 + Android 需配 Auto Backup/key 编码 |
+| 认证（访问/刷新懒刷新 + 会话过期） | ✅ | ✅ 复用 `ApiClient`/`AuthProvider` |
+| 播放器 | ✅ `just_audio` + `just_audio_mpv`（Linux） | 🔧 需换后端：`just_audio` 默认为 ExoPlayer |
+| 配对页 / 内容区 / 设置页 | ✅ | ✅ 复用（Dart 跨平台） |
+| 全局队列 / 迷你条 / 队列面板 | ✅ | ✅ 复用布局 + Android 窄屏自动走 Drawer |
+
+**Android 平台对齐实施步骤：**
+
+1. **重建安卓壳工程**：在 `frontend/` 执行 `flutter create --platforms android .`，补齐 `android/app/build.gradle(.kts)`、`AndroidManifest.xml`、`MainActivity(.kt)`、`gradle/wrapper`、`res/`。
+2. **联网与播放器后端**：
+   - `AndroidManifest` 加 `INTERNET` 权限；内网 http 后端需 `usesCleartextTraffic="true"` 或 network security config 白名单。
+   - 音频后端平台区分：`just_audio_mpv` 是 **Linux-only**，Android 用 `just_audio` 默认 ExoPlayer 后端 → 对音频初始化做**条件导入/平台分支**，不能在 Android 触发 mpv 初始化。
+3. **secure_storage Android 配置**：`flutter_secure_storage` 在 Android 需处理 Keystore/编码方案、`allowBackup`（避免备份导致的解密失败）。
+4. **生命周期与后台播放**：Android 断点续播、声道变更、音频焦点、8.0+ 通知栏播放控制（引入 `audio_service` 或 `just_audio_background`）。
+5. **真机验收**：配对 → 浏览服务器曲库 → 流式播放 + seek/断点 → 换主题/切换明暗并重启保留 → 会话过期弹窗重配对。
+6. **后续阶段双端并行**：自阶段 1 之后，每个特性的验收项同时列出"Linux + Android"两行。
+
+#### 验收口径（阶段 0 完成定义）
+
+- `flutter build apk --release` 成功出包；
+- Android 真机完成与 Linux 完全相同的功能验收清单（对照上表）；
+- 后续路线图各阶段验收项均按「双平台同步」口径修订。
 
 ### 阶段 1：双模式骨架 + 服务器核心（~1.5 周）
 
