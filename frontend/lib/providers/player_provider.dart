@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import '../models/song.dart';
 import '../data/sources/music_source.dart';
+import '../data/sources/direct_audio_source.dart';
 
 /// 全局播放状态：统一持有 AudioPlayer 与播放队列，供播放页与队列面板共享。
 class PlayerProvider extends ChangeNotifier {
@@ -9,6 +10,7 @@ class PlayerProvider extends ChangeNotifier {
   List<Song> _queue = [];
   int _idx = 0;
   Song? _current;
+  MusicSource? _curSource;
   String? error;
 
   PlayerProvider() {
@@ -31,6 +33,7 @@ class PlayerProvider extends ChangeNotifier {
     _idx = index.clamp(0, _queue.length - 1);
     final song = _queue[_idx];
     _current = song;
+    _curSource = source;
     error = null;
     notifyListeners();
     await _play(song, source: source);
@@ -39,24 +42,39 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> _play(Song s, {MusicSource? source}) async {
     error = null;
     try {
-      String? url;
-      Map<String, String>? headers;
-      if (source != null) {
-        url = source.streamUrl(s.id);
-        headers = source.streamHeaders();
+      final src = source ?? _curSource;
+      if (src != null && src.supportsDirect) {
+        await _playDirect(s, src);
+      } else {
+        String? url;
+        Map<String, String>? headers;
+        if (src != null) {
+          url = src.streamUrl(s.id);
+          headers = src.streamHeaders();
+        }
+        if (url == null) {
+          throw StateError('no stream source available');
+        }
+        await player.setUrl(url, headers: headers);
       }
-      if (url == null) {
-        // 无可用 source 时（如队列面板直接操作）无法取流，交给播放页处理。
-        throw StateError('no stream source available');
-      }
-      await player.setUrl(url, headers: headers);
       await player.play();
       _current = s;
+      _curSource = src;
       notifyListeners();
     } catch (e) {
       error = e.toString();
       notifyListeners();
     }
+  }
+
+  /// 直连源播放：优先离线缓存文件，否则流式（Range seek / 断点可持续）。
+  Future<void> _playDirect(Song s, MusicSource src) async {
+    final cached = await src.cachedFilePath(s);
+    if (cached != null) {
+      await player.setFilePath(cached);
+      return;
+    }
+    await player.setAudioSource(DirectAudioSource(source: src, song: s));
   }
 
   Future<void> playAt(int index, {MusicSource? source}) async {
@@ -79,14 +97,14 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> next() async {
     if (_idx + 1 < _queue.length) {
       _idx++;
-      await _play(_queue[_idx]);
+      await _play(_queue[_idx], source: _curSource);
     }
   }
 
   Future<void> prev() async {
     if (_idx > 0) {
       _idx--;
-      await _play(_queue[_idx]);
+      await _play(_queue[_idx], source: _curSource);
     }
   }
 
