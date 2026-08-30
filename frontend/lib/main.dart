@@ -4,6 +4,7 @@ import 'services/api_client.dart';
 import 'data/sources/server_proxy_source.dart';
 import 'providers/auth_provider.dart';
 import 'providers/library_provider.dart';
+import 'providers/direct_source_manager.dart';
 import 'providers/player_provider.dart';
 import 'providers/navigation_provider.dart';
 import 'theme/theme_provider.dart';
@@ -11,12 +12,17 @@ import 'screens/pairing_screen.dart';
 import 'screens/library_screen.dart';
 import 'layout/app_shell.dart';
 
-void main() {
-  runApp(const SelfMusicApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // 先完成本地索引打开（含直连源配置恢复），避免 UI 首次访问 DB 时的初始化竞态。
+  final direct = DirectSourceManager();
+  await direct.init();
+  runApp(SelfMusicApp(direct: direct));
 }
 
 class SelfMusicApp extends StatelessWidget {
-  const SelfMusicApp({super.key});
+  final DirectSourceManager direct;
+  const SelfMusicApp({super.key, required this.direct});
 
   @override
   Widget build(BuildContext context) {
@@ -38,6 +44,7 @@ class SelfMusicApp extends StatelessWidget {
         ChangeNotifierProvider<ThemeProvider>.value(value: ThemeProvider()),
         ChangeNotifierProvider<AuthProvider>.value(value: auth),
         ChangeNotifierProvider<LibraryProvider>.value(value: lib),
+        ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
         ChangeNotifierProvider<PlayerProvider>(create: (_) => PlayerProvider()),
         ChangeNotifierProvider<NavigationProvider>.value(value: nav),
       ],
