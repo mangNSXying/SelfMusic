@@ -1,6 +1,7 @@
 *.txt
 *.lst
 *.md
+*.sh
 
 backend/target/
 scripts/
