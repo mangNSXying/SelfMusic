@@ -8,6 +8,7 @@ import '../models/album.dart';
 import '../theme/app_theme.dart';
 import 'player_screen.dart';
 import 'settings_screen.dart';
+import 'sources_screen.dart';
 
 /// 内容区：根据导航 Section / 设置分区 / 播放页动态渲染对应页面。
 class AppContent extends StatelessWidget {
@@ -29,9 +30,10 @@ class AppContent extends StatelessWidget {
         return const _SongsView();
       case NavSection.albums:
         return const _AlbumsView();
+      case NavSection.sources:
+        return const SourcesScreen();
       case NavSection.playlists:
       case NavSection.liked:
-      case NavSection.sources:
       case NavSection.artists:
         return _Placeholder(section: nav.section);
     }

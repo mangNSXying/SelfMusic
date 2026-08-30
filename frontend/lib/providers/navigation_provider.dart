@@ -68,6 +68,5 @@ class NavigationProvider extends ChangeNotifier {
   bool get isPlaceholder =>
       _section == NavSection.playlists ||
       _section == NavSection.liked ||
-      _section == NavSection.sources ||
       _section == NavSection.artists;
 }
