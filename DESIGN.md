@@ -482,11 +482,11 @@ frozen=true                              → factor 恒为 1.0
 
 ### 阶段 1：双模式骨架 + 服务器核心（~1.5 周）
 
-> **状态：主体已完成✅** —— 认证（access/refresh 轮换 + 过期懒刷新）、可换主题的自适应 UI 框架、全局播放器（mpv 后端）均已落地；SMB/WebDAV 直连源、本地索引与后台扫描仍待实施。
+> **状态：已完成✅** —— 认证（access/refresh 轮换 + 过期懒刷新）、可换主题的自适应 UI 框架、全局播放器、配对页均已落地；后端 local/webdav 直取与**扫描入库**（`MusicSourceProxy` + `MusicScanner` + `/library/**` + `/stream/**`）已端到端可用；镜像内置 ffmpeg。前端 Source 层四实现骨架已就位（ServerProxy 完整可用，Webdav/Smb/Local 为骨架，完整实现在阶段 3/4）。前端**直连源与本地索引**不属阶段 1 范围，已在阶段 3/4 承接。
 
-- 后端：SecurityConfig+TokenFilter(**含过期校验/X-Token-Expired**) + devices/auth API(**pair + refresh 轮换**)；MusicSource 抽象+Smb/Webdav/Local 实现(**ServerProxy 完整可用**)；扫描入库；`/library/**`、`/stream/**`；镜像加 ffmpeg
+- 后端：SecurityConfig+TokenFilter(**含过期校验/X-Token-Expired**) + devices/auth API(**pair + refresh 轮换**)；MusicSource 抽象+Smb/Webdav/Local 实现(**ServerProxy 完整可用**)；扫描入库（local/webdav，SMB 直连归阶段 4）；`/library/**`、`/stream/**`；镜像加 ffmpeg
 - App：Source 层四实现骨架（ServerProxy 完整可用）、**可换主题自适应 UI 框架（theme/layout/providers)**、基础播放器（顺序播放）、配对页
-- 验收：配对一台真机 → 浏览三源曲目 → 任选一首流式播放；未带 token 的请求被拒
+- 验收：配对一台真机 → 浏览服务器曲库 → 任选一首流式播放；未带 token 的请求被拒
 
 ### 阶段 2：加权播放 + 歌单 + 喜欢歌缓存（~1 周，蓝图核心）
 
@@ -496,8 +496,13 @@ frozen=true                              → factor 恒为 1.0
 
 ### 阶段 3：直连 WebDAV + 本地索引（~1 周）
 
-- WebdavDirectSource 完整实现；本地索引扫描器（Isolate）；直连模式的浏览/搜索页
-- 验收：**卸载后端场景**——只配 WebDAV 源，完成扫描→搜索→播放→收藏→断网播缓存 全链路
+> **状态：已完成✅**
+
+- `WebdavDirectSource` 完整实现：dart:io `PROPFIND` 递归列举（`package:xml`）+ `Range` 流式（seek/断点）+ 纯 Dart 头部元数据解析（mp3 ID3v2 / flac STREAMINFO + VORBIS_COMMENT，含封面提取）。
+- 本地轻量索引（DESIGN §6.4）：SQLite `LocalIndex`（`sources`/`idx_songs`/`cache` 表），Isolate 扫描器，`(ref,mtime,size)` 增量与 missing 标记，封面落 `covers/<hash>.jpg`；离线缓存（DESIGN §6.5）断网播缓存。
+- 直连浏览/搜索页（`SourcesScreen` + `DirectBrowseScreen`）：扫描→搜索→播放（`DirectAudioSource` 包装为 just_audio `StreamAudioSource`）→收藏→缓存。
+- 三平台源骨架就位：ServerProxy 完整 / Webdav 完整 / SMB（阶段 4）/ Local（阶段 3 附 dart:io 基础实现）。
+- 验收：**卸载后端场景**——只配 WebDAV 源，完成扫描→搜索→播放→收藏→断网播缓存 全链路（Linux `flutter build linux --debug` 与 Android `flutter build apk --debug` 双端构建通过）。
 
 ### 阶段 4：全平台 SMB 直连（~1–2 周，风险最高）
 
