@@ -93,9 +93,10 @@
 
 ```
 主配对令牌 (pairing_token)
-  · 服务器首次启动自动生成，settings 表持久化，管理页可见可重置
+  · 权威来源 = 环境变量 PAIRING_TOKEN；每次启动覆盖写入 settings 表（DB 仅为镜像）
+  · 未提供 PAIRING_TOKEN 时沿用库中旧值；首次初始化（库中无）才随机生成
   · 仅用于 /auth/pair 配对一次，不用于日常请求
-  · 以明文存储（需要展示成二维码），泄露可随时重置
+  · 以明文存储（需要展示成二维码）；改 .env 重启即生效，仅影响新设备，已配对设备不受影响
 
 访问令牌 (access_token / device_token)
   · pair 成功后签发，TTL = 24h（expires_in=86400），仅存哈希（token_hash）
@@ -181,7 +182,7 @@ INDEX idx_refresh(refresh_token_hash)
 
 | 键 | 默认 | 说明 |
 |----|------|------|
-| `pairing_token` | 随机生成 | 主配对令牌 |
+| `pairing_token` | 未提供 `PAIRING_TOKEN` 时首次随机 | 主配对令牌（env 镜像，供 /auth/pair 校验） |
 | `cache_max_bytes` | 1073741824 (1GB) | 全局建议值，App 可下发 |
 | `cache_song_limit` | 500 | |
 | `scan_interval_min` | 0（关） | 定时扫描间隔 |
@@ -262,8 +263,7 @@ INDEX idx_refresh(refresh_token_hash)
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/admin/config` | 当前配置概览 + 主配对二维码内容（`selfmusic://pair?...`） |
-| POST | `/admin/pairing-token/reset` | 重置主令牌 |
+| GET | `/admin/config` | 当前配置概览 + 主配对二维码内容（`selfmusic://pair?...`，密钥源自 env 镜像） |
 | GET/PUT/DELETE | `/admin/devices[...]` | 设备列表 / 改名 / 吊销 |
 | POST | `/admin/scans` · GET `/admin/scans[/id]` | 触发/查询扫描任务 |
 | POST | `/admin/upload/init` → `/part/{n}` → `/commit` | 分片上传（16MB/片） |
@@ -317,7 +317,7 @@ TokenFilter (OncePerRequestFilter)
 | prod | `eclipse-temurin:21-jre` | apt 加 `ffmpeg`；non-root 用户 |
 | dev | `maven:3.9-eclipse-temurin-21` | 同上加 `ffmpeg`（保持与 prod 行为一致） |
 
-环境变量：`PAIRING_TOKEN_INIT`（可选，首次启动注入固定令牌便于自动化）、其余同 v1。
+环境变量：`PAIRING_TOKEN`（可选，配对密钥权威来源；每次启动覆盖写入 settings，改后重启即生效；仅在首次初始化时以 WARN 打印一次密钥）、其余同 v1。
 
 ---
 
@@ -513,6 +513,14 @@ frozen=true                              → factor 恒为 1.0
 
 - ffmpeg 按需转码管线与并发上限；分片上传；删除/隐藏；设置页
 - 验收：FLAC 源按 128k 出流实测流量达标；上传 50MB 文件入库可播
+
+### 暂缓项：已配对设备设置页明文显示配对密钥
+
+> **状态：暂缓实现**（计划落地，不排入当前阶段）。
+
+- 后端：新增需已配对设备 token 的端点，返回当前 `pairing_token`（从 settings 镜像读取，权威源为 env）。
+- 前端：`设置→常规` 面板显示"配对密钥"明文条目，附说明"改 .env 重启后生效，仅影响新设备"。
+- 动机：首次启动日志仅打印一次，后续查看密钥需此入口（替代已移除的 `pairing-token/reset`）。
 
 ---
 

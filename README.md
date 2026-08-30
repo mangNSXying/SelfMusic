@@ -38,6 +38,8 @@ mysql -u root -p < scripts/init.sql
 
 ```bash
 # 编辑 .env，修改 DB_HOST 和 DB_PASSWORD
+# 配对密钥 PAIRING_TOKEN 可选：留空则首次启动随机生成并在启动日志(WARN)打印一次；
+# 改动后重启生效，仅影响新设备（已配对设备不受影响）
 ```
 
 ### 3. 启动后端（二选一）

@@ -309,6 +309,9 @@ ldconfig -p | grep libmpv   # 应看到 libmpv.so / libmpv.so.2
 | `DB_NAME` | 库名 | selfmusic |
 | `DB_USERNAME` | 数据库用户 | shamiko |
 | `DB_PASSWORD` | 数据库密码 | 无 |
+| `PAIRING_TOKEN` | 配对密钥（可选；每次启动覆盖写入，改后重启生效，仅影响新设备；留空则首次随机生成） | 首次随机 |
+
+> 配对密钥查看：① 后端**首次启动**日志以 `WARN` 打印一次；② （暂缓）已配对设备 `设置→常规` 明文显示。
 
 ### application.yml 关键项
 

@@ -22,10 +22,21 @@ class ApiClient {
   Future<bool>? _inflightRefresh;
   void Function()? onSessionExpired;
 
+  /// 把 [url] 规整为合法的绝对 URL：缺少 scheme 时补 `http://`，并去掉末尾 `/`，
+  /// 避免用户传入 `192.168.3.25:18089` 这类无协议地址导致 dio 报错。
+  static String normalizeBaseUrl(String url) {
+    var s = url.trim();
+    if (s.isEmpty) return s;
+    if (!s.contains('://')) {
+      s = 'http://$s';
+    }
+    return s.endsWith('/') ? s.substring(0, s.length - 1) : s;
+  }
+
   ApiClient({Dio? dio, FlutterSecureStorage? storage})
       : dio = dio ??
             Dio(BaseOptions(
-              baseUrl: _baseUrlEnv,
+              baseUrl: normalizeBaseUrl(_baseUrlEnv),
               connectTimeout: const Duration(seconds: 10),
               receiveTimeout: const Duration(seconds: 30),
             )),

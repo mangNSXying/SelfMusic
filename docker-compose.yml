@@ -12,6 +12,7 @@ services:
       DB_NAME: ${DB_NAME:-selfmusic}
       DB_USERNAME: ${DB_USERNAME:-shamiko}
       DB_PASSWORD: ${DB_PASSWORD}
+      PAIRING_TOKEN: ${PAIRING_TOKEN:-}
       TZ: Asia/Shanghai
     volumes:
       - backend-maven-repo:/root/.m2
@@ -32,6 +33,7 @@ services:
       DB_NAME: ${DB_NAME:-selfmusic}
       DB_USERNAME: ${DB_USERNAME:-shamiko}
       DB_PASSWORD: ${DB_PASSWORD}
+      PAIRING_TOKEN: ${PAIRING_TOKEN:-}
       TZ: Asia/Shanghai
       LOCAL_MUSIC_ROOT: /opt/music
       WEBDAV_BASE_URL: ${WEBDAV_BASE_URL}
