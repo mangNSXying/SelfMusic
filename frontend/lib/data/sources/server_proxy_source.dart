@@ -3,13 +3,21 @@ import '../../models/song.dart';
 import '../../models/album.dart';
 import 'music_source.dart';
 
-class ServerProxySource implements MusicSource {
+class ServerProxySource extends MusicSource {
   final Dio dio;
   final String baseUrl;
   final String Function()? tokenProvider;
 
   ServerProxySource({required this.dio, required this.baseUrl, this.tokenProvider});
 
+  @override
+  String get key => 'server';
+
+  @override
+  SourceKind get kind => SourceKind.server;
+
+  @override
+  String streamUrl(int songId) => '$baseUrl/api/v1/stream/$songId';
   @override
   Future<List<Song>> fetchSongs({String? query, int page = 1, int size = 50}) async {
     final resp = await dio.get('/api/v1/library/songs', queryParameters: {
@@ -41,9 +49,6 @@ class ServerProxySource implements MusicSource {
     final songs = data['songs'] as List;
     return songs.map((e) => Song.fromJson(e as Map<String, dynamic>)).toList();
   }
-
-  @override
-  String streamUrl(int songId) => '$baseUrl/api/v1/stream/$songId';
 
   @override
   Map<String, String>? streamHeaders() {
