@@ -68,7 +68,12 @@ class SelfMusicApp extends StatelessWidget {
             ..attachSourceResolver((key) {
               if (key == 'server') return lib.source;
               return direct.sourceByKey(key);
-            }),
+            })
+            ..attachPersistence(
+              index: direct.index,
+              weight: direct.weight,
+              onTrackStarted: (src, s) => direct.onTrackPlaying(src, s),
+            ),
         ),
         ChangeNotifierProvider<NavigationProvider>.value(value: nav),
       ],
@@ -100,6 +105,15 @@ class Root extends StatefulWidget {
 
 class _RootState extends State<Root> {
   bool _expiryDialogShown = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // 启动时恢复上次播放队列与位置（暂停态，stage2.md §7）。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.read<PlayerProvider>().restoreIfAny();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
