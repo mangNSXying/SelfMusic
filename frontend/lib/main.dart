@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'services/api_client.dart';
+import 'services/server_settings.dart';
 import 'data/sources/server_proxy_source.dart';
 import 'providers/auth_provider.dart';
 import 'providers/library_provider.dart';
@@ -14,19 +15,35 @@ import 'layout/app_shell.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // 先完成本地索引打开（含直连源配置恢复），避免 UI 首次访问 DB 时的初始化竞态。
+  // 先加载「服务端」设置（后端地址）与本地索引（含直连源配置恢复），
+  // 避免 UI 首次访问时的初始化竞态。
+  final serverSettings = ServerSettings();
+  await serverSettings.load();
+
+  final api = ApiClient();
+  if (serverSettings.baseUrl.isNotEmpty) {
+    api.setBaseUrl(serverSettings.baseUrl);
+  }
+
   final direct = DirectSourceManager();
   await direct.init();
-  runApp(SelfMusicApp(direct: direct));
+  direct.attachApi(api);
+  runApp(SelfMusicApp(direct: direct, settings: serverSettings, api: api));
 }
 
 class SelfMusicApp extends StatelessWidget {
   final DirectSourceManager direct;
-  const SelfMusicApp({super.key, required this.direct});
+  final ServerSettings settings;
+  final ApiClient api;
+  const SelfMusicApp({
+    super.key,
+    required this.direct,
+    required this.settings,
+    required this.api,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final api = ApiClient();
     final auth = AuthProvider(api);
     // 播放流式取 token 依赖 Auth（懒读）。
     final lib = LibraryProvider(
@@ -35,17 +52,24 @@ class SelfMusicApp extends StatelessWidget {
         baseUrl: api.baseUrl,
         tokenProvider: () => auth.token ?? '',
       ),
-    );
+    )..attachDirectManager(direct);
     final nav = NavigationProvider();
 
     return MultiProvider(
       providers: [
         Provider<ApiClient>.value(value: api),
+        ChangeNotifierProvider<ServerSettings>.value(value: settings),
         ChangeNotifierProvider<ThemeProvider>.value(value: ThemeProvider()),
         ChangeNotifierProvider<AuthProvider>.value(value: auth),
         ChangeNotifierProvider<LibraryProvider>.value(value: lib),
         ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
-        ChangeNotifierProvider<PlayerProvider>(create: (_) => PlayerProvider()),
+        ChangeNotifierProvider<PlayerProvider>(
+          create: (_) => PlayerProvider()
+            ..attachSourceResolver((key) {
+              if (key == 'server') return lib.source;
+              return direct.sourceByKey(key);
+            }),
+        ),
         ChangeNotifierProvider<NavigationProvider>.value(value: nav),
       ],
       child: const _ThemedApp(),
