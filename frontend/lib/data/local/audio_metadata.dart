@@ -1,3 +1,4 @@
+import 'dart:convert' show utf8;
 import 'dart:typed_data';
 
 /// 音频头部元数据（来自扫描时的 Range 头部直读，DESIGN §6.4）。
@@ -98,7 +99,7 @@ String _decodeText(List<int> bytes) {
   if (bytes.isEmpty) return '';
   final enc = bytes[0];
   var body = bytes.sublist(1);
-  if (enc == 3) return String.fromCharCodes(body); // UTF-8 (rare enc==3 still UTF-8)
+  if (enc == 3) return utf8.decode(body, allowMalformed: true).trim();
   if (enc == 2) {
     // UTF-16BE without BOM
     final list = <int>[];
@@ -119,7 +120,12 @@ String _decodeText(List<int> bytes) {
     }
     return String.fromCharCodes(list).trim();
   }
-  return String.fromCharCodes(body).trim(); // ISO-8859-1 / latin1
+  // enc == 0: ISO-8859-1 declared, but many files are actually UTF-8
+  try {
+    return utf8.decode(body, allowMalformed: false).trim();
+  } catch (_) {
+    return String.fromCharCodes(body).trim();
+  }
 }
 
 /// 估算 mp3 时长：优先 Xing/Info 帧头；否则按首个 MPEG 帧码率 + 文件大小。
@@ -241,7 +247,13 @@ void _parseVorbisComment(List<int> body, AudioMeta meta) {
     final len = readU32(body, p);
     p += 4;
     if (p + len > body.length) break;
-    final entry = String.fromCharCodes(body.sublist(p, p + len));
+    final raw = body.sublist(p, p + len);
+    String entry;
+    try {
+      entry = utf8.decode(raw, allowMalformed: false);
+    } catch (_) {
+      entry = String.fromCharCodes(raw);
+    }
     p += len;
     final eq = entry.indexOf('=');
     if (eq <= 0) continue;

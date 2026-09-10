@@ -6,6 +6,8 @@
 backend/target/
 scripts/
 *test*
+!frontend/test/
+!frontend/test/**
 
 # ---> Flutter
 # Miscellaneous
