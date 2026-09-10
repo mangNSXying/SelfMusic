@@ -4,6 +4,9 @@ import '../models/song.dart';
 import '../data/sources/music_source.dart';
 import '../data/sources/direct_audio_source.dart';
 
+/// 按源 key 解析播放源的函数：`server` → 服务器代理源；`webdav:<name>` → 对应直连源。
+typedef SourceResolver = MusicSource? Function(String sourceKey);
+
 /// 全局播放状态：统一持有 AudioPlayer 与播放队列，供播放页与队列面板共享。
 class PlayerProvider extends ChangeNotifier {
   final AudioPlayer player = AudioPlayer();
@@ -11,12 +14,18 @@ class PlayerProvider extends ChangeNotifier {
   int _idx = 0;
   Song? _current;
   MusicSource? _curSource;
+  SourceResolver? _resolver;
   String? error;
 
   PlayerProvider() {
     player.playerStateStream.listen((st) {
       if (st.processingState == ProcessingState.completed) next();
     });
+  }
+
+  /// 关联源解析器（混合队列时按歌曲 sourceKey 逐首选择播放源）。
+  void attachSourceResolver(SourceResolver resolver) {
+    _resolver = resolver;
   }
 
   List<Song> get queue => List.unmodifiable(_queue);
@@ -42,7 +51,7 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> _play(Song s, {MusicSource? source}) async {
     error = null;
     try {
-      final src = source ?? _curSource;
+      final src = _resolver?.call(s.sourceKey) ?? source ?? _curSource;
       if (src != null && src.supportsDirect) {
         await _playDirect(s, src);
       } else {
