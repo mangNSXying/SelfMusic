@@ -8,6 +8,7 @@ import 'music_source.dart';
 /// 阶段 1 只要求"四实现骨架"存在；阶段 4 再补齐全平台直连通路。
 /// 播放/扫描统一抛"暂未实现"，模式判定只认 server 源时不受影响。
 class SmbDirectSource extends MusicSource {
+  @override
   final String name;
   final String host;
   final String share;

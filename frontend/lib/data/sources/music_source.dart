@@ -4,6 +4,9 @@ import '../../models/album.dart';
 /// 源的分类。决定直连协议与可用的增强能力。
 enum SourceKind { server, local, webdav, smb }
 
+/// 一个源的数据通道模式：直连（App 内扫描/播放）或服务端代理（走后端 /api）。
+enum SourceMode { direct, proxy }
+
 /// 字节范围请求（含起止），用于 Range 起播 / seek。
 class IntRange {
   final int start;
@@ -42,6 +45,10 @@ class OpenedStream {
 abstract class MusicSource {
   /// 稳定标识（DESIGN §6.2 key）：`server` / `webdav:<name>` / `smb:<name>` / `local:<name>`。
   String get key;
+
+  /// 友好显示名（如源名称「NAS」/「服务器」）。
+  String get name;
+
   SourceKind get kind;
 
   // ---------- 服务器模式接口 ----------

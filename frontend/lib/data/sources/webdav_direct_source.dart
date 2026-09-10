@@ -20,6 +20,7 @@ import '../local/audio_metadata.dart';
 /// - 播放：dart:io HTTP Range GET，支持 seek/断点。
 /// - 封面：提取嵌入图存本地 `covers/<hash>.jpg`，DB 记路径。
 class WebdavDirectSource implements MusicSource {
+  @override
   final String name;
   final String baseUrl;
   final String username;
@@ -315,7 +316,11 @@ Future<Uint8List> _getHead(
 
 Future<void> _listRecursive(HttpClient client, String url,
     List<_WebdavEntry> out, String username, String password) async {
-  final entries = await _propfind(client, url, username, password);
+  // WebDAV 目录请求须以 '/' 结尾（如 /dav/ → 207；/dav → 部分服务器 301 重定向
+  // 导致 3xx 被 _propfind 判为非 207/200 而返回空）。目录 href 已带尾斜杠，
+  // 仅根 base 被 _normalizeBase 去掉了尾斜杠，这里补上。
+  final dirUrl = url.endsWith('/') ? url : '$url/';
+  final entries = await _propfind(client, dirUrl, username, password);
   for (final e in entries) {
     if (!e.isDir && _audioExt(e.href)) {
       out.add(e);
