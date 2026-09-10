@@ -66,6 +66,26 @@ class Song {
         coverPath: j['coverPath'] as String?,
       );
 
+  /// 完整序列化（play_meta 快照 / play_state 断点，stage2.md §7）。
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'sourceKey': sourceKey,
+        'title': title,
+        if (artist != null) 'artist': artist,
+        if (albumName != null) 'albumName': albumName,
+        if (trackNo != null) 'trackNo': trackNo,
+        if (year != null) 'year': year,
+        if (genre != null) 'genre': genre,
+        if (duration != null) 'duration': duration,
+        'source': source,
+        'sourceRef': sourceRef,
+        'fileSize': fileSize,
+        if (format != null) 'format': format,
+        'favorite': favorite,
+        'hidden': hidden,
+        if (coverPath != null) 'coverPath': coverPath,
+      };
+
   /// 直连模式行构造（本地索引读出）。
   factory Song.direct({
     required int id,

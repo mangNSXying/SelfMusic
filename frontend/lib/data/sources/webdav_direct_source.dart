@@ -167,16 +167,17 @@ class WebdavDirectSource implements MusicSource {
 
   // ---------- 离线缓存（DESIGN §6.5） ----------
 
-  String _cacheKey(Song song) =>
+  /// 该歌的缓存 key（供 CacheManager 跟踪 LRU / 跳过正在播放）。
+  String cacheKeyFor(Song song) =>
       md5.convert(utf8.encode('$key|${song.sourceRef}')).toString();
 
   @override
   Future<String?> cachedFilePath(Song song) async =>
-      index.cachedPath(_cacheKey(song));
+      index.cachedPath(cacheKeyFor(song));
 
   @override
   Future<void> cacheSong(Song song) async {
-    final cacheKey = _cacheKey(song);
+    final cacheKey = cacheKeyFor(song);
     if (index.isCached(cacheKey)) return;
     final client = _newClient();
     try {

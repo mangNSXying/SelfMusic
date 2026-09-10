@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -7,6 +8,9 @@ import '../data/sources/music_source.dart';
 import '../data/sources/webdav_direct_source.dart';
 import '../data/sources/server_proxy_source.dart';
 import '../data/local/local_index.dart';
+import '../data/local/app_settings.dart';
+import '../data/local/cache_manager.dart';
+import '../data/local/song_weight_store.dart';
 import '../models/song.dart';
 import '../services/api_client.dart';
 
@@ -25,7 +29,16 @@ class DirectSourceManager extends ChangeNotifier {
   bool scanning = false;
   String? error;
 
+  late AppSettings settings;
+  late CacheManager cache;
+  late SongWeightStore weight;
+
   ApiClient? _api;
+
+  int _favoriteVersion = 0;
+
+  /// 收藏列表版本号：全局收藏面板监听该值刷新（避免全量 rebuild）。
+  int get favoriteVersion => _favoriteVersion;
 
   /// 关联后端接入点，供按源代理源使用其中的 dio/baseUrl。
   void attachApi(ApiClient api) => _api = api;
@@ -46,6 +59,9 @@ class DirectSourceManager extends ChangeNotifier {
 
   Future<void> init() async {
     await index.open();
+    settings = AppSettings(index);
+    cache = CacheManager(index, settings);
+    weight = SongWeightStore(index);
     final rows = index.listSources();
     for (final r in rows) {
       if (!r.enabled) continue;
@@ -240,17 +256,46 @@ class DirectSourceManager extends ChangeNotifier {
     return n;
   }
 
+  /// 收藏统一收口到 play_meta（直连 + 服务器一致）；收藏直连歌自动后台缓存。
   void setFavorite(Song s, bool fav) {
-    if (!s.isDirect) return;
-    index.setFavorite(s.sourceKey, s.sourceRef, fav);
+    if (fav) {
+      weight.setLiked(s);
+    } else {
+      weight.setUnliked(s);
+    }
+    _favoriteVersion++;
+    notifyListeners();
+    // 自动缓存喜欢的直连歌（LRU 淘汰见 CacheManager，stage2.md §6）。
+    if (fav && s.isDirect) {
+      unawaited(cache.autoCacheIfNeeded(sourceByKey(s.sourceKey), s,
+          becameFavorite: true));
+    }
+  }
+
+  /// 全部已收藏歌曲（直连 + 服务器，统一来自 play_meta 快照）。
+  List<Song> favoriteSongs() => index.likedSongs();
+
+  /// 手动「不喜欢」：立即降 0.1（stage2.md §2.3 disliked）。
+  void dislikeSong(Song s) {
+    weight.dislike(s);
     notifyListeners();
   }
 
   Future<void> cacheSong(MusicSource src, Song s) async {
     await src.cacheSong(s);
+    cache.currentCacheKey = cache.cacheKeyOf(src, s);
+    cache.evictIfNeeded();
     notifyListeners();
   }
 
-  String? cachedPathOf(MusicSource src, Song s) =>
-      index.cachedPath('cache:$src.key|${s.sourceRef}');
+  String? cachedPathOf(MusicSource src, Song s) {
+    final k = cache.cacheKeyOf(src, s);
+    return k == null ? null : index.cachedPath(k);
+  }
+
+  /// 播放某直连歌时登记其缓存访问时间与当前 key（LRU 保留当前播放）。
+  void onTrackPlaying(MusicSource src, Song s) {
+    cache.currentCacheKey = cache.cacheKeyOf(src, s);
+    cache.touch(src, s);
+  }
 }
