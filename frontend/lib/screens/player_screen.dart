@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 import '../providers/player_provider.dart';
+import '../providers/direct_source_manager.dart';
+import '../widgets/play_mode_selector.dart';
 
 /// 播放页（嵌入 AppShell 内容区，不再自带 Scaffold/AppBar）。
 class PlayerScreen extends StatelessWidget {
@@ -10,12 +12,14 @@ class PlayerScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final player = context.watch<PlayerProvider>();
+    final direct = context.watch<DirectSourceManager>();
     final cs = Theme.of(context).colorScheme;
 
     if (!player.hasCurrent) {
       return const Center(child: Text('未在播放'));
     }
     final s = player.current!;
+    final favorite = direct.weight.isFavorite(s);
 
     return Center(
       child: ConstrainedBox(
@@ -41,7 +45,41 @@ class PlayerScreen extends StatelessWidget {
               const SizedBox(height: 4),
               Text('${s.source} · ${s.format ?? ""} · ${s.duration ?? ''}s',
                   style: TextStyle(color: cs.onSurface.withValues(alpha: 0.6))),
-              const SizedBox(height: 24),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  IconButton(
+                    iconSize: 30,
+                    icon: Icon(
+                      favorite ? Icons.favorite : Icons.favorite_border,
+                      color: favorite ? Colors.pink : null,
+                    ),
+                    tooltip: favorite ? '取消喜欢' : '喜欢',
+                    onPressed: () => direct.setFavorite(s, !favorite),
+                  ),
+                  IconButton(
+                    iconSize: 30,
+                    icon: Icon(Icons.thumb_down_outlined,
+                        color: cs.onSurface.withValues(alpha: 0.7)),
+                    tooltip: '不喜欢（降低权重）',
+                    onPressed: () {
+                      direct.dislikeSong(s);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('已下调该曲权重')));
+                    },
+                  ),
+                  const SizedBox(width: 12),
+                  Chip(
+                    avatar: const Icon(Icons.speed, size: 16),
+                    label: Text(
+                        '权重 ${player.currentWeightFactor?.toStringAsFixed(1) ?? '—'}'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              const PlayModeSelector(),
+              const SizedBox(height: 16),
               _PlayerSeek(player: player, cs: cs),
               const SizedBox(height: 8),
               Row(

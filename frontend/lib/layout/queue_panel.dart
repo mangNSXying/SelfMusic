@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/player_provider.dart';
+import '../widgets/play_mode_selector.dart';
 
 /// 右侧播放队列面板：展示当前队列 + 播放控制，可折叠。
 class QueuePanel extends StatelessWidget {
@@ -70,8 +71,9 @@ class _MiniControls extends StatelessWidget {
     return Column(
       children: [
         const Divider(height: 1),
+        const Center(child: Padding(padding: EdgeInsets.symmetric(vertical: 2), child: PlayModeSelector())),
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+          padding: const EdgeInsets.fromLTRB(16, 6, 16, 12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [

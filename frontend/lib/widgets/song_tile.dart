@@ -9,7 +9,7 @@ import '../providers/direct_source_manager.dart';
 
 /// 通用歌曲条目：封面缩略图 + 标题 + 歌手/专辑 + 时长时间器。
 ///
-/// 直连歌曲额外显示收藏、缓存按钮；服务器歌曲仅显示基本信息。
+/// 收藏（喜欢）对所有歌曲生效（统一收口到 play_meta）；缓存仅直连歌曲。
 class SongTile extends StatelessWidget {
   final Song song;
   final MusicSource source;
@@ -24,6 +24,7 @@ class SongTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final direct = context.watch<DirectSourceManager>();
+    final favorite = direct.weight.isFavorite(song);
     return ListTile(
       leading: CoverThumb(coverPath: song.coverPath),
       title: Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis),
@@ -35,14 +36,14 @@ class SongTile extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (song.isDirect)
-            IconButton(
-              icon: Icon(
-                song.favorite ? Icons.favorite : Icons.favorite_border,
-                color: song.favorite ? Colors.pink : null,
-              ),
-              onPressed: () => direct.setFavorite(song, !song.favorite),
+          IconButton(
+            icon: Icon(
+              favorite ? Icons.favorite : Icons.favorite_border,
+              color: favorite ? Colors.pink : null,
             ),
+            tooltip: favorite ? '取消喜欢' : '喜欢',
+            onPressed: () => direct.setFavorite(song, !favorite),
+          ),
           if (song.isDirect)
             IconButton(
               icon: const Icon(Icons.download),
