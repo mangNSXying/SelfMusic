@@ -1,3 +1,5 @@
+import 'song.dart';
+
 class Album {
   final int id;
   final String artist;
@@ -7,6 +9,9 @@ class Album {
   final int trackCount;
   final int totalDuration;
 
+  /// 客户端聚合专辑时取首张有封面的歌（直连源封面缓存路径）。
+  final String? coverPath;
+
   Album({
     required this.id,
     required this.artist,
@@ -15,6 +20,7 @@ class Album {
     this.genre,
     required this.trackCount,
     required this.totalDuration,
+    this.coverPath,
   });
 
   factory Album.fromJson(Map<String, dynamic> j) => Album(
@@ -26,4 +32,35 @@ class Album {
         trackCount: j['trackCount'] as int? ?? 0,
         totalDuration: j['totalDuration'] as int? ?? 0,
       );
+
+  /// 客户端从歌曲列表按 (artist, albumName) 分组聚合（含直连源）。
+  static List<Album> fromSongs(List<Song> songs) {
+    final map = <String, List<Song>>{};
+    for (final s in songs) {
+      final artist = _blank(s.artist, 'Unknown');
+      final albumName = _blank(s.albumName, 'Unknown Album');
+      map.putIfAbsent('$artist\x00$albumName', () => []).add(s);
+    }
+    final list = map.entries.map((e) {
+      final group = e.value;
+      final first = group.first;
+      final coverSong = group.where((s) => s.coverPath != null).firstOrNull;
+      return Album(
+        id: e.key.hashCode & 0x7FFFFFFF,
+        artist: _blank(first.artist, 'Unknown'),
+        album: _blank(first.albumName, 'Unknown Album'),
+        year: first.year,
+        genre: first.genre,
+        trackCount: group.length,
+        totalDuration:
+            group.fold(0, (sum, s) => sum + (s.duration ?? 0)),
+        coverPath: coverSong?.coverPath,
+      );
+    }).toList();
+    list.sort((a, b) => a.album.compareTo(b.album));
+    return list;
+  }
+
+  static String _blank(String? v, String fallback) =>
+      (v == null || v.isEmpty) ? fallback : v;
 }
