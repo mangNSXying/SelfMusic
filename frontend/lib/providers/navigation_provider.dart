@@ -8,9 +8,13 @@ class NavigationProvider extends ChangeNotifier {
   String _search = '';
   SettingsItem? _settings;
   bool _playerView = false;
+  String? _browsingSourceKey;
 
   NavSection get section => _section;
   String get search => _search;
+
+  /// 当前正在浏览的源 key（文件夹式导航）；null 表示位于播放源列表。
+  String? get browsingSourceKey => _browsingSourceKey;
 
   /// 当前打开的设置分区，null 表示非设置页。
   SettingsItem? get settings => _settings;
@@ -25,6 +29,19 @@ class NavigationProvider extends ChangeNotifier {
     _section = s;
     _settings = null;
     _playerView = false;
+    _browsingSourceKey = null;
+    notifyListeners();
+  }
+
+  /// 进入播放源内部（文件夹式导航）。
+  void enterSource(String key) {
+    _browsingSourceKey = key;
+    notifyListeners();
+  }
+
+  /// 返回播放源列表（文件夹返回上一级）。
+  void exitSource() {
+    _browsingSourceKey = null;
     notifyListeners();
   }
 
@@ -66,7 +83,5 @@ class NavigationProvider extends ChangeNotifier {
 
   /// 是否为占位页（后端尚无数据接口的导航项）。
   bool get isPlaceholder =>
-      _section == NavSection.playlists ||
-      _section == NavSection.liked ||
-      _section == NavSection.artists;
+      _section == NavSection.playlists || _section == NavSection.liked;
 }
