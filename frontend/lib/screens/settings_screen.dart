@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import '../data/local/app_settings.dart';
+import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../services/api_client.dart';
 import '../services/server_settings.dart';
@@ -22,9 +25,10 @@ class SettingsScreen extends StatelessWidget {
         return const _AppearanceSettings();
       case SettingsItem.server:
         return const _ServerSettings();
+      case SettingsItem.songs:
+        return const _SongsSettings();
       case SettingsItem.general:
       case SettingsItem.playback:
-      case SettingsItem.songs:
       case SettingsItem.notifications:
         return _CategoryPlaceholder(item: item);
     }
@@ -413,5 +417,136 @@ class _ColorPickerDialogState extends State<_ColorPickerDialog> {
         TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('取消')),
       ],
     );
+  }
+}
+
+/// 歌曲设置：缓存上限 / 歌曲上限 / 收藏自动缓存（stage2.md §1.4）。
+class _SongsSettings extends StatefulWidget {
+  const _SongsSettings();
+  @override
+  State<_SongsSettings> createState() => _SongsSettingsState();
+}
+
+class _SongsSettingsState extends State<_SongsSettings> {
+  late AppSettings _settings;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _settings = context.read<DirectSourceManager>().settings;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('缓存与离线',
+              style: TextStyle(
+                  color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        SwitchListTile(
+          title: const Text('收藏自动缓存'),
+          subtitle: const Text('喜欢的歌自动下载离线可用'),
+          value: _settings.autoCacheFavorites,
+          onChanged: (v) {
+            setState(() => _settings.autoCacheFavorites = v);
+          },
+        ),
+        ListTile(
+          title: const Text('缓存总上限'),
+          subtitle: Text(_labelBytes(_settings.cacheMaxBytes)),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _editCacheMaxBytes(context),
+        ),
+        ListTile(
+          title: const Text('歌曲数量上限'),
+          subtitle: Text('${_settings.cacheSongLimit} 首'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _editCacheSongLimit(context),
+        ),
+        const Divider(height: 32),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Text('缓存管理',
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        ListTile(
+          leading: const Icon(Icons.folder_open),
+          title: const Text('查看缓存目录'),
+          onTap: () {
+            ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('缓存目录详情功能待实现')));
+          },
+        ),
+      ],
+    );
+  }
+
+  Future<void> _editCacheMaxBytes(BuildContext context) async {
+    final current = _settings.cacheMaxBytes ~/ (1024 * 1024);
+    final controller = TextEditingController(text: current.toString());
+    final result = await showDialog<int>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('缓存总上限（MB）'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.of(c)
+                  .pop(int.tryParse(controller.text) ?? current),
+              child: const Text('确定')),
+        ],
+      ),
+    );
+    if (result != null && result > 0 && mounted) {
+      setState(() => _settings.cacheMaxBytes = result * 1024 * 1024);
+    }
+  }
+
+  Future<void> _editCacheSongLimit(BuildContext context) async {
+    final controller =
+        TextEditingController(text: _settings.cacheSongLimit.toString());
+    final result = await showDialog<int>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('歌曲数量上限'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.of(c)
+                  .pop(int.tryParse(controller.text) ?? _settings.cacheSongLimit),
+              child: const Text('确定')),
+        ],
+      ),
+    );
+    if (result != null && result > 0 && mounted) {
+      setState(() => _settings.cacheSongLimit = result);
+    }
+  }
+
+  static String _labelBytes(int bytes) {
+    if (bytes >= 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
+    }
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(0)} MB';
   }
 }
