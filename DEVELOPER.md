@@ -94,10 +94,13 @@ selfmusic/
 │   │   ├── main.dart                 # 入口 + Provider 装配 / Root
 │   │   ├── theme/                    # 可配置主题（app_theme / theme_provider）
 │   │   ├── layout/                   # 自适应布局（app_shell / sidebar / top_bar / queue_panel / mini_player_bar）
-│   │   ├── providers/                # 状态（auth / library / player / navigation）
-│   │   ├── services/                 # dio+懒刷新拦截器(ApiClient)、AuthService
-│   │   ├── data/sources/             # MusicSource 抽象 + ServerProxy
-│   │   └── screens/                  # 内容区/设置/配对/播放页
+│   │   ├── providers/                # 状态（auth / library / player / navigation / direct_source_manager）
+│   │   ├── services/                 # dio+懒刷新拦截器(ApiClient)、AuthService、ServerSettings
+│   │   ├── data/sources/             # MusicSource 抽象 + ServerProxy + WebdavDirect + SmbDirect
+│   │   ├── data/local/               # audio_metadata（mp3/flac 头部解析）+ local_index（SQLite 轻量索引）
+│   │   ├── models/                   # Song / Album / Artist
+│   │   ├── widgets/                  # 共享组件（SongTile / CoverThumb）
+│   │   └── screens/                  # library / sources / source_browse_view / settings / player / pairing
 │   ├── android/ linux/ windows/ web/ # 各平台壳工程
 │   └── pubspec.yaml
 ├── scripts/init.sql                  # 数据库初始化脚本（v2 schema）
@@ -259,6 +262,16 @@ fvm flutter build apk --release
 | just_audio_mpv | Linux 音频后端（联邦 Dart 插件，走系统 mpv/libmpv） |
 | cached_network_image | 图片缓存 |
 | flutter_secure_storage | 敏感数据安全存储（token、主题偏好） |
+| sqlite3 / sqlite3_flutter_libs | 本地轻量索引（直连源 idx_songs 表，drift 的轻量替代） |
+| xml | WebDAV PROPFIND XML 解析 |
+
+### 直连索引与元数据编码
+
+`audio_metadata.dart` 纯 Dart 解析 mp3 ID3v2 / flac VORBIS_COMMENT 头部标签，不依赖第三方标签库：
+
+- mp3 ID3v2：按帧 encoding 字节选解码策略（enc==3 → UTF-8；enc==0 → 尝试 UTF-8，失败回退 Latin-1；enc==1/2 → UTF-16）
+- flac VORBIS_COMMENT：规范规定 UTF-8（`utf8.decode`），解码失败时回退 Latin-1
+- 乱码修复历史：此前 mp3 enc==3 误用 `String.fromCharCodes`（逐字节解码导致 CJK 乱码），flac vorbis 同样误用——均已修正；修复后需对已有播放源重新执行一次「扫描」以覆写旧索引行（`upsert` 自动覆盖，无需手动清库）
 
 ### Linux 桌面音频依赖（mpv）
 

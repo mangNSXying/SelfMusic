@@ -3,7 +3,7 @@
 **去中心化的个人音乐服务**：自建单用户媒体服务器（Spring Boot），配合双模式客户端（Flutter，覆盖 Android / Windows / 鸿蒙）。
 
 - **服务器模式**：统一曲库索引、多设备状态同步、按需转码省流量、设备配对管理
-- **直连模式**：无后端时 App 直连 WebDAV / SMB 依然完整可用（浏览/搜索/加权播放/离线缓存）
+- **直连模式**：无后端时 App 直连 WebDAV / SMB 依然完整可用（所有播放源默认激活；源内文件夹式浏览；源卡片三点菜单切换直连/代理模式；全局歌曲/专辑/歌手合并视图；离线缓存）
 
 > 整体设计（数据模型 / API / 播放算法 / 路线图）见 [DESIGN.md](DESIGN.md)，开发环境与日常流程见 [DEVELOPER.md](DEVELOPER.md)。
 
@@ -105,10 +105,13 @@ selfmusic/
 │       ├── main.dart            # 入口 + Provider 装配 / Root
 │       ├── theme/               # 可配置主题（app_theme / theme_provider）
 │       ├── layout/              # 自适应布局（app_shell/sidebar/top_bar/queue_panel/mini_player_bar）
-│       ├── providers/           # 状态（auth/library/player/navigation）
-│       ├── services/            # ApiClient（含懒刷新拦截器）/ AuthService
-│       ├── data/sources/        # MusicSource 抽象 + ServerProxy
-│       └── screens/             # 内容区 / 设置 / 配对 / 播放页
+│       ├── providers/           # 状态（auth/library/player/navigation/direct_source_manager）
+│       ├── services/            # ApiClient（含懒刷新拦截器）/ AuthService / ServerSettings
+│       ├── data/sources/        # MusicSource 抽象 + ServerProxy / WebdavDirect / SmbDirect
+│       ├── data/local/          # 纯 Dart 头部解析（audio_metadata）+ SQLite 轻量索引（local_index）
+│       ├── models/              # Song / Album / Artist
+│       ├── widgets/             # 共享组件（SongTile / CoverThumb）
+│       └── screens/             # library / sources / source_browse_view / settings / player / pairing
 ├── scripts/
 │   └── init.sql                 # MySQL 建库建表
 ├── nginx/

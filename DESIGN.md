@@ -338,17 +338,22 @@ lib/
 │   ├── queue_panel.dart    右侧播放队列面板
 │   └── mini_player_bar.dart 底部"正在播放"条
 ├── providers/            ★ 状态
-│   ├── navigation_provider.dart  分区/设置/播放页视图切换
-│   ├── player_provider.dart      全局播放(AudioPlayer+队列)，播放页/队列/迷你条共享
-│   ├── library_provider.dart     曲库
+│   ├── navigation_provider.dart  分区/设置/播放页视图切换 + 源内文件夹导航(browsingSourceKey)
+│   ├── player_provider.dart      全局播放(AudioPlayer+队列) + 按歌曲 sourceKey 解析源
+│   ├── library_provider.dart     合并库（服务器+直连）+ 专辑/歌手分组 + sourceFor 解析
+│   ├── direct_source_manager.dart 直连源管理（全部激活，无单一激活态）
 │   └── auth_provider.dart        配对 + 会话过期态
-├── services/             dio 封装(ApiClient 含懒刷新拦截器)、AuthService
-├── data/sources/         ★ Source 抽象层 (ServerProxy / Local / Webdav / Smb)
-├── models/               Song / Album ...
-└── screens/              AppContent(内容区) / settings(界面主题设置) / player / pairing
+├── services/             ApiClient(含懒刷新拦截器)、AuthService、ServerSettings(代理后端地址)
+├── data/
+│   ├── sources/          ★ Source 抽象层 (ServerProxy / WebdavDirect / SmbDirect) + DirectAudioSource
+│   └── local/            纯 Dart 头部解析(audio_metadata) + SQLite 轻量索引(local_index)
+├── models/               Song / Album(含 coverPath) / Artist
+├── widgets/              共享组件（SongTile / 封面缩略图 CoverThumb）
+└── screens/              library(内容区 AppContent) / sources(源卡片+三点菜单) /
+                          source_browse_view(源内文件夹浏览) / settings / player / pairing
 ```
 
-> **platform 收口层**（§6.3 的 `capabilities`）与 **drift 本地库** 尚未落地，属路线图后续阶段。
+> **平台收口层**（§6.3 的 `capabilities`）与 **drift 本地库** 尚未落地，属路线图后续阶段（本地索引已用 `sqlite3` 轻量版落地，见 §6.4）。
 
 > **为什么要有 `platform/` 层**：鸿蒙走的是三方 Flutter 分支而非官方 target，`Platform.isXxx` 行为、原生插件实现均可能与官方平台不一致。业务代码禁止直接写 `Platform.isAndroid` 之类判断，一律询问 `capabilities`；鸿蒙加入时只需在 `platform/harmonyos/` 提供一套实现，不动上层。
 
@@ -387,8 +392,21 @@ abstract class MusicSource {
 - 增量：以 `(ref, mtime, size)` 三元组比对；消失项标记 `missing`（保留缓存歌的可播性）
 - 封面：提取嵌入图存应用目录 `covers/<hash>.jpg`，SQLite 存路径
 - 大目录保护：单源上限 20k 首，超出提示分目录添加
+- 头部元数据编码：mp3 ID3v2 按帧 encoding 字节选解码（enc==3 → UTF-8，enc==0 → 尝试 UTF-8 再回退 Latin-1）；flac VORBIS_COMMENT 按规范用 UTF-8（尝试解码失败则回退 Latin-1）；m4a 无内嵌标签时走文件名回退
+- 旧索引乱码修复：`idx_songs` 行通过 `upsert` 覆写（无跳过），重新扫描即自动更新；扫描无需手动清除旧数据
 
-### 6.5 网络与离线
+> **重要**：修复 FLAC VORBIS_COMMENT 乱码（`String.fromCharCodes` → `utf8.decode`）后，需对已有播放源重新执行一次「扫描」以覆写此前按 Latin-1 存入的旧乱码行；`upsert` 的 `ON CONFLICT` 会无条件更新 title/artist/album，无需手动删除或重建索引。
+
+### 6.5 源内文件夹式浏览与全局歌曲合并
+
+- 所有播放源默认激活（移除旧「单一激活源」概念），`direct_source_manager.dart` 仅维护源列表与本地索引，不再持有 `_activeKey`
+- 点击源卡片 → `NavigationProvider.enterSource(key)` 将 `browsingSourceKey` 置为该源 key → `AppContent` 检测到 `sources + browsingSourceKey` → 内容区原地切换为 `SourceBrowseView`（不走 `Navigator.push`）
+- `SourceBrowseView`：顶部返回按钮调用 `exitSource()`、显示源名、扫描/刷新按钮、搜索框、歌曲计数；扫描完成后自动调用 `LibraryProvider.loadSongs()` 刷新全局合并库
+- 源卡片右侧 `PopupMenuButton` 三点菜单：切换为直连/切换为服务端代理、删除源（二次确认弹窗）；移除旧「服务器源」独立卡片（服务端代理归属直连源的模式之一）
+- 全局歌曲/专辑/歌手合并：`LibraryProvider.loadSongs()` 合并 `ServerProxySource.fetchSongs()` 与 `DirectSourceManager.allSongs()`（按 `title|artist|albumName` 去重），服务器源返回的歌曲 `sourceKey = 'server'`；专辑和歌手按合并后的歌曲列表客户端聚合（`Album.fromSongs` / `Artist.fromSongs`），切换到对应栏目时自动拉取
+- 播放路由：`PlayerProvider.attachSourceResolver` 注册解析函数，按歌曲 `sourceKey` 逐首解析源实现（'server' → `ServerProxySource`；其余 → `DirectSourceManager.sourceByKey`），混播队列中直连歌曲与服务器歌曲均可正常播放
+
+### 6.6 网络与离线
 
 - `dio`：API 超时 5s、指数退避重试 3 次；流式请求超时 ∞
 - **懒刷新拦截器（ApiClient）**：`onRequest` 自动带 `Bearer access`；`onError` 命中 `401 + X-Token-Expired` 时用 `refresh_token` **单飞（single-flight）**换发新 token 并对原请求重放一次；刷新失败清空令牌并触发 `onSessionExpired` → "会话过期"弹窗重新配对。
@@ -497,10 +515,13 @@ frozen=true                              → factor 恒为 1.0
 ### 阶段 3：直连 WebDAV + 本地索引（~1 周）
 
 > **状态：已完成✅**
+>
+> **本次迭代追加**：修复 mp3 ID3v2 (`_decodeText` UTF-8 enc==3/enc==0) 与 flac VORBIS_COMMENT (`String.fromCharCodes` → `utf8.decode`) 乱码；所有播放源默认激活、源卡片点击进入文件夹式浏览（`SourceBrowseView`）并配三点菜单（直连/代理切换、删除）；全局歌曲/专辑/歌手合并视图（`LibraryProvider` 合并 `ServerProxySource` + `DirectSourceManager.allSongs`）；专辑/歌手客户端完整分组聚合；封面缩略图（`CoverThumb`/`SongTile`）；`PlayerProvider` 按歌曲 `sourceKey` 解析播放源（混播支持）；回归测试 8 条通过。乱码修复后需对已有源重新扫描一次以覆写旧索引行。
 
 - `WebdavDirectSource` 完整实现：dart:io `PROPFIND` 递归列举（`package:xml`）+ `Range` 流式（seek/断点）+ 纯 Dart 头部元数据解析（mp3 ID3v2 / flac STREAMINFO + VORBIS_COMMENT，含封面提取）。
-- 本地轻量索引（DESIGN §6.4）：SQLite `LocalIndex`（`sources`/`idx_songs`/`cache` 表），Isolate 扫描器，`(ref,mtime,size)` 增量与 missing 标记，封面落 `covers/<hash>.jpg`；离线缓存（DESIGN §6.5）断网播缓存。
-- 直连浏览/搜索页（`SourcesScreen` + `DirectBrowseScreen`）：扫描→搜索→播放（`DirectAudioSource` 包装为 just_audio `StreamAudioSource`）→收藏→缓存。
+- 本地轻量索引（DESIGN §6.4）：SQLite `LocalIndex`（`sources`/`idx_songs`/`cache` 表），Isolate 扫描器，`(ref,mtime,size)` 增量与 missing 标记，封面落 `covers/<hash>.jpg`；离线缓存（DESIGN §6.6）断网播缓存。
+- 直连浏览/搜索页（`SourcesScreen` 卡片三点菜单 + `SourceBrowseView` 文件夹式内页）：扫描→搜索→播放→收藏→缓存，扫描后自动刷新全局合并库。
+- 全局库合并（`LibraryProvider`）：`ServerProxySource` 与所有直连源歌曲合并（去重），专辑/歌手按合并结果客户端聚合；`PlayerProvider` 按歌曲 `sourceKey` 逐首解析源实现，混播队列中直连与服务器歌曲均可播。
 - 三平台源骨架就位：ServerProxy 完整 / Webdav 完整 / SMB（阶段 4）/ Local（阶段 3 附 dart:io 基础实现）。
 - 验收：**卸载后端场景**——只配 WebDAV 源，完成扫描→搜索→播放→收藏→断网播缓存 全链路（Linux `flutter build linux --debug` 与 Android `flutter build apk --debug` 双端构建通过）。
 
