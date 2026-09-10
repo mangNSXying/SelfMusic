@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
+import '../services/api_client.dart';
+import '../services/server_settings.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_provider.dart';
 
@@ -18,12 +20,117 @@ class SettingsScreen extends StatelessWidget {
     switch (item) {
       case SettingsItem.appearance:
         return const _AppearanceSettings();
+      case SettingsItem.server:
+        return const _ServerSettings();
       case SettingsItem.general:
       case SettingsItem.playback:
       case SettingsItem.songs:
       case SettingsItem.notifications:
         return _CategoryPlaceholder(item: item);
     }
+  }
+}
+
+/// 「服务端」设置：后端地址（运行时可改，替代编译期 --dart-define）。
+class _ServerSettings extends StatefulWidget {
+  const _ServerSettings();
+
+  @override
+  State<_ServerSettings> createState() => _ServerSettingsState();
+}
+
+class _ServerSettingsState extends State<_ServerSettings> {
+  late final TextEditingController _controller;
+  late String _saved;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final settings = context.read<ServerSettings>();
+    _saved = settings.baseUrl;
+    _controller = TextEditingController(text: settings.baseUrl);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final settings = context.read<ServerSettings>();
+    final api = context.read<ApiClient>();
+    final entered = _controller.text.trim();
+    // 空表示清空（未配置）
+    await settings.setBaseUrl(entered);
+    api.setBaseUrl(settings.baseUrl);
+    if (!mounted) return;
+    setState(() {
+      _saved = settings.baseUrl;
+      _saving = false;
+    });
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('已保存服务端地址：${_saved.isEmpty ? "（未配置）" : _saved}')));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('服务端',
+              style: Theme.of(context)
+                  .textTheme
+                  .headlineSmall
+                  ?.copyWith(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 4),
+          Text('配置后端地址；选择「服务端代理」模式的源会走后端拉取整体库',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: scheme.onSurface.withValues(alpha: 0.6))),
+          const SizedBox(height: 24),
+          TextField(
+            controller: _controller,
+            keyboardType: TextInputType.url,
+            decoration: const InputDecoration(
+              labelText: '后端地址',
+              hintText: 'http://192.168.1.10:18089',
+              helperText: '含协议与端口，留空表示未配置',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.dns_outlined),
+            ),
+          ),
+          const SizedBox(height: 12),
+          if (_saved.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text('当前已配置：$_saved',
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(color: scheme.primary)),
+            ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: FilledButton.icon(
+              onPressed: _saving
+                  ? null
+                  : () {
+                      setState(() => _saving = true);
+                      _save();
+                    },
+              icon: const Icon(Icons.save_outlined),
+              label: const Text('保存'),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

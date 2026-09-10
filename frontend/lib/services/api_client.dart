@@ -10,7 +10,9 @@ class SessionExpiredException implements Exception {
 }
 
 class ApiClient {
-  static const _baseUrlEnv = String.fromEnvironment('API_BASE_URL', defaultValue: 'http://192.168.3.25:18089');
+  // 编译期默认后端地址（可通过 --dart-define 覆盖）。空串表示未配置，
+  // 实际地址由「服务端」设置中的运行时 ServerSettings 提供（[setBaseUrl]）。
+  static const _baseUrlEnv = String.fromEnvironment('API_BASE_URL', defaultValue: '');
 
   static const kAccess = 'device_token';
   static const kRefresh = 'refresh_token';
@@ -74,6 +76,11 @@ class ApiClient {
   }
 
   String get baseUrl => dio.options.baseUrl;
+
+  /// 运行时可改后端地址（规整为绝对 URL），空串表示未配置。
+  void setBaseUrl(String url) {
+    dio.options.baseUrl = normalizeBaseUrl(url);
+  }
 
   Future<String?> getAccessToken() => storage.read(key: kAccess);
   Future<String?> getRefreshToken() => storage.read(key: kRefresh);
