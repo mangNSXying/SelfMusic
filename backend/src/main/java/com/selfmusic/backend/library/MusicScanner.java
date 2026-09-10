@@ -165,11 +165,13 @@ public class MusicScanner {
         String xml = propfind(url);
         if (xml == null) return;
         String base = webdavBaseUrl.endsWith("/") ? webdavBaseUrl : webdavBaseUrl + "/";
+        // 当前目录的路径形式（如 /dav/），用于在下级响应里跳过目录自身引用。
+        String selfPath = pathOf(url);
         for (String resp : splitResponses(xml)) {
             String href = propFindHref(resp);
             if (href == null) continue;
             String h = href.trim();
-            if (h.equals(url) || h.equals(url + "/")) continue;
+            if (pathOf(h).equals(selfPath)) continue;
             String rel = toRelative(h, base);
             boolean isDir = h.endsWith("/") || COLLECTION.matcher(resp).find();
             if (isDir) {
@@ -186,6 +188,17 @@ public class MusicScanner {
                 }
             }
         }
+    }
+
+    /** 返回 URL 或路径的"路径"部分：https://h/dav/ → /dav/；/dav/sub/ → /dav/sub/；用于比较并跳过目录自身。 */
+    private static String pathOf(String urlOrPath) {
+        int i = urlOrPath.indexOf("://");
+        if (i > 0) {
+            String rest = urlOrPath.substring(i + 3);
+            int slash = rest.indexOf('/');
+            return slash >= 0 ? rest.substring(slash) : "/";
+        }
+        return urlOrPath;
     }
 
     private String toRelative(String href, String base) {
