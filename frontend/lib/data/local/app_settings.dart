@@ -3,7 +3,7 @@ import 'local_index.dart';
 /// 客户端用户设置（直连模式 app_settings 表，stage2.md §1.4）。
 ///
 /// 本轮已实现：缓存上限 / 歌曲上限 / 收藏自动缓存；
-/// 规划中的设置项见 DEVELOPER.md「客户端用户设置（规划）」。
+/// 规划中的设置项见 DESIGN.md §6.7「客户端用户设置（规划）」。
 class AppSettings {
   static const String kCacheMaxBytes = 'cache_max_bytes';
   static const String kCacheSongLimit = 'cache_song_limit';

@@ -1,6 +1,6 @@
 # SelfMusic 整体设计文档
 
-> 状态：设计稿 **v2**（阶段 1 骨架 + 阶段 1 认证已落地，其余待实施）
+> 状态：设计稿 **v3**（阶段 1 认证、阶段 2 客户端本地闭环、阶段 3 直连 WebDAV 已落地，其余待实施）
 > 定位：**去中心化的个人音乐服务器 + 双模式客户端**
 > 上游约束：`开发思路.txt`（无中心账号 / 本地+SMB+WebDAV 曲库 / 加权播放 / 喜欢歌自动缓存）
 
@@ -191,22 +191,26 @@ INDEX idx_refresh(refresh_token_hash)
 
 `songs` 权重相关字段与触发规则见 §7.1。
 
-### 3.2 客户端（SQLite，drift 管理）
+### 3.2 客户端（SQLite，`sqlite3` 轻量版已落地，见 §6.4）
 
 | 表 | 说明 |
 |----|------|
-| `sources` | 源配置：`type(local/smb/webdav/server)`、名称、加密的凭据 JSON、enabled、last_scan_at |
-| `idx_songs` | 直连模式本地索引：`source_id, source_ref, title, artist, album, track_no, duration, file_mtime, file_size, format, cover_path` |
-| `playlists_local` / `playlist_items_local` | 歌单镜像（含 `pending_sync` 标记，服务器模式下推送） |
-| `weight_outbox` | 待上推的权重事件流水：`event_uuid, song_key, event, created_at` |
-| `play_state_local` | 断点：`(list_key, song_key, position_ms)` |
-| `cache_meta` | 已缓存歌曲：`cache_key, local_path, size_bytes, cached_at, bitrate` |
+| `sources` | 源配置：`type(local/webdav/smb/server)`、名称、凭据引用键、enabled、last_scan_at |
+| `idx_songs` | 直连模式本地索引：`source_key, ref, title, artist, album, track_no, duration, file_mtime, file_size, format, cover_path`（`is_favorite` 旧列仅用于一次性回填迁移，阶段 2 起不再读写） |
+| `cache` | 已缓存歌曲：`cache_key, source_key, ref, local path, size_bytes` + `cached_at, last_accessed_at`（阶段 2 补列，LRU 用） |
+| `play_meta` | 歌曲播放元数据（阶段 2 新增）：`(source_key, song_ref)` 主键 + `like_streak, dislike_streak, factor, frozen, is_favorite`（**收藏统一收口**）+ `song_json`（服务器歌快照） |
+| `playlists` / `playlist_items` | 歌单与条目（阶段 2 新增）：条目含歌曲快照字段 + `sort_order`；播放时按 `(source_key, song_ref)` 重新解析 |
+| `app_settings` | 客户端设置（阶段 2 新增）：键值表，`cache_max_bytes / cache_song_limit / auto_cache_favorites` 等 |
+| `play_state` | 断点（阶段 2 新增）：单行（`id=1`），`queue_json + index + position_ms` |
 
 要点：
 
 - `song_key` 统一为 `(来源标识, source_ref)` 复合键；同一首歌在不同模式下可解析到不同 Source 实现
+- 收藏状态**统一收口** `play_meta.is_favorite`（直连 + 服务器一致）：迁移时从 `idx_songs.is_favorite=1` 回填一次，
+  此后所有读取（搜索 / 收藏列表 / 歌单解析 / 断点恢复）统一 `LEFT JOIN play_meta`，见 `stage2.md §1.1`
 - 凭据加密：WebDAV/SMB 密码经 `flutter_secure_storage` 存放，SQLite 只存引用键
 - 离线优先：所有播放决策只查本地表；网络层的角色是把远端变更搬进本地
+- 阶段 5 同步时：权重/歌单改动落 `weight_outbox` 流水上推，服务端按 `event_uuid` 幂等去重（本轮未实现）
 
 ---
 
@@ -339,16 +343,17 @@ lib/
 │   └── mini_player_bar.dart 底部"正在播放"条
 ├── providers/            ★ 状态
 │   ├── navigation_provider.dart  分区/设置/播放页视图切换 + 源内文件夹导航(browsingSourceKey)
-│   ├── player_provider.dart      全局播放(AudioPlayer+队列) + 按歌曲 sourceKey 解析源
+│   ├── player_provider.dart      全局播放(AudioPlayer+队列) + 按歌曲 sourceKey 解析源 + 四种播放模式(阶段2) + 断点续播
 │   ├── library_provider.dart     合并库（服务器+直连）+ 专辑/歌手分组 + sourceFor 解析
 │   ├── direct_source_manager.dart 直连源管理（全部激活，无单一激活态）
 │   └── auth_provider.dart        配对 + 会话过期态
 ├── services/             ApiClient(含懒刷新拦截器)、AuthService、ServerSettings(代理后端地址)
 ├── data/
 │   ├── sources/          ★ Source 抽象层 (ServerProxy / WebdavDirect / SmbDirect) + DirectAudioSource
-│   └── local/            纯 Dart 头部解析(audio_metadata) + SQLite 轻量索引(local_index)
-├── models/               Song / Album(含 coverPath) / Artist
-├── widgets/              共享组件（SongTile / 封面缩略图 CoverThumb）
+│   └── local/            纯 Dart 头部解析(audio_metadata) + SQLite(local_index) +
+│                         stage2 封装：SongWeightStore / PlaylistStore / CacheManager / AppSettings
+├── models/               Song(含 toJson/fromJson 断点快照) / Album(含 coverPath) / Artist
+├── widgets/              共享组件（SongTile / 封面缩略图 CoverThumb / 播放模式选择器 PlayModeSelector）
 └── screens/              library(内容区 AppContent) / sources(源卡片+三点菜单) /
                           source_browse_view(源内文件夹浏览) / settings / player / pairing
 ```
@@ -410,8 +415,22 @@ abstract class MusicSource {
 
 - `dio`：API 超时 5s、指数退避重试 3 次；流式请求超时 ∞
 - **懒刷新拦截器（ApiClient）**：`onRequest` 自动带 `Bearer access`；`onError` 命中 `401 + X-Token-Expired` 时用 `refresh_token` **单飞（single-flight）**换发新 token 并对原请求重放一次；刷新失败清空令牌并触发 `onSessionExpired` → "会话过期"弹窗重新配对。
-- 断网判定：连续失败 → 进"离线模式"，UI 顶栏提示；播放范围收缩为 `cache_meta` 命中项
+- 断网判定：连续失败 → 进"离线模式"，UI 顶栏提示；播放范围收缩为 `cache` 命中项
 - 恢复网络：SyncEngine 自动恢复，先推 outbox 再拉增量
+
+### 6.7 客户端用户设置（规划）
+
+> 以下设置项需要「设置」入口供用户自定义（**规划中，暂未实现**，仅记档）；键名对应直连模式
+> `app_settings` 表的 key。阶段 2 已完成 `设置 → 歌曲` 的缓存上限 / 歌曲数量上限 / 收藏自动缓存
+> 开关（见 `stage2.md §6`），下列尚需开发入口：
+
+| 设置项 | 键 | 说明 | 默认 | 建议入口 |
+|--------|----|------|------|---------|
+| 默认播放模式 | `play_mode_default` | `sequence / loopList / loopOne / weighted` 四选一，决定启动后的播放模式 | `sequence` | `设置 → 歌曲` |
+| 播放页权重信息显示 | `player_show_weight` | 是否在播放页展示当前歌曲 liked / factor 状态 | 显示 | `设置 → 歌曲` |
+| 断点续播自动恢复 | `resume_on_startup` | 启动时是否自动恢复上次队列与播放位置（恢复为暂停态，不自动播放） | 开 | `设置 → 歌曲` |
+
+来源：`stage2.md §3`（默认播放模式）、`§4`（播放页权重显示）、`§7`（断点续播恢复）。
 
 ---
 
@@ -424,21 +443,32 @@ abstract class MusicSource {
 ```
 基础权重 w₀ = 1/n
 weight = w₀ × factor
-factor ∈ [0.5, 1.5]：
-  is_favorite 或 like_streak≥1 连发达标   → factor 升至 1.5
-  dislike_streak≥1 连发达标               → factor 降至 0.5
-frozen=true                              → factor 恒为 1.0
-选择时排除上一首（n>1），对剩余集合归一化使 Σp=1
+factor ∈ [0.5, 1.5]，连续取值、步长 0.1，初始 1.0：
+  连续完整播放（like_streak≥3）→ factor 提高 0.1（上限 1.5）
+  连续中断（dislike_streak≥3）→ factor 降低 0.1（下限 0.5）
+  liked / 手动喜欢        → factor 直接 1.5
+  disliked / 手动不喜欢    → factor 降低 0.1
+  frozen=true            → factor 恒为 1.0，不参与事件调整
+选中概率 p_i = factor_i / Σfactor_j（对候选集合归一化）
 ```
 
-事件规则（服务端与客户端逻辑一致，服务端为准）：
+选歌（加权随机模式，`PlayerProvider` 实现）：**并非无放回抽取**——每步从队列**全量**（排除上一首，
+n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮中播放多次、不喜欢的歌可能要若干轮才播一次，
+无固定"单轮"长度，每步独立随机采样。
 
-| 事件 | 判定 | 效果 |
+事件规则（阶段 2 为**纯客户端本地**落地，后端逻辑与服务端一致、以服务端为准，阶段 5 再接同步上推）：
+
+| 事件 | 触发 | 效果 |
 |------|------|------|
-| complete_play | 播放 ≥70% 时长自然结束 | like_streak++，dislike_streak=0；streak 达 3 → factor→1.5 并清零 streak |
-| skip | 中途跳出（<70%） | dislike_streak++，like_streak=0；达 3 → factor→0.5 并清零 |
-| liked / unfavor | 手动点击 | 直接置 favorite / factor 立即生效 |
-| reset | 手动重置 | 两 streak 清零，factor 回 1.0 |
+| complete | 自然结束且播放比例 ≥70% | like_streak++，dislike_streak=0；like_streak≥3 → factor=min(1.5, factor+0.1)，streak 清零 |
+| skip | 被 next/prev/换歌打断且比例 <70% | dislike_streak++，like_streak=0；dislike_streak≥3 → factor=max(0.5, factor−0.1)，streak 清零 |
+| liked | 手动喜欢 / 收藏 | favorite=true，factor=1.5 |
+| unfavorite | 取消喜欢 / 收藏 | favorite=false，factor=1.0 |
+| disliked | 手动不喜欢（👎） | favorite 不变，factor=max(0.5, factor−0.1)，双 streak 清零 |
+| reset | 手动重置 | 双 streak 清零，factor 回 1.0 |
+
+播放模式：`sequence`（当前顺序播放，播完即停）/ `loopList`（列表循环）/ `loopOne`（单曲循环）/
+`weighted`（加权随机），切换入口播放页 + 队列面板；`next()` 与自动下一首按当前模式路由。
 
 ### 7.2 同步协议（仅服务器模式）
 
@@ -508,9 +538,19 @@ frozen=true                              → factor 恒为 1.0
 
 ### 阶段 2：加权播放 + 歌单 + 喜欢歌缓存（~1 周，蓝图核心）
 
-- 加权队列、complete/skip 事件采集、喜欢/不喜欢 UI
-- 歌单增删改排序；喜欢歌自动缓存 + LRU + 上限设置
-- 验收：蓝图 §三 全部行为可演示；杀 App 重开断点续播
+> **状态：客户端本地闭环已完成✅**（实施准绳为 `stage2.md`）。本轮按「**纯客户端本地**」落地，
+> 后端不新增 API；服务器模式歌曲的权重 / 收藏 / 断点同样落本地，阶段 5 再接同步上推。
+> Linux `flutter build linux --debug` 构建通过、`flutter analyze` 0 问题。
+
+- ✅ 播放模式 ×4：顺序（默认）/ 列表循环 / 单曲循环 / 加权随机；切换入口：播放页 + 队列面板
+- ✅ 加权随机：factor 连续 0.5~1.5 步长 0.1；每步全量排除上一首采样（非无放回）；complete/skip 事件自动调权
+- ✅ 喜欢 / 不喜欢 UI（播放页 ❤️/👎 + 权重芯片；SongTile 收藏通用化——服务器歌曲也可喜欢）
+- ✅ 收藏统一收口 `play_meta.is_favorite`（直连 + 服务器单一数据源）；旧 `idx_songs.is_favorite` 一次性回填迁移
+- ✅ 断点续播：`Song.toJson/fromJson` + `play_state` 单行（2s 节流），启动恢复为**暂停态**不自动播放
+- ✅ 喜欢歌自动缓存 + LRU（`cached_at/last_accessed_at`，跳过正在播放）；`设置 → 歌曲` 缓存上限 / 歌曲数量上限 / 收藏自动缓存开关
+- ⏳ **待续**：歌单 UI——数据层 `playlists` / `playlist_items` 与 `PlaylistStore` 已就绪，`PlaylistsProvider`、列表/详情、增删改排序、「加入歌单」入口未做
+- ⏳ **规划设置项 3 项**见 §6.7（`play_mode_default` / `player_show_weight` / `resume_on_startup`）
+- 验收（蓝图 §三 核心行为已演示）：加权随机按概率选歌、同首不连续播放、喜欢可一轮多次 / 不喜欢可能多轮一次；连续 3 次完整播放 factor 提高（反之降低）；杀 App 重开断点续播；四种模式切换正确
 
 ### 阶段 3：直连 WebDAV + 本地索引（~1 周）
 

@@ -23,6 +23,7 @@ nginx/
 *.txt
 *.log
 *.lock
+*.md
 *test*
 
 # 排除文件
