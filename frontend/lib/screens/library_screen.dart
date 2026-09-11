@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../providers/library_provider.dart';
 import '../providers/player_provider.dart';
 import '../providers/navigation_provider.dart';
+import '../providers/direct_source_manager.dart';
 import '../models/song.dart';
 import '../models/album.dart';
 import '../models/artist.dart';
@@ -14,6 +15,7 @@ import 'player_screen.dart';
 import 'settings_screen.dart';
 import 'sources_screen.dart';
 import 'source_browse_view.dart';
+import 'playlists_view.dart';
 
 /// 内容区：根据导航 Section / 设置分区 / 播放页动态渲染对应页面。
 class AppContent extends StatelessWidget {
@@ -44,32 +46,58 @@ class AppContent extends StatelessWidget {
       case NavSection.artists:
         return const _ArtistsView();
       case NavSection.playlists:
+        return nav.browsingPlaylistId != null
+            ? PlaylistDetailView(playlistId: nav.browsingPlaylistId!)
+            : const PlaylistsView();
       case NavSection.liked:
-        return _Placeholder(section: nav.section);
+        return const _LikedView();
     }
   }
 }
 
-/// 占位页：后端尚无对应数据接口，先展示骨架提示。
-class _Placeholder extends StatelessWidget {
-  final NavSection section;
-  const _Placeholder({required this.section});
+/// 喜欢（收藏）列表：统一来自 play_meta.is_favorite（直连 + 服务器）。
+class _LikedView extends StatelessWidget {
+  const _LikedView();
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(section.icon, size: 72, color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.4)),
-          const SizedBox(height: 16),
-          Text('${section.label}功能开发中',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
-          const SizedBox(height: 8),
-          Text('该模块的后端数据接入尚未完成，敬请期待',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5))),
-        ],
-      ),
+    final direct = context.watch<DirectSourceManager>();
+    final player = context.read<PlayerProvider>();
+    final lib = context.read<LibraryProvider>();
+    final songs = direct.favoriteSongs();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+          child: Text('喜欢',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleLarge
+                  ?.copyWith(fontWeight: FontWeight.bold)),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: songs.isEmpty
+              ? const Center(child: Text('暂无喜欢的歌曲，点 ♡ 收藏'))
+              : ListView.separated(
+                  itemCount: songs.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1, indent: 72),
+                  itemBuilder: (c, i) {
+                    final s = songs[i];
+                    return SongTile(
+                      song: s,
+                      source: lib.sourceFor(s.sourceKey) ?? lib.source,
+                      onPlay: () {
+                        player.playQueue(songs, index: i, source: lib.source);
+                        context.read<NavigationProvider>().openPlayer();
+                      },
+                    );
+                  },
+                ),
+        ),
+      ],
     );
   }
 }
