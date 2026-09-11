@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../data/sources/music_source.dart';
 import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
+import 'add_to_playlist.dart';
 
 /// 通用歌曲条目：封面缩略图 + 标题 + 歌手/专辑 + 时长时间器。
 ///
@@ -64,6 +65,18 @@ class SongTile extends StatelessWidget {
               },
             ),
           Text(song.duration != null ? '${song.duration}s' : ''),
+          PopupMenuButton<String>(
+            tooltip: '更多',
+            icon: const Icon(Icons.more_vert),
+            onSelected: (v) {
+              if (v == 'playlist') {
+                showAddToPlaylistSheet(context, song);
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'playlist', child: Text('加入歌单')),
+            ],
+          ),
         ],
       ),
       onTap: onPlay,
