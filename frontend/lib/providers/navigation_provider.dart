@@ -9,6 +9,7 @@ class NavigationProvider extends ChangeNotifier {
   SettingsItem? _settings;
   bool _playerView = false;
   String? _browsingSourceKey;
+  int? _browsingPlaylistId;
 
   NavSection get section => _section;
   String get search => _search;
@@ -30,6 +31,7 @@ class NavigationProvider extends ChangeNotifier {
     _settings = null;
     _playerView = false;
     _browsingSourceKey = null;
+    _browsingPlaylistId = null;
     notifyListeners();
   }
 
@@ -42,6 +44,21 @@ class NavigationProvider extends ChangeNotifier {
   /// 返回播放源列表（文件夹返回上一级）。
   void exitSource() {
     _browsingSourceKey = null;
+    notifyListeners();
+  }
+
+  /// 当前正在浏览的歌单 id（歌单详情子视图）；null 表示位于歌单列表。
+  int? get browsingPlaylistId => _browsingPlaylistId;
+
+  /// 进入歌单详情（原地子视图）。
+  void enterPlaylist(int id) {
+    _browsingPlaylistId = id;
+    notifyListeners();
+  }
+
+  /// 返回歌单列表。
+  void exitPlaylist() {
+    _browsingPlaylistId = null;
     notifyListeners();
   }
 
@@ -80,8 +97,4 @@ class NavigationProvider extends ChangeNotifier {
     _search = '';
     notifyListeners();
   }
-
-  /// 是否为占位页（后端尚无数据接口的导航项）。
-  bool get isPlaceholder =>
-      _section == NavSection.playlists || _section == NavSection.liked;
 }

@@ -11,6 +11,7 @@ import '../data/local/local_index.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/cache_manager.dart';
 import '../data/local/song_weight_store.dart';
+import '../data/local/playlist_store.dart';
 import '../models/song.dart';
 import '../services/api_client.dart';
 
@@ -32,6 +33,7 @@ class DirectSourceManager extends ChangeNotifier {
   late AppSettings settings;
   late CacheManager cache;
   late SongWeightStore weight;
+  late PlaylistStore playlists;
 
   ApiClient? _api;
 
@@ -62,6 +64,7 @@ class DirectSourceManager extends ChangeNotifier {
     settings = AppSettings(index);
     cache = CacheManager(index, settings);
     weight = SongWeightStore(index);
+    playlists = PlaylistStore(index);
     final rows = index.listSources();
     for (final r in rows) {
       if (!r.enabled) continue;

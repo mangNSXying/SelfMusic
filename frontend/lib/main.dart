@@ -6,6 +6,7 @@ import 'data/sources/server_proxy_source.dart';
 import 'providers/auth_provider.dart';
 import 'providers/library_provider.dart';
 import 'providers/direct_source_manager.dart';
+import 'providers/playlists_provider.dart';
 import 'providers/player_provider.dart';
 import 'providers/navigation_provider.dart';
 import 'theme/theme_provider.dart';
@@ -63,6 +64,9 @@ class SelfMusicApp extends StatelessWidget {
         ChangeNotifierProvider<AuthProvider>.value(value: auth),
         ChangeNotifierProvider<LibraryProvider>.value(value: lib),
         ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+        ChangeNotifierProvider<PlaylistsProvider>(
+          create: (_) => PlaylistsProvider(direct.playlists),
+        ),
         ChangeNotifierProvider<PlayerProvider>(
           create: (_) => PlayerProvider()
             ..attachSourceResolver((key) {
