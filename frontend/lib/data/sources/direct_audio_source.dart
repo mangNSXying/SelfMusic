@@ -28,7 +28,7 @@ class DirectAudioSource extends StreamAudioSource {
           ? null
           : IntRange(start ?? 0, end == null ? null : (end - (start ?? 0))),
     );
-    final contentLength = full ? opened.contentLength : (end! - (start ?? 0));
+    final contentLength = full ? opened.contentLength : (end != null ? (end - (start ?? 0)) : opened.contentLength);
     return StreamAudioResponse(
       sourceLength: song.fileSize > 0 ? song.fileSize : null,
       contentLength: contentLength,
