@@ -1,6 +1,6 @@
 # SelfMusic 整体设计文档
 
-> 状态：设计稿 **v3**（阶段 1 认证、阶段 2 客户端本地闭环、阶段 3 直连 WebDAV 已落地，其余待实施）
+> 状态：设计稿 **v3**（阶段 0 Android 壳对齐、阶段 1 认证、阶段 2 客户端本地闭环含歌单/喜欢列表 UI、阶段 3 直连 WebDAV 已落地；阶段 4~6 待实施）
 > 定位：**去中心化的个人音乐服务器 + 双模式客户端**
 > 上游约束：`开发思路.txt`（无中心账号 / 本地+SMB+WebDAV 曲库 / 加权播放 / 喜欢歌自动缓存）
 
@@ -342,10 +342,11 @@ lib/
 │   ├── queue_panel.dart    右侧播放队列面板
 │   └── mini_player_bar.dart 底部"正在播放"条
 ├── providers/            ★ 状态
-│   ├── navigation_provider.dart  分区/设置/播放页视图切换 + 源内文件夹导航(browsingSourceKey)
+│   ├── navigation_provider.dart  分区/设置/播放页视图切换 + 源内文件夹导航(browsingSourceKey) + 歌单详情导航(browsingPlaylistId)
 │   ├── player_provider.dart      全局播放(AudioPlayer+队列) + 按歌曲 sourceKey 解析源 + 四种播放模式(阶段2) + 断点续播
 │   ├── library_provider.dart     合并库（服务器+直连）+ 专辑/歌手分组 + sourceFor 解析
-│   ├── direct_source_manager.dart 直连源管理（全部激活，无单一激活态）
+│   ├── direct_source_manager.dart 直连源管理（全部激活，无单一激活态）+ 本地歌单/收藏/播放元数据存取
+│   ├── playlists_provider.dart   歌单列表/详情状态（阶段 2）
 │   └── auth_provider.dart        配对 + 会话过期态
 ├── services/             ApiClient(含懒刷新拦截器)、AuthService、ServerSettings(代理后端地址)
 ├── data/
@@ -353,12 +354,13 @@ lib/
 │   └── local/            纯 Dart 头部解析(audio_metadata) + SQLite(local_index) +
 │                         stage2 封装：SongWeightStore / PlaylistStore / CacheManager / AppSettings
 ├── models/               Song(含 toJson/fromJson 断点快照) / Album(含 coverPath) / Artist
-├── widgets/              共享组件（SongTile / 封面缩略图 CoverThumb / 播放模式选择器 PlayModeSelector）
-└── screens/              library(内容区 AppContent) / sources(源卡片+三点菜单) /
-                          source_browse_view(源内文件夹浏览) / settings / player / pairing
+├── widgets/              共享组件（SongTile 可收藏/⋮加入歌单 / CoverThumb / PlayModeSelector / add_to_playlist）
+└── screens/              library(内容区 AppContent：分区/歌单详情/喜欢列表) / playlists_view(歌单列表+详情原地子视图)/
+                          sources(源卡片+三点菜单) / source_browse_view(源内文件夹浏览) / settings / player / pairing
 ```
 
-> **平台收口层**（§6.3 的 `capabilities`）与 **drift 本地库** 尚未落地，属路线图后续阶段（本地索引已用 `sqlite3` 轻量版落地，见 §6.4）。
+> **平台收口层**（`capabilities`，见下方「为什么要有 platform/ 层」）与 **drift** 均未落地，属后续阶段：
+> 本地库已用 `sqlite3` 轻量版 + 阶段 2 各表落地（见 §6.4 / §3.2），无需 drift。
 
 > **为什么要有 `platform/` 层**：鸿蒙走的是三方 Flutter 分支而非官方 target，`Platform.isXxx` 行为、原生插件实现均可能与官方平台不一致。业务代码禁止直接写 `Platform.isAndroid` 之类判断，一律询问 `capabilities`；鸿蒙加入时只需在 `platform/harmonyos/` 提供一套实现，不动上层。
 
@@ -491,46 +493,19 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 ### 阶段 0：Android 平台对齐
 
-> **状态：规划完成，实现暂缓** —— 当前 Linux 桌面主体已完成但 `frontend/android/` 仅为空壳（缺 build.gradle / AndroidManifest / MainActivity），
-> Android 与 Linux 进度脱节。本阶段负责补齐安卓壳工程并使两条平台线回到同一"功能基准线"，完成后后续所有阶段都按 §8 顶部约定双平台同步推进。
+> **状态：已完成✅** —— `frontend/android/` 壳工程已重建（Gradle/Kotlin 构建 + AndroidManifest + MainActivity 齐全），
+> `flutter build apk --debug / --release` 与 Linux 双端均可出包；Android 真机（无线 adb）已能 `flutter run` 启动，
+> 加载与 Linux 完全一致的 `lib/` 跨平台代码。此后各阶段验收均按 §8 顶部「双平台同步」约定推进。
 
-#### 目标：Android 对齐现有 Linux 进度
-
-> 以下为**待执行计划**（按「同步开发」原则立项，但**当前不实现**，仅作为对齐抓手纳入文档）：
-> 需将 Linux 当前全部能力迁移到 Android，使双端功能与验收标准一致。
-
-**版本对照（Linux 已落地 → Android 待对齐）：**
-
-| 能力 | Linux（当前） | Android（目标） |
-|------|--------------|----------------|
-| 平台壳工程 | ✅ `linux/` 完整 | ❌ 空壳 → 需 `flutter create --platforms android .` 重建 |
-| 主题框架（theme/ + layout/ + providers/） | ✅ 跨平台 Dart | ✅ 复用（同一 `lib/`） |
-| 可换主题 / 明暗 / 持久化(secure_storage) | ✅ | ✅ 复用 + Android 需配 Auto Backup/key 编码 |
-| 认证（访问/刷新懒刷新 + 会话过期） | ✅ | ✅ 复用 `ApiClient`/`AuthProvider` |
-| 播放器 | ✅ `just_audio` + `just_audio_mpv`（Linux） | 🔧 需换后端：`just_audio` 默认为 ExoPlayer |
-| 配对页 / 内容区 / 设置页 | ✅ | ✅ 复用（Dart 跨平台） |
-| 全局队列 / 迷你条 / 队列面板 | ✅ | ✅ 复用布局 + Android 窄屏自动走 Drawer |
-
-**Android 平台对齐实施步骤：**
-
-1. **重建安卓壳工程**：在 `frontend/` 执行 `flutter create --platforms android .`，补齐 `android/app/build.gradle(.kts)`、`AndroidManifest.xml`、`MainActivity(.kt)`、`gradle/wrapper`、`res/`。
-2. **联网与播放器后端**：
-   - `AndroidManifest` 加 `INTERNET` 权限；内网 http 后端需 `usesCleartextTraffic="true"` 或 network security config 白名单。
-   - 音频后端平台区分：`just_audio_mpv` 是 **Linux-only**，Android 用 `just_audio` 默认 ExoPlayer 后端 → 对音频初始化做**条件导入/平台分支**，不能在 Android 触发 mpv 初始化。
-3. **secure_storage Android 配置**：`flutter_secure_storage` 在 Android 需处理 Keystore/编码方案、`allowBackup`（避免备份导致的解密失败）。
-4. **生命周期与后台播放**：Android 断点续播、声道变更、音频焦点、8.0+ 通知栏播放控制（引入 `audio_service` 或 `just_audio_background`）。
-5. **真机验收**：配对 → 浏览服务器曲库 → 流式播放 + seek/断点 → 换主题/切换明暗并重启保留 → 会话过期弹窗重配对。
-6. **后续阶段双端并行**：自阶段 1 之后，每个特性的验收项同时列出"Linux + Android"两行。
-
-#### 验收口径（阶段 0 完成定义）
-
-- `flutter build apk --release` 成功出包；
-- Android 真机完成与 Linux 完全相同的功能验收清单（对照上表）；
-- 后续路线图各阶段验收项均按「双平台同步」口径修订。
+- ✅ 重建安卓壳工程：`flutter create --platforms android .`（`build.gradle.kts` / `AndroidManifest.xml` / `MainActivity` / `gradle/wrapper` / `res/` 齐全）
+- ✅ 网络与播放器后端：`INTERNET` 权限、内网 http 走 `usesCleartextTraffic`；音频**无需手动平台分支**——`just_audio` 在 Android 走默认 ExoPlayer、Linux 由联邦插件接管 mpv，`lib/` 不直接引用平台插件
+- ✅ 双端共用同一 `lib/`：主题 / 认证 / 播放器 / 配对页 / 内容区 / 队列均复用
+- ⏳ 遗留（后续阶段补验）：Android 后台播放与通知栏（音频焦点 / `audio_service`）、`secure_storage` Keystore 细节
+- 验收口径：`flutter build apk --release` 成功出包；Android 真机与 Linux 完成同一套功能验收清单
 
 ### 阶段 1：双模式骨架 + 服务器核心（~1.5 周）
 
-> **状态：已完成✅** —— 认证（access/refresh 轮换 + 过期懒刷新）、可换主题的自适应 UI 框架、全局播放器、配对页均已落地；后端 local/webdav 直取与**扫描入库**（`MusicSourceProxy` + `MusicScanner` + `/library/**` + `/stream/**`）已端到端可用；镜像内置 ffmpeg。前端 Source 层四实现骨架已就位（ServerProxy 完整可用，Webdav/Smb/Local 为骨架，完整实现在阶段 3/4）。前端**直连源与本地索引**不属阶段 1 范围，已在阶段 3/4 承接。
+> **状态：已完成✅** —— 认证（access/refresh 轮换 + 过期懒刷新）、可换主题的自适应 UI 框架、全局播放器、配对页均已落地；后端 local/webdav 直取与**扫描入库**（`MusicSourceProxy` + `MusicScanner` + `/library/**` + `/stream/**`）已端到端可用；镜像内置 ffmpeg。前端 Source 层四实现骨架已就位（ServerProxy 完整可用，Webdav/Smb/Local 为骨架，完整实现在阶段 3/4）。前端**直连源与本地索引**不属阶段 1 范围，已在阶段 3（WebDAV）/ 4（SMB）承接。
 
 - 后端：SecurityConfig+TokenFilter(**含过期校验/X-Token-Expired**) + devices/auth API(**pair + refresh 轮换**)；MusicSource 抽象+Smb/Webdav/Local 实现(**ServerProxy 完整可用**)；扫描入库（local/webdav，SMB 直连归阶段 4）；`/library/**`、`/stream/**`；镜像加 ffmpeg
 - App：Source 层四实现骨架（ServerProxy 完整可用）、**可换主题自适应 UI 框架（theme/layout/providers)**、基础播放器（顺序播放）、配对页
@@ -538,32 +513,32 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 ### 阶段 2：加权播放 + 歌单 + 喜欢歌缓存（~1 周，蓝图核心）
 
-> **状态：客户端本地闭环已完成✅**（实施准绳为 `stage2.md`）。本轮按「**纯客户端本地**」落地，
+> **状态：客户端本地闭环 + 歌单/喜欢列表 UI 已完成✅**（实施准绳为 `stage2.md`）。本轮整体按「**纯客户端本地**」落地：
 > 后端不新增 API；服务器模式歌曲的权重 / 收藏 / 断点同样落本地，阶段 5 再接同步上推。
-> Linux `flutter build linux --debug` 构建通过、`flutter analyze` 0 问题。
+> `flutter analyze` 0 问题，`flutter build linux --debug` 与 `flutter build apk --debug` 均通过。
 
-- ✅ 播放模式 ×4：顺序（默认）/ 列表循环 / 单曲循环 / 加权随机；切换入口：播放页 + 队列面板
-- ✅ 加权随机：factor 连续 0.5~1.5 步长 0.1；每步全量排除上一首采样（非无放回）；complete/skip 事件自动调权
-- ✅ 喜欢 / 不喜欢 UI（播放页 ❤️/👎 + 权重芯片；SongTile 收藏通用化——服务器歌曲也可喜欢）
+- ✅ 播放模式 ×4：顺序（默认）/ 列表循环 / 单曲循环 / 加权随机；切换入口播放页 + 队列面板
+- ✅ 加权随机：factor 连续 0.5~1.5 步长 0.1；每步全量排除上一首采样（非无放回）；complete/skip 事件自动调权（详见 §7.1）
+- ✅ 喜欢 / 不喜欢 UI（播放页 ❤️/👎 + 权重芯片；SongTile 收藏通用化，服务器歌曲也可喜欢）
 - ✅ 收藏统一收口 `play_meta.is_favorite`（直连 + 服务器单一数据源）；旧 `idx_songs.is_favorite` 一次性回填迁移
+- ✅ 喜欢列表：内容区「喜欢」分栏目走 `direct.favoriteSongs()`（同 play_meta 统一数据源）
+- ✅ 歌单：`PlaylistStore` + `PlaylistsProvider`；`playlists_view.dart` 列表/详情原地子视图（新建/重命名/删除/播放全部/上移/下移/移除）+ SongTile ⋮「加入歌单」弹层
 - ✅ 断点续播：`Song.toJson/fromJson` + `play_state` 单行（2s 节流），启动恢复为**暂停态**不自动播放
 - ✅ 喜欢歌自动缓存 + LRU（`cached_at/last_accessed_at`，跳过正在播放）；`设置 → 歌曲` 缓存上限 / 歌曲数量上限 / 收藏自动缓存开关
-- ⏳ **待续**：歌单 UI——数据层 `playlists` / `playlist_items` 与 `PlaylistStore` 已就绪，`PlaylistsProvider`、列表/详情、增删改排序、「加入歌单」入口未做
 - ⏳ **规划设置项 3 项**见 §6.7（`play_mode_default` / `player_show_weight` / `resume_on_startup`）
-- 验收（蓝图 §三 核心行为已演示）：加权随机按概率选歌、同首不连续播放、喜欢可一轮多次 / 不喜欢可能多轮一次；连续 3 次完整播放 factor 提高（反之降低）；杀 App 重开断点续播；四种模式切换正确
+- 验收（蓝图 §三 核心行为）：加权随机按概率选歌、同首不连续播放、喜欢可一轮多次 / 不喜欢可能多轮一次；连续 3 次完整播放 factor 提高（反之降低）；杀 App 重开断点续播；四种模式切换正确
 
 ### 阶段 3：直连 WebDAV + 本地索引（~1 周）
 
-> **状态：已完成✅**
->
-> **本次迭代追加**：修复 mp3 ID3v2 (`_decodeText` UTF-8 enc==3/enc==0) 与 flac VORBIS_COMMENT (`String.fromCharCodes` → `utf8.decode`) 乱码；所有播放源默认激活、源卡片点击进入文件夹式浏览（`SourceBrowseView`）并配三点菜单（直连/代理切换、删除）；全局歌曲/专辑/歌手合并视图（`LibraryProvider` 合并 `ServerProxySource` + `DirectSourceManager.allSongs`）；专辑/歌手客户端完整分组聚合；封面缩略图（`CoverThumb`/`SongTile`）；`PlayerProvider` 按歌曲 `sourceKey` 解析播放源（混播支持）；回归测试 8 条通过。乱码修复后需对已有源重新扫描一次以覆写旧索引行。
+> **状态：已完成✅** —— WebDAV 直连与本地索引全链路落地（设计与细节见 §6.4 / §6.5），双端构建通过、回归测试 8 条。
+> 本迭代附加 mp3/flac 元数据乱码修复：修复后需对已有源重新扫描一次以覆写旧索引行（`upsert` 无条件覆盖，无需清库）。
 
-- `WebdavDirectSource` 完整实现：dart:io `PROPFIND` 递归列举（`package:xml`）+ `Range` 流式（seek/断点）+ 纯 Dart 头部元数据解析（mp3 ID3v2 / flac STREAMINFO + VORBIS_COMMENT，含封面提取）。
-- 本地轻量索引（DESIGN §6.4）：SQLite `LocalIndex`（`sources`/`idx_songs`/`cache` 表），Isolate 扫描器，`(ref,mtime,size)` 增量与 missing 标记，封面落 `covers/<hash>.jpg`；离线缓存（DESIGN §6.6）断网播缓存。
-- 直连浏览/搜索页（`SourcesScreen` 卡片三点菜单 + `SourceBrowseView` 文件夹式内页）：扫描→搜索→播放→收藏→缓存，扫描后自动刷新全局合并库。
-- 全局库合并（`LibraryProvider`）：`ServerProxySource` 与所有直连源歌曲合并（去重），专辑/歌手按合并结果客户端聚合；`PlayerProvider` 按歌曲 `sourceKey` 逐首解析源实现，混播队列中直连与服务器歌曲均可播。
-- 三平台源骨架就位：ServerProxy 完整 / Webdav 完整 / SMB（阶段 4）/ Local（阶段 3 附 dart:io 基础实现）。
-- 验收：**卸载后端场景**——只配 WebDAV 源，完成扫描→搜索→播放→收藏→断网播缓存 全链路（Linux `flutter build linux --debug` 与 Android `flutter build apk --debug` 双端构建通过）。
+- `WebdavDirectSource`：dart:io `PROPFIND` 递归列举（`package:xml`）+ `Range` 流式（seek/断点）+ 纯 Dart 头部元数据解析（mp3 ID3v2 / flac STREAMINFO+VORBIS_COMMENT，含封面提取）
+- 本地轻量索引（§6.4）：`LocalIndex`（sources/idx_songs/cache）、Isolate 扫描器、`(ref,mtime,size)` 增量与 missing 标记、封面落 `covers/<hash>.jpg`
+- 直连浏览：`SourcesScreen` 卡片三点菜单 + `SourceBrowseView` 文件夹式内页，扫描→搜索→播放→收藏→缓存全链路；离线缓存（§6.6）
+- 全局库合并（§6.5）：`LibraryProvider` 合并 ServerProxy + 直连源（去重），专辑/歌手客户端聚合；按 `sourceKey` 逐首解析源实现，混播直连/服务器歌曲
+- 三平台源骨架：ServerProxy / Webdav 完整，SMB（阶段 4），Local（dart:io 基础实现）
+- 验收（卸载后端场景）：只配 WebDAV 源，完成扫描→搜索→播放→收藏→断网播缓存 全链路
 
 ### 阶段 4：全平台 SMB 直连（~1–2 周，风险最高）
 

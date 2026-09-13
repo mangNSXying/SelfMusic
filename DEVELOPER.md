@@ -27,8 +27,8 @@
 | Maven | 3.9+ | 后端构建 |
 | Docker + Compose | 任意近期版本 | 后端容器化运行 |
 | MySQL | 8.0 | 宿主机已有实例 |
-| Flutter SDK | 3.6+（Dart ^3.6.0） | 前端开发，经 **FVM** 安装管理（见下） |
-| FVM | 最新稳定版 | Flutter 版本管理，多项目/长期项目防版本漂移 |
+| Flutter SDK | 3.6+（pubspec `sdk: ^3.6.0`） | 前端开发。直接使用系统 `flutter`（FVM 可选，见「版本管理」） |
+| FVM（可选） | 最新稳定版 | 团队协作时锁定 Flutter 版本，防版本漂移 |
 | mpv + libmpv-dev | 0.37+ | Linux 桌面音频后端（`just_audio_mpv` 依赖，见"Linux 桌面音频依赖"） |
 | Android SDK / Android Studio | 最新稳定版 | Android 构建调试 |
 | Visual Studio 2022 | 含"使用 C++ 的桌面开发"负载 | Windows 桌面构建（在 Windows 机器上） |
@@ -45,26 +45,26 @@
 
 | 目标平台 | 构建环境 | 状态 |
 |---------|---------|------|
-| Android | 本机 Ubuntu（Android Studio + SDK） | ✅ 环境就绪；🔧 **壳工程尚未重建**（`android/` 为空壳，见 DESIGN.md §8 阶段 0，实现暂缓) |
+| Android | 本机 Ubuntu（Android Studio + SDK） | ✅ 环境就绪；壳工程已重建（`android/app` + Gradle 配置齐全），`flutter build apk` 可出包，双端（Linux/Android）对齐开发 |
 | Linux Desktop | 本机 Ubuntu（clang + GTK + cmake + ninja） | ✅ 当前主力平台（UI/主题/播放器/鉴权已落地） |
 | Web | 不做 | ❌ 明确排除 |
-| Windows Desktop | 需要 Windows 环境：Flutter + FVM + VS Code + **Visual Studio 2022**（C++ 桌面负载） | ⏳ 后置 |
+| Windows Desktop | 需要 Windows 环境：Flutter + VS Code + **Visual Studio 2022**（C++ 桌面负载） | ⏳ 后置 |
 | HarmonyOS | 需要 DevEco Studio + HarmonyOS SDK + 鸿蒙真机，配合三方 Flutter 分支 | ⏳ 后置（阶段 4 再投入） |
 
 ### 环境搭建顺序
 
 **现在（本机 Ubuntu）：**
-1. Flutter（经 FVM 安装）+ Linux toolchain
+1. Flutter（系统安装即可；FVM 可选）+ Linux toolchain
 2. Android Studio + Android SDK + 接受 license
 3. VS Code + Flutter/Dart 扩展
 4. Git（项目已纳入 git 管理）
-5. FVM：`fvm use stable` 后生成 `.fvmrc` 入库
+5. （可选）FVM：`fvm use stable` 生成 `.fvmrc` 入库
 
 **暂时不需要：**
 - Chrome / Web SDK（不做 Web）
 
 **之后准备（按路线图触发）：**
-- 阶段 1 收尾前后 → Windows 机器（或 VM）+ Visual Studio 2022，用于 Windows Desktop 出包
+- Windows 出包前（后置）→ Windows 机器（或 VM）+ Visual Studio 2022，用于 Windows Desktop 出包
 - 阶段 4 开始前 → 鸿蒙开发环境（DevEco Studio + SDK + 真机）；**不要提前把鸿蒙 SDK 装进 Ubuntu**
 
 ---
@@ -94,18 +94,20 @@ selfmusic/
 │   │   ├── main.dart                 # 入口 + Provider 装配 / Root
 │   │   ├── theme/                    # 可配置主题（app_theme / theme_provider）
 │   │   ├── layout/                   # 自适应布局（app_shell / sidebar / top_bar / queue_panel / mini_player_bar）
-│   │   ├── providers/                # 状态（auth / library / player / navigation / direct_source_manager）
+│   │   ├── providers/                # 状态（auth / library / player / navigation / playlists / direct_source_manager）
 │   │   ├── services/                 # dio+懒刷新拦截器(ApiClient)、AuthService、ServerSettings
 │   │   ├── data/sources/             # MusicSource 抽象 + ServerProxy + WebdavDirect + SmbDirect
-│   │   ├── data/local/               # audio_metadata（mp3/flac 头部解析）+ local_index（SQLite 轻量索引）
+│   │   ├── data/local/               # audio_metadata（mp3/flac 头部解析）+ local_index + 阶段2 封装（song_weight_store / playlist_store / cache_manager / app_settings）
 │   │   ├── models/                   # Song / Album / Artist
-│   │   ├── widgets/                  # 共享组件（SongTile / CoverThumb）
-│   │   └── screens/                  # library / sources / source_browse_view / settings / player / pairing
-│   ├── android/ linux/ windows/ web/ # 各平台壳工程
+│   │   ├── widgets/                  # 共享组件（SongTile / CoverThumb / PlayModeSelector / add_to_playlist）
+│   │   └── screens/                  # library / playlists_view / sources / source_browse_view / settings / player / pairing
+│   ├── android/ linux/ windows/ web/ # 各平台壳工程（安卓壳已重建）
 │   └── pubspec.yaml
 ├── scripts/init.sql                  # 数据库初始化脚本（v2 schema）
 ├── nginx/selfmusic.conf              # Nginx 反代模板（部署到宿主机）
 ├── docker-compose.yml                # backend（18088）+ backend-dev（18089，profile: dev）
+├── run-linux.sh                      # Linux 快速运行：cd frontend && flutter run -d linux
+├── run-android.sh                    # Android 快速运行：flutter run -d <设备id> --dart-define=API_BASE_URL=<后端>
 └── .env                              # 数据库连接等敏感配置（不入库）
 ```
 
@@ -170,7 +172,7 @@ docker compose down                # 停止并移除
 
 前端联调时 `--dart-define=API_BASE_URL` 指向对应端口。
 
-### 常用命令
+### 常用 Maven 命令
 
 ```bash
 mvn compile -f backend/pom.xml                   # 仅编译
@@ -191,65 +193,58 @@ mvn dependency:go-offline -f backend/pom.xml     # 预拉全部依赖
 
 ## 前端开发
 
-### Flutter 版本管理（FVM）
+### 版本管理（FVM，可选）
 
-项目使用 **FVM** 锁定 Flutter SDK 版本，避免全局版本漂移：
+仓库当前**未启用 FVM**，直接用系统 `flutter` 命令即可。若需锁定 Flutter 版本（团队协作防版本漂移）：
 
 ```bash
-# 首次：安装指定版本并生成 .fvmrc（提交入库，团队成员自动对齐）
-cd frontend && fvm use 3.x.x   # 以 pubspec environment 约定的版本为准
-
-# 之后所有 flutter 命令经 fvm 调用：
-fvm flutter pub get
-fvm flutter run -d <device>
-fvm flutter analyze
-fvm flutter test
-fvm flutter build apk --release
-fvm flutter build windows --release
-
-# IDE：VS Code 中执行 "FVM: Change SDK" 或把 .fvm/flutter_sdk 加入 dart.sdkPath
+cd frontend && fvm use 3.x.x   # 生成 .fvmrc 并提交入库
+# 之后所有 flutter 命令改为 fvm flutter ...（如 fvm flutter run -d linux）
+# IDE：VS Code 执行 "FVM: Change SDK"，或把 .fvm/flutter_sdk 加入 dart.sdkPath
 ```
 
-`.fvm/` 目录不入库（`.gitignore` 已覆盖），`.fvmrc` 必须入库。
+`.fvm/` 不入库（`.gitignore` 已覆盖），`.fvmrc` 必须入库。
+
+### 快速启动
+
+仓库根目录提供两个快捷脚本（推荐直接使用）：
+
+```bash
+bash run-linux.sh      # Linux 桌面：等价于 cd frontend && flutter run -d linux
+bash run-android.sh    # Android：flutter run -d <安卓设备id> --dart-define=API_BASE_URL=<后端地址>
+```
+
+> `flutter run` 必须用 `-d` 显式指定目标设备：如果同时连着安卓设备又不指定，flutter 会优先选安卓，而不会弹出 Linux 窗口。
 
 ### 常用命令
 
 ```bash
-flutter pub get                # 安装依赖
-flutter run -d <device>        # 运行：windows / android / linux
-flutter analyze                # 静态检查
-flutter test                   # 单元测试
-flutter build apk --release    # Android 出包
+cd frontend
+flutter pub get                 # 安装依赖
+flutter run -d linux            # Linux 桌面
+flutter run -d <设备id>         # Android 真机/模拟器（flutter devices 查看设备 id）
+flutter analyze                 # 静态检查
+flutter test                    # 单元测试
+flutter build linux --release   # Linux 出包
+flutter build apk --release     # Android 出包（壳工程已就绪）
 flutter build windows --release # Windows 出包（需 Windows 环境，见"多平台构建矩阵"）
 ```
 
 ### API 地址配置
 
-`lib/services/api_client.dart` 通过编译期常量 `String.fromEnvironment('API_BASE_URL')` 注入后端地址（默认 `http://192.168.3.25:18089`）：
+`lib/services/api_client.dart` 通过编译期常量 `String.fromEnvironment('API_BASE_URL')` 注入后端地址，**默认值为空字符串**（不指定；实际地址取自配对设备 / `ServerSettings`）。联调时可覆盖：
 
 ```bash
 # 连接本地直跑的后端（8080）
 flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:8080
 
-# 连接 Dev 容器后端（日常开发，18089，也是默认值）
+# 连接 Dev 容器后端（当前局域网后端，18089）
 flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18089
 
 # 连接生产镜像后端（18088）
 flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 
-# Android 真机不能用 localhost，必须用宿主机局域网 IP
-```
-
-### 常用 Flutter 命令
-
-```bash
-fvm flutter pub get
-fvm flutter run -d linux      # Linux 桌面（默认）
-fvm flutter run -d android    # Android
-fvm flutter analyze
-fvm flutter test
-fvm flutter build linux --release
-fvm flutter build apk --release
+# Android 真机不能用 localhost，必须写宿主机局域网 IP；run-android.sh 已预置该参数
 ```
 
 ### 技术选型（pubspec.yaml 已引入）
@@ -262,7 +257,7 @@ fvm flutter build apk --release
 | just_audio_mpv | Linux 音频后端（联邦 Dart 插件，走系统 mpv/libmpv） |
 | cached_network_image | 图片缓存 |
 | flutter_secure_storage | 敏感数据安全存储（token、主题偏好） |
-| sqlite3 / sqlite3_flutter_libs | 本地轻量索引（直连源 idx_songs 表，drift 的轻量替代） |
+| sqlite3 / sqlite3_flutter_libs | 客户端本地库（local_index）：源索引 idx_songs + cache + play_meta + playlists + app_settings + play_state（drift 的轻量替代，见 DESIGN §3.2） |
 | xml | WebDAV PROPFIND XML 解析 |
 
 ### 直连索引与元数据编码
@@ -287,6 +282,8 @@ ldconfig -p | grep libmpv   # 应看到 libmpv.so / libmpv.so.2
 ---
 
 ## 数据库规范
+
+> 以下为**服务端 MySQL** 表规范；客户端 SQLite 是独立的轻量库（`local_index`，无 created_at/updated_at 约定），表结构见 `stage2.md §1` 与 `DESIGN.md §3.2`。
 
 - 表结构变更：**修改 `scripts/init.sql` 并同步提交**，同时更新对应 JPA 实体；`application.yml` 中 `ddl-auto: validate` 会校验实体与表结构一致性，不一致启动即报错
 - 字符集统一 `utf8mb4`
@@ -388,6 +385,6 @@ Docker Hub 网络不通。解决方案任选：
 ## Git 约定
 
 - 分支：`main`（稳定）、`dev`（集成）、`feature/xxx` 功能分支
-- 提交信息：`feat: 新增歌单接口` / `fix: 修复播放进度丢失` / `chore: 升级依赖`
+- 提交信息：仓库现状多用「模块 + 中文短句」的简短描述（如 `歌单数据接入：...`）；也可用 `feat:`/`fix:`/`chore:` 前缀风格，如 `feat: 新增歌单接口`。一条提交做完一件事
 - 不要提交：`.env.local`、`build/`、`.dart_tool/`、`.fvm/`、IDE 私有配置（`.gitignore` 已覆盖大部分）
-- 远端：推荐推送至自建 **Gitea**（局域网私有仓库），四端代码同仓管理；`.fvmrc` 入库保证各构建机 Flutter 版本一致
+- 远端：推荐推送至自建 **Gitea**（局域网私有仓库），四端代码同仓管理；如启用 FVM，`.fvmrc` 入库可保证各构建机 Flutter 版本一致
