@@ -19,17 +19,17 @@ class TopBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final nav = context.watch<NavigationProvider>();
 
-    if (nav.inSettings) {
-      return _SettingsTopBar(nav: nav, onSidebarToggle: onSidebarToggle);
-    }
-
-    return Column(
-      children: [
-        _UpperRow(nav: nav, onSidebarToggle: onSidebarToggle, onQueueToggle: onQueueToggle, queueActive: queueActive),
-        _NavBar(nav: nav),
-        const Divider(height: 1),
-      ],
-    );
+    final Widget bar = nav.inSettings
+        ? _SettingsTopBar(nav: nav, onSidebarToggle: onSidebarToggle)
+        : Column(
+            children: [
+              _UpperRow(nav: nav, onSidebarToggle: onSidebarToggle, onQueueToggle: onQueueToggle, queueActive: queueActive),
+              _NavBar(nav: nav),
+              const Divider(height: 1),
+            ],
+          );
+    // 适配手机状态栏：无 AppBar 时顶栏会顶到状态栏，这里让出顶部安全区。
+    return SafeArea(bottom: false, child: bar);
   }
 }
 

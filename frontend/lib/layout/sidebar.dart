@@ -18,14 +18,16 @@ class Sidebar extends StatelessWidget {
     return Container(
       width: 260,
       color: Theme.of(context).colorScheme.surface,
-      child: Column(
-        children: [
-          _Header(onClose: onClose),
-          const Divider(height: 1),
-          Expanded(child: _SettingsList(nav: nav)),
-          const Divider(height: 1),
-          _BottomBar(theme: theme, nav: nav),
-        ],
+      child: SafeArea(
+        child: Column(
+          children: [
+            _Header(onClose: onClose),
+            const Divider(height: 1),
+            Expanded(child: _SettingsList(nav: nav)),
+            const Divider(height: 1),
+            _BottomBar(theme: theme, nav: nav),
+          ],
+        ),
       ),
     );
   }
