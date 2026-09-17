@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -7,13 +9,23 @@ import '../models/song.dart';
 import '../data/sources/music_source.dart';
 import '../data/sources/direct_audio_source.dart';
 import '../data/local/local_index.dart';
+import '../data/local/app_settings.dart';
 import '../data/local/song_weight_store.dart';
+import '../services/selfmusic_audio_handler.dart';
 
 /// 按源 key 解析播放源的函数：`server` → 服务器代理源；`webdav:<name>` → 对应直连源。
 typedef SourceResolver = MusicSource? Function(String sourceKey);
 
 /// 播放模式（stage2.md §3）。
 enum PlayMode { sequence, loopList, loopOne, weighted }
+
+extension PlayModeParse on PlayMode {
+  /// 从存储值（settings.md §3.2 `play_mode_default`）解析；未知值回退 sequence。
+  static PlayMode fromStored(String? v) => PlayMode.values.firstWhere(
+        (m) => m.name == v,
+        orElse: () => PlayMode.sequence,
+      );
+}
 
 /// 全局播放状态：统一持有 AudioPlayer 与播放队列，供播放页与队列面板共享。
 ///
@@ -25,7 +37,7 @@ enum PlayMode { sequence, loopList, loopOne, weighted }
 class PlayerProvider extends ChangeNotifier {
   static const double completeRatio = 0.7;
 
-  final AudioPlayer player = AudioPlayer();
+  late AudioPlayer player;
   List<Song> _queue = [];
   int _idx = 0;
   Song? _current;
@@ -33,14 +45,52 @@ class PlayerProvider extends ChangeNotifier {
   SourceResolver? _resolver;
   LocalIndex? _index;
   SongWeightStore? _weight;
+  AppSettings? _appSettings;
   void Function(MusicSource src, Song s)? _onTrackStarted;
   String? error;
+  SelfMusicAudioHandler? _audioHandler;
+
+  /// 关联 audio_service 通知栏处理器（settings.md §3.6）：状态变化时回推媒体信息。
+  void attachAudioHandler(SelfMusicAudioHandler handler) {
+    _audioHandler = handler;
+    handler.attach(this);
+  }
+
+  /// 与 [main] 中可选的 audio_service 处理器接线（未启用通知栏控制时为空）。
+  void attachAudioHandlerIfAny(SelfMusicAudioHandler? handler) {
+    if (handler != null) attachAudioHandler(handler);
+  }
+
+  void _syncSystemMedia() => _audioHandler?.sync();
 
   PlayMode _mode = PlayMode.sequence;
   DateTime? _lastStateSave;
   bool _restored = false;
 
+  Timer? _fadeTimer;
+  bool _fadingPause = false;
+  AndroidEqualizer? _eq;
+
   PlayerProvider() {
+    player = _buildPlayer();
+    _setupPlayerStreams();
+  }
+
+  /// 按用户设置构造播放器：均衡器（Android 原生 AndroidEqualizer）与音频焦点开关
+  /// 均需在构造时注入（settings.md §3.2/§3.6），设置变动时经 [applyAudioConfig] 重建。
+  AudioPlayer _buildPlayer() {
+    final s = _appSettings;
+    final eqEnabled = !kIsWeb && Platform.isAndroid && (s?.equalizerEnabled ?? false);
+    _eq = eqEnabled ? AndroidEqualizer() : null;
+    return AudioPlayer(
+      handleInterruptions: s?.audioFocusEnabled ?? true,
+      audioPipeline: _eq != null
+          ? AudioPipeline(androidAudioEffects: [_eq!])
+          : null,
+    );
+  }
+
+  void _setupPlayerStreams() {
     player.playerStateStream.listen((st) {
       if (st.processingState == ProcessingState.completed) {
         final finished = _current;
@@ -52,6 +102,119 @@ class PlayerProvider extends ChangeNotifier {
       }
     });
     player.positionStream.listen(_maybeSaveState);
+  }
+
+  /// 应用音频相关设置（均衡器/音频焦点/淡入淡出开关变化）：重建播放器并恢复当前曲目。
+  Future<void> applyAudioConfig() async {
+    if (_current == null) {
+      _fadeTimer?.cancel();
+      await player.dispose();
+      player = _buildPlayer();
+      _setupPlayerStreams();
+      notifyListeners();
+      return;
+    }
+    final pos = player.position;
+    final wasPlaying = player.playing;
+    final current = _current!;
+    final source = _curSource;
+    _fadeTimer?.cancel();
+    await player.dispose();
+    player = _buildPlayer();
+    _setupPlayerStreams();
+    await _play(current, source: source, play: wasPlaying);
+    try {
+      await player.seek(pos);
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  // ---------- 淡入淡出（settings.md §3.2） ----------
+
+  bool get _fadeOn => _appSettings?.fadeEnabled ?? false;
+
+  Duration get _fadeDuration => Duration(
+      milliseconds: _appSettings?.fadeDurationMs ?? 2000);
+
+  /// 淡入：从 0 渐变到 1（关闭时直接置 1）。
+  void _fadeIn() {
+    _fadeTimer?.cancel();
+    if (!_fadeOn) {
+      player.setVolume(1.0);
+      return;
+    }
+    final dur = _fadeDuration.inMilliseconds;
+    final start = DateTime.now();
+    player.setVolume(0.0);
+    _fadeTimer = Timer.periodic(const Duration(milliseconds: 16), (t) async {
+      final el = DateTime.now().difference(start).inMilliseconds;
+      final p = dur <= 0 ? 1.0 : (el / dur).clamp(0.0, 1.0);
+      await player.setVolume(p);
+      if (p >= 1.0) t.cancel();
+    });
+  }
+
+  /// 淡出后真正暂停（关闭淡入淡出时直接暂停）。
+  Future<void> _fadeOutThenPause() async {
+    if (!_fadeOn) {
+      await player.pause();
+      return;
+    }
+    _fadeTimer?.cancel();
+    _fadingPause = true;
+    final dur = _fadeDuration.inMilliseconds;
+    final start = DateTime.now();
+    player.setVolume(1.0);
+    await Future.delayed(const Duration(milliseconds: 16));
+    while (true) {
+      final el = DateTime.now().difference(start).inMilliseconds;
+      final v = (1.0 - el / dur).clamp(0.0, 1.0);
+      await player.setVolume(v);
+      if (v <= 0.0) break;
+      await Future.delayed(const Duration(milliseconds: 16));
+    }
+    await player.pause();
+    await player.setVolume(1.0);
+    _fadingPause = false;
+  }
+
+  // ---------- 均衡器（settings.md §3.2，仅 Android） ----------
+
+  /// 应用存储的频段增益（播放器装载完成、效果激活后调用）。
+  Future<void> _applyEqualizerBands() async {
+    final eq = _eq;
+    final s = _appSettings;
+    if (eq == null || s == null || !s.equalizerEnabled) return;
+    try {
+      final params = await eq.parameters;
+      final bands = s.eqBands;
+      for (var i = 0; i < bands.length && i < params.bands.length; i++) {
+        final gain = bands[i]
+            .clamp(params.minDecibels.toDouble(), params.maxDecibels.toDouble());
+        await params.bands[i].setGain(gain);
+      }
+      await eq.setEnabled(true);
+    } catch (_) {
+      // 平台不支持 / 尚未激活时静默跳过。
+    }
+  }
+
+  /// 单个频段增益写入（UI 拖动即时生效）；同时持久化。
+  Future<void> setEqBand(int index, double db) async {
+    final s = _appSettings;
+    if (s == null) return;
+    final bands = s.eqBands;
+    bands[index] = db;
+    s.eqBands = bands;
+    final params = _eq == null ? null : await _eq!.parameters;
+    if (params != null && index < params.bands.length) {
+      try {
+        var gain = db;
+        if (gain < params.minDecibels) gain = params.minDecibels;
+        if (gain > params.maxDecibels) gain = params.maxDecibels;
+        await params.bands[index].setGain(gain);
+      } catch (_) {}
+    }
   }
 
   /// 关联源解析器（混合队列时按歌曲 sourceKey 逐首选择播放源）。
@@ -68,6 +231,14 @@ class PlayerProvider extends ChangeNotifier {
     _index = index;
     _weight = weight;
     _onTrackStarted = onTrackStarted;
+  }
+
+  /// 关联用户设置：套用默认播放模式（settings.md §3.2 `play_mode_default`），
+  /// 之后每次切模式写回。
+  void attachAppSettings(AppSettings settings) {
+    _appSettings = settings;
+    final m = PlayModeParse.fromStored(settings.playModeDefault);
+    if (_mode != m) _mode = m;
   }
 
   List<Song> get queue => List.unmodifiable(_queue);
@@ -89,6 +260,10 @@ class PlayerProvider extends ChangeNotifier {
   void setMode(PlayMode m) {
     if (_mode == m) return;
     _mode = m;
+    final s = _appSettings;
+    if (s != null && s.playModeDefault != m.name) {
+      s.playModeDefault = m.name;
+    }
     notifyListeners();
   }
 
@@ -148,12 +323,17 @@ class PlayerProvider extends ChangeNotifier {
         }
         await player.setUrl(url, headers: headers);
       }
-      if (play) await player.play();
+      if (play) {
+        await player.play();
+        _fadeIn();
+      }
+      unawaited(_applyEqualizerBands());
       _current = s;
       _curSource = src;
       _saveState(player.position);
       if (src != null) _onTrackStarted?.call(src, s);
       notifyListeners();
+      _syncSystemMedia();
     } catch (e) {
       error = e.toString();
       notifyListeners();
@@ -281,15 +461,36 @@ class PlayerProvider extends ChangeNotifier {
   // ---------- 播放控制 ----------
 
   Future<void> toggle() async {
+    if (_fadingPause) return;
     if (player.playing) {
-      await player.pause();
+      await _fadeOutThenPause();
     } else {
       await player.play();
+      _fadeIn();
     }
     notifyListeners();
+    _syncSystemMedia();
   }
 
-  Future<void> seek(Duration d) => player.seek(d);
+  /// 通知栏「播放」回调（settings.md §3.6）。
+  Future<void> resumeFromNotifier() async {
+    await player.play();
+    _fadeIn();
+    notifyListeners();
+    _syncSystemMedia();
+  }
+
+  /// 通知栏「暂停/停止」回调（settings.md §3.6）。
+  Future<void> pauseFromNotifier() async {
+    await _fadeOutThenPause();
+    notifyListeners();
+    _syncSystemMedia();
+  }
+
+  Future<void> seek(Duration d) async {
+    await player.seek(d);
+    _syncSystemMedia();
+  }
 
   // ---------- 断点（stage2.md §7） ----------
 
@@ -334,6 +535,7 @@ class PlayerProvider extends ChangeNotifier {
       await _play(_current!, play: false);
       await player.seek(Duration(milliseconds: st.positionMs));
       notifyListeners();
+      _syncSystemMedia();
     } catch (e) {
       error = '断点恢复失败：$e';
       notifyListeners();
@@ -347,6 +549,7 @@ class PlayerProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    _fadeTimer?.cancel();
     _saveState(player.position);
     player.dispose();
     super.dispose();

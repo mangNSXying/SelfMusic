@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -44,6 +45,23 @@ class DirectSourceManager extends ChangeNotifier {
 
   /// 关联后端接入点，供按源代理源使用其中的 dio/baseUrl。
   void attachApi(ApiClient api) => _api = api;
+
+  /// 拉取服务端缓存建议值并填入 [settings]（settings.md §3.3 follow_server 来源）。
+  Future<bool> refreshServerConfig() async {
+    final api = _api;
+    if (api == null) return false;
+    final cfg = await api.fetchServerConfig();
+    if (cfg == null) return false;
+    final mb = (cfg['cache_max_bytes'] as num?)?.toInt();
+    final limit = (cfg['cache_song_limit'] as num?)?.toInt();
+    if (mb != null && limit != null) {
+      settings.serverCacheMaxBytes = mb;
+      settings.serverCacheSongLimit = limit;
+      notifyListeners();
+      return true;
+    }
+    return false;
+  }
 
   bool get ready => _ready;
   List<MusicSource> get sources => List.unmodifiable(_sources);
@@ -190,17 +208,39 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<ScanSummary> scanSource(String key) async {
+  Future<ScanSummary>? _inFlightScan;
+
+  /// 扫描指定源（增量，mtime/size 未变快速跳过）。
+  /// 并发保护：同一时刻仅允许一次扫描在飞，重复触发复用同一 Future，
+  /// 避免「打开播放源自动扫描」与手动点扫描叠加造成重复探测。
+  Future<ScanSummary> scanSource(String key) {
+    final existing = _inFlightScan;
+    if (existing != null) return existing;
+    final f = _doScan(key);
+    _inFlightScan = f;
+    return f.whenComplete(() => _inFlightScan = null);
+  }
+
+  Future<ScanSummary> _doScan(String key) async {
     final src = sourceByKey(key);
     if (src == null || !src.supportsDirect) {
       throw StateError('$key 不支持直连扫描');
+    }
+    // 「仅 Wi-Fi 扫描」（settings.md §3.4）：移动端生效，桌面忽略。
+    if (settings.scanWifiOnly && Platform.isAndroid && !await _hasWifi()) {
+      throw StateError('已开启「仅 Wi-Fi 扫描」，当前不在 Wi-Fi 下');
     }
     scanning = true;
     error = null;
     notifyListeners();
     try {
       index.updateSourceScan(key, 'scanning');
-      final summary = await src.scan();
+      final summary = await src.scan(
+        options: ScanOptions(
+          minSizeBytes: settings.scanIgnoreMinSizeBytes,
+          minDurationSec: settings.scanIgnoreMinDurationSec,
+        ),
+      );
       index.updateSourceScan(key, 'done');
       return summary;
     } catch (e) {
@@ -210,6 +250,18 @@ class DirectSourceManager extends ChangeNotifier {
     } finally {
       scanning = false;
       notifyListeners();
+    }
+  }
+
+  /// 零依赖 Wi-Fi 探测（best-effort）：存在 `wlan` 网卡即认为在 Wi-Fi。
+  static Future<bool> _hasWifi() async {
+    try {
+      final ifaces = await NetworkInterface.list(
+          type: InternetAddressType.IPv4);
+      return ifaces.any((i) => i.name.toLowerCase().contains('wlan') ||
+          i.name.toLowerCase().contains('wifi'));
+    } catch (_) {
+      return true; // 探测失败放行，避免误锁扫描。
     }
   }
 

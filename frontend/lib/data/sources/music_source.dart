@@ -25,6 +25,17 @@ class ScanSummary {
   const ScanSummary({required this.added, required this.updated, required this.total});
 }
 
+/// 扫描过滤选项（settings.md §3.4「忽略音频」）。
+/// 0 表示不过滤；移动端「仅 Wi-Fi」门控在调用侧（DirectSourceManager）处理。
+class ScanOptions {
+  final int minSizeBytes;
+  final int minDurationSec;
+  const ScanOptions({this.minSizeBytes = 0, this.minDurationSec = 0});
+  const ScanOptions.none()
+      : minSizeBytes = 0,
+        minDurationSec = 0;
+}
+
 /// 打开的音频流（直接流式传输的统一返回结构）。
 class OpenedStream {
   final int contentLength;
@@ -64,7 +75,7 @@ abstract class MusicSource {
   bool get supportsDirect => false;
 
   /// 建本地索引（增量）。默认抛"不支持直连"。
-  Future<ScanSummary> scan() async =>
+  Future<ScanSummary> scan({ScanOptions options = const ScanOptions.none()}) async =>
       throw UnimplementedError('$key 不支持直连扫描');
 
   /// 打开音频流（支持 Range）。默认抛"不支持直连"。

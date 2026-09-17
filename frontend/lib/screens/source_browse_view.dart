@@ -38,7 +38,17 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
   @override
   void initState() {
     super.initState();
-    if (_isProxy && !_serverUnconfigured) _loadProxy();
+    if (_isProxy) {
+      if (!_serverUnconfigured) _loadProxy();
+    } else {
+      // 打开直连源即自动触发扫描（增量式，mtime/size 未变则快速跳过），
+      // 建立/刷新该源本地索引。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final source = context.read<DirectSourceManager>().sourceByKey(widget.sourceKey);
+        if (source != null && !_scanning) _scan(source);
+      });
+    }
   }
 
   Future<void> _loadProxy() async {

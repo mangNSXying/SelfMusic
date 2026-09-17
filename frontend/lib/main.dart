@@ -1,7 +1,13 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:audio_service/audio_service.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'services/api_client.dart';
 import 'services/server_settings.dart';
+import 'services/selfmusic_audio_handler.dart';
 import 'data/sources/server_proxy_source.dart';
 import 'providers/auth_provider.dart';
 import 'providers/library_provider.dart';
@@ -29,18 +35,50 @@ Future<void> main() async {
   final direct = DirectSourceManager();
   await direct.init();
   direct.attachApi(api);
-  runApp(SelfMusicApp(direct: direct, settings: serverSettings, api: api));
+  // 已配对的设备在启动时拉取服务端缓存建议值（settings.md §3.3 follow_server）。
+  if (serverSettings.baseUrl.isNotEmpty) {
+    unawaited(direct.refreshServerConfig());
+  }
+
+  // 通知栏播放控制 / 后台播放（settings.md §3.6）：Android + 开关注册 audio_service。
+  // 处理器本身在 PlayerProvider 创建时再绑定。
+  // 失败时降级为无通知栏（audioHandler=null），不允许任何通知服务异常拖垮启动（曾致白屏）。
+  SelfMusicAudioHandler? audioHandler;
+  if (!kIsWeb &&
+      Platform.isAndroid &&
+      direct.settings.notificationControls) {
+    try {
+      audioHandler = await AudioService.init(
+        builder: () => SelfMusicAudioHandler(),
+        config: const AudioServiceConfig(
+          androidNotificationChannelId:
+              'com.selfmusic.selfmusic.channel.audio',
+          androidNotificationChannelName: 'SelfMusic 播放',
+          androidNotificationChannelDescription: '播放控制与后台播放',
+          androidNotificationOngoing: true,
+          androidStopForegroundOnPause: true,
+        ),
+      );
+    } catch (e) {
+      debugPrint('AudioService.init 失败，通知栏控制降级关闭：$e');
+    }
+  }
+
+  runApp(SelfMusicApp(
+      direct: direct, settings: serverSettings, api: api, audioHandler: audioHandler));
 }
 
 class SelfMusicApp extends StatelessWidget {
   final DirectSourceManager direct;
   final ServerSettings settings;
   final ApiClient api;
+  final SelfMusicAudioHandler? audioHandler;
   const SelfMusicApp({
     super.key,
     required this.direct,
     required this.settings,
     required this.api,
+    this.audioHandler,
   });
 
   @override
@@ -73,11 +111,13 @@ class SelfMusicApp extends StatelessWidget {
               if (key == 'server') return lib.source;
               return direct.sourceByKey(key);
             })
+            ..attachAppSettings(direct.settings)
             ..attachPersistence(
               index: direct.index,
               weight: direct.weight,
               onTrackStarted: (src, s) => direct.onTrackPlaying(src, s),
-            ),
+            )
+            ..attachAudioHandlerIfAny(audioHandler),
         ),
         ChangeNotifierProvider<NavigationProvider>.value(value: nav),
       ],
@@ -113,9 +153,13 @@ class _RootState extends State<Root> {
   @override
   void initState() {
     super.initState();
-    // 启动时恢复上次播放队列与位置（暂停态，stage2.md §7）。
+    // 启动恢复上次播放队列与位置（暂停态，stage2.md §7）。
+    // 受「断点续播」开关控制（settings.md §3.2 `resume_on_startup`）。
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) context.read<PlayerProvider>().restoreIfAny();
+      if (!mounted) return;
+      final direct = context.read<DirectSourceManager>();
+      if (!direct.settings.resumeOnStartup) return;
+      context.read<PlayerProvider>().restoreIfAny();
     });
   }
 

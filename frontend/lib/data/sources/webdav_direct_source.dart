@@ -75,19 +75,24 @@ class WebdavDirectSource implements MusicSource {
   // ---------- 直连扫描 ----------
 
   @override
-  Future<ScanSummary> scan() async {
+  Future<ScanSummary> scan(
+      {ScanOptions options = const ScanOptions.none()}) async {
     // 先复制出可跨 isolate 发送的原始值，再闭包引用（避免捕获 this）。
     final srcKey = key;
     final base = _base;
     final user = username;
     final pass = password;
     final coversDir = p.join(index.dir, 'covers');
+    final minSize = options.minSizeBytes;
+    final minDuration = options.minDurationSec;
     final out = await Isolate.run(
       () => _webdavWalk(
         key: srcKey,
         baseUrl: base,
         username: user,
         password: pass,
+        minSizeBytes: minSize,
+        minDurationSec: minDuration,
       ),
     );
     final alive = <String>[];
@@ -244,6 +249,8 @@ Future<List<_WebdavWalkOut>> _webdavWalk({
   required String baseUrl,
   required String username,
   required String password,
+  required int minSizeBytes,
+  required int minDurationSec,
 }) async {
   final client = _newClient();
   final files = <_WebdavEntry>[];
@@ -252,7 +259,12 @@ Future<List<_WebdavWalkOut>> _webdavWalk({
     await _listRecursive(client, baseUrl, files, username, password)
         .timeout(const Duration(seconds: 300));
     for (final f in files) {
+      // 「忽略音频」大小过滤（settings.md §3.4）：不响应探测的过小文件直接跳过。
+      if (minSizeBytes > 0 && f.size > 0 && f.size < minSizeBytes) continue;
       final meta = await _probe(client, f, username, password);
+      // 时长过滤：仅在解析出时长时生效，避免误杀探测失败的文件。
+      final dur = meta?.duration ?? 0;
+      if (minDurationSec > 0 && dur > 0 && dur < minDurationSec) continue;
       out.add(_WebdavWalkOut(
         DirectSongRow(
           sourceKey: key,

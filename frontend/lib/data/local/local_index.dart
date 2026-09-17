@@ -568,7 +568,7 @@ class LocalIndex {
         [items[i].sortOrder, items[j].id]);
   }
 
-  // ---------- 应用设置（stage2.md §1.4） ----------
+  // ---------- 应用设置（settings.md §3） ----------
 
   String? settingsGet(String key) {
     final rs = _db!.select('SELECT value FROM app_settings WHERE key=?', [key]);
@@ -579,6 +579,14 @@ class LocalIndex {
     _db!.execute(
         'INSERT INTO app_settings(key, value) VALUES(?,?) '
         'ON CONFLICT(key) DO UPDATE SET value=excluded.value', [key, value]);
+  }
+
+  /// 全部已存设置键值（供设置导入导出，settings.md §3.5）。
+  Map<String, String> settingsAll() {
+    final rs = _db!.select('SELECT key, value FROM app_settings');
+    return {
+      for (final r in rs) r['key'] as String: r['value'] as String,
+    };
   }
 
   // ---------- 断点（stage2.md §1.4） ----------

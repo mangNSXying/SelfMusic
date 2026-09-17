@@ -70,11 +70,11 @@ class PlayerScreen extends StatelessWidget {
                     },
                   ),
                   const SizedBox(width: 12),
-                  Chip(
-                    avatar: const Icon(Icons.speed, size: 16),
-                    label: Text(
-                        '权重 ${player.currentWeightFactor?.toStringAsFixed(1) ?? '—'}'),
-                  ),
+                  if (direct.settings.playerShowWeight)
+                    Chip(
+                      avatar: const Icon(Icons.speed, size: 16),
+                      label: Text('权重 ${player.currentWeightFactor?.toStringAsFixed(1) ?? '—'}'),
+                    ),
                 ],
               ),
               const SizedBox(height: 8),

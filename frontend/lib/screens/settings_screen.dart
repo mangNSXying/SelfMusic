@@ -1,9 +1,15 @@
+import 'dart:io';
+
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../data/local/app_settings.dart';
+import '../data/local/backup_service.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
+import '../providers/player_provider.dart';
+import '../providers/playlists_provider.dart';
 import '../services/api_client.dart';
 import '../services/server_settings.dart';
 import '../theme/app_theme.dart';
@@ -28,9 +34,11 @@ class SettingsScreen extends StatelessWidget {
       case SettingsItem.songs:
         return const _SongsSettings();
       case SettingsItem.general:
+        return const _GeneralSettings();
       case SettingsItem.playback:
+        return const _PlaybackSettings();
       case SettingsItem.notifications:
-        return _CategoryPlaceholder(item: item);
+        return const _NotificationsSettings();
     }
   }
 }
@@ -132,9 +140,199 @@ class _ServerSettingsState extends State<_ServerSettings> {
               label: const Text('保存'),
             ),
           ),
+          const SizedBox(height: 32),
+          const Divider(),
+          const _CacheConfigSection(),
         ],
       ),
     );
+  }
+}
+
+/// 服务端 → 缓存配置（settings.md §3.3）：
+/// 「跟随服务端 / 自定义」双来源；跟随模式暂灰显（待阶段 6 服务端下发能力）。
+class _CacheConfigSection extends StatefulWidget {
+  const _CacheConfigSection();
+  @override
+  State<_CacheConfigSection> createState() => _CacheConfigSectionState();
+}
+
+class _CacheConfigSectionState extends State<_CacheConfigSection> {
+  late AppSettings _settings;
+  bool _fetched = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _settings = context.read<DirectSourceManager>().settings;
+    if (!_fetched) {
+      _fetched = true;
+      context.read<DirectSourceManager>().refreshServerConfig();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final followReady =
+        _settings.serverCacheMaxBytes != null && _settings.serverCacheSongLimit != null;
+    final followLocked =
+        _settings.cacheConfigMode == CacheConfigMode.followServer;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text('缓存配置',
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w600)),
+            ),
+            IconButton(
+              icon: const Icon(Icons.sync, size: 20),
+              tooltip: '刷新服务端建议值',
+              onPressed: () async {
+                final messenger = ScaffoldMessenger.of(context);
+                final ok =
+                    await context.read<DirectSourceManager>().refreshServerConfig();
+                if (!mounted) return;
+                setState(() {});
+                messenger.showSnackBar(SnackBar(
+                    content: Text(ok ? '已刷新服务端建议值' : '拉取失败（检查后端连接）')));
+              },
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text('上限来源与建议值；同键项的服务端对照见 settings.md §5',
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
+        const SizedBox(height: 8),
+        RadioGroup<CacheConfigMode>(
+          groupValue: _settings.cacheConfigMode,
+          onChanged: (v) {
+            if (v == null) return;
+            setState(() => _settings.cacheConfigMode = v);
+          },
+          child: Column(
+            children: [
+              const RadioListTile<CacheConfigMode>(
+                contentPadding: EdgeInsets.zero,
+                title: Text('自定义'),
+                subtitle: Text('使用本机设置的上限'),
+                value: CacheConfigMode.custom,
+              ),
+              RadioListTile<CacheConfigMode>(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('跟随服务端'),
+                subtitle: Text(
+                  followReady
+                      ? '使用服务端建议值：'
+                          '${_labelBytes(_settings.serverCacheMaxBytes!)} / '
+                          '${_settings.serverCacheSongLimit} 首'
+                      : '服务端建议值未拉取（检查后端连接）',
+                ),
+                value: CacheConfigMode.followServer,
+                enabled: followReady,
+              ),
+            ],
+          ),
+        ),
+        if (followLocked)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text('已启用跟随服务端：${_labelBytes(_settings.effectiveCacheMaxBytes)} / ${_settings.effectiveCacheSongLimit} 首',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: cs.primary)),
+          )
+        else ...[
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.storage_outlined),
+            title: const Text('缓存总上限'),
+            subtitle: Text(_labelBytes(_settings.effectiveCacheMaxBytes)),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _editMaxBytes(context),
+          ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.library_music_outlined),
+            title: const Text('歌曲数量上限'),
+            subtitle: Text('${_settings.effectiveCacheSongLimit} 首'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _editSongLimit(context),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Future<void> _editMaxBytes(BuildContext context) async {
+    final current = _settings.cacheMaxBytes ~/ (1024 * 1024);
+    final controller = TextEditingController(text: current.toString());
+    final result = await showDialog<int>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('缓存总上限（MB）'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.of(c)
+                  .pop(int.tryParse(controller.text) ?? current),
+              child: const Text('确定')),
+        ],
+      ),
+    );
+    if (result != null && result > 0 && mounted) {
+      setState(() => _settings.cacheMaxBytes = result * 1024 * 1024);
+    }
+  }
+
+  Future<void> _editSongLimit(BuildContext context) async {
+    final controller =
+        TextEditingController(text: _settings.cacheSongLimit.toString());
+    final result = await showDialog<int>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('歌曲数量上限'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.of(c)
+                  .pop(int.tryParse(controller.text) ?? _settings.cacheSongLimit),
+              child: const Text('确定')),
+        ],
+      ),
+    );
+    if (result != null && result > 0 && mounted) {
+      setState(() => _settings.cacheSongLimit = result);
+    }
+  }
+
+  static String _labelBytes(int bytes) {
+    if (bytes >= 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
+    }
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(0)} MB';
   }
 }
 
@@ -262,27 +460,6 @@ class _AppearanceSettings extends StatelessWidget {
 
   String _rgb(Color c) =>
       'rgb(${c.r}, ${c.g}, ${c.b})'.replaceAll('.0', '');
-}
-
-class _CategoryPlaceholder extends StatelessWidget {
-  final SettingsItem item;
-  const _CategoryPlaceholder({required this.item});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(item.icon, size: 72, color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.4)),
-          const SizedBox(height: 16),
-          Text('${item.label}设置开发中', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
-          const SizedBox(height: 8),
-          Text('该设置项尚未实现', style: Theme.of(context).textTheme.bodySmall),
-        ],
-      ),
-    );
-  }
 }
 
 class _ColorDot extends StatelessWidget {
@@ -457,17 +634,44 @@ class _SongsSettingsState extends State<_SongsSettings> {
             setState(() => _settings.autoCacheFavorites = v);
           },
         ),
-        ListTile(
-          title: const Text('缓存总上限'),
-          subtitle: Text(_labelBytes(_settings.cacheMaxBytes)),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => _editCacheMaxBytes(context),
+        const Divider(height: 32),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('歌曲显示与扫描',
+              style: TextStyle(
+                  color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        SwitchListTile(
+          title: const Text('播放页显示权重信息'),
+          subtitle: const Text('播放页展示当前歌曲喜欢 / 权重状态'),
+          value: _settings.playerShowWeight,
+          onChanged: (v) {
+            setState(() => _settings.playerShowWeight = v);
+          },
         ),
         ListTile(
-          title: const Text('歌曲数量上限'),
-          subtitle: Text('${_settings.cacheSongLimit} 首'),
+          title: const Text('忽略音频（时长过滤）'),
+          subtitle: Text(_settings.scanIgnoreMinDurationSec > 0
+              ? '扫描时忽略短于 ${_settings.scanIgnoreMinDurationSec} 秒的音频'
+              : '关闭（按时长不过滤）'),
           trailing: const Icon(Icons.chevron_right),
-          onTap: () => _editCacheSongLimit(context),
+          onTap: () => _editIgnoreDuration(context),
+        ),
+        ListTile(
+          title: const Text('忽略音频（大小过滤）'),
+          subtitle: Text(_settings.scanIgnoreMinSizeBytes > 0
+              ? '扫描时忽略小于 ${_labelBytes(_settings.scanIgnoreMinSizeBytes)} 的音频'
+              : '关闭（按大小不过滤）'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _editIgnoreBytes(context),
+        ),
+        SwitchListTile(
+          title: const Text('仅 Wi-Fi 扫描'),
+          subtitle: const Text('移动端直连扫描仅在 Wi-Fi 下进行（桌面忽略）'),
+          value: _settings.scanWifiOnly,
+          onChanged: (v) {
+            setState(() => _settings.scanWifiOnly = v);
+          },
         ),
         const Divider(height: 32),
         Padding(
@@ -487,13 +691,13 @@ class _SongsSettingsState extends State<_SongsSettings> {
     );
   }
 
-  Future<void> _editCacheMaxBytes(BuildContext context) async {
-    final current = _settings.cacheMaxBytes ~/ (1024 * 1024);
-    final controller = TextEditingController(text: current.toString());
+  Future<void> _editIgnoreDuration(BuildContext context) async {
+    final controller =
+        TextEditingController(text: _settings.scanIgnoreMinDurationSec.toString());
     final result = await showDialog<int>(
       context: context,
       builder: (c) => AlertDialog(
-        title: const Text('缓存总上限（MB）'),
+        title: const Text('忽略音频：最小时长（秒）'),
         content: TextField(
           controller: controller,
           keyboardType: TextInputType.number,
@@ -501,27 +705,26 @@ class _SongsSettingsState extends State<_SongsSettings> {
           autofocus: true,
         ),
         actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
+          TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
           TextButton(
               onPressed: () => Navigator.of(c)
-                  .pop(int.tryParse(controller.text) ?? current),
+                  .pop(int.tryParse(controller.text) ?? 0),
               child: const Text('确定')),
         ],
       ),
     );
-    if (result != null && result > 0 && mounted) {
-      setState(() => _settings.cacheMaxBytes = result * 1024 * 1024);
+    if (result != null && result >= 0 && mounted) {
+      setState(() => _settings.scanIgnoreMinDurationSec = result);
     }
   }
 
-  Future<void> _editCacheSongLimit(BuildContext context) async {
-    final controller =
-        TextEditingController(text: _settings.cacheSongLimit.toString());
+  Future<void> _editIgnoreBytes(BuildContext context) async {
+    final mb = _settings.scanIgnoreMinSizeBytes ~/ (1024 * 1024);
+    final controller = TextEditingController(text: (mb > 0 ? mb : 0).toString());
     final result = await showDialog<int>(
       context: context,
       builder: (c) => AlertDialog(
-        title: const Text('歌曲数量上限'),
+        title: const Text('忽略音频：最小大小（MB）'),
         content: TextField(
           controller: controller,
           keyboardType: TextInputType.number,
@@ -529,17 +732,16 @@ class _SongsSettingsState extends State<_SongsSettings> {
           autofocus: true,
         ),
         actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
+          TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
           TextButton(
               onPressed: () => Navigator.of(c)
-                  .pop(int.tryParse(controller.text) ?? _settings.cacheSongLimit),
+                  .pop(int.tryParse(controller.text) ?? 0),
               child: const Text('确定')),
         ],
       ),
     );
-    if (result != null && result > 0 && mounted) {
-      setState(() => _settings.cacheSongLimit = result);
+    if (result != null && result >= 0 && mounted) {
+      setState(() => _settings.scanIgnoreMinSizeBytes = result * 1024 * 1024);
     }
   }
 
@@ -548,5 +750,553 @@ class _SongsSettingsState extends State<_SongsSettings> {
       return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
     }
     return '${(bytes / (1024 * 1024)).toStringAsFixed(0)} MB';
+  }
+}
+
+/// 播放设置（settings.md §3.2）：默认播放模式 / 断点续播 / 淡入淡出 / 均衡器。
+class _PlaybackSettings extends StatefulWidget {
+  const _PlaybackSettings();
+  @override
+  State<_PlaybackSettings> createState() => _PlaybackSettingsState();
+}
+
+class _PlaybackSettingsState extends State<_PlaybackSettings> {
+  static const List<String> _eqLabels = [
+    '低音 60Hz', '中低 230Hz', '中音 910Hz', '中高 3.6kHz', '高音 14kHz',
+  ];
+
+  late AppSettings _settings;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _settings = context.read<DirectSourceManager>().settings;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final current = PlayModeParse.fromStored(_settings.playModeDefault);
+    final eqBands = _settings.eqBands;
+
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('播放', style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        ListTile(
+          leading: const Icon(Icons.playlist_play),
+          title: const Text('默认播放模式'),
+          subtitle: Text(_modeLabel(current)),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _pickMode(context, current),
+        ),
+        SwitchListTile(
+          title: const Text('断点续播自动恢复'),
+          subtitle: const Text('启动时恢复上次队列与位置（恢复为暂停态，不自动播放）'),
+          value: _settings.resumeOnStartup,
+          onChanged: (v) => setState(() => _settings.resumeOnStartup = v),
+        ),
+        const Divider(height: 32),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('音效', style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        SwitchListTile(
+          title: const Text('淡入淡出'),
+          subtitle: Text('播放淡入、暂停淡出${_settings.fadeEnabled ? '，时长 ${(_settings.fadeDurationMs / 1000).toStringAsFixed(1)}s' : ''}'),
+          value: _settings.fadeEnabled,
+          onChanged: (v) => setState(() => _settings.fadeEnabled = v),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(left: 16, right: 16, top: 4),
+          child: Row(
+            children: [
+              const Text('时长', style: TextStyle(fontSize: 13)),
+              Expanded(
+                child: Slider(
+                  value: (_settings.fadeDurationMs / 1000).clamp(1.0, 3.0),
+                  min: 1,
+                  max: 3,
+                  divisions: 4,
+                  label: '${(_settings.fadeDurationMs / 1000).toStringAsFixed(1)} 秒',
+                  onChanged: (v) => setState(
+                      () => _settings.fadeDurationMs = (v * 1000).round()),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 24),
+        SwitchListTile(
+          title: const Text('均衡器'),
+          subtitle: const Text('5 段频段增益（JustAudio 原生支持，Android 生效）'),
+          value: _settings.equalizerEnabled,
+          onChanged: _toggleEqualizer,
+        ),
+        if (_settings.equalizerEnabled) ...[
+          for (var i = 0; i < 5; i++)
+            Padding(
+              padding: const EdgeInsets.only(left: 16, right: 16),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 92,
+                    child: Text(_eqLabels[i], style: const TextStyle(fontSize: 13)),
+                  ),
+                  Expanded(
+                    child: Slider(
+                      value: eqBands[i].clamp(-12.0, 12.0),
+                      min: -12,
+                      max: 12,
+                      divisions: 48,
+                      label: '${eqBands[i].toStringAsFixed(1)} dB',
+                      onChanged: (v) {
+                        setState(() {});
+                        context.read<PlayerProvider>().setEqBand(i, v);
+                      },
+                    ),
+                  ),
+                  SizedBox(
+                    width: 40,
+                    child: Text(
+                      '${eqBands[i] >= 0 ? '+' : ''}${eqBands[i].toStringAsFixed(1)}',
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ],
+    );
+  }
+
+  void _toggleEqualizer(bool v) {
+    setState(() => _settings.equalizerEnabled = v);
+    context.read<PlayerProvider>().applyAudioConfig();
+  }
+
+  Future<void> _pickMode(BuildContext context, PlayMode current) async {
+    final picked = await showDialog<PlayMode>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: const Text('默认播放模式'),
+        children: [
+          RadioGroup<PlayMode>(
+            groupValue: current,
+            onChanged: (v) {
+              if (v != null) Navigator.of(c).pop(v);
+            },
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final m in PlayMode.values)
+                  RadioListTile<PlayMode>(
+                    title: Text(_modeLabel(m)),
+                    value: m,
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+    if (picked == null || picked == current || !context.mounted) return;
+    setState(() => _settings.playModeDefault = picked.name);
+    context.read<PlayerProvider>().setMode(picked);
+  }
+
+  static String _modeLabel(PlayMode m) => switch (m) {
+        PlayMode.sequence => '顺序播放',
+        PlayMode.loopList => '列表循环',
+        PlayMode.loopOne => '单曲循环',
+        PlayMode.weighted => '加权随机',
+      };
+}
+
+/// 常规设置（settings.md §3.5）：设置/歌单导出导入（不含令牌与源凭据）。
+class _GeneralSettings extends StatefulWidget {
+  const _GeneralSettings();
+  @override
+  State<_GeneralSettings> createState() => _GeneralSettingsState();
+}
+
+class _GeneralSettingsState extends State<_GeneralSettings> {
+  List<File> _backups = [];
+  String? _pairingToken;
+  bool _showToken = false;
+  bool _pairingFetched = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final direct = context.read<DirectSourceManager>();
+    _backups = _service(direct).listBackups();
+    if (!_pairingFetched) {
+      _pairingFetched = true;
+      context.read<ApiClient>().fetchPairingToken().then((t) {
+        if (mounted) setState(() => _pairingToken = t);
+      });
+    }
+  }
+
+  BackupService _service(DirectSourceManager direct) => BackupService(
+        index: direct.index,
+        server: context.read<ServerSettings>(),
+        theme: context.read<ThemeProvider>(),
+      );
+
+  static String _maskToken(String token) {
+    if (token.length <= 8) return '••••••••';
+    return '${token.substring(0, 4)}••••••${token.substring(token.length - 4)}';
+  }
+
+  void _refresh() {
+    setState(() {
+      final direct = context.read<DirectSourceManager>();
+      _backups = _service(direct).listBackups();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('服务器',
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        ListTile(
+          leading: const Icon(Icons.key),
+          title: const Text('配对密钥'),
+          subtitle: Text(_pairingToken == null
+              ? '拉取中…'
+              : _showToken
+                  ? _pairingToken!
+                  : _maskToken(_pairingToken!)),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (_pairingToken != null)
+                IconButton(
+                  icon: Icon(_showToken
+                      ? Icons.visibility_off_outlined
+                      : Icons.visibility_outlined),
+                  tooltip: _showToken ? '隐藏' : '显示',
+                  onPressed: () => setState(() => _showToken = !_showToken),
+                ),
+              if (_pairingToken != null)
+                IconButton(
+                  icon: const Icon(Icons.copy_outlined),
+                  tooltip: '复制',
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: _pairingToken!));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('已复制配对密钥')));
+                  },
+                ),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              const Icon(Icons.info_outline, size: 16),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text('修改服务端 .env 中的 PAIRING_TOKEN 并重启后端后生效，仅影响后续新设备；当前已配对的设备不受影响。',
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodySmall
+                        ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 32),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('备份与迁移',
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        ListTile(
+          leading: const Icon(Icons.tune),
+          title: const Text('导出设置'),
+          subtitle: const Text('本机设置 + 服务端地址 + 主题 → JSON 备份文件'),
+          trailing: const Icon(Icons.arrow_downward),
+          onTap: () => _doExportSettings(),
+        ),
+        ListTile(
+          leading: const Icon(Icons.upload_file),
+          title: const Text('导入设置（选择文件）'),
+          subtitle: const Text('从任意位置选择设置备份文件恢复'),
+          trailing: const Icon(Icons.folder_open),
+          onTap: () => _pickAndImport(BackupKind.settings),
+        ),
+        ListTile(
+          leading: const Icon(Icons.queue_music),
+          title: const Text('导出歌单'),
+          subtitle: const Text('全部歌单（含歌曲快照）→ JSON 备份文件'),
+          trailing: const Icon(Icons.arrow_downward),
+          onTap: () => _doExportPlaylists(),
+        ),
+        ListTile(
+          leading: const Icon(Icons.playlist_add),
+          title: const Text('导入歌单（选择文件）'),
+          subtitle: const Text('从任意位置选择歌单备份文件恢复'),
+          trailing: const Icon(Icons.folder_open),
+          onTap: () => _pickAndImport(BackupKind.playlists),
+        ),
+        const Divider(height: 32),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('本机备份',
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        if (_backups.isEmpty)
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text('暂无备份。点击上方「导出」创建。',
+                style: Theme.of(context).textTheme.bodySmall),
+          ),
+        for (final f in _backups) _backupTile(context, f),
+      ],
+    );
+  }
+
+  Widget _backupTile(BuildContext context, File f) {
+    final name = f.path.split('/').last;
+    final kind = BackupService.kindOf(f);
+    final kindLabel = switch (kind) {
+      BackupKind.settings => '设置',
+      BackupKind.playlists => '歌单',
+      BackupKind.full => '设置 + 歌单',
+    };
+    return ListTile(
+      leading: const Icon(Icons.description_outlined),
+      title: Text(name),
+      subtitle: Text('$kindLabel · ${_sizeLabel(f.lengthSync())}'),
+      onTap: () => _confirmImport(f, name, kind),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: const Icon(Icons.restore),
+            tooltip: '导入此备份',
+            onPressed: () => _confirmImport(f, name, kind),
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_outline),
+            tooltip: '删除备份',
+            onPressed: () => _doDelete(f),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _doExportSettings() async {
+    final direct = context.read<DirectSourceManager>();
+    final file = _service(direct).exportSettings();
+    _refresh();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已导出：${file.path.split('/').last}（不含令牌与源凭据）')));
+  }
+
+  Future<void> _doExportPlaylists() async {
+    final direct = context.read<DirectSourceManager>();
+    final file = _service(direct).exportPlaylists();
+    _refresh();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已导出：${file.path.split('/').last}')));
+  }
+
+  /// 文件选择器导入设置/歌单。
+  Future<void> _pickAndImport(BackupKind kind) async {
+    const groups = [
+      XTypeGroup(label: 'JSON 备份', extensions: ['json'], mimeTypes: ['application/json']),
+      XTypeGroup(label: '所有文件', mimeTypes: ['*/*']),
+    ];
+    final XFile? picked;
+    try {
+      picked = await openFile(acceptedTypeGroups: groups);
+    } catch (e) {
+      if (mounted) return _toast('打开文件失败：$e');
+      return;
+    }
+    if (picked == null) return;
+    if (!mounted) return;
+    final f = File(picked.path);
+    if (!f.existsSync()) {
+      _toast('所选文件不存在：${picked.path}');
+      return;
+    }
+    final direct = context.read<DirectSourceManager>();
+    final service = _service(direct);
+    try {
+      final summary = kind == BackupKind.settings
+          ? await service.importSettings(f)
+          : await service.importPlaylists(f);
+      if (kind == BackupKind.playlists) {
+        if (!mounted) return;
+        context.read<PlaylistsProvider>().refresh();
+      }
+      if (!mounted) return;
+      _toast(summary);
+    } catch (e) {
+      if (!mounted) return;
+      _toast('导入失败：$e');
+    }
+  }
+
+  void _toast(String msg) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Future<void> _confirmImport(File f, String name, BackupKind kind) async {
+    final scope = switch (kind) {
+      BackupKind.settings => '将覆盖当前设置（含服务端地址与主题）',
+      BackupKind.playlists => '将以本机歌单重建',
+      BackupKind.full => '将覆盖当前设置并重建歌单',
+    };
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('导入备份'),
+        content: Text('$scope，是否继续？\n\n$name'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(c).pop(false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.of(c).pop(true),
+              child: const Text('导入')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final direct = context.read<DirectSourceManager>();
+    final service = _service(direct);
+    try {
+      final summaries = <String>[];
+      if (kind == BackupKind.settings || kind == BackupKind.full) {
+        summaries.add(await service.importSettings(f));
+      }
+      if (kind == BackupKind.playlists || kind == BackupKind.full) {
+        summaries.add(await service.importPlaylists(f));
+      }
+      if (!mounted) return;
+      context.read<PlaylistsProvider>().refresh();
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(summaries.join('；'))));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('导入失败：$e')));
+    }
+  }
+
+  Future<void> _doDelete(File f) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('删除备份'),
+        content: Text('确定删除 ${f.path.split('/').last}？'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(c).pop(false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.of(c).pop(true),
+              child: const Text('删除')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      f.deleteSync();
+    } catch (_) {}
+    _refresh();
+  }
+
+  static String _sizeLabel(int bytes) {
+    if (bytes >= 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / 1024).toStringAsFixed(0)} KB';
+  }
+}
+
+/// 通知设置（settings.md §3.6）：通知栏控制/后台播放（Android）；音频焦点开关。
+class _NotificationsSettings extends StatefulWidget {
+  const _NotificationsSettings();
+  @override
+  State<_NotificationsSettings> createState() => _NotificationsSettingsState();
+}
+
+class _NotificationsSettingsState extends State<_NotificationsSettings> {
+  late AppSettings _settings;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _settings = context.read<DirectSourceManager>().settings;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('通知',
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        Card(
+          margin: const EdgeInsets.symmetric(horizontal: 16),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(
+              '通知栏播放控制 / 后台播放 / 音频焦点基于 just_audio_background 与 audio_session，'
+              '仅 Android 生效；Linux 桌面忽略这些开关。',
+              style: Theme.of(context).textTheme.bodySmall),
+          ),
+        ),
+        SwitchListTile(
+          title: const Text('通知栏播放控制'),
+          subtitle: const Text('通知栏常驻播放控制与后台播放（修改后重启生效）'),
+          value: _settings.notificationControls,
+          onChanged: (v) {
+            setState(() => _settings.notificationControls = v);
+            ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('通知栏播放控制将在重启应用后生效')));
+          },
+        ),
+        const Divider(height: 24),
+        SwitchListTile(
+          title: const Text('自动暂停/恢复'),
+          subtitle: const Text('通话等音频焦点抢占时自动暂停，结束后恢复'),
+          value: _settings.audioFocusEnabled,
+          onChanged: (v) {
+            setState(() => _settings.audioFocusEnabled = v);
+            context.read<PlayerProvider>().applyAudioConfig();
+          },
+        ),
+      ],
+    );
   }
 }
