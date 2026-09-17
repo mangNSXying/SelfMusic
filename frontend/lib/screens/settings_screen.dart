@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/backup_service.dart';
+import '../providers/auth_provider.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
@@ -14,6 +15,7 @@ import '../services/api_client.dart';
 import '../services/server_settings.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_provider.dart';
+import 'pairing_screen.dart';
 
 /// 设置页：根据侧边栏选中的分区渲染对应设置面板。
 class SettingsScreen extends StatelessWidget {
@@ -89,6 +91,7 @@ class _ServerSettingsState extends State<_ServerSettings> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final auth = context.watch<AuthProvider>();
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Column(
@@ -106,6 +109,17 @@ class _ServerSettingsState extends State<_ServerSettings> {
                   .bodySmall
                   ?.copyWith(color: scheme.onSurface.withValues(alpha: 0.6))),
           const SizedBox(height: 24),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.key),
+            title: const Text('配对服务器'),
+            subtitle: Text(auth.isPaired ? '已配对' : '未配对（首次启动不强制，直连模式仍可用）'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const PairingScreen()),
+            ),
+          ),
+          const Divider(height: 24),
           TextField(
             controller: _controller,
             keyboardType: TextInputType.url,
@@ -396,14 +410,16 @@ class _AppearanceSettings extends StatelessWidget {
           // 背景色
           Text('背景色', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
-          Row(
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               OutlinedButton.icon(
                 icon: const Icon(Icons.auto_fix_high, size: 18),
                 label: const Text('自动（跟随强调色）'),
                 onPressed: theme.clearBackgroundOverride,
               ),
-              const SizedBox(width: 12),
               OutlinedButton.icon(
                 icon: const Icon(Icons.colorize, size: 18),
                 label: const Text('自定义背景色'),
@@ -417,8 +433,12 @@ class _AppearanceSettings extends StatelessWidget {
               children: [
                 _SwatchPreview(color: theme.background!),
                 const SizedBox(width: 12),
-                Text('当前自定义背景 ${_rgb(theme.background!)}',
-                    style: Theme.of(context).textTheme.bodySmall),
+                Expanded(
+                  child: Text('当前自定义背景 ${_rgb(theme.background!)}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall),
+                ),
               ],
             ),
           ],

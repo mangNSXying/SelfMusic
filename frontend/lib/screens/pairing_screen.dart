@@ -27,11 +27,12 @@ class _PairingScreenState extends State<PairingScreen> {
     final auth = context.watch<AuthProvider>();
     return Scaffold(
       appBar: AppBar(title: const Text('配对 SelfMusic')),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          children: [
-            const Text('输入服务器配对令牌（pairing_token）以完成配对。', style: TextStyle(fontSize: 14)),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            children: [
+              const Text('输入服务器配对令牌（pairing_token）以完成配对。', style: TextStyle(fontSize: 14)),
             const SizedBox(height: 16),
             _ServerAddressCard(),
             const SizedBox(height: 16),
@@ -65,7 +66,8 @@ class _PairingScreenState extends State<PairingScreen> {
             ),
             const SizedBox(height: 12),
             const Text('可在后端 .env 的 PAIRING_TOKEN_INIT 或 settings 表查看令牌。', style: TextStyle(fontSize: 12, color: Colors.grey)),
-          ],
+            ],
+          ),
         ),
       ),
     );

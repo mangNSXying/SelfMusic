@@ -16,7 +16,7 @@ import 'providers/playlists_provider.dart';
 import 'providers/player_provider.dart';
 import 'providers/navigation_provider.dart';
 import 'theme/theme_provider.dart';
-import 'screens/pairing_screen.dart';
+import 'theme/app_theme.dart';
 import 'screens/library_screen.dart';
 import 'layout/app_shell.dart';
 
@@ -175,12 +175,8 @@ class _RootState extends State<Root> {
         _showExpiryDialog(context, auth);
       });
     }
-    if (!auth.isPaired || auth.sessionExpired) {
-      return const PairingScreen();
-    }
-
-    // 播放页作为内容区的一种视图：导航到“歌曲”后从列表进入播放页时，
-    // 通过 PlayerProvider 会话状态在内容区切换展示。
+    // 首次启动不再强制配对：未配对也可正常使用直连模式；
+    // 配对 / 会话过期后重新配对在「设置 → 服务端」进行。
     return const AppShell(
       content: AppContent(),
     );
@@ -190,10 +186,9 @@ class _RootState extends State<Root> {
     _expiryDialogShown = true;
     showDialog<void>(
       context: context,
-      barrierDismissible: false,
       builder: (ctx) => AlertDialog(
         title: const Text('会话已过期'),
-        content: const Text('登录已过期，请重新配对后继续使用。'),
+        content: const Text('服务端登录已过期，服务端功能将不可用；可直接使用直连模式，或在「设置 → 服务端」重新配对。'),
         actions: [
           TextButton(
             onPressed: () {
@@ -201,7 +196,16 @@ class _RootState extends State<Root> {
               setState(() => _expiryDialogShown = false);
               Navigator.of(ctx).pop();
             },
-            child: const Text('重新配对'),
+            child: const Text('稍后'),
+          ),
+          FilledButton(
+            onPressed: () {
+              auth.acceptSessionExpired();
+              setState(() => _expiryDialogShown = false);
+              Navigator.of(ctx).pop();
+              context.read<NavigationProvider>().openSettings(SettingsItem.server);
+            },
+            child: const Text('去配对'),
           ),
         ],
       ),
