@@ -207,7 +207,7 @@ INDEX idx_refresh(refresh_token_hash)
 
 - `song_key` 统一为 `(来源标识, source_ref)` 复合键；同一首歌在不同模式下可解析到不同 Source 实现
 - 收藏状态**统一收口** `play_meta.is_favorite`（直连 + 服务器一致）：迁移时从 `idx_songs.is_favorite=1` 回填一次，
-  此后所有读取（搜索 / 收藏列表 / 歌单解析 / 断点恢复）统一 `LEFT JOIN play_meta`，见 `stage2.md §1.1`
+  此后所有读取（搜索 / 收藏列表 / 歌单解析 / 断点恢复）统一 `LEFT JOIN play_meta`
 - 凭据加密：WebDAV/SMB 密码经 `flutter_secure_storage` 存放，SQLite 只存引用键
 - 离线优先：所有播放决策只查本地表；网络层的角色是把远端变更搬进本地
 - 阶段 5 同步时：权重/歌单改动落 `weight_outbox` 流水上推，服务端按 `event_uuid` 幂等去重（本轮未实现）
@@ -337,7 +337,7 @@ lib/
 │   └── theme_provider.dart 主题状态：运行时切换 + secure_storage 持久化
 ├── layout/                ★ 自适应模块化布局框架
 │   ├── app_shell.dart      顶层壳：桌面[侧边栏|内容|队列面板]，窄屏抽屉
-│   ├── sidebar.dart        侧边栏：设置分区(常规/播放/界面/歌曲/通知)+底部(明暗/退出)
+│   ├── sidebar.dart        侧边栏：设置分区(常规/播放/界面/服务端/歌曲/通知)+底部(明暗/退出)
 │   ├── top_bar.dart        顶栏：上层汉堡+搜索，下层导航(播放列表/喜欢/播放源/歌曲/专辑/歌手)
 │   ├── queue_panel.dart    右侧播放队列面板
 │   └── mini_player_bar.dart 底部"正在播放"条
@@ -420,19 +420,26 @@ abstract class MusicSource {
 - 断网判定：连续失败 → 进"离线模式"，UI 顶栏提示；播放范围收缩为 `cache` 命中项
 - 恢复网络：SyncEngine 自动恢复，先推 outbox 再拉增量
 
-### 6.7 客户端用户设置（规划）
+### 6.7 客户端用户设置（✅ 已实现）
 
-> 以下设置项需要「设置」入口供用户自定义（**规划中，暂未实现**，仅记档）；键名对应直连模式
-> `app_settings` 表的 key。阶段 2 已完成 `设置 → 歌曲` 的缓存上限 / 歌曲数量上限 / 收藏自动缓存
-> 开关（见 `stage2.md §6`），下列尚需开发入口：
+> 以下设置项已提供「设置」入口供用户自定义，键名对应直连模式 `app_settings` 表的 key，
+> 完整清单见 `settings.md`。6 个分区面板已全部落地（含此前暂缓项）：
+> 歌曲（收藏自动缓存/权重信息/忽略音频过滤/仅 Wi-Fi 扫描）、播放（默认播放模式/断点续播/
+> 淡入淡出/均衡器）、服务端（后端地址/缓存配置双来源含 follow_server）、常规（设置/歌单
+> 导出导入 + 配对密钥明文）、通知（通知栏播放控制 + 音频焦点）。
 
-| 设置项 | 键 | 说明 | 默认 | 建议入口 |
-|--------|----|------|------|---------|
-| 默认播放模式 | `play_mode_default` | `sequence / loopList / loopOne / weighted` 四选一，决定启动后的播放模式 | `sequence` | `设置 → 歌曲` |
+| 设置项 | 键 | 说明 | 默认 | 入口 |
+|--------|----|------|------|------|
+| 默认播放模式 | `play_mode_default` | `sequence / loopList / loopOne / weighted` 四选一，决定启动后的播放模式 | `sequence` | `设置 → 播放` |
 | 播放页权重信息显示 | `player_show_weight` | 是否在播放页展示当前歌曲 liked / factor 状态 | 显示 | `设置 → 歌曲` |
-| 断点续播自动恢复 | `resume_on_startup` | 启动时是否自动恢复上次队列与播放位置（恢复为暂停态，不自动播放） | 开 | `设置 → 歌曲` |
+| 断点续播自动恢复 | `resume_on_startup` | 启动时是否自动恢复上次队列与播放位置（恢复为暂停态，不自动播放） | 开 | `设置 → 播放` |
+| 淡入淡出 | `fade_enabled` + `fade_duration_ms` | 播放/暂停音量软件渐变（just_audio `setVolume` ramp，全平台，不依赖后端 crossfade） | 开 / 1000 ms（1~3 s） | `设置 → 播放` |
+| 均衡器 | `equalizer_enabled` + `eq_bands` | 5 频段增益（60/230/910/3600/14000 Hz，±12 dB）；**仅 Android**（`AndroidEqualizer` 注入 `AudioPipeline`），Linux/macOS 不生效 | 关 | `设置 → 播放` |
+| 缓存来源模式 | `cache_config_mode` | `custom`=本地自定义值；`follow_server`=服务端建议值（`GET /api/v1/admin/config`） | `custom` | `设置 → 服务端` |
+| 通知栏播放控制 | `notification_controls` | audio_service 媒体通知 + 前台服务；**启动时门控注册**，改动重启生效 | 开 | `设置 → 通知` |
+| 自动暂停/恢复（音频焦点） | `audio_focus_enabled` | 来电 / 其他 App 抢占的暂停-恢复（just_audio `handleInterruptions`，重建播放器即时生效） | 开 | `设置 → 通知` |
 
-来源：`stage2.md §3`（默认播放模式）、`§4`（播放页权重显示）、`§7`（断点续播恢复）。
+来源：§7.1（播放模式与调权）；设置项汇总见 `settings.md §3`。
 
 ---
 
@@ -500,7 +507,8 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 - ✅ 重建安卓壳工程：`flutter create --platforms android .`（`build.gradle.kts` / `AndroidManifest.xml` / `MainActivity` / `gradle/wrapper` / `res/` 齐全）
 - ✅ 网络与播放器后端：`INTERNET` 权限、内网 http 走 `usesCleartextTraffic`；音频**无需手动平台分支**——`just_audio` 在 Android 走默认 ExoPlayer、Linux 由联邦插件接管 mpv，`lib/` 不直接引用平台插件
 - ✅ 双端共用同一 `lib/`：主题 / 认证 / 播放器 / 配对页 / 内容区 / 队列均复用
-- ⏳ 遗留（后续阶段补验）：Android 后台播放与通知栏（音频焦点 / `audio_service`）、`secure_storage` Keystore 细节
+- ✅ 阶段 0 遗留的通知栏 / 后台播放 / 音频焦点已落地（`audio_service` 自定义处理器 + `notification_controls` / `audio_focus_enabled` 开关，见 §6.7 / settings.md §3.6）；真机行为待验证
+- ✅ `secure_storage` Keystore 细节已过（Android 默认 Keystore-backed）
 - 验收口径：`flutter build apk --release` 成功出包；Android 真机与 Linux 完成同一套功能验收清单
 
 ### 阶段 1：双模式骨架 + 服务器核心（~1.5 周）
@@ -513,7 +521,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 ### 阶段 2：加权播放 + 歌单 + 喜欢歌缓存（~1 周，蓝图核心）
 
-> **状态：客户端本地闭环 + 歌单/喜欢列表 UI 已完成✅**（实施准绳为 `stage2.md`）。本轮整体按「**纯客户端本地**」落地：
+> **状态：客户端本地闭环 + 歌单/喜欢列表 UI 已完成✅**。本轮整体按「**纯客户端本地**」落地：
 > 后端不新增 API；服务器模式歌曲的权重 / 收藏 / 断点同样落本地，阶段 5 再接同步上推。
 > `flutter analyze` 0 问题，`flutter build linux --debug` 与 `flutter build apk --debug` 均通过。
 
@@ -524,8 +532,8 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 - ✅ 喜欢列表：内容区「喜欢」分栏目走 `direct.favoriteSongs()`（同 play_meta 统一数据源）
 - ✅ 歌单：`PlaylistStore` + `PlaylistsProvider`；`playlists_view.dart` 列表/详情原地子视图（新建/重命名/删除/播放全部/上移/下移/移除）+ SongTile ⋮「加入歌单」弹层
 - ✅ 断点续播：`Song.toJson/fromJson` + `play_state` 单行（2s 节流），启动恢复为**暂停态**不自动播放
-- ✅ 喜欢歌自动缓存 + LRU（`cached_at/last_accessed_at`，跳过正在播放）；`设置 → 歌曲` 缓存上限 / 歌曲数量上限 / 收藏自动缓存开关
-- ⏳ **规划设置项 3 项**见 §6.7（`play_mode_default` / `player_show_weight` / `resume_on_startup`）
+- ✅ 喜欢歌自动缓存 + LRU（`cached_at/last_accessed_at`，跳过正在播放）；收藏自动缓存开关在 `设置 → 歌曲`，缓存上限已迁至 `设置 → 服务端`（双来源，见 settings.md §3.3）
+- ✅ 规划设置项见 §6.7（`play_mode_default` / `player_show_weight` / `resume_on_startup` / 淡入淡出 / 均衡器 / 缓存双来源 / 通知控制）与 settings.md §3 全套面板（含忽略音频过滤 / 仅 Wi-Fi 扫描 / 缓存双来源 / 导入导出）
 - 验收（蓝图 §三 核心行为）：加权随机按概率选歌、同首不连续播放、喜欢可一轮多次 / 不喜欢可能多轮一次；连续 3 次完整播放 factor 提高（反之降低）；杀 App 重开断点续播；四种模式切换正确
 
 ### 阶段 3：直连 WebDAV + 本地索引（~1 周）
@@ -542,7 +550,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 ### 阶段 4：全平台 SMB 直连（~1–2 周，风险最高）
 
-- Windows UNC 通路（先行，半天）；Android smbj 平台通道 PoC（1 天硬门槛）→ 正式实现；鸿蒙验证（三方分支 + 核心依赖 just_audio/path_provider/drift 的鸿蒙可用性逐项核查，同时此阶段才搭建 DevEco 环境）
+- Windows UNC 通路（先行，半天）；Android smbj 平台通道 PoC（1 天硬门槛）→ 正式实现；鸿蒙验证（三方分支 + 核心依赖 just_audio/path_provider/sqlite3 的鸿蒙可用性逐项核查，同时此阶段才搭建 DevEco 环境）
 - 验收：Android 真机直连 NAS 播放 SMB 歌曲，seek/断点正常；鸿蒙给出可行/降级结论
 
 ### 阶段 5：多设备状态同步（~1 周）
@@ -552,15 +560,16 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 ### 阶段 6：转码 + 管理闭环（~1 周）
 
-- ffmpeg 按需转码管线与并发上限；分片上传；删除/隐藏；设置页
+- ffmpeg 按需转码管线与并发上限；分片上传；删除/隐藏
+- 管理端设置：`GET /api/v1/admin/config`（缓存建议值）与 `GET /api/v1/admin/pairing-token` **已随暂缓项提前落地**；`PUT /admin/settings` 与设置页仍在本阶段
 - 验收：FLAC 源按 128k 出流实测流量达标；上传 50MB 文件入库可播
 
 ### 暂缓项：已配对设备设置页明文显示配对密钥
 
-> **状态：暂缓实现**（计划落地，不排入当前阶段）。
+> **状态：已实现✅**（`GET /api/v1/admin/pairing-token` + 前端 `设置→常规` 明文条目，与淡入淡出/均衡器/通知控制等暂缓项一并落地）。
 
 - 后端：新增需已配对设备 token 的端点，返回当前 `pairing_token`（从 settings 镜像读取，权威源为 env）。
-- 前端：`设置→常规` 面板显示"配对密钥"明文条目，附说明"改 .env 重启后生效，仅影响新设备"。
+- 前端：`设置→常规` 面板显示"配对密钥"明文条目（默认遮显，可显示/复制），附说明"改 .env 重启后生效，仅影响新设备"。
 - 动机：首次启动日志仅打印一次，后续查看密钥需此入口（替代已移除的 `pairing-token/reset`）。
 
 ---

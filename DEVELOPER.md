@@ -283,7 +283,7 @@ ldconfig -p | grep libmpv   # 应看到 libmpv.so / libmpv.so.2
 
 ## 数据库规范
 
-> 以下为**服务端 MySQL** 表规范；客户端 SQLite 是独立的轻量库（`local_index`，无 created_at/updated_at 约定），表结构见 `stage2.md §1` 与 `DESIGN.md §3.2`。
+> 以下为**服务端 MySQL** 表规范；客户端 SQLite 是独立的轻量库（`local_index`，无 created_at/updated_at 约定），表结构见 `DESIGN.md §3.2`。
 
 - 表结构变更：**修改 `scripts/init.sql` 并同步提交**，同时更新对应 JPA 实体；`application.yml` 中 `ddl-auto: validate` 会校验实体与表结构一致性，不一致启动即报错
 - 字符集统一 `utf8mb4`

@@ -5,7 +5,7 @@
 - **服务器模式**：统一曲库索引、多设备状态同步、按需转码省流量、设备配对管理
 - **直连模式**：无后端时 App 直连 WebDAV / SMB 依然完整可用（所有播放源默认激活；源内文件夹式浏览；源卡片三点菜单切换直连/代理模式；全局歌曲/专辑/歌手合并视图；离线缓存）
 
-> 整体设计（数据模型 / API / 播放算法 / 路线图）见 [DESIGN.md](DESIGN.md)，开发环境与日常流程见 [DEVELOPER.md](DEVELOPER.md)。
+> 整体设计（数据模型 / API / 播放算法 / 路线图）见 [DESIGN.md](DESIGN.md)，开发环境与日常流程见 [DEVELOPER.md](DEVELOPER.md)，设置体系见 [settings.md](settings.md)。
 
 ## 技术栈
 
@@ -18,7 +18,7 @@
 | 反向代理 | Nginx | 宿主机已有实例 |
 | 容器 | Docker + Docker Compose | 仅后端容器化 |
 
-> **平台开发原则**：Linux 桌面与 Android **同步开发、进度对齐**。`frontend/lib/` 的 UI/主题/播放器/鉴权/状态层均为跨平台 Dart，任何特性的落地同时给出双平台平台配套（音频后端/权限/生命周期差异用条件导入收口）。Android 平台对齐计划见 `DESIGN.md` §8「阶段 0」（实现暂缓）。
+> **平台开发原则**：Linux 桌面与 Android **同步开发、进度对齐**。`frontend/lib/` 的 UI/主题/播放器/鉴权/状态层均为跨平台 Dart，任何特性的落地同时给出双平台平台配套（音频后端/权限/生命周期差异用条件导入收口）。Android 壳工程已重建（DESIGN.md §8 阶段 0 完成），双端同步验收。
 
 **音频后端**：`just_audio` 在 Linux 依赖 `just_audio_mpv`（需 `sudo apt install -y mpv libmpv-dev`），在 Android 使用默认 ExoPlayer 后端。
 
@@ -70,12 +70,12 @@ curl http://localhost:18088/api/health   # 生产模式
 sudo apt install -y mpv libmpv-dev   # Linux 桌面音频后端（仅首次）
 cd frontend
 flutter pub get
-flutter run -d linux     # Linux 桌面（默认，当前主力平台）
-flutter run -d android   # Android（⚠️ 需先创建安卓壳工程，见 DESIGN.md §8 阶段 0）
+flutter run -d linux     # Linux 桌面（当前主力平台）
+flutter run -d android   # Android（壳工程已就绪，见 DESIGN.md §8 阶段 0）
 ```
 
 > **同步开发提示**：`frontend/lib/` 为跨平台 Dart 代码，同一份逻辑可同时在 Linux 与 Android 跑；音频后端按平台自动选择（Linux=mpv，Android=ExoPlayer）。
-> Android 壳工程当前为空壳，落地计划见 `DESIGN.md §8 阶段 0`（实现暂缓）。
+> 仓库根目录提供 `run-linux.sh` / `run-android.sh` 快捷脚本。
 
 ### 5. 配置 Nginx（可选）
 
@@ -100,24 +100,26 @@ selfmusic/
 ├── frontend/                    # Flutter 前端（可换主题自适应 UI，跨平台 Dart）
 │   ├── pubspec.yaml
 │   ├── linux/                   # Linux 壳工程（当前主力，完整）
-│   ├── android/                 # Android 壳工程（⚠️ 空壳，落地见 DESIGN.md §8 阶段 0）
+│   ├── android/                 # Android 壳工程（已重建，双端对齐开发）
 │   └── lib/
 │       ├── main.dart            # 入口 + Provider 装配 / Root
 │       ├── theme/               # 可配置主题（app_theme / theme_provider）
 │       ├── layout/              # 自适应布局（app_shell/sidebar/top_bar/queue_panel/mini_player_bar）
-│       ├── providers/           # 状态（auth/library/player/navigation/direct_source_manager）
+│       ├── providers/           # 状态（auth/library/player/navigation/playlists/direct_source_manager）
 │       ├── services/            # ApiClient（含懒刷新拦截器）/ AuthService / ServerSettings
 │       ├── data/sources/        # MusicSource 抽象 + ServerProxy / WebdavDirect / SmbDirect
-│       ├── data/local/          # 纯 Dart 头部解析（audio_metadata）+ SQLite 轻量索引（local_index）
+│       ├── data/local/          # audio_metadata 头部解析 + local_index + 阶段2 封装（weight/playlist/cache/settings）
 │       ├── models/              # Song / Album / Artist
-│       ├── widgets/             # 共享组件（SongTile / CoverThumb）
-│       └── screens/             # library / sources / source_browse_view / settings / player / pairing
+│       ├── widgets/             # 共享组件（SongTile / CoverThumb / PlayModeSelector / add_to_playlist）
+│       └── screens/             # library / playlists_view / sources / source_browse_view / settings / player / pairing
 ├── scripts/
 │   └── init.sql                 # MySQL 建库建表
 ├── nginx/
 │   └── selfmusic.conf           # Nginx 反向代理配置
 ├── docker-compose.yml           # Docker 编排
 ├── .env                         # 环境变量模板
+├── run-linux.sh                 # Linux 快速运行（等价 flutter run -d linux）
+├── run-android.sh               # Android 快速运行（flutter run -d <设备id> --dart-define=API_BASE_URL）
 └── README.md
 ```
 
