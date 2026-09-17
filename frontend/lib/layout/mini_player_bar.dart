@@ -25,8 +25,8 @@ class MiniPlayerBar extends StatelessWidget {
           if (!nav.playerView) nav.openPlayer();
         },
         child: Container(
-          height: 56,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
+          constraints: const BoxConstraints(minHeight: 56),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
           decoration: BoxDecoration(
             border: Border(top: BorderSide(color: cs.outlineVariant)),
           ),

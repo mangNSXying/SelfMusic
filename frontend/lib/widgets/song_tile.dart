@@ -38,6 +38,7 @@ class SongTile extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           IconButton(
+            visualDensity: VisualDensity.compact,
             icon: Icon(
               favorite ? Icons.favorite : Icons.favorite_border,
               color: favorite ? Colors.pink : null,
@@ -47,6 +48,7 @@ class SongTile extends StatelessWidget {
           ),
           if (song.isDirect)
             IconButton(
+              visualDensity: VisualDensity.compact,
               icon: const Icon(Icons.download),
               tooltip: '缓存以便离线播放',
               onPressed: () async {

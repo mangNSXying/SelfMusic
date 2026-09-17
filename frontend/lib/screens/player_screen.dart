@@ -22,92 +22,97 @@ class PlayerScreen extends StatelessWidget {
     final favorite = direct.weight.isFavorite(s);
 
     return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 520),
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                width: 200,
-                height: 200,
-                decoration: BoxDecoration(
-                  color: cs.primary.withValues(alpha: 0.18),
-                  borderRadius: BorderRadius.circular(20),
+      child: SingleChildScrollView(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              children: [
+                Container(
+                  width: 260,
+                  height: 260,
+                  decoration: BoxDecoration(
+                    color: cs.primary.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Icon(Icons.music_note, size: 128, color: cs.primary),
                 ),
-                child: Icon(Icons.music_note, size: 96, color: cs.primary),
-              ),
-              const SizedBox(height: 28),
-              Text(s.title, style: Theme.of(context).textTheme.headlineSmall, textAlign: TextAlign.center),
-              const SizedBox(height: 8),
-              Text(s.artist ?? 'Unknown', style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 4),
-              Text('${s.source} · ${s.format ?? ""} · ${s.duration ?? ''}s',
-                  style: TextStyle(color: cs.onSurface.withValues(alpha: 0.6))),
-              const SizedBox(height: 16),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  IconButton(
-                    iconSize: 30,
-                    icon: Icon(
-                      favorite ? Icons.favorite : Icons.favorite_border,
-                      color: favorite ? Colors.pink : null,
+                const SizedBox(height: 32),
+                Text(s.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.headlineSmall,
+                    textAlign: TextAlign.center),
+                const SizedBox(height: 8),
+                Text(s.artist ?? 'Unknown', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 4),
+                Text('${s.source} · ${s.format ?? ""} · ${s.duration ?? ''}s',
+                    style: TextStyle(color: cs.onSurface.withValues(alpha: 0.6))),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    IconButton(
+                      iconSize: 34,
+                      icon: Icon(
+                        favorite ? Icons.favorite : Icons.favorite_border,
+                        color: favorite ? Colors.pink : null,
+                      ),
+                      tooltip: favorite ? '取消喜欢' : '喜欢',
+                      onPressed: () => direct.setFavorite(s, !favorite),
                     ),
-                    tooltip: favorite ? '取消喜欢' : '喜欢',
-                    onPressed: () => direct.setFavorite(s, !favorite),
-                  ),
-                  IconButton(
-                    iconSize: 30,
-                    icon: Icon(Icons.thumb_down_outlined,
-                        color: cs.onSurface.withValues(alpha: 0.7)),
-                    tooltip: '不喜欢（降低权重）',
-                    onPressed: () {
-                      direct.dislikeSong(s);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('已下调该曲权重')));
-                    },
-                  ),
-                  const SizedBox(width: 12),
-                  if (direct.settings.playerShowWeight)
-                    Chip(
-                      avatar: const Icon(Icons.speed, size: 16),
-                      label: Text('权重 ${player.currentWeightFactor?.toStringAsFixed(1) ?? '—'}'),
+                    IconButton(
+                      iconSize: 34,
+                      icon: Icon(Icons.thumb_down_outlined,
+                          color: cs.onSurface.withValues(alpha: 0.7)),
+                      tooltip: '不喜欢（降低权重）',
+                      onPressed: () {
+                        direct.dislikeSong(s);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('已下调该曲权重')));
+                      },
                     ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              const PlayModeSelector(),
-              const SizedBox(height: 16),
-              _PlayerSeek(player: player, cs: cs),
-              const SizedBox(height: 8),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  IconButton(icon: const Icon(Icons.skip_previous, size: 36), onPressed: player.prev),
-                  const SizedBox(width: 12),
-                  StreamBuilder<PlayerState>(
-                    stream: player.player.playerStateStream,
-                    builder: (c, snap) {
-                      final playing = snap.data?.playing ?? false;
-                      return IconButton(
-                        icon: Icon(playing ? Icons.pause_circle : Icons.play_circle, size: 64),
-                        color: cs.primary,
-                        onPressed: player.toggle,
-                      );
-                    },
-                  ),
-                  const SizedBox(width: 12),
-                  IconButton(icon: const Icon(Icons.skip_next, size: 36), onPressed: player.next),
-                ],
-              ),
-              if (player.error != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 16),
-                  child: Text(player.error!, style: const TextStyle(color: Colors.red), textAlign: TextAlign.center),
+                    const SizedBox(width: 12),
+                    if (direct.settings.playerShowWeight)
+                      Chip(
+                        avatar: const Icon(Icons.speed, size: 16),
+                        label: Text('权重 ${player.currentWeightFactor?.toStringAsFixed(1) ?? '—'}'),
+                      ),
+                  ],
                 ),
-            ],
+                const SizedBox(height: 8),
+                const PlayModeSelector(),
+                const SizedBox(height: 16),
+                _PlayerSeek(player: player, cs: cs),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    IconButton(icon: const Icon(Icons.skip_previous, size: 44), onPressed: player.prev),
+                    const SizedBox(width: 12),
+                    StreamBuilder<PlayerState>(
+                      stream: player.player.playerStateStream,
+                      builder: (c, snap) {
+                        final playing = snap.data?.playing ?? false;
+                        return IconButton(
+                          icon: Icon(playing ? Icons.pause_circle : Icons.play_circle, size: 80),
+                          color: cs.primary,
+                          onPressed: player.toggle,
+                        );
+                      },
+                    ),
+                    const SizedBox(width: 12),
+                    IconButton(icon: const Icon(Icons.skip_next, size: 44), onPressed: player.next),
+                  ],
+                ),
+                if (player.error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 16),
+                    child: Text(player.error!, style: const TextStyle(color: Colors.red), textAlign: TextAlign.center),
+                  ),
+              ],
+            ),
           ),
         ),
       ),

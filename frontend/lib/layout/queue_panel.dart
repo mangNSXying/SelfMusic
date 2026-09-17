@@ -51,7 +51,11 @@ class QueuePanel extends StatelessWidget {
                     },
                   ),
           ),
-          _MiniControls(player: player),
+          Flexible(
+            child: SingleChildScrollView(
+              child: _MiniControls(player: player),
+            ),
+          ),
         ],
       ),
     );

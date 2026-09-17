@@ -36,21 +36,19 @@ class _AppShellState extends State<AppShell> {
   Widget build(BuildContext context) {
     final wide = MediaQuery.of(context).size.width >= 900;
 
-    final contentColumn = Expanded(
-      child: Column(
-        children: [
-          TopBar(onSidebarToggle: _toggleSidebar, onQueueToggle: _toggleQueue, queueActive: _queueVisible),
-          Expanded(child: widget.content),
-          const MiniPlayerBar(),
-        ],
-      ),
+    final contentColumn = Column(
+      children: [
+        TopBar(onSidebarToggle: _toggleSidebar, onQueueToggle: _toggleQueue, queueActive: _queueVisible),
+        Expanded(child: widget.content),
+        const MiniPlayerBar(),
+      ],
     );
 
     final shell = wide
         ? Row(
             children: [
               if (_sidebarVisible) Sidebar(onClose: _toggleSidebar),
-              contentColumn,
+              Expanded(child: contentColumn),
               if (_queueVisible) QueuePanel(onClose: _toggleQueue),
             ],
           )
