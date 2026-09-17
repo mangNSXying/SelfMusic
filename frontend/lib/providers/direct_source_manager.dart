@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 
 import '../data/sources/music_source.dart';
 import '../data/sources/webdav_direct_source.dart';
+import '../data/sources/local_direct_source.dart';
 import '../data/sources/server_proxy_source.dart';
 import '../data/local/local_index.dart';
 import '../data/local/app_settings.dart';
@@ -87,21 +88,12 @@ class DirectSourceManager extends ChangeNotifier {
     for (final r in rows) {
       if (!r.enabled) continue;
       try {
-        if (r.kind == 'webdav') {
+        if (r.kind == 'webdav' || r.kind == 'local') {
           final cfg = jsonDecode(r.config) as Map<String, dynamic>;
           final mode = _modeFromConfig(cfg);
           final name = cfg['name'] as String? ?? r.name;
-          if (mode == SourceMode.proxy) {
-            _sources.add(_buildProxy(name: name, key: _webdavKey(name)));
-          } else {
-            _sources.add(WebdavDirectSource(
-              name: name,
-              baseUrl: cfg['baseUrl'] as String? ?? '',
-              username: cfg['username'] as String? ?? '',
-              password: cfg['password'] as String? ?? '',
-              index: index,
-            ));
-          }
+          _sources.add(_buildFor(
+              kind: r.kind, key: r.key, name: name, cfg: cfg, mode: mode));
         }
         // SMB 自动恢复在阶段 4 补充。
       } catch (_) {
@@ -116,6 +108,54 @@ class DirectSourceManager extends ChangeNotifier {
       (cfg['mode'] as String?) == 'proxy' ? SourceMode.proxy : SourceMode.direct;
 
   String _webdavKey(String name) => 'webdav:$name';
+
+  String _localKey(String name) => 'local:$name';
+
+  /// 按源类型构建直连源实例（webdav / local）。
+  MusicSource _buildDirect({
+    required String kind,
+    required String name,
+    required Map<String, dynamic> cfg,
+  }) {
+    if (kind == 'local') {
+      return LocalDirectSource(
+        name: name,
+        rootPath: cfg['path'] as String? ?? '',
+        index: index,
+      );
+    }
+    return WebdavDirectSource(
+      name: name,
+      baseUrl: cfg['baseUrl'] as String? ?? '',
+      username: cfg['username'] as String? ?? '',
+      password: cfg['password'] as String? ?? '',
+      index: index,
+    );
+  }
+
+  /// 按类型 + 数据通道构建源实例（直连或服务端代理）。
+  MusicSource _buildFor({
+    required String kind,
+    required String key,
+    required String name,
+    required Map<String, dynamic> cfg,
+    required SourceMode mode,
+  }) =>
+      mode == SourceMode.proxy
+          ? _buildProxy(name: name, key: key)
+          : _buildDirect(kind: kind, name: name, cfg: cfg);
+
+  /// 读取某源的可编辑配置（含 kind/name/path/baseUrl/username/password/mode）。
+  /// 代理模式下内存对象只是 [ServerProxySource]，原始凭据需从持久化配置还原。
+  Map<String, dynamic> editableConfig(String key) {
+    final row = index.getSource(key);
+    if (row == null) return const {};
+    final cfg = <String, dynamic>{'kind': row.kind, 'key': row.key};
+    try {
+      cfg.addAll(jsonDecode(row.config) as Map<String, dynamic>);
+    } catch (_) {}
+    return cfg;
+  }
 
   ServerProxySource _buildProxy({required String name, required String key}) {
     final base = _api?.baseUrl ?? '';
@@ -165,6 +205,77 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 新增本地文件夹源。
+  Future<void> addLocal({
+    required String name,
+    required String path,
+    SourceMode mode = SourceMode.direct,
+  }) async {
+    final key = _localKey(name);
+    final cfg = <String, dynamic>{
+      'name': name,
+      'path': path,
+      'mode': mode.name,
+    };
+    _sources.add(_buildFor(
+        kind: 'local', key: key, name: name, cfg: cfg, mode: mode));
+    index.upsertSource(key, 'local', name, jsonEncode(cfg));
+    notifyListeners();
+  }
+
+  /// 编辑源：可改 名称（含 key 迁移）/ 地址或目录 / 账号 / 密码 / 数据通道。
+  ///
+  /// 改名会派生新的 key，[LocalIndex.renameSource] 同步迁移已索引歌曲、
+  /// 收藏与歌单条目；与已有源重名时抛 [StateError]。
+  Future<void> updateSource(
+    String key, {
+    String? name,
+    String? path,
+    String? baseUrl,
+    String? username,
+    String? password,
+    SourceMode? mode,
+  }) async {
+    final row = index.getSource(key);
+    if (row == null) return;
+    final cfg = <String, dynamic>{};
+    try {
+      cfg.addAll(jsonDecode(row.config) as Map<String, dynamic>);
+    } catch (_) {}
+    final newName = (name ?? cfg['name'] ?? row.name).toString().trim();
+    if (newName.isEmpty) throw StateError('源名称不能为空');
+    cfg['name'] = newName;
+    if (path != null) cfg['path'] = path;
+    if (baseUrl != null) cfg['baseUrl'] = baseUrl;
+    if (username != null) cfg['username'] = username;
+    if (password != null) cfg['password'] = password;
+    final newMode = mode ?? _modeFromConfig(cfg);
+    cfg['mode'] = newMode.name;
+
+    final newKey = '${row.kind}:$newName';
+    if (newKey != key && _sources.any((s) => s.key == newKey)) {
+      throw StateError('已存在同名播放源');
+    }
+
+    final rebuilt = <MusicSource>[];
+    for (final s in _sources) {
+      if (s.key == key) {
+        rebuilt.add(_buildFor(
+            kind: row.kind, key: newKey, name: newName, cfg: cfg, mode: newMode));
+      } else {
+        rebuilt.add(s);
+      }
+    }
+    _sources
+      ..clear()
+      ..addAll(rebuilt);
+    if (newKey != key) {
+      index.renameSource(key, newKey);
+    }
+    index.upsertSource(newKey, row.kind, newName, jsonEncode(cfg));
+    notifyListeners();
+  }
+
   /// 切换某源的数据通道模式（直连 ↔ 服务端代理）并持久化。
   Future<void> setMode(String key, SourceMode mode) async {
     final row = index.getSource(key);
@@ -180,17 +291,8 @@ class DirectSourceManager extends ChangeNotifier {
     final List<MusicSource> rebuilt = [];
     for (final s in _sources) {
       if (s.key == key) {
-        if (mode == SourceMode.proxy) {
-          rebuilt.add(_buildProxy(name: name, key: key));
-        } else {
-          rebuilt.add(WebdavDirectSource(
-            name: name,
-            baseUrl: cfg['baseUrl'] as String? ?? '',
-            username: cfg['username'] as String? ?? '',
-            password: cfg['password'] as String? ?? '',
-            index: index,
-          ));
-        }
+        rebuilt.add(_buildFor(
+            kind: row.kind, key: key, name: name, cfg: cfg, mode: mode));
       } else {
         rebuilt.add(s);
       }

@@ -185,6 +185,21 @@ class LocalIndex {
     _db!.execute('DELETE FROM idx_songs WHERE source_key=?', [key]);
   }
 
+  /// 源改名：源 key 由名称派生，改名时同步迁移所有引用该 key 的数据，
+  /// 保证已索引歌曲、收藏、歌单条目在改名后仍然有效。
+  void renameSource(String oldKey, String newKey) {
+    if (oldKey == newKey) return;
+    _db!.execute('UPDATE OR REPLACE sources SET key=? WHERE key=?',
+        [newKey, oldKey]);
+    _db!.execute('UPDATE OR REPLACE idx_songs SET source_key=? WHERE source_key=?',
+        [newKey, oldKey]);
+    _db!.execute('UPDATE OR REPLACE play_meta SET source_key=? WHERE source_key=?',
+        [newKey, oldKey]);
+    _db!.execute(
+        'UPDATE OR REPLACE playlist_items SET source_key=? WHERE source_key=?',
+        [newKey, oldKey]);
+  }
+
   DirectSourceRow _rowToSource(Row r) => DirectSourceRow(
         key: r['key'] as String,
         kind: r['kind'] as String,

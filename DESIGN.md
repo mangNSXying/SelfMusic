@@ -368,7 +368,7 @@ lib/
 
 ```dart
 abstract class MusicSource {
-  String get key;                       // 稳定标识: 'server'/'smb:nas1'/'webdav:xx'
+  String get key;                       // 稳定标识: 'server'/'smb:nas1'/'webdav:xx'/'local:xx'
   SourceKind get kind;
   Future<ScanResult> scan();            // 建本地索引（增量）
   Future<SongMeta> probe(String ref);   // 头部元数据（Range 读头部）
@@ -394,7 +394,8 @@ abstract class MusicSource {
 
 ### 6.4 直连模式本地轻量索引
 
-- 首次添加源 → 后台 Isolate 扫描：列目录（WebDAV PROPFIND Depth:infinity 或逐级；SMB 递归枚举）→ 对每个音频文件 Range 取头部 → `audio_metadata_reader`（纯 Dart，mp3/flac/m4a）解析标题/歌手/专辑/封面 → 写入 `idx_songs`
+- 首次添加源 → 后台 Isolate 扫描：列目录（WebDAV PROPFIND Depth:infinity 或逐级；SMB 递归枚举；本地文件夹 `Directory.list(recursive:true)`）→ 对每个音频文件 Range 取头部 → `audio_metadata_reader`（纯 Dart，mp3/flac/m4a）解析标题/歌手/专辑/封面 → 写入 `idx_songs`
+- 本地文件夹源（`LocalDirectSource`，全平台）：`key='local:<name>'`、`kind=local`；文件本身即本体，`cachedFilePath` 直接返回绝对路径走 `setFilePath`；Android 读取共享存储需运行时 `READ_MEDIA_AUDIO`（13+）/ `READ_EXTERNAL_STORAGE`（12-）权限，扫描前申请
 - 时长探测：mp3 估算法（文件大小÷码率）或解析 Xing/VBRI 头；flac 读 STREAMINFO
 - 增量：以 `(ref, mtime, size)` 三元组比对；消失项标记 `missing`（保留缓存歌的可播性）
 - 封面：提取嵌入图存应用目录 `covers/<hash>.jpg`，SQLite 存路径
@@ -409,7 +410,8 @@ abstract class MusicSource {
 - 所有播放源默认激活（移除旧「单一激活源」概念），`direct_source_manager.dart` 仅维护源列表与本地索引，不再持有 `_activeKey`
 - 点击源卡片 → `NavigationProvider.enterSource(key)` 将 `browsingSourceKey` 置为该源 key → `AppContent` 检测到 `sources + browsingSourceKey` → 内容区原地切换为 `SourceBrowseView`（不走 `Navigator.push`）
 - `SourceBrowseView`：顶部返回按钮调用 `exitSource()`、显示源名、扫描/刷新按钮、搜索框、歌曲计数；扫描完成后自动调用 `LibraryProvider.loadSongs()` 刷新全局合并库
-- 源卡片右侧 `PopupMenuButton` 三点菜单：切换为直连/切换为服务端代理、删除源（二次确认弹窗）；移除旧「服务器源」独立卡片（服务端代理归属直连源的模式之一）
+- 源卡片右侧 `PopupMenuButton` 三点菜单：切换为直连/切换为服务端代理、编辑、删除源（二次确认弹窗）；移除旧「服务器源」独立卡片（服务端代理归属直连源的模式之一）
+- 新增/编辑源弹窗统一为 `_SourceDialog`：添加态用 `SegmentedButton` 选 WebDAV/本地文件夹（本地态提供「选择目录」走 `file_selector.getDirectoryPath`）；编辑态按 key 从 `LocalIndex` 原始配置预填（代理模式下内存对象不持底层凭据），改名会派生新 key 并同步迁移 `sources/idx_songs/play_meta/playlist_items`（`LocalIndex.renameSource`）
 - 全局歌曲/专辑/歌手合并：`LibraryProvider.loadSongs()` 合并 `ServerProxySource.fetchSongs()` 与 `DirectSourceManager.allSongs()`（按 `title|artist|albumName` 去重），服务器源返回的歌曲 `sourceKey = 'server'`；专辑和歌手按合并后的歌曲列表客户端聚合（`Album.fromSongs` / `Artist.fromSongs`），切换到对应栏目时自动拉取
 - 播放路由：`PlayerProvider.attachSourceResolver` 注册解析函数，按歌曲 `sourceKey` 逐首解析源实现（'server' → `ServerProxySource`；其余 → `DirectSourceManager.sourceByKey`），混播队列中直连歌曲与服务器歌曲均可正常播放
 

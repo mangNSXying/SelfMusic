@@ -259,6 +259,8 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 | flutter_secure_storage | 敏感数据安全存储（token、主题偏好） |
 | sqlite3 / sqlite3_flutter_libs | 客户端本地库（local_index）：源索引 idx_songs + cache + play_meta + playlists + app_settings + play_state（drift 的轻量替代，见 DESIGN §3.2） |
 | xml | WebDAV PROPFIND XML 解析 |
+| file_selector | 备份导入导出、本地文件夹源「选择目录」 |
+| permission_handler | Android 本地文件夹源运行时权限（READ_MEDIA_AUDIO / READ_EXTERNAL_STORAGE） |
 
 ### 直连索引与元数据编码
 
