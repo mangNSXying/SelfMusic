@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 import '../data/sources/music_source.dart';
+import '../data/sources/scan_worker.dart';
 import '../data/sources/webdav_direct_source.dart';
 import '../data/sources/local_direct_source.dart';
 import '../data/sources/server_proxy_source.dart';
@@ -43,6 +44,87 @@ class DirectSourceManager extends ChangeNotifier {
 
   /// 收藏列表版本号：全局收藏面板监听该值刷新（避免全量 rebuild）。
   int get favoriteVersion => _favoriteVersion;
+
+  // ---------- 扫描：进度 / 取消 / 自动触发 ----------
+
+  final Map<String, ScanToken> _scanTokens = {};
+  final StreamController<ScanProgress> _scanProgress =
+      StreamController<ScanProgress>.broadcast();
+  ScanProgress? _lastProgress;
+  DateTime _lastProgressNotify = DateTime.fromMillisecondsSinceEpoch(0);
+  bool _scanningNow = false;
+
+  /// 扫描进度事件（内存广播；UI 监听即可，无需轮询）。
+  Stream<ScanProgress> get scanProgressStream => _scanProgress.stream;
+
+  /// 最近一次进度（UI 直接读取，避免全量 rebuild 丢帧）。
+  ScanProgress? get currentScanProgress => _lastProgress;
+
+  /// 是否有源正在扫描。
+  bool get scanningNow => _scanningNow;
+
+  /// 指定源是否正在扫描。
+  bool isScanning(String key) => _scanTokens.containsKey(key);
+
+  /// 取消指定源的扫描（worker 收到后尽快停止并返回已完成的增量）。
+  void cancelScan(String key) => _scanTokens[key]?.cancel();
+
+  // ---------- 自动扫描 ----------
+
+  Timer? _autoScanTimer;
+  final List<DirectoryWatcher> _watchers = [];
+
+  /// 按设置重启周期自动扫描定时器 + 本地目录监视（检测到变化即增量扫描）。
+  void restartAutoScan() {
+    _autoScanTimer?.cancel();
+    _autoScanTimer = null;
+    final minutes = settings.scanAutoIntervalMin;
+    if (minutes > 0) {
+      _autoScanTimer = Timer.periodic(Duration(minutes: minutes), (_) {
+        unawaited(autoScanAll());
+      });
+    }
+    // 重建本地目录监视（路径/模式变更后生效）。
+    for (final w in _watchers) {
+      w.dispose();
+    }
+    _watchers.clear();
+    for (final s in _sources) {
+      if (s is LocalDirectSource) _registerWatcher(s);
+    }
+  }
+
+  void _registerWatcher(LocalDirectSource src) {
+    if (_watchers.any((w) => w.key == src.key)) return;
+    try {
+      final dir = Directory(src.rootPath);
+      if (!dir.existsSync()) return;
+      late final DirectoryWatcher entry;
+      final sub = dir.watch(recursive: true).listen((_) {
+        // 去抖 2s：批量改动只触发一次。
+        entry.debounce?.cancel();
+        entry.debounce = Timer(const Duration(seconds: 2), () {
+          unawaited(scanSource(src.key));
+        });
+      }, onError: (_) {});
+      entry = DirectoryWatcher(src.key, src.rootPath, sub);
+      _watchers.add(entry);
+    } catch (_) {
+      // 目录不可监听（如 Android FUSE 存储）时静默降级给周期定时器。
+    }
+  }
+
+  /// 对所有直连源依次增量扫描（自动触发用；并发保护在 scanSource 内）。
+  Future<void> autoScanAll() async {
+    for (final s in _sources) {
+      if (!s.supportsDirect || isProxy(s.key)) continue;
+      try {
+        await scanSource(s.key);
+      } catch (_) {
+        // 自动扫描失败静默，不影响其余源。
+      }
+    }
+  }
 
   /// 关联后端接入点，供按源代理源使用其中的 dio/baseUrl。
   void attachApi(ApiClient api) => _api = api;
@@ -101,7 +183,23 @@ class DirectSourceManager extends ChangeNotifier {
       }
     }
     _ready = true;
+    restartAutoScan();
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _autoScanTimer?.cancel();
+    for (final w in _watchers) {
+      w.dispose();
+    }
+    _watchers.clear();
+    for (final t in _scanTokens.values) {
+      t.cancel();
+    }
+    _scanTokens.clear();
+    _scanProgress.close();
+    super.dispose();
   }
 
   SourceMode _modeFromConfig(Map<String, dynamic> cfg) =>
@@ -202,6 +300,7 @@ class DirectSourceManager extends ChangeNotifier {
       'mode': mode.name,
     };
     index.upsertSource(key, 'webdav', name, jsonEncode(cfg));
+    restartAutoScan();
     notifyListeners();
   }
 
@@ -220,6 +319,7 @@ class DirectSourceManager extends ChangeNotifier {
     _sources.add(_buildFor(
         kind: 'local', key: key, name: name, cfg: cfg, mode: mode));
     index.upsertSource(key, 'local', name, jsonEncode(cfg));
+    restartAutoScan();
     notifyListeners();
   }
 
@@ -273,6 +373,7 @@ class DirectSourceManager extends ChangeNotifier {
       index.renameSource(key, newKey);
     }
     index.upsertSource(newKey, row.kind, newName, jsonEncode(cfg));
+    restartAutoScan();
     notifyListeners();
   }
 
@@ -301,10 +402,17 @@ class DirectSourceManager extends ChangeNotifier {
       ..clear()
       ..addAll(rebuilt);
     index.upsertSource(key, row.kind, name, jsonEncode(cfg));
+    restartAutoScan();
     notifyListeners();
   }
 
   Future<void> removeSource(String key) async {
+    _scanTokens[key]?.cancel();
+    final gone = _watchers.where((w) => w.key == key).toList();
+    for (final w in gone) {
+      w.dispose();
+    }
+    _watchers.removeWhere((w) => gone.contains(w));
     _sources.removeWhere((s) => s.key == key);
     index.deleteSource(key);
     notifyListeners();
@@ -312,18 +420,27 @@ class DirectSourceManager extends ChangeNotifier {
 
   Future<ScanSummary>? _inFlightScan;
 
-  /// 扫描指定源（增量，mtime/size 未变快速跳过）。
+  /// 扫描指定源（增量：mtime/size/etag 未变快速跳过，零音频下载）。
   /// 并发保护：同一时刻仅允许一次扫描在飞，重复触发复用同一 Future，
-  /// 避免「打开播放源自动扫描」与手动点扫描叠加造成重复探测。
+  /// 避免「自动扫描」与手动扫描叠加造成重复探测。
   Future<ScanSummary> scanSource(String key) {
     final existing = _inFlightScan;
     if (existing != null) return existing;
-    final f = _doScan(key);
+    final token = ScanToken();
+    _scanTokens[key] = token;
+    _scanningNow = true;
+    final f = _doScan(key, token);
     _inFlightScan = f;
-    return f.whenComplete(() => _inFlightScan = null);
+    return f.whenComplete(() {
+      _scanTokens.remove(key);
+      _inFlightScan = null;
+      _scanningNow = false;
+      _lastProgress = null;
+      notifyListeners();
+    });
   }
 
-  Future<ScanSummary> _doScan(String key) async {
+  Future<ScanSummary> _doScan(String key, ScanToken token) async {
     final src = sourceByKey(key);
     if (src == null || !src.supportsDirect) {
       throw StateError('$key 不支持直连扫描');
@@ -337,14 +454,45 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
     try {
       index.updateSourceScan(key, 'scanning');
-      final summary = await src.scan(
-        options: ScanOptions(
-          minSizeBytes: settings.scanIgnoreMinSizeBytes,
-          minDurationSec: settings.scanIgnoreMinDurationSec,
-        ),
+      final options = ScanOptions(
+        minSizeBytes: settings.scanIgnoreMinSizeBytes,
+        minDurationSec: settings.scanIgnoreMinDurationSec,
+        headBytes: settings.scanHeadBytes,
+        fullMeta: settings.scanModeFull,
+        fast: settings.scanModeFast,
+        collectCover: settings.scanEmbedCover && settings.scanModeFull,
       );
-      index.updateSourceScan(key, 'done');
-      return summary;
+      final summary = await src.scan(
+        options: options,
+        token: token,
+        onProgress: (p) {
+          // 节流：距上次通知 >250ms 或进度比例/阶段发生变化时才通知 UI。
+          final now = DateTime.now();
+          final prevValue = _lastProgress?.value;
+          final pv = p.value;
+          final changed =
+              p.listing != (_lastProgress?.listing ?? false) || pv != prevValue;
+          if (now.difference(_lastProgressNotify).inMilliseconds >= 250 ||
+              changed) {
+            _lastProgressNotify = now;
+            _lastProgress = p;
+            _scanProgress.add(p);
+            notifyListeners();
+          }
+        },
+      );
+      if (token.cancelled) {
+        index.updateSourceScan(key, 'cancelled');
+      } else {
+        index.updateSourceScan(key, 'done');
+      }
+      return ScanSummary(
+        added: summary.added,
+        updated: summary.updated,
+        unchanged: summary.unchanged,
+        total: summary.total,
+        cancelled: token.cancelled,
+      );
     } catch (e) {
       error = e.toString();
       index.updateSourceScan(key, 'failed');
@@ -454,5 +602,19 @@ class DirectSourceManager extends ChangeNotifier {
   void onTrackPlaying(MusicSource src, Song s) {
     cache.currentCacheKey = cache.cacheKeyOf(src, s);
     cache.touch(src, s);
+  }
+}
+
+/// 本地目录监视句柄（变化去抖后触发增量扫描）。
+class DirectoryWatcher {
+  final String key;
+  final String path;
+  final StreamSubscription<FileSystemEvent> sub;
+  Timer? debounce;
+  DirectoryWatcher(this.key, this.path, this.sub);
+
+  void dispose() {
+    debounce?.cancel();
+    sub.cancel();
   }
 }

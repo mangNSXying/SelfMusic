@@ -44,3 +44,8 @@ selfmusic:
     password: ${SMB_PASS:}
   transcode:
     max-concurrency: 2
+  scan:
+    head-bytes: ${SCAN_HEAD_BYTES:65536}
+    probe-pool: ${SCAN_PROBE_POOL:4}
+    scheduling-enabled: ${SCAN_SCHEDULING_ENABLED:true}
+    interval-ms: ${SCAN_INTERVAL_MS:21600000}

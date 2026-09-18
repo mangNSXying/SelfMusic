@@ -134,7 +134,7 @@ void main() {
       baseUrl: base,
       index: index,
     );
-    index.open();
+    await index.open();
     addTearDown(index.close);
 
     final summary = await src.scan();
@@ -145,6 +145,67 @@ void main() {
     final titles = all.map((s) => s.title).toSet();
     expect(titles, contains('Song One'));
     expect(titles, contains('Song Two'));
+
+    // 增量：指纹（size/mtime/etag）未变 → 二次扫描零读头（GET 不再增加）。
+    final getsAfterFirst = log.where((l) => l.startsWith('GET')).length;
+    expect(getsAfterFirst, 2);
+    final summary2 = await src.scan();
+    expect(summary2.unchanged, 2, reason: '未变化的文件应直接跳过读头');
+    expect(summary2.added, 0);
+    final getsAfterSecond = log.where((l) => l.startsWith('GET')).length;
+    expect(getsAfterSecond, getsAfterFirst, reason: '增量扫描不应产生新的 GET');
+  });
+
+  test('增量：校验 etag/getlastmodified；etag 变化仅重探该文件', () async {
+    // 服务器返回固定 size + 可变 etag；第二次改 etag → 仅该文件重新探测。
+    var etagRoot = '"abc"';
+    final etagServer = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => etagServer.close(force: true));
+    etagServer.listen((req) async {
+      final resp = req.response;
+      if (req.method == 'PROPFIND') {
+        resp.statusCode = HttpStatus.multiStatus;
+        resp.headers.contentType = ContentType('application', 'xml');
+        resp.write('''<d:multistatus xmlns:d="DAV:">
+ <d:response><d:href>/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+ <d:response><d:href>/a.mp3</d:href><d:propstat><d:prop><d:getcontentlength>100</d:getcontentlength><d:getetag>$etagRoot</d:getetag><d:getlastmodified>Wed, 18 Sep 2026 10:00:00 GMT</d:getlastmodified></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+ <d:response><d:href>/b.mp3</d:href><d:propstat><d:prop><d:getcontentlength>100</d:getcontentlength><d:getetag>"fixed"</d:getetag><d:getlastmodified>Wed, 18 Sep 2026 10:00:00 GMT</d:getlastmodified></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+</d:multistatus>''');
+        await resp.close();
+        return;
+      }
+      final b = _mp3Bytes('A');
+      resp.statusCode = HttpStatus.partialContent;
+      resp.headers.set(HttpHeaders.contentRangeHeader,
+          'bytes 0-${b.length - 1}/${b.length}');
+      resp.contentLength = b.length;
+      resp.headers.contentType = ContentType('audio', 'mpeg');
+      resp.add(b);
+      await resp.close();
+    });
+
+    open.overrideFor(OperatingSystem.linux, _openOnLinux);
+    final tmp = Directory.systemTemp.createTempSync('selftest-etag');
+    addTearDown(() => tmp.deleteSync(recursive: true));
+    PathProviderPlatform.instance = _FakePathProvider(tmp.path);
+
+    final index = LocalIndex();
+    final src = WebdavDirectSource(
+      name: 'etag',
+      baseUrl: 'http://127.0.0.1:${etagServer.port}',
+      index: index,
+    );
+    await index.open();
+    addTearDown(index.close);
+
+    final s1 = await src.scan();
+    expect(s1.added, 2);
+
+    // a.mp3 的 etag 变化 → 仅它被重新探测（updated），b.mp3 跳过。
+    etagRoot = '"def"';
+    final s2 = await src.scan();
+    expect(s2.updated, 1, reason: 'etag 变化的 a.mp3 应重探');
+    expect(s2.unchanged, 1, reason: 'etag 不变的 b.mp3 应跳过');
   });
 
   test('目录 base 不带尾斜杠时也能扫描（服务器 301 重定向场景）', () async {
@@ -198,7 +259,7 @@ void main() {
       baseUrl: 'http://127.0.0.1:${redirectServer.port}/dav',
       index: index,
     );
-    index.open();
+    await index.open();
     addTearDown(index.close);
 
     final summary = await src.scan();

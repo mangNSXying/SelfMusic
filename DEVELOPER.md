@@ -1,6 +1,7 @@
 # SelfMusic 开发者文档
 
-本文档面向项目开发者，介绍日常开发流程、调试方法与常见问题排查。
+本文档面向项目开发者，介绍**日常开发流程、环境搭建、常用命令与调试排查**。
+架构设计、数据模型、API 设计与落地状态见 [DESIGN.md](DESIGN.md)；设置项完整清单见 [settings.md](settings.md)。
 
 环境搭建与快速启动请参考 [README.md](README.md)。
 
@@ -13,9 +14,9 @@
 - [后端开发](#后端开发)
 - [前端开发](#前端开发)
 - [数据库规范](#数据库规范)
-- [API 规范](#api-规范)
 - [配置说明](#配置说明)
 - [常见问题排查](#常见问题排查)
+- [Git 约定](#git-约定)
 
 ---
 
@@ -41,7 +42,7 @@
 
 不同平台的最终产物必须在对应操作系统上构建，一台 Ubuntu 无法完成全部：
 
-> **平台开发原则**：**Linux 与 Android 同步开发、进度对齐**。`lib/` 全部代码为跨平台 Dart，特性落地时必须同时给出 Linux + Android 的平台配套（音频后端/权限/生命周期用条件导入或平台插件收口）。详见 `DESIGN.md §8`。
+> **平台开发原则**：Linux 与 Android 同步开发、进度对齐（详见 DESIGN.md §8 顶部约定）——本矩阵只给结论，原因与验收口径在 DESIGN 里。
 
 | 目标平台 | 构建环境 | 状态 |
 |---------|---------|------|
@@ -136,6 +137,9 @@ docker compose --env-file .env stop backend-dev      # 停止
 # 改完 Java 代码后触发重编译+热重启（devtools 只监听编译产物 target/classes）
 docker compose --env-file .env exec backend-dev \
     mvn -f /home/ubuntu/app/pom.xml -B -o -q compile
+# 若容器内识别不了挂载的 ~/.m2，可显式指定本地仓库（常见于此前的离线构建环境）：
+docker compose exec backend-dev \
+    mvn -q -Dmaven.repo.local=/home/ubuntu/.m2/repository -o compile
 ```
 
 原理：容器里跑 `mvn spring-boot:run`，你的 `backend/src` 和 `~/.m2` 直接挂载进容器
@@ -262,13 +266,20 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 | file_selector | 备份导入导出、本地文件夹源「选择目录」 |
 | permission_handler | Android 本地文件夹源运行时权限（READ_MEDIA_AUDIO / READ_EXTERNAL_STORAGE） |
 
-### 直连索引与元数据编码
+### 客户端扫描与元数据（实现要点）
 
-`audio_metadata.dart` 纯 Dart 解析 mp3 ID3v2 / flac VORBIS_COMMENT 头部标签，不依赖第三方标签库：
+> 设计方案与扫描模式见 DESIGN.md §6.4；这里只记**写代码时必守的隔离与数据规则**。
 
-- mp3 ID3v2：按帧 encoding 字节选解码策略（enc==3 → UTF-8；enc==0 → 尝试 UTF-8，失败回退 Latin-1；enc==1/2 → UTF-16）
-- flac VORBIS_COMMENT：规范规定 UTF-8（`utf8.decode`），解码失败时回退 Latin-1
-- 乱码修复历史：此前 mp3 enc==3 误用 `String.fromCharCodes`（逐字节解码导致 CJK 乱码），flac vorbis 同样误用——均已修正；修复后需对已有播放源重新执行一次「扫描」以覆写旧索引行（`upsert` 自动覆盖，无需手动清库）
+- 扫描在独立 Isolate 运行（`data/sources/scan_worker.dart` 的 `runScan`）：入口函数只收可序列化的原始参数
+  （HTTP 客户端 / DB 句柄 / `LocalIndex` 等**不得跨 isolate 发送**）；指纹表由主 isolate 在 `scan()` 前查好以 `Map<String,Object?>` 传入
+- 增量指纹键 `(ref, size, mtime, etag)`：WebDAV 从 PROPFIND 的 `getlastmodified`/`getetag`/`getcontentlength` 解析；
+  `scanFingerprint` 主 isolate 查询一次传入，避免 worker 碰 DB
+- WebDAV 列表与探测分别并发（`_mapConcurrent` 并发 6 / 本地探测并发 4）；单文件探测失败不拦截整个扫描
+- 结果回主 isolate 后统一 `upsertSongs`（单事务批量）+ `persistCover` + `markMissingExcept` + `clearMissing`；`LocalIndex` 只允许主 isolate 访问
+- 自动扫描：本地 `Directory.watch(recursive)` 变化去抖 2s 触发 `scanSource(key)`；周期定时器按 `scan_auto_interval_min` 轮询全部直连源；`_inFlightScan` 全局互斥防重复扫描
+- 播放时懒补全：`PlayerProvider._enrichLazily` 只在 `duration == null` 时读头解析并 `enrichSong` 回填，失败静默
+- 测试：`test/webdav_scan_test.dart` 用真 `HttpServer`（PROPFIND/GET/Range + 可变 etag）验证跨 isolate 扫描、增量跳过与 etag 变化仅重探目标文件；`test/audio_metadata_test.dart` 覆盖头部越界与大封面边界
+- 历史坑：mp3 enc==3 / flac VORBIS_COMMENT 曾用 `String.fromCharCodes` 逐字节解码导致 CJK 乱码——已改 UTF-8 解码（见 DESIGN §6.4「防护与编码」）；修复后需重扫一次覆写旧行
 
 ### Linux 桌面音频依赖（mpv）
 
@@ -296,17 +307,11 @@ ldconfig -p | grep libmpv   # 应看到 libmpv.so / libmpv.so.2
 
 ## API 规范
 
-- 路径前缀 `/api/v1/`，资源名用复数：`/api/v1/library/songs`、`/api/v1/playlists`
-- 动作语义：GET 查询 / POST 创建 / PUT 全量更新 / PATCH 局部更新 / DELETE 删除
-- 认证：除 `/api/v1/health`、`/api/v1/auth/pair`、`/api/v1/auth/refresh` 外全部要求 `Authorization: Bearer <access_token>`；access 过期返回 `401 + X-Token-Expired: true`，客户端懒刷新
-- 统一响应包一层：
-
-```json
-{ "code": 0, "message": "ok", "data": { } }
-```
-
-- 错误码：`0` 成功，`4xx` 客户端错误，`5xx` 服务端错误
-- 健康检查：`GET /api/v1/health`
+> 完整端点清单、认证细节与**已实现/规划**标注见 DESIGN.md §4。这里只留写代码常用的三条：
+>
+> - 路径前缀 `/api/v1/`，资源名用复数（`/api/v1/library/songs`）
+> - 除 `/api/v1/health`、`/api/v1/auth/pair`、`/api/v1/auth/refresh` 外均需 `Authorization: Bearer <access_token>`；access 过期返回 `401 + X-Token-Expired: true`，客户端懒刷新
+> - 响应统一包一层 `{ "code": 0, "message": "ok", "data": ... }`；`4xx` 客户端错误，`5xx` 服务端错误
 
 ---
 
@@ -330,6 +335,7 @@ ldconfig -p | grep libmpv   # 应看到 libmpv.so / libmpv.so.2
 - 容器内应用监听 8080，对外经 Compose 映射为 18088
 - Hikari 连接池：最大 20、最小空闲 5
 - devtools 热重载已开启，监控 `src/main/java`
+- 业务配置（local/webdav 源、扫描间隔与并发、转码上限等）见 [settings.md §5 服务端全局设置](settings.md)；服务端扫描 env 见 settings.md §5.1
 
 ### Nginx
 

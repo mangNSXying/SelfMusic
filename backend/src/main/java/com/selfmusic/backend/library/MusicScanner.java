@@ -14,6 +14,7 @@ import org.jaudiotagger.audio.AudioFileIO;
 import org.jaudiotagger.tag.FieldKey;
 import org.jaudiotagger.tag.Tag;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -24,21 +25,26 @@ import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Optional;
+import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.regex.Pattern;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
+@EnableScheduling
 public class MusicScanner {
 
     private static final Pattern AUDIO_EXT =
             Pattern.compile("\\.(mp3|flac|m4a|aac|ogg|wav)$", Pattern.CASE_INSENSITIVE);
-
-    private static final int HEAD_BYTES = 256 * 1024; // 解析标签只用文件头部，避免大文件整下载
 
     /** 进程级共享客户端，带连接/请求超时，避免远端慢或无响应时无限阻塞 */
     private static final java.net.http.HttpClient HTTP_CLIENT =
@@ -62,9 +68,39 @@ public class MusicScanner {
     @Value("${selfmusic.webdav.password:}")
     private String webdavPassword;
 
+    /** 每个音频最多读取的头部字节数（标签解析只需头部，避免大文件整下载）。 */
+    @Value("${selfmusic.scan.head-bytes:65536}")
+    private int headBytes;
+
+    /** 标签探测并发池大小（网络/IO 密集，远小于全量顺序探测）。 */
+    @Value("${selfmusic.scan.probe-pool:4}")
+    private int probePool;
+
+    /** 是否启用定时增量扫描。 */
+    @Value("${selfmusic.scan.scheduling-enabled:true}")
+    private boolean schedulingEnabled;
+
+    /** 手动扫描入口（ScanController 调用）。 */
     public ScanTask scan() {
+        return scan(ScanTask.TriggerType.manual);
+    }
+
+    /** 定时增量扫描：指纹（size+mtime）未变直接跳过，不读标签、不写库。 */
+    @org.springframework.scheduling.annotation.Scheduled(
+            fixedDelayString = "${selfmusic.scan.interval-ms:21600000}")
+    public void scheduledScan() {
+        if (!schedulingEnabled) return;
+        try {
+            log.info("scheduled incremental scan start");
+            scan(ScanTask.TriggerType.scheduled);
+        } catch (Exception e) {
+            log.error("scheduled scan failed", e.getMessage(), e);
+        }
+    }
+
+    private ScanTask scan(ScanTask.TriggerType trigger) {
         ScanTask task = new ScanTask();
-        task.setTriggerType(ScanTask.TriggerType.manual);
+        task.setTriggerType(trigger);
         task.setStatus(ScanTask.TaskStatus.running);
         task.setStartedAt(LocalDateTime.now());
         task.setTotalCount(0);
@@ -73,22 +109,58 @@ public class MusicScanner {
         task.setMissingCount(0);
         scanTaskRepository.save(task);
 
-        int added = 0, updated = 0, total = 0;
-        List<ScannedFile> seen = new ArrayList<>();
+        int added = 0, updated = 0, unchanged = 0;
+        List<ScannedFile> all = new ArrayList<>();
         try {
-            seen.addAll(scanLocal());
-            seen.addAll(scanWebdav());
+            all.addAll(scanLocal());
+            all.addAll(scanWebdav());
+            task.setTotalCount(all.size());
 
-            for (ScannedFile f : seen) {
-                total++;
-                if (f.isDirectory) continue;
-                UpsertStatus st = upsert(f);
-                if (st == UpsertStatus.ADDED) added++;
-                else if (st == UpsertStatus.UPDATED) updated++;
+            // 指纹表：一次性载入，避免逐条 N+1 查询。
+            Map<String, Song> known = new HashMap<>();
+            for (Song s : songRepository.findAll()) {
+                known.put(mapKey(s.getSource(), s.getSourceRef()), s);
             }
+
+            // 1) 增量：size + mtime 与库中一致 → 跳过（不读标签、零音频下载）。
+            List<ScannedFile> toProbe = new ArrayList<>();
+            for (ScannedFile f : all) {
+                Song ex = known.get(mapKey(f.source, f.sourceRef));
+                if (ex != null && ex.getFileSize() != null && ex.getFileSize() > 0 && f.size > 0
+                        && ex.getFileSize().equals(f.size)
+                        && ex.getFileMtime() != null && f.mtime != null
+                        && ex.getFileMtime().equals(f.mtime)) {
+                    unchanged++;
+                    continue;
+                }
+                toProbe.add(f);
+            }
+            log.info("scan: total={}, unchanged(skip)={}, probe={}",
+                    all.size(), unchanged, toProbe.size());
+
+            // 2) 并发探测标签（每个文件只读 headBytes）。
+            ExecutorService pool = Executors.newFixedThreadPool(
+                    Math.max(1, Math.min(Math.max(probePool, 1), Math.max(toProbe.size(), 1))));
+            try {
+                List<Future<Meta>> futures = new ArrayList<>();
+                for (ScannedFile f : toProbe) {
+                    futures.add(pool.submit(() -> readMeta(f)));
+                }
+                Map<String, Album> albumCache = new HashMap<>();
+                for (int i = 0; i < toProbe.size(); i++) {
+                    ScannedFile f = toProbe.get(i);
+                    Meta meta = futures.get(i).get();
+                    if (meta == null) continue; // 无标签：跳过（fallback 由 readMeta 兜底文件名，不会为 null）
+                    UpsertStatus st = upsert(f, meta, known, albumCache);
+                    if (st == UpsertStatus.ADDED) added++;
+                    else if (st == UpsertStatus.UPDATED) updated++;
+                }
+            } finally {
+                pool.shutdown();
+            }
+
             recomputeAlbums();
 
-            task.setTotalCount(total);
             task.setAddedCount(added);
             task.setUpdatedCount(updated);
             task.setMissingCount(0);
@@ -97,7 +169,7 @@ public class MusicScanner {
             log.error("scan failed", e);
             task.setStatus(ScanTask.TaskStatus.failed);
             task.setErrorMsg(String.valueOf(e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
-            task.setTotalCount(total);
+            task.setTotalCount(all.size());
             task.setAddedCount(added);
             task.setUpdatedCount(updated);
         } finally {
@@ -105,6 +177,10 @@ public class MusicScanner {
             scanTaskRepository.save(task);
         }
         return task;
+    }
+
+    private static String mapKey(MusicSource src, String ref) {
+        return src.name() + "\u0000" + ref;
     }
 
     // ---------- local ----------
@@ -184,6 +260,8 @@ public class MusicScanner {
                     f.sourceRef = rel;
                     f.ext = extOf(rel);
                     f.size = parseSize(resp);
+                    // getlastmodified 增量指纹：同一文件的 size+mtime 未变则跳过读头。
+                    f.mtime = parseMtime(resp);
                     out.add(f);
                 }
             }
@@ -306,18 +384,32 @@ public class MusicScanner {
         }
     }
 
+    private static final DateTimeFormatter RFC1123 = DateTimeFormatter.RFC_1123_DATE_TIME;
+
+    /** 解析 PROPFIND 的 getlastmodified（RFC1123，如 "Wed, 18 Sep 2026 10:00:00 GMT"）。
+     *  与 local 侧一致转回本时区的 LocalDateTime，保证增量指纹可对。 */
+    private LocalDateTime parseMtime(String resp) {
+        var m = Pattern.compile(
+                "<[^:>]*:?getlastmodified>([^<]+)</[^:>]*:?getlastmodified>",
+                Pattern.CASE_INSENSITIVE).matcher(resp);
+        if (!m.find()) return null;
+        try {
+            ZonedDateTime zdt = ZonedDateTime.parse(m.group(1).trim(), RFC1123);
+            return zdt.withZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     // ---------- 元数据读取与落库 ----------
 
     private enum UpsertStatus { ADDED, UPDATED, UNCHANGED }
 
-    private UpsertStatus upsert(ScannedFile f) {
-        // 解析标签（local 从文件读；webdav 从远程 GET 读）
-        Meta meta = readMeta(f);
-        if (meta == null) return UpsertStatus.UNCHANGED;
-
-        Optional<Song> existing = songRepository.findBySourceAndSourceRef(f.source, f.sourceRef);
-        Song song = existing.orElseGet(Song::new);
-        boolean isNew = existing.isEmpty();
+    private UpsertStatus upsert(ScannedFile f, Meta meta,
+                                Map<String, Song> known, Map<String, Album> albumCache) {
+        Song song = known.get(mapKey(f.source, f.sourceRef));
+        boolean isNew = song == null;
+        if (song == null) song = new Song();
 
         song.setSource(f.source);
         song.setSourceRef(f.sourceRef);
@@ -329,12 +421,12 @@ public class MusicScanner {
         song.setDuration(meta.duration);
         song.setFormat(f.ext);
         song.setFileSize(f.size != 0 ? f.size : song.getFileSize());
-        song.setFileMtime(f.mtime != null ? f.mtime : LocalDateTime.now());
+        song.setFileMtime(f.mtime != null ? f.mtime
+                : song.getFileMtime() != null ? song.getFileMtime() : LocalDateTime.now());
         song.setHidden(false);
-        attachAlbum(song, meta);
+        attachAlbum(song, meta, albumCache);
 
-        if (isNew) songRepository.save(song);
-        else songRepository.save(song);
+        songRepository.save(song);
         return isNew ? UpsertStatus.ADDED : UpsertStatus.UPDATED;
     }
 
@@ -380,8 +472,8 @@ public class MusicScanner {
             byte[] chunk = new byte[8192];
             int total = 0;
             int n;
-            while (total < HEAD_BYTES && (n = in.read(chunk)) != -1) {
-                int take = Math.min(n, HEAD_BYTES - total);
+            while (total < headBytes && (n = in.read(chunk)) != -1) {
+                int take = Math.min(n, headBytes - total);
                 buf.write(chunk, 0, take);
                 total += take;
             }
@@ -397,7 +489,7 @@ public class MusicScanner {
             builder = java.net.http.HttpRequest.newBuilder()
                     .uri(java.net.URI.create(url))
                     .timeout(java.time.Duration.ofSeconds(30))
-                    .header("Range", "bytes=0-" + (HEAD_BYTES - 1))
+                    .header("Range", "bytes=0-" + (headBytes - 1))
                     .GET();
         } catch (IllegalArgumentException e) {
             return null;
@@ -418,18 +510,23 @@ public class MusicScanner {
         }
     }
 
-    private void attachAlbum(Song song, Meta meta) {
+    private void attachAlbum(Song song, Meta meta, Map<String, Album> albumCache) {
         String artist = blankToNull(meta.artist) != null ? meta.artist : "Unknown Artist";
         String albumName = blankToNull(meta.albumName) != null ? meta.albumName : "Unknown Album";
-        Album album = albumRepository.findByArtistAndAlbum(artist, albumName)
-                .orElseGet(() -> {
-                    Album a = new Album();
-                    a.setArtist(artist);
-                    a.setAlbum(albumName);
-                    a.setYear(meta.year);
-                    a.setGenre(blankToNull(meta.genre));
-                    return albumRepository.save(a);
-                });
+        String cacheKey = artist + "\u0000" + albumName;
+        Album album = albumCache.get(cacheKey);
+        if (album == null) {
+            album = albumRepository.findByArtistAndAlbum(artist, albumName)
+                    .orElseGet(() -> {
+                        Album a = new Album();
+                        a.setArtist(artist);
+                        a.setAlbum(albumName);
+                        a.setYear(meta.year);
+                        a.setGenre(blankToNull(meta.genre));
+                        return albumRepository.save(a);
+                    });
+            albumCache.put(cacheKey, album);
+        }
         if (album.getYear() == null && meta.year != null) {
             album.setYear(meta.year);
             albumRepository.save(album);

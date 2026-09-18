@@ -27,6 +27,57 @@ AudioMeta? parseAudioHead(Uint8List head, String format, int fileSize) {
   }
 }
 
+/// 最小元数据解析：仅 标题/歌手/专辑（DESIGN §6.4 快速扫描）。
+///
+/// 不解析时长、曲目、年份、流派、封面，因此头部采样可更小、下载量最小；
+/// 其余元数据在播放时由 [parseAudioHead] 懒补全（enrich）。
+AudioMeta? parseMinimalHead(Uint8List head, String format) {
+  switch (format) {
+    case 'mp3':
+      return _parseMp3Minimal(head);
+    case 'flac':
+      return _parseFlacMinimal(head);
+    default:
+      return null; // m4a/aac/ogg/wav 走文件名回退
+  }
+}
+
+// ---------- MP3 最小解析 ----------
+
+AudioMeta _parseMp3Minimal(Uint8List head) {
+  final meta = AudioMeta();
+  if (head.length >= 10 && String.fromCharCodes(head.sublist(0, 3)) == 'ID3') {
+    final frames = _id3TagToFrames(head, 10);
+    meta.title = frames['TIT2'];
+    meta.artist = frames['TPE1'];
+    meta.album = frames['TALB'];
+  }
+  return meta;
+}
+
+// ---------- FLAC 最小解析 ----------
+
+AudioMeta _parseFlacMinimal(Uint8List head) {
+  final meta = AudioMeta();
+  if (head.length < 4 || String.fromCharCodes(head.sublist(0, 4)) != 'fLaC') {
+    return meta;
+  }
+  var i = 4;
+  bool last = false;
+  while (!last && i + 4 <= head.length) {
+    final hdr = head[i];
+    last = (hdr & 0x80) != 0;
+    final blockType = hdr & 0x7F;
+    final len = _be24(head, i + 1);
+    if (i + 4 + len > head.length) break;
+    final body = head.sublist(i + 4, i + 4 + len);
+    // 只取 VORBIS_COMMENT（标题/歌手/专辑所在地）；STREAMINFO/PICTURE 跳过。
+    if (blockType == 4) _parseVorbisComment(body, meta);
+    i += 4 + len;
+  }
+  return meta;
+}
+
 // ---------- MP3 (ID3v2) ----------
 
 AudioMeta _parseMp3(Uint8List head, int fileSize) {

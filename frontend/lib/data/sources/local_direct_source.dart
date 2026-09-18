@@ -3,19 +3,20 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
-import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../models/song.dart';
 import '../../models/album.dart';
 import 'music_source.dart';
+import 'scan_worker.dart';
 import '../local/local_index.dart';
 import '../local/audio_metadata.dart';
 
 /// 本地文件夹直连源：扫描/播放本机目录（Linux 桌面 + Android 共享存储）。
 ///
-/// - 扫描：Isolate 内递归 [Directory.list] + 读文件头解析元数据，主 isolate 落库 [LocalIndex]。
+/// - 扫描：[runScan] 驱动 worker isolate，先枚举（stat 快照），再按增量指纹跳过
+///   未变化文件的读头；[ScanOptions] 控制 快速模式 / 最小元数据 / 头部大小。
 /// - 播放：文件本身即本地，[cachedFilePath] 直接返回原路径走 setFilePath；
 ///   [open] 作为 Range 流式兜底。
 /// - Android 读取共享存储需运行时权限（READ_MEDIA_AUDIO / READ_EXTERNAL_STORAGE），扫描前申请。
@@ -70,29 +71,47 @@ class LocalDirectSource implements MusicSource {
 
   @override
   Future<ScanSummary> scan(
-      {ScanOptions options = const ScanOptions.none()}) async {
+      {ScanOptions options = const ScanOptions.none(),
+      ScanToken? token,
+      void Function(ScanProgress)? onProgress}) async {
     await _ensureAudioPermission();
-    final srcKey = key;
-    final root = rootPath;
-    final coversDir = p.join(index.dir, 'covers');
-    final minSize = options.minSizeBytes;
-    final minDuration = options.minDurationSec;
-    final out = await Isolate.run(
-      () => _localWalk(
-        key: srcKey,
-        root: root,
-        minSizeBytes: minSize,
-        minDurationSec: minDuration,
-      ),
+    final out = await runScan<List<_LocalWalkOut>>(
+      entry: _localWalkEntry,
+      params: <String, Object?>{
+        'key': key,
+        'root': rootPath,
+        'minSizeBytes': options.minSizeBytes,
+        'minDurationSec': options.minDurationSec,
+        'headBytes': options.headBytes,
+        'fullMeta': options.fullMeta,
+        'fast': options.fast,
+        'collectCover': options.collectCover,
+        'known': index.scanFingerprint(key),
+      },
+      token: token,
+      onProgress: onProgress,
     );
+
     final alive = <String>[];
+    final toWrite = <DirectSongRow>[];
+    var added = 0, updated = 0, unchanged = 0;
     for (final item in out) {
       alive.add(item.row.ref);
-      final coverPath = (item.cover == null || item.cover!.isEmpty)
+      switch (item.kind) {
+        case _OutKind.unchanged:
+          unchanged++;
+          continue;
+        case _OutKind.added:
+          added++;
+        case _OutKind.updated:
+          updated++;
+      }
+      final coverPath = (item.cover == null || item.cover!.isEmpty ||
+              !options.collectCover)
           ? null
-          : _persistCoverToDir(item.cover!, item.row.ref, coversDir);
-      index.upsertSong(DirectSongRow(
-        sourceKey: srcKey,
+          : index.persistCover(item.cover!, item.row.ref);
+      toWrite.add(DirectSongRow(
+        sourceKey: item.row.sourceKey,
         ref: item.row.ref,
         title: item.row.title,
         artist: item.row.artist,
@@ -104,12 +123,18 @@ class LocalDirectSource implements MusicSource {
         format: item.row.format,
         size: item.row.size,
         mtime: item.row.mtime,
-        coverPath: coverPath,
+        etag: item.row.etag,
+        coverPath: coverPath ?? item.row.coverPath,
       ));
     }
-    index.markMissingExcept(srcKey, alive);
-    index.clearMissing(srcKey);
-    return ScanSummary(added: out.length, updated: 0, total: out.length);
+    index.upsertSongs(toWrite);
+    index.markMissingExcept(key, alive);
+    index.clearMissing(key);
+    return ScanSummary(
+        added: added,
+        updated: updated,
+        unchanged: unchanged,
+        total: alive.length);
   }
 
   // ---------- 直连播放 ----------
@@ -168,27 +193,70 @@ class LocalDirectSource implements MusicSource {
   String get configJson => jsonEncode(configJ);
 }
 
-// ---------- helpers ----------
+// ---------- isolate worker（runScan entry） ----------
+
+void _localWalkEntry(Map<String, Object?> msg) async {
+  final params = msg['params']! as Map<String, Object?>;
+  final send = msg['send']! as SendPort;
+  final progress = msg['progress']! as SendPort;
+  final cancelReq = ReceivePort();
+  send.send({'__cancel__': cancelReq.sendPort});
+  var cancelled = false;
+  cancelReq.listen((_) => cancelled = true);
+  try {
+    final out = await _localWalk(
+      key: params['key']! as String,
+      root: params['root']! as String,
+      minSizeBytes: params['minSizeBytes']! as int,
+      minDurationSec: params['minDurationSec']! as int,
+      headBytes: params['headBytes']! as int,
+      fullMeta: params['fullMeta']! as bool,
+      fast: params['fast']! as bool,
+      collectCover: params['collectCover']! as bool,
+      known: (params['known']! as Map<Object?, Object?>)
+          .map((k, v) => MapEntry(k as String, v as ScanFingerprint)),
+      onProgress: (p) => progress.send(p),
+      isCancelled: () => cancelled,
+    );
+    send.send(out);
+  } finally {
+    cancelReq.close();
+  }
+}
 
 class _LocalWalkOut {
   final DirectSongRow row;
   final Uint8List? cover;
-  const _LocalWalkOut(this.row, this.cover);
+  final _OutKind kind;
+  const _LocalWalkOut(this.row, this.cover, this.kind);
 }
 
-/// 进入 isolate：递归遍历本地目录 + 读文件头元数据，返回可落库行与封面字节。
+enum _OutKind { added, updated, unchanged }
+
+/// 进入 worker isolate：先枚举（stat 快照 + 指纹跳过），再并行读未变化文件头。
 Future<List<_LocalWalkOut>> _localWalk({
   required String key,
   required String root,
   required int minSizeBytes,
   required int minDurationSec,
+  required int headBytes,
+  required bool fullMeta,
+  required bool fast,
+  required bool collectCover,
+  required Map<String, ScanFingerprint> known,
+  void Function(ScanProgress)? onProgress,
+  bool Function()? isCancelled,
 }) async {
   final dir = Directory(root);
   if (!await dir.exists()) {
     throw StateError('本地目录不存在：$root');
   }
+  // 阶段 1：枚举 + stat，产出「需要探测」的文件与「未变化」的条目。
+  final toProbe = <_LocalCandidate>[];
   final out = <_LocalWalkOut>[];
+  onProgress?.call(const ScanProgress(listing: true, done: 0, total: 0));
   await for (final entity in dir.list(recursive: true, followLinks: false)) {
+    if (isCancelled?.call() ?? false) return out;
     if (entity is! File) continue;
     final path = entity.path;
     if (!_audioExt(path)) continue;
@@ -196,39 +264,88 @@ Future<List<_LocalWalkOut>> _localWalk({
     if (minSizeBytes > 0 && stat.size < minSizeBytes) continue;
     final ext = _extOf(path);
     final rel = p.relative(path, from: root).replaceAll('\\', '/');
-    final head = await _readHead(entity, 262144);
-    final meta = head.isEmpty ? null : parseAudioHead(head, ext, stat.size);
-    final dur = meta?.duration ?? 0;
-    if (minDurationSec > 0 && dur > 0 && dur < minDurationSec) continue;
-    out.add(_LocalWalkOut(
-      DirectSongRow(
-        sourceKey: key,
-        ref: rel,
-        title: meta?.title?.isNotEmpty == true
-            ? meta!.title!
-            : fallbackTitle(rel),
-        artist: meta?.artist,
-        album: meta?.album,
-        trackNo: meta?.trackNo,
-        year: meta?.year,
-        genre: meta?.genre,
-        duration: meta?.duration,
-        format: ext,
-        size: stat.size,
-        mtime: stat.modified.millisecondsSinceEpoch ~/ 1000,
-        coverPath: null,
-      ),
-      meta?.cover,
-    ));
-    if (out.length >= 20000) {
+    final fp = known[rel];
+    final mtime = stat.modified.millisecondsSinceEpoch ~/ 1000;
+    if (fp != null && fp.same(stat.size, mtime, null)) {
+      out.add(_LocalWalkOut(
+        _rowFor(key, rel, ext, stat.size, mtime, null, fullMeta, false),
+        null,
+        _OutKind.unchanged,
+      ));
+      continue;
+    }
+    if (fast) {
+      out.add(_LocalWalkOut(
+        _rowFor(key, rel, ext, stat.size, mtime, null, fullMeta, true),
+        null,
+        fp == null ? _OutKind.added : _OutKind.updated,
+      ));
+      continue;
+    }
+    toProbe.add(_LocalCandidate(path, rel, ext, stat.size, mtime));
+    if (out.length + toProbe.length >= 20000) {
       throw StateError('单源超过 20000 首上限（DESIGN §6.4 大目录保护）');
     }
   }
+  if (isCancelled?.call() ?? false) return out;
+  onProgress?.call(ScanProgress(listing: false, done: 0, total: toProbe.length));
+  // 阶段 2：读头 + 解析（本地磁盘并行 4，解析 CPU 也在 worker 内完成）。
+  var done = 0;
+  await _mapConcurrent(toProbe, 4, (c) async {
+    if (isCancelled?.call() ?? false) return;
+    final head = await _readHead(c.path, headBytes);
+    if (head.isEmpty) return;
+    var meta = parseAudioHead(head, c.ext, c.size);
+    if (meta != null && !collectCover) meta.cover = null;
+    final dur = meta?.duration ?? 0;
+    if (minDurationSec > 0 && dur > 0 && dur < minDurationSec) return;
+    final outKind =
+        known[c.rel] == null ? _OutKind.added : _OutKind.updated;
+    out.add(_LocalWalkOut(
+      _rowFor(key, c.rel, c.ext, c.size, c.mtime, meta, fullMeta, false),
+      meta?.cover,
+      outKind,
+    ));
+    done++;
+    onProgress?.call(
+        ScanProgress(listing: false, done: done, total: toProbe.length));
+  });
   return out;
 }
 
-Future<Uint8List> _readHead(File f, int max) async {
-  final raf = await f.open();
+class _LocalCandidate {
+  final String path;
+  final String rel;
+  final String ext;
+  final int size;
+  final int mtime;
+  const _LocalCandidate(this.path, this.rel, this.ext, this.size, this.mtime);
+}
+
+DirectSongRow _rowFor(String key, String ref, String ext, int size, int mtime,
+    AudioMeta? meta, bool fullMeta, bool fast) {
+  final title = (fast || meta?.title?.isNotEmpty != true)
+      ? fallbackTitle(ref)
+      : meta!.title!;
+  return DirectSongRow(
+    sourceKey: key,
+    ref: ref,
+    title: title,
+    artist: meta?.artist,
+    album: meta?.album,
+    trackNo: fullMeta && !fast ? meta?.trackNo : null,
+    year: fullMeta && !fast ? meta?.year : null,
+    genre: fullMeta && !fast ? meta?.genre : null,
+    duration: fullMeta && !fast ? meta?.duration : null,
+    format: ext,
+    size: size,
+    mtime: mtime,
+    coverPath: null,
+  );
+}
+
+Future<Uint8List> _readHead(String path, int max) async {
+  final raf = await File(path).open();
   try {
     final len = await raf.length();
     final n = len < max ? len : max;
@@ -239,6 +356,21 @@ Future<Uint8List> _readHead(File f, int max) async {
   }
 }
 
+/// 有界并发（顺序保序；任务返回后释放槽位）。
+Future<void> _mapConcurrent<T>(
+    List<T> items, int pool, Future<void> Function(T) fn) async {
+  if (items.isEmpty) return;
+  var next = 0;
+  Future<void> worker() async {
+    while (true) {
+      final i = next++;
+      if (i >= items.length) return;
+      await fn(items[i]);
+    }
+  }
+  await Future.wait([for (var i = 0; i < pool; i++) worker()]);
+}
+
 /// Android 运行时申请音频读取权限（13+ 用 audio，低版本回退 storage）。
 Future<void> _ensureAudioPermission() async {
   if (!Platform.isAndroid) return;
@@ -247,18 +379,6 @@ Future<void> _ensureAudioPermission() async {
   final storage = await Permission.storage.request();
   if (!storage.isGranted) {
     throw StateError('未授予音频读取权限，请在系统设置中允许后重试');
-  }
-}
-
-String? _persistCoverToDir(Uint8List cover, String ref, String coversDir) {
-  try {
-    final h = md5.convert(utf8.encode(ref)).toString();
-    Directory(coversDir).createSync(recursive: true);
-    final filePath = p.join(coversDir, '$h.jpg');
-    File(filePath).writeAsBytesSync(cover, flush: true);
-    return filePath;
-  } catch (_) {
-    return null;
   }
 }
 

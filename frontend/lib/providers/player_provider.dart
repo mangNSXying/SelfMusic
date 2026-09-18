@@ -9,6 +9,7 @@ import '../models/song.dart';
 import '../data/sources/music_source.dart';
 import '../data/sources/direct_audio_source.dart';
 import '../data/local/local_index.dart';
+import '../data/local/audio_metadata.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/song_weight_store.dart';
 import '../services/selfmusic_audio_handler.dart';
@@ -49,6 +50,9 @@ class PlayerProvider extends ChangeNotifier {
   void Function(MusicSource src, Song s)? _onTrackStarted;
   String? error;
   SelfMusicAudioHandler? _audioHandler;
+
+  /// 播放时懒补全元数据：正在补全的歌（sourceKey|sourceRef）去重集合。
+  final Set<String> _enriching = {};
 
   /// 关联 audio_service 通知栏处理器（settings.md §3.6）：状态变化时回推媒体信息。
   void attachAudioHandler(SelfMusicAudioHandler handler) {
@@ -332,6 +336,10 @@ class PlayerProvider extends ChangeNotifier {
       _curSource = src;
       _saveState(player.position);
       if (src != null) _onTrackStarted?.call(src, s);
+      // 最小扫描的歌没存额外元数据（时长/流派/年份/封面），播放时懒补全。
+      if (src != null && src.supportsDirect && s.duration == null) {
+        unawaited(_enrichLazily(s, src));
+      }
       notifyListeners();
       _syncSystemMedia();
     } catch (e) {
@@ -354,6 +362,42 @@ class PlayerProvider extends ChangeNotifier {
       return;
     }
     await player.setAudioSource(DirectAudioSource(source: src, song: s));
+  }
+
+  /// 懒补全：播放后把解析出的完整元数据（时长/流派/曲目/年份/封面）回填索引。
+  /// 从头读取（本地直读 / WebDAV Range GET），失败静默不影响播放。
+  Future<void> _enrichLazily(Song s, MusicSource src) async {
+    final idx = _index;
+    if (idx == null) return;
+    final k = '${s.sourceKey}\u0000${s.sourceRef}';
+    if (_enriching.contains(k)) return;
+    _enriching.add(k);
+    try {
+      const headMax = 256 * 1024;
+      final head = <int>[];
+      final opened = await src.open(s, range: const IntRange(0, headMax));
+      await for (final chunk in opened.stream) {
+        head.addAll(chunk);
+        if (head.length >= headMax) break;
+      }
+      final meta = parseAudioHead(
+          Uint8List.fromList(head), s.format ?? '', s.fileSize);
+      String? coverPath;
+      final cover = meta?.cover;
+      if (cover != null && cover.isNotEmpty) {
+        coverPath = idx.persistCover(cover, s.sourceRef);
+      }
+      idx.enrichSong(s.sourceKey, s.sourceRef,
+          duration: meta?.duration,
+          genre: meta?.genre,
+          trackNo: meta?.trackNo,
+          year: meta?.year,
+          coverPath: coverPath);
+    } catch (_) {
+      // 后台补全失败不影响播放。
+    } finally {
+      _enriching.remove(k);
+    }
   }
 
   // ---------- 前进/后退 ----------

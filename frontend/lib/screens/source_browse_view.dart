@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../data/sources/music_source.dart';
+import '../data/sources/scan_worker.dart';
 import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/library_provider.dart';
@@ -27,6 +30,8 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
   bool _scanning = false;
   bool _loading = false;
   List<Song> _songs = [];
+  ScanProgress? _progress;
+  StreamSubscription<ScanProgress>? _progressSub;
 
   bool get _isProxy =>
       context.read<DirectSourceManager>().isProxy(widget.sourceKey);
@@ -70,9 +75,16 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
   }
 
   Future<void> _scan(MusicSource source) async {
-    setState(() => _scanning = true);
     final lib = context.read<LibraryProvider>();
     final manager = context.read<DirectSourceManager>();
+    setState(() {
+      _scanning = true;
+      _progress = null;
+    });
+    _progressSub?.cancel();
+    _progressSub = manager.scanProgressStream.listen((p) {
+      if (mounted) setState(() => _progress = p);
+    });
     try {
       final summary = await manager.scanSource(widget.sourceKey);
       // 扫描后刷新全局合并库，使歌曲/专辑/歌手栏目同步出现该源曲目。
@@ -80,8 +92,9 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text(
-                  '扫描完成：新增 ${summary.added} 首，共 ${summary.total} 首')),
+              content: Text(summary.cancelled
+                  ? '扫描已取消'
+                  : '扫描完成：新增 ${summary.added} 首，共 ${summary.total} 首')),
         );
       }
     } catch (e) {
@@ -90,8 +103,26 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
             .showSnackBar(SnackBar(content: Text('扫描失败：$e')));
       }
     } finally {
-      if (mounted) setState(() => _scanning = false);
+      _progressSub?.cancel();
+      _progressSub = null;
+      if (mounted) {
+        setState(() {
+          _scanning = false;
+          _progress = null;
+        });
+      }
     }
+  }
+
+  void _cancel() {
+    final manager = context.read<DirectSourceManager>();
+    manager.cancelScan(widget.sourceKey);
+  }
+
+  @override
+  void dispose() {
+    _progressSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _play(
@@ -151,20 +182,51 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                   label: const Text('刷新'),
                 )
               else
-                FilledButton.icon(
-                  onPressed: _scanning ? null : () => _scan(source),
-                  icon: _scanning
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.refresh, size: 18),
-                  label: const Text('扫描'),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: _scanning ? null : () => _scan(source),
+                      icon: _scanning
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.refresh, size: 18),
+                      label: const Text('扫描'),
+                    ),
+                    if (_scanning)
+                      IconButton(
+                        icon: const Icon(Icons.close),
+                        tooltip: '取消扫描',
+                        onPressed: _cancel,
+                      ),
+                  ],
                 ),
             ],
           ),
         ),
+        // 扫描进度：枚举阶段为不确定进度条；探测阶段显示比例与数字。
+        if (_scanning && !isProxy)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+            child: Column(
+              children: [
+                LinearProgressIndicator(
+                  value: _progress?.value,
+                ),
+                if (_progress != null && !_progress!.listing)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      '已处理 ${_progress!.done}/${_progress!.total}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+              ],
+            ),
+          ),
         const Divider(height: 16),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),

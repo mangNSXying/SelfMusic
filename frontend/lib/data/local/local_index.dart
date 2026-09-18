@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqlite3/sqlite3.dart';
@@ -124,6 +126,14 @@ class LocalIndex {
     if (!cacheCols.contains('last_accessed_at')) {
       _db!.execute('ALTER TABLE cache ADD COLUMN last_accessed_at TEXT');
     }
+    // idx_songs 增量指纹：getetag（WebDAV）列，mtime/size 已在建表时定义。
+    final songCols = _db!
+        .select('PRAGMA table_info(idx_songs)')
+        .map((r) => r['name'] as String)
+        .toSet();
+    if (!songCols.contains('etag')) {
+      _db!.execute('ALTER TABLE idx_songs ADD COLUMN etag TEXT');
+    }
     // play_meta 为既有 DB 时可能缺 song_json 快照列。
     final metaCols = _db!
         .select('PRAGMA table_info(play_meta)')
@@ -212,16 +222,33 @@ class LocalIndex {
 
   // ---------- indexed songs ----------
 
+  /// 该源已有歌曲的增量指纹表：`ref → (size, mtime, etag)`。
+  /// 扫描 worker 比对该表，未变化则跳过读头（增量扫描，零音频下载）。
+  Map<String, ScanFingerprint> scanFingerprint(String sourceKey) {
+    final rs = _db!.select(
+        'SELECT ref, size, mtime, etag FROM idx_songs WHERE source_key=?',
+        [sourceKey]);
+    return {
+      for (final r in rs)
+        r['ref'] as String: ScanFingerprint(
+          size: r['size'] as int,
+          mtime: r['mtime'] as int,
+          etag: r['etag'] as String?,
+        ),
+    };
+  }
+
   void upsertSong(DirectSongRow s) {
     _db!.execute('''
       INSERT INTO idx_songs(source_key, ref, title, artist, album, track_no, year,
-        genre, duration, format, size, mtime, cover_path, is_favorite, missing)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0,0)
+        genre, duration, format, size, mtime, etag, cover_path, is_favorite, missing)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0)
       ON CONFLICT(source_key, ref) DO UPDATE SET
         title=excluded.title, artist=excluded.artist, album=excluded.album,
         track_no=excluded.track_no, year=excluded.year, genre=excluded.genre,
         duration=excluded.duration, format=excluded.format, size=excluded.size,
         mtime=excluded.mtime,
+        etag=COALESCE(excluded.etag, idx_songs.etag),
         cover_path=COALESCE(excluded.cover_path, idx_songs.cover_path),
         missing=0
     ''', [
@@ -237,8 +264,85 @@ class LocalIndex {
       s.format,
       s.size,
       s.mtime,
+      s.etag,
       s.coverPath,
     ]);
+  }
+
+  /// 批量落库（单事务），供扫描结束一次性写入，避免逐行 autocommit。
+  void upsertSongs(List<DirectSongRow> songs) {
+    if (songs.isEmpty) return;
+    _db!.execute('BEGIN');
+    try {
+      final stmt = _db!.prepare('''
+        INSERT INTO idx_songs(source_key, ref, title, artist, album, track_no, year,
+          genre, duration, format, size, mtime, etag, cover_path, is_favorite, missing)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0)
+        ON CONFLICT(source_key, ref) DO UPDATE SET
+          title=excluded.title, artist=excluded.artist, album=excluded.album,
+          track_no=excluded.track_no, year=excluded.year, genre=excluded.genre,
+          duration=excluded.duration, format=excluded.format, size=excluded.size,
+          mtime=excluded.mtime,
+          etag=COALESCE(excluded.etag, idx_songs.etag),
+          cover_path=COALESCE(excluded.cover_path, idx_songs.cover_path),
+          missing=0
+      ''');
+      try {
+        for (final s in songs) {
+          stmt.execute([
+            s.sourceKey,
+            s.ref,
+            s.title,
+            s.artist,
+            s.album,
+            s.trackNo,
+            s.year,
+            s.genre,
+            s.duration,
+            s.format,
+            s.size,
+            s.mtime,
+            s.etag,
+            s.coverPath,
+          ]);
+        }
+      } finally {
+        stmt.dispose();
+      }
+      _db!.execute('COMMIT');
+    } catch (_) {
+      _db!.execute('ROLLBACK');
+      rethrow;
+    }
+  }
+
+  /// 播放懒补全：把播放时解析出的额外元数据（时长/流派/曲目/年份/封面）回填。
+  void enrichSong(String sourceKey, String songRef,
+      {int? duration, String? genre, int? trackNo, int? year, String? coverPath}) {
+    _db!.execute('''
+      UPDATE idx_songs SET
+        duration=COALESCE(?, duration),
+        genre=COALESCE(?, genre),
+        track_no=COALESCE(?, track_no),
+        year=COALESCE(?, year),
+        cover_path=COALESCE(?, cover_path)
+      WHERE source_key=? AND ref=?
+    ''', [duration, genre, trackNo, year, coverPath, sourceKey, songRef]);
+  }
+
+  /// 把嵌入封面包装成可跨源复用的落盘（`covers/<md5(ref)>.jpg`），返回路径或 null。
+  String? persistCover(Uint8List cover, String ref) {
+    if (cover.isEmpty) return null;
+    try {
+      final dir = p.join(_dir!, 'covers');
+      Directory(dir).createSync(recursive: true);
+      final h = md5.convert(utf8.encode(ref)).toString();
+      final filePath = p.join(dir, '$h.jpg');
+      File(filePath).writeAsBytesSync(cover, flush: true);
+      return filePath;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// 扫描结束后把不再存在的条目标记 missing（DESIGN §6.4 增量）。
@@ -668,6 +772,7 @@ class DirectSongRow {
   final String? format;
   final int size;
   final int mtime;
+  final String? etag;
   final String? coverPath;
   DirectSongRow({
     required this.sourceKey,
@@ -682,8 +787,24 @@ class DirectSongRow {
     this.format,
     required this.size,
     required this.mtime,
+    this.etag,
     this.coverPath,
   });
+}
+
+/// 增量指纹：远端 `(size, mtime, etag)` 与库中相同则扫描跳过读头。
+class ScanFingerprint {
+  final int size;
+  final int mtime;
+  final String? etag;
+  const ScanFingerprint({required this.size, required this.mtime, this.etag});
+
+  bool same(int otherSize, int otherMtime, String? otherEtag) {
+    if (size != otherSize) return false;
+    if (mtime != otherMtime) return false;
+    if (etag != null && otherEtag != null && etag != otherEtag) return false;
+    return true;
+  }
 }
 
 /// 一首歌的播放元数据（权重/收藏，stage2.md §1.1）。

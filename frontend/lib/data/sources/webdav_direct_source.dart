@@ -10,15 +10,19 @@ import 'package:xml/xml.dart';
 import '../../models/song.dart';
 import '../../models/album.dart';
 import 'music_source.dart';
+import 'scan_worker.dart';
 import '../local/local_index.dart';
 import '../local/audio_metadata.dart';
 
 /// WebDAV 直连源完整实现（阶段 3）。
 ///
 /// - 扫描：Isolate 内递归 PROPFIND + Range 读头部 + 纯 Dart 解析元数据，
-///   产出 [DirectSongRow] 列表，主 isolate 落库到 [LocalIndex]（增量）。
-/// - 播放：dart:io HTTP Range GET，支持 seek/断点。
-/// - 封面：提取嵌入图存本地 `covers/<hash>.jpg`，DB 记路径。
+///   [runScan] 驱动（可汇报进度 / 可取消），产出 [_WebdavWalkOut] 列表，
+///   主 isolate 批量落库到 [LocalIndex]。
+/// - 增量：比对 `(size, mtime, etag)` 指纹，未变化直接跳过读头（零音频下载）。
+/// - 只读必要参数：非 fullMeta 时仅解析 标题/歌手/专辑（[parseMinimalHead]），
+///   时长/封面等留待播放时懒补全。
+/// - 播放：dart:io HTTP Range GET，支持 seek/断点；或直接交给原生播放器。
 class WebdavDirectSource implements MusicSource {
   @override
   final String name;
@@ -76,33 +80,49 @@ class WebdavDirectSource implements MusicSource {
 
   @override
   Future<ScanSummary> scan(
-      {ScanOptions options = const ScanOptions.none()}) async {
-    // 先复制出可跨 isolate 发送的原始值，再闭包引用（避免捕获 this）。
-    final srcKey = key;
-    final base = _base;
-    final user = username;
-    final pass = password;
-    final coversDir = p.join(index.dir, 'covers');
-    final minSize = options.minSizeBytes;
-    final minDuration = options.minDurationSec;
-    final out = await Isolate.run(
-      () => _webdavWalk(
-        key: srcKey,
-        baseUrl: base,
-        username: user,
-        password: pass,
-        minSizeBytes: minSize,
-        minDurationSec: minDuration,
-      ),
+      {ScanOptions options = const ScanOptions.none(),
+      ScanToken? token,
+      void Function(ScanProgress)? onProgress}) async {
+    // 只传可跨 isolate 发送的原始值（不含 this）。
+    final out = await runScan<List<_WebdavWalkOut>>(
+      entry: _webdavWalkEntry,
+      params: <String, Object?>{
+        'key': key,
+        'baseUrl': _base,
+        'username': username,
+        'password': password,
+        'minSizeBytes': options.minSizeBytes,
+        'minDurationSec': options.minDurationSec,
+        'headBytes': options.headBytes,
+        'fullMeta': options.fullMeta,
+        'fast': options.fast,
+        'collectCover': options.collectCover,
+        'known': index.scanFingerprint(key),
+      },
+      token: token,
+      onProgress: onProgress,
     );
+
     final alive = <String>[];
+    final toWrite = <DirectSongRow>[];
+    var added = 0, updated = 0, unchanged = 0;
     for (final item in out) {
       alive.add(item.row.ref);
-      final coverPath = (item.cover == null || item.cover!.isEmpty)
+      switch (item.kind) {
+        case _OutKind.unchanged:
+          unchanged++;
+          continue;
+        case _OutKind.added:
+          added++;
+        case _OutKind.updated:
+          updated++;
+      }
+      final coverPath = (item.cover == null || item.cover!.isEmpty ||
+              !options.collectCover)
           ? null
-          : _persistCoverToDir(item.cover!, item.row.ref, coversDir);
-      index.upsertSong(DirectSongRow(
-        sourceKey: srcKey,
+          : index.persistCover(item.cover!, item.row.ref);
+      toWrite.add(DirectSongRow(
+        sourceKey: item.row.sourceKey,
         ref: item.row.ref,
         title: item.row.title,
         artist: item.row.artist,
@@ -114,15 +134,20 @@ class WebdavDirectSource implements MusicSource {
         format: item.row.format,
         size: item.row.size,
         mtime: item.row.mtime,
-        coverPath: coverPath,
+        etag: item.row.etag,
+        coverPath: coverPath ?? item.row.coverPath,
       ));
     }
-    index.markMissingExcept(srcKey, alive);
-    index.clearMissing(srcKey);
-    return ScanSummary(added: out.length, updated: 0, total: out.length);
+    index.upsertSongs(toWrite);
+    index.markMissingExcept(key, alive);
+    // 删除不再存在的行（保留收藏）。
+    index.clearMissing(key);
+    return ScanSummary(
+        added: added,
+        updated: updated,
+        unchanged: unchanged,
+        total: alive.length);
   }
-
-  // 扫描相关网络/解析辅助逻辑已下沉为文件底部顶层函数，供 Isolate.run 使用。
 
   // ---------- 直连播放 ----------
 
@@ -133,8 +158,8 @@ class WebdavDirectSource implements MusicSource {
     final req = await client.getUrl(Uri.parse(url));
     _auth(req, username, password);
     if (range != null) {
-      req.headers.set(
-          HttpHeaders.rangeHeader, 'bytes=${range.start}-${range.end ?? ''}');
+      req.headers.set(HttpHeaders.rangeHeader,
+          'bytes=${range.start}-${range.end ?? ''}');
     }
     final resp = await req.close();
     if (resp.statusCode != 200 && resp.statusCode != 206) {
@@ -149,8 +174,8 @@ class WebdavDirectSource implements MusicSource {
     if (range == null) {
       contentLength = resp.contentLength;
     } else {
-      contentLength =
-          (range.length ?? (resp.contentLength > 0 ? resp.contentLength : 0));
+      contentLength = (range.length ??
+          (resp.contentLength > 0 ? resp.contentLength : 0));
     }
     final broadcast = resp.map((b) => b).asBroadcastStream();
     // 流结束后释放 HttpClient 连接（避免跨 request 累积）。
@@ -232,30 +257,40 @@ class WebdavDirectSource implements MusicSource {
   String get configJson => jsonEncode(configJ);
 }
 
-// ---------- helpers ----------
+// ---------- isolate worker（runScan entry） ----------
 
-class _WebdavEntry {
-  final bool isDir;
-  final String href;
-  final int size;
-  final String fullUrl;
-  int mtime = 0;
-  _WebdavEntry({
-    required this.isDir,
-    required this.href,
-    this.size = 0,
-    this.fullUrl = '',
-  });
-
-  String get ext {
-    final i = href.lastIndexOf('.');
-    return i >= 0 ? href.substring(i + 1).toLowerCase() : '';
+void _webdavWalkEntry(Map<String, Object?> msg) async {
+  final params = msg['params']! as Map<String, Object?>;
+  final send = msg['send']! as SendPort;
+  final progress = msg['progress']! as SendPort;
+  final cancelReq = ReceivePort();
+  send.send({'__cancel__': cancelReq.sendPort});
+  var cancelled = false;
+  cancelReq.listen((_) => cancelled = true);
+  try {
+    final out = await _webdavWalk(
+      key: params['key']! as String,
+      baseUrl: params['baseUrl']! as String,
+      username: params['username']! as String,
+      password: params['password']! as String,
+      minSizeBytes: params['minSizeBytes']! as int,
+      minDurationSec: params['minDurationSec']! as int,
+      headBytes: params['headBytes']! as int,
+      fullMeta: params['fullMeta']! as bool,
+      fast: params['fast']! as bool,
+      collectCover: params['collectCover']! as bool,
+      known: (params['known']! as Map<Object?, Object?>)
+          .map((k, v) => MapEntry(k as String, v as ScanFingerprint)),
+      onProgress: (p) => progress.send(p),
+      isCancelled: () => cancelled,
+    );
+    send.send(out);
+  } finally {
+    cancelReq.close();
   }
 }
 
-/// 进入 isolate：递归 PROPFIND + Range 读头部元数据，返回可落库行与封面字节。
-///
-/// 只接收可跨 isolate 发送的原始值（不使用实例字段），因此可用 [Isolate.run]。
+/// 进入 worker isolate：递归 PROPFIND + Range 读头部元数据，返回可落库行与封面字节。
 Future<List<_WebdavWalkOut>> _webdavWalk({
   required String key,
   required String baseUrl,
@@ -263,39 +298,59 @@ Future<List<_WebdavWalkOut>> _webdavWalk({
   required String password,
   required int minSizeBytes,
   required int minDurationSec,
+  required int headBytes,
+  required bool fullMeta,
+  required bool fast,
+  required bool collectCover,
+  required Map<String, ScanFingerprint> known,
+  void Function(ScanProgress)? onProgress,
+  bool Function()? isCancelled,
 }) async {
   final client = _newClient();
   final files = <_WebdavEntry>[];
   final out = <_WebdavWalkOut>[];
+  onProgress?.call(const ScanProgress(listing: true, done: 0, total: 0));
   try {
-    await _listRecursive(client, baseUrl, files, username, password)
-        .timeout(const Duration(seconds: 300));
+    await _listRecursive(client, baseUrl, files, username, password,
+        isCancelled: isCancelled);
+    if (isCancelled?.call() ?? false) return out;
+    onProgress?.call(ScanProgress(listing: false, done: 0, total: files.length));
+    var done = 0;
     for (final f in files) {
-      // 「忽略音频」大小过滤（settings.md §3.4）：不响应探测的过小文件直接跳过。
+      done++;
+      if (isCancelled?.call() ?? false) break;
+      onProgress?.call(
+          ScanProgress(listing: false, done: done, total: files.length));
+      // 已存在且指纹未变 → 跳过探测（零音频下载）。
+      final fp = known[f.href];
+      if (fp != null &&
+          fp.same(f.size, f.mtime, f.etag)) {
+        out.add(_WebdavWalkOut(
+          _rowFor(key, f, null, fullMeta, fast),
+          null,
+          _OutKind.unchanged,
+        ));
+        continue;
+      }
+      // 「忽略音频」大小过滤：不响应探测的过小文件直接跳过。
       if (minSizeBytes > 0 && f.size > 0 && f.size < minSizeBytes) continue;
-      final meta = await _probe(client, f, username, password);
+      if (fast) {
+        out.add(_WebdavWalkOut(
+          _rowFor(key, f, null, false, true),
+          null,
+          fp == null ? _OutKind.added : _OutKind.updated,
+        ));
+        continue;
+      }
+      var meta = await _probe(client, f, username, password, headBytes);
+      if (meta != null && !collectCover) meta.cover = null;
       // 时长过滤：仅在解析出时长时生效，避免误杀探测失败的文件。
       final dur = meta?.duration ?? 0;
       if (minDurationSec > 0 && dur > 0 && dur < minDurationSec) continue;
       out.add(_WebdavWalkOut(
-        DirectSongRow(
-          sourceKey: key,
-          ref: f.href,
-          title: meta?.title?.isNotEmpty == true
-              ? meta!.title!
-              : fallbackTitle(f.href),
-          artist: meta?.artist,
-          album: meta?.album,
-          trackNo: meta?.trackNo,
-          year: meta?.year,
-          genre: meta?.genre,
-          duration: meta?.duration,
-          format: f.ext,
-          size: f.size,
-          mtime: f.mtime,
-          coverPath: null,
-        ),
+        _rowFor(key, f, meta, fullMeta, false),
         meta?.cover,
+        fp == null ? _OutKind.added : _OutKind.updated,
       ));
     }
   } finally {
@@ -308,7 +363,58 @@ Future<List<_WebdavWalkOut>> _webdavWalk({
 class _WebdavWalkOut {
   final DirectSongRow row;
   final Uint8List? cover;
-  const _WebdavWalkOut(this.row, this.cover);
+  final _OutKind kind;
+  const _WebdavWalkOut(this.row, this.cover, this.kind);
+}
+
+/// 落库动作分类（增量统计用）。
+enum _OutKind { added, updated, unchanged }
+
+DirectSongRow _rowFor(String key, _WebdavEntry f, AudioMeta? meta,
+    bool fullMeta, bool fast) {
+  final title = (fast || meta?.title?.isNotEmpty != true)
+      ? fallbackTitle(f.href)
+      : meta!.title!;
+  return DirectSongRow(
+    sourceKey: key,
+    ref: f.href,
+    title: title,
+    artist: meta?.artist,
+    album: meta?.album,
+    trackNo: fullMeta ? meta?.trackNo : null,
+    year: fullMeta ? meta?.year : null,
+    genre: fullMeta ? meta?.genre : null,
+    duration: fullMeta ? meta?.duration : null,
+    format: f.ext,
+    size: f.size,
+    mtime: f.mtime,
+    etag: f.etag,
+    coverPath: null,
+  );
+}
+
+// ---------- helpers ----------
+
+class _WebdavEntry {
+  final bool isDir;
+  final String href;
+  final int size;
+  final String fullUrl;
+  final int mtime;
+  final String? etag;
+  _WebdavEntry({
+    required this.isDir,
+    required this.href,
+    this.size = 0,
+    this.fullUrl = '',
+    this.mtime = 0,
+    this.etag,
+  });
+
+  String get ext {
+    final i = href.lastIndexOf('.');
+    return i >= 0 ? href.substring(i + 1).toLowerCase() : '';
+  }
 }
 
 HttpClient _newClient() => HttpClient()
@@ -321,11 +427,11 @@ void _auth(HttpClientRequest req, String username, String password) {
   req.headers.set(HttpHeaders.authorizationHeader, 'Basic $cred');
 }
 
-Future<Uint8List> _getHead(
-    HttpClient client, String url, String username, String password) async {
+Future<Uint8List> _getHead(HttpClient client, String url, String username,
+    String password, int headBytes) async {
   final req = await client.getUrl(Uri.parse(url));
   _auth(req, username, password);
-  req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-${262144 - 1}');
+  req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-${headBytes - 1}');
   final resp = await req.close();
   if (resp.statusCode != 200 && resp.statusCode != 206) {
     await resp.drain<void>();
@@ -334,31 +440,37 @@ Future<Uint8List> _getHead(
   final builder = BytesBuilder(copy: false);
   await for (final chunk in resp) {
     builder.add(chunk);
-    if (builder.length >= 262144) break;
+    if (builder.length >= headBytes) break;
   }
   return builder.takeBytes();
 }
 
 Future<void> _listRecursive(HttpClient client, String url,
-    List<_WebdavEntry> out, String username, String password) async {
+    List<_WebdavEntry> out, String username, String password,
+    {bool Function()? isCancelled}) async {
   // WebDAV 目录请求须以 '/' 结尾（如 /dav/ → 207；/dav → 部分服务器 301 重定向
   // 导致 3xx 被 _propfind 判为非 207/200 而返回空）。目录 href 已带尾斜杠，
   // 仅根 base 被 _normalizeBase 去掉了尾斜杠，这里补上。
   final dirUrl = url.endsWith('/') ? url : '$url/';
   final entries = await _propfind(client, dirUrl, username, password);
+  final dirs = <String>[];
   for (final e in entries) {
+    if (isCancelled?.call() ?? false) return;
     if (!e.isDir && _audioExt(e.href)) {
       out.add(e);
+    } else if (e.isDir) {
+      dirs.add(e.fullUrl);
     }
     if (out.length >= 20000) {
       throw StateError('单源超过 20000 首上限（DESIGN §6.4 大目录保护）');
     }
   }
-  for (final e in entries) {
-    if (e.isDir) {
-      await _listRecursive(client, e.fullUrl, out, username, password);
-    }
-  }
+  // 目录递归并发（有界 6），显著缩短大目录树的枚举时间。
+  await _mapConcurrent(dirs, 6, (d) async {
+    if (isCancelled?.call() ?? false) return;
+    await _listRecursive(client, d, out, username, password,
+        isCancelled: isCancelled);
+  });
 }
 
 Future<List<_WebdavEntry>> _propfind(
@@ -366,12 +478,12 @@ Future<List<_WebdavEntry>> _propfind(
   final req = await client.openUrl('PROPFIND', Uri.parse(url));
   req.headers.set('Depth', '1');
   _auth(req, username, password);
-  final resp = await req.close();
+  final resp = await req.close().timeout(const Duration(seconds: 30));
   if (resp.statusCode != 207 && resp.statusCode != 200) {
     await resp.drain<void>();
     return const [];
   }
-  final body = await utf8.decodeStream(resp);
+  final body = await utf8.decodeStream(resp).timeout(const Duration(seconds: 30));
   return _parsePropfind(body, url);
 }
 
@@ -386,22 +498,43 @@ List<_WebdavEntry> _parsePropfind(String xml, String dirUrl) {
     if (raw.isEmpty) continue;
     final pathOnly = _pathOf(raw);
     if (pathOnly == dirPath || pathOnly == '$dirPath/') continue;
-    // resourcetype/getcontentlength 位于 propstat/prop 内，需在整棵子树按 local name 找。
+    // resourcetype/getcontentlength/getlastmodified/getetag 位于 propstat/prop 内。
     final rt = _firstByName(resp, 'resourcetype');
     final isDir = rt != null &&
         rt.children.any((c) => c is XmlElement && c.name.local == 'collection');
     var size = 0;
     final sizeEl = _firstByName(resp, 'getcontentlength');
     if (sizeEl != null) size = int.tryParse(sizeEl.innerText.trim()) ?? 0;
+    var mtime = 0;
+    final mt = _firstByName(resp, 'getlastmodified');
+    if (mt != null) {
+      mtime = _parseHttpDateMs(mt.innerText.trim());
+    }
+    String? etag;
+    final et = _firstByName(resp, 'getetag');
+    if (et != null && et.innerText.trim().isNotEmpty) {
+      etag = et.innerText.trim();
+    }
     out.add(_WebdavEntry(
       isDir: isDir,
       // 存人类可读的路径（解码后）作为 ref/标题来源；网络请求用的 fullUrl 保持编码。
       href: _decodePath(pathOnly.trimLeft()),
       size: size,
       fullUrl: _resolve(raw, dirUrl),
+      mtime: mtime,
+      etag: etag,
     ));
   }
   return out;
+}
+
+/// getlastmodified（RFC1123，如 `Wed, 18 Sep 2026 10:00:00 GMT`）→ epoch 秒（UTC）。
+int _parseHttpDateMs(String value) {
+  try {
+    return HttpDate.parse(value).millisecondsSinceEpoch ~/ 1000;
+  } catch (_) {
+    return 0;
+  }
 }
 
 /// 在 [node] 整棵子树里按 local name 找第一个匹配元素（无视 DAV: 命名空间前缀）。
@@ -412,10 +545,11 @@ XmlElement? _firstByName(XmlNode node, String name) {
   return null;
 }
 
-Future<AudioMeta?> _probe(
-    HttpClient client, _WebdavEntry f, String username, String password) async {
+Future<AudioMeta?> _probe(HttpClient client, _WebdavEntry f,
+    String username, String password, int headBytes) async {
   try {
-    final head = await _getHead(client, f.fullUrl, username, password);
+    final head =
+        await _getHead(client, f.fullUrl, username, password, headBytes);
     if (head.isEmpty) return null;
     return parseAudioHead(head, f.ext, f.size);
   } catch (_) {
@@ -423,17 +557,19 @@ Future<AudioMeta?> _probe(
   }
 }
 
-/// 把封面字节写入 [coversDir]（主 isolate 执行，需访问本地目录）。
-String? _persistCoverToDir(Uint8List cover, String ref, String coversDir) {
-  try {
-    final h = md5.convert(utf8.encode(ref)).toString();
-    Directory(coversDir).createSync(recursive: true);
-    final filePath = p.join(coversDir, '$h.jpg');
-    File(filePath).writeAsBytesSync(cover, flush: true);
-    return filePath;
-  } catch (_) {
-    return null;
+/// 有界并发：至多 [pool] 个 [fn] 同时执行（顺序保序）。
+Future<void> _mapConcurrent<T>(
+    List<T> items, int pool, Future<void> Function(T) fn) async {
+  if (items.isEmpty) return;
+  var next = 0;
+  Future<void> worker() async {
+    while (true) {
+      final i = next++;
+      if (i >= items.length) return;
+      await fn(items[i]);
+    }
   }
+  await Future.wait([for (var i = 0; i < pool; i++) worker()]);
 }
 
 bool _audioExt(String href) =>

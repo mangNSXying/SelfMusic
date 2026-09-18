@@ -97,6 +97,10 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 | 忽略音频（时长过滤） | `scan_ignore_min_duration_sec` | `0`（关；启用建议 `60`） | 直连扫描 / 全局合并时过滤过短的明显非音乐文件 |
 | 忽略音频（大小过滤） | `scan_ignore_min_size_bytes` | `0`（关） | 同上，按文件大小过滤 |
 | 仅 Wi-Fi 扫描 | `scan_wifi_only` | `true`（移动端） | 移动端直连扫描仅 Wi-Fi 下进行（DESIGN R4）；桌面端忽略此开关 |
+| 扫描模式 | `scan_mode` | `minimal` | `fast` 仅文件名建索引（零读头）/ `minimal` 只解析标题·歌手·专辑，其余播放时再补全 / `full` 解析全部元数据+封面 |
+| 读取音频头部 | `scan_head_bytes` | `65536`（64KB） | 扫描时每个音频最多读取的字节数；越小扫描越快，但超长标签/封面可能缺失（建议 ≥64KB） |
+| 提取内嵌封面 | `scan_embed_cover` | `true` | `full` 模式下把内嵌封面另存到本地；关闭可加快大曲库扫描 |
+| 自动扫描间隔 | `scan_auto_interval_min` | `0`（关） | 按固定周期对全部直连源增量扫描（指纹未变零下载）；本地目录变化即使未开启也会自动触发 |
 
 ### 3.5 常规分区 · 备份与迁移（动作型，非键值）
 
@@ -154,9 +158,23 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 | `pairing_token` | env 提供 / 首次随机 | 配对主令牌（明文可展示二维码） | — |
 | `cache_max_bytes` | `1073741824`（1 GB） | 全局建议值，供客户端 `follow_server` 模式采纳 | ✅ 是 → 客户端解析见 §3.3 |
 | `cache_song_limit` | `500` | 同上 | ✅ 是 → 客户端解析见 §3.3 |
-| `scan_interval_min` | `0`（关） | 服务端定时扫描间隔 | — |
+| `scan_interval_min` | `0`（关） | 服务端定时扫描间隔（分钟），已迁移为 env `SCAN_INTERVAL_MS` / `SCAN_SCHEDULING_ENABLED`、`SCAN_HEAD_BYTES`、`SCAN_PROBE_POOL`（见 §5.1） | — |
 | `transcode_max_concurrency` | `2` | ffmpeg 并发上限（超限降级透传） | — |
 | `upload_dir` | `{LOCAL_ROOT}/Uploads` | 上传落点 | — |
+| `scan_head_bytes` | `65536` | 服务端扫描每个音频最多读取的头部字节数 | — |
+| `scan_scheduling_enabled` | `true` | 是否启用服务端定时增量扫描 | — |
+
+### 5.1 服务端扫描配置（`application.yml` → env）
+
+| env | 默认 | 说明 |
+|-----|------|------|
+| `SCAN_INTERVAL_MS` | `21600000`（6h） | 定时增量扫描间隔（`@Scheduled fixedDelay`） |
+| `SCAN_SCHEDULING_ENABLED` | `true` | 关闭则仅手动扫描 |
+| `SCAN_HEAD_BYTES` | `65536` | 每个音频最多读取的头部字节数（标签解析） |
+| `SCAN_PROBE_POOL` | `4` | 标签探测并发池大小 |
+
+> 服务端增量：PROPFIND 解析 `getcontentlength` + `getlastmodified` 作为指纹，
+> 与库里 `file_size`/`file_mtime` 一致则跳过读头与写库（二次扫描近乎零成本）。
 
 > **同键项设计约定**：客户端与服务器同名的配置（当前为缓存两项），客户端一律用
 > 「`follow_server` / `custom`」双来源（§3.3）。客户端默认值与服务端建议值不同属正常：

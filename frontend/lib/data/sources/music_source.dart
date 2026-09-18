@@ -1,5 +1,6 @@
 import '../../models/song.dart';
 import '../../models/album.dart';
+import 'scan_worker.dart';
 
 /// 源的分类。决定直连协议与可用的增强能力。
 enum SourceKind { server, local, webdav, smb }
@@ -21,19 +22,49 @@ class IntRange {
 class ScanSummary {
   final int added;
   final int updated;
+  final int unchanged;
   final int total;
-  const ScanSummary({required this.added, required this.updated, required this.total});
+
+  /// 用户是否中途取消了本次扫描（取消后仍返回已处理部分）。
+  final bool cancelled;
+  const ScanSummary({
+    required this.added,
+    required this.updated,
+    this.unchanged = 0,
+    required this.total,
+    this.cancelled = false,
+  });
 }
 
-/// 扫描过滤选项（settings.md §3.4「忽略音频」）。
-/// 0 表示不过滤；移动端「仅 Wi-Fi」门控在调用侧（DirectSourceManager）处理。
+/// 扫描过滤与速度选项（settings.md §3.4）。
+///
+/// - 只读必要参数：非 [fullMeta] 时仅解析 标题/歌手/专辑，时长/曲目/年份/流派/封面
+///   留待播放时 `enrich`（下载量与解析量最小化）。
+/// - [fast] 仅用文件名建索引，不发任何读头请求（零网络）。
+/// - [headBytes] 头部采样上限（默认 64KB，替代旧的固定 256KB）。
+/// - [collectCover] 仅 fullMeta 且 true 时提取并落盘封面。
 class ScanOptions {
   final int minSizeBytes;
   final int minDurationSec;
-  const ScanOptions({this.minSizeBytes = 0, this.minDurationSec = 0});
+  final int headBytes;
+  final bool fullMeta;
+  final bool fast;
+  final bool collectCover;
+  const ScanOptions({
+    this.minSizeBytes = 0,
+    this.minDurationSec = 0,
+    this.headBytes = 64 * 1024,
+    this.fullMeta = false,
+    this.fast = false,
+    this.collectCover = false,
+  });
   const ScanOptions.none()
       : minSizeBytes = 0,
-        minDurationSec = 0;
+        minDurationSec = 0,
+        headBytes = 64 * 1024,
+        fullMeta = false,
+        fast = false,
+        collectCover = false;
 }
 
 /// 打开音频流（直接流式传输的统一返回结构）。
@@ -83,7 +114,11 @@ abstract class MusicSource {
   bool get supportsDirect => false;
 
   /// 建本地索引（增量）。默认抛"不支持直连"。
-  Future<ScanSummary> scan({ScanOptions options = const ScanOptions.none()}) async =>
+  /// [token] 用于取消（可选），[onProgress] 接收进度（可选，跨 isolate 由 runScan 转发）。
+  Future<ScanSummary> scan(
+      {ScanOptions options = const ScanOptions.none(),
+      ScanToken? token,
+      void Function(ScanProgress)? onProgress}) async =>
       throw UnimplementedError('$key 不支持直连扫描');
 
   /// 打开音频流（支持 Range）。默认抛"不支持直连"。
