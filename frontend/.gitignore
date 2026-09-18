@@ -46,5 +46,9 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+# 正式 release 签名密钥（切勿提交）
+android/key.jks
+android/key.properties
+
 # Widget Preview related
 .widget_preview/
