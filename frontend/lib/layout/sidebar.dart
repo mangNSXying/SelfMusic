@@ -83,9 +83,9 @@ class _SettingsList extends StatelessWidget {
             selectedTileColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
             onTap: () {
               nav.openSettings(item);
-              // 移动端选中后收起抽屉
+              // 移动端选中后收起抽屉。
               if (NavigationProviderHelper.isNarrow(context)) {
-                Navigator.of(context).maybePop();
+                Scaffold.of(context).closeDrawer();
               }
             },
           ),

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'services/api_client.dart';
 import 'services/server_settings.dart';
@@ -151,6 +152,7 @@ class Root extends StatefulWidget {
 
 class _RootState extends State<Root> {
   bool _expiryDialogShown = false;
+  DateTime? _lastBackPressed;
 
   @override
   void initState() {
@@ -163,6 +165,28 @@ class _RootState extends State<Root> {
       if (!direct.settings.resumeOnStartup) return;
       context.read<PlayerProvider>().restoreIfAny();
     });
+  }
+
+  /// 「再按一次退出」：根路由拦截返回键，2 秒内再次按下才真正退出。
+  void _onPopInvoked(bool didPop, Object? result) {
+    if (didPop) return;
+    final now = DateTime.now();
+    if (_lastBackPressed != null &&
+        now.difference(_lastBackPressed!) < const Duration(seconds: 2)) {
+      if (Platform.isAndroid) {
+        SystemNavigator.pop();
+      } else {
+        exit(0);
+      }
+      return;
+    }
+    _lastBackPressed = now;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(const SnackBar(
+        content: Text('再按一次退出软件'),
+        duration: Duration(seconds: 2),
+      ));
   }
 
   @override
@@ -179,8 +203,12 @@ class _RootState extends State<Root> {
     }
     // 首次启动不再强制配对：未配对也可正常使用直连模式；
     // 配对 / 会话过期后重新配对在「设置 → 服务端」进行。
-    return const AppShell(
-      content: AppContent(),
+    return PopScope<void>(
+      canPop: false,
+      onPopInvokedWithResult: _onPopInvoked,
+      child: const AppShell(
+        content: AppContent(),
+      ),
     );
   }
 
