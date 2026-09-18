@@ -91,7 +91,9 @@ class SelfMusicApp extends StatelessWidget {
         baseUrl: api.baseUrl,
         tokenProvider: () => auth.token ?? '',
       ),
-    )..attachDirectManager(direct);
+    )
+      ..serverConfigured = settings.baseUrl.isNotEmpty
+      ..attachDirectManager(direct);
     final nav = NavigationProvider();
 
     return MultiProvider(

@@ -116,7 +116,7 @@ class _SongsViewState extends State<_SongsView> {
     final lib = context.read<LibraryProvider>();
     if (lib.songs.isEmpty && !lib.loading) {
       final nav = context.read<NavigationProvider>();
-      lib.loadSongs(query: nav.search.isEmpty ? null : nav.search);
+      lib.startup(query: nav.search.isEmpty ? null : nav.search);
     }
   }
 
@@ -182,8 +182,10 @@ class _AlbumsViewState extends State<_AlbumsView> {
     super.initState();
     final lib = context.read<LibraryProvider>();
     if (lib.albums.isEmpty && !lib.loading) {
-      lib.loadAlbums(
-          query: context.read<NavigationProvider>().search.isEmpty ? null : context.read<NavigationProvider>().search);
+      lib.startup(
+          query: context.read<NavigationProvider>().search.isEmpty
+              ? null
+              : context.read<NavigationProvider>().search);
     }
   }
 
@@ -241,7 +243,8 @@ class _AlbumCard extends StatelessWidget {
       onTap: () async {
         final lib = context.read<LibraryProvider>();
         var songs = lib.albumSongs(album);
-        if (songs.isEmpty) {
+        // 未配置服务端时不做远端回退，直接按本地聚合结果展示。
+        if (songs.isEmpty && lib.serverConfigured) {
           songs = await lib.source.fetchAlbumSongs(album.id);
         }
         if (!context.mounted) return;
@@ -344,8 +347,10 @@ class _ArtistsViewState extends State<_ArtistsView> {
     super.initState();
     final lib = context.read<LibraryProvider>();
     if (lib.artists.isEmpty && !lib.loading) {
-      lib.loadArtists(
-          query: context.read<NavigationProvider>().search.isEmpty ? null : context.read<NavigationProvider>().search);
+      lib.startup(
+          query: context.read<NavigationProvider>().search.isEmpty
+              ? null
+              : context.read<NavigationProvider>().search);
     }
   }
 
