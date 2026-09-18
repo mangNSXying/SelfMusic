@@ -5,13 +5,21 @@ import '../models/song.dart';
 import '../providers/playlists_provider.dart';
 
 /// 弹出「加入歌单」选择器（stage2.md §5）：底部弹层列出歌单，无歌单可现场新建。
-Future<void> showAddToPlaylistSheet(BuildContext context, Song song) async {
+Future<void> showAddToPlaylistSheet(BuildContext context, Song song) =>
+    _showAddToPlaylist(context, [song]);
+
+/// 多选批量加入：把多首歌曲一次加入目标歌单。
+Future<void> showAddToPlaylistSheetForSongs(
+        BuildContext context, List<Song> songs) =>
+    _showAddToPlaylist(context, songs);
+
+Future<void> _showAddToPlaylist(BuildContext context, List<Song> songs) async {
   final provider = context.read<PlaylistsProvider>();
   if (!provider.loaded) provider.refresh();
 
   final result = await showModalBottomSheet<int>(
     context: context,
-    builder: (c) => _AddToPlaylistSheet(song: song),
+    builder: (c) => _AddToPlaylistSheet(songs: songs),
   );
   if (result != null && context.mounted) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -28,8 +36,8 @@ String _nameById(BuildContext context, int id) {
 }
 
 class _AddToPlaylistSheet extends StatelessWidget {
-  final Song song;
-  const _AddToPlaylistSheet({required this.song});
+  final List<Song> songs;
+  const _AddToPlaylistSheet({required this.songs});
 
   @override
   Widget build(BuildContext context) {
@@ -37,7 +45,9 @@ class _AddToPlaylistSheet extends StatelessWidget {
     final playlists = provider.playlists;
 
     Future<void> pick(int id) async {
-      provider.addSong(id, song);
+      for (final s in songs) {
+        provider.addSong(id, s);
+      }
       Navigator.of(context).pop(id);
     }
 
@@ -78,11 +88,13 @@ class _AddToPlaylistSheet extends StatelessWidget {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Text('加入歌单：${song.title}',
-                style: Theme.of(context)
-                    .textTheme
-                    .titleMedium
-                    ?.copyWith(fontWeight: FontWeight.w600)),
+            child: Text(
+              songs.length == 1 ? '加入歌单：${songs.first.title}' : '加入歌单（${songs.length} 首）',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w600),
+            ),
           ),
           const Divider(height: 1),
           Flexible(

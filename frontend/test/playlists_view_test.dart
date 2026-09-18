@@ -83,4 +83,70 @@ void main() {
       dir.deleteSync(recursive: true);
     });
   });
+
+  testWidgets('长按歌单进入多选，可全选 / 取消选择', (tester) async {
+    late final LocalIndex index;
+    late final Directory dir;
+    await tester.runAsync(() async {
+      dir = await Directory.systemTemp.createTemp('selfmusic_plw_');
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      index = LocalIndex();
+      await index.open();
+      final store = PlaylistStore(index);
+      store.create('现有歌单');
+      store.create('另一个歌单');
+    });
+
+    final store = PlaylistStore(index);
+    final provider = PlaylistsProvider(store);
+    final nav = NavigationProvider();
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<PlaylistsProvider>.value(value: provider),
+          ChangeNotifierProvider<NavigationProvider>.value(value: nav),
+        ],
+        child: const MaterialApp(
+          home: Scaffold(body: PlaylistsView()),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 50));
+
+    // 长按进入选择模式并选中当前项
+    await tester.longPress(find.text('现有歌单'));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('已选 1'), findsOneWidget);
+    expect(find.text('全选'), findsOneWidget);
+    expect(find.text('删除选中'), findsOneWidget);
+
+    // 点击另一项累计选中 → 全部选中后按钮变为「取消全选」
+    await tester.tap(find.text('另一个歌单'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 2'), findsOneWidget);
+    expect(find.text('取消全选'), findsOneWidget);
+
+    // 取消全选清空勾选
+    await tester.tap(find.text('取消全选'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 0'), findsOneWidget);
+    expect(find.text('全选'), findsOneWidget);
+
+    // 全选勾满
+    await tester.tap(find.text('全选'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 2'), findsOneWidget);
+
+    // 取消选择退出多选
+    await tester.tap(find.byTooltip('取消选择'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 2'), findsNothing);
+
+    await tester.runAsync(() async {
+      index.close();
+      dir.deleteSync(recursive: true);
+    });
+  });
 }

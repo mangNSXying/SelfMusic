@@ -11,6 +11,9 @@ import '../providers/library_provider.dart';
 import '../providers/player_provider.dart';
 import '../providers/navigation_provider.dart';
 import '../services/server_settings.dart';
+import '../widgets/add_to_playlist.dart';
+import '../widgets/list_selection.dart';
+import '../widgets/selection_bar.dart';
 import '../widgets/song_tile.dart';
 
 /// 源内浏览组件（文件夹式导航）：在 AppContent 内容区原地渲染。
@@ -32,6 +35,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
   List<Song> _songs = [];
   ScanProgress? _progress;
   StreamSubscription<ScanProgress>? _progressSub;
+  final Selection<String> _sel = Selection<String>();
 
   bool get _isProxy =>
       context.read<DirectSourceManager>().isProxy(widget.sourceKey);
@@ -58,7 +62,10 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
 
   Future<void> _loadProxy() async {
     if (_serverUnconfigured) return;
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      _sel.cancel();
+    });
     try {
       final direct = context.read<DirectSourceManager>();
       final songs =
@@ -80,6 +87,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
     setState(() {
       _scanning = true;
       _progress = null;
+      _sel.cancel();
     });
     _progressSub?.cancel();
     _progressSub = manager.scanProgressStream.listen((p) {
@@ -117,6 +125,24 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
   void _cancel() {
     final manager = context.read<DirectSourceManager>();
     manager.cancelScan(widget.sourceKey);
+  }
+
+  void _toggle(String key) => setState(() {
+        _sel.active = true;
+        _sel.toggle(key);
+      });
+
+  Future<void> _playSelected(
+      BuildContext c, MusicSource source, List<Song> songs) async {
+    final selSongs = selectedSongs(_sel, songs);
+    _sel.cancel();
+    await _play(c, source, selSongs, 0);
+  }
+
+  void _addToPlaylistSelected(List<Song> songs) {
+    final selSongs = selectedSongs(_sel, songs);
+    _sel.cancel();
+    showAddToPlaylistSheetForSongs(context, selSongs);
   }
 
   @override
@@ -207,6 +233,30 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
             ],
           ),
         ),
+        if (_sel.active)
+          SelectionBar(
+            total: songs.length,
+            selectedCount: _sel.of(songs.map(songKey)).length,
+            onToggleAll: () =>
+                setState(() => _sel.setAll(songs.map(songKey))),
+            onCancel: () => setState(_sel.cancel),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.play_arrow),
+                tooltip: '播放选中',
+                onPressed: _sel.isEmpty
+                    ? null
+                    : () => _playSelected(context, source, songs),
+              ),
+              IconButton(
+                icon: const Icon(Icons.playlist_add),
+                tooltip: '加入歌单',
+                onPressed: _sel.isEmpty
+                    ? null
+                    : () => _addToPlaylistSelected(songs),
+              ),
+            ],
+          ),
         // 扫描进度：枚举阶段为不确定进度条；探测阶段显示比例与数字。
         if (_scanning && !isProxy)
           Padding(
@@ -300,11 +350,18 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                       itemCount: songs.length,
                       separatorBuilder: (_, __) =>
                           const Divider(height: 1, indent: 72),
-                      itemBuilder: (c, i) => SongTile(
-                        song: songs[i],
-                        source: source,
-                        onPlay: () => _play(c, source, songs, i),
-                      ),
+                      itemBuilder: (c, i) {
+                        final s = songs[i];
+                        return SongTile(
+                          song: s,
+                          source: source,
+                          onPlay: () => _play(c, source, songs, i),
+                          selectionMode: _sel.active,
+                          selected: _sel.contains(songKey(s)),
+                          onSelect: () => _toggle(songKey(s)),
+                          onStartSelect: () { setState(() => _sel.startWith(songKey(s))); },
+                        );
+                      },
                     ),
         ),
       ],

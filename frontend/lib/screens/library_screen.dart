@@ -10,6 +10,9 @@ import '../models/song.dart';
 import '../models/album.dart';
 import '../models/artist.dart';
 import '../theme/app_theme.dart';
+import '../widgets/add_to_playlist.dart';
+import '../widgets/list_selection.dart';
+import '../widgets/selection_bar.dart';
 import '../widgets/song_tile.dart';
 import 'player_screen.dart';
 import 'settings_screen.dart';
@@ -56,8 +59,39 @@ class AppContent extends StatelessWidget {
 }
 
 /// 喜欢（收藏）列表：统一来自 play_meta.is_favorite（直连 + 服务器）。
-class _LikedView extends StatelessWidget {
+class _LikedView extends StatefulWidget {
   const _LikedView();
+
+  @override
+  State<_LikedView> createState() => _LikedViewState();
+}
+
+class _LikedViewState extends State<_LikedView> {
+  final Selection<String> _sel = Selection<String>();
+
+  void _toggle(String key) => setState(() {
+        _sel.active = true;
+        _sel.toggle(key);
+      });
+
+  void _playSelected(List<Song> songs) {
+    final lib = context.read<LibraryProvider>();
+    final selected = selectedSongs(_sel, songs);
+    _sel.cancel();
+    context.read<PlayerProvider>().playQueue(selected, source: lib.source);
+    context.read<NavigationProvider>().openPlayer();
+  }
+
+  void _unlikeSelected(List<Song> songs) {
+    final direct = context.read<DirectSourceManager>();
+    final selected = selectedSongs(_sel, songs);
+    _sel.cancel();
+    for (final s in selected) {
+      direct.setFavorite(s, false);
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已取消喜欢 ${selected.length} 首')));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -77,6 +111,26 @@ class _LikedView extends StatelessWidget {
                   .titleLarge
                   ?.copyWith(fontWeight: FontWeight.bold)),
         ),
+        if (_sel.active)
+          SelectionBar(
+            total: songs.length,
+            selectedCount: _sel.of(songs.map(songKey)).length,
+            onToggleAll: () =>
+                setState(() => _sel.setAll(songs.map(songKey))),
+            onCancel: () => setState(_sel.cancel),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.play_arrow),
+                tooltip: '播放选中',
+                onPressed: _sel.isEmpty ? null : () => _playSelected(songs),
+              ),
+              IconButton(
+                icon: const Icon(Icons.favorite_border),
+                tooltip: '取消喜欢',
+                onPressed: _sel.isEmpty ? null : () => _unlikeSelected(songs),
+              ),
+            ],
+          ),
         const Divider(height: 1),
         Expanded(
           child: songs.isEmpty
@@ -93,6 +147,11 @@ class _LikedView extends StatelessWidget {
                         player.playQueue(songs, index: i, source: lib.source);
                         context.read<NavigationProvider>().openPlayer();
                       },
+                      selectionMode: _sel.active,
+                      selected: _sel.contains(songKey(s)),
+                      onSelect: () => _toggle(songKey(s)),
+                      onStartSelect:
+                          () => setState(() => _sel.startWith(songKey(s))),
                     );
                   },
                 ),
@@ -110,6 +169,8 @@ class _SongsView extends StatefulWidget {
 }
 
 class _SongsViewState extends State<_SongsView> {
+  final Selection<String> _sel = Selection<String>();
+
   @override
   void initState() {
     super.initState();
@@ -122,6 +183,25 @@ class _SongsViewState extends State<_SongsView> {
         lib.startup(query: nav.search.isEmpty ? null : nav.search);
       }
     });
+  }
+
+  void _toggle(String key) => setState(() {
+        _sel.active = true;
+        _sel.toggle(key);
+      });
+
+  void _playSelected(List<Song> songs) {
+    final lib = context.read<LibraryProvider>();
+    final selected = selectedSongs(_sel, songs);
+    _sel.cancel();
+    context.read<PlayerProvider>().playQueue(selected, source: lib.source);
+    context.read<NavigationProvider>().openPlayer();
+  }
+
+  void _addToPlaylistSelected(List<Song> songs) {
+    final selected = selectedSongs(_sel, songs);
+    _sel.cancel();
+    showAddToPlaylistSheetForSongs(context, selected);
   }
 
   @override
@@ -138,6 +218,28 @@ class _SongsViewState extends State<_SongsView> {
         if (lib.loading) const LinearProgressIndicator(minHeight: 2),
         if (lib.error != null)
           Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
+        if (_sel.active)
+          SelectionBar(
+            total: songs.length,
+            selectedCount: _sel.of(songs.map(songKey)).length,
+            onToggleAll: () =>
+                setState(() => _sel.setAll(songs.map(songKey))),
+            onCancel: () => setState(_sel.cancel),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.play_arrow),
+                tooltip: '播放选中',
+                onPressed: _sel.isEmpty ? null : () => _playSelected(songs),
+              ),
+              IconButton(
+                icon: const Icon(Icons.playlist_add),
+                tooltip: '加入歌单',
+                onPressed: _sel.isEmpty
+                    ? null
+                    : () => _addToPlaylistSelected(songs),
+              ),
+            ],
+          ),
         Expanded(
           child: songs.isEmpty
               ? _EmptyHint(onRefresh: () => lib.loadSongs(query: nav.search.isEmpty ? null : nav.search))
@@ -155,6 +257,10 @@ class _SongsViewState extends State<_SongsView> {
                           player.playQueue(songs, index: i, source: lib.source);
                           context.read<NavigationProvider>().openPlayer();
                         },
+                        selectionMode: _sel.active,
+                        selected: _sel.contains(songKey(s)),
+                        onSelect: () => _toggle(songKey(s)),
+                        onStartSelect: () { setState(() => _sel.startWith(songKey(s))); },
                       );
                     },
                   ),

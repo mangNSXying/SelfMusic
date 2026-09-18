@@ -67,6 +67,9 @@ class PlaylistsProvider extends ChangeNotifier {
   /// 歌单内条目行（含 itemId，供上移/下移/移除）。
   List<PlaylistItemRow> itemsOf(int playlistId) => store.itemsOf(playlistId);
 
+  /// 条目行 → 对应歌曲（多选去重键用）。
+  Song songOf(PlaylistItemRow r) => store.songOf(r);
+
   void removeItemRow(int playlistId, PlaylistItemRow r) {
     store.removeSong(playlistId, store.songOf(r));
     refresh();

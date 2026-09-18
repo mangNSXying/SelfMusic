@@ -11,15 +11,35 @@ import 'add_to_playlist.dart';
 /// 通用歌曲条目：封面缩略图 + 标题 + 歌手/专辑 + 时长时间器。
 ///
 /// 收藏（喜欢）对所有歌曲生效（统一收口到 play_meta）；缓存仅直连歌曲。
+///
+/// 多选模式：当 [selectionMode] 为 true 时，leading 变为选择框，
+/// 点击条目切换勾选，[onSelect] 负责切换 [selected]。
 class SongTile extends StatelessWidget {
   final Song song;
   final MusicSource source;
   final VoidCallback onPlay;
+
+  /// 多选模式：true 时显示勾选框并以选中态渲染。
+  final bool selectionMode;
+
+  /// 当前条目是否被选中（多选模式下）。
+  final bool selected;
+
+  /// 多选模式下切换本条目选中状态；非多选时为空。
+  final VoidCallback? onSelect;
+
+  /// 长按进入多选模式并选中本条目（非多选模式下生效）。
+  final VoidCallback? onStartSelect;
+
   const SongTile({
     super.key,
     required this.song,
     required this.source,
     required this.onPlay,
+    this.selectionMode = false,
+    this.selected = false,
+    this.onSelect,
+    this.onStartSelect,
   });
 
   @override
@@ -27,61 +47,80 @@ class SongTile extends StatelessWidget {
     final direct = context.watch<DirectSourceManager>();
     final favorite = direct.weight.isFavorite(song);
     return ListTile(
-      leading: CoverThumb(coverPath: song.coverPath),
-      title: Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      selected: selectionMode && selected,
+      leading: selectionMode
+          ? Checkbox(
+              value: selected,
+              onChanged: (_) => onSelect?.call(),
+            )
+          : CoverThumb(coverPath: song.coverPath),
+      title: Text(
+        song.title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: selectionMode && selected
+            ? TextStyle(
+                color: Theme.of(context).colorScheme.primary,
+                fontWeight: FontWeight.w600,
+              )
+            : null,
+      ),
       subtitle: Text(
         '${song.artist ?? "Unknown"} · ${song.albumName ?? ""}',
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          IconButton(
-            visualDensity: VisualDensity.compact,
-            icon: Icon(
-              favorite ? Icons.favorite : Icons.favorite_border,
-              color: favorite ? Colors.pink : null,
+      trailing: selectionMode
+          ? null
+          : Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(
+                    favorite ? Icons.favorite : Icons.favorite_border,
+                    color: favorite ? Colors.pink : null,
+                  ),
+                  tooltip: favorite ? '取消喜欢' : '喜欢',
+                  onPressed: () => direct.setFavorite(song, !favorite),
+                ),
+                if (song.isDirect)
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.download),
+                    tooltip: '缓存以便离线播放',
+                    onPressed: () async {
+                      try {
+                        await direct.cacheSong(source, song);
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('已缓存，可离线播放')));
+                        }
+                      } catch (e) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context)
+                              .showSnackBar(SnackBar(content: Text('缓存失败：$e')));
+                        }
+                      }
+                    },
+                  ),
+                Text(song.duration != null ? '${song.duration}s' : ''),
+                PopupMenuButton<String>(
+                  tooltip: '更多',
+                  icon: const Icon(Icons.more_vert),
+                  onSelected: (v) {
+                    if (v == 'playlist') {
+                      showAddToPlaylistSheet(context, song);
+                    }
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'playlist', child: Text('加入歌单')),
+                  ],
+                ),
+              ],
             ),
-            tooltip: favorite ? '取消喜欢' : '喜欢',
-            onPressed: () => direct.setFavorite(song, !favorite),
-          ),
-          if (song.isDirect)
-            IconButton(
-              visualDensity: VisualDensity.compact,
-              icon: const Icon(Icons.download),
-              tooltip: '缓存以便离线播放',
-              onPressed: () async {
-                try {
-                  await direct.cacheSong(source, song);
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('已缓存，可离线播放')));
-                  }
-                } catch (e) {
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context)
-                        .showSnackBar(SnackBar(content: Text('缓存失败：$e')));
-                  }
-                }
-              },
-            ),
-          Text(song.duration != null ? '${song.duration}s' : ''),
-          PopupMenuButton<String>(
-            tooltip: '更多',
-            icon: const Icon(Icons.more_vert),
-            onSelected: (v) {
-              if (v == 'playlist') {
-                showAddToPlaylistSheet(context, song);
-              }
-            },
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 'playlist', child: Text('加入歌单')),
-            ],
-          ),
-        ],
-      ),
-      onTap: onPlay,
+      onTap: selectionMode ? onSelect : onPlay,
+      onLongPress: selectionMode ? onSelect : onStartSelect,
     );
   }
 }
