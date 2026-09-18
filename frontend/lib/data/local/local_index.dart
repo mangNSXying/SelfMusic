@@ -246,7 +246,8 @@ class LocalIndex {
     final stmt = _db!.prepare(
         'UPDATE idx_songs SET missing=1 WHERE source_key=? AND ref NOT IN (SELECT value FROM json_each(?))');
     try {
-      stmt.execute([sourceKey, '[${aliveRefs.map((e) => '"$e"').join(',')}]']);
+      // 用 jsonEncode 生成合法 JSON 数组，避免 ref 含引号/反斜杠时破坏 json_each。
+      stmt.execute([sourceKey, jsonEncode(aliveRefs)]);
     } finally {
       stmt.dispose();
     }
@@ -368,7 +369,7 @@ class LocalIndex {
         sourceRef: r['ref'] as String,
         fileSize: r['size'] as int,
         format: r['format'] as String?,
-        favorite: r['is_favorite'] == 1,
+        favorite: r['favorite'] == 1,
         coverPath: r['cover_path'] as String?,
       );
 

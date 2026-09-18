@@ -340,11 +340,17 @@ class PlayerProvider extends ChangeNotifier {
     }
   }
 
-  /// 直连源播放：优先离线缓存文件，否则流式（Range seek / 断点可持续）。
+  /// 直连源播放：优先离线缓存文件，其次原生 URL（Range/seek 更稳），
+  /// 最后回落到自建字节流 [DirectAudioSource]。
   Future<void> _playDirect(Song s, MusicSource src) async {
     final cached = await src.cachedFilePath(s);
     if (cached != null) {
       await player.setFilePath(cached);
+      return;
+    }
+    final direct = src.directStream(s);
+    if (direct != null) {
+      await player.setUrl(direct.url, headers: direct.headers);
       return;
     }
     await player.setAudioSource(DirectAudioSource(source: src, song: s));

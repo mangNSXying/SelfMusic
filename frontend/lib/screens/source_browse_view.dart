@@ -94,10 +94,17 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
     }
   }
 
-  void _play(BuildContext c, MusicSource source, List<Song> songs, int i) {
+  Future<void> _play(
+      BuildContext c, MusicSource source, List<Song> songs, int i) async {
     final player = c.read<PlayerProvider>();
-    player.playQueue(songs, index: i, source: source);
-    c.read<NavigationProvider>().openPlayer();
+    final nav = c.read<NavigationProvider>();
+    final messenger = ScaffoldMessenger.of(c);
+    await player.playQueue(songs, index: i, source: source);
+    nav.openPlayer();
+    final err = player.error;
+    if (err != null) {
+      messenger.showSnackBar(SnackBar(content: Text('播放失败：$err')));
+    }
   }
 
   @override

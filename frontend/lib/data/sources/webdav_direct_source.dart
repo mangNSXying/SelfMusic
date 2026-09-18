@@ -128,7 +128,7 @@ class WebdavDirectSource implements MusicSource {
 
   @override
   Future<OpenedStream> open(Song song, {IntRange? range}) async {
-    final url = _resolve(song.sourceRef, _base);
+    final url = _resolveRef(song.sourceRef, _base);
     final client = _newClient();
     final req = await client.getUrl(Uri.parse(url));
     _auth(req, username, password);
@@ -170,6 +170,18 @@ class WebdavDirectSource implements MusicSource {
   @override
   Future<void> close() async {}
 
+  /// 直接把 WebDAV URL 交给 just_audio 原生播放（ExoPlayer Range/seek 更可靠）。
+  @override
+  DirectStream? directStream(Song song) {
+    final headers = username.isEmpty
+        ? null
+        : {
+            'Authorization':
+                'Basic ${base64Encode(utf8.encode('$username:$password'))}',
+          };
+    return DirectStream(_resolveRef(song.sourceRef, _base), headers: headers);
+  }
+
   // ---------- 离线缓存（DESIGN §6.5） ----------
 
   /// 该歌的缓存 key（供 CacheManager 跟踪 LRU / 跳过正在播放）。
@@ -188,7 +200,7 @@ class WebdavDirectSource implements MusicSource {
     try {
       final tmp = File('${p.join(index.dir, 'cache')}/.tmp-$cacheKey');
       final req =
-          await client.getUrl(Uri.parse(_resolve(song.sourceRef, _base)));
+          await client.getUrl(Uri.parse(_resolveRef(song.sourceRef, _base)));
       _auth(req, username, password);
       final resp = await req.close();
       if (resp.statusCode != 200 && resp.statusCode != 206) {
@@ -383,7 +395,8 @@ List<_WebdavEntry> _parsePropfind(String xml, String dirUrl) {
     if (sizeEl != null) size = int.tryParse(sizeEl.innerText.trim()) ?? 0;
     out.add(_WebdavEntry(
       isDir: isDir,
-      href: pathOnly.trimLeft(),
+      // 存人类可读的路径（解码后）作为 ref/标题来源；网络请求用的 fullUrl 保持编码。
+      href: _decodePath(pathOnly.trimLeft()),
       size: size,
       fullUrl: _resolve(raw, dirUrl),
     ));
@@ -441,6 +454,24 @@ String _pathOf(String url) {
   }
   return url.startsWith('/') ? url : '/$url';
 }
+
+/// 把 PROPFIND 返回的编码路径解码为人类可读路径（ref / 标题使用）。
+String _decodePath(String path) {
+  try {
+    return Uri.decodeFull(path);
+  } catch (_) {
+    return path;
+  }
+}
+
+/// 把解码后的 ref 重新按路径段编码，供实际网络请求使用。
+String _encodePath(String ref) {
+  final parts = ref.split('/').where((s) => s.isNotEmpty);
+  return '/${parts.map(Uri.encodeComponent).join('/')}';
+}
+
+/// 由已解码的 ref 生成完整请求 URL。
+String _resolveRef(String ref, String base) => _resolve(_encodePath(ref), base);
 
 /// 把 PROPFIND 返回的 href 解析为可请求的完整 URL（相对路径以 [dirUrl] 目录为基准）。
 String _resolve(String href, String dirUrl) {

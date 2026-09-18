@@ -379,6 +379,8 @@ abstract class MusicSource {
 
 - 播放器只认 `MusicSource`，不感知模式
 - `ServerProxySource.open()` 即 GET `/stream/{id}`；直连实现各自对接协议
+- 直连播放优先级：离线缓存文件 → `directStream()`（原生 URL，ExoPlayer/native Range seek 更稳，WebDAV 用）→ 自建 `StreamAudioSource`（`open()`）回落
+- WebDAV `ref` 存**解码后**路径（标题/去重友好），请求时按路径段重新编码；扫描头部元数据解析对大内嵌封面做了边界保护（超采样长度即停止解析，不抛 `RangeError`）
 - 模式判定 = `sources` 表里有哪些启用的源；配置了 `server` 源即解锁同步/转码等增强功能
 
 ### 6.3 SMB 直连平台策略（全平台目标）

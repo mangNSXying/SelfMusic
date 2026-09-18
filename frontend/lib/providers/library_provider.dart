@@ -35,14 +35,16 @@ class LibraryProvider extends ChangeNotifier {
     loading = true;
     error = null;
     notifyListeners();
+    // 服务器不可用时不应阻断直连源歌曲的合并展示（未配对 / 断网场景）。
+    List<Song> server = const [];
     try {
-      final server = await source.fetchSongs(query: query, size: 2000);
-      final direct = _directManager?.allSongs(query: query) ?? const <Song>[];
-      songs = _mergeSongs(server, direct);
-      _recomputeGroups();
+      server = await source.fetchSongs(query: query, size: 2000);
     } catch (e) {
-      error = e.toString();
+      error = '服务端不可用：$e';
     }
+    final direct = _directManager?.allSongs(query: query) ?? const <Song>[];
+    songs = _mergeSongs(server, direct);
+    _recomputeGroups();
     loading = false;
     notifyListeners();
   }

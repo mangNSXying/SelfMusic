@@ -213,5 +213,43 @@ void main() {
       expect(meta.artist, '中島みゆき');
       expect(meta.album, 'COM.ALBUM');
     });
+
+    test('不因元数据块超出头部采样而越界（大内嵌封面场景）', () {
+      // STREAMINFO（有效，含时长）后跟一个声明长度 300000、实际远小的 PICTURE 块。
+      // 旧实现 head.sublist(i+4, i+4+len) 会抛 RangeError。
+      const sampleRate = 44100;
+      const totalSamples = 44100;
+      final si = List<int>.filled(18, 0);
+      si[10] = (sampleRate >> 12) & 0xFF;
+      si[11] = (sampleRate >> 4) & 0xFF;
+      si[12] = (sampleRate & 0x0F) << 4;
+      si[13] = (totalSamples >> 32) & 0x0F;
+      si[14] = (totalSamples >> 24) & 0xFF;
+      si[15] = (totalSamples >> 16) & 0xFF;
+      si[16] = (totalSamples >> 8) & 0xFF;
+      si[17] = totalSamples & 0xFF;
+      const huge = 300000;
+      final head = Uint8List.fromList([
+        ...'fLaC'.codeUnits,
+        0x00, 0x00, 0x00, 18, ...si, // STREAMINFO
+        0x06, (huge >> 16) & 0xFF, (huge >> 8) & 0xFF, huge & 0xFF, 1, 2, 3,
+      ]);
+      final meta = parseAudioHead(head, 'flac', head.length);
+      expect(meta, isNotNull);
+      expect(meta!.duration, (totalSamples / sampleRate).round());
+    });
+  });
+
+  test('mp3 ID3 tag 声明长度超出头部采样时不越界', () {
+    // 仅 ID3v2 头 10 字节，声明 tag 长度 100000，远大于实际 10 字节。
+    final head = Uint8List.fromList([
+      ...'ID3'.codeUnits,
+      0x04,
+      0x00,
+      0x00,
+      ...syncsafe(100000),
+    ]);
+    final meta = parseAudioHead(head, 'mp3', 200000);
+    expect(meta, isNotNull);
   });
 }

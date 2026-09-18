@@ -52,7 +52,10 @@ AudioMeta _parseMp3(Uint8List head, int fileSize) {
 Map<String, String> _id3TagToFrames(Uint8List head, int tagStart) {
   final out = <String, String>{};
   var i = tagStart;
-  final limit = tagStart + _syncsafe(head, 6);
+  // 头部采样可能短于 ID3 tag 声明长度（如内嵌封面很大），以实际字节数为界，
+  // 避免 sublist 越界抛 RangeError。
+  final declared = tagStart + _syncsafe(head, 6);
+  final limit = declared < head.length ? declared : head.length;
   while (i + 10 <= limit) {
     final id = String.fromCharCodes(head.sublist(i, i + 4)).trim();
     if (id.isEmpty || id.codeUnitAt(0) == 0) break;
@@ -200,6 +203,8 @@ AudioMeta _parseFlac(Uint8List head, int fileSize) {
     last = (hdr & 0x80) != 0;
     final blockType = hdr & 0x7F;
     final len = _be24(head, i + 1);
+    // 元数据块可能超出头部采样长度（如大内嵌封面），此时无法继续解析后续块。
+    if (i + 4 + len > head.length) break;
     final body = head.sublist(i + 4, i + 4 + len);
     if (blockType == 0 && body.length >= 18) {
       // STREAMINFO：sample_rate(20)|channels(3)|bps(5)|total_samples(36)，位于 body[10..17]

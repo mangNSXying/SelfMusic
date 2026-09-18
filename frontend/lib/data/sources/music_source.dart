@@ -36,7 +36,7 @@ class ScanOptions {
         minDurationSec = 0;
 }
 
-/// 打开的音频流（直接流式传输的统一返回结构）。
+/// 打开音频流（直接流式传输的统一返回结构）。
 class OpenedStream {
   final int contentLength;
   final String contentType;
@@ -46,6 +46,14 @@ class OpenedStream {
     required this.contentType,
     required this.stream,
   });
+}
+
+/// 直连源可直接交给播放器的 URL（原生 HTTP Range / seek），
+/// 比自建 [StreamAudioSource] 更可靠；不可用时返回 null 走 [MusicSource.open]。
+class DirectStream {
+  final String url;
+  final Map<String, String>? headers;
+  const DirectStream(this.url, {this.headers});
 }
 
 /// Source 抽象（DESIGN §6.2）。播放器只认 [MusicSource]，不感知服务器/直连模式。
@@ -81,6 +89,9 @@ abstract class MusicSource {
   /// 打开音频流（支持 Range）。默认抛"不支持直连"。
   Future<OpenedStream> open(Song song, {IntRange? range}) async =>
       throw UnimplementedError('$key 不支持直连播放');
+
+  /// 若该歌可直接以 URL 播放（原生 Range/seek），返回 URL 与请求头；否则 null。
+  DirectStream? directStream(Song song) => null;
 
   /// 依据本地索引检索歌曲。
   Future<List<Song>> search({String? query, int page = 1, int size = 100}) async =>

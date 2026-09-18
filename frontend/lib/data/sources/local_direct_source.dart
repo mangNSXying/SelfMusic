@@ -145,6 +145,10 @@ class LocalDirectSource implements MusicSource {
   @override
   Future<void> close() async {}
 
+  /// 本地文件由 [cachedFilePath] 直接返回路径走 `setFilePath`，无需 URL。
+  @override
+  DirectStream? directStream(Song song) => null;
+
   /// 将源内相对引用安全地拼到根目录（过滤 `..` 防止越界）。
   String _absPath(String ref) {
     final parts = ref
