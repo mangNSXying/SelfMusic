@@ -113,11 +113,15 @@ class _SongsViewState extends State<_SongsView> {
   @override
   void initState() {
     super.initState();
-    final lib = context.read<LibraryProvider>();
-    if (lib.songs.isEmpty && !lib.loading) {
-      final nav = context.read<NavigationProvider>();
-      lib.startup(query: nav.search.isEmpty ? null : nav.search);
-    }
+    // 首帧后再启动加载：startup 会同步 notifyListeners，build 期间触发会报断言。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final lib = context.read<LibraryProvider>();
+      if (lib.songs.isEmpty && !lib.loading) {
+        final nav = context.read<NavigationProvider>();
+        lib.startup(query: nav.search.isEmpty ? null : nav.search);
+      }
+    });
   }
 
   @override
@@ -180,13 +184,17 @@ class _AlbumsViewState extends State<_AlbumsView> {
   @override
   void initState() {
     super.initState();
-    final lib = context.read<LibraryProvider>();
-    if (lib.albums.isEmpty && !lib.loading) {
-      lib.startup(
-          query: context.read<NavigationProvider>().search.isEmpty
-              ? null
-              : context.read<NavigationProvider>().search);
-    }
+    // 首帧后再启动加载：startup 会同步 notifyListeners，build 期间触发会报断言。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final lib = context.read<LibraryProvider>();
+      if (lib.albums.isEmpty && !lib.loading) {
+        lib.startup(
+            query: context.read<NavigationProvider>().search.isEmpty
+                ? null
+                : context.read<NavigationProvider>().search);
+      }
+    });
   }
 
   @override
@@ -345,13 +353,17 @@ class _ArtistsViewState extends State<_ArtistsView> {
   @override
   void initState() {
     super.initState();
-    final lib = context.read<LibraryProvider>();
-    if (lib.artists.isEmpty && !lib.loading) {
-      lib.startup(
-          query: context.read<NavigationProvider>().search.isEmpty
-              ? null
-              : context.read<NavigationProvider>().search);
-    }
+    // 首帧后再启动加载：startup 会同步 notifyListeners，build 期间触发会报断言。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final lib = context.read<LibraryProvider>();
+      if (lib.artists.isEmpty && !lib.loading) {
+        lib.startup(
+            query: context.read<NavigationProvider>().search.isEmpty
+                ? null
+                : context.read<NavigationProvider>().search);
+      }
+    });
   }
 
   @override

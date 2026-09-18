@@ -19,8 +19,12 @@ class _PlaylistsViewState extends State<PlaylistsView> {
   @override
   void initState() {
     super.initState();
-    final p = context.read<PlaylistsProvider>();
-    if (!p.loaded) p.refresh();
+    // 首帧后再刷新，避免 refresh() 的 notifyListeners 在 build 期间触发断言。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final p = context.read<PlaylistsProvider>();
+      if (!p.loaded) p.refresh();
+    });
   }
 
   @override
@@ -187,8 +191,12 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
   @override
   void initState() {
     super.initState();
-    final p = context.read<PlaylistsProvider>();
-    if (!p.loaded) p.refresh();
+    // 首帧后再刷新，避免 refresh() 的 notifyListeners 在 build 期间触发断言。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final p = context.read<PlaylistsProvider>();
+      if (!p.loaded) p.refresh();
+    });
   }
 
   @override
