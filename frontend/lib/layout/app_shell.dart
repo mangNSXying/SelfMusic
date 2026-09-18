@@ -47,7 +47,7 @@ class _AppShellState extends State<AppShell> {
     final shell = wide
         ? Row(
             children: [
-              if (_sidebarVisible) Sidebar(onClose: _toggleSidebar),
+              if (_sidebarVisible) const Sidebar(),
               Expanded(child: contentColumn),
               if (_queueVisible) QueuePanel(onClose: _toggleQueue),
             ],
@@ -62,7 +62,7 @@ class _AppShellState extends State<AppShell> {
       // 窄屏：顶部抽屉由 Drawer 承载；队列用底部 sheet。
       return Scaffold(
         key: _scaffoldKey,
-        drawer: Sidebar(onClose: () => _scaffoldKey.currentState?.closeDrawer()),
+        drawer: const Sidebar(),
         body: shell,
         floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
         floatingActionButton: _queueVisible

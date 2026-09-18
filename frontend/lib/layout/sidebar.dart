@@ -7,8 +7,7 @@ import '../theme/theme_provider.dart';
 
 /// 侧边导航栏：主要承载设置分区 + 底部明暗切换/退出。
 class Sidebar extends StatelessWidget {
-  final VoidCallback? onClose;
-  const Sidebar({super.key, this.onClose});
+  const Sidebar({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -21,7 +20,7 @@ class Sidebar extends StatelessWidget {
       child: SafeArea(
         child: Column(
           children: [
-            _Header(onClose: onClose),
+            const _Header(),
             const Divider(height: 1),
             Expanded(child: _SettingsList(nav: nav)),
             const Divider(height: 1),
@@ -34,8 +33,7 @@ class Sidebar extends StatelessWidget {
 }
 
 class _Header extends StatelessWidget {
-  final VoidCallback? onClose;
-  const _Header({this.onClose});
+  const _Header();
 
   @override
   Widget build(BuildContext context) {
@@ -49,12 +47,7 @@ class _Header extends StatelessWidget {
         children: [
           Icon(Icons.graphic_eq, color: Theme.of(context).colorScheme.primary),
           const SizedBox(width: 10),
-          // 展开时不显示标题？这里始终显示；onClose 为移动端抽屉提供收起按钮
           title,
-          if (onClose != null) ...[
-            const Spacer(),
-            IconButton(icon: const Icon(Icons.close), onPressed: onClose),
-          ],
         ],
       ),
     );
