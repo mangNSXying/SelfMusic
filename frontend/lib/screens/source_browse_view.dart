@@ -39,6 +39,9 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
   StreamSubscription<ScanProgress>? _progressSub;
   final Selection<String> _sel = Selection<String>();
 
+  /// 已应用的元数据版本（编辑/补读后就地重拉代理列表）。
+  int _seenMetaVersion = 0;
+
   bool get _isProxy =>
       context.read<DirectSourceManager>().isProxy(widget.sourceKey);
 
@@ -49,6 +52,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
   @override
   void initState() {
     super.initState();
+    _seenMetaVersion = context.read<DirectSourceManager>().metaVersion;
     if (_isProxy) {
       if (!_serverUnconfigured) _loadProxy();
     } else {
@@ -169,6 +173,13 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
       return const Center(child: Text('源不存在'));
     }
     final isProxy = _isProxy;
+    // 元数据被编辑/补读后就地重拉代理列表，使覆盖层即时可见。
+    if (isProxy && direct.metaVersion != _seenMetaVersion) {
+      _seenMetaVersion = direct.metaVersion;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadProxy();
+      });
+    }
     final songs = isProxy
         ? _songs
         : direct.songsOf(widget.sourceKey, query: _query);

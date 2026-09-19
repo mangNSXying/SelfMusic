@@ -13,6 +13,9 @@ class CacheManager {
   /// 正在播放的缓存 key（淘汰时跳过，避免中断当前播放）。
   String? currentCacheKey;
 
+  /// 预载的下一首缓存 key（淘汰时同样跳过，避免刚预载就被清掉）。
+  String? preloadCacheKey;
+
   CacheManager(this.index, this.settings);
 
   /// 计算某（直连）源歌曲的缓存 key；不支持的源返回 null。
@@ -56,7 +59,9 @@ class CacheManager {
       final over = (maxSongs > 0 && remaining > maxSongs) ||
           (maxBytes > 0 && total > maxBytes);
       if (!over) break;
-      if (currentCacheKey != null && row.cacheKey == currentCacheKey) {
+      // 正在播放与已预载的下一首都保留，避免中断播放 / 预载白做。
+      if ((currentCacheKey != null && row.cacheKey == currentCacheKey) ||
+          (preloadCacheKey != null && row.cacheKey == preloadCacheKey)) {
         continue;
       }
       index.deleteCache(row.cacheKey);

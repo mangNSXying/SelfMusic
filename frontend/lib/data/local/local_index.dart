@@ -9,6 +9,7 @@ import 'package:sqlite3/sqlite3.dart';
 
 import '../../models/song.dart';
 import '../sources/webdav_url.dart';
+import 'audio_metadata.dart';
 
 /// 直连模式本地轻量索引（DESIGN §6.4）。///
 /// SQLite 存放：已配置的直连源（[DirectSourceRow]）、索引歌曲（[Song]）、
@@ -335,37 +336,55 @@ class LocalIndex {
   }
 
   /// 指定源尚未读取过元数据的歌曲（后台补读用，missing=0）。
-  List<Song> unreadSongs(String sourceKey, int limit) {
+  /// [excludeRef] 用于跳过正在播放的歌（播放链路自己会重读，避免重复读流）。
+  List<Song> unreadSongs(String sourceKey, int limit, {String? excludeRef}) {
+    final excludeCond = excludeRef == null ? '' : ' AND i.ref != ?';
+    final params = <Object?>[
+      sourceKey,
+      if (excludeRef != null) excludeRef,
+      limit,
+    ];
     final rows = _db!.select('''
       SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.track_no,
              i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
              COALESCE(p.is_favorite, 0) AS favorite
       FROM idx_songs i
       LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
-      WHERE i.source_key=? AND i.missing=0 AND COALESCE(i.meta_read, 0)=0
+      WHERE i.source_key=? AND i.missing=0 AND COALESCE(i.meta_read, 0)=0$excludeCond
       ORDER BY i.id
       LIMIT ?
-    ''', [sourceKey, limit]);
+    ''', params);
     return rows.map(_rowToSong).toList();
   }
 
   /// 用户手动修改歌曲元数据：标题/歌手/专辑落库并标记 user_edited=1（扫描不再覆盖），
   /// 同时同步 play_meta 歌曲快照中的对应字段（喜欢列表/断点恢复用快照渲染）。
+  /// 字段语义：null=不修改；''=清空（置 NULL，UI 显示为未知）。
   void updateSongUserMeta(String sourceKey, String songRef,
       {String? title, String? artist, String? album}) {
     _db!.execute('''
       UPDATE idx_songs SET
-        title=COALESCE(?, title),
-        artist=COALESCE(?, artist),
-        album=COALESCE(?, album),
+        title=CASE WHEN ? IS NULL THEN title ELSE NULLIF(?, '') END,
+        artist=CASE WHEN ? IS NULL THEN artist ELSE NULLIF(?, '') END,
+        album=CASE WHEN ? IS NULL THEN album ELSE NULLIF(?, '') END,
         user_edited=1
       WHERE source_key=? AND ref=?
-    ''', [title, artist, album, sourceKey, songRef]);
+    ''', [
+      title,
+      title,
+      artist,
+      artist,
+      album,
+      album,
+      sourceKey,
+      songRef,
+    ]);
     syncMetaSnapshot(sourceKey, songRef,
         title: title, artist: artist, album: album);
   }
 
   /// 同步 play_meta 歌曲快照中的标题/歌手/专辑（直连改库 / 服务端覆盖层共用）。
+  /// '' 表示清空为未知（写 null）。
   void syncMetaSnapshot(String sourceKey, String songRef,
       {String? title, String? artist, String? album}) {
     final rows = _db!.select(
@@ -376,9 +395,9 @@ class LocalIndex {
     if (raw == null || raw.isEmpty) return;
     try {
       final j = jsonDecode(raw) as Map<String, dynamic>;
-      if (title != null) j['title'] = title;
-      if (artist != null) j['artist'] = artist;
-      if (album != null) j['albumName'] = album;
+      if (title != null) j['title'] = title.isEmpty ? null : title;
+      if (artist != null) j['artist'] = artist.isEmpty ? null : artist;
+      if (album != null) j['albumName'] = album.isEmpty ? null : album;
       _db!.execute(
           'UPDATE play_meta SET song_json=? WHERE source_key=? AND song_ref=?',
           [jsonEncode(j), sourceKey, songRef]);
@@ -387,16 +406,16 @@ class LocalIndex {
     }
   }
 
-  /// 服务端歌曲元数据本地覆盖（部分字段可空：空=不覆盖）。
+  /// 服务端歌曲元数据本地覆盖（null=不覆盖；''=显式清空为未知）。
   void setMetaOverride(String sourceKey, String songRef,
       {String? title, String? artist, String? album}) {
     _db!.execute('''
       INSERT INTO song_meta_override(source_key, song_ref, title, artist, album)
       VALUES(?,?,?,?,?)
       ON CONFLICT(source_key, song_ref) DO UPDATE SET
-        title=COALESCE(excluded.title, song_meta_override.title),
-        artist=COALESCE(excluded.artist, song_meta_override.artist),
-        album=COALESCE(excluded.album, song_meta_override.album)
+        title=CASE WHEN excluded.title IS NULL THEN song_meta_override.title ELSE excluded.title END,
+        artist=CASE WHEN excluded.artist IS NULL THEN song_meta_override.artist ELSE excluded.artist END,
+        album=CASE WHEN excluded.album IS NULL THEN song_meta_override.album ELSE excluded.album END
     ''', [sourceKey, songRef, title, artist, album]);
   }
 
@@ -415,8 +434,9 @@ class LocalIndex {
   }
 
   /// 把嵌入封面包装成可跨源复用的落盘（`covers/<md5(ref)>.jpg`），返回路径或 null。
+  /// 仅接受图片签名通过的字节（防止描述残留/URL 等脏数据落盘致解码报错）。
   String? persistCover(Uint8List cover, String ref) {
-    if (cover.isEmpty) return null;
+    if (cover.isEmpty || !looksLikeImageBytes(cover)) return null;
     try {
       final dir = p.join(_dir!, 'covers');
       Directory(dir).createSync(recursive: true);
@@ -427,6 +447,40 @@ class LocalIndex {
     } catch (_) {
       return null;
     }
+  }
+
+  /// 清理历史无效封面（旧解析缺陷曾把描述残留/URL 写盘，Android 解码器会刷错误日志）：
+  /// 删除签名不符的封面文件，并把引用它们的歌标为未读，让补读用修复后的解析重取。
+  /// 分块让出事件循环，避免大封面目录一次性阻塞 UI。
+  Future<int> cleanupInvalidCovers() async {
+    final root = _dir;
+    if (root == null || _db == null) return 0;
+    final dir = Directory(p.join(root, 'covers'));
+    if (!dir.existsSync()) return 0;
+    var cleaned = 0;
+    var processed = 0;
+    final now = DateTime.now();
+    for (final f in dir.listSync()) {
+      if (f is! File) continue;
+      try {
+        // 跳过刚落盘的文件，避免与正在进行的扫描/补读写盘竞争。
+        if (now.difference(f.statSync().modified).inMinutes < 5) continue;
+        final raf = f.openSync();
+        final sig = raf.readSync(16);
+        raf.closeSync();
+        if (!looksLikeImageBytes(sig)) {
+          f.deleteSync();
+          _db!.execute(
+              'UPDATE idx_songs SET cover_path=NULL, meta_read=0 WHERE cover_path=?',
+              [f.path]);
+          cleaned++;
+        }
+      } catch (_) {
+        // 单文件失败忽略，继续清理其余。
+      }
+      if (++processed % 50 == 0) await Future.delayed(Duration.zero);
+    }
+    return cleaned;
   }
 
   /// 扫描结束后把不再存在的条目标记 missing（DESIGN §6.4 增量）。

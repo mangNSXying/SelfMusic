@@ -58,8 +58,7 @@ class _ServerSettingsState extends State<_ServerSettings> {
   late final TextEditingController _controller;
   late String _saved;
   bool _saving = false;
-  String? _pairingToken;
-  bool _pairingFetched = false;
+  String _pairingToken = '';
 
   @override
   void initState() {
@@ -67,17 +66,11 @@ class _ServerSettingsState extends State<_ServerSettings> {
     final settings = context.read<ServerSettings>();
     _saved = settings.baseUrl;
     _controller = TextEditingController(text: settings.baseUrl);
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (!_pairingFetched) {
-      _pairingFetched = true;
-      context.read<ApiClient>().fetchPairingToken().then((t) {
-        if (mounted) setState(() => _pairingToken = t);
-      });
-    }
+    // 先展示本地保存的密钥（离线也能看到），再尝试向服务端刷新。
+    _pairingToken = settings.pairingKey;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _fetchPairingKey();
+    });
   }
 
   @override
@@ -86,11 +79,22 @@ class _ServerSettingsState extends State<_ServerSettings> {
     super.dispose();
   }
 
-  /// 配对服务器副标题：配对态 + 同一份配对密钥（与下方密钥行一致）。
+  /// 拉取配对密钥并落盘；失败保留本地缓存（副标题仍可见）。
+  Future<void> _fetchPairingKey() async {
+    final api = context.read<ApiClient>();
+    final settings = context.read<ServerSettings>();
+    if (settings.baseUrl.isEmpty) return;
+    final t = await api.fetchPairingToken();
+    if (!mounted || t == null || t.isEmpty) return;
+    await settings.setPairingKey(t);
+    if (mounted) setState(() => _pairingToken = t);
+  }
+
+  /// 配对服务器副标题：配对态 + 同一份配对密钥（与配对页一致）。
   String _pairingSubtitle(bool paired) {
     final state = paired ? '已配对' : '未配对（首次启动不强制，直连模式仍可用）';
+    if (_pairingToken.isEmpty) return state;
     final t = _pairingToken;
-    if (t == null) return state;
     final masked = t.length <= 8
         ? '••••••••'
         : '${t.substring(0, 4)}••••••${t.substring(t.length - 4)}';
@@ -109,6 +113,9 @@ class _ServerSettingsState extends State<_ServerSettings> {
       _saved = settings.baseUrl;
       _saving = false;
     });
+    // 地址变化后刷新配对密钥展示。
+    await _fetchPairingKey();
+    if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text('已保存服务端地址：${_saved.isEmpty ? "（未配置）" : _saved}')));
   }
@@ -183,7 +190,7 @@ class _ServerSettingsState extends State<_ServerSettings> {
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('预载下一首'),
-            subtitle: const Text('播放时按播放顺序确定下一首并后台缓存（只决定是否预载；加权随机不可预知，跳过）'),
+            subtitle: const Text('播放时按播放顺序算法确定下一首并后台缓存（加权随机也先抽样确定并复用；开关只决定是否预载）'),
             value: context
                 .read<DirectSourceManager>()
                 .settings

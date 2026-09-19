@@ -46,6 +46,10 @@ class DirectSourceManager extends ChangeNotifier {
   /// 收藏列表版本号：全局收藏面板监听该值刷新（避免全量 rebuild）。
   int get favoriteVersion => _favoriteVersion;
 
+  /// 歌曲元数据版本号：扫描/补读/编辑后自增，[LibraryProvider] 监听它就地重建。
+  int _metaVersion = 0;
+  int get metaVersion => _metaVersion;
+
   // ---------- 扫描：进度 / 取消 / 自动触发 ----------
 
   final Map<String, ScanToken> _scanTokens = {};
@@ -189,6 +193,13 @@ class DirectSourceManager extends ChangeNotifier {
     _ready = true;
     restartAutoScan();
     notifyListeners();
+    // 后台清理历史无效封面（旧解析缺陷可能写脏数据），清理到的歌标未读待补读。
+    unawaited(index.cleanupInvalidCovers().then((cleaned) {
+      if (cleaned > 0) {
+        _metaVersion++;
+        notifyListeners();
+      }
+    }));
   }
 
   @override
@@ -490,6 +501,8 @@ class DirectSourceManager extends ChangeNotifier {
       } else {
         index.updateSourceScan(key, 'done');
       }
+      // 扫描有增改 → 元数据版本自增（全局库/LibraryProvider 就地刷新）。
+      if (summary.added > 0 || summary.updated > 0) _metaVersion++;
       return ScanSummary(
         added: summary.added,
         updated: summary.updated,
@@ -519,13 +532,14 @@ class DirectSourceManager extends ChangeNotifier {
     }
   }
 
-  /// 检索某源索引的歌。代理源走后端整体库（异步，分页取完）。
+  /// 检索某源索引的歌。代理源走后端整体库（异步，分页取完），并应用本地元数据覆盖。
   Future<List<Song>> fetchSongsFor(String? sourceKey, {String? query}) async {
     final key = sourceKey ?? serverKey;
     if (key == serverKey) return const [];
     final s = _sources.where((x) => x.key == key).firstOrNull;
     if (s is ServerProxySource) {
-      return s.fetchAllSongs(query: query);
+      final list = await s.fetchAllSongs(query: query);
+      return [for (final x in list) applyMetaOverride(x)];
     }
     return index.searchSongs(sourceKey: key, query: query);
   }
@@ -593,15 +607,52 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 应用服务端歌曲本地元数据覆盖（'' 表示用户显式清空该字段）。
+  ///
+  /// 直连歌改库直接生效；服务端/代理歌经此覆盖层渲染（全局库与源内浏览共用）。
+  /// 注意 Song.copyWith 对 null 是「保留旧值」，清空必须显式重建对象。
+  Song applyMetaOverride(Song s) {
+    final o = index.metaOverrideOf(s.sourceKey, s.sourceRef);
+    if (o == null || o.isEmpty) return s;
+    String? pick(String? ov, String? base) {
+      if (ov == null) return base; // 未覆盖
+      return ov.isEmpty ? null : ov; // 覆盖为空 = 清空为未知
+    }
+
+    final title = pick(o.title, s.title);
+    return Song(
+      id: s.id,
+      sourceKey: s.sourceKey,
+      title: (title == null || title.isEmpty) ? s.title : title,
+      artist: pick(o.artist, s.artist),
+      albumName: pick(o.album, s.albumName),
+      trackNo: s.trackNo,
+      year: s.year,
+      genre: s.genre,
+      duration: s.duration,
+      source: s.source,
+      sourceRef: s.sourceRef,
+      fileSize: s.fileSize,
+      format: s.format,
+      favorite: s.favorite,
+      hidden: s.hidden,
+      coverPath: s.coverPath,
+      sourceUrl: s.sourceUrl,
+      isDirect: s.isDirect,
+    );
+  }
+
   /// 用户手动修改歌曲元数据（标题/歌手/专辑）。
   ///
   /// 直连歌落库并标记扫描保护；服务端歌（后端只读）写入本地覆盖层。
+  /// 字段语义：null=不修改，''=清空为未知，其余=新值。
   /// 返回刷新后的歌曲（供播放队列/当前歌曲同步），失败返回 null。
   Song? updateSongMeta(Song s,
       {String? title, String? artist, String? album}) {
     if (s.isDirect) {
       index.updateSongUserMeta(s.sourceKey, s.sourceRef,
           title: title, artist: artist, album: album);
+      _metaVersion++;
       _favoriteVersion++;
       notifyListeners();
       return index.songByRef(s.sourceKey, s.sourceRef);
@@ -610,13 +661,15 @@ class DirectSourceManager extends ChangeNotifier {
         title: title, artist: artist, album: album);
     index.syncMetaSnapshot(s.sourceKey, s.sourceRef,
         title: title, artist: artist, album: album);
+    _metaVersion++;
     _favoriteVersion++;
     notifyListeners();
-    return s.copyWith(
+    final patched = s.copyWith(
       title: title ?? s.title,
       artist: artist ?? s.artist,
       albumName: album ?? s.albumName,
     );
+    return applyMetaOverride(patched);
   }
 
   Future<void> cacheSong(MusicSource src, Song s) async {
@@ -627,16 +680,24 @@ class DirectSourceManager extends ChangeNotifier {
   }
 
   /// 预载指定歌曲（播放开始后对 peekNext() 的结果调用）：
-  /// 开关关闭/非直连歌/已缓存直接返回；下载后走 LRU 淘汰，失败静默。
+  /// 开关关闭/非直连歌/已缓存直接返回；下载后走 LRU 淘汰（预载条目受保护），失败静默。
   Future<void> preloadSong(Song s) async {
     if (!settings.preloadNext) return;
     if (!s.isDirect) return;
     final src = sourceByKey(s.sourceKey);
     if (src == null) return;
     try {
-      if (await src.cachedFilePath(s) != null) return;
+      final existing = await src.cachedFilePath(s);
+      if (existing != null) {
+        // 已缓存：只刷新访问时间并登记保护，不再下载。
+        cache.touch(src, s);
+        cache.preloadCacheKey = cache.cacheKeyOf(src, s);
+        return;
+      }
       await src.cacheSong(s);
-      cache.currentCacheKey = cache.cacheKeyOf(src, s);
+      final k = cache.cacheKeyOf(src, s);
+      if (k != null) index.touchCache(k);
+      cache.preloadCacheKey = k;
       cache.evictIfNeeded();
     } catch (_) {
       // 预载失败静默，不影响当前播放。
@@ -652,14 +713,22 @@ class DirectSourceManager extends ChangeNotifier {
   /// 并触发后台元数据补读（未读过的歌曲逐个读头回填）。
   void onTrackPlaying(MusicSource src, Song s) {
     cache.currentCacheKey = cache.cacheKeyOf(src, s);
+    // 预载曲开始播放：解除预载保护（它现在由 currentCacheKey 保护）。
+    final k = cache.cacheKeyOf(src, s);
+    if (k != null && cache.preloadCacheKey == k) cache.preloadCacheKey = null;
     cache.touch(src, s);
+    _playingSourceKey = s.sourceKey;
+    _playingRef = s.sourceRef;
     enrichUnreadInBackground();
   }
 
   bool _enrichRunning = false;
+  String? _playingSourceKey;
+  String? _playingRef;
 
-  /// 后台补读：各直连源未读取过元数据的歌曲逐个读头回填（每源每轮 100 首）。
-  /// 播放开始后触发；单例运行，失败的歌不标已读、下轮再试。
+  /// 后台补读：各直连源未读取过元数据的歌曲逐个读头回填，分批循环直到读完。
+  /// 播放开始后触发；单例运行；跳过正在播放的歌（播放链路自己会重读）；
+  /// 解析失败不标已读、下轮再试；每批成功即通知 UI 就地刷新。
   void enrichUnreadInBackground() {
     if (_enrichRunning) return;
     _enrichRunning = true;
@@ -671,15 +740,23 @@ class DirectSourceManager extends ChangeNotifier {
       for (final s in _sources) {
         if (s is ServerProxySource) continue;
         if (!s.supportsDirect) continue;
-        final unread = index.unreadSongs(s.key, 100);
-        for (final song in unread) {
-          try {
-            await enrichSongMeta(index, s, song);
-          } catch (_) {
-            // 单首失败跳过，不标已读。
+        while (true) {
+          final skipRef = _playingSourceKey == s.key ? _playingRef : null;
+          final unread = index.unreadSongs(s.key, 100, excludeRef: skipRef);
+          if (unread.isEmpty) break;
+          var enriched = 0;
+          for (final song in unread) {
+            try {
+              if (await enrichSongMeta(index, s, song)) enriched++;
+            } catch (_) {
+              // 单首失败跳过，不标已读。
+            }
+            // 让出事件循环，避免长循环卡 UI。
+            await Future.delayed(Duration.zero);
           }
-          // 让出事件循环，避免长循环卡 UI。
-          await Future.delayed(Duration.zero);
+          if (enriched == 0) break; // 整批无进展（网络断/不可解析）：避免死循环
+          _metaVersion++;
+          notifyListeners();
         }
       }
     } finally {

@@ -17,13 +17,18 @@ class _PairingScreenState extends State<PairingScreen> {
   final _nameCtrl = TextEditingController(text: PlatformInfo.defaultDeviceName);
   String? _pairingToken;
   bool _showKey = false;
+  bool _loading = false;
+  bool _failed = false;
+
+  /// 已发起过拉取的地址（地址变更时自动重拉）。
+  String _fetchedUrl = '';
 
   @override
   void initState() {
     super.initState();
-    context.read<ApiClient>().fetchPairingToken().then((t) {
-      if (mounted) setState(() => _pairingToken = t);
-    });
+    // 先用本地保存的密钥，保证离线/配对后也能看到信息。
+    final saved = context.read<ServerSettings>().pairingKey;
+    _pairingToken = saved.isEmpty ? null : saved;
   }
 
   @override
@@ -36,6 +41,35 @@ class _PairingScreenState extends State<PairingScreen> {
   static String _mask(String token) {
     if (token.length <= 8) return '••••••••';
     return '${token.substring(0, 4)}••••••${token.substring(token.length - 4)}';
+  }
+
+  /// 从服务端拉取配对密钥；成功后落盘，失败保留本地缓存并提示可重试。
+  Future<void> _fetchToken() async {
+    final api = context.read<ApiClient>();
+    final settings = context.read<ServerSettings>();
+    if (api.dio.options.baseUrl.isEmpty) {
+      setState(() => _failed = true);
+      return;
+    }
+    setState(() {
+      _loading = true;
+      _failed = false;
+    });
+    final t = await api.fetchPairingToken();
+    if (!mounted) return;
+    if (t != null && t.isNotEmpty) {
+      await settings.setPairingKey(t);
+      if (!mounted) return;
+      setState(() {
+        _pairingToken = t;
+        _loading = false;
+      });
+    } else {
+      setState(() {
+        _failed = true;
+        _loading = false;
+      });
+    }
   }
 
   Future<void> _unpair(AuthProvider auth) async {
@@ -61,10 +95,29 @@ class _PairingScreenState extends State<PairingScreen> {
         .showSnackBar(const SnackBar(content: Text('已取消配对')));
   }
 
+  /// 密钥行副标题：加载中 / 已取到（离线时标注缓存来源）/ 获取失败。
+  String _keySubtitle() {
+    if (_loading) return '拉取中…';
+    final t = _pairingToken;
+    if (t == null) {
+      return _failed ? '获取失败：请检查服务端地址与网络后重试' : '暂无可显示的配对密钥';
+    }
+    final shown = _showKey ? t : _mask(t);
+    return _failed ? '$shown（离线，显示上次保存的密钥）' : shown;
+  }
+
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
     final settings = context.watch<ServerSettings>();
+    final scheme = Theme.of(context).colorScheme;
+    // 地址变化（如首次配置/改地址）后自动重拉；未配置地址则标记失败态。
+    if (settings.baseUrl != _fetchedUrl) {
+      _fetchedUrl = settings.baseUrl;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _fetchToken();
+      });
+    }
     return Scaffold(
       appBar: AppBar(title: const Text('配对服务器')),
       body: SafeArea(
@@ -95,38 +148,43 @@ class _PairingScreenState extends State<PairingScreen> {
                       ListTile(
                         leading: const Icon(Icons.key),
                         title: const Text('配对密钥'),
-                        subtitle: Text(_pairingToken == null
-                            ? '拉取中…'
-                            : _showKey
-                                ? _pairingToken!
-                                : _mask(_pairingToken!)),
-                        trailing: _pairingToken == null
-                            ? null
-                            : Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                    icon: Icon(_showKey
-                                        ? Icons.visibility_off_outlined
-                                        : Icons.visibility_outlined),
-                                    tooltip: _showKey ? '隐藏' : '显示',
-                                    onPressed: () => setState(
-                                        () => _showKey = !_showKey),
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(Icons.copy_outlined),
-                                    tooltip: '复制',
-                                    onPressed: () {
-                                      Clipboard.setData(ClipboardData(
-                                          text: _pairingToken!));
-                                      ScaffoldMessenger.of(context)
-                                          .showSnackBar(const SnackBar(
-                                              content:
-                                                  Text('已复制配对密钥')));
-                                    },
-                                  ),
-                                ],
+                        subtitle: Text(
+                          _keySubtitle(),
+                          style: _failed
+                              ? TextStyle(color: scheme.error)
+                              : null,
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (_pairingToken != null) ...[
+                              IconButton(
+                                icon: Icon(_showKey
+                                    ? Icons.visibility_off_outlined
+                                    : Icons.visibility_outlined),
+                                tooltip: _showKey ? '隐藏' : '显示',
+                                onPressed: () =>
+                                    setState(() => _showKey = !_showKey),
                               ),
+                              IconButton(
+                                icon: const Icon(Icons.copy_outlined),
+                                tooltip: '复制',
+                                onPressed: () {
+                                  Clipboard.setData(
+                                      ClipboardData(text: _pairingToken!));
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                          content: Text('已复制配对密钥')));
+                                },
+                              ),
+                            ],
+                            IconButton(
+                              icon: const Icon(Icons.refresh),
+                              tooltip: '重新获取',
+                              onPressed: _loading ? null : _fetchToken,
+                            ),
+                          ],
+                        ),
                       ),
                       const Divider(height: 1),
                       ListTile(

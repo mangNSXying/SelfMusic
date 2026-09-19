@@ -7,8 +7,8 @@ import 'music_source.dart';
 
 /// 后台元数据补读（播放链路共用）：读文件头部 256KB → 解析 → 回填索引 → 标已读。
 ///
-/// 成功（取到头部，无论是否解析出字段）返回 true；取流失败抛异常，
-/// 调用方决定是否重试（播放失败不标已读，下次播放再试）。
+/// 返回是否解析成功：成功才标已读；头部不可解析（如元数据块超出采样范围）
+/// 返回 false 且不标已读，下次再试。取流失败抛异常，由调用方决定重试策略。
 Future<bool> enrichSongMeta(
     LocalIndex index, MusicSource src, Song song) async {
   const headMax = 256 * 1024;
@@ -20,16 +20,17 @@ Future<bool> enrichSongMeta(
   }
   final meta = parseAudioHead(
       Uint8List.fromList(head), song.format ?? '', song.fileSize);
+  if (meta == null) return false; // 解析失败：不标已读，留待下次重试
   String? coverPath;
-  final cover = meta?.cover;
+  final cover = meta.cover;
   if (cover != null && cover.isNotEmpty) {
     coverPath = index.persistCover(cover, song.sourceRef);
   }
   index.enrichSong(song.sourceKey, song.sourceRef,
-      duration: meta?.duration,
-      genre: meta?.genre,
-      trackNo: meta?.trackNo,
-      year: meta?.year,
+      duration: meta.duration,
+      genre: meta.genre,
+      trackNo: meta.trackNo,
+      year: meta.year,
       coverPath: coverPath);
   return true;
 }

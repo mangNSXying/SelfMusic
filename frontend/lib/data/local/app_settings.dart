@@ -150,8 +150,8 @@ class AppSettings {
   set sleepPlayThroughDefault(bool v) =>
       index.settingsSet(kSleepPlayThroughDefault, v ? '1' : '0');
 
-  /// 预载下一首（默认开）：播放某首歌时按播放顺序算法确定下一首并后台缓存，
-  /// 开关只决定是否预载，不影响下一首的确定逻辑（加权随机不可预知，跳过预载）。
+  /// 预载下一首（默认开）：播放某首歌时按播放顺序算法确定下一首并后台缓存
+  /// （加权随机也先抽样确定，切歌时复用同一结果），开关只决定是否预载。
   bool get preloadNext => (index.settingsGet(kPreloadNext) ?? '1') == '1';
   set preloadNext(bool v) => index.settingsSet(kPreloadNext, v ? '1' : '0');
 

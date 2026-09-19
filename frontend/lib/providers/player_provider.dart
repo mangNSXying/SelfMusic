@@ -468,6 +468,7 @@ class PlayerProvider extends ChangeNotifier {
   void setMode(PlayMode m) {
     if (_mode == m) return;
     _mode = m;
+    _peekedNext = null; // 模式变了，旧的预取结果作废
     final s = _appSettings;
     if (s != null && s.playModeDefault != m.name) {
       s.playModeDefault = m.name;
@@ -531,6 +532,8 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   Future<void> _play(Song s, {MusicSource? source, bool play = true}) async {
+    // 新曲开始前清掉上一首的预取结果（_onTrackStarted 会对新曲重新 peek）。
+    _peekedNext = null;
     // 睡眠定时处于「等当前曲放完」的挂起态时，手动切歌视为用户接管：取消定时。
     if (_sleepPendingStop) {
       _clearSleep();
@@ -598,6 +601,7 @@ class PlayerProvider extends ChangeNotifier {
 
   /// 懒补全：播放后把解析出的完整元数据（时长/流派/曲目/年份/封面）回填索引。
   /// 从头读取（本地直读 / WebDAV Range GET），失败静默不影响播放。
+  /// 成功后刷新队列与当前歌曲对象并通知，播放页即时展示新读到的信息。
   Future<void> _enrichLazily(Song s, MusicSource src) async {
     final idx = _index;
     if (idx == null) return;
@@ -606,6 +610,8 @@ class PlayerProvider extends ChangeNotifier {
     _enriching.add(k);
     try {
       await enrichSongMeta(idx, src, s);
+      final updated = idx.songByRef(s.sourceKey, s.sourceRef);
+      if (updated != null) refreshSongMeta(updated);
     } catch (_) {
       // 后台补全失败不影响播放（不标已读，下次播放再试）。
     } finally {
@@ -615,17 +621,37 @@ class PlayerProvider extends ChangeNotifier {
 
   // ---------- 前进/后退 ----------
 
+  /// 预取的下一首（加权随机用它保证「确定的结果 = 实际播放」；其余模式可随时重算）。
+  Song? _peekedNext;
+
   /// 按当前播放顺序算法确定下一首（不播放，只确定；开关与预载无关）：
-  /// 顺序/列表循环/单曲循环可确定；加权随机不可预知返回 null。
+  /// 顺序/列表循环/单曲循环可确定；加权随机先按权重抽样并记住，
+  /// 切歌时复用同一结果，保证预载命中。
   Song? peekNext() {
     if (_queue.isEmpty || _current == null) return null;
-    if (_mode == PlayMode.weighted) return null;
     if (_mode == PlayMode.loopOne) return _current;
     if (_mode == PlayMode.loopList) {
-      return _queue[(_idx + 1) % _queue.length];
+      _peekedNext = _queue[(_idx + 1) % _queue.length];
+      return _peekedNext;
     }
-    if (_idx + 1 < _queue.length) return _queue[_idx + 1];
+    if (_mode == PlayMode.weighted) {
+      _peekedNext = _pickWeighted();
+      return _peekedNext;
+    }
+    if (_idx + 1 < _queue.length) {
+      _peekedNext = _queue[_idx + 1];
+      return _peekedNext;
+    }
     return null;
+  }
+
+  /// 取出并校验预取的下一首（队列/当前曲变化后失效则返回 null 重新采样）。
+  Song? _takePeeked() {
+    final p = _peekedNext;
+    _peekedNext = null;
+    if (p == null || _current == null || _same(p, _current!)) return null;
+    final i = _queue.indexWhere((s) => _same(s, p));
+    return i < 0 ? null : _queue[i];
   }
 
   Future<void> next() {
@@ -675,9 +701,19 @@ class PlayerProvider extends ChangeNotifier {
     await player.play();
   }
 
-  /// 加权随机下一首（stage2.md §2.2）：从队列全量排除上一首按 factor 采样。
+  /// 加权随机下一首（stage2.md §2.2）：优先采用 peekNext 已抽样的结果
+  /// （保证预载的就是实际要播的），失效则重新从队列全量排除上一首按 factor 采样。
   Future<void> _playWeighted() async {
-    if (_queue.isEmpty) return;
+    final picked = _takePeeked() ?? _pickWeighted();
+    if (picked == null) return;
+    _idx = _queue.indexWhere((s) => _same(s, picked));
+    if (_idx < 0) _idx = 0;
+    await _play(picked, source: _curSource);
+  }
+
+  /// 按权重随机抽一首（排除当前曲；只剩当前曲时允许重播）。
+  Song? _pickWeighted() {
+    if (_queue.isEmpty) return null;
     final prev = _current;
     var candidates =
         _queue.where((s) => prev == null || !_same(s, prev)).toList();
@@ -698,9 +734,7 @@ class PlayerProvider extends ChangeNotifier {
         break;
       }
     }
-    _idx = _queue.indexWhere((s) => _same(s, picked));
-    if (_idx < 0) _idx = 0;
-    await _play(picked, source: _curSource);
+    return picked;
   }
 
   // ---------- 事件采集（stage2.md §2.3） ----------

@@ -209,6 +209,11 @@ void main() {
     unread = index.unreadSongs('webdav:nas', 100);
     expect(unread, isEmpty);
 
+    // 排除正在播放的歌（后台补读跳过它，播放链路自己会重读）。
+    index.upsertSongs([row('/dav/skip.mp3', null), row('/dav/other.mp3', null)]);
+    unread = index.unreadSongs('webdav:nas', 100, excludeRef: '/dav/skip.mp3');
+    expect(unread.map((s) => s.sourceRef), ['/dav/other.mp3']);
+
     index.close();
     dir.deleteSync(recursive: true);
   });
@@ -232,6 +237,15 @@ void main() {
     expect(o.title, '覆盖标题');
     expect(o.artist, '覆盖歌手');
     expect(o.isEmpty, isFalse);
+
+    // 空串 = 显式清空（覆盖层保留 ''，渲染层据此显示未知）；null = 不动该字段。
+    index.setMetaOverride('server', '42', artist: '');
+    o = index.metaOverrideOf('server', '42')!;
+    expect(o.artist, '');
+    expect(o.title, '覆盖标题');
+    index.setMetaOverride('server', '42', title: null);
+    o = index.metaOverrideOf('server', '42')!;
+    expect(o.title, '覆盖标题');
 
     index.close();
     dir.deleteSync(recursive: true);

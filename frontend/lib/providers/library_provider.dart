@@ -33,8 +33,36 @@ class LibraryProvider extends ChangeNotifier {
   String? error;
 
   /// 关联直连源管理器，使「歌曲/专辑/歌手」能合并直连扫描结果。
+  /// 同时监听其元数据版本号：扫描/后台补读/编辑元数据后就地重建列表（不重拉服务端）。
   void attachDirectManager(DirectSourceManager m) {
+    if (identical(_directManager, m)) return;
+    _directManager?.removeListener(_onDirectChanged);
     _directManager = m;
+    _seenMetaVersion = m.metaVersion;
+    m.addListener(_onDirectChanged);
+    notifyListeners();
+  }
+
+  int _seenMetaVersion = 0;
+  bool _loadedOnce = false;
+  List<Song> _serverSongs = const [];
+  String? _lastQuery;
+
+  void _onDirectChanged() {
+    final m = _directManager;
+    if (m == null || m.metaVersion == _seenMetaVersion) return;
+    _seenMetaVersion = m.metaVersion;
+    // 首次 loadSongs 前不重建：此时 _serverSongs 还没缓存，就地重建会丢服务端部分。
+    if (!_loadedOnce) return;
+    refreshDirect();
+  }
+
+  /// 就地把直连部分换成索引最新数据（元数据补读/编辑后调用），并刷新分组。
+  void refreshDirect() {
+    final m = _directManager;
+    if (m == null) return;
+    songs = _mergeSongs(_serverSongs, m.allSongs(query: _lastQuery));
+    _recomputeGroups();
     notifyListeners();
   }
 
@@ -86,8 +114,11 @@ class LibraryProvider extends ChangeNotifier {
       }
     }
     final direct = _directManager?.allSongs(query: query) ?? const <Song>[];
+    _serverSongs = server;
+    _lastQuery = query;
     songs = _mergeSongs(server, direct);
     _recomputeGroups();
+    _loadedOnce = true;
     unawaited(_saveCache());
     loading = false;
     notifyListeners();
@@ -162,15 +193,7 @@ class LibraryProvider extends ChangeNotifier {
   }
 
   /// 应用服务端歌曲本地元数据覆盖（直连歌已在入库时处理）。
-  Song _applyOverride(Song s) {
-    final o = _directManager?.index.metaOverrideOf(s.sourceKey, s.sourceRef);
-    if (o == null || o.isEmpty) return s;
-    return s.copyWith(
-      title: o.title ?? s.title,
-      artist: o.artist ?? s.artist,
-      albumName: o.album ?? s.albumName,
-    );
-  }
+  Song _applyOverride(Song s) => _directManager?.applyMetaOverride(s) ?? s;
 
   void _recomputeGroups() {
     albums = Album.fromSongs(songs);
