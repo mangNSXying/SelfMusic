@@ -149,6 +149,9 @@ class DirectSourceManager extends ChangeNotifier {
   bool get ready => _ready;
   List<MusicSource> get sources => List.unmodifiable(_sources);
 
+  /// 轻量刷新：通知监听者重建（如切换动画设置即时生效）。
+  void refresh() => notifyListeners();
+
   /// 服务器模式始终存在。
   String get serverKey => 'server';
 

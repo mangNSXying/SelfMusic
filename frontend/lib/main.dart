@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import 'services/api_client.dart';
 import 'services/server_settings.dart';
 import 'services/selfmusic_audio_handler.dart';
+import 'data/local/app_settings.dart';
 import 'data/sources/server_proxy_source.dart';
 import 'providers/auth_provider.dart';
 import 'providers/library_provider.dart';
@@ -22,6 +23,7 @@ import 'screens/library_screen.dart';
 import 'screens/player_screen.dart';
 import 'layout/app_shell.dart';
 import 'widgets/app_toast.dart';
+import 'widgets/page_transition.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -209,19 +211,26 @@ class _RootState extends State<Root> {
     // 首次启动不再强制配对：未配对也可正常使用直连模式；
     // 配对 / 会话过期后重新配对在「设置 → 服务端」进行。
     final nav = context.watch<NavigationProvider>();
-    // 播放页为首页：全屏展示（替换整个壳层）；返回键走统一层级回退。
-    if (nav.playerView) {
-      return PopScope<void>(
-        canPop: false,
-        onPopInvokedWithResult: _onPopInvoked,
-        child: const PlayerScreen(),
-      );
-    }
+    final transition =
+        context.watch<DirectSourceManager>().settings.playerTransition;
+    // 全局页面切换过渡（播放页/各分组/设置/源内/歌单详情统一应用所选动画）。
+    final key =
+        '${nav.playerView}|${nav.settings}|${nav.section}|${nav.browsingSourceKey}|${nav.browsingPlaylistId}';
+    final body = nav.playerView
+        ? const PlayerScreen()
+        : const AppShell(content: AppContent());
     return PopScope<void>(
       canPop: false,
       onPopInvokedWithResult: _onPopInvoked,
-      child: const AppShell(
-        content: AppContent(),
+      child: AnimatedSwitcher(
+        duration: transition == PlayerTransition.none
+            ? Duration.zero
+            : const Duration(milliseconds: 240),
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        transitionBuilder: (child, anim) =>
+            pageTransition(transition, child, anim),
+        child: KeyedSubtree(key: ValueKey(key), child: body),
       ),
     );
   }

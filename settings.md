@@ -141,7 +141,7 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 
 | 设置项 | 键 | 默认 | 说明 |
 |--------|----|------|------|
-| 播放页切换动画 | `player_transition` | `fade` | 播放页与歌词页切换时的过渡效果：`none` 关闭 / `fade` 淡入 / `slide` 滑动 / `scale` 缩放 |
+| 页面切换动画 | `player_transition` | `fade` | 播放页、分组、设置、源内、歌单详情等全部页面切换效果：`none` 关闭 / `fade` 淡入 / `slide` 滑动 / `scale` 缩放 |
 
 > 明暗主题 / 强调色 / 背景色存主题偏好（`flutter_secure_storage`，见 §4），不进 `app_settings`。
 

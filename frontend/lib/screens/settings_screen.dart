@@ -588,8 +588,8 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.animation_outlined),
-            title: const Text('播放页切换动画'),
-            subtitle: Text('播放页与歌词页切换时的过渡效果：${_transition.label}'),
+            title: const Text('页面切换动画'),
+            subtitle: Text('播放页、分组、设置等全部页面切换效果：${_transition.label}'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _pickTransition(context),
           ),
@@ -633,7 +633,7 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
     final picked = await showDialog<PlayerTransition>(
       context: context,
       builder: (c) => SimpleDialog(
-        title: const Text('播放页切换动画'),
+        title: const Text('页面切换动画'),
         children: [
           RadioGroup<PlayerTransition>(
             groupValue: _transition,
@@ -656,6 +656,8 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
     );
     if (picked == null || picked == _transition || !context.mounted) return;
     context.read<DirectSourceManager>().settings.playerTransition = picked;
+    // 通知全局监听者（根路由切换器）即时生效。
+    context.read<DirectSourceManager>().refresh();
     setState(() => _transition = picked);
   }
 
