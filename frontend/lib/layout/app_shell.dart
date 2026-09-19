@@ -41,7 +41,7 @@ class _AppShellState extends State<AppShell> {
         context: context,
         isScrollControlled: true,
         builder: (c) => FractionallySizedBox(
-          heightFactor: 0.6,
+          heightFactor: 0.7,
           child: QueuePanel(onClose: () => Navigator.of(c).pop()),
         ),
       ).whenComplete(() {
