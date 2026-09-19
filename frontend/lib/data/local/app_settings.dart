@@ -47,6 +47,7 @@ class AppSettings {
   static const String kPlayerShowWeight = 'player_show_weight';
   static const String kPlayerGestureSwipe = 'player_gesture_swipe';
   static const String kSleepPlayThroughDefault = 'sleep_play_through_default';
+  static const String kPreloadNext = 'preload_next';
   static const String kScanIgnoreMinDurationSec = 'scan_ignore_min_duration_sec';
   static const String kScanIgnoreMinSizeBytes = 'scan_ignore_min_size_bytes';
   static const String kScanWifiOnly = 'scan_wifi_only';
@@ -148,6 +149,11 @@ class AppSettings {
       (index.settingsGet(kSleepPlayThroughDefault) ?? '1') == '1';
   set sleepPlayThroughDefault(bool v) =>
       index.settingsSet(kSleepPlayThroughDefault, v ? '1' : '0');
+
+  /// 预载下一首（默认开）：播放某首歌时按播放顺序算法确定下一首并后台缓存，
+  /// 开关只决定是否预载，不影响下一首的确定逻辑（加权随机不可预知，跳过预载）。
+  bool get preloadNext => (index.settingsGet(kPreloadNext) ?? '1') == '1';
+  set preloadNext(bool v) => index.settingsSet(kPreloadNext, v ? '1' : '0');
 
   // ---------- 歌曲分区（settings.md §3.4） ----------
 
@@ -268,6 +274,7 @@ class AppSettings {
     kPlayerShowWeight,
     kPlayerGestureSwipe,
     kSleepPlayThroughDefault,
+    kPreloadNext,
     kScanIgnoreMinDurationSec,
     kScanIgnoreMinSizeBytes,
     kScanWifiOnly,

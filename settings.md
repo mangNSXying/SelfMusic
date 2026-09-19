@@ -65,6 +65,7 @@
 | 断点续播自动恢复 | `resume_on_startup` | `true`（开） | 启动时读取 `play_state` 恢复上次队列与播放位置，**保持暂停态**不自动播放；关闭则忽略 `play_state` |
 | 播放页滑动手势 | `player_gesture_swipe` | `true`（开） | 横滑切换播放页与歌词页、下滑返回列表；关闭后仅用按钮操作 |
 | 睡眠定时默认播完最后曲目 | `sleep_play_through_default` | `true`（开） | 睡眠弹窗「播放完最后的曲目」开关默认值；弹窗内可单独调整 |
+| 预载下一首 | `preload_next` | `true`（开） | 播放时按播放顺序算法确定下一首并后台缓存（开关在 `设置 → 服务端`；只决定是否预载，加权随机不可预知跳过） |
 | 播放页权重信息显示 | `player_show_weight` | `true`（显示） | 播放页是否展示当前歌曲 liked / factor 权重芯片（读取 `play_meta`） |
 | 淡入淡出 | `fade_enabled` + `fade_duration_ms` | 开，1000 ms（1~3 s） | 从暂停恢复到播放 / 播放挥手暂停前做 `setVolume` 软件渐变（16 ms 周期），全平台可用；不依赖音频后端 crossfade。关闭时无渐变直接切换 |
 | 均衡器 | `equalizer_enabled` + `eq_bands` | 关 | 5 频段增益（`eq_bands`=JSON 整数数组：低音 60 Hz / 中低 230 Hz / 中音 910 Hz / 中高 3.6 kHz / 高音 14 kHz，范围 -12~+12 dB）。**仅 Android**（just_audio `AndroidEqualizer` 注入 `AudioPipeline`）；Linux/macOS 无公开 mpv Dart API，开关与滑块界面仍可见但不生效 |

@@ -100,6 +100,28 @@ class SelfMusicApp extends StatelessWidget {
       ..serverConfigured = settings.baseUrl.isNotEmpty
       ..attachDirectManager(direct);
     final nav = NavigationProvider();
+    final player = PlayerProvider()
+      ..attachSourceResolver((key) {
+        if (key == 'server') return lib.source;
+        return direct.sourceByKey(key);
+      })
+      ..attachAppSettings(direct.settings);
+    player
+      ..attachPersistence(
+        index: direct.index,
+        weight: direct.weight,
+        onTrackStarted: (src, s) {
+          direct.onTrackPlaying(src, s);
+          // 预载下一首（开关在设置→服务端；与当前同首/随机模式跳过）。
+          final next = player.peekNext();
+          if (next != null &&
+              (next.sourceKey != s.sourceKey ||
+                  next.sourceRef != s.sourceRef)) {
+            unawaited(direct.preloadSong(next));
+          }
+        },
+      )
+      ..attachAudioHandlerIfAny(audioHandler);
 
     return MultiProvider(
       providers: [
@@ -112,20 +134,7 @@ class SelfMusicApp extends StatelessWidget {
         ChangeNotifierProvider<PlaylistsProvider>(
           create: (_) => PlaylistsProvider(direct.playlists),
         ),
-        ChangeNotifierProvider<PlayerProvider>(
-          create: (_) => PlayerProvider()
-            ..attachSourceResolver((key) {
-              if (key == 'server') return lib.source;
-              return direct.sourceByKey(key);
-            })
-            ..attachAppSettings(direct.settings)
-            ..attachPersistence(
-              index: direct.index,
-              weight: direct.weight,
-              onTrackStarted: (src, s) => direct.onTrackPlaying(src, s),
-            )
-            ..attachAudioHandlerIfAny(audioHandler),
-        ),
+        ChangeNotifierProvider<PlayerProvider>.value(value: player),
         ChangeNotifierProvider<NavigationProvider>.value(value: nav),
       ],
       child: const _ThemedApp(),

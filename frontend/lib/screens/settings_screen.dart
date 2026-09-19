@@ -246,6 +246,20 @@ class _ServerSettingsState extends State<_ServerSettings> {
               label: const Text('保存'),
             ),
           ),
+          const SizedBox(height: 8),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('预载下一首'),
+            subtitle: const Text('播放时按播放顺序确定下一首并后台缓存（只决定是否预载；加权随机不可预知，跳过）'),
+            value: context
+                .read<DirectSourceManager>()
+                .settings
+                .preloadNext,
+            onChanged: (v) {
+              context.read<DirectSourceManager>().settings.preloadNext = v;
+              setState(() {});
+            },
+          ),
           const SizedBox(height: 32),
           const Divider(),
           const _CacheConfigSection(),

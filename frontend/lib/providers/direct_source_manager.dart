@@ -626,6 +626,23 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 预载指定歌曲（播放开始后对 peekNext() 的结果调用）：
+  /// 开关关闭/非直连歌/已缓存直接返回；下载后走 LRU 淘汰，失败静默。
+  Future<void> preloadSong(Song s) async {
+    if (!settings.preloadNext) return;
+    if (!s.isDirect) return;
+    final src = sourceByKey(s.sourceKey);
+    if (src == null) return;
+    try {
+      if (await src.cachedFilePath(s) != null) return;
+      await src.cacheSong(s);
+      cache.currentCacheKey = cache.cacheKeyOf(src, s);
+      cache.evictIfNeeded();
+    } catch (_) {
+      // 预载失败静默，不影响当前播放。
+    }
+  }
+
   String? cachedPathOf(MusicSource src, Song s) {
     final k = cache.cacheKeyOf(src, s);
     return k == null ? null : index.cachedPath(k);

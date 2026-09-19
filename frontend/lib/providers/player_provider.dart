@@ -615,6 +615,19 @@ class PlayerProvider extends ChangeNotifier {
 
   // ---------- 前进/后退 ----------
 
+  /// 按当前播放顺序算法确定下一首（不播放，只确定；开关与预载无关）：
+  /// 顺序/列表循环/单曲循环可确定；加权随机不可预知返回 null。
+  Song? peekNext() {
+    if (_queue.isEmpty || _current == null) return null;
+    if (_mode == PlayMode.weighted) return null;
+    if (_mode == PlayMode.loopOne) return _current;
+    if (_mode == PlayMode.loopList) {
+      return _queue[(_idx + 1) % _queue.length];
+    }
+    if (_idx + 1 < _queue.length) return _queue[_idx + 1];
+    return null;
+  }
+
   Future<void> next() {
     _leaveFor(null);
     return _advance();
