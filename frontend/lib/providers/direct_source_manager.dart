@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 import '../data/sources/music_source.dart';
+import '../data/sources/meta_enrich.dart';
 import '../data/sources/scan_worker.dart';
 import '../data/sources/webdav_direct_source.dart';
 import '../data/sources/local_direct_source.dart';
@@ -616,10 +617,43 @@ class DirectSourceManager extends ChangeNotifier {
     return k == null ? null : index.cachedPath(k);
   }
 
-  /// 播放某直连歌时登记其缓存访问时间与当前 key（LRU 保留当前播放）。
+  /// 播放某直连歌时登记其缓存访问时间与当前 key（LRU 保留当前播放），
+  /// 并触发后台元数据补读（未读过的歌曲逐个读头回填）。
   void onTrackPlaying(MusicSource src, Song s) {
     cache.currentCacheKey = cache.cacheKeyOf(src, s);
     cache.touch(src, s);
+    enrichUnreadInBackground();
+  }
+
+  bool _enrichRunning = false;
+
+  /// 后台补读：各直连源未读取过元数据的歌曲逐个读头回填（每源每轮 100 首）。
+  /// 播放开始后触发；单例运行，失败的歌不标已读、下轮再试。
+  void enrichUnreadInBackground() {
+    if (_enrichRunning) return;
+    _enrichRunning = true;
+    unawaited(_doEnrichUnread());
+  }
+
+  Future<void> _doEnrichUnread() async {
+    try {
+      for (final s in _sources) {
+        if (s is ServerProxySource) continue;
+        if (!s.supportsDirect) continue;
+        final unread = index.unreadSongs(s.key, 100);
+        for (final song in unread) {
+          try {
+            await enrichSongMeta(index, s, song);
+          } catch (_) {
+            // 单首失败跳过，不标已读。
+          }
+          // 让出事件循环，避免长循环卡 UI。
+          await Future.delayed(Duration.zero);
+        }
+      }
+    } finally {
+      _enrichRunning = false;
+    }
   }
 }
 

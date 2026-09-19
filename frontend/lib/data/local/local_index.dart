@@ -143,6 +143,11 @@ class LocalIndex {
       _db!.execute(
           'ALTER TABLE idx_songs ADD COLUMN user_edited INTEGER NOT NULL DEFAULT 0');
     }
+    // 是否已读取过文件元数据（播放时补读/后台扫描用，N1）。
+    if (!songCols.contains('meta_read')) {
+      _db!.execute(
+          'ALTER TABLE idx_songs ADD COLUMN meta_read INTEGER NOT NULL DEFAULT 0');
+    }
     // play_meta 为既有 DB 时可能缺 song_json 快照列。
     final metaCols = _db!
         .select('PRAGMA table_info(play_meta)')
@@ -256,8 +261,8 @@ class LocalIndex {
     try {
       final stmt = _db!.prepare('''
         INSERT INTO idx_songs(source_key, ref, title, artist, album, track_no, year,
-          genre, duration, format, size, mtime, etag, cover_path, is_favorite, missing, url)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?)
+          genre, duration, format, size, mtime, etag, cover_path, is_favorite, missing, url, meta_read)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,CASE WHEN ? IS NOT NULL THEN 1 ELSE 0 END)
         ON CONFLICT(source_key, ref) DO UPDATE SET
           title=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.title ELSE excluded.title END,
           artist=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.artist ELSE excluded.artist END,
@@ -268,6 +273,7 @@ class LocalIndex {
           etag=COALESCE(excluded.etag, idx_songs.etag),
           cover_path=COALESCE(excluded.cover_path, idx_songs.cover_path),
           url=COALESCE(excluded.url, idx_songs.url),
+          meta_read=CASE WHEN idx_songs.meta_read=1 THEN 1 WHEN excluded.duration IS NOT NULL THEN 1 ELSE 0 END,
           missing=0
       ''');
       try {
@@ -288,6 +294,7 @@ class LocalIndex {
             s.etag,
             s.coverPath,
             s.url,
+            s.duration,
           ]);
         }
       } finally {
@@ -300,7 +307,8 @@ class LocalIndex {
     }
   }
 
-  /// 播放懒补全：把播放时解析出的额外元数据（时长/流派/曲目/年份/封面）回填。
+  /// 播放懒补全：把播放时解析出的额外元数据（时长/流派/曲目/年份/封面）回填，
+  /// 并标记已读（后台不再重复扫描）。
   void enrichSong(String sourceKey, String songRef,
       {int? duration, String? genre, int? trackNo, int? year, String? coverPath}) {
     _db!.execute('''
@@ -309,9 +317,25 @@ class LocalIndex {
         genre=COALESCE(?, genre),
         track_no=COALESCE(?, track_no),
         year=COALESCE(?, year),
-        cover_path=COALESCE(?, cover_path)
+        cover_path=COALESCE(?, cover_path),
+        meta_read=1
       WHERE source_key=? AND ref=?
     ''', [duration, genre, trackNo, year, coverPath, sourceKey, songRef]);
+  }
+
+  /// 指定源尚未读取过元数据的歌曲（后台补读用，missing=0）。
+  List<Song> unreadSongs(String sourceKey, int limit) {
+    final rows = _db!.select('''
+      SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.track_no,
+             i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
+             COALESCE(p.is_favorite, 0) AS favorite
+      FROM idx_songs i
+      LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
+      WHERE i.source_key=? AND i.missing=0 AND COALESCE(i.meta_read, 0)=0
+      ORDER BY i.id
+      LIMIT ?
+    ''', [sourceKey, limit]);
+    return rows.map(_rowToSong).toList();
   }
 
   /// 用户手动修改歌曲元数据：标题/歌手/专辑落库并标记 user_edited=1（扫描不再覆盖），

@@ -8,8 +8,8 @@ import 'package:just_audio/just_audio.dart';
 import '../models/song.dart';
 import '../data/sources/music_source.dart';
 import '../data/sources/direct_audio_source.dart';
+import '../data/sources/meta_enrich.dart';
 import '../data/local/local_index.dart';
-import '../data/local/audio_metadata.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/song_weight_store.dart';
 import '../services/selfmusic_audio_handler.dart';
@@ -563,8 +563,8 @@ class PlayerProvider extends ChangeNotifier {
       _curSource = src;
       _saveState(player.position);
       if (src != null) _onTrackStarted?.call(src, s);
-      // 最小扫描的歌没存额外元数据（时长/流派/年份/封面），播放时懒补全。
-      if (src != null && src.supportsDirect && s.duration == null) {
+      // 播放即重读当前歌曲元数据（不管之前是否读过，保证展示最新）。
+      if (src != null && src.supportsDirect) {
         unawaited(_enrichLazily(s, src));
       }
       notifyListeners();
@@ -605,28 +605,9 @@ class PlayerProvider extends ChangeNotifier {
     if (_enriching.contains(k)) return;
     _enriching.add(k);
     try {
-      const headMax = 256 * 1024;
-      final head = <int>[];
-      final opened = await src.open(s, range: const IntRange(0, headMax));
-      await for (final chunk in opened.stream) {
-        head.addAll(chunk);
-        if (head.length >= headMax) break;
-      }
-      final meta = parseAudioHead(
-          Uint8List.fromList(head), s.format ?? '', s.fileSize);
-      String? coverPath;
-      final cover = meta?.cover;
-      if (cover != null && cover.isNotEmpty) {
-        coverPath = idx.persistCover(cover, s.sourceRef);
-      }
-      idx.enrichSong(s.sourceKey, s.sourceRef,
-          duration: meta?.duration,
-          genre: meta?.genre,
-          trackNo: meta?.trackNo,
-          year: meta?.year,
-          coverPath: coverPath);
+      await enrichSongMeta(idx, src, s);
     } catch (_) {
-      // 后台补全失败不影响播放。
+      // 后台补全失败不影响播放（不标已读，下次播放再试）。
     } finally {
       _enriching.remove(k);
     }

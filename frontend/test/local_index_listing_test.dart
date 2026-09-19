@@ -182,4 +182,34 @@ void main() {
     index.close();
     dir.deleteSync(recursive: true);
   });
+
+  test('元数据已读标记：极简扫描未读、补读后已读、完整扫描直接已读', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir = await Directory.systemTemp.createTemp('selfmusic_idxread_');
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+
+    DirectSongRow row(String ref, int? duration) => DirectSongRow(
+          sourceKey: 'webdav:nas',
+          ref: ref,
+          title: ref,
+          duration: duration,
+          format: 'mp3',
+          size: 1024,
+          mtime: 1,
+        );
+    // 极简扫描（无时长）→ 未读；完整扫描（有时长）→ 已读。
+    index.upsertSongs([row('/dav/min.mp3', null), row('/dav/full.mp3', 200)]);
+    var unread = index.unreadSongs('webdav:nas', 100);
+    expect(unread.map((s) => s.sourceRef), ['/dav/min.mp3']);
+
+    // 补读后不再未读。
+    index.enrichSong('webdav:nas', '/dav/min.mp3', duration: 180);
+    unread = index.unreadSongs('webdav:nas', 100);
+    expect(unread, isEmpty);
+
+    index.close();
+    dir.deleteSync(recursive: true);
+  });
 }
