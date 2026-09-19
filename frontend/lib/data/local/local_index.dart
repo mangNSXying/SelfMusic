@@ -46,6 +46,7 @@ class LocalIndex {
         title TEXT NOT NULL,
         artist TEXT,
         album TEXT,
+        album_artist TEXT,
         track_no INTEGER,
         year INTEGER,
         genre TEXT,
@@ -126,6 +127,7 @@ class LocalIndex {
         title      TEXT,
         artist     TEXT,
         album      TEXT,
+        album_artist TEXT,
         PRIMARY KEY (source_key, song_ref)
       );
     ''');
@@ -159,6 +161,19 @@ class LocalIndex {
     if (!songCols.contains('meta_read')) {
       _db!.execute(
           'ALTER TABLE idx_songs ADD COLUMN meta_read INTEGER NOT NULL DEFAULT 0');
+    }
+    // 专辑歌手（mp3 TPE2 / flac ALBUMARTIST）。
+    if (!songCols.contains('album_artist')) {
+      _db!.execute('ALTER TABLE idx_songs ADD COLUMN album_artist TEXT');
+    }
+    // 服务端歌曲覆盖层同样支持专辑歌手。
+    final overrideCols = _db!
+        .select('PRAGMA table_info(song_meta_override)')
+        .map((r) => r['name'] as String)
+        .toSet();
+    if (!overrideCols.contains('album_artist')) {
+      _db!.execute(
+          'ALTER TABLE song_meta_override ADD COLUMN album_artist TEXT');
     }
     // play_meta 为既有 DB 时可能缺 song_json 快照列。
     final metaCols = _db!
@@ -272,13 +287,14 @@ class LocalIndex {
     _db!.execute('BEGIN');
     try {
       final stmt = _db!.prepare('''
-        INSERT INTO idx_songs(source_key, ref, title, artist, album, track_no, year,
+        INSERT INTO idx_songs(source_key, ref, title, artist, album, album_artist, track_no, year,
           genre, duration, format, size, mtime, etag, cover_path, is_favorite, missing, url, meta_read)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,CASE WHEN ? IS NOT NULL THEN 1 ELSE 0 END)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,CASE WHEN ? IS NOT NULL THEN 1 ELSE 0 END)
         ON CONFLICT(source_key, ref) DO UPDATE SET
           title=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.title ELSE excluded.title END,
           artist=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.artist ELSE excluded.artist END,
           album=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.album ELSE excluded.album END,
+          album_artist=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.album_artist ELSE excluded.album_artist END,
           track_no=excluded.track_no, year=excluded.year, genre=excluded.genre,
           duration=excluded.duration, format=excluded.format, size=excluded.size,
           mtime=excluded.mtime,
@@ -296,6 +312,7 @@ class LocalIndex {
             s.title,
             s.artist,
             s.album,
+            s.albumArtist,
             s.trackNo,
             s.year,
             s.genre,
@@ -319,12 +336,25 @@ class LocalIndex {
     }
   }
 
-  /// 播放懒补全：把播放时解析出的额外元数据（时长/流派/曲目/年份/封面）回填，
-  /// 并标记已读（后台不再重复扫描）。
+  /// 播放懒补全：把播放时解析出的额外元数据（标题/歌手/专辑/专辑歌手/时长/流派/
+  /// 曲目/年份/封面）回填，并标记已读（后台不再重复扫描）。
+  /// 用户手改过的行（user_edited=1）不回写文本字段，只补技术字段。
   void enrichSong(String sourceKey, String songRef,
-      {int? duration, String? genre, int? trackNo, int? year, String? coverPath}) {
+      {String? title,
+      String? artist,
+      String? album,
+      String? albumArtist,
+      int? duration,
+      String? genre,
+      int? trackNo,
+      int? year,
+      String? coverPath}) {
     _db!.execute('''
       UPDATE idx_songs SET
+        title=CASE WHEN user_edited=1 THEN title ELSE COALESCE(NULLIF(?, ''), title) END,
+        artist=CASE WHEN user_edited=1 THEN artist ELSE COALESCE(NULLIF(?, ''), artist) END,
+        album=CASE WHEN user_edited=1 THEN album ELSE COALESCE(NULLIF(?, ''), album) END,
+        album_artist=CASE WHEN user_edited=1 THEN album_artist ELSE COALESCE(NULLIF(?, ''), album_artist) END,
         duration=COALESCE(?, duration),
         genre=COALESCE(?, genre),
         track_no=COALESCE(?, track_no),
@@ -332,25 +362,41 @@ class LocalIndex {
         cover_path=COALESCE(?, cover_path),
         meta_read=1
       WHERE source_key=? AND ref=?
-    ''', [duration, genre, trackNo, year, coverPath, sourceKey, songRef]);
+    ''', [
+      title,
+      artist,
+      album,
+      albumArtist,
+      duration,
+      genre,
+      trackNo,
+      year,
+      coverPath,
+      sourceKey,
+      songRef,
+    ]);
   }
 
   /// 指定源尚未读取过元数据的歌曲（后台补读用，missing=0）。
   /// [excludeRef] 用于跳过正在播放的歌（播放链路自己会重读，避免重复读流）。
-  List<Song> unreadSongs(String sourceKey, int limit, {String? excludeRef}) {
+  /// [afterId] 游标：只取 id 更大的行，供后台补读跳过无法解析的批次继续前进。
+  List<Song> unreadSongs(String sourceKey, int limit,
+      {String? excludeRef, int? afterId}) {
     final excludeCond = excludeRef == null ? '' : ' AND i.ref != ?';
+    final cursorCond = afterId == null ? '' : ' AND i.id > ?';
     final params = <Object?>[
       sourceKey,
       if (excludeRef != null) excludeRef,
+      if (afterId != null) afterId,
       limit,
     ];
     final rows = _db!.select('''
-      SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.track_no,
+      SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
              i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
              COALESCE(p.is_favorite, 0) AS favorite
       FROM idx_songs i
       LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
-      WHERE i.source_key=? AND i.missing=0 AND COALESCE(i.meta_read, 0)=0$excludeCond
+      WHERE i.source_key=? AND i.missing=0 AND COALESCE(i.meta_read, 0)=0$excludeCond$cursorCond
       ORDER BY i.id
       LIMIT ?
     ''', params);
@@ -361,12 +407,13 @@ class LocalIndex {
   /// 同时同步 play_meta 歌曲快照中的对应字段（喜欢列表/断点恢复用快照渲染）。
   /// 字段语义：null=不修改；''=清空（置 NULL，UI 显示为未知）。
   void updateSongUserMeta(String sourceKey, String songRef,
-      {String? title, String? artist, String? album}) {
+      {String? title, String? artist, String? album, String? albumArtist}) {
     _db!.execute('''
       UPDATE idx_songs SET
         title=CASE WHEN ? IS NULL THEN title ELSE NULLIF(?, '') END,
         artist=CASE WHEN ? IS NULL THEN artist ELSE NULLIF(?, '') END,
         album=CASE WHEN ? IS NULL THEN album ELSE NULLIF(?, '') END,
+        album_artist=CASE WHEN ? IS NULL THEN album_artist ELSE NULLIF(?, '') END,
         user_edited=1
       WHERE source_key=? AND ref=?
     ''', [
@@ -376,17 +423,19 @@ class LocalIndex {
       artist,
       album,
       album,
+      albumArtist,
+      albumArtist,
       sourceKey,
       songRef,
     ]);
     syncMetaSnapshot(sourceKey, songRef,
-        title: title, artist: artist, album: album);
+        title: title, artist: artist, album: album, albumArtist: albumArtist);
   }
 
-  /// 同步 play_meta 歌曲快照中的标题/歌手/专辑（直连改库 / 服务端覆盖层共用）。
+  /// 同步 play_meta 歌曲快照中的标题/歌手/专辑/专辑歌手（直连改库 / 服务端覆盖层共用）。
   /// '' 表示清空为未知（写 null）。
   void syncMetaSnapshot(String sourceKey, String songRef,
-      {String? title, String? artist, String? album}) {
+      {String? title, String? artist, String? album, String? albumArtist}) {
     final rows = _db!.select(
         'SELECT song_json FROM play_meta WHERE source_key=? AND song_ref=?',
         [sourceKey, songRef]);
@@ -398,6 +447,9 @@ class LocalIndex {
       if (title != null) j['title'] = title.isEmpty ? null : title;
       if (artist != null) j['artist'] = artist.isEmpty ? null : artist;
       if (album != null) j['albumName'] = album.isEmpty ? null : album;
+      if (albumArtist != null) {
+        j['albumArtist'] = albumArtist.isEmpty ? null : albumArtist;
+      }
       _db!.execute(
           'UPDATE play_meta SET song_json=? WHERE source_key=? AND song_ref=?',
           [jsonEncode(j), sourceKey, songRef]);
@@ -408,21 +460,22 @@ class LocalIndex {
 
   /// 服务端歌曲元数据本地覆盖（null=不覆盖；''=显式清空为未知）。
   void setMetaOverride(String sourceKey, String songRef,
-      {String? title, String? artist, String? album}) {
+      {String? title, String? artist, String? album, String? albumArtist}) {
     _db!.execute('''
-      INSERT INTO song_meta_override(source_key, song_ref, title, artist, album)
-      VALUES(?,?,?,?,?)
+      INSERT INTO song_meta_override(source_key, song_ref, title, artist, album, album_artist)
+      VALUES(?,?,?,?,?,?)
       ON CONFLICT(source_key, song_ref) DO UPDATE SET
         title=CASE WHEN excluded.title IS NULL THEN song_meta_override.title ELSE excluded.title END,
         artist=CASE WHEN excluded.artist IS NULL THEN song_meta_override.artist ELSE excluded.artist END,
-        album=CASE WHEN excluded.album IS NULL THEN song_meta_override.album ELSE excluded.album END
-    ''', [sourceKey, songRef, title, artist, album]);
+        album=CASE WHEN excluded.album IS NULL THEN song_meta_override.album ELSE excluded.album END,
+        album_artist=CASE WHEN excluded.album_artist IS NULL THEN song_meta_override.album_artist ELSE excluded.album_artist END
+    ''', [sourceKey, songRef, title, artist, album, albumArtist]);
   }
 
   /// 读取本地覆盖（无则返回 null）。
   MetaOverride? metaOverrideOf(String sourceKey, String songRef) {
     final rows = _db!.select(
-        'SELECT title, artist, album FROM song_meta_override WHERE source_key=? AND song_ref=?',
+        'SELECT title, artist, album, album_artist FROM song_meta_override WHERE source_key=? AND song_ref=?',
         [sourceKey, songRef]);
     if (rows.isEmpty) return null;
     final r = rows.first;
@@ -430,6 +483,7 @@ class LocalIndex {
       title: r['title'] as String?,
       artist: r['artist'] as String?,
       album: r['album'] as String?,
+      albumArtist: r['album_artist'] as String?,
     );
   }
 
@@ -521,7 +575,7 @@ class LocalIndex {
       args.add((page - 1) * size);
     }
     final rows = _db!.select('''
-      SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.track_no,
+      SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
              i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
              COALESCE(p.is_favorite, 0) AS favorite
       FROM idx_songs i
@@ -558,6 +612,7 @@ class LocalIndex {
   }
 
   /// 「喜欢」列表：play_meta 中已收藏歌曲（含服务器歌快照；迁移回填的直连歌查 idx_songs 补全）。
+  /// 直连歌优先现查索引，保证后台补读/编辑元数据后喜欢页即时反映最新封面与专辑信息。
   List<Song> likedSongs() {
     final rows = _db!.select(
         'SELECT source_key, song_ref, song_json FROM play_meta WHERE is_favorite=1');
@@ -565,6 +620,11 @@ class LocalIndex {
     for (final r in rows) {
       final srcKey = r['source_key'] as String;
       final ref = r['song_ref'] as String;
+      final live = srcKey == 'server' ? null : _songByRef(srcKey, ref);
+      if (live != null) {
+        out.add(live);
+        continue;
+      }
       final json = r['song_json'] as String?;
       if (json != null && json.isNotEmpty) {
         try {
@@ -583,7 +643,7 @@ class LocalIndex {
 
   Song? _songByRef(String sourceKey, String ref) {
     const sql = '''
-      SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.track_no,
+      SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
              i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
              COALESCE(p.is_favorite, 0) AS favorite
       FROM idx_songs i
@@ -599,7 +659,7 @@ class LocalIndex {
 
   List<Song> favorites(String sourceKey) {
     final rows = _db!.select('''
-      SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.track_no,
+      SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
              i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
              COALESCE(p.is_favorite, 0) AS favorite
       FROM idx_songs i
@@ -616,6 +676,7 @@ class LocalIndex {
         title: r['title'] as String,
         artist: r['artist'] as String?,
         albumName: r['album'] as String?,
+        albumArtist: r['album_artist'] as String?,
         trackNo: r['track_no'] as int?,
         year: r['year'] as int?,
         genre: r['genre'] as String?,
@@ -987,6 +1048,7 @@ class DirectSongRow {
   final String title;
   final String? artist;
   final String? album;
+  final String? albumArtist;
   final int? trackNo;
   final int? year;
   final String? genre;
@@ -1003,6 +1065,7 @@ class DirectSongRow {
     required this.title,
     this.artist,
     this.album,
+    this.albumArtist,
     this.trackNo,
     this.year,
     this.genre,
@@ -1035,9 +1098,12 @@ class MetaOverride {
   final String? title;
   final String? artist;
   final String? album;
-  const MetaOverride({this.title, this.artist, this.album});
+  final String? albumArtist;
+  const MetaOverride(
+      {this.title, this.artist, this.album, this.albumArtist});
 
-  bool get isEmpty => title == null && artist == null && album == null;
+  bool get isEmpty =>
+      title == null && artist == null && album == null && albumArtist == null;
 }
 
 /// 一首歌的播放元数据（权重/收藏，stage2.md §1.1）。

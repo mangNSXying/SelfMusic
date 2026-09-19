@@ -8,6 +8,9 @@ class Song {
   final String title;
   final String? artist;
   final String? albumName;
+
+  /// 专辑歌手（可空；展示/分组时回退到 [artist]）。
+  final String? albumArtist;
   final int? trackNo;
   final int? year;
   final String? genre;
@@ -37,6 +40,7 @@ class Song {
     required this.title,
     this.artist,
     this.albumName,
+    this.albumArtist,
     this.trackNo,
     this.year,
     this.genre,
@@ -58,6 +62,7 @@ class Song {
         title: j['title'] as String? ?? 'Unknown',
         artist: j['artist'] as String?,
         albumName: j['albumName'] as String?,
+        albumArtist: j['albumArtist'] as String?,
         trackNo: j['trackNo'] as int?,
         year: j['year'] as int?,
         genre: j['genre'] as String?,
@@ -79,6 +84,7 @@ class Song {
         'title': title,
         if (artist != null) 'artist': artist,
         if (albumName != null) 'albumName': albumName,
+        if (albumArtist != null) 'albumArtist': albumArtist,
         if (trackNo != null) 'trackNo': trackNo,
         if (year != null) 'year': year,
         if (genre != null) 'genre': genre,
@@ -99,6 +105,7 @@ class Song {
     required String title,
     String? artist,
     String? albumName,
+    String? albumArtist,
     int? trackNo,
     int? year,
     String? genre,
@@ -117,6 +124,7 @@ class Song {
         title: title,
         artist: artist,
         albumName: albumName,
+        albumArtist: albumArtist,
         trackNo: trackNo,
         year: year,
         genre: genre,
@@ -138,6 +146,7 @@ class Song {
     String? title,
     String? artist,
     String? albumName,
+    String? albumArtist,
     int? trackNo,
     int? year,
     String? genre,
@@ -158,6 +167,7 @@ class Song {
         title: title ?? this.title,
         artist: artist ?? this.artist,
         albumName: albumName ?? this.albumName,
+        albumArtist: albumArtist ?? this.albumArtist,
         trackNo: trackNo ?? this.trackNo,
         year: year ?? this.year,
         genre: genre ?? this.genre,

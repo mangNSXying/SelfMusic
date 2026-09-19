@@ -134,6 +134,26 @@ void main() {
       expect(meta.title, '雨中曲');
       expect(meta.artist, '張學友');
     });
+
+    test('exposes album artist (TPE2)', () {
+      final frames = <int>[
+        ...textFrame('TIT2', 'Song Title'),
+        ...textFrame('TPE1', 'Track Artist'),
+        ...textFrame('TPE2', 'Album Artist'),
+      ];
+      final tag = <int>[
+        ...'ID3'.codeUnits,
+        0x04,
+        0x00,
+        0x00,
+        ...syncsafe(frames.length),
+        ...frames,
+        0xFF, 0xFB, 0x90, 0x00,
+      ];
+      final meta = parseAudioHead(Uint8List.fromList(tag), 'mp3', tag.length + 1)!;
+      expect(meta.artist, 'Track Artist');
+      expect(meta.albumArtist, 'Album Artist');
+    });
   });
 
   group('parseAudioHead - flac', () {
@@ -212,6 +232,40 @@ void main() {
       expect(meta.title, '日本語の曲');
       expect(meta.artist, '中島みゆき');
       expect(meta.album, 'COM.ALBUM');
+    });
+
+    test('parses ALBUMARTIST from VORBIS_COMMENT', () {
+      List<int> u32le(int v) => Uint8List.fromList(
+          [v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF]);
+      final entries = <String>[
+        'TITLE=群星合辑',
+        'ARTIST=张三',
+        'ALBUMARTIST=群星',
+      ];
+      final vc = <int>[];
+      vc.addAll(u32le(0));
+      vc.addAll(u32le(entries.length));
+      for (final e in entries) {
+        final bytes = utf8.encode(e);
+        vc.addAll(u32le(bytes.length));
+        vc.addAll(bytes);
+      }
+      List<int> block(int type, List<int> body, {bool last = false}) => [
+            (last ? 0x80 : 0) | type,
+            body.length >> 16 & 0xFF,
+            body.length >> 8 & 0xFF,
+            body.length & 0xFF,
+            ...body
+          ];
+
+      final head = Uint8List.fromList([
+        ...'fLaC'.codeUnits,
+        ...block(0, List<int>.filled(18, 0)),
+        ...block(4, vc, last: true),
+      ]);
+      final meta = parseAudioHead(head, 'flac', head.length)!;
+      expect(meta.artist, '张三');
+      expect(meta.albumArtist, '群星');
     });
 
     test('不因元数据块超出头部采样而越界（大内嵌封面场景）', () {

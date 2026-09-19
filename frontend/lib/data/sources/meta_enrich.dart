@@ -27,6 +27,10 @@ Future<bool> enrichSongMeta(
     coverPath = index.persistCover(cover, song.sourceRef);
   }
   index.enrichSong(song.sourceKey, song.sourceRef,
+      title: meta.title,
+      artist: meta.artist,
+      album: meta.album,
+      albumArtist: meta.albumArtist,
       duration: meta.duration,
       genre: meta.genre,
       trackNo: meta.trackNo,

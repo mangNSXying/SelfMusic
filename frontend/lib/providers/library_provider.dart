@@ -133,10 +133,10 @@ class LibraryProvider extends ChangeNotifier {
     await loadSongs(query: query);
   }
 
-  /// 客户端专辑查询对应歌曲（按 artist + album 名过滤合并列表）。
+  /// 客户端专辑查询对应歌曲（按 专辑歌手? + 专辑名 过滤合并列表，与分组规则一致）。
   List<Song> albumSongs(Album album) => songs
       .where((s) =>
-          _blank(s.artist, 'Unknown') == album.artist &&
+          _blank(s.albumArtist, _blank(s.artist, 'Unknown')) == album.artist &&
           _blank(s.albumName, 'Unknown Album') == album.album)
       .toList();
 

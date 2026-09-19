@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart';
 import 'package:just_audio/just_audio.dart';
 import '../models/song.dart';
 import '../data/sources/music_source.dart';
@@ -52,6 +53,7 @@ class PlayerProvider extends ChangeNotifier {
   SongWeightStore? _weight;
   AppSettings? _appSettings;
   void Function(MusicSource src, Song s)? _onTrackStarted;
+  void Function(Song s)? _onSongMetaRefreshed;
   String? error;
   SelfMusicAudioHandler? _audioHandler;
 
@@ -444,10 +446,12 @@ class PlayerProvider extends ChangeNotifier {
     required LocalIndex index,
     required SongWeightStore weight,
     void Function(MusicSource src, Song s)? onTrackStarted,
+    void Function(Song s)? onSongMetaRefreshed,
   }) {
     _index = index;
     _weight = weight;
     _onTrackStarted = onTrackStarted;
+    _onSongMetaRefreshed = onSongMetaRefreshed;
   }
 
   /// 关联用户设置：套用默认播放模式（settings.md §3.2 `play_mode_default`），
@@ -551,6 +555,10 @@ class PlayerProvider extends ChangeNotifier {
     error = null;
     try {
       final src = _resolver?.call(s.sourceKey) ?? source ?? _curSource;
+      // 立即切换当前曲目并通知：后面的网络装载/缓冲再慢，播放页也先显示新曲。
+      _current = s;
+      _curSource = src;
+      notifyListeners();
       if (src != null && src.supportsDirect) {
         await _playDirect(s, src);
       } else {
@@ -571,8 +579,6 @@ class PlayerProvider extends ChangeNotifier {
         _fadeIn();
       }
       unawaited(_applyEqualizerBands());
-      _current = s;
-      _curSource = src;
       _saveState(player.position);
       if (src != null) _onTrackStarted?.call(src, s);
       // 播放即重读当前歌曲元数据（不管之前是否读过，保证展示最新）。
@@ -608,9 +614,10 @@ class PlayerProvider extends ChangeNotifier {
     await player.setAudioSource(DirectAudioSource(source: src, song: s));
   }
 
-  /// 懒补全：播放后把解析出的完整元数据（时长/流派/曲目/年份/封面）回填索引。
-  /// 从头读取（本地直读 / WebDAV Range GET），失败静默不影响播放。
-  /// 成功后刷新队列与当前歌曲对象并通知，播放页即时展示新读到的信息。
+  /// 懒补全：播放后把解析出的完整元数据（标题/歌手/专辑/专辑歌手/时长/曲目/年份/封面）
+  /// 回填索引。从头读取（本地直读 / WebDAV Range GET），失败静默不影响播放。
+  /// 成功后刷新队列与当前歌曲对象并通知，播放页即时展示新读到的信息；
+  /// 另有变化时通过 [_onSongMetaRefreshed] 通知全局库就地刷新，并失效旧封面图像缓存。
   Future<void> _enrichLazily(Song s, MusicSource src) async {
     final idx = _index;
     if (idx == null) return;
@@ -620,7 +627,26 @@ class PlayerProvider extends ChangeNotifier {
     try {
       await enrichSongMeta(idx, src, s);
       final updated = idx.songByRef(s.sourceKey, s.sourceRef);
-      if (updated != null) refreshSongMeta(updated);
+      if (updated != null) {
+        final changed = updated.title != s.title ||
+            updated.artist != s.artist ||
+            updated.albumName != s.albumName ||
+            updated.albumArtist != s.albumArtist ||
+            updated.duration != s.duration ||
+            updated.genre != s.genre ||
+            updated.trackNo != s.trackNo ||
+            updated.year != s.year ||
+            updated.coverPath != s.coverPath;
+        refreshSongMeta(updated);
+        if (changed) {
+          final cover = updated.coverPath;
+          if (cover != null) {
+            // 同一路径封面被重写时 Flutter 图像缓存会留旧图，主动失效。
+            unawaited(FileImage(File(cover)).evict());
+          }
+          _onSongMetaRefreshed?.call(updated);
+        }
+      }
     } catch (_) {
       // 后台补全失败不影响播放（不标已读，下次播放再试）。
     } finally {

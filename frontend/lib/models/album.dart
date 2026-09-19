@@ -33,11 +33,12 @@ class Album {
         totalDuration: j['totalDuration'] as int? ?? 0,
       );
 
-  /// 客户端从歌曲列表按 (artist, albumName) 分组聚合（含直连源）。
+  /// 客户端从歌曲列表按 (专辑歌手?, 专辑名) 分组聚合（含直连源）。
+  /// 专辑歌手优先（缺失回退到曲目歌手），同名合辑/多歌手专辑可正确归组。
   static List<Album> fromSongs(List<Song> songs) {
     final map = <String, List<Song>>{};
     for (final s in songs) {
-      final artist = _blank(s.artist, 'Unknown');
+      final artist = _albumArtistOf(s);
       final albumName = _blank(s.albumName, 'Unknown Album');
       map.putIfAbsent('$artist\x00$albumName', () => []).add(s);
     }
@@ -47,7 +48,7 @@ class Album {
       final coverSong = group.where((s) => s.coverPath != null).firstOrNull;
       return Album(
         id: e.key.hashCode & 0x7FFFFFFF,
-        artist: _blank(first.artist, 'Unknown'),
+        artist: _albumArtistOf(first),
         album: _blank(first.albumName, 'Unknown Album'),
         year: first.year,
         genre: first.genre,
@@ -60,6 +61,10 @@ class Album {
     list.sort((a, b) => a.album.compareTo(b.album));
     return list;
   }
+
+  /// 专辑歌手：优先 albumArtist，缺失回退曲目 artist。
+  static String _albumArtistOf(Song s) =>
+      _blank(s.albumArtist, _blank(s.artist, 'Unknown'));
 
   static String _blank(String? v, String fallback) =>
       (v == null || v.isEmpty) ? fallback : v;

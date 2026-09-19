@@ -555,6 +555,7 @@ class _SongInfoDialog extends StatelessWidget {
     final rows = <List<String>>[
       ['标题', song.title],
       ['歌手', song.artist ?? 'Unknown'],
+      ['专辑歌手', song.albumArtist ?? '—'],
       ['专辑', song.albumName ?? '—'],
       if (song.genre != null) ['流派', song.genre!],
       if (song.year != null) ['年份', '${song.year}'],
@@ -620,6 +621,7 @@ class _EditSongMetaDialog extends StatefulWidget {
 class _EditSongMetaDialogState extends State<_EditSongMetaDialog> {
   late final TextEditingController _title;
   late final TextEditingController _artist;
+  late final TextEditingController _albumArtist;
   late final TextEditingController _album;
 
   @override
@@ -627,6 +629,7 @@ class _EditSongMetaDialogState extends State<_EditSongMetaDialog> {
     super.initState();
     _title = TextEditingController(text: widget.song.title);
     _artist = TextEditingController(text: widget.song.artist ?? '');
+    _albumArtist = TextEditingController(text: widget.song.albumArtist ?? '');
     _album = TextEditingController(text: widget.song.albumName ?? '');
   }
 
@@ -634,6 +637,7 @@ class _EditSongMetaDialogState extends State<_EditSongMetaDialog> {
   void dispose() {
     _title.dispose();
     _artist.dispose();
+    _albumArtist.dispose();
     _album.dispose();
     super.dispose();
   }
@@ -656,6 +660,7 @@ class _EditSongMetaDialogState extends State<_EditSongMetaDialog> {
       widget.song,
       title: delta(title, widget.song.title),
       artist: delta(_artist.text, widget.song.artist),
+      albumArtist: delta(_albumArtist.text, widget.song.albumArtist),
       album: delta(_album.text, widget.song.albumName),
     );
     if (updated != null) {
@@ -684,6 +689,11 @@ class _EditSongMetaDialogState extends State<_EditSongMetaDialog> {
               controller: _artist,
               decoration:
                   const InputDecoration(labelText: '歌手（留空为未知）'),
+            ),
+            TextField(
+              controller: _albumArtist,
+              decoration:
+                  const InputDecoration(labelText: '专辑歌手（留空为未知）'),
             ),
             TextField(
               controller: _album,

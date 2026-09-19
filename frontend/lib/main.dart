@@ -119,6 +119,7 @@ class SelfMusicApp extends StatelessWidget {
             unawaited(direct.preloadSong(next));
           }
         },
+        onSongMetaRefreshed: (s) => direct.notifySongMetaChanged(),
       )
       ..attachAudioHandlerIfAny(audioHandler);
 

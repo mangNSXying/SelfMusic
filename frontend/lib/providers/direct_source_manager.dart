@@ -626,6 +626,7 @@ class DirectSourceManager extends ChangeNotifier {
       title: (title == null || title.isEmpty) ? s.title : title,
       artist: pick(o.artist, s.artist),
       albumName: pick(o.album, s.albumName),
+      albumArtist: pick(o.albumArtist, s.albumArtist),
       trackNo: s.trackNo,
       year: s.year,
       genre: s.genre,
@@ -642,25 +643,28 @@ class DirectSourceManager extends ChangeNotifier {
     );
   }
 
-  /// 用户手动修改歌曲元数据（标题/歌手/专辑）。
+  /// 用户手动修改歌曲元数据（标题/歌手/专辑/专辑歌手）。
   ///
   /// 直连歌落库并标记扫描保护；服务端歌（后端只读）写入本地覆盖层。
   /// 字段语义：null=不修改，''=清空为未知，其余=新值。
   /// 返回刷新后的歌曲（供播放队列/当前歌曲同步），失败返回 null。
   Song? updateSongMeta(Song s,
-      {String? title, String? artist, String? album}) {
+      {String? title,
+      String? artist,
+      String? album,
+      String? albumArtist}) {
     if (s.isDirect) {
       index.updateSongUserMeta(s.sourceKey, s.sourceRef,
-          title: title, artist: artist, album: album);
+          title: title, artist: artist, album: album, albumArtist: albumArtist);
       _metaVersion++;
       _favoriteVersion++;
       notifyListeners();
       return index.songByRef(s.sourceKey, s.sourceRef);
     }
     index.setMetaOverride(s.sourceKey, s.sourceRef,
-        title: title, artist: artist, album: album);
+        title: title, artist: artist, album: album, albumArtist: albumArtist);
     index.syncMetaSnapshot(s.sourceKey, s.sourceRef,
-        title: title, artist: artist, album: album);
+        title: title, artist: artist, album: album, albumArtist: albumArtist);
     _metaVersion++;
     _favoriteVersion++;
     notifyListeners();
@@ -668,6 +672,7 @@ class DirectSourceManager extends ChangeNotifier {
       title: title ?? s.title,
       artist: artist ?? s.artist,
       albumName: album ?? s.albumName,
+      albumArtist: albumArtist ?? s.albumArtist,
     );
     return applyMetaOverride(patched);
   }
@@ -728,11 +733,18 @@ class DirectSourceManager extends ChangeNotifier {
 
   /// 后台补读：各直连源未读取过元数据的歌曲逐个读头回填，分批循环直到读完。
   /// 播放开始后触发；单例运行；跳过正在播放的歌（播放链路自己会重读）；
-  /// 解析失败不标已读、下轮再试；每批成功即通知 UI 就地刷新。
+  /// 解析失败不标已读，靠 id 游标跳过继续处理后面的歌（不整批卡死）；
+  /// 每批成功即通知 UI 就地刷新。
   void enrichUnreadInBackground() {
     if (_enrichRunning) return;
     _enrichRunning = true;
     unawaited(_doEnrichUnread());
+  }
+
+  /// 播放链路懒补读成功后调用：元数据版本号 +1，驱动全局库/列表就地刷新。
+  void notifySongMetaChanged() {
+    _metaVersion++;
+    notifyListeners();
   }
 
   Future<void> _doEnrichUnread() async {
@@ -740,21 +752,23 @@ class DirectSourceManager extends ChangeNotifier {
       for (final s in _sources) {
         if (s is ServerProxySource) continue;
         if (!s.supportsDirect) continue;
+        var afterId = 0;
         while (true) {
           final skipRef = _playingSourceKey == s.key ? _playingRef : null;
-          final unread = index.unreadSongs(s.key, 100, excludeRef: skipRef);
+          final unread = index.unreadSongs(s.key, 100,
+              excludeRef: skipRef, afterId: afterId > 0 ? afterId : null);
           if (unread.isEmpty) break;
-          var enriched = 0;
           for (final song in unread) {
+            // 游标始终前进：不可解析/失败的歌本轮跳过，下次播放再重试。
+            if (song.id > afterId) afterId = song.id;
             try {
-              if (await enrichSongMeta(index, s, song)) enriched++;
+              await enrichSongMeta(index, s, song);
             } catch (_) {
               // 单首失败跳过，不标已读。
             }
             // 让出事件循环，避免长循环卡 UI。
             await Future.delayed(Duration.zero);
           }
-          if (enriched == 0) break; // 整批无进展（网络断/不可解析）：避免死循环
           _metaVersion++;
           notifyListeners();
         }

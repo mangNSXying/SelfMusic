@@ -5,6 +5,9 @@ import 'dart:typed_data';
 class AudioMeta {
   String? title;
   String? artist;
+
+  /// 专辑歌手（mp3 TPE2 / flac ALBUMARTIST，可空；为空时展示回退到 [artist]）。
+  String? albumArtist;
   String? album;
   String? genre;
   int? year;
@@ -50,6 +53,7 @@ AudioMeta _parseMp3Minimal(Uint8List head) {
     final frames = _id3TagToFrames(head, 10);
     meta.title = frames['TIT2'];
     meta.artist = frames['TPE1'];
+    meta.albumArtist = frames['TPE2'];
     meta.album = frames['TALB'];
   }
   return meta;
@@ -87,6 +91,7 @@ AudioMeta _parseMp3(Uint8List head, int fileSize) {
     final frames = _id3TagToFrames(head, 10);
     meta.title = frames['TIT2'];
     meta.artist = frames['TPE1'];
+    meta.albumArtist = frames['TPE2'];
     meta.album = frames['TALB'];
     meta.genre = frames['TCON'];
     meta.year = _yearOf(frames['TYER'] ?? frames['TDRC']);
@@ -374,6 +379,11 @@ void _parseVorbisComment(List<int> body, AudioMeta meta) {
         break;
       case 'ARTIST':
         meta.artist ??= val;
+        break;
+      case 'ALBUMARTIST':
+      case 'ALBUM ARTIST':
+      case 'ALBUM_ARTIST':
+        meta.albumArtist ??= val;
         break;
       case 'ALBUM':
         meta.album ??= val;
