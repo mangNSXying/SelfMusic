@@ -212,4 +212,28 @@ void main() {
     index.close();
     dir.deleteSync(recursive: true);
   });
+
+  test('服务端歌曲元数据本地覆盖：写入/读取/部分更新', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir = await Directory.systemTemp.createTemp('selfmusic_idxovr_');
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+
+    expect(index.metaOverrideOf('server', '42'), isNull);
+    index.setMetaOverride('server', '42', title: '覆盖标题');
+    var o = index.metaOverrideOf('server', '42')!;
+    expect(o.title, '覆盖标题');
+    expect(o.artist, isNull);
+
+    // 部分更新合并，不覆盖已有。
+    index.setMetaOverride('server', '42', artist: '覆盖歌手');
+    o = index.metaOverrideOf('server', '42')!;
+    expect(o.title, '覆盖标题');
+    expect(o.artist, '覆盖歌手');
+    expect(o.isEmpty, isFalse);
+
+    index.close();
+    dir.deleteSync(recursive: true);
+  });
 }

@@ -94,8 +94,7 @@ class Song {
       };
 
   /// 直连模式行构造（本地索引读出）。
-  factory Song.direct({
-    required int id,
+  factory Song.direct({    required int id,
     required String sourceKey,
     required String title,
     String? artist,
@@ -130,5 +129,47 @@ class Song {
         coverPath: coverPath,
         sourceUrl: sourceUrl,
         isDirect: true,
+      );
+
+  /// 拷贝（元数据覆盖/刷新用）。
+  Song copyWith({
+    int? id,
+    String? sourceKey,
+    String? title,
+    String? artist,
+    String? albumName,
+    int? trackNo,
+    int? year,
+    String? genre,
+    int? duration,
+    String? source,
+    String? sourceRef,
+    int? fileSize,
+    String? format,
+    bool? favorite,
+    bool? hidden,
+    String? coverPath,
+    String? sourceUrl,
+    bool? isDirect,
+  }) =>
+      Song(
+        id: id ?? this.id,
+        sourceKey: sourceKey ?? this.sourceKey,
+        title: title ?? this.title,
+        artist: artist ?? this.artist,
+        albumName: albumName ?? this.albumName,
+        trackNo: trackNo ?? this.trackNo,
+        year: year ?? this.year,
+        genre: genre ?? this.genre,
+        duration: duration ?? this.duration,
+        source: source ?? this.source,
+        sourceRef: sourceRef ?? this.sourceRef,
+        fileSize: fileSize ?? this.fileSize,
+        format: format ?? this.format,
+        favorite: favorite ?? this.favorite,
+        hidden: hidden ?? this.hidden,
+        coverPath: coverPath ?? this.coverPath,
+        sourceUrl: sourceUrl ?? this.sourceUrl,
+        isDirect: isDirect ?? this.isDirect,
       );
 }

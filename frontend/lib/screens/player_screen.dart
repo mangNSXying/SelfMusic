@@ -482,13 +482,9 @@ class _Cover extends StatelessWidget {
                 icon: const Icon(Icons.more_horiz, color: Colors.black87, size: 18),
                 padding: EdgeInsets.zero,
                 onSelected: (v) => _onSelected(context, v),
-                itemBuilder: (c) => [
-                  const PopupMenuItem(value: 'info', child: Text('歌曲信息')),
-                  PopupMenuItem(
-                    value: 'edit',
-                    enabled: song.isDirect,
-                    child: Text(song.isDirect ? '修改歌曲元数据' : '修改歌曲元数据（仅直连）'),
-                  ),
+                itemBuilder: (c) => const [
+                  PopupMenuItem(value: 'info', child: Text('歌曲信息')),
+                  PopupMenuItem(value: 'edit', child: Text('修改歌曲元数据')),
                 ],
               ),
             ),
@@ -505,7 +501,6 @@ class _Cover extends StatelessWidget {
         builder: (_) => _SongInfoDialog(song: song),
       );
     } else if (v == 'edit') {
-      if (!song.isDirect) return;
       showDialog<void>(
         context: context,
         builder: (_) => _EditSongMetaDialog(song: song),
@@ -581,7 +576,9 @@ class _SongInfoDialog extends StatelessWidget {
   }
 }
 
-/// 修改歌曲元数据弹窗（仅直连）：标题/歌手/专辑可编辑，保存后扫描不再覆盖。
+/// 修改歌曲元数据弹窗（全源）：标题/歌手/专辑可编辑。
+///
+/// 直连歌落库并标记扫描保护；服务端歌（后端只读）写入本地覆盖层，刷新即生效。
 class _EditSongMetaDialog extends StatefulWidget {
   final Song song;
   const _EditSongMetaDialog({required this.song});
@@ -628,7 +625,9 @@ class _EditSongMetaDialogState extends State<_EditSongMetaDialog> {
       context.read<PlayerProvider>().refreshSongMeta(updated);
     }
     Navigator.of(context).pop();
-    AppToast.show('已保存歌曲信息（扫描不再覆盖）', isError: false);
+    AppToast.show(
+        widget.song.isDirect ? '已保存歌曲信息（扫描不再覆盖）' : '已保存歌曲信息（本地覆盖）',
+        isError: false);
   }
 
   @override

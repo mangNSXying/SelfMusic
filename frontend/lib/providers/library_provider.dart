@@ -146,9 +146,10 @@ class LibraryProvider extends ChangeNotifier {
     final seen = <String>{};
     final out = <Song>[];
     void add(Song s) {
-      final key = '${s.title}\x00${s.artist}\x00${s.albumName}';
+      final v = _applyOverride(s);
+      final key = '${v.title}\x00${v.artist}\x00${v.albumName}';
       if (!seen.add(key)) return;
-      out.add(s);
+      out.add(v);
     }
 
     for (final s in server) {
@@ -158,6 +159,17 @@ class LibraryProvider extends ChangeNotifier {
       add(s);
     }
     return out;
+  }
+
+  /// 应用服务端歌曲本地元数据覆盖（直连歌已在入库时处理）。
+  Song _applyOverride(Song s) {
+    final o = _directManager?.index.metaOverrideOf(s.sourceKey, s.sourceRef);
+    if (o == null || o.isEmpty) return s;
+    return s.copyWith(
+      title: o.title ?? s.title,
+      artist: o.artist ?? s.artist,
+      albumName: o.album ?? s.albumName,
+    );
   }
 
   void _recomputeGroups() {

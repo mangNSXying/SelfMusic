@@ -593,16 +593,30 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 用户手动修改直连歌曲元数据（标题/歌手/专辑）：落库并标记扫描保护，
-  /// 返回刷新后的歌曲（供播放队列/当前歌曲同步），非直连歌返回 null。
+  /// 用户手动修改歌曲元数据（标题/歌手/专辑）。
+  ///
+  /// 直连歌落库并标记扫描保护；服务端歌（后端只读）写入本地覆盖层。
+  /// 返回刷新后的歌曲（供播放队列/当前歌曲同步），失败返回 null。
   Song? updateSongMeta(Song s,
       {String? title, String? artist, String? album}) {
-    if (!s.isDirect) return null;
-    index.updateSongUserMeta(s.sourceKey, s.sourceRef,
+    if (s.isDirect) {
+      index.updateSongUserMeta(s.sourceKey, s.sourceRef,
+          title: title, artist: artist, album: album);
+      _favoriteVersion++;
+      notifyListeners();
+      return index.songByRef(s.sourceKey, s.sourceRef);
+    }
+    index.setMetaOverride(s.sourceKey, s.sourceRef,
+        title: title, artist: artist, album: album);
+    index.syncMetaSnapshot(s.sourceKey, s.sourceRef,
         title: title, artist: artist, album: album);
     _favoriteVersion++;
     notifyListeners();
-    return index.songByRef(s.sourceKey, s.sourceRef);
+    return s.copyWith(
+      title: title ?? s.title,
+      artist: artist ?? s.artist,
+      albumName: album ?? s.albumName,
+    );
   }
 
   Future<void> cacheSong(MusicSource src, Song s) async {

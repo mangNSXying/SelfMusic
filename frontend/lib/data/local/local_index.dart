@@ -117,6 +117,17 @@ class LocalIndex {
         updated_at  TEXT NOT NULL
       );
     ''');
+    // 服务端歌曲元数据本地覆盖（后端只读，无改元数据接口）：标题/歌手/专辑按需覆盖。
+    _db!.execute('''
+      CREATE TABLE IF NOT EXISTS song_meta_override (
+        source_key TEXT NOT NULL,
+        song_ref   TEXT NOT NULL,
+        title      TEXT,
+        artist     TEXT,
+        album      TEXT,
+        PRIMARY KEY (source_key, song_ref)
+      );
+    ''');
     final cacheCols = _db!
         .select('PRAGMA table_info(cache)')
         .map((r) => r['name'] as String)
@@ -350,6 +361,13 @@ class LocalIndex {
         user_edited=1
       WHERE source_key=? AND ref=?
     ''', [title, artist, album, sourceKey, songRef]);
+    syncMetaSnapshot(sourceKey, songRef,
+        title: title, artist: artist, album: album);
+  }
+
+  /// 同步 play_meta 歌曲快照中的标题/歌手/专辑（直连改库 / 服务端覆盖层共用）。
+  void syncMetaSnapshot(String sourceKey, String songRef,
+      {String? title, String? artist, String? album}) {
     final rows = _db!.select(
         'SELECT song_json FROM play_meta WHERE source_key=? AND song_ref=?',
         [sourceKey, songRef]);
@@ -359,9 +377,7 @@ class LocalIndex {
     try {
       final j = jsonDecode(raw) as Map<String, dynamic>;
       if (title != null) j['title'] = title;
-      if (artist != null) {
-        j['artist'] = artist;
-      }
+      if (artist != null) j['artist'] = artist;
       if (album != null) j['albumName'] = album;
       _db!.execute(
           'UPDATE play_meta SET song_json=? WHERE source_key=? AND song_ref=?',
@@ -369,6 +385,33 @@ class LocalIndex {
     } catch (_) {
       // 快照损坏则忽略（下次收藏时重写）。
     }
+  }
+
+  /// 服务端歌曲元数据本地覆盖（部分字段可空：空=不覆盖）。
+  void setMetaOverride(String sourceKey, String songRef,
+      {String? title, String? artist, String? album}) {
+    _db!.execute('''
+      INSERT INTO song_meta_override(source_key, song_ref, title, artist, album)
+      VALUES(?,?,?,?,?)
+      ON CONFLICT(source_key, song_ref) DO UPDATE SET
+        title=COALESCE(excluded.title, song_meta_override.title),
+        artist=COALESCE(excluded.artist, song_meta_override.artist),
+        album=COALESCE(excluded.album, song_meta_override.album)
+    ''', [sourceKey, songRef, title, artist, album]);
+  }
+
+  /// 读取本地覆盖（无则返回 null）。
+  MetaOverride? metaOverrideOf(String sourceKey, String songRef) {
+    final rows = _db!.select(
+        'SELECT title, artist, album FROM song_meta_override WHERE source_key=? AND song_ref=?',
+        [sourceKey, songRef]);
+    if (rows.isEmpty) return null;
+    final r = rows.first;
+    return MetaOverride(
+      title: r['title'] as String?,
+      artist: r['artist'] as String?,
+      album: r['album'] as String?,
+    );
   }
 
   /// 把嵌入封面包装成可跨源复用的落盘（`covers/<md5(ref)>.jpg`），返回路径或 null。
@@ -931,6 +974,16 @@ class ScanFingerprint {
     if (etag != null && otherEtag != null && etag != otherEtag) return false;
     return true;
   }
+}
+
+/// 服务端歌曲元数据本地覆盖（空字段=不覆盖）。
+class MetaOverride {
+  final String? title;
+  final String? artist;
+  final String? album;
+  const MetaOverride({this.title, this.artist, this.album});
+
+  bool get isEmpty => title == null && artist == null && album == null;
 }
 
 /// 一首歌的播放元数据（权重/收藏，stage2.md §1.1）。
