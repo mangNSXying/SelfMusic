@@ -77,20 +77,11 @@ class _AppShellState extends State<AppShell> {
           );
 
     if (!wide) {
-      // 窄屏：顶部抽屉由 Drawer 承载；队列用底部 sheet。
+      // 窄屏：顶部抽屉由 Drawer 承载；队列入口在顶栏与迷你播放条。
       return Scaffold(
         key: _scaffoldKey,
         drawer: const Sidebar(),
         body: shell,
-        floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
-        floatingActionButton: _queueVisible
-            ? null
-            : FloatingActionButton.extended(
-                heroTag: 'queueFab',
-                onPressed: _toggleQueue,
-                icon: const Icon(Icons.queue_music),
-                label: const Text('队列'),
-              ),
       );
     }
 

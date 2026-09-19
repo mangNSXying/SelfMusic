@@ -75,6 +75,33 @@ class PlayerProvider extends ChangeNotifier {
   bool _fadingPause = false;
   AndroidEqualizer? _eq;
 
+  Timer? _sleepTimer;
+  int _sleepMinutes = 0;
+
+  /// 睡眠定时是否激活（播放页「睡眠」按钮高亮）。
+  bool get sleepTimerActive => _sleepTimer != null && _sleepMinutes > 0;
+
+  /// 睡眠定时剩余分钟数（≤0 表示未设置）。
+  int get sleepMinutes => _sleepMinutes;
+
+  /// 睡眠定时：设置分钟后暂停播放；传入 ≤0 关闭定时。
+  void setSleepTimer(int minutes) {
+    _sleepTimer?.cancel();
+    _sleepMinutes = minutes < 0 ? 0 : minutes;
+    if (_sleepMinutes <= 0) {
+      _sleepTimer = null;
+    } else {
+      _sleepTimer = Timer(Duration(minutes: _sleepMinutes), () async {
+        _sleepMinutes = 0;
+        _sleepTimer = null;
+        if (player.playing) await _fadeOutThenPause();
+        notifyListeners();
+        _syncSystemMedia();
+      });
+    }
+    notifyListeners();
+  }
+
   PlayerProvider() {
     player = _buildPlayer();
     _setupPlayerStreams();
@@ -600,6 +627,7 @@ class PlayerProvider extends ChangeNotifier {
   @override
   void dispose() {
     _fadeTimer?.cancel();
+    _sleepTimer?.cancel();
     _saveState(player.position);
     player.dispose();
     super.dispose();

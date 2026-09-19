@@ -19,6 +19,7 @@ import 'providers/navigation_provider.dart';
 import 'theme/theme_provider.dart';
 import 'theme/app_theme.dart';
 import 'screens/library_screen.dart';
+import 'screens/player_screen.dart';
 import 'layout/app_shell.dart';
 
 Future<void> main() async {
@@ -203,6 +204,17 @@ class _RootState extends State<Root> {
     }
     // 首次启动不再强制配对：未配对也可正常使用直连模式；
     // 配对 / 会话过期后重新配对在「设置 → 服务端」进行。
+    final nav = context.watch<NavigationProvider>();
+    // 播放页为首页：全屏展示（替换整个壳层）；返回键从播放页回到上一分区。
+    if (nav.playerView) {
+      return PopScope<void>(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) nav.closePlayer();
+        },
+        child: const PlayerScreen(),
+      );
+    }
     return PopScope<void>(
       canPop: false,
       onPopInvokedWithResult: _onPopInvoked,

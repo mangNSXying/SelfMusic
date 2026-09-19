@@ -2,12 +2,14 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 
-/// 全局导航状态：驱动顶栏下层导航 + 内容区切换，与布局模块解耦。
+// 导航状态：驱动首页（全屏播放页）与 AppShell 内容区切换。
 class NavigationProvider extends ChangeNotifier {
   NavSection _section = NavSection.songs;
   String _search = '';
   SettingsItem? _settings;
-  bool _playerView = false;
+
+  /// 播放页为首页（ui-playpage.html 理念）：启动即全屏展示播放页。
+  bool _playerView = true;
   String? _browsingSourceKey;
   int? _browsingPlaylistId;
 
