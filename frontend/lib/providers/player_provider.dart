@@ -300,18 +300,26 @@ class PlayerProvider extends ChangeNotifier {
 
   void _setupPlayerStreams() {
     player.playerStateStream.listen((st) {
-      if (st.processingState == ProcessingState.completed) {
-        final finished = _current;
-        if (finished != null) {
-          _emitWeight(finished, completed: true,
-              position: player.duration ?? Duration.zero);
-        }
-        if (_handleTrackCompletedSleep()) return;
-        _advance();
-      }
+      if (st.processingState != ProcessingState.completed) return;
+      // 到点暂停会把 playing 置 false 并再发一次 completed：
+      // 这种「已暂停」的完成事件不再处理，否则暂停后又被自动切歌。
+      if (!st.playing) return;
+      final finished = _current;
+      if (finished == null) return;
+      // 同一首歌的 completed 事件兜底去重。
+      final key = '${finished.sourceKey}\u0000${finished.sourceRef}';
+      if (_completedKey == key) return;
+      _completedKey = key;
+      _emitWeight(finished, completed: true,
+          position: player.duration ?? Duration.zero);
+      if (_handleTrackCompletedSleep()) return;
+      _advance();
     });
     player.positionStream.listen(_maybeSaveState);
   }
+
+  /// 已处理过 completed 的曲目 key（含暂停导致的二次 completed，见监听器注释）。
+  String? _completedKey;
 
   /// 应用音频相关设置（均衡器/音频焦点/淡入淡出开关变化）：重建播放器并恢复当前曲目。
   Future<void> applyAudioConfig() async {
@@ -532,8 +540,9 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   Future<void> _play(Song s, {MusicSource? source, bool play = true}) async {
-    // 新曲开始前清掉上一首的预取结果（_onTrackStarted 会对新曲重新 peek）。
+    // 新曲开始前清掉上一首的预取结果与 completed 去重标记。
     _peekedNext = null;
+    _completedKey = null;
     // 睡眠定时处于「等当前曲放完」的挂起态时，手动切歌视为用户接管：取消定时。
     if (_sleepPendingStop) {
       _clearSleep();
@@ -697,6 +706,7 @@ class PlayerProvider extends ChangeNotifier {
 
   /// 单曲循环：同一首重播。
   Future<void> _replay() async {
+    _completedKey = null;
     await player.seek(Duration.zero);
     await player.play();
   }
