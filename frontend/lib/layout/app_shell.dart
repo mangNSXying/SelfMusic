@@ -31,27 +31,6 @@ class _AppShellState extends State<AppShell> {
     }
   }
 
-  void _toggleQueue() {
-    final nav = context.read<NavigationProvider>();
-    // 窄屏：以底部弹层展示队列（宽屏为右侧常驻面板）。
-    if (MediaQuery.of(context).size.width < 900) {
-      if (nav.queueOpen) return;
-      nav.openQueue();
-      showModalBottomSheet<void>(
-        context: context,
-        isScrollControlled: true,
-        builder: (c) => FractionallySizedBox(
-          heightFactor: 0.7,
-          child: QueuePanel(onClose: () => Navigator.of(c).pop()),
-        ),
-      ).whenComplete(() {
-        if (mounted) nav.closeQueue();
-      });
-      return;
-    }
-    nav.toggleQueue();
-  }
-
   @override
   Widget build(BuildContext context) {
     final wide = MediaQuery.of(context).size.width >= 900;
@@ -59,7 +38,7 @@ class _AppShellState extends State<AppShell> {
 
     final contentColumn = Column(
       children: [
-        TopBar(onSidebarToggle: _toggleSidebar, onQueueToggle: _toggleQueue, queueActive: nav.queueOpen),
+        TopBar(onSidebarToggle: _toggleSidebar),
         Expanded(child: widget.content),
         const MiniPlayerBar(),
       ],

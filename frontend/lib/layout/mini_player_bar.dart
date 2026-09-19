@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
+import 'queue_panel.dart';
 
 /// 底部“正在播放”迷你条：点击进入全屏播放页；提供播放控制。
 /// 尺寸较大（72 高 + 封面缩略图），便于移动端点击。
@@ -101,10 +102,13 @@ class MiniPlayerBar extends StatelessWidget {
                 onPressed: player.next,
               ),
               IconButton(
-                icon: const Icon(Icons.queue_music),
+                icon: Icon(nav.queueOpen
+                    ? Icons.queue_music
+                    : Icons.queue_music_outlined),
                 iconSize: 28,
-                tooltip: '打开播放页',
-                onPressed: () => nav.openPlayer(),
+                color: nav.queueOpen ? cs.primary : null,
+                tooltip: '播放队列',
+                onPressed: () => toggleQueuePanel(context),
               ),
             ],
           ),

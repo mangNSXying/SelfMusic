@@ -1,6 +1,28 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
+
+/// 切换播放队列面板：窄屏底部弹层（0.7 高），宽屏右侧常驻面板开关。
+///
+/// 顶栏队列按钮已移除，统一由迷你播放栏进入；AppShell 与迷你栏共用此入口。
+void toggleQueuePanel(BuildContext context) {
+  final nav = context.read<NavigationProvider>();
+  if (MediaQuery.of(context).size.width < 900) {
+    if (nav.queueOpen) return;
+    nav.openQueue();
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (c) => FractionallySizedBox(
+        heightFactor: 0.7,
+        child: QueuePanel(onClose: () => Navigator.of(c).pop()),
+      ),
+    ).whenComplete(nav.closeQueue);
+    return;
+  }
+  nav.toggleQueue();
+}
 
 /// 播放队列面板：纯队列展示（当前歌曲与控制在播放页/迷你条操作）。
 class QueuePanel extends StatelessWidget {

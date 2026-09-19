@@ -6,13 +6,9 @@ import '../theme/app_theme.dart';
 /// 顶栏：上层 = 汉堡 + 搜索框；下层 = 导航（播放列表/喜欢/播放源/歌曲/专辑/歌手）。
 class TopBar extends StatelessWidget {
   final VoidCallback onSidebarToggle;
-  final VoidCallback onQueueToggle;
-  final bool queueActive;
   const TopBar({
     super.key,
     required this.onSidebarToggle,
-    required this.onQueueToggle,
-    this.queueActive = false,
   });
 
   @override
@@ -23,7 +19,7 @@ class TopBar extends StatelessWidget {
         ? _SettingsTopBar(nav: nav, onSidebarToggle: onSidebarToggle)
         : Column(
             children: [
-              _UpperRow(nav: nav, onSidebarToggle: onSidebarToggle, onQueueToggle: onQueueToggle, queueActive: queueActive),
+              _UpperRow(nav: nav, onSidebarToggle: onSidebarToggle),
               _NavBar(nav: nav),
               const Divider(height: 1),
             ],
@@ -36,14 +32,11 @@ class TopBar extends StatelessWidget {
 class _UpperRow extends StatelessWidget {
   final NavigationProvider nav;
   final VoidCallback onSidebarToggle;
-  final VoidCallback onQueueToggle;
-  final bool queueActive;
-  const _UpperRow({required this.nav, required this.onSidebarToggle, required this.onQueueToggle, required this.queueActive});
+  const _UpperRow({required this.nav, required this.onSidebarToggle});
 
   @override
   Widget build(BuildContext context) {
     final searchCtrl = TextEditingController(text: nav.search);
-    final colorScheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
       child: Row(
@@ -72,13 +65,6 @@ class _UpperRow extends StatelessWidget {
                       ),
               ),
             ),
-          ),
-          const SizedBox(width: 4),
-          IconButton(
-            icon: Icon(queueActive ? Icons.queue_music : Icons.playlist_play),
-            tooltip: '播放队列',
-            onPressed: onQueueToggle,
-            color: queueActive ? colorScheme.primary : null,
           ),
         ],
       ),
