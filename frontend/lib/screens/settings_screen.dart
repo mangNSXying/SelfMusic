@@ -352,8 +352,20 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
 }
 
 /// 界面设置：强调色/背景色/明暗/恢复默认，实时生效并持久化。
-class _AppearanceSettings extends StatelessWidget {
+class _AppearanceSettings extends StatefulWidget {
   const _AppearanceSettings();
+  @override
+  State<_AppearanceSettings> createState() => _AppearanceSettingsState();
+}
+
+class _AppearanceSettingsState extends State<_AppearanceSettings> {
+  late PlayerTransition _transition;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _transition = context.read<DirectSourceManager>().settings.playerTransition;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -444,6 +456,20 @@ class _AppearanceSettings extends StatelessWidget {
             ),
           ],
           const Divider(),
+          const SizedBox(height: 8),
+
+          // 播放页切换动画
+          Text('播放页', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.animation_outlined),
+            title: const Text('播放页切换动画'),
+            subtitle: Text('播放页与歌词页切换时的过渡效果：${_transition.label}'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _pickTransition(context),
+          ),
+          const Divider(),
           const SizedBox(height: 12),
 
           Align(
@@ -477,6 +503,36 @@ class _AppearanceSettings extends StatelessWidget {
       }),
     );
     if (picked != null) await theme.setBackground(picked);
+  }
+
+  Future<void> _pickTransition(BuildContext context) async {
+    final picked = await showDialog<PlayerTransition>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: const Text('播放页切换动画'),
+        children: [
+          RadioGroup<PlayerTransition>(
+            groupValue: _transition,
+            onChanged: (v) {
+              if (v != null) Navigator.of(c).pop(v);
+            },
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final t in PlayerTransition.values)
+                  RadioListTile<PlayerTransition>(
+                    title: Text(t.label),
+                    value: t,
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+    if (picked == null || picked == _transition || !context.mounted) return;
+    context.read<DirectSourceManager>().settings.playerTransition = picked;
+    setState(() => _transition = picked);
   }
 
   String _rgb(Color c) =>

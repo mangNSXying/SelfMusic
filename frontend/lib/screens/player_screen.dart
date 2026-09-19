@@ -6,6 +6,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 
 import '../models/song.dart';
+import '../data/local/app_settings.dart';
 import '../providers/player_provider.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
@@ -51,8 +52,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final gestureOn =
-        context.watch<DirectSourceManager>().settings.playerGestureSwipe;
+    final settings = context.watch<DirectSourceManager>().settings;
+    final gestureOn = settings.playerGestureSwipe;
+    final transition = settings.playerTransition;
 
     return Scaffold(
       body: SafeArea(
@@ -61,18 +63,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
           onHorizontalDragEnd: gestureOn ? _onHorizSwipe : null,
           onVerticalDragEnd: gestureOn ? _onVertSwipe : null,
           child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 240),
+            duration: transition == PlayerTransition.none
+                ? Duration.zero
+                : const Duration(milliseconds: 240),
             switchInCurve: Curves.easeOutCubic,
             switchOutCurve: Curves.easeInCubic,
-            transitionBuilder: (child, anim) => FadeTransition(
-              opacity: anim,
-              child: SlideTransition(
-                position: Tween<Offset>(
-                        begin: const Offset(0.08, 0), end: Offset.zero)
-                    .animate(anim),
-                child: child,
-              ),
-            ),
+            transitionBuilder: (child, anim) =>
+                _playerTransition(transition, child, anim),
             child: KeyedSubtree(
               key: ValueKey<bool>(_lyrics),
               child: _lyrics
@@ -83,6 +80,28 @@ class _PlayerScreenState extends State<PlayerScreen> {
         ),
       ),
     );
+  }
+
+  /// 按设置构建切换过渡：关闭 / 淡入 / 滑动 / 缩放。
+  static Widget _playerTransition(
+      PlayerTransition t, Widget child, Animation<double> anim) {
+    switch (t) {
+      case PlayerTransition.none:
+        return child;
+      case PlayerTransition.fade:
+        return FadeTransition(opacity: anim, child: child);
+      case PlayerTransition.slide:
+        return SlideTransition(
+          position: Tween<Offset>(begin: const Offset(0.3, 0), end: Offset.zero)
+              .animate(anim),
+          child: FadeTransition(opacity: anim, child: child),
+        );
+      case PlayerTransition.scale:
+        return ScaleTransition(
+          scale: Tween<double>(begin: 0.94, end: 1.0).animate(anim),
+          child: FadeTransition(opacity: anim, child: child),
+        );
+    }
   }
 
   /// 自适应播放页：整页不滚动，封面尺寸按可用空间计算以恰好放满一屏。

@@ -17,6 +17,20 @@ enum CacheConfigMode {
       this == followServer ? 'follow_server' : 'custom';
 }
 
+/// 播放页（播放/歌词）切换过渡动画。
+enum PlayerTransition {
+  none('关闭'),
+  fade('淡入'),
+  slide('滑动'),
+  scale('缩放');
+
+  const PlayerTransition(this.label);
+  final String label;
+
+  static PlayerTransition parse(String? v) => PlayerTransition.values
+      .firstWhere((e) => e.name == v, orElse: () => PlayerTransition.fade);
+}
+
 /// 客户端用户设置（直连模式 app_settings 表；settings.md §3）。
 ///
 /// 已实现（settings.md §3.1/§3.3/§3.4）：
@@ -54,6 +68,9 @@ class AppSettings {
 
   /// 通知栏播放控制（settings.md §3.6）：Android 通知栏/后台播放。
   static const String kNotificationControls = 'notification_controls';
+
+  /// 播放页切换过渡动画（settings.md §3.7 界面）：none / fade / slide / scale。
+  static const String kPlayerTransition = 'player_transition';
 
   /// 默认缓存总上限（512 MB）。
   static const int defaultCacheMaxBytes = 512 * 1024 * 1024;
@@ -220,6 +237,14 @@ class AppSettings {
     index.settingsSet(kEqBands, jsonEncode(norm.map((e) => e.round())));
   }
 
+  // ---------- 界面分区（settings.md §3.7） ----------
+
+  /// 播放页（播放/歌词）切换过渡动画（默认淡入）。
+  PlayerTransition get playerTransition =>
+      PlayerTransition.parse(index.settingsGet(kPlayerTransition));
+  set playerTransition(PlayerTransition v) =>
+      index.settingsSet(kPlayerTransition, v.name);
+
   // ---------- 通知分区（settings.md §3.6） ----------
 
   bool get audioFocusEnabled =>
@@ -256,5 +281,6 @@ class AppSettings {
     kEqBands,
     kAudioFocusEnabled,
     kNotificationControls,
+    kPlayerTransition,
   ];
 }
