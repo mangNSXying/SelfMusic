@@ -7,20 +7,21 @@ import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 
 import '../models/song.dart';
-import '../data/local/app_settings.dart';
 import '../providers/player_provider.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
-import '../widgets/page_transition.dart';
+import '../widgets/marquee_text.dart';
+import '../widgets/player_sheet_anim.dart';
 
 /// 全屏播放页（ui-playpage.html v5）：作为「首页」整屏展示，替换整个壳层。
 ///
 /// 手势交互（可在设置中关闭）：
-/// - 播放页【右滑（从右往左）】进入歌词页；
-/// - 播放页【下滑（从上往下）】返回列表；
-/// - 底部迷你栏【上滑（从下往上）】返回播放页。
+/// - 播放页/歌词页横向跟手互切（PageView 原生：跟手 + 速度/位置裁决）；
+/// - 播放页【下滑跟手】整页随手指下移返回列表（松手吸附/离场）；
+/// - 歌词页纵向滚动，右滑或按钮返回播放页；
+/// - 底部迷你栏【上滑跟手】播放页从底部升起。
 class PlayerScreen extends StatefulWidget {
   const PlayerScreen({super.key});
 
@@ -30,55 +31,90 @@ class PlayerScreen extends StatefulWidget {
 
 class _PlayerScreenState extends State<PlayerScreen> {
   bool _lyrics = false;
+  late final PageController _pageCtrl;
 
-  /// 横向滑动：播放页从右往左 → 歌词页；歌词页反向滑回播放页。
-  void _onHorizSwipe(DragEndDetails d) {
-    final v = d.primaryVelocity ?? 0;
-    if (v.abs() < 250) return;
-    if (v < 0) {
-      setState(() => _lyrics = true);
-    } else if (_lyrics) {
-      setState(() => _lyrics = false);
-    }
+  /// 播放页下拉跟手的起点（全局 Y + 起始进度）。
+  double _dragStartY = 0;
+  double _dragStartP = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _pageCtrl = PageController(initialPage: 0);
   }
 
-  /// 竖向滑动：下滑（从上往下）→ 返回列表；歌词页上滑回播放页。
-  void _onVertSwipe(DragEndDetails d) {
+  @override
+  void dispose() {
+    _pageCtrl.dispose();
+    super.dispose();
+  }
+
+  /// 跟手切页：左滑进歌词，右滑回播放（歌词页内右滑同样生效）。
+  void _goLyrics(bool to) {
+    if (_lyrics == to) return;
+    _pageCtrl.animateToPage(to ? 1 : 0,
+        duration: const Duration(milliseconds: 260),
+        curve: Curves.easeOutCubic);
+  }
+
+  /// 播放页下拉跟手：整页随手指下移，底下显露分组区；松手按位移/速度吸附或离场。
+  void _onPlayerDragStart(DragStartDetails d) {
+    final sheet = context.read<PlayerSheetAnimator>();
+    _dragStartY = d.globalPosition.dy;
+    _dragStartP = sheet.value;
+    sheet.dragStart();
+  }
+
+  void _onPlayerDragUpdate(DragUpdateDetails d) {
+    final h = MediaQuery.of(context).size.height;
+    if (h <= 0) return;
+    context
+        .read<PlayerSheetAnimator>()
+        .dragTo(_dragStartP + (d.globalPosition.dy - _dragStartY) / h);
+  }
+
+  void _onPlayerDragEnd(DragEndDetails d) {
+    final sheet = context.read<PlayerSheetAnimator>();
     final v = d.primaryVelocity ?? 0;
-    if (v > 250) {
-      context.read<NavigationProvider>().closePlayer();
-    } else if (v < -250 && _lyrics) {
-      setState(() => _lyrics = false);
+    final p = sheet.value;
+    if (v > 700 || p > 0.4) {
+      sheet.settle(1, onDone: () {
+        if (!mounted) return;
+        context.read<NavigationProvider>().closePlayer();
+      });
+    } else {
+      sheet.settle(0);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final settings = context.watch<DirectSourceManager>().settings;
-    final gestureOn = settings.playerGestureSwipe;
-    final transition = settings.playerTransition;
+    final gestureOn =
+        context.watch<DirectSourceManager>().settings.playerGestureSwipe;
 
     return Scaffold(
       body: SafeArea(
-        child: GestureDetector(
-          behavior: HitTestBehavior.translucent,
-          onHorizontalDragEnd: gestureOn ? _onHorizSwipe : null,
-          onVerticalDragEnd: gestureOn ? _onVertSwipe : null,
-          child: AnimatedSwitcher(
-            duration: transition == PlayerTransition.none
-                ? Duration.zero
-                : const Duration(milliseconds: 240),
-            switchInCurve: Curves.easeOutCubic,
-            switchOutCurve: Curves.easeInCubic,
-            transitionBuilder: (child, anim) =>
-                pageTransition(transition, child, anim),
-            child: KeyedSubtree(
-              key: ValueKey<bool>(_lyrics),
-              child: _lyrics
-                  ? _LyricsPage(onClose: () => setState(() => _lyrics = false))
-                  : _buildPlayerBody(context),
+        // 横向由内层 PageView 原生跟手；竖向仅播放页（第 0 页）跟手下拉，
+        // 歌词页纵向留给滚动（按钮/右滑返回播放页）。
+        // 关闭手势后 PageView 禁滑、下拉停用。
+        child: PageView(
+          controller: _pageCtrl,
+          physics: gestureOn
+              ? const PageScrollPhysics()
+              : const NeverScrollableScrollPhysics(),
+          onPageChanged: (i) => setState(() => _lyrics = i == 1),
+          children: [
+            GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onVerticalDragStart:
+                  gestureOn ? _onPlayerDragStart : null,
+              onVerticalDragUpdate:
+                  gestureOn ? _onPlayerDragUpdate : null,
+              onVerticalDragEnd: gestureOn ? _onPlayerDragEnd : null,
+              child: _buildPlayerBody(context),
             ),
-          ),
+            _LyricsPage(onClose: () => _goLyrics(false)),
+          ],
         ),
       ),
     );
@@ -159,17 +195,15 @@ class _LyricsPage extends StatelessWidget {
                       size: 64, color: cs.primary.withValues(alpha: 0.55)),
                   const SizedBox(height: 20),
                   if (s != null) ...[
-                    Text(
+                    MarqueeText(
                       s.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
                       style: Theme.of(context).textTheme.headlineSmall,
-                      textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 6),
-                    Text(
+                    MarqueeText(
                       s.artist ?? 'Unknown',
-                      style: TextStyle(color: cs.onSurface.withValues(alpha: 0.6)),
+                      style: TextStyle(
+                          color: cs.onSurface.withValues(alpha: 0.6)),
                     ),
                     const SizedBox(height: 24),
                   ],
@@ -256,21 +290,17 @@ class _NowPlaying extends StatelessWidget {
               coverPath: s.coverPath, song: s, cs: cs, size: coverSize),
         ),
         const SizedBox(height: 20),
-        Text(
+        MarqueeText(
           s.title,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
           style: Theme.of(context)
               .textTheme
               .headlineSmall
               ?.copyWith(fontWeight: FontWeight.w700),
-          textAlign: TextAlign.center,
         ),
         const SizedBox(height: 6),
-        Text(
+        MarqueeText(
           s.artist ?? 'Unknown',
           style: Theme.of(context).textTheme.titleMedium,
-          textAlign: TextAlign.center,
         ),
         const SizedBox(height: 8),
         Wrap(
@@ -614,12 +644,19 @@ class _EditSongMetaDialogState extends State<_EditSongMetaDialog> {
       AppToast.error(StateError('标题不能为空'));
       return;
     }
+    // 字段语义：null=未改动不写；''=清空为未知；其余=新值。
+    String? delta(String input, String? current) {
+      final v = input.trim();
+      if (v == (current ?? '')) return null;
+      return v.isEmpty ? '' : v;
+    }
+
     final direct = context.read<DirectSourceManager>();
     final updated = direct.updateSongMeta(
       widget.song,
-      title: title,
-      artist: _artist.text.trim().isEmpty ? null : _artist.text.trim(),
-      album: _album.text.trim().isEmpty ? null : _album.text.trim(),
+      title: delta(title, widget.song.title),
+      artist: delta(_artist.text, widget.song.artist),
+      album: delta(_album.text, widget.song.albumName),
     );
     if (updated != null) {
       context.read<PlayerProvider>().refreshSongMeta(updated);
