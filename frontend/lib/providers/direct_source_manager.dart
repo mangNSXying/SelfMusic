@@ -515,13 +515,13 @@ class DirectSourceManager extends ChangeNotifier {
     }
   }
 
-  /// 检索某源索引的歌。代理源走后端整体库（异步）。
+  /// 检索某源索引的歌。代理源走后端整体库（异步，分页取完）。
   Future<List<Song>> fetchSongsFor(String? sourceKey, {String? query}) async {
     final key = sourceKey ?? serverKey;
     if (key == serverKey) return const [];
     final s = _sources.where((x) => x.key == key).firstOrNull;
     if (s is ServerProxySource) {
-      return s.fetchSongs(query: query, size: 200);
+      return s.fetchAllSongs(query: query);
     }
     return index.searchSongs(sourceKey: key, query: query);
   }

@@ -106,6 +106,18 @@ abstract class MusicSource {
   Future<List<Album>> fetchAlbums({String? query, int page = 1, int size = 50});
   Future<List<Song>> fetchAlbumSongs(int albumId);
 
+  /// 分页取完全部歌曲：后端单页有上限（如 500），循环取到不足一页为止。
+  Future<List<Song>> fetchAllSongs(
+      {String? query, int pageSize = 500, int maxTotal = 20000}) async {
+    final out = <Song>[];
+    for (var page = 1;; page++) {
+      final batch = await fetchSongs(query: query, page: page, size: pageSize);
+      out.addAll(batch);
+      if (batch.length < pageSize || out.length >= maxTotal) break;
+    }
+    return out;
+  }
+
   /// 服务器模式的流式 URL；直连源返回 null（由 [open] 提供）。
   String? streamUrl(int songId);
   Map<String, String>? streamHeaders();

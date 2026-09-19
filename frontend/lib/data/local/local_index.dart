@@ -371,12 +371,17 @@ class LocalIndex {
     required String sourceKey,
     String? query,
     int page = 1,
-    int size = 200,
+    int? size,
   }) {
     final q = query?.trim().toLowerCase() ?? '';
     final like = q.isEmpty ? '%' : '%$q%';
-    final limit = size;
-    final offset = (page - 1) * size;
+    // size==null 时不设 LIMIT（返回全部，供列表无限滚动 / 全选）。
+    final limitSql = size == null ? '' : 'LIMIT ? OFFSET ?';
+    final args = <Object?>[sourceKey, like, like, like];
+    if (size != null) {
+      args.add(size);
+      args.add((page - 1) * size);
+    }
     final rows = _db!.select('''
       SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.track_no,
              i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.missing,
@@ -386,8 +391,8 @@ class LocalIndex {
       WHERE i.source_key=? AND i.missing=0
         AND (i.title LIKE ? OR COALESCE(i.artist,'') LIKE ? OR COALESCE(i.album,'') LIKE ?)
       ORDER BY i.artist, i.album, i.track_no, i.title
-      LIMIT ? OFFSET ?
-    ''', [sourceKey, like, like, like, limit, offset]);
+      $limitSql
+    ''', args);
     return rows.map(_rowToSong).toList();
   }
 

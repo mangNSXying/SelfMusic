@@ -156,8 +156,13 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
     final player = c.read<PlayerProvider>();
     final nav = c.read<NavigationProvider>();
     final messenger = ScaffoldMessenger.of(c);
-    await player.playQueue(songs, index: i, source: source);
+    // 先进播放页（立即切过去），播放是否成功由 error 提示，避免卡在列表里。
     nav.openPlayer();
+    try {
+      await player.playQueue(songs, index: i, source: source);
+    } catch (_) {
+      // playQueue 内部捕获音频错误；此处分外异常也保证导航已生效。
+    }
     final err = player.error;
     if (err != null) {
       messenger.showSnackBar(SnackBar(content: Text('播放失败：$err')));

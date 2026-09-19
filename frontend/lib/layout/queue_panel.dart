@@ -3,10 +3,13 @@ import 'package:provider/provider.dart';
 import '../providers/player_provider.dart';
 import '../widgets/play_mode_selector.dart';
 
-/// 右侧播放队列面板：展示当前队列 + 播放控制，可折叠。
+/// 播放队列面板：展示当前队列 + 播放控制，可折叠。
 class QueuePanel extends StatelessWidget {
   final VoidCallback onClose;
-  const QueuePanel({super.key, required this.onClose});
+
+  /// 面板宽度（null 时撑满可用宽度，供窄屏底部弹层使用）。
+  final double? width;
+  const QueuePanel({super.key, required this.onClose, this.width});
 
   @override
   Widget build(BuildContext context) {
@@ -14,7 +17,7 @@ class QueuePanel extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
 
     return Container(
-      width: 300,
+      width: width,
       color: colorScheme.surface,
       child: Column(
         children: [

@@ -63,6 +63,19 @@ class LocalDirectSource implements MusicSource {
   Future<List<Song>> fetchAlbumSongs(int albumId) async => const [];
 
   @override
+  Future<List<Song>> fetchAllSongs(
+      {String? query, int pageSize = 500, int maxTotal = 20000}) async {
+    final out = <Song>[];
+    for (var page = 1;; page++) {
+      final batch =
+          await fetchSongs(query: query, page: page, size: pageSize);
+      out.addAll(batch);
+      if (batch.length < pageSize || out.length >= maxTotal) break;
+    }
+    return out;
+  }
+
+  @override
   Future<List<Song>> search(
           {String? query, int page = 1, int size = 100}) async =>
       index.searchSongs(sourceKey: key, query: query, page: page, size: size);

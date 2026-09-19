@@ -30,7 +30,25 @@ class _AppShellState extends State<AppShell> {
     }
   }
 
-  void _toggleQueue() => setState(() => _queueVisible = !_queueVisible);
+  void _toggleQueue() {
+    // 窄屏：以底部弹层展示队列（宽屏为右侧常驻面板）。
+    if (MediaQuery.of(context).size.width < 900) {
+      if (_queueVisible) return;
+      setState(() => _queueVisible = true);
+      showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        builder: (c) => FractionallySizedBox(
+          heightFactor: 0.6,
+          child: QueuePanel(onClose: () => Navigator.of(c).pop()),
+        ),
+      ).whenComplete(() {
+        if (mounted) setState(() => _queueVisible = false);
+      });
+      return;
+    }
+    setState(() => _queueVisible = !_queueVisible);
+  }
 
   @override
   Widget build(BuildContext context) {

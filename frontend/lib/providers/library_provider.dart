@@ -80,7 +80,7 @@ class LibraryProvider extends ChangeNotifier {
     List<Song> server = const [];
     if (serverConfigured) {
       try {
-        server = await source.fetchSongs(query: query, size: 2000);
+        server = await source.fetchAllSongs(query: query);
       } catch (e) {
         error = '服务端不可用：$e';
       }

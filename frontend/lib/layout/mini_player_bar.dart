@@ -13,10 +13,11 @@ class MiniPlayerBar extends StatelessWidget {
     final nav = context.watch<NavigationProvider>();
     final cs = Theme.of(context).colorScheme;
 
-    if (!player.hasCurrent) {
+    // 队列有内容即展示（即使当前曲加载失败也保留入口），无队列才隐藏。
+    if (player.queue.isEmpty) {
       return const SizedBox.shrink();
     }
-    final song = player.current!;
+    final song = player.current ?? player.queue.first;
 
     return Material(
       color: cs.surface,
