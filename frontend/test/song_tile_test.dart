@@ -49,7 +49,7 @@ class _FakeSource extends MusicSource {
 }
 
 void main() {
-  testWidgets('点爱心后图标填充，再点取消', (tester) async {
+  testWidgets('三点菜单内切换喜欢态；副标题展示专辑歌手', (tester) async {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
     late final Directory dir;
     late final DirectSourceManager direct;
@@ -64,6 +64,9 @@ void main() {
       id: 1,
       sourceKey: 'webdav:t',
       title: '测试歌',
+      artist: '曲目歌手',
+      albumArtist: '专辑歌手',
+      albumName: '测试专辑',
       source: 'webdav',
       sourceRef: '/dav/a.mp3',
       fileSize: 1024,
@@ -87,17 +90,32 @@ void main() {
     );
     await tester.pump();
 
+    // 副标题：歌手 · 专辑 · 专辑歌手（与歌手不同时展示）。
+    expect(find.text('曲目歌手 · 测试专辑 · 专辑歌手：专辑歌手'), findsOneWidget);
+    // 列表行不再直接放置喜欢按钮。
+    expect(find.byIcon(Icons.favorite_border), findsNothing);
+
+    Future<void> openMenu() async {
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+    }
+
+    await openMenu();
+    expect(find.text('喜欢'), findsOneWidget);
     expect(find.byIcon(Icons.favorite_border), findsOneWidget);
 
-    await tester.tap(find.byIcon(Icons.favorite_border));
-    await tester.pump();
+    await tester.tap(find.text('喜欢'));
+    await tester.pumpAndSettle();
 
+    await openMenu();
+    expect(find.text('取消喜欢'), findsOneWidget);
     expect(find.byIcon(Icons.favorite), findsOneWidget);
 
-    await tester.tap(find.byIcon(Icons.favorite));
-    await tester.pump();
+    await tester.tap(find.text('取消喜欢'));
+    await tester.pumpAndSettle();
 
-    expect(find.byIcon(Icons.favorite_border), findsOneWidget);
+    await openMenu();
+    expect(find.text('喜欢'), findsOneWidget);
 
     await tester.runAsync(() async {
       direct.dispose();
