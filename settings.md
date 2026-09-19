@@ -37,10 +37,11 @@
 
 | 分区 | 键 | 当前状态 | 内容与规划 |
 |------|----|---------|-----------|
-| 常规 | `general` | ✅ 已实现 | 设置 / 歌单 分开导出导入（§3.5，支持选择文件导入）；配对密钥明文显示（§3.5，DESIGN「暂缓项」已实现） |
-| 播放 | `playback` | ✅ 已实现 | 默认播放模式 / 断点自动恢复 / 淡入淡出 / 均衡器（§3.2） |
-| 服务端 | `server` | ✅ 已实现 | 后端地址 + 配对入口（`设置 → 服务端`，`pairing_token`）；缓存配置「跟随服务端 / 自定义」双模式（§3.3）。首次启动不强制配对——未配对可正常使用直连模式，服务端 / 代理功能需配对 |
-| 歌曲 | `songs` | ✅ 已实现 | 收藏自动缓存 / 权重信息显示 / 忽略音频过滤 / 仅 Wi-Fi 扫描 |
+| 备份 | `general` | ✅ 已实现 | 设置 / 歌单 分开导出导入（§3.5，支持选择文件导入） |
+| 播放 | `playback` | ✅ 已实现 | 默认播放模式 / 断点自动恢复 / 播放页手势 / 睡眠定时默认播完 / 播放页权重信息显示 / 淡入淡出 / 均衡器（§3.2） |
+| 服务端 | `server` | ✅ 已实现 | 后端地址 + 配对入口与配对密钥显示/复制（`设置 → 服务端`）；缓存配置「跟随服务端 / 自定义」双模式（§3.3）+ 缓存目录展示。首次启动不强制配对——未配对可正常使用直连模式，服务端 / 代理功能需配对 |
+| 歌曲 | `songs` | ✅ 已实现 | 收藏自动缓存 / 忽略音频过滤 / 仅 Wi-Fi 扫描 |
+| 界面 | `appearance` | ✅ 已实现 | 明暗主题 / 强调色 / 背景色 / 播放页切换动画（§3.7） |
 | 通知 | `notifications` | 🔧 占位 | 面板已就绪（信息展示）；Android 通知栏 / 后台播放 / 音频焦点（§3.6，阶段 0 遗留） |
 
 ---
@@ -62,6 +63,9 @@
 |--------|----|---------|------|
 | 默认播放模式 | `play_mode_default` | `sequence` | 启动时读入并初始化播放模式（`sequence / loopList / loopOne / weighted`）；播放模式切换时同步写回。配合 `PlayerProvider` 现有模式状态 |
 | 断点续播自动恢复 | `resume_on_startup` | `true`（开） | 启动时读取 `play_state` 恢复上次队列与播放位置，**保持暂停态**不自动播放；关闭则忽略 `play_state` |
+| 播放页滑动手势 | `player_gesture_swipe` | `true`（开） | 横滑切换播放页与歌词页、下滑返回列表；关闭后仅用按钮操作 |
+| 睡眠定时默认播完最后曲目 | `sleep_play_through_default` | `true`（开） | 睡眠弹窗「播放完最后的曲目」开关默认值；弹窗内可单独调整 |
+| 播放页权重信息显示 | `player_show_weight` | `true`（显示） | 播放页是否展示当前歌曲 liked / factor 权重芯片（读取 `play_meta`） |
 | 淡入淡出 | `fade_enabled` + `fade_duration_ms` | 开，1000 ms（1~3 s） | 从暂停恢复到播放 / 播放挥手暂停前做 `setVolume` 软件渐变（16 ms 周期），全平台可用；不依赖音频后端 crossfade。关闭时无渐变直接切换 |
 | 均衡器 | `equalizer_enabled` + `eq_bands` | 关 | 5 频段增益（`eq_bands`=JSON 整数数组：低音 60 Hz / 中低 230 Hz / 中音 910 Hz / 中高 3.6 kHz / 高音 14 kHz，范围 -12~+12 dB）。**仅 Android**（just_audio `AndroidEqualizer` 注入 `AudioPipeline`）；Linux/macOS 无公开 mpv Dart API，开关与滑块界面仍可见但不生效 |
 
@@ -93,7 +97,6 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 
 | 设置项 | 键 | 建议默认 | 说明 |
 |--------|----|---------|------|
-| 播放页权重信息显示 | `player_show_weight` | `true`（显示） | 播放页是否展示当前歌曲 liked / factor 权重芯片（读取 `play_meta`） |
 | 忽略音频（时长过滤） | `scan_ignore_min_duration_sec` | `0`（关；启用建议 `60`） | 直连扫描 / 全局合并时过滤过短的明显非音乐文件 |
 | 忽略音频（大小过滤） | `scan_ignore_min_size_bytes` | `0`（关） | 同上，按文件大小过滤 |
 | 仅 Wi-Fi 扫描 | `scan_wifi_only` | `true`（移动端） | 移动端直连扫描仅 Wi-Fi 下进行（DESIGN R4）；桌面端忽略此开关 |
@@ -102,14 +105,13 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 | 提取内嵌封面 | `scan_embed_cover` | `true` | `full` 模式下把内嵌封面另存到本地；关闭可加快大曲库扫描 |
 | 自动扫描间隔 | `scan_auto_interval_min` | `0`（关） | 按固定周期对全部直连源增量扫描（指纹未变零下载）；本地目录变化即使未开启也会自动触发 |
 
-### 3.5 常规分区 · 备份与迁移（动作型，非键值）
+### 3.5 备份分区 · 备份与迁移（动作型，非键值）
 
-> 属「动作入口」，不进 `app_settings`；放在 `设置 → 常规`。
+> 属「动作入口」，不进 `app_settings`；放在 `设置 → 备份`。
 > **设置与歌单分开导出导入**（独立文件），导入支持从任意位置选择文件（`file_selector`），方便跨机迁移。
 
 | 功能 | 行为 |
 |------|------|
-| 配对密钥明文显示 | `设置 → 常规` 顶部展示 `GET /api/v1/admin/pairing-token` 返回的 `pairing_token`（默认遮显，可显示/复制）；附注「修改服务端 .env 重启后生效，仅影响新设备」；需已配对 |
 | 导出设置 | `app_settings`（已知键）+ 服务端地址 + 主题偏好 → JSON 快照；**不含令牌与源凭据** |
 | 导入设置（选择文件） | 文件选择器选取任一路径的设置备份恢复；兼容旧综合备份中对应部分 |
 | 导出歌单 | 全部 `playlists / playlist_items`（含歌曲快照）→ JSON 快照 |
@@ -117,7 +119,7 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 
 实现要点（已在 stage 2 落地，本节为拆分细化）：JSON 文件统一放在应用支持目录
 `selfmusic/backups/`，命名 `selfmusic-settings-<yyyyMMdd-HHmmss>.json` 与
-`selfmusic-playlists-<yyyyMMdd-HHmmss>.json`；`设置 → 常规` 面板四个动作入口
+`selfmusic-playlists-<yyyyMMdd-HHmmss>.json`；`设置 → 备份` 面板四个动作入口
 （导出/导入 各两个），导入经 `file_selector` 打开系统文件选择器（Android SAF / 桌面原生对话框），
 并可对本机备份文件列表点选导入 / 删除；schema 为 `selfmusic_backup / 1` 且以 `type` 字段
 （`settings` / `playlists`）区分内容，导入先校验版本再写回对应部分并重建相关状态。
@@ -134,6 +136,14 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 | 音频焦点（自动暂停/恢复） | `audio_focus_enabled` | `true` | 来电 / 其他 App 抢占时的暂停-恢复。just_audio `handleInterruptions`，切换后重建播放器即时生效（Android） |
 
 ---
+
+### 3.7 界面分区 · 已实现
+
+| 设置项 | 键 | 默认 | 说明 |
+|--------|----|------|------|
+| 播放页切换动画 | `player_transition` | `fade` | 播放页与歌词页切换时的过渡效果：`none` 关闭 / `fade` 淡入 / `slide` 滑动 / `scale` 缩放 |
+
+> 明暗主题 / 强调色 / 背景色存主题偏好（`flutter_secure_storage`，见 §4），不进 `app_settings`。
 
 ## 4. 客户端运行配置（独立持久化）
 
@@ -193,7 +203,8 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 | 导入导出设置 / 歌单 | 本地文件 + `file_selector`，无后端依赖 | ✅ 已实现（设置、歌单分开导出；导入支持选择文件） |
 | 淡入淡出 / 均衡器 | 音频后端能力验证 | ✅ 已实现（淡入淡出全平台；均衡器仅 Android，真机验证） |
 | 通知栏 / 后台播放 / 音频焦点 | Android 壳 + `audio_service` | ✅ 已实现（实现见 §3.6；真机验证） |
-| 配对密钥明文显示（`设置 → 常规`） | 后端端点 + 前端 | ✅ 已实现（`GET /api/v1/admin/pairing-token`） |
+| 配对密钥显示/复制（`设置 → 服务端`） | 后端端点 + 前端 | ✅ 已实现（`GET /api/v1/admin/pairing-token`，配对入口副标题同步显示） |
+| 缓存目录展示（`设置 → 服务端`） | 客户端本地 | ✅ 已实现（真实路径 + 占用 + 点击复制） |
 | 服务端 `PUT /admin/settings` | 阶段 6 | `GET` 已实现；`PUT`（管理端改设置）仍规划 |
 
 > 仍规划：服务端【管理设置】 `PUT /api/v1/admin/settings`（阶段 6）；

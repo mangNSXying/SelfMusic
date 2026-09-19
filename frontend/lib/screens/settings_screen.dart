@@ -46,6 +46,72 @@ class SettingsScreen extends StatelessWidget {
   }
 }
 
+/// 配对密钥行（服务端分区专用）：显示/复制本机配对密钥。
+class _PairingKeyTile extends StatefulWidget {
+  const _PairingKeyTile();
+  @override
+  State<_PairingKeyTile> createState() => _PairingKeyTileState();
+}
+
+class _PairingKeyTileState extends State<_PairingKeyTile> {
+  String? _token;
+  bool _show = false;
+  bool _fetched = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_fetched) {
+      _fetched = true;
+      context.read<ApiClient>().fetchPairingToken().then((t) {
+        if (mounted) setState(() => _token = t);
+      });
+    }
+  }
+
+  static String _mask(String token) {
+    if (token.length <= 8) return '••••••••';
+    return '${token.substring(0, 4)}••••••${token.substring(token.length - 4)}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: const Icon(Icons.key),
+      title: const Text('配对密钥'),
+      subtitle: Text(_token == null
+          ? '拉取中…'
+          : _show
+              ? _token!
+              : _mask(_token!)),
+      trailing: _token == null
+          ? null
+          : Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: Icon(_show
+                      ? Icons.visibility_off_outlined
+                      : Icons.visibility_outlined),
+                  tooltip: _show ? '隐藏' : '显示',
+                  onPressed: () => setState(() => _show = !_show),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.copy_outlined),
+                  tooltip: '复制',
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: _token!));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('已复制配对密钥')));
+                  },
+                ),
+              ],
+            ),
+    );
+  }
+}
+
 /// 「服务端」设置：后端地址（运行时可改，替代编译期 --dart-define）。
 class _ServerSettings extends StatefulWidget {
   const _ServerSettings();
@@ -58,6 +124,8 @@ class _ServerSettingsState extends State<_ServerSettings> {
   late final TextEditingController _controller;
   late String _saved;
   bool _saving = false;
+  String? _pairingToken;
+  bool _pairingFetched = false;
 
   @override
   void initState() {
@@ -68,9 +136,31 @@ class _ServerSettingsState extends State<_ServerSettings> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_pairingFetched) {
+      _pairingFetched = true;
+      context.read<ApiClient>().fetchPairingToken().then((t) {
+        if (mounted) setState(() => _pairingToken = t);
+      });
+    }
+  }
+
+  @override
   void dispose() {
     _controller.dispose();
     super.dispose();
+  }
+
+  /// 配对服务器副标题：配对态 + 同一份配对密钥（与下方密钥行一致）。
+  String _pairingSubtitle(bool paired) {
+    final state = paired ? '已配对' : '未配对（首次启动不强制，直连模式仍可用）';
+    final t = _pairingToken;
+    if (t == null) return state;
+    final masked = t.length <= 8
+        ? '••••••••'
+        : '${t.substring(0, 4)}••••••${t.substring(t.length - 4)}';
+    return '$state · 密钥 $masked';
   }
 
   Future<void> _save() async {
@@ -114,12 +204,13 @@ class _ServerSettingsState extends State<_ServerSettings> {
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.key),
             title: const Text('配对服务器'),
-            subtitle: Text(auth.isPaired ? '已配对' : '未配对（首次启动不强制，直连模式仍可用）'),
+            subtitle: Text(_pairingSubtitle(auth.isPaired)),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute<void>(builder: (_) => const PairingScreen()),
             ),
           ),
+          const _PairingKeyTile(),
           const Divider(height: 24),
           TextField(
             controller: _controller,
@@ -158,8 +249,41 @@ class _ServerSettingsState extends State<_ServerSettings> {
           const SizedBox(height: 32),
           const Divider(),
           const _CacheConfigSection(),
+          const Divider(height: 24),
+          const _CacheDirTile(),
         ],
       ),
+    );
+  }
+}
+
+/// 服务端 → 缓存目录：展示真实路径与当前占用，点击复制路径。
+class _CacheDirTile extends StatelessWidget {
+  const _CacheDirTile();
+
+  static String _fmtBytes(int bytes) {
+    if (bytes >= 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / 1024).toStringAsFixed(0)} KB';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final index = context.read<DirectSourceManager>().index;
+    final count = index.listCache().length;
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: const Icon(Icons.folder_open),
+      title: const Text('缓存目录'),
+      subtitle: Text('${index.cacheDir}\n已缓存 $count 首 · 占用 ${_fmtBytes(index.cacheTotalBytes())}'),
+      isThreeLine: true,
+      trailing: const Icon(Icons.copy_outlined),
+      onTap: () {
+        Clipboard.setData(ClipboardData(text: index.cacheDir));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('已复制缓存目录路径')));
+      },
     );
   }
 }
@@ -718,14 +842,6 @@ class _SongsSettingsState extends State<_SongsSettings> {
               style: TextStyle(
                   color: cs.primary, fontWeight: FontWeight.w600)),
         ),
-        SwitchListTile(
-          title: const Text('播放页显示权重信息'),
-          subtitle: const Text('播放页展示当前歌曲喜欢 / 权重状态'),
-          value: _settings.playerShowWeight,
-          onChanged: (v) {
-            setState(() => _settings.playerShowWeight = v);
-          },
-        ),
         ListTile(
           title: const Text('忽略音频（时长过滤）'),
           subtitle: Text(_settings.scanIgnoreMinDurationSec > 0
@@ -777,20 +893,6 @@ class _SongsSettingsState extends State<_SongsSettings> {
               : '关闭（手动扫描 / 打开源页触发）'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _editScanInterval(context),
-        ),
-        const Divider(height: 32),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Text('缓存管理',
-              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
-        ),
-        ListTile(
-          leading: const Icon(Icons.folder_open),
-          title: const Text('查看缓存目录'),
-          onTap: () {
-            ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('缓存目录详情功能待实现')));
-          },
         ),
       ],
     );
@@ -1017,8 +1119,8 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
           onChanged: (v) => setState(() => _settings.resumeOnStartup = v),
         ),
         SwitchListTile(
-          title: const Text('播放页左右滑动手势'),
-          subtitle: const Text('左滑返回列表、右滑查看歌词（关闭后仅用按钮操作）'),
+          title: const Text('播放页滑动手势'),
+          subtitle: const Text('横滑切换播放页与歌词页、下滑返回列表（关闭后仅用按钮操作）'),
           value: _settings.playerGestureSwipe,
           onChanged: (v) => setState(() => _settings.playerGestureSwipe = v),
         ),
@@ -1027,6 +1129,12 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
           subtitle: const Text('到点不中断当前歌曲，放完这曲再暂停（弹窗内可单独调整）'),
           value: _settings.sleepPlayThroughDefault,
           onChanged: (v) => setState(() => _settings.sleepPlayThroughDefault = v),
+        ),
+        SwitchListTile(
+          title: const Text('播放页显示权重信息'),
+          subtitle: const Text('播放页展示当前歌曲喜欢 / 权重状态'),
+          value: _settings.playerShowWeight,
+          onChanged: (v) => setState(() => _settings.playerShowWeight = v),
         ),
         const Divider(height: 32),
         Padding(
@@ -1156,21 +1264,12 @@ class _GeneralSettings extends StatefulWidget {
 
 class _GeneralSettingsState extends State<_GeneralSettings> {
   List<File> _backups = [];
-  String? _pairingToken;
-  bool _showToken = false;
-  bool _pairingFetched = false;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     final direct = context.read<DirectSourceManager>();
     _backups = _service(direct).listBackups();
-    if (!_pairingFetched) {
-      _pairingFetched = true;
-      context.read<ApiClient>().fetchPairingToken().then((t) {
-        if (mounted) setState(() => _pairingToken = t);
-      });
-    }
   }
 
   BackupService _service(DirectSourceManager direct) => BackupService(
@@ -1178,11 +1277,6 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
         server: context.read<ServerSettings>(),
         theme: context.read<ThemeProvider>(),
       );
-
-  static String _maskToken(String token) {
-    if (token.length <= 8) return '••••••••';
-    return '${token.substring(0, 4)}••••••${token.substring(token.length - 4)}';
-  }
 
   void _refresh() {
     setState(() {
@@ -1198,60 +1292,6 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
     return ListView(
       padding: const EdgeInsets.symmetric(vertical: 12),
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text('服务器',
-              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
-        ),
-        ListTile(
-          leading: const Icon(Icons.key),
-          title: const Text('配对密钥'),
-          subtitle: Text(_pairingToken == null
-              ? '拉取中…'
-              : _showToken
-                  ? _pairingToken!
-                  : _maskToken(_pairingToken!)),
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (_pairingToken != null)
-                IconButton(
-                  icon: Icon(_showToken
-                      ? Icons.visibility_off_outlined
-                      : Icons.visibility_outlined),
-                  tooltip: _showToken ? '隐藏' : '显示',
-                  onPressed: () => setState(() => _showToken = !_showToken),
-                ),
-              if (_pairingToken != null)
-                IconButton(
-                  icon: const Icon(Icons.copy_outlined),
-                  tooltip: '复制',
-                  onPressed: () {
-                    Clipboard.setData(ClipboardData(text: _pairingToken!));
-                    ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('已复制配对密钥')));
-                  },
-                ),
-            ],
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Row(
-            children: [
-              const Icon(Icons.info_outline, size: 16),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text('修改服务端 .env 中的 PAIRING_TOKEN 并重启后端后生效，仅影响后续新设备；当前已配对的设备不受影响。',
-                    style: Theme.of(context)
-                        .textTheme
-                        .bodySmall
-                        ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
-              ),
-            ],
-          ),
-        ),
-        const Divider(height: 32),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Text('备份与迁移',

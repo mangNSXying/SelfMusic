@@ -522,6 +522,18 @@ class LocalIndex {
     return d;
   }
 
+  /// 缓存目录（设置页展示用）。
+  String get cacheDir => _cacheDir;
+
+  /// 当前缓存占用（字节）与文件数（设置页展示用）。
+  int cacheTotalBytes() {
+    var total = 0;
+    for (final r in listCache()) {
+      total += r.size;
+    }
+    return total;
+  }
+
   String cachePathForKey(String cacheKey) => p.join(_cacheDir, '$cacheKey.dat');
 
   bool isCached(String cacheKey) {
