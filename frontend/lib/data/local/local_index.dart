@@ -672,26 +672,35 @@ class LocalIndex {
 
   /// 全量更新一首歌的权重元数据（null 保持原值）。
   ///
-  /// NOTE：play_meta 各列为 NOT NULL，INSERT 时用 COALESCE(?, 默认值) 兜底；
-  /// ON CONFLICT 仍用原值（excluded 为 null），避免无关注册意外覆盖收藏等状态。
+  /// NOTE：play_meta 各列为 NOT NULL，且 ON CONFLICT 需区分「未传（保持原值）」
+  /// 与「传 0（清零）」。VALUES 里用 COALESCE(?,0) 会把「未传」也变成 0，
+  /// 导致 excluded 行覆盖掉刚写入的收藏等状态；因此先读当前行在 Dart 侧合并，
+  /// 再写入全非 null 值，CONFLICT 时直接用 excluded 覆盖。
   void upsertPlayMeta(String sourceKey, String songRef,
       {int? likeStreak, int? dislikeStreak, double? factor, bool? frozen,
       bool? favorite, String? songJson}) {
-    _migrateMetaRef(sourceKey, songRef);
+    final cur = playMetaOf(sourceKey, songRef);
     _db!.execute('''
       INSERT INTO play_meta(source_key, song_ref, like_streak, dislike_streak,
         factor, frozen, is_favorite, song_json)
-      VALUES(?,?,COALESCE(?,0),COALESCE(?,0),COALESCE(?,1.0),COALESCE(?,0),COALESCE(?,0),?)
+      VALUES(?,?,?,?,?,?,?,?)
       ON CONFLICT(source_key, song_ref) DO UPDATE SET
-        like_streak = COALESCE(excluded.like_streak, play_meta.like_streak),
-        dislike_streak = COALESCE(excluded.dislike_streak, play_meta.dislike_streak),
-        factor = COALESCE(excluded.factor, play_meta.factor),
-        frozen = COALESCE(excluded.frozen, play_meta.frozen),
-        is_favorite = COALESCE(excluded.is_favorite, play_meta.is_favorite),
+        like_streak = excluded.like_streak,
+        dislike_streak = excluded.dislike_streak,
+        factor = excluded.factor,
+        frozen = excluded.frozen,
+        is_favorite = excluded.is_favorite,
         song_json = COALESCE(excluded.song_json, play_meta.song_json)
-    ''', [sourceKey, songRef, likeStreak, dislikeStreak, factor,
-        frozen == null ? null : (frozen ? 1 : 0),
-        favorite == null ? null : (favorite ? 1 : 0), songJson]);
+    ''', [
+      sourceKey,
+      songRef,
+      likeStreak ?? cur.likeStreak,
+      dislikeStreak ?? cur.dislikeStreak,
+      factor ?? cur.factor,
+      (frozen ?? cur.frozen) ? 1 : 0,
+      (favorite ?? cur.favorite) ? 1 : 0,
+      songJson ?? cur.songJson,
+    ]);
   }
 
   // ---------- 歌单（stage2.md §1.2） ----------
