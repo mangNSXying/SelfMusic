@@ -754,7 +754,7 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('睡眠定时'),
+      title: const Text('睡眠定时', style: TextStyle(fontSize: 21)),
       content: SizedBox(
         width: 360,
         child: SingleChildScrollView(
@@ -773,24 +773,12 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
                       value: SleepTimerKind.time,
                       controlAffinity: ListTileControlAffinity.leading,
                       dense: true,
-                      title: const Text('指定时间'),
-                      subtitle: _time == null
-                          ? const Text('选择停止时刻')
-                          : Row(children: [
-                              Text(_fmtTime(_time!)),
-                              const SizedBox(width: 4),
-                              TextButton(
-                                style: TextButton.styleFrom(
-                                  visualDensity: VisualDensity.compact,
-                                  padding: const EdgeInsets.symmetric(horizontal: 6),
-                                ),
-                                onPressed: _pickTime,
-                                child: const Text('选择'),
-                              ),
-                            ]),
+                      title: const Text('指定时间',
+                          style: TextStyle(fontSize: 17)),
+                      subtitle: _timeSubtitle(),
                       secondary: _mode == SleepTimerKind.time
                           ? IconButton(
-                              icon: const Icon(Icons.schedule, size: 20),
+                              icon: const Icon(Icons.schedule, size: 30),
                               tooltip: '选择时间',
                               onPressed: _pickTime,
                             )
@@ -800,22 +788,27 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
                       value: SleepTimerKind.duration,
                       controlAffinity: ListTileControlAffinity.leading,
                       dense: true,
-                      title: const Text('指定时长'),
-                      subtitle: Text('倒计时 $_minutes 分钟后自动停止'),
+                      title: const Text('指定时长',
+                          style: TextStyle(fontSize: 17)),
+                      subtitle: Text('倒计时 $_minutes 分钟后自动停止',
+                          style: const TextStyle(fontSize: 15)),
                     ),
                     RadioListTile<SleepTimerKind>(
                       value: SleepTimerKind.count,
                       controlAffinity: ListTileControlAffinity.leading,
                       dense: true,
-                      title: const Text('指定曲数'),
-                      subtitle: Text('再播放 $_count 首后停止'),
+                      title: const Text('指定曲数',
+                          style: TextStyle(fontSize: 17)),
+                      subtitle: Text('再播放 $_count 首后停止',
+                          style: const TextStyle(fontSize: 15)),
                     ),
                     const RadioListTile<SleepTimerKind>(
                       value: SleepTimerKind.endOfList,
                       controlAffinity: ListTileControlAffinity.leading,
                       dense: true,
-                      title: Text('列表结尾'),
-                      subtitle: Text('播完队列最后一首即停止'),
+                      title: Text('列表结尾', style: TextStyle(fontSize: 17)),
+                      subtitle:
+                          Text('播完队列最后一首即停止', style: TextStyle(fontSize: 15)),
                     ),
                   ],
                 ),
@@ -852,8 +845,10 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
               const SizedBox(height: 8),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const Text('播放完最后的曲目'),
-                subtitle: const Text('到点不中断当前歌曲，放完这曲再暂停'),
+                title: const Text('播放完最后的曲目',
+                    style: TextStyle(fontSize: 17)),
+                subtitle: const Text('到点不中断当前歌曲，放完这曲再暂停',
+                    style: TextStyle(fontSize: 15)),
                 value: _playThrough || _mode == SleepTimerKind.endOfList,
                 onChanged: _mode == SleepTimerKind.endOfList
                     ? null
@@ -866,14 +861,33 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
       actions: [
         TextButton(
           onPressed: () => _close(),
-          child: const Text('关闭'),
+          child: const Text('关闭', style: TextStyle(fontSize: 16)),
         ),
         FilledButton(
           onPressed: _invalid ? null : _apply,
-          child: const Text('确定'),
+          child: const Text('确定', style: TextStyle(fontSize: 16)),
         ),
       ],
     );
+  }
+
+  /// 指定时间副标题（时刻 + 选择按钮）。
+  Widget _timeSubtitle() {
+    if (_time == null) {
+      return const Text('选择停止时刻', style: TextStyle(fontSize: 15));
+    }
+    return Row(children: [
+      Text(_fmtTime(_time!), style: const TextStyle(fontSize: 15)),
+      const SizedBox(width: 4),
+      TextButton(
+        style: TextButton.styleFrom(
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+        ),
+        onPressed: _pickTime,
+        child: const Text('选择', style: TextStyle(fontSize: 15)),
+      ),
+    ]);
   }
 
   /// 当前选择不完整（未选模式 / 指定时间未选时刻）时不可确定。
@@ -1001,13 +1015,13 @@ class _NumberOptions<T> extends StatelessWidget {
         children: [
           for (final v in values)
             ChoiceChip(
-              label: Text(labelOf(v)),
+              label: Text(labelOf(v), style: const TextStyle(fontSize: 15)),
               visualDensity: VisualDensity.compact,
               selected: v == current,
               onSelected: (_) => onSelect(v),
             ),
           ActionChip(
-            label: const Text('自定义…'),
+            label: const Text('自定义…', style: TextStyle(fontSize: 15)),
             visualDensity: VisualDensity.compact,
             onPressed: onCustom,
           ),
