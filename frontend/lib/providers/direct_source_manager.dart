@@ -580,9 +580,13 @@ class DirectSourceManager extends ChangeNotifier {
   /// 全部已收藏歌曲（直连 + 服务器，统一来自 play_meta 快照）。
   List<Song> favoriteSongs() => index.likedSongs();
 
-  /// 手动「不喜欢」：立即降 0.1（stage2.md §2.3 disliked）。
-  void dislikeSong(Song s) {
-    weight.dislike(s);
+  /// 是否处于「不喜欢」态（权重锁定最低）。
+  bool isDisliked(Song s) => weight.isDisliked(s);
+
+  /// 手动「不喜欢」开关：开 → 权重降到最低并锁定；关 → 解锁回到 1.0。
+  void setDisliked(Song s, bool disliked) {
+    weight.setDisliked(s, disliked);
+    _favoriteVersion++;
     notifyListeners();
   }
 

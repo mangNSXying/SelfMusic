@@ -246,6 +246,7 @@ class _NowPlaying extends StatelessWidget {
   Widget build(BuildContext context) {
     final s = player.current!;
     final favorite = direct.weight.isFavorite(s);
+    final disliked = direct.weight.isDisliked(s);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -334,14 +335,18 @@ class _NowPlaying extends StatelessWidget {
               ),
               IconButton(
                 iconSize: 22,
-                tooltip: '不喜欢（降低权重）',
-                color: cs.onSurface.withValues(alpha: 0.55),
-                icon: const Icon(Icons.thumb_down_outlined),
+                tooltip: disliked ? '取消不喜欢' : '不喜欢（权重降到最低）',
+                color: disliked
+                    ? Colors.orange
+                    : cs.onSurface.withValues(alpha: 0.55),
+                icon: Icon(disliked
+                    ? Icons.thumb_down
+                    : Icons.thumb_down_outlined),
                 onPressed: () {
-                  direct.dislikeSong(s);
-                  ScaffoldMessenger.of(context)
-                    ..clearSnackBars()
-                    ..showSnackBar(const SnackBar(content: Text('已下调该曲权重')));
+                  direct.setDisliked(s, !disliked);
+                  AppToast.show(
+                      !disliked ? '已标记不喜欢，权重降到最低' : '已取消不喜欢',
+                      isError: false);
                 },
               ),
               IconButton(

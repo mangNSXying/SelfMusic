@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:selfmusic/data/local/local_index.dart';
+import 'package:selfmusic/data/local/song_weight_store.dart';
+import 'package:selfmusic/models/song.dart';
 import 'package:sqlite3/open.dart';
 
 DynamicLibrary _openOnLinux() {
@@ -95,6 +97,48 @@ void main() {
     index.setFavorite('webdav:nas', decodedRef, false);
     expect(index.likedSongs(), isEmpty);
     expect(index.playMetaOf('webdav:nas', decodedRef).favorite, isFalse);
+
+    index.close();
+    dir.deleteSync(recursive: true);
+  });
+
+  test('不喜欢锁定最低权重：可取消、跳过自动调权、喜欢可解冻', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir = await Directory.systemTemp.createTemp('selfmusic_idxdis_');
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+    final weight = SongWeightStore(index);
+    final song = Song.direct(
+      id: 1,
+      sourceKey: 'webdav:nas',
+      title: 'Growing!',
+      source: 'webdav',
+      sourceRef: '/dav/a.flac',
+      fileSize: 1024,
+    );
+
+    // 标记不喜欢 → 权重最低并锁定。
+    weight.setDisliked(song, true);
+    expect(weight.isDisliked(song), isTrue);
+    expect(weight.factorOf(song), SongWeightStore.minFactor);
+    // 锁定后跳过/播完只记 streak，不调权重。
+    weight.onSkipped(song);
+    weight.onSkipped(song);
+    weight.onSkipped(song);
+    expect(weight.factorOf(song), SongWeightStore.minFactor);
+    expect(weight.isDisliked(song), isTrue);
+
+    // 再次点击取消 → 解锁回 1.0。
+    weight.setDisliked(song, false);
+    expect(weight.isDisliked(song), isFalse);
+    expect(weight.factorOf(song), SongWeightStore.defaultFactor);
+
+    // 喜欢可解冻：先锁再喜欢 → 解锁且 factor 拉满。
+    weight.setDisliked(song, true);
+    weight.setLiked(song);
+    expect(weight.isDisliked(song), isFalse);
+    expect(weight.factorOf(song), SongWeightStore.maxFactor);
 
     index.close();
     dir.deleteSync(recursive: true);

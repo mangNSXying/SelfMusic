@@ -47,6 +47,7 @@ class SongTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final direct = context.watch<DirectSourceManager>();
     final favorite = direct.weight.isFavorite(song);
+    final disliked = direct.weight.isDisliked(song);
     return ListTile(
       selected: selectionMode && selected,
       leading: selectionMode
@@ -86,6 +87,20 @@ class SongTile extends StatelessWidget {
                   onPressed: () {
                     direct.setFavorite(song, !favorite);
                     AppToast.show(!favorite ? '已加入喜欢' : '已取消喜欢',
+                        isError: false);
+                  },
+                ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(
+                    disliked ? Icons.thumb_down : Icons.thumb_down_outlined,
+                    color: disliked ? Colors.orange : null,
+                  ),
+                  tooltip: disliked ? '取消不喜欢' : '不喜欢（权重降到最低）',
+                  onPressed: () {
+                    direct.setDisliked(song, !disliked);
+                    AppToast.show(
+                        !disliked ? '已标记不喜欢，权重降到最低' : '已取消不喜欢',
                         isError: false);
                   },
                 ),
