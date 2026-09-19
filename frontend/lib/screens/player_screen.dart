@@ -567,10 +567,8 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
       final t = p.sleepUntilTime!;
       _time = TimeOfDay(hour: t.hour, minute: t.minute);
     }
-    _minutes = _minuteChoices.contains(p.sleepMinutes)
-        ? p.sleepMinutes
-        : 30;
-    _count = _countChoices.contains(p.sleepCountLeft) ? p.sleepCountLeft : 3;
+    _minutes = p.sleepMinutes > 0 ? p.sleepMinutes : 30;
+    _count = p.sleepCountLeft > 0 ? p.sleepCountLeft : 3;
     _playThrough = p.sleepTimerActive
         ? p.sleepPlayThrough
         : widget.playThroughDefault;
@@ -647,18 +645,32 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
               ),
               const SizedBox(height: 8),
               if (_mode == SleepTimerKind.duration)
-                _OptionChips<int>(
-                  values: _minuteChoices,
-                  selected: _minutes,
+                _NumberOptions<int>(
+                  shortcuts: _minuteChoices,
+                  current: _minutes,
                   labelOf: (v) => '$v 分钟',
                   onSelect: (v) => setState(() => _minutes = v),
+                  onCustom: () => _pickCustomNumber(
+                    title: '自定义时长（分钟）',
+                    min: 1,
+                    max: 720,
+                    current: _minutes,
+                    onPick: (n) => setState(() => _minutes = n),
+                  ),
                 ),
               if (_mode == SleepTimerKind.count)
-                _OptionChips<int>(
-                  values: _countChoices,
-                  selected: _count,
+                _NumberOptions<int>(
+                  shortcuts: _countChoices,
+                  current: _count,
                   labelOf: (v) => '$v 首',
                   onSelect: (v) => setState(() => _count = v),
+                  onCustom: () => _pickCustomNumber(
+                    title: '自定义曲数',
+                    min: 1,
+                    max: 999,
+                    current: _count,
+                    onPick: (n) => setState(() => _count = n),
+                  ),
                 ),
               const SizedBox(height: 8),
               SwitchListTile(
@@ -693,7 +705,6 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
       (_mode == SleepTimerKind.time && _time == null) ||
       (_mode == SleepTimerKind.duration && _minutes <= 0) ||
       (_mode == SleepTimerKind.count && _count <= 0);
-
   Future<void> _pickTime() async {
     final t = await showTimePicker(
       context: context,
@@ -704,6 +715,42 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
       _time = t;
       _mode = SleepTimerKind.time;
     });
+  }
+
+  /// 自定义数字输入（时长 1~720 分钟 / 曲数 1~999 首），非常规快捷值。
+  Future<void> _pickCustomNumber({
+    required String title,
+    required int min,
+    required int max,
+    required int current,
+    required ValueChanged<int> onPick,
+  }) async {
+    final ctrl = TextEditingController(text: current.toString());
+    final v = await showDialog<int>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          decoration: InputDecoration(hintText: '$min ~ $max'),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
+          FilledButton(
+            onPressed: () {
+              final n = int.tryParse(ctrl.text.trim());
+              if (n == null) return;
+              Navigator.of(c).pop(n.clamp(min, max));
+            },
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    if (v != null) onPick(v);
   }
 
   void _apply() {
@@ -748,35 +795,45 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
   }
 }
 
-/// 模式选择用的可选项 chips（时长 / 曲数）。
-class _OptionChips<T> extends StatelessWidget {
-  final List<T> values;
-  final T selected;
+/// 数字选项（时长 / 曲数）：快捷 chips + 自定义输入；当前值不在快捷内时追加展示。
+class _NumberOptions<T> extends StatelessWidget {
+  final List<T> shortcuts;
+  final T current;
   final String Function(T) labelOf;
   final ValueChanged<T> onSelect;
+  final VoidCallback onCustom;
 
-  const _OptionChips({
-    required this.values,
-    required this.selected,
+  const _NumberOptions({
+    required this.shortcuts,
+    required this.current,
     required this.labelOf,
     required this.onSelect,
+    required this.onCustom,
   });
 
   @override
   Widget build(BuildContext context) {
+    final values = [...shortcuts];
+    if (!values.contains(current)) values.add(current);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4),
       child: Wrap(
         spacing: 8,
         runSpacing: 4,
+        crossAxisAlignment: WrapCrossAlignment.center,
         children: [
           for (final v in values)
             ChoiceChip(
               label: Text(labelOf(v)),
               visualDensity: VisualDensity.compact,
-              selected: v == selected,
+              selected: v == current,
               onSelected: (_) => onSelect(v),
             ),
+          ActionChip(
+            label: const Text('自定义…'),
+            visualDensity: VisualDensity.compact,
+            onPressed: onCustom,
+          ),
         ],
       ),
     );
