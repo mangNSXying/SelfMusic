@@ -31,6 +31,8 @@ class AppSettings {
   static const String kPlayModeDefault = 'play_mode_default';
   static const String kResumeOnStartup = 'resume_on_startup';
   static const String kPlayerShowWeight = 'player_show_weight';
+  static const String kPlayerGestureSwipe = 'player_gesture_swipe';
+  static const String kSleepPlayThroughDefault = 'sleep_play_through_default';
   static const String kScanIgnoreMinDurationSec = 'scan_ignore_min_duration_sec';
   static const String kScanIgnoreMinSizeBytes = 'scan_ignore_min_size_bytes';
   static const String kScanWifiOnly = 'scan_wifi_only';
@@ -117,6 +119,18 @@ class AppSettings {
       (index.settingsGet(kResumeOnStartup) ?? '1') == '1';
   set resumeOnStartup(bool v) =>
       index.settingsSet(kResumeOnStartup, v ? '1' : '0');
+
+  /// 播放页左右滑动手势：左滑返回列表、右滑查看歌词（默认开）。
+  bool get playerGestureSwipe =>
+      (index.settingsGet(kPlayerGestureSwipe) ?? '1') == '1';
+  set playerGestureSwipe(bool v) =>
+      index.settingsSet(kPlayerGestureSwipe, v ? '1' : '0');
+
+  /// 睡眠定时弹窗中「播放完最后的曲目」开关的默认值（默认开）。
+  bool get sleepPlayThroughDefault =>
+      (index.settingsGet(kSleepPlayThroughDefault) ?? '1') == '1';
+  set sleepPlayThroughDefault(bool v) =>
+      index.settingsSet(kSleepPlayThroughDefault, v ? '1' : '0');
 
   // ---------- 歌曲分区（settings.md §3.4） ----------
 
@@ -227,6 +241,8 @@ class AppSettings {
     kPlayModeDefault,
     kResumeOnStartup,
     kPlayerShowWeight,
+    kPlayerGestureSwipe,
+    kSleepPlayThroughDefault,
     kScanIgnoreMinDurationSec,
     kScanIgnoreMinSizeBytes,
     kScanWifiOnly,

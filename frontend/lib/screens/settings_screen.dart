@@ -959,6 +959,18 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
           value: _settings.resumeOnStartup,
           onChanged: (v) => setState(() => _settings.resumeOnStartup = v),
         ),
+        SwitchListTile(
+          title: const Text('播放页左右滑动手势'),
+          subtitle: const Text('左滑返回列表、右滑查看歌词（关闭后仅用按钮操作）'),
+          value: _settings.playerGestureSwipe,
+          onChanged: (v) => setState(() => _settings.playerGestureSwipe = v),
+        ),
+        SwitchListTile(
+          title: const Text('睡眠定时默认播完最后曲目'),
+          subtitle: const Text('到点不中断当前歌曲，放完这曲再暂停（弹窗内可单独调整）'),
+          value: _settings.sleepPlayThroughDefault,
+          onChanged: (v) => setState(() => _settings.sleepPlayThroughDefault = v),
+        ),
         const Divider(height: 32),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),

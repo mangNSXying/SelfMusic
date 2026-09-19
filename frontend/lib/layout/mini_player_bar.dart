@@ -22,13 +22,20 @@ class MiniPlayerBar extends StatelessWidget {
     }
     final song = player.current ?? player.queue.first;
 
-    return Material(
-      color: cs.surface,
-      child: InkWell(
-        onTap: () {
-          if (!nav.playerView) nav.openPlayer();
-        },
-        child: Container(
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      // 上滑（从下往上）返回播放页。
+      onVerticalDragEnd: (d) {
+        final v = d.primaryVelocity ?? 0;
+        if (v < -250) nav.openPlayer();
+      },
+      child: Material(
+        color: cs.surface,
+        child: InkWell(
+          onTap: () {
+            if (!nav.playerView) nav.openPlayer();
+          },
+          child: Container(
           constraints: const BoxConstraints(minHeight: 72),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
           decoration: BoxDecoration(
@@ -100,6 +107,7 @@ class MiniPlayerBar extends StatelessWidget {
                 onPressed: () => nav.openPlayer(),
               ),
             ],
+          ),
           ),
         ),
       ),

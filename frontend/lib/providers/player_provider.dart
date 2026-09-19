@@ -20,6 +20,9 @@ typedef SourceResolver = MusicSource? Function(String sourceKey);
 /// 播放模式（stage2.md §3）。
 enum PlayMode { sequence, loopList, loopOne, weighted }
 
+/// 睡眠定时模式（播放页「睡眠」弹窗）。
+enum SleepTimerKind { time, duration, count, endOfList }
+
 extension PlayModeParse on PlayMode {
   /// 从存储值（settings.md §3.2 `play_mode_default`）解析；未知值回退 sequence。
   static PlayMode fromStored(String? v) => PlayMode.values.firstWhere(
@@ -75,31 +78,204 @@ class PlayerProvider extends ChangeNotifier {
   bool _fadingPause = false;
   AndroidEqualizer? _eq;
 
-  Timer? _sleepTimer;
-  int _sleepMinutes = 0;
+  // ---------- 睡眠定时（播放页「睡眠」） ----------
 
-  /// 睡眠定时是否激活（播放页「睡眠」按钮高亮）。
-  bool get sleepTimerActive => _sleepTimer != null && _sleepMinutes > 0;
+  Timer? _sleepTick;
+  SleepTimerKind? _sleepKind;
+  DateTime? _sleepUntil;          // 指定时间：目标时刻（可含次日）
+  DateTime? _sleepDeadline;       // 指定时长：倒计时截止时刻
+  int _sleepCountLeft = 0;        // 指定曲数：剩余曲目数
+  bool _sleepPlayThrough = false; // 播放完最后的曲目（到点不中断当前曲）
+  bool _sleepPendingStop = false; // play-through 已触发，等当前曲放完暂停
 
-  /// 睡眠定时剩余分钟数（≤0 表示未设置）。
-  int get sleepMinutes => _sleepMinutes;
+  bool get sleepTimerActive => _sleepKind != null;
 
-  /// 睡眠定时：设置分钟后暂停播放；传入 ≤0 关闭定时。
-  void setSleepTimer(int minutes) {
-    _sleepTimer?.cancel();
-    _sleepMinutes = minutes < 0 ? 0 : minutes;
-    if (_sleepMinutes <= 0) {
-      _sleepTimer = null;
-    } else {
-      _sleepTimer = Timer(Duration(minutes: _sleepMinutes), () async {
-        _sleepMinutes = 0;
-        _sleepTimer = null;
-        if (player.playing) await _fadeOutThenPause();
-        notifyListeners();
-        _syncSystemMedia();
-      });
+  SleepTimerKind? get sleepMode => _sleepKind;
+
+  /// 指定时间模式下目标时刻（null 表示未设置）。
+  DateTime? get sleepUntilTime => _sleepUntil;
+
+  /// 指定曲数模式下剩余曲数。
+  int get sleepCountLeft => _sleepCountLeft;
+
+  /// 是否「播放完最后的曲目」。
+  bool get sleepPlayThrough => _sleepPlayThrough;
+
+  /// 倒计时剩余分钟（指定时长模式，随秒跳变取整）。
+  int get sleepMinutes {
+    if (_sleepKind == SleepTimerKind.duration && _sleepDeadline != null) {
+      final rem = _sleepDeadline!
+          .difference(DateTime.now())
+          .inMilliseconds;
+      return rem <= 0 ? 0 : (rem / 60000).ceil();
     }
+    return 0;
+  }
+
+  /// 当前定时的可读摘要（用于按钮 tooltip / 弹窗标识）。
+  String? get sleepSummaryText => switch (_sleepKind) {
+        SleepTimerKind.time => _sleepUntil == null
+            ? null
+            : '到 ${_fmtTime(_sleepUntil!)} 停止'
+                '${_sleepPlayThrough ? '（播完当前曲）' : ''}',
+        SleepTimerKind.duration => '$sleepMinutes 分钟后停止'
+            '${_sleepPlayThrough ? '（播完当前曲）' : ''}',
+        SleepTimerKind.count => '播放 $_sleepCountLeft 首后停止'
+            '${_sleepPlayThrough ? '（播完当前曲）' : ''}',
+        SleepTimerKind.endOfList => '列表结尾停止',
+        null => null,
+      };
+
+  static String _fmtTime(DateTime t) {
+    final h = t.hour.toString().padLeft(2, '0');
+    final m = t.minute.toString().padLeft(2, '0');
+    return '$h:$m';
+  }
+
+  /// 指定时间：到 [target] 时刻停止（早于当前时间视为次日）。
+  void setSleepTime(DateTime target, {bool playThrough = false}) {
+    var when = target;
+    if (!when.isAfter(DateTime.now())) when = when.add(const Duration(days: 1));
+    _setSleepStart();
+    _sleepKind = SleepTimerKind.time;
+    _sleepUntil = when;
+    _sleepPlayThrough = playThrough;
+    _startSleepTick();
     notifyListeners();
+  }
+
+  /// 指定时长：倒计时 [duration] 后停止。
+  void setSleepDuration(Duration duration, {bool playThrough = false}) {
+    if (duration.inSeconds <= 0) {
+      cancelSleepTimer();
+      return;
+    }
+    _setSleepStart();
+    _sleepKind = SleepTimerKind.duration;
+    _sleepDeadline = DateTime.now().add(duration);
+    _sleepPlayThrough = playThrough;
+    _startSleepTick();
+    notifyListeners();
+  }
+
+  /// 指定曲数：再播放 [count] 首后停止。
+  void setSleepCount(int count, {bool playThrough = false}) {
+    _setSleepStart();
+    _sleepKind = SleepTimerKind.count;
+    _sleepCountLeft = count > 0 ? count : 0;
+    _sleepPlayThrough = playThrough;
+    notifyListeners();
+  }
+
+  /// 列表结尾：播完队列最后一首即停止（天然播完）。
+  void setSleepEndOfList() {
+    _setSleepStart();
+    _sleepKind = SleepTimerKind.endOfList;
+    _sleepPlayThrough = true;
+    notifyListeners();
+  }
+
+  void cancelSleepTimer() {
+    _clearSleep();
+    notifyListeners();
+  }
+
+  void _setSleepStart() {
+    _sleepTick?.cancel();
+    _sleepPendingStop = false;
+    _sleepUntil = null;
+    _sleepDeadline = null;
+    _sleepCountLeft = 0;
+  }
+
+  void _clearSleep() {
+    _sleepTick?.cancel();
+    _sleepTick = null;
+    _sleepKind = null;
+    _sleepUntil = null;
+    _sleepDeadline = null;
+    _sleepCountLeft = 0;
+    _sleepPlayThrough = false;
+    _sleepPendingStop = false;
+  }
+
+  /// 时间/时长模式：每秒检查到期；时长模式剩余分钟变化时刷新 UI。
+  void _startSleepTick() {
+    _sleepTick?.cancel();
+    var shown = sleepMinutes;
+    _sleepTick = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (_sleepPendingStop) {
+        t.cancel();
+        return;
+      }
+      final kind = _sleepKind;
+      if (kind == SleepTimerKind.time) {
+        final until = _sleepUntil;
+        if (until != null && !DateTime.now().isBefore(until)) {
+          t.cancel();
+          unawaited(_stopForSleep(atBoundary: false));
+        }
+      } else if (kind == SleepTimerKind.duration) {
+        final dl = _sleepDeadline;
+        if (dl != null && !DateTime.now().isBefore(dl)) {
+          t.cancel();
+          unawaited(_stopForSleep(atBoundary: false));
+        } else {
+          final m = sleepMinutes;
+          if (m != shown) {
+            shown = m;
+            notifyListeners();
+          }
+        }
+      }
+    });
+  }
+
+  /// 到期执行：play-through 时等当前曲放完；否则立即暂停。
+  Future<void> _stopForSleep({required bool atBoundary}) async {
+    if (player.playing && _sleepPlayThrough && !atBoundary && !_sleepPendingStop) {
+      _sleepPendingStop = true;
+      _sleepTick?.cancel();
+      notifyListeners();
+      return;
+    }
+    _clearSleep();
+    await _pauseNowForSleep();
+  }
+
+  Future<void> _pauseNowForSleep() async {
+    if (player.playing) await _fadeOutThenPause();
+    notifyListeners();
+    _syncSystemMedia();
+  }
+
+  /// 曲目自然播放结束时被调用：返回 true 表示由睡眠定时接管（不再自动切歌）。
+  bool _handleTrackCompletedSleep() {
+    if (_sleepPendingStop) {
+      _sleepPendingStop = false;
+      _clearSleep();
+      unawaited(_pauseNowForSleep());
+      return true;
+    }
+    final kind = _sleepKind;
+    if (kind == SleepTimerKind.count) {
+      if (_sleepCountLeft > 0) _sleepCountLeft--;
+      if (_sleepCountLeft <= 0) {
+        _clearSleep();
+        unawaited(_pauseNowForSleep());
+        return true;
+      }
+      notifyListeners();
+      return false;
+    }
+    if (kind == SleepTimerKind.endOfList &&
+        _idx == _queue.length - 1 &&
+        _current != null) {
+      _clearSleep();
+      unawaited(_pauseNowForSleep());
+      return true;
+    }
+    return false;
   }
 
   PlayerProvider() {
@@ -129,6 +305,7 @@ class PlayerProvider extends ChangeNotifier {
           _emitWeight(finished, completed: true,
               position: player.duration ?? Duration.zero);
         }
+        if (_handleTrackCompletedSleep()) return;
         _advance();
       }
     });
@@ -337,6 +514,11 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   Future<void> _play(Song s, {MusicSource? source, bool play = true}) async {
+    // 睡眠定时处于「等当前曲放完」的挂起态时，手动切歌视为用户接管：取消定时。
+    if (_sleepPendingStop) {
+      _clearSleep();
+      notifyListeners();
+    }
     error = null;
     try {
       final src = _resolver?.call(s.sourceKey) ?? source ?? _curSource;
@@ -627,7 +809,7 @@ class PlayerProvider extends ChangeNotifier {
   @override
   void dispose() {
     _fadeTimer?.cancel();
-    _sleepTimer?.cancel();
+    _sleepTick?.cancel();
     _saveState(player.position);
     player.dispose();
     super.dispose();

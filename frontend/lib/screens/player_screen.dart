@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
@@ -11,79 +12,208 @@ import '../providers/navigation_provider.dart';
 import '../widgets/add_to_playlist.dart';
 
 /// 全屏播放页（ui-playpage.html v5）：作为「首页」整屏展示，替换整个壳层。
-/// 左滑返回主页/右滑进歌词页暂以「收起箭头」代替；布局与配色对齐 v5 设计稿。
-class PlayerScreen extends StatelessWidget {
+///
+/// 手势交互（可在设置中关闭）：
+/// - 播放页【右滑（从右往左）】进入歌词页；
+/// - 播放页【下滑（从上往下）】返回列表；
+/// - 底部迷你栏【上滑（从下往上）】返回播放页。
+class PlayerScreen extends StatefulWidget {
   const PlayerScreen({super.key});
 
   @override
+  State<PlayerScreen> createState() => _PlayerScreenState();
+}
+
+class _PlayerScreenState extends State<PlayerScreen> {
+  bool _lyrics = false;
+
+  /// 横向滑动：播放页从右往左 → 歌词页；歌词页反向滑回播放页。
+  void _onHorizSwipe(DragEndDetails d) {
+    final v = d.primaryVelocity ?? 0;
+    if (v.abs() < 250) return;
+    if (v < 0) {
+      setState(() => _lyrics = true);
+    } else if (_lyrics) {
+      setState(() => _lyrics = false);
+    }
+  }
+
+  /// 竖向滑动：下滑（从上往下）→ 返回列表；歌词页上滑回播放页。
+  void _onVertSwipe(DragEndDetails d) {
+    final v = d.primaryVelocity ?? 0;
+    if (v > 250) {
+      context.read<NavigationProvider>().closePlayer();
+    } else if (v < -250 && _lyrics) {
+      setState(() => _lyrics = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final nav = context.watch<NavigationProvider>();
-    final player = context.watch<PlayerProvider>();
+    final gestureOn =
+        context.watch<DirectSourceManager>().settings.playerGestureSwipe;
 
     return Scaffold(
       body: SafeArea(
-        child: SingleChildScrollView(
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 480),
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: IconButton(
-                        icon: const Icon(Icons.keyboard_arrow_down),
-                        iconSize: 30,
-                        tooltip: '收起播放页',
-                        onPressed: nav.closePlayer,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    if (!player.hasCurrent)
-                      const _EmptyState()
-                    else
-                      _NowPlaying(player: player, direct: context.watch<DirectSourceManager>(), cs: Theme.of(context).colorScheme),
-                    if (player.error != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 16),
-                        child: Text(
-                          player.error!,
-                          style: const TextStyle(color: Colors.red),
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
-                    const SizedBox(height: 16),
-                  ],
-                ),
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onHorizontalDragEnd: gestureOn ? _onHorizSwipe : null,
+          onVerticalDragEnd: gestureOn ? _onVertSwipe : null,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 240),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            transitionBuilder: (child, anim) => FadeTransition(
+              opacity: anim,
+              child: SlideTransition(
+                position: Tween<Offset>(
+                        begin: const Offset(0.08, 0), end: Offset.zero)
+                    .animate(anim),
+                child: child,
               ),
+            ),
+            child: KeyedSubtree(
+              key: ValueKey<bool>(_lyrics),
+              child: _lyrics
+                  ? _LyricsPage(onClose: () => setState(() => _lyrics = false))
+                  : _buildPlayerBody(context),
             ),
           ),
         ),
       ),
     );
   }
+
+  /// 自适应播放页：整页不滚动，封面尺寸按可用空间计算以恰好放满一屏。
+  Widget _buildPlayerBody(BuildContext context) {
+    final player = context.watch<PlayerProvider>();
+
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 480),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final coverSize = _fitCover(
+              constraints.maxWidth - 48,
+              constraints.maxHeight - 48,
+            );
+            return Padding(
+              padding: const EdgeInsets.all(24),
+              child: player.hasCurrent
+                  ? _NowPlaying(
+                      player: player,
+                      direct: context.watch<DirectSourceManager>(),
+                      cs: Theme.of(context).colorScheme,
+                      coverSize: coverSize,
+                    )
+                  : _EmptyState(coverSize: coverSize),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  /// 计算封面边长：横向受宽度限制，纵向受「高度 - 其余控件固定高度」限制。
+  double _fitCover(double availW, double availH) {
+    // 封面以外部分的近似固定高度（标题/歌手/元信息 + 工具行 + 进度 + 控制行 + 间距）。
+    const fixed = 342.0;
+    final byH = (availH - fixed).clamp(0.0, 360.0);
+    return math.min(availW, byH);
+  }
+}
+
+/// 歌词页：当前无 LRC 数据源，先提供歌曲信息与占位提示（右滑进入，可左右滑返回）。
+class _LyricsPage extends StatelessWidget {
+  final VoidCallback onClose;
+
+  const _LyricsPage({required this.onClose});
+
+  @override
+  Widget build(BuildContext context) {
+    final player = context.watch<PlayerProvider>();
+    final cs = Theme.of(context).colorScheme;
+    final s = player.current;
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: IconButton(
+              icon: const Icon(Icons.keyboard_arrow_down),
+              iconSize: 30,
+              tooltip: '回到播放页',
+              onPressed: onClose,
+            ),
+          ),
+        ),
+        Expanded(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(32),
+              child: Column(
+                children: [
+                  Icon(Icons.queue_music,
+                      size: 64, color: cs.primary.withValues(alpha: 0.55)),
+                  const SizedBox(height: 20),
+                  if (s != null) ...[
+                    Text(
+                      s.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.headlineSmall,
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      s.artist ?? 'Unknown',
+                      style: TextStyle(color: cs.onSurface.withValues(alpha: 0.6)),
+                    ),
+                    const SizedBox(height: 24),
+                  ],
+                  Text(
+                    '暂无歌词',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '该曲暂无可用的 LRC 歌词\n接入歌词数据后将自动同步滚动',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: cs.onSurface.withValues(alpha: 0.5)),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+      ],
+    );
+  }
 }
 
 /// 未在播放时的首页空态。
 class _EmptyState extends StatelessWidget {
-  const _EmptyState();
+  final double coverSize;
+
+  const _EmptyState({required this.coverSize});
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Column(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        const SizedBox(height: 48),
         Container(
-          width: 240,
-          height: 240,
+          width: coverSize,
+          height: coverSize,
           decoration: BoxDecoration(
             color: cs.primary.withValues(alpha: 0.10),
             borderRadius: BorderRadius.circular(24),
           ),
-          child: Icon(Icons.music_note, size: 120, color: cs.primary.withValues(alpha: 0.55)),
+          child: Icon(Icons.music_note, size: coverSize * 0.5, color: cs.primary.withValues(alpha: 0.55)),
         ),
         const SizedBox(height: 32),
         Text('未在播放', style: Theme.of(context).textTheme.headlineMedium),
@@ -92,7 +222,6 @@ class _EmptyState extends StatelessWidget {
           '从左侧导航选择歌曲开始播放',
           style: TextStyle(color: cs.onSurface.withValues(alpha: 0.6)),
         ),
-        const SizedBox(height: 48),
       ],
     );
   }
@@ -103,8 +232,14 @@ class _NowPlaying extends StatelessWidget {
   final PlayerProvider player;
   final DirectSourceManager direct;
   final ColorScheme cs;
+  final double coverSize;
 
-  const _NowPlaying({required this.player, required this.direct, required this.cs});
+  const _NowPlaying({
+    required this.player,
+    required this.direct,
+    required this.cs,
+    required this.coverSize,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -112,9 +247,13 @@ class _NowPlaying extends StatelessWidget {
     final favorite = direct.weight.isFavorite(s);
 
     return Column(
+      mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _Cover(coverPath: s.coverPath, song: s, cs: cs),
+        Center(
+          child: _Cover(
+              coverPath: s.coverPath, song: s, cs: cs, size: coverSize),
+        ),
         const SizedBox(height: 20),
         Text(
           s.title,
@@ -177,7 +316,7 @@ class _NowPlaying extends StatelessWidget {
         ),
         // 工具行（低频操作，颜色更浅）
         Padding(
-          padding: const EdgeInsets.symmetric(vertical: 22),
+          padding: const EdgeInsets.symmetric(vertical: 12),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
@@ -250,6 +389,15 @@ class _NowPlaying extends StatelessWidget {
             _ModeButton(player: player, cs: cs),
           ],
         ),
+        if (player.error != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: Text(
+              player.error!,
+              style: const TextStyle(color: Colors.red),
+              textAlign: TextAlign.center,
+            ),
+          ),
       ],
     );
   }
@@ -271,65 +419,69 @@ class _NowPlaying extends StatelessWidget {
   }
 }
 
-/// 专辑封面：方形圆角 + 右上角更多操作。
+/// 专辑封面：指定尺寸的方形圆角封面 + 右上角更多操作。
 class _Cover extends StatelessWidget {
   final String? coverPath;
   final Song song;
   final ColorScheme cs;
+  final double size;
 
-  const _Cover({required this.coverPath, required this.song, required this.cs});
+  const _Cover({
+    required this.coverPath,
+    required this.song,
+    required this.cs,
+    required this.size,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 360),
-        child: AspectRatio(
-          aspectRatio: 1,
-          child: Stack(
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(24),
-                child: Container(
-                  width: double.infinity,
-                  height: double.infinity,
-                  color: cs.primary.withValues(alpha: 0.10),
-                  child: coverPath != null
-                      ? Image.file(
-                          File(coverPath!),
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => Icon(
-                            Icons.music_note,
-                            size: 96,
-                            color: cs.primary.withValues(alpha: 0.5),
-                          ),
-                        )
-                      : Icon(Icons.music_note,
-                          size: 96, color: cs.primary.withValues(alpha: 0.5)),
-                ),
-              ),
-              Positioned(
-                top: 10,
-                right: 10,
-                child: Material(
-                  color: Colors.white.withValues(alpha: 0.6),
-                  shape: const CircleBorder(),
-                  child: PopupMenuButton<String>(
-                    tooltip: '更多',
-                    icon: const Icon(Icons.more_horiz, color: Colors.black87, size: 18),
-                    padding: EdgeInsets.zero,
-                    onSelected: (v) => _onSelected(context, v),
-                    itemBuilder: (c) => [
-                      const PopupMenuItem(value: 'playlist', child: Text('加入歌单')),
-                      if (song.isDirect)
-                        const PopupMenuItem(value: 'cache', child: Text('缓存')),
-                    ],
-                  ),
-                ),
-              ),
-            ],
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(24),
+            child: Container(
+              color: cs.primary.withValues(alpha: 0.10),
+              child: coverPath != null
+                  ? Image.file(
+                      File(coverPath!),
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Icon(
+                        Icons.music_note,
+                        size: size * 0.3,
+                        color: cs.primary.withValues(alpha: 0.5),
+                      ),
+                    )
+                  : Icon(
+                      Icons.music_note,
+                      size: size * 0.3,
+                      color: cs.primary.withValues(alpha: 0.5),
+                    ),
+            ),
           ),
-        ),
+          Positioned(
+            top: size * 0.04,
+            right: size * 0.04,
+            child: Material(
+              color: Colors.white.withValues(alpha: 0.6),
+              shape: const CircleBorder(),
+              child: PopupMenuButton<String>(
+                tooltip: '更多',
+                icon: const Icon(Icons.more_horiz, color: Colors.black87, size: 18),
+                padding: EdgeInsets.zero,
+                onSelected: (v) => _onSelected(context, v),
+                itemBuilder: (c) => [
+                  const PopupMenuItem(value: 'playlist', child: Text('加入歌单')),
+                  if (song.isDirect)
+                    const PopupMenuItem(value: 'cache', child: Text('缓存')),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -349,7 +501,7 @@ class _Cover extends StatelessWidget {
   }
 }
 
-/// 睡眠定时按钮：激活时高亮，点击弹出时长选择。
+/// 睡眠定时按钮：激活时高亮，点击弹出四种模式对话框。
 class _SleepButton extends StatelessWidget {
   final PlayerProvider player;
   final ColorScheme cs;
@@ -359,56 +511,265 @@ class _SleepButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final active = player.sleepTimerActive;
+    final summary = player.sleepSummaryText;
     return IconButton(
       iconSize: 22,
       color: active ? cs.primary : cs.onSurface.withValues(alpha: 0.7),
-      tooltip: '睡眠定时${active ? '：${player.sleepMinutes} 分钟后暂停' : ''}',
+      tooltip: '睡眠定时${active && summary != null ? '：$summary' : ''}',
       icon: Icon(active ? Icons.bedtime : Icons.bedtime_outlined),
-      onPressed: () => _pick(context),
+      onPressed: () => showDialog<void>(
+        context: context,
+        builder: (_) => _SleepTimerDialog(
+          playThroughDefault:
+              context.read<DirectSourceManager>().settings.sleepPlayThroughDefault,
+        ),
+      ),
+    );
+  }
+}
+
+/// 睡眠定时弹窗：指定时间 / 指定时长 / 指定曲数 / 列表结尾 + 「播放完最后的曲目」。
+class _SleepTimerDialog extends StatefulWidget {
+  final bool playThroughDefault;
+
+  const _SleepTimerDialog({required this.playThroughDefault});
+
+  @override
+  State<_SleepTimerDialog> createState() => _SleepTimerDialogState();
+}
+
+class _SleepTimerDialogState extends State<_SleepTimerDialog> {
+  static const List<int> _minuteChoices = [15, 30, 45, 60];
+  static const List<int> _countChoices = [1, 3, 5, 10];
+
+  late SleepTimerKind? _mode;
+  TimeOfDay? _time;
+  late int _minutes;
+  late int _count;
+  late bool _playThrough;
+
+  @override
+  void initState() {
+    super.initState();
+    final p = context.read<PlayerProvider>();
+    _mode = p.sleepMode;
+    if (_mode == SleepTimerKind.time && p.sleepUntilTime != null) {
+      final t = p.sleepUntilTime!;
+      _time = TimeOfDay(hour: t.hour, minute: t.minute);
+    }
+    _minutes = _minuteChoices.contains(p.sleepMinutes)
+        ? p.sleepMinutes
+        : 30;
+    _count = _countChoices.contains(p.sleepCountLeft) ? p.sleepCountLeft : 3;
+    _playThrough = p.sleepTimerActive
+        ? p.sleepPlayThrough
+        : widget.playThroughDefault;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('睡眠定时'),
+      content: SizedBox(
+        width: 360,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              RadioGroup<SleepTimerKind>(
+                groupValue: _mode,
+                onChanged: (v) {
+                  if (v != null) setState(() => _mode = v);
+                },
+                child: Column(
+                  children: [
+                    RadioListTile<SleepTimerKind>(
+                      value: SleepTimerKind.time,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      dense: true,
+                      title: const Text('指定时间'),
+                      subtitle: _time == null
+                          ? const Text('选择停止时刻')
+                          : Row(children: [
+                              Text(_fmtTime(_time!)),
+                              const SizedBox(width: 4),
+                              TextButton(
+                                style: TextButton.styleFrom(
+                                  visualDensity: VisualDensity.compact,
+                                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                                ),
+                                onPressed: _pickTime,
+                                child: const Text('选择'),
+                              ),
+                            ]),
+                      secondary: _mode == SleepTimerKind.time
+                          ? IconButton(
+                              icon: const Icon(Icons.schedule, size: 20),
+                              tooltip: '选择时间',
+                              onPressed: _pickTime,
+                            )
+                          : null,
+                    ),
+                    RadioListTile<SleepTimerKind>(
+                      value: SleepTimerKind.duration,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      dense: true,
+                      title: const Text('指定时长'),
+                      subtitle: Text('倒计时 $_minutes 分钟后自动停止'),
+                    ),
+                    RadioListTile<SleepTimerKind>(
+                      value: SleepTimerKind.count,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      dense: true,
+                      title: const Text('指定曲数'),
+                      subtitle: Text('再播放 $_count 首后停止'),
+                    ),
+                    const RadioListTile<SleepTimerKind>(
+                      value: SleepTimerKind.endOfList,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      dense: true,
+                      title: Text('列表结尾'),
+                      subtitle: Text('播完队列最后一首即停止'),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              if (_mode == SleepTimerKind.duration)
+                _OptionChips<int>(
+                  values: _minuteChoices,
+                  selected: _minutes,
+                  labelOf: (v) => '$v 分钟',
+                  onSelect: (v) => setState(() => _minutes = v),
+                ),
+              if (_mode == SleepTimerKind.count)
+                _OptionChips<int>(
+                  values: _countChoices,
+                  selected: _count,
+                  labelOf: (v) => '$v 首',
+                  onSelect: (v) => setState(() => _count = v),
+                ),
+              const SizedBox(height: 8),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('播放完最后的曲目'),
+                subtitle: const Text('到点不中断当前歌曲，放完这曲再暂停'),
+                value: _playThrough || _mode == SleepTimerKind.endOfList,
+                onChanged: _mode == SleepTimerKind.endOfList
+                    ? null
+                    : (v) => setState(() => _playThrough = v),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => _close(),
+          child: const Text('关闭'),
+        ),
+        FilledButton(
+          onPressed: _invalid ? null : _apply,
+          child: const Text('确定'),
+        ),
+      ],
     );
   }
 
-  Future<void> _pick(BuildContext context) async {
-    final sel = await showModalBottomSheet<int>(
+  /// 当前选择不完整（未选模式 / 指定时间未选时刻）时不可确定。
+  bool get _invalid =>
+      _mode == null ||
+      (_mode == SleepTimerKind.time && _time == null) ||
+      (_mode == SleepTimerKind.duration && _minutes <= 0) ||
+      (_mode == SleepTimerKind.count && _count <= 0);
+
+  Future<void> _pickTime() async {
+    final t = await showTimePicker(
       context: context,
-      builder: (c) {
-        final cs = Theme.of(c).colorScheme;
-        Future<void> choose(int v) async {
-          Navigator.of(c).pop(v);
-        }
-
-        Widget tile(int v, String label) {
-          final isCurrent = player.sleepTimerActive && player.sleepMinutes == v;
-          return ListTile(
-            leading: Icon(isCurrent ? Icons.check_circle : Icons.timer_outlined,
-                color: isCurrent ? cs.primary : null),
-            title: Text(v <= 0 ? '关闭定时' : '$label 后暂停'),
-            selected: isCurrent,
-            onTap: () => choose(v),
-          );
-        }
-
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Padding(
-                padding: EdgeInsets.all(16),
-                child: Text('睡眠定时', style: TextStyle(fontWeight: FontWeight.w600)),
-              ),
-              tile(0, '—'),
-              tile(15, '15 分钟'),
-              tile(30, '30 分钟'),
-              tile(60, '60 分钟'),
-              const SizedBox(height: 8),
-            ],
-          ),
-        );
-      },
+      initialTime: _time ?? const TimeOfDay(hour: 22, minute: 0),
     );
-    if (sel != null) {
-      player.setSleepTimer(sel);
+    if (t == null || !mounted) return;
+    setState(() {
+      _time = t;
+      _mode = SleepTimerKind.time;
+    });
+  }
+
+  void _apply() {
+    final p = context.read<PlayerProvider>();
+    final now = DateTime.now();
+    switch (_mode) {
+      case SleepTimerKind.time:
+        final t = _time;
+        if (t == null) return;
+        p.setSleepTime(
+          DateTime(now.year, now.month, now.day, t.hour, t.minute),
+          playThrough: _playThrough,
+        );
+      case SleepTimerKind.duration:
+        p.setSleepDuration(Duration(minutes: _minutes), playThrough: _playThrough);
+      case SleepTimerKind.count:
+        p.setSleepCount(_count, playThrough: _playThrough);
+      case SleepTimerKind.endOfList:
+        p.setSleepEndOfList();
+      case null:
+        return;
     }
+    final messenger = ScaffoldMessenger.of(context);
+    Navigator.of(context).pop();
+    messenger
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(
+        content: Text('睡眠定时：${p.sleepSummaryText ?? '已设置'}'),
+        duration: const Duration(seconds: 2),
+      ));
+  }
+
+  void _close() {
+    context.read<PlayerProvider>().cancelSleepTimer();
+    Navigator.of(context).pop();
+  }
+
+  static String _fmtTime(TimeOfDay t) {
+    final h = t.hour.toString().padLeft(2, '0');
+    final m = t.minute.toString().padLeft(2, '0');
+    return '$h:$m';
+  }
+}
+
+/// 模式选择用的可选项 chips（时长 / 曲数）。
+class _OptionChips<T> extends StatelessWidget {
+  final List<T> values;
+  final T selected;
+  final String Function(T) labelOf;
+  final ValueChanged<T> onSelect;
+
+  const _OptionChips({
+    required this.values,
+    required this.selected,
+    required this.labelOf,
+    required this.onSelect,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        children: [
+          for (final v in values)
+            ChoiceChip(
+              label: Text(labelOf(v)),
+              visualDensity: VisualDensity.compact,
+              selected: v == selected,
+              onSelected: (_) => onSelect(v),
+            ),
+        ],
+      ),
+    );
   }
 }
 
