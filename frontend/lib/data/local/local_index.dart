@@ -134,6 +134,9 @@ class LocalIndex {
     if (!songCols.contains('etag')) {
       _db!.execute('ALTER TABLE idx_songs ADD COLUMN etag TEXT');
     }
+    if (!songCols.contains('url')) {
+      _db!.execute('ALTER TABLE idx_songs ADD COLUMN url TEXT');
+    }
     // play_meta 为既有 DB 时可能缺 song_json 快照列。
     final metaCols = _db!
         .select('PRAGMA table_info(play_meta)')
@@ -276,8 +279,8 @@ class LocalIndex {
     try {
       final stmt = _db!.prepare('''
         INSERT INTO idx_songs(source_key, ref, title, artist, album, track_no, year,
-          genre, duration, format, size, mtime, etag, cover_path, is_favorite, missing)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0)
+          genre, duration, format, size, mtime, etag, cover_path, is_favorite, missing, url)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?)
         ON CONFLICT(source_key, ref) DO UPDATE SET
           title=excluded.title, artist=excluded.artist, album=excluded.album,
           track_no=excluded.track_no, year=excluded.year, genre=excluded.genre,
@@ -285,6 +288,7 @@ class LocalIndex {
           mtime=excluded.mtime,
           etag=COALESCE(excluded.etag, idx_songs.etag),
           cover_path=COALESCE(excluded.cover_path, idx_songs.cover_path),
+          url=COALESCE(excluded.url, idx_songs.url),
           missing=0
       ''');
       try {
@@ -304,6 +308,7 @@ class LocalIndex {
             s.mtime,
             s.etag,
             s.coverPath,
+            s.url,
           ]);
         }
       } finally {
@@ -384,7 +389,7 @@ class LocalIndex {
     }
     final rows = _db!.select('''
       SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.track_no,
-             i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.missing,
+             i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
              COALESCE(p.is_favorite, 0) AS favorite
       FROM idx_songs i
       LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
@@ -442,7 +447,7 @@ class LocalIndex {
   Song? _songByRef(String sourceKey, String ref) {
     final rows = _db!.select('''
       SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.track_no,
-             i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.missing,
+             i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
              COALESCE(p.is_favorite, 0) AS favorite
       FROM idx_songs i
       LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
@@ -454,7 +459,7 @@ class LocalIndex {
   List<Song> favorites(String sourceKey) {
     final rows = _db!.select('''
       SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.track_no,
-             i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.missing,
+             i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
              COALESCE(p.is_favorite, 0) AS favorite
       FROM idx_songs i
       LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
@@ -480,6 +485,7 @@ class LocalIndex {
         format: r['format'] as String?,
         favorite: r['favorite'] == 1,
         coverPath: r['cover_path'] as String?,
+        sourceUrl: r['url'] as String?,
       );
 
   /// 从 source_key（'webdav:name'）取协议名（'webdav'）。
@@ -589,13 +595,16 @@ class LocalIndex {
       playMetaOf(sourceKey, songRef).favorite;
 
   /// 全量更新一首歌的权重元数据（null 保持原值）。
+  ///
+  /// NOTE：play_meta 各列为 NOT NULL，INSERT 时用 COALESCE(?, 默认值) 兜底；
+  /// ON CONFLICT 仍用原值（excluded 为 null），避免无关注册意外覆盖收藏等状态。
   void upsertPlayMeta(String sourceKey, String songRef,
       {int? likeStreak, int? dislikeStreak, double? factor, bool? frozen,
       bool? favorite, String? songJson}) {
     _db!.execute('''
       INSERT INTO play_meta(source_key, song_ref, like_streak, dislike_streak,
         factor, frozen, is_favorite, song_json)
-      VALUES(?,?,?,?,?,?,?,?)
+      VALUES(?,?,COALESCE(?,0),COALESCE(?,0),COALESCE(?,1.0),COALESCE(?,0),COALESCE(?,0),?)
       ON CONFLICT(source_key, song_ref) DO UPDATE SET
         like_streak = COALESCE(excluded.like_streak, play_meta.like_streak),
         dislike_streak = COALESCE(excluded.dislike_streak, play_meta.dislike_streak),
@@ -767,6 +776,7 @@ class DirectSourceRow {
 class DirectSongRow {
   final String sourceKey;
   final String ref;
+  final String? url;
   final String title;
   final String? artist;
   final String? album;
@@ -782,6 +792,7 @@ class DirectSongRow {
   DirectSongRow({
     required this.sourceKey,
     required this.ref,
+    this.url,
     required this.title,
     this.artist,
     this.album,

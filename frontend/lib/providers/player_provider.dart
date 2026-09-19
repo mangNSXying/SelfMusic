@@ -13,6 +13,7 @@ import '../data/local/audio_metadata.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/song_weight_store.dart';
 import '../services/selfmusic_audio_handler.dart';
+import '../widgets/app_toast.dart';
 
 /// 按源 key 解析播放源的函数：`server` → 服务器代理源；`webdav:<name>` → 对应直连源。
 typedef SourceResolver = MusicSource? Function(String sourceKey);
@@ -534,6 +535,7 @@ class PlayerProvider extends ChangeNotifier {
         if (url == null) {
           throw StateError('no stream source available');
         }
+        debugPrint('[play] 代理 URL: $url');
         await player.setUrl(url, headers: headers);
       }
       if (play) {
@@ -553,6 +555,7 @@ class PlayerProvider extends ChangeNotifier {
       _syncSystemMedia();
     } catch (e) {
       error = e.toString();
+      AppToast.error(e, '播放失败');
       notifyListeners();
     }
   }
@@ -562,14 +565,18 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> _playDirect(Song s, MusicSource src) async {
     final cached = await src.cachedFilePath(s);
     if (cached != null) {
+      debugPrint('[play] ${src.kind} 缓存文件: $cached');
       await player.setFilePath(cached);
       return;
     }
     final direct = src.directStream(s);
     if (direct != null) {
+      debugPrint('[play] ${src.kind} URL: ${direct.url}'
+          '${direct.headers != null && direct.headers!.isNotEmpty ? ' (headers: ${direct.headers!.keys.join(",")})' : ' (无 headers)'}');
       await player.setUrl(direct.url, headers: direct.headers);
       return;
     }
+    debugPrint('[play] ${src.kind} 自建字节流: ${s.title}');
     await player.setAudioSource(DirectAudioSource(source: src, song: s));
   }
 

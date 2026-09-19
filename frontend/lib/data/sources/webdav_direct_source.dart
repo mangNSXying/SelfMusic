@@ -11,6 +11,7 @@ import '../../models/song.dart';
 import '../../models/album.dart';
 import 'music_source.dart';
 import 'scan_worker.dart';
+import 'webdav_url.dart';
 import '../local/local_index.dart';
 import '../local/audio_metadata.dart';
 
@@ -37,7 +38,7 @@ class WebdavDirectSource implements MusicSource {
     this.username = '',
     this.password = '',
     required this.index,
-  }) : _base = _normalizeBase(baseUrl);
+  }) : _base = webdavNormalizeBase(baseUrl);
 
   final String _base;
 
@@ -137,6 +138,7 @@ class WebdavDirectSource implements MusicSource {
       toWrite.add(DirectSongRow(
         sourceKey: item.row.sourceKey,
         ref: item.row.ref,
+        url: item.row.url,
         title: item.row.title,
         artist: item.row.artist,
         album: item.row.album,
@@ -164,9 +166,16 @@ class WebdavDirectSource implements MusicSource {
 
   // ---------- 直连播放 ----------
 
+  /// 播放/缓存用完整 URL：优先扫描期持久化的 [Song.sourceUrl]，历史行回落到
+  /// base+ref（先解码一层防双重编码），最后统一做「单层编码」规范化。
+  String? _playUrl(Song song) {
+    final raw = song.sourceUrl ?? webdavResolveRefForPlay(song.sourceRef, _base);
+    return webdavCanonicalUrl(raw);
+  }
+
   @override
   Future<OpenedStream> open(Song song, {IntRange? range}) async {
-    final url = _resolveRef(song.sourceRef, _base);
+    final url = _playUrl(song)!;
     final client = _newClient();
     final req = await client.getUrl(Uri.parse(url));
     _auth(req, username, password);
@@ -217,7 +226,7 @@ class WebdavDirectSource implements MusicSource {
             'Authorization':
                 'Basic ${base64Encode(utf8.encode('$username:$password'))}',
           };
-    return DirectStream(_resolveRef(song.sourceRef, _base), headers: headers);
+    return DirectStream(_playUrl(song)!, headers: headers);
   }
 
   // ---------- 离线缓存（DESIGN §6.5） ----------
@@ -238,7 +247,7 @@ class WebdavDirectSource implements MusicSource {
     try {
       final tmp = File('${p.join(index.dir, 'cache')}/.tmp-$cacheKey');
       final req =
-          await client.getUrl(Uri.parse(_resolveRef(song.sourceRef, _base)));
+          await client.getUrl(Uri.parse(_playUrl(song)!));
       _auth(req, username, password);
       final resp = await req.close();
       if (resp.statusCode != 200 && resp.statusCode != 206) {
@@ -391,6 +400,7 @@ DirectSongRow _rowFor(String key, _WebdavEntry f, AudioMeta? meta,
   return DirectSongRow(
     sourceKey: key,
     ref: f.href,
+    url: f.fullUrl,
     title: title,
     artist: meta?.artist,
     album: meta?.album,
@@ -463,7 +473,7 @@ Future<void> _listRecursive(HttpClient client, String url,
     {bool Function()? isCancelled}) async {
   // WebDAV 目录请求须以 '/' 结尾（如 /dav/ → 207；/dav → 部分服务器 301 重定向
   // 导致 3xx 被 _propfind 判为非 207/200 而返回空）。目录 href 已带尾斜杠，
-  // 仅根 base 被 _normalizeBase 去掉了尾斜杠，这里补上。
+  // 仅根 base 被 webdavNormalizeBase 去掉了尾斜杠，这里补上。
   final dirUrl = url.endsWith('/') ? url : '$url/';
   final entries = await _propfind(client, dirUrl, username, password);
   final dirs = <String>[];
@@ -502,14 +512,14 @@ Future<List<_WebdavEntry>> _propfind(
 
 List<_WebdavEntry> _parsePropfind(String xml, String dirUrl) {
   final out = <_WebdavEntry>[];
-  final dirPath = _pathOf(dirUrl);
-  final doc = XmlDocument.parse(xml);
-  for (final resp in doc.findAllElements('response', namespace: '*')) {
-    final hrefEl = resp.getElement('href', namespace: '*');
-    if (hrefEl == null) continue;
-    final raw = hrefEl.innerText.trim();
-    if (raw.isEmpty) continue;
-    final pathOnly = _pathOf(raw);
+  final dirPath = webdavPathOf(dirUrl);
+    final doc = XmlDocument.parse(xml);
+    for (final resp in doc.findAllElements('response', namespace: '*')) {
+      final hrefEl = resp.getElement('href', namespace: '*');
+      if (hrefEl == null) continue;
+      final raw = hrefEl.innerText.trim();
+      if (raw.isEmpty) continue;
+      final pathOnly = webdavPathOf(raw);
     if (pathOnly == dirPath || pathOnly == '$dirPath/') continue;
     // resourcetype/getcontentlength/getlastmodified/getetag 位于 propstat/prop 内。
     final rt = _firstByName(resp, 'resourcetype');
@@ -531,9 +541,9 @@ List<_WebdavEntry> _parsePropfind(String xml, String dirUrl) {
     out.add(_WebdavEntry(
       isDir: isDir,
       // 存人类可读的路径（解码后）作为 ref/标题来源；网络请求用的 fullUrl 保持编码。
-      href: _decodePath(pathOnly.trimLeft()),
+      href: webdavDecodePath(pathOnly.trimLeft()),
       size: size,
-      fullUrl: _resolve(raw, dirUrl),
+      fullUrl: webdavResolve(raw, dirUrl),
       mtime: mtime,
       etag: etag,
     ));
@@ -588,50 +598,3 @@ Future<void> _mapConcurrent<T>(
 bool _audioExt(String href) =>
     RegExp(r'\.(mp3|flac|m4a|aac|ogg|wav)$', caseSensitive: false)
         .hasMatch(href);
-
-String _normalizeBase(String url) {
-  var u = url.trim();
-  if (!u.contains('://')) u = 'http://$u';
-  if (u.endsWith('/')) u = u.substring(0, u.length - 1);
-  return u;
-}
-
-String _pathOf(String url) {
-  if (url.startsWith('http://') || url.startsWith('https://')) {
-    final uri = Uri.parse(url);
-    return uri.path;
-  }
-  return url.startsWith('/') ? url : '/$url';
-}
-
-/// 把 PROPFIND 返回的编码路径解码为人类可读路径（ref / 标题使用）。
-String _decodePath(String path) {
-  try {
-    return Uri.decodeFull(path);
-  } catch (_) {
-    return path;
-  }
-}
-
-/// 把解码后的 ref 重新按路径段编码，供实际网络请求使用。
-String _encodePath(String ref) {
-  final parts = ref.split('/').where((s) => s.isNotEmpty);
-  return '/${parts.map(Uri.encodeComponent).join('/')}';
-}
-
-/// 由已解码的 ref 生成完整请求 URL。
-String _resolveRef(String ref, String base) => _resolve(_encodePath(ref), base);
-
-/// 把 PROPFIND 返回的 href 解析为可请求的完整 URL（相对路径以 [dirUrl] 目录为基准）。
-String _resolve(String href, String dirUrl) {
-  if (href.startsWith('http://') || href.startsWith('https://')) return href;
-  final base = Uri.parse(dirUrl);
-  final origin =
-      '${base.scheme}://${base.host}${base.hasPort ? ':${base.port}' : ''}';
-  // PROJECT design: webdav root path is `_base`'s path; href is usually server-root-relative.
-  final rootPath = base.path.endsWith('/') ? base.path : '${base.path}/';
-  if (href.startsWith(rootPath)) {
-    return '$origin$href';
-  }
-  return '$origin${href.startsWith('/') ? href : '/$href'}';
-}

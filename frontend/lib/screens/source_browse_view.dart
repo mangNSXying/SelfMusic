@@ -12,6 +12,7 @@ import '../providers/player_provider.dart';
 import '../providers/navigation_provider.dart';
 import '../services/server_settings.dart';
 import '../widgets/add_to_playlist.dart';
+import '../widgets/app_toast.dart';
 import '../widgets/list_selection.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_tile.dart';
@@ -72,10 +73,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
           await direct.fetchSongsFor(widget.sourceKey, query: _query);
       if (mounted) setState(() => _songs = songs);
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('拉取失败：$e')));
-      }
+      AppToast.error(e, '拉取失败');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -106,10 +104,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
         );
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('扫描失败：$e')));
-      }
+      AppToast.error(e, '扫描失败');
     } finally {
       _progressSub?.cancel();
       _progressSub = null;
@@ -155,17 +150,12 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
       BuildContext c, MusicSource source, List<Song> songs, int i) async {
     final player = c.read<PlayerProvider>();
     final nav = c.read<NavigationProvider>();
-    final messenger = ScaffoldMessenger.of(c);
-    // 先进播放页（立即切过去），播放是否成功由 error 提示，避免卡在列表里。
+    // 先进播放页（立即切过去），播放是否成功由 toast/红字提示，避免卡在列表里。
     nav.openPlayer();
     try {
       await player.playQueue(songs, index: i, source: source);
     } catch (_) {
       // playQueue 内部捕获音频错误；此处分外异常也保证导航已生效。
-    }
-    final err = player.error;
-    if (err != null) {
-      messenger.showSnackBar(SnackBar(content: Text('播放失败：$err')));
     }
   }
 

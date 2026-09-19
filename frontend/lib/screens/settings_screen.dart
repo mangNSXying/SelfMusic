@@ -15,6 +15,7 @@ import '../services/api_client.dart';
 import '../services/server_settings.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_provider.dart';
+import '../widgets/app_toast.dart';
 import 'pairing_screen.dart';
 
 /// 设置页：根据侧边栏选中的分区渲染对应设置面板。
@@ -1375,8 +1376,7 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
           .showSnackBar(SnackBar(content: Text(summaries.join('；'))));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('导入失败：$e')));
+      AppToast.error(e, '导入失败');
     }
   }
 

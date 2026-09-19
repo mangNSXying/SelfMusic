@@ -21,6 +21,7 @@ import 'theme/app_theme.dart';
 import 'screens/library_screen.dart';
 import 'screens/player_screen.dart';
 import 'layout/app_shell.dart';
+import 'widgets/app_toast.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -139,6 +140,7 @@ class _ThemedApp extends StatelessWidget {
     return MaterialApp(
       title: 'SelfMusic',
       debugShowCheckedModeBanner: false,
+      scaffoldMessengerKey: toastMessengerKey,
       theme: theme.themeData,
       home: const Root(),
     );

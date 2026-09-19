@@ -21,6 +21,10 @@ class Song {
   final bool favorite;
   final bool hidden;
 
+  /// 直连模式专有：扫描期解析出的完整可请求 URL（如 WebDAV 原始 href）。
+  /// 服务器模式 / 历史行可为 null，由源回落到 base+ref 重建。
+  final String? sourceUrl;
+
   /// 直连模式的封面缓存路径（本地文件），服务器模式为空走网络。
   final String? coverPath;
 
@@ -44,6 +48,7 @@ class Song {
     this.favorite = false,
     this.hidden = false,
     this.coverPath,
+    this.sourceUrl,
     this.isDirect = false,
   });
 
@@ -64,6 +69,7 @@ class Song {
         favorite: j['favorite'] as bool? ?? false,
         hidden: j['hidden'] as bool? ?? false,
         coverPath: j['coverPath'] as String?,
+        sourceUrl: j['sourceUrl'] as String?,
       );
 
   /// 完整序列化（play_meta 快照 / play_state 断点，stage2.md §7）。
@@ -84,6 +90,7 @@ class Song {
         'favorite': favorite,
         'hidden': hidden,
         if (coverPath != null) 'coverPath': coverPath,
+        if (sourceUrl != null) 'sourceUrl': sourceUrl,
       };
 
   /// 直连模式行构造（本地索引读出）。
@@ -103,6 +110,7 @@ class Song {
     String? format,
     bool favorite = false,
     String? coverPath,
+    String? sourceUrl,
   }) =>
       Song(
         id: id,
@@ -120,6 +128,7 @@ class Song {
         format: format,
         favorite: favorite,
         coverPath: coverPath,
+        sourceUrl: sourceUrl,
         isDirect: true,
       );
 }

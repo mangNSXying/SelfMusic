@@ -7,6 +7,7 @@ import '../data/sources/music_source.dart';
 import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
 import 'add_to_playlist.dart';
+import 'app_toast.dart';
 
 /// 通用歌曲条目：封面缩略图 + 标题 + 歌手/专辑 + 时长时间器。
 ///
@@ -97,10 +98,7 @@ class SongTile extends StatelessWidget {
                               const SnackBar(content: Text('已缓存，可离线播放')));
                         }
                       } catch (e) {
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context)
-                              .showSnackBar(SnackBar(content: Text('缓存失败：$e')));
-                        }
+                        AppToast.error(e, '缓存失败');
                       }
                     },
                   ),
