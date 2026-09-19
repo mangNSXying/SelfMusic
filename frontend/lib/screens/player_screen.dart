@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
@@ -726,9 +727,6 @@ class _SleepTimerDialog extends StatefulWidget {
 }
 
 class _SleepTimerDialogState extends State<_SleepTimerDialog> {
-  static const List<int> _minuteChoices = [15, 30, 45, 60];
-  static const List<int> _countChoices = [1, 3, 5, 10];
-
   late SleepTimerKind? _mode;
   TimeOfDay? _time;
   late int _minutes;
@@ -790,7 +788,7 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
                       dense: true,
                       title: const Text('指定时长',
                           style: TextStyle(fontSize: 17)),
-                      subtitle: Text('倒计时 $_minutes 分钟后自动停止',
+                      subtitle: Text('倒计时 ${_fmtMinutes(_minutes)}后自动停止',
                           style: const TextStyle(fontSize: 15)),
                     ),
                     RadioListTile<SleepTimerKind>(
@@ -815,32 +813,14 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
               ),
               const SizedBox(height: 8),
               if (_mode == SleepTimerKind.duration)
-                _NumberOptions<int>(
-                  shortcuts: _minuteChoices,
-                  current: _minutes,
-                  labelOf: (v) => '$v 分钟',
-                  onSelect: (v) => setState(() => _minutes = v),
-                  onCustom: () => _pickCustomNumber(
-                    title: '自定义时长（分钟）',
-                    min: 1,
-                    max: 720,
-                    current: _minutes,
-                    onPick: (n) => setState(() => _minutes = n),
-                  ),
+                _WheelOpener(
+                  label: _fmtMinutes(_minutes),
+                  onTap: () => _pickDurationWheel(),
                 ),
               if (_mode == SleepTimerKind.count)
-                _NumberOptions<int>(
-                  shortcuts: _countChoices,
-                  current: _count,
-                  labelOf: (v) => '$v 首',
-                  onSelect: (v) => setState(() => _count = v),
-                  onCustom: () => _pickCustomNumber(
-                    title: '自定义曲数',
-                    min: 1,
-                    max: 999,
-                    current: _count,
-                    onPick: (n) => setState(() => _count = n),
-                  ),
+                _WheelOpener(
+                  label: '$_count 首',
+                  onTap: () => _pickCountWheel(),
                 ),
               const SizedBox(height: 8),
               SwitchListTile(
@@ -908,40 +888,50 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
     });
   }
 
-  /// 自定义数字输入（时长 1~720 分钟 / 曲数 1~999 首），非常规快捷值。
-  Future<void> _pickCustomNumber({
-    required String title,
-    required int min,
-    required int max,
-    required int current,
-    required ValueChanged<int> onPick,
-  }) async {
-    final ctrl = TextEditingController(text: current.toString());
-    final v = await showDialog<int>(
+  /// 时长滚轮：时（0~12）+ 分（0~59）双轮，结果至少 1 分钟。
+  Future<void> _pickDurationWheel() async {
+    final picked = await showDialog<int>(
       context: context,
-      builder: (c) => AlertDialog(
-        title: Text(title),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          keyboardType: TextInputType.number,
-          decoration: InputDecoration(hintText: '$min ~ $max'),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
-          FilledButton(
-            onPressed: () {
-              final n = int.tryParse(ctrl.text.trim());
-              if (n == null) return;
-              Navigator.of(c).pop(n.clamp(min, max));
-            },
-            child: const Text('确定'),
-          ),
+      builder: (c) => _WheelDialog(
+        title: '选择时长',
+        columns: [
+          [for (var h = 0; h <= 12; h++) '$h 小时'],
+          [for (var m = 0; m <= 59; m++) '$m 分'],
         ],
+        initial: [_minutes ~/ 60, _minutes % 60],
+        resultOf: (idx) => idx[0] * 60 + idx[1],
+        valid: (v) => v > 0,
       ),
     );
-    if (v != null) onPick(v);
+    if (picked != null && picked > 0 && mounted) {
+      setState(() => _minutes = picked);
+    }
+  }
+
+  /// 曲数滚轮：1~200 首单轮。
+  Future<void> _pickCountWheel() async {
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (c) => _WheelDialog(
+        title: '选择曲数',
+        columns: [
+          [for (var n = 1; n <= 200; n++) '$n 首'],
+        ],
+        initial: [(_count - 1).clamp(0, 199)],
+        resultOf: (idx) => idx[0] + 1,
+        valid: (v) => v > 0,
+      ),
+    );
+    if (picked != null && picked > 0 && mounted) {
+      setState(() => _count = picked);
+    }
+  }
+
+  static String _fmtMinutes(int total) {
+    if (total < 60) return '$total 分钟';
+    final h = total ~/ 60;
+    final m = total % 60;
+    return m == 0 ? '$h 小时' : '$h 小时 $m 分钟';
   }
 
   void _apply() {
@@ -986,47 +976,115 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
   }
 }
 
-/// 数字选项（时长 / 曲数）：快捷 chips + 自定义输入；当前值不在快捷内时追加展示。
-class _NumberOptions<T> extends StatelessWidget {
-  final List<T> shortcuts;
-  final T current;
-  final String Function(T) labelOf;
-  final ValueChanged<T> onSelect;
-  final VoidCallback onCustom;
-
-  const _NumberOptions({
-    required this.shortcuts,
-    required this.current,
-    required this.labelOf,
-    required this.onSelect,
-    required this.onCustom,
-  });
+/// 当前值展示 + 打开滚轮选择器的行（时长 / 曲数模式下）。
+class _WheelOpener extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+  const _WheelOpener({required this.label, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    final values = [...shortcuts];
-    if (!values.contains(current)) values.add(current);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 4,
-        crossAxisAlignment: WrapCrossAlignment.center,
+      child: Row(
         children: [
-          for (final v in values)
-            ChoiceChip(
-              label: Text(labelOf(v), style: const TextStyle(fontSize: 15)),
-              visualDensity: VisualDensity.compact,
-              selected: v == current,
-              onSelected: (_) => onSelect(v),
-            ),
-          ActionChip(
-            label: const Text('自定义…', style: TextStyle(fontSize: 15)),
-            visualDensity: VisualDensity.compact,
-            onPressed: onCustom,
+          Text(label, style: const TextStyle(fontSize: 16)),
+          const Spacer(),
+          FilledButton.tonalIcon(
+            icon: const Icon(Icons.unfold_more, size: 20),
+            label: const Text('滚轮选择', style: TextStyle(fontSize: 15)),
+            onPressed: onTap,
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 通用滚轮选择弹窗（CupertinoPicker，无键盘输入）。
+///
+/// [columns] 为每轮的文本列，[initial] 为每轮初始选中下标；
+/// [resultOf] 把各轮下标换算为结果值，[valid] 决定「确定」是否可用。
+class _WheelDialog extends StatefulWidget {
+  final String title;
+  final List<List<String>> columns;
+  final List<int> initial;
+  final int Function(List<int>) resultOf;
+  final bool Function(int) valid;
+  const _WheelDialog({
+    required this.title,
+    required this.columns,
+    required this.initial,
+    required this.resultOf,
+    required this.valid,
+  });
+
+  @override
+  State<_WheelDialog> createState() => _WheelDialogState();
+}
+
+class _WheelDialogState extends State<_WheelDialog> {
+  late List<int> _idx;
+  late List<FixedExtentScrollController> _ctrls;
+
+  @override
+  void initState() {
+    super.initState();
+    _idx = List.of(widget.initial);
+    _ctrls = [
+      for (var c = 0; c < widget.columns.length; c++)
+        FixedExtentScrollController(initialItem: widget.initial[c]),
+    ];
+  }
+
+  @override
+  void dispose() {
+    for (final c in _ctrls) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final value = widget.resultOf(_idx);
+    final ok = widget.valid(value);
+    return AlertDialog(
+      title: Text(widget.title, style: const TextStyle(fontSize: 20)),
+      content: SizedBox(
+        width: 320,
+        height: 200,
+        child: Row(
+          children: [
+            for (var c = 0; c < widget.columns.length; c++)
+              Expanded(
+                child: CupertinoPicker(
+                  scrollController: _ctrls[c],
+                  itemExtent: 40,
+                  magnification: 1.15,
+                  onSelectedItemChanged: (i) => setState(() => _idx[c] = i),
+                  children: [
+                    for (final label in widget.columns[c])
+                      Center(
+                        child: Text(label,
+                            style: const TextStyle(fontSize: 17)),
+                      ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消', style: TextStyle(fontSize: 16)),
+        ),
+        FilledButton(
+          onPressed: ok ? () => Navigator.of(context).pop(value) : null,
+          child: const Text('确定', style: TextStyle(fontSize: 16)),
+        ),
+      ],
     );
   }
 }
