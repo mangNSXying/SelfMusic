@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../data/sources/music_source.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
+import '../widgets/section_swipe.dart';
 
 /// 播放源管理页：直连源（WebDAV / 本地文件夹）列表。
 ///
@@ -18,8 +19,9 @@ class SourcesScreen extends StatelessWidget {
     final direct = context.watch<DirectSourceManager>();
     final scheme = Theme.of(context).colorScheme;
 
-    return Column(
-      children: [
+    return SectionSwipe(
+      child: Column(
+        children: [
         Expanded(
           child: ListView(
             padding: const EdgeInsets.all(16),
@@ -53,7 +55,8 @@ class SourcesScreen extends StatelessWidget {
             ),
           ),
         ),
-      ],
+        ],
+      ),
     );
   }
 }

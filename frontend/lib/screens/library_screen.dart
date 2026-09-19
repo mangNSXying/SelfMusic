@@ -12,6 +12,7 @@ import '../models/artist.dart';
 import '../theme/app_theme.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/list_selection.dart';
+import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_tile.dart';
 import 'player_screen.dart';
@@ -100,9 +101,10 @@ class _LikedViewState extends State<_LikedView> {
     final lib = context.read<LibraryProvider>();
     final songs = direct.favoriteSongs();
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
+    return SectionSwipe(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
           child: Text('喜欢',
@@ -156,7 +158,8 @@ class _LikedViewState extends State<_LikedView> {
                   },
                 ),
         ),
-      ],
+        ],
+      ),
     );
   }
 }

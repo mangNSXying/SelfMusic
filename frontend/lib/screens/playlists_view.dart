@@ -6,6 +6,7 @@ import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../providers/playlists_provider.dart';
 import '../widgets/list_selection.dart';
+import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_tile.dart';
 
@@ -73,9 +74,10 @@ class _PlaylistsViewState extends State<PlaylistsView> {
     final provider = context.watch<PlaylistsProvider>();
     final playlists = provider.playlists;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
+    return SectionSwipe(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
           child: Row(
@@ -160,7 +162,8 @@ class _PlaylistsViewState extends State<PlaylistsView> {
                   },
                 ),
         ),
-      ],
+        ],
+      ),
     );
   }
 
