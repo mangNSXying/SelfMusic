@@ -46,72 +46,6 @@ class SettingsScreen extends StatelessWidget {
   }
 }
 
-/// 配对密钥行（服务端分区专用）：显示/复制本机配对密钥。
-class _PairingKeyTile extends StatefulWidget {
-  const _PairingKeyTile();
-  @override
-  State<_PairingKeyTile> createState() => _PairingKeyTileState();
-}
-
-class _PairingKeyTileState extends State<_PairingKeyTile> {
-  String? _token;
-  bool _show = false;
-  bool _fetched = false;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (!_fetched) {
-      _fetched = true;
-      context.read<ApiClient>().fetchPairingToken().then((t) {
-        if (mounted) setState(() => _token = t);
-      });
-    }
-  }
-
-  static String _mask(String token) {
-    if (token.length <= 8) return '••••••••';
-    return '${token.substring(0, 4)}••••••${token.substring(token.length - 4)}';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return ListTile(
-      contentPadding: EdgeInsets.zero,
-      leading: const Icon(Icons.key),
-      title: const Text('配对密钥'),
-      subtitle: Text(_token == null
-          ? '拉取中…'
-          : _show
-              ? _token!
-              : _mask(_token!)),
-      trailing: _token == null
-          ? null
-          : Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  icon: Icon(_show
-                      ? Icons.visibility_off_outlined
-                      : Icons.visibility_outlined),
-                  tooltip: _show ? '隐藏' : '显示',
-                  onPressed: () => setState(() => _show = !_show),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.copy_outlined),
-                  tooltip: '复制',
-                  onPressed: () {
-                    Clipboard.setData(ClipboardData(text: _token!));
-                    ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('已复制配对密钥')));
-                  },
-                ),
-              ],
-            ),
-    );
-  }
-}
-
 /// 「服务端」设置：后端地址（运行时可改，替代编译期 --dart-define）。
 class _ServerSettings extends StatefulWidget {
   const _ServerSettings();
@@ -210,7 +144,6 @@ class _ServerSettingsState extends State<_ServerSettings> {
               MaterialPageRoute<void>(builder: (_) => const PairingScreen()),
             ),
           ),
-          const _PairingKeyTile(),
           const Divider(height: 24),
           TextField(
             controller: _controller,
