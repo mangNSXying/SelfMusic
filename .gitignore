@@ -25,6 +25,7 @@ nginx/
 *.lock
 *.md
 *test*
+*.htm*
 
 # 排除文件
 !frontend/test/

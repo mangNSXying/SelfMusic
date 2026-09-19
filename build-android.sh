@@ -5,6 +5,6 @@
 # 注意：flutter run / app-debug.apk 是 debug 包，含 JIT 快照与全部 ABI，约 200MB，勿用于分发。
 set -e
 cd "$(dirname "$0")/frontend"
-sudo flutter build apk --release --split-per-abi "$@"
-sudo chown -R 1000:1000 build/
+flutter build apk --release --split-per-abi "$@"
 ls -lh build/app/outputs/flutter-apk/*-release.apk
+cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ~/ServerSMB/Phone/Software/Selfmusic
