@@ -9,7 +9,6 @@ import 'package:provider/provider.dart';
 import 'services/api_client.dart';
 import 'services/server_settings.dart';
 import 'services/selfmusic_audio_handler.dart';
-import 'data/local/app_settings.dart';
 import 'data/sources/server_proxy_source.dart';
 import 'providers/auth_provider.dart';
 import 'providers/library_provider.dart';
@@ -23,7 +22,7 @@ import 'screens/library_screen.dart';
 import 'screens/player_screen.dart';
 import 'layout/app_shell.dart';
 import 'widgets/app_toast.dart';
-import 'widgets/page_transition.dart';
+import 'widgets/player_sheet_anim.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -164,13 +163,23 @@ class Root extends StatefulWidget {
   State<Root> createState() => _RootState();
 }
 
-class _RootState extends State<Root> {
+class _RootState extends State<Root> with TickerProviderStateMixin {
   bool _expiryDialogShown = false;
   DateTime? _lastBackPressed;
+
+  /// 播放页悬浮层动画唯一控制器（壳常驻 + 播放页悬浮层跟手共用）。
+  late final PlayerSheetAnimator _sheetAnim;
+  late final NavigationProvider _nav;
 
   @override
   void initState() {
     super.initState();
+    _nav = context.read<NavigationProvider>();
+    _sheetAnim = PlayerSheetAnimator(
+      vsync: this,
+      progress: _nav.playerProgress,
+    );
+    _nav.addListener(_syncPlayerSheet);
     // 启动恢复上次播放队列与位置（暂停态，stage2.md §7）。
     // 受「断点续播」开关控制（settings.md §3.2 `resume_on_startup`）。
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -179,6 +188,23 @@ class _RootState extends State<Root> {
       if (!direct.settings.resumeOnStartup) return;
       context.read<PlayerProvider>().restoreIfAny();
     });
+  }
+
+  @override
+  void dispose() {
+    _nav.removeListener(_syncPlayerSheet);
+    _sheetAnim.dispose();
+    super.dispose();
+  }
+
+  /// 意图位（playerView）变化 → 播放页悬浮层吸附动画：
+  /// 打开从底部升起（进度 1→0），离开降下（0→1）。手势跟手期间不触发。
+  void _syncPlayerSheet() {
+    if (_nav.playerView && _sheetAnim.value > 0.001) {
+      _sheetAnim.settle(0);
+    } else if (!_nav.playerView && _sheetAnim.value < 0.999) {
+      _sheetAnim.settle(1);
+    }
   }
 
   /// 统一返回：先按层级逐级回退（设置 → 队列 → 源内/歌单详情 → 内容页 → 播放页），
@@ -220,26 +246,30 @@ class _RootState extends State<Root> {
     // 首次启动不再强制配对：未配对也可正常使用直连模式；
     // 配对 / 会话过期后重新配对在「设置 → 服务端」进行。
     final nav = context.watch<NavigationProvider>();
-    final transition =
-        context.watch<DirectSourceManager>().settings.playerTransition;
-    // 全局页面切换过渡（播放页/各分组/设置/源内/歌单详情统一应用所选动画）。
-    final key =
-        '${nav.playerView}|${nav.settings}|${nav.section}|${nav.browsingSourceKey}|${nav.browsingPlaylistId}';
-    final body = nav.playerView
-        ? const PlayerScreen()
-        : const AppShell(content: AppContent());
-    return PopScope<void>(
-      canPop: false,
-      onPopInvokedWithResult: _onPopInvoked,
-      child: AnimatedSwitcher(
-        duration: transition == PlayerTransition.none
-            ? Duration.zero
-            : const Duration(milliseconds: 240),
-        switchInCurve: Curves.easeOutCubic,
-        switchOutCurve: Curves.easeInCubic,
-        transitionBuilder: (child, anim) =>
-            pageTransition(transition, child, anim),
-        child: KeyedSubtree(key: ValueKey(key), child: body),
+    // 壳常驻（底层）；播放页为悬浮层（高层），按进度跟手位移。
+    return Provider<PlayerSheetAnimator>.value(
+      value: _sheetAnim,
+      child: PopScope<void>(
+        canPop: false,
+        onPopInvokedWithResult: _onPopInvoked,
+        child: Stack(
+          children: [
+            const AppShell(content: AppContent()),
+            ValueListenableBuilder<double>(
+              valueListenable: nav.playerProgress,
+              builder: (c, p, _) {
+                if (!nav.playerView && p >= 1) {
+                  return const SizedBox.shrink();
+                }
+                final h = MediaQuery.of(c).size.height;
+                return Transform.translate(
+                  offset: Offset(0, p * h),
+                  child: const PlayerScreen(),
+                );
+              },
+            ),
+          ],
+        ),
       ),
     );
   }

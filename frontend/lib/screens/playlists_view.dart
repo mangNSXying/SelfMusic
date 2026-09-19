@@ -75,12 +75,11 @@ class _PlaylistsViewState extends State<PlaylistsView> {
     final provider = context.watch<PlaylistsProvider>();
     final playlists = provider.playlists;
 
-    return SectionSwipe(
-      child: Stack(
-        children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+    return Stack(
+      children: [
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
               if (_sel.active)
                 SelectionBar(
                   total: playlists.length,
@@ -160,8 +159,7 @@ class _PlaylistsViewState extends State<PlaylistsView> {
             ),
           ),
         ],
-      ),
-    );
+      );
   }
 
   static Future<void> _createDialog(

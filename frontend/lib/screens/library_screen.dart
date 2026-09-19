@@ -6,33 +6,56 @@ import '../providers/library_provider.dart';
 import '../providers/player_provider.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/direct_source_manager.dart';
+import '../data/local/app_settings.dart';
 import '../models/song.dart';
 import '../models/album.dart';
 import '../models/artist.dart';
 import '../theme/app_theme.dart';
 import '../widgets/add_to_playlist.dart';
+import '../widgets/area_switcher.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/list_selection.dart';
+import '../widgets/page_transition.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_tile.dart';
-import 'player_screen.dart';
 import 'settings_screen.dart';
 import 'sources_screen.dart';
 import 'source_browse_view.dart';
 import 'playlists_view.dart';
 
-/// 内容区：根据导航 Section / 设置分区 / 播放页动态渲染对应页面。
+/// 内容区：根据导航 Section / 设置分区动态渲染对应页面（播放页为悬浮层，不在这里）。
 class AppContent extends StatelessWidget {
   const AppContent({super.key});
 
   @override
   Widget build(BuildContext context) {
     final nav = context.watch<NavigationProvider>();
-
-    if (nav.playerView) {
-      return const PlayerScreen();
+    final transition =
+        context.watch<DirectSourceManager>().settings.playerTransition;
+    final page = _areaPage(nav);
+    if (transition == PlayerTransition.none) return page;
+    if (transition == PlayerTransition.slide) {
+      // 分层切换：底层静止垫底，只有高层移动，不透黑底。
+      return AreaSwitcher(
+        areaKey: nav.areaKey,
+        level: nav.areaLevel,
+        slideOffset: nav.slideOffset,
+        child: page,
+      );
     }
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 320),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      transitionBuilder: (child, anim) =>
+          pageTransition(transition, child, anim),
+      child: KeyedSubtree(key: ValueKey(nav.areaKey), child: page),
+    );
+  }
+
+  /// 当前区域页面（设置 / 源内浏览 / 歌单详情 / 六分组 pager）。
+  Widget _areaPage(NavigationProvider nav) {
     if (nav.inSettings) {
       return const SettingsScreen();
     }
@@ -40,23 +63,143 @@ class AppContent extends StatelessWidget {
     if (nav.section == NavSection.sources && nav.browsingSourceKey != null) {
       return SourceBrowseView(sourceKey: nav.browsingSourceKey!);
     }
-
-    switch (nav.section) {
-      case NavSection.songs:
-        return const _SongsView();
-      case NavSection.albums:
-        return const _AlbumsView();
-      case NavSection.sources:
-        return const SourcesScreen();
-      case NavSection.artists:
-        return const _ArtistsView();
-      case NavSection.playlists:
-        return nav.browsingPlaylistId != null
-            ? PlaylistDetailView(playlistId: nav.browsingPlaylistId!)
-            : const PlaylistsView();
-      case NavSection.liked:
-        return const _LikedView();
+    // 歌单详情子视图。
+    if (nav.section == NavSection.playlists && nav.browsingPlaylistId != null) {
+      return PlaylistDetailView(playlistId: nav.browsingPlaylistId!);
     }
+    // 六个顶级分组：滑动模式跟手 PageView，其余模式松手触发区切换。
+    return const SectionPager();
+  }
+}
+
+/// 六个顶级分组的容器（播放列表/喜欢/播放源/歌曲/专辑/歌手）。
+///
+/// - 滑动档：跟手 PageView（原生跟手 + 位置/速度吸附）；
+///   程序驱动（顶栏点击/返回键）`animateToPage`，方向天然正确；
+///   双向同步防抢：手指拖拽中不调 `animateToPage`（`_programmatic` +
+///   `isScrolling` 双条件）。
+/// - 淡入/缩放/关闭档：单页 + 按设置的过渡（横滑松手触发切换）。
+class SectionPager extends StatefulWidget {
+  const SectionPager({super.key});
+
+  @override
+  State<SectionPager> createState() => _SectionPagerState();
+}
+
+class _SectionPagerState extends State<SectionPager> {
+  late final PageController _ctrl;
+  late int _applied;
+  bool _programmatic = false;
+  bool _slideActive = false;
+
+  static int _indexOf(NavSection s) => NavSection.values.indexOf(s);
+
+  /// 六个分组页（顺序与 NavSection.values 一致）。
+  static const _pages = [
+    PlaylistsView(),
+    _LikedView(),
+    SourcesScreen(),
+    _SongsView(),
+    _AlbumsView(),
+    _ArtistsView(),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    final nav = context.read<NavigationProvider>();
+    final initial = _indexOf(nav.section);
+    _applied = initial;
+    nav.pageOffset.value = initial.toDouble();
+    _ctrl = PageController(initialPage: initial);
+    _ctrl.addListener(_syncOffset);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.removeListener(_syncOffset);
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  /// 控制器页码（含拖拽小数）同步给顶栏，顶栏据此跟手高亮/滚动。
+  void _syncOffset() {
+    if (!_ctrl.hasClients) return;
+    final nav = context.read<NavigationProvider>();
+    nav.pageOffset.value = _ctrl.page ?? _applied.toDouble();
+  }
+
+  void _onPageChanged(int i) {
+    _applied = i;
+    _programmatic = false;
+    context.read<NavigationProvider>().select(NavSection.values[i]);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final nav = context.watch<NavigationProvider>();
+    final transition =
+        context.watch<DirectSourceManager>().settings.playerTransition;
+    final target = _indexOf(nav.section);
+
+    // 非滑动档：单页按设置过渡（松手触发切换）；顶栏高亮随后同步。
+    // 滑动档：跟手 PageView，顶栏由控制器监听逐帧同步。
+    if (transition != PlayerTransition.slide) {
+      _slideActive = false;
+      _programmatic = false;
+      _applied = target;
+      if (nav.pageOffset.value != target.toDouble()) {
+        final t = target.toDouble();
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && nav.pageOffset.value != t) nav.pageOffset.value = t;
+        });
+      }
+      final page = KeyedSubtree(key: ValueKey(target), child: _pages[target]);
+      if (transition == PlayerTransition.none) {
+        return SectionSwipe(child: page);
+      }
+      return SectionSwipe(
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 320),
+          switchInCurve: Curves.easeOutCubic,
+          switchOutCurve: Curves.easeInCubic,
+          transitionBuilder: (child, anim) =>
+              pageTransition(transition, child, anim),
+          child: page,
+        ),
+      );
+    }
+
+    // 从非滑动档切回：控制器可能停留在旧页，首帧对齐到当前分组。
+    if (!_slideActive) {
+      _slideActive = true;
+      _applied = target;
+      _programmatic = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _ctrl.hasClients && _ctrl.page?.round() != target) {
+          _ctrl.jumpToPage(target);
+        }
+      });
+    }
+
+    if (target != _applied) {
+      final scrolling =
+          _ctrl.hasClients && _ctrl.position.isScrollingNotifier.value;
+      // 手指拖拽中跳过，避免拽手指；程序飞行中可重定向。
+      if (!scrolling || _programmatic) {
+        _programmatic = true;
+        _applied = target;
+        _ctrl.animateToPage(target,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOutCubic);
+      }
+    }
+
+    return PageView(
+      controller: _ctrl,
+      onPageChanged: _onPageChanged,
+      children: _pages,
+    );
   }
 }
 
@@ -102,12 +245,11 @@ class _LikedViewState extends State<_LikedView> {
     final lib = context.read<LibraryProvider>();
     final songs = direct.favoriteSongs();
 
-    return SectionSwipe(
-      child: Stack(
-        children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+    return Stack(
+      children: [
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
               if (_sel.active)
                 SelectionBar(
                   total: songs.length,
@@ -165,8 +307,7 @@ class _LikedViewState extends State<_LikedView> {
             ),
           ),
         ],
-      ),
-    );
+      );
   }
 }
 
@@ -222,9 +363,8 @@ class _SongsViewState extends State<_SongsView> {
     // 依据全局搜索词加载（由 LibraryProvider 配合）。
     final songs = _filter(lib.songs, nav.search);
 
-    return SectionSwipe(
-      child: Column(
-        children: [
+    return Column(
+      children: [
         if (lib.loading) const LinearProgressIndicator(minHeight: 2),
         if (lib.error != null)
           Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
@@ -276,8 +416,7 @@ class _SongsViewState extends State<_SongsView> {
                   ),
                 ),
         ),
-        ],
-      ),
+      ],
     );
   }
 
@@ -320,9 +459,8 @@ class _AlbumsViewState extends State<_AlbumsView> {
     final lib = context.watch<LibraryProvider>();
     final albums = _filter(lib.albums, nav.search);
 
-    return SectionSwipe(
-      child: Column(
-        children: [
+    return Column(
+      children: [
         if (lib.loading) const LinearProgressIndicator(minHeight: 2),
         if (lib.error != null)
           Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
@@ -344,8 +482,7 @@ class _AlbumsViewState extends State<_AlbumsView> {
                   ),
                 ),
         ),
-        ],
-      ),
+      ],
     );
   }
 
@@ -491,9 +628,8 @@ class _ArtistsViewState extends State<_ArtistsView> {
     final lib = context.watch<LibraryProvider>();
     final artists = _filter(lib.artists, nav.search);
 
-    return SectionSwipe(
-      child: Column(
-        children: [
+    return Column(
+      children: [
         if (lib.loading) const LinearProgressIndicator(minHeight: 2),
         if (lib.error != null)
           Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
@@ -515,8 +651,7 @@ class _ArtistsViewState extends State<_ArtistsView> {
                   ),
                 ),
         ),
-        ],
-      ),
+      ],
     );
   }
 

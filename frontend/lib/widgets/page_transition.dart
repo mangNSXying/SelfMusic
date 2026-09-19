@@ -5,7 +5,10 @@ import '../data/local/app_settings.dart';
 /// 按设置构建页面切换过渡：关闭 / 淡入 / 滑动 / 缩放。
 ///
 /// 播放页（播放/歌词）与全局内容区（各分组/设置/源内/歌单详情）共用。
-Widget pageTransition(PlayerTransition t, Widget child, Animation<double> anim) {
+/// [slideOffset] 为滑动模式新页面的进入方向：(1,0) 从右侧整页滑入（前进），
+/// (-1,0) 从左侧滑入（返回），(0,1)/(0,-1) 为竖向手势（上滑进播放页/下滑回列表）。
+Widget pageTransition(PlayerTransition t, Widget child, Animation<double> anim,
+    {Offset slideOffset = const Offset(1, 0)}) {
   switch (t) {
     case PlayerTransition.none:
       return child;
@@ -13,9 +16,9 @@ Widget pageTransition(PlayerTransition t, Widget child, Animation<double> anim) 
       return FadeTransition(opacity: anim, child: child);
     case PlayerTransition.slide:
       return SlideTransition(
-        position: Tween<Offset>(begin: const Offset(0.3, 0), end: Offset.zero)
+        position: Tween<Offset>(begin: slideOffset, end: Offset.zero)
             .animate(anim),
-        child: FadeTransition(opacity: anim, child: child),
+        child: child,
       );
     case PlayerTransition.scale:
       return ScaleTransition(
