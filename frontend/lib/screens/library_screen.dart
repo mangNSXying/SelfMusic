@@ -222,8 +222,9 @@ class _SongsViewState extends State<_SongsView> {
     // 依据全局搜索词加载（由 LibraryProvider 配合）。
     final songs = _filter(lib.songs, nav.search);
 
-    return Column(
-      children: [
+    return SectionSwipe(
+      child: Column(
+        children: [
         if (lib.loading) const LinearProgressIndicator(minHeight: 2),
         if (lib.error != null)
           Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
@@ -275,7 +276,8 @@ class _SongsViewState extends State<_SongsView> {
                   ),
                 ),
         ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -318,8 +320,9 @@ class _AlbumsViewState extends State<_AlbumsView> {
     final lib = context.watch<LibraryProvider>();
     final albums = _filter(lib.albums, nav.search);
 
-    return Column(
-      children: [
+    return SectionSwipe(
+      child: Column(
+        children: [
         if (lib.loading) const LinearProgressIndicator(minHeight: 2),
         if (lib.error != null)
           Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
@@ -341,7 +344,8 @@ class _AlbumsViewState extends State<_AlbumsView> {
                   ),
                 ),
         ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -487,8 +491,9 @@ class _ArtistsViewState extends State<_ArtistsView> {
     final lib = context.watch<LibraryProvider>();
     final artists = _filter(lib.artists, nav.search);
 
-    return Column(
-      children: [
+    return SectionSwipe(
+      child: Column(
+        children: [
         if (lib.loading) const LinearProgressIndicator(minHeight: 2),
         if (lib.error != null)
           Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
@@ -510,7 +515,8 @@ class _ArtistsViewState extends State<_ArtistsView> {
                   ),
                 ),
         ),
-      ],
+        ],
+      ),
     );
   }
 

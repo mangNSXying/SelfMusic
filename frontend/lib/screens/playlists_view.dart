@@ -321,9 +321,10 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
     final songs = provider.songsOf(widget.playlistId);
     final items = provider.itemsOf(widget.playlistId);
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
+    return SectionSwipe(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
           child: Row(
@@ -455,7 +456,8 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
                   },
                 ),
         ),
-      ],
+        ],
+      ),
     );
   }
 }

@@ -13,6 +13,7 @@ import '../providers/navigation_provider.dart';
 import '../services/server_settings.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/section_swipe.dart';
 import '../widgets/list_selection.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_tile.dart';
@@ -173,8 +174,9 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
         : direct.songsOf(widget.sourceKey, query: _query);
     final count = isProxy ? _songs.length : direct.countOf(widget.sourceKey);
 
-    return Column(
-      children: [
+    return SectionSwipe(
+      child: Column(
+        children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(8, 8, 16, 0),
           child: Row(
@@ -359,7 +361,8 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                       },
                     ),
         ),
-      ],
+        ],
+      ),
     );
   }
 }
