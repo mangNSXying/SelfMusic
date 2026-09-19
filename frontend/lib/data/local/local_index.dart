@@ -138,6 +138,11 @@ class LocalIndex {
     if (!songCols.contains('url')) {
       _db!.execute('ALTER TABLE idx_songs ADD COLUMN url TEXT');
     }
+    // 用户手动改过元数据的行：扫描不再覆盖其标题/歌手/专辑。
+    if (!songCols.contains('user_edited')) {
+      _db!.execute(
+          'ALTER TABLE idx_songs ADD COLUMN user_edited INTEGER NOT NULL DEFAULT 0');
+    }
     // play_meta 为既有 DB 时可能缺 song_json 快照列。
     final metaCols = _db!
         .select('PRAGMA table_info(play_meta)')
@@ -242,38 +247,9 @@ class LocalIndex {
     };
   }
 
-  void upsertSong(DirectSongRow s) {
-    _db!.execute('''
-      INSERT INTO idx_songs(source_key, ref, title, artist, album, track_no, year,
-        genre, duration, format, size, mtime, etag, cover_path, is_favorite, missing)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0)
-      ON CONFLICT(source_key, ref) DO UPDATE SET
-        title=excluded.title, artist=excluded.artist, album=excluded.album,
-        track_no=excluded.track_no, year=excluded.year, genre=excluded.genre,
-        duration=excluded.duration, format=excluded.format, size=excluded.size,
-        mtime=excluded.mtime,
-        etag=COALESCE(excluded.etag, idx_songs.etag),
-        cover_path=COALESCE(excluded.cover_path, idx_songs.cover_path),
-        missing=0
-    ''', [
-      s.sourceKey,
-      s.ref,
-      s.title,
-      s.artist,
-      s.album,
-      s.trackNo,
-      s.year,
-      s.genre,
-      s.duration,
-      s.format,
-      s.size,
-      s.mtime,
-      s.etag,
-      s.coverPath,
-    ]);
-  }
-
   /// 批量落库（单事务），供扫描结束一次性写入，避免逐行 autocommit。
+  ///
+  /// 用户手动改过元数据的行（user_edited=1）：标题/歌手/专辑不再被扫描覆盖。
   void upsertSongs(List<DirectSongRow> songs) {
     if (songs.isEmpty) return;
     _db!.execute('BEGIN');
@@ -283,7 +259,9 @@ class LocalIndex {
           genre, duration, format, size, mtime, etag, cover_path, is_favorite, missing, url)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?)
         ON CONFLICT(source_key, ref) DO UPDATE SET
-          title=excluded.title, artist=excluded.artist, album=excluded.album,
+          title=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.title ELSE excluded.title END,
+          artist=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.artist ELSE excluded.artist END,
+          album=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.album ELSE excluded.album END,
           track_no=excluded.track_no, year=excluded.year, genre=excluded.genre,
           duration=excluded.duration, format=excluded.format, size=excluded.size,
           mtime=excluded.mtime,
@@ -334,6 +312,39 @@ class LocalIndex {
         cover_path=COALESCE(?, cover_path)
       WHERE source_key=? AND ref=?
     ''', [duration, genre, trackNo, year, coverPath, sourceKey, songRef]);
+  }
+
+  /// 用户手动修改歌曲元数据：标题/歌手/专辑落库并标记 user_edited=1（扫描不再覆盖），
+  /// 同时同步 play_meta 歌曲快照中的对应字段（喜欢列表/断点恢复用快照渲染）。
+  void updateSongUserMeta(String sourceKey, String songRef,
+      {String? title, String? artist, String? album}) {
+    _db!.execute('''
+      UPDATE idx_songs SET
+        title=COALESCE(?, title),
+        artist=COALESCE(?, artist),
+        album=COALESCE(?, album),
+        user_edited=1
+      WHERE source_key=? AND ref=?
+    ''', [title, artist, album, sourceKey, songRef]);
+    final rows = _db!.select(
+        'SELECT song_json FROM play_meta WHERE source_key=? AND song_ref=?',
+        [sourceKey, songRef]);
+    if (rows.isEmpty) return;
+    final raw = rows.first['song_json'] as String?;
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final j = jsonDecode(raw) as Map<String, dynamic>;
+      if (title != null) j['title'] = title;
+      if (artist != null) {
+        j['artist'] = artist;
+      }
+      if (album != null) j['albumName'] = album;
+      _db!.execute(
+          'UPDATE play_meta SET song_json=? WHERE source_key=? AND song_ref=?',
+          [jsonEncode(j), sourceKey, songRef]);
+    } catch (_) {
+      // 快照损坏则忽略（下次收藏时重写）。
+    }
   }
 
   /// 把嵌入封面包装成可跨源复用的落盘（`covers/<md5(ref)>.jpg`），返回路径或 null。
@@ -447,7 +458,9 @@ class LocalIndex {
   }
 
   /// 按 ref 回查歌曲：兼容新旧两种入库形态（解码态 / 历史 ENCODE 文本）。
-Song? _songByRef(String sourceKey, String ref) {
+  Song? songByRef(String sourceKey, String ref) => _songByRef(sourceKey, ref);
+
+  Song? _songByRef(String sourceKey, String ref) {
     const sql = '''
       SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.track_no,
              i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,

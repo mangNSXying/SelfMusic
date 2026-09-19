@@ -582,12 +582,23 @@ class DirectSourceManager extends ChangeNotifier {
 
   /// 是否处于「不喜欢」态（权重锁定最低）。
   bool isDisliked(Song s) => weight.isDisliked(s);
-
   /// 手动「不喜欢」开关：开 → 权重降到最低并锁定；关 → 解锁回到 1.0。
   void setDisliked(Song s, bool disliked) {
     weight.setDisliked(s, disliked);
     _favoriteVersion++;
     notifyListeners();
+  }
+
+  /// 用户手动修改直连歌曲元数据（标题/歌手/专辑）：落库并标记扫描保护，
+  /// 返回刷新后的歌曲（供播放队列/当前歌曲同步），非直连歌返回 null。
+  Song? updateSongMeta(Song s,
+      {String? title, String? artist, String? album}) {
+    if (!s.isDirect) return null;
+    index.updateSongUserMeta(s.sourceKey, s.sourceRef,
+        title: title, artist: artist, album: album);
+    _favoriteVersion++;
+    notifyListeners();
+    return index.songByRef(s.sourceKey, s.sourceRef);
   }
 
   Future<void> cacheSong(MusicSource src, Song s) async {

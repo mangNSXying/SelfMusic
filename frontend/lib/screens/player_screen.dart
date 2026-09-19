@@ -484,9 +484,12 @@ class _Cover extends StatelessWidget {
                 padding: EdgeInsets.zero,
                 onSelected: (v) => _onSelected(context, v),
                 itemBuilder: (c) => [
-                  const PopupMenuItem(value: 'playlist', child: Text('加入歌单')),
-                  if (song.isDirect)
-                    const PopupMenuItem(value: 'cache', child: Text('缓存')),
+                  const PopupMenuItem(value: 'info', child: Text('歌曲信息')),
+                  PopupMenuItem(
+                    value: 'edit',
+                    enabled: song.isDirect,
+                    child: Text(song.isDirect ? '修改歌曲元数据' : '修改歌曲元数据（仅直连）'),
+                  ),
                 ],
               ),
             ),
@@ -497,17 +500,172 @@ class _Cover extends StatelessWidget {
   }
 
   void _onSelected(BuildContext context, String v) {
-    if (v == 'playlist') {
-      showAddToPlaylistSheet(context, song);
-    } else if (v == 'cache') {
-      final direct = context.read<DirectSourceManager>();
-      final src = direct.sourceByKey(song.sourceKey);
-      if (src == null || !song.isDirect) return;
-      direct.cacheSong(src, song);
-      ScaffoldMessenger.of(context)
-        ..clearSnackBars()
-        ..showSnackBar(const SnackBar(content: Text('已开始缓存')));
+    if (v == 'info') {
+      showDialog<void>(
+        context: context,
+        builder: (_) => _SongInfoDialog(song: song),
+      );
+    } else if (v == 'edit') {
+      if (!song.isDirect) return;
+      showDialog<void>(
+        context: context,
+        builder: (_) => _EditSongMetaDialog(song: song),
+      );
     }
+  }
+}
+
+/// 歌曲信息弹窗：标题/歌手/专辑/流派/年份/时长/格式/来源/权重/收藏态。
+class _SongInfoDialog extends StatelessWidget {
+  final Song song;
+  const _SongInfoDialog({required this.song});
+
+  @override
+  Widget build(BuildContext context) {
+    final direct = context.watch<DirectSourceManager>();
+    final states = <String>[];
+    if (song.isDirect) {
+      if (direct.weight.isFavorite(song)) states.add('喜欢');
+      if (direct.weight.isDisliked(song)) states.add('不喜欢');
+    }
+    final rows = <List<String>>[
+      ['标题', song.title],
+      ['歌手', song.artist ?? 'Unknown'],
+      ['专辑', song.albumName ?? '—'],
+      if (song.genre != null) ['流派', song.genre!],
+      if (song.year != null) ['年份', '${song.year}'],
+      if (song.duration != null) ['时长', '${song.duration} 秒'],
+      if (song.format != null) ['格式', song.format!.toUpperCase()],
+      ['来源', '${song.source}（${song.sourceKey}）'],
+      if (song.isDirect)
+        ['权重', direct.weight.factorOf(song).toStringAsFixed(1)],
+      if (song.isDirect) ['状态', states.isEmpty ? '—' : states.join(' · ')],
+    ];
+    return AlertDialog(
+      title: const Text('歌曲信息'),
+      content: SizedBox(
+        width: 340,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final r in rows)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        width: 52,
+                        child: Text(r[0],
+                            style: TextStyle(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurface
+                                    .withValues(alpha: 0.6))),
+                      ),
+                      Expanded(child: Text(r[1])),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('关闭'),
+        ),
+      ],
+    );
+  }
+}
+
+/// 修改歌曲元数据弹窗（仅直连）：标题/歌手/专辑可编辑，保存后扫描不再覆盖。
+class _EditSongMetaDialog extends StatefulWidget {
+  final Song song;
+  const _EditSongMetaDialog({required this.song});
+
+  @override
+  State<_EditSongMetaDialog> createState() => _EditSongMetaDialogState();
+}
+
+class _EditSongMetaDialogState extends State<_EditSongMetaDialog> {
+  late final TextEditingController _title;
+  late final TextEditingController _artist;
+  late final TextEditingController _album;
+
+  @override
+  void initState() {
+    super.initState();
+    _title = TextEditingController(text: widget.song.title);
+    _artist = TextEditingController(text: widget.song.artist ?? '');
+    _album = TextEditingController(text: widget.song.albumName ?? '');
+  }
+
+  @override
+  void dispose() {
+    _title.dispose();
+    _artist.dispose();
+    _album.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final title = _title.text.trim();
+    if (title.isEmpty) {
+      AppToast.error(StateError('标题不能为空'));
+      return;
+    }
+    final direct = context.read<DirectSourceManager>();
+    final updated = direct.updateSongMeta(
+      widget.song,
+      title: title,
+      artist: _artist.text.trim().isEmpty ? null : _artist.text.trim(),
+      album: _album.text.trim().isEmpty ? null : _album.text.trim(),
+    );
+    if (updated != null) {
+      context.read<PlayerProvider>().refreshSongMeta(updated);
+    }
+    Navigator.of(context).pop();
+    AppToast.show('已保存歌曲信息（扫描不再覆盖）', isError: false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('修改歌曲元数据'),
+      content: SizedBox(
+        width: 340,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _title,
+              decoration: const InputDecoration(labelText: '标题'),
+            ),
+            TextField(
+              controller: _artist,
+              decoration:
+                  const InputDecoration(labelText: '歌手（留空为未知）'),
+            ),
+            TextField(
+              controller: _album,
+              decoration:
+                  const InputDecoration(labelText: '专辑（留空为未知）'),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(onPressed: _save, child: const Text('保存')),
+      ],
+    );
   }
 }
 

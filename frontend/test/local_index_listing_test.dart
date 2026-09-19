@@ -143,4 +143,43 @@ void main() {
     index.close();
     dir.deleteSync(recursive: true);
   });
+
+  test('用户改元数据后扫描不再覆盖标题/歌手/专辑', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir = await Directory.systemTemp.createTemp('selfmusic_idxmeta_');
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+
+    DirectSongRow row(String title, String? artist, String? album) =>
+        DirectSongRow(
+          sourceKey: 'webdav:nas',
+          ref: '/dav/a.flac',
+          title: title,
+          artist: artist,
+          album: album,
+          duration: 200,
+          format: 'flac',
+          size: 1024,
+          mtime: 1,
+        );
+    index.upsertSongs([row('扫描标题', '扫描歌手', '扫描专辑')]);
+    index.updateSongUserMeta('webdav:nas', '/dav/a.flac',
+        title: '我的标题', artist: '我的歌手');
+
+    var got = index.songByRef('webdav:nas', '/dav/a.flac')!;
+    expect(got.title, '我的标题');
+    expect(got.artist, '我的歌手');
+    expect(got.albumName, '扫描专辑');
+
+    // 再次扫描：标题/歌手/专辑保留用户版，其余字段照常更新。
+    index.upsertSongs([row('新扫描标题', '新扫描歌手', '新扫描专辑')]);
+    got = index.songByRef('webdav:nas', '/dav/a.flac')!;
+    expect(got.title, '我的标题');
+    expect(got.artist, '我的歌手');
+    expect(got.albumName, '扫描专辑');
+
+    index.close();
+    dir.deleteSync(recursive: true);
+  });
 }

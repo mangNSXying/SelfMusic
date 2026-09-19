@@ -452,8 +452,7 @@ class PlayerProvider extends ChangeNotifier {
 
   List<Song> get queue => List.unmodifiable(_queue);
   Song? get current => _current;
-  bool get hasCurrent => _current != null;
-  Duration get position => player.position;
+  bool get hasCurrent => _current != null;  Duration get position => player.position;
   Duration? get duration => player.duration;
   bool get playing => player.playing;
   PlayMode get mode => _mode;
@@ -512,6 +511,23 @@ class PlayerProvider extends ChangeNotifier {
       error = null;
       await _play(s, source: source);
     }
+  }
+
+  /// 用户修改元数据后：刷新队列与当前歌曲中的同源对象并通知（含断点快照）。
+  void refreshSongMeta(Song updated) {
+    var changed = false;
+    for (var i = 0; i < _queue.length; i++) {
+      if (_same(_queue[i], updated)) {
+        _queue[i] = updated;
+        changed = true;
+      }
+    }
+    final cur = _current;
+    if (cur != null && _same(cur, updated)) {
+      _current = updated;
+      changed = true;
+    }
+    if (changed) notifyListeners();
   }
 
   Future<void> _play(Song s, {MusicSource? source, bool play = true}) async {
