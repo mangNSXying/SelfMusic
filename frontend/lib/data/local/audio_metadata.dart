@@ -132,21 +132,74 @@ Uint8List? _apicOf(Uint8List head) {
     final size = _syncsafe(head, i + 4);
     if (size < 0 || i + 10 + size > head.length) break;
     if (id == 'APIC' && size > 8) {
-      final data = head.sublist(i + 10, i + 10 + size);
-      // encoding byte, mime (null-terminated), pic type, description (null-terminated)
-      var p = 1;
-      final mimeEnd = data.indexOf(0, p);
-      if (mimeEnd < 0) return null;
-      p = mimeEnd + 1;
-      p += 1; // pic type
-      final descEnd = data.indexOf(0, p);
-      if (descEnd < 0) return null;
-      p = descEnd + 1;
-      if (p < data.length) return data.sublist(p);
+      final img = _apicImage(head.sublist(i + 10, i + 10 + size));
+      if (img != null) return img;
     }
     i += 10 + size;
   }
   return null;
+}
+
+/// 从 APIC 帧体提取图片字节：
+/// - mime `-->` 是 URL 引用而非图片数据，跳过；
+/// - 描述终止符按编码处理（UTF-16 为对齐的 00 00，单字节编码为 00）；
+/// - 只有通过图片签名校验才返回，避免把描述残留/URL 写进封面缓存
+///   （否则 Android ImageDecoder 会报「Failed to decode image」）。
+Uint8List? _apicImage(List<int> data) {
+  if (data.length < 6) return null;
+  final enc = data[0];
+  var p = 1;
+  final mimeEnd = data.indexOf(0, p);
+  if (mimeEnd < 0) return null;
+  final mime = String.fromCharCodes(data.sublist(p, mimeEnd));
+  if (mime == '-->') return null;
+  p = mimeEnd + 1;
+  if (p >= data.length) return null;
+  p += 1; // 图片类型
+  if (enc == 1 || enc == 2) {
+    // UTF-16：描述终止符为双字节 00 00（按 2 字节对齐扫描）。
+    var q = p;
+    var terminated = false;
+    while (q + 1 < data.length) {
+      if (data[q] == 0 && data[q + 1] == 0) {
+        q += 2;
+        terminated = true;
+        break;
+      }
+      q += 2;
+    }
+    if (!terminated) return null;
+    p = q;
+  } else {
+    final descEnd = data.indexOf(0, p);
+    if (descEnd < 0) return null;
+    p = descEnd + 1;
+  }
+  if (p >= data.length) return null;
+  final img = Uint8List.fromList(data.sublist(p));
+  return looksLikeImageBytes(img) ? img : null;
+}
+
+/// 图片字节签名校验（JPEG/PNG/GIF/BMP/WEBP/HEIF-AVIF）。
+///
+/// 封面写入缓存前必须通过校验：解析出的字节可能是描述残留、URL 文本等，
+/// 直接落盘会让图片解码器报错刷日志。
+bool looksLikeImageBytes(List<int> b) {
+  if (b.length < 12) return false;
+  if (b[0] == 0xFF && b[1] == 0xD8) return true; // JPEG
+  if (b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) {
+    return true; // PNG
+  }
+  if (b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46) return true; // GIF
+  if (b[0] == 0x42 && b[1] == 0x4D) return true; // BMP
+  if (b[0] == 0x52 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x46 &&
+      b[8] == 0x57 && b[9] == 0x45 && b[10] == 0x42 && b[11] == 0x50) {
+    return true; // WEBP (RIFF....WEBP)
+  }
+  if (b[4] == 0x66 && b[5] == 0x74 && b[6] == 0x79 && b[7] == 0x70) {
+    return true; // ftyp (HEIF/AVIF)
+  }
+  return false;
 }
 
 String _decodeText(List<int> bytes) {
@@ -346,7 +399,11 @@ Uint8List? _parseFlacPicture(List<int> body) {
   var p = 4;
   if (p + 4 > body.length) return null;
   final mimeLen = readU32b(body, p);
-  p += 4 + mimeLen;
+  p += 4;
+  if (mimeLen < 0 || p + mimeLen > body.length) return null;
+  final mime = String.fromCharCodes(body.sublist(p, p + mimeLen));
+  if (mime == '-->') return null; // URL 引用而非图片数据
+  p += mimeLen;
   if (p + 4 > body.length) return null;
   final descLen = readU32b(body, p);
   p += 4 + descLen;
@@ -354,8 +411,9 @@ Uint8List? _parseFlacPicture(List<int> body) {
   if (p + 4 > body.length) return null;
   final dataLen = readU32b(body, p);
   p += 4;
-  if (p + dataLen > body.length) return null;
-  return Uint8List.fromList(body.sublist(p, p + dataLen));
+  if (dataLen < 0 || p + dataLen > body.length) return null;
+  final img = Uint8List.fromList(body.sublist(p, p + dataLen));
+  return looksLikeImageBytes(img) ? img : null;
 }
 
 // ---------- helpers ----------
