@@ -170,9 +170,11 @@ class _RootState extends State<Root> {
     });
   }
 
-  /// 「再按一次退出」：根路由拦截返回键，2 秒内再次按下才真正退出。
+  /// 统一返回：先按层级逐级回退（设置 → 队列 → 源内/歌单详情 → 内容页 → 播放页），
+  /// 已在最底层（播放页）时「再按一次退出」（2 秒内再次按下才真正退出）。
   void _onPopInvoked(bool didPop, Object? result) {
     if (didPop) return;
+    if (context.read<NavigationProvider>().backToPrevious()) return;
     final now = DateTime.now();
     if (_lastBackPressed != null &&
         now.difference(_lastBackPressed!) < const Duration(seconds: 2)) {
@@ -207,13 +209,11 @@ class _RootState extends State<Root> {
     // 首次启动不再强制配对：未配对也可正常使用直连模式；
     // 配对 / 会话过期后重新配对在「设置 → 服务端」进行。
     final nav = context.watch<NavigationProvider>();
-    // 播放页为首页：全屏展示（替换整个壳层）；返回键从播放页回到上一分区。
+    // 播放页为首页：全屏展示（替换整个壳层）；返回键走统一层级回退。
     if (nav.playerView) {
       return PopScope<void>(
         canPop: false,
-        onPopInvokedWithResult: (didPop, _) {
-          if (!didPop) nav.closePlayer();
-        },
+        onPopInvokedWithResult: _onPopInvoked,
         child: const PlayerScreen(),
       );
     }

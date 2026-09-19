@@ -13,6 +13,9 @@ class NavigationProvider extends ChangeNotifier {
   String? _browsingSourceKey;
   int? _browsingPlaylistId;
 
+  /// 播放队列面板是否展开（宽屏右侧常驻 / 窄屏底部弹层标记）。
+  bool _queueOpen = false;
+
   NavSection get section => _section;
   String get search => _search;
 
@@ -27,6 +30,58 @@ class NavigationProvider extends ChangeNotifier {
 
   /// 是否展示播放页。
   bool get playerView => _playerView;
+
+  /// 播放队列面板是否展开。
+  bool get queueOpen => _queueOpen;
+
+  void openQueue() {
+    _queueOpen = true;
+    notifyListeners();
+  }
+
+  void closeQueue() {
+    if (!_queueOpen) return;
+    _queueOpen = false;
+    notifyListeners();
+  }
+
+  void toggleQueue() {
+    _queueOpen = !_queueOpen;
+    notifyListeners();
+  }
+
+  /// 层级返回（底 → 顶）：播放页 < 内容页（含源内/歌单详情） < 队列面板 < 设置页。
+  ///
+  /// 窄屏侧边抽屉 / 队列弹层是系统路由，返回键由框架先关闭，到不了这里。
+  /// 返回 true 表示已消费（停留在上一级），false 表示已在最底层（调用方可退出）。
+  bool backToPrevious() {
+    if (_settings != null) {
+      _settings = null;
+      notifyListeners();
+      return true;
+    }
+    if (_queueOpen) {
+      _queueOpen = false;
+      notifyListeners();
+      return true;
+    }
+    if (_browsingPlaylistId != null) {
+      _browsingPlaylistId = null;
+      notifyListeners();
+      return true;
+    }
+    if (_browsingSourceKey != null) {
+      _browsingSourceKey = null;
+      notifyListeners();
+      return true;
+    }
+    if (!_playerView) {
+      _playerView = true;
+      notifyListeners();
+      return true;
+    }
+    return false;
+  }
 
   void select(NavSection s) {
     _section = s;

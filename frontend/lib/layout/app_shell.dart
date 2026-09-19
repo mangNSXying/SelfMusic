@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../providers/navigation_provider.dart';
 import 'sidebar.dart';
 import 'top_bar.dart';
 import 'queue_panel.dart';
@@ -19,7 +21,6 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   bool _sidebarVisible = true;
-  bool _queueVisible = false;
 
   void _toggleSidebar() {
     final w = MediaQuery.of(context).size.width;
@@ -31,10 +32,11 @@ class _AppShellState extends State<AppShell> {
   }
 
   void _toggleQueue() {
+    final nav = context.read<NavigationProvider>();
     // 窄屏：以底部弹层展示队列（宽屏为右侧常驻面板）。
     if (MediaQuery.of(context).size.width < 900) {
-      if (_queueVisible) return;
-      setState(() => _queueVisible = true);
+      if (nav.queueOpen) return;
+      nav.openQueue();
       showModalBottomSheet<void>(
         context: context,
         isScrollControlled: true,
@@ -43,20 +45,21 @@ class _AppShellState extends State<AppShell> {
           child: QueuePanel(onClose: () => Navigator.of(c).pop()),
         ),
       ).whenComplete(() {
-        if (mounted) setState(() => _queueVisible = false);
+        if (mounted) nav.closeQueue();
       });
       return;
     }
-    setState(() => _queueVisible = !_queueVisible);
+    nav.toggleQueue();
   }
 
   @override
   Widget build(BuildContext context) {
     final wide = MediaQuery.of(context).size.width >= 900;
+    final nav = context.watch<NavigationProvider>();
 
     final contentColumn = Column(
       children: [
-        TopBar(onSidebarToggle: _toggleSidebar, onQueueToggle: _toggleQueue, queueActive: _queueVisible),
+        TopBar(onSidebarToggle: _toggleSidebar, onQueueToggle: _toggleQueue, queueActive: nav.queueOpen),
         Expanded(child: widget.content),
         const MiniPlayerBar(),
       ],
@@ -67,7 +70,7 @@ class _AppShellState extends State<AppShell> {
             children: [
               if (_sidebarVisible) const Sidebar(),
               Expanded(child: contentColumn),
-              if (_queueVisible) QueuePanel(onClose: _toggleQueue),
+              if (nav.queueOpen) QueuePanel(onClose: nav.closeQueue),
             ],
           )
         : Stack(
