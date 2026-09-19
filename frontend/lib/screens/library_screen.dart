@@ -11,6 +11,7 @@ import '../models/album.dart';
 import '../models/artist.dart';
 import '../theme/app_theme.dart';
 import '../widgets/add_to_playlist.dart';
+import '../widgets/corner_add_button.dart';
 import '../widgets/list_selection.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
@@ -102,62 +103,67 @@ class _LikedViewState extends State<_LikedView> {
     final songs = direct.favoriteSongs();
 
     return SectionSwipe(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Stack(
         children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-          child: Text('喜欢',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleLarge
-                  ?.copyWith(fontWeight: FontWeight.bold)),
-        ),
-        if (_sel.active)
-          SelectionBar(
-            total: songs.length,
-            selectedCount: _sel.of(songs.map(songKey)).length,
-            onToggleAll: () =>
-                setState(() => _sel.setAll(songs.map(songKey))),
-            onCancel: () => setState(_sel.cancel),
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.play_arrow),
-                tooltip: '播放选中',
-                onPressed: _sel.isEmpty ? null : () => _playSelected(songs),
-              ),
-              IconButton(
-                icon: const Icon(Icons.favorite_border),
-                tooltip: '取消喜欢',
-                onPressed: _sel.isEmpty ? null : () => _unlikeSelected(songs),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (_sel.active)
+                SelectionBar(
+                  total: songs.length,
+                  selectedCount: _sel.of(songs.map(songKey)).length,
+                  onToggleAll: () =>
+                      setState(() => _sel.setAll(songs.map(songKey))),
+                  onCancel: () => setState(_sel.cancel),
+                  actions: [
+                    IconButton(
+                      icon: const Icon(Icons.play_arrow),
+                      tooltip: '播放选中',
+                      onPressed: _sel.isEmpty ? null : () => _playSelected(songs),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.favorite_border),
+                      tooltip: '取消喜欢',
+                      onPressed: _sel.isEmpty ? null : () => _unlikeSelected(songs),
+                    ),
+                  ],
+                ),
+              if (_sel.active) const Divider(height: 1),
+              Expanded(
+                child: songs.isEmpty
+                    ? const Center(child: Text('暂无喜欢的歌曲，去歌曲页点 ♡ 收藏'))
+                    : ListView.separated(
+                        itemCount: songs.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1, indent: 72),
+                        itemBuilder: (c, i) {
+                          final s = songs[i];
+                          return SongTile(
+                            song: s,
+                            source: lib.sourceFor(s.sourceKey) ?? lib.source,
+                            onPlay: () {
+                              player.playQueue(songs, index: i, source: lib.source);
+                              context.read<NavigationProvider>().openPlayer();
+                            },
+                            selectionMode: _sel.active,
+                            selected: _sel.contains(songKey(s)),
+                            onSelect: () => _toggle(songKey(s)),
+                            onStartSelect:
+                                () => setState(() => _sel.startWith(songKey(s))),
+                          );
+                        },
+                      ),
               ),
             ],
           ),
-        const Divider(height: 1),
-        Expanded(
-          child: songs.isEmpty
-              ? const Center(child: Text('暂无喜欢的歌曲，点 ♡ 收藏'))
-              : ListView.separated(
-                  itemCount: songs.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1, indent: 72),
-                  itemBuilder: (c, i) {
-                    final s = songs[i];
-                    return SongTile(
-                      song: s,
-                      source: lib.sourceFor(s.sourceKey) ?? lib.source,
-                      onPlay: () {
-                        player.playQueue(songs, index: i, source: lib.source);
-                        context.read<NavigationProvider>().openPlayer();
-                      },
-                      selectionMode: _sel.active,
-                      selected: _sel.contains(songKey(s)),
-                      onSelect: () => _toggle(songKey(s)),
-                      onStartSelect:
-                          () => setState(() => _sel.startWith(songKey(s))),
-                    );
-                  },
-                ),
-        ),
+          Positioned(
+            right: 16,
+            bottom: 16,
+            child: CornerAddButton(
+              tooltip: '去歌曲页收藏',
+              onPressed: () =>
+                  context.read<NavigationProvider>().select(NavSection.songs),
+            ),
+          ),
         ],
       ),
     );

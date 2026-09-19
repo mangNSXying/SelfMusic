@@ -67,7 +67,8 @@ void main() {
     expect(find.text('已有歌单'), findsOneWidget);
     expect(find.text('新建歌单'), findsNothing);
 
-    await tester.tap(find.text('新建'));
+    // 右下角「+」新建
+    await tester.tap(find.byTooltip('新建播放列表'));
     await tester.pump(const Duration(milliseconds: 200));
     await tester.enterText(find.byType(TextField), '新建歌单');
     await tester.tap(find.text('创建'));
@@ -120,7 +121,8 @@ void main() {
 
     expect(find.text('已选 1'), findsOneWidget);
     expect(find.text('全选'), findsOneWidget);
-    expect(find.text('删除选中'), findsOneWidget);
+    // 删除选中已迁入多选栏 actions（图标按钮）
+    expect(find.byTooltip('删除选中'), findsOneWidget);
 
     // 点击另一项累计选中 → 全部选中后按钮变为「取消全选」
     await tester.tap(find.text('另一个歌单'));

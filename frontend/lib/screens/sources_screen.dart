@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../data/sources/music_source.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
+import '../widgets/corner_add_button.dart';
 import '../widgets/section_swipe.dart';
 
 /// 播放源管理页：直连源（WebDAV / 本地文件夹）列表。
@@ -20,41 +21,39 @@ class SourcesScreen extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
 
     return SectionSwipe(
-      child: Column(
+      child: Stack(
         children: [
-        Expanded(
-          child: ListView(
-            padding: const EdgeInsets.all(16),
+          Column(
             children: [
-              for (final s in direct.sources) ...[
-                _DirectSourceCard(sourceKey: s.key),
-                const SizedBox(height: 8),
-              ],
-              if (direct.sources.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 24),
-                  child: Text('尚未添加播放源',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: scheme.onSurfaceVariant)),
+              Expanded(
+                child: ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    for (final s in direct.sources) ...[
+                      _DirectSourceCard(sourceKey: s.key),
+                      const SizedBox(height: 8),
+                    ],
+                    if (direct.sources.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 24),
+                        child: Text('尚未添加播放源，点右下角「+」添加',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: scheme.onSurfaceVariant)),
+                      ),
+                  ],
                 ),
+              ),
             ],
           ),
-        ),
-        const Divider(height: 1),
-        SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                icon: const Icon(Icons.add_link),
-                label: const Text('添加播放源'),
-                onPressed: () =>
-                    showDialog<void>(context: context, builder: (_) => const _SourceDialog()),
-              ),
+          Positioned(
+            right: 16,
+            bottom: 16,
+            child: CornerAddButton(
+              tooltip: '添加播放源',
+              onPressed: () => showDialog<void>(
+                  context: context, builder: (_) => const _SourceDialog()),
             ),
           ),
-        ),
         ],
       ),
     );

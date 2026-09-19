@@ -5,6 +5,7 @@ import '../data/local/local_index.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../providers/playlists_provider.dart';
+import '../widgets/corner_add_button.dart';
 import '../widgets/list_selection.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
@@ -75,47 +76,33 @@ class _PlaylistsViewState extends State<PlaylistsView> {
     final playlists = provider.playlists;
 
     return SectionSwipe(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Stack(
         children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-          child: Row(
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('播放列表',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleLarge
-                      ?.copyWith(fontWeight: FontWeight.bold)),
-              const Spacer(),
               if (_sel.active)
-                TextButton.icon(
-                  icon: const Icon(Icons.delete),
-                  label: const Text('删除选中'),
-                  onPressed: _sel.isEmpty ? null : () => _deleteSelected(provider),
-                )
-              else
-                TextButton.icon(
-                  icon: const Icon(Icons.add),
-                  label: const Text('新建'),
-                  onPressed: () => _createDialog(context, provider),
+                SelectionBar(
+                  total: playlists.length,
+                  selectedCount: _sel.count,
+                  onToggleAll: () =>
+                      setState(() => _sel.setAll(playlists.map((p) => p.id))),
+                  onCancel: () => setState(_sel.cancel),
+                  actions: [
+                    IconButton(
+                      icon: const Icon(Icons.delete),
+                      tooltip: '删除选中',
+                      onPressed: _sel.isEmpty
+                          ? null
+                          : () => _deleteSelected(provider),
+                    ),
+                  ],
                 ),
-            ],
-          ),
-        ),
-        if (_sel.active)
-          SelectionBar(
-            total: playlists.length,
-            selectedCount: _sel.count,
-            onToggleAll: () =>
-                setState(() => _sel.setAll(playlists.map((p) => p.id))),
-            onCancel: () => setState(_sel.cancel),
-          ),
-        const Divider(height: 1),
-        Expanded(
-          child: playlists.isEmpty
-              ? const Center(child: Text('暂无歌单，点右上角「新建」创建'))
-              : ListView.separated(
+              if (_sel.active) const Divider(height: 1),
+              Expanded(
+                child: playlists.isEmpty
+                    ? const Center(child: Text('暂无歌单，点右下角「+」创建'))
+                    : ListView.separated(
                   itemCount: playlists.length,
                   separatorBuilder: (_, __) => const Divider(height: 1, indent: 72),
                   itemBuilder: (c, i) {
@@ -161,7 +148,17 @@ class _PlaylistsViewState extends State<PlaylistsView> {
                     );
                   },
                 ),
-        ),
+              ),
+            ],
+          ),
+          Positioned(
+            right: 16,
+            bottom: 16,
+            child: CornerAddButton(
+              tooltip: '新建播放列表',
+              onPressed: () => _createDialog(context, provider),
+            ),
+          ),
         ],
       ),
     );
