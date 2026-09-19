@@ -72,11 +72,26 @@ void main() {
 
     test('webdavCanonicalUrl 收敛 Unicode/编码/双重编码', () {
       const base =
-              'http://h:5005/dav/%E4%BD%90%E8%97%A4%E3%81%97%E3%81%9A%E3%81%8F%20-%20Growing!.flac';
+          'http://h:5005/dav/%E4%BD%90%E8%97%A4%E3%81%97%E3%81%9A%E3%81%8F%20-%20Growing!.flac';
       expect(webdavCanonicalUrl('http://h:5005/dav/佐藤しずく - Growing!.flac'), base);
       expect(webdavCanonicalUrl(
               'http://h:5005/dav/%E4%BD%90%E8%97%A4%E3%81%97%E3%81%9A%E3%81%8F%20-%20Growing%21.flac'),
           base);
+    });
+
+    test('webdavRefVariants 覆盖新旧两种入库形态', () {
+      const encoded =
+          '/dav/%E4%BD%90%E8%97%A4%E3%81%97%E3%81%9A%E3%81%8F%20-%20Growing%21.flac';
+      const decoded = '/dav/佐藤しずく - Growing!.flac';
+      final fromEncoded = webdavRefVariants(encoded);
+      expect(fromEncoded.first, encoded);
+      expect(fromEncoded, contains(decoded));
+      final fromDecoded = webdavRefVariants(decoded);
+      expect(fromDecoded.first, decoded);
+      // 历史行把 `!` 存成 `%21` 也能命中（严格编码形态）。
+      expect(fromDecoded, contains(encoded));
+      // 无需编码的纯 ASCII 路径只有一种形态。
+      expect(webdavRefVariants('/dav/song.mp3'), ['/dav/song.mp3']);
     });
   });
 }

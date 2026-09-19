@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 import '../../models/song.dart';
+import '../sources/webdav_url.dart';
 
 /// 直连模式本地轻量索引（DESIGN §6.4）。///
 /// SQLite 存放：已配置的直连源（[DirectSourceRow]）、索引歌曲（[Song]）、
@@ -411,6 +412,7 @@ class LocalIndex {
   /// 收藏状态统一存 play_meta（直连 + 服务器一致，stage2.md §1.1）。
   /// [songJson] 为该歌快照（收藏服务器歌曲时写入，供「喜欢」列表离线渲染），可空。
   void setFavorite(String sourceKey, String songRef, bool fav, {String? songJson}) {
+    _migrateMetaRef(sourceKey, songRef);
     final cur = playMetaOf(sourceKey, songRef);
     _db!.execute('''
       INSERT INTO play_meta(source_key, song_ref, like_streak, dislike_streak,
@@ -444,16 +446,21 @@ class LocalIndex {
     return out;
   }
 
-  Song? _songByRef(String sourceKey, String ref) {
-    final rows = _db!.select('''
+  /// 按 ref 回查歌曲：兼容新旧两种入库形态（解码态 / 历史 ENCODE 文本）。
+Song? _songByRef(String sourceKey, String ref) {
+    const sql = '''
       SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.track_no,
              i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
              COALESCE(p.is_favorite, 0) AS favorite
       FROM idx_songs i
       LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
       WHERE i.source_key=? AND i.ref=?
-    ''', [sourceKey, ref]);
-    return rows.isEmpty ? null : _rowToSong(rows.first);
+    ''';
+    for (final variant in webdavRefVariants(ref)) {
+      final rows = _db!.select(sql, [sourceKey, variant]);
+      if (rows.isNotEmpty) return _rowToSong(rows.first);
+    }
+    return null;
   }
 
   List<Song> favorites(String sourceKey) {
@@ -563,7 +570,51 @@ class LocalIndex {
 
   // ---------- play_meta（阶段 2：权重 / 收藏，stage2.md §1.1） ----------
 
+  /// 把历史 ENCODE 形态的旧行迁移到当前 ref（幂等）。
+  ///
+  /// 历史版本曾在 play_meta.song_ref 里存 ENCODE 文本；新扫描入库的 ref 为解码态。
+  /// 若不合并，同一首歌会分裂成两行：旧收藏态读不到、新写行与旧行并存导致
+  /// 「取消喜欢后喜欢列表仍在」。迁移保留最有价值的一行（收藏 > 有快照）。
+  void _migrateMetaRef(String sourceKey, String songRef) {
+    final alts =
+        webdavRefVariants(songRef).where((v) => v != songRef).toList();
+    if (alts.isEmpty) return;
+    final ph = alts.map((_) => '?').join(',');
+    final rows = _db!.select(
+        'SELECT song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json '
+        'FROM play_meta WHERE source_key=? AND song_ref IN ($ph)',
+        [sourceKey, ...alts]);
+    if (rows.isEmpty) return;
+    // 挑选保留行：已收藏优先，其次有歌曲快照，最后取 factor 偏离 1.0 最多。
+    Row best = rows.first;
+    int score(Row r) =>
+        ((r['is_favorite'] as int) == 1 ? 4 : 0) +
+        (((r['song_json'] as String?)?.isNotEmpty ?? false) ? 2 : 0) +
+        ((((r['factor'] as num).toDouble() - 1.0).abs() > 0.01) ? 1 : 0);
+    for (final r in rows.skip(1)) {
+      if (score(r) > score(best)) best = r;
+    }
+    _db!.execute(
+        'DELETE FROM play_meta WHERE source_key=? AND song_ref IN ($ph)',
+        [sourceKey, ...alts]);
+    _db!.execute(
+        'INSERT OR IGNORE INTO play_meta(source_key, song_ref, like_streak, dislike_streak, '
+        'factor, frozen, is_favorite, song_json) VALUES(?,?,?,?,?,?,?,?)',
+        [
+          sourceKey,
+          songRef,
+          best['like_streak'],
+          best['dislike_streak'],
+          best['factor'],
+          best['frozen'],
+          best['is_favorite'],
+          best['song_json']
+        ]);
+  }
+
   PlayMetaRow playMetaOf(String sourceKey, String songRef) {
+    // 读前迁移：旧编码行的收藏/权重态对新 ref 可见（图标、喜欢列表正确）。
+    _migrateMetaRef(sourceKey, songRef);
     final rs = _db!.select(
         'SELECT source_key, song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json '
         'FROM play_meta WHERE source_key=? AND song_ref=?', [sourceKey, songRef]);
@@ -601,6 +652,7 @@ class LocalIndex {
   void upsertPlayMeta(String sourceKey, String songRef,
       {int? likeStreak, int? dislikeStreak, double? factor, bool? frozen,
       bool? favorite, String? songJson}) {
+    _migrateMetaRef(sourceKey, songRef);
     _db!.execute('''
       INSERT INTO play_meta(source_key, song_ref, like_streak, dislike_streak,
         factor, frozen, is_favorite, song_json)

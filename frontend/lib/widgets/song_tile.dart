@@ -83,7 +83,11 @@ class SongTile extends StatelessWidget {
                     color: favorite ? Colors.pink : null,
                   ),
                   tooltip: favorite ? '取消喜欢' : '喜欢',
-                  onPressed: () => direct.setFavorite(song, !favorite),
+                  onPressed: () {
+                    direct.setFavorite(song, !favorite);
+                    AppToast.show(!favorite ? '已加入喜欢' : '已取消喜欢',
+                        isError: false);
+                  },
                 ),
                 if (song.isDirect)
                   IconButton(

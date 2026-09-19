@@ -10,6 +10,7 @@ import '../providers/player_provider.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../widgets/add_to_playlist.dart';
+import '../widgets/app_toast.dart';
 
 /// 全屏播放页（ui-playpage.html v5）：作为「首页」整屏展示，替换整个壳层。
 ///
@@ -325,7 +326,11 @@ class _NowPlaying extends StatelessWidget {
                 tooltip: favorite ? '取消喜欢' : '喜欢',
                 color: favorite ? Colors.pink : cs.onSurface.withValues(alpha: 0.55),
                 icon: Icon(favorite ? Icons.favorite : Icons.favorite_border),
-                onPressed: () => direct.setFavorite(s, !favorite),
+                onPressed: () {
+                  direct.setFavorite(s, !favorite);
+                  AppToast.show(!favorite ? '已加入喜欢' : '已取消喜欢',
+                      isError: false);
+                },
               ),
               IconButton(
                 iconSize: 22,

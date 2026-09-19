@@ -57,4 +57,46 @@ void main() {
     index.close();
     dir.deleteSync(recursive: true);
   });
+
+  test('旧 ENCODE 收藏行被新解码 ref 继承并合并（取消喜欢不残留）', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir = await Directory.systemTemp.createTemp('selfmusic_idxfav_');
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+
+    const decodedRef = '/dav/佐藤しずく - Growing!.flac';
+    const encodedRef =
+        '/dav/%E4%BD%90%E8%97%A4%E3%81%97%E3%81%9A%E3%81%8F%20-%20Growing%21.flac';
+    index.upsertSongs([
+      DirectSongRow(
+        sourceKey: 'webdav:nas',
+        ref: decodedRef,
+        title: 'Growing!',
+        artist: '佐藤しずく',
+        album: '',
+        duration: 200,
+        format: 'flac',
+        size: 1024,
+        mtime: 1,
+      ),
+    ]);
+    // 模拟历史版本写入的 ENCODE 收藏行（无歌曲快照）。
+    index.upsertPlayMeta('webdav:nas', encodedRef, favorite: true);
+
+    // 读侧：新 ref 能看到旧收藏态。
+    expect(index.playMetaOf('webdav:nas', decodedRef).favorite, isTrue);
+    // 喜欢列表：经回查补全出歌曲。
+    final liked = index.likedSongs();
+    expect(liked.length, 1);
+    expect(liked.first.title, 'Growing!');
+
+    // 写侧：取消喜欢后旧行被合并，不再残留。
+    index.setFavorite('webdav:nas', decodedRef, false);
+    expect(index.likedSongs(), isEmpty);
+    expect(index.playMetaOf('webdav:nas', decodedRef).favorite, isFalse);
+
+    index.close();
+    dir.deleteSync(recursive: true);
+  });
 }

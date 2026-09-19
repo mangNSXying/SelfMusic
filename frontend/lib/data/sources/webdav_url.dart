@@ -1,6 +1,8 @@
 /// WebDAV URL 路径解析（纯函数，供扫描 / 播放 / 缓存共用，可单元测试）。
 library;
 
+import 'dart:convert' show utf8;
+
 /// 归一化 base：补 scheme、去尾斜杠。如 `192.168.1.10:5005/media` → `http://.../media`。
 String webdavNormalizeBase(String url) {
   var u = url.trim();
@@ -30,6 +32,50 @@ String webdavDecodePath(String path) {
 String webdavEncodePath(String ref) {
   final parts = ref.split('/').where((s) => s.isNotEmpty);
   return '/${parts.map(Uri.encodeComponent).join('/')}';
+}
+
+/// ref 的新旧多种形态（原样 / 解码态 / 宽松编码 / 严格编码）去重列表。
+///
+/// 历史版本曾在 idx_songs.ref / play_meta.song_ref 里存 ENCODE 文本，且不同
+/// 服务器对子界定符（`!` 等）的编码风格不一（`!` vs `%21`）；按 ref 回查
+/// （喜欢列表、歌单快照回填）时逐一尝试，兼容各种入库形态。
+List<String> webdavRefVariants(String ref) {
+  final out = <String>[ref];
+  void add(String v) {
+    if (!out.contains(v)) out.add(v);
+  }
+
+  try {
+    add(Uri.decodeComponent(ref));
+  } catch (_) {}
+  try {
+    final d = Uri.decodeComponent(ref);
+    add(webdavEncodePath(d));
+    add(_webdavEncodePathStrict(d));
+  } catch (_) {
+    // ref 本身就是 Unicode（decodeComponent 拒收）：直接产出两种编码形态。
+    add(webdavEncodePath(ref));
+    add(_webdavEncodePathStrict(ref));
+  }
+  return out;
+}
+
+/// 严格编码：除 unreserved（A-Za-z0-9 `-_.~`）与 `/` 分隔符外全部百分号编码，
+/// 兼容把 `!` 等子界定符也编码的服务器/历史入库风格（`!` → `%21`）。
+String _webdavEncodePathStrict(String ref) {
+  const keep = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~/';
+  final buf = StringBuffer();
+  for (final rune in ref.runes) {
+    final c = String.fromCharCode(rune);
+    if (c.length == 1 && keep.contains(c)) {
+      buf.write(c);
+      continue;
+    }
+    for (final b in utf8.encode(c)) {
+      buf.write('%${b.toRadixString(16).toUpperCase().padLeft(2, '0')}');
+    }
+  }
+  return '/${buf.toString().replaceAll(RegExp(r'^/+'), '')}';
 }
 
 /// 由已解码的 ref 生成完整请求 URL（base 为去尾斜杠的源根）。
