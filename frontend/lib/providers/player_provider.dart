@@ -526,6 +526,11 @@ class PlayerProvider extends ChangeNotifier {
     }
   }
 
+  /// 以本地索引最新行纠正旧快照（歌单快照/断点恢复可能携带补读前的数据）：
+  /// 返回可直接播放的歌曲对象；索引中无此歌（服务端歌）时原样返回。
+  Song resolveLiveSong(Song s) =>
+      _index?.songByRef(s.sourceKey, s.sourceRef) ?? s;
+
   /// 用户修改元数据后：刷新队列与当前歌曲中的同源对象并通知（含断点快照）。
   void refreshSongMeta(Song updated) {
     var changed = false;
@@ -555,17 +560,25 @@ class PlayerProvider extends ChangeNotifier {
     error = null;
     try {
       final src = _resolver?.call(s.sourceKey) ?? source ?? _curSource;
+      // 以索引最新行纠正调用方可能携带的旧快照（歌单快照/断点恢复等）：
+      // 后台补读过的歌名/歌手/封面立即可见，不再等重新读头或重启。
+      final cur = resolveLiveSong(s);
+      if (!identical(cur, s)) {
+        for (var i = 0; i < _queue.length; i++) {
+          if (_same(_queue[i], s)) _queue[i] = cur;
+        }
+      }
       // 立即切换当前曲目并通知：后面的网络装载/缓冲再慢，播放页也先显示新曲。
-      _current = s;
+      _current = cur;
       _curSource = src;
       notifyListeners();
       if (src != null && src.supportsDirect) {
-        await _playDirect(s, src);
+        await _playDirect(cur, src);
       } else {
         String? url;
         Map<String, String>? headers;
         if (src != null) {
-          url = src.streamUrl(s.id);
+          url = src.streamUrl(cur.id);
           headers = src.streamHeaders();
         }
         if (url == null) {
@@ -580,10 +593,10 @@ class PlayerProvider extends ChangeNotifier {
       }
       unawaited(_applyEqualizerBands());
       _saveState(player.position);
-      if (src != null) _onTrackStarted?.call(src, s);
+      if (src != null) _onTrackStarted?.call(src, cur);
       // 播放即重读当前歌曲元数据（不管之前是否读过，保证展示最新）。
       if (src != null && src.supportsDirect) {
-        unawaited(_enrichLazily(s, src));
+        unawaited(_enrichLazily(cur, src));
       }
       notifyListeners();
       _syncSystemMedia();
