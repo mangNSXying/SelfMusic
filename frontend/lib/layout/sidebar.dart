@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
+import '../providers/player_provider.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_provider.dart';
 
@@ -114,20 +115,22 @@ class _BottomBar extends StatelessWidget {
           dense: true,
           leading: const Icon(Icons.logout),
           title: const Text('退出'),
-          onTap: _exitApp,
+          onTap: () => _exitApp(context),
         ),
       ],
     );
   }
 
-  /// 退出软件：不留后台，直接终止进程。
-  void _exitApp() {
+  /// 退出软件：先停止播放并释放播放器（避免 mpv 等子进程残留），再终止进程。
+  Future<void> _exitApp(BuildContext context) async {
+    await context.read<PlayerProvider>().shutdown();
     exit(0);
   }
 }
 
 /// 便于 Sidebar 判断是否处于移动端抽屉（窄屏）。
 class NavigationProviderHelper {
-  static bool isNarrow(BuildContext context) => MediaQuery.of(context).size.width < 900;
+  static bool isNarrow(BuildContext context) =>
+      MediaQuery.of(context).size.width < 900;
   const NavigationProviderHelper._();
 }

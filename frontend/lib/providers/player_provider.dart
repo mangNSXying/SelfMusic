@@ -977,6 +977,20 @@ class PlayerProvider extends ChangeNotifier {
     _syncSystemMedia();
   }
 
+  /// 通知栏「停止」/ 划掉最近任务：停止播放并清除断点，
+  /// 处理器的 `super.stop()` 随后把状态置 idle，前台服务/通知随之结束。
+  Future<void> stopFromNotifier() async {
+    _fadeTimer?.cancel();
+    _fadingPause = false;
+    try {
+      await player.stop();
+    } catch (_) {
+      // 平台停止失败不阻塞退出流程。
+    }
+    clearResumeState();
+    notifyListeners();
+  }
+
   Future<void> seek(Duration d) async {
     await player.seek(d);
     _syncSystemMedia();
@@ -1033,6 +1047,19 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   void clearResumeState() => _index?.clearPlayState();
+
+  /// 退出软件前清理：保存断点、停止并释放播放器（确保 mpv 等外部子进程退出）。
+  Future<void> shutdown() async {
+    _fadeTimer?.cancel();
+    _sleepTick?.cancel();
+    _saveState(player.position);
+    try {
+      await player.stop();
+    } catch (_) {}
+    try {
+      await player.dispose();
+    } catch (_) {}
+  }
 
   bool _same(Song a, Song b) =>
       a.sourceKey == b.sourceKey && a.sourceRef == b.sourceRef;

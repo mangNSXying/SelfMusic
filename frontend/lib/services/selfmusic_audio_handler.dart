@@ -75,9 +75,16 @@ class SelfMusicAudioHandler extends BaseAudioHandler {
   @override
   Future<void> skipToPrevious() async => _player?.prev();
 
+  /// 通知栏「停止」：真正停止播放并把系统状态置 idle（收起通知/前台服务）。
   @override
   Future<void> stop() async {
-    await _player?.pauseFromNotifier();
-    _player?.clearResumeState();
+    await _player?.stopFromNotifier();
+    await super.stop();
+  }
+
+  /// 手动杀后台（最近任务划掉）：停止播放，不继续驻留后台。
+  @override
+  Future<void> onTaskRemoved() async {
+    await stop();
   }
 }

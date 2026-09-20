@@ -48,19 +48,18 @@ Future<void> main() async {
   // 处理器本身在 PlayerProvider 创建时再绑定。
   // 失败时降级为无通知栏（audioHandler=null），不允许任何通知服务异常拖垮启动（曾致白屏）。
   SelfMusicAudioHandler? audioHandler;
-  if (!kIsWeb &&
-      Platform.isAndroid &&
-      direct.settings.notificationControls) {
+  if (!kIsWeb && Platform.isAndroid && direct.settings.notificationControls) {
     try {
       audioHandler = await AudioService.init(
         builder: () => SelfMusicAudioHandler(),
         config: const AudioServiceConfig(
-          androidNotificationChannelId:
-              'com.selfmusic.selfmusic.channel.audio',
+          androidNotificationChannelId: 'com.selfmusic.selfmusic.channel.audio',
           androidNotificationChannelName: 'SelfMusic 播放',
           androidNotificationChannelDescription: '播放控制与后台播放',
-          androidNotificationOngoing: true,
-          androidStopForegroundOnPause: true,
+          // 暂停不退出前台服务：回到桌面/锁屏后系统不会回收服务，
+          // 再次恢复播放也不会受 Android 12+ 后台启动前台服务限制。
+          // （前台服务期间通知本就常驻，无需再设 androidNotificationOngoing）
+          androidStopForegroundOnPause: false,
         ),
       );
     } catch (e) {
@@ -217,9 +216,12 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
     if (_lastBackPressed != null &&
         now.difference(_lastBackPressed!) < const Duration(seconds: 2)) {
       if (Platform.isAndroid) {
+        // 只结束 Activity：audio_service 前台服务继续，后台播放不中断。
         SystemNavigator.pop();
       } else {
-        exit(0);
+        // 桌面端退出前先释放播放器（mpv 子进程），再终止进程。
+        final player = context.read<PlayerProvider>();
+        player.shutdown().whenComplete(() => exit(0));
       }
       return;
     }
