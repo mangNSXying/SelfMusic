@@ -1,4 +1,4 @@
-package com.selfmusic.selfmusic
+package com.shamiko.selfmusic
 
 import com.ryanheise.audioservice.AudioServiceActivity
 

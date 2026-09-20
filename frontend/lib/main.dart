@@ -55,7 +55,7 @@ Future<void> main() async {
       audioHandler = await AudioService.init(
         builder: () => SelfMusicAudioHandler(),
         config: const AudioServiceConfig(
-          androidNotificationChannelId: 'com.selfmusic.selfmusic.channel.audio',
+          androidNotificationChannelId: 'com.shamiko.selfmusic.channel.audio',
           androidNotificationChannelName: 'SelfMusic 播放',
           androidNotificationChannelDescription: '播放控制与后台播放',
           // 暂停不退出前台服务：回到桌面/锁屏后系统不会回收服务，
