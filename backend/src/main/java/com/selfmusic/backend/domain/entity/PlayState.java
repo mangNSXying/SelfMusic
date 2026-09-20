@@ -19,6 +19,9 @@ public class PlayState {
     @Column(name = "position_ms")
     private Integer positionMs = 0;
 
+    @Column(name = "last_event_at")
+    private LocalDateTime lastEventAt;
+
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
@@ -34,6 +37,9 @@ public class PlayState {
 
     public Integer getPositionMs() { return positionMs; }
     public void setPositionMs(Integer positionMs) { this.positionMs = positionMs; }
+
+    public LocalDateTime getLastEventAt() { return lastEventAt; }
+    public void setLastEventAt(LocalDateTime lastEventAt) { this.lastEventAt = lastEventAt; }
 
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }

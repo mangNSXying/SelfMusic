@@ -15,6 +15,8 @@ public interface SongRepository extends JpaRepository<Song, Long> {
 
     Optional<Song> findBySourceAndSourceRef(MusicSource source, String sourceRef);
 
+    Optional<Song> findFirstBySourceRef(String sourceRef);
+
     Page<Song> findByHiddenFalse(Pageable pageable);
 
     @Query("SELECT s FROM Song s WHERE s.hidden=false AND "

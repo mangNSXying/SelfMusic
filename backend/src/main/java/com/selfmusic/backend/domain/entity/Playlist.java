@@ -21,6 +21,14 @@ public class Playlist {
     @Column(length = 20)
     private PlaylistMode mode = PlaylistMode.shuffle_weighted;
 
+    @Column(name = "client_uuid", length = 36)
+    private String clientUuid;
+
+    private boolean deleted = false;
+
+    @Column(name = "last_event_at")
+    private LocalDateTime lastEventAt;
+
     @Column(name = "sync_ver")
     private Long syncVer = 0L;
 
@@ -53,6 +61,15 @@ public class Playlist {
     public void setMode(PlaylistMode mode) {
         this.mode = mode != null ? mode : PlaylistMode.shuffle_weighted;
     }
+
+    public String getClientUuid() { return clientUuid; }
+    public void setClientUuid(String clientUuid) { this.clientUuid = clientUuid; }
+
+    public boolean isDeleted() { return deleted; }
+    public void setDeleted(boolean deleted) { this.deleted = deleted; }
+
+    public LocalDateTime getLastEventAt() { return lastEventAt; }
+    public void setLastEventAt(LocalDateTime lastEventAt) { this.lastEventAt = lastEventAt; }
 
     public Long getSyncVer() { return syncVer; }
     public void setSyncVer(Long syncVer) { this.syncVer = syncVer; }
