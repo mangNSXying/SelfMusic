@@ -497,7 +497,9 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
                   icon: const Icon(Icons.play_arrow),
                   label: const Text('播放全部'),
                   onPressed: () {
-                    player.playQueue(songs);
+                    player.playQueue(songs,
+                        playlistUuid: provider.store.index
+                            .ensurePlaylistUuid(widget.playlistId));
                     context.read<NavigationProvider>().openPlayer();
                   },
                 ),
@@ -607,7 +609,10 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
                       onTap: _sel.active
                           ? () => _toggle(key)
                           : () {
-                              player.playQueue(songs, index: i);
+                              player.playQueue(songs,
+                                  index: i,
+                                  playlistUuid: provider.store.index
+                                      .ensurePlaylistUuid(widget.playlistId));
                               context.read<NavigationProvider>().openPlayer();
                             },
                       onLongPress: _sel.active

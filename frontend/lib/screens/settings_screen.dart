@@ -13,9 +13,11 @@ import '../providers/player_provider.dart';
 import '../providers/playlists_provider.dart';
 import '../services/api_client.dart';
 import '../services/server_settings.dart';
+import '../services/sync_engine.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_provider.dart';
 import '../widgets/app_toast.dart';
+import 'devices_screen.dart';
 import 'pairing_screen.dart';
 
 /// 设置页：根据侧边栏选中的分区渲染对应设置面板。
@@ -249,6 +251,15 @@ class _ServerSettingsState extends State<_ServerSettings> {
               setState(() {});
             },
           ),
+          const SizedBox(height: 16),
+          const Divider(),
+          const Align(
+            alignment: Alignment.centerLeft,
+            child: Text('多设备同步',
+                style: TextStyle(fontWeight: FontWeight.w600)),
+          ),
+          const SizedBox(height: 4),
+          const _SyncSection(),
           const SizedBox(height: 32),
           const Divider(),
           const _CacheConfigSection(),
@@ -256,6 +267,89 @@ class _ServerSettingsState extends State<_ServerSettings> {
           const _CacheDirTile(),
         ],
       ),
+    );
+  }
+}
+
+/// 服务端 → 多设备同步（阶段5，DESIGN §7.2）：总开关 + 立即同步 + 设备管理入口。
+class _SyncSection extends StatefulWidget {
+  const _SyncSection();
+
+  @override
+  State<_SyncSection> createState() => _SyncSectionState();
+}
+
+class _SyncSectionState extends State<_SyncSection> {
+  bool _syncing = false;
+
+  String _subtitle() {
+    final settings = context.read<DirectSourceManager>().settings;
+    final engine = context.read<SyncEngine>();
+    final parts = <String>[];
+    final pending = context
+        .read<DirectSourceManager>()
+        .index
+        .pendingOutboxCount();
+    if (pending > 0) parts.add('待上推 $pending');
+    final last = settings.lastSyncAt;
+    parts.add(last.isEmpty ? '尚未同步成功' : '上次 ${_shortTime(last)}');
+    if (engine.lastError.isNotEmpty) parts.add('错误：${engine.lastError}');
+    return parts.join(' · ');
+  }
+
+  static String _shortTime(String iso) {
+    final s = iso.replaceFirst('T', ' ');
+    return s.length > 16 ? s.substring(0, 16) : s;
+  }
+
+  Future<void> _syncNow() async {
+    setState(() => _syncing = true);
+    await context.read<SyncEngine>().syncNow(force: true);
+    if (!mounted) return;
+    setState(() => _syncing = false);
+    final err = context.read<SyncEngine>().lastError;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(err.isEmpty ? '同步完成' : '同步失败：$err')));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = context.read<DirectSourceManager>().settings;
+    return Column(
+      children: [
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('多设备同步'),
+          subtitle: const Text('权重 / 收藏 / 歌单 / 断点经服务端在设备间收敛（仅服务器模式；关闭=仅本地）'),
+          value: settings.syncEnabled,
+          onChanged: (v) {
+            settings.syncEnabled = v;
+            setState(() {});
+          },
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: _syncing
+              ? const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.sync),
+          title: const Text('立即同步'),
+          subtitle: Text(_subtitle()),
+          onTap: _syncing ? null : _syncNow,
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.devices),
+          title: const Text('已配对设备'),
+          subtitle: const Text('查看 / 改名 / 吊销'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => const DevicesScreen()),
+          ),
+        ),
+      ],
     );
   }
 }

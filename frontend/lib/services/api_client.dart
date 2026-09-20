@@ -200,4 +200,46 @@ class ApiClient {
       return null;
     }
   }
+
+  // ---------- 多设备状态同步（阶段5，DESIGN §7.2 / SyncEngine） ----------
+  //
+  // 与上面可空吞错的读取类方法不同：同步走引擎退避，Dio 异常直接上抛，
+  // 由 SyncEngine 捕获记退避（未配对时返回 null 表示跳过）。
+
+  /// 批量上推事件。返回 data（cursor/applied/duplicates/rejected/corrections）。
+  Future<Map<String, dynamic>?> syncPush(
+      String clientId, List<Map<String, dynamic>> events) async {
+    if (dio.options.baseUrl.isEmpty) return null;
+    final resp = await dio.post('/api/v1/sync/push', data: {
+      'events': events,
+    });
+    return resp.data['data'] as Map<String, dynamic>?;
+  }
+
+  /// 增量拉取（since_cursor）。返回 data（cursor/has_more/songs/playlists/playstates）。
+  Future<Map<String, dynamic>?> syncPull(int cursor) async {
+    if (dio.options.baseUrl.isEmpty) return null;
+    final resp = await dio.get('/api/v1/sync/pull',
+        queryParameters: {'since_cursor': cursor});
+    return resp.data['data'] as Map<String, dynamic>?;
+  }
+
+  // ---------- 已配对设备管理（阶段5，设备管理页） ----------
+
+  /// 设备列表（id/clientId/name/platform/revoked/pairedAt/lastSeenAt）。
+  Future<List<dynamic>?> fetchDevices() async {
+    if (dio.options.baseUrl.isEmpty) return null;
+    final resp = await dio.get('/api/v1/admin/devices');
+    return resp.data['data'] as List<dynamic>?;
+  }
+
+  /// 设备改名。
+  Future<void> renameDevice(int id, String name) async {
+    await dio.put('/api/v1/admin/devices/$id', data: {'name': name});
+  }
+
+  /// 吊销设备（服务端 revoked=true；被吊销设备 token 即刻失效）。
+  Future<void> revokeDevice(int id) async {
+    await dio.delete('/api/v1/admin/devices/$id');
+  }
 }

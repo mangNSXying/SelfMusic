@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import 'services/api_client.dart';
 import 'services/server_settings.dart';
 import 'services/selfmusic_audio_handler.dart';
+import 'services/sync_engine.dart';
 import 'data/sources/server_proxy_source.dart';
 import 'providers/auth_provider.dart';
 import 'providers/library_provider.dart';
@@ -69,8 +70,28 @@ Future<void> main() async {
     }
   }
 
+  // 阶段5 多设备同步引擎：启动即开始（未配对/关开关时内部跳过），回前台追一次。
+  final sync = SyncEngine(api: api, index: direct.index, settings: direct.settings)
+    ..start();
+  WidgetsBinding.instance.addObserver(_SyncLifecycleObserver(sync));
+
   runApp(SelfMusicApp(
-      direct: direct, settings: serverSettings, api: api, audioHandler: audioHandler));
+      direct: direct,
+      settings: serverSettings,
+      api: api,
+      audioHandler: audioHandler,
+      sync: sync));
+}
+
+/// 回前台触发同步（阶段5）：无 connectivity 依赖，切后台期间的变更在恢复后追上。
+class _SyncLifecycleObserver extends WidgetsBindingObserver {
+  final SyncEngine sync;
+  _SyncLifecycleObserver(this.sync);
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) unawaited(sync.syncNow());
+  }
 }
 
 class SelfMusicApp extends StatelessWidget {
@@ -78,12 +99,14 @@ class SelfMusicApp extends StatelessWidget {
   final ServerSettings settings;
   final ApiClient api;
   final SelfMusicAudioHandler? audioHandler;
+  final SyncEngine sync;
   const SelfMusicApp({
     super.key,
     required this.direct,
     required this.settings,
     required this.api,
     this.audioHandler,
+    required this.sync,
   });
 
   @override
@@ -127,6 +150,7 @@ class SelfMusicApp extends StatelessWidget {
     return MultiProvider(
       providers: [
         Provider<ApiClient>.value(value: api),
+        Provider<SyncEngine>.value(value: sync),
         ChangeNotifierProvider<ServerSettings>.value(value: settings),
         ChangeNotifierProvider<ThemeProvider>.value(value: ThemeProvider()),
         ChangeNotifierProvider<AuthProvider>.value(value: auth),

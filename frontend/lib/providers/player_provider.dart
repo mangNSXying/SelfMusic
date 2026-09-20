@@ -13,6 +13,7 @@ import '../data/sources/meta_enrich.dart';
 import '../data/local/local_index.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/song_weight_store.dart';
+import '../data/local/sync_event_types.dart';
 import '../services/selfmusic_audio_handler.dart';
 import '../utils/lrc_parser.dart';
 import '../utils/song_title_format.dart';
@@ -58,6 +59,14 @@ class PlayerProvider extends ChangeNotifier {
   void Function(Song s)? _onSongMetaRefreshed;
   String? error;
   SelfMusicAudioHandler? _audioHandler;
+
+  /// 阶段5：当前队列归属的已同步歌单 uuid（播歌单时由调用方传入，其它队列为 null）。
+  /// 断点事件仅在此非空且当前为服务器歌曲时进 outbox。
+  String? _syncPlaylistUuid;
+
+  /// 断点事件节流：同歌 25s 内不重复入队（切歌立即入队）。
+  String? _lastBpKey;
+  int _lastBpAtMs = 0;
 
   /// 播放时懒补全元数据：正在补全的歌（sourceKey|sourceRef）去重集合。
   final Set<String> _enriching = {};
@@ -503,10 +512,12 @@ class PlayerProvider extends ChangeNotifier {
   // ---------- 队列装载 ----------
 
   /// 载入一个播放队列并从 [index] 开始播放。
+  /// [playlistUuid]：从已同步歌单播全部/点歌时传入（阶段5 断点归属用），其它队列不传。
   Future<void> playQueue(List<Song> songs,
-      {int index = 0, MusicSource? source}) async {
+      {int index = 0, MusicSource? source, String? playlistUuid}) async {
     if (songs.isEmpty) return;
     final start = index.clamp(0, songs.length - 1);
+    _syncPlaylistUuid = playlistUuid;
     _leaveFor(songs[start]);
     _queue = List.of(songs);
     _idx = start;
@@ -525,6 +536,8 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> playSong(Song s,
       {List<Song>? queue, int? index, MusicSource? source}) async {
     if (queue != null && queue.isNotEmpty) {
+      // 通用队列（来源不明）：清除歌单归属，避免断点误标。
+      _syncPlaylistUuid = null;
       _queue = List.of(queue);
       final found = _queue.indexWhere((x) => _same(x, s));
       final i = index ??
@@ -1026,6 +1039,30 @@ class PlayerProvider extends ChangeNotifier {
       _idx,
       pos.inMilliseconds,
     );
+    _maybeEnqueueBreakpoint(idx, pos);
+  }
+
+  /// 阶段5 断点进 outbox（节流：同歌 25s 一次，切歌立即）。
+  /// 仅当队列归属已同步歌单且当前为服务器歌曲时上报；其它情况只活本机。
+  void _maybeEnqueueBreakpoint(LocalIndex idx, Duration pos) {
+    final uuid = _syncPlaylistUuid;
+    final cur = _current;
+    if (uuid == null || cur == null) return;
+    if (cur.sourceKey != 'server' || cur.source.isEmpty || cur.source == 'server') {
+      return;
+    }
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final key = '$uuid|${cur.source}|${cur.sourceRef}';
+    if (key != _lastBpKey || nowMs - _lastBpAtMs > 25000) {
+      _lastBpKey = key;
+      _lastBpAtMs = nowMs;
+      idx.enqueueOutbox(SyncEventTypes.breakpointSet, {
+        'playlist_uuid': uuid,
+        'source': cur.source,
+        'source_ref': cur.sourceRef,
+        'position_ms': pos.inMilliseconds,
+      });
+    }
   }
 
   /// 启动恢复：装载上次队列与位置，暂停态不自动播放。
@@ -1046,6 +1083,8 @@ class PlayerProvider extends ChangeNotifier {
       _queue = list;
       _idx = st.idx.clamp(0, _queue.length - 1);
       _current = _queue[_idx];
+      // 恢复的队列来源不明：清除歌单归属（阶段5 断点不上报）。
+      _syncPlaylistUuid = null;
       error = null;
       await _play(_current!, play: false);
       await player.seek(Duration(milliseconds: st.positionMs));
