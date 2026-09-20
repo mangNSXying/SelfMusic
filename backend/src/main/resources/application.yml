@@ -30,22 +30,12 @@ spring:
       enabled: true
 
 selfmusic:
+  # 出流代理配置（/stream 为库中既有行出流；服务端不再扫描入库，歌曲只由 APP 在播放源处扫描）。
   local:
     root: ${LOCAL_MUSIC_ROOT:/opt/music}
   webdav:
     base-url: ${WEBDAV_BASE_URL:}
     username: ${WEBDAV_USER:}
     password: ${WEBDAV_PASS:}
-  smb:
-    host: ${SMB_HOST:}
-    port: ${SMB_PORT:445}
-    share: ${SMB_SHARE:}
-    username: ${SMB_USER:}
-    password: ${SMB_PASS:}
   transcode:
     max-concurrency: 2
-  scan:
-    head-bytes: ${SCAN_HEAD_BYTES:65536}
-    probe-pool: ${SCAN_PROBE_POOL:4}
-    scheduling-enabled: ${SCAN_SCHEDULING_ENABLED:true}
-    interval-ms: ${SCAN_INTERVAL_MS:21600000}

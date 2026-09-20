@@ -31,8 +31,6 @@ public class AdminSettingsController {
                 Long.parseLong(settingService.get("cache_max_bytes", "1073741824")));
         data.put("cache_song_limit",
                 Integer.parseInt(settingService.get("cache_song_limit", "500")));
-        data.put("scan_interval_min",
-                Integer.parseInt(settingService.get("scan_interval_min", "0")));
         return ApiResponse.ok(data);
     }
 

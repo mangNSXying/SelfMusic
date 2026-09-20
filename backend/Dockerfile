@@ -7,8 +7,11 @@ RUN mvn package -DskipTests -B
 
 FROM eclipse-temurin:21-jre
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
-RUN useradd -m -u 1000 app && chown -R app:app /app
+# 复用基镜像自带的 ubuntu 用户（UID 1000，与 Dockerfile.dev / compose user 对齐）：
+# temurin 已占用 UID 1000，自建 app 用户会报 "UID 1000 is not unique" 导致构建失败。
 WORKDIR /app
-COPY --from=builder --chown=app:app /app/target/selfmusic-backend.jar app.jar
+RUN chown -R ubuntu:ubuntu /app
+USER ubuntu
+COPY --from=builder --chown=ubuntu:ubuntu /app/target/selfmusic-backend.jar app.jar
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "app.jar"]
