@@ -388,4 +388,37 @@ void main() {
     index.close();
     dir.deleteSync(recursive: true);
   });
+
+  test('歌词存储：三态读取、覆盖写入、缺歌词标记不覆盖内嵌', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir = await Directory.systemTemp.createTemp('selfmusic_idxlrc_');
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+
+    const key = 'webdav:nas';
+    expect(index.lyricsOf(key, '/dav/a.mp3'), isNull);
+
+    index.setLyrics(key, '/dav/a.mp3', '[00:01.00]第一句');
+    expect(index.lyricsOf(key, '/dav/a.mp3'), '[00:01.00]第一句');
+
+    // 覆盖写入（补读到内嵌歌词 / 用户重取）。
+    index.setLyrics(key, '/dav/a.mp3', '[00:02.00]新歌词');
+    expect(index.lyricsOf(key, '/dav/a.mp3'), '[00:02.00]新歌词');
+
+    // 缺歌词标记：空串代表「查过但没有」。
+    index.markLyricsMissing(key, '/dav/b.mp3');
+    expect(index.lyricsOf(key, '/dav/b.mp3'), '');
+
+    // 已有内嵌歌词时标记不覆盖。
+    index.markLyricsMissing(key, '/dav/a.mp3');
+    expect(index.lyricsOf(key, '/dav/a.mp3'), '[00:02.00]新歌词');
+
+    // 标记后补读到内嵌歌词仍可写入。
+    index.setLyrics(key, '/dav/b.mp3', '[00:05.00]补读歌词');
+    expect(index.lyricsOf(key, '/dav/b.mp3'), '[00:05.00]补读歌词');
+
+    index.close();
+    dir.deleteSync(recursive: true);
+  });
 }

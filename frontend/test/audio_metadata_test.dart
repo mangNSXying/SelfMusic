@@ -148,11 +148,50 @@ void main() {
         0x00,
         ...syncsafe(frames.length),
         ...frames,
-        0xFF, 0xFB, 0x90, 0x00,
+        0xFF,
+        0xFB,
+        0x90,
+        0x00,
       ];
-      final meta = parseAudioHead(Uint8List.fromList(tag), 'mp3', tag.length + 1)!;
+      final meta =
+          parseAudioHead(Uint8List.fromList(tag), 'mp3', tag.length + 1)!;
       expect(meta.artist, 'Track Artist');
       expect(meta.albumArtist, 'Album Artist');
+    });
+
+    test('exposes embedded lyrics (USLT, UTF-8)', () {
+      // USLT 帧体：encoding(1) + language(3) + 描述(以 00 结束) + 歌词文本。
+      Uint8List usltFrame(String text) {
+        final body = <int>[3, ...'eng'.codeUnits, 0];
+        body.addAll(utf8.encode(text));
+        return Uint8List.fromList([
+          ...'USLT'.codeUnits,
+          ...syncsafe(body.length),
+          0,
+          0,
+          ...body,
+        ]);
+      }
+
+      final frames = <int>[
+        ...utf8Frame('TIT2', '带歌词的歌'),
+        ...usltFrame('[00:01.00]第一句\n[00:05.50]第二句'),
+      ];
+      final tag = <int>[
+        ...'ID3'.codeUnits,
+        0x04,
+        0x00,
+        0x00,
+        ...syncsafe(frames.length),
+        ...frames,
+        0xFF,
+        0xFB,
+        0x90,
+        0x00,
+      ];
+      final meta =
+          parseAudioHead(Uint8List.fromList(tag), 'mp3', tag.length + 1)!;
+      expect(meta.lyrics, '[00:01.00]第一句\n[00:05.50]第二句');
     });
   });
 
@@ -266,6 +305,37 @@ void main() {
       final meta = parseAudioHead(head, 'flac', head.length)!;
       expect(meta.artist, '张三');
       expect(meta.albumArtist, '群星');
+    });
+
+    test('parses embedded lyrics (LYRICS/UNSYNCEDLYRICS)', () {
+      List<int> u32le(int v) => Uint8List.fromList(
+          [v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF]);
+      final entries = <String>[
+        'TITLE=带歌词的歌',
+        'LYRICS=[00:01.00]第一句\n[00:03.00]第二句',
+      ];
+      final vc = <int>[];
+      vc.addAll(u32le(0));
+      vc.addAll(u32le(entries.length));
+      for (final e in entries) {
+        final bytes = utf8.encode(e);
+        vc.addAll(u32le(bytes.length));
+        vc.addAll(bytes);
+      }
+      List<int> block(int type, List<int> body, {bool last = false}) => [
+            (last ? 0x80 : 0) | type,
+            body.length >> 16 & 0xFF,
+            body.length >> 8 & 0xFF,
+            body.length & 0xFF,
+            ...body
+          ];
+      final head = Uint8List.fromList([
+        ...'fLaC'.codeUnits,
+        ...block(0, List<int>.filled(18, 0)),
+        ...block(4, vc, last: true),
+      ]);
+      final meta = parseAudioHead(head, 'flac', head.length)!;
+      expect(meta.lyrics, '[00:01.00]第一句\n[00:03.00]第二句');
     });
 
     test('不因元数据块超出头部采样而越界（大内嵌封面场景）', () {

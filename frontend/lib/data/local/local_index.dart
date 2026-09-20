@@ -175,6 +175,16 @@ class LocalIndex {
       _db!.execute(
           'ALTER TABLE song_meta_override ADD COLUMN album_artist TEXT');
     }
+    // 歌词（内嵌标签 / 同目录 .lrc 原文）：独立表存储，歌曲列表查询不加载大文本。
+    _db!.execute('''
+      CREATE TABLE IF NOT EXISTS song_lyrics (
+        source_key TEXT NOT NULL,
+        ref        TEXT NOT NULL,
+        content    TEXT NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (source_key, ref)
+      );
+    ''');
     // play_meta 为既有 DB 时可能缺 song_json 快照列。
     final metaCols = _db!
         .select('PRAGMA table_info(play_meta)')
@@ -557,6 +567,40 @@ class LocalIndex {
                       WHERE p.source_key = idx_songs.source_key
                         AND p.song_ref = idx_songs.ref), 0) = 0
     ''', [sourceKey]);
+  }
+
+  /// 读取歌曲歌词原文。三态语义：
+  /// - null：从未查过（播放时尝试内嵌标签 / 同目录 .lrc）；
+  /// - ''：查过但无歌词（避免每次播放重复请求）；
+  /// - 其他：歌词原文（可能是带时间轴的 LRC）。
+  String? lyricsOf(String sourceKey, String ref) {
+    for (final variant in webdavRefVariants(ref)) {
+      final rows = _db!.select(
+          'SELECT content FROM song_lyrics WHERE source_key=? AND ref=?',
+          [sourceKey, variant]);
+      if (rows.isNotEmpty) return rows.first['content'] as String;
+    }
+    return null;
+  }
+
+  /// 写入歌词原文（内嵌标签 / 同目录 .lrc / 用户编辑）。
+  void setLyrics(String sourceKey, String ref, String content) {
+    _db!.execute('''
+      INSERT INTO song_lyrics(source_key, ref, content, updated_at)
+      VALUES(?,?,?,?)
+      ON CONFLICT(source_key, ref) DO UPDATE SET
+        content=excluded.content, updated_at=excluded.updated_at
+    ''', [sourceKey, ref, content, DateTime.now().millisecondsSinceEpoch]);
+  }
+
+  /// 标记「已查过但无歌词」：仅在没有记录时写入空串，
+  /// 不覆盖并发补读写回的内嵌歌词。
+  void markLyricsMissing(String sourceKey, String ref) {
+    _db!.execute('''
+      INSERT INTO song_lyrics(source_key, ref, content, updated_at)
+      VALUES(?,?,'',?)
+      ON CONFLICT(source_key, ref) DO NOTHING
+    ''', [sourceKey, ref, DateTime.now().millisecondsSinceEpoch]);
   }
 
   List<Song> searchSongs({

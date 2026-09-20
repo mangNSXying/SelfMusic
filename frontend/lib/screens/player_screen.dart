@@ -13,6 +13,7 @@ import '../providers/navigation_provider.dart';
 import '../utils/duration_format.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/lyrics_view.dart';
 import '../widgets/marquee_text.dart';
 import '../widgets/player_sheet_anim.dart';
 
@@ -160,7 +161,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 }
 
-/// 歌词页：当前无 LRC 数据源，先提供歌曲信息与占位提示（右滑进入，可左右滑返回）。
+/// 歌词页：LRC 同步滚动歌词（右滑/按钮返回播放页）。
 class _LyricsPage extends StatelessWidget {
   final VoidCallback onClose;
 
@@ -186,44 +187,38 @@ class _LyricsPage extends StatelessWidget {
             ),
           ),
         ),
-        Expanded(
-          child: Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(32),
-              child: Column(
-                children: [
-                  Icon(Icons.queue_music,
-                      size: 64, color: cs.primary.withValues(alpha: 0.55)),
-                  const SizedBox(height: 20),
-                  if (s != null) ...[
-                    MarqueeText(
-                      s.title,
-                      style: Theme.of(context).textTheme.headlineSmall,
-                    ),
-                    const SizedBox(height: 6),
-                    MarqueeText(
-                      s.artist ?? 'Unknown',
-                      style: TextStyle(
-                          color: cs.onSurface.withValues(alpha: 0.6)),
-                    ),
-                    const SizedBox(height: 24),
-                  ],
-                  Text(
-                    '暂无歌词',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    '该曲暂无可用的 LRC 歌词\n接入歌词数据后将自动同步滚动',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: cs.onSurface.withValues(alpha: 0.5)),
-                  ),
-                ],
-              ),
+        if (s != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Column(
+              children: [
+                MarqueeText(
+                  s.title,
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 4),
+                MarqueeText(
+                  s.artist ?? 'Unknown',
+                  style: TextStyle(
+                      fontSize: 13, color: cs.onSurface.withValues(alpha: 0.6)),
+                ),
+              ],
             ),
           ),
+        const SizedBox(height: 6),
+        Expanded(
+          child: s == null
+              ? Center(
+                  child: Text('暂无歌曲',
+                      style: TextStyle(
+                          color: cs.onSurface.withValues(alpha: 0.5))),
+                )
+              : LyricsView(player: player),
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 8),
       ],
     );
   }

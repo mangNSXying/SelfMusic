@@ -14,6 +14,9 @@ class AudioMeta {
   int? trackNo;
   int? duration; // 秒
   Uint8List? cover; // 嵌入封面原始字节（jpg/png）
+
+  /// 内嵌歌词原文（mp3 USLT / flac LYRICS|UNSYNCEDLYRICS；可能是带时间轴的 LRC）。
+  String? lyrics;
 }
 
 /// 纯 Dart 头部解析：mp3(ID3v2) 与 flac。m4a 走文件名回退。
@@ -97,6 +100,7 @@ AudioMeta _parseMp3(Uint8List head, int fileSize) {
     meta.year = _yearOf(frames['TYER'] ?? frames['TDRC']);
     meta.trackNo = _trackOf(frames['TRCK']);
     meta.cover = _apicOf(head);
+    meta.lyrics = frames['USLT'];
     final sz = _syncsafe(head, 6);
     offset = 10 + sz;
   }
@@ -119,6 +123,12 @@ Map<String, String> _id3TagToFrames(Uint8List head, int tagStart) {
     if (size < 0 || i + 10 + size > head.length || i + 10 + size > limit) break;
     if (id == 'APIC') {
       // 交由 _apicOf 处理；这里跳过
+    } else if (id == 'USLT') {
+      // 歌词帧结构特殊（encoding + language + descriptor + text），不能按普通文本帧解码。
+      if (!out.containsKey(id)) {
+        final v = _decodeUslt(head.sublist(i + 10, i + 10 + size));
+        if (v.isNotEmpty) out[id] = v;
+      }
     } else if (!out.containsKey(id)) {
       final v = _decodeText(head.sublist(i + 10, i + 10 + size));
       if (v.isNotEmpty) out[id] = v;
@@ -240,12 +250,32 @@ String _decodeText(List<int> bytes) {
   }
 }
 
+/// 解码 USLT（非同步歌词）帧体：encoding(1) + language(3) + descriptor + text。
+/// 描述段终止符按编码对齐：UTF-16 为双字节 00 00，单字节编码为 00。
+String _decodeUslt(List<int> data) {
+  if (data.length < 5) return '';
+  final enc = data[0];
+  var p = 4; // 跳过 encoding + 3 字节 language
+  if (enc == 1 || enc == 2) {
+    while (p + 1 < data.length && !(data[p] == 0 && data[p + 1] == 0)) {
+      p += 2;
+    }
+    p += 2;
+  } else {
+    final z = data.indexOf(0, p);
+    if (z >= 0) p = z + 1;
+  }
+  if (p >= data.length) return '';
+  return _decodeText([enc, ...data.sublist(p)]);
+}
+
 /// 估算 mp3 时长：优先 Xing/Info 帧头；否则按首个 MPEG 帧码率 + 文件大小。
 int? _mp3Duration(Uint8List head, int offset, int fileSize) {
   var i = offset;
   // 找 Xing/Info 帧
   for (var scan = i; scan < head.length - 4; scan++) {
-    if (head[scan] == 0x58 && head[scan + 1] == 0x69 &&
+    if (head[scan] == 0x58 &&
+        head[scan + 1] == 0x69 &&
         (head[scan + 2] == 0x6E || head[scan + 2] == 0x67) &&
         head[scan + 3] == 0x67) {
       // 0x78 69 6E 67 = Xing ; 49 6E 66 6F = Info
@@ -396,6 +426,12 @@ void _parseVorbisComment(List<int> body, AudioMeta meta) {
         break;
       case 'TRACKNUMBER':
         meta.trackNo ??= int.tryParse(val);
+        break;
+      case 'LYRICS':
+      case 'UNSYNCEDLYRICS':
+      case 'UNSYNCED LYRICS':
+      case 'LYRIC':
+        meta.lyrics ??= val;
         break;
     }
   }

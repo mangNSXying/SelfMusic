@@ -14,6 +14,7 @@ import '../data/local/local_index.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/song_weight_store.dart';
 import '../services/selfmusic_audio_handler.dart';
+import '../utils/lrc_parser.dart';
 import '../widgets/app_toast.dart';
 
 /// 按源 key 解析播放源的函数：`server` → 服务器代理源；`webdav:<name>` → 对应直连源。
@@ -598,6 +599,7 @@ class PlayerProvider extends ChangeNotifier {
       if (src != null && src.supportsDirect) {
         unawaited(_enrichLazily(cur, src));
       }
+      unawaited(_loadLyrics(cur, src));
       notifyListeners();
       _syncSystemMedia();
     } catch (e) {
@@ -660,11 +662,140 @@ class PlayerProvider extends ChangeNotifier {
           _onSongMetaRefreshed?.call(updated);
         }
       }
+      _applyLyricsIfCurrent(s);
     } catch (_) {
       // 后台补全失败不影响播放（不标已读，下次播放再试）。
     } finally {
       _enriching.remove(k);
     }
+  }
+
+  // ---------- 歌词（内嵌标签 / 同目录 .lrc） ----------
+
+  List<LyricLine> _lyricLines = const [];
+  String? _plainLyrics;
+  bool _lyricsLoading = false;
+
+  /// 当前歌词加载目标（sourceKey\0sourceRef）：异步结果回填时的切歌竞态守卫。
+  String? _lyricsKey;
+
+  List<LyricLine> get lyricLines => _lyricLines;
+  String? get plainLyrics => _plainLyrics;
+  bool get lyricsLoading => _lyricsLoading;
+
+  static String _songKey(Song s) => '${s.sourceKey}\u0000${s.sourceRef}';
+
+  /// 加载当前歌曲歌词：
+  /// 1. 索引已有（内嵌补读 / 上次读取的同名 .lrc）→ 直接展示；
+  /// 2. 直连源尝试同目录 `.lrc`；等待期间内嵌补读可能已写入索引，内嵌优先；
+  /// 3. 都没有 → 写「无歌词」标记，避免每次播放重复请求。
+  /// 服务端代理歌暂无歌词来源（后端未提供），显示空态。
+  Future<void> _loadLyrics(Song s, MusicSource? src) async {
+    final idx = _index;
+    final key = _songKey(s);
+    _lyricsKey = key;
+    _lyricLines = const [];
+    _plainLyrics = null;
+    _lyricsLoading = true;
+    notifyListeners();
+
+    String? content = idx?.lyricsOf(s.sourceKey, s.sourceRef);
+    if (content == null && idx != null && src != null && src.supportsDirect) {
+      final lrc = await _fetchSiblingLrc(src, s);
+      if (_lyricsKey != key) return; // 已切歌：丢弃本次结果
+      final embedded = idx.lyricsOf(s.sourceKey, s.sourceRef);
+      if (embedded != null && embedded.isNotEmpty) {
+        content = embedded;
+      } else if (lrc != null && lrc.trim().isNotEmpty) {
+        idx.setLyrics(s.sourceKey, s.sourceRef, lrc);
+        content = lrc;
+      } else {
+        idx.markLyricsMissing(s.sourceKey, s.sourceRef);
+      }
+    }
+    if (_lyricsKey != key) return;
+    _applyLyrics(content);
+  }
+
+  /// 内嵌补读成功后调用：当前曲有新歌词且尚未展示时即时刷新。
+  void _applyLyricsIfCurrent(Song s) {
+    if (_lyricsKey != _songKey(s)) return;
+    final content = _index?.lyricsOf(s.sourceKey, s.sourceRef);
+    if (content != null && content.isNotEmpty) _applyLyrics(content);
+  }
+
+  void _applyLyrics(String? content) {
+    if (content == null || content.isEmpty) {
+      _lyricLines = const [];
+      _plainLyrics = null;
+    } else {
+      final parsed = parseLyrics(content);
+      _lyricLines = parsed.lines;
+      _plainLyrics = parsed.plain;
+    }
+    _lyricsLoading = false;
+    notifyListeners();
+  }
+
+  /// 尝试读取同目录同名 `.lrc`（大小写两种扩展名），失败/不存在返回 null。
+  Future<String?> _fetchSiblingLrc(MusicSource src, Song s) async {
+    final ref = s.sourceRef;
+    final slash = ref.lastIndexOf('/');
+    final dot = ref.lastIndexOf('.');
+    if (dot <= slash) return null;
+    final stem = ref.substring(0, dot);
+    for (final ext in const ['.lrc', '.LRC']) {
+      try {
+        final probe = Song.direct(
+          id: s.id,
+          sourceKey: s.sourceKey,
+          title: s.title,
+          source: s.source,
+          sourceRef: '$stem$ext',
+          fileSize: 0,
+          format: 'lrc',
+        );
+        final opened =
+            await src.open(probe, range: const IntRange(0, 512 * 1024));
+        final bytes = <int>[];
+        await for (final chunk in opened.stream) {
+          bytes.addAll(chunk);
+          if (bytes.length >= 512 * 1024) break;
+        }
+        if (bytes.isEmpty) continue;
+        final text = _decodeTextBytes(bytes);
+        if (text.trim().isNotEmpty) return text;
+      } catch (_) {
+        // 不存在/无权限：尝试下一个扩展名。
+      }
+    }
+    return null;
+  }
+
+  /// 歌词文件字节解码：兼容 UTF-16 BOM 与 UTF-8（含 BOM / 宽松容错）。
+  static String _decodeTextBytes(List<int> bytes) {
+    if (bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE) {
+      final buf = StringBuffer();
+      for (var i = 2; i + 1 < bytes.length; i += 2) {
+        buf.writeCharCode(bytes[i] | (bytes[i + 1] << 8));
+      }
+      return buf.toString();
+    }
+    if (bytes.length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF) {
+      final buf = StringBuffer();
+      for (var i = 2; i + 1 < bytes.length; i += 2) {
+        buf.writeCharCode((bytes[i] << 8) | bytes[i + 1]);
+      }
+      return buf.toString();
+    }
+    var start = 0;
+    if (bytes.length >= 3 &&
+        bytes[0] == 0xEF &&
+        bytes[1] == 0xBB &&
+        bytes[2] == 0xBF) {
+      start = 3;
+    }
+    return utf8.decode(bytes.sublist(start), allowMalformed: true);
   }
 
   // ---------- 前进/后退 ----------

@@ -36,5 +36,13 @@ Future<bool> enrichSongMeta(
       trackNo: meta.trackNo,
       year: meta.year,
       coverPath: coverPath);
+  // 内嵌歌词：仅在尚无歌词记录（或仅有「无歌词」标记）时写入，避免覆盖同名 .lrc/用户内容。
+  final lyrics = meta.lyrics?.trim();
+  if (lyrics != null && lyrics.isNotEmpty) {
+    final existing = index.lyricsOf(song.sourceKey, song.sourceRef);
+    if (existing == null || existing.isEmpty) {
+      index.setLyrics(song.sourceKey, song.sourceRef, lyrics);
+    }
+  }
   return true;
 }
