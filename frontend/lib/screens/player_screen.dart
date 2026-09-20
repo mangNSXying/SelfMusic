@@ -10,6 +10,7 @@ import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
+import '../utils/duration_format.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/marquee_text.dart';
@@ -310,7 +311,12 @@ class _NowPlaying extends StatelessWidget {
           runSpacing: 6,
           children: [
             Text(
-              '${s.source} · ${s.format ?? ''} · ${s.duration ?? ''}s',
+              [
+                s.source,
+                if (s.format != null && s.format!.isNotEmpty) s.format!,
+                if (formatDuration(s.duration).isNotEmpty)
+                  formatDuration(s.duration),
+              ].join(' · '),
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     fontFamily: 'monospace',
                     color: cs.onSurface.withValues(alpha: 0.6),
@@ -559,7 +565,8 @@ class _SongInfoDialog extends StatelessWidget {
       ['专辑', song.albumName ?? '—'],
       if (song.genre != null) ['流派', song.genre!],
       if (song.year != null) ['年份', '${song.year}'],
-      if (song.duration != null) ['时长', '${song.duration} 秒'],
+      if (song.duration != null && song.duration! > 0)
+        ['时长', formatDuration(song.duration)],
       if (song.format != null) ['格式', song.format!.toUpperCase()],
       ['来源', '${song.source}（${song.sourceKey}）'],
       if (song.isDirect)
@@ -1202,8 +1209,10 @@ class _PlayerSeekState extends State<_PlayerSeek> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(_fmt(pos), style: const TextStyle(fontFamily: 'monospace')),
-                  Text(_fmt(dur), style: const TextStyle(fontFamily: 'monospace')),
+                  Text(formatClock(pos),
+                      style: const TextStyle(fontFamily: 'monospace')),
+                  Text(formatClock(dur),
+                      style: const TextStyle(fontFamily: 'monospace')),
                 ],
               ),
             ),
@@ -1211,11 +1220,5 @@ class _PlayerSeekState extends State<_PlayerSeek> {
         );
       },
     );
-  }
-
-  String _fmt(Duration d) {
-    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
-    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
-    return '$m:$s';
   }
 }

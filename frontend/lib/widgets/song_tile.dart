@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../data/sources/music_source.dart';
 import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
+import '../utils/duration_format.dart';
 import 'add_to_playlist.dart';
 import 'app_toast.dart';
 
@@ -104,7 +105,7 @@ class SongTile extends StatelessWidget {
           : Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(song.duration != null ? '${song.duration}s' : ''),
+                Text(formatDuration(song.duration)),
                 PopupMenuButton<String>(
                   tooltip: '更多',
                   icon: const Icon(Icons.more_vert),

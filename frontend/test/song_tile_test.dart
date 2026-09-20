@@ -67,6 +67,7 @@ void main() {
       artist: '曲目歌手',
       albumArtist: '专辑歌手',
       albumName: '测试专辑',
+      duration: 200,
       source: 'webdav',
       sourceRef: '/dav/a.mp3',
       fileSize: 1024,
@@ -90,8 +91,9 @@ void main() {
     );
     await tester.pump();
 
-    // 副标题：歌手 · 专辑 · 专辑歌手（与歌手不同时展示）。
+    // 副标题：歌手 · 专辑 · 专辑歌手（与歌手不同时展示）；时长由秒换算为 mm:ss。
     expect(find.text('曲目歌手 · 测试专辑 · 专辑歌手：专辑歌手'), findsOneWidget);
+    expect(find.text('03:20'), findsOneWidget);
     // 列表行不再直接放置喜欢按钮。
     expect(find.byIcon(Icons.favorite_border), findsNothing);
 
