@@ -191,7 +191,7 @@ INDEX idx_refresh(refresh_token_hash)
 | `pairing_token` | 未提供 `PAIRING_TOKEN` 时首次随机 | 主配对令牌（env 镜像，供 /auth/pair 校验） |
 | `cache_max_bytes` | 1073741824 (1GB) | 全局建议值，App 可下发 |
 | `cache_song_limit` | 500 | |
-| `scan_interval_min` | 0（关） | ~~定时扫描间隔~~ 已迁移为服务端环境变量 `SCAN_SCHEDULING_ENABLED` / `SCAN_INTERVAL_MS`（另见 `SCAN_HEAD_BYTES` / `SCAN_PROBE_POOL`，见 settings.md §5.1） |
+| `scan_interval_min` | 0（关） | ❌ 已移除（服务端不再扫描；歌曲只由 APP 在播放源处扫描，见 §6.4） |
 | `transcode_max_concurrency` | 2 | 全局 ffmpeg 并发上限 |
 | `upload_dir` | `{LOCAL_ROOT}/Uploads` | 上传落点 |
 
@@ -278,7 +278,7 @@ INDEX idx_refresh(refresh_token_hash)
 | ✅ GET | `/admin/config` | 当前配置建议值概览（缓存双来源用） |
 | ✅ GET | `/admin/pairing-token` | 主配对令牌明文（`设置→服务端→配对服务器` 展示用；密钥源自 env 镜像） |
 | ✅ GET | `/admin/devices` · PUT/DELETE `/admin/devices/{id}` | 设备列表 / 改名 / 吊销 |
-| ✅ POST | `/scan` · GET `/scan` | 触发扫描 / 查询最近扫描任务（定时触发见 §5.1 的 `MusicScanner.scheduledScan`） |
+| ❌ ~~POST~~ `/scan` · ~~GET~~ `/scan` | 已移除（服务端不再扫描入库；歌曲只由 APP 在播放源处扫描，见 §6.4；历史库 `scan_tasks` 表残留无害） |
 | ⏳ POST | `/admin/upload/init` → `/part/{n}` → `/commit` | 分片上传（16MB/片），阶段 6 |
 | ⏳ DELETE | `/library/songs/{id}?hard=` | 移出索引；`hard=true` 删源文件（仅 local 源允许），阶段 6 |
 | ⏳ PUT | `/admin/settings` | 设置读写（已实现 GET `/admin/config`，写接口仍规划） |
@@ -293,7 +293,7 @@ INDEX idx_refresh(refresh_token_hash)
 auth/         AuthController(pair/refresh/unpair) + DeviceAdminController + SecurityConfig + TokenFilter
 admin/        AdminSettingsController(config/pairing-token)
 controller/   HealthController
-library/      LibraryController(songs/albums/favorites) + ScanController + **MusicScanner**（本地/WebDAV 扫描）
+library/      LibraryController(songs/albums/favorites) + SongController（调权直调，阶段5）
 stream/       StreamController(Range 代理) + MusicSourceProxy(local/webdav 源解析)
 common/       ApiResponse, BizException, GlobalExceptionHandler, MusicSource 枚举
 config/       FirstBootInitializer, WebConfig(CORS)
@@ -325,10 +325,10 @@ TokenFilter (OncePerRequestFilter)
 
 | 镜像 | 基座 | 变化 |
 |------|------|------|
-| prod | `eclipse-temurin:21-jre` | apt 加 `ffmpeg`；non-root 用户 |
+| prod | `eclipse-temurin:21-jre` | apt 加 `ffmpeg`；复用基镜像自带 `ubuntu` 用户运行（UID 1000，与 dev 对齐；自建同 UID 用户会构建失败） |
 | dev | `maven:3.9-eclipse-temurin-21` | 同上加 `ffmpeg`（保持与 prod 行为一致） |
 
-环境变量：`PAIRING_TOKEN`（可选，配对密钥权威来源；每次启动覆盖写入 settings，改后重启即生效；仅在首次初始化时以 WARN 打印一次密钥）、扫描相关 `SCAN_SCHEDULING_ENABLED` / `SCAN_INTERVAL_MS` / `SCAN_HEAD_BYTES` / `SCAN_PROBE_POOL`（默认值与说明见 settings.md §5.1）、其余同 v1。
+环境变量：`PAIRING_TOKEN`（可选，配对密钥权威来源；每次启动覆盖写入 settings，改后重启即生效；仅在首次初始化时以 WARN 打印一次密钥）、出流代理 `LOCAL_MUSIC_ROOT` / `WEBDAV_BASE_URL` / `WEBDAV_USER` / `WEBDAV_PASS`（库中既有行出流用）、其余同 v1。服务端扫描相关 env（`SCAN_*`）已随扫描移除而作废。
 
 ---
 
@@ -571,7 +571,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 ### 阶段 1：双模式骨架 + 服务器核心（~1.5 周）
 
-> **状态：已完成✅** —— 认证（access/refresh 轮换 + 过期懒刷新）、可换主题的自适应 UI 框架、全局播放器、配对页均已落地；后端 local/webdav 直取与**扫描入库**（`MusicSourceProxy` + `MusicScanner` + `/library/**` + `/stream/**`）已端到端可用；镜像内置 ffmpeg。前端 Source 层四实现骨架已就位（ServerProxy 完整可用，Webdav/Smb/Local 为骨架，完整实现在阶段 3/4）。前端**直连源与本地索引**不属阶段 1 范围，已在阶段 3（WebDAV）/ 4（SMB）承接。
+> **状态：已完成✅** —— 认证（access/refresh 轮换 + 过期懒刷新）、可换主题的自适应 UI 框架、全局播放器、配对页均已落地；后端 local/webdav 出流直取（`MusicSourceProxy` + `/library/**` + `/stream/**`）已端到端可用（服务端不再扫描入库）；镜像内置 ffmpeg。前端 Source 层四实现骨架已就位（ServerProxy 完整可用，Webdav/Smb/Local 为骨架，完整实现在阶段 3/4）。前端**直连源与本地索引**不属阶段 1 范围，已在阶段 3（WebDAV）/ 4（SMB）承接。
 
 - 后端：SecurityConfig+TokenFilter(**含过期校验/X-Token-Expired**) + devices/auth API(**pair + refresh 轮换**)；MusicSource 抽象+Smb/Webdav/Local 实现(**ServerProxy 完整可用**)；扫描入库（local/webdav，SMB 直连归阶段 4）；`/library/**`、`/stream/**`；镜像加 ffmpeg
 - App：Source 层四实现骨架（ServerProxy 完整可用）、**可换主题自适应 UI 框架（theme/layout/providers)**、基础播放器（顺序播放）、配对页
@@ -597,14 +597,14 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 ### 阶段 3：直连 WebDAV + 本地索引（~1 周）
 
 > **状态：已完成✅（含后续扫描优化迭代）** —— 直连 WebDAV/本地源 + 本地索引全链路落地（§6.4 / §6.5），
-> 增量指纹（size/mtime/etag）、`minimal/fast/full` 扫描模式、播放时懒补全、进度/取消、本地变化自动扫描与后端定时增量扫描均已落地。
+> 增量指纹（size/mtime/etag）、`minimal/fast/full` 扫描模式、播放时懒补全、进度/取消、本地变化自动扫描均已落地（均为 APP 侧扫描；服务端不再扫描入库）。
 > 双端构建通过、`webdav_scan_test` 3 条 + `audio_metadata_test` 8 条全部通过。
 > 早期附加 mp3/flac 乱码修复：需对已有源重新扫描一次覆写旧索引行（`upsert` 无条件覆盖）。
 
 - ✅ `WebdavDirectSource`：dart:io `PROPFIND Depth:1` 并发递归（`package:xml`）+ `Range` 流式（seek/断点）+ 纯 Dart 头部元数据解析（mp3 ID3v2 / flac STREAMINFO+VORBIS_COMMENT），头部越界保护
 - ✅ 本地轻量索引（§6.4）：`LocalIndex`（sources/idx_songs/cache）、Isolate 扫描器（`scan_worker.dart`）、`(ref,size,mtime,etag)` 增量与 missing 标记、封面落 `covers/<hash>.jpg`
 - ✅ 扫描优化：三档模式 + `head_bytes` 配置、批量 `upsertSongs`、进度/取消、并发池、自动扫描（本地 watcher + 周期快扫）、播放时 `enrichSong` 懒补全（§6.4）
-- ✅ 后端扫描增量：`MusicScanner` 指纹跳过 + `getlastmodified` 解析 + 并发探测 + album 缓存 + `@Scheduled` 定时（§4.5 / settings.md §5.1）
+- ~~✅ 后端扫描增量：`MusicScanner` 指纹跳过 + `getlastmodified` 解析 + 并发探测 + album 缓存 + `@Scheduled` 定时（§4.5 / settings.md §5.1）~~ 已移除（服务端不再扫描；歌曲只由 APP 在播放源处扫描）
 - ✅ 直连浏览：`SourcesScreen` 卡片三点菜单 + `SourceBrowseView` 文件夹式内页（扫描/进度/取消 → 搜索 → 播放 → 收藏 → 缓存全链路）；离线缓存（§6.6）
 - ✅ 全局库合并（§6.5）：`LibraryProvider` 合并 ServerProxy + 直连源（去重），专辑/歌手客户端聚合；按 `sourceKey` 逐首解析源实现
 - ✅ 三平台源骨架：ServerProxy / Webdav / Local 完整，SMB（阶段 4）
@@ -659,7 +659,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 ### 待拍板（沿用 v1，默认按文中执行）
 
 1. 上传落点 `Uploads/` 可配 —— 默认如此
-2. 服务端定时扫描 —— 默认开启（`SCAN_SCHEDULING_ENABLED=true`、6h 间隔），可在 `.env` 关闭
+2. ~~服务端定时扫描 —— 默认开启（`SCAN_SCHEDULING_ENABLED=true`、6h 间隔），可在 `.env` 关闭~~ 已作废（服务端不再扫描）
 3. 封面 128/512 两档 —— 默认如此
 4. `hard=true` 仅限 local 源 —— 默认如此
 5. `frozen` 是否暴露 UI —— 已定：以「不喜欢」开关形式暴露（播放页 👎 / 列表 ⋮），开即锁定最低权重，见 §7.1

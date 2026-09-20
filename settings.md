@@ -23,7 +23,7 @@
 |----|---------|---------|---------|------|
 | 客户端键值设置 | SQLite `app_settings`（`LocalIndex.settings`） | App `设置` 各分区 | 单台设备 | `auto_cache_favorites` |
 | 客户端运行配置 | `server_settings.json` / `flutter_secure_storage` | `设置 → 服务端 / 界面` | 单台设备 | 后端地址、主题偏好、令牌 |
-| 服务端全局设置 | MySQL `settings` 表（`PAIRING_TOKEN` 镜像写入） | `/admin/settings`（规划）、宿主机 `.env` | 全部已配对设备 | `scan_interval_min` |
+| 服务端全局设置 | MySQL `settings` 表（`PAIRING_TOKEN` 镜像写入） | `/admin/settings`（规划）、宿主机 `.env` | 全部已配对设备 | `pairing_token` |
 
 > 设计原则：**单设备体验优先**——客户端设置完全本地闭环、离线可改；与服务器同名的配置项（缓存上限等）采用「跟随服务端 / 自定义」双来源，见 §3.3 与 §5。
 
@@ -194,23 +194,9 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 | `pairing_token` | env 提供 / 首次随机 | 配对主令牌（明文可展示二维码） | — |
 | `cache_max_bytes` | `1073741824`（1 GB） | 全局建议值，供客户端 `follow_server` 模式采纳 | ✅ 是 → 客户端解析见 §3.3 |
 | `cache_song_limit` | `500` | 同上 | ✅ 是 → 客户端解析见 §3.3 |
-| `scan_interval_min` | `0`（关） | 服务端定时扫描间隔（分钟），已迁移为 env `SCAN_INTERVAL_MS` / `SCAN_SCHEDULING_ENABLED`、`SCAN_HEAD_BYTES`、`SCAN_PROBE_POOL`（见 §5.1） | — |
+| `scan_interval_min` | `0`（关） | ❌ 已移除（服务端不再扫描；歌曲只由 APP 在播放源处扫描） | — |
 | `transcode_max_concurrency` | `2` | ffmpeg 并发上限（超限降级透传） | — |
 | `upload_dir` | `{LOCAL_ROOT}/Uploads` | 上传落点 | — |
-| `scan_head_bytes` | `65536` | 服务端扫描每个音频最多读取的头部字节数 | — |
-| `scan_scheduling_enabled` | `true` | 是否启用服务端定时增量扫描 | — |
-
-### 5.1 服务端扫描配置（`application.yml` → env）
-
-| env | 默认 | 说明 |
-|-----|------|------|
-| `SCAN_INTERVAL_MS` | `21600000`（6h） | 定时增量扫描间隔（`@Scheduled fixedDelay`） |
-| `SCAN_SCHEDULING_ENABLED` | `true` | 关闭则仅手动扫描 |
-| `SCAN_HEAD_BYTES` | `65536` | 每个音频最多读取的头部字节数（标签解析） |
-| `SCAN_PROBE_POOL` | `4` | 标签探测并发池大小 |
-
-> 服务端增量：PROPFIND 解析 `getcontentlength` + `getlastmodified` 作为指纹，
-> 与库里 `file_size`/`file_mtime` 一致则跳过读头与写库（二次扫描近乎零成本）。
 
 > **同键项设计约定**：客户端与服务器同名的配置（当前为缓存两项），客户端一律用
 > 「`follow_server` / `custom`」双来源（§3.3）。客户端默认值与服务端建议值不同属正常：
