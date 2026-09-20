@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
@@ -185,6 +186,51 @@ class LocalIndex {
         PRIMARY KEY (source_key, ref)
       );
     ''');
+    // 阶段5 同步：本地变更流水（weight_outbox）+ 远端断点镜像（breakpoint_mirror）。
+    _db!.execute('''
+      CREATE TABLE IF NOT EXISTS weight_outbox (
+        event_uuid  TEXT PRIMARY KEY,
+        type        TEXT NOT NULL,
+        payload     TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        acked       INTEGER NOT NULL DEFAULT 0,
+        created_at  TEXT NOT NULL
+      );
+    ''');
+    _db!.execute('''
+      CREATE TABLE IF NOT EXISTS breakpoint_mirror (
+        playlist_uuid TEXT PRIMARY KEY,
+        song_id       INTEGER,
+        source        TEXT,
+        source_ref    TEXT,
+        position_ms   INTEGER NOT NULL DEFAULT 0,
+        updated_at    TEXT NOT NULL,
+        device_id     TEXT
+      );
+    ''');
+    // 歌单跨设备全局标识 + 删除墓碑（本地删除仍硬删，墓碑只活在服务端）。
+    final playlistCols = _db!
+        .select('PRAGMA table_info(playlists)')
+        .map((r) => r['name'] as String)
+        .toSet();
+    if (!playlistCols.contains('client_uuid')) {
+      _db!.execute('ALTER TABLE playlists ADD COLUMN client_uuid TEXT');
+      _db!.execute(
+          'CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_uuid ON playlists(client_uuid)');
+    }
+    if (!playlistCols.contains('deleted')) {
+      _db!.execute(
+          'ALTER TABLE playlists ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');
+    }
+    // 条目归属源（local/smb/webdav）：同步条目事件解析服务端 song_id 用。
+    // 既有行留空（NULL），仅新写入行携带。
+    final itemCols = _db!
+        .select('PRAGMA table_info(playlist_items)')
+        .map((r) => r['name'] as String)
+        .toSet();
+    if (!itemCols.contains('source')) {
+      _db!.execute('ALTER TABLE playlist_items ADD COLUMN source TEXT');
+    }
     // play_meta 为既有 DB 时可能缺 song_json 快照列。
     final metaCols = _db!
         .select('PRAGMA table_info(play_meta)')
@@ -385,6 +431,16 @@ class LocalIndex {
       sourceKey,
       songRef,
     ]);
+  }
+
+  /// 大内嵌封面回填补读（旧版头部采样截断缺陷修复）：把已标已读、但没有封面的
+  /// mp3/flac 行重置为未读，交给后台补读用加深的封面读取（coverReadHint）重取。
+  /// 返回重置行数。
+  int resetMetaReadForMissingCovers() {
+    _db!.execute(
+        "UPDATE idx_songs SET meta_read=0 "
+        "WHERE meta_read=1 AND cover_path IS NULL AND format IN ('mp3','flac')");
+    return _db!.updatedRows;
   }
 
   /// 指定源尚未读取过元数据的歌曲（后台补读用，missing=0）。
@@ -933,8 +989,9 @@ class LocalIndex {
 
   int createPlaylist(String name, {String? description}) {
     _db!.execute(
-        'INSERT INTO playlists(name, description, created_at) VALUES(?,?,?)',
-        [name, description, DateTime.now().toIso8601String()]);
+        'INSERT INTO playlists(name, description, created_at, client_uuid, deleted) '
+        'VALUES(?,?,?,?,0)',
+        [name, description, DateTime.now().toIso8601String(), newEventUuid()]);
     return _db!.lastInsertRowId;
   }
 
@@ -949,18 +1006,20 @@ class LocalIndex {
 
   List<PlaylistRow> listPlaylists() {
     final rs = _db!.select(
-        'SELECT id, name, description, created_at FROM playlists ORDER BY id');
+        'SELECT id, name, description, created_at, client_uuid FROM playlists ORDER BY id');
     return rs.map((r) => PlaylistRow(
           id: r['id'] as int,
           name: r['name'] as String,
           description: r['description'] as String?,
           createdAt: r['created_at'] as String,
+          clientUuid: r['client_uuid'] as String?,
         )).toList();
   }
 
   void addPlaylistItem(int playlistId,
       {required String sourceKey, required String songRef,
-      required String title, String? artist, String? album, String? coverPath}) {
+      required String title, String? artist, String? album, String? coverPath,
+      String? source}) {
     final max = _db!
         .select('SELECT COALESCE(MAX(sort_order),0) m FROM playlist_items WHERE playlist_id=?',
             [playlistId])
@@ -968,10 +1027,10 @@ class LocalIndex {
     final now = DateTime.now().toIso8601String();
     _db!.execute('''
       INSERT INTO playlist_items(playlist_id, source_key, song_ref, title, artist,
-        album, cover_path, sort_order, added_at)
-      VALUES(?,?,?,?,?,?,?,?,?)
+        album, cover_path, sort_order, added_at, source)
+      VALUES(?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(playlist_id, source_key, song_ref) DO NOTHING
-    ''', [playlistId, sourceKey, songRef, title, artist, album, coverPath, max + 1, now]);
+    ''', [playlistId, sourceKey, songRef, title, artist, album, coverPath, max + 1, now, source]);
   }
 
   void removePlaylistItem(int playlistId, String sourceKey, String songRef) {
@@ -1000,7 +1059,7 @@ class LocalIndex {
   List<PlaylistItemRow> playlistItems(int playlistId) {
     final rs = _db!.select('''
       SELECT id, playlist_id, source_key, song_ref, title, artist, album,
-             cover_path, sort_order
+             cover_path, sort_order, source
       FROM playlist_items WHERE playlist_id=?
       ORDER BY sort_order, id
     ''', [playlistId]);
@@ -1014,6 +1073,7 @@ class LocalIndex {
           album: r['album'] as String?,
           coverPath: r['cover_path'] as String?,
           sortOrder: r['sort_order'] as int,
+          source: r['source'] as String?,
         )).toList();
   }
 
@@ -1029,6 +1089,205 @@ class LocalIndex {
     _db!.execute(
         'UPDATE playlist_items SET sort_order=? WHERE id=?',
         [items[i].sortOrder, items[j].id]);
+  }
+
+  // ---------- 多设备同步 outbox（阶段5，DESIGN §7.2） ----------
+
+  /// 事件 uuid（服务端 event_uuid 幂等键；36 列内唯一即可，不需标准 UUID 形态）。
+  static String newEventUuid() {
+    final r = Random.secure();
+    final tail = List.generate(3,
+            (_) => r.nextInt(0xffffffff).toRadixString(16).padLeft(8, '0'))
+        .join();
+    return '${DateTime.now().microsecondsSinceEpoch.toRadixString(16)}-${tail.substring(0, 12)}';
+  }
+
+  /// 本地变更入队（同步方法，供权重/歌单/断点写路径直接调用；仅服务器模式歌曲调用方负责过滤）。
+  /// 返回 event_uuid。
+  String enqueueOutbox(String type, Map<String, dynamic> payload) {
+    final uuid = newEventUuid();
+    final now = DateTime.now().toIso8601String();
+    _db!.execute(
+        'INSERT INTO weight_outbox(event_uuid, type, payload, occurred_at, acked, created_at) '
+        'VALUES(?,?,?,?,0,?)',
+        [uuid, type, jsonEncode(payload), now, now]);
+    return uuid;
+  }
+
+  /// 未确认事件（SyncEngine 上推用，按入队序）。
+  List<OutboxRow> pendingOutbox({int limit = 500}) {
+    final rs = _db!.select(
+        'SELECT event_uuid, type, payload, occurred_at FROM weight_outbox '
+        'WHERE acked=0 ORDER BY rowid LIMIT ?',
+        [limit]);
+    return [
+      for (final r in rs)
+        OutboxRow(
+          eventUuid: r['event_uuid'] as String,
+          type: r['type'] as String,
+          payload: r['payload'] as String,
+          occurredAt: r['occurred_at'] as String,
+        )
+    ];
+  }
+
+  int pendingOutboxCount() {
+    return _db!
+        .select('SELECT COUNT(*) c FROM weight_outbox WHERE acked=0')
+        .first['c'] as int;
+  }
+
+  /// 已被服务端接受（含去重命中）：删队，避免表无限增长。
+  void deleteOutbox(Iterable<String> uuids) {
+    for (final uuid in uuids) {
+      _db!.execute('DELETE FROM weight_outbox WHERE event_uuid=?', [uuid]);
+    }
+  }
+
+  /// 服务端明确拒绝（游离引用等）：进死信，不再重试，避免毒丸循环。
+  void deadLetterOutbox(Iterable<String> uuids) {
+    for (final uuid in uuids) {
+      _db!.execute(
+          'UPDATE weight_outbox SET acked=2 WHERE event_uuid=?', [uuid]);
+    }
+  }
+
+  /// 歌单跨设备标识： legacy 行按需补发；新建行在 [createPlaylist] 已直接写入。
+  String ensurePlaylistUuid(int id) {
+    final rs = _db!
+        .select('SELECT client_uuid FROM playlists WHERE id=?', [id]);
+    if (rs.isEmpty) throw StateError('playlist not found: $id');
+    var uuid = rs.first['client_uuid'] as String?;
+    if (uuid == null || uuid.isEmpty) {
+      uuid = newEventUuid();
+      _db!.execute(
+          'UPDATE playlists SET client_uuid=? WHERE id=?', [uuid, id]);
+    }
+    return uuid;
+  }
+
+  String? playlistUuidOf(int id) {
+    final rs = _db!
+        .select('SELECT client_uuid FROM playlists WHERE id=?', [id]);
+    if (rs.isEmpty) return null;
+    return rs.first['client_uuid'] as String?;
+  }
+
+  int? playlistIdOfUuid(String uuid) {
+    final rs = _db!
+        .select('SELECT id FROM playlists WHERE client_uuid=?', [uuid]);
+    if (rs.isEmpty) return null;
+    return rs.first['id'] as int;
+  }
+
+  /// pull 歌单快照落库（deleted=true 则本地硬删）。
+  /// 条目只替换服务端歌曲行（source_key='server'）：本地直连歌曲行保留，
+  /// 服务端感知不到它们（见 playlist_store 埋点过滤）。
+  void applyPlaylistSnapshot({
+    required String uuid,
+    required String name,
+    String? description,
+    required bool deleted,
+    required List<SyncedItem> items,
+  }) {
+    final id = playlistIdOfUuid(uuid);
+    if (deleted) {
+      if (id != null) deletePlaylist(id);
+      return;
+    }
+    final int pid;
+    if (id == null) {
+      _db!.execute(
+          'INSERT INTO playlists(name, description, created_at, client_uuid, deleted) '
+          'VALUES(?,?,?,?,0)',
+          [name, description, DateTime.now().toIso8601String(), uuid]);
+      pid = _db!.lastInsertRowId;
+    } else {
+      _db!.execute('UPDATE playlists SET name=?, description=? WHERE id=?',
+          [name, description, id]);
+      pid = id;
+    }
+    _db!.execute(
+        'DELETE FROM playlist_items WHERE playlist_id=? AND source_key=?',
+        [pid, 'server']);
+    for (final it in items) {
+      _db!.execute('''
+        INSERT INTO playlist_items(playlist_id, source_key, song_ref, title, artist,
+          album, cover_path, sort_order, added_at, source)
+        VALUES(?,?,?,?,?,?,?,?,?,?)
+      ''', [
+        pid,
+        'server',
+        it.songRef,
+        it.title,
+        it.artist,
+        it.album,
+        null,
+        it.sortOrder,
+        DateTime.now().toIso8601String(),
+        it.source,
+      ]);
+    }
+  }
+
+  /// pull 歌曲权重快照落 play_meta（source_key 恒 'server'）。
+  void applySongSnapshot({
+    required String songRef,
+    required int likeStreak,
+    required int dislikeStreak,
+    required double factor,
+    required bool frozen,
+    required bool favorite,
+  }) {
+    upsertPlayMeta('server', songRef,
+        likeStreak: likeStreak,
+        dislikeStreak: dislikeStreak,
+        factor: factor,
+        frozen: frozen,
+        favorite: favorite);
+  }
+
+  /// pull 断点写入镜像表（不碰运行时 play_state，见 SyncEngine）。
+  void upsertBreakpointMirror({
+    required String playlistUuid,
+    int? songId,
+    String? source,
+    String? sourceRef,
+    required int positionMs,
+    required String updatedAt,
+    String? deviceId,
+  }) {
+    _db!.execute(
+        'INSERT INTO breakpoint_mirror(playlist_uuid, song_id, source, source_ref, '
+        'position_ms, updated_at, device_id) VALUES(?,?,?,?,?,?,?) '
+        'ON CONFLICT(playlist_uuid) DO UPDATE SET '
+        'song_id=excluded.song_id, source=excluded.source, source_ref=excluded.source_ref, '
+        'position_ms=excluded.position_ms, updated_at=excluded.updated_at, '
+        'device_id=excluded.device_id',
+        [playlistUuid, songId, source, sourceRef, positionMs, updatedAt, deviceId]);
+  }
+
+  BreakpointMirrorRow? breakpointMirrorOf(String playlistUuid) {
+    final rs = _db!.select(
+        'SELECT playlist_uuid, song_id, source, source_ref, position_ms, updated_at, device_id '
+        'FROM breakpoint_mirror WHERE playlist_uuid=?',
+        [playlistUuid]);
+    if (rs.isEmpty) return null;
+    final r = rs.first;
+    return BreakpointMirrorRow(
+      playlistUuid: r['playlist_uuid'] as String,
+      songId: r['song_id'] as int?,
+      source: r['source'] as String?,
+      sourceRef: r['source_ref'] as String?,
+      positionMs: r['position_ms'] as int,
+      updatedAt: r['updated_at'] as String,
+      deviceId: r['device_id'] as String?,
+    );
+  }
+
+  void deleteBreakpointMirror(String playlistUuid) {
+    _db!.execute(
+        'DELETE FROM breakpoint_mirror WHERE playlist_uuid=?', [playlistUuid]);
   }
 
   // ---------- 应用设置（settings.md §3） ----------
@@ -1189,21 +1448,23 @@ class PlayMetaRow {
   });
 }
 
-/// 歌单行（stage2.md §1.2）。
+/// 歌单行（stage2.md §1.2；clientUuid 为阶段5 跨设备全局标识）。
 class PlaylistRow {
   final int id;
   final String name;
   final String? description;
   final String createdAt;
+  final String? clientUuid;
   const PlaylistRow({
     required this.id,
     required this.name,
     this.description,
     required this.createdAt,
+    this.clientUuid,
   });
 }
 
-/// 歌单条目行（含歌曲快照字段，离线或源失效仍可展示）。
+/// 歌单条目行（含歌曲快照字段，离线或源失效仍可展示；source 为阶段5 同步用归属源）。
 class PlaylistItemRow {
   final int id;
   final int playlistId;
@@ -1214,6 +1475,7 @@ class PlaylistItemRow {
   final String? album;
   final String? coverPath;
   final int sortOrder;
+  final String? source;
   const PlaylistItemRow({
     required this.id,
     required this.playlistId,
@@ -1224,6 +1486,7 @@ class PlaylistItemRow {
     this.album,
     this.coverPath,
     required this.sortOrder,
+    this.source,
   });
 }
 
@@ -1254,5 +1517,57 @@ class PlayStateRow {
     required this.idx,
     required this.positionMs,
     required this.updatedAt,
+  });
+}
+
+/// 同步 outbox 行（阶段5）。
+class OutboxRow {
+  final String eventUuid;
+  final String type;
+  final String payload;
+  final String occurredAt;
+  const OutboxRow({
+    required this.eventUuid,
+    required this.type,
+    required this.payload,
+    required this.occurredAt,
+  });
+}
+
+/// pull 歌单条目快照（阶段5；source_key 恒 'server'，由落库方补）。
+class SyncedItem {
+  final String? source;
+  final String songRef;
+  final String? title;
+  final String? artist;
+  final String? album;
+  final int sortOrder;
+  const SyncedItem({
+    this.source,
+    required this.songRef,
+    this.title,
+    this.artist,
+    this.album,
+    required this.sortOrder,
+  });
+}
+
+/// 远端断点镜像行（阶段5；只读展示/续播用，不驱动运行时播放）。
+class BreakpointMirrorRow {
+  final String playlistUuid;
+  final int? songId;
+  final String? source;
+  final String? sourceRef;
+  final int positionMs;
+  final String updatedAt;
+  final String? deviceId;
+  const BreakpointMirrorRow({
+    required this.playlistUuid,
+    this.songId,
+    this.source,
+    this.sourceRef,
+    required this.positionMs,
+    required this.updatedAt,
+    this.deviceId,
   });
 }

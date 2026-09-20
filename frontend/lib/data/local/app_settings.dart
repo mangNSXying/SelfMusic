@@ -78,6 +78,19 @@ class AppSettings {
   /// 信任自签名证书（settings.md §3.3 服务端）：覆盖 dio API 与直连 WebDAV（dart:io）；
   /// 播放器层（ExoPlayer/mpv）不受此开关影响，仍要求 CA 有效证书。
   static const String kAllowSelfSigned = 'allow_self_signed';
+
+  /// 多设备状态同步（阶段5，DESIGN §7.2）：服务端 cursor（pull 的 since_cursor 基准）。
+  static const String kSyncCursor = 'sync_cursor';
+
+  /// 多设备状态同步总开关（关=仅本地，直连模式同样跳过）。
+  static const String kSyncEnabled = 'sync_enabled';
+
+  /// 上次同步成功时间（ISO-8601，服务端分区展示用）。
+  static const String kLastSyncAt = 'last_sync_at';
+
+  /// 大封面回填补读是否已执行（设备本地一次性迁移标记）。
+  /// 刻意不进 [knownKeys]：它与本机索引数据绑定，不随设置导出/导入。
+  static const String kCoverReenrichV1Done = 'cover_reenrich_v1_done';
   static const String kPlayModeDefault = 'play_mode_default';
   static const String kResumeOnStartup = 'resume_on_startup';
   static const String kPlayerShowWeight = 'player_show_weight';
@@ -176,6 +189,28 @@ class AppSettings {
       (index.settingsGet(kAllowSelfSigned) ?? '0') == '1';
   set allowSelfSigned(bool v) =>
       index.settingsSet(kAllowSelfSigned, v ? '1' : '0');
+
+  // ---------- 多设备状态同步（阶段5，DESIGN §7.2） ----------
+
+  /// 服务端 cursor：pull 增量基准，SyncEngine 每次成功后推进。
+  int get syncCursor => int.tryParse(index.settingsGet(kSyncCursor) ?? '0') ?? 0;
+  set syncCursor(int v) => index.settingsSet(kSyncCursor, v.toString());
+
+  /// 同步总开关（默认开；关=仅本地，不上推也不拉取）。
+  bool get syncEnabled => (index.settingsGet(kSyncEnabled) ?? '1') == '1';
+  set syncEnabled(bool v) => index.settingsSet(kSyncEnabled, v ? '1' : '0');
+
+  /// 上次同步成功时间（ISO-8601，空=从未成功）。
+  String get lastSyncAt => index.settingsGet(kLastSyncAt) ?? '';
+  set lastSyncAt(String v) => index.settingsSet(kLastSyncAt, v);
+
+  // ---------- 设备本地一次性迁移标记（不进 knownKeys） ----------
+
+  /// 大内嵌封面回填补读标记：旧版封面读取受头部采样截断，见 direct_source_manager.init。
+  bool get coverReenrichV1Done =>
+      (index.settingsGet(kCoverReenrichV1Done) ?? '0') == '1';
+  set coverReenrichV1Done(bool v) =>
+      index.settingsSet(kCoverReenrichV1Done, v ? '1' : '0');
 
   // ---------- 收藏自动缓存（settings.md §3.4 歌曲分区） ----------
 
@@ -364,6 +399,9 @@ class AppSettings {
 kCacheConfigMode,
     kAllowInsecureHttp,
     kAllowSelfSigned,
+    kSyncCursor,
+    kSyncEnabled,
+    kLastSyncAt,
     kPlayModeDefault,
     kResumeOnStartup,
     kPlayerShowWeight,

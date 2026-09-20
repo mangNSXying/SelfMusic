@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import '../local/local_index.dart';
 import '../../models/song.dart';
+import 'sync_event_types.dart';
 
 /// 歌曲权重与收藏的统一点（stage2.md §1.5 / §2.1）。
 ///
@@ -38,6 +39,7 @@ class SongWeightStore {
         dislikeStreak: 0,
         factor: factor,
         frozen: m.frozen);
+    _emit(s, SyncEventTypes.songComplete);
   }
 
   /// 中途跳过（<70% 被打断）：dislike_streak++，like 清零；streak≥3 → factor−0.1（≥0.5）并清零。
@@ -55,6 +57,7 @@ class SongWeightStore {
         dislikeStreak: streak,
         factor: factor,
         frozen: m.frozen);
+    _emit(s, SyncEventTypes.songSkipped);
   }
 
   /// 主动喜欢 / 收藏：factor 直接拉到 1.5，同时解除「不喜欢」锁定。
@@ -66,6 +69,7 @@ class SongWeightStore {
         dislikeStreak: 0,
         factor: maxFactor,
         frozen: false);
+    _emit(s, SyncEventTypes.songLiked);
   }
 
   /// 取消喜欢 / 收藏：非锁定态 factor 回落 1.0；「不喜欢」锁定态保持最低权重。
@@ -77,6 +81,7 @@ class SongWeightStore {
         dislikeStreak: 0,
         factor: m.frozen ? m.factor : defaultFactor,
         frozen: m.frozen);
+    _emit(s, SyncEventTypes.songUnfavorite);
   }
 
   /// 是否处于「不喜欢」态（权重锁定最低）。
@@ -92,6 +97,7 @@ class SongWeightStore {
         factor: disliked ? minFactor : defaultFactor,
         frozen: disliked,
         favorite: m.favorite);
+    _emit(s, SyncEventTypes.songDisliked, {'enabled': disliked});
   }
 
   /// 手动重置：双 streak 清零，factor=1.0，解除「不喜欢」锁定。
@@ -103,6 +109,20 @@ class SongWeightStore {
         factor: defaultFactor,
         frozen: false,
         favorite: m.favorite);
+    _emit(s, SyncEventTypes.songReset);
+  }
+
+  /// 阶段5：仅服务器模式歌曲进 outbox（直连歌曲只活本机，见 DESIGN §7.2）。
+  /// legacy/未知 source 一律跳过（服务端按 source_ref 兜底只处理条目类事件）。
+  void _emit(Song s, String type, [Map<String, dynamic>? extra]) {
+    if (s.sourceKey != 'server' || s.source.isEmpty || s.source == 'server') {
+      return;
+    }
+    index.enqueueOutbox(type, {
+      'source': s.source,
+      'source_ref': s.sourceRef,
+      if (extra != null) ...extra,
+    });
   }
 
   static double _clamp(double v) => v.clamp(minFactor, maxFactor).toDouble();
