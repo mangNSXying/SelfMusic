@@ -2,7 +2,7 @@
 
 > 定位：**去中心化的个人音乐服务器 + 双模式客户端**
 > 上游约束：`开发思路.txt`（无中心账号 / 本地+SMB+WebDAV 曲库 / 加权播放 / 喜欢歌自动缓存）
-> 状态：**阶段 0–3 已完成**（Android 壳对齐 / 认证·配对 / 客户端本地闭环·歌单·喜欢列表 / 直连 WebDAV·本地索引·增量扫描优化）；阶段 4~6 待实施。
+> 状态：**阶段 0–3、阶段 5 已完成**（Android 壳对齐 / 认证·配对 / 客户端本地闭环·歌单·喜欢列表 / 直连 WebDAV·本地索引·增量扫描优化 / 多设备状态同步）；阶段 4（SMB）、阶段 6（转码+管理闭环）待实施。
 > 在此之上，后续迭代全部落地：元数据后台补读与全源编辑、歌词、后台播放、睡眠定时四模式、播放页与集合页交互
 > （层级返回 / 分组左右滑切 / 列表·卡片切换 / 队列·歌单自动定位高亮 / 标题显示格式 / 搜索追焦 / 编辑歌单）、
 > 网络安全加固（默认 HTTPS + 允许不安全 HTTP / 信任自签名开关 + 明文凭据收敛到 secure storage，见 §6.7 与 问题.md）。
@@ -217,7 +217,7 @@ INDEX idx_refresh(refresh_token_hash)
   此后所有读取（搜索 / 收藏列表 / 歌单解析 / 断点恢复）统一 `LEFT JOIN play_meta`
 - 凭据加密：WebDAV/SMB 密码经 `flutter_secure_storage` 存放，SQLite 只存引用键
 - 离线优先：所有播放决策只查本地表；网络层的角色是把远端变更搬进本地
-- 阶段 5 同步时：权重/歌单改动落 `weight_outbox` 流水上推，服务端按 `event_uuid` 幂等去重（本轮未实现）
+- 阶段 5 同步时：权重/歌单改动落 `weight_outbox` 流水上推，服务端按 `event_uuid` 幂等去重（阶段 5 已落地，见 §7.2）
 
 ---
 
@@ -261,15 +261,15 @@ INDEX idx_refresh(refresh_token_hash)
 | ⏳ HEAD | `/stream/{id}` | 探测长度/时长 |
 | ⏳ DELETE | `/stream/{id}` | 显式停止（关闭 ffmpeg 子进程） |
 
-### 4.4 状态同步（服务器模式）—— ⏳ 全部规划（阶段 5）
+### 4.4 状态同步（服务器模式）—— ✅ 已实现（阶段 5）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/sync/pull?since_cursor=` | 增量拉取（歌单+权重+断点），返回新 cursor |
-| POST | `/sync/push` | 批量上推权重事件流水/断点/歌单差异；幂等按 `event_uuid` 去重 |
-| CRUD | `/playlists` 系列 | 见 v1 §3.4，不变 |
-| PUT | `/playstates/{playlistId}` | `{song_id, position_ms}` |
-| POST | `/songs/{id}/weight` | `{event: liked\|disliked\|reset\|favorite\|unfavorite}`，服务端重算权重 |
+| ✅ GET | `/api/v1/sync/pull?since_cursor=` | 增量拉取（歌单+权重+断点快照），返回新 cursor；`since=0` 为启动全量校准；超 2000 事件分页（`has_more`） |
+| ✅ POST | `/api/v1/sync/push` | 批量上推事件流水；幂等按 `event_uuid` 去重；LWW 判输回 correction 快照；`device_client_id` 须与认证身份一致 |
+| ✅ CRUD | `/api/v1/playlists` 系列（含 `{id}/items` 增删改） | 直接 REST 变更同样走事件管线（服务端代写事件），其它设备经 pull 可见 |
+| ✅ PUT | `/api/v1/playstates/{playlistId}` | `{song_id, position_ms}`；行级 LWW，判输回服务端快照 |
+| ✅ POST | `/api/v1/songs/{id}/weight` | `{event: liked\|...}` 单权重事件直调（走同一管线，`song_id` 强制为路径 id） |
 
 ### 4.5 管理
 
@@ -389,7 +389,7 @@ abstract class MusicSource {
 - 播放器只认 `MusicSource`，不感知模式
 - `ServerProxySource.open()` 即 GET `/stream/{id}`；直连实现各自对接协议
 - 直连播放优先级：离线缓存文件 → `directStream()`（原生 URL，ExoPlayer/native Range seek 更稳，WebDAV 用）→ 自建 `StreamAudioSource`（`open()`）回落
-- WebDAV `ref` 存**解码后**路径（标题/去重友好），请求时按路径段重新编码；扫描头部元数据解析对大内嵌封面做了边界保护（超采样长度即停止解析，不抛 `RangeError`）
+- WebDAV `ref` 存**解码后**路径（标题/去重友好），请求时按路径段重新编码；扫描头部元数据解析对大内嵌封面做了边界保护（超采样长度即停止解析，不抛 `RangeError`，随后按提示补读）
 - 模式判定 = `sources` 表里有哪些启用的源；配置了 `server` 源即解锁同步/转码等增强功能
 
 ### 6.3 SMB 直连平台策略（全平台目标）
@@ -410,16 +410,18 @@ abstract class MusicSource {
 **扫描流程（首次）**
 
 - 列目录：WebDAV `PROPFIND Depth:1` 递归 + `_mapConcurrent` 并发（并发 6）；本地文件夹 `Directory.list(recursive:true)`
-- 逐文件 Range 取头部（`head_bytes`≈64KB，可配 `scan_head_bytes`）→ `audio_metadata`（纯 Dart 解析 mp3/flac/m4a）得标题/歌手/专辑
+- 逐文件 Range 取头部（`head_bytes`≈64KB，可配 `scan_head_bytes`）→ `audio_metadata`（纯 Dart 解析 mp3(ID3v2) / flac / m4a(mp4) / ogg·opus / wav / aac(ADTS)）得标题/歌手/专辑
 - 单事务批量 `upsertSongs` 落库 → `persistCover`（封面落 `covers/<hash>.jpg`，SQLite 存路径）→ `markMissingExcept`/`clearMissing` 标记消失项（保留缓存歌可播性）
 - 大目录保护：单源上限 20k 首，超出提示分目录添加
 
 **增量与扫描模式**
 
 - 增量指纹 `(ref, size, mtime, etag)`：WebDAV 从 PROPFIND 解析 `getlastmodified`/`getetag`/`getcontentlength`；本地扫描 `stat` 取 size/mtime；**四元组未变直接跳过读头 → 二次扫描零音频下载**
-- `scan_mode` 三档：`fast` 仅文件名建索引（零读头，**默认**）/ `minimal` 只解析标题·歌手·专辑（最快补充）/ `full` 解析全部元数据 + 封面（时长/曲目/年份/流派）
+- `scan_mode` 三档：`fast` 仅文件名建索引（零读头，**默认**）/ `minimal` 只解析标题·歌手·专辑（最快补充）/ `full` 解析全部元数据 + 封面（时长/曲目/年份/流派）。六类格式 mp3/flac/m4a/ogg·opus/wav/aac 均支持；解析无果时按「同目录图片 → 文件名」回退
 - 播放时懒补全：`minimal` 入库的歌缺 时长/流派/年份/封面 → `PlayerProvider` 播放后后台 `open` 读头解析并 `enrichSong` 回填，失败不影响播放
 - **播放时必然重读**：`_enrichLazily` 不依赖索引缓存，任何歌开始播放都再次读头解析并回填（兼修正断点/歌单旧快照），保证切歌即时刷新
+- **大内嵌封面两段读**：首段采样（256KB）解析缺少封面时，`coverReadHint` 按 ID3 标签声明长度 / FLAC 块头 / ogg comment 包完成度算出「读到封面块尾」所需字节数，补读一次（上限 `kCoverReadCapBytes` 8MB）再解析——高清扫图常见 1~3MB，一段读会整块丢失；**moov-at-end 的 m4a、ogg/opus 时长、无 ID3v2 的 mp3 ID3v1** 走 `tailReadHint` 尾部补读（m4a 按 256KB→1MB→4MB→8MB 逐级增大，ogg 取末页 granule，mp3 取尾 128B）；扫描 `full`+提取封面同样走 `readAudioMeta` 统一读序。旧版已标已读但无封面的 mp3/flac 行由一次性迁移（`kCoverReenrichV1Done`，设备本地标记）重置为未读，交给后台补读重取。**歌词（USLT / LYRICS）与长文本帧同在整段标签内，随两段读一并补全**
+- **同目录图片回退**：解析后仍无封面 → 按「同名图片（`.png/.jpg/.jpeg/.webp`）→ `cover.*`/`folder.*`/`front.*`/`album.*`」顺序取同目录图片（播放补读按会话缓存，扫描按目录清单/下载缓存去重），经图片签名校验后落盘。同名 `.lrc` 歌词回退早已在同目录读取路径（§3.2 song_lyrics / 播放歌词加载）
 - **全局后台补读**：任一首开始播放后，后台逐个补读各直连源「尚未读取过元数据」的歌曲（`DirectSourceManager` 分批循环读头回填），专辑/歌手/封面在扫描未覆盖时也能逐步补齐并在 UI 就地刷新（`LibraryProvider` 监听元数据版本号）
 - **修改歌曲元数据（全源）**：播放页封面「更多 → 修改歌曲元数据」，标题/歌手/专辑可编辑；直连歌曲落 `user_edited=1` 扫描不再覆盖，服务器歌曲本地覆盖展示（`LocalIndex.setUserMeta` / `DirectSourceManager.updateSongMeta`）
 
@@ -438,7 +440,7 @@ abstract class MusicSource {
 
 - 头部越界保护：元数据块声明长度超出头部采样即停止解析，不抛 `RangeError`（大内嵌封面场景）
 - 时长探测：mp3 估算法（文件大小÷码率）或解析 Xing/VBRI 头；flac 读 STREAMINFO
-- 文字编码：mp3 ID3v2 按帧 encoding 选解码（enc==3 → UTF-8；enc==0 → 尝试 UTF-8 再回退 Latin-1）；flac VORBIS_COMMENT 按规范 UTF-8（失败回退 Latin-1）；m4a 无内嵌标签时走文件名回退
+- 文字编码：mp3 ID3v2 按帧 encoding 选解码（enc==3 → UTF-8；enc==0 → 尝试 UTF-8 再回退 Latin-1）；flac/ogg VORBIS_COMMENT 按规范 UTF-8（失败回退 Latin-1）；m4a 文本原子 UTF-8；无内嵌标签时走文件名/同目录回退
 - 旧索引乱码修复：`idx_songs` 行经 `upsert` 无条件覆写，重新扫描即自动更新，无需手动清库
 
 > **重要**：修复 FLAC VORBIS_COMMENT 乱码（`String.fromCharCodes` → `utf8.decode`）后，需对已有播放源重新执行一次「扫描」以覆写旧乱码行；`upsert` 的 `ON CONFLICT` 会无条件更新 title/artist/album，无需手动删除或重建索引。
@@ -536,9 +538,10 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 ### 7.2 同步协议（仅服务器模式）
 
 - **方向**：客户端本地 SQLite 是运行时事实源；后端是多设备汇聚点
-- **Pull**：启动全量校准 + 每 30s `GET /sync/pull?since_cursor=`；cursor 为服务端单调递增变更号
+- **Pull**：启动全量校准 + 每 30s `GET /api/v1/sync/pull?since_cursor=`；cursor 为服务端 `sync_events.seq` 单调递增变更号
 - **Push**：本地产生权重事件/断点/歌单改动 → 写 `weight_outbox`（带 event_uuid）→ 2s 防抖批量上推；服务端按 uuid 幂等去重
-- **冲突**：last-write-wins；权重走**事件重算**而非绝对值覆盖（两设备并发点赞不会互相抹掉）；歌单条目用 `sync_ver` 乐观锁，失败则重拉重放
+- **冲突（字段级合并，阶段 5 落地）**：权重走**事件重算**而非绝对值覆盖（两设备并发点赞按到达序重放，不互抹）；收藏/歌单元数据/删除墓碑/断点走**行级 LWW**（事件 `occurred_at` vs 行 `last_event_at`，输方收 correction 回执自纠；仲裁时钟为服务端 `arrived_at`）；歌单条目按 seq 到达序重放（后到达胜出）；直接 REST 变更（歌单 CRUD/断点 PUT/调权 POST）同样先记事件再生效，保证 pull 可见
+- **歌曲身份**：数字 `song_id` 优先，否则按 `(source, source_ref)` 唯一键解析；legacy 空 source 按 `source_ref` 兜底
 - 直连模式：上述全部跳过，数据只在本机
 
 ---
@@ -613,8 +616,15 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 ### 阶段 5：多设备状态同步（~1 周）
 
-- `/sync/*` 全套；SyncEngine；设备管理页
-- 验收：两台设备 30s 内状态收敛；断网操作恢复网络后正确合并
+> **状态：已实现✅（跳过阶段 4 先行）** —— `/api/v1/sync/*` + 歌单 CRUD + 断点 PUT + 调权 POST（§4.4）；
+> `SyncService`（事件去重/§7.1 服务端重算/行级 LWW/correction 回执/seq cursor）；
+> 客户端 `weight_outbox` + 四处埋点（调权/收藏/歌单/断点，仅服务器模式）+ `SyncEngine`
+> （2s tick 推/30s 拉/退避/手动）+ 设备管理页；后端 8 单测 + 前端 5 单测全绿；
+> scratch 库 11 步端到端验证通过（幂等/LWW/墓碑/冒充拒绝全覆盖）。
+> 断点按"播放歌单归属 + 服务器歌曲"上报，远端断点进 `breakpoint_mirror`（不碰运行时 play_state）。
+
+- ✅ `/sync/*` 全套；SyncEngine；设备管理页
+- 验收：两台设备 30s 内状态收敛；断网操作恢复网络后正确合并（待三端真机验收：Linux 桌面 + 双手机）
 
 ### 阶段 6：转码 + 管理闭环（~1 周）
 

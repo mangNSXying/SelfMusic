@@ -84,7 +84,9 @@ selfmusic/
 │       │   ├── common/               # ApiResponse / BizException / MusicSource 枚举 / 全局异常
 │       │   ├── config/               # FirstBootInitializer 等启动配置
 │       │   ├── auth/                 # SecurityConfig / TokenFilter / 配对与设备管理 API
-│       │   ├── library/              # 曲库 API（songs/albums/favorites）
+│       │   ├── library/              # 曲库 API（songs/albums/favorites）+ 歌曲调权 POST（阶段5）
+│       │   ├── playlist/             # 歌单 CRUD + 断点 PUT（阶段5，走 SyncService 事件管线）
+│       │   ├── sync/                 # 同步引擎服务端：SyncController pull/push + SyncService（去重/重算/LWW/cursor）
 │       │   ├── stream/               # 流媒体 API + MusicSourceProxy（local/webdav/smb）
 │       │   └── domain/
 │       │       ├── entity/           # JPA 实体（纯手写 getter/setter，不用 Lombok）
@@ -96,16 +98,17 @@ selfmusic/
 │   │   ├── theme/                    # 可配置主题（app_theme / theme_provider）
 │   │   ├── layout/                   # 自适应布局（app_shell / sidebar / top_bar / queue_panel / mini_player_bar）
 │   │   ├── providers/                # 状态（auth / library / player / navigation / playlists / direct_source_manager）
-│   │   ├── services/                 # dio+懒刷新拦截器(ApiClient)、AuthService、ServerSettings
-│   │   ├── data/sources/             # MusicSource 抽象 + ServerProxy + WebdavDirect + SmbDirect
-│   │   ├── data/local/               # audio_metadata（mp3/flac 头部解析）+ local_index + 阶段2 封装（song_weight_store / playlist_store / cache_manager / app_settings）
+│   │   ├── services/                 # dio+懒刷新拦截器(ApiClient)、AuthService、ServerSettings、SyncEngine（阶段5 推拉/cursor/退避）
+│   │   ├── data/sources/             # MusicSource 抽象 + ServerProxy + WebdavDirect + LocalDirect + sibling_cover（同目录图片回退）
+│   │   ├── data/local/               # audio_metadata（mp3/flac/m4a/ogg·opus/wav/aac 头部解析 + 两段/尾读） + local_index + 阶段2 封装（song_weight_store / playlist_store / cache_manager / app_settings）+ 阶段5（sync_event_types / weight_outbox / breakpoint_mirror）
 │   │   ├── models/                   # Song / Album / Artist
 │   │   ├── utils/                    # duration_format / song_title_format / lrc_parser
 │   │   ├── widgets/                  # 共享组件（SongTile / CoverThumb / lyrics_view / add_to_playlist / view_mode_toggle 等）
-│   │   └── screens/                  # library / playlists_view / sources / source_browse_view / settings / player / pairing
+│   │   └── screens/                  # library / playlists_view / sources / source_browse_view / settings / player / pairing / devices（阶段5 设备管理）
 │   ├── android/ linux/ windows/ web/ # 各平台壳工程（安卓壳已重建）
 │   └── pubspec.yaml
-├── scripts/init.sql                  # 数据库初始化脚本（v2 schema）
+├── scripts/init.sql                  # 数据库初始化脚本（v2 schema + 阶段5 sync_events / playlists.client_uuid+deleted+last_event_at / play_states.last_event_at）
+├── scripts/migration_003_sync.sql    # 存量库补表/补列（阶段5；新部署只需 init.sql）
 ├── nginx/selfmusic.conf              # Nginx 反代模板（部署到宿主机）
 ├── docker-compose.yml                # backend（18088）+ backend-dev（18089，profile: dev）
 ├── run-linux.sh                      # Linux 快速运行：cd frontend && flutter run -d linux
