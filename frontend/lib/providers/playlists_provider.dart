@@ -55,6 +55,19 @@ class PlaylistsProvider extends ChangeNotifier {
     refresh();
   }
 
+  /// 该歌是否已在指定歌单。
+  bool containsSong(int playlistId, Song s) => store.contains(playlistId, s);
+
+  /// 该歌所在的全部歌单 id（编辑歌单弹层一次查全）。
+  Set<int> playlistsContaining(Song s) => store.containingPlaylists(s);
+
+  /// 切换「在歌单中」；返回切换后是否在歌单中。
+  bool toggleSong(int playlistId, Song s) {
+    final inPlaylist = store.toggleSong(playlistId, s);
+    refresh();
+    return inPlaylist;
+  }
+
   void move(int playlistId, int itemId, int delta) {
     store.move(playlistId, itemId, delta);
     refresh();

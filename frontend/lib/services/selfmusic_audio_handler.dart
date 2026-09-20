@@ -29,11 +29,12 @@ class SelfMusicAudioHandler extends BaseAudioHandler {
       final id = _songId(s);
       final cur = mediaItem.valueOrNull;
       if (cur == null || cur.id != id) {
+        final title = p.displayTitle(s);
         mediaItem.add(MediaItem(
           id: id,
           album: s.albumName,
           artist: s.artist,
-          title: s.title.isEmpty ? '未知曲目' : s.title,
+          title: title.isEmpty ? '未知曲目' : title,
           duration: p.duration,
           artUri: s.coverPath != null ? Uri.file(s.coverPath!) : null,
         ));

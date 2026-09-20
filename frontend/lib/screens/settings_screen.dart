@@ -799,6 +799,13 @@ class _SongsSettingsState extends State<_SongsSettings> {
                   color: cs.primary, fontWeight: FontWeight.w600)),
         ),
         ListTile(
+          title: const Text('标题显示格式'),
+          subtitle: Text('当前：${_settings.songTitleFormat.label}'
+              '（补读元数据后按此格式展示，不修改存储字段）'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _pickTitleFormat(context),
+        ),
+        ListTile(
           title: const Text('忽略音频（时长过滤）'),
           subtitle: Text(_settings.scanIgnoreMinDurationSec > 0
               ? '扫描时忽略短于 ${_settings.scanIgnoreMinDurationSec} 秒的音频'
@@ -924,6 +931,35 @@ class _SongsSettingsState extends State<_SongsSettings> {
       default:
         return '最小：只读歌名/歌手/专辑，其余播放时再补全（推荐）';
     }
+  }
+
+  Future<void> _pickTitleFormat(BuildContext context) async {
+    final chosen = await showDialog<SongTitleFormat>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: const Text('标题显示格式'),
+        children: [
+          for (final f in SongTitleFormat.values)
+            SimpleDialogOption(
+              onPressed: () => Navigator.of(c).pop(f),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  children: [
+                    Expanded(child: Text(f.label)),
+                    if (f == _settings.songTitleFormat)
+                      Icon(Icons.check, color: Theme.of(c).colorScheme.primary),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (chosen == null || !context.mounted) return;
+    setState(() => _settings.songTitleFormat = chosen);
+    // 设置写入后通知全局重建（AppSettings 非 ChangeNotifier）。
+    context.read<DirectSourceManager>().refresh();
   }
 
   Future<void> _pickScanMode(BuildContext context) async {

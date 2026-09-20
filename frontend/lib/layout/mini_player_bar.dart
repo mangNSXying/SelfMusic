@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
+import '../utils/song_title_format.dart';
 import '../widgets/player_sheet_anim.dart';
 import 'queue_panel.dart';
 
@@ -55,8 +56,8 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
   Widget build(BuildContext context) {
     final player = context.watch<PlayerProvider>();
     final nav = context.watch<NavigationProvider>();
-    final gestureOn =
-        context.watch<DirectSourceManager>().settings.playerGestureSwipe;
+    final settings = context.watch<DirectSourceManager>().settings;
+    final gestureOn = settings.playerGestureSwipe;
     final cs = Theme.of(context).colorScheme;
 
     // 队列有内容即展示（即使当前曲加载失败也保留入口），无队列才隐藏。
@@ -112,7 +113,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      song.title,
+                      formatSongTitle(song, settings.songTitleFormat),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: Theme.of(context)

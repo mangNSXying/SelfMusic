@@ -975,9 +975,26 @@ class LocalIndex {
   }
 
   void removePlaylistItem(int playlistId, String sourceKey, String songRef) {
-    _db!.execute(
-        'DELETE FROM playlist_items WHERE playlist_id=? AND source_key=? AND song_ref=?',
-        [playlistId, sourceKey, songRef]);
+    // 兼容历史 ENCODE/Unicode ref 形态：逐一删除。
+    for (final variant in webdavRefVariants(songRef)) {
+      _db!.execute(
+          'DELETE FROM playlist_items WHERE playlist_id=? AND source_key=? AND song_ref=?',
+          [playlistId, sourceKey, variant]);
+    }
+  }
+
+  /// 该歌已在哪些歌单中（兼容 WebDAV 历史 ENCODE/Unicode 两种 ref 形态）。
+  Set<int> playlistIdsContaining(String sourceKey, String songRef) {
+    final out = <int>{};
+    for (final variant in webdavRefVariants(songRef)) {
+      final rs = _db!.select(
+          'SELECT DISTINCT playlist_id FROM playlist_items WHERE source_key=? AND song_ref=?',
+          [sourceKey, variant]);
+      for (final r in rs) {
+        out.add(r['playlist_id'] as int);
+      }
+    }
+    return out;
   }
 
   List<PlaylistItemRow> playlistItems(int playlistId) {

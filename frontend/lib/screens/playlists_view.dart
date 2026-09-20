@@ -1,15 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
+import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../providers/playlists_provider.dart';
+import '../utils/song_title_format.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/list_selection.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_tile.dart';
+import '../widgets/view_mode_toggle.dart';
 
 /// 歌单栏：列表页（新建 / 重命名 / 删除 / 长按多选删除）与详情原地子视图。
 class PlaylistsView extends StatefulWidget {
@@ -21,6 +25,17 @@ class PlaylistsView extends StatefulWidget {
 
 class _PlaylistsViewState extends State<PlaylistsView> {
   final Selection<int> _sel = Selection<int>();
+
+  /// 本地覆盖的展示形式（null 时读设置）。
+  CollectionViewMode? _mode;
+
+  CollectionViewMode _modeOf(BuildContext c) =>
+      _mode ?? c.read<DirectSourceManager>().settings.viewModePlaylists;
+
+  void _setMode(BuildContext c, CollectionViewMode m) {
+    c.read<DirectSourceManager>().settings.viewModePlaylists = m;
+    setState(() => _mode = m);
+  }
 
   @override
   void initState() {
@@ -74,6 +89,7 @@ class _PlaylistsViewState extends State<PlaylistsView> {
   Widget build(BuildContext context) {
     final provider = context.watch<PlaylistsProvider>();
     final playlists = provider.playlists;
+    final card = _modeOf(context) == CollectionViewMode.card;
 
     return Stack(
       children: [
@@ -98,55 +114,57 @@ class _PlaylistsViewState extends State<PlaylistsView> {
                   ],
                 ),
               if (_sel.active) const Divider(height: 1),
+              if (!_sel.active)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
+                  child: Row(
+                    children: [
+                      Text(
+                        '${playlists.length} 个播放列表',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurface
+                              .withValues(alpha: 0.6),
+                        ),
+                      ),
+                      const Spacer(),
+                      ViewModeToggle(
+                        card: card,
+                        onChanged: (v) => _setMode(
+                            context,
+                            v
+                                ? CollectionViewMode.card
+                                : CollectionViewMode.list),
+                      ),
+                    ],
+                  ),
+                ),
               Expanded(
                 child: playlists.isEmpty
                     ? const Center(child: Text('暂无歌单，点右下角「+」创建'))
-                    : ListView.separated(
-                  itemCount: playlists.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1, indent: 72),
-                  itemBuilder: (c, i) {
-                    final p = playlists[i];
-                    return ListTile(
-                      selected: _sel.active && _sel.contains(p.id),
-                      leading: _sel.active
-                          ? Checkbox(
-                              value: _sel.contains(p.id),
-                              onChanged: (_) => _toggleSelect(p.id),
-                            )
-                          : const Icon(Icons.queue_music),
-                      title: Text(p.name,
-                          maxLines: 1, overflow: TextOverflow.ellipsis),
-                      subtitle: Text('${provider.countOf(p.id)} 首'),
-                      trailing: _sel.active
-                          ? null
-                          : PopupMenuButton<String>(
-                              tooltip: '更多',
-                              onSelected: (v) {
-                                switch (v) {
-                                  case 'rename':
-                                    _renameDialog(context, provider, p);
-                                  case 'delete':
-                                    _confirmDelete(context, provider, p);
-                                }
-                              },
-                              itemBuilder: (_) => const [
-                                PopupMenuItem(
-                                    value: 'rename', child: Text('重命名')),
-                                PopupMenuItem(
-                                    value: 'delete', child: Text('删除')),
-                              ],
+                    : card
+                        ? GridView.builder(
+                            padding: const EdgeInsets.all(16),
+                            gridDelegate:
+                                const SliverGridDelegateWithMaxCrossAxisExtent(
+                              maxCrossAxisExtent: 220,
+                              mainAxisSpacing: 12,
+                              crossAxisSpacing: 12,
+                              childAspectRatio: 1.5,
                             ),
-                      onTap: _sel.active
-                          ? () => _toggleSelect(p.id)
-                          : () => context
-                              .read<NavigationProvider>()
-                              .enterPlaylist(p.id),
-                      onLongPress: _sel.active
-                          ? () => _toggleSelect(p.id)
-                          : () => setState(() => _sel.startWith(p.id)),
-                    );
-                  },
-                ),
+                            itemCount: playlists.length,
+                            itemBuilder: (c, i) =>
+                                _playlistCard(provider, playlists[i]),
+                          )
+                        : ListView.separated(
+                            itemCount: playlists.length,
+                            separatorBuilder: (_, __) =>
+                                const Divider(height: 1, indent: 72),
+                            itemBuilder: (c, i) =>
+                                _playlistTile(provider, playlists[i]),
+                          ),
               ),
             ],
           ),
@@ -160,6 +178,97 @@ class _PlaylistsViewState extends State<PlaylistsView> {
           ),
         ],
       );
+  }
+
+  Widget _playlistTile(PlaylistsProvider provider, PlaylistRow p) {
+    return ListTile(
+      selected: _sel.active && _sel.contains(p.id),
+      leading: _sel.active
+          ? Checkbox(
+              value: _sel.contains(p.id),
+              onChanged: (_) => _toggleSelect(p.id),
+            )
+          : const Icon(Icons.queue_music),
+      title: Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text('${provider.countOf(p.id)} 首'),
+      trailing: _sel.active ? null : _playlistMenu(provider, p),
+      onTap: _sel.active
+          ? () => _toggleSelect(p.id)
+          : () => context.read<NavigationProvider>().enterPlaylist(p.id),
+      onLongPress: _sel.active
+          ? () => _toggleSelect(p.id)
+          : () => setState(() => _sel.startWith(p.id)),
+    );
+  }
+
+  Widget _playlistCard(PlaylistsProvider provider, PlaylistRow p) {
+    final cs = Theme.of(context).colorScheme;
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: _sel.active
+            ? () => _toggleSelect(p.id)
+            : () => context.read<NavigationProvider>().enterPlaylist(p.id),
+        onLongPress: _sel.active
+            ? () => _toggleSelect(p.id)
+            : () => setState(() => _sel.startWith(p.id)),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.queue_music, color: cs.primary, size: 30),
+                  const Spacer(),
+                  if (_sel.active)
+                    Checkbox(
+                      value: _sel.contains(p.id),
+                      onChanged: (_) => _toggleSelect(p.id),
+                    )
+                  else
+                    _playlistMenu(provider, p),
+                ],
+              ),
+              const Spacer(),
+              Text(
+                p.name,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context)
+                    .textTheme
+                    .titleSmall
+                    ?.copyWith(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                '${provider.countOf(p.id)} 首',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: cs.onSurface.withValues(alpha: 0.6)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _playlistMenu(PlaylistsProvider provider, PlaylistRow p) {
+    return PopupMenuButton<String>(
+      tooltip: '更多',
+      onSelected: (v) {
+        switch (v) {
+          case 'rename':
+            _renameDialog(context, provider, p);
+          case 'delete':
+            _confirmDelete(context, provider, p);
+        }
+      },
+      itemBuilder: (_) => const [
+        PopupMenuItem(value: 'rename', child: Text('重命名')),
+        PopupMenuItem(value: 'delete', child: Text('删除')),
+      ],
+    );
   }
 
   static Future<void> _createDialog(
@@ -260,6 +369,35 @@ class PlaylistDetailView extends StatefulWidget {
 class _PlaylistDetailViewState extends State<PlaylistDetailView> {
   final Selection<String> _sel = Selection<String>();
 
+  /// 歌单内歌曲滚动定位（打开时定位到当前播放歌曲）。
+  final ScrollController _scroll = ScrollController();
+  final Map<int, GlobalKey> _rowKeys = {};
+  bool _located = false;
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  /// 先估算跳到目标附近（懒构建列表项），再对已构建的目标行精调。
+  void _scrollToCurrent(int index) {
+    if (!mounted || !_scroll.hasClients) return;
+    final estimate = (index * 64.0 - 120)
+        .clamp(0.0, _scroll.position.maxScrollExtent);
+    _scroll.jumpTo(estimate);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = _rowKeys[index]?.currentContext;
+      if (ctx == null || !mounted) return;
+      Scrollable.ensureVisible(
+        ctx,
+        alignment: 0.3,
+        duration: const Duration(milliseconds: 260),
+        curve: Curves.easeOutCubic,
+      );
+    });
+  }
+
   @override
   void initState() {
     super.initState();
@@ -310,7 +448,9 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
   Widget build(BuildContext context) {
     final nav = context.watch<NavigationProvider>();
     final provider = context.watch<PlaylistsProvider>();
-    final player = context.read<PlayerProvider>();
+    final player = context.watch<PlayerProvider>();
+    final titleFormat =
+        context.watch<DirectSourceManager>().settings.songTitleFormat;
 
     PlaylistRow? playlist;
     for (final p in provider.playlists) {
@@ -318,6 +458,15 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
     }
     final songs = provider.songsOf(widget.playlistId);
     final items = provider.itemsOf(widget.playlistId);
+    final currentIdx = songs.indexWhere((s) => player.isCurrent(s));
+
+    // 打开歌单后自动定位到当前播放歌曲（仅一次）。
+    if (!_located && currentIdx >= 0) {
+      _located = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scrollToCurrent(currentIdx);
+      });
+    }
 
     return SectionSwipe(
       child: Column(
@@ -379,6 +528,7 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
           child: songs.isEmpty
               ? const Center(child: Text('歌单为空'))
               : ListView.separated(
+                  controller: _scroll,
                   itemCount: items.length,
                   separatorBuilder: (_, __) =>
                       const Divider(height: 1, indent: 56),
@@ -388,16 +538,29 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
                     final isFirst = i == 0;
                     final isLast = i == items.length - 1;
                     final key = songKey(s);
+                    final isCurrent = i == currentIdx;
+                    final rowKey = _rowKeys.putIfAbsent(i, GlobalKey.new);
+                    final cs = Theme.of(context).colorScheme;
                     return ListTile(
+                      key: rowKey,
                       selected: _sel.active && _sel.contains(key),
                       leading: _sel.active
                           ? Checkbox(
                               value: _sel.contains(key),
                               onChanged: (_) => _toggle(key),
                             )
-                          : CoverThumb(coverPath: s.coverPath),
-                      title: Text(s.title,
-                          maxLines: 1, overflow: TextOverflow.ellipsis),
+                          : isCurrent
+                              ? Icon(Icons.graphic_eq, color: cs.primary)
+                              : CoverThumb(coverPath: s.coverPath),
+                      title: Text(
+                          formatSongTitle(s, titleFormat),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: isCurrent
+                              ? TextStyle(
+                                  color: cs.primary,
+                                  fontWeight: FontWeight.w600)
+                              : null),
                       subtitle: Text(
                         '${s.artist ?? "Unknown"} · ${s.albumName ?? ""}',
                         maxLines: 1,

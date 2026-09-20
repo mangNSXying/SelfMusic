@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
+import '../utils/song_title_format.dart';
 
 /// 切换播放队列面板：窄屏底部弹层（0.7 高），宽屏右侧常驻面板开关。
 ///
@@ -25,7 +27,8 @@ void toggleQueuePanel(BuildContext context) {
 }
 
 /// 播放队列面板：纯队列展示（当前歌曲与控制在播放页/迷你条操作）。
-class QueuePanel extends StatelessWidget {
+/// 打开时自动定位到当前播放歌曲并以强调色显示。
+class QueuePanel extends StatefulWidget {
   final VoidCallback onClose;
 
   /// 面板宽度（null 时撑满可用宽度，供窄屏底部弹层使用）。
@@ -33,12 +36,51 @@ class QueuePanel extends StatelessWidget {
   const QueuePanel({super.key, required this.onClose, this.width});
 
   @override
+  State<QueuePanel> createState() => _QueuePanelState();
+}
+
+class _QueuePanelState extends State<QueuePanel> {
+  static const double _rowExtent = 64;
+  final ScrollController _scroll = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    // 打开即定位到当前播放歌曲（首帧布局完成后再滚动）。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      final player = context.read<PlayerProvider>();
+      final idx = _currentIndex(player);
+      if (idx <= 0) return;
+      final target = (idx * _rowExtent - 96)
+          .clamp(0.0, _scroll.position.maxScrollExtent);
+      _scroll.jumpTo(target);
+    });
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  int _currentIndex(PlayerProvider player) {
+    for (var i = 0; i < player.queue.length; i++) {
+      if (player.isCurrent(player.queue[i])) return i;
+    }
+    return -1;
+  }
+
+  @override
   Widget build(BuildContext context) {
     final player = context.watch<PlayerProvider>();
+    final titleFormat =
+        context.watch<DirectSourceManager>().settings.songTitleFormat;
     final colorScheme = Theme.of(context).colorScheme;
+    final queue = player.queue;
 
     return Container(
-      width: width,
+      width: widget.width,
       color: colorScheme.surface,
       child: Column(
         children: [
@@ -46,31 +88,82 @@ class QueuePanel extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(16, 12, 4, 4),
             child: Row(
               children: [
-                Text('播放队列', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
+                Text('播放队列',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleMedium
+                        ?.copyWith(fontWeight: FontWeight.bold)),
                 const Spacer(),
-                IconButton(icon: const Icon(Icons.close), onPressed: onClose),
+                IconButton(icon: const Icon(Icons.close), onPressed: widget.onClose),
               ],
             ),
           ),
           const Divider(height: 1),
           Expanded(
-            child: player.queue.isEmpty
+            child: queue.isEmpty
                 ? const Center(child: Text('队列为空'))
-                : ListView.separated(
-                    itemCount: player.queue.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1, indent: 56),
+                : ListView.builder(
+                    controller: _scroll,
+                    itemExtent: _rowExtent,
+                    itemCount: queue.length,
                     itemBuilder: (c, i) {
-                      final s = player.queue[i];
-                      final isCurrent = player.current?.id == s.id;
-                      return ListTile(
-                        leading: Icon(isCurrent ? Icons.graphic_eq : Icons.music_note,
-                            color: isCurrent ? colorScheme.primary : null),
-                        title: Text(s.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: isCurrent ? TextStyle(color: colorScheme.primary, fontWeight: FontWeight.w600) : null),
-                        subtitle: Text(s.artist ?? 'Unknown', maxLines: 1, overflow: TextOverflow.ellipsis),
+                      final s = queue[i];
+                      final isCurrent = player.isCurrent(s);
+                      return InkWell(
                         onTap: () => player.playAt(i),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          decoration: i == queue.length - 1
+                              ? null
+                              : BoxDecoration(
+                                  border: Border(
+                                    bottom: BorderSide(
+                                        color: colorScheme.outlineVariant
+                                            .withValues(alpha: 0.5)),
+                                  ),
+                                ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                  isCurrent
+                                      ? Icons.graphic_eq
+                                      : Icons.music_note,
+                                  color: isCurrent ? colorScheme.primary : null),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      formatSongTitle(s, titleFormat),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: isCurrent
+                                          ? TextStyle(
+                                              color: colorScheme.primary,
+                                              fontWeight: FontWeight.w600)
+                                          : null,
+                                    ),
+                                    Text(
+                                      s.artist ?? 'Unknown',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(
+                                              color: isCurrent
+                                                  ? colorScheme.primary
+                                                      .withValues(alpha: 0.8)
+                                                  : null),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       );
                     },
                   ),

@@ -29,23 +29,67 @@ class TopBar extends StatelessWidget {
   }
 }
 
-class _UpperRow extends StatelessWidget {
+class _UpperRow extends StatefulWidget {
   final NavigationProvider nav;
   final VoidCallback onSidebarToggle;
   const _UpperRow({required this.nav, required this.onSidebarToggle});
 
   @override
+  State<_UpperRow> createState() => _UpperRowState();
+}
+
+class _UpperRowState extends State<_UpperRow> {
+  /// 输入状态由 State 持有：build 中新建 controller 会让输入法每次按键
+  /// 收到非法 selection/composing（-1），表现为"输入后失焦、键盘收起"。
+  late final TextEditingController _searchCtrl;
+  late final FocusNode _searchFocus;
+
+  @override
+  void initState() {
+    super.initState();
+    _searchCtrl = TextEditingController(text: widget.nav.search);
+    _searchFocus = FocusNode();
+    widget.nav.addListener(_syncFromNav);
+    _searchCtrl.addListener(_onTextChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.nav.removeListener(_syncFromNav);
+    _searchCtrl.removeListener(_onTextChanged);
+    _searchCtrl.dispose();
+    _searchFocus.dispose();
+    super.dispose();
+  }
+
+  /// 外部清空（clearSearch）时同步文本；只改文本、给合法光标位，保留焦点。
+  void _syncFromNav() {
+    if (widget.nav.search == _searchCtrl.text) return;
+    _searchCtrl.value = TextEditingValue(
+      text: widget.nav.search,
+      selection: TextSelection.collapsed(offset: widget.nav.search.length),
+    );
+  }
+
+  /// clear 图标随文本自更新（不再依赖整树重建）。
+  void _onTextChanged() => setState(() {});
+
+  @override
   Widget build(BuildContext context) {
-    final searchCtrl = TextEditingController(text: nav.search);
+    final nav = widget.nav;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
       child: Row(
         children: [
-          IconButton(icon: const Icon(Icons.menu), tooltip: '伸缩侧边栏', onPressed: onSidebarToggle),
+          IconButton(
+              icon: const Icon(Icons.menu),
+              tooltip: '伸缩侧边栏',
+              onPressed: widget.onSidebarToggle),
           const SizedBox(width: 4),
           Expanded(
             child: TextField(
-              controller: searchCtrl,
+              controller: _searchCtrl,
+              focusNode: _searchFocus,
               onChanged: (v) => nav.setSearch(v),
               onSubmitted: (v) => nav.setSearch(v),
               textInputAction: TextInputAction.search,
@@ -53,14 +97,16 @@ class _UpperRow extends StatelessWidget {
                 hintText: '搜索标题 / 艺术家',
                 prefixIcon: const Icon(Icons.search),
                 isDense: true,
-                suffixIcon: searchCtrl.text.isEmpty
+                suffixIcon: _searchCtrl.text.isEmpty
                     ? null
                     : IconButton(
                         icon: const Icon(Icons.clear, size: 18),
+                        tooltip: '清空搜索',
                         onPressed: () {
-                          searchCtrl.clear();
+                          // 仅清空并保持焦点（手动去焦用键盘收起/点击别处）。
+                          _searchCtrl.clear();
                           nav.clearSearch();
-                          FocusScope.of(context).unfocus();
+                          _searchFocus.requestFocus();
                         },
                       ),
               ),

@@ -2,44 +2,94 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../data/local/app_settings.dart';
 import '../data/sources/music_source.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../widgets/corner_add_button.dart';
+import '../widgets/view_mode_toggle.dart';
 
-/// 播放源管理页：直连源（WebDAV / 本地文件夹）列表。
+/// 播放源管理页：直连源（WebDAV / 本地文件夹）列表（支持列表/卡片切换）。
 ///
 /// - 点击源卡片直接进入源内浏览（文件夹式导航）。
 /// - 卡片右侧「三点」菜单承载 直连/代理 切换、编辑、删除等设置。
-class SourcesScreen extends StatelessWidget {
+class SourcesScreen extends StatefulWidget {
   const SourcesScreen({super.key});
+
+  @override
+  State<SourcesScreen> createState() => _SourcesScreenState();
+}
+
+class _SourcesScreenState extends State<SourcesScreen> {
+  /// 本地覆盖的展示形式（null 时读设置）。
+  CollectionViewMode? _mode;
+
+  CollectionViewMode _modeOf(BuildContext c) =>
+      _mode ?? c.read<DirectSourceManager>().settings.viewModeSources;
+
+  void _setMode(BuildContext c, CollectionViewMode m) {
+    c.read<DirectSourceManager>().settings.viewModeSources = m;
+    setState(() => _mode = m);
+  }
 
   @override
   Widget build(BuildContext context) {
     final direct = context.watch<DirectSourceManager>();
     final scheme = Theme.of(context).colorScheme;
+    final card = _modeOf(context) == CollectionViewMode.card;
 
     return Stack(
       children: [
         Column(
           children: [
-              Expanded(
-                child: ListView(
-                  padding: const EdgeInsets.all(16),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
+                child: Row(
                   children: [
-                    for (final s in direct.sources) ...[
-                      _DirectSourceCard(sourceKey: s.key),
-                      const SizedBox(height: 8),
-                    ],
-                    if (direct.sources.isEmpty)
-                      Padding(
+                    Text(
+                      '${direct.sources.length} 个播放源',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: scheme.onSurface.withValues(alpha: 0.6),
+                      ),
+                    ),
+                    const Spacer(),
+                    ViewModeToggle(
+                      card: card,
+                      onChanged: (v) => _setMode(
+                          context,
+                          v
+                              ? CollectionViewMode.card
+                              : CollectionViewMode.list),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: direct.sources.isEmpty
+                    ? Padding(
                         padding: const EdgeInsets.symmetric(vertical: 24),
                         child: Text('尚未添加播放源，点右下角「+」添加',
                             textAlign: TextAlign.center,
                             style: TextStyle(color: scheme.onSurfaceVariant)),
-                      ),
-                  ],
-                ),
+                      )
+                    : card
+                        ? ListView(
+                            padding: const EdgeInsets.all(16),
+                            children: [
+                              for (final s in direct.sources) ...[
+                                _DirectSourceCard(sourceKey: s.key),
+                                const SizedBox(height: 8),
+                              ],
+                            ],
+                          )
+                        : ListView.separated(
+                            itemCount: direct.sources.length,
+                            separatorBuilder: (_, __) =>
+                                const Divider(height: 1, indent: 56),
+                            itemBuilder: (c, i) =>
+                                _DirectSourceTile(sourceKey: direct.sources[i].key),
+                          ),
               ),
             ],
           ),
@@ -274,9 +324,21 @@ class _SourceDialogState extends State<_SourceDialog> {
   }
 }
 
+class _DirectSourceTile extends StatelessWidget {
+  final String sourceKey;
+  const _DirectSourceTile({required this.sourceKey});
+
+  @override
+  Widget build(BuildContext context) =>
+      _DirectSourceCard(sourceKey: sourceKey, plain: true);
+}
+
 class _DirectSourceCard extends StatelessWidget {
   final String sourceKey;
-  const _DirectSourceCard({required this.sourceKey});
+
+  /// true 时渲染为不走卡片的紧凑列表行。
+  final bool plain;
+  const _DirectSourceCard({required this.sourceKey, this.plain = false});
 
   @override
   Widget build(BuildContext context) {
@@ -288,38 +350,34 @@ class _DirectSourceCard extends StatelessWidget {
     final isProxy = direct.isProxy(sourceKey);
     final isLocal = s.kind == SourceKind.local;
 
-    return Card(
-      child: ListTile(
-        leading: Icon(isLocal ? Icons.folder : Icons.cloud, color: scheme.primary),
-        title: Text(s.name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.titleMedium),
-        subtitle: isProxy
-            ? const Text('服务端代理 · 从后端拉取整体库')
-            : Text(
-                '直连${isLocal ? ' · 本地文件夹' : ''} · 已索引 $count 首'),
-        trailing: PopupMenuButton<String>(
-          tooltip: '源设置',
-          onSelected: (v) => _onMenu(context, v, s, direct),
-          itemBuilder: (c) => [
-            PopupMenuItem(
-              value: 'mode',
-              child: Text(isProxy ? '切换为直连' : '切换为服务端代理'),
-            ),
-            const PopupMenuItem(value: 'edit', child: Text('编辑')),
-            const PopupMenuDivider(),
-            const PopupMenuItem(
-              value: 'delete',
-              child: Text('删除源',
-                  style: TextStyle(color: Colors.redAccent)),
-            ),
-          ],
-        ),
-        onTap: () =>
-            context.read<NavigationProvider>().enterSource(sourceKey),
+    final tile = ListTile(
+      leading: Icon(isLocal ? Icons.folder : Icons.cloud, color: scheme.primary),
+      title: Text(s.name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.titleMedium),
+      subtitle: isProxy
+          ? const Text('服务端代理 · 从后端拉取整体库')
+          : Text('直连${isLocal ? ' · 本地文件夹' : ''} · 已索引 $count 首'),
+      trailing: PopupMenuButton<String>(
+        tooltip: '源设置',
+        onSelected: (v) => _onMenu(context, v, s, direct),
+        itemBuilder: (c) => [
+          PopupMenuItem(
+            value: 'mode',
+            child: Text(isProxy ? '切换为直连' : '切换为服务端代理'),
+          ),
+          const PopupMenuItem(value: 'edit', child: Text('编辑')),
+          const PopupMenuDivider(),
+          const PopupMenuItem(
+            value: 'delete',
+            child: Text('删除源', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
       ),
+      onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
     );
+    return plain ? tile : Card(child: tile);
   }
 
   void _onMenu(BuildContext context, String action, MusicSource src,

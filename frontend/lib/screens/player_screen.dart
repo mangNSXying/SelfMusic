@@ -11,6 +11,7 @@ import '../providers/player_provider.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../utils/duration_format.dart';
+import '../utils/song_title_format.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/lyrics_view.dart';
@@ -170,6 +171,7 @@ class _LyricsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final player = context.watch<PlayerProvider>();
+    final direct = context.watch<DirectSourceManager>();
     final cs = Theme.of(context).colorScheme;
     final s = player.current;
 
@@ -193,7 +195,7 @@ class _LyricsPage extends StatelessWidget {
             child: Column(
               children: [
                 MarqueeText(
-                  s.title,
+                  formatSongTitle(s, direct.settings.songTitleFormat),
                   style: Theme.of(context)
                       .textTheme
                       .titleMedium
@@ -287,7 +289,7 @@ class _NowPlaying extends StatelessWidget {
         ),
         const SizedBox(height: 20),
         MarqueeText(
-          s.title,
+          formatSongTitle(s, direct.settings.songTitleFormat),
           style: Theme.of(context)
               .textTheme
               .headlineSmall
@@ -381,10 +383,10 @@ class _NowPlaying extends StatelessWidget {
               ),
               IconButton(
                 iconSize: 22,
-                tooltip: '加入歌单',
+                tooltip: '编辑歌单',
                 color: cs.onSurface.withValues(alpha: 0.55),
-                icon: const Icon(Icons.playlist_add),
-                onPressed: () => showAddToPlaylistSheet(context, s),
+                icon: const Icon(Icons.playlist_add_check),
+                onPressed: () => showEditPlaylistsSheet(context, s),
               ),
               IconButton(
                 iconSize: 22,

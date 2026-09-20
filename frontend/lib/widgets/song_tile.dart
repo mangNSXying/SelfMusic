@@ -8,6 +8,7 @@ import '../data/sources/music_source.dart';
 import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
 import '../utils/duration_format.dart';
+import '../utils/song_title_format.dart';
 import 'add_to_playlist.dart';
 import 'app_toast.dart';
 
@@ -85,7 +86,7 @@ class SongTile extends StatelessWidget {
             )
           : CoverThumb(coverPath: song.coverPath),
       title: Text(
-        song.title,
+        formatSongTitle(song, direct.settings.songTitleFormat),
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: selectionMode && selected

@@ -5,8 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:provider/provider.dart';
-import 'package:selfmusic/data/local/local_index.dart';
-import 'package:selfmusic/data/local/playlist_store.dart';
+import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/playlists_provider.dart';
 import 'package:selfmusic/screens/playlists_view.dart';
@@ -36,24 +35,23 @@ void main() {
   });
 
   testWidgets('新建播放列表后立即显示（无需重启）', (tester) async {
-    late final LocalIndex index;
     late final Directory dir;
+    late final DirectSourceManager direct;
     await tester.runAsync(() async {
       dir = await Directory.systemTemp.createTemp('selfmusic_plw_');
       PathProviderPlatform.instance = _FakePathProvider(dir.path);
-      index = LocalIndex();
-      await index.open();
-      final store = PlaylistStore(index);
-      store.create('已有歌单');
+      direct = DirectSourceManager();
+      await direct.init();
+      direct.playlists.create('已有歌单');
     });
 
-    final store = PlaylistStore(index);
-    final provider = PlaylistsProvider(store);
+    final provider = PlaylistsProvider(direct.playlists);
     final nav = NavigationProvider();
 
     await tester.pumpWidget(
       MultiProvider(
         providers: [
+          ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
           ChangeNotifierProvider<PlaylistsProvider>.value(value: provider),
           ChangeNotifierProvider<NavigationProvider>.value(value: nav),
         ],
@@ -80,31 +78,30 @@ void main() {
     expect(provider.playlists.length, 2);
 
     await tester.runAsync(() async {
-      index.close();
+      direct.dispose();
       dir.deleteSync(recursive: true);
     });
   });
 
   testWidgets('长按歌单进入多选，可全选 / 取消选择', (tester) async {
-    late final LocalIndex index;
     late final Directory dir;
+    late final DirectSourceManager direct;
     await tester.runAsync(() async {
       dir = await Directory.systemTemp.createTemp('selfmusic_plw_');
       PathProviderPlatform.instance = _FakePathProvider(dir.path);
-      index = LocalIndex();
-      await index.open();
-      final store = PlaylistStore(index);
-      store.create('现有歌单');
-      store.create('另一个歌单');
+      direct = DirectSourceManager();
+      await direct.init();
+      direct.playlists.create('现有歌单');
+      direct.playlists.create('另一个歌单');
     });
 
-    final store = PlaylistStore(index);
-    final provider = PlaylistsProvider(store);
+    final provider = PlaylistsProvider(direct.playlists);
     final nav = NavigationProvider();
 
     await tester.pumpWidget(
       MultiProvider(
         providers: [
+          ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
           ChangeNotifierProvider<PlaylistsProvider>.value(value: provider),
           ChangeNotifierProvider<NavigationProvider>.value(value: nav),
         ],
@@ -147,7 +144,7 @@ void main() {
     expect(find.text('已选 2'), findsNothing);
 
     await tester.runAsync(() async {
-      index.close();
+      direct.dispose();
       dir.deleteSync(recursive: true);
     });
   });

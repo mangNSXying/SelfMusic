@@ -32,6 +32,26 @@ class PlaylistStore {
   void removeSong(int playlistId, Song s) =>
       index.removePlaylistItem(playlistId, s.sourceKey, s.sourceRef);
 
+  /// 该歌是否已在指定歌单（兼容历史 ref 形态）。
+  bool contains(int playlistId, Song s) =>
+      index
+          .playlistIdsContaining(s.sourceKey, s.sourceRef)
+          .contains(playlistId);
+
+  /// 该歌所在的全部歌单 id（弹层一次查全）。
+  Set<int> containingPlaylists(Song s) =>
+      index.playlistIdsContaining(s.sourceKey, s.sourceRef);
+
+  /// 切换「在歌单中」状态；返回切换后是否在歌单中。
+  bool toggleSong(int playlistId, Song s) {
+    if (contains(playlistId, s)) {
+      removeSong(playlistId, s);
+      return false;
+    }
+    addSong(playlistId, s);
+    return true;
+  }
+
   /// 歌单内条目托盘→转 Song（快照字段；sourceRef 即歌曲标识）。
   Song songOf(PlaylistItemRow item, {int id = 0}) => Song(
         id: id,

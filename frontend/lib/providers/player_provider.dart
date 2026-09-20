@@ -15,6 +15,7 @@ import '../data/local/app_settings.dart';
 import '../data/local/song_weight_store.dart';
 import '../services/selfmusic_audio_handler.dart';
 import '../utils/lrc_parser.dart';
+import '../utils/song_title_format.dart';
 import '../widgets/app_toast.dart';
 
 /// 按源 key 解析播放源的函数：`server` → 服务器代理源；`webdav:<name>` → 对应直连源。
@@ -465,10 +466,20 @@ class PlayerProvider extends ChangeNotifier {
 
   List<Song> get queue => List.unmodifiable(_queue);
   Song? get current => _current;
-  bool get hasCurrent => _current != null;  Duration get position => player.position;
+  bool get hasCurrent => _current != null;
+  Duration get position => player.position;
   Duration? get duration => player.duration;
   bool get playing => player.playing;
   PlayMode get mode => _mode;
+
+  /// 是否为当前播放曲（按 sourceKey + sourceRef，避免多源 id 碰撞）。
+  bool isCurrent(Song s) {
+    final c = _current;
+    return c != null && _same(c, s);
+  }
+
+  /// 按「歌曲标题显示格式」格式化（通知栏等无 BuildContext 场景）。
+  String displayTitle(Song s) => formatSongTitleWith(s, _appSettings);
 
   /// 当前歌曲权重因子（无存储时为空；用于播放页展示，可选）。
   double? get currentWeightFactor {

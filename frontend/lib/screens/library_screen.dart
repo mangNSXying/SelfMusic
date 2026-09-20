@@ -19,6 +19,7 @@ import '../widgets/page_transition.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_tile.dart';
+import '../widgets/view_mode_toggle.dart';
 import 'settings_screen.dart';
 import 'sources_screen.dart';
 import 'source_browse_view.dart';
@@ -437,6 +438,17 @@ class _AlbumsView extends StatefulWidget {
 }
 
 class _AlbumsViewState extends State<_AlbumsView> {
+  /// 本地覆盖的展示形式（null 时读设置）。
+  CollectionViewMode? _mode;
+
+  CollectionViewMode _modeOf(BuildContext c) =>
+      _mode ?? c.read<DirectSourceManager>().settings.viewModeAlbums;
+
+  void _setMode(BuildContext c, CollectionViewMode m) {
+    c.read<DirectSourceManager>().settings.viewModeAlbums = m;
+    setState(() => _mode = m);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -458,28 +470,59 @@ class _AlbumsViewState extends State<_AlbumsView> {
     final nav = context.watch<NavigationProvider>();
     final lib = context.watch<LibraryProvider>();
     final albums = _filter(lib.albums, nav.search);
+    final card = _modeOf(context) == CollectionViewMode.card;
 
     return Column(
       children: [
         if (lib.loading) const LinearProgressIndicator(minHeight: 2),
         if (lib.error != null)
           Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
+          child: Row(
+            children: [
+              Text('${albums.length} 张专辑',
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: 0.6))),
+              const Spacer(),
+              ViewModeToggle(
+                card: card,
+                onChanged: (v) => _setMode(
+                    context,
+                    v ? CollectionViewMode.card : CollectionViewMode.list),
+              ),
+            ],
+          ),
+        ),
         Expanded(
           child: albums.isEmpty
               ? _EmptyHint(onRefresh: () => lib.loadAlbums(query: nav.search.isEmpty ? null : nav.search))
               : RefreshIndicator(
                   onRefresh: () => lib.loadAlbums(query: nav.search.isEmpty ? null : nav.search),
-                  child: GridView.builder(
-                    padding: const EdgeInsets.all(16),
-                    gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                      maxCrossAxisExtent: 220,
-                      mainAxisSpacing: 16,
-                      crossAxisSpacing: 16,
-                      childAspectRatio: 0.72,
-                    ),
-                    itemCount: albums.length,
-                    itemBuilder: (c, i) => _AlbumCard(album: albums[i]),
-                  ),
+                  child: card
+                      ? GridView.builder(
+                          padding: const EdgeInsets.all(16),
+                          gridDelegate:
+                              const SliverGridDelegateWithMaxCrossAxisExtent(
+                            maxCrossAxisExtent: 220,
+                            mainAxisSpacing: 16,
+                            crossAxisSpacing: 16,
+                            childAspectRatio: 0.72,
+                          ),
+                          itemCount: albums.length,
+                          itemBuilder: (c, i) => _AlbumCard(album: albums[i]),
+                        )
+                      : ListView.separated(
+                          itemCount: albums.length,
+                          separatorBuilder: (_, __) =>
+                              const Divider(height: 1, indent: 72),
+                          itemBuilder: (c, i) =>
+                              _AlbumListTile(album: albums[i]),
+                        ),
                 ),
         ),
       ],
@@ -495,6 +538,60 @@ class _AlbumsViewState extends State<_AlbumsView> {
   }
 }
 
+/// 打开专辑歌曲弹层（卡片/列表两种形态共用）。
+Future<void> _openAlbum(BuildContext context, Album album) async {
+  final lib = context.read<LibraryProvider>();
+  var songs = lib.albumSongs(album);
+  // 未配置服务端时不做远端回退，直接按本地聚合结果展示。
+  if (songs.isEmpty && lib.serverConfigured) {
+    songs = await lib.source.fetchAlbumSongs(album.id);
+  }
+  if (!context.mounted) return;
+  showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    builder: (c) => _AlbumSongsSheet(album: album, songs: songs),
+  );
+}
+
+class _AlbumListTile extends StatelessWidget {
+  final Album album;
+  const _AlbumListTile({required this.album});
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return ListTile(
+      leading: ClipRRect(
+        borderRadius: BorderRadius.circular(6),
+        child: SizedBox(
+          width: 44,
+          height: 44,
+          child: album.coverPath != null
+              ? Image.file(File(album.coverPath!),
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) =>
+                      Icon(Icons.album, color: colorScheme.primary))
+              : Container(
+                  color: colorScheme.primary.withValues(alpha: 0.15),
+                  child: Icon(Icons.album, color: colorScheme.primary),
+                ),
+        ),
+      ),
+      title: Text(album.album,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context)
+              .textTheme
+              .bodyLarge
+              ?.copyWith(fontWeight: FontWeight.w600)),
+      subtitle: Text('${album.artist} · ${album.trackCount}首',
+          maxLines: 1, overflow: TextOverflow.ellipsis),
+      onTap: () => _openAlbum(context, album),
+    );
+  }
+}
+
 class _AlbumCard extends StatelessWidget {
   final Album album;
   const _AlbumCard({required this.album});
@@ -504,20 +601,7 @@ class _AlbumCard extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
     return InkWell(
       borderRadius: BorderRadius.circular(12),
-      onTap: () async {
-        final lib = context.read<LibraryProvider>();
-        var songs = lib.albumSongs(album);
-        // 未配置服务端时不做远端回退，直接按本地聚合结果展示。
-        if (songs.isEmpty && lib.serverConfigured) {
-          songs = await lib.source.fetchAlbumSongs(album.id);
-        }
-        if (!context.mounted) return;
-        showModalBottomSheet<void>(
-          context: context,
-          isScrollControlled: true,
-          builder: (c) => _AlbumSongsSheet(album: album, songs: songs),
-        );
-      },
+      onTap: () => _openAlbum(context, album),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -606,6 +690,17 @@ class _ArtistsView extends StatefulWidget {
 }
 
 class _ArtistsViewState extends State<_ArtistsView> {
+  /// 本地覆盖的展示形式（null 时读设置）。
+  CollectionViewMode? _mode;
+
+  CollectionViewMode _modeOf(BuildContext c) =>
+      _mode ?? c.read<DirectSourceManager>().settings.viewModeArtists;
+
+  void _setMode(BuildContext c, CollectionViewMode m) {
+    c.read<DirectSourceManager>().settings.viewModeArtists = m;
+    setState(() => _mode = m);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -627,28 +722,59 @@ class _ArtistsViewState extends State<_ArtistsView> {
     final nav = context.watch<NavigationProvider>();
     final lib = context.watch<LibraryProvider>();
     final artists = _filter(lib.artists, nav.search);
+    final card = _modeOf(context) == CollectionViewMode.card;
 
     return Column(
       children: [
         if (lib.loading) const LinearProgressIndicator(minHeight: 2),
         if (lib.error != null)
           Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
+          child: Row(
+            children: [
+              Text('${artists.length} 位歌手',
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: 0.6))),
+              const Spacer(),
+              ViewModeToggle(
+                card: card,
+                onChanged: (v) => _setMode(
+                    context,
+                    v ? CollectionViewMode.card : CollectionViewMode.list),
+              ),
+            ],
+          ),
+        ),
         Expanded(
           child: artists.isEmpty
               ? _EmptyHint(onRefresh: () => lib.loadArtists(query: nav.search.isEmpty ? null : nav.search))
               : RefreshIndicator(
                   onRefresh: () => lib.loadArtists(query: nav.search.isEmpty ? null : nav.search),
-                  child: GridView.builder(
-                    padding: const EdgeInsets.all(16),
-                    gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                      maxCrossAxisExtent: 220,
-                      mainAxisSpacing: 16,
-                      crossAxisSpacing: 16,
-                      childAspectRatio: 0.8,
-                    ),
-                    itemCount: artists.length,
-                    itemBuilder: (c, i) => _ArtistCard(artist: artists[i]),
-                  ),
+                  child: card
+                      ? GridView.builder(
+                          padding: const EdgeInsets.all(16),
+                          gridDelegate:
+                              const SliverGridDelegateWithMaxCrossAxisExtent(
+                            maxCrossAxisExtent: 220,
+                            mainAxisSpacing: 16,
+                            crossAxisSpacing: 16,
+                            childAspectRatio: 0.8,
+                          ),
+                          itemCount: artists.length,
+                          itemBuilder: (c, i) => _ArtistCard(artist: artists[i]),
+                        )
+                      : ListView.separated(
+                          itemCount: artists.length,
+                          separatorBuilder: (_, __) =>
+                              const Divider(height: 1, indent: 72),
+                          itemBuilder: (c, i) =>
+                              _ArtistListTile(artist: artists[i]),
+                        ),
                 ),
         ),
       ],
@@ -662,6 +788,56 @@ class _ArtistsViewState extends State<_ArtistsView> {
   }
 }
 
+/// 打开歌手歌曲弹层（卡片/列表两种形态共用）。
+void _openArtist(BuildContext context, Artist artist) {
+  final lib = context.read<LibraryProvider>();
+  final songs = lib.artistSongs(artist);
+  if (!context.mounted) return;
+  showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    builder: (c) => _ArtistSongsSheet(artist: artist, songs: songs),
+  );
+}
+
+class _ArtistListTile extends StatelessWidget {
+  final Artist artist;
+  const _ArtistListTile({required this.artist});
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return ListTile(
+      leading: ClipRRect(
+        borderRadius: BorderRadius.circular(22),
+        child: SizedBox(
+          width: 44,
+          height: 44,
+          child: artist.coverPath != null
+              ? Image.file(File(artist.coverPath!),
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) =>
+                      Icon(Icons.person, color: colorScheme.primary))
+              : Container(
+                  color: colorScheme.primary.withValues(alpha: 0.15),
+                  child: Icon(Icons.person, color: colorScheme.primary),
+                ),
+        ),
+      ),
+      title: Text(artist.name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context)
+              .textTheme
+              .bodyLarge
+              ?.copyWith(fontWeight: FontWeight.w600)),
+      subtitle: Text('${artist.songCount}首 · ${artist.albumCount}张专辑',
+          maxLines: 1, overflow: TextOverflow.ellipsis),
+      onTap: () => _openArtist(context, artist),
+    );
+  }
+}
+
 class _ArtistCard extends StatelessWidget {
   final Artist artist;
   const _ArtistCard({required this.artist});
@@ -671,16 +847,7 @@ class _ArtistCard extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
     return InkWell(
       borderRadius: BorderRadius.circular(12),
-      onTap: () {
-        final lib = context.read<LibraryProvider>();
-        final songs = lib.artistSongs(artist);
-        if (!context.mounted) return;
-        showModalBottomSheet<void>(
-          context: context,
-          isScrollControlled: true,
-          builder: (c) => _ArtistSongsSheet(artist: artist, songs: songs),
-        );
-      },
+      onTap: () => _openArtist(context, artist),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

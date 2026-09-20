@@ -31,6 +31,33 @@ enum PlayerTransition {
       .firstWhere((e) => e.name == v, orElse: () => PlayerTransition.fade);
 }
 
+/// 歌曲标题显示格式（设置→歌曲，默认「歌手 - 歌名」）。
+enum SongTitleFormat {
+  fileName('文件名'),
+  titleOnly('歌名'),
+  artistTitle('歌手 - 歌名'),
+  titleArtist('歌名 - 歌手');
+
+  const SongTitleFormat(this.label);
+  final String label;
+
+  static SongTitleFormat parse(String? v) => SongTitleFormat.values
+      .firstWhere((e) => e.name == v, orElse: () => SongTitleFormat.artistTitle);
+}
+
+/// 集合页（播放列表/播放源/专辑/歌手）展示形式。
+enum CollectionViewMode {
+  list('列表', 'list'),
+  card('卡片', 'card');
+
+  const CollectionViewMode(this.label, this.storeValue);
+  final String label;
+  final String storeValue;
+
+  static CollectionViewMode parse(String? v) =>
+      v == card.storeValue ? card : list;
+}
+
 /// 客户端用户设置（直连模式 app_settings 表；settings.md §3）。
 ///
 /// 已实现（settings.md §3.1/§3.3/§3.4）：
@@ -72,6 +99,15 @@ class AppSettings {
 
   /// 播放页切换过渡动画（settings.md §3.7 界面）：none / fade / slide / scale。
   static const String kPlayerTransition = 'player_transition';
+
+  /// 歌曲标题显示格式（settings.md §3.4 歌曲）：默认 song.artist - song.title。
+  static const String kSongTitleFormat = 'song_title_format';
+
+  /// 集合页展示形式（列表/卡片）：播放列表 / 播放源 / 专辑 / 歌手。
+  static const String kViewModePlaylists = 'view_mode_playlists';
+  static const String kViewModeSources = 'view_mode_sources';
+  static const String kViewModeAlbums = 'view_mode_albums';
+  static const String kViewModeArtists = 'view_mode_artists';
 
   /// 默认缓存总上限（512 MB）。
   static const int defaultCacheMaxBytes = 512 * 1024 * 1024;
@@ -251,6 +287,39 @@ class AppSettings {
   set playerTransition(PlayerTransition v) =>
       index.settingsSet(kPlayerTransition, v.name);
 
+  /// 歌曲标题显示格式（默认「歌手 - 歌名」）。
+  SongTitleFormat get songTitleFormat =>
+      SongTitleFormat.parse(index.settingsGet(kSongTitleFormat));
+  set songTitleFormat(SongTitleFormat v) =>
+      index.settingsSet(kSongTitleFormat, v.name);
+
+  CollectionViewMode _viewMode(String key, CollectionViewMode fallback) {
+    final raw = index.settingsGet(key);
+    if (raw == null) return fallback;
+    return CollectionViewMode.parse(raw);
+  }
+
+  /// 各集合页展示形式（默认：播放列表=列表，播放源/专辑/歌手=卡片）。
+  CollectionViewMode get viewModePlaylists =>
+      _viewMode(kViewModePlaylists, CollectionViewMode.list);
+  set viewModePlaylists(CollectionViewMode v) =>
+      index.settingsSet(kViewModePlaylists, v.storeValue);
+
+  CollectionViewMode get viewModeSources =>
+      _viewMode(kViewModeSources, CollectionViewMode.card);
+  set viewModeSources(CollectionViewMode v) =>
+      index.settingsSet(kViewModeSources, v.storeValue);
+
+  CollectionViewMode get viewModeAlbums =>
+      _viewMode(kViewModeAlbums, CollectionViewMode.card);
+  set viewModeAlbums(CollectionViewMode v) =>
+      index.settingsSet(kViewModeAlbums, v.storeValue);
+
+  CollectionViewMode get viewModeArtists =>
+      _viewMode(kViewModeArtists, CollectionViewMode.card);
+  set viewModeArtists(CollectionViewMode v) =>
+      index.settingsSet(kViewModeArtists, v.storeValue);
+
   // ---------- 通知分区（settings.md §3.6） ----------
 
   bool get audioFocusEnabled =>
@@ -289,5 +358,10 @@ class AppSettings {
     kAudioFocusEnabled,
     kNotificationControls,
     kPlayerTransition,
+    kSongTitleFormat,
+    kViewModePlaylists,
+    kViewModeSources,
+    kViewModeAlbums,
+    kViewModeArtists,
   ];
 }
