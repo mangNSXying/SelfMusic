@@ -60,7 +60,7 @@ enum CollectionViewMode {
 
 /// 客户端用户设置（直连模式 app_settings 表；settings.md §3）。
 ///
-/// 已实现（settings.md §3.1/§3.3/§3.4）：
+/// 已实现（settings.md §3.2/§3.3/§3.4）：
 /// - 缓存来源模式 `cache_config_mode`（custom / follow_server，后者暂灰显）与自定义上限；
 /// - 收藏自动缓存；播放页权重信息显示；忽略音频过滤；仅 Wi-Fi 扫描；
 /// - 默认播放模式、断点续播开关（对应 DESIGN §6.7）。
@@ -153,7 +153,7 @@ class AppSettings {
           ? (serverCacheSongLimit ?? cacheSongLimit)
           : cacheSongLimit;
 
-  // ---------- 收藏自动缓存（settings.md §3.1） ----------
+  // ---------- 收藏自动缓存（settings.md §3.4 歌曲分区） ----------
 
   bool get autoCacheFavorites =>
       (index.settingsGet(kAutoCacheFavorites) ?? '1') == '1';

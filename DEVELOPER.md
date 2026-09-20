@@ -100,7 +100,8 @@ selfmusic/
 │   │   ├── data/sources/             # MusicSource 抽象 + ServerProxy + WebdavDirect + SmbDirect
 │   │   ├── data/local/               # audio_metadata（mp3/flac 头部解析）+ local_index + 阶段2 封装（song_weight_store / playlist_store / cache_manager / app_settings）
 │   │   ├── models/                   # Song / Album / Artist
-│   │   ├── widgets/                  # 共享组件（SongTile / CoverThumb / PlayModeSelector / add_to_playlist）
+│   │   ├── utils/                    # duration_format / song_title_format / lrc_parser
+│   │   ├── widgets/                  # 共享组件（SongTile / CoverThumb / lyrics_view / add_to_playlist / view_mode_toggle 等）
 │   │   └── screens/                  # library / playlists_view / sources / source_browse_view / settings / player / pairing
 │   ├── android/ linux/ windows/ web/ # 各平台壳工程（安卓壳已重建）
 │   └── pubspec.yaml
@@ -261,7 +262,9 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 | just_audio_mpv | Linux 音频后端（联邦 Dart 插件，走系统 mpv/libmpv） |
 | cached_network_image | 图片缓存 |
 | flutter_secure_storage | 敏感数据安全存储（token、主题偏好） |
-| sqlite3 / sqlite3_flutter_libs | 客户端本地库（local_index）：源索引 idx_songs + cache + play_meta + playlists + app_settings + play_state（drift 的轻量替代，见 DESIGN §3.2） |
+| audio_service | Android 通知栏 / 后台播放（前台服务 + 媒体通知，`SelfMusicAudioHandler` 自定义处理器） |
+| crypto | 缓存 key / 封面等哈希去重 |
+| sqlite3 / sqlite3_flutter_libs | 客户端本地库（local_index）：源索引 idx_songs + cache + play_meta + playlists + app_settings + song_lyrics + play_state（drift 的轻量替代，见 DESIGN §3.2） |
 | xml | WebDAV PROPFIND XML 解析 |
 | file_selector | 备份导入导出、本地文件夹源「选择目录」 |
 | permission_handler | Android 本地文件夹源运行时权限（READ_MEDIA_AUDIO / READ_EXTERNAL_STORAGE） |
@@ -278,7 +281,8 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 - 结果回主 isolate 后统一 `upsertSongs`（单事务批量）+ `persistCover` + `markMissingExcept` + `clearMissing`；`LocalIndex` 只允许主 isolate 访问
 - 自动扫描：本地 `Directory.watch(recursive)` 变化去抖 2s 触发 `scanSource(key)`；周期定时器按 `scan_auto_interval_min` 轮询全部直连源；`_inFlightScan` 全局互斥防重复扫描
 - 播放时懒补全：`PlayerProvider._enrichLazily` 只在 `duration == null` 时读头解析并 `enrichSong` 回填，失败静默
-- 测试：`test/webdav_scan_test.dart` 用真 `HttpServer`（PROPFIND/GET/Range + 可变 etag）验证跨 isolate 扫描、增量跳过与 etag 变化仅重探目标文件；`test/audio_metadata_test.dart` 覆盖头部越界与大封面边界
+- 测试：`test/webdav_scan_test.dart` 用真 `HttpServer`（PROPFIND/GET/Range + 可变 etag）验证跨 isolate 扫描、增量跳过与 etag 变化仅重探目标文件；`test/audio_metadata_test.dart` 覆盖头部越界与大封面边界；
+  另有 `duration_format_test`（时长 mm:ss/h:mm:ss）、`lrc_parser_test`（歌词解析）、`song_title_format_test`（标题格式）、`play_reconcile_test`（播放前最新行纠正）、`top_bar_search_test`（搜索追焦）、`view_mode_settings_test`（集合页视图持久化）、`playlist_membership_test`（歌单归属/切换）与 `playlists_view_test` 等
 - 历史坑：mp3 enc==3 / flac VORBIS_COMMENT 曾用 `String.fromCharCodes` 逐字节解码导致 CJK 乱码——已改 UTF-8 解码（见 DESIGN §6.4「防护与编码」）；修复后需重扫一次覆写旧行
 
 ### Linux 桌面音频依赖（mpv）
@@ -328,7 +332,7 @@ ldconfig -p | grep libmpv   # 应看到 libmpv.so / libmpv.so.2
 | `DB_PASSWORD` | 数据库密码 | 无 |
 | `PAIRING_TOKEN` | 配对密钥（可选；每次启动覆盖写入，改后重启生效，仅影响新设备；留空则首次随机生成） | 首次随机 |
 
-> 配对密钥查看：① 后端**首次启动**日志以 `WARN` 打印一次；② （暂缓）已配对设备 `设置→常规` 明文显示。
+> 配对密钥查看：① 后端**首次启动**日志以 `WARN` 打印一次；② 已配对设备 `设置 → 服务端 → 配对服务器`（副标题遮显同一份密钥，配对页明文可复制）。
 
 ### application.yml 关键项
 

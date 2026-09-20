@@ -3,6 +3,8 @@
 > 定位：**去中心化的个人音乐服务器 + 双模式客户端**
 > 上游约束：`开发思路.txt`（无中心账号 / 本地+SMB+WebDAV 曲库 / 加权播放 / 喜欢歌自动缓存）
 > 状态：**阶段 0–3 已完成**（Android 壳对齐 / 认证·配对 / 客户端本地闭环·歌单·喜欢列表 / 直连 WebDAV·本地索引·增量扫描优化）；阶段 4~6 待实施。
+> 在此之上，后续迭代全部落地：元数据后台补读与全源编辑、歌词、后台播放、睡眠定时四模式、播放页与集合页交互
+> （层级返回 / 分组左右滑切 / 列表·卡片切换 / 队列·歌单自动定位高亮 / 标题显示格式 / 搜索追焦 / 编辑歌单）。
 > 各阶段交付、验收与落地状态见 §8；文中已用「✅ 已实现 / ⏳ 规划」标注能力与端点到现状。
 
 > **文档地图**：本文 = 整体设计 + 落地状态；设置项完整清单见 [settings.md](settings.md)；环境搭建、常用命令、调试与常见问题见 [DEVELOPER.md](DEVELOPER.md)。
@@ -204,6 +206,7 @@ INDEX idx_refresh(refresh_token_hash)
 | `play_meta` | 歌曲播放元数据（阶段 2 新增）：`(source_key, song_ref)` 主键 + `like_streak, dislike_streak, factor, frozen, is_favorite`（**收藏统一收口**）+ `song_json`（服务器歌快照） |
 | `playlists` / `playlist_items` | 歌单与条目（阶段 2 新增）：条目含歌曲快照字段 + `sort_order`；播放时按 `(source_key, song_ref)` 重新解析 |
 | `app_settings` | 客户端设置（阶段 2 新增）：键值表，`cache_max_bytes / cache_song_limit / auto_cache_favorites` 等 |
+| `song_lyrics` | 歌词（迭代新增）：`(source_key, song_ref)` 主键 + `content`（LRC 文本）+ `updated_at`；三态收录（内嵌歌词 / 同名 `.lrc` / 标记缺失），避免每次播放重复读文件 |
 | `play_state` | 断点（阶段 2 新增）：单行（`id=1`），`queue_json + index + position_ms` |
 
 要点：
@@ -272,7 +275,7 @@ INDEX idx_refresh(refresh_token_hash)
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | ✅ GET | `/admin/config` | 当前配置建议值概览（缓存双来源用） |
-| ✅ GET | `/admin/pairing-token` | 主配对令牌明文（`设置→常规` 展示用；密钥源自 env 镜像） |
+| ✅ GET | `/admin/pairing-token` | 主配对令牌明文（`设置→服务端→配对服务器` 展示用；密钥源自 env 镜像） |
 | ✅ GET | `/admin/devices` · PUT/DELETE `/admin/devices/{id}` | 设备列表 / 改名 / 吊销 |
 | ✅ POST | `/scan` · GET `/scan` | 触发扫描 / 查询最近扫描任务（定时触发见 §5.1 的 `MusicScanner.scheduledScan`） |
 | ⏳ POST | `/admin/upload/init` → `/part/{n}` → `/commit` | 分片上传（16MB/片），阶段 6 |
@@ -340,16 +343,16 @@ lib/
 │   └── theme_provider.dart 主题状态：运行时切换 + secure_storage 持久化
 ├── layout/                ★ 自适应模块化布局框架
 │   ├── app_shell.dart      顶层壳：桌面[侧边栏|内容|队列面板]，窄屏抽屉
-│   ├── sidebar.dart        侧边栏：设置分区(常规/播放/界面/服务端/歌曲/通知)+底部(明暗/退出)
-│   ├── top_bar.dart        顶栏：上层汉堡+搜索，下层导航(播放列表/喜欢/播放源/歌曲/专辑/歌手)
-│   ├── queue_panel.dart    右侧播放队列面板
-│   └── mini_player_bar.dart 底部"正在播放"条
+│   ├── sidebar.dart        侧边栏：设置分区(备份/播放/界面/服务端/歌曲/通知)+底部(明暗/退出)
+│   ├── top_bar.dart        顶栏：上层汉堡+搜索（键入保持焦点），下层导航(播放列表/喜欢/播放源/歌曲/专辑/歌手，支持左右滑动切组)
+│   ├── queue_panel.dart    播放队列面板：窄屏底部 0.7 高弹层 / 宽屏右侧常驻；打开自动定位当前曲并强调色
+│   └── mini_player_bar.dart 底部"正在播放"条：播放控制 + 播放队列入口 + 上滑/点按进播放页
 ├── providers/            ★ 状态
-│   ├── navigation_provider.dart  分区/设置/播放页视图切换 + 源内文件夹导航(browsingSourceKey) + 歌单详情导航(browsingPlaylistId)
-│   ├── player_provider.dart      全局播放(AudioPlayer+队列) + 按歌曲 sourceKey 解析源 + 四种播放模式(阶段2) + 断点续播
+│   ├── navigation_provider.dart  分区/设置/播放页视图切换（层级返回）+ 源内文件夹导航(browsingSourceKey) + 歌单详情导航(browsingPlaylistId)
+│   ├── player_provider.dart      全局播放(AudioPlayer+队列) + 睡眠定时 + 歌词加载 + 预载下一首 + 按 sourceKey 解析源 + 四种播放模式 + 断点续播
 │   ├── library_provider.dart     合并库（服务器+直连）+ 专辑/歌手分组 + sourceFor 解析
-│   ├── direct_source_manager.dart 直连源管理（全部激活，无单一激活态）+ 本地歌单/收藏/播放元数据存取
-│   ├── playlists_provider.dart   歌单列表/详情状态（阶段 2）
+│   ├── direct_source_manager.dart 直连源管理（全部激活，无单一激活态）+ 本地歌单/收藏/播放元数据 + 后台元数据补读 + 预载
+│   ├── playlists_provider.dart   歌单列表/详情状态
 │   └── auth_provider.dart        配对 + 会话过期态
 ├── services/             ApiClient(含懒刷新拦截器)、AuthService、ServerSettings(代理后端地址)
 ├── data/
@@ -357,9 +360,11 @@ lib/
 │   └── local/            纯 Dart 头部解析(audio_metadata) + SQLite(local_index) +
 │                         stage2 封装：SongWeightStore / PlaylistStore / CacheManager / AppSettings
 ├── models/               Song(含 toJson/fromJson 断点快照) / Album(含 coverPath) / Artist
-├── widgets/              共享组件（SongTile 可收藏/⋮加入歌单 / CoverThumb / PlayModeSelector / add_to_playlist）
-└── screens/              library(内容区 AppContent：分区/歌单详情/喜欢列表) / playlists_view(歌单列表+详情原地子视图)/
-                          sources(源卡片+三点菜单) / source_browse_view(源内文件夹浏览) / settings / player / pairing
+├── utils/                纯工具：duration_format（mm:ss/h:mm:ss）、song_title_format（标题显示格式）、lrc_parser（LRC 解析/二分定位）
+├── widgets/              共享组件（SongTile 可收藏/⋮ / CoverThumb / PlayModeSelector / add_to_playlist（加入·编辑歌单）/
+│                         lyrics_view（歌词页） / view_mode_toggle（列表·卡片切换） / player_sheet_anim · marquee_text · section_swipe 等）
+└── screens/              library(内容区 AppContent：分区/歌单详情/喜欢列表，六组跟手滑动) / playlists_view(歌单列表+详情原地子视图，自动定位当前曲)/
+                          sources(源卡片·列表行+三点菜单) / source_browse_view(源内文件夹浏览) / settings / player(封面更多→歌曲信息·修改元数据) / pairing
 ```
 
 > **平台收口层**（`capabilities`，见下方「为什么要有 platform/ 层」）与 **drift** 均未落地，属后续阶段：
@@ -413,6 +418,9 @@ abstract class MusicSource {
 - 增量指纹 `(ref, size, mtime, etag)`：WebDAV 从 PROPFIND 解析 `getlastmodified`/`getetag`/`getcontentlength`；本地扫描 `stat` 取 size/mtime；**四元组未变直接跳过读头 → 二次扫描零音频下载**
 - `scan_mode` 三档：`fast` 仅文件名建索引（零读头，**默认**）/ `minimal` 只解析标题·歌手·专辑（最快补充）/ `full` 解析全部元数据 + 封面（时长/曲目/年份/流派）
 - 播放时懒补全：`minimal` 入库的歌缺 时长/流派/年份/封面 → `PlayerProvider` 播放后后台 `open` 读头解析并 `enrichSong` 回填，失败不影响播放
+- **播放时必然重读**：`_enrichLazily` 不依赖索引缓存，任何歌开始播放都再次读头解析并回填（兼修正断点/歌单旧快照），保证切歌即时刷新
+- **全局后台补读**：任一首开始播放后，后台逐个补读各直连源「尚未读取过元数据」的歌曲（`DirectSourceManager` 分批循环读头回填），专辑/歌手/封面在扫描未覆盖时也能逐步补齐并在 UI 就地刷新（`LibraryProvider` 监听元数据版本号）
+- **修改歌曲元数据（全源）**：播放页封面「更多 → 修改歌曲元数据」，标题/歌手/专辑可编辑；直连歌曲落 `user_edited=1` 扫描不再覆盖，服务器歌曲本地覆盖展示（`LocalIndex.setUserMeta` / `DirectSourceManager.updateSongMeta`）
 
 **进程隔离与进度**
 
@@ -439,6 +447,7 @@ abstract class MusicSource {
 - 所有播放源默认激活（移除旧「单一激活源」概念），`direct_source_manager.dart` 仅维护源列表与本地索引，不再持有 `_activeKey`
 - 点击源卡片 → `NavigationProvider.enterSource(key)` 将 `browsingSourceKey` 置为该源 key → `AppContent` 检测到 `sources + browsingSourceKey` → 内容区原地切换为 `SourceBrowseView`（不走 `Navigator.push`）
 - `SourceBrowseView`：顶部返回按钮调用 `exitSource()`、显示源名、扫描/刷新按钮、搜索框、歌曲计数；扫描完成后自动调用 `LibraryProvider.loadSongs()` 刷新全局合并库
+- 源列表页（`SourcesScreen`）支持**列表 / 卡片**两种展示（右上角切换，持久化 `view_mode_sources`，见 §6.7）；列表行复用卡片组件（`plain` 参数）
 - 源卡片右侧 `PopupMenuButton` 三点菜单：切换为直连/切换为服务端代理、编辑、删除源（二次确认弹窗）；移除旧「服务器源」独立卡片（服务端代理归属直连源的模式之一）
 - 新增/编辑源弹窗统一为 `_SourceDialog`：添加态用 `SegmentedButton` 选 WebDAV/本地文件夹（本地态提供「选择目录」走 `file_selector.getDirectoryPath`）；编辑态按 key 从 `LocalIndex` 原始配置预填（代理模式下内存对象不持底层凭据），改名会派生新 key 并同步迁移 `sources/idx_songs/play_meta/playlist_items`（`LocalIndex.renameSource`）
 - 全局歌曲/专辑/歌手合并：`LibraryProvider.loadSongs()` 合并 `ServerProxySource.fetchSongs()` 与 `DirectSourceManager.allSongs()`（按 `title|artist|albumName` 去重），服务器源返回的歌曲 `sourceKey = 'server'`；专辑和歌手按合并后的歌曲列表客户端聚合（`Album.fromSongs` / `Artist.fromSongs`），切换到对应栏目时自动拉取
@@ -455,22 +464,33 @@ abstract class MusicSource {
 
 > 以下设置项已提供「设置」入口供用户自定义，键名对应直连模式 `app_settings` 表的 key，
 > 完整清单见 `settings.md`。6 个分区面板已全部落地（含此前暂缓项）：
-> 歌曲（收藏自动缓存/权重信息/忽略音频过滤/仅 Wi-Fi 扫描）、播放（默认播放模式/断点续播/
-> 淡入淡出/均衡器）、服务端（后端地址/缓存配置双来源含 follow_server）、常规（设置/歌单
-> 导出导入 + 配对密钥明文）、通知（通知栏播放控制 + 音频焦点）。
+> 备份（设置/歌单导出导入）、播放（默认播放模式/断点续播/淡入淡出/均衡器/播放页手势/睡眠定时默认播完）、
+> 服务端（后端地址/配对服务器[含同一份配对密钥]/预载/缓存配置双来源）、
+> 歌曲（收藏自动缓存/扫描模式与头部·封面/忽略音频过滤/仅 Wi-Fi 扫描/标题显示格式/集合页展示形式）、界面、通知。
 
 | 设置项 | 键 | 说明 | 默认 | 入口 |
 |--------|----|------|------|------|
 | 默认播放模式 | `play_mode_default` | `sequence / loopList / loopOne / weighted` 四选一，决定启动后的播放模式 | `sequence` | `设置 → 播放` |
-| 播放页权重信息显示 | `player_show_weight` | 是否在播放页展示当前歌曲 liked / factor 状态 | 显示 | `设置 → 歌曲` |
+| 播放页权重信息显示 | `player_show_weight` | 是否在播放页展示当前歌曲 liked / factor 状态 | 显示 | `设置 → 播放` |
 | 断点续播自动恢复 | `resume_on_startup` | 启动时是否自动恢复上次队列与播放位置（恢复为暂停态，不自动播放） | 开 | `设置 → 播放` |
+| 播放页滑动手势 | `player_gesture_swipe` | 播放/歌词页横滑互切、下滑返回、迷你条上滑跟手进播放页 | 开 | `设置 → 播放` |
+| 睡眠定时默认播完最后曲目 | `sleep_play_through_default` | 睡眠弹窗「播放完最后的曲目」默认值；弹窗内可选 指定时间/指定时长/指定曲数/列表结尾 | 开 | `设置 → 播放` |
+| 预载下一首 | `preload_next` | 播放时按播放顺序算法确定下一首并后台缓存（与预载开关无关，算法照常确定） | 开 | `设置 → 服务端` |
 | 淡入淡出 | `fade_enabled` + `fade_duration_ms` | 播放/暂停音量软件渐变（just_audio `setVolume` ramp，全平台，不依赖后端 crossfade） | 开 / 1000 ms（1~3 s） | `设置 → 播放` |
 | 均衡器 | `equalizer_enabled` + `eq_bands` | 5 频段增益（60/230/910/3600/14000 Hz，±12 dB）；**仅 Android**（`AndroidEqualizer` 注入 `AudioPipeline`），Linux/macOS 不生效 | 关 | `设置 → 播放` |
 | 缓存来源模式 | `cache_config_mode` | `custom`=本地自定义值；`follow_server`=服务端建议值（`GET /api/v1/admin/config`） | `custom` | `设置 → 服务端` |
-| 通知栏播放控制 | `notification_controls` | audio_service 媒体通知 + 前台服务；**启动时门控注册**，改动重启生效 | 开 | `设置 → 通知` |
+| 标题显示格式 | `song_title_format` | `fileName / titleOnly / artistTitle / titleArtist`；默认 歌手-歌名，显示层转换不修改存储 | `artistTitle` | `设置 → 歌曲` |
+| 集合页展示形式 | `view_mode_playlists/sources/albums/artists` | 四集合页 列表/卡片 切换的持久化取值（播放列表=`list`，其余=`card`） | 见左 | 对应页面右上角 |
+| 通知栏播放控制 / 后台播放 | `notification_controls` | audio_service 媒体通知 + 前台服务；**启动时门控注册**，改动重启生效；返回桌面续播，停止才真正停 | 开 | `设置 → 通知` |
 | 自动暂停/恢复（音频焦点） | `audio_focus_enabled` | 来电 / 其他 App 抢占的暂停-恢复（just_audio `handleInterruptions`，重建播放器即时生效） | 开 | `设置 → 通知` |
 
 来源：§7.1（播放模式与调权）；设置项汇总见 `settings.md §3`。
+
+### 6.8 歌词与后台播放
+
+- **歌词三通道**：内嵌标签（mp3 `USLT` / FLAC `LYRICS`·`UNSYNCEDLYRICS`）→ 同目录同名 `.lrc`（local/WebDAV 通用，UTF-8/UTF-16 BOM 兼容）→ 服务端代理源（后端暂无歌词接口，留空）；解析为 LRC 文本入库 `song_lyrics`（`(source_key,song_ref)` 主键，三态：内容 / 显式标记缺失 / 未读取），缺失标记避免每次播放重复读文件
+- **歌词页**：与播放进度同步滚动 + 居中高亮当前行 + 点击任意行 seek；手动拖动暂停跟随，切歌归位；`lrc_parser.dart` 支持多标签 / `offset` / 毫秒位数 / 纯文本退化 / 二分定位
+- **后台播放**：Android 走 `audio_service` 自定义处理器（`SelfMusicAudioHandler`，通知按钮转发 `PlayerProvider`）；返回桌面/切后台**继续播放**（`androidStopForegroundOnPause=false` 暂停不撤前台服务，与 `androidNotificationOngoing` 互斥故弃用 ongoing）；通知栏「停止」/ 划掉任务（`onTaskRemoved`）/ 侧边栏「退出」（先 `shutdown()` 再 `exit(0)`）才真正停止并置空闲；`notification_controls=false` 时不注册前台服务、后台保活不成立
 
 ---
 
@@ -486,9 +506,9 @@ weight = w₀ × factor
 factor ∈ [0.5, 1.5]，连续取值、步长 0.1，初始 1.0：
   连续完整播放（like_streak≥3）→ factor 提高 0.1（上限 1.5）
   连续中断（dislike_streak≥3）→ factor 降低 0.1（下限 0.5）
-  liked / 手动喜欢        → factor 直接 1.5
-  disliked / 手动不喜欢    → factor 降低 0.1
-  frozen=true            → factor 恒为 1.0，不参与事件调整
+  liked / 手动喜欢        → factor 直接 1.5（并解除「不喜欢」锁定）
+  手动不喜欢（开关）       → factor 直接降到最低 0.5 并锁定（frozen=true）
+  frozen=true（不喜欢锁定）→ 权重锁定最低值，跳过自动调权
 选中概率 p_i = factor_i / Σfactor_j（对候选集合归一化）
 ```
 
@@ -500,12 +520,12 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 | 事件 | 触发 | 效果 |
 |------|------|------|
-| complete | 自然结束且播放比例 ≥70% | like_streak++，dislike_streak=0；like_streak≥3 → factor=min(1.5, factor+0.1)，streak 清零 |
-| skip | 被 next/prev/换歌打断且比例 <70% | dislike_streak++，like_streak=0；dislike_streak≥3 → factor=max(0.5, factor−0.1)，streak 清零 |
-| liked | 手动喜欢 / 收藏 | favorite=true，factor=1.5 |
-| unfavorite | 取消喜欢 / 收藏 | favorite=false，factor=1.0 |
-| disliked | 手动不喜欢（👎） | favorite 不变，factor=max(0.5, factor−0.1)，双 streak 清零 |
-| reset | 手动重置 | 双 streak 清零，factor 回 1.0 |
+| complete | 自然结束且播放比例 ≥70% | like_streak++，dislike_streak=0；非锁定态 like_streak≥3 → factor=min(1.5, factor+0.1)、streak 清零；不喜欢锁定态只记 streak 不调权 |
+| skip | 被 next/prev/换歌打断且比例 <70% | dislike_streak++，like_streak=0；非锁定态 dislike_streak≥3 → factor=max(0.5, factor−0.1)、streak 清零；不喜欢锁定态只记 streak 不调权 |
+| liked | 手动喜欢 / 收藏 | favorite=true，factor=1.5，解除「不喜欢」锁定（frozen=false） |
+| unfavorite | 取消喜欢 / 收藏 | favorite=false；非锁定态 factor 回 1.0；不喜欢锁定态保持最低权重 |
+| disliked | 手动不喜欢（开关式） | favorite 不变；开 → factor=0.5 且 **frozen=true（权重锁定最低、跳过自动调权）**；关 → 解锁回 1.0 |
+| reset | 手动重置 | 双 streak 清零，factor 回 1.0，解除「不喜欢」锁定 |
 
 播放模式：`sequence`（当前顺序播放，播完即停）/ `loopList`（列表循环）/ `loopOne`（单曲循环）/
 `weighted`（加权随机），切换入口播放页 + 队列面板；`next()` 与自动下一首按当前模式路由。
@@ -538,7 +558,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 - ✅ 重建安卓壳工程：`flutter create --platforms android .`（`build.gradle.kts` / `AndroidManifest.xml` / `MainActivity` / `gradle/wrapper` / `res/` 齐全）
 - ✅ 网络与播放器后端：`INTERNET` 权限、内网 http 走 `usesCleartextTraffic`；音频**无需手动平台分支**——`just_audio` 在 Android 走默认 ExoPlayer、Linux 由联邦插件接管 mpv，`lib/` 不直接引用平台插件
 - ✅ 双端共用同一 `lib/`：主题 / 认证 / 播放器 / 配对页 / 内容区 / 队列均复用
-- ✅ 阶段 0 遗留的通知栏 / 后台播放 / 音频焦点已落地（`audio_service` 自定义处理器 + `notification_controls` / `audio_focus_enabled` 开关，见 §6.7 / settings.md §3.6）；真机行为待验证
+- ✅ 阶段 0 遗留的通知栏 / 后台播放 / 音频焦点已落地（`audio_service` 自定义处理器 + `notification_controls` / `audio_focus_enabled` 开关，见 §6.7 / §6.8 / settings.md §3.6）；真机行为待验证
 - ✅ `secure_storage` Keystore 细节已过（Android 默认 Keystore-backed）
 - 验收口径：`flutter build apk --release` 成功出包；Android 真机与 Linux 完成同一套功能验收清单
 
@@ -601,10 +621,10 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 ### 暂缓项：已配对设备设置页明文显示配对密钥
 
-> **状态：已实现✅**（`GET /api/v1/admin/pairing-token` + 前端 `设置→常规` 明文条目，与淡入淡出/均衡器/通知控制等暂缓项一并落地）。
+> **状态：已实现✅**（`GET /api/v1/admin/pairing-token` + `设置→服务端→配对服务器` 副标题遮显、配对页明文可复制，与淡入淡出/均衡器/通知控制等暂缓项一并落地；功能 7「设置整理」后密钥归入服务端分区，不再放常规）。
 
 - 后端：新增需已配对设备 token 的端点，返回当前 `pairing_token`（从 settings 镜像读取，权威源为 env）。
-- 前端：`设置→常规` 面板显示"配对密钥"明文条目（默认遮显，可显示/复制），附说明"改 .env 重启后生效，仅影响新设备"。
+- 前端：`设置→服务端→配对服务器` 条目副标题遮显同一份配对密钥（未配对也显示），进入配对页可显示/复制。
 - 动机：首次启动日志仅打印一次，后续查看密钥需此入口（替代已移除的 `pairing-token/reset`）。
 
 ---
@@ -628,4 +648,4 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 2. 服务端定时扫描 —— 默认开启（`SCAN_SCHEDULING_ENABLED=true`、6h 间隔），可在 `.env` 关闭
 3. 封面 128/512 两档 —— 默认如此
 4. `hard=true` 仅限 local 源 —— 默认如此
-5. `frozen` 是否暴露 UI —— 默认隐藏，仅数据库字段就位
+5. `frozen` 是否暴露 UI —— 已定：以「不喜欢」开关形式暴露（播放页 👎 / 列表 ⋮），开即锁定最低权重，见 §7.1
