@@ -27,6 +27,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -190,7 +191,7 @@ public class SyncService {
         JsonNode p = ev.payload();
         return switch (typeGroup(ev.type())) {
             case "song" -> {
-                Song song = songOf(p);
+                Song song = songOf(p, true);
                 applySongEvent(song, ev.type(), p);
                 songRepository.save(song);
                 yield null;
@@ -217,10 +218,15 @@ public class SyncService {
 
     /**
      * 解析事件中的歌曲身份：优先数字 song_id（直接 REST 调用），
-     * 否则按 (source, source_ref) 唯一键解析（客户端 outbox 事件，见 songs.uk_source_ref）；
+     * 否则按 (source, source_ref) 唯一键解析（客户端 outbox 事件）；
      * source 缺失/非法（含 legacy 行的 'server' 占位）时按 source_ref 全源兜底找第一首。
+     *
+     * 直连歌曲在服务端曲库无此行：[provision] 为真时按 (source, source_ref)
+     * 建影子行承载权重/收藏/断点（展示字段取载荷或 ref 兜底，pull 回执只带权重字段，
+     * 不覆盖客户端本地标题）；为假时（如 pull 身份收集）沿用旧行为：找不到抛 404，
+     * 由调用方跳过（已删歌曲不复活）。
      */
-    private Song songOf(JsonNode p) {
+    private Song songOf(JsonNode p, boolean provision) {
         if (p != null && p.has("song_id") && p.path("song_id").asLong(0) != 0) {
             long songId = p.path("song_id").asLong(0);
             return songRepository.findById(songId)
@@ -234,14 +240,56 @@ public class SyncService {
         if (source != null && !source.isBlank() && !"server".equals(source)) {
             try {
                 MusicSource ms = MusicSource.valueOf(source);
-                return songRepository.findBySourceAndSourceRef(ms, ref)
-                        .orElseThrow(() -> new BizException(40402, "song not found: " + source + "/" + ref));
+                Optional<Song> found = songRepository.findBySourceAndSourceRef(ms, ref);
+                if (found.isPresent()) return found.get();
+                if (!provision) {
+                    throw new BizException(40402, "song not found: " + source + "/" + ref);
+                }
+                return provisionShadow(ms, ref, p);
             } catch (IllegalArgumentException ignored) {
                 // 非法 source 值：继续走 source_ref 兜底
             }
         }
         return songRepository.findFirstBySourceRef(ref)
                 .orElseThrow(() -> new BizException(40402, "song not found: " + ref));
+    }
+
+    /**
+     * 直连歌曲影子行：服务端曲库没有的 (source, source_ref) 在此建最小行，
+     * 只承载权重/收藏/断点状态；标题取事件载荷（歌单条目携带）或 ref 末段兜底。
+     */
+    private Song provisionShadow(MusicSource ms, String ref, JsonNode p) {
+        Song shadow = new Song();
+        shadow.setSource(ms);
+        shadow.setSourceRef(ref);
+        shadow.setTitle(shadowTitle(p, ref));
+        if (p != null && p.has("artist") && !p.path("artist").isNull()) {
+            shadow.setArtist(p.path("artist").asText(null));
+        }
+        shadow.setFileSize(0L);
+        return songRepository.save(shadow);
+    }
+
+    /**
+     * 影子行标题：事件载荷 title 优先（去空白），否则取 ref 最后一段
+     * （去末尾斜杠 + URL 解码），再兜底 ref 全串。纯函数，可单测。
+     */
+    static String shadowTitle(JsonNode p, String ref) {
+        if (p != null && p.has("title") && !p.path("title").isNull()) {
+            String t = p.path("title").asText("").trim();
+            if (!t.isEmpty()) return t;
+        }
+        String s = ref == null ? "" : ref;
+        while (s.endsWith("/") && s.length() > 1) s = s.substring(0, s.length() - 1);
+        int cut = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+        String tail = cut >= 0 ? s.substring(cut + 1) : s;
+        try {
+            tail = java.net.URLDecoder.decode(tail, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException ignored) {
+            // 非法百分号编码：用解码前原文
+        }
+        tail = tail.trim();
+        return tail.isEmpty() ? s : tail;
     }
 
     private Playlist playlistOf(JsonNode p) {
@@ -318,25 +366,31 @@ public class SyncService {
         JsonNode p = ev.payload();
         Playlist pl = playlistOf(p);
         if (pl.isDeleted()) throw new BizException(40001, "playlist_deleted");
-        long songId = p.path("song_id").asLong(0);
-        if (songId == 0) throw new BizException(40001, "song_id required");
         String t = ev.type();
         if (SyncEventTypes.PLAYLIST_ITEM_REMOVE.equals(t)) {
-            playlistItemRepository.deleteByPlaylistIdAndSongId(pl.getId(), songId);
-        } else {
-            // add：已存在则当 move 更新顺序；move：不存在则插入（超集收敛）
-            if (songRepository.findById(songId).isEmpty()) {
-                throw new BizException(40402, "song not found: " + songId);
+            // 移除幂等：服务端无此歌 = 早已收敛，直接 no-op（不建影子行）。
+            Long sid = tryResolveSongId(p);
+            if (sid != null) {
+                playlistItemRepository.deleteByPlaylistIdAndSongId(pl.getId(), sid);
             }
+        } else {
+            // add/move：直连歌曲无服务端 song_id，按 (source, source_ref)
+            // 解析，缺行则建影子行（已存在则当 move 更新顺序）。
+            long songId = p == null ? 0 : p.path("song_id").asLong(0);
+            Song song = songId != 0
+                    ? songRepository.findById(songId)
+                            .orElseThrow(() -> new BizException(40402, "song not found: " + songId))
+                    : songOf(p, true);
+            long sid = song.getId();
             PlaylistItem item = playlistItemRepository
-                    .findByPlaylistIdAndSongId(pl.getId(), songId)
+                    .findByPlaylistIdAndSongId(pl.getId(), sid)
                     .orElseGet(() -> {
                         PlaylistItem ni = new PlaylistItem();
                         ni.setPlaylist(pl);
-                        ni.setSong(songRepository.getReferenceById(songId));
+                        ni.setSong(song);
                         return ni;
                     });
-            if (p.has("sort_order")) item.setSortOrder(p.path("sort_order").asInt(0));
+            if (p != null && p.has("sort_order")) item.setSortOrder(p.path("sort_order").asInt(0));
             playlistItemRepository.save(item);
         }
         pl.setSyncVer(nvlLong(pl.getSyncVer()) + 1);
@@ -354,7 +408,7 @@ public class SyncService {
         if (!eventWins(ev.occurred_at(), st.getLastEventAt())) {
             return playstateSnapshot(st, pl.getClientUuid());
         }
-        Song song = songOf(p);
+        Song song = songOf(p, true);
         st.setSong(song);
         st.setPositionMs(p == null ? 0 : p.path("position_ms").asInt(0));
         st.setLastEventAt(ev.occurred_at());
@@ -501,10 +555,11 @@ public class SyncService {
 
     /**
      * pull 收集歌曲快照 id：与 songOf 同一身份规则，找不到返回 null（歌已删则跳过）。
+     * 注意此处恒不建影子行（provision=false）：已删歌曲不复活。
      */
     private Long tryResolveSongId(JsonNode p) {
         try {
-            return songOf(p).getId();
+            return songOf(p, false).getId();
         } catch (BizException e) {
             return null;
         }
