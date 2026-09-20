@@ -247,6 +247,13 @@ class DirectSourceManager extends ChangeNotifier {
     _ready = true;
     restartAutoScan();
     notifyListeners();
+    // 一次性回填：旧版封面读取受头部采样截断（大内嵌封面丢失）且已标已读的行，
+    // 重置为未读，交给后台补读用加深的封面读取重取。仅本机一次（不进 knownKeys）。
+    if (!settings.coverReenrichV1Done) {
+      final reset = index.resetMetaReadForMissingCovers();
+      settings.coverReenrichV1Done = true;
+      if (reset > 0) debugPrint('封面回填补读：已重置 $reset 首待重读');
+    }
     // 后台清理历史无效封面（旧解析缺陷可能写脏数据），清理到的歌标未读待补读。
     unawaited(index.cleanupInvalidCovers().then((cleaned) {
       if (cleaned > 0) {

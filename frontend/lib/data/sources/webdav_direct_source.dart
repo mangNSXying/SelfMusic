@@ -11,6 +11,7 @@ import '../../models/song.dart';
 import '../../models/album.dart';
 import 'music_source.dart';
 import 'scan_worker.dart';
+import 'sibling_cover.dart';
 import 'webdav_url.dart';
 import '../local/local_index.dart';
 import '../local/audio_metadata.dart';
@@ -340,6 +341,7 @@ Future<List<_WebdavWalkOut>> _webdavWalk({
   final client = _newClient(allowSelfSigned);
   final files = <_WebdavEntry>[];
   final out = <_WebdavWalkOut>[];
+  final imageCache = <String, Uint8List?>{}; // 同目录图片探测缓存（候选 URL → 字节/null）
   onProgress?.call(const ScanProgress(listing: true, done: 0, total: 0));
   try {
     await _listRecursive(client, baseUrl, files, username, password,
@@ -373,8 +375,39 @@ Future<List<_WebdavWalkOut>> _webdavWalk({
         ));
         continue;
       }
-      var meta = await _probe(client, f, username, password, headBytes);
-      if (meta != null && !collectCover) meta.cover = null;
+      AudioMeta? meta;
+      if (!fullMeta) {
+        // 最小模式：仅头部标签（时长仍用于过滤，不入库由 _rowFor 处理）。
+        try {
+          final head =
+              await _getHead(client, f.fullUrl, username, password, headBytes);
+          if (head.isNotEmpty) meta = parseAudioHead(head, f.ext, f.size);
+        } catch (_) {
+          // 单文件探测失败跳过（不中断整源扫描）。
+        }
+      } else {
+        // 完整模式：头部补读（大封面）+ 尾部补读（m4a moov-at-end / ogg 时长）+ 同目录图片回退。
+        try {
+          meta = await readAudioMeta(
+            readRange: (start, length) => _getHead(
+                client, f.fullUrl, username, password, length,
+                start: start),
+            format: f.ext,
+            fileSize: f.size,
+            headBytes: headBytes,
+          );
+        } catch (_) {
+          // 单文件读取失败跳过（不中断整源扫描）。
+        }
+        if (meta != null) {
+          if (!collectCover) {
+            meta.cover = null;
+          } else {
+            meta.cover ??= await _siblingImageWebdav(
+                client, f, username, password, imageCache);
+          }
+        }
+      }
       // 时长过滤：仅在解析出时长时生效，避免误杀探测失败的文件。
       final dur = meta?.duration ?? 0;
       if (minDurationSec > 0 && dur > 0 && dur < minDurationSec) continue;
@@ -388,6 +421,45 @@ Future<List<_WebdavWalkOut>> _webdavWalk({
     client.close(force: true);
   }
   return out;
+}
+
+/// 扫描期同目录图片回退（WebDAV）：候选 URL 按次探测，命中缓存（跨歌单目录去重）。
+Future<Uint8List?> _siblingImageWebdav(HttpClient client, _WebdavEntry f,
+    String username, String password, Map<String, Uint8List?> cache) async {
+  final slash = f.fullUrl.lastIndexOf('/');
+  if (slash < 0) return null;
+  final base = f.fullUrl.substring(0, slash + 1);
+  final name = f.fullUrl.substring(slash + 1);
+  final dot = name.lastIndexOf('.');
+  final stem = dot > 0 ? name.substring(0, dot) : name;
+  final candidates = <String>[
+    if (stem.isNotEmpty)
+      for (final ext in const [
+        '.png', '.jpg', '.jpeg', '.webp', '.PNG', '.JPG',
+      ])
+        '$base$stem$ext',
+    for (final n in const [
+      'cover.jpg', 'cover.png', 'folder.jpg', 'folder.png',
+      'front.jpg', 'album.jpg',
+    ])
+      '$base$n',
+  ];
+  for (final url in candidates) {
+    if (url == f.fullUrl) continue;
+    if (cache.containsKey(url)) {
+      final hit = cache[url];
+      if (hit != null) return hit;
+      continue;
+    }
+    final bytes = await _getHead(
+        client, url, username, password, kCoverReadCapBytes);
+    if (isImageBytes(bytes)) {
+      cache[url] = bytes;
+      return bytes;
+    }
+    cache[url] = null;
+  }
+  return null;
 }
 
 /// isolate 产出：一行歌曲数据 + 可选封面字节（封面落盘在主 isolate 完成）。
@@ -463,10 +535,11 @@ void _auth(HttpClientRequest req, String username, String password) {
 }
 
 Future<Uint8List> _getHead(HttpClient client, String url, String username,
-    String password, int headBytes) async {
+    String password, int headBytes, {int start = 0}) async {
   final req = await client.getUrl(Uri.parse(url));
   _auth(req, username, password);
-  req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-${headBytes - 1}');
+  req.headers.set(HttpHeaders.rangeHeader,
+      'bytes=$start-${start + headBytes - 1}');
   final resp = await req.close();
   if (resp.statusCode != 200 && resp.statusCode != 206) {
     await resp.drain<void>();
@@ -578,18 +651,6 @@ XmlElement? _firstByName(XmlNode node, String name) {
     if (c is XmlElement && c.name.local == name) return c;
   }
   return null;
-}
-
-Future<AudioMeta?> _probe(HttpClient client, _WebdavEntry f,
-    String username, String password, int headBytes) async {
-  try {
-    final head =
-        await _getHead(client, f.fullUrl, username, password, headBytes);
-    if (head.isEmpty) return null;
-    return parseAudioHead(head, f.ext, f.size);
-  } catch (_) {
-    return null;
-  }
 }
 
 /// 有界并发：至多 [pool] 个 [fn] 同时执行（顺序保序）。

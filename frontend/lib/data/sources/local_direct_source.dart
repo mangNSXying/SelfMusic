@@ -10,6 +10,7 @@ import '../../models/song.dart';
 import '../../models/album.dart';
 import 'music_source.dart';
 import 'scan_worker.dart';
+import 'sibling_cover.dart';
 import '../local/local_index.dart';
 import '../local/audio_metadata.dart';
 
@@ -265,19 +266,25 @@ Future<List<_LocalWalkOut>> _localWalk({
   if (!await dir.exists()) {
     throw StateError('本地目录不存在：$root');
   }
-  // 阶段 1：枚举 + stat，产出「需要探测」的文件与「未变化」的条目。
+  // 阶段 1：枚举 + stat，产出「需要探测」的文件与「未变化」的条目；
+  // 同时收集同目录图片（封面回退用，按小写相对路径索引）。
   final toProbe = <_LocalCandidate>[];
+  final imageRefs = <String, String>{}; // rel(小写) → 绝对路径
   final out = <_LocalWalkOut>[];
   onProgress?.call(const ScanProgress(listing: true, done: 0, total: 0));
   await for (final entity in dir.list(recursive: true, followLinks: false)) {
     if (isCancelled?.call() ?? false) return out;
     if (entity is! File) continue;
     final path = entity.path;
+    final rel = p.relative(path, from: root).replaceAll('\\', '/');
+    if (_imageExt(path)) {
+      imageRefs.putIfAbsent(rel.toLowerCase(), () => path);
+      continue;
+    }
     if (!_audioExt(path)) continue;
     final stat = await entity.stat();
     if (minSizeBytes > 0 && stat.size < minSizeBytes) continue;
     final ext = _extOf(path);
-    final rel = p.relative(path, from: root).replaceAll('\\', '/');
     final fp = known[rel];
     final mtime = stat.modified.millisecondsSinceEpoch ~/ 1000;
     if (fp != null && fp.same(stat.size, mtime, null)) {
@@ -305,12 +312,37 @@ Future<List<_LocalWalkOut>> _localWalk({
   onProgress?.call(ScanProgress(listing: false, done: 0, total: toProbe.length));
   // 阶段 2：读头 + 解析（本地磁盘并行 4，解析 CPU 也在 worker 内完成）。
   var done = 0;
+  final imageBytes = <String, Uint8List?>{}; // 图片绝对路径 → 字节/null
   await _mapConcurrent(toProbe, 4, (c) async {
     if (isCancelled?.call() ?? false) return;
-    final head = await _readHead(c.path, headBytes);
-    if (head.isEmpty) return;
-    var meta = parseAudioHead(head, c.ext, c.size);
-    if (meta != null && !collectCover) meta.cover = null;
+    AudioMeta? meta;
+    if (!fullMeta) {
+      try {
+        final head = await _readHeadAt(c.path, 0, headBytes);
+        if (head.isEmpty) return;
+        meta = parseMinimalHead(head, c.ext);
+      } catch (_) {
+        return; // 单文件失败跳过（不中断整源扫描）
+      }
+    } else {
+      // 完整模式：头部补读（大封面）+ 尾部补读（m4a moov-at-end / ogg 时长）+ 同目录图片回退。
+      try {
+        meta = await readAudioMeta(
+          readRange: (start, length) => _readHeadAt(c.path, start, length),
+          format: c.ext,
+          fileSize: c.size,
+          headBytes: headBytes,
+        );
+      } catch (_) {
+        return;
+      }
+      if (meta == null) return;
+      if (!collectCover) {
+        meta.cover = null;
+      } else {
+        meta.cover ??= await _siblingImageLocal(c.rel, imageRefs, imageBytes);
+      }
+    }
     final dur = meta?.duration ?? 0;
     if (minDurationSec > 0 && dur > 0 && dur < minDurationSec) return;
     final outKind =
@@ -325,6 +357,31 @@ Future<List<_LocalWalkOut>> _localWalk({
         ScanProgress(listing: false, done: done, total: toProbe.length));
   });
   return out;
+}
+
+/// 扫描期同目录图片回退：从同批枚举的图片清单中按候选顺序命中并读入（按路径缓存）。
+Future<Uint8List?> _siblingImageLocal(String ref,
+    Map<String, String> imageRefs, Map<String, Uint8List?> cache) async {
+  for (final cand in siblingImageCandidates(ref)) {
+    final path = imageRefs[cand.toLowerCase()];
+    if (path == null) continue;
+    if (cache.containsKey(path)) {
+      final hit = cache[path];
+      if (hit != null) return hit;
+      continue;
+    }
+    try {
+      final bytes = await _readHeadAt(path, 0, kCoverReadCapBytes);
+      if (isImageBytes(bytes)) {
+        cache[path] = bytes;
+        return bytes;
+      }
+      cache[path] = null;
+    } catch (_) {
+      cache[path] = null;
+    }
+  }
+  return null;
 }
 
 class _LocalCandidate {
@@ -359,13 +416,14 @@ DirectSongRow _rowFor(String key, String ref, String ext, int size, int mtime,
   );
 }
 
-Future<Uint8List> _readHead(String path, int max) async {
+Future<Uint8List> _readHeadAt(String path, int start, int length) async {
   final raf = await File(path).open();
   try {
     final len = await raf.length();
-    final n = len < max ? len : max;
-    if (n <= 0) return Uint8List(0);
-    return await raf.read(n);
+    if (start >= len || length <= 0) return Uint8List(0);
+    final end = (start + length) > len ? len : start + length;
+    await raf.setPosition(start);
+    return await raf.read(end - start);
   } finally {
     await raf.close();
   }
@@ -400,6 +458,9 @@ Future<void> _ensureAudioPermission() async {
 bool _audioExt(String path) =>
     RegExp(r'\.(mp3|flac|m4a|aac|ogg|wav)$', caseSensitive: false)
         .hasMatch(path);
+
+bool _imageExt(String path) =>
+    RegExp(r'\.(jpg|jpeg|png|webp)$', caseSensitive: false).hasMatch(path);
 
 String _extOf(String path) {
   final i = path.lastIndexOf('.');
