@@ -39,6 +39,8 @@ Future<void> main() async {
   final direct = DirectSourceManager();
   await direct.init();
   direct.attachApi(api);
+  // 信任自签名证书开关（settings.md §3.3）：按 AppSettings 配置 dio 一次。
+  api.setSelfSignedPolicy(direct.settings.allowSelfSigned);
   // 已配对的设备在启动时拉取服务端缓存建议值（settings.md §3.3 follow_server）。
   if (serverSettings.baseUrl.isNotEmpty) {
     unawaited(direct.refreshServerConfig());

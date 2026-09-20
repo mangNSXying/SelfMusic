@@ -3,10 +3,11 @@ library;
 
 import 'dart:convert' show utf8;
 
-/// 归一化 base：补 scheme、去尾斜杠。如 `192.168.1.10:5005/media` → `http://.../media`。
+/// 归一化 base：补 scheme、去尾斜杠。缺 scheme 时默认补 `https://`（需明文 HTTP
+/// 必须显式写 `http://`）。如 `192.168.1.10:5005/media` → `https://.../media`。
 String webdavNormalizeBase(String url) {
   var u = url.trim();
-  if (!u.contains('://')) u = 'http://$u';
+  if (!u.contains('://')) u = 'https://$u';
   if (u.endsWith('/')) u = u.substring(0, u.length - 1);
   return u;
 }

@@ -1,4 +1,7 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 /// 表示会话已过期且无法续签，需重新配对。
@@ -24,13 +27,33 @@ class ApiClient {
   Future<bool>? _inflightRefresh;
   void Function()? onSessionExpired;
 
-  /// 把 [url] 规整为合法的绝对 URL：缺少 scheme 时补 `http://`，并去掉末尾 `/`，
-  /// 避免用户传入 `192.168.3.25:18089` 这类无协议地址导致 dio 报错。
+  /// 校验端点为「安全链路策略」允许的形式；返回错误提示，合法返回 null。
+  ///
+  /// - 空串：允许（表示未配置）。
+  /// - 无 scheme：允许（归一化时会补默认 `https://`）。
+  /// - 显式 `http://`：仅当 [allowHttp]（「允许不安全 HTTP」开关）为真时允许。
+  /// - 其余 scheme（https 等）：允许。
+  static String? validateEndpointUrl(String url, {required bool allowHttp}) {
+    final s = url.trim();
+    if (s.isEmpty) return null;
+    final i = s.indexOf('://');
+    if (i > 0) {
+      final scheme = s.substring(0, i).toLowerCase();
+      if (scheme == 'http' && !allowHttp) {
+        return '明文 HTTP 已被默认关闭；如确需使用，请在「允许不安全 HTTP」中启用，或改用 https://';
+      }
+    }
+    return null;
+  }
+
+  /// 把 [url] 规整为合法的绝对 URL：缺少 scheme 时补 `https://`（默认安全链路），
+  /// 并去掉末尾 `/`，避免用户传入 `192.168.3.25:18443` 这类无协议地址导致 dio 报错。
+  /// 需要明文 HTTP 时用户须显式写 `http://`（受「允许不安全 HTTP」开关约束，见 settings.md §3.3）。
   static String normalizeBaseUrl(String url) {
     var s = url.trim();
     if (s.isEmpty) return s;
     if (!s.contains('://')) {
-      s = 'http://$s';
+      s = 'https://$s';
     }
     return s.endsWith('/') ? s.substring(0, s.length - 1) : s;
   }
@@ -76,6 +99,20 @@ class ApiClient {
   }
 
   String get baseUrl => dio.options.baseUrl;
+
+  bool _allowSelfSigned = false;
+
+  /// 信任自签名证书开关（settings.md §3.3）：为 true 时本 dio 的 TLS 请求接受
+  /// 任意证书（dart:io [HttpClient.badCertificateCallback]）。替换 adapter 仅对
+  /// 之后发出的请求生效，适合在启动阶段按 [AppSettings.allowSelfSigned] 配置一次。
+  void setSelfSignedPolicy(bool allow) {
+    _allowSelfSigned = allow;
+    dio.httpClientAdapter = IOHttpClientAdapter(
+      createHttpClient: () => HttpClient()
+        ..badCertificateCallback =
+            (cert, host, port) => _allowSelfSigned,
+    );
+  }
 
   /// 运行时可改后端地址（规整为绝对 URL），空串表示未配置。
   void setBaseUrl(String url) {

@@ -38,10 +38,15 @@ void main() {
     expect(s.viewModeAlbums, CollectionViewMode.card);
     expect(s.viewModeArtists, CollectionViewMode.card);
     expect(s.songTitleFormat, SongTitleFormat.artistTitle);
+    // 网络与安全开关默认关（settings.md §3.3）。
+    expect(s.allowInsecureHttp, isFalse);
+    expect(s.allowSelfSigned, isFalse);
 
     s.viewModePlaylists = CollectionViewMode.card;
     s.viewModeAlbums = CollectionViewMode.list;
     s.songTitleFormat = SongTitleFormat.titleArtist;
+    s.allowInsecureHttp = true;
+    s.allowSelfSigned = true;
 
     // 重新读取（模拟重启）保持。
     final s2 = AppSettings(index);
@@ -49,6 +54,8 @@ void main() {
     expect(s2.viewModeAlbums, CollectionViewMode.list);
     expect(s2.viewModeArtists, CollectionViewMode.card);
     expect(s2.songTitleFormat, SongTitleFormat.titleArtist);
+    expect(s2.allowInsecureHttp, isTrue);
+    expect(s2.allowSelfSigned, isTrue);
 
     for (final k in [
       AppSettings.kSongTitleFormat,
@@ -56,6 +63,8 @@ void main() {
       AppSettings.kViewModeSources,
       AppSettings.kViewModeAlbums,
       AppSettings.kViewModeArtists,
+      AppSettings.kAllowInsecureHttp,
+      AppSettings.kAllowSelfSigned,
     ]) {
       expect(AppSettings.knownKeys, contains(k));
     }

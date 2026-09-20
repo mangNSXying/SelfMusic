@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
+import '../providers/direct_source_manager.dart';
 import '../services/api_client.dart';
 import '../services/server_settings.dart';
 import '../utils/platform_info.dart';
@@ -283,7 +284,7 @@ class _ServerAddressCard extends StatelessWidget {
           keyboardType: TextInputType.url,
           decoration: const InputDecoration(
             labelText: '后端地址',
-            hintText: 'http://192.168.1.10:18089',
+            hintText: 'https://192.168.1.10:18443',
             helperText: '含协议与端口，留空表示未配置',
             border: OutlineInputBorder(),
           ),
@@ -292,7 +293,18 @@ class _ServerAddressCard extends StatelessWidget {
           TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
           FilledButton(
             onPressed: () async {
-              await settings.setBaseUrl(ctrl.text.trim());
+              final entered = ctrl.text.trim();
+              final err = ApiClient.validateEndpointUrl(entered,
+                  allowHttp: context
+                      .read<DirectSourceManager>()
+                      .settings
+                      .allowInsecureHttp);
+              if (err != null) {
+                ScaffoldMessenger.of(c)
+                    .showSnackBar(SnackBar(content: Text(err)));
+                return;
+              }
+              await settings.setBaseUrl(entered);
               api.setBaseUrl(settings.baseUrl);
               if (c.mounted) Navigator.of(c).pop();
             },

@@ -63,12 +63,21 @@ enum CollectionViewMode {
 /// 已实现（settings.md §3.2/§3.3/§3.4）：
 /// - 缓存来源模式 `cache_config_mode`（custom / follow_server，后者暂灰显）与自定义上限；
 /// - 收藏自动缓存；播放页权重信息显示；忽略音频过滤；仅 Wi-Fi 扫描；
-/// - 默认播放模式、断点续播开关（对应 DESIGN §6.7）。
+/// - 默认播放模式、断点续播开关（对应 DESIGN §6.7）；
+/// - 服务端分区网络（settings.md §3.3）：`allow_insecure_http`（默认关，显式 http 才允许）、
+///   `allow_self_signed`（默认关，dio/WebDAV 信任自签名 TLS）。
 class AppSettings {
   static const String kCacheMaxBytes = 'cache_max_bytes';
   static const String kCacheSongLimit = 'cache_song_limit';
   static const String kAutoCacheFavorites = 'auto_cache_favorites';
   static const String kCacheConfigMode = 'cache_config_mode';
+
+  /// 允许不安全 HTTP（settings.md §3.3 服务端）：关（默认）时显式 `http://` 地址一律拒绝。
+  static const String kAllowInsecureHttp = 'allow_insecure_http';
+
+  /// 信任自签名证书（settings.md §3.3 服务端）：覆盖 dio API 与直连 WebDAV（dart:io）；
+  /// 播放器层（ExoPlayer/mpv）不受此开关影响，仍要求 CA 有效证书。
+  static const String kAllowSelfSigned = 'allow_self_signed';
   static const String kPlayModeDefault = 'play_mode_default';
   static const String kResumeOnStartup = 'resume_on_startup';
   static const String kPlayerShowWeight = 'player_show_weight';
@@ -152,6 +161,21 @@ class AppSettings {
       cacheConfigMode == CacheConfigMode.followServer
           ? (serverCacheSongLimit ?? cacheSongLimit)
           : cacheSongLimit;
+
+  // ---------- 服务端分区·网络（settings.md §3.3） ----------
+
+  /// 允许不安全 HTTP：关（默认）时显式 `http://` 地址被拒绝；缺 scheme 恒默认 https，
+  /// 不受此开关影响。
+  bool get allowInsecureHttp =>
+      (index.settingsGet(kAllowInsecureHttp) ?? '0') == '1';
+  set allowInsecureHttp(bool v) =>
+      index.settingsSet(kAllowInsecureHttp, v ? '1' : '0');
+
+  /// 信任自签名证书：dio API 与直连 WebDAV（dart:io）跳过证书校验；播放器层不受影响。
+  bool get allowSelfSigned =>
+      (index.settingsGet(kAllowSelfSigned) ?? '0') == '1';
+  set allowSelfSigned(bool v) =>
+      index.settingsSet(kAllowSelfSigned, v ? '1' : '0');
 
   // ---------- 收藏自动缓存（settings.md §3.4 歌曲分区） ----------
 
@@ -337,7 +361,9 @@ class AppSettings {
     kCacheMaxBytes,
     kCacheSongLimit,
     kAutoCacheFavorites,
-    kCacheConfigMode,
+kCacheConfigMode,
+    kAllowInsecureHttp,
+    kAllowSelfSigned,
     kPlayModeDefault,
     kResumeOnStartup,
     kPlayerShowWeight,

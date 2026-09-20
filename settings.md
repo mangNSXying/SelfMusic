@@ -39,7 +39,7 @@
 |------|----|---------|-----------|
 | 备份 | `general` | ✅ 已实现 | 设置 / 歌单 分开导出导入（§3.5，支持选择文件导入） |
 | 播放 | `playback` | ✅ 已实现 | 默认播放模式 / 断点自动恢复 / 播放页手势 / 睡眠定时默认播完 / 播放页权重信息显示 / 淡入淡出 / 均衡器（§3.2） |
-| 服务端 | `server` | ✅ 已实现 | 后端地址 + 配对服务器（副标题遮显同一份配对密钥，配对页明文可复制）；预载下一首（§3.2）；缓存配置「跟随服务端 / 自定义」双模式（§3.3）+ 缓存目录展示。首次启动不强制配对——未配对可正常使用直连模式，服务端 / 代理功能需配对 |
+| 服务端 | `server` | ✅ 已实现 | 后端地址 + 配对服务器（副标题遮显同一份配对密钥，配对页明文可复制）；预载下一首（§3.2）；缓存配置「跟随服务端 / 自定义」双模式（§3.3）+ 缓存目录展示；「网络与安全」（§3.3.1）：允许不安全 HTTP / 信任自签名证书。首次启动不强制配对——未配对可正常使用直连模式，服务端 / 代理功能需配对 |
 | 歌曲 | `songs` | ✅ 已实现 | 收藏自动缓存 / 忽略音频过滤 / 仅 Wi-Fi 扫描 / 扫描模式与头部·封面 / 自动扫描间隔 / 标题显示格式（§3.4） |
 | 界面 | `appearance` | ✅ 已实现 | 明暗主题 / 强调色 / 背景色 / 播放页切换动画（§3.7） |
 | 通知 | `notifications` | ✅ 已实现 | 通知栏播放控制 + 返回桌面后台续播（停止需通知栏「停止」或侧边栏「退出」）/ 音频焦点（§3.6） |
@@ -87,6 +87,18 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 - `设置 → 服务端` 新增「缓存配置」区块：来源选择器（跟随服务端 / 自定义）+ 自定义时两个输入框行；下方展示当前生效值；右上角同步按钮手动刷新服务端建议值
 - 已从 `设置 → 歌曲` 移除 `cache_max_bytes / cache_song_limit`（原存储值保留为「自定义」模式的取值）
 - `follow_server` 选项在成功拉到服务端建议值后可用（`GET /api/v1/admin/config`），拉取失败时灰显并提示检查后端连接；进入该分区与显式点同步按钮都会触发一次拉取
+
+### 3.3.1 服务端分区 · 网络与安全（已实现）
+
+> 同在 `设置 → 服务端`（「预载下一首」下方的「网络与安全」区块）。
+
+| 设置项 | 键 | 默认 | 说明 |
+|--------|----|------|------|
+| 允许不安全 HTTP | `allow_insecure_http` | `false`（关） | 关时显式 `http://` 地址一律拒绝并提示（后端地址 / WebDAV 地址 / 配对弹窗均受约束）；缺省协议恒补默认 `https://`，与开关无关。运行时 URL 归一化见 `ApiClient.normalizeBaseUrl` / `webdavNormalizeBase` |
+| 信任自签名证书 | `allow_self_signed` | `false`（关） | 开时 dio API 与直连 WebDAV（dart:io `badCertificateCallback`）接受自签名/自建 TLS 证书，配置即生效（重建 WebDAV 源 + 替换 dio adapter）；**播放器层**（Android ExoPlayer / 桌面 mpv 原生起流）不受此开关影响，仍需 CA 有效证书 |
+
+> 明文凭据收敛（对应 问题.md B1/B2）：WebDAV 密码（`SecretStore` 键 `webdav_pwd:<sourceKey>`）与配对密钥（键 `pairing_key`）均改存 `flutter_secure_storage`；`sources.config` 与 `server_settings.json` 不再落地明文，旧数据启动时自动迁移并回写清理。
+> Android 清单保留 `usesCleartextTraffic=true`：这是运行期「允许不安全 HTTP」可用的平台前提（network_security_config 无法运行期切换）——权衡见 问题.md。
 
 ### 3.4 歌曲分区 · 已实现
 
@@ -212,6 +224,8 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 | 通知栏 / 后台播放 / 音频焦点 | Android 壳 + `audio_service` | ✅ 已实现（实现见 §3.6；真机验证） |
 | 配对密钥显示/复制（`设置 → 服务端 → 配对服务器`） | 后端端点 + 前端 | ✅ 已实现（`GET /api/v1/admin/pairing-token`，配对服务器副标题遮显、配对页明文可复制） |
 | 缓存目录展示（`设置 → 服务端`） | 客户端本地 | ✅ 已实现（真实路径 + 占用 + 点击复制） |
+| 默认 HTTPS + 「允许不安全 HTTP」+「信任自签名证书」开关 | 网络安全加固 | ✅ 已实现（§3.3.1；`ApiClient.validateEndpointUrl` 约束后端/WebDAV/配对地址，自签名开关覆盖 dio + dart:io 直连） |
+| 明文凭据收敛（WebDAV 密码 / 配对密钥 → `flutter_secure_storage`，清理 `sources.config` 与 `server_settings.json` 明文） | 网络安全加固 | ✅ 已实现（`SecretStore`；老数据启动自动迁移，见 问题.md B1/B2） |
 | 服务端 `PUT /admin/settings` | 阶段 6 | `GET` 已实现；`PUT`（管理端改设置）仍规划 |
 
 > 截至最新迭代，客户端全部设置与功能项均已落地；仅剩服务端【管理设置】 `PUT /api/v1/admin/settings`（阶段 6）未实现。

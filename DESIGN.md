@@ -4,7 +4,8 @@
 > 上游约束：`开发思路.txt`（无中心账号 / 本地+SMB+WebDAV 曲库 / 加权播放 / 喜欢歌自动缓存）
 > 状态：**阶段 0–3 已完成**（Android 壳对齐 / 认证·配对 / 客户端本地闭环·歌单·喜欢列表 / 直连 WebDAV·本地索引·增量扫描优化）；阶段 4~6 待实施。
 > 在此之上，后续迭代全部落地：元数据后台补读与全源编辑、歌词、后台播放、睡眠定时四模式、播放页与集合页交互
-> （层级返回 / 分组左右滑切 / 列表·卡片切换 / 队列·歌单自动定位高亮 / 标题显示格式 / 搜索追焦 / 编辑歌单）。
+> （层级返回 / 分组左右滑切 / 列表·卡片切换 / 队列·歌单自动定位高亮 / 标题显示格式 / 搜索追焦 / 编辑歌单）、
+> 网络安全加固（默认 HTTPS + 允许不安全 HTTP / 信任自签名开关 + 明文凭据收敛到 secure storage，见 §6.7 与 问题.md）。
 > 各阶段交付、验收与落地状态见 §8；文中已用「✅ 已实现 / ⏳ 规划」标注能力与端点到现状。
 
 > **文档地图**：本文 = 整体设计 + 落地状态；设置项完整清单见 [settings.md](settings.md)；环境搭建、常用命令、调试与常见问题见 [DEVELOPER.md](DEVELOPER.md)。
@@ -483,6 +484,8 @@ abstract class MusicSource {
 | 集合页展示形式 | `view_mode_playlists/sources/albums/artists` | 四集合页 列表/卡片 切换的持久化取值（播放列表=`list`，其余=`card`） | 见左 | 对应页面右上角 |
 | 通知栏播放控制 / 后台播放 | `notification_controls` | audio_service 媒体通知 + 前台服务；**启动时门控注册**，改动重启生效；返回桌面续播，停止才真正停 | 开 | `设置 → 通知` |
 | 自动暂停/恢复（音频焦点） | `audio_focus_enabled` | 来电 / 其他 App 抢占的暂停-恢复（just_audio `handleInterruptions`，重建播放器即时生效） | 开 | `设置 → 通知` |
+| 允许不安全 HTTP | `allow_insecure_http` | 关时显式 `http://` 地址被拒并提示；缺 scheme 恒默认补 `https://`；约束后端 / WebDAV / 配对地址 | 关 | `设置 → 服务端` |
+| 信任自签名证书 | `allow_self_signed` | dio API 与直连 WebDAV（dart:io `badCertificateCallback`）接受自签名/自建 TLS；播放器层（ExoPlayer/mpv）不受影响 | 关 | `设置 → 服务端` |
 
 来源：§7.1（播放模式与调权）；设置项汇总见 `settings.md §3`。
 

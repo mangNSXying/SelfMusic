@@ -5,7 +5,7 @@ void main() {
   group('webdavNormalizeBase', () {
     test('补 scheme、去尾斜杠', () {
       expect(webdavNormalizeBase('192.168.1.10:5005/media/'),
-          'http://192.168.1.10:5005/media');
+          'https://192.168.1.10:5005/media');
       expect(webdavNormalizeBase('https://nas.example.com:8443/dav'),
           'https://nas.example.com:8443/dav');
     });

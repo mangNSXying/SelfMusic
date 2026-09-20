@@ -6,6 +6,7 @@ import '../data/local/app_settings.dart';
 import '../data/sources/music_source.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
+import '../services/api_client.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/view_mode_toggle.dart';
 
@@ -191,6 +192,13 @@ class _SourceDialogState extends State<_SourceDialog> {
           setState(() => _error = '请填写 WebDAV 地址');
           return;
         }
+        // 默认 HTTPS：显式 http:// 仅在「允许不安全 HTTP」开启后放行（settings.md §3.3）。
+        final err = ApiClient.validateEndpointUrl(url,
+            allowHttp: direct.settings.allowInsecureHttp);
+        if (err != null) {
+          setState(() => _error = err);
+          return;
+        }
         if (_isEdit) {
           await direct.updateSource(widget.editKey!,
               name: name,
@@ -265,7 +273,7 @@ class _SourceDialogState extends State<_SourceDialog> {
                 controller: _baseUrl,
                 decoration: const InputDecoration(
                   labelText: 'WebDAV 地址',
-                  hintText: 'http://192.168.1.10/dav/music',
+                  hintText: 'https://192.168.1.10/dav/music',
                 ),
               ),
               TextField(

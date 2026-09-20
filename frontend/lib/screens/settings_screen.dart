@@ -105,6 +105,17 @@ class _ServerSettingsState extends State<_ServerSettings> {
     final settings = context.read<ServerSettings>();
     final api = context.read<ApiClient>();
     final entered = _controller.text.trim();
+    // 默认 HTTPS：显式 http:// 仅在「允许不安全 HTTP」开启后放行（settings.md §3.3）。
+    final directSettings = context.read<DirectSourceManager>().settings;
+    final err = ApiClient.validateEndpointUrl(entered,
+        allowHttp: directSettings.allowInsecureHttp);
+    if (err != null) {
+      setState(() => _saving = false);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(err)));
+      return;
+    }
     // 空表示清空（未配置）
     await settings.setBaseUrl(entered);
     api.setBaseUrl(settings.baseUrl);
@@ -157,7 +168,7 @@ class _ServerSettingsState extends State<_ServerSettings> {
             keyboardType: TextInputType.url,
             decoration: const InputDecoration(
               labelText: '后端地址',
-              hintText: 'http://192.168.1.10:18089',
+              hintText: 'https://192.168.1.10:18443',
               helperText: '含协议与端口，留空表示未配置',
               border: OutlineInputBorder(),
               prefixIcon: Icon(Icons.dns_outlined),
@@ -197,6 +208,44 @@ class _ServerSettingsState extends State<_ServerSettings> {
                 .preloadNext,
             onChanged: (v) {
               context.read<DirectSourceManager>().settings.preloadNext = v;
+              setState(() {});
+            },
+          ),
+          const SizedBox(height: 16),
+          const Divider(),
+          const Align(
+            alignment: Alignment.centerLeft,
+            child: Text('网络与安全',
+                style: TextStyle(fontWeight: FontWeight.w600)),
+          ),
+          const SizedBox(height: 4),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('允许不安全 HTTP'),
+            subtitle: const Text('默认关闭，收不到明文 http:// 地址；缺省协议默认补 https://。后端地址与 WebDAV 地址均受此开关约束'),
+            value: context
+                .read<DirectSourceManager>()
+                .settings
+                .allowInsecureHttp,
+            onChanged: (v) {
+              context.read<DirectSourceManager>().settings.allowInsecureHttp = v;
+              setState(() {});
+            },
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('信任自签名证书'),
+            subtitle: const Text('默认关闭；开启后 API 与直连 WebDAV 跳过证书校验（播放器层 ExoPlayer/mpv 仍要求有效证书）'),
+            value: context
+                .read<DirectSourceManager>()
+                .settings
+                .allowSelfSigned,
+            onChanged: (v) {
+              final settings =
+                  context.read<DirectSourceManager>().settings;
+              settings.allowSelfSigned = v;
+              context.read<DirectSourceManager>().applySecuritySettings();
+              context.read<ApiClient>().setSelfSignedPolicy(v);
               setState(() {});
             },
           ),

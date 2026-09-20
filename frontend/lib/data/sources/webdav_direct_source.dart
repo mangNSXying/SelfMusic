@@ -32,12 +32,17 @@ class WebdavDirectSource implements MusicSource {
   final String password;
   final LocalIndex index;
 
+  /// 信任自签名证书（settings.md §3.3 服务端）：扫描/播放/缓存的 dart:io 请求
+  /// 跳过证书校验；播放器层（ExoPlayer/mpv 原生起流）不受此开关影响。
+  final bool allowSelfSigned;
+
   WebdavDirectSource({
     required this.name,
     required this.baseUrl,
     this.username = '',
     this.password = '',
     required this.index,
+    this.allowSelfSigned = false,
   }) : _base = webdavNormalizeBase(baseUrl);
 
   final String _base;
@@ -105,6 +110,7 @@ class WebdavDirectSource implements MusicSource {
         'baseUrl': _base,
         'username': username,
         'password': password,
+        'allowSelfSigned': allowSelfSigned,
         'minSizeBytes': options.minSizeBytes,
         'minDurationSec': options.minDurationSec,
         'headBytes': options.headBytes,
@@ -177,7 +183,7 @@ class WebdavDirectSource implements MusicSource {
   @override
   Future<OpenedStream> open(Song song, {IntRange? range}) async {
     final url = _playUrl(song)!;
-    final client = _newClient();
+    final client = _newClient(allowSelfSigned);
     final req = await client.getUrl(Uri.parse(url));
     _auth(req, username, password);
     if (range != null) {
@@ -244,7 +250,7 @@ class WebdavDirectSource implements MusicSource {
   Future<void> cacheSong(Song song) async {
     final cacheKey = cacheKeyFor(song);
     if (index.isCached(cacheKey)) return;
-    final client = _newClient();
+    final client = _newClient(allowSelfSigned);
     try {
       final tmp = File('${p.join(index.dir, 'cache')}/.tmp-$cacheKey');
       final req =
@@ -296,6 +302,7 @@ void _webdavWalkEntry(Map<String, Object?> msg) async {
       baseUrl: params['baseUrl']! as String,
       username: params['username']! as String,
       password: params['password']! as String,
+      allowSelfSigned: params['allowSelfSigned']! as bool,
       minSizeBytes: params['minSizeBytes']! as int,
       minDurationSec: params['minDurationSec']! as int,
       headBytes: params['headBytes']! as int,
@@ -319,6 +326,7 @@ Future<List<_WebdavWalkOut>> _webdavWalk({
   required String baseUrl,
   required String username,
   required String password,
+  required bool allowSelfSigned,
   required int minSizeBytes,
   required int minDurationSec,
   required int headBytes,
@@ -329,7 +337,7 @@ Future<List<_WebdavWalkOut>> _webdavWalk({
   void Function(ScanProgress)? onProgress,
   bool Function()? isCancelled,
 }) async {
-  final client = _newClient();
+  final client = _newClient(allowSelfSigned);
   final files = <_WebdavEntry>[];
   final out = <_WebdavWalkOut>[];
   onProgress?.call(const ScanProgress(listing: true, done: 0, total: 0));
@@ -442,9 +450,11 @@ class _WebdavEntry {
   }
 }
 
-HttpClient _newClient() => HttpClient()
+HttpClient _newClient(bool allowSelfSigned) => HttpClient()
   ..connectionTimeout = const Duration(seconds: 15)
-  ..userAgent = 'SelfMusic';
+  ..userAgent = 'SelfMusic'
+  ..badCertificateCallback =
+      allowSelfSigned ? (cert, host, port) => true : null;
 
 void _auth(HttpClientRequest req, String username, String password) {
   if (username.isEmpty) return;
