@@ -320,7 +320,7 @@ class _SyncSectionState extends State<_SyncSection> {
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: const Text('多设备同步'),
-          subtitle: const Text('权重 / 收藏 / 歌单 / 断点经服务端在设备间收敛（仅服务器模式；关闭=仅本地）'),
+          subtitle: const Text('权重 / 收藏 / 歌单 / 断点经服务端在设备间收敛（连着服务器时直连歌曲同样参与；关闭=仅本地）'),
           value: settings.syncEnabled,
           onChanged: (v) {
             settings.syncEnabled = v;

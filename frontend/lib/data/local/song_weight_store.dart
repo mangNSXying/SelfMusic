@@ -16,7 +16,12 @@ class SongWeightStore {
   static const double defaultFactor = 1.0;
 
   final LocalIndex index;
-  SongWeightStore(this.index);
+
+  /// 服务器可达性门控（DirectSourceManager 注入 `isServerAvailable`）：
+  /// 直连歌曲仅在连着服务器时进 outbox，避免未配对用户 outbox 无限积压。
+  final bool Function()? serverAvailable;
+
+  SongWeightStore(this.index, {this.serverAvailable});
 
   PlayMetaRow metaOf(Song s) => index.playMetaOf(s.sourceKey, s.sourceRef);
 
@@ -112,10 +117,16 @@ class SongWeightStore {
     _emit(s, SyncEventTypes.songReset);
   }
 
-  /// 阶段5：仅服务器模式歌曲进 outbox（直连歌曲只活本机，见 DESIGN §7.2）。
-  /// legacy/未知 source 一律跳过（服务端按 source_ref 兜底只处理条目类事件）。
+  /// 阶段5：有歌曲身份（source/sourceRef 非空、可解析）即进 outbox；服务端按
+  /// (source, source_ref) 解析，直连歌曲无行则建影子行（DESIGN §7.2）。
+  /// 服务器模式行恒进（行存在即配过服务器）；直连歌曲需连着服务器
+  ///（[serverAvailable] 为假时跳过，避免未配对用户 outbox 积压）。
+  /// source=='server' 占位（归属源未知）仍跳过，避免跨源误归属。
   void _emit(Song s, String type, [Map<String, dynamic>? extra]) {
-    if (s.sourceKey != 'server' || s.source.isEmpty || s.source == 'server') {
+    if (s.source.isEmpty || s.source == 'server' || s.sourceRef.isEmpty) {
+      return;
+    }
+    if (s.sourceKey != 'server' && !(serverAvailable?.call() ?? false)) {
       return;
     }
     index.enqueueOutbox(type, {

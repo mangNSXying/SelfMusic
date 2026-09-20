@@ -6,7 +6,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:selfmusic/data/local/app_settings.dart';
 import 'package:selfmusic/data/local/local_index.dart';
+import 'package:selfmusic/data/local/playlist_store.dart';
+import 'package:selfmusic/data/local/song_weight_store.dart';
 import 'package:selfmusic/data/local/sync_event_types.dart';
+import 'package:selfmusic/models/song.dart';
 import 'package:sqlite3/open.dart';
 
 DynamicLibrary _openOnLinux() {
@@ -188,8 +191,7 @@ void main() {
     index.close();
   });
 
-  test('AppSettings 同步三键：默认值、持久化、白名单', () async {
-    final index = await _openIndex();
+  test('AppSettings 同步三键：默认值、持久化、白名单', () async {    final index = await _openIndex();
     final s = AppSettings(index);
     expect(s.syncCursor, 0);
     expect(s.syncEnabled, isTrue);
@@ -211,6 +213,118 @@ void main() {
     ]) {
       expect(AppSettings.knownKeys, contains(k));
     }
+    index.close();
+  });
+
+  Song directSong() => Song.direct(
+        id: 1,
+        sourceKey: 'webdav:NAS',
+        title: '直连歌',
+        artist: 'A',
+        albumName: 'B',
+        source: 'webdav',
+        sourceRef: '/music/z.mp3',
+        fileSize: 100,
+      );
+
+  Song serverSong() => Song.direct(
+        id: 2,
+        sourceKey: 'server',
+        title: '服务歌',
+        source: 'webdav',
+        sourceRef: '/music/s.mp3',
+        fileSize: 200,
+      );
+
+  test('权重埋点：服务器歌恒进队；直连歌需连着服务器', () async {
+    // 未注门控：服务器歌进，直连歌不进
+    var index = await _openIndex();
+    var weight = SongWeightStore(index);
+    weight.setLiked(serverSong());
+    expect(index.pendingOutboxCount(), 1);
+    weight.setLiked(directSong());
+    expect(index.pendingOutboxCount(), 1);
+    index.close();
+
+    // 门控开：直连歌进队，载荷带身份
+    index = await _openIndex();
+    weight = SongWeightStore(index, serverAvailable: () => true);
+    weight.onSkipped(directSong());
+    expect(index.pendingOutboxCount(), 1);
+    final payload = jsonDecode(index.pendingOutbox().single.payload)
+        as Map<String, dynamic>;
+    expect(index.pendingOutbox().single.type, SyncEventTypes.songSkipped);
+    expect(payload['source'], 'webdav');
+    expect(payload['source_ref'], '/music/z.mp3');
+    index.close();
+
+    // 门控关：直连歌不进队（避免未配对用户积压）
+    index = await _openIndex();
+    weight = SongWeightStore(index, serverAvailable: () => false);
+    weight.setLiked(directSong());
+    expect(index.pendingOutboxCount(), 0);
+    index.close();
+  });
+
+  test('歌单条目埋点：直连歌随门控进队，载荷带标题', () async {
+    var index = await _openIndex();
+    var store = PlaylistStore(index, serverAvailable: () => true);
+    final pid = store.create('单');
+    expect(index.pendingOutboxCount(), 1); // create 恒进
+    store.addSong(pid, directSong());
+    expect(index.pendingOutboxCount(), 2);
+    final payload = jsonDecode(index.pendingOutbox().last.payload)
+        as Map<String, dynamic>;
+    expect(payload['source'], 'webdav');
+    expect(payload['source_ref'], '/music/z.mp3');
+    expect(payload['title'], '直连歌');
+    index.close();
+
+    index = await _openIndex();
+    store = PlaylistStore(index, serverAvailable: () => false);
+    final pid2 = store.create('单');
+    store.addSong(pid2, directSong());
+    // 只有 create，条目未进
+    expect(index.pendingOutboxCount(), 1);
+    index.close();
+  });
+
+  test('pull 歌曲快照：按源协议回写直连行 play_meta', () async {
+    final index = await _openIndex();
+    index.upsertSongs([
+      DirectSongRow(
+          sourceKey: 'webdav:NAS',
+          ref: '/music/z.mp3',
+          title: '直连歌',
+          size: 100,
+          mtime: 1),
+      DirectSongRow(
+          sourceKey: 'local:Disk',
+          ref: '/music/z.mp3',
+          title: '同名本地歌',
+          size: 100,
+          mtime: 1),
+    ]);
+
+    index.applySongSnapshot(
+      songRef: '/music/z.mp3',
+      source: 'webdav',
+      likeStreak: 3,
+      dislikeStreak: 0,
+      factor: 1.5,
+      frozen: false,
+      favorite: true,
+    );
+
+    // 服务端行（旧行为保留）+ 同协议直连行落库
+    expect(index.playMetaOf('server', '/music/z.mp3').favorite, isTrue);
+    final direct = index.playMetaOf('webdav:NAS', '/music/z.mp3');
+    expect(direct.favorite, isTrue);
+    expect(direct.factor, 1.5);
+    expect(direct.likeStreak, 3);
+    // 不同协议的同名行不受影响
+    expect(index.playMetaOf('local:Disk', '/music/z.mp3').favorite, isFalse);
+
     index.close();
   });
 }

@@ -61,8 +61,11 @@ class PlayerProvider extends ChangeNotifier {
   SelfMusicAudioHandler? _audioHandler;
 
   /// 阶段5：当前队列归属的已同步歌单 uuid（播歌单时由调用方传入，其它队列为 null）。
-  /// 断点事件仅在此非空且当前为服务器歌曲时进 outbox。
+  /// 断点事件仅在此非空且当前歌曲有身份时进 outbox。
   String? _syncPlaylistUuid;
+
+  /// 阶段5：服务器可达性门控（main 经 [attachServerAvailable] 注入）。
+  bool Function()? _serverAvailable;
 
   /// 断点事件节流：同歌 25s 内不重复入队（切歌立即入队）。
   String? _lastBpKey;
@@ -471,6 +474,12 @@ class PlayerProvider extends ChangeNotifier {
     _appSettings = settings;
     final m = PlayModeParse.fromStored(settings.playModeDefault);
     if (_mode != m) _mode = m;
+  }
+
+  /// 关联服务器可达性门控（main 注入 `direct.isServerAvailable`）：
+  /// 直连歌曲断点仅在连着服务器时上报，避免未配对用户 outbox 积压。
+  void attachServerAvailable(bool Function() fn) {
+    _serverAvailable = fn;
   }
 
   List<Song> get queue => List.unmodifiable(_queue);
@@ -1043,12 +1052,18 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   /// 阶段5 断点进 outbox（节流：同歌 25s 一次，切歌立即）。
-  /// 仅当队列归属已同步歌单且当前为服务器歌曲时上报；其它情况只活本机。
+  /// 队列归属已同步歌单且当前歌曲有身份即上报：服务器模式恒上报，
+  /// 直连歌曲需连着服务器；其它情况只活本机。
   void _maybeEnqueueBreakpoint(LocalIndex idx, Duration pos) {
     final uuid = _syncPlaylistUuid;
     final cur = _current;
     if (uuid == null || cur == null) return;
-    if (cur.sourceKey != 'server' || cur.source.isEmpty || cur.source == 'server') {
+    if (cur.source.isEmpty ||
+        cur.source == 'server' ||
+        cur.sourceRef.isEmpty) {
+      return;
+    }
+    if (cur.sourceKey != 'server' && !(_serverAvailable?.call() ?? false)) {
       return;
     }
     final nowMs = DateTime.now().millisecondsSinceEpoch;

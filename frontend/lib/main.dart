@@ -128,7 +128,8 @@ class SelfMusicApp extends StatelessWidget {
         if (key == 'server') return lib.source;
         return direct.sourceByKey(key);
       })
-      ..attachAppSettings(direct.settings);
+      ..attachAppSettings(direct.settings)
+      ..attachServerAvailable(() => direct.isServerAvailable);
     player
       ..attachPersistence(
         index: direct.index,

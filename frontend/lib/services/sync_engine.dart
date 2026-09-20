@@ -208,6 +208,7 @@ class SyncEngine {
     if (ref == null || ref.isEmpty) return;
     index.applySongSnapshot(
       songRef: ref,
+      source: s['source'] as String?,
       likeStreak: (s['like_streak'] as num?)?.toInt() ?? 0,
       dislikeStreak: (s['dislike_streak'] as num?)?.toInt() ?? 0,
       factor: (s['weight'] as num?)?.toDouble() ?? 1.0,

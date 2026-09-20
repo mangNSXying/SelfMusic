@@ -141,6 +141,11 @@ class DirectSourceManager extends ChangeNotifier {
   /// 关联后端接入点，供按源代理源使用其中的 dio/baseUrl。
   void attachApi(ApiClient api) => _api = api;
 
+  /// 服务器是否可达（配了后端地址）：直连歌曲同步事件的进队门控
+  ///（SongWeightStore/PlaylistStore/PlayerProvider 共用；SyncEngine 用
+  ///同一信号决定是否上推，未配对时跳过）。读实时值，attach 先后无碍。
+  bool get isServerAvailable => _api?.baseUrl.isNotEmpty ?? false;
+
   /// 拉取服务端缓存建议值并填入 [settings]（settings.md §3.3 follow_server 来源）。
   Future<bool> refreshServerConfig() async {
     final api = _api;
@@ -206,8 +211,10 @@ class DirectSourceManager extends ChangeNotifier {
     await index.open();
     settings = AppSettings(index);
     cache = CacheManager(index, settings);
-    weight = SongWeightStore(index);
-    playlists = PlaylistStore(index);
+    weight = SongWeightStore(index,
+        serverAvailable: () => isServerAvailable);
+    playlists = PlaylistStore(index,
+        serverAvailable: () => isServerAvailable);
     final rows = index.listSources();
     for (final r in rows) {
       if (!r.enabled) continue;

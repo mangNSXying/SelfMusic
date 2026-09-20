@@ -4,11 +4,17 @@ import 'sync_event_types.dart';
 
 /// 歌单本地仓储（stage2.md §1.2 / §5）。
 ///
-/// 阶段5：create/rename/delete 恒进 outbox；条目增删改仅服务器模式歌曲进
-/// outbox（直连歌曲服务端无法解析，见 DESIGN §7.2）。
+/// 阶段5：create/rename/delete 恒进 outbox；条目增删改有歌曲身份即进 outbox，
+/// 直连歌曲需连着服务器（[serverAvailable] 门控），服务端无行则建影子行
+///（DESIGN §7.2）。
 class PlaylistStore {
   final LocalIndex index;
-  PlaylistStore(this.index);
+
+  /// 服务器可达性门控（DirectSourceManager 注入 `isServerAvailable`），
+  /// 语义同 SongWeightStore.serverAvailable。
+  final bool Function()? serverAvailable;
+
+  PlaylistStore(this.index, {this.serverAvailable});
 
   int create(String name, {String? description}) {
     final id = index.createPlaylist(name, description: description);
@@ -62,6 +68,10 @@ class PlaylistStore {
       'playlist_uuid': uuid,
       'source': s.source,
       'source_ref': s.sourceRef,
+      // 影子行展示字段（服务端无此歌时建行用；已有行忽略）。
+      'title': s.title,
+      if (s.artist != null) 'artist': s.artist,
+      if (s.albumName != null) 'album': s.albumName,
       'sort_order': _sortOrderOf(playlistId, s),
     });
   }
@@ -124,7 +134,11 @@ class PlaylistStore {
     }
     index.movePlaylistItem(playlistId, itemId, delta);
     final b = before;
-    if (b == null || b.sourceKey != 'server') return;
+    if (b == null || b.songRef.isEmpty) return;
+    // 服务器模式行恒上报；直连行需连着服务器。
+    if (b.sourceKey != 'server' && !(serverAvailable?.call() ?? false)) {
+      return;
+    }
     final uuid = index.ensurePlaylistUuid(playlistId);
     index.enqueueOutbox(SyncEventTypes.playlistItemMove, {
       'playlist_uuid': uuid,
@@ -135,9 +149,13 @@ class PlaylistStore {
     });
   }
 
-  /// 仅服务器模式且归属源可解析的歌曲参与条目同步。
-  static bool _syncable(Song s) =>
-      s.sourceKey == 'server' && s.source.isNotEmpty && s.source != 'server';
+  /// 有歌曲身份即参与条目同步（直连歌曲需连着服务器，见 [serverAvailable]）。
+  /// source=='server' 占位（归属源未知）仍跳过，避免跨源误归属。
+  bool _syncable(Song s) =>
+      s.source.isNotEmpty &&
+      s.source != 'server' &&
+      s.sourceRef.isNotEmpty &&
+      (s.sourceKey == 'server' || (serverAvailable?.call() ?? false));
 
   int _sortOrderOf(int playlistId, Song s) {
     for (final it in index.playlistItems(playlistId)) {

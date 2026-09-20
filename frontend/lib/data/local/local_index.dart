@@ -250,6 +250,9 @@ class LocalIndex {
     _db!.execute('''
       CREATE INDEX IF NOT EXISTS idx_songs_source ON idx_songs(source_key);
     ''');
+    _db!.execute('''
+      CREATE INDEX IF NOT EXISTS idx_songs_ref ON idx_songs(ref);
+    ''');
   }
 
   void close() {
@@ -1102,7 +1105,7 @@ class LocalIndex {
     return '${DateTime.now().microsecondsSinceEpoch.toRadixString(16)}-${tail.substring(0, 12)}';
   }
 
-  /// 本地变更入队（同步方法，供权重/歌单/断点写路径直接调用；仅服务器模式歌曲调用方负责过滤）。
+  /// 本地变更入队（同步方法，供权重/歌单/断点写路径直接调用；调用方负责按身份与服务器可达性过滤）。
   /// 返回 event_uuid。
   String enqueueOutbox(String type, Map<String, dynamic> payload) {
     final uuid = newEventUuid();
@@ -1182,7 +1185,7 @@ class LocalIndex {
 
   /// pull 歌单快照落库（deleted=true 则本地硬删）。
   /// 条目只替换服务端歌曲行（source_key='server'）：本地直连歌曲行保留，
-  /// 服务端感知不到它们（见 playlist_store 埋点过滤）。
+  /// 由本机 push 事件与服务端收敛（直连歌曲同样参与同步，见 DESIGN §7.2）。
   void applyPlaylistSnapshot({
     required String uuid,
     required String name,
@@ -1230,21 +1233,38 @@ class LocalIndex {
     }
   }
 
-  /// pull 歌曲权重快照落 play_meta（source_key 恒 'server'）。
+  /// pull 歌曲权重快照落 play_meta：先写 ('server', ref) 行（服务端歌曲），
+  /// 再按快照 [source] 协议匹配本地直连行（同 ref 含 WebDAV 编码变体 + 同协议），
+  /// 各写各的源 key（运行时按源 key 读权重，见 playMetaOf）。
+  /// 直连歌曲在连着服务器时同样参与同步（DESIGN §7.2 影子行）。
   void applySongSnapshot({
     required String songRef,
+    String? source,
     required int likeStreak,
     required int dislikeStreak,
     required double factor,
     required bool frozen,
     required bool favorite,
   }) {
-    upsertPlayMeta('server', songRef,
+    void write(String key, String ref) => upsertPlayMeta(key, ref,
         likeStreak: likeStreak,
         dislikeStreak: dislikeStreak,
         factor: factor,
         frozen: frozen,
         favorite: favorite);
+    write('server', songRef);
+    if (source == null || source.isEmpty) return;
+    final refs = <String>{songRef, ...webdavRefVariants(songRef)};
+    for (final v in refs) {
+      final rows = _db!.select(
+          'SELECT source_key, ref FROM idx_songs WHERE ref=?', [v]);
+      for (final r in rows) {
+        final key = r['source_key'] as String;
+        if (key == 'server') continue;
+        if (_sourceOf(key) != source) continue;
+        write(key, r['ref'] as String);
+      }
+    }
   }
 
   /// pull 断点写入镜像表（不碰运行时 play_state，见 SyncEngine）。

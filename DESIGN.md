@@ -542,7 +542,8 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 - **Push**：本地产生权重事件/断点/歌单改动 → 写 `weight_outbox`（带 event_uuid）→ 2s 防抖批量上推；服务端按 uuid 幂等去重
 - **冲突（字段级合并，阶段 5 落地）**：权重走**事件重算**而非绝对值覆盖（两设备并发点赞按到达序重放，不互抹）；收藏/歌单元数据/删除墓碑/断点走**行级 LWW**（事件 `occurred_at` vs 行 `last_event_at`，输方收 correction 回执自纠；仲裁时钟为服务端 `arrived_at`）；歌单条目按 seq 到达序重放（后到达胜出）；直接 REST 变更（歌单 CRUD/断点 PUT/调权 POST）同样先记事件再生效，保证 pull 可见
 - **歌曲身份**：数字 `song_id` 优先，否则按 `(source, source_ref)` 唯一键解析；legacy 空 source 按 `source_ref` 兜底
-- 直连模式：上述全部跳过，数据只在本机
+- **直连歌曲同样同步（连着服务器时）**：客户端放行一切有身份（source/sourceRef 非空、可解析）的事件，不再限服务器模式；服务端按 `(source, source_ref)` 建**影子行**承载权重/收藏/断点（标题取歌单条目载荷或 ref 末段兜底，pull 回执只带权重字段、不覆盖客户端本地标题）；歌单条目 add/move 无 `song_id` 时同样按身份解析（缺行建影子行），remove 按身份解析、未知即 no-op；pull 身份收集恒不建行（已删歌曲不复活）。未配对（无后端地址）时直连事件不进队，避免 outbox 无限积压；`sync_enabled` 关闭同样全跳
+- 直连模式（无服务器）：上述全部跳过，数据只在本机
 
 ---
 
@@ -618,10 +619,10 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 > **状态：已实现✅（跳过阶段 4 先行）** —— `/api/v1/sync/*` + 歌单 CRUD + 断点 PUT + 调权 POST（§4.4）；
 > `SyncService`（事件去重/§7.1 服务端重算/行级 LWW/correction 回执/seq cursor）；
-> 客户端 `weight_outbox` + 四处埋点（调权/收藏/歌单/断点，仅服务器模式）+ `SyncEngine`
+> 客户端 `weight_outbox` + 四处埋点（调权/收藏/歌单/断点，有身份歌曲；直连歌需连着服务器，未配对不进队）+ `SyncEngine`
 > （2s tick 推/30s 拉/退避/手动）+ 设备管理页；后端 8 单测 + 前端 5 单测全绿；
 > scratch 库 11 步端到端验证通过（幂等/LWW/墓碑/冒充拒绝全覆盖）。
-> 断点按"播放歌单归属 + 服务器歌曲"上报，远端断点进 `breakpoint_mirror`（不碰运行时 play_state）。
+> 断点按"播放歌单归属 + 有身份歌曲"上报（直连歌需连着服务器），远端断点进 `breakpoint_mirror`（不碰运行时 play_state）。
 
 - ✅ `/sync/*` 全套；SyncEngine；设备管理页
 - 验收：两台设备 30s 内状态收敛；断网操作恢复网络后正确合并（待三端真机验收：Linux 桌面 + 双手机）
