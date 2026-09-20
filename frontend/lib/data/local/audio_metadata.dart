@@ -1,4 +1,4 @@
-import 'dart:convert' show utf8;
+import 'dart:convert' show base64Decode, utf8;
 import 'dart:typed_data';
 
 /// 音频头部元数据（来自扫描时的 Range 头部直读，DESIGN §6.4）。
@@ -6,7 +6,7 @@ class AudioMeta {
   String? title;
   String? artist;
 
-  /// 专辑歌手（mp3 TPE2 / flac ALBUMARTIST，可空；为空时展示回退到 [artist]）。
+  /// 专辑歌手（mp3 TPE2 / flac ALBUMARTIST / m4a aART / ogg ALBUMARTIST，可空；为空时展示回退到 [artist]）。
   String? albumArtist;
   String? album;
   String? genre;
@@ -15,11 +15,19 @@ class AudioMeta {
   int? duration; // 秒
   Uint8List? cover; // 嵌入封面原始字节（jpg/png）
 
-  /// 内嵌歌词原文（mp3 USLT / flac LYRICS|UNSYNCEDLYRICS；可能是带时间轴的 LRC）。
+  /// 内嵌歌词原文（mp3 USLT / flac·ogg LYRICS|UNSYNCEDLYRICS；可能是带时间轴的 LRC）。
   String? lyrics;
+
+  /// 采样率（ogg/opus 尾部 granule 换算时长用；不落库）。
+  int? sampleRate;
+
+  /// 是否为「已识别的容器但头部采样不完整」（如 m4a moov 在文件尾）：
+  /// 提示调用方做尾部补读，而不是判定为无标签。
+  bool truncatedContainer = false;
 }
 
-/// 纯 Dart 头部解析：mp3(ID3v2) 与 flac。m4a 走文件名回退。
+/// 纯 Dart 头部解析：mp3(ID3v2) / flac / m4a(mp4) / ogg·opus / wav / aac(ADTS)。
+/// 未识别容器返回 null（调用方做文件名回退）。
 ///
 /// [head] 为文件头部字节（扫描时取 ~256KB），[format] 为扩展名，[fileSize] 为完整大小。
 AudioMeta? parseAudioHead(Uint8List head, String format, int fileSize) {
@@ -28,8 +36,19 @@ AudioMeta? parseAudioHead(Uint8List head, String format, int fileSize) {
       return _parseMp3(head, fileSize);
     case 'flac':
       return _parseFlac(head, fileSize);
+    case 'm4a':
+    case 'mp4':
+      return _parseMp4(head, fileSize);
+    case 'ogg':
+    case 'oga':
+    case 'opus':
+      return _parseOgg(head);
+    case 'wav':
+      return _parseWav(head);
+    case 'aac':
+      return _parseAac(head, fileSize);
     default:
-      return null; // m4a/aac/ogg/wav 走文件名回退
+      return null;
   }
 }
 
@@ -43,9 +62,260 @@ AudioMeta? parseMinimalHead(Uint8List head, String format) {
       return _parseMp3Minimal(head);
     case 'flac':
       return _parseFlacMinimal(head);
+    case 'm4a':
+    case 'mp4':
+      return _parseMp4Minimal(head);
+    case 'ogg':
+    case 'oga':
+    case 'opus':
+      return _parseOggMinimal(head);
+    case 'wav':
+      return _parseWavMinimal(head);
+    case 'aac':
+      return _parseMp3Minimal(head); // aac 通常带 ID3v2 头
     default:
-      return null; // m4a/aac/ogg/wav 走文件名回退
+      return null;
   }
+}
+
+/// 封面深度读取上限（防止恶意/异常文件把标签声明撑到 GB 级）。
+const int kCoverReadCapBytes = 8 * 1024 * 1024;
+
+/// 封面读取提示（播放补读 / 扫描的「两段读」用）：
+///
+/// 首次采样解析缺少封面时，返回「需要多少头部字节才能读到完整的封面块」
+/// （即封面块被采样截断）；null 表示无需更多字节——标签已在采样内完整
+/// （封面要么已解析，要么确实没有）。
+int? coverReadHint(Uint8List head, String format) {
+  switch (format) {
+    case 'mp3':
+      return _mp3CoverReadHint(head);
+    case 'flac':
+      return _flacCoverReadHint(head);
+    case 'ogg':
+    case 'oga':
+    case 'opus':
+      return _oggCoverReadHint(head);
+    default:
+      return null;
+  }
+}
+
+/// ogg/opus：comment 包（第二逻辑包）未在采样内结束 → 需按上限补读；
+/// 完整读到即无需补读（有封面会已解析，无封面则是真的没有）。
+int? _oggCoverReadHint(Uint8List head) {
+  var i = 0;
+  var packets = 0;
+  while (i + 27 <= head.length) {
+    if (head[i] != 0x4F || head[i + 1] != 0x67 || head[i + 2] != 0x67 ||
+        head[i + 3] != 0x53) {
+      return null;
+    }
+    final segCount = head[i + 26];
+    final tableStart = i + 27;
+    if (tableStart + segCount > head.length) return kCoverReadCapBytes;
+    var payload = tableStart + segCount;
+    for (var s = 0; s < segCount; s++) {
+      final seg = head[tableStart + s];
+      if (payload + seg > head.length) return kCoverReadCapBytes;
+      payload += seg;
+      if (seg < 255) {
+        packets++;
+        if (packets >= 2) return null; // comment 包已完整
+      }
+    }
+    i = payload;
+  }
+  return kCoverReadCapBytes;
+}
+
+int? _mp3CoverReadHint(Uint8List head) {
+  if (head.length < 10) return null;
+  if (head[0] != 0x49 || head[1] != 0x44 || head[2] != 0x33) return null; // 'ID3'
+  final tagEnd = 10 + _syncsafe(head, 6);
+  return tagEnd > head.length ? tagEnd : null;
+}
+
+int? _flacCoverReadHint(Uint8List head) {
+  if (head.length < 8 || String.fromCharCodes(head.sublist(0, 4)) != 'fLaC') {
+    return null;
+  }
+  var i = 4;
+  var last = false;
+  while (!last && i + 4 <= head.length) {
+    final hdr = head[i];
+    last = (hdr & 0x80) != 0;
+    final blockType = hdr & 0x7F;
+    final len = _be24(head, i + 1);
+    if (i + 4 + len > head.length) {
+      // 该块被采样截断：PICTURE 可能在后续块，提示补到本块结束再继续解析。
+      return i + 4 + len;
+    }
+    if (blockType == 6) return null; // PICTURE 已完整读入；缺封面说明块内无有效图
+    i += 4 + len;
+  }
+  return null;
+}
+
+/// 字节范围读取器（起址 + 长度）→ 字节；读不满允许返回实际长度。
+typedef AudioRangeReader = Future<Uint8List> Function(int start, int length);
+
+/// 尾部补读提示（字节数，自文件末尾起）：
+/// - m4a：moov 不在头部采样内（常见 moov-at-end）→ 先试 256KB，调用方逐级增大；
+/// - ogg/opus：头部无法得时长，读末尾页取 granule → 64KB；
+/// - 其余 null（无需尾读）。
+int? tailReadHint(Uint8List head, String format, int fileSize) {
+  switch (format) {
+    case 'm4a':
+    case 'mp4':
+      return _mp4NeedsMoovTail(head)
+          ? (fileSize < 256 * 1024 ? fileSize : 256 * 1024)
+          : null;
+    case 'ogg':
+    case 'oga':
+    case 'opus':
+      return fileSize < 64 * 1024 ? fileSize : 64 * 1024;
+    case 'mp3':
+      // 无 ID3v2 的老文件可能有文件尾 128 字节 ID3v1（标题/歌手/专辑/年份/曲目）。
+      if (head.length >= 3 &&
+          head[0] == 0x49 && head[1] == 0x44 && head[2] == 0x33) {
+        return null;
+      }
+      return fileSize >= 128 ? 128 : null;
+    default:
+      return null;
+  }
+}
+
+/// 解析文件尾部（m4a moov-at-end 的标签/封面/时长；ogg 末页 granule 时长；
+/// mp3 ID3v1 兜底标签）。
+/// m4a：仅当 moov 盒完整落在 [tail] 内才返回（否则调用方增大尾读长度）；
+/// 其余：无有效信息返回 null。
+AudioMeta? parseAudioTail(Uint8List tail, String format, int fileSize,
+    {AudioMeta? headMeta}) {
+  switch (format) {
+    case 'm4a':
+    case 'mp4':
+      return _parseMp4Tail(tail, fileSize);
+    case 'ogg':
+    case 'oga':
+    case 'opus':
+      final d = _oggTailDuration(tail, headMeta?.sampleRate);
+      if (d == null) return null;
+      final meta = AudioMeta();
+      meta.duration = d;
+      return meta;
+    case 'mp3':
+      return _parseId3v1(tail);
+  }
+  return null;
+}
+
+/// ID3v1（文件尾 128 字节，'TAG' 开头）：老 mp3 的兜底标签。
+AudioMeta? _parseId3v1(Uint8List tail) {
+  if (tail.length < 128) return null;
+  final p = tail.length - 128;
+  if (tail[p] != 0x54 || tail[p + 1] != 0x41 || tail[p + 2] != 0x47) {
+    return null;
+  }
+  String field(int offset, int len) {
+    final end = offset + len;
+    var stop = offset;
+    while (stop < end && tail[p + stop] != 0) {
+      stop++;
+    }
+    if (stop <= offset) return '';
+    // ID3v1 多为 Latin-1；尝试 UTF-8 失败再回退。
+    final raw = tail.sublist(p + offset, p + stop);
+    try {
+      return utf8.decode(raw, allowMalformed: false).trim();
+    } catch (_) {
+      return String.fromCharCodes(raw).trim();
+    }
+  }
+
+  final meta = AudioMeta();
+  final title = field(3, 30);
+  final artist = field(33, 30);
+  final album = field(63, 30);
+  final year = field(93, 4);
+  if (title.isNotEmpty) meta.title = title;
+  if (artist.isNotEmpty) meta.artist = artist;
+  if (album.isNotEmpty) meta.album = album;
+  meta.year = _yearOf(year);
+  // 曲目：ID3v1.1 在 comment 末两字节（comment 长 30，倒数第二字节 0 时次字节为 track）。
+  if (tail[p + 125] == 0 && tail[p + 126] != 0) {
+    meta.trackNo = tail[p + 126];
+  }
+  return meta;
+}
+
+/// 头部 + 头部补读 + 尾部补读的统一直读流程（播放补读 / 扫描共用）。
+///
+/// [readRange] 由调用方实现（本地文件 / WebDAV Range GET）。
+Future<AudioMeta?> readAudioMeta({
+  required AudioRangeReader readRange,
+  required String format,
+  required int fileSize,
+  int headBytes = 256 * 1024,
+}) async {
+  var head = await readRange(0, headBytes);
+  if (head.isEmpty) return null;
+  var meta = parseAudioHead(head, format, fileSize);
+  // 大内嵌封面/标签：按提示补读头部一次。
+  if (meta != null && meta.cover == null) {
+    final hint = coverReadHint(head, format);
+    if (hint != null && hint > head.length && hint <= kCoverReadCapBytes) {
+      final deeper = await readRange(0, hint);
+      if (deeper.length > head.length) {
+        final deeperMeta = parseAudioHead(deeper, format, fileSize);
+        if (deeperMeta != null) {
+          meta = deeperMeta;
+          head = deeper;
+        }
+      }
+    }
+  }
+  // moov-at-end / ogg 时长：尾部补读（m4a 按 256KB→1MB→4MB→8MB 逐级增大）。
+  if (meta == null || meta.cover == null || meta.duration == null) {
+    final first = tailReadHint(head, format, fileSize);
+    if (first != null && first > 0) {
+      var tailLen = first;
+      while (true) {
+        final len = tailLen > fileSize ? fileSize : tailLen;
+        final start = fileSize - len;
+        if (start < 0 || len <= 0) break;
+        final tail = await readRange(start, len);
+        final t = parseAudioTail(tail, format, fileSize, headMeta: meta);
+        if (t != null) {
+          meta = _mergeMeta(meta, t);
+          break;
+        }
+        if (format != 'm4a' && format != 'mp4') break;
+        final next = len * 4;
+        if (next <= len || next > kCoverReadCapBytes || len >= fileSize) break;
+        tailLen = next;
+      }
+    }
+  }
+  return meta;
+}
+
+/// [extra] 非空字段覆盖 [base]；base 为 null 时直接返回 extra。
+AudioMeta _mergeMeta(AudioMeta? base, AudioMeta extra) {
+  if (base == null) return extra;
+  base.title ??= extra.title;
+  base.artist ??= extra.artist;
+  base.albumArtist ??= extra.albumArtist;
+  base.album ??= extra.album;
+  base.genre ??= extra.genre;
+  base.year ??= extra.year;
+  base.trackNo ??= extra.trackNo;
+  base.duration ??= extra.duration;
+  base.cover ??= extra.cover;
+  base.lyrics ??= extra.lyrics;
+  base.sampleRate ??= extra.sampleRate;
+  return base;
 }
 
 // ---------- MP3 最小解析 ----------
@@ -377,64 +647,7 @@ AudioMeta _parseFlac(Uint8List head, int fileSize) {
 }
 
 void _parseVorbisComment(List<int> body, AudioMeta meta) {
-  // vorbis comment: after framing, vendor (LE uint32 len), vendor string, then count (LE u32), entries
-  var p = 0;
-  int readU32(List<int> b, int o) =>
-      (b[o]) | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24);
-  if (body.length < 4) return;
-  final vendorLen = readU32(body, 0);
-  p = 4 + vendorLen;
-  if (p + 4 > body.length) return;
-  final count = readU32(body, p);
-  p += 4;
-  for (var n = 0; n < count && p + 4 <= body.length; n++) {
-    final len = readU32(body, p);
-    p += 4;
-    if (p + len > body.length) break;
-    final raw = body.sublist(p, p + len);
-    String entry;
-    try {
-      entry = utf8.decode(raw, allowMalformed: false);
-    } catch (_) {
-      entry = String.fromCharCodes(raw);
-    }
-    p += len;
-    final eq = entry.indexOf('=');
-    if (eq <= 0) continue;
-    final key = entry.substring(0, eq).toUpperCase();
-    final val = entry.substring(eq + 1);
-    switch (key) {
-      case 'TITLE':
-        meta.title ??= val;
-        break;
-      case 'ARTIST':
-        meta.artist ??= val;
-        break;
-      case 'ALBUMARTIST':
-      case 'ALBUM ARTIST':
-      case 'ALBUM_ARTIST':
-        meta.albumArtist ??= val;
-        break;
-      case 'ALBUM':
-        meta.album ??= val;
-        break;
-      case 'GENRE':
-        meta.genre ??= val;
-        break;
-      case 'DATE':
-        meta.year ??= _yearOf(val);
-        break;
-      case 'TRACKNUMBER':
-        meta.trackNo ??= int.tryParse(val);
-        break;
-      case 'LYRICS':
-      case 'UNSYNCEDLYRICS':
-      case 'UNSYNCED LYRICS':
-      case 'LYRIC':
-        meta.lyrics ??= val;
-        break;
-    }
-  }
+  _parseVorbisComments(body, meta, includePicture: true);
 }
 
 Uint8List? _parseFlacPicture(List<int> body) {
@@ -462,7 +675,467 @@ Uint8List? _parseFlacPicture(List<int> body) {
   return looksLikeImageBytes(img) ? img : null;
 }
 
+// ---------- MP4 / M4A ----------
+
+class _Mp4Box {
+  final String type;
+  final int offset; // 盒起始（含 size/type 头）
+  final int size; // 整盒长度
+  final int header; // 头长度（8 或 16）
+  const _Mp4Box(this.type, this.offset, this.size, this.header);
+  int get bodyStart => offset + header;
+  int get end => offset + size;
+}
+
+/// 遍历 [start, end) 内的同级盒；遇到越界/不完整即停止（不抛异常）。
+Iterable<_Mp4Box> _mp4Boxes(Uint8List b, int start, int end) sync* {
+  var i = start;
+  while (i + 8 <= end) {
+    var size = _be32(b, i);
+    final type = String.fromCharCodes(b.sublist(i + 4, i + 8));
+    var header = 8;
+    if (size == 1) {
+      if (i + 16 > end) return;
+      size = _be64(b, i + 8);
+      header = 16;
+    } else if (size == 0) {
+      size = end - i;
+    }
+    if (size < header || i + size > end) return;
+    yield _Mp4Box(type, i, size, header);
+    i += size;
+  }
+}
+
+bool _mp4NeedsMoovTail(Uint8List head) {
+  var i = 0;
+  while (i + 8 <= head.length) {
+    var size = _be32(head, i);
+    final type = String.fromCharCodes(head.sublist(i + 4, i + 8));
+    var header = 8;
+    if (size == 1) {
+      if (i + 16 > head.length) return true;
+      size = _be64(head, i + 8);
+      header = 16;
+    } else if (size == 0) {
+      size = head.length - i;
+    }
+    if (size < header) return true;
+    if (type == 'moov') return i + size > head.length;
+    if (i + size > head.length) return true; // 后续盒越界：moov 可能在文件尾
+    i += size;
+  }
+  return true; // 采样内未见 moov：按 moov-at-end 处理
+}
+
+AudioMeta _parseMp4(Uint8List head, int fileSize) {
+  final meta = AudioMeta();
+  for (final box in _mp4Boxes(head, 0, head.length)) {
+    if (box.type == 'moov') {
+      _parseMp4Moov(head, box.bodyStart, box.end, meta);
+      return meta;
+    }
+  }
+  meta.truncatedContainer = true; // moov 不在头部：调用方做尾部补读
+  return meta;
+}
+
+AudioMeta _parseMp4Minimal(Uint8List head) {
+  final meta = AudioMeta();
+  final full = _parseMp4(head, head.length);
+  meta.title = full.title;
+  meta.artist = full.artist;
+  meta.albumArtist = full.albumArtist;
+  meta.album = full.album;
+  return meta;
+}
+
+AudioMeta? _parseMp4Tail(Uint8List tail, int fileSize) {
+  // 自尾向前找完整落在 tail 内的 moov 盒（moov-at-end 常见）。
+  for (var p = tail.length - 8; p >= 4; p--) {
+    if (tail[p] == 0x6D && tail[p + 1] == 0x6F && tail[p + 2] == 0x6F &&
+        tail[p + 3] == 0x76) {
+      final size = _be32(tail, p - 4);
+      final start = p - 4;
+      if (size < 8 || start + size > tail.length) continue;
+      final meta = AudioMeta();
+      final box = _Mp4Box('moov', start, size, 8);
+      _parseMp4Moov(tail, box.bodyStart, box.end, meta);
+      return meta;
+    }
+  }
+  return null;
+}
+
+void _parseMp4Moov(Uint8List b, int start, int end, AudioMeta meta) {
+  for (final box in _mp4Boxes(b, start, end)) {
+    switch (box.type) {
+      case 'mvhd':
+        _parseMp4Mvhd(b, box.bodyStart, box.end, meta);
+      case 'udta':
+        _parseMp4Moov(b, box.bodyStart, box.end, meta);
+      case 'meta':
+        // fullbox：version/flags 4 字节后再遍历（hdlr + ilst）。
+        _parseMp4Moov(b, box.bodyStart + 4, box.end, meta);
+      case 'ilst':
+        _parseMp4Ilst(b, box.bodyStart, box.end, meta);
+    }
+  }
+}
+
+void _parseMp4Mvhd(Uint8List b, int start, int end, AudioMeta meta) {
+  if (start + 4 > end) return;
+  final version = b[start];
+  int timescale;
+  int duration;
+  if (version == 1) {
+    if (start + 32 > end) return;
+    timescale = _be32(b, start + 20);
+    duration = _be64(b, start + 24);
+  } else {
+    if (start + 20 > end) return;
+    timescale = _be32(b, start + 12);
+    duration = _be32(b, start + 16);
+  }
+  if (timescale > 0 && duration > 0) {
+    meta.duration = (duration / timescale).round();
+  }
+}
+
+void _parseMp4Ilst(Uint8List b, int start, int end, AudioMeta meta) {
+  for (final item in _mp4Boxes(b, start, end)) {
+    for (final data in _mp4Boxes(b, item.bodyStart, item.end)) {
+      if (data.type != 'data' || data.bodyStart + 8 > data.end) continue;
+      final dataType = _be32(b, data.bodyStart);
+      final payloadStart = data.bodyStart + 8; // type(4) + locale(4)
+      final payloadEnd = data.end;
+      switch (item.type) {
+        case '©nam':
+          meta.title ??= _mp4Text(b, payloadStart, payloadEnd);
+        case '©ART':
+          meta.artist ??= _mp4Text(b, payloadStart, payloadEnd);
+        case 'aART':
+          meta.albumArtist ??= _mp4Text(b, payloadStart, payloadEnd);
+        case '©alb':
+          meta.album ??= _mp4Text(b, payloadStart, payloadEnd);
+        case '©gen':
+          meta.genre ??= _mp4Text(b, payloadStart, payloadEnd);
+        case '©day':
+          meta.year ??= _yearOf(_mp4Text(b, payloadStart, payloadEnd));
+        case '©lyr':
+          final t = _mp4Text(b, payloadStart, payloadEnd);
+          if (t != null && t.trim().isNotEmpty) meta.lyrics ??= t;
+        case 'trkn':
+          if (payloadStart + 4 <= payloadEnd) {
+            meta.trackNo ??= (b[payloadStart + 2] << 8) | b[payloadStart + 3];
+          }
+        case 'covr':
+          if (meta.cover == null && (dataType == 13 || dataType == 14)) {
+            final img = Uint8List.fromList(
+                b.sublist(payloadStart, payloadEnd));
+            if (looksLikeImageBytes(img)) meta.cover = img;
+          }
+      }
+    }
+  }
+}
+
+String? _mp4Text(Uint8List b, int start, int end) {
+  if (start >= end) return null;
+  final s = utf8.decode(b.sublist(start, end), allowMalformed: true).trim();
+  return s.isEmpty ? null : s;
+}
+
+// ---------- OGG / OPUS ----------
+
+/// 组装头部采样内的前 [maxPackets] 个逻辑包（跨页 lacing 拼接）。
+List<Uint8List> _oggFirstPackets(Uint8List b, {int maxPackets = 2}) {
+  final packets = <Uint8List>[];
+  var current = BytesBuilder();
+  var i = 0;
+  while (i + 27 <= b.length && packets.length < maxPackets) {
+    if (b[i] != 0x4F || b[i + 1] != 0x67 || b[i + 2] != 0x67 || b[i + 3] != 0x53) {
+      break; // 非 OggS
+    }
+    final segCount = b[i + 26];
+    final tableStart = i + 27;
+    if (tableStart + segCount > b.length) break;
+    var payload = tableStart + segCount;
+    for (var s = 0; s < segCount; s++) {
+      final seg = b[tableStart + s];
+      if (payload + seg > b.length) return packets; // 采样截断
+      current.add(b.sublist(payload, payload + seg));
+      payload += seg;
+      if (seg < 255) {
+        packets.add(current.takeBytes());
+        current = BytesBuilder();
+        if (packets.length >= maxPackets) break;
+      }
+    }
+    i = payload;
+  }
+  return packets;
+}
+
+AudioMeta _parseOgg(Uint8List head) => _oggParse(head, includePicture: true);
+
+AudioMeta _parseOggMinimal(Uint8List head) {
+  final meta = _parseOgg(head);
+  meta.cover = null;
+  meta.lyrics = null;
+  return meta;
+}
+
+AudioMeta _oggParse(Uint8List head, {required bool includePicture}) {
+  final meta = AudioMeta();
+  final packets = _oggFirstPackets(head);
+  if (packets.isEmpty) return meta;
+  final id = packets[0];
+  final isVorbis = _startsWith(id, [0x01, ...'vorbis'.codeUnits]);
+  final isOpus = _startsWith(id, 'OpusHead'.codeUnits);
+  if (isVorbis) {
+    if (id.length >= 16) meta.sampleRate = _le32(id, 12);
+  } else if (isOpus) {
+    if (id.length >= 16) meta.sampleRate = _le32(id, 12);
+  } else {
+    return meta;
+  }
+  if (packets.length < 2) return meta;
+  final tags = packets[1];
+  List<int> body;
+  if (isVorbis && _startsWith(tags, [0x03, ...'vorbis'.codeUnits])) {
+    body = tags.sublist(7);
+  } else if (isOpus && _startsWith(tags, 'OpusTags'.codeUnits)) {
+    body = tags.sublist(8);
+  } else {
+    return meta;
+  }
+  _parseVorbisComments(body, meta, includePicture: includePicture);
+  return meta;
+}
+
+/// 解析 Vorbis comment 正文（vendor + 条目），ogg/opus 与 flac 共用条目规则。
+void _parseVorbisComments(List<int> b, AudioMeta meta,
+    {bool includePicture = true}) {
+  if (b.length < 4) return;
+  var p = 0;
+  final vendorLen = _le32(b, 0);
+  p = 4 + vendorLen;
+  if (p + 4 > b.length) return;
+  final count = _le32(b, p);
+  p += 4;
+  for (var n = 0; n < count && p + 4 <= b.length; n++) {
+    final len = _le32(b, p);
+    p += 4;
+    if (len < 0 || p + len > b.length) break;
+    final raw = b.sublist(p, p + len);
+    p += len;
+    String entry;
+    try {
+      entry = utf8.decode(raw, allowMalformed: false);
+    } catch (_) {
+      entry = String.fromCharCodes(raw);
+    }
+    final eq = entry.indexOf('=');
+    if (eq <= 0) continue;
+    final key = entry.substring(0, eq).toUpperCase();
+    final val = entry.substring(eq + 1);
+    switch (key) {
+      case 'TITLE':
+        meta.title ??= val;
+        break;
+      case 'ARTIST':
+        meta.artist ??= val;
+        break;
+      case 'ALBUMARTIST':
+      case 'ALBUM ARTIST':
+      case 'ALBUM_ARTIST':
+        meta.albumArtist ??= val;
+        break;
+      case 'ALBUM':
+        meta.album ??= val;
+        break;
+      case 'GENRE':
+        meta.genre ??= val;
+        break;
+      case 'DATE':
+        meta.year ??= _yearOf(val);
+        break;
+      case 'TRACKNUMBER':
+        meta.trackNo ??= _trackOf(val);
+        break;
+      case 'LYRICS':
+      case 'UNSYNCEDLYRICS':
+      case 'UNSYNCED LYRICS':
+      case 'LYRIC':
+        if (val.trim().isNotEmpty) meta.lyrics ??= val;
+        break;
+      case 'METADATA_BLOCK_PICTURE':
+        if (includePicture && meta.cover == null) {
+          try {
+            meta.cover = _parseFlacPicture(base64Decode(val.trim()));
+          } catch (_) {}
+        }
+        break;
+      case 'COVERART':
+        if (includePicture && meta.cover == null) {
+          try {
+            final img = base64Decode(val.trim());
+            if (looksLikeImageBytes(img)) meta.cover = img;
+          } catch (_) {}
+        }
+        break;
+    }
+  }
+}
+
+/// 末页 granule → 时长（秒）；[sampleRate] 缺省按 Opus 48000。
+int? _oggTailDuration(Uint8List tail, int? sampleRate) {
+  for (var p = tail.length - 27; p >= 0; p--) {
+    if (tail[p] != 0x4F || tail[p + 1] != 0x67 || tail[p + 2] != 0x67 ||
+        tail[p + 3] != 0x53) {
+      continue;
+    }
+    final granule = _le64(tail, p + 6);
+    if (granule <= 0 || granule == 0x7FFFFFFFFFFFFFFF) continue;
+    final rate = (sampleRate == null || sampleRate <= 0) ? 48000 : sampleRate;
+    final d = (granule / rate).round();
+    return d > 0 ? d : null;
+  }
+  return null;
+}
+
+// ---------- WAV ----------
+
+AudioMeta _parseWav(Uint8List head) {
+  final meta = AudioMeta();
+  if (!_startsWith(head, 'RIFF'.codeUnits) ||
+      head.length < 12 ||
+      !_startsWith(head.sublist(8), 'WAVE'.codeUnits)) {
+    return meta;
+  }
+  var byteRate = 0;
+  var i = 12;
+  while (i + 8 <= head.length) {
+    final id = String.fromCharCodes(head.sublist(i, i + 4));
+    final size = _le32(head, i + 4);
+    final body = i + 8;
+    if (size < 0) break;
+    if (id == 'fmt ' && size >= 12 && body + size <= head.length) {
+      byteRate = _le32(head, body + 8);
+    } else if (id == 'data') {
+      // data 体在头部采样中通常被截断：按时长 = 声明大小 / 字节率计算。
+      if (byteRate > 0 && size > 0) meta.duration = (size / byteRate).round();
+      break;
+    } else if (id == 'LIST' && size >= 4 && body + size <= head.length &&
+        _startsWith(head.sublist(body), 'INFO'.codeUnits)) {
+      _parseWavInfo(head, body + 4, body + size, meta);
+    }
+    if (body + size > head.length) break;
+    i = body + size + (size.isOdd ? 1 : 0);
+  }
+  return meta;
+}
+
+AudioMeta _parseWavMinimal(Uint8List head) {
+  final meta = _parseWav(head);
+  meta.duration = null;
+  return meta;
+}
+
+void _parseWavInfo(Uint8List b, int start, int end, AudioMeta meta) {
+  var i = start;
+  while (i + 8 <= end) {
+    final id = String.fromCharCodes(b.sublist(i, i + 4));
+    final size = _le32(b, i + 4);
+    if (size < 0 || i + 8 + size > end) break;
+    final val = utf8
+        .decode(b.sublist(i + 8, i + 8 + size), allowMalformed: true)
+        .replaceAll('\u0000', '')
+        .trim();
+    if (val.isNotEmpty) {
+      switch (id) {
+        case 'INAM':
+          meta.title ??= val;
+          break;
+        case 'IART':
+          meta.artist ??= val;
+          break;
+        case 'IPRD':
+          meta.album ??= val;
+          break;
+        case 'IGNR':
+          meta.genre ??= val;
+          break;
+        case 'ICRD':
+          meta.year ??= _yearOf(val);
+          break;
+        case 'ITRK':
+          meta.trackNo ??= _trackOf(val);
+          break;
+      }
+    }
+    i += 8 + size + (size.isOdd ? 1 : 0);
+  }
+}
+
+// ---------- AAC (ADTS，常带 ID3v2 头) ----------
+
+AudioMeta _parseAac(Uint8List head, int fileSize) {
+  final meta = AudioMeta();
+  var offset = 0;
+  if (head.length >= 10 && _startsWith(head, 'ID3'.codeUnits)) {
+    final frames = _id3TagToFrames(head, 10);
+    meta.title = frames['TIT2'];
+    meta.artist = frames['TPE1'];
+    meta.albumArtist = frames['TPE2'];
+    meta.album = frames['TALB'];
+    meta.genre = frames['TCON'];
+    meta.year = _yearOf(frames['TYER'] ?? frames['TDRC']);
+    meta.trackNo = _trackOf(frames['TRCK']);
+    meta.cover = _apicOf(head);
+    meta.lyrics = frames['USLT'];
+    offset = 10 + _syncsafe(head, 6);
+  }
+  // ADTS 时长估算：首帧帧长 / 采样率 → 码率 → 文件大小 / 码率。
+  for (var i = offset; i + 7 <= head.length; i++) {
+    if (head[i] != 0xFF || (head[i + 1] & 0xF6) != 0xF0) continue;
+    final srIndex = (head[i + 2] >> 2) & 0x0F;
+    const rates = [
+      96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
+      16000, 12000, 11025, 8000, 7350, 0, 0, 0
+    ];
+    final rate = rates[srIndex];
+    if (rate <= 0) break;
+    final frameLen = ((head[i + 3] & 0x03) << 11) |
+        (head[i + 4] << 3) |
+        ((head[i + 5] >> 5) & 0x07);
+    if (frameLen <= 7) break;
+    final bitrate = frameLen * 8 * rate / 1024; // 每帧 1024 采样
+    if (bitrate > 0) meta.duration = (fileSize / bitrate).round();
+    break;
+  }
+  return meta;
+}
+
 // ---------- helpers ----------
+
+bool _startsWith(Uint8List b, List<int> prefix) {
+  if (b.length < prefix.length) return false;
+  for (var i = 0; i < prefix.length; i++) {
+    if (b[i] != prefix[i]) return false;
+  }
+  return true;
+}
+
+int _le32(List<int> b, int o) =>
+    b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24);
+
+int _le64(List<int> b, int o) =>
+    _le32(b, o) | (_le32(b, o + 4) << 32);
+
+int _be64(List<int> b, int o) =>
+    (_be32(b, o) << 32) | _be32(b, o + 4);
 
 int _syncsafe(List<int> b, int o) => (b[o] & 0x7F) << 21 |
     (b[o + 1] & 0x7F) << 14 |
