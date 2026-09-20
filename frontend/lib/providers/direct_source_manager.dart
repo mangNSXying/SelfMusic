@@ -18,6 +18,7 @@ import '../data/local/song_weight_store.dart';
 import '../data/local/playlist_store.dart';
 import '../models/song.dart';
 import '../services/api_client.dart';
+import '../services/secret_store.dart';
 
 /// 直连模式源管理（阶段 3 / 阶段 4 接收器）。
 ///
@@ -40,6 +41,12 @@ class DirectSourceManager extends ChangeNotifier {
   late PlaylistStore playlists;
 
   ApiClient? _api;
+
+  /// 敏感凭据统一存储（WebDAV 密码 / 配对密钥，问题.md B1/B2 收敛）。
+  SecretStore secrets = SecretStore();
+
+  /// 各源 WebDAV 密码的内存镜像（编辑预填 / 源重建用；持久化在 [SecretStore]）。
+  final Map<String, String> _webdavPwds = {};
 
   int _favoriteVersion = 0;
 
@@ -157,6 +164,33 @@ class DirectSourceManager extends ChangeNotifier {
   /// 轻量刷新：通知监听者重建（如切换动画设置即时生效）。
   void refresh() => notifyListeners();
 
+  /// 「信任自签名」开关已写入 [settings] 后调用：按新策略重建 WebDAV 直连源
+  /// （dart:io `badCertificateCallback`），本地源与服务端代理无需重建。
+  void applySecuritySettings() {
+    final rebuilt = <MusicSource>[];
+    for (final s in _sources) {
+      final row = index.getSource(s.key);
+      if (row == null) {
+        rebuilt.add(s);
+        continue;
+      }
+      Map<String, dynamic> cfg = {};
+      try {
+        cfg.addAll(jsonDecode(row.config) as Map<String, dynamic>);
+      } catch (_) {}
+      rebuilt.add(_buildFor(
+          kind: row.kind,
+          key: row.key,
+          name: (cfg['name'] as String? ?? row.name).toString(),
+          cfg: cfg,
+          mode: _modeFromConfig(cfg)));
+    }
+    _sources
+      ..clear()
+      ..addAll(rebuilt);
+    notifyListeners();
+  }
+
   /// 服务器模式始终存在。
   String get serverKey => 'server';
 
@@ -178,12 +212,32 @@ class DirectSourceManager extends ChangeNotifier {
     for (final r in rows) {
       if (!r.enabled) continue;
       try {
-        if (r.kind == 'webdav' || r.kind == 'local') {
-          final cfg = jsonDecode(r.config) as Map<String, dynamic>;
+        if (r.kind == 'webdav') {
+          var cfg = jsonDecode(r.config) as Map<String, dynamic>;
           final mode = _modeFromConfig(cfg);
-          final name = cfg['name'] as String? ?? r.name;
+          final name = (cfg['name'] as String? ?? r.name).toString();
+          // 老数据迁移：config 里的明文密码 → SecretStore，并回写干净 config。
+          var pwd = await secrets.webdavPassword(r.key);
+          final legacy = (cfg['password'] as String? ?? '');
+          if ((pwd == null || pwd.isEmpty) && legacy.isNotEmpty) {
+            await secrets.setWebdavPassword(r.key, legacy);
+            pwd = legacy;
+          }
+          // 只要 config 仍残留 password 字段就清理（含有过中途迁移的旧库）。
+          if (cfg.containsKey('password')) {
+            cfg = Map<String, dynamic>.of(cfg)..remove('password');
+            index.upsertSource(r.key, r.kind, r.name, jsonEncode(cfg));
+          }
+          _webdavPwds[r.key] = pwd ?? '';
+          // 构建源对象时密码从内存镜像来，config 不落地明文。
+          cfg['password'] = pwd ?? '';
           _sources.add(_buildFor(
               kind: r.kind, key: r.key, name: name, cfg: cfg, mode: mode));
+        } else if (r.kind == 'local') {
+          final cfg = jsonDecode(r.config) as Map<String, dynamic>;
+          final name = cfg['name'] as String? ?? r.name;
+          _sources.add(_buildFor(
+              kind: r.kind, key: r.key, name: name, cfg: cfg, mode: _modeFromConfig(cfg)));
         }
         // SMB 自动恢复在阶段 4 补充。
       } catch (_) {
@@ -224,9 +278,11 @@ class DirectSourceManager extends ChangeNotifier {
 
   String _localKey(String name) => 'local:$name';
 
-  /// 按源类型构建直连源实例（webdav / local）。
+  /// 按源类型构建直连源实例（webdav / local）。WebDAV 密码取内存镜像
+  /// （持久化在 SecretStore，config 不落地明文）；[allowSelfSigned] 随直连构建生效。
   MusicSource _buildDirect({
     required String kind,
+    required String key,
     required String name,
     required Map<String, dynamic> cfg,
   }) {
@@ -241,8 +297,9 @@ class DirectSourceManager extends ChangeNotifier {
       name: name,
       baseUrl: cfg['baseUrl'] as String? ?? '',
       username: cfg['username'] as String? ?? '',
-      password: cfg['password'] as String? ?? '',
+      password: _webdavPwds[key] ?? (cfg['password'] as String? ?? ''),
       index: index,
+      allowSelfSigned: settings.allowSelfSigned,
     );
   }
 
@@ -256,7 +313,7 @@ class DirectSourceManager extends ChangeNotifier {
   }) =>
       mode == SourceMode.proxy
           ? _buildProxy(name: name, key: key)
-          : _buildDirect(kind: kind, name: name, cfg: cfg);
+          : _buildDirect(kind: kind, key: key, name: name, cfg: cfg);
 
   /// 读取某源的可编辑配置（含 kind/name/path/baseUrl/username/password/mode）。
   /// 代理模式下内存对象只是 [ServerProxySource]，原始凭据需从持久化配置还原。
@@ -267,6 +324,8 @@ class DirectSourceManager extends ChangeNotifier {
     try {
       cfg.addAll(jsonDecode(row.config) as Map<String, dynamic>);
     } catch (_) {}
+    // WebDAV 密码从内存镜像（SecretStore）回填，供编辑弹窗预填。
+    cfg['password'] = _webdavPwds[key] ?? '';
     return cfg;
   }
 
@@ -297,21 +356,21 @@ class DirectSourceManager extends ChangeNotifier {
     SourceMode mode = SourceMode.direct,
   }) async {
     final key = _webdavKey(name);
-    final src = mode == SourceMode.proxy
-        ? _buildProxy(name: name, key: key)
-        : WebdavDirectSource(
-            name: name,
-            baseUrl: baseUrl,
-            username: username,
-            password: password,
-            index: index,
-          );
+    _webdavPwds[key] = password;
+    await secrets.setWebdavPassword(key, password);
+    final src = _buildFor(
+        kind: 'webdav', key: key, name: name, cfg: <String, dynamic>{
+      'name': name,
+      'baseUrl': baseUrl,
+      'username': username,
+      'mode': mode.name,
+    }, mode: mode);
     _sources.add(src);
+    // config 不含密码（明文收敛到 SecretStore）。
     final cfg = <String, dynamic>{
       'name': name,
       'baseUrl': baseUrl,
       'username': username,
-      'password': password,
       'mode': mode.name,
     };
     index.upsertSource(key, 'webdav', name, jsonEncode(cfg));
@@ -363,13 +422,28 @@ class DirectSourceManager extends ChangeNotifier {
     if (path != null) cfg['path'] = path;
     if (baseUrl != null) cfg['baseUrl'] = baseUrl;
     if (username != null) cfg['username'] = username;
-    if (password != null) cfg['password'] = password;
     final newMode = mode ?? _modeFromConfig(cfg);
     cfg['mode'] = newMode.name;
 
     final newKey = '${row.kind}:$newName';
     if (newKey != key && _sources.any((s) => s.key == newKey)) {
       throw StateError('已存在同名播放源');
+    }
+
+    // WebDAV 密码：持久化收敛到 SecretStore，config 不落地明文。
+    if (password != null) {
+      cfg.remove('password');
+      if (newKey != key) {
+        await secrets.migrateWebdav(key, newKey);
+        _webdavPwds.remove(key);
+      }
+      await secrets.setWebdavPassword(newKey, password);
+      _webdavPwds[newKey] = password;
+    } else if (newKey != key && _webdavPwds.containsKey(key)) {
+      // 仅改名未传密码：迁移内存镜像 + SecretStore 键。
+      await secrets.migrateWebdav(key, newKey);
+      _webdavPwds[newKey] = _webdavPwds[key]!;
+      _webdavPwds.remove(key);
     }
 
     final rebuilt = <MusicSource>[];
@@ -429,6 +503,8 @@ class DirectSourceManager extends ChangeNotifier {
     }
     _watchers.removeWhere((w) => gone.contains(w));
     _sources.removeWhere((s) => s.key == key);
+    _webdavPwds.remove(key);
+    await secrets.deleteWebdav(key);
     index.deleteSource(key);
     notifyListeners();
   }

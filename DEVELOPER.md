@@ -261,7 +261,7 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 | just_audio | 音频播放抽象 |
 | just_audio_mpv | Linux 音频后端（联邦 Dart 插件，走系统 mpv/libmpv） |
 | cached_network_image | 图片缓存 |
-| flutter_secure_storage | 敏感数据安全存储（token、主题偏好） |
+| flutter_secure_storage | 敏感数据安全存储（token、主题偏好、WebDAV 密码、配对密钥；统一经 `SecretStore` 收口，见 `frontend/lib/services/secret_store.dart`） |
 | audio_service | Android 通知栏 / 后台播放（前台服务 + 媒体通知，`SelfMusicAudioHandler` 自定义处理器） |
 | crypto | 缓存 key / 封面等哈希去重 |
 | sqlite3 / sqlite3_flutter_libs | 客户端本地库（local_index）：源索引 idx_songs + cache + play_meta + playlists + app_settings + song_lyrics + play_state（drift 的轻量替代，见 DESIGN §3.2） |
