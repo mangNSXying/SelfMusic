@@ -43,11 +43,19 @@ class _Header extends StatelessWidget {
       'SelfMusic',
       style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
     );
+    // 浅色背景用 selfmusic.png，深色背景用 selfmusic-black.png。
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final logo = Image.asset(
+      isDark ? 'assets/selfmusic-black.png' : 'assets/selfmusic.png',
+      width: 34,
+      height: 34,
+      fit: BoxFit.cover,
+    );
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       child: Row(
         children: [
-          Icon(Icons.graphic_eq, color: Theme.of(context).colorScheme.primary),
+          ClipRRect(borderRadius: BorderRadius.circular(8), child: logo),
           const SizedBox(width: 10),
           title,
         ],

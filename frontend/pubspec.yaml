@@ -33,3 +33,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/selfmusic.png
+    - assets/selfmusic-black.png
