@@ -8,6 +8,7 @@ import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../services/api_client.dart';
 import '../widgets/corner_add_button.dart';
+import '../widgets/square_card.dart';
 import '../widgets/view_mode_toggle.dart';
 
 /// 播放源管理页：直连源（WebDAV / 本地文件夹）列表（支持列表/卡片切换）。
@@ -75,14 +76,19 @@ class _SourcesScreenState extends State<SourcesScreen> {
                             style: TextStyle(color: scheme.onSurfaceVariant)),
                       )
                     : card
-                        ? ListView(
-                            padding: const EdgeInsets.all(16),
-                            children: [
-                              for (final s in direct.sources) ...[
-                                _DirectSourceCard(sourceKey: s.key),
-                                const SizedBox(height: 8),
-                              ],
-                            ],
+                        ? GridView.builder(
+                            padding:
+                                const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                            gridDelegate:
+                                const SliverGridDelegateWithMaxCrossAxisExtent(
+                              maxCrossAxisExtent: 220,
+                              mainAxisSpacing: 16,
+                              crossAxisSpacing: 16,
+                              childAspectRatio: 0.72,
+                            ),
+                            itemCount: direct.sources.length,
+                            itemBuilder: (c, i) => _DirectSourceCard(
+                                sourceKey: direct.sources[i].key),
                           )
                         : ListView.separated(
                             itemCount: direct.sources.length,
@@ -351,7 +357,6 @@ class _DirectSourceCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final direct = context.watch<DirectSourceManager>();
-    final scheme = Theme.of(context).colorScheme;
     final s = direct.sourceByKey(sourceKey);
     if (s == null) return const SizedBox.shrink();
     final count = direct.countOf(sourceKey);
@@ -359,7 +364,8 @@ class _DirectSourceCard extends StatelessWidget {
     final isLocal = s.kind == SourceKind.local;
 
     final tile = ListTile(
-      leading: Icon(isLocal ? Icons.folder : Icons.cloud, color: scheme.primary),
+      leading: Icon(isLocal ? Icons.folder : Icons.cloud,
+          color: Theme.of(context).colorScheme.primary),
       title: Text(s.name,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
@@ -367,48 +373,75 @@ class _DirectSourceCard extends StatelessWidget {
       subtitle: isProxy
           ? const Text('服务端代理 · 从后端拉取整体库')
           : Text('直连${isLocal ? ' · 本地文件夹' : ''} · 已索引 $count 首'),
-      trailing: PopupMenuButton<String>(
-        tooltip: '源设置',
-        onSelected: (v) => _onMenu(context, v, s, direct),
-        itemBuilder: (c) => [
-          PopupMenuItem(
-            value: 'mode',
-            child: Text(isProxy ? '切换为直连' : '切换为服务端代理'),
-          ),
-          const PopupMenuItem(value: 'edit', child: Text('编辑')),
-          const PopupMenuDivider(),
-          const PopupMenuItem(
-            value: 'delete',
-            child: Text('删除源', style: TextStyle(color: Colors.redAccent)),
-          ),
-        ],
-      ),
+      trailing: _SourceMenu(
+          sourceKey: sourceKey, isProxy: isProxy, source: s, direct: direct),
       onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
     );
-    return plain ? tile : Card(child: tile);
+    if (plain) return tile;
+    // 卡片形态：与专辑/歌手共用方形卡片（SquareCard），菜单叠右上角。
+    return SquareCard(
+      title: s.name,
+      subtitle: isProxy
+          ? '服务端代理 · 从后端拉取整体库'
+          : '直连${isLocal ? ' · 本地文件夹' : ''} · 已索引 $count 首',
+      fallbackIcon: isLocal ? Icons.folder : Icons.cloud,
+      onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
+      cornerAction: _SourceMenu(
+          sourceKey: sourceKey, isProxy: isProxy, source: s, direct: direct),
+    );
   }
+}
 
-  void _onMenu(BuildContext context, String action, MusicSource src,
-      DirectSourceManager direct) {
-    switch (action) {
-      case 'mode':
-        final next =
-            direct.isProxy(src.key) ? SourceMode.direct : SourceMode.proxy;
-        direct.setMode(src.key, next);
-        break;
-      case 'edit':
-        showDialog<void>(
-            context: context,
-            builder: (_) => _SourceDialog(editKey: src.key));
-        break;
-      case 'delete':
-        _confirmDelete(context, src.key, direct);
-        break;
-    }
+/// 播放源设置菜单（列表行 trailing / 方形卡片右上角共用）。
+class _SourceMenu extends StatelessWidget {
+  final String sourceKey;
+  final bool isProxy;
+  final MusicSource source;
+  final DirectSourceManager direct;
+  const _SourceMenu(
+      {required this.sourceKey,
+      required this.isProxy,
+      required this.source,
+      required this.direct});
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<String>(
+      tooltip: '源设置',
+      iconSize: 20,
+      padding: EdgeInsets.zero,
+      onSelected: (v) {
+        switch (v) {
+          case 'mode':
+            direct.setMode(sourceKey,
+                isProxy ? SourceMode.direct : SourceMode.proxy);
+          case 'edit':
+            showDialog<void>(
+                context: context,
+                builder: (_) => _SourceDialog(editKey: sourceKey));
+          case 'delete':
+            _confirmDelete(context, sourceKey, direct);
+        }
+      },
+      itemBuilder: (c) => [
+        PopupMenuItem(
+          value: 'mode',
+          child: Text(isProxy ? '切换为直连' : '切换为服务端代理'),
+        ),
+        const PopupMenuItem(value: 'edit', child: Text('编辑')),
+        const PopupMenuDivider(),
+        const PopupMenuItem(
+          value: 'delete',
+          child: Text('删除源', style: TextStyle(color: Colors.redAccent)),
+        ),
+      ],
+    );
   }
+}
 
-  Future<void> _confirmDelete(
-      BuildContext context, String key, DirectSourceManager direct) async {
+/// 删除源二次确认（列表/卡片共用）。
+Future<void> _confirmDelete(
+    BuildContext context, String key, DirectSourceManager direct) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
@@ -431,4 +464,3 @@ class _DirectSourceCard extends StatelessWidget {
       direct.removeSource(key);
     }
   }
-}

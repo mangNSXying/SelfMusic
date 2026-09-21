@@ -21,6 +21,7 @@ import '../widgets/page_transition.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_tile.dart';
+import '../widgets/square_card.dart';
 import '../widgets/view_mode_toggle.dart';
 import 'settings_screen.dart';
 import 'sources_screen.dart';
@@ -507,7 +508,7 @@ class _AlbumsViewState extends State<_AlbumsView> {
                   onRefresh: () => lib.loadAlbums(query: nav.search.isEmpty ? null : nav.search),
                   child: card
                       ? GridView.builder(
-                          padding: const EdgeInsets.all(16),
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                           gridDelegate:
                               const SliverGridDelegateWithMaxCrossAxisExtent(
                             maxCrossAxisExtent: 220,
@@ -599,41 +600,13 @@ class _AlbumCard extends StatelessWidget {
   const _AlbumCard({required this.album});
 
   @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: () => _openAlbum(context, album),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: Container(
-              width: double.infinity,
-              decoration: BoxDecoration(
-                color: colorScheme.primary.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              clipBehavior: Clip.antiAlias,
-              child: album.coverPath != null
-                  ? Image.file(File(album.coverPath!),
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Icon(Icons.album,
-                          size: 48,
-                          color: colorScheme.primary.withValues(alpha: 0.6)))
-                  : Icon(Icons.album,
-                      size: 48, color: colorScheme.primary.withValues(alpha: 0.6)),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(album.album, maxLines: 1, overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)),
-          Text('${album.artist} · ${album.trackCount}首', maxLines: 1, overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: colorScheme.onSurface.withValues(alpha: 0.6))),
-        ],
-      ),
-    );
-  }
+  Widget build(BuildContext context) => SquareCard(
+        title: album.album,
+        subtitle: '${album.artist} · ${album.trackCount}首',
+        coverPath: album.coverPath,
+        fallbackIcon: Icons.album,
+        onTap: () => _openAlbum(context, album),
+      );
 }
 
 class _AlbumSongsSheet extends StatelessWidget {
@@ -757,7 +730,7 @@ class _ArtistsViewState extends State<_ArtistsView> {
                   onRefresh: () => lib.loadArtists(query: nav.search.isEmpty ? null : nav.search),
                   child: card
                       ? GridView.builder(
-                          padding: const EdgeInsets.all(16),
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                           gridDelegate:
                               const SliverGridDelegateWithMaxCrossAxisExtent(
                             maxCrossAxisExtent: 220,
@@ -843,41 +816,13 @@ class _ArtistCard extends StatelessWidget {
   const _ArtistCard({required this.artist});
 
   @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: () => _openArtist(context, artist),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: Container(
-              width: double.infinity,
-              decoration: BoxDecoration(
-                color: colorScheme.primary.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              clipBehavior: Clip.antiAlias,
-              child: artist.coverPath != null
-                  ? Image.file(File(artist.coverPath!),
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Icon(Icons.person,
-                          size: 48,
-                          color: colorScheme.primary.withValues(alpha: 0.6)))
-                  : Icon(Icons.person,
-                      size: 48, color: colorScheme.primary.withValues(alpha: 0.6)),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(artist.name, maxLines: 1, overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)),
-          Text('${artist.songCount}首 · ${artist.albumCount}张专辑', maxLines: 1, overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: colorScheme.onSurface.withValues(alpha: 0.6))),
-        ],
-      ),
-    );
-  }
+  Widget build(BuildContext context) => SquareCard(
+        title: artist.name,
+        subtitle: '${artist.songCount}首 · ${artist.albumCount}张专辑',
+        coverPath: artist.coverPath,
+        fallbackIcon: Icons.person,
+        onTap: () => _openArtist(context, artist),
+      );
 }
 
 class _ArtistSongsSheet extends StatelessWidget {

@@ -34,7 +34,6 @@ class PlayerScreen extends StatefulWidget {
 }
 
 class _PlayerScreenState extends State<PlayerScreen> {
-  bool _lyrics = false;
   late final PageController _pageCtrl;
 
   /// 播放页下拉跟手的起点（全局 Y + 起始进度）。
@@ -51,14 +50,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void dispose() {
     _pageCtrl.dispose();
     super.dispose();
-  }
-
-  /// 跟手切页：左滑进歌词，右滑回播放（歌词页内右滑同样生效）。
-  void _goLyrics(bool to) {
-    if (_lyrics == to) return;
-    _pageCtrl.animateToPage(to ? 1 : 0,
-        duration: const Duration(milliseconds: 260),
-        curve: Curves.easeOutCubic);
   }
 
   /// 播放页下拉跟手：整页随手指下移，底下显露分组区；松手按位移/速度吸附或离场。
@@ -98,15 +89,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     return Scaffold(
       body: SafeArea(
-        // 横向由内层 PageView 原生跟手；竖向仅播放页（第 0 页）跟手下拉，
-        // 歌词页纵向留给滚动（按钮/右滑返回播放页）。
+        // 横向由内层 PageView 原生跟手（右滑回播放页）；
+        // 竖向仅播放页（第 0 页）跟手下拉，歌词页纵向留给滚动。
         // 关闭手势后 PageView 禁滑、下拉停用。
         child: PageView(
           controller: _pageCtrl,
           physics: gestureOn
               ? const PageScrollPhysics()
               : const NeverScrollableScrollPhysics(),
-          onPageChanged: (i) => setState(() => _lyrics = i == 1),
           children: [
             GestureDetector(
               behavior: HitTestBehavior.translucent,
@@ -117,7 +107,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
               onVerticalDragEnd: gestureOn ? _onPlayerDragEnd : null,
               child: _buildPlayerBody(context),
             ),
-            _LyricsPage(onClose: () => _goLyrics(false)),
+            const _LyricsPage(),
           ],
         ),
       ),
@@ -165,9 +155,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
 /// 歌词页：LRC 同步滚动歌词（右滑/按钮返回播放页）。
 class _LyricsPage extends StatelessWidget {
-  final VoidCallback onClose;
-
-  const _LyricsPage({required this.onClose});
+  const _LyricsPage();
 
   @override
   Widget build(BuildContext context) {
@@ -178,18 +166,6 @@ class _LyricsPage extends StatelessWidget {
 
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: IconButton(
-              icon: const Icon(Icons.keyboard_arrow_down),
-              iconSize: 30,
-              tooltip: '回到播放页',
-              onPressed: onClose,
-            ),
-          ),
-        ),
         if (s != null)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24),
