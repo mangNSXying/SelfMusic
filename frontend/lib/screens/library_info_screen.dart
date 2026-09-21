@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/direct_source_manager.dart';
+import '../utils/build_stamp.dart';
 
 /// 侧边栏「信息」页（改进 B6-4）：汇总全部歌曲的元数据读取情况。
 /// 口径见 [LocalIndex.metaStats]：总数/已读/失效 + 各维度已获取数 + 格式分组。
@@ -43,6 +44,13 @@ class LibraryInfoScreen extends StatelessWidget {
                     valid: valid,
                     missing: stats['missing'] ?? 0,
                     read: stats['meta_read'] ?? 0),
+                if (kBuildStamp.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text('构建：$kBuildStamp',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: cs.onSurface.withValues(alpha: 0.6))),
+                  ),
                 const SizedBox(height: 12),
                 Text('各维度已获取',
                     style: Theme.of(context)
