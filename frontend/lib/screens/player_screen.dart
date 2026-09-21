@@ -86,14 +86,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Widget build(BuildContext context) {
     final gestureOn =
         context.watch<DirectSourceManager>().settings.playerGestureSwipe;
+    final player = context.watch<PlayerProvider>();
+    // 横屏（宽>高，手机横屏/桌面宽屏）走双栏布局（UI10），否则竖屏 PageView。
+    final landscape =
+        MediaQuery.sizeOf(context).width > MediaQuery.sizeOf(context).height;
 
     return Scaffold(
       body: SafeArea(
-        // 横向由内层 PageView 原生跟手（右滑回播放页）；
-        // 竖向仅播放页（第 0 页）跟手下拉，歌词页纵向留给滚动。
-        // 关闭手势后 PageView 禁滑、下拉停用。
-        child: PageView(
-          controller: _pageCtrl,
+        child: landscape
+            ? _LandscapePlayer(
+                player: player,
+                direct: context.watch<DirectSourceManager>(),
+                cs: Theme.of(context).colorScheme)
+            : PageView(
+                // 横向由内层 PageView 原生跟手（右滑回播放页）；
+                // 竖向仅播放页（第 0 页）跟手下拉，歌词页纵向留给滚动。
+                // 关闭手势后 PageView 禁滑、下拉停用。
+                controller: _pageCtrl,
           physics: gestureOn
               ? const PageScrollPhysics()
               : const NeverScrollableScrollPhysics(),
@@ -253,9 +262,6 @@ class _NowPlaying extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = player.current!;
-    final favorite = direct.weight.isFavorite(s);
-    final disliked = direct.weight.isDisliked(s);
-
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -265,165 +271,127 @@ class _NowPlaying extends StatelessWidget {
               coverPath: s.coverPath, song: s, cs: cs, size: coverSize),
         ),
         const SizedBox(height: 20),
-        MarqueeText(
-          formatSongTitle(s, direct.settings.songTitleFormat),
-          style: Theme.of(context)
-              .textTheme
-              .headlineSmall
-              ?.copyWith(fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 6),
-        MarqueeText(
-          s.artist ?? 'Unknown',
-          style: Theme.of(context).textTheme.titleMedium,
-        ),
+        _TitleBlock(player: player, direct: direct),
         const SizedBox(height: 8),
-        Wrap(
-          alignment: WrapAlignment.center,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          spacing: 10,
-          runSpacing: 6,
-          children: [
-            Text(
-              [
-                s.source,
-                if (s.format != null && s.format!.isNotEmpty) s.format!,
-                if (formatDuration(s.duration).isNotEmpty)
-                  formatDuration(s.duration),
-              ].join(' · '),
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    fontFamily: 'monospace',
-                    color: cs.onSurface.withValues(alpha: 0.6),
-                  ),
-            ),
-            if (direct.settings.playerShowWeight)
-              InkWell(
-                borderRadius: BorderRadius.circular(8),
-                onTap: () => AppToast.show('当前曲目的播放权重', isError: false),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: cs.surfaceContainerHighest.withValues(alpha: 0.7),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.speed, size: 12, color: cs.onSurface.withValues(alpha: 0.6)),
-                      const SizedBox(width: 4),
-                      Text(
-                        '权重 ${player.currentWeightFactor?.toStringAsFixed(1) ?? '—'}',
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                              color: cs.onSurface.withValues(alpha: 0.6),
-                            ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-          ],
-        ),
-        // 工具行（低频操作，颜色更浅）
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              IconButton(
-                iconSize: 22,
-                tooltip: favorite ? '取消喜欢' : '喜欢',
-                color: favorite ? Colors.pink : cs.onSurface.withValues(alpha: 0.55),
-                icon: Icon(favorite ? Icons.favorite : Icons.favorite_border),
-                onPressed: () {
-                  direct.setFavorite(s, !favorite);
-                  AppToast.show(!favorite ? '已加入喜欢' : '已取消喜欢',
-                      isError: false);
-                },
-              ),
-              IconButton(
-                iconSize: 22,
-                tooltip: disliked ? '取消不喜欢' : '不喜欢（权重降到最低）',
-                color: disliked
-                    ? Colors.orange
-                    : cs.onSurface.withValues(alpha: 0.55),
-                icon: Icon(disliked
-                    ? Icons.thumb_down
-                    : Icons.thumb_down_outlined),
-                onPressed: () {
-                  direct.setDisliked(s, !disliked);
-                  AppToast.show(
-                      !disliked ? '已标记不喜欢，权重降到最低' : '已取消不喜欢',
-                      isError: false);
-                },
-              ),
-              IconButton(
-                iconSize: 22,
-                tooltip: '编辑歌单',
-                color: cs.onSurface.withValues(alpha: 0.55),
-                icon: const Icon(Icons.playlist_add_check),
-                onPressed: () => showEditPlaylistsSheet(context, s),
-              ),
-              IconButton(
-                iconSize: 22,
-                tooltip: '缓存歌曲',
-                color: cs.onSurface.withValues(alpha: 0.55),
-                icon: const Icon(Icons.download),
-                onPressed: () => _cache(context, s),
-              ),
-            ],
-          ),
-        ),
+        _MetaLine(player: player, direct: direct, cs: cs, song: s),
+        _ToolRow(player: player, direct: direct, cs: cs, song: s),
         _PlayerSeek(player: player, cs: cs),
         const SizedBox(height: 6),
-        // 主控制区（定时 - 上一首 - 播放 - 下一首 - 播放模式）
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            _SleepButton(player: player, cs: cs),
-            const SizedBox(width: 8),
-            Pressable(
-              onPressed: player.prev,
-              tooltip: '上一首',
-              child: const Icon(Icons.skip_previous, size: 34),
-            ),
-            StreamBuilder<PlayerState>(
-              stream: player.player.playerStateStream,
-              builder: (c, snap) {
-                final playing = snap.data?.playing ?? false;
-                return Pressable(
-                  onPressed: player.toggle,
-                  tooltip: playing ? '暂停' : '播放',
-                  pressedScale: 0.85,
-                  child: Icon(
-                      playing
-                          ? Icons.pause_circle_filled
-                          : Icons.play_circle_filled,
-                      size: 74,
-                      color: cs.primary),
-                );
-              },
-            ),
-            Pressable(
-              onPressed: player.next,
-              tooltip: '下一首',
-              child: const Icon(Icons.skip_next, size: 34),
-            ),
-            const SizedBox(width: 8),
-            _ModeButton(player: player, cs: cs),
-          ],
+        _ControlRow(player: player, cs: cs),
+        _PlayerError(player: player),
+      ],
+    );
+  }
+}
+
+/// 标题块（歌名跑马灯 + 歌手）：竖屏/横屏共用，[compact] 切紧凑字号。
+class _TitleBlock extends StatelessWidget {
+  final PlayerProvider player;
+  final DirectSourceManager direct;
+  final bool compact;
+  const _TitleBlock(
+      {required this.player, required this.direct, this.compact = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = player.current!;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        MarqueeText(
+          formatSongTitle(s, direct.settings.songTitleFormat),
+          style: (compact
+                  ? Theme.of(context).textTheme.titleLarge
+                  : Theme.of(context).textTheme.headlineSmall)
+              ?.copyWith(fontWeight: FontWeight.w700),
         ),
-        if (player.error != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 12),
-            child: Text(
-              player.error!,
-              style: const TextStyle(color: Colors.red),
-              textAlign: TextAlign.center,
+        SizedBox(height: compact ? 4 : 6),
+        MarqueeText(
+          s.artist ?? 'Unknown',
+          style: compact
+              ? Theme.of(context).textTheme.titleSmall
+              : Theme.of(context).textTheme.titleMedium,
+        ),
+      ],
+    );
+  }
+}
+
+/// 元信息行（来源 · 格式 · 时长 + 权重徽标）：竖屏/横屏共用。
+class _MetaLine extends StatelessWidget {
+  final PlayerProvider player;
+  final DirectSourceManager direct;
+  final ColorScheme cs;
+  final Song song;
+  const _MetaLine(
+      {required this.player,
+      required this.direct,
+      required this.cs,
+      required this.song});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = song;
+    return Wrap(
+      alignment: WrapAlignment.center,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      spacing: 10,
+      runSpacing: 6,
+      children: [
+        Text(
+          [
+            s.source,
+            if (s.format != null && s.format!.isNotEmpty) s.format!,
+            if (formatDuration(s.duration).isNotEmpty)
+              formatDuration(s.duration),
+          ].join(' · '),
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                fontFamily: 'monospace',
+                color: cs.onSurface.withValues(alpha: 0.6),
+              ),
+        ),
+        if (direct.settings.playerShowWeight)
+          InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => AppToast.show('当前曲目的播放权重', isError: false),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: cs.surfaceContainerHighest.withValues(alpha: 0.7),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.speed,
+                      size: 12, color: cs.onSurface.withValues(alpha: 0.6)),
+                  const SizedBox(width: 4),
+                  Text(
+                    '权重 ${player.currentWeightFactor?.toStringAsFixed(1) ?? '—'}',
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: cs.onSurface.withValues(alpha: 0.6),
+                        ),
+                  ),
+                ],
+              ),
             ),
           ),
       ],
     );
   }
+}
+
+/// 工具行（喜欢/不喜欢/编辑歌单/缓存）：竖屏/横屏共用。
+class _ToolRow extends StatelessWidget {
+  final PlayerProvider player;
+  final DirectSourceManager direct;
+  final ColorScheme cs;
+  final Song song;
+  const _ToolRow(
+      {required this.player,
+      required this.direct,
+      required this.cs,
+      required this.song});
 
   Future<void> _cache(BuildContext context, Song s) async {
     final src = direct.sourceByKey(s.sourceKey);
@@ -435,6 +403,204 @@ class _NowPlaying extends StatelessWidget {
     if (context.mounted) {
       AppToast.show('已开始缓存', isError: false);
     }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = song;
+    final favorite = direct.weight.isFavorite(s);
+    final disliked = direct.weight.isDisliked(s);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          IconButton(
+            iconSize: 22,
+            tooltip: favorite ? '取消喜欢' : '喜欢',
+            color: favorite ? Colors.pink : cs.onSurface.withValues(alpha: 0.55),
+            icon: Icon(favorite ? Icons.favorite : Icons.favorite_border),
+            onPressed: () {
+              direct.setFavorite(s, !favorite);
+              AppToast.show(!favorite ? '已加入喜欢' : '已取消喜欢',
+                  isError: false);
+            },
+          ),
+          IconButton(
+            iconSize: 22,
+            tooltip: disliked ? '取消不喜欢' : '不喜欢（权重降到最低）',
+            color: disliked
+                ? Colors.orange
+                : cs.onSurface.withValues(alpha: 0.55),
+            icon: Icon(
+                disliked ? Icons.thumb_down : Icons.thumb_down_outlined),
+            onPressed: () {
+              direct.setDisliked(s, !disliked);
+              AppToast.show(
+                  !disliked ? '已标记不喜欢，权重降到最低' : '已取消不喜欢',
+                  isError: false);
+            },
+          ),
+          IconButton(
+            iconSize: 22,
+            tooltip: '编辑歌单',
+            color: cs.onSurface.withValues(alpha: 0.55),
+            icon: const Icon(Icons.playlist_add_check),
+            onPressed: () => showEditPlaylistsSheet(context, s),
+          ),
+          IconButton(
+            iconSize: 22,
+            tooltip: '缓存歌曲',
+            color: cs.onSurface.withValues(alpha: 0.55),
+            icon: const Icon(Icons.download),
+            onPressed: () => _cache(context, s),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 主控制区（定时 - 上一首 - 播放 - 下一首 - 播放模式）：竖屏/横屏共用。
+class _ControlRow extends StatelessWidget {
+  final PlayerProvider player;
+  final ColorScheme cs;
+  const _ControlRow({required this.player, required this.cs});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        _SleepButton(player: player, cs: cs),
+        const SizedBox(width: 8),
+        Pressable(
+          onPressed: player.prev,
+          tooltip: '上一首',
+          child: const Icon(Icons.skip_previous, size: 34),
+        ),
+        StreamBuilder<PlayerState>(
+          stream: player.player.playerStateStream,
+          builder: (c, snap) {
+            final playing = snap.data?.playing ?? false;
+            return Pressable(
+              onPressed: player.toggle,
+              tooltip: playing ? '暂停' : '播放',
+              pressedScale: 0.85,
+              child: Icon(
+                  playing
+                      ? Icons.pause_circle_filled
+                      : Icons.play_circle_filled,
+                  size: 74,
+                  color: cs.primary),
+            );
+          },
+        ),
+        Pressable(
+          onPressed: player.next,
+          tooltip: '下一首',
+          child: const Icon(Icons.skip_next, size: 34),
+        ),
+        const SizedBox(width: 8),
+        _ModeButton(player: player, cs: cs),
+      ],
+    );
+  }
+}
+
+/// 播放错误行：竖屏/横屏共用。
+class _PlayerError extends StatelessWidget {
+  final PlayerProvider player;
+  const _PlayerError({required this.player});
+
+  @override
+  Widget build(BuildContext context) {
+    final err = player.error;
+    if (err == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Text(
+        err,
+        style: const TextStyle(color: Colors.red),
+        textAlign: TextAlign.center,
+      ),
+    );
+  }
+}
+
+/// 横屏双栏（参照 ui-playpage-wide.html，UI10）：左控右词；
+/// 宽>高时（手机横屏/桌面宽屏）与竖屏 PageView 二选一，共用上面全部部件。
+class _LandscapePlayer extends StatelessWidget {
+  final PlayerProvider player;
+  final DirectSourceManager direct;
+  final ColorScheme cs;
+  const _LandscapePlayer(
+      {required this.player, required this.direct, required this.cs});
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    if (!player.hasCurrent) {
+      return Center(
+          child: _EmptyState(coverSize: (size.height * 0.3).clamp(96.0, 150.0)));
+    }
+    final s = player.current!;
+    final leftW = (size.width * 0.42).clamp(280.0, 400.0);
+    final cover = (size.height * 0.3).clamp(96.0, 150.0);
+    return Row(
+      children: [
+        SizedBox(
+          width: leftW,
+          // 矮屏（高度不足时）允许左栏滚动，避免溢出；高屏不滚动。
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Center(
+                  child: _Cover(
+                      coverPath: s.coverPath, song: s, cs: cs, size: cover),
+                ),
+                const SizedBox(height: 10),
+                _TitleBlock(player: player, direct: direct, compact: true),
+                const SizedBox(height: 6),
+                _MetaLine(player: player, direct: direct, cs: cs, song: s),
+                _ToolRow(
+                    player: player, direct: direct, cs: cs, song: s),
+                _PlayerSeek(player: player, cs: cs),
+                const SizedBox(height: 4),
+                _ControlRow(player: player, cs: cs),
+                _PlayerError(player: player),
+              ],
+            ),
+          ),
+        ),
+        const VerticalDivider(width: 1),
+        Expanded(
+          // 右侧歌词区：上下边缘渐隐（参照稿 mask-image）。
+          child: ShaderMask(
+            shaderCallback: (r) => const LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                Colors.transparent,
+                Colors.black,
+                Colors.black,
+                Colors.transparent
+              ],
+              stops: [0.0, 0.12, 0.88, 1.0],
+            ).createShader(r),
+            blendMode: BlendMode.dstIn,
+            child: Padding(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+              child: LyricsView(player: player),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }
 
