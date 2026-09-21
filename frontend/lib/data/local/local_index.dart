@@ -1268,6 +1268,48 @@ class LocalIndex {
     }
   }
 
+  /// 元数据读取情况汇总（侧边栏「信息」页，改进 B6-4）。
+  /// 口径：total=全部行；missing=失效行；其余维度按有效行（missing=0）统计
+  /// 非空即"已获取"。码率无独立列，用"大小+时长齐全可估算"近似。
+  Map<String, int> metaStats() {
+    int bit(dynamic v) => (v as num?)?.toInt() ?? 0;
+    final r = _db!.select('''
+      SELECT COUNT(*) total,
+        COALESCE(SUM(i.missing),0) missing,
+        COALESCE(SUM(CASE WHEN i.missing=0 AND COALESCE(i.meta_read,0)=1 THEN 1 ELSE 0 END),0) meta_read,
+        COALESCE(SUM(CASE WHEN i.missing=0 AND i.artist IS NOT NULL AND i.artist<>'' THEN 1 ELSE 0 END),0) artist,
+        COALESCE(SUM(CASE WHEN i.missing=0 AND i.album IS NOT NULL AND i.album<>'' THEN 1 ELSE 0 END),0) album,
+        COALESCE(SUM(CASE WHEN i.missing=0 AND i.album_artist IS NOT NULL AND i.album_artist<>'' THEN 1 ELSE 0 END),0) album_artist,
+        COALESCE(SUM(CASE WHEN i.missing=0 AND i.genre IS NOT NULL AND i.genre<>'' THEN 1 ELSE 0 END),0) genre,
+        COALESCE(SUM(CASE WHEN i.missing=0 AND i.track_no IS NOT NULL THEN 1 ELSE 0 END),0) track_no,
+        COALESCE(SUM(CASE WHEN i.missing=0 AND i.year IS NOT NULL THEN 1 ELSE 0 END),0) year,
+        COALESCE(SUM(CASE WHEN i.missing=0 AND i.duration IS NOT NULL AND i.duration>0 THEN 1 ELSE 0 END),0) duration,
+        COALESCE(SUM(CASE WHEN i.missing=0 AND i.cover_path IS NOT NULL AND i.cover_path<>'' THEN 1 ELSE 0 END),0) cover,
+        COALESCE(SUM(CASE WHEN i.missing=0 AND l.content IS NOT NULL AND l.content<>'' THEN 1 ELSE 0 END),0) lyrics,
+        COALESCE(SUM(CASE WHEN i.missing=0 AND i.format IS NOT NULL AND i.format<>'' THEN 1 ELSE 0 END),0) format,
+        COALESCE(SUM(CASE WHEN i.missing=0 AND i.size>0 AND i.duration>0 THEN 1 ELSE 0 END),0) bitrate
+      FROM idx_songs i LEFT JOIN song_lyrics l
+        ON l.source_key=i.source_key AND l.ref=i.ref
+    ''').first;
+    return {
+      for (final k in [
+        'total', 'missing', 'meta_read', 'artist', 'album', 'album_artist',
+        'genre', 'track_no', 'year', 'duration', 'cover', 'lyrics', 'format',
+        'bitrate',
+      ])
+        k: bit(r[k]),
+    };
+  }
+
+  /// 按格式分组计数（有效行，信息页用）。
+  Map<String, int> formatStats() {
+    final rs = _db!.select('''
+      SELECT COALESCE(NULLIF(format,''),'未知') f, COUNT(*) c
+      FROM idx_songs WHERE missing=0 GROUP BY f ORDER BY c DESC
+    ''');
+    return {for (final r in rs) (r['f'] as String): (r['c'] as int)};
+  }
+
   /// pull 歌曲权重快照落 play_meta：先写 ('server', ref) 行（服务端歌曲），
   /// 再按快照 [source] 协议匹配本地直连行（同 ref 含 WebDAV 编码变体 + 同协议），
   /// 各写各的源 key（运行时按源 key 读权重，见 playMetaOf）。

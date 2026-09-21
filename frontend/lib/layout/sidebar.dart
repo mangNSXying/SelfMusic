@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
+import '../screens/library_info_screen.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_provider.dart';
 
@@ -105,6 +106,21 @@ class _BottomBar extends StatelessWidget {
     final isDark = theme.isDark;
     return Column(
       children: [
+        ListTile(
+          dense: true,
+          leading: const Icon(Icons.info_outline),
+          title: const Text('信息'),
+          subtitle: const Text('歌曲元数据读取情况汇总',
+              style: TextStyle(fontSize: 11)),
+          onTap: () {
+            // 移动端先收起抽屉，再压入信息页。
+            if (NavigationProviderHelper.isNarrow(context)) {
+              Scaffold.of(context).closeDrawer();
+            }
+            Navigator.of(context).push(MaterialPageRoute<void>(
+                builder: (_) => const LibraryInfoScreen()));
+          },
+        ),
         ListTile(
           dense: true,
           leading: Icon(isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined),

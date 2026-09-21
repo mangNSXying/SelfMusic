@@ -289,8 +289,7 @@ void main() {
     index.close();
   });
 
-  test('pull 歌曲快照：按源协议回写直连行 play_meta', () async {
-    final index = await _openIndex();
+  test('pull 歌曲快照：按源协议回写直连行 play_meta', () async {    final index = await _openIndex();
     index.upsertSongs([
       DirectSongRow(
           sourceKey: 'webdav:NAS',
@@ -324,6 +323,51 @@ void main() {
     expect(direct.likeStreak, 3);
     // 不同协议的同名行不受影响
     expect(index.playMetaOf('local:Disk', '/music/z.mp3').favorite, isFalse);
+
+    index.close();
+  });
+
+  test('信息汇总：metaStats/formatStats 口径', () async {
+    final index = await _openIndex();
+    index.upsertSongs([
+      DirectSongRow(
+          sourceKey: 'webdav:NAS',
+          ref: '/music/full.mp3',
+          title: '全',
+          artist: 'A',
+          album: 'B',
+          albumArtist: 'AA',
+          trackNo: 1,
+          year: 2020,
+          genre: 'Rock',
+          duration: 200,
+          format: 'mp3',
+          size: 1000,
+          mtime: 1),
+      DirectSongRow(
+          sourceKey: 'webdav:NAS',
+          ref: '/music/bare.flac',
+          title: '秃',
+          size: 500,
+          mtime: 1),
+    ]);
+    index.setLyrics('webdav:NAS', '/music/full.mp3', '[00:01] la');
+    index.enrichSong('webdav:NAS', '/music/full.mp3');
+
+    final stats = index.metaStats();
+    expect(stats['total'], 2);
+    expect(stats['missing'], 0);
+    expect(stats['meta_read'], 1);
+    expect(stats['artist'], 1);
+    expect(stats['album'], 1);
+    expect(stats['lyrics'], 1);
+    expect(stats['duration'], 1);
+    expect(stats['cover'], 0);
+    expect(stats['bitrate'], 1); // 仅 full 行大小+时长齐全
+
+    final formats = index.formatStats();
+    expect(formats['mp3'], 1);
+    expect(formats['未知'], 1); // bare 行 format 为空
 
     index.close();
   });
