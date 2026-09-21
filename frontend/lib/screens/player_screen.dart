@@ -269,34 +269,41 @@ class _NowPlaying extends StatelessWidget {
   }
 }
 
-/// 标题块（歌名跑马灯 + 歌手）：竖屏/横屏共用，[compact] 切紧凑字号。
+/// 标题块（歌名跑马灯 + 歌手）：竖屏/横屏共用，[compact] 切紧凑字号；
+/// [dense] 为横屏三列布局的更小字号（参照 ui-playpage-wide.html 15/11px）。
 class _TitleBlock extends StatelessWidget {
   final PlayerProvider player;
   final DirectSourceManager direct;
   final bool compact;
+  final bool dense;
   const _TitleBlock(
-      {required this.player, required this.direct, this.compact = false});
+      {required this.player,
+      required this.direct,
+      this.compact = false,
+      this.dense = false});
 
   @override
   Widget build(BuildContext context) {
     final s = player.current!;
+    final tt = Theme.of(context).textTheme;
+    final titleStyle = dense
+        ? tt.titleMedium?.copyWith(fontWeight: FontWeight.w700)
+        : (compact ? tt.titleLarge : tt.headlineSmall)
+            ?.copyWith(fontWeight: FontWeight.w700);
+    final artistStyle =
+        dense ? tt.bodySmall : (compact ? tt.titleSmall : tt.titleMedium);
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         MarqueeText(
           formatSongTitle(s, direct.settings.songTitleFormat),
-          style: (compact
-                  ? Theme.of(context).textTheme.titleLarge
-                  : Theme.of(context).textTheme.headlineSmall)
-              ?.copyWith(fontWeight: FontWeight.w700),
+          style: titleStyle,
         ),
-        SizedBox(height: compact ? 4 : 6),
+        SizedBox(height: dense ? 2 : (compact ? 4 : 6)),
         MarqueeText(
           // 未读取的元数据标注「未读取」，避免与「读取后发现没有」的留白混淆。
           s.metaDisplay(s.artist) ?? '',
-          style: compact
-              ? Theme.of(context).textTheme.titleSmall
-              : Theme.of(context).textTheme.titleMedium,
+          style: artistStyle,
         ),
       ],
     );
@@ -514,8 +521,9 @@ class _PlayerError extends StatelessWidget {
   }
 }
 
-/// 横屏双栏（参照 ui-playpage-wide.html，UI10）：左控右词；
-/// 宽>高时（手机横屏/桌面宽屏）与竖屏 PageView 二选一，共用上面全部部件。
+/// 横屏三列（参照更新版 ui-playpage-wide.html，UI10）：
+/// 左列 34% 封面/信息/进度，中列歌词（上下渐隐），右列 22% 竖向控制
+/// （定时 / 上一首·播放·下一首 / 模式）。宽>高时（手机横屏/桌面宽屏）启用。
 class _LandscapePlayer extends StatelessWidget {
   final PlayerProvider player;
   final DirectSourceManager direct;
@@ -531,59 +539,129 @@ class _LandscapePlayer extends StatelessWidget {
           child: _EmptyState(coverSize: (size.height * 0.3).clamp(96.0, 150.0)));
     }
     final s = player.current!;
-    final leftW = (size.width * 0.42).clamp(280.0, 400.0);
-    final cover = (size.height * 0.3).clamp(96.0, 150.0);
-    return Row(
-      children: [
-        SizedBox(
-          width: leftW,
-          // 矮屏（高度不足时）允许左栏滚动，避免溢出；高屏不滚动。
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Center(
-                  child: _Cover(
-                      coverPath: s.coverPath, song: s, cs: cs, size: cover),
+    final leftW = (size.width * 0.34).clamp(200.0, 360.0);
+    final rightW = (size.width * 0.22).clamp(88.0, 132.0);
+    final cover = (size.height * 0.32).clamp(80.0, 120.0);
+    // 桌面宽屏限宽居中（参照稿 max-width: 820），避免三列被拉得过散。
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 900),
+        child: Row(
+          children: [
+            // 第一列：封面、信息、进度条（竖屏逻辑）。
+            SizedBox(
+              width: leftW,
+              // 矮屏（高度不足时）允许左栏滚动，避免溢出；高屏不滚动。
+              child: SingleChildScrollView(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Center(
+                      child: _Cover(
+                          coverPath: s.coverPath, song: s, cs: cs, size: cover),
+                    ),
+                    const SizedBox(height: 8),
+                    _TitleBlock(
+                        player: player,
+                        direct: direct,
+                        compact: true,
+                        dense: true),
+                    const SizedBox(height: 4),
+                    _MetaLine(player: player, direct: direct, cs: cs, song: s),
+                    _ToolRow(player: player, direct: direct, cs: cs, song: s),
+                    _PlayerSeek(player: player, cs: cs),
+                    _PlayerError(player: player),
+                  ],
                 ),
-                const SizedBox(height: 10),
-                _TitleBlock(player: player, direct: direct, compact: true),
-                const SizedBox(height: 6),
-                _MetaLine(player: player, direct: direct, cs: cs, song: s),
-                _ToolRow(
-                    player: player, direct: direct, cs: cs, song: s),
-                _PlayerSeek(player: player, cs: cs),
-                const SizedBox(height: 4),
-                _ControlRow(player: player, cs: cs),
-                _PlayerError(player: player),
-              ],
+              ),
             ),
-          ),
+            const VerticalDivider(width: 1),
+            // 第二列：歌词区，上下边缘渐隐（参照稿 mask-image）。
+            Expanded(
+              child: ShaderMask(
+                shaderCallback: (r) => const LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.transparent,
+                    Colors.black,
+                    Colors.black,
+                    Colors.transparent
+                  ],
+                  stops: [0.0, 0.12, 0.88, 1.0],
+                ).createShader(r),
+                blendMode: BlendMode.dstIn,
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                  child: LyricsView(player: player),
+                ),
+              ),
+            ),
+            const VerticalDivider(width: 1),
+            // 第三列：竖向主控制区（顶部定时 / 中部切歌播放 / 底部模式）。
+            SizedBox(
+              width: rightW,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    _SleepButton(player: player, cs: cs),
+                    _VerticalControls(player: player, cs: cs),
+                    _ModeButton(player: player, cs: cs),
+                  ],
+                ),
+              ),
+            ),
+          ],
         ),
-        const VerticalDivider(width: 1),
-        Expanded(
-          // 右侧歌词区：上下边缘渐隐（参照稿 mask-image）。
-          child: ShaderMask(
-            shaderCallback: (r) => const LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Colors.transparent,
-                Colors.black,
-                Colors.black,
-                Colors.transparent
-              ],
-              stops: [0.0, 0.12, 0.88, 1.0],
-            ).createShader(r),
-            blendMode: BlendMode.dstIn,
-            child: Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
-              child: LyricsView(player: player),
-            ),
-          ),
+      ),
+    );
+  }
+}
+
+/// 横屏右列中部的竖向播放控制：上一首 / 播放暂停 / 下一首。
+class _VerticalControls extends StatelessWidget {
+  final PlayerProvider player;
+  final ColorScheme cs;
+  const _VerticalControls({required this.player, required this.cs});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Pressable(
+          onPressed: player.prev,
+          tooltip: '上一首',
+          child: const Icon(Icons.skip_previous, size: 28),
+        ),
+        const SizedBox(height: 6),
+        StreamBuilder<PlayerState>(
+          stream: player.player.playerStateStream,
+          builder: (c, snap) {
+            final playing = snap.data?.playing ?? false;
+            return Pressable(
+              onPressed: player.toggle,
+              tooltip: playing ? '暂停' : '播放',
+              pressedScale: 0.85,
+              child: Icon(
+                  playing
+                      ? Icons.pause_circle_filled
+                      : Icons.play_circle_filled,
+                  size: 56,
+                  color: cs.primary),
+            );
+          },
+        ),
+        const SizedBox(height: 6),
+        Pressable(
+          onPressed: player.next,
+          tooltip: '下一首',
+          child: const Icon(Icons.skip_next, size: 28),
         ),
       ],
     );
