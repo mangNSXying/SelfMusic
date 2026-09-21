@@ -22,9 +22,16 @@ class _AppShellState extends State<AppShell> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   bool _sidebarVisible = true;
 
+  /// 宽屏判定（UI10）：宽 ≥900，或横屏（宽>高）一律按桌面布局
+  ///（常驻可收缩侧边栏 + 右队列槽 + 内容多列自适应）。
+  /// 竖屏窄屏仍走抽屉。
+  static bool isWide(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    return size.width >= 900 || size.width > size.height;
+  }
+
   void _toggleSidebar() {
-    final w = MediaQuery.of(context).size.width;
-    if (w < 900) {
+    if (!isWide(context)) {
       _scaffoldKey.currentState?.openDrawer();
     } else {
       setState(() => _sidebarVisible = !_sidebarVisible);
@@ -33,7 +40,7 @@ class _AppShellState extends State<AppShell> {
 
   @override
   Widget build(BuildContext context) {
-    final wide = MediaQuery.of(context).size.width >= 900;
+    final wide = isWide(context);
     final nav = context.watch<NavigationProvider>();
 
     final contentColumn = Column(

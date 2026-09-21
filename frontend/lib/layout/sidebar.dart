@@ -145,8 +145,12 @@ class _BottomBar extends StatelessWidget {
 }
 
 /// 便于 Sidebar 判断是否处于移动端抽屉（窄屏）。
+/// 与 AppShell.isWide 取反一致：横屏一律桌面布局，无抽屉可关。
 class NavigationProviderHelper {
-  static bool isNarrow(BuildContext context) =>
-      MediaQuery.of(context).size.width < 900;
+  static bool isNarrow(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    return !(size.width >= 900 || size.width > size.height);
+  }
+
   const NavigationProviderHelper._();
 }

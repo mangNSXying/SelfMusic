@@ -509,13 +509,7 @@ class _AlbumsViewState extends State<_AlbumsView> {
                   child: card
                       ? GridView.builder(
                           padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                          gridDelegate:
-                              const SliverGridDelegateWithMaxCrossAxisExtent(
-                            maxCrossAxisExtent: 220,
-                            mainAxisSpacing: 16,
-                            crossAxisSpacing: 16,
-                            childAspectRatio: 0.72,
-                          ),
+                            gridDelegate: SquareCard.gridDelegate,
                           itemCount: albums.length,
                           itemBuilder: (c, i) => _AlbumCard(album: albums[i]),
                         )
@@ -731,13 +725,7 @@ class _ArtistsViewState extends State<_ArtistsView> {
                   child: card
                       ? GridView.builder(
                           padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                          gridDelegate:
-                              const SliverGridDelegateWithMaxCrossAxisExtent(
-                            maxCrossAxisExtent: 220,
-                            mainAxisSpacing: 16,
-                            crossAxisSpacing: 16,
-                            childAspectRatio: 0.8,
-                          ),
+                            gridDelegate: SquareCard.gridDelegate,
                           itemCount: artists.length,
                           itemBuilder: (c, i) => _ArtistCard(artist: artists[i]),
                         )

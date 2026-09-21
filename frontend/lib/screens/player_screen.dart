@@ -177,24 +177,9 @@ class _LyricsPage extends StatelessWidget {
       children: [
         if (s != null)
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            child: Column(
-              children: [
-                MarqueeText(
-                  formatSongTitle(s, direct.settings.songTitleFormat),
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleMedium
-                      ?.copyWith(fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 4),
-                MarqueeText(
-                  s.artist ?? 'Unknown',
-                  style: TextStyle(
-                      fontSize: 13, color: cs.onSurface.withValues(alpha: 0.6)),
-                ),
-              ],
-            ),
+            padding: const EdgeInsets.fromLTRB(24, 28, 24, 0),
+            child: _TitleBlock(
+                player: player, direct: direct, compact: true),
           ),
         const SizedBox(height: 6),
         Expanded(

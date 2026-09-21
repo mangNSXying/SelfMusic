@@ -5,12 +5,15 @@ import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../utils/song_title_format.dart';
 
-/// 切换播放队列面板：窄屏底部弹层（0.7 高），宽屏右侧常驻面板开关。
+/// 切换播放队列面板：窄屏竖屏底部弹层（0.7 高），宽屏/横屏右侧常驻面板开关。
 ///
 /// 顶栏队列按钮已移除，统一由迷你播放栏进入；AppShell 与迷你栏共用此入口。
+/// 宽屏判定与 AppShell.isWide 一致（queue_panel 不导入 app_shell 避免循环依赖）。
 void toggleQueuePanel(BuildContext context) {
   final nav = context.read<NavigationProvider>();
-  if (MediaQuery.of(context).size.width < 900) {
+  final size = MediaQuery.sizeOf(context);
+  final wide = size.width >= 900 || size.width > size.height;
+  if (!wide) {
     if (nav.queueOpen) return;
     nav.openQueue();
     showModalBottomSheet<void>(

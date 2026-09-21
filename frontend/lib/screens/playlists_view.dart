@@ -10,6 +10,7 @@ import '../providers/playlists_provider.dart';
 import '../utils/song_title_format.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
+import '../widgets/square_card.dart';
 import '../widgets/list_selection.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
@@ -120,17 +121,11 @@ class _PlaylistsViewState extends State<PlaylistsView> {
                   padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
                   child: Row(
                     children: [
-                      Text(
-                        '${playlists.length} 个播放列表',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSurface
-                              .withValues(alpha: 0.6),
-                        ),
-                      ),
-                      const Spacer(),
+                      Expanded(
+                          child: CountHeader(
+                              count: playlists.length,
+                              unit: '个播放列表',
+                              padding: EdgeInsets.zero)),
                       ViewModeToggle(
                         card: card,
                         onChanged: (v) => _setMode(
@@ -148,13 +143,7 @@ class _PlaylistsViewState extends State<PlaylistsView> {
                     : card
                         ? GridView.builder(
                             padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                            gridDelegate:
-                                const SliverGridDelegateWithMaxCrossAxisExtent(
-                              maxCrossAxisExtent: 220,
-                              mainAxisSpacing: 12,
-                              crossAxisSpacing: 12,
-                              childAspectRatio: 1.5,
-                            ),
+                            gridDelegate: SquareCard.gridDelegate,
                             itemCount: playlists.length,
                             itemBuilder: (c, i) =>
                                 _playlistCard(provider, playlists[i]),
@@ -203,54 +192,23 @@ class _PlaylistsViewState extends State<PlaylistsView> {
   }
 
   Widget _playlistCard(PlaylistsProvider provider, PlaylistRow p) {
-    final cs = Theme.of(context).colorScheme;
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: _sel.active
-            ? () => _toggleSelect(p.id)
-            : () => context.read<NavigationProvider>().enterPlaylist(p.id),
-        onLongPress: _sel.active
-            ? () => _toggleSelect(p.id)
-            : () => setState(() => _sel.startWith(p.id)),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(Icons.queue_music, color: cs.primary, size: 30),
-                  const Spacer(),
-                  if (_sel.active)
-                    Checkbox(
-                      value: _sel.contains(p.id),
-                      onChanged: (_) => _toggleSelect(p.id),
-                    )
-                  else
-                    _playlistMenu(provider, p),
-                ],
-              ),
-              const Spacer(),
-              Text(
-                p.name,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context)
-                    .textTheme
-                    .titleSmall
-                    ?.copyWith(fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                '${provider.countOf(p.id)} 首',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: cs.onSurface.withValues(alpha: 0.6)),
-              ),
-            ],
-          ),
-        ),
-      ),
+    return SquareCard(
+      title: p.name,
+      titleMaxLines: 2,
+      subtitle: '${provider.countOf(p.id)} 首',
+      fallbackIcon: Icons.queue_music,
+      onTap: _sel.active
+          ? () => _toggleSelect(p.id)
+          : () => context.read<NavigationProvider>().enterPlaylist(p.id),
+      onLongPress: _sel.active
+          ? () => _toggleSelect(p.id)
+          : () => setState(() => _sel.startWith(p.id)),
+      cornerAction: _sel.active
+          ? Checkbox(
+              value: _sel.contains(p.id),
+              onChanged: (_) => _toggleSelect(p.id),
+            )
+          : _playlistMenu(provider, p),
     );
   }
 

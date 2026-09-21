@@ -5,7 +5,8 @@ import 'package:flutter/material.dart';
 class CountHeader extends StatelessWidget {
   final int count;
 
-  /// 量词：歌曲页 '首'，专辑页 '张'，歌手页 '位'。
+  /// 量词：歌曲页 '首'，专辑页 '张'，歌手页 '位'，
+  /// 播放列表页 '个播放列表'，播放源页 '个播放源'。
   final String unit;
 
   /// 内边距（嵌入已有行内时传 [EdgeInsets.zero]，由外层负责）。
@@ -17,6 +18,8 @@ class CountHeader extends StatelessWidget {
   String get _label => switch (unit) {
         '张' => '共 $count 张专辑',
         '位' => '共 $count 位歌手',
+        '个播放列表' => '共 $count 个播放列表',
+        '个播放源' => '共 $count 个播放源',
         _ => '共 $count 首歌曲',
       };
 

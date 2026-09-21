@@ -8,6 +8,7 @@ import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../services/api_client.dart';
 import '../widgets/corner_add_button.dart';
+import '../widgets/count_header.dart';
 import '../widgets/square_card.dart';
 import '../widgets/view_mode_toggle.dart';
 
@@ -48,14 +49,11 @@ class _SourcesScreenState extends State<SourcesScreen> {
                 padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
                 child: Row(
                   children: [
-                    Text(
-                      '${direct.sources.length} 个播放源',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: scheme.onSurface.withValues(alpha: 0.6),
-                      ),
-                    ),
-                    const Spacer(),
+                    Expanded(
+                        child: CountHeader(
+                            count: direct.sources.length,
+                            unit: '个播放源',
+                            padding: EdgeInsets.zero)),
                     ViewModeToggle(
                       card: card,
                       onChanged: (v) => _setMode(
@@ -79,13 +77,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
                         ? GridView.builder(
                             padding:
                                 const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                            gridDelegate:
-                                const SliverGridDelegateWithMaxCrossAxisExtent(
-                              maxCrossAxisExtent: 220,
-                              mainAxisSpacing: 16,
-                              crossAxisSpacing: 16,
-                              childAspectRatio: 0.72,
-                            ),
+                            gridDelegate: SquareCard.gridDelegate,
                             itemCount: direct.sources.length,
                             itemBuilder: (c, i) => _DirectSourceCard(
                                 sourceKey: direct.sources[i].key),
