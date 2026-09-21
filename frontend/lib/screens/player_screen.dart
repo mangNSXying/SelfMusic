@@ -802,11 +802,11 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
                       controlAffinity: ListTileControlAffinity.leading,
                       dense: true,
                       title: const Text('指定时间',
-                          style: TextStyle(fontSize: 19)),
+                          style: TextStyle(fontSize: 17)),
                       subtitle: _timeSubtitle(),
                       secondary: _mode == SleepTimerKind.time
                           ? IconButton(
-                              icon: const Icon(Icons.schedule, size: 40),
+                              icon: const Icon(Icons.schedule, size: 30),
                               tooltip: '选择时间',
                               onPressed: _pickTime,
                             )
@@ -817,26 +817,26 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
                       controlAffinity: ListTileControlAffinity.leading,
                       dense: true,
                       title: const Text('指定时长',
-                          style: TextStyle(fontSize: 19)),
+                          style: TextStyle(fontSize: 17)),
                       subtitle: Text('倒计时 ${_fmtMinutes(_minutes)}后自动停止',
-                          style: const TextStyle(fontSize: 17)),
+                          style: const TextStyle(fontSize: 15)),
                     ),
                     RadioListTile<SleepTimerKind>(
                       value: SleepTimerKind.count,
                       controlAffinity: ListTileControlAffinity.leading,
                       dense: true,
                       title: const Text('指定曲数',
-                          style: TextStyle(fontSize: 19)),
+                          style: TextStyle(fontSize: 17)),
                       subtitle: Text('再播放 $_count 首后停止',
-                          style: const TextStyle(fontSize: 17)),
+                          style: const TextStyle(fontSize: 15)),
                     ),
                     const RadioListTile<SleepTimerKind>(
                       value: SleepTimerKind.endOfList,
                       controlAffinity: ListTileControlAffinity.leading,
                       dense: true,
-                      title: Text('列表结尾', style: TextStyle(fontSize: 19)),
+                      title: Text('列表结尾', style: TextStyle(fontSize: 17)),
                       subtitle:
-                          Text('播完队列最后一首即停止', style: TextStyle(fontSize: 17)),
+                          Text('播完队列最后一首即停止', style: TextStyle(fontSize: 15)),
                     ),
                   ],
                 ),
@@ -856,9 +856,9 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('播放完最后的曲目',
-                    style: TextStyle(fontSize: 19)),
-                subtitle: const Text('到点不中断当前歌曲，放完这曲再暂停',
                     style: TextStyle(fontSize: 17)),
+                subtitle: const Text('到点不中断当前歌曲，放完这曲再暂停',
+                    style: TextStyle(fontSize: 15)),
                 value: _playThrough || _mode == SleepTimerKind.endOfList,
                 onChanged: _mode == SleepTimerKind.endOfList
                     ? null
@@ -884,10 +884,10 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
   /// 指定时间副标题（时刻 + 选择按钮）。
   Widget _timeSubtitle() {
     if (_time == null) {
-      return const Text('选择停止时刻', style: TextStyle(fontSize: 17));
+      return const Text('选择停止时刻', style: TextStyle(fontSize: 15));
     }
     return Row(children: [
-      Text(_fmtTime(_time!), style: const TextStyle(fontSize: 17)),
+      Text(_fmtTime(_time!), style: const TextStyle(fontSize: 15)),
       const SizedBox(width: 4),
       TextButton(
         style: TextButton.styleFrom(
@@ -895,7 +895,7 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
           padding: const EdgeInsets.symmetric(horizontal: 6),
         ),
         onPressed: _pickTime,
-        child: const Text('选择', style: TextStyle(fontSize: 17)),
+        child: const Text('选择', style: TextStyle(fontSize: 15)),
       ),
     ]);
   }
@@ -1013,11 +1013,11 @@ class _WheelOpener extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 4),
       child: Row(
         children: [
-          Text(label, style: const TextStyle(fontSize: 18)),
+          Text(label, style: const TextStyle(fontSize: 16)),
           const Spacer(),
           FilledButton.tonalIcon(
             icon: const Icon(Icons.unfold_more, size: 20),
-            label: const Text('滚轮选择', style: TextStyle(fontSize: 16)),
+            label: const Text('滚轮选择', style: TextStyle(fontSize: 15)),
             onPressed: onTap,
           ),
         ],
