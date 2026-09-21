@@ -353,9 +353,12 @@ class _SyncSectionState extends State<_SyncSection> {
   }
 }
 
-/// 服务端 → 缓存目录：展示真实路径与当前占用，点击复制路径。
-class _CacheDirTile extends StatelessWidget {
+/// 服务端 → 缓存目录：展示真实路径与当前占用；复制路径 / 更改目录（含迁移）。
+class _CacheDirTile extends StatefulWidget {
   const _CacheDirTile();
+
+  @override
+  State<_CacheDirTile> createState() => _CacheDirTileState();
 
   static String _fmtBytes(int bytes) {
     if (bytes >= 1024 * 1024) {
@@ -363,22 +366,64 @@ class _CacheDirTile extends StatelessWidget {
     }
     return '${(bytes / 1024).toStringAsFixed(0)} KB';
   }
+}
+
+class _CacheDirTileState extends State<_CacheDirTile> {
+  var _moving = false;
+
+  Future<void> _changeDir() async {
+    final dir = await getDirectoryPath(confirmButtonText: '选择');
+    if (dir == null || !mounted) return;
+    setState(() => _moving = true);
+    try {
+      final index = context.read<DirectSourceManager>().index;
+      final moved = await index.migrateCacheDir(dir);
+      if (!mounted) return;
+      setState(() => _moving = false);
+      AppToast.show(moved == 0 ? '缓存目录已是该位置' : '缓存目录已更改，迁移 $moved 首',
+          isError: false);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _moving = false);
+      AppToast.error(e, '更改缓存目录失败');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final index = context.read<DirectSourceManager>().index;
     final count = index.listCache().length;
+    final custom = index.customCacheDir;
     return ListTile(
       contentPadding: EdgeInsets.zero,
       leading: const Icon(Icons.folder_open),
       title: const Text('缓存目录'),
-      subtitle: Text('${index.cacheDir}\n已缓存 $count 首 · 占用 ${_fmtBytes(index.cacheTotalBytes())}'),
+      subtitle: Text(
+          '${index.cacheDir}${custom == null ? '（默认）' : '（自定义）'}\n已缓存 $count 首 · 占用 ${_CacheDirTile._fmtBytes(index.cacheTotalBytes())}'),
       isThreeLine: true,
-      trailing: const Icon(Icons.copy_outlined),
-      onTap: () {
-        Clipboard.setData(ClipboardData(text: index.cacheDir));
-        AppToast.show('已复制缓存目录路径', isError: false);
-      },
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: const Icon(Icons.copy_outlined),
+            tooltip: '复制路径',
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: index.cacheDir));
+              AppToast.show('已复制缓存目录路径', isError: false);
+            },
+          ),
+          _moving
+              ? const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+              : IconButton(
+                  icon: const Icon(Icons.edit_outlined),
+                  tooltip: '更改目录（迁移已有缓存）',
+                  onPressed: _changeDir,
+                ),
+        ],
+      ),
     );
   }
 }

@@ -801,8 +801,19 @@ class LocalIndex {
 
   // ---------- offline cache ----------
 
+  /// 自定义缓存目录（空=默认应用目录下 cache；机器相关，不进导出白名单）。
+  static const String kCacheDirCustom = 'cache_dir_custom';
+
+  String? get customCacheDir {
+    final v = settingsGet(kCacheDirCustom);
+    return (v == null || v.isEmpty) ? null : v;
+  }
+
   String get _cacheDir {
-    final d = p.join(_dir!, 'cache');
+    final custom = customCacheDir;
+    final d = (custom != null && Directory(custom).existsSync())
+        ? custom
+        : p.join(_dir!, 'cache');
     Directory(d).createSync(recursive: true);
     return d;
   }
@@ -850,6 +861,30 @@ class LocalIndex {
   String? cachedPath(String cacheKey) {
     if (!isCached(cacheKey)) return null;
     return cachePathForKey(cacheKey);
+  }
+
+  /// 迁移缓存目录：建新目录（含可写校验）→ 逐个移动 .dat 并更新 path 列 →
+  /// 切换设置。返回迁移文件数；失败抛异常（调用方 toast），可重试继续。
+  Future<int> migrateCacheDir(String newDir) async {
+    final target = Directory(newDir);
+    target.createSync(recursive: true);
+    final probe = File(p.join(target.path, '.writetest'));
+    probe.writeAsStringSync('ok');
+    probe.deleteSync();
+    final oldDir = cacheDir;
+    if (p.normalize(oldDir) == p.normalize(target.path)) return 0;
+    var moved = 0;
+    for (final r in listCache()) {
+      final src = File(cachePathForKey(r.cacheKey));
+      if (!src.existsSync()) continue;
+      final dstPath = p.join(target.path, '${r.cacheKey}.dat');
+      src.renameSync(dstPath);
+      _db!.execute('UPDATE cache SET path=? WHERE cache_key=?',
+          [dstPath, r.cacheKey]);
+      moved++;
+    }
+    settingsSet(kCacheDirCustom, target.path);
+    return moved;
   }
 
   /// 播放/访问缓存时刷新最后访问时间（LRU 依据）。

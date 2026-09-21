@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
+import '../theme/app_theme.dart';
 import '../utils/song_title_format.dart';
 import '../widgets/player_sheet_anim.dart';
 import '../widgets/pressable.dart';
@@ -61,9 +62,49 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
     final gestureOn = settings.playerGestureSwipe;
     final cs = Theme.of(context).colorScheme;
 
-    // 队列有内容即展示（即使当前曲加载失败也保留入口），无队列才隐藏。
+    // 队列为空（初次进入）时显示占位条：点按进入播放源页添加歌曲，
+    // 保证内容页底部始终有迷你条（改进 B6-U9）。
     if (player.queue.isEmpty) {
-      return const SizedBox.shrink();
+      return Material(
+        color: cs.surface,
+        child: InkWell(
+          onTap: () => nav.select(NavSection.sources),
+          child: Container(
+            constraints: const BoxConstraints(minHeight: 72),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+            decoration: BoxDecoration(
+              border: Border(top: BorderSide(color: cs.outlineVariant)),
+            ),
+            child: Row(
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: SizedBox(
+                    width: 46,
+                    height: 46,
+                    child: Container(
+                      color: cs.primary.withValues(alpha: 0.12),
+                      child: Icon(Icons.music_note, color: cs.primary),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    '还没有播放队列，去播放源页添加歌曲',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: cs.onSurface.withValues(alpha: 0.6)),
+                  ),
+                ),
+                Icon(Icons.chevron_right,
+                    color: cs.onSurface.withValues(alpha: 0.4)),
+              ],
+            ),
+          ),
+        ),
+      );
     }
     final song = player.current ?? player.queue.first;
 
