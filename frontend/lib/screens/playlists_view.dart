@@ -147,7 +147,7 @@ class _PlaylistsViewState extends State<PlaylistsView> {
                     ? const Center(child: Text('暂无歌单，点右下角「+」创建'))
                     : card
                         ? GridView.builder(
-                            padding: const EdgeInsets.all(16),
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                             gridDelegate:
                                 const SliverGridDelegateWithMaxCrossAxisExtent(
                               maxCrossAxisExtent: 220,
