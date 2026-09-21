@@ -19,6 +19,13 @@ import '../widgets/marquee_text.dart';
 import '../widgets/pressable.dart';
 import '../widgets/player_sheet_anim.dart';
 
+/// 横屏播放页布局分流（UI10 平台差异化）：
+/// 桌面平台（鼠标+大窗口）或超宽屏（≥1000，大平板）→ 双栏居中布局；
+/// 手机等窄屏横屏 → 三列紧凑布局（ui-playpage-wide.html）。
+@visibleForTesting
+bool useDesktopLandscape(Size size, {required bool isDesktopPlatform}) =>
+    isDesktopPlatform || size.width >= 1000;
+
 /// 全屏播放页（ui-playpage.html v5）：作为「首页」整屏展示，替换整个壳层。
 ///
 /// 手势交互（可在设置中关闭）：
@@ -87,17 +94,28 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final gestureOn =
         context.watch<DirectSourceManager>().settings.playerGestureSwipe;
     final player = context.watch<PlayerProvider>();
-    // 横屏（宽>高，手机横屏/桌面宽屏）走双栏布局（UI10），否则竖屏 PageView。
-    final landscape =
-        MediaQuery.sizeOf(context).width > MediaQuery.sizeOf(context).height;
+    final size = MediaQuery.sizeOf(context);
+    // 横屏（宽>高）分两套（UI10 平台差异化）：
+    // - 桌面（Linux/Windows/macOS）或超宽屏（大平板）：双栏居中布局，避免
+    //   手机版三列被大窗口拉散（控制键散布整屏高、内容缩在角落）；
+    // - 手机横屏：三列紧凑布局，贴合 ui-playpage-wide.html 稿。
+    final landscape = size.width > size.height;
+    final desktopLandscape = useDesktopLandscape(size,
+        isDesktopPlatform:
+            Platform.isLinux || Platform.isWindows || Platform.isMacOS);
 
     return Scaffold(
       body: SafeArea(
         child: landscape
-            ? _LandscapePlayer(
-                player: player,
-                direct: context.watch<DirectSourceManager>(),
-                cs: Theme.of(context).colorScheme)
+            ? (desktopLandscape
+                ? _DesktopLandscapePlayer(
+                    player: player,
+                    direct: context.watch<DirectSourceManager>(),
+                    cs: Theme.of(context).colorScheme)
+                : _LandscapePlayer(
+                    player: player,
+                    direct: context.watch<DirectSourceManager>(),
+                    cs: Theme.of(context).colorScheme))
             : PageView(
                 // 横向由内层 PageView 原生跟手（右滑回播放页）；
                 // 竖向仅播放页（第 0 页）跟手下拉，歌词页纵向留给滚动。
@@ -521,9 +539,10 @@ class _PlayerError extends StatelessWidget {
   }
 }
 
-/// 横屏三列（参照更新版 ui-playpage-wide.html，UI10）：
+/// 手机横屏三列（参照更新版 ui-playpage-wide.html，UI10）：
 /// 左列 34% 封面/信息/进度，中列歌词（上下渐隐），右列 22% 竖向控制
-/// （定时 / 上一首·播放·下一首 / 模式）。宽>高时（手机横屏/桌面宽屏）启用。
+/// （定时 / 上一首·播放·下一首 / 模式）。只在窄屏横屏（手机）使用；
+/// 桌面/超宽屏走 [_DesktopLandscapePlayer]，避免被大窗口拉散。
 class _LandscapePlayer extends StatelessWidget {
   final PlayerProvider player;
   final DirectSourceManager direct;
@@ -613,6 +632,105 @@ class _LandscapePlayer extends StatelessWidget {
                     _VerticalControls(player: player, cs: cs),
                     _ModeButton(player: player, cs: cs),
                   ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 桌面横屏双栏（Linux/Windows/macOS 或超宽屏）：
+/// 左栏封面/信息/控制整体垂直居中的一列（横排控制键，不被窗口高度拉散），
+/// 右栏整幅歌词限宽居中。手机版三列在大窗口下会显得内容碎、留白多，
+/// 故按平台/宽度分流（UI10 平台差异化）。
+class _DesktopLandscapePlayer extends StatelessWidget {
+  final PlayerProvider player;
+  final DirectSourceManager direct;
+  final ColorScheme cs;
+  const _DesktopLandscapePlayer(
+      {required this.player, required this.direct, required this.cs});
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    if (!player.hasCurrent) {
+      return Center(
+          child:
+              _EmptyState(coverSize: (size.height * 0.32).clamp(120.0, 200.0)));
+    }
+    final s = player.current!;
+    final leftW = (size.width * 0.30).clamp(320.0, 440.0);
+    final cover = (size.height * 0.40).clamp(160.0, 280.0);
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 1240),
+        child: Row(
+          children: [
+            // 左栏：矮窗口可滚动；内容不足一屏高时垂直居中，不留大片死白。
+            SizedBox(
+              width: leftW,
+              child: LayoutBuilder(
+                builder: (context, c) => SingleChildScrollView(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(minHeight: c.maxHeight - 32),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Center(
+                          child: _Cover(
+                              coverPath: s.coverPath,
+                              song: s,
+                              cs: cs,
+                              size: cover),
+                        ),
+                        const SizedBox(height: 16),
+                        _TitleBlock(
+                            player: player, direct: direct, compact: true),
+                        const SizedBox(height: 6),
+                        _MetaLine(
+                            player: player, direct: direct, cs: cs, song: s),
+                        _ToolRow(
+                            player: player, direct: direct, cs: cs, song: s),
+                        _PlayerSeek(player: player, cs: cs),
+                        _ControlRow(player: player, cs: cs),
+                        _PlayerError(player: player),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const VerticalDivider(width: 1),
+            // 右栏：歌词限宽居中 + 上下边缘渐隐。
+            Expanded(
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 680),
+                  child: ShaderMask(
+                    shaderCallback: (r) => const LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.transparent,
+                        Colors.black,
+                        Colors.black,
+                        Colors.transparent
+                      ],
+                      stops: [0.0, 0.12, 0.88, 1.0],
+                    ).createShader(r),
+                    blendMode: BlendMode.dstIn,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 24, vertical: 12),
+                      child: LyricsView(player: player),
+                    ),
+                  ),
                 ),
               ),
             ),
