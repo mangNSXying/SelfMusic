@@ -107,15 +107,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return Scaffold(
       body: SafeArea(
         child: landscape
-            ? (desktopLandscape
-                ? _DesktopLandscapePlayer(
-                    player: player,
-                    direct: context.watch<DirectSourceManager>(),
-                    cs: Theme.of(context).colorScheme)
-                : _LandscapePlayer(
-                    player: player,
-                    direct: context.watch<DirectSourceManager>(),
-                    cs: Theme.of(context).colorScheme))
+            // 横屏无歌词分页：左上角箭头悬浮于两套横屏布局之上。
+            ? Stack(
+                children: [
+                  desktopLandscape
+                      ? _DesktopLandscapePlayer(
+                          player: player,
+                          direct: context.watch<DirectSourceManager>(),
+                          cs: Theme.of(context).colorScheme)
+                      : _LandscapePlayer(
+                          player: player,
+                          direct: context.watch<DirectSourceManager>(),
+                          cs: Theme.of(context).colorScheme),
+                  const Positioned(
+                      top: 6, left: 6, child: _BackToContentButton()),
+                ],
+              )
             : PageView(
                 // 横向由内层 PageView 原生跟手（右滑回播放页）；
                 // 竖向仅播放页（第 0 页）跟手下拉，歌词页纵向留给滚动。
@@ -125,14 +132,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ? const PageScrollPhysics()
               : const NeverScrollableScrollPhysics(),
           children: [
-            GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              onVerticalDragStart:
-                  gestureOn ? _onPlayerDragStart : null,
-              onVerticalDragUpdate:
-                  gestureOn ? _onPlayerDragUpdate : null,
-              onVerticalDragEnd: gestureOn ? _onPlayerDragEnd : null,
-              child: _buildPlayerBody(context),
+            // 箭头悬浮在播放页内容之上（不占布局空间，不压缩封面）；
+            // 歌词页（第 1 页）按先前要求不再放箭头。
+            Stack(
+              children: [
+                GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onVerticalDragStart:
+                      gestureOn ? _onPlayerDragStart : null,
+                  onVerticalDragUpdate:
+                      gestureOn ? _onPlayerDragUpdate : null,
+                  onVerticalDragEnd: gestureOn ? _onPlayerDragEnd : null,
+                  child: _buildPlayerBody(context),
+                ),
+                const Positioned(
+                    top: 6, left: 6, child: _BackToContentButton()),
+              ],
             ),
             const _LyricsPage(),
           ],
@@ -177,6 +192,30 @@ class _PlayerScreenState extends State<PlayerScreen> {
     const fixed = 342.0;
     final byH = (availH - fixed).clamp(0.0, 360.0);
     return math.min(availW, byH);
+  }
+}
+
+/// 播放页左上角「回到内容页」向下箭头：悬浮覆盖（Positioned 入 Stack），
+/// 不参与布局，因此不压缩封面及其他内容的显示空间；点击与下滑返回同路径
+/// （置意图位 → Root 驱动悬浮层下降动画）。
+class _BackToContentButton extends StatelessWidget {
+  const _BackToContentButton();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Material(
+      color: cs.surface.withValues(alpha: 0.78),
+      shape: const CircleBorder(),
+      elevation: 1,
+      child: IconButton(
+        tooltip: '回到内容页',
+        iconSize: 26,
+        visualDensity: VisualDensity.compact,
+        icon: const Icon(Icons.keyboard_arrow_down_rounded),
+        onPressed: () => context.read<NavigationProvider>().closePlayer(),
+      ),
+    );
   }
 }
 
