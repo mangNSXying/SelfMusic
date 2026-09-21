@@ -1,19 +1,25 @@
 import 'package:flutter/material.dart';
 
-/// 内容页共用计数头（改进 B6-U5）：顶部「共 N 首歌曲 / 张专辑 / 位歌手」一行，
-/// 歌曲/喜欢/歌单详情/专辑/歌手各内容页共用同一套。
+/// 内容页共用计数头（改进 B6-U5 / 效果修复）：图标 + 「共 N …」一行。
+///
+/// 歌曲 / 喜欢 / 歌单详情 / 专辑 / 歌手 / 播放列表 / 播放源共用同一套；
+/// 样式对齐设计稿（UI-mobile「♪ 共 36 首」）：正文级字号 + 次要前景色，
+/// 不用浅灰小字；右侧可挂 [trailing]（列表/卡片切换按钮）。
 class CountHeader extends StatelessWidget {
   final int count;
 
-  /// 量词：歌曲页 '首'，专辑页 '张'，歌手页 '位'，
-  /// 播放列表页 '个播放列表'，播放源页 '个播放源'。
+  /// 量词：'首' / '张' / '位' / '个播放列表' / '个播放源'。
   final String unit;
 
-  /// 内边距（嵌入已有行内时传 [EdgeInsets.zero]，由外层负责）。
-  final EdgeInsetsGeometry padding;
+  /// 行尾控件（如 ViewModeToggle）；为空时右侧留常规内边距。
+  final Widget? trailing;
 
-  const CountHeader(
-      {super.key, required this.count, this.unit = '首', this.padding = const EdgeInsets.fromLTRB(16, 4, 16, 4)});
+  const CountHeader({
+    super.key,
+    required this.count,
+    this.unit = '首',
+    this.trailing,
+  });
 
   String get _label => switch (unit) {
         '张' => '共 $count 张专辑',
@@ -23,17 +29,39 @@ class CountHeader extends StatelessWidget {
         _ => '共 $count 首歌曲',
       };
 
+  IconData get _icon => switch (unit) {
+        '张' => Icons.album,
+        '位' => Icons.person_outline,
+        '个播放列表' => Icons.queue_music,
+        '个播放源' => Icons.storage,
+        _ => Icons.music_note,
+      };
+
   @override
   Widget build(BuildContext context) {
+    final muted = Theme.of(context).colorScheme.onSurfaceVariant;
     return Padding(
-      padding: padding,
-      child: Text(
-        _label,
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-            color: Theme.of(context)
-                .colorScheme
-                .onSurface
-                .withValues(alpha: 0.6)),
+      padding: EdgeInsets.fromLTRB(16, 4, trailing == null ? 16 : 8, 4),
+      child: SizedBox(
+        height: 32,
+        child: Row(
+          children: [
+            Icon(_icon, size: 17, color: muted),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                _label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(color: muted),
+              ),
+            ),
+            if (trailing != null) trailing!,
+          ],
+        ),
       ),
     );
   }

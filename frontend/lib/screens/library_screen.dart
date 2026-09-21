@@ -483,22 +483,13 @@ class _AlbumsViewState extends State<_AlbumsView> {
         if (lib.loading) const LinearProgressIndicator(minHeight: 2),
         if (lib.error != null)
           Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
-          child: Row(
-            children: [
-              Expanded(
-                  child: CountHeader(
-                      count: albums.length,
-                      unit: '张',
-                      padding: EdgeInsets.zero)),
-              ViewModeToggle(
-                card: card,
-                onChanged: (v) => _setMode(
-                    context,
-                    v ? CollectionViewMode.card : CollectionViewMode.list),
-              ),
-            ],
+        CountHeader(
+          count: albums.length,
+          unit: '张',
+          trailing: ViewModeToggle(
+            card: card,
+            onChanged: (v) => _setMode(
+                context, v ? CollectionViewMode.card : CollectionViewMode.list),
           ),
         ),
         Expanded(
@@ -507,9 +498,7 @@ class _AlbumsViewState extends State<_AlbumsView> {
               : RefreshIndicator(
                   onRefresh: () => lib.loadAlbums(query: nav.search.isEmpty ? null : nav.search),
                   child: card
-                      ? GridView.builder(
-                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                            gridDelegate: SquareCard.gridDelegate,
+                      ? SquareCardGrid(
                           itemCount: albums.length,
                           itemBuilder: (c, i) => _AlbumCard(album: albums[i]),
                         )
@@ -699,22 +688,13 @@ class _ArtistsViewState extends State<_ArtistsView> {
         if (lib.loading) const LinearProgressIndicator(minHeight: 2),
         if (lib.error != null)
           Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
-          child: Row(
-            children: [
-              Expanded(
-                  child: CountHeader(
-                      count: artists.length,
-                      unit: '位',
-                      padding: EdgeInsets.zero)),
-              ViewModeToggle(
-                card: card,
-                onChanged: (v) => _setMode(
-                    context,
-                    v ? CollectionViewMode.card : CollectionViewMode.list),
-              ),
-            ],
+        CountHeader(
+          count: artists.length,
+          unit: '位',
+          trailing: ViewModeToggle(
+            card: card,
+            onChanged: (v) => _setMode(
+                context, v ? CollectionViewMode.card : CollectionViewMode.list),
           ),
         ),
         Expanded(
@@ -723,9 +703,7 @@ class _ArtistsViewState extends State<_ArtistsView> {
               : RefreshIndicator(
                   onRefresh: () => lib.loadArtists(query: nav.search.isEmpty ? null : nav.search),
                   child: card
-                      ? GridView.builder(
-                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                            gridDelegate: SquareCard.gridDelegate,
+                      ? SquareCardGrid(
                           itemCount: artists.length,
                           itemBuilder: (c, i) => _ArtistCard(artist: artists[i]),
                         )

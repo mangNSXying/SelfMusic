@@ -45,24 +45,16 @@ class _SourcesScreenState extends State<SourcesScreen> {
       children: [
         Column(
           children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
-                child: Row(
-                  children: [
-                    Expanded(
-                        child: CountHeader(
-                            count: direct.sources.length,
-                            unit: '个播放源',
-                            padding: EdgeInsets.zero)),
-                    ViewModeToggle(
-                      card: card,
-                      onChanged: (v) => _setMode(
-                          context,
-                          v
-                              ? CollectionViewMode.card
-                              : CollectionViewMode.list),
-                    ),
-                  ],
+              CountHeader(
+                count: direct.sources.length,
+                unit: '个播放源',
+                trailing: ViewModeToggle(
+                  card: card,
+                  onChanged: (v) => _setMode(
+                      context,
+                      v
+                          ? CollectionViewMode.card
+                          : CollectionViewMode.list),
                 ),
               ),
               Expanded(
@@ -74,10 +66,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
                             style: TextStyle(color: scheme.onSurfaceVariant)),
                       )
                     : card
-                        ? GridView.builder(
-                            padding:
-                                const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                            gridDelegate: SquareCard.gridDelegate,
+                        ? SquareCardGrid(
                             itemCount: direct.sources.length,
                             itemBuilder: (c, i) => _DirectSourceCard(
                                 sourceKey: direct.sources[i].key),

@@ -1,18 +1,11 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-/// 内容页共用方形卡片（改进 B6-U6）：方形封面 + 标题 + 副标题，
-/// 专辑 / 歌手 / 播放源 / 播放列表卡片共用同一套（列表行继续用 SongTile / ListTile）。
+/// 内容页共用方形卡片（改进 B6-U6）：封面恒为正方形 + 标题 + 副标题，
+/// 专辑 / 歌手 / 播放源 / 播放列表卡片共用（列表行继续用 SongTile / ListTile）。
 class SquareCard extends StatelessWidget {
-  /// 四卡片页共用 grid 参数（220 宽 / 16 间距 / 高宽比 0.8 近正方形）。
-  static const gridDelegate = SliverGridDelegateWithMaxCrossAxisExtent(
-    maxCrossAxisExtent: 220,
-    mainAxisSpacing: 16,
-    crossAxisSpacing: 16,
-    childAspectRatio: 0.8,
-  );
-
   final String title;
 
   /// 标题最大行数（歌单名较长用 2，其余 1）。
@@ -50,8 +43,11 @@ class SquareCard extends StatelessWidget {
       onLongPress: onLongPress,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Expanded(
+          // 封面恒定 1:1（宽高比由 SquareCardGrid 的行高保证恰好放下文本）。
+          AspectRatio(
+            aspectRatio: 1,
             child: Stack(
               children: [
                 Container(
@@ -93,6 +89,66 @@ class SquareCard extends StatelessWidget {
                     color: colorScheme.onSurface.withValues(alpha: 0.6))),
         ],
       ),
+    );
+  }
+}
+
+/// 方形卡片网格：按可用宽度计算列数与行高，保证每张卡片的封面恰为正方形
+///（固定 childAspectRatio 会在窄列时把封面压成长方形——改进反馈 #3）。
+class SquareCardGrid extends StatelessWidget {
+  /// 单项最大宽度（与旧 maxCrossAxisExtent 语义一致）。
+  static const double maxItemWidth = 220;
+  static const double gap = 16;
+  static const double sidePadding = 16;
+
+  final int itemCount;
+  final Widget Function(BuildContext, int) itemBuilder;
+
+  /// 标题最大行数（与卡片保持一致，用于估算文本高度）。
+  final int titleMaxLines;
+
+  const SquareCardGrid({
+    super.key,
+    required this.itemCount,
+    required this.itemBuilder,
+    this.titleMaxLines = 1,
+  });
+
+  /// 卡片底部文本区高度（间距 + 标题 + 副标题），带少量余量防溢出。
+  double _textHeight(BuildContext context) {
+    final theme = Theme.of(context);
+    final scaler = MediaQuery.textScalerOf(context);
+    double line(TextStyle? s) {
+      final size = s?.fontSize ?? 14;
+      return scaler.scale(size) * (s?.height ?? 1.3);
+    }
+
+    return 8 +
+        line(theme.textTheme.bodyMedium) * titleMaxLines +
+        line(theme.textTheme.bodySmall) +
+        6;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final avail = math.max(0.0, constraints.maxWidth - sidePadding * 2);
+        final cols = math.max(
+            1, ((avail + gap) / (maxItemWidth + gap)).ceil());
+        final itemW = (avail - (cols - 1) * gap) / cols;
+        return GridView.builder(
+          padding: const EdgeInsets.fromLTRB(sidePadding, 0, sidePadding, 16),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: cols,
+            mainAxisSpacing: gap,
+            crossAxisSpacing: gap,
+            mainAxisExtent: itemW + _textHeight(context),
+          ),
+          itemCount: itemCount,
+          itemBuilder: itemBuilder,
+        );
+      },
     );
   }
 }

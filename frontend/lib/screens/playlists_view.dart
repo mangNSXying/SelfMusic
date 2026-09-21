@@ -117,34 +117,25 @@ class _PlaylistsViewState extends State<PlaylistsView> {
                 ),
               if (_sel.active) const Divider(height: 1),
               if (!_sel.active)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
-                  child: Row(
-                    children: [
-                      Expanded(
-                          child: CountHeader(
-                              count: playlists.length,
-                              unit: '个播放列表',
-                              padding: EdgeInsets.zero)),
-                      ViewModeToggle(
-                        card: card,
-                        onChanged: (v) => _setMode(
-                            context,
-                            v
-                                ? CollectionViewMode.card
-                                : CollectionViewMode.list),
-                      ),
-                    ],
+                CountHeader(
+                  count: playlists.length,
+                  unit: '个播放列表',
+                  trailing: ViewModeToggle(
+                    card: card,
+                    onChanged: (v) => _setMode(
+                        context,
+                        v
+                            ? CollectionViewMode.card
+                            : CollectionViewMode.list),
                   ),
                 ),
               Expanded(
                 child: playlists.isEmpty
                     ? const Center(child: Text('暂无歌单，点右下角「+」创建'))
                     : card
-                        ? GridView.builder(
-                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                            gridDelegate: SquareCard.gridDelegate,
+                        ? SquareCardGrid(
                             itemCount: playlists.length,
+                            titleMaxLines: 2,
                             itemBuilder: (c, i) =>
                                 _playlistCard(provider, playlists[i]),
                           )
