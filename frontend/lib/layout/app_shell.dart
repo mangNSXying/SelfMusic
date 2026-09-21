@@ -46,7 +46,17 @@ class _AppShellState extends State<AppShell> {
     final contentColumn = Column(
       children: [
         TopBar(onSidebarToggle: _toggleSidebar),
-        Expanded(child: widget.content),
+        Expanded(
+          // 顶栏已用 SafeArea 消费过状态栏；内容区不能再叠加一次系统安全区。
+          // Flutter 的 ListView/GridView 在 padding==null 时会把 MediaQuery.padding
+          //（状态栏+手势条）自动加为滚动内边距——这正是 UI4「列表均多一条空白」的根因。
+          child: MediaQuery.removePadding(
+            context: context,
+            removeTop: true,
+            removeBottom: true,
+            child: widget.content,
+          ),
+        ),
         const MiniPlayerBar(),
       ],
     );
