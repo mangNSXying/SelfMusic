@@ -9,6 +9,7 @@ import '../providers/player_provider.dart';
 import '../providers/playlists_provider.dart';
 import '../utils/song_title_format.dart';
 import '../widgets/corner_add_button.dart';
+import '../widgets/count_header.dart';
 import '../widgets/list_selection.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
@@ -506,9 +507,9 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
             ],
           ),
         ),
+        CountHeader(count: songs.length),
         if (_sel.active)
-          SelectionBar(
-            total: items.length,
+          SelectionBar(            total: items.length,
             selectedCount: _sel.of(items.map((r) => songKey(provider.songOf(r))))
                 .length,
             onToggleAll: () => setState(() {

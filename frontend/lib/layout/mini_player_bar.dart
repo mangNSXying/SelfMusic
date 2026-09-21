@@ -7,6 +7,7 @@ import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../utils/song_title_format.dart';
 import '../widgets/player_sheet_anim.dart';
+import '../widgets/pressable.dart';
 import 'queue_panel.dart';
 
 /// 底部“正在播放”迷你条：点击进入全屏播放页；提供播放控制。
@@ -130,18 +131,21 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
                   ],
                 ),
               ),
-              IconButton(
-                icon: Icon(player.playing ? Icons.pause_circle_filled : Icons.play_circle_filled),
-                color: cs.primary,
-                iconSize: 42,
-                tooltip: player.playing ? '暂停' : '播放',
+              Pressable(
                 onPressed: player.toggle,
+                tooltip: player.playing ? '暂停' : '播放',
+                pressedScale: 0.85,
+                child: Icon(
+                    player.playing
+                        ? Icons.pause_circle_filled
+                        : Icons.play_circle_filled,
+                    size: 42,
+                    color: cs.primary),
               ),
-              IconButton(
-                icon: const Icon(Icons.skip_next),
-                iconSize: 30,
-                tooltip: '下一首',
+              Pressable(
                 onPressed: player.next,
+                tooltip: '下一首',
+                child: const Icon(Icons.skip_next, size: 30),
               ),
               IconButton(
                 icon: Icon(nav.queueOpen

@@ -15,6 +15,7 @@ import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/area_switcher.dart';
 import '../widgets/corner_add_button.dart';
+import '../widgets/count_header.dart';
 import '../widgets/list_selection.dart';
 import '../widgets/page_transition.dart';
 import '../widgets/section_swipe.dart';
@@ -251,6 +252,7 @@ class _LikedViewState extends State<_LikedView> {
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+              CountHeader(count: songs.length),
               if (_sel.active)
                 SelectionBar(
                   total: songs.length,
@@ -369,6 +371,7 @@ class _SongsViewState extends State<_SongsView> {
         if (lib.loading) const LinearProgressIndicator(minHeight: 2),
         if (lib.error != null)
           Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
+        CountHeader(count: songs.length),
         if (_sel.active)
           SelectionBar(
             total: songs.length,
@@ -655,6 +658,7 @@ class _AlbumSongsSheet extends StatelessWidget {
               child: Text(album.album,
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
             ),
+            CountHeader(count: songs.length),
             const Divider(height: 1),
             Expanded(
               child: ListView.separated(
@@ -901,6 +905,7 @@ class _ArtistSongsSheet extends StatelessWidget {
               child: Text(artist.name,
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
             ),
+            CountHeader(count: songs.length),
             const Divider(height: 1),
             Expanded(
               child: ListView.separated(
