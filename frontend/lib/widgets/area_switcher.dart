@@ -85,6 +85,8 @@ class _AreaSwitcherState extends State<AreaSwitcher>
   @override
   Widget build(BuildContext context) {
     if (!_flying || _prevChild == null) return widget.child;
+    // 遮罩（改进 B6-U8）：滑动中新页/旧页衬不透明底，避免两页内容重叠透视。
+    final bg = Theme.of(context).scaffoldBackgroundColor;
     if (_forward) {
       return Stack(
         children: [
@@ -93,7 +95,7 @@ class _AreaSwitcherState extends State<AreaSwitcher>
             child: SlideTransition(
               position: Tween<Offset>(begin: _offset, end: Offset.zero)
                   .animate(_curved),
-              child: widget.child,
+              child: ColoredBox(color: bg, child: widget.child),
             ),
           ),
         ],
@@ -106,7 +108,7 @@ class _AreaSwitcherState extends State<AreaSwitcher>
           child: SlideTransition(
             position: Tween<Offset>(begin: Offset.zero, end: -_offset)
                 .animate(_curved),
-            child: _prevChild!,
+            child: ColoredBox(color: bg, child: _prevChild!),
           ),
         ),
       ],

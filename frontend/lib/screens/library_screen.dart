@@ -51,8 +51,8 @@ class AppContent extends StatelessWidget {
       duration: const Duration(milliseconds: 320),
       switchInCurve: Curves.easeOutCubic,
       switchOutCurve: Curves.easeInCubic,
-      transitionBuilder: (child, anim) =>
-          pageTransition(transition, child, anim),
+      transitionBuilder: (child, anim) => pageTransition(transition, child, anim,
+          backdrop: Theme.of(context).scaffoldBackgroundColor),
       child: KeyedSubtree(key: ValueKey(nav.areaKey), child: page),
     );
   }
@@ -167,7 +167,9 @@ class _SectionPagerState extends State<SectionPager> {
           switchInCurve: Curves.easeOutCubic,
           switchOutCurve: Curves.easeInCubic,
           transitionBuilder: (child, anim) =>
-              pageTransition(transition, child, anim),
+              pageTransition(transition, child, anim,
+                  backdrop:
+                      Theme.of(context).scaffoldBackgroundColor),
           child: page,
         ),
       );
@@ -484,14 +486,11 @@ class _AlbumsViewState extends State<_AlbumsView> {
           padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
           child: Row(
             children: [
-              Text('${albums.length} 张专辑',
-                  style: TextStyle(
-                      fontSize: 12,
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onSurface
-                          .withValues(alpha: 0.6))),
-              const Spacer(),
+              Expanded(
+                  child: CountHeader(
+                      count: albums.length,
+                      unit: '张',
+                      padding: EdgeInsets.zero)),
               ViewModeToggle(
                 card: card,
                 onChanged: (v) => _setMode(
@@ -737,14 +736,11 @@ class _ArtistsViewState extends State<_ArtistsView> {
           padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
           child: Row(
             children: [
-              Text('${artists.length} 位歌手',
-                  style: TextStyle(
-                      fontSize: 12,
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onSurface
-                          .withValues(alpha: 0.6))),
-              const Spacer(),
+              Expanded(
+                  child: CountHeader(
+                      count: artists.length,
+                      unit: '位',
+                      padding: EdgeInsets.zero)),
               ViewModeToggle(
                 card: card,
                 onChanged: (v) => _setMode(

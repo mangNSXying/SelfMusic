@@ -8,7 +8,11 @@ class CountHeader extends StatelessWidget {
   /// 量词：歌曲页 '首'，专辑页 '张'，歌手页 '位'。
   final String unit;
 
-  const CountHeader({super.key, required this.count, this.unit = '首'});
+  /// 内边距（嵌入已有行内时传 [EdgeInsets.zero]，由外层负责）。
+  final EdgeInsetsGeometry padding;
+
+  const CountHeader(
+      {super.key, required this.count, this.unit = '首', this.padding = const EdgeInsets.fromLTRB(16, 4, 16, 4)});
 
   String get _label => switch (unit) {
         '张' => '共 $count 张专辑',
@@ -19,7 +23,7 @@ class CountHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+      padding: padding,
       child: Text(
         _label,
         style: Theme.of(context).textTheme.bodySmall?.copyWith(
