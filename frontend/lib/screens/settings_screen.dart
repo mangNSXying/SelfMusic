@@ -114,8 +114,7 @@ class _ServerSettingsState extends State<_ServerSettings> {
     if (err != null) {
       setState(() => _saving = false);
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(err)));
+      AppToast.show(err);
       return;
     }
     // 空表示清空（未配置）
@@ -129,8 +128,8 @@ class _ServerSettingsState extends State<_ServerSettings> {
     // 地址变化后刷新配对密钥展示。
     await _fetchPairingKey();
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('已保存服务端地址：${_saved.isEmpty ? "（未配置）" : _saved}')));
+    AppToast.show('已保存服务端地址：${_saved.isEmpty ? "（未配置）" : _saved}',
+        isError: false);
   }
 
   @override
@@ -308,8 +307,8 @@ class _SyncSectionState extends State<_SyncSection> {
     if (!mounted) return;
     setState(() => _syncing = false);
     final err = context.read<SyncEngine>().lastError;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(err.isEmpty ? '同步完成' : '同步失败：$err')));
+    AppToast.show(err.isEmpty ? '同步完成' : '同步失败：$err',
+        isError: err.isNotEmpty);
   }
 
   @override
@@ -378,8 +377,7 @@ class _CacheDirTile extends StatelessWidget {
       trailing: const Icon(Icons.copy_outlined),
       onTap: () {
         Clipboard.setData(ClipboardData(text: index.cacheDir));
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('已复制缓存目录路径')));
+        AppToast.show('已复制缓存目录路径', isError: false);
       },
     );
   }
@@ -431,13 +429,12 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
               icon: const Icon(Icons.sync, size: 20),
               tooltip: '刷新服务端建议值',
               onPressed: () async {
-                final messenger = ScaffoldMessenger.of(context);
                 final ok =
                     await context.read<DirectSourceManager>().refreshServerConfig();
                 if (!mounted) return;
                 setState(() {});
-                messenger.showSnackBar(SnackBar(
-                    content: Text(ok ? '已刷新服务端建议值' : '拉取失败（检查后端连接）')));
+                AppToast.show(ok ? '已刷新服务端建议值' : '拉取失败（检查后端连接）',
+                    isError: !ok);
               },
             ),
           ],
@@ -1513,8 +1510,8 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
     final file = _service(direct).exportSettings();
     _refresh();
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已导出：${file.path.split('/').last}（不含令牌与源凭据）')));
+    AppToast.show('已导出：${file.path.split('/').last}（不含令牌与源凭据）',
+        isError: false);
   }
 
   Future<void> _doExportPlaylists() async {
@@ -1522,8 +1519,7 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
     final file = _service(direct).exportPlaylists();
     _refresh();
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已导出：${file.path.split('/').last}')));
+    AppToast.show('已导出：${file.path.split('/').last}', isError: false);
   }
 
   /// 文件选择器导入设置/歌单。
@@ -1536,14 +1532,14 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
     try {
       picked = await openFile(acceptedTypeGroups: groups);
     } catch (e) {
-      if (mounted) return _toast('打开文件失败：$e');
+      if (mounted) return _toast('打开文件失败：$e', isError: true);
       return;
     }
     if (picked == null) return;
     if (!mounted) return;
     final f = File(picked.path);
     if (!f.existsSync()) {
-      _toast('所选文件不存在：${picked.path}');
+      _toast('所选文件不存在：${picked.path}', isError: true);
       return;
     }
     final direct = context.read<DirectSourceManager>();
@@ -1560,13 +1556,12 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
       _toast(summary);
     } catch (e) {
       if (!mounted) return;
-      _toast('导入失败：$e');
+      _toast('导入失败：$e', isError: true);
     }
   }
 
-  void _toast(String msg) {
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg)));
+  void _toast(String msg, {bool isError = false}) {
+    AppToast.show(msg, isError: isError);
   }
 
   Future<void> _confirmImport(File f, String name, BackupKind kind) async {
@@ -1603,8 +1598,7 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
       }
       if (!mounted) return;
       context.read<PlaylistsProvider>().refresh();
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(summaries.join('；'))));
+      AppToast.show(summaries.join('；'), isError: false);
     } catch (e) {
       if (!mounted) return;
       AppToast.error(e, '导入失败');
@@ -1685,8 +1679,7 @@ class _NotificationsSettingsState extends State<_NotificationsSettings> {
           value: _settings.notificationControls,
           onChanged: (v) {
             setState(() => _settings.notificationControls = v);
-            ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('通知栏播放控制将在重启应用后生效')));
+            AppToast.show('通知栏播放控制将在重启应用后生效', isError: false);
           },
         ),
         const Divider(height: 24),

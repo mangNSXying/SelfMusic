@@ -64,8 +64,7 @@ class SongTile extends StatelessWidget {
     try {
       await direct.cacheSong(source, song);
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('已缓存，可离线播放')));
+        AppToast.show('已缓存，可离线播放', isError: false);
       }
     } catch (e) {
       AppToast.error(e, '缓存失败');

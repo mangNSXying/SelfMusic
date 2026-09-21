@@ -322,9 +322,7 @@ class _NowPlaying extends StatelessWidget {
             if (direct.settings.playerShowWeight)
               InkWell(
                 borderRadius: BorderRadius.circular(8),
-                onTap: () => ScaffoldMessenger.of(context)
-                  ..clearSnackBars()
-                  ..showSnackBar(const SnackBar(content: Text('当前曲目的播放权重'))),
+                onTap: () => AppToast.show('当前曲目的播放权重', isError: false),
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                   decoration: BoxDecoration(
@@ -447,16 +445,12 @@ class _NowPlaying extends StatelessWidget {
   Future<void> _cache(BuildContext context, Song s) async {
     final src = direct.sourceByKey(s.sourceKey);
     if (src == null || !s.isDirect) {
-      ScaffoldMessenger.of(context)
-        ..clearSnackBars()
-        ..showSnackBar(const SnackBar(content: Text('仅直连歌曲可缓存')));
+      AppToast.show('仅直连歌曲可缓存', isError: false);
       return;
     }
     await direct.cacheSong(src, s);
     if (context.mounted) {
-      ScaffoldMessenger.of(context)
-        ..clearSnackBars()
-        ..showSnackBar(const SnackBar(content: Text('已开始缓存')));
+      AppToast.show('已开始缓存', isError: false);
     }
   }
 }
@@ -983,14 +977,9 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
       case null:
         return;
     }
-    final messenger = ScaffoldMessenger.of(context);
+    final summary = '睡眠定时：${p.sleepSummaryText ?? '已设置'}';
     Navigator.of(context).pop();
-    messenger
-      ..clearSnackBars()
-      ..showSnackBar(SnackBar(
-        content: Text('睡眠定时：${p.sleepSummaryText ?? '已设置'}'),
-        duration: const Duration(seconds: 2),
-      ));
+    AppToast.show(summary, isError: false);
   }
 
   void _close() {
@@ -1137,13 +1126,7 @@ class _ModeButton extends StatelessWidget {
       onPressed: () {
         final next = PlayMode.values[(m.index + 1) % PlayMode.values.length];
         player.setMode(next);
-        ScaffoldMessenger.of(context)
-          ..clearSnackBars()
-          ..showSnackBar(SnackBar(
-            content: Text('播放模式：${_label(next)}'),
-            duration: const Duration(seconds: 1),
-            behavior: SnackBarBehavior.floating,
-          ));
+        AppToast.show('播放模式：${_label(next)}', isError: false);
       },
     );
   }

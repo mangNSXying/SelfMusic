@@ -12,6 +12,7 @@ import '../models/album.dart';
 import '../models/artist.dart';
 import '../theme/app_theme.dart';
 import '../widgets/add_to_playlist.dart';
+import '../widgets/app_toast.dart';
 import '../widgets/area_switcher.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/list_selection.dart';
@@ -235,8 +236,7 @@ class _LikedViewState extends State<_LikedView> {
     for (final s in selected) {
       direct.setFavorite(s, false);
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已取消喜欢 ${selected.length} 首')));
+    AppToast.show('已取消喜欢 ${selected.length} 首', isError: false);
   }
 
   @override

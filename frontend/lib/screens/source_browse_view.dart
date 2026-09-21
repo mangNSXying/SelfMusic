@@ -101,12 +101,11 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
       // 扫描后刷新全局合并库，使歌曲/专辑/歌手栏目同步出现该源曲目。
       await lib.loadSongs();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text(summary.cancelled
-                  ? '扫描已取消'
-                  : '扫描完成：新增 ${summary.added} 首，共 ${summary.total} 首')),
-        );
+        AppToast.show(
+            summary.cancelled
+                ? '扫描已取消'
+                : '扫描完成：新增 ${summary.added} 首，共 ${summary.total} 首',
+            isError: false);
       }
     } catch (e) {
       AppToast.error(e, '扫描失败');

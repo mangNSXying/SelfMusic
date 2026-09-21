@@ -6,6 +6,7 @@ import '../providers/direct_source_manager.dart';
 import '../services/api_client.dart';
 import '../services/server_settings.dart';
 import '../utils/platform_info.dart';
+import '../widgets/app_toast.dart';
 
 class PairingScreen extends StatefulWidget {
   const PairingScreen({super.key});
@@ -92,8 +93,7 @@ class _PairingScreenState extends State<PairingScreen> {
     if (ok != true || !mounted) return;
     await auth.unpair();
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('已取消配对')));
+    AppToast.show('已取消配对', isError: false);
   }
 
   /// 密钥行副标题：加载中 / 已取到（离线时标注缓存来源）/ 获取失败。
@@ -173,9 +173,7 @@ class _PairingScreenState extends State<PairingScreen> {
                                 onPressed: () {
                                   Clipboard.setData(
                                       ClipboardData(text: _pairingToken!));
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                          content: Text('已复制配对密钥')));
+                                  AppToast.show('已复制配对密钥', isError: false);
                                 },
                               ),
                             ],
@@ -232,7 +230,7 @@ class _PairingScreenState extends State<PairingScreen> {
                         final ok = await auth.pair(_tokenCtrl.text.trim(), _nameCtrl.text.trim());
                         if (!mounted) return;
                         if (ok && context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('配对成功')));
+                          AppToast.show('配对成功', isError: false);
                         }
                       },
                 child: auth.loading ? const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2)) : Text(auth.isPaired ? '重新配对' : '配对'),
@@ -300,8 +298,7 @@ class _ServerAddressCard extends StatelessWidget {
                       .settings
                       .allowInsecureHttp);
               if (err != null) {
-                ScaffoldMessenger.of(c)
-                    .showSnackBar(SnackBar(content: Text(err)));
+                AppToast.show(err);
                 return;
               }
               await settings.setBaseUrl(entered);

@@ -5,6 +5,7 @@ import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/playlists_provider.dart';
 import '../utils/song_title_format.dart';
+import 'app_toast.dart';
 
 /// 弹出「加入歌单」选择器（stage2.md §5）：底部弹层列出歌单，无歌单可现场新建。
 Future<void> showAddToPlaylistSheet(BuildContext context, Song song) =>
@@ -34,8 +35,7 @@ Future<void> _showAddToPlaylist(BuildContext context, List<Song> songs) async {
     builder: (c) => _AddToPlaylistSheet(songs: songs),
   );
   if (result != null && context.mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已加入歌单「${_nameById(context, result)}」')));
+    AppToast.show('已加入歌单「${_nameById(context, result)}」', isError: false);
   }
 }
 

@@ -74,6 +74,9 @@ class PlayerProvider extends ChangeNotifier {
   /// 播放时懒补全元数据：正在补全的歌（sourceKey|sourceRef）去重集合。
   final Set<String> _enriching = {};
 
+  /// 切歌令牌（P0 连按 guard）：每次 [_play] 递增，过期者静默丢弃。
+  int _playToken = 0;
+
   /// 关联 audio_service 通知栏处理器（settings.md §3.6）：状态变化时回推媒体信息。
   void attachAudioHandler(SelfMusicAudioHandler handler) {
     _audioHandler = handler;
@@ -583,6 +586,11 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   Future<void> _play(Song s, {MusicSource? source, bool play = true}) async {
+    // 连按切歌 guard：每次 _play 领一个单调令牌，后续 await 间隙若令牌过期
+    //（更新的切歌已接管），静默丢弃，不报错、不覆盖、不触发副作用。
+    // 解决了快速 next/prev 时旧 setUrl 的 connection abort / source error  toast 刷屏。
+    final token = ++_playToken;
+    bool alive() => token == _playToken;
     // 新曲开始前清掉上一首的预取结果与 completed 去重标记。
     _peekedNext = null;
     _completedKey = null;
@@ -621,10 +629,12 @@ class PlayerProvider extends ChangeNotifier {
         debugPrint('[play] 代理 URL: $url');
         await player.setUrl(url, headers: headers);
       }
+      if (!alive()) return; // 已被更新的切歌接管
       if (play) {
         await player.play();
         _fadeIn();
       }
+      if (!alive()) return;
       unawaited(_applyEqualizerBands());
       _saveState(player.position);
       if (src != null) _onTrackStarted?.call(src, cur);
@@ -636,6 +646,7 @@ class PlayerProvider extends ChangeNotifier {
       notifyListeners();
       _syncSystemMedia();
     } catch (e) {
+      if (!alive()) return; // 旧切歌被接管后的 abort：静默丢弃
       error = e.toString();
       AppToast.error(e, '播放失败');
       notifyListeners();

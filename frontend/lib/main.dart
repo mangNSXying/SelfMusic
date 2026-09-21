@@ -253,12 +253,7 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
       return;
     }
     _lastBackPressed = now;
-    ScaffoldMessenger.of(context)
-      ..clearSnackBars()
-      ..showSnackBar(const SnackBar(
-        content: Text('再按一次退出软件'),
-        duration: Duration(seconds: 2),
-      ));
+    AppToast.show('再按一次退出软件', isError: false);
   }
 
   @override

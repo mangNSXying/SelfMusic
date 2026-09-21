@@ -30,29 +30,49 @@ class PlaylistsProvider extends ChangeNotifier {
 
   int create(String name, {String? description}) {
     final id = store.create(name, description: description);
-    refresh();
+    // 增量更新：只拉一次列表 + 新歌单计数归零，避免全量 refresh
+    //（逐歌单查条目数的 N+1 查询曾导致建单卡顿）。
+    _playlists = store.list();
+    _counts[id] = 0;
+    loaded = true;
+    notifyListeners();
     return id;
   }
 
   void rename(int id, String name) {
     store.rename(id, name);
-    refresh();
+    // 仅原地改名，不碰计数与其它行。
+    _playlists = [
+      for (final p in _playlists)
+        if (p.id == id)
+          PlaylistRow(
+              id: p.id,
+              name: name,
+              description: p.description,
+              createdAt: p.createdAt,
+              clientUuid: p.clientUuid)
+        else
+          p,
+    ];
+    notifyListeners();
   }
 
   void delete(int id) {
     store.delete(id);
-    refresh();
+    _playlists = [for (final p in _playlists) if (p.id != id) p];
+    _counts.remove(id);
+    notifyListeners();
   }
 
   /// 加入歌单（无则新建）。
   void addSong(int playlistId, Song s) {
     store.addSong(playlistId, s);
-    refresh();
+    _recount(playlistId);
   }
 
   void removeSong(int playlistId, Song s) {
     store.removeSong(playlistId, s);
-    refresh();
+    _recount(playlistId);
   }
 
   /// 该歌是否已在指定歌单。
@@ -64,7 +84,7 @@ class PlaylistsProvider extends ChangeNotifier {
   /// 切换「在歌单中」；返回切换后是否在歌单中。
   bool toggleSong(int playlistId, Song s) {
     final inPlaylist = store.toggleSong(playlistId, s);
-    refresh();
+    _recount(playlistId);
     return inPlaylist;
   }
 
@@ -85,11 +105,18 @@ class PlaylistsProvider extends ChangeNotifier {
 
   void removeItemRow(int playlistId, PlaylistItemRow r) {
     store.removeSong(playlistId, store.songOf(r));
-    refresh();
+    _recount(playlistId);
   }
 
   void moveItemRow(int playlistId, PlaylistItemRow r, int delta) {
     store.move(playlistId, r.id, delta);
-    refresh();
+    // 仅顺序变化：计数不动，只通知重排。
+    notifyListeners();
+  }
+
+  /// 单歌单计数刷新（1 次查询）：替代全量 refresh 的 N+1 查询。
+  void _recount(int playlistId) {
+    _counts[playlistId] = _countsOf(playlistId);
+    notifyListeners();
   }
 }
