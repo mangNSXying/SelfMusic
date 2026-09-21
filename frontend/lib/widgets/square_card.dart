@@ -48,7 +48,10 @@ class SquareCard extends StatelessWidget {
           // 封面恒定 1:1（宽高比由 SquareCardGrid 的行高保证恰好放下文本）。
           AspectRatio(
             aspectRatio: 1,
+            // StackFit.expand：无封面时占位底色也必须撑满正方形
+            //（默认 loose 会让 Container 高度只由图标决定，显示成矮长条）。
             child: Stack(
+              fit: StackFit.expand,
               children: [
                 Container(
                   width: double.infinity,

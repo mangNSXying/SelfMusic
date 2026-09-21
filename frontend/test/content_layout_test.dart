@@ -104,5 +104,10 @@ void main() {
     // 400 宽 - 两侧 16 - 列间距 16 = 176（两列）
     expect(cover.width, closeTo(176, 0.5));
     expect(cover.width, lessThanOrEqualTo(SquareCardGrid.maxItemWidth));
+
+    // 无封面（占位图标）时，占位底色也要撑满正方形，不能是矮长条。
+    final placeholder = tester.getSize(find.byIcon(Icons.album).first);
+    expect(placeholder.width, closeTo(cover.width, 0.5));
+    expect(placeholder.height, closeTo(cover.height, 0.5));
   });
 }
