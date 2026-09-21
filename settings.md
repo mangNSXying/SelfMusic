@@ -38,11 +38,11 @@
 | 分区 | 键 | 当前状态 | 内容与规划 |
 |------|----|---------|-----------|
 | 备份 | `general` | ✅ 已实现 | 设置 / 歌单 分开导出导入（§3.5，支持选择文件导入） |
-| 播放 | `playback` | ✅ 已实现 | 默认播放模式 / 断点自动恢复 / 播放页手势 / 睡眠定时默认播完 / 播放页权重信息显示 / 淡入淡出 / 均衡器（§3.2） |
+| 播放 | `playback` | ✅ 已实现 | 默认播放模式 / 断点自动恢复 / 播放页手势 / 睡眠定时默认播完 / 播放页权重信息显示 / 淡入淡出 / 均衡器 / 音频焦点自动暂停恢复（§3.2） |
 | 服务端 | `server` | ✅ 已实现 | 后端地址 + 配对服务器（副标题遮显同一份配对密钥，配对页明文可复制）；预载下一首（§3.2）；缓存配置「跟随服务端 / 自定义」双模式（§3.3）+ 缓存目录展示；「网络与安全」（§3.3.1）：允许不安全 HTTP / 信任自签名证书；「多设备同步」（§3.3.2）：总开关 / 立即同步 / 已配对设备管理。首次启动不强制配对——未配对可正常使用直连模式，服务端 / 代理功能需配对 |
 | 歌曲 | `songs` | ✅ 已实现 | 收藏自动缓存 / 忽略音频过滤 / 仅 Wi-Fi 扫描 / 扫描模式与头部·封面 / 自动扫描间隔 / 标题显示格式（§3.4） |
 | 界面 | `appearance` | ✅ 已实现 | 明暗主题 / 强调色 / 背景色 / 播放页切换动画（§3.7） |
-| 通知 | `notifications` | ✅ 已实现 | 通知栏播放控制 + 返回桌面后台续播（停止需通知栏「停止」或侧边栏「退出」）/ 音频焦点（§3.6） |
+| 通知 | `notifications` | ✅ 已实现 | 通知栏播放控制 + 返回桌面后台续播（停止需通知栏「停止」或侧边栏「退出」）（§3.6） |
 
 ---
 
@@ -63,6 +63,7 @@
 | 播放页权重信息显示 | `player_show_weight` | `true`（显示） | 播放页是否展示当前歌曲 liked / factor 权重芯片（读取 `play_meta`） |
 | 淡入淡出 | `fade_enabled` + `fade_duration_ms` | 开，1000 ms（1~3 s） | 从暂停恢复到播放 / 播放挥手暂停前做 `setVolume` 软件渐变（16 ms 周期），全平台可用；不依赖音频后端 crossfade。关闭时无渐变直接切换 |
 | 均衡器 | `equalizer_enabled` + `eq_bands` | 关 | 5 频段增益（`eq_bands`=JSON 整数数组：低音 60 Hz / 中低 230 Hz / 中音 910 Hz / 中高 3.6 kHz / 高音 14 kHz，范围 -12~+12 dB）。**仅 Android**（just_audio `AndroidEqualizer` 注入 `AudioPipeline`）；Linux/macOS 无公开 mpv Dart API，开关与滑块界面仍可见但不生效 |
+| 音频焦点（自动暂停/恢复） | `audio_focus_enabled` | `true` | 来电 / 其他 App 抢占时的暂停-恢复。just_audio `handleInterruptions`，切换后重建播放器即时生效（Android）。原在「通知」分区，现归「播放」分区 |
 
 ### 3.3 服务端分区 · 缓存配置（已实现，双来源）
 
@@ -159,7 +160,6 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 | 设置项 | 键 | 默认 | 说明 |
 |--------|----|------|------|
 | 通知栏播放控制 / 后台播放 | `notification_controls` | `true` | **启动时生效**：开启则 `main()` 注册 `AudioService`（媒体通知 + 前台服务），自作 `SelfMusicAudioHandler` 把通知按钮转发到 `PlayerProvider`，播放状态/媒体信息（含标题显示格式）回推通知；关闭则不注册。**后台播放语义**：返回桌面 / 切后台继续播放（`androidStopForegroundOnPause=false`，暂停不撤前台服务；audio_service 断言禁止与 `androidNotificationOngoing:true` 同用）；通知栏「停止」、划掉任务（`onTaskRemoved`）或侧边栏「退出」才**真正停止**并置空闲。改动后重启应用生效 |
-| 音频焦点（自动暂停/恢复） | `audio_focus_enabled` | `true` | 来电 / 其他 App 抢占时的暂停-恢复。just_audio `handleInterruptions`，切换后重建播放器即时生效（Android） |
 
 ---
 
@@ -223,7 +223,8 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 | 缓存配置迁入「服务端」+ `follow_server` | 需服务端下发 API | ✅ 已实现（`GET /api/v1/admin/config` + 客户端跟随模式） |
 | 导入导出设置 / 歌单 | 本地文件 + `file_selector`，无后端依赖 | ✅ 已实现（设置、歌单分开导出；导入支持选择文件） |
 | 淡入淡出 / 均衡器 | 音频后端能力验证 | ✅ 已实现（淡入淡出全平台；均衡器仅 Android，真机验证） |
-| 通知栏 / 后台播放 / 音频焦点 | Android 壳 + `audio_service` | ✅ 已实现（实现见 §3.6；真机验证） |
+| 通知栏 / 后台播放 | Android 壳 + `audio_service` | ✅ 已实现（实现见 §3.6；真机验证） |
+| 音频焦点自动暂停/恢复 | just_audio `handleInterruptions` | ✅ 已实现（`设置 → 播放`；真机验证） |
 | 配对密钥显示/复制（`设置 → 服务端 → 配对服务器`） | 后端端点 + 前端 | ✅ 已实现（`GET /api/v1/admin/pairing-token`，配对服务器副标题遮显、配对页明文可复制） |
 | 缓存目录展示（`设置 → 服务端`） | 客户端本地 | ✅ 已实现（真实路径 + 占用 + 点击复制） |
 | 默认 HTTPS + 「允许不安全 HTTP」+「信任自签名证书」开关 | 网络安全加固 | ✅ 已实现（§3.3.1；`ApiClient.validateEndpointUrl` 约束后端/WebDAV/配对地址，自签名开关覆盖 dio + dart:io 直连） |

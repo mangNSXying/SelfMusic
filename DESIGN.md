@@ -485,7 +485,7 @@ abstract class MusicSource {
 | 标题显示格式 | `song_title_format` | `fileName / titleOnly / artistTitle / titleArtist`；默认 歌手-歌名，显示层转换不修改存储 | `artistTitle` | `设置 → 歌曲` |
 | 集合页展示形式 | `view_mode_playlists/sources/albums/artists` | 四集合页 列表/卡片 切换的持久化取值（播放列表=`list`，其余=`card`） | 见左 | 对应页面右上角 |
 | 通知栏播放控制 / 后台播放 | `notification_controls` | audio_service 媒体通知 + 前台服务；**启动时门控注册**，改动重启生效；返回桌面续播，停止才真正停 | 开 | `设置 → 通知` |
-| 自动暂停/恢复（音频焦点） | `audio_focus_enabled` | 来电 / 其他 App 抢占的暂停-恢复（just_audio `handleInterruptions`，重建播放器即时生效） | 开 | `设置 → 通知` |
+| 自动暂停/恢复（音频焦点） | `audio_focus_enabled` | 来电 / 其他 App 抢占的暂停-恢复（just_audio `handleInterruptions`，重建播放器即时生效） | 开 | `设置 → 播放` |
 | 允许不安全 HTTP | `allow_insecure_http` | 关时显式 `http://` 地址被拒并提示；缺 scheme 恒默认补 `https://`；约束后端 / WebDAV / 配对地址 | 关 | `设置 → 服务端` |
 | 信任自签名证书 | `allow_self_signed` | dio API 与直连 WebDAV（dart:io `badCertificateCallback`）接受自签名/自建 TLS；播放器层（ExoPlayer/mpv）不受影响 | 关 | `设置 → 服务端` |
 

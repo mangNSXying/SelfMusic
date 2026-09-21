@@ -1385,6 +1385,16 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
               ),
             ),
         ],
+        const Divider(height: 24),
+        SwitchListTile(
+          title: const Text('自动暂停/恢复'),
+          subtitle: const Text('通话等音频焦点抢占时自动暂停，结束后恢复（Android 生效）'),
+          value: _settings.audioFocusEnabled,
+          onChanged: (v) {
+            setState(() => _settings.audioFocusEnabled = v);
+            context.read<PlayerProvider>().applyAudioConfig();
+          },
+        ),
       ],
     );
   }
@@ -1681,7 +1691,7 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
   }
 }
 
-/// 通知设置（settings.md §3.6）：通知栏控制/后台播放（Android）；音频焦点开关。
+/// 通知设置（settings.md §3.6）：通知栏控制/后台播放（Android）。
 class _NotificationsSettings extends StatefulWidget {
   const _NotificationsSettings();
   @override
@@ -1713,7 +1723,7 @@ class _NotificationsSettingsState extends State<_NotificationsSettings> {
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Text(
-              '通知栏播放控制 / 后台播放 / 音频焦点基于 just_audio_background 与 audio_session，'
+              '通知栏播放控制 / 后台播放基于 just_audio_background，'
               '仅 Android 生效；Linux 桌面忽略这些开关。',
               style: Theme.of(context).textTheme.bodySmall),
           ),
@@ -1725,16 +1735,6 @@ class _NotificationsSettingsState extends State<_NotificationsSettings> {
           onChanged: (v) {
             setState(() => _settings.notificationControls = v);
             AppToast.show('通知栏播放控制将在重启应用后生效', isError: false);
-          },
-        ),
-        const Divider(height: 24),
-        SwitchListTile(
-          title: const Text('自动暂停/恢复'),
-          subtitle: const Text('通话等音频焦点抢占时自动暂停，结束后恢复'),
-          value: _settings.audioFocusEnabled,
-          onChanged: (v) {
-            setState(() => _settings.audioFocusEnabled = v);
-            context.read<PlayerProvider>().applyAudioConfig();
           },
         ),
       ],
