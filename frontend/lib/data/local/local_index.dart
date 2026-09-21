@@ -462,7 +462,7 @@ class LocalIndex {
     final rows = _db!.select('''
       SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
              i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
-             COALESCE(p.is_favorite, 0) AS favorite
+             i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
       FROM idx_songs i
       LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
       WHERE i.source_key=? AND i.missing=0 AND COALESCE(i.meta_read, 0)=0$excludeCond$cursorCond
@@ -680,7 +680,7 @@ class LocalIndex {
     final rows = _db!.select('''
       SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
              i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
-             COALESCE(p.is_favorite, 0) AS favorite
+             i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
       FROM idx_songs i
       LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
       WHERE i.source_key=? AND i.missing=0
@@ -748,7 +748,7 @@ class LocalIndex {
     const sql = '''
       SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
              i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
-             COALESCE(p.is_favorite, 0) AS favorite
+             i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
       FROM idx_songs i
       LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
       WHERE i.source_key=? AND i.ref=?
@@ -764,7 +764,7 @@ class LocalIndex {
     final rows = _db!.select('''
       SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
              i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
-             COALESCE(p.is_favorite, 0) AS favorite
+             i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
       FROM idx_songs i
       LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
       WHERE i.source_key=? AND i.missing=0 AND COALESCE(p.is_favorite, 0) = 1
@@ -791,6 +791,7 @@ class LocalIndex {
         favorite: r['favorite'] == 1,
         coverPath: r['cover_path'] as String?,
         sourceUrl: r['url'] as String?,
+        metaRead: (r['meta_read'] as int? ?? 0) == 1,
       );
 
   /// 从 source_key（'webdav:name'）取协议名（'webdav'）。

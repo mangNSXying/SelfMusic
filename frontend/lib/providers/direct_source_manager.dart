@@ -730,6 +730,7 @@ class DirectSourceManager extends ChangeNotifier {
       coverPath: s.coverPath,
       sourceUrl: s.sourceUrl,
       isDirect: s.isDirect,
+      metaRead: s.metaRead,
     );
   }
 

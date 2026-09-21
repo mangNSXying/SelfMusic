@@ -205,10 +205,22 @@ void main() {
     var unread = index.unreadSongs('webdav:nas', 100);
     expect(unread.map((s) => s.sourceRef), ['/dav/min.mp3']);
 
+    // metaRead 随 `meta_read` 列落 Song：未读歌 artist 为空 → 标注「未读取」；
+    // 已读歌 artist 为空 → 留白（null）。
+    final unreadSong = index.songByRef('webdav:nas', '/dav/min.mp3')!;
+    expect(unreadSong.metaRead, isFalse);
+    expect(unreadSong.metaDisplay(unreadSong.artist), Song.unreadLabel);
+    final readSong = index.songByRef('webdav:nas', '/dav/full.mp3')!;
+    expect(readSong.metaRead, isTrue);
+    expect(readSong.metaDisplay(readSong.artist), isNull);
+    // 有值时不论读未读都显示原值。
+    expect(unreadSong.metaDisplay('已有歌手'), '已有歌手');
+
     // 补读后不再未读。
     index.enrichSong('webdav:nas', '/dav/min.mp3', duration: 180);
     unread = index.unreadSongs('webdav:nas', 100);
     expect(unread, isEmpty);
+    expect(index.songByRef('webdav:nas', '/dav/min.mp3')!.metaRead, isTrue);
 
     // 排除正在播放的歌（后台补读跳过它，播放链路自己会重读）。
     index.upsertSongs([row('/dav/skip.mp3', null), row('/dav/other.mp3', null)]);

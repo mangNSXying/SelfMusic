@@ -292,7 +292,8 @@ class _TitleBlock extends StatelessWidget {
         ),
         SizedBox(height: compact ? 4 : 6),
         MarqueeText(
-          s.artist ?? 'Unknown',
+          // 未读取的元数据标注「未读取」，避免与「读取后发现没有」的留白混淆。
+          s.metaDisplay(s.artist) ?? '',
           style: compact
               ? Theme.of(context).textTheme.titleSmall
               : Theme.of(context).textTheme.titleMedium,
@@ -625,11 +626,13 @@ class _Cover extends StatelessWidget {
                         color: cs.primary.withValues(alpha: 0.5),
                       ),
                     )
-                  : Icon(
-                      Icons.music_note,
-                      size: size * 0.3,
-                      color: cs.primary.withValues(alpha: 0.5),
-                    ),
+                  : song.metaUnread
+                      ? _UnreadCoverPlaceholder(cs: cs, size: size)
+                      : Icon(
+                          Icons.music_note,
+                          size: size * 0.3,
+                          color: cs.primary.withValues(alpha: 0.5),
+                        ),
             ),
           ),
           Positioned(
@@ -670,6 +673,32 @@ class _Cover extends StatelessWidget {
   }
 }
 
+/// 未读取元数据时的封面占位：提示「尚未读取，可能有封面」，区别于真无封面的图标占位。
+class _UnreadCoverPlaceholder extends StatelessWidget {
+  final ColorScheme cs;
+  final double size;
+  const _UnreadCoverPlaceholder({required this.cs, required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(Icons.image_not_supported_outlined,
+            size: size * 0.22, color: cs.primary.withValues(alpha: 0.5)),
+        SizedBox(height: size * 0.04),
+        Text(
+          Song.unreadLabel,
+          style: TextStyle(
+            fontSize: size * 0.08,
+            color: cs.primary.withValues(alpha: 0.7),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 /// 歌曲信息弹窗：标题/歌手/专辑/流派/年份/时长/格式/来源/权重/收藏态。
 class _SongInfoDialog extends StatelessWidget {
   final Song song;
@@ -683,15 +712,21 @@ class _SongInfoDialog extends StatelessWidget {
       if (direct.weight.isFavorite(song)) states.add('喜欢');
       if (direct.weight.isDisliked(song)) states.add('不喜欢');
     }
+    // 元数据字段：未读取 → 标注「未读取」；已读取且无值 → 留白（—）。
+    String? optField(String? v) => song.metaDisplay(v);
     final rows = <List<String>>[
       ['标题', song.title],
-      ['歌手', song.artist ?? 'Unknown'],
-      ['专辑歌手', song.albumArtist ?? '—'],
-      ['专辑', song.albumName ?? '—'],
-      if (song.genre != null) ['流派', song.genre!],
-      if (song.year != null) ['年份', '${song.year}'],
-      if (song.duration != null && song.duration! > 0)
-        ['时长', formatDuration(song.duration)],
+      ['歌手', optField(song.artist) ?? '—'],
+      ['专辑歌手', optField(song.albumArtist) ?? '—'],
+      ['专辑', optField(song.albumName) ?? '—'],
+      if (song.metaUnread || (song.genre != null && song.genre!.isNotEmpty))
+        ['流派', song.metaUnread ? Song.unreadLabel : song.genre!],
+      if (song.metaUnread || song.year != null)
+        ['年份', song.metaUnread ? Song.unreadLabel : '${song.year}'],
+      if (song.metaUnread ||
+          (song.duration != null && song.duration! > 0))
+        ['时长',
+            song.metaUnread ? Song.unreadLabel : formatDuration(song.duration)],
       if (song.format != null) ['格式', song.format!.toUpperCase()],
       ['来源', '${song.source}（${song.sourceKey}）'],
       if (song.isDirect)

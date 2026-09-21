@@ -63,6 +63,7 @@ class ServerProxySource extends MusicSource {
         hidden: s.hidden,
         coverPath: s.coverPath,
         sourceUrl: s.sourceUrl,
+        metaRead: s.metaRead,
       );
 
   @override

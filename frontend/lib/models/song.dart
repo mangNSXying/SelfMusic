@@ -34,6 +34,11 @@ class Song {
   /// 直连模式专有：此歌唯一引用 `sourceKey|sourceRef`，供索引化/去重。
   final bool isDirect;
 
+  /// 元数据（歌手/专辑/流派/年份/时长/封面等）是否已完整读取过。
+  /// 服务端歌曲由服务端完整下发 → 恒 true；直连歌来自索引 `meta_read` 列，
+  /// 极简扫描（无时长）时为 false，后台补读成功后才置 true。
+  final bool metaRead;
+
   Song({
     required this.id,
     required this.sourceKey,
@@ -54,6 +59,7 @@ class Song {
     this.coverPath,
     this.sourceUrl,
     this.isDirect = false,
+    this.metaRead = true,
   });
 
   factory Song.fromJson(Map<String, dynamic> j) => Song(
@@ -117,6 +123,7 @@ class Song {
     bool favorite = false,
     String? coverPath,
     String? sourceUrl,
+    bool metaRead = true,
   }) =>
       Song(
         id: id,
@@ -137,6 +144,7 @@ class Song {
         coverPath: coverPath,
         sourceUrl: sourceUrl,
         isDirect: true,
+        metaRead: metaRead,
       );
 
   /// 拷贝（元数据覆盖/刷新用）。
@@ -160,6 +168,7 @@ class Song {
     String? coverPath,
     String? sourceUrl,
     bool? isDirect,
+    bool? metaRead,
   }) =>
       Song(
         id: id ?? this.id,
@@ -181,5 +190,18 @@ class Song {
         coverPath: coverPath ?? this.coverPath,
         sourceUrl: sourceUrl ?? this.sourceUrl,
         isDirect: isDirect ?? this.isDirect,
+        metaRead: metaRead ?? this.metaRead,
       );
+
+  /// 未读取元数据时标注的占位文案（区别于「读取后发现没有」的留白）。
+  static const String unreadLabel = '未读取';
+
+  /// 元数据字段展示值：
+  /// - 有值 → 原值（极简扫描可能已拿到部分标签）；
+  /// - 未读取且无值 → [unreadLabel]，提示尚未读头补全；
+  /// - 已读取且无值 → null，调用方留白（确认真没有该字段）。
+  String? metaDisplay(String? v) => v ?? (metaRead ? null : unreadLabel);
+
+  /// 当前歌曲的元数据是否仍为「未读取」。
+  bool get metaUnread => !metaRead;
 }
