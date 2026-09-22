@@ -2,7 +2,7 @@
 
 **去中心化的个人音乐服务**：自建单用户媒体服务器（Spring Boot），配合双模式客户端（Flutter，覆盖 Android / Windows / 鸿蒙）。
 
-- **服务器模式**：统一曲库索引、多设备状态同步、按需转码省流量、设备配对管理
+- **多设备同步**：权重/收藏/歌单/播放源/断点的跨设备收敛，设备配对管理（后端不持有曲库）
 - **直连模式**：无后端时 App 直连 WebDAV / SMB / 本地文件夹依然完整可用（所有播放源默认激活；源内文件夹式浏览；源卡片三点菜单切换直连/代理模式、编辑源；全局歌曲/专辑/歌手合并视图；离线缓存）
 
 > 整体设计（数据模型 / API / 播放算法 / 路线图）见 [DESIGN.md](DESIGN.md)，开发环境与日常流程见 [DEVELOPER.md](DEVELOPER.md)，设置体系见 [settings.md](settings.md)。
@@ -10,7 +10,7 @@
 ## 主要功能（已实现）
 
 - **播放**：顺序 / 列表循环 / 单曲循环 / 加权随机四种模式；断点续播；淡入淡出、均衡器（Android）；睡眠定时（指定时间 / 时长 / 曲数 / 列表结尾，可播完当前曲）
-- **曲库**：直连扫描三档（fast / minimal / full）增量指纹极速重扫，播放时后台补读未取元数据；歌曲信息 / 修改元数据全源支持
+- **曲库**：本地索引 + 直连扫描三档（fast / minimal / full）增量指纹极速重扫，播放时从头完整补读元数据；歌曲信息 / 修改元数据支持
 - **喜欢与权重**：喜欢 / 不喜欢即时生效（不喜欢权重最低）、加权随机按 factor 选歌、喜欢歌自动缓存离线播
 - **交互**：六分组左右滑动切换、播放页/歌词页跟手滑动（可关）、标题显示格式（文件名 / 歌名 / 歌手-歌名 / 歌名-歌手）、播放列表 / 播放源 / 专辑 / 歌手四页列表·卡片切换、进入播放队列与歌单自动定位当前曲并强调色
 - **歌单**：播放页「编辑歌单」（列出全部播放列表，点按加入/移出），列表页长按多选批量管理；设置 / 歌单导出导入
@@ -117,7 +117,7 @@ selfmusic/
 │       ├── layout/              # 自适应布局（app_shell/sidebar/top_bar/queue_panel/mini_player_bar）
 │       ├── providers/           # 状态（auth/library/player/navigation/playlists/direct_source_manager）
 │       ├── services/            # ApiClient（含懒刷新拦截器）/ AuthService / ServerSettings
-│       ├── data/sources/        # MusicSource 抽象 + ServerProxy / WebdavDirect / SmbDirect
+│       ├── data/sources/        # MusicSource 抽象 + WebdavDirect / LocalDirect / SmbDirect
 │       ├── data/local/          # audio_metadata 头部解析 + local_index + 阶段2 封装（weight/playlist/cache/settings）
 │       ├── models/              # Song / Album / Artist
 │       ├── widgets/             # 共享组件（SongTile / CoverThumb / PlayModeSelector / add_to_playlist）

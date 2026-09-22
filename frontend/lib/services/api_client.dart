@@ -177,18 +177,7 @@ class ApiClient {
     return dioForRetry.fetch(req);
   }
 
-  // ---------- 设置同步 / 配对密钥（settings.md §3.5 / DESIGN 暂缓项） ----------
-
-  /// 拉取服务端缓存建议值（settings.md §5 / §3.3 follow_server）。
-  Future<Map<String, dynamic>?> fetchServerConfig() async {
-    if (dio.options.baseUrl.isEmpty) return null;
-    try {
-      final resp = await dio.get('/api/v1/admin/config');
-      return (resp.data['data'] as Map<String, dynamic>?) ?? {};
-    } catch (_) {
-      return null;
-    }
-  }
+  // ---------- 配对密钥（settings.md §3.5） ----------
 
   /// 拉取当前配对密钥（DESIGN §8「暂缓项」）。
   Future<String?> fetchPairingToken() async {

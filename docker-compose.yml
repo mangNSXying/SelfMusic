@@ -35,10 +35,6 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       PAIRING_TOKEN: ${PAIRING_TOKEN:-}
       TZ: Asia/Shanghai
-      LOCAL_MUSIC_ROOT: /opt/music
-      WEBDAV_BASE_URL: ${WEBDAV_BASE_URL}
-      WEBDAV_USER: ${WEBDAV_USER}
-      WEBDAV_PASS: ${WEBDAV_PASS}
     command:
       - "/bin/sh"
       - "-c"
@@ -47,7 +43,6 @@ services:
       - ./backend/pom.xml:/home/ubuntu/app/pom.xml
       - ./backend/src:/home/ubuntu/app/src
       - ${HOME}/.m2:/home/ubuntu/.m2
-      - ./testmusic:/opt/music
     restart: unless-stopped
 
 volumes:

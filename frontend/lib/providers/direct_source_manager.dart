@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 import '../data/sources/music_source.dart';
@@ -10,7 +9,6 @@ import '../data/sources/meta_enrich.dart';
 import '../data/sources/scan_worker.dart';
 import '../data/sources/webdav_direct_source.dart';
 import '../data/sources/local_direct_source.dart';
-import '../data/sources/server_proxy_source.dart';
 import '../data/local/local_index.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/cache_manager.dart';
@@ -20,14 +18,12 @@ import '../models/song.dart';
 import '../services/api_client.dart';
 import '../services/secret_store.dart';
 
-/// 直连模式源管理（阶段 3 / 阶段 4 接收器）。
+/// 直连源管理（阶段 3 / 阶段 4 接收器）。
 ///
-/// - 持有 [LocalIndex]（直连模式的本地事实源）。
+/// - 持有 [LocalIndex]（本地事实源）。
 /// - 管理已配置的直连源（WebDAV 完整，SMB 为阶段 4 骨架）。
-/// - 每个源可独立选择 [SourceMode.direct]（App 内扫描/播放）或
-///   [SourceMode.proxy]（该源走后端 /api 拉整体库，需先配置「服务端」地址）。
 /// - 所有源默认激活，歌曲经 [allSongs] 合并进全局图库。
-/// - 提供 添加/删除/扫描/检索/收藏/缓存/模式切换 等操作，并驱动 UI 刷新。
+/// - 提供 添加/删除/扫描/检索/收藏/缓存 等操作，并驱动 UI 刷新。
 class DirectSourceManager extends ChangeNotifier {
   final LocalIndex index = LocalIndex();
   final List<MusicSource> _sources = [];
@@ -129,7 +125,7 @@ class DirectSourceManager extends ChangeNotifier {
   /// 对所有直连源依次增量扫描（自动触发用；并发保护在 scanSource 内）。
   Future<void> autoScanAll() async {
     for (final s in _sources) {
-      if (!s.supportsDirect || isProxy(s.key)) continue;
+      if (!s.supportsDirect) continue;
       try {
         await scanSource(s.key);
       } catch (_) {
@@ -138,30 +134,13 @@ class DirectSourceManager extends ChangeNotifier {
     }
   }
 
-  /// 关联后端接入点，供按源代理源使用其中的 dio/baseUrl。
+  /// 关联后端接入点（同步/配对用；未配置时同步全跳）。
   void attachApi(ApiClient api) => _api = api;
 
   /// 服务器是否可达（配了后端地址）：直连歌曲同步事件的进队门控
   ///（SongWeightStore/PlaylistStore/PlayerProvider 共用；SyncEngine 用
   ///同一信号决定是否上推，未配对时跳过）。读实时值，attach 先后无碍。
   bool get isServerAvailable => _api?.baseUrl.isNotEmpty ?? false;
-
-  /// 拉取服务端缓存建议值并填入 [settings]（settings.md §3.3 follow_server 来源）。
-  Future<bool> refreshServerConfig() async {
-    final api = _api;
-    if (api == null) return false;
-    final cfg = await api.fetchServerConfig();
-    if (cfg == null) return false;
-    final mb = (cfg['cache_max_bytes'] as num?)?.toInt();
-    final limit = (cfg['cache_song_limit'] as num?)?.toInt();
-    if (mb != null && limit != null) {
-      settings.serverCacheMaxBytes = mb;
-      settings.serverCacheSongLimit = limit;
-      notifyListeners();
-      return true;
-    }
-    return false;
-  }
 
   bool get ready => _ready;
   List<MusicSource> get sources => List.unmodifiable(_sources);
@@ -170,7 +149,7 @@ class DirectSourceManager extends ChangeNotifier {
   void refresh() => notifyListeners();
 
   /// 「信任自签名」开关已写入 [settings] 后调用：按新策略重建 WebDAV 直连源
-  /// （dart:io `badCertificateCallback`），本地源与服务端代理无需重建。
+  /// （dart:io `badCertificateCallback`），本地源无需重建。
   void applySecuritySettings() {
     final rebuilt = <MusicSource>[];
     for (final s in _sources) {
@@ -183,29 +162,17 @@ class DirectSourceManager extends ChangeNotifier {
       try {
         cfg.addAll(jsonDecode(row.config) as Map<String, dynamic>);
       } catch (_) {}
-      rebuilt.add(_buildFor(
+      rebuilt.add(_buildDirect(
           kind: row.kind,
           key: row.key,
           name: (cfg['name'] as String? ?? row.name).toString(),
-          cfg: cfg,
-          mode: _modeFromConfig(cfg)));
+          cfg: cfg));
     }
     _sources
       ..clear()
       ..addAll(rebuilt);
     notifyListeners();
   }
-
-  /// 服务器模式始终存在。
-  String get serverKey => 'server';
-
-  /// 从 [src] 读出该源的模式（默认直连）。
-  static SourceMode modeOf(MusicSource src) =>
-      src is ServerProxySource ? SourceMode.proxy : SourceMode.direct;
-
-  /// 该源当前是否为「服务端代理」模式。
-  bool isProxy(String key) =>
-      _sources.where((x) => x.key == key).firstOrNull is ServerProxySource;
 
   Future<void> init() async {
     await index.open();
@@ -221,7 +188,6 @@ class DirectSourceManager extends ChangeNotifier {
       try {
         if (r.kind == 'webdav') {
           var cfg = jsonDecode(r.config) as Map<String, dynamic>;
-          final mode = _modeFromConfig(cfg);
           final name = (cfg['name'] as String? ?? r.name).toString();
           // 老数据迁移：config 里的明文密码 → SecretStore，并回写干净 config。
           var pwd = await secrets.webdavPassword(r.key);
@@ -238,13 +204,13 @@ class DirectSourceManager extends ChangeNotifier {
           _webdavPwds[r.key] = pwd ?? '';
           // 构建源对象时密码从内存镜像来，config 不落地明文。
           cfg['password'] = pwd ?? '';
-          _sources.add(_buildFor(
-              kind: r.kind, key: r.key, name: name, cfg: cfg, mode: mode));
+          _sources.add(
+              _buildDirect(kind: r.kind, key: r.key, name: name, cfg: cfg));
         } else if (r.kind == 'local') {
           final cfg = jsonDecode(r.config) as Map<String, dynamic>;
           final name = cfg['name'] as String? ?? r.name;
-          _sources.add(_buildFor(
-              kind: r.kind, key: r.key, name: name, cfg: cfg, mode: _modeFromConfig(cfg)));
+          _sources.add(
+              _buildDirect(kind: r.kind, key: r.key, name: name, cfg: cfg));
         }
         // SMB 自动恢复在阶段 4 补充。
       } catch (_) {
@@ -265,10 +231,7 @@ class DirectSourceManager extends ChangeNotifier {
     // 之前）的文件上提前中断，已标已读却读不出歌手。重置这些行，交给后台
     // 补读用「从头完整读取」重取。仅本机一次（不进 knownKeys）。
     if (!settings.metaReenrichV2Done) {
-      final keys = _sources
-          .where((s) => s is! ServerProxySource)
-          .map((s) => s.key)
-          .toList();
+      final keys = _sources.map((s) => s.key).toList();
       final reset = index.resetMetaReadForMissingArtist(keys);
       settings.metaReenrichV2Done = true;
       if (reset > 0) debugPrint('元数据回填补读：已重置 $reset 首待重读');
@@ -296,9 +259,6 @@ class DirectSourceManager extends ChangeNotifier {
     _scanProgress.close();
     super.dispose();
   }
-
-  SourceMode _modeFromConfig(Map<String, dynamic> cfg) =>
-      (cfg['mode'] as String?) == 'proxy' ? SourceMode.proxy : SourceMode.direct;
 
   String _webdavKey(String name) => 'webdav:$name';
 
@@ -329,20 +289,7 @@ class DirectSourceManager extends ChangeNotifier {
     );
   }
 
-  /// 按类型 + 数据通道构建源实例（直连或服务端代理）。
-  MusicSource _buildFor({
-    required String kind,
-    required String key,
-    required String name,
-    required Map<String, dynamic> cfg,
-    required SourceMode mode,
-  }) =>
-      mode == SourceMode.proxy
-          ? _buildProxy(name: name, key: key)
-          : _buildDirect(kind: kind, key: key, name: name, cfg: cfg);
-
-  /// 读取某源的可编辑配置（含 kind/name/path/baseUrl/username/password/mode）。
-  /// 代理模式下内存对象只是 [ServerProxySource]，原始凭据需从持久化配置还原。
+  /// 读取某源的可编辑配置（含 kind/name/path/baseUrl/username/password）。
   Map<String, dynamic> editableConfig(String key) {
     final row = index.getSource(key);
     if (row == null) return const {};
@@ -355,50 +302,30 @@ class DirectSourceManager extends ChangeNotifier {
     return cfg;
   }
 
-  ServerProxySource _buildProxy({required String name, required String key}) {
-    final base = _api?.baseUrl ?? '';
-    return ServerProxySource(
-      dio: _api?.dio ?? Dio(),
-      baseUrl: base,
-      key: key,
-      name: name,
-    );
-  }
-
   void setActive(String key) {
     notifyListeners();
   }
 
-  MusicSource? sourceByKey(String key) {
-    if (key == serverKey) return null; // 服务器无直连源对象
-    return _sources.where((x) => x.key == key).firstOrNull;
-  }
+  MusicSource? sourceByKey(String key) =>
+      _sources.where((x) => x.key == key).firstOrNull;
 
   Future<void> addWebdav({
     required String name,
     required String baseUrl,
     String username = '',
     String password = '',
-    SourceMode mode = SourceMode.direct,
   }) async {
     final key = _webdavKey(name);
     _webdavPwds[key] = password;
     await secrets.setWebdavPassword(key, password);
-    final src = _buildFor(
-        kind: 'webdav', key: key, name: name, cfg: <String, dynamic>{
-      'name': name,
-      'baseUrl': baseUrl,
-      'username': username,
-      'mode': mode.name,
-    }, mode: mode);
-    _sources.add(src);
     // config 不含密码（明文收敛到 SecretStore）。
     final cfg = <String, dynamic>{
       'name': name,
       'baseUrl': baseUrl,
       'username': username,
-      'mode': mode.name,
     };
+    _sources.add(_buildDirect(
+        kind: 'webdav', key: key, name: name, cfg: cfg));
     index.upsertSource(key, 'webdav', name, jsonEncode(cfg));
     restartAutoScan();
     notifyListeners();
@@ -408,22 +335,20 @@ class DirectSourceManager extends ChangeNotifier {
   Future<void> addLocal({
     required String name,
     required String path,
-    SourceMode mode = SourceMode.direct,
   }) async {
     final key = _localKey(name);
     final cfg = <String, dynamic>{
       'name': name,
       'path': path,
-      'mode': mode.name,
     };
-    _sources.add(_buildFor(
-        kind: 'local', key: key, name: name, cfg: cfg, mode: mode));
+    _sources.add(
+        _buildDirect(kind: 'local', key: key, name: name, cfg: cfg));
     index.upsertSource(key, 'local', name, jsonEncode(cfg));
     restartAutoScan();
     notifyListeners();
   }
 
-  /// 编辑源：可改 名称（含 key 迁移）/ 地址或目录 / 账号 / 密码 / 数据通道。
+  /// 编辑源：可改 名称（含 key 迁移）/ 地址或目录 / 账号 / 密码。
   ///
   /// 改名会派生新的 key，[LocalIndex.renameSource] 同步迁移已索引歌曲、
   /// 收藏与歌单条目；与已有源重名时抛 [StateError]。
@@ -434,7 +359,6 @@ class DirectSourceManager extends ChangeNotifier {
     String? baseUrl,
     String? username,
     String? password,
-    SourceMode? mode,
   }) async {
     final row = index.getSource(key);
     if (row == null) return;
@@ -448,8 +372,6 @@ class DirectSourceManager extends ChangeNotifier {
     if (path != null) cfg['path'] = path;
     if (baseUrl != null) cfg['baseUrl'] = baseUrl;
     if (username != null) cfg['username'] = username;
-    final newMode = mode ?? _modeFromConfig(cfg);
-    cfg['mode'] = newMode.name;
 
     final newKey = '${row.kind}:$newName';
     if (newKey != key && _sources.any((s) => s.key == newKey)) {
@@ -475,8 +397,8 @@ class DirectSourceManager extends ChangeNotifier {
     final rebuilt = <MusicSource>[];
     for (final s in _sources) {
       if (s.key == key) {
-        rebuilt.add(_buildFor(
-            kind: row.kind, key: newKey, name: newName, cfg: cfg, mode: newMode));
+        rebuilt.add(_buildDirect(
+            kind: row.kind, key: newKey, name: newName, cfg: cfg));
       } else {
         rebuilt.add(s);
       }
@@ -488,35 +410,6 @@ class DirectSourceManager extends ChangeNotifier {
       index.renameSource(key, newKey);
     }
     index.upsertSource(newKey, row.kind, newName, jsonEncode(cfg));
-    restartAutoScan();
-    notifyListeners();
-  }
-
-  /// 切换某源的数据通道模式（直连 ↔ 服务端代理）并持久化。
-  Future<void> setMode(String key, SourceMode mode) async {
-    final row = index.getSource(key);
-    if (row == null) return;
-    final cfg = <String, dynamic>{};
-    try {
-      final existing = jsonDecode(row.config) as Map<String, dynamic>;
-      cfg.addAll(existing);
-    } catch (_) {}
-    cfg['mode'] = mode.name;
-
-    final name = cfg['name'] as String? ?? row.name;
-    final List<MusicSource> rebuilt = [];
-    for (final s in _sources) {
-      if (s.key == key) {
-        rebuilt.add(_buildFor(
-            kind: row.kind, key: key, name: name, cfg: cfg, mode: mode));
-      } else {
-        rebuilt.add(s);
-      }
-    }
-    _sources
-      ..clear()
-      ..addAll(rebuilt);
-    index.upsertSource(key, row.kind, name, jsonEncode(cfg));
     restartAutoScan();
     notifyListeners();
   }
@@ -634,38 +527,18 @@ class DirectSourceManager extends ChangeNotifier {
     }
   }
 
-  /// 检索某源索引的歌。代理源走后端整体库（异步，分页取完），并应用本地元数据覆盖。
-  Future<List<Song>> fetchSongsFor(String? sourceKey, {String? query}) async {
-    final key = sourceKey ?? serverKey;
-    if (key == serverKey) return const [];
-    final s = _sources.where((x) => x.key == key).firstOrNull;
-    if (s is ServerProxySource) {
-      final list = await s.fetchAllSongs(query: query);
-      return [for (final x in list) applyMetaOverride(x)];
-    }
-    return index.searchSongs(sourceKey: key, query: query);
-  }
-
-  /// 同步检索（本地索引）。代理源无本地索引，返回空（由 [fetchSongsFor] 异步取后端）。
+  /// 检索某源索引的歌（本地索引）。
   List<Song> songsOf(String? sourceKey, {String? query}) {
-    final key = sourceKey ?? serverKey;
-    if (key == serverKey) return const [];
-    final s = _sources.where((x) => x.key == key).firstOrNull;
-    if (s is ServerProxySource) return const [];
-    return index.searchSongs(sourceKey: key, query: query);
+    if (sourceKey == null) return const [];
+    return index.searchSongs(sourceKey: sourceKey, query: query);
   }
 
-  int countOf(String sourceKey) {
-    final s = _sources.where((x) => x.key == sourceKey).firstOrNull;
-    if (s is ServerProxySource) return 0;
-    return index.countSongs(sourceKey);
-  }
+  int countOf(String sourceKey) => index.countSongs(sourceKey);
 
   /// 所有直连源本地索引歌曲的总和（供全局图库合并）。
   List<Song> allSongs({String? query}) {
     final out = <Song>[];
     for (final s in _sources) {
-      if (s is ServerProxySource) continue;
       out.addAll(index.searchSongs(sourceKey: s.key, query: query));
     }
     return out;
@@ -675,13 +548,12 @@ class DirectSourceManager extends ChangeNotifier {
   int get allSongsCount {
     var n = 0;
     for (final s in _sources) {
-      if (s is ServerProxySource) continue;
       n += index.countSongs(s.key);
     }
     return n;
   }
 
-  /// 收藏统一收口到 play_meta（直连 + 服务器一致）；收藏直连歌自动后台缓存。
+  /// 收藏统一收口到 play_meta；收藏直连歌自动后台缓存。
   void setFavorite(Song s, bool fav) {
     if (fav) {
       weight.setLiked(s);
@@ -697,7 +569,7 @@ class DirectSourceManager extends ChangeNotifier {
     }
   }
 
-  /// 全部已收藏歌曲（直连 + 服务器，统一来自 play_meta 快照）。
+  /// 全部已收藏歌曲（统一来自 play_meta 快照）。
   List<Song> favoriteSongs() => index.likedSongs();
 
   /// 是否处于「不喜欢」态（权重锁定最低）。
@@ -709,75 +581,21 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 应用服务端歌曲本地元数据覆盖（'' 表示用户显式清空该字段）。
-  ///
-  /// 直连歌改库直接生效；服务端/代理歌经此覆盖层渲染（全局库与源内浏览共用）。
-  /// 注意 Song.copyWith 对 null 是「保留旧值」，清空必须显式重建对象。
-  Song applyMetaOverride(Song s) {
-    final o = index.metaOverrideOf(s.sourceKey, s.sourceRef);
-    if (o == null || o.isEmpty) return s;
-    String? pick(String? ov, String? base) {
-      if (ov == null) return base; // 未覆盖
-      return ov.isEmpty ? null : ov; // 覆盖为空 = 清空为未知
-    }
-
-    final title = pick(o.title, s.title);
-    return Song(
-      id: s.id,
-      sourceKey: s.sourceKey,
-      title: (title == null || title.isEmpty) ? s.title : title,
-      artist: pick(o.artist, s.artist),
-      albumName: pick(o.album, s.albumName),
-      albumArtist: pick(o.albumArtist, s.albumArtist),
-      trackNo: s.trackNo,
-      year: s.year,
-      genre: s.genre,
-      duration: s.duration,
-      source: s.source,
-      sourceRef: s.sourceRef,
-      fileSize: s.fileSize,
-      format: s.format,
-      favorite: s.favorite,
-      hidden: s.hidden,
-      coverPath: s.coverPath,
-      sourceUrl: s.sourceUrl,
-      isDirect: s.isDirect,
-      metaRead: s.metaRead,
-    );
-  }
-
   /// 用户手动修改歌曲元数据（标题/歌手/专辑/专辑歌手）。
   ///
-  /// 直连歌落库并标记扫描保护；服务端歌（后端只读）写入本地覆盖层。
-  /// 字段语义：null=不修改，''=清空为未知，其余=新值。
+  /// 落库并标记扫描保护；字段语义：null=不修改，''=清空为未知，其余=新值。
   /// 返回刷新后的歌曲（供播放队列/当前歌曲同步），失败返回 null。
   Song? updateSongMeta(Song s,
       {String? title,
       String? artist,
       String? album,
       String? albumArtist}) {
-    if (s.isDirect) {
-      index.updateSongUserMeta(s.sourceKey, s.sourceRef,
-          title: title, artist: artist, album: album, albumArtist: albumArtist);
-      _metaVersion++;
-      _favoriteVersion++;
-      notifyListeners();
-      return index.songByRef(s.sourceKey, s.sourceRef);
-    }
-    index.setMetaOverride(s.sourceKey, s.sourceRef,
-        title: title, artist: artist, album: album, albumArtist: albumArtist);
-    index.syncMetaSnapshot(s.sourceKey, s.sourceRef,
+    index.updateSongUserMeta(s.sourceKey, s.sourceRef,
         title: title, artist: artist, album: album, albumArtist: albumArtist);
     _metaVersion++;
     _favoriteVersion++;
     notifyListeners();
-    final patched = s.copyWith(
-      title: title ?? s.title,
-      artist: artist ?? s.artist,
-      albumName: album ?? s.albumName,
-      albumArtist: albumArtist ?? s.albumArtist,
-    );
-    return applyMetaOverride(patched);
+    return index.songByRef(s.sourceKey, s.sourceRef);
   }
 
   Future<void> cacheSong(MusicSource src, Song s) async {
@@ -853,7 +671,6 @@ class DirectSourceManager extends ChangeNotifier {
   Future<void> _doEnrichUnread() async {
     try {
       for (final s in _sources) {
-        if (s is ServerProxySource) continue;
         if (!s.supportsDirect) continue;
         var afterId = 0;
         while (true) {

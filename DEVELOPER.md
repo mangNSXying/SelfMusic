@@ -84,10 +84,8 @@ selfmusic/
 │       │   ├── common/               # ApiResponse / BizException / MusicSource 枚举 / 全局异常
 │       │   ├── config/               # FirstBootInitializer 等启动配置
 │       │   ├── auth/                 # SecurityConfig / TokenFilter / 配对与设备管理 API
-│       │   ├── library/              # 曲库 API（songs/albums/favorites）+ 歌曲调权 POST（阶段5）
 │       │   ├── playlist/             # 歌单 CRUD + 断点 PUT（阶段5，走 SyncService 事件管线）
 │       │   ├── sync/                 # 同步引擎服务端：SyncController pull/push + SyncService（去重/重算/LWW/cursor）
-│       │   ├── stream/               # 流媒体 API + MusicSourceProxy（local/webdav/smb）
 │       │   └── domain/
 │       │       ├── entity/           # JPA 实体（纯手写 getter/setter，不用 Lombok）
 │       │       └── repository/       # Spring Data JPA 接口
@@ -99,7 +97,7 @@ selfmusic/
 │   │   ├── layout/                   # 自适应布局（app_shell / sidebar / top_bar / queue_panel / mini_player_bar）
 │   │   ├── providers/                # 状态（auth / library / player / navigation / playlists / direct_source_manager）
 │   │   ├── services/                 # dio+懒刷新拦截器(ApiClient)、AuthService、ServerSettings、SyncEngine（阶段5 推拉/cursor/退避）
-│   │   ├── data/sources/             # MusicSource 抽象 + ServerProxy + WebdavDirect + LocalDirect + sibling_cover（同目录图片回退）
+│   │   ├── data/sources/             # MusicSource 抽象 + WebdavDirect + LocalDirect + SmbDirect + sibling_cover（同目录图片回退）
 │   │   ├── data/local/               # audio_metadata（mp3/flac/m4a/ogg·opus/wav/aac 头部解析 + 两段/尾读） + local_index + 阶段2 封装（song_weight_store / playlist_store / cache_manager / app_settings）+ 阶段5（sync_event_types / weight_outbox / breakpoint_mirror）
 │   │   ├── models/                   # Song / Album / Artist
 │   │   ├── utils/                    # duration_format / song_title_format / lrc_parser
@@ -194,7 +192,7 @@ mvn dependency:go-offline -f backend/pom.xml     # 预拉全部依赖
 1. 在 `domain/entity/` 建 JPA 实体（对应 `scripts/init.sql` 中已存在的表；**手写 getter/setter**，equals/hashCode 基于 id）
 2. 在 `domain/repository/` 建接口继承 `JpaRepository`
 3. 在 `service/` 写业务逻辑
-4. 在对应功能包（`auth/`、`library/`、`stream/`…）暴露 REST 接口，路径以 `/api/v1/` 开头
+4. 在对应功能包（`auth/`、`sync/`、`playlist/`…）暴露 REST 接口，路径以 `/api/v1/` 开头
 5. 写测试到 `src/test/java`
 
 ---
@@ -316,7 +314,7 @@ ldconfig -p | grep libmpv   # 应看到 libmpv.so / libmpv.so.2
 
 > 完整端点清单、认证细节与**已实现/规划**标注见 DESIGN.md §4。这里只留写代码常用的三条：
 >
-> - 路径前缀 `/api/v1/`，资源名用复数（`/api/v1/library/songs`）
+> - 路径前缀 `/api/v1/`，资源名用复数（`/api/v1/playlists`）
 > - 除 `/api/v1/health`、`/api/v1/auth/pair`、`/api/v1/auth/refresh` 外均需 `Authorization: Bearer <access_token>`；access 过期返回 `401 + X-Token-Expired: true`，客户端懒刷新
 > - 响应统一包一层 `{ "code": 0, "message": "ok", "data": ... }`；`4xx` 客户端错误，`5xx` 服务端错误
 

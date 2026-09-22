@@ -1,9 +1,12 @@
 package com.selfmusic.backend.domain.entity;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
+/**
+ * 断点续播状态（每歌单一行）：自持歌曲身份，不再依赖服务端曲库。
+ * LWW 基准为 last_event_at（最后一次应用的断点事件 occurred_at）。
+ */
 @Entity
 @Table(name = "play_states")
 public class PlayState {
@@ -11,10 +14,20 @@ public class PlayState {
     @Column(name = "playlist_id")
     private Long playlistId;
 
-    @JsonIgnore
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "song_id")
-    private Song song;
+    /** 源实例身份：客户端 sources.client_uuid；旧数据为 legacy:<协议>。 */
+    @Column(name = "source_id", length = 100)
+    private String sourceId;
+
+    /** 协议名（webdav/local/smb），仅展示/兜底匹配用。 */
+    @Column(length = 20)
+    private String source;
+
+    @Column(name = "source_ref", length = 500)
+    private String sourceRef;
+
+    /** 上报设备 client_id（跨设备续播提示用，可空）。 */
+    @Column(name = "device_client_id", length = 36)
+    private String deviceClientId;
 
     @Column(name = "position_ms")
     private Integer positionMs = 0;
@@ -32,8 +45,17 @@ public class PlayState {
     public Long getPlaylistId() { return playlistId; }
     public void setPlaylistId(Long playlistId) { this.playlistId = playlistId; }
 
-    public Song getSong() { return song; }
-    public void setSong(Song song) { this.song = song; }
+    public String getSourceId() { return sourceId; }
+    public void setSourceId(String sourceId) { this.sourceId = sourceId; }
+
+    public String getSource() { return source; }
+    public void setSource(String source) { this.source = source; }
+
+    public String getSourceRef() { return sourceRef; }
+    public void setSourceRef(String sourceRef) { this.sourceRef = sourceRef; }
+
+    public String getDeviceClientId() { return deviceClientId; }
+    public void setDeviceClientId(String deviceClientId) { this.deviceClientId = deviceClientId; }
 
     public Integer getPositionMs() { return positionMs; }
     public void setPositionMs(Integer positionMs) { this.positionMs = positionMs; }
@@ -60,7 +82,7 @@ public class PlayState {
     @Override
     public String toString() {
         return "PlayState{playlistId=" + playlistId
-                + ", songId=" + (song != null ? song.getId() : null)
-                + ", positionMs=" + positionMs + "}";
+                + ", sourceId='" + sourceId + "', sourceRef='" + sourceRef
+                + "', positionMs=" + positionMs + "}";
     }
 }

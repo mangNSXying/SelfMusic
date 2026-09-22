@@ -28,14 +28,3 @@ spring:
   devtools:
     restart:
       enabled: true
-
-selfmusic:
-  # 出流代理配置（/stream 为库中既有行出流；服务端不再扫描入库，歌曲只由 APP 在播放源处扫描）。
-  local:
-    root: ${LOCAL_MUSIC_ROOT:/opt/music}
-  webdav:
-    base-url: ${WEBDAV_BASE_URL:}
-    username: ${WEBDAV_USER:}
-    password: ${WEBDAV_PASS:}
-  transcode:
-    max-concurrency: 2

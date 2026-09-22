@@ -2,21 +2,6 @@ import 'dart:convert';
 
 import 'local_index.dart';
 
-/// 客户端缓存配置来源（settings.md §3.3）。
-enum CacheConfigMode {
-  custom('自定义'),
-  followServer('跟随服务端');
-
-  const CacheConfigMode(this.label);
-  final String label;
-
-  static CacheConfigMode parse(String? v) =>
-      v == 'follow_server' ? followServer : custom;
-
-  String get storeValue =>
-      this == followServer ? 'follow_server' : 'custom';
-}
-
 /// 播放页（播放/歌词）切换过渡动画。
 enum PlayerTransition {
   none('关闭'),
@@ -70,7 +55,6 @@ class AppSettings {
   static const String kCacheMaxBytes = 'cache_max_bytes';
   static const String kCacheSongLimit = 'cache_song_limit';
   static const String kAutoCacheFavorites = 'auto_cache_favorites';
-  static const String kCacheConfigMode = 'cache_config_mode';
 
   /// 允许不安全 HTTP（settings.md §3.3 服务端）：关（默认）时显式 `http://` 地址一律拒绝。
   static const String kAllowInsecureHttp = 'allow_insecure_http';
@@ -149,11 +133,6 @@ class AppSettings {
 
   // ---------- 缓存（settings.md §3.3） ----------
 
-  CacheConfigMode get cacheConfigMode =>
-      CacheConfigMode.parse(index.settingsGet(kCacheConfigMode));
-  set cacheConfigMode(CacheConfigMode v) =>
-      index.settingsSet(kCacheConfigMode, v.storeValue);
-
   int get cacheMaxBytes =>
       int.tryParse(index.settingsGet(kCacheMaxBytes) ?? '') ??
       defaultCacheMaxBytes;
@@ -163,21 +142,6 @@ class AppSettings {
       int.tryParse(index.settingsGet(kCacheSongLimit) ?? '') ??
       defaultCacheSongLimit;
   set cacheSongLimit(int v) => index.settingsSet(kCacheSongLimit, v.toString());
-
-  /// 服务端建议值（阶段 6 下发后由客户端填入；未下发前为空，此时跟随模式回退自定义值）。
-  int? serverCacheMaxBytes;
-  int? serverCacheSongLimit;
-
-  /// 生效缓存上限：custom → 本地值；follow_server → 服务端建议值（不可达/未下发回退本地）。
-  int get effectiveCacheMaxBytes =>
-      cacheConfigMode == CacheConfigMode.followServer
-          ? (serverCacheMaxBytes ?? cacheMaxBytes)
-          : cacheMaxBytes;
-
-  int get effectiveCacheSongLimit =>
-      cacheConfigMode == CacheConfigMode.followServer
-          ? (serverCacheSongLimit ?? cacheSongLimit)
-          : cacheSongLimit;
 
   // ---------- 服务端分区·网络（settings.md §3.3） ----------
 
@@ -407,7 +371,6 @@ class AppSettings {
     kCacheMaxBytes,
     kCacheSongLimit,
     kAutoCacheFavorites,
-kCacheConfigMode,
     kAllowInsecureHttp,
     kAllowSelfSigned,
     kSyncCursor,

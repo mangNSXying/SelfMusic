@@ -362,45 +362,6 @@ void main() {
     dir.deleteSync(recursive: true);
   });
 
-  test('服务端歌曲元数据本地覆盖：写入/读取/部分更新', () async {
-    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
-    final dir = await Directory.systemTemp.createTemp('selfmusic_idxovr_');
-    PathProviderPlatform.instance = _FakePathProvider(dir.path);
-    final index = LocalIndex();
-    await index.open();
-
-    expect(index.metaOverrideOf('server', '42'), isNull);
-    index.setMetaOverride('server', '42', title: '覆盖标题');
-    var o = index.metaOverrideOf('server', '42')!;
-    expect(o.title, '覆盖标题');
-    expect(o.artist, isNull);
-
-    // 部分更新合并，不覆盖已有。
-    index.setMetaOverride('server', '42', artist: '覆盖歌手');
-    o = index.metaOverrideOf('server', '42')!;
-    expect(o.title, '覆盖标题');
-    expect(o.artist, '覆盖歌手');
-    expect(o.isEmpty, isFalse);
-
-    // 专辑歌手同样支持部分覆盖。
-    index.setMetaOverride('server', '42', albumArtist: '覆盖专辑歌手');
-    o = index.metaOverrideOf('server', '42')!;
-    expect(o.albumArtist, '覆盖专辑歌手');
-    expect(o.title, '覆盖标题');
-
-    // 空串 = 显式清空（覆盖层保留 ''，渲染层据此显示未知）；null = 不动该字段。
-    index.setMetaOverride('server', '42', artist: '');
-    o = index.metaOverrideOf('server', '42')!;
-    expect(o.artist, '');
-    expect(o.title, '覆盖标题');
-    index.setMetaOverride('server', '42', title: null);
-    o = index.metaOverrideOf('server', '42')!;
-    expect(o.title, '覆盖标题');
-
-    index.close();
-    dir.deleteSync(recursive: true);
-  });
-
   test('歌词存储：三态读取、覆盖写入、缺歌词标记不覆盖内嵌', () async {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
     final dir = await Directory.systemTemp.createTemp('selfmusic_idxlrc_');

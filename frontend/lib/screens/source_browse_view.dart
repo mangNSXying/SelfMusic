@@ -10,7 +10,6 @@ import '../providers/direct_source_manager.dart';
 import '../providers/library_provider.dart';
 import '../providers/player_provider.dart';
 import '../providers/navigation_provider.dart';
-import '../services/server_settings.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/section_swipe.dart';
@@ -21,7 +20,6 @@ import '../widgets/song_tile.dart';
 /// 源内浏览组件（文件夹式导航）：在 AppContent 内容区原地渲染。
 ///
 /// - 直连源：本地索引（扫描后）检索，提供「扫描」按钮建立/刷新本地索引。
-/// - 服务端代理源：从后端 /api 拉取整体库（异步），无「扫描」按钮。
 class SourceBrowseView extends StatefulWidget {
   final String sourceKey;
   const SourceBrowseView({super.key, required this.sourceKey});
@@ -33,55 +31,21 @@ class SourceBrowseView extends StatefulWidget {
 class _SourceBrowseViewState extends State<SourceBrowseView> {
   String _query = '';
   bool _scanning = false;
-  bool _loading = false;
-  List<Song> _songs = [];
   ScanProgress? _progress;
   StreamSubscription<ScanProgress>? _progressSub;
   final Selection<String> _sel = Selection<String>();
 
-  /// 已应用的元数据版本（编辑/补读后就地重拉代理列表）。
-  int _seenMetaVersion = 0;
-
-  bool get _isProxy =>
-      context.read<DirectSourceManager>().isProxy(widget.sourceKey);
-
-  /// 代理模式但「服务端」地址尚未配置。
-  bool get _serverUnconfigured =>
-      _isProxy && context.read<ServerSettings>().baseUrl.isEmpty;
-
   @override
   void initState() {
     super.initState();
-    _seenMetaVersion = context.read<DirectSourceManager>().metaVersion;
-    if (_isProxy) {
-      if (!_serverUnconfigured) _loadProxy();
-    } else {
-      // 打开直连源即自动触发扫描（增量式，mtime/size 未变则快速跳过），
-      // 建立/刷新该源本地索引。
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        final source = context.read<DirectSourceManager>().sourceByKey(widget.sourceKey);
-        if (source != null && !_scanning) _scan(source);
-      });
-    }
-  }
-
-  Future<void> _loadProxy() async {
-    if (_serverUnconfigured) return;
-    setState(() {
-      _loading = true;
-      _sel.cancel();
+    // 打开直连源即自动触发扫描（增量式，mtime/size 未变则快速跳过），
+    // 建立/刷新该源本地索引。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final source =
+          context.read<DirectSourceManager>().sourceByKey(widget.sourceKey);
+      if (source != null && !_scanning) _scan(source);
     });
-    try {
-      final direct = context.read<DirectSourceManager>();
-      final songs =
-          await direct.fetchSongsFor(widget.sourceKey, query: _query);
-      if (mounted) setState(() => _songs = songs);
-    } catch (e) {
-      AppToast.error(e, '拉取失败');
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
   }
 
   Future<void> _scan(MusicSource source) async {
@@ -171,18 +135,8 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
     if (source == null) {
       return const Center(child: Text('源不存在'));
     }
-    final isProxy = _isProxy;
-    // 元数据被编辑/补读后就地重拉代理列表，使覆盖层即时可见。
-    if (isProxy && direct.metaVersion != _seenMetaVersion) {
-      _seenMetaVersion = direct.metaVersion;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _loadProxy();
-      });
-    }
-    final songs = isProxy
-        ? _songs
-        : direct.songsOf(widget.sourceKey, query: _query);
-    final count = isProxy ? _songs.length : direct.countOf(widget.sourceKey);
+    final songs = direct.songsOf(widget.sourceKey, query: _query);
+    final count = direct.countOf(widget.sourceKey);
 
     return SectionSwipe(
       child: Column(
@@ -208,35 +162,28 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
               ),
-              if (isProxy)
-                TextButton.icon(
-                  onPressed: _loading ? null : _loadProxy,
-                  icon: const Icon(Icons.sync, size: 18),
-                  label: const Text('刷新'),
-                )
-              else
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    FilledButton.icon(
-                      onPressed: _scanning ? null : () => _scan(source),
-                      icon: _scanning
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.refresh, size: 18),
-                      label: const Text('扫描'),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  FilledButton.icon(
+                    onPressed: _scanning ? null : () => _scan(source),
+                    icon: _scanning
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.refresh, size: 18),
+                    label: const Text('扫描'),
+                  ),
+                  if (_scanning)
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      tooltip: '取消扫描',
+                      onPressed: _cancel,
                     ),
-                    if (_scanning)
-                      IconButton(
-                        icon: const Icon(Icons.close),
-                        tooltip: '取消扫描',
-                        onPressed: _cancel,
-                      ),
-                  ],
-                ),
+                ],
+              ),
             ],
           ),
         ),
@@ -265,7 +212,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
             ],
           ),
         // 扫描进度：枚举阶段为不确定进度条；探测阶段显示比例与数字。
-        if (_scanning && !isProxy)
+        if (_scanning)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
             child: Column(
@@ -297,10 +244,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                     isDense: true,
                     border: OutlineInputBorder(),
                   ),
-                  onChanged: (v) {
-                    setState(() => _query = v);
-                    if (isProxy) _loadProxy();
-                  },
+                  onChanged: (v) => setState(() => _query = v),
                 ),
               ),
             ],
@@ -311,16 +255,14 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
           child: Align(
             alignment: Alignment.centerLeft,
             child: Text(
-              isProxy
-                  ? '服务端代理 · 共 $count 首'
-                  : '已索引 $count 首 · ${source.name}',
+              '已索引 $count 首 · ${source.name}',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: Theme.of(context).colorScheme.onSurfaceVariant),
             ),
           ),
         ),
         const Divider(height: 16),
-        if (direct.error != null && !isProxy)
+        if (direct.error != null)
           Padding(
             padding: const EdgeInsets.all(8),
             child: Text(direct.error!,
@@ -328,9 +270,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                 textAlign: TextAlign.center),
           ),
         Expanded(
-          child: _loading
-              ? const Center(child: CircularProgressIndicator())
-              : songs.isEmpty
+          child: songs.isEmpty
                   ? Center(
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
@@ -342,12 +282,8 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                                   .primary
                                   .withValues(alpha: 0.4)),
                           const SizedBox(height: 12),
-                          Text(
-                            _serverUnconfigured
-                                ? '代理模式需要先配置后端地址\n请到设置 → 「服务端」填写后端地址'
-                                : (isProxy
-                                    ? '服务端暂无可播放曲目'
-                                    : '暂无索引曲目，点击"扫描"建立本地索引'),
+                          const Text(
+                            '暂无索引曲目，点击"扫描"建立本地索引',
                             textAlign: TextAlign.center,
                           ),
                         ],

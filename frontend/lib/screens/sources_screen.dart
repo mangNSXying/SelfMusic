@@ -15,7 +15,7 @@ import '../widgets/view_mode_toggle.dart';
 /// 播放源管理页：直连源（WebDAV / 本地文件夹）列表（支持列表/卡片切换）。
 ///
 /// - 点击源卡片直接进入源内浏览（文件夹式导航）。
-/// - 卡片右侧「三点」菜单承载 直连/代理 切换、编辑、删除等设置。
+/// - 卡片右侧「三点」菜单承载 编辑、删除等设置。
 class SourcesScreen extends StatefulWidget {
   const SourcesScreen({super.key});
 
@@ -111,7 +111,6 @@ class _SourceDialogState extends State<_SourceDialog> {
   late final TextEditingController _username;
   late final TextEditingController _password;
   SourceKind _kind = SourceKind.webdav;
-  SourceMode _mode = SourceMode.direct;
   String? _error;
 
   bool get _isEdit => widget.editKey != null;
@@ -125,9 +124,6 @@ class _SourceDialogState extends State<_SourceDialog> {
       _kind = (cfg['kind'] as String?) == 'local'
           ? SourceKind.local
           : SourceKind.webdav;
-      _mode = (cfg['mode'] as String?) == 'proxy'
-          ? SourceMode.proxy
-          : SourceMode.direct;
     }
     _name = TextEditingController(text: cfg['name'] as String? ?? '');
     _path = TextEditingController(text: cfg['path'] as String? ?? '');
@@ -169,9 +165,9 @@ class _SourceDialogState extends State<_SourceDialog> {
         }
         if (_isEdit) {
           await direct.updateSource(widget.editKey!,
-              name: name, path: path, mode: _mode);
+              name: name, path: path);
         } else {
-          await direct.addLocal(name: name, path: path, mode: _mode);
+          await direct.addLocal(name: name, path: path);
         }
       } else {
         final url = _baseUrl.text.trim();
@@ -191,15 +187,13 @@ class _SourceDialogState extends State<_SourceDialog> {
               name: name,
               baseUrl: url,
               username: _username.text.trim(),
-              password: _password.text,
-              mode: _mode);
+              password: _password.text);
         } else {
           await direct.addWebdav(
               name: name,
               baseUrl: url,
               username: _username.text.trim(),
-              password: _password.text,
-              mode: _mode);
+              password: _password.text);
         }
       }
       if (mounted) Navigator.of(context).pop();
@@ -273,28 +267,6 @@ class _SourceDialogState extends State<_SourceDialog> {
                 decoration: const InputDecoration(labelText: '密码（可空）'),
               ),
             ],
-            const SizedBox(height: 16),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Text('数据通道', style: Theme.of(context).textTheme.labelLarge),
-            ),
-            const SizedBox(height: 8),
-            SegmentedButton<SourceMode>(
-              segments: const [
-                ButtonSegment(
-                  value: SourceMode.direct,
-                  icon: Icon(Icons.flash_on),
-                  label: Text('直连'),
-                ),
-                ButtonSegment(
-                  value: SourceMode.proxy,
-                  icon: Icon(Icons.dns_outlined),
-                  label: Text('服务端代理'),
-                ),
-              ],
-              selected: {_mode},
-              onSelectionChanged: (s) => setState(() => _mode = s.first),
-            ),
             if (_error != null) ...[
               const SizedBox(height: 12),
               Align(
@@ -341,7 +313,6 @@ class _DirectSourceCard extends StatelessWidget {
     final s = direct.sourceByKey(sourceKey);
     if (s == null) return const SizedBox.shrink();
     final count = direct.countOf(sourceKey);
-    final isProxy = direct.isProxy(sourceKey);
     final isLocal = s.kind == SourceKind.local;
 
     final tile = ListTile(
@@ -351,24 +322,18 @@ class _DirectSourceCard extends StatelessWidget {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: Theme.of(context).textTheme.titleMedium),
-      subtitle: isProxy
-          ? const Text('服务端代理 · 从后端拉取整体库')
-          : Text('直连${isLocal ? ' · 本地文件夹' : ''} · 已索引 $count 首'),
-      trailing: _SourceMenu(
-          sourceKey: sourceKey, isProxy: isProxy, source: s, direct: direct),
+      subtitle: Text('直连${isLocal ? ' · 本地文件夹' : ''} · 已索引 $count 首'),
+      trailing: _SourceMenu(sourceKey: sourceKey, direct: direct),
       onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
     );
     if (plain) return tile;
     // 卡片形态：与专辑/歌手共用方形卡片（SquareCard），菜单叠右上角。
     return SquareCard(
       title: s.name,
-      subtitle: isProxy
-          ? '服务端代理 · 从后端拉取整体库'
-          : '直连${isLocal ? ' · 本地文件夹' : ''} · 已索引 $count 首',
+      subtitle: '直连${isLocal ? ' · 本地文件夹' : ''} · 已索引 $count 首',
       fallbackIcon: isLocal ? Icons.folder : Icons.cloud,
       onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
-      cornerAction: _SourceMenu(
-          sourceKey: sourceKey, isProxy: isProxy, source: s, direct: direct),
+      cornerAction: _SourceMenu(sourceKey: sourceKey, direct: direct),
     );
   }
 }
@@ -376,14 +341,8 @@ class _DirectSourceCard extends StatelessWidget {
 /// 播放源设置菜单（列表行 trailing / 方形卡片右上角共用）。
 class _SourceMenu extends StatelessWidget {
   final String sourceKey;
-  final bool isProxy;
-  final MusicSource source;
   final DirectSourceManager direct;
-  const _SourceMenu(
-      {required this.sourceKey,
-      required this.isProxy,
-      required this.source,
-      required this.direct});
+  const _SourceMenu({required this.sourceKey, required this.direct});
 
   @override
   Widget build(BuildContext context) {
@@ -393,9 +352,6 @@ class _SourceMenu extends StatelessWidget {
       padding: EdgeInsets.zero,
       onSelected: (v) {
         switch (v) {
-          case 'mode':
-            direct.setMode(sourceKey,
-                isProxy ? SourceMode.direct : SourceMode.proxy);
           case 'edit':
             showDialog<void>(
                 context: context,
@@ -405,10 +361,6 @@ class _SourceMenu extends StatelessWidget {
         }
       },
       itemBuilder: (c) => [
-        PopupMenuItem(
-          value: 'mode',
-          child: Text(isProxy ? '切换为直连' : '切换为服务端代理'),
-        ),
         const PopupMenuItem(value: 'edit', child: Text('编辑')),
         const PopupMenuDivider(),
         const PopupMenuItem(

@@ -8,7 +8,6 @@ import 'package:path/path.dart' as p;
 import 'package:xml/xml.dart';
 
 import '../../models/song.dart';
-import '../../models/album.dart';
 import 'music_source.dart';
 import 'scan_worker.dart';
 import 'sibling_cover.dart';
@@ -56,40 +55,6 @@ class WebdavDirectSource implements MusicSource {
 
   @override
   bool get supportsDirect => true;
-
-  // ---------- 服务器模式接口（直连源不提供） ----------
-
-  @override
-  String? streamUrl(int songId) => null;
-
-  @override
-  Map<String, String>? streamHeaders() => null;
-
-  @override
-  Future<List<Song>> fetchSongs(
-          {String? query, int page = 1, int size = 50}) async =>
-      index.searchSongs(sourceKey: key, query: query, page: page, size: size);
-
-  @override
-  Future<List<Album>> fetchAlbums(
-          {String? query, int page = 1, int size = 50}) async =>
-      const [];
-
-  @override
-  Future<List<Song>> fetchAlbumSongs(int albumId) async => const [];
-
-  @override
-  Future<List<Song>> fetchAllSongs(
-      {String? query, int pageSize = 500, int maxTotal = 20000}) async {
-    final out = <Song>[];
-    for (var page = 1;; page++) {
-      final batch =
-          await fetchSongs(query: query, page: page, size: pageSize);
-      out.addAll(batch);
-      if (batch.length < pageSize || out.length >= maxTotal) break;
-    }
-    return out;
-  }
 
   @override
   Future<List<Song>> search(

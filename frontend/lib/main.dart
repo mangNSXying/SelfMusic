@@ -10,7 +10,6 @@ import 'services/api_client.dart';
 import 'services/server_settings.dart';
 import 'services/selfmusic_audio_handler.dart';
 import 'services/sync_engine.dart';
-import 'data/sources/server_proxy_source.dart';
 import 'providers/auth_provider.dart';
 import 'providers/library_provider.dart';
 import 'providers/direct_source_manager.dart';
@@ -42,10 +41,6 @@ Future<void> main() async {
   direct.attachApi(api);
   // 信任自签名证书开关（settings.md §3.3）：按 AppSettings 配置 dio 一次。
   api.setSelfSignedPolicy(direct.settings.allowSelfSigned);
-  // 已配对的设备在启动时拉取服务端缓存建议值（settings.md §3.3 follow_server）。
-  if (serverSettings.baseUrl.isNotEmpty) {
-    unawaited(direct.refreshServerConfig());
-  }
 
   // 通知栏播放控制 / 后台播放（settings.md §3.6）：Android + 开关注册 audio_service。
   // 处理器本身在 PlayerProvider 创建时再绑定。
@@ -113,21 +108,10 @@ class SelfMusicApp extends StatelessWidget {
   Widget build(BuildContext context) {
     final auth = AuthProvider(api);
     // 播放流式取 token 依赖 Auth（懒读）。
-    final lib = LibraryProvider(
-      ServerProxySource(
-        dio: api.dio,
-        baseUrl: api.baseUrl,
-        tokenProvider: () => auth.token ?? '',
-      ),
-    )
-      ..serverConfigured = settings.baseUrl.isNotEmpty
-      ..attachDirectManager(direct);
+    final lib = LibraryProvider()..attachDirectManager(direct);
     final nav = NavigationProvider();
     final player = PlayerProvider()
-      ..attachSourceResolver((key) {
-        if (key == 'server') return lib.source;
-        return direct.sourceByKey(key);
-      })
+      ..attachSourceResolver((key) => direct.sourceByKey(key))
       ..attachAppSettings(direct.settings)
       ..attachServerAvailable(() => direct.isServerAvailable);
     player
@@ -305,7 +289,7 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('会话已过期'),
-        content: const Text('服务端登录已过期，服务端功能将不可用；可直接使用直连模式，或在「设置 → 服务端」重新配对。'),
+        content: const Text('服务端登录已过期，多设备同步将暂停；本地播放不受影响。可在「设置 → 服务端」重新配对。'),
         actions: [
           TextButton(
             onPressed: () {

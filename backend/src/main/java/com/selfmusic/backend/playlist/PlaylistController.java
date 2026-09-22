@@ -109,36 +109,52 @@ public class PlaylistController {
     public ApiResponse<Map<String, Object>> addItem(@PathVariable Long id,
                                                     @RequestBody Map<String, Object> body) {
         Playlist p = playlistOf(id);
-        ObjectNode payload = objectMapper.createObjectNode();
-        payload.put("playlist_uuid", p.getClientUuid());
-        payload.put("song_id", toLong(body.get("song_id")));
+        ObjectNode payload = itemIdentity(p, body);
+        if (body.containsKey("title")) payload.put("title", str(body, "title"));
+        if (body.containsKey("artist")) payload.put("artist", str(body, "artist"));
+        if (body.containsKey("album")) payload.put("album", str(body, "album"));
+        if (body.containsKey("duration")) payload.put("duration", toInt(body.get("duration")));
         if (body.containsKey("sort_order")) payload.put("sort_order", toInt(body.get("sort_order")));
         pushOne(SyncEventTypes.PLAYLIST_ITEM_ADD, payload);
         return ApiResponse.ok(syncService.playlistSnapshot(playlistRepository.findById(id).orElseThrow()));
     }
 
-    @DeleteMapping("/{id}/items/{songId}")
+    @DeleteMapping("/{id}/items")
     public ApiResponse<Map<String, Object>> removeItem(@PathVariable Long id,
-                                                       @PathVariable Long songId) {
+                                                       @RequestBody Map<String, Object> body) {
         Playlist p = playlistOf(id);
-        ObjectNode payload = objectMapper.createObjectNode();
-        payload.put("playlist_uuid", p.getClientUuid());
-        payload.put("song_id", songId);
-        pushOne(SyncEventTypes.PLAYLIST_ITEM_REMOVE, payload);
+        pushOne(SyncEventTypes.PLAYLIST_ITEM_REMOVE, itemIdentity(p, body));
         return ApiResponse.ok(syncService.playlistSnapshot(playlistRepository.findById(id).orElseThrow()));
     }
 
-    @PutMapping("/{id}/items/{songId}")
+    @PutMapping("/{id}/items")
     public ApiResponse<Map<String, Object>> moveItem(@PathVariable Long id,
-                                                     @PathVariable Long songId,
                                                      @RequestBody Map<String, Object> body) {
         Playlist p = playlistOf(id);
-        ObjectNode payload = objectMapper.createObjectNode();
-        payload.put("playlist_uuid", p.getClientUuid());
-        payload.put("song_id", songId);
+        ObjectNode payload = itemIdentity(p, body);
         payload.put("sort_order", toInt(body.get("sort_order")));
         pushOne(SyncEventTypes.PLAYLIST_ITEM_MOVE, payload);
         return ApiResponse.ok(syncService.playlistSnapshot(playlistRepository.findById(id).orElseThrow()));
+    }
+
+    /** 条目身份载荷：source_id 优先，缺省按 source 协议记 legacy:<协议>。 */
+    private ObjectNode itemIdentity(Playlist p, Map<String, Object> body) {
+        ObjectNode payload = objectMapper.createObjectNode();
+        payload.put("playlist_uuid", p.getClientUuid());
+        String sourceId = str(body, "source_id");
+        if (sourceId == null || sourceId.isBlank()) {
+            String source = str(body, "source");
+            if (source == null || source.isBlank()) {
+                throw new BizException(40001, "source_id required");
+            }
+            sourceId = "legacy:" + source;
+            payload.put("source", source);
+        }
+        payload.put("source_id", sourceId);
+        String ref = str(body, "source_ref");
+        if (ref == null || ref.isBlank()) throw new BizException(40001, "source_ref required");
+        payload.put("source_ref", ref);
+        return payload;
     }
 
     private Playlist playlistOf(Long id) {

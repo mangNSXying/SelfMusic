@@ -11,21 +11,16 @@ import '../models/album.dart';
 import '../models/artist.dart';
 import 'direct_source_manager.dart';
 
-/// 全局图库数据源：合并后端（服务器模式）与所有直连源的歌曲，
-/// 并在客户端按 专辑/歌手 分组聚合，供「歌曲/专辑/歌手」栏目共用。
+/// 全局图库数据源：合并所有直连源的歌曲，并在客户端按 专辑/歌手 分组聚合，
+/// 供「歌曲/专辑/歌手」栏目共用。
 class LibraryProvider extends ChangeNotifier {
   static const _cacheFileName = 'library_cache.json';
 
-  /// 全局服务端源（key=`server`）。
-  final MusicSource source;
-  LibraryProvider(this.source);
+  LibraryProvider();
 
   DirectSourceManager? _directManager;
 
-  /// 是否已配置服务端（baseUrl 非空）。未配置时跳过全部服务端请求，直连源照常可用。
-  bool serverConfigured = true;
-
-  /// 合并后的全部歌曲（服务器 + 所有直连源）。
+  /// 合并后的全部歌曲（所有直连源）。
   List<Song> songs = [];
   List<Album> albums = [];
   List<Artist> artists = [];
@@ -33,7 +28,7 @@ class LibraryProvider extends ChangeNotifier {
   String? error;
 
   /// 关联直连源管理器，使「歌曲/专辑/歌手」能合并直连扫描结果。
-  /// 同时监听其元数据版本号：扫描/后台补读/编辑元数据后就地重建列表（不重拉服务端）。
+  /// 同时监听其元数据版本号：扫描/后台补读/编辑元数据后就地重建列表。
   void attachDirectManager(DirectSourceManager m) {
     if (identical(_directManager, m)) return;
     _directManager?.removeListener(_onDirectChanged);
@@ -45,23 +40,22 @@ class LibraryProvider extends ChangeNotifier {
 
   int _seenMetaVersion = 0;
   bool _loadedOnce = false;
-  List<Song> _serverSongs = const [];
   String? _lastQuery;
 
   void _onDirectChanged() {
     final m = _directManager;
     if (m == null || m.metaVersion == _seenMetaVersion) return;
     _seenMetaVersion = m.metaVersion;
-    // 首次 loadSongs 前不重建：此时 _serverSongs 还没缓存，就地重建会丢服务端部分。
+    // 首次 loadSongs 前不重建：避免与启动加载竞争。
     if (!_loadedOnce) return;
     refreshDirect();
   }
 
-  /// 就地把直连部分换成索引最新数据（元数据补读/编辑后调用），并刷新分组。
+  /// 就地把列表换成索引最新数据（元数据补读/编辑/扫描后调用），并刷新分组。
   void refreshDirect() {
     final m = _directManager;
     if (m == null) return;
-    songs = _mergeSongs(_serverSongs, m.allSongs(query: _lastQuery));
+    songs = m.allSongs(query: _lastQuery);
     _recomputeGroups();
     notifyListeners();
   }
@@ -70,7 +64,7 @@ class LibraryProvider extends ChangeNotifier {
   List<Song> get directSongs =>
       _directManager?.allSongs() ?? const <Song>[];
 
-  /// 启动加载：先恢复上次曲库快照即时展示，再后台刷新（新建播放源/重扫后自动合并）。
+  /// 启动加载：先恢复上次曲库快照即时展示，再后台刷新。
   Future<void> startup({String? query}) async {
     loading = true;
     error = null;
@@ -82,6 +76,7 @@ class LibraryProvider extends ChangeNotifier {
   }
 
   /// 从磁盘恢复上次曲库快照（曲库缓存，上次 launch 成功加载后落盘）。
+  /// 旧版本快照可能含已废弃的服务端歌曲，恢复时直接过滤。
   Future<void> restoreCache() async {
     try {
       final file = await _cacheFile();
@@ -91,6 +86,7 @@ class LibraryProvider extends ChangeNotifier {
       songs = data
           .whereType<Map<String, dynamic>>()
           .map(Song.fromJson)
+          .where((s) => s.sourceKey != 'server')
           .toList();
       _recomputeGroups();
       notifyListeners();
@@ -103,20 +99,8 @@ class LibraryProvider extends ChangeNotifier {
     loading = true;
     error = null;
     notifyListeners();
-    // 未配置服务端时跳过拉取（避免每次启动都抛 Dio 「No host」错误）；
-    // 已配置但失败则提示且不阻断直连源歌曲展示。
-    List<Song> server = const [];
-    if (serverConfigured) {
-      try {
-        server = await source.fetchAllSongs(query: query);
-      } catch (e) {
-        error = '服务端不可用：$e';
-      }
-    }
-    final direct = _directManager?.allSongs(query: query) ?? const <Song>[];
-    _serverSongs = server;
+    songs = _directManager?.allSongs(query: query) ?? const <Song>[];
     _lastQuery = query;
-    songs = _mergeSongs(server, direct);
     _recomputeGroups();
     _loadedOnce = true;
     unawaited(_saveCache());
@@ -124,7 +108,7 @@ class LibraryProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 专辑/歌手从合并后的歌曲列表客户端聚合（统一先刷新歌曲，再由 loadSongs 分组）。
+  /// 专辑/歌手从合并后的歌曲列表客户端聚合（统一先刷新歌曲，再分组）。
   Future<void> loadAlbums({String? query}) async {
     await loadSongs(query: query);
   }
@@ -145,11 +129,9 @@ class LibraryProvider extends ChangeNotifier {
       .where((s) => _blank(s.artist, 'Unknown') == artist.name)
       .toList();
 
-  /// 依据匹配的 sourceKey 解析播放源（服务器→全局代理源；直连→管理器源）。
-  MusicSource? sourceFor(String sourceKey) {
-    if (sourceKey == 'server') return source;
-    return _directManager?.sourceByKey(sourceKey);
-  }
+  /// 依据匹配的 sourceKey 解析播放源。
+  MusicSource? sourceFor(String sourceKey) =>
+      _directManager?.sourceByKey(sourceKey);
 
   Future<File?> _cacheFile() async {
     try {
@@ -172,28 +154,6 @@ class LibraryProvider extends ChangeNotifier {
       debugPrint('library cache save failed: $e');
     }
   }
-
-  List<Song> _mergeSongs(List<Song> server, List<Song> direct) {
-    final seen = <String>{};
-    final out = <Song>[];
-    void add(Song s) {
-      final v = _applyOverride(s);
-      final key = '${v.title}\x00${v.artist}\x00${v.albumName}';
-      if (!seen.add(key)) return;
-      out.add(v);
-    }
-
-    for (final s in server) {
-      add(s);
-    }
-    for (final s in direct) {
-      add(s);
-    }
-    return out;
-  }
-
-  /// 应用服务端歌曲本地元数据覆盖（直连歌已在入库时处理）。
-  Song _applyOverride(Song s) => _directManager?.applyMetaOverride(s) ?? s;
 
   void _recomputeGroups() {
     albums = Album.fromSongs(songs);

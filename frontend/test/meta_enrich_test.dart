@@ -9,7 +9,6 @@ import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/data/sources/meta_enrich.dart';
 import 'package:selfmusic/data/sources/music_source.dart';
 import 'package:selfmusic/data/sources/sibling_cover.dart';
-import 'package:selfmusic/models/album.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:sqlite3/open.dart';
 
@@ -75,19 +74,6 @@ class _RangeFakeSource extends MusicSource {
   bool get supportsDirect => true;
 
   @override
-  Future<List<Song>> fetchSongs({String? query, int page = 1, int size = 50}) async =>
-      const [];
-  @override
-  Future<List<Album>> fetchAlbums({String? query, int page = 1, int size = 50}) async =>
-      const [];
-  @override
-  Future<List<Song>> fetchAlbumSongs(int albumId) async => const [];
-  @override
-  String? streamUrl(int songId) => null;
-  @override
-  Map<String, String>? streamHeaders() => null;
-
-  @override
   Future<OpenedStream> open(Song song, {IntRange? range}) async {
     final limit = range?.length ?? bytes.length;
     requestedLengths.add(limit);
@@ -114,19 +100,6 @@ class _RefMapFakeSource extends MusicSource {
   SourceKind get kind => SourceKind.webdav;
   @override
   bool get supportsDirect => true;
-
-  @override
-  Future<List<Song>> fetchSongs({String? query, int page = 1, int size = 50}) async =>
-      const [];
-  @override
-  Future<List<Album>> fetchAlbums({String? query, int page = 1, int size = 50}) async =>
-      const [];
-  @override
-  Future<List<Song>> fetchAlbumSongs(int albumId) async => const [];
-  @override
-  String? streamUrl(int songId) => null;
-  @override
-  Map<String, String>? streamHeaders() => null;
 
   @override
   Future<OpenedStream> open(Song song, {IntRange? range}) async {

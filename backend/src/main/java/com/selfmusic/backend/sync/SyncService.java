@@ -3,17 +3,16 @@ package com.selfmusic.backend.sync;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.selfmusic.backend.common.BizException;
-import com.selfmusic.backend.common.MusicSource;
 import com.selfmusic.backend.domain.entity.PlayState;
 import com.selfmusic.backend.domain.entity.Playlist;
 import com.selfmusic.backend.domain.entity.PlaylistItem;
-import com.selfmusic.backend.domain.entity.Song;
+import com.selfmusic.backend.domain.entity.SongState;
 import com.selfmusic.backend.domain.entity.SyncEvent;
 import com.selfmusic.backend.domain.repository.DeviceRepository;
 import com.selfmusic.backend.domain.repository.PlayStateRepository;
 import com.selfmusic.backend.domain.repository.PlaylistItemRepository;
 import com.selfmusic.backend.domain.repository.PlaylistRepository;
-import com.selfmusic.backend.domain.repository.SongRepository;
+import com.selfmusic.backend.domain.repository.SongStateRepository;
 import com.selfmusic.backend.domain.repository.SyncEventRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -29,10 +28,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
 
 /**
  * 阶段5 同步引擎服务端（DESIGN.md §4.4 / §7.2，字段级合并）。
+ *
+ * 服务端不持有曲库：歌曲身份统一为 {@code source_id + source_ref}
+ * （source_id 为客户端源实例 uuid，旧数据/旧客户端记作 {@code legacy:<协议>}），
+ * 权重状态落 {@link SongState}，歌单条目/断点自持身份与展示快照。
  *
  * 合并矩阵：
  * - 权重事件（song.*）：事件重算（本类 {@link #applySongEvent}，§7.1 翻版），
@@ -54,8 +56,11 @@ public class SyncService {
     public static final int PUSH_EVENT_LIMIT = 500;
     public static final int PULL_EVENT_LIMIT = 2000;
 
+    /** 旧数据/旧客户端协议级身份的 source_id 前缀。 */
+    public static final String LEGACY_PREFIX = "legacy:";
+
     private final SyncEventRepository syncEventRepository;
-    private final SongRepository songRepository;
+    private final SongStateRepository songStateRepository;
     private final PlaylistRepository playlistRepository;
     private final PlaylistItemRepository playlistItemRepository;
     private final PlayStateRepository playStateRepository;
@@ -66,8 +71,8 @@ public class SyncService {
     // 纯函数：§7.1 权重状态机（无 DB，可单测）
     // ------------------------------------------------------------------
 
-    /** 对服务端 Song 行应用一个权重事件（§7.1 事件表翻版）。未知类型抛 400。 */
-    public static void applySongEvent(Song song, String type, JsonNode payload) {
+    /** 对服务端权重行应用一个权重事件（§7.1 事件表翻版）。未知类型抛 400。 */
+    public static void applySongEvent(SongState song, String type, JsonNode payload) {
         switch (type) {
             case SyncEventTypes.SONG_COMPLETE -> {
                 song.setLikeStreak(nvl(song.getLikeStreak()) + 1);
@@ -191,9 +196,9 @@ public class SyncService {
         JsonNode p = ev.payload();
         return switch (typeGroup(ev.type())) {
             case "song" -> {
-                Song song = songOf(p, true);
+                SongState song = stateOf(p, true);
                 applySongEvent(song, ev.type(), p);
-                songRepository.save(song);
+                songStateRepository.save(song);
                 yield null;
             }
             case "playlist_meta" -> applyPlaylistMeta(ev);
@@ -216,62 +221,68 @@ public class SyncService {
         return "?";
     }
 
+    // ------------------------------------------------------------------
+    // 歌曲身份解析（source_id + source_ref）
+    // ------------------------------------------------------------------
+
     /**
-     * 解析事件中的歌曲身份：优先数字 song_id（直接 REST 调用），
-     * 否则按 (source, source_ref) 唯一键解析（客户端 outbox 事件）；
-     * source 缺失/非法（含 legacy 行的 'server' 占位）时按 source_ref 全源兜底找第一首。
-     *
-     * 直连歌曲在服务端曲库无此行：[provision] 为真时按 (source, source_ref)
-     * 建影子行承载权重/收藏/断点（展示字段取载荷或 ref 兜底，pull 回执只带权重字段，
-     * 不覆盖客户端本地标题）；为假时（如 pull 身份收集）沿用旧行为：找不到抛 404，
-     * 由调用方跳过（已删歌曲不复活）。
+     * 事件载荷中的源实例身份：优先 `source_id`（客户端 sources.client_uuid）；
+     * 缺省时按协议名回退 {@code legacy:<协议>}（旧客户端/旧数据）；
+     * `source` 为空或 `'server'` 占位（无实例信息的旧快照行）返回 null。
      */
-    private Song songOf(JsonNode p, boolean provision) {
-        if (p != null && p.has("song_id") && p.path("song_id").asLong(0) != 0) {
-            long songId = p.path("song_id").asLong(0);
-            return songRepository.findById(songId)
-                    .orElseThrow(() -> new BizException(40402, "song not found: " + songId));
-        }
-        String source = p == null ? null : p.path("source").asText(null);
-        String ref = p == null ? null : p.path("source_ref").asText(null);
-        if (ref == null || ref.isBlank()) {
-            throw new BizException(40001, "song_id or source_ref required");
-        }
+    static String sourceIdOf(JsonNode p) {
+        if (p == null) return null;
+        String sid = p.path("source_id").asText(null);
+        if (sid != null && !sid.isBlank()) return sid;
+        String source = p.path("source").asText(null);
         if (source != null && !source.isBlank() && !"server".equals(source)) {
-            try {
-                MusicSource ms = MusicSource.valueOf(source);
-                Optional<Song> found = songRepository.findBySourceAndSourceRef(ms, ref);
-                if (found.isPresent()) return found.get();
-                if (!provision) {
-                    throw new BizException(40402, "song not found: " + source + "/" + ref);
-                }
-                return provisionShadow(ms, ref, p);
-            } catch (IllegalArgumentException ignored) {
-                // 非法 source 值：继续走 source_ref 兜底
-            }
+            return LEGACY_PREFIX + source;
         }
-        return songRepository.findFirstBySourceRef(ref)
-                .orElseThrow(() -> new BizException(40402, "song not found: " + ref));
+        return null;
+    }
+
+    private static String protocolOf(JsonNode p) {
+        if (p == null) return null;
+        String source = p.path("source").asText(null);
+        if (source == null || source.isBlank() || "server".equals(source)) return null;
+        return source;
+    }
+
+    private static String refOf(JsonNode p) {
+        return p == null ? null : p.path("source_ref").asText(null);
     }
 
     /**
-     * 直连歌曲影子行：服务端曲库没有的 (source, source_ref) 在此建最小行，
-     * 只承载权重/收藏/断点状态；标题取事件载荷（歌单条目携带）或 ref 末段兜底。
+     * 解析事件中的歌曲权重行：按 (source_id, source_ref) 唯一键；
+     * 无 source_id 的旧占位数据按 source_ref 全源兜底。
+     * [provision] 为真时缺行新建（承载权重/收藏）；为假时（pull 身份收集）
+     * 找不到抛 404，由调用方跳过（已删歌曲不复活）。
      */
-    private Song provisionShadow(MusicSource ms, String ref, JsonNode p) {
-        Song shadow = new Song();
-        shadow.setSource(ms);
-        shadow.setSourceRef(ref);
-        shadow.setTitle(shadowTitle(p, ref));
-        if (p != null && p.has("artist") && !p.path("artist").isNull()) {
-            shadow.setArtist(p.path("artist").asText(null));
+    private SongState stateOf(JsonNode p, boolean provision) {
+        String ref = refOf(p);
+        if (ref == null || ref.isBlank()) {
+            throw new BizException(40001, "source_ref required");
         }
-        shadow.setFileSize(0L);
-        return songRepository.save(shadow);
+        String sid = sourceIdOf(p);
+        if (sid == null) {
+            return songStateRepository.findFirstBySourceRef(ref)
+                    .orElseThrow(() -> new BizException(40402, "song not found: " + ref));
+        }
+        Optional<SongState> found = songStateRepository.findBySourceIdAndSourceRef(sid, ref);
+        if (found.isPresent()) return found.get();
+        if (!provision) {
+            throw new BizException(40402, "song not found: " + sid + "/" + ref);
+        }
+        SongState created = new SongState();
+        created.setSourceId(sid);
+        created.setSource(protocolOf(p));
+        created.setSourceRef(ref);
+        created.setTitle(shadowTitle(p, ref));
+        return songStateRepository.save(created);
     }
 
     /**
-     * 影子行标题：事件载荷 title 优先（去空白），否则取 ref 最后一段
+     * 权重行标题：事件载荷 title 优先（去空白），否则取 ref 最后一段
      * （去末尾斜杠 + URL 解码），再兜底 ref 全串。纯函数，可单测。
      */
     static String shadowTitle(JsonNode p, String ref) {
@@ -352,11 +363,12 @@ public class SyncService {
     private void applyCreateItems(Playlist pl, JsonNode p) {
         if (p == null || !p.has("items") || !p.path("items").isArray()) return;
         for (JsonNode it : p.path("items")) {
-            long songId = it.path("song_id").asLong(0);
-            if (songId == 0 || songRepository.findById(songId).isEmpty()) continue;
+            String ref = refOf(it);
+            String sid = sourceIdOf(it);
+            if (ref == null || ref.isBlank() || sid == null) continue;
             PlaylistItem item = new PlaylistItem();
             item.setPlaylist(pl);
-            item.setSong(songRepository.getReferenceById(songId));
+            applyItemSnapshot(item, it, sid, ref);
             item.setSortOrder(it.path("sort_order").asInt(0));
             playlistItemRepository.save(item);
         }
@@ -367,34 +379,51 @@ public class SyncService {
         Playlist pl = playlistOf(p);
         if (pl.isDeleted()) throw new BizException(40001, "playlist_deleted");
         String t = ev.type();
+        String ref = refOf(p);
+        String sid = sourceIdOf(p);
         if (SyncEventTypes.PLAYLIST_ITEM_REMOVE.equals(t)) {
-            // 移除幂等：服务端无此歌 = 早已收敛，直接 no-op（不建影子行）。
-            Long sid = tryResolveSongId(p);
-            if (sid != null) {
-                playlistItemRepository.deleteByPlaylistIdAndSongId(pl.getId(), sid);
+            // 移除幂等：服务端无此条目 = 早已收敛，直接 no-op（不建行）。
+            if (sid != null && ref != null && !ref.isBlank()) {
+                playlistItemRepository.deleteByPlaylistIdAndSourceIdAndSourceRef(pl.getId(), sid, ref);
             }
         } else {
-            // add/move：直连歌曲无服务端 song_id，按 (source, source_ref)
-            // 解析，缺行则建影子行（已存在则当 move 更新顺序）。
-            long songId = p == null ? 0 : p.path("song_id").asLong(0);
-            Song song = songId != 0
-                    ? songRepository.findById(songId)
-                            .orElseThrow(() -> new BizException(40402, "song not found: " + songId))
-                    : songOf(p, true);
-            long sid = song.getId();
+            if (sid == null || ref == null || ref.isBlank()) {
+                throw new BizException(40001, "source_id and source_ref required");
+            }
             PlaylistItem item = playlistItemRepository
-                    .findByPlaylistIdAndSongId(pl.getId(), sid)
+                    .findByPlaylistIdAndSourceIdAndSourceRef(pl.getId(), sid, ref)
                     .orElseGet(() -> {
                         PlaylistItem ni = new PlaylistItem();
                         ni.setPlaylist(pl);
-                        ni.setSong(song);
                         return ni;
                     });
+            applyItemSnapshot(item, p, sid, ref);
             if (p != null && p.has("sort_order")) item.setSortOrder(p.path("sort_order").asInt(0));
             playlistItemRepository.save(item);
         }
         pl.setSyncVer(nvlLong(pl.getSyncVer()) + 1);
         playlistRepository.save(pl);
+    }
+
+    /** 条目身份与展示快照：载荷缺省字段不覆盖已有快照。 */
+    private static void applyItemSnapshot(PlaylistItem item, JsonNode p, String sid, String ref) {
+        item.setSourceId(sid);
+        item.setSourceRef(ref);
+        if (p != null && p.has("source") && !p.path("source").isNull()) {
+            item.setSource(p.path("source").asText(null));
+        }
+        if (p != null && p.has("title") && !p.path("title").isNull()) {
+            item.setTitle(p.path("title").asText(null));
+        }
+        if (p != null && p.has("artist") && !p.path("artist").isNull()) {
+            item.setArtist(p.path("artist").asText(null));
+        }
+        if (p != null && p.has("album") && !p.path("album").isNull()) {
+            item.setAlbum(p.path("album").asText(null));
+        }
+        if (p != null && p.has("duration") && p.path("duration").canConvertToInt()) {
+            item.setDuration(p.path("duration").asInt());
+        }
     }
 
     private Object applyBreakpoint(PushEvent ev) {
@@ -408,31 +437,18 @@ public class SyncService {
         if (!eventWins(ev.occurred_at(), st.getLastEventAt())) {
             return playstateSnapshot(st, pl.getClientUuid());
         }
-        Song song = songOf(p, true);
-        st.setSong(song);
-        st.setPositionMs(p == null ? 0 : p.path("position_ms").asInt(0));
+        String ref = refOf(p);
+        if (ref == null || ref.isBlank()) throw new BizException(40001, "source_ref required");
+        st.setSourceId(sourceIdOf(p));
+        st.setSource(protocolOf(p));
+        st.setSourceRef(ref);
+        if (p.has("device_client_id") && !p.path("device_client_id").isNull()) {
+            st.setDeviceClientId(p.path("device_client_id").asText(null));
+        }
+        st.setPositionMs(p.path("position_ms").asInt(0));
         st.setLastEventAt(ev.occurred_at());
         playStateRepository.save(st);
         return null;
-    }
-
-    // ------------------------------------------------------------------
-    // 直接调权（POST /songs/{id}/weight）：走同一事件管线，保证 pull 可见
-    // ------------------------------------------------------------------
-
-    @Transactional
-    public Map<String, Object> applyDirectWeight(Long songId, String eventType, JsonNode payload, String authClientId) {
-        PushEvent ev = new PushEvent(UUID.randomUUID().toString(), authClientId, eventType,
-                LocalDateTime.now(), payload == null ? objectMapper.createObjectNode() : payload);
-        // song_id 强制为路径 id，防止载荷冒充他歌
-        ((com.fasterxml.jackson.databind.node.ObjectNode) ev.payload()).put("song_id", songId);
-        Map<String, Object> r = push(authClientId, List.of(ev));
-        Song song = songRepository.findById(songId)
-                .orElseThrow(() -> new BizException(40402, "song not found: " + songId));
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("song", songSnapshot(song));
-        out.put("cursor", r.get("cursor"));
-        return out;
     }
 
     // ------------------------------------------------------------------
@@ -442,13 +458,13 @@ public class SyncService {
     @Transactional
     public Map<String, Object> pull(String authClientId, long sinceCursor) {
         List<SyncEvent> page = syncEventRepository.findTop2000BySeqGreaterThanOrderBySeqAsc(sinceCursor);
-        Set<Long> songIds = new LinkedHashSet<>();
+        Set<Long> songStateIds = new LinkedHashSet<>();
         Set<String> playlistUuids = new LinkedHashSet<>();
         for (SyncEvent e : page) {
             JsonNode p = parsePayload(e.getPayload());
             if (e.getType().startsWith("song.")) {
-                Long sid = tryResolveSongId(p);
-                if (sid != null) songIds.add(sid);
+                Long sid = tryResolveStateId(p);
+                if (sid != null) songStateIds.add(sid);
             } else if (e.getType().startsWith("playlist.")) {
                 String uuid = p.path("client_uuid").asText(null);
                 if (uuid == null) uuid = p.path("playlist_uuid").asText(null);
@@ -459,7 +475,7 @@ public class SyncService {
             }
         }
         List<Map<String, Object>> songs = new ArrayList<>();
-        for (Song s : songRepository.findAllById(songIds)) songs.add(songSnapshot(s));
+        for (SongState s : songStateRepository.findAllById(songStateIds)) songs.add(songSnapshot(s));
         List<Map<String, Object>> playlists = new ArrayList<>();
         List<Map<String, Object>> playstates = new ArrayList<>();
         for (String uuid : playlistUuids) {
@@ -486,10 +502,11 @@ public class SyncService {
     // 快照（pull 与 correction 共用同一形状）
     // ------------------------------------------------------------------
 
-    public static Map<String, Object> songSnapshot(Song s) {
+    public static Map<String, Object> songSnapshot(SongState s) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", s.getId());
-        m.put("source", s.getSource() == null ? null : s.getSource().name());
+        m.put("source_id", s.getSourceId());
+        m.put("source", s.getSource());
         m.put("source_ref", s.getSourceRef());
         m.put("like_streak", nvl(s.getLikeStreak()));
         m.put("dislike_streak", nvl(s.getDislikeStreak()));
@@ -513,14 +530,13 @@ public class SyncService {
         if (!p.isDeleted()) {
             for (PlaylistItem it : playlistItemRepository.findByPlaylistIdOrderBySortOrderAsc(p.getId())) {
                 Map<String, Object> im = new LinkedHashMap<>();
-                Song ss = it.getSong();
-                im.put("song_id", ss == null ? null : ss.getId());
-                im.put("source", ss == null || ss.getSource() == null ? null : ss.getSource().name());
-                im.put("source_ref", ss == null ? null : ss.getSourceRef());
-                im.put("title", ss == null ? null : ss.getTitle());
-                im.put("artist", ss == null ? null : ss.getArtist());
-                im.put("album", ss == null || ss.getAlbum() == null ? null : ss.getAlbum().getAlbum());
-                im.put("duration", ss == null ? null : ss.getDuration());
+                im.put("source_id", it.getSourceId());
+                im.put("source", it.getSource());
+                im.put("source_ref", it.getSourceRef());
+                im.put("title", it.getTitle());
+                im.put("artist", it.getArtist());
+                im.put("album", it.getAlbum());
+                im.put("duration", it.getDuration());
                 im.put("sort_order", it.getSortOrder());
                 items.add(im);
             }
@@ -533,10 +549,10 @@ public class SyncService {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("playlist_id", st.getPlaylistId());
         m.put("client_uuid", clientUuid);
-        Song ss = st.getSong();
-        m.put("song_id", ss == null ? null : ss.getId());
-        m.put("source", ss == null || ss.getSource() == null ? null : ss.getSource().name());
-        m.put("source_ref", ss == null ? null : ss.getSourceRef());
+        m.put("source_id", st.getSourceId());
+        m.put("source", st.getSource());
+        m.put("source_ref", st.getSourceRef());
+        m.put("device_client_id", st.getDeviceClientId());
         m.put("position_ms", st.getPositionMs());
         m.put("updated_at", st.getUpdatedAt() == null ? null : st.getUpdatedAt().toString());
         return m;
@@ -554,12 +570,12 @@ public class SyncService {
     }
 
     /**
-     * pull 收集歌曲快照 id：与 songOf 同一身份规则，找不到返回 null（歌已删则跳过）。
-     * 注意此处恒不建影子行（provision=false）：已删歌曲不复活。
+     * pull 收集权重行 id：与 stateOf 同一身份规则，找不到返回 null（歌已删则跳过）。
+     * 注意此处恒不建行（provision=false）：已删歌曲不复活。
      */
-    private Long tryResolveSongId(JsonNode p) {
+    private Long tryResolveStateId(JsonNode p) {
         try {
-            return songOf(p, false).getId();
+            return stateOf(p, false).getId();
         } catch (BizException e) {
             return null;
         }
@@ -603,7 +619,7 @@ public class SyncService {
         return m;
     }
 
-    private static BigDecimal factor(Song song) {
+    private static BigDecimal factor(SongState song) {
         return song.getWeight() == null ? BigDecimal.ONE : song.getWeight();
     }
 

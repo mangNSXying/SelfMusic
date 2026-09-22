@@ -6,7 +6,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:provider/provider.dart';
 import 'package:selfmusic/data/sources/music_source.dart';
-import 'package:selfmusic/models/album.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/widgets/song_tile.dart';
@@ -36,16 +35,6 @@ class _FakeSource extends MusicSource {
   String get name => 't';
   @override
   SourceKind get kind => SourceKind.webdav;
-  @override
-  Future<List<Song>> fetchSongs({String? query, int page = 1, int size = 50}) async => const [];
-  @override
-  Future<List<Album>> fetchAlbums({String? query, int page = 1, int size = 50}) async => const [];
-  @override
-  Future<List<Song>> fetchAlbumSongs(int albumId) async => const [];
-  @override
-  String? streamUrl(int songId) => null;
-  @override
-  Map<String, String>? streamHeaders() => null;
 }
 
 void main() {

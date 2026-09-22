@@ -1,13 +1,11 @@
 import 'dart:ffi';
 import 'dart:io';
 
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:provider/provider.dart';
 import 'package:selfmusic/data/local/app_settings.dart';
-import 'package:selfmusic/data/sources/server_proxy_source.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/library_provider.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
@@ -48,9 +46,7 @@ void main() {
       // 跟手 PageView 仅在「滑动」档存在，本用例专测滑动档行为。
       direct.settings.playerTransition = PlayerTransition.slide;
     });
-    final lib = LibraryProvider(
-      ServerProxySource(dio: Dio(), baseUrl: '', tokenProvider: () => ''),
-    )..attachDirectManager(direct);
+    final lib = LibraryProvider()..attachDirectManager(direct);
     nav = NavigationProvider();
     // 默认 songs（index 3）：断言歌曲空态可见。
     expect(nav.section, NavSection.songs);

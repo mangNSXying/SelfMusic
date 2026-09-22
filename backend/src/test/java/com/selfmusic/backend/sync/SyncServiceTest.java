@@ -3,7 +3,7 @@ package com.selfmusic.backend.sync;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.selfmusic.backend.common.BizException;
-import com.selfmusic.backend.domain.entity.Song;
+import com.selfmusic.backend.domain.entity.SongState;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -18,8 +18,8 @@ class SyncServiceTest {
 
     private final ObjectMapper mapper = new ObjectMapper();
 
-    private static Song freshSong() {
-        Song s = new Song();
+    private static SongState freshState() {
+        SongState s = new SongState();
         s.setLikeStreak(0);
         s.setDislikeStreak(0);
         s.setWeight(BigDecimal.ONE);
@@ -30,7 +30,7 @@ class SyncServiceTest {
 
     @Test
     void completeThreeTimesRaisesFactor() {
-        Song s = freshSong();
+        SongState s = freshState();
         ObjectNode empty = new ObjectMapper().createObjectNode();
         SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE, empty);
         SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE, empty);
@@ -44,7 +44,7 @@ class SyncServiceTest {
 
     @Test
     void skipThreeTimesLowersFactor() {
-        Song s = freshSong();
+        SongState s = freshState();
         ObjectNode empty = new ObjectMapper().createObjectNode();
         SyncService.applySongEvent(s, SyncEventTypes.SONG_SKIP, empty);
         SyncService.applySongEvent(s, SyncEventTypes.SONG_SKIP, empty);
@@ -55,7 +55,7 @@ class SyncServiceTest {
 
     @Test
     void factorClampedAtBounds() {
-        Song s = freshSong();
+        SongState s = freshState();
         s.setWeight(new BigDecimal("1.5"));
         ObjectNode empty = new ObjectMapper().createObjectNode();
         for (int i = 0; i < 6; i++) SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE, empty);
@@ -68,7 +68,7 @@ class SyncServiceTest {
 
     @Test
     void likedUnfavoriteDislikedReset() {
-        Song s = freshSong();
+        SongState s = freshState();
         ObjectNode empty = new ObjectMapper().createObjectNode();
 
         SyncService.applySongEvent(s, SyncEventTypes.SONG_LIKED, empty);
@@ -101,7 +101,7 @@ class SyncServiceTest {
 
     @Test
     void unfavoriteKeepsWeightWhenFrozen() {
-        Song s = freshSong();
+        SongState s = freshState();
         s.setFrozen(true);
         s.setWeight(new BigDecimal("0.5"));
         SyncService.applySongEvent(s, SyncEventTypes.SONG_UNFAVORITE, new ObjectMapper().createObjectNode());
@@ -110,7 +110,7 @@ class SyncServiceTest {
 
     @Test
     void frozenSkipsAutoAdjustButCountsStreak() {
-        Song s = freshSong();
+        SongState s = freshState();
         s.setFrozen(true);
         s.setWeight(new BigDecimal("0.5"));
         ObjectNode empty = new ObjectMapper().createObjectNode();
@@ -121,7 +121,7 @@ class SyncServiceTest {
 
     @Test
     void unknownSongEventThrows() {
-        Song s = freshSong();
+        SongState s = freshState();
         BizException ex = assertThrows(BizException.class, () ->
                 SyncService.applySongEvent(s, "song.nope", mapper.createObjectNode()));
         assertEquals(40001, ex.code);

@@ -7,6 +7,8 @@ import java.util.Optional;
 
 public interface PlaylistItemRepository extends JpaRepository<PlaylistItem, Long> {
     List<PlaylistItem> findByPlaylistIdOrderBySortOrderAsc(Long playlistId);
-    Optional<PlaylistItem> findByPlaylistIdAndSongId(Long playlistId, Long songId);
-    void deleteByPlaylistIdAndSongId(Long playlistId, Long songId);
+    Optional<PlaylistItem> findByPlaylistIdAndSourceIdAndSourceRef(
+            Long playlistId, String sourceId, String sourceRef);
+    void deleteByPlaylistIdAndSourceIdAndSourceRef(
+            Long playlistId, String sourceId, String sourceRef);
 }

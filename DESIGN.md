@@ -16,8 +16,8 @@
 |------|------|
 | 无用户 → 单用户 | 引入"一服务器一主人"语义，配对 Token 认证，设备可管理可吊销 |
 | 单模式 → 双模式 | App 在**无后端**时靠 SMB/WebDAV 直连完整可用；后端是增强层 |
-| 新增 Source 抽象层 | Local / WebdavDirect / SmbDirect / ServerProxy 四实现统一接口 |
-| 新增客户端本地索引 | 直连模式下 SQLite 轻量建库，跨源搜索体验接近服务器模式 |
+| 新增 Source 抽象层 | Local / WebdavDirect / SmbDirect 三实现统一接口 |
+| 新增客户端本地索引 | 直连模式下 SQLite 轻量建库，跨源搜索体验接近一体化曲库 |
 | 路线图重排 | 按"骨架→核心体验→直连→SMB→同步→转码/管理"六阶段 |
 
 ---
@@ -38,55 +38,51 @@
 
 ## 1. 总体架构
 
-### 1.1 双模式总览
+### 1.1 总体架构
 
 ```
                         ┌─────────────────────────────────┐
                         │         Flutter App              │
                         │                                  │
                         │  ┌────────────────────────────┐ │
-                        │  │ 播放引擎（加权算法）          │ │ ←── 两模式共用
-                        │  │ 本地 SQLite（状态事实源）     │ │      核心体验：
-                        │  │ 缓存管理（LRU、喜欢歌）       │ │      离线可用
+                        │  │ 播放引擎（加权算法）          │ │ ←── 核心体验：
+                        │  │ 本地 SQLite（状态事实源）     │ │      离线可用
+                        │  │ 缓存管理（LRU、喜欢歌）       │ │
                         │  ├────────────────────────────┤ │
                         │  │      Source 抽象层           │ │
-                        │  │  LocalSource                │ │
+                        │  │  LocalDirectSource          │ │
                         │  │  WebdavDirectSource         │ │
-                        │  │  SmbDirectSource            │ │
-                        │  │  ServerProxySource          │ │
-                        │  └──────┬──────────┬──────────┘ │
-                        │   直连模式│          │服务器模式    │
-                        └────────┼──────────┼────────────┘
-                                 │          │
-             ┌───────────────────┘          └────────────────┐
-             ▼                                               ▼
-   ┌──────────────────┐                    ┌──────────────────────────┐
-   │  音乐源（协议直连） │                    │ Spring Boot 后端          │
-   │  · NAS(SMB)       │                    │ （个人单用户媒体服务器）    │
-   │  · WebDAV 服务    │◄───────────────────│ · 统一扫描索引 → MySQL     │
-   └──────────────────┘    后端也连这些源     │ · 流式代理 + ffmpeg 转码   │
-                                             │ · 多设备状态同步           │
-                                             │ · 设备配对与管理           │
-                                             └──────────────────────────┘
+                        │  │  SmbDirectSource（阶段4）     │ │
+                        │  └────────────┬───────────────┘ │
+                        └───────────────┼─────────────────┘
+                                        │ 协议直连（App 内扫描/播放）
+                                        ▼
+                           ┌──────────────────────┐
+                           │  音乐源（协议直连）    │
+                           │  · NAS(SMB)          │
+                           │  · WebDAV 服务        │
+                           └──────────────────────┘
+                                        ▲ 状态同步（权重/收藏/歌单/断点/播放源）
+                                        │ 配对与设备管理（无曲库/无流媒体）
+                           ┌──────────────────────┐
+                           │ Spring Boot 后端      │
+                           │ （个人单用户同步服务）  │
+                           └──────────────────────┘
 ```
 
-### 1.2 功能矩阵（两模式能力边界）
+### 1.2 功能矩阵
 
-| 功能 | 直连模式 | 服务器模式 | 说明 |
-|------|:---:|:---:|------|
-| 本地文件播放 | ✅ | ✅ | |
-| SMB/WebDAV 浏览与播放 | ✅ 内嵌协议客户端 | ✅ 走 `/stream` | |
-| 歌单 / 加权算法 / 喜欢·不喜欢 | ✅ 存本地 SQLite | ✅ 同左 + 同步 | 算法纯客户端 |
-| 喜欢歌自动缓存 / 断网播放 | ✅ | ✅ | 蓝图 §三.3 |
-| 曲库浏览 / 跨源搜索 | ✅ 本地轻量索引 | ✅ 服务端索引 | 直连首次连接需现场扫描 |
-| 多设备状态同步 | ❌ 各设备独立 | ✅ | 需要后端 |
-| 音频转码省流量 | ❌ 原码率 | ✅ 按需码率 | 需要后端 ffmpeg |
-| 后台增量扫描 | ✅ 自动（本地变化监听 + 周期快扫，指纹跳过零下载） | ✅ 定时+手动 | |
-| 上传 / 删除源文件 | ⚠️ WebDAV 可直传；SMB 视权限 | ✅ 统一管理 API | |
-
-> 设计原则：**凡是能在客户端闭环的能力一律不依赖后端**；后端只做客户端做不了/做不好的事（跨设备一致、转码、后台扫描）。
-
----
+| 功能 | 现状 | 说明 |
+|------|:---:|------|
+| 本地文件播放 | ✅ | 内嵌协议客户端 |
+| SMB/WebDAV 浏览与播放 | ✅ | 不依赖后端 |
+| 歌单 / 加权算法 / 喜欢·不喜欢 | ✅ | 本地 SQLite |
+| 喜欢歌自动缓存 / 断网播放 | ✅ | 蓝图 §三.3 |
+| 曲库浏览 / 跨源搜索 | ✅ | 本地轻量索引，首次需现场扫描 |
+| 多设备状态同步 | ✅ | 权重/收藏/歌单/断点/播放源；需要后端 |
+| 播放源同步 | ✅ | WebDAV/SMB 等远端源（本地文件夹源各机独立） |
+| 后台增量扫描 | ✅ | 本地变化监听 + 周期快扫，指纹跳过零下载 |
+| 上传 / 删除源文件 | ⚠️ | WebDAV 可直传；SMB 视权限 |
 
 ## 2. 身份与设备配对
 
@@ -153,17 +149,17 @@
 
 > `scripts/init.sql` 为唯一事实源；应用启动 `ddl-auto: validate` 校验一致性。
 
-| 表 | 说明 | 相对 v1 |
-|----|------|--------|
-| `albums` | 专辑（artist+album 归并） | 不变 |
-| `songs` | 歌曲（元数据+源定位+权重状态） | 不变 |
-| `covers` | 封面落盘记录 | 不变 |
-| `playlists` | 歌单 | 不变 |
-| `playlist_items` | 列表条目 | 不变 |
-| `play_states` | 每列表断点 | 不变 |
-| `scan_tasks` | 扫描任务 | 不变 |
-| `settings` | 全局设置（含 pairing_token） | 增加键 |
-| `devices` | 已配对设备 | **新增** |
+| 表 | 说明 |
+|----|------|
+| `song_states` | 直连歌权重/收藏状态（`source_id`+`source_ref` 唯一，无曲库字段） |
+| `playlists` | 歌单 |
+| `playlist_items` | 列表条目（自持 `source_id/source_ref` + 标题/歌手/专辑/时长快照） |
+| `play_states` | 每列表断点（自持歌曲身份 + `device_client_id`） |
+| `sync_events` | 同步事件流水（seq 单调 cursor） |
+| `settings` | 全局设置（含 pairing_token） |
+| `devices` | 已配对设备 |
+
+> 原 `albums/songs/covers/scan_tasks` 已随服务端曲库移除（`migration_004_remove_library.sql`）。
 
 #### devices
 
@@ -189,22 +185,18 @@ INDEX idx_refresh(refresh_token_hash)
 | 键 | 默认 | 说明 |
 |----|------|------|
 | `pairing_token` | 未提供 `PAIRING_TOKEN` 时首次随机 | 主配对令牌（env 镜像，供 /auth/pair 校验） |
-| `cache_max_bytes` | 1073741824 (1GB) | 全局建议值，App 可下发 |
-| `cache_song_limit` | 500 | |
-| `scan_interval_min` | 0（关） | ❌ 已移除（服务端不再扫描；歌曲只由 APP 在播放源处扫描，见 §6.4） |
-| `transcode_max_concurrency` | 2 | 全局 ffmpeg 并发上限 |
-| `upload_dir` | `{LOCAL_ROOT}/Uploads` | 上传落点 |
+| `pairing_token` 外键项均按需由环境变量镜像写入；`cache_*`/`scan_*`/`upload_*` 等旧键已随曲库功能移除。
 
-`songs` 权重相关字段与触发规则见 §7.1。
+`song_states` 权重相关字段与触发规则见 §7.1。
 
 ### 3.2 客户端（SQLite，`sqlite3` 轻量版已落地，见 §6.4）
 
 | 表 | 说明 |
 |----|------|
-| `sources` | 源配置：`type(local/webdav/smb/server)`、名称、凭据引用键、enabled、last_scan_at |
+| `sources` | 源配置：`type(local/webdav/smb)`、名称、凭据引用键、enabled、last_scan_at（同步后含 `client_uuid`） |
 | `idx_songs` | 直连模式本地索引：`source_key, ref, title, artist, album, track_no, year, genre, duration, format, size, mtime, etag, cover_path, missing`（增量指纹含 `mtime,size,etag`；`is_favorite` 旧列仅用于一次性回填迁移，阶段 2 起不再读写） |
 | `cache` | 已缓存歌曲：`cache_key, source_key, ref, local path, size_bytes` + `cached_at, last_accessed_at`（阶段 2 补列，LRU 用） |
-| `play_meta` | 歌曲播放元数据（阶段 2 新增）：`(source_key, song_ref)` 主键 + `like_streak, dislike_streak, factor, frozen, is_favorite`（**收藏统一收口**）+ `song_json`（服务器歌快照） |
+| `play_meta` | 歌曲播放元数据（阶段 2 新增）：`(source_key, song_ref)` 主键 + `like_streak, dislike_streak, factor, frozen, is_favorite`（**收藏统一收口**）+ `song_json`（同步快照；本机未配置对应源时用于展示） |
 | `playlists` / `playlist_items` | 歌单与条目（阶段 2 新增）：条目含歌曲快照字段 + `sort_order`；播放时按 `(source_key, song_ref)` 重新解析 |
 | `app_settings` | 客户端设置（阶段 2 新增）：键值表，`cache_max_bytes / cache_song_limit / auto_cache_favorites` 等 |
 | `song_lyrics` | 歌词（迭代新增）：`(source_key, song_ref)` 主键 + `content`（LRC 文本）+ `updated_at`；三态收录（内嵌歌词 / 同名 `.lrc` / 标记缺失），避免每次播放重复读文件 |
@@ -213,7 +205,7 @@ INDEX idx_refresh(refresh_token_hash)
 要点：
 
 - `song_key` 统一为 `(来源标识, source_ref)` 复合键；同一首歌在不同模式下可解析到不同 Source 实现
-- 收藏状态**统一收口** `play_meta.is_favorite`（直连 + 服务器一致）：迁移时从 `idx_songs.is_favorite=1` 回填一次，
+- 收藏状态**统一收口** `play_meta.is_favorite`：迁移时从 `idx_songs.is_favorite=1` 回填一次，
   此后所有读取（搜索 / 收藏列表 / 歌单解析 / 断点恢复）统一 `LEFT JOIN play_meta`
 - 凭据加密：WebDAV/SMB 密码经 `flutter_secure_storage` 存放，SQLite 只存引用键
 - 离线优先：所有播放决策只查本地表；网络层的角色是把远端变更搬进本地
@@ -242,45 +234,28 @@ INDEX idx_refresh(refresh_token_hash)
 | ✅ POST | `/auth/unpair` | 自我注销（吊销当前设备） |
 | ⏳ GET | `/meta/server` | 版本、ffmpeg 可用性、源概况（需认证） |
 
-### 4.2 曲库浏览与搜索（服务器模式）
+### 4.2 曲库与流媒体（已移除）
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| ✅ GET | `/library/songs` | 过滤：`q/artist/album/source/favorite/hidden` |
-| ✅ GET | `/library/songs/{id}` | 详情（含权重） |
-| ✅ GET | `/library/albums` · `/library/albums/{id}` | 专辑列表/详情 |
-| ⏳ GET | `/library/artists` | 歌手聚合 |
-| ⏳ GET | `/library/folders` | 目录浏览 `?source=&path=` |
-| ✅ GET | `/library/favorites` | 收藏快捷端点 |
+> 服务端不提供曲库索引与流式代理：歌曲由 App 在各播放源处扫描、直接从源播放；
+> 后端仅提供认证/配对与状态同步（§4.4）。原 `/library/**`、`/stream/**`、
+> `POST /songs/{id}/weight` 已删除。
 
-### 4.3 流媒体（服务器模式）
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| ✅ GET | `/stream/{id}?br=&format=` | Range 流式代理（`Accept-Ranges`/`206` 透传）；**转码参数 `br`/`format` 为规划态（阶段 6），当前全原码透传** |
-| ⏳ HEAD | `/stream/{id}` | 探测长度/时长 |
-| ⏳ DELETE | `/stream/{id}` | 显式停止（关闭 ffmpeg 子进程） |
-
-### 4.4 状态同步（服务器模式）—— ✅ 已实现（阶段 5）
+### 4.4 状态同步 —— ✅ 已实现（阶段 5）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | ✅ GET | `/api/v1/sync/pull?since_cursor=` | 增量拉取（歌单+权重+断点快照），返回新 cursor；`since=0` 为启动全量校准；超 2000 事件分页（`has_more`） |
 | ✅ POST | `/api/v1/sync/push` | 批量上推事件流水；幂等按 `event_uuid` 去重；LWW 判输回 correction 快照；`device_client_id` 须与认证身份一致 |
 | ✅ CRUD | `/api/v1/playlists` 系列（含 `{id}/items` 增删改） | 直接 REST 变更同样走事件管线（服务端代写事件），其它设备经 pull 可见 |
-| ✅ PUT | `/api/v1/playstates/{playlistId}` | `{song_id, position_ms}`；行级 LWW，判输回服务端快照 |
-| ✅ POST | `/api/v1/songs/{id}/weight` | `{event: liked\|...}` 单权重事件直调（走同一管线，`song_id` 强制为路径 id） |
+| ✅ PUT | `/api/v1/playstates/{playlistId}` | `{source_id, source_ref, position_ms}`；行级 LWW，判输回服务端快照 |
 
 ### 4.5 管理
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| ✅ GET | `/admin/config` | 当前配置建议值概览（缓存双来源用） |
 | ✅ GET | `/admin/pairing-token` | 主配对令牌明文（`设置→服务端→配对服务器` 展示用；密钥源自 env 镜像） |
 | ✅ GET | `/admin/devices` · PUT/DELETE `/admin/devices/{id}` | 设备列表 / 改名 / 吊销 |
-| ❌ ~~POST~~ `/scan` · ~~GET~~ `/scan` | 已移除（服务端不再扫描入库；歌曲只由 APP 在播放源处扫描，见 §6.4；历史库 `scan_tasks` 表残留无害） |
 | ⏳ POST | `/admin/upload/init` → `/part/{n}` → `/commit` | 分片上传（16MB/片），阶段 6 |
-| ⏳ DELETE | `/library/songs/{id}?hard=` | 移出索引；`hard=true` 删源文件（仅 local 源允许），阶段 6 |
 | ⏳ PUT | `/admin/settings` | 设置读写（已实现 GET `/admin/config`，写接口仍规划） |
 
 ---
@@ -293,11 +268,9 @@ INDEX idx_refresh(refresh_token_hash)
 auth/         AuthController(pair/refresh/unpair) + DeviceAdminController + SecurityConfig + TokenFilter
 admin/        AdminSettingsController(config/pairing-token)
 controller/   HealthController
-library/      LibraryController(songs/albums/favorites) + SongController（调权直调，阶段5）
-stream/       StreamController(Range 代理) + MusicSourceProxy(local/webdav 源解析)
-common/       ApiResponse, BizException, GlobalExceptionHandler, MusicSource 枚举
+common/       ApiResponse, BizException, GlobalExceptionHandler
 config/       FirstBootInitializer, WebConfig(CORS)
-domain/       JPA 实体 + Repository + service
+domain/       JPA 实体（Playlist/PlaylistItem/PlayState/SongState/Device/SyncEvent/Setting）+ Repository + service
 ```
 
 ### 5.2 第三方库
@@ -351,13 +324,13 @@ lib/
 ├── providers/            ★ 状态
 │   ├── navigation_provider.dart  分区/设置/播放页视图切换（层级返回）+ 源内文件夹导航(browsingSourceKey) + 歌单详情导航(browsingPlaylistId)
 │   ├── player_provider.dart      全局播放(AudioPlayer+队列) + 睡眠定时 + 歌词加载 + 预载下一首 + 按 sourceKey 解析源 + 四种播放模式 + 断点续播
-│   ├── library_provider.dart     合并库（服务器+直连）+ 专辑/歌手分组 + sourceFor 解析
+│   ├── library_provider.dart     直连源合并库 + 专辑/歌手分组 + sourceFor 解析
 │   ├── direct_source_manager.dart 直连源管理（全部激活，无单一激活态）+ 本地歌单/收藏/播放元数据 + 后台元数据补读 + 预载
 │   ├── playlists_provider.dart   歌单列表/详情状态
 │   └── auth_provider.dart        配对 + 会话过期态
 ├── services/             ApiClient(含懒刷新拦截器)、AuthService、ServerSettings(代理后端地址)
 ├── data/
-│   ├── sources/          ★ Source 抽象层 (ServerProxy / WebdavDirect / SmbDirect) + DirectAudioSource
+│   ├── sources/          ★ Source 抽象层 (LocalDirect / WebdavDirect / SmbDirect) + DirectAudioSource
 │   └── local/            纯 Dart 头部解析(audio_metadata) + SQLite(local_index) +
 │                         stage2 封装：SongWeightStore / PlaylistStore / CacheManager / AppSettings
 ├── models/               Song(含 toJson/fromJson 断点快照) / Album(含 coverPath) / Artist
@@ -377,7 +350,7 @@ lib/
 
 ```dart
 abstract class MusicSource {
-  String get key;                       // 稳定标识: 'server'/'smb:nas1'/'webdav:xx'/'local:xx'
+  String get key;                       // 稳定标识: 'smb:nas1'/'webdav:xx'/'local:xx'
   SourceKind get kind;
   Future<ScanResult> scan();            // 建本地索引（增量）
   Future<SongMeta> probe(String ref);   // 头部元数据（Range 读头部）
@@ -386,11 +359,10 @@ abstract class MusicSource {
 }
 ```
 
-- 播放器只认 `MusicSource`，不感知模式
-- `ServerProxySource.open()` 即 GET `/stream/{id}`；直连实现各自对接协议
+- 播放器只认 `MusicSource`（全部为直连实现）
 - 直连播放优先级：离线缓存文件 → `directStream()`（原生 URL，ExoPlayer/native Range seek 更稳，WebDAV 用）→ 自建 `StreamAudioSource`（`open()`）回落
 - WebDAV `ref` 存**解码后**路径（标题/去重友好），请求时按路径段重新编码；扫描头部元数据解析对大内嵌封面做了边界保护（超采样长度即停止解析，不抛 `RangeError`，随后按提示补读）
-- 模式判定 = `sources` 表里有哪些启用的源；配置了 `server` 源即解锁同步/转码等增强功能
+- 源列表 = `sources` 表里启用的源；配置后端地址后解锁多设备同步（与曲库无关）
 
 ### 6.3 SMB 直连平台策略（全平台目标）
 
@@ -423,7 +395,7 @@ abstract class MusicSource {
 - **大内嵌封面两段读**：首段采样（256KB）解析缺少封面时，`coverReadHint` 按 ID3 标签声明长度 / FLAC 块头 / ogg comment 包完成度算出「读到封面块尾」所需字节数，补读一次（上限 `kCoverReadCapBytes` 8MB）再解析——高清扫图常见 1~3MB，一段读会整块丢失；**moov-at-end 的 m4a、ogg/opus 时长、无 ID3v2 的 mp3 ID3v1** 走 `tailReadHint` 尾部补读（m4a 按 256KB→1MB→4MB→8MB 逐级增大，ogg 取末页 granule，mp3 取尾 128B）；扫描 `full`+提取封面同样走 `readAudioMeta` 统一读序。旧版已标已读但无封面的 mp3/flac 行由一次性迁移（`kCoverReenrichV1Done`，设备本地标记）重置为未读，交给后台补读重取。**歌词（USLT / LYRICS）与长文本帧同在整段标签内，随两段读一并补全**
 - **同目录图片回退**：解析后仍无封面 → 按「同名图片（`.png/.jpg/.jpeg/.webp`）→ `cover.*`/`folder.*`/`front.*`/`album.*`」顺序取同目录图片（播放补读按会话缓存，扫描按目录清单/下载缓存去重），经图片签名校验后落盘。同名 `.lrc` 歌词回退早已在同目录读取路径（§3.2 song_lyrics / 播放歌词加载）
 - **全局后台补读**：任一首开始播放后，后台逐个补读各直连源「尚未读取过元数据」的歌曲（`DirectSourceManager` 分批循环读头回填），专辑/歌手/封面在扫描未覆盖时也能逐步补齐并在 UI 就地刷新（`LibraryProvider` 监听元数据版本号）
-- **修改歌曲元数据（全源）**：播放页封面「更多 → 修改歌曲元数据」，标题/歌手/专辑可编辑；直连歌曲落 `user_edited=1` 扫描不再覆盖，服务器歌曲本地覆盖展示（`LocalIndex.setUserMeta` / `DirectSourceManager.updateSongMeta`）
+- **修改歌曲元数据**：播放页封面「更多 → 修改歌曲元数据」，标题/歌手/专辑可编辑；落 `user_edited=1`，扫描不再覆盖（`LocalIndex.updateSongUserMeta` / `DirectSourceManager.updateSongMeta`）
 
 **进程隔离与进度**
 
@@ -451,10 +423,10 @@ abstract class MusicSource {
 - 点击源卡片 → `NavigationProvider.enterSource(key)` 将 `browsingSourceKey` 置为该源 key → `AppContent` 检测到 `sources + browsingSourceKey` → 内容区原地切换为 `SourceBrowseView`（不走 `Navigator.push`）
 - `SourceBrowseView`：顶部返回按钮调用 `exitSource()`、显示源名、扫描/刷新按钮、搜索框、歌曲计数；扫描完成后自动调用 `LibraryProvider.loadSongs()` 刷新全局合并库
 - 源列表页（`SourcesScreen`）支持**列表 / 卡片**两种展示（右上角切换，持久化 `view_mode_sources`，见 §6.7）；列表行复用卡片组件（`plain` 参数）
-- 源卡片右侧 `PopupMenuButton` 三点菜单：切换为直连/切换为服务端代理、编辑、删除源（二次确认弹窗）；移除旧「服务器源」独立卡片（服务端代理归属直连源的模式之一）
-- 新增/编辑源弹窗统一为 `_SourceDialog`：添加态用 `SegmentedButton` 选 WebDAV/本地文件夹（本地态提供「选择目录」走 `file_selector.getDirectoryPath`）；编辑态按 key 从 `LocalIndex` 原始配置预填（代理模式下内存对象不持底层凭据），改名会派生新 key 并同步迁移 `sources/idx_songs/play_meta/playlist_items`（`LocalIndex.renameSource`）
-- 全局歌曲/专辑/歌手合并：`LibraryProvider.loadSongs()` 合并 `ServerProxySource.fetchSongs()` 与 `DirectSourceManager.allSongs()`（按 `title|artist|albumName` 去重），服务器源返回的歌曲 `sourceKey = 'server'`；专辑和歌手按合并后的歌曲列表客户端聚合（`Album.fromSongs` / `Artist.fromSongs`），切换到对应栏目时自动拉取
-- 播放路由：`PlayerProvider.attachSourceResolver` 注册解析函数，按歌曲 `sourceKey` 逐首解析源实现（'server' → `ServerProxySource`；其余 → `DirectSourceManager.sourceByKey`），混播队列中直连歌曲与服务器歌曲均可正常播放
+- 源卡片右侧 `PopupMenuButton` 三点菜单：编辑、删除源（二次确认弹窗）
+- 新增/编辑源弹窗统一为 `_SourceDialog`：添加态用 `SegmentedButton` 选 WebDAV/本地文件夹（本地态提供「选择目录」走 `file_selector.getDirectoryPath`）；编辑态按 key 从 `LocalIndex` 原始配置预填（密码从 SecretStore 回填），改名会派生新 key 并同步迁移 `sources/idx_songs/play_meta/playlist_items`（`LocalIndex.renameSource`）
+- 全局歌曲/专辑/歌手合并：`LibraryProvider.loadSongs()` 聚合 `DirectSourceManager.allSongs()`；专辑和歌手按合并后的歌曲列表客户端聚合（`Album.fromSongs` / `Artist.fromSongs`），切换到对应栏目时自动拉取
+- 播放路由：`PlayerProvider.attachSourceResolver` 注册解析函数，按歌曲 `sourceKey` 逐首从 `DirectSourceManager.sourceByKey` 解析源实现；无本机源的快照行不参与播放
 
 ### 6.6 网络与离线
 
@@ -493,7 +465,7 @@ abstract class MusicSource {
 
 ### 6.8 歌词与后台播放
 
-- **歌词三通道**：内嵌标签（mp3 `USLT` / FLAC `LYRICS`·`UNSYNCEDLYRICS`）→ 同目录同名 `.lrc`（local/WebDAV 通用，UTF-8/UTF-16 BOM 兼容）→ 服务端代理源（后端暂无歌词接口，留空）；解析为 LRC 文本入库 `song_lyrics`（`(source_key,song_ref)` 主键，三态：内容 / 显式标记缺失 / 未读取），缺失标记避免每次播放重复读文件
+- **歌词三通道**：内嵌标签（mp3 `USLT` / FLAC `LYRICS`·`UNSYNCEDLYRICS`）→ 同目录同名 `.lrc`（local/WebDAV 通用，UTF-8/UTF-16 BOM 兼容）（后端不提供歌词）；解析为 LRC 文本入库 `song_lyrics`（`(source_key,song_ref)` 主键，三态：内容 / 显式标记缺失 / 未读取），缺失标记避免每次播放重复读文件
 - **歌词页**：与播放进度同步滚动 + 居中高亮当前行 + 点击任意行 seek；手动拖动暂停跟随，切歌归位；`lrc_parser.dart` 支持多标签 / `offset` / 毫秒位数 / 纯文本退化 / 二分定位
 - **后台播放**：Android 走 `audio_service` 自定义处理器（`SelfMusicAudioHandler`，通知按钮转发 `PlayerProvider`）；返回桌面/切后台**继续播放**（`androidStopForegroundOnPause=false` 暂停不撤前台服务，与 `androidNotificationOngoing` 互斥故弃用 ongoing）；通知栏「停止」/ 划掉任务（`onTaskRemoved`）/ 侧边栏「退出」（先 `shutdown()` 再 `exit(0)`）才真正停止并置空闲；`notification_controls=false` 时不注册前台服务、后台保活不成立
 
@@ -535,14 +507,14 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 播放模式：`sequence`（当前顺序播放，播完即停）/ `loopList`（列表循环）/ `loopOne`（单曲循环）/
 `weighted`（加权随机），切换入口播放页 + 队列面板；`next()` 与自动下一首按当前模式路由。
 
-### 7.2 同步协议（仅服务器模式）
+### 7.2 同步协议
 
 - **方向**：客户端本地 SQLite 是运行时事实源；后端是多设备汇聚点
 - **Pull**：启动全量校准 + 每 30s `GET /api/v1/sync/pull?since_cursor=`；cursor 为服务端 `sync_events.seq` 单调递增变更号
 - **Push**：本地产生权重事件/断点/歌单改动 → 写 `weight_outbox`（带 event_uuid）→ 2s 防抖批量上推；服务端按 uuid 幂等去重
 - **冲突（字段级合并，阶段 5 落地）**：权重走**事件重算**而非绝对值覆盖（两设备并发点赞按到达序重放，不互抹）；收藏/歌单元数据/删除墓碑/断点走**行级 LWW**（事件 `occurred_at` vs 行 `last_event_at`，输方收 correction 回执自纠；仲裁时钟为服务端 `arrived_at`）；歌单条目按 seq 到达序重放（后到达胜出）；直接 REST 变更（歌单 CRUD/断点 PUT/调权 POST）同样先记事件再生效，保证 pull 可见
 - **歌曲身份**：数字 `song_id` 优先，否则按 `(source, source_ref)` 唯一键解析；legacy 空 source 按 `source_ref` 兜底
-- **直连歌曲同样同步（连着服务器时）**：客户端放行一切有身份（source/sourceRef 非空、可解析）的事件，不再限服务器模式；服务端按 `(source, source_ref)` 建**影子行**承载权重/收藏/断点（标题取歌单条目载荷或 ref 末段兜底，pull 回执只带权重字段、不覆盖客户端本地标题）；歌单条目 add/move 无 `song_id` 时同样按身份解析（缺行建影子行），remove 按身份解析、未知即 no-op；pull 身份收集恒不建行（已删歌曲不复活）。未配对（无后端地址）时直连事件不进队，避免 outbox 无限积压；`sync_enabled` 关闭同样全跳
+- **歌曲身份（服务端无曲库）**：统一为 `source_id + source_ref`（source_id=客户端源实例 uuid，旧数据/旧客户端为 `legacy:<协议>`）；权重/收藏落 `song_states`，歌单条目与断点自持身份及展示快照（标题/歌手/专辑/时长，pull 不覆盖客户端本地标题）；pull 身份收集恒不建行（已删歌曲不复活）。未配对（无后端地址）时直连事件不进队，避免 outbox 无限积压；`sync_enabled` 关闭同样全跳
 - 直连模式（无服务器）：上述全部跳过，数据只在本机
 
 ---
@@ -571,22 +543,22 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 ### 阶段 1：双模式骨架 + 服务器核心（~1.5 周）
 
-> **状态：已完成✅** —— 认证（access/refresh 轮换 + 过期懒刷新）、可换主题的自适应 UI 框架、全局播放器、配对页均已落地；后端 local/webdav 出流直取（`MusicSourceProxy` + `/library/**` + `/stream/**`）已端到端可用（服务端不再扫描入库）；镜像内置 ffmpeg。前端 Source 层四实现骨架已就位（ServerProxy 完整可用，Webdav/Smb/Local 为骨架，完整实现在阶段 3/4）。前端**直连源与本地索引**不属阶段 1 范围，已在阶段 3（WebDAV）/ 4（SMB）承接。
+> **状态：已完成✅** —— 认证（access/refresh 轮换 + 过期懒刷新）、可换主题的自适应 UI 框架、全局播放器、配对页均已落地。后端的曲库/流媒体能力已彻底移除（历史阶段产物），现仅保留认证/配对与状态同步。
 
-- 后端：SecurityConfig+TokenFilter(**含过期校验/X-Token-Expired**) + devices/auth API(**pair + refresh 轮换**)；MusicSource 抽象+Smb/Webdav/Local 实现(**ServerProxy 完整可用**)；扫描入库（local/webdav，SMB 直连归阶段 4）；`/library/**`、`/stream/**`；镜像加 ffmpeg
-- App：Source 层四实现骨架（ServerProxy 完整可用）、**可换主题自适应 UI 框架（theme/layout/providers)**、基础播放器（顺序播放）、配对页
+- 后端：SecurityConfig+TokenFilter(**含过期校验/X-Token-Expired**) + devices/auth API(**pair + refresh 轮换**)
+- App：Source 层直连实现、**可换主题自适应 UI 框架（theme/layout/providers)**、基础播放器（顺序播放）、配对页
 - 验收：配对一台真机 → 浏览服务器曲库 → 任选一首流式播放；未带 token 的请求被拒
 
 ### 阶段 2：加权播放 + 歌单 + 喜欢歌缓存（~1 周，蓝图核心）
 
 > **状态：客户端本地闭环 + 歌单/喜欢列表 UI 已完成✅**。本轮整体按「**纯客户端本地**」落地：
-> 后端不新增 API；服务器模式歌曲的权重 / 收藏 / 断点同样落本地，阶段 5 再接同步上推。
+> 后端不新增 API；直连歌曲的权重 / 收藏 / 断点同样落本地，阶段 5 再接同步上推。
 > `flutter analyze` 0 问题，`flutter build linux --debug` 与 `flutter build apk --debug` 均通过。
 
 - ✅ 播放模式 ×4：顺序（默认）/ 列表循环 / 单曲循环 / 加权随机；切换入口播放页 + 队列面板
 - ✅ 加权随机：factor 连续 0.5~1.5 步长 0.1；每步全量排除上一首采样（非无放回）；complete/skip 事件自动调权（详见 §7.1）
-- ✅ 喜欢 / 不喜欢 UI（播放页 ❤️/👎 + 权重芯片；SongTile 收藏通用化，服务器歌曲也可喜欢）
-- ✅ 收藏统一收口 `play_meta.is_favorite`（直连 + 服务器单一数据源）；旧 `idx_songs.is_favorite` 一次性回填迁移
+- ✅ 喜欢 / 不喜欢 UI（播放页 ❤️/👎 + 权重芯片；SongTile 收藏通用化，含本机无源的同步快照行）
+- ✅ 收藏统一收口 `play_meta.is_favorite`（单一数据源）；旧 `idx_songs.is_favorite` 一次性回填迁移
 - ✅ 喜欢列表：内容区「喜欢」分栏目走 `direct.favoriteSongs()`（同 play_meta 统一数据源）
 - ✅ 歌单：`PlaylistStore` + `PlaylistsProvider`；`playlists_view.dart` 列表/详情原地子视图（新建/重命名/删除/播放全部/上移/下移/移除）+ SongTile ⋮「加入歌单」弹层
 - ✅ 断点续播：`Song.toJson/fromJson` + `play_state` 单行（2s 节流），启动恢复为**暂停态**不自动播放
@@ -606,8 +578,8 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 - ✅ 扫描优化：三档模式 + `head_bytes` 配置、批量 `upsertSongs`、进度/取消、并发池、自动扫描（本地 watcher + 周期快扫）、播放时 `enrichSong` 懒补全（§6.4）
 - ~~✅ 后端扫描增量：`MusicScanner` 指纹跳过 + `getlastmodified` 解析 + 并发探测 + album 缓存 + `@Scheduled` 定时（§4.5 / settings.md §5.1）~~ 已移除（服务端不再扫描；歌曲只由 APP 在播放源处扫描）
 - ✅ 直连浏览：`SourcesScreen` 卡片三点菜单 + `SourceBrowseView` 文件夹式内页（扫描/进度/取消 → 搜索 → 播放 → 收藏 → 缓存全链路）；离线缓存（§6.6）
-- ✅ 全局库合并（§6.5）：`LibraryProvider` 合并 ServerProxy + 直连源（去重），专辑/歌手客户端聚合；按 `sourceKey` 逐首解析源实现
-- ✅ 三平台源骨架：ServerProxy / Webdav / Local 完整，SMB（阶段 4）
+- ✅ 全局库合并（§6.5）：`LibraryProvider` 聚合直连源（去重），专辑/歌手客户端聚合；按 `sourceKey` 逐首解析源实现
+- ✅ 源骨架：Webdav / Local 完整，SMB（阶段 4）
 - 验收（卸载后端场景）：只配 WebDAV / 本地源，完成扫描→搜索→播放→收藏→断网播缓存 全链路
 
 ### 阶段 4：全平台 SMB 直连（~1–2 周，风险最高）

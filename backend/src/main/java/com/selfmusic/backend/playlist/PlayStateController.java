@@ -44,11 +44,26 @@ public class PlayStateController {
                 .orElseThrow(() -> new BizException(40402, "playlist not found: " + playlistId));
         if (p.isDeleted()) throw new BizException(40402, "playlist not found: " + playlistId);
         if (p.getClientUuid() == null) throw new BizException(40001, "playlist not syncable (no client_uuid)");
-        Object songId = body.get("song_id");
-        if (songId == null) throw new BizException(40001, "song_id required");
+        Object sourceId = body.get("source_id");
+        Object source = body.get("source");
+        Object sourceRef = body.get("source_ref");
+        if (sourceRef == null || sourceRef.toString().isBlank()) {
+            throw new BizException(40001, "source_ref required");
+        }
+        String sid = sourceId == null ? null : sourceId.toString();
+        if (sid == null || sid.isBlank()) {
+            if (source == null || source.toString().isBlank()) {
+                throw new BizException(40001, "source_id required");
+            }
+            sid = "legacy:" + source;
+        }
         ObjectNode payload = objectMapper.createObjectNode();
         payload.put("playlist_uuid", p.getClientUuid());
-        payload.put("song_id", toLong(songId));
+        payload.put("source_id", sid);
+        if (source != null && !source.toString().isBlank()) {
+            payload.put("source", source.toString());
+        }
+        payload.put("source_ref", sourceRef.toString());
         Object pos = body.get("position_ms");
         payload.put("position_ms", pos == null ? 0 : toInt(pos));
 
@@ -63,11 +78,6 @@ public class PlayStateController {
         }
         PlayState st = playStateRepository.findById(playlistId).orElseThrow();
         return ApiResponse.ok(SyncService.playstateSnapshot(st, p.getClientUuid()));
-    }
-
-    private static long toLong(Object v) {
-        if (v instanceof Number n) return n.longValue();
-        return Long.parseLong(String.valueOf(v));
     }
 
     private static int toInt(Object v) {

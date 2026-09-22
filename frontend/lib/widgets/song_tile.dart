@@ -21,7 +21,9 @@ import 'app_toast.dart';
 /// 点击条目切换勾选，[onSelect] 负责切换 [selected]。
 class SongTile extends StatelessWidget {
   final Song song;
-  final MusicSource source;
+
+  /// 该歌对应的本机播放源；null=本机未配置对应源（如同步快照行，仅可查看/收藏）。
+  final MusicSource? source;
   final VoidCallback onPlay;
 
   /// 多选模式：true 时显示勾选框并以选中态渲染。
@@ -61,8 +63,10 @@ class SongTile extends StatelessWidget {
   }
 
   Future<void> _cacheSong(BuildContext context, DirectSourceManager direct) async {
+    final src = source;
+    if (src == null) return;
     try {
-      await direct.cacheSong(source, song);
+      await direct.cacheSong(src, song);
       if (context.mounted) {
         AppToast.show('已缓存，可离线播放', isError: false);
       }
@@ -159,7 +163,7 @@ class SongTile extends StatelessWidget {
                         ],
                       ),
                     ),
-                    if (song.isDirect)
+                    if (song.isDirect && source != null)
                       const PopupMenuItem(
                         value: 'cache',
                         child: Row(

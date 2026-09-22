@@ -147,7 +147,7 @@ class _ServerSettingsState extends State<_ServerSettings> {
                   .headlineSmall
                   ?.copyWith(fontWeight: FontWeight.bold)),
           const SizedBox(height: 4),
-          Text('配置后端地址；选择「服务端代理」模式的源会走后端拉取整体库',
+          Text('配置后端地址与配对；多设备同步与设备管理在此',
               style: Theme.of(context)
                   .textTheme
                   .bodySmall
@@ -197,20 +197,6 @@ class _ServerSettingsState extends State<_ServerSettings> {
               icon: const Icon(Icons.save_outlined),
               label: const Text('保存'),
             ),
-          ),
-          const SizedBox(height: 8),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('预载下一首'),
-            subtitle: const Text('播放时按播放顺序算法确定下一首并后台缓存（加权随机也先抽样确定并复用；开关只决定是否预载）'),
-            value: context
-                .read<DirectSourceManager>()
-                .settings
-                .preloadNext,
-            onChanged: (v) {
-              context.read<DirectSourceManager>().settings.preloadNext = v;
-              setState(() {});
-            },
           ),
           const SizedBox(height: 16),
           const Divider(),
@@ -428,8 +414,7 @@ class _CacheDirTileState extends State<_CacheDirTile> {
   }
 }
 
-/// 服务端 → 缓存配置（settings.md §3.3）：
-/// 「跟随服务端 / 自定义」双来源；跟随模式暂灰显（待阶段 6 服务端下发能力）。
+/// 服务端 → 缓存上限（settings.md §3.3）：本机自定义缓存总上限与歌曲数量上限。
 class _CacheConfigSection extends StatefulWidget {
   const _CacheConfigSection();
   @override
@@ -438,116 +423,47 @@ class _CacheConfigSection extends StatefulWidget {
 
 class _CacheConfigSectionState extends State<_CacheConfigSection> {
   late AppSettings _settings;
-  bool _fetched = false;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _settings = context.read<DirectSourceManager>().settings;
-    if (!_fetched) {
-      _fetched = true;
-      context.read<DirectSourceManager>().refreshServerConfig();
-    }
   }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final followReady =
-        _settings.serverCacheMaxBytes != null && _settings.serverCacheSongLimit != null;
-    final followLocked =
-        _settings.cacheConfigMode == CacheConfigMode.followServer;
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text('缓存配置',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleMedium
-                      ?.copyWith(fontWeight: FontWeight.w600)),
-            ),
-            IconButton(
-              icon: const Icon(Icons.sync, size: 20),
-              tooltip: '刷新服务端建议值',
-              onPressed: () async {
-                final ok =
-                    await context.read<DirectSourceManager>().refreshServerConfig();
-                if (!mounted) return;
-                setState(() {});
-                AppToast.show(ok ? '已刷新服务端建议值' : '拉取失败（检查后端连接）',
-                    isError: !ok);
-              },
-            ),
-          ],
-        ),
+        Text('缓存上限',
+            style: Theme.of(context)
+                .textTheme
+                .titleMedium
+                ?.copyWith(fontWeight: FontWeight.w600)),
         const SizedBox(height: 4),
-        Text('上限来源与建议值；同键项的服务端对照见 settings.md §5',
+        Text('离线缓存与预载共用；超出后按 LRU 淘汰（当前播放/预载受保护）',
             style: Theme.of(context)
                 .textTheme
                 .bodySmall
                 ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
         const SizedBox(height: 8),
-        RadioGroup<CacheConfigMode>(
-          groupValue: _settings.cacheConfigMode,
-          onChanged: (v) {
-            if (v == null) return;
-            setState(() => _settings.cacheConfigMode = v);
-          },
-          child: Column(
-            children: [
-              const RadioListTile<CacheConfigMode>(
-                contentPadding: EdgeInsets.zero,
-                title: Text('自定义'),
-                subtitle: Text('使用本机设置的上限'),
-                value: CacheConfigMode.custom,
-              ),
-              RadioListTile<CacheConfigMode>(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('跟随服务端'),
-                subtitle: Text(
-                  followReady
-                      ? '使用服务端建议值：'
-                          '${_labelBytes(_settings.serverCacheMaxBytes!)} / '
-                          '${_settings.serverCacheSongLimit} 首'
-                      : '服务端建议值未拉取（检查后端连接）',
-                ),
-                value: CacheConfigMode.followServer,
-                enabled: followReady,
-              ),
-            ],
-          ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.storage_outlined),
+          title: const Text('缓存总上限'),
+          subtitle: Text(_labelBytes(_settings.cacheMaxBytes)),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _editMaxBytes(context),
         ),
-        if (followLocked)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Text('已启用跟随服务端：${_labelBytes(_settings.effectiveCacheMaxBytes)} / ${_settings.effectiveCacheSongLimit} 首',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodySmall
-                    ?.copyWith(color: cs.primary)),
-          )
-        else ...[
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.storage_outlined),
-            title: const Text('缓存总上限'),
-            subtitle: Text(_labelBytes(_settings.effectiveCacheMaxBytes)),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => _editMaxBytes(context),
-          ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.library_music_outlined),
-            title: const Text('歌曲数量上限'),
-            subtitle: Text('${_settings.effectiveCacheSongLimit} 首'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => _editSongLimit(context),
-          ),
-        ],
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.library_music_outlined),
+          title: const Text('歌曲数量上限'),
+          subtitle: Text('${_settings.cacheSongLimit} 首'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _editSongLimit(context),
+        ),
       ],
     );
   }
@@ -1294,6 +1210,12 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
           subtitle: const Text('启动时恢复上次队列与位置（恢复为暂停态，不自动播放）'),
           value: _settings.resumeOnStartup,
           onChanged: (v) => setState(() => _settings.resumeOnStartup = v),
+        ),
+        SwitchListTile(
+          title: const Text('预载下一首'),
+          subtitle: const Text('播放时按播放顺序算法确定下一首并后台缓存（加权随机也先抽样确定并复用；开关只决定是否预载）'),
+          value: _settings.preloadNext,
+          onChanged: (v) => setState(() => _settings.preloadNext = v),
         ),
         SwitchListTile(
           title: const Text('播放页滑动手势'),

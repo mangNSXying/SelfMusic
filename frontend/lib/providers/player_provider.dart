@@ -630,21 +630,11 @@ class PlayerProvider extends ChangeNotifier {
       _current = cur;
       _curSource = src;
       notifyListeners();
-      if (src != null && src.supportsDirect) {
-        await _playDirect(cur, src);
-      } else {
-        String? url;
-        Map<String, String>? headers;
-        if (src != null) {
-          url = src.streamUrl(cur.id);
-          headers = src.streamHeaders();
-        }
-        if (url == null) {
-          throw StateError('no stream source available');
-        }
-        debugPrint('[play] 代理 URL: $url');
-        await player.setUrl(url, headers: headers);
+      if (src == null || !src.supportsDirect) {
+        // 无本地源（如同步快照行且本机未配置对应源）：不崩，提示后由调用方决定。
+        throw StateError('找不到该歌曲的播放源，请先配置对应播放源');
       }
+      await _playDirect(cur, src);
       if (!alive()) return; // 已被更新的切歌接管
       if (play) {
         await player.play();
@@ -653,11 +643,9 @@ class PlayerProvider extends ChangeNotifier {
       if (!alive()) return;
       unawaited(_applyEqualizerBands());
       _saveState(player.position);
-      if (src != null) _onTrackStarted?.call(src, cur);
+      _onTrackStarted?.call(src, cur);
       // 播放即重读当前歌曲元数据（不管之前是否读过，保证展示最新）。
-      if (src != null && src.supportsDirect) {
-        unawaited(_enrichLazily(cur, src));
-      }
+      unawaited(_enrichLazily(cur, src));
       unawaited(_loadLyrics(cur, src));
       notifyListeners();
       _syncSystemMedia();
@@ -688,8 +676,8 @@ class PlayerProvider extends ChangeNotifier {
     await player.setAudioSource(DirectAudioSource(source: src, song: s));
   }
 
-/// 懒补全：播放后把解析出的完整元数据（标题/歌手/专辑/专辑歌手/时长/曲目/年份/封面）
-/// 回填索引。从头完整读取（采样不足时读满整个文件，不截断），失败静默不影响播放。
+  /// 懒补全：播放后把解析出的完整元数据（标题/歌手/专辑/专辑歌手/时长/曲目/年份/封面）
+  /// 回填索引。从头完整读取（采样不足时读满整个文件，不截断），失败静默不影响播放。
   /// 成功后刷新队列与当前歌曲对象并通知，播放页即时展示新读到的信息；
   /// 另有变化时通过 [_onSongMetaRefreshed] 通知全局库就地刷新，并失效旧封面图像缓存。
   Future<void> _enrichLazily(Song s, MusicSource src) async {
@@ -748,7 +736,6 @@ class PlayerProvider extends ChangeNotifier {
   /// 1. 索引已有（内嵌补读 / 上次读取的同名 .lrc）→ 直接展示；
   /// 2. 直连源尝试同目录 `.lrc`；等待期间内嵌补读可能已写入索引，内嵌优先；
   /// 3. 都没有 → 写「无歌词」标记，避免每次播放重复请求。
-  /// 服务端代理歌暂无歌词来源（后端未提供），显示空态。
   Future<void> _loadLyrics(Song s, MusicSource? src) async {
     final idx = _index;
     final key = _songKey(s);

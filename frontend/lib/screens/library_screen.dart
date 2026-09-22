@@ -226,10 +226,9 @@ class _LikedViewState extends State<_LikedView> {
       });
 
   void _playSelected(List<Song> songs) {
-    final lib = context.read<LibraryProvider>();
     final selected = selectedSongs(_sel, songs);
     _sel.cancel();
-    context.read<PlayerProvider>().playQueue(selected, source: lib.source);
+    context.read<PlayerProvider>().playQueue(selected);
     context.read<NavigationProvider>().openPlayer();
   }
 
@@ -287,9 +286,9 @@ class _LikedViewState extends State<_LikedView> {
                           final s = songs[i];
                           return SongTile(
                             song: s,
-                            source: lib.sourceFor(s.sourceKey) ?? lib.source,
+                            source: lib.sourceFor(s.sourceKey),
                             onPlay: () {
-                              player.playQueue(songs, index: i, source: lib.source);
+                              player.playQueue(songs, index: i);
                               context.read<NavigationProvider>().openPlayer();
                             },
                             selectionMode: _sel.active,
@@ -347,10 +346,9 @@ class _SongsViewState extends State<_SongsView> {
       });
 
   void _playSelected(List<Song> songs) {
-    final lib = context.read<LibraryProvider>();
     final selected = selectedSongs(_sel, songs);
     _sel.cancel();
-    context.read<PlayerProvider>().playQueue(selected, source: lib.source);
+    context.read<PlayerProvider>().playQueue(selected);
     context.read<NavigationProvider>().openPlayer();
   }
 
@@ -409,9 +407,9 @@ class _SongsViewState extends State<_SongsView> {
                       final s = songs[i];
                       return SongTile(
                         song: s,
-                        source: lib.sourceFor(s.sourceKey) ?? lib.source,
+                        source: lib.sourceFor(s.sourceKey),
                         onPlay: () {
-                          player.playQueue(songs, index: i, source: lib.source);
+                          player.playQueue(songs, index: i);
                           context.read<NavigationProvider>().openPlayer();
                         },
                         selectionMode: _sel.active,
@@ -527,11 +525,7 @@ class _AlbumsViewState extends State<_AlbumsView> {
 /// 打开专辑歌曲弹层（卡片/列表两种形态共用）。
 Future<void> _openAlbum(BuildContext context, Album album) async {
   final lib = context.read<LibraryProvider>();
-  var songs = lib.albumSongs(album);
-  // 未配置服务端时不做远端回退，直接按本地聚合结果展示。
-  if (songs.isEmpty && lib.serverConfigured) {
-    songs = await lib.source.fetchAlbumSongs(album.id);
-  }
+  final songs = lib.albumSongs(album);
   if (!context.mounted) return;
   showModalBottomSheet<void>(
     context: context,
@@ -626,7 +620,7 @@ class _AlbumSongsSheet extends StatelessWidget {
                   final s = songs[i];
                   return SongTile(
                     song: s,
-                    source: lib.sourceFor(s.sourceKey) ?? lib.source,
+                    source: lib.sourceFor(s.sourceKey),
                     onPlay: () {
                       Navigator.of(c).pop();
                       player.playQueue(songs, index: i);
@@ -827,7 +821,7 @@ class _ArtistSongsSheet extends StatelessWidget {
                   final s = songs[i];
                   return SongTile(
                     song: s,
-                    source: lib.sourceFor(s.sourceKey) ?? lib.source,
+                    source: lib.sourceFor(s.sourceKey),
                     onPlay: () {
                       Navigator.of(c).pop();
                       player.playQueue(songs, index: i);

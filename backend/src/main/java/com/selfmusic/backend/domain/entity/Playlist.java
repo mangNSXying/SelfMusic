@@ -14,9 +14,6 @@ public class Playlist {
 
     private String description;
 
-    @Column(name = "cover_id")
-    private Long coverId;
-
     @Enumerated(EnumType.STRING)
     @Column(length = 20)
     private PlaylistMode mode = PlaylistMode.shuffle_weighted;
@@ -53,9 +50,6 @@ public class Playlist {
 
     public String getDescription() { return description; }
     public void setDescription(String description) { this.description = description; }
-
-    public Long getCoverId() { return coverId; }
-    public void setCoverId(Long coverId) { this.coverId = coverId; }
 
     public PlaylistMode getMode() { return mode; }
     public void setMode(PlaylistMode mode) {

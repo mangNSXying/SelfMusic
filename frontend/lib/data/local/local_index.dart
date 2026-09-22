@@ -120,18 +120,6 @@ class LocalIndex {
         updated_at  TEXT NOT NULL
       );
     ''');
-    // 服务端歌曲元数据本地覆盖（后端只读，无改元数据接口）：标题/歌手/专辑按需覆盖。
-    _db!.execute('''
-      CREATE TABLE IF NOT EXISTS song_meta_override (
-        source_key TEXT NOT NULL,
-        song_ref   TEXT NOT NULL,
-        title      TEXT,
-        artist     TEXT,
-        album      TEXT,
-        album_artist TEXT,
-        PRIMARY KEY (source_key, song_ref)
-      );
-    ''');
     final cacheCols = _db!
         .select('PRAGMA table_info(cache)')
         .map((r) => r['name'] as String)
@@ -166,15 +154,6 @@ class LocalIndex {
     // 专辑歌手（mp3 TPE2 / flac ALBUMARTIST）。
     if (!songCols.contains('album_artist')) {
       _db!.execute('ALTER TABLE idx_songs ADD COLUMN album_artist TEXT');
-    }
-    // 服务端歌曲覆盖层同样支持专辑歌手。
-    final overrideCols = _db!
-        .select('PRAGMA table_info(song_meta_override)')
-        .map((r) => r['name'] as String)
-        .toSet();
-    if (!overrideCols.contains('album_artist')) {
-      _db!.execute(
-          'ALTER TABLE song_meta_override ADD COLUMN album_artist TEXT');
     }
     // 歌词（内嵌标签 / 同目录 .lrc 原文）：独立表存储，歌曲列表查询不加载大文本。
     _db!.execute('''
@@ -516,7 +495,7 @@ class LocalIndex {
         title: title, artist: artist, album: album, albumArtist: albumArtist);
   }
 
-  /// 同步 play_meta 歌曲快照中的标题/歌手/专辑/专辑歌手（直连改库 / 服务端覆盖层共用）。
+  /// 同步 play_meta 歌曲快照中的标题/歌手/专辑/专辑歌手（直连改库用）。
   /// '' 表示清空为未知（写 null）。
   void syncMetaSnapshot(String sourceKey, String songRef,
       {String? title, String? artist, String? album, String? albumArtist}) {
@@ -540,35 +519,6 @@ class LocalIndex {
     } catch (_) {
       // 快照损坏则忽略（下次收藏时重写）。
     }
-  }
-
-  /// 服务端歌曲元数据本地覆盖（null=不覆盖；''=显式清空为未知）。
-  void setMetaOverride(String sourceKey, String songRef,
-      {String? title, String? artist, String? album, String? albumArtist}) {
-    _db!.execute('''
-      INSERT INTO song_meta_override(source_key, song_ref, title, artist, album, album_artist)
-      VALUES(?,?,?,?,?,?)
-      ON CONFLICT(source_key, song_ref) DO UPDATE SET
-        title=CASE WHEN excluded.title IS NULL THEN song_meta_override.title ELSE excluded.title END,
-        artist=CASE WHEN excluded.artist IS NULL THEN song_meta_override.artist ELSE excluded.artist END,
-        album=CASE WHEN excluded.album IS NULL THEN song_meta_override.album ELSE excluded.album END,
-        album_artist=CASE WHEN excluded.album_artist IS NULL THEN song_meta_override.album_artist ELSE excluded.album_artist END
-    ''', [sourceKey, songRef, title, artist, album, albumArtist]);
-  }
-
-  /// 读取本地覆盖（无则返回 null）。
-  MetaOverride? metaOverrideOf(String sourceKey, String songRef) {
-    final rows = _db!.select(
-        'SELECT title, artist, album, album_artist FROM song_meta_override WHERE source_key=? AND song_ref=?',
-        [sourceKey, songRef]);
-    if (rows.isEmpty) return null;
-    final r = rows.first;
-    return MetaOverride(
-      title: r['title'] as String?,
-      artist: r['artist'] as String?,
-      album: r['album'] as String?,
-      albumArtist: r['album_artist'] as String?,
-    );
   }
 
   /// 把嵌入封面包装成可跨源复用的落盘（`covers/<md5(ref)>.jpg`），返回路径或 null。
@@ -1524,19 +1474,6 @@ class ScanFingerprint {
     if (etag != null && otherEtag != null && etag != otherEtag) return false;
     return true;
   }
-}
-
-/// 服务端歌曲元数据本地覆盖（空字段=不覆盖）。
-class MetaOverride {
-  final String? title;
-  final String? artist;
-  final String? album;
-  final String? albumArtist;
-  const MetaOverride(
-      {this.title, this.artist, this.album, this.albumArtist});
-
-  bool get isEmpty =>
-      title == null && artist == null && album == null && albumArtist == null;
 }
 
 /// 一首歌的播放元数据（权重/收藏，stage2.md §1.1）。
