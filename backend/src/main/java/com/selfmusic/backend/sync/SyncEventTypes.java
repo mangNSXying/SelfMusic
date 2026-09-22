@@ -22,6 +22,11 @@ public final class SyncEventTypes {
     public static final String PLAYLIST_ITEM_REMOVE = "playlist.item_remove";
     public static final String PLAYLIST_ITEM_MOVE = "playlist.item_move";
 
+    // 播放源元数据：行级 LWW（去重键 kind+address，密码不入服务端）
+    public static final String SOURCE_CREATE = "source.create";
+    public static final String SOURCE_UPDATE = "source.update";
+    public static final String SOURCE_DELETE = "source.delete";
+
     // 断点：行级 LWW（以 last_event_at 为基准）
     public static final String BREAKPOINT_SET = "breakpoint.set";
 }

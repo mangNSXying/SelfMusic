@@ -21,6 +21,11 @@ abstract final class SyncEventTypes {
   static const playlistItemRemove = 'playlist.item_remove';
   static const playlistItemMove = 'playlist.item_move';
 
+  // 播放源元数据（行级 LWW；去重键 kind+地址；密码不入服务端）
+  static const sourceCreate = 'source.create';
+  static const sourceUpdate = 'source.update';
+  static const sourceDelete = 'source.delete';
+
   // 断点（行级 LWW）
   static const breakpointSet = 'breakpoint.set';
 }

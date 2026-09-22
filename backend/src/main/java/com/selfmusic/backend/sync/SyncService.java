@@ -8,12 +8,14 @@ import com.selfmusic.backend.domain.entity.Playlist;
 import com.selfmusic.backend.domain.entity.PlaylistItem;
 import com.selfmusic.backend.domain.entity.SongState;
 import com.selfmusic.backend.domain.entity.SyncEvent;
+import com.selfmusic.backend.domain.entity.SyncSource;
 import com.selfmusic.backend.domain.repository.DeviceRepository;
 import com.selfmusic.backend.domain.repository.PlayStateRepository;
 import com.selfmusic.backend.domain.repository.PlaylistItemRepository;
 import com.selfmusic.backend.domain.repository.PlaylistRepository;
 import com.selfmusic.backend.domain.repository.SongStateRepository;
 import com.selfmusic.backend.domain.repository.SyncEventRepository;
+import com.selfmusic.backend.domain.repository.SyncSourceRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -61,6 +63,7 @@ public class SyncService {
 
     private final SyncEventRepository syncEventRepository;
     private final SongStateRepository songStateRepository;
+    private final SyncSourceRepository syncSourceRepository;
     private final PlaylistRepository playlistRepository;
     private final PlaylistItemRepository playlistItemRepository;
     private final PlayStateRepository playStateRepository;
@@ -201,6 +204,7 @@ public class SyncService {
                 songStateRepository.save(song);
                 yield null;
             }
+            case "source_meta" -> applySourceMeta(ev);
             case "playlist_meta" -> applyPlaylistMeta(ev);
             case "playlist_item" -> {
                 applyPlaylistItem(ev);
@@ -213,6 +217,7 @@ public class SyncService {
 
     private static String typeGroup(String type) {
         if (type.startsWith("song.")) return "song";
+        if (type.startsWith("source.")) return "source_meta";
         if (type.equals(SyncEventTypes.PLAYLIST_CREATE)
                 || type.equals(SyncEventTypes.PLAYLIST_UPDATE)
                 || type.equals(SyncEventTypes.PLAYLIST_DELETE)) return "playlist_meta";
@@ -270,6 +275,18 @@ public class SyncService {
         }
         Optional<SongState> found = songStateRepository.findBySourceIdAndSourceRef(sid, ref);
         if (found.isPresent()) return found.get();
+        // 旧协议级身份懒迁移：首台升级设备重新上报时，把 legacy:<协议> 行收编到源实例 uuid。
+        String protocol = protocolOf(p);
+        if (protocol != null) {
+            Optional<SongState> legacy = songStateRepository
+                    .findBySourceIdAndSourceRef(LEGACY_PREFIX + protocol, ref);
+            if (legacy.isPresent()) {
+                SongState row = legacy.get();
+                row.setSourceId(sid);
+                row.setSource(protocol);
+                return songStateRepository.save(row);
+            }
+        }
         if (!provision) {
             throw new BizException(40402, "song not found: " + sid + "/" + ref);
         }
@@ -301,6 +318,86 @@ public class SyncService {
         }
         tail = tail.trim();
         return tail.isEmpty() ? s : tail;
+    }
+
+    /**
+     * 播放源元数据（create/update/delete）：LWW + 去重（kind+address）。
+     * 名称不参与去重；配置不含密码。若事件 uuid 与既有同址源不同，回 correction
+     * （携带权威 uuid），事件方据此重绑本地源标识。
+     */
+    private Object applySourceMeta(PushEvent ev) {
+        JsonNode p = ev.payload();
+        String uuid = p == null ? null : p.path("client_uuid").asText(null);
+        if (uuid == null || uuid.isBlank()) throw new BizException(40001, "client_uuid required");
+        String kind = textOr(p, "kind", null);
+        if (kind == null || kind.isBlank()) throw new BizException(40001, "kind required");
+        String address = textOr(p, "address", null);
+        if (address == null || address.isBlank()) throw new BizException(40001, "address required");
+
+        if (SyncEventTypes.SOURCE_DELETE.equals(ev.type())) {
+            SyncSource row = syncSourceRepository.findByClientUuid(uuid).orElse(null);
+            if (row == null || row.isDeleted()) return null; // 重复删除：幂等 no-op
+            if (!eventWins(ev.occurred_at(), row.getLastEventAt())) return sourceSnapshot(row);
+            row.setDeleted(true);
+            row.setLastEventAt(ev.occurred_at());
+            row.setSyncVer(nvlLong(row.getSyncVer()) + 1);
+            syncSourceRepository.save(row);
+            return null;
+        }
+
+        SyncSource row = syncSourceRepository.findByClientUuid(uuid).orElse(null);
+        if (row == null) {
+            SyncSource same = syncSourceRepository.findByKindAndAddress(kind, address).orElse(null);
+            if (same != null) {
+                // 同址去重合并：采纳既有权威 uuid，事件方收 correction 重绑。
+                if (!eventWins(ev.occurred_at(), same.getLastEventAt())) return sourceSnapshot(same);
+                applySourceFields(same, p);
+                same.setLastEventAt(ev.occurred_at());
+                same.setSyncVer(nvlLong(same.getSyncVer()) + 1);
+                syncSourceRepository.save(same);
+                return sourceSnapshot(same);
+            }
+            SyncSource created = new SyncSource();
+            created.setClientUuid(uuid);
+            created.setKind(kind);
+            created.setAddress(address);
+            created.setDeleted(false);
+            created.setName(textOr(p, "name", null));
+            applySourceFields(created, p);
+            created.setLastEventAt(ev.occurred_at());
+            created.setSyncVer(1L);
+            syncSourceRepository.save(created);
+            return null;
+        }
+        if (!eventWins(ev.occurred_at(), row.getLastEventAt())) return sourceSnapshot(row);
+        // 地址可改：若与其它既有同址行冲突则合并（同址即同源，回 correction 重绑）。
+        if (!address.equals(row.getAddress())) {
+            SyncSource conflict = syncSourceRepository
+                    .findByKindAndAddress(kind, address).orElse(null);
+            if (conflict != null && !conflict.getClientUuid().equals(row.getClientUuid())) {
+                row.setDeleted(true);
+                row.setLastEventAt(ev.occurred_at());
+                row.setSyncVer(nvlLong(row.getSyncVer()) + 1);
+                syncSourceRepository.save(row);
+                return sourceSnapshot(conflict);
+            }
+            row.setAddress(address);
+        }
+        applySourceFields(row, p);
+        row.setLastEventAt(ev.occurred_at());
+        row.setSyncVer(nvlLong(row.getSyncVer()) + 1);
+        syncSourceRepository.save(row);
+        return null;
+    }
+
+    private static void applySourceFields(SyncSource row, JsonNode p) {
+        if (p == null) return;
+        if (p.has("name") && !p.path("name").isNull()) row.setName(p.path("name").asText(null));
+        if (p.has("config") && !p.path("config").isNull()) {
+            row.setConfigJson(p.path("config").isObject()
+                    ? p.path("config").toString() : p.path("config").asText(null));
+        }
+        if (p.has("enabled")) row.setEnabled(p.path("enabled").asBoolean(true));
     }
 
     private Playlist playlistOf(JsonNode p) {
@@ -385,6 +482,11 @@ public class SyncService {
             // 移除幂等：服务端无此条目 = 早已收敛，直接 no-op（不建行）。
             if (sid != null && ref != null && !ref.isBlank()) {
                 playlistItemRepository.deleteByPlaylistIdAndSourceIdAndSourceRef(pl.getId(), sid, ref);
+                String protocol = protocolOf(p);
+                if (protocol != null) {
+                    playlistItemRepository.deleteByPlaylistIdAndSourceIdAndSourceRef(
+                            pl.getId(), LEGACY_PREFIX + protocol, ref);
+                }
             }
         } else {
             if (sid == null || ref == null || ref.isBlank()) {
@@ -392,11 +494,19 @@ public class SyncService {
             }
             PlaylistItem item = playlistItemRepository
                     .findByPlaylistIdAndSourceIdAndSourceRef(pl.getId(), sid, ref)
-                    .orElseGet(() -> {
-                        PlaylistItem ni = new PlaylistItem();
-                        ni.setPlaylist(pl);
-                        return ni;
-                    });
+                    .orElse(null);
+            String protocol = protocolOf(p);
+            if (item == null && protocol != null) {
+                // 旧协议级条目懒迁移到源实例身份。
+                item = playlistItemRepository
+                        .findByPlaylistIdAndSourceIdAndSourceRef(
+                                pl.getId(), LEGACY_PREFIX + protocol, ref)
+                        .orElse(null);
+            }
+            if (item == null) {
+                item = new PlaylistItem();
+                item.setPlaylist(pl);
+            }
             applyItemSnapshot(item, p, sid, ref);
             if (p != null && p.has("sort_order")) item.setSortOrder(p.path("sort_order").asInt(0));
             playlistItemRepository.save(item);
@@ -460,11 +570,15 @@ public class SyncService {
         List<SyncEvent> page = syncEventRepository.findTop2000BySeqGreaterThanOrderBySeqAsc(sinceCursor);
         Set<Long> songStateIds = new LinkedHashSet<>();
         Set<String> playlistUuids = new LinkedHashSet<>();
+        Set<String> sourceUuids = new LinkedHashSet<>();
         for (SyncEvent e : page) {
             JsonNode p = parsePayload(e.getPayload());
             if (e.getType().startsWith("song.")) {
                 Long sid = tryResolveStateId(p);
                 if (sid != null) songStateIds.add(sid);
+            } else if (e.getType().startsWith("source.")) {
+                String uuid = p.path("client_uuid").asText(null);
+                if (uuid != null) sourceUuids.add(uuid);
             } else if (e.getType().startsWith("playlist.")) {
                 String uuid = p.path("client_uuid").asText(null);
                 if (uuid == null) uuid = p.path("playlist_uuid").asText(null);
@@ -476,6 +590,10 @@ public class SyncService {
         }
         List<Map<String, Object>> songs = new ArrayList<>();
         for (SongState s : songStateRepository.findAllById(songStateIds)) songs.add(songSnapshot(s));
+        List<Map<String, Object>> sources = new ArrayList<>();
+        for (String uuid : sourceUuids) {
+            syncSourceRepository.findByClientUuid(uuid).ifPresent(ss -> sources.add(sourceSnapshot(ss)));
+        }
         List<Map<String, Object>> playlists = new ArrayList<>();
         List<Map<String, Object>> playstates = new ArrayList<>();
         for (String uuid : playlistUuids) {
@@ -493,6 +611,7 @@ public class SyncService {
         out.put("cursor", cursor);
         out.put("has_more", page.size() >= PULL_EVENT_LIMIT);
         out.put("songs", songs);
+        out.put("sources", sources);
         out.put("playlists", playlists);
         out.put("playstates", playstates);
         return out;
@@ -513,6 +632,21 @@ public class SyncService {
         m.put("weight", s.getWeight() == null ? 1.0 : s.getWeight().doubleValue());
         m.put("frozen", s.isFrozen());
         m.put("is_favorite", s.isFavorite());
+        return m;
+    }
+
+    public Map<String, Object> sourceSnapshot(SyncSource s) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", s.getId());
+        m.put("client_uuid", s.getClientUuid());
+        m.put("kind", s.getKind());
+        m.put("name", s.getName());
+        m.put("address", s.getAddress());
+        m.put("config", parsePayload(s.getConfigJson()));
+        m.put("enabled", s.isEnabled());
+        m.put("deleted", s.isDeleted());
+        m.put("sync_ver", s.getSyncVer());
+        m.put("updated_at", s.getUpdatedAt() == null ? null : s.getUpdatedAt().toString());
         return m;
     }
 

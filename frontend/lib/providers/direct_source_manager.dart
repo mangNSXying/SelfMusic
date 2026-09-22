@@ -10,6 +10,7 @@ import '../data/sources/scan_worker.dart';
 import '../data/sources/webdav_direct_source.dart';
 import '../data/sources/local_direct_source.dart';
 import '../data/local/local_index.dart';
+import '../data/local/sync_event_types.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/cache_manager.dart';
 import '../data/local/song_weight_store.dart';
@@ -135,7 +136,94 @@ class DirectSourceManager extends ChangeNotifier {
   }
 
   /// 关联后端接入点（同步/配对用；未配置时同步全跳）。
-  void attachApi(ApiClient api) => _api = api;
+  /// 关联后补发存量远端源的 source.create（仅一次：uuid 已存在的不再重发）。
+  void attachApi(ApiClient api) {
+    _api = api;
+    _bootstrapSourceSync();
+  }
+
+  /// 存量远端类型源首次接入同步时补 uuid + source.create。
+  void _bootstrapSourceSync() {
+    if (!isServerAvailable) return;
+    for (final r in index.listSources()) {
+      if (!isSyncableKind(r.kind)) continue;
+      if (index.sourceUuidOf(r.key) != null) continue;
+      index.ensureSourceUuid(r.key);
+      _emitSource(SyncEventTypes.sourceCreate, r.key);
+    }
+  }
+
+  /// 远端类型源的同步事件（本地文件夹源各机独立；未连服务器不发）。
+  void _emitSource(String type, String key) {
+    if (!isServerAvailable) return;
+    final row = index.getSource(key);
+    if (row == null || !isSyncableKind(row.kind)) return;
+    final uuid = index.sourceUuidOf(key) ?? index.ensureSourceUuid(key);
+    Map<String, dynamic> cfg = const {};
+    try {
+      cfg = jsonDecode(row.config) as Map<String, dynamic>;
+    } catch (_) {}
+    final sanitized = Map<String, dynamic>.of(cfg)..remove('password');
+    index.enqueueOutbox(type, {
+      'client_uuid': uuid,
+      'kind': row.kind,
+      if (row.name.isNotEmpty) 'name': row.name,
+      'address': sourceAddressOf(row.kind, cfg),
+      'config': sanitized,
+      'enabled': row.enabled,
+    });
+  }
+
+  /// 该源是否等待本机补输密码（同步到的 WebDAV 源密码不落地服务端）。
+  bool sourceNeedsPassword(String key) {
+    final s = sourceByKey(key);
+    if (s == null || s.kind != SourceKind.webdav) return false;
+    return (_webdavPwds[key] ?? '').isEmpty;
+  }
+
+  /// 同步落库后重建内存源列表（源集合可能新增/改名/删除/改配置）。
+  Future<void> reloadSourcesFromIndex() async {
+    _sources.clear();
+    for (final r in index.listSources()) {
+      if (!r.enabled) continue;
+      final src = await _buildRowFromRow(r);
+      if (src != null) _sources.add(src);
+    }
+    restartAutoScan();
+    notifyListeners();
+  }
+
+  Future<MusicSource?> _buildRowFromRow(DirectSourceRow r) async {
+    try {
+      if (r.kind == 'webdav') {
+        var cfg = jsonDecode(r.config) as Map<String, dynamic>;
+        final name = (cfg['name'] as String? ?? r.name).toString();
+        var pwd = await secrets.webdavPassword(r.key);
+        final legacy = (cfg['password'] as String? ?? '');
+        if ((pwd == null || pwd.isEmpty) && legacy.isNotEmpty) {
+          await secrets.setWebdavPassword(r.key, legacy);
+          pwd = legacy;
+        }
+        if (cfg.containsKey('password')) {
+          cfg = Map<String, dynamic>.of(cfg)..remove('password');
+          index.upsertSource(r.key, r.kind, r.name, jsonEncode(cfg));
+        }
+        _webdavPwds[r.key] = pwd ?? '';
+        cfg['password'] = pwd ?? '';
+        return _buildDirect(
+            kind: r.kind, key: r.key, name: name, cfg: cfg);
+      }
+      if (r.kind == 'local') {
+        final cfg = jsonDecode(r.config) as Map<String, dynamic>;
+        final name = cfg['name'] as String? ?? r.name;
+        return _buildDirect(
+            kind: r.kind, key: r.key, name: name, cfg: cfg);
+      }
+    } catch (_) {
+      // 忽略损坏的源配置。
+    }
+    return null;
+  }
 
   /// 服务器是否可达（配了后端地址）：直连歌曲同步事件的进队门控
   ///（SongWeightStore/PlaylistStore/PlayerProvider 共用；SyncEngine 用
@@ -185,37 +273,9 @@ class DirectSourceManager extends ChangeNotifier {
     final rows = index.listSources();
     for (final r in rows) {
       if (!r.enabled) continue;
-      try {
-        if (r.kind == 'webdav') {
-          var cfg = jsonDecode(r.config) as Map<String, dynamic>;
-          final name = (cfg['name'] as String? ?? r.name).toString();
-          // 老数据迁移：config 里的明文密码 → SecretStore，并回写干净 config。
-          var pwd = await secrets.webdavPassword(r.key);
-          final legacy = (cfg['password'] as String? ?? '');
-          if ((pwd == null || pwd.isEmpty) && legacy.isNotEmpty) {
-            await secrets.setWebdavPassword(r.key, legacy);
-            pwd = legacy;
-          }
-          // 只要 config 仍残留 password 字段就清理（含有过中途迁移的旧库）。
-          if (cfg.containsKey('password')) {
-            cfg = Map<String, dynamic>.of(cfg)..remove('password');
-            index.upsertSource(r.key, r.kind, r.name, jsonEncode(cfg));
-          }
-          _webdavPwds[r.key] = pwd ?? '';
-          // 构建源对象时密码从内存镜像来，config 不落地明文。
-          cfg['password'] = pwd ?? '';
-          _sources.add(
-              _buildDirect(kind: r.kind, key: r.key, name: name, cfg: cfg));
-        } else if (r.kind == 'local') {
-          final cfg = jsonDecode(r.config) as Map<String, dynamic>;
-          final name = cfg['name'] as String? ?? r.name;
-          _sources.add(
-              _buildDirect(kind: r.kind, key: r.key, name: name, cfg: cfg));
-        }
-        // SMB 自动恢复在阶段 4 补充。
-      } catch (_) {
-        // 忽略损坏的源配置
-      }
+      final src = await _buildRowFromRow(r);
+      if (src != null) _sources.add(src);
+      // SMB 自动恢复在阶段 4 补充。
     }
     _ready = true;
     restartAutoScan();
@@ -327,6 +387,8 @@ class DirectSourceManager extends ChangeNotifier {
     _sources.add(_buildDirect(
         kind: 'webdav', key: key, name: name, cfg: cfg));
     index.upsertSource(key, 'webdav', name, jsonEncode(cfg));
+    index.ensureSourceUuid(key);
+    _emitSource(SyncEventTypes.sourceCreate, key);
     restartAutoScan();
     notifyListeners();
   }
@@ -410,11 +472,13 @@ class DirectSourceManager extends ChangeNotifier {
       index.renameSource(key, newKey);
     }
     index.upsertSource(newKey, row.kind, newName, jsonEncode(cfg));
+    _emitSource(SyncEventTypes.sourceUpdate, newKey);
     restartAutoScan();
     notifyListeners();
   }
 
   Future<void> removeSource(String key) async {
+    _emitSource(SyncEventTypes.sourceDelete, key);
     _scanTokens[key]?.cancel();
     final gone = _watchers.where((w) => w.key == key).toList();
     for (final w in gone) {

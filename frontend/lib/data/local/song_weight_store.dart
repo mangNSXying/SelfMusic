@@ -134,9 +134,11 @@ class SongWeightStore {
     if (s.sourceKey != 'server' && !(serverAvailable?.call() ?? false)) {
       return;
     }
+    final sourceId = index.sourceUuidOf(s.sourceKey);
     index.enqueueOutbox(type, {
       'source': s.source,
       'source_ref': s.sourceRef,
+      if (sourceId != null) 'source_id': sourceId,
       if (extra != null) ...extra,
     });
   }

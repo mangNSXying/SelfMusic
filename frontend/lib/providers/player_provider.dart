@@ -1077,10 +1077,12 @@ class PlayerProvider extends ChangeNotifier {
     if (key != _lastBpKey || nowMs - _lastBpAtMs > 25000) {
       _lastBpKey = key;
       _lastBpAtMs = nowMs;
+      final sourceId = idx.sourceUuidOf(cur.sourceKey);
       idx.enqueueOutbox(SyncEventTypes.breakpointSet, {
         'playlist_uuid': uuid,
         'source': cur.source,
         'source_ref': cur.sourceRef,
+        if (sourceId != null) 'source_id': sourceId,
         'position_ms': pos.inMilliseconds,
       });
     }

@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 import '../../models/song.dart';
+import '../sources/music_source.dart';
 import '../sources/webdav_url.dart';
 import 'audio_metadata.dart';
 
@@ -36,9 +37,19 @@ class LocalIndex {
         config TEXT NOT NULL,
         enabled INTEGER NOT NULL DEFAULT 1,
         status TEXT NOT NULL DEFAULT '',
-        last_scan_at TEXT
+        last_scan_at TEXT,
+        client_uuid TEXT
       );
     ''');
+    final sourceCols = _db!
+        .select('PRAGMA table_info(sources)')
+        .map((r) => r['name'] as String)
+        .toSet();
+    if (!sourceCols.contains('client_uuid')) {
+      _db!.execute('ALTER TABLE sources ADD COLUMN client_uuid TEXT');
+    }
+    _db!.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_sources_uuid ON sources(client_uuid)');
     _db!.execute('''
       CREATE TABLE IF NOT EXISTS idx_songs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -180,6 +191,7 @@ class LocalIndex {
       CREATE TABLE IF NOT EXISTS breakpoint_mirror (
         playlist_uuid TEXT PRIMARY KEY,
         song_id       INTEGER,
+        source_id     TEXT,
         source        TEXT,
         source_ref    TEXT,
         position_ms   INTEGER NOT NULL DEFAULT 0,
@@ -187,6 +199,14 @@ class LocalIndex {
         device_id     TEXT
       );
     ''');
+    final mirrorCols = _db!
+        .select('PRAGMA table_info(breakpoint_mirror)')
+        .map((r) => r['name'] as String)
+        .toSet();
+    if (!mirrorCols.contains('source_id')) {
+      _db!.execute(
+          'ALTER TABLE breakpoint_mirror ADD COLUMN source_id TEXT');
+    }
     // 歌单跨设备全局标识 + 删除墓碑（本地删除仍硬删，墓碑只活在服务端）。
     final playlistCols = _db!
         .select('PRAGMA table_info(playlists)')
@@ -264,6 +284,32 @@ class LocalIndex {
     ''', [key, kind, name, config]);
   }
 
+  /// 源实例 uuid（跨设备同步身份）：无则生成并落库。
+  String ensureSourceUuid(String key) {
+    final rs = _db!.select('SELECT client_uuid FROM sources WHERE key=?', [key]);
+    if (rs.isEmpty) throw StateError('source not found: $key');
+    final cur = rs.first['client_uuid'] as String?;
+    if (cur != null && cur.isNotEmpty) return cur;
+    final uuid = newEventUuid();
+    _db!.execute('UPDATE sources SET client_uuid=? WHERE key=?', [uuid, key]);
+    return uuid;
+  }
+
+  /// 源实例 uuid（未生成返回 null）。
+  String? sourceUuidOf(String key) {
+    final rs = _db!.select('SELECT client_uuid FROM sources WHERE key=?', [key]);
+    if (rs.isEmpty) return null;
+    final v = rs.first['client_uuid'] as String?;
+    return (v == null || v.isEmpty) ? null : v;
+  }
+
+  /// 按源实例 uuid 反查本地源 key（未配置对应源返回 null）。
+  String? sourceKeyOfUuid(String uuid) {
+    if (uuid.isEmpty) return null;
+    final rs = _db!.select('SELECT key FROM sources WHERE client_uuid=?', [uuid]);
+    return rs.isEmpty ? null : rs.first['key'] as String;
+  }
+
   void updateSourceScan(String key, String status) {
     _db!.execute('UPDATE sources SET status=?, last_scan_at=? WHERE key=?',
         [status, DateTime.now().toIso8601String(), key]);
@@ -287,6 +333,73 @@ class LocalIndex {
     _db!.execute(
         'UPDATE OR REPLACE playlist_items SET source_key=? WHERE source_key=?',
         [newKey, oldKey]);
+  }
+
+  /// 应用服务端源快照（阶段5 源同步）：
+  /// - deleted → 本地硬删（源 + 索引）；
+  /// - uuid 命中 → 更新名称/配置/开关；
+  /// - 未命中 → 按 (kind, 地址) 去重合并（同址视为同一源，采纳远端 uuid）；
+  /// - 均无 → 以 `kind:名称` 建行（重名加后缀）。
+  /// 返回是否发生变更（调用方据此重建内存源与 UI）。
+  bool applySourceSnapshot({
+    required String uuid,
+    required String kind,
+    String? name,
+    required String address,
+    Map<String, dynamic>? config,
+    required bool enabled,
+    required bool deleted,
+  }) {
+    if (!isSyncableKind(kind)) return false;
+    Map<String, dynamic>? hit;
+    final rs = _db!
+        .select('SELECT key, config FROM sources WHERE client_uuid=?', [uuid]);
+    if (rs.isNotEmpty) {
+      hit = {'key': rs.first['key'], 'config': rs.first['config']};
+    }
+    if (hit == null && !deleted && address.isNotEmpty) {
+      for (final r in listSources()) {
+        if (r.kind != kind) continue;
+        Map<String, dynamic> cfg = const {};
+        try {
+          cfg = jsonDecode(r.config) as Map<String, dynamic>;
+        } catch (_) {}
+        if (sourceAddressOf(kind, cfg) == address) {
+          _db!.execute('UPDATE sources SET client_uuid=? WHERE key=?',
+              [uuid, r.key]);
+          hit = {'key': r.key, 'config': r.config};
+          break;
+        }
+      }
+    }
+    if (deleted) {
+      if (hit == null) return false;
+      deleteSource(hit['key'] as String);
+      return true;
+    }
+    final cfgJson = jsonEncode(<String, dynamic>{...?config});
+    if (hit != null) {
+      final key = hit['key'] as String;
+      final fallbackName = key.contains(':')
+          ? key.substring(key.indexOf(':') + 1)
+          : key;
+      _db!.execute(
+          'UPDATE sources SET kind=?, name=?, config=?, enabled=? WHERE key=?',
+          [kind, name ?? fallbackName, cfgJson, enabled ? 1 : 0, key]);
+      return true;
+    }
+    final suffix = name == null || name.isEmpty ? uuid.substring(0, 8) : name;
+    var key = '$kind:$suffix';
+    var n = 2;
+    while (_db!.select('SELECT 1 FROM sources WHERE key=?', [key]).isNotEmpty) {
+      key = '$kind:$suffix($n)';
+      n++;
+    }
+    _db!.execute(
+        'INSERT INTO sources(key, kind, name, config, enabled, client_uuid) '
+        'VALUES(?,?,?,?,?,?)',
+        [key, kind, name ?? suffix, cfgJson, enabled ? 1 : 0, uuid]);
+    return true;
   }
 
   DirectSourceRow _rowToSource(Row r) => DirectSourceRow(
@@ -1215,13 +1328,28 @@ class LocalIndex {
         'DELETE FROM playlist_items WHERE playlist_id=? AND source_key=?',
         [pid, 'server']);
     for (final it in items) {
+      // 源实例 uuid 可解析到本机源 → 直接以该源 key 落库（可播放、无重复行）。
+      String key = 'server';
+      final resolved = it.sourceId == null ? null : sourceKeyOfUuid(it.sourceId!);
+      if (resolved != null) {
+        key = resolved;
+      } else if (it.source != null && it.source!.isNotEmpty) {
+        // 兼容旧数据（无 uuid）：同协议仅一个本地源时用它，否则保留快照行。
+        final peers = listSources()
+            .where((r) => r.kind == it.source)
+            .toList();
+        if (peers.length == 1) key = peers.first.key;
+      }
+      _db!.execute(
+          'DELETE FROM playlist_items WHERE playlist_id=? AND source_key=? AND song_ref=?',
+          [pid, key, it.songRef]);
       _db!.execute('''
         INSERT INTO playlist_items(playlist_id, source_key, song_ref, title, artist,
           album, cover_path, sort_order, added_at, source)
         VALUES(?,?,?,?,?,?,?,?,?,?)
       ''', [
         pid,
-        'server',
+        key,
         it.songRef,
         it.title,
         it.artist,
@@ -1283,6 +1411,7 @@ class LocalIndex {
   void applySongSnapshot({
     required String songRef,
     String? source,
+    String? sourceId,
     required int likeStreak,
     required int dislikeStreak,
     required double factor,
@@ -1295,6 +1424,12 @@ class LocalIndex {
         factor: factor,
         frozen: frozen,
         favorite: favorite);
+    // 源实例 uuid 可解析 → 直接写本机源行（不再写 server 快照行，避免重复）。
+    final byUuid = sourceId == null ? null : sourceKeyOfUuid(sourceId);
+    if (byUuid != null) {
+      write(byUuid, songRef);
+      return;
+    }
     write('server', songRef);
     if (source == null || source.isEmpty) return;
     final refs = <String>{songRef, ...webdavRefVariants(songRef)};
@@ -1314,6 +1449,7 @@ class LocalIndex {
   void upsertBreakpointMirror({
     required String playlistUuid,
     int? songId,
+    String? sourceId,
     String? source,
     String? sourceRef,
     required int positionMs,
@@ -1321,18 +1457,18 @@ class LocalIndex {
     String? deviceId,
   }) {
     _db!.execute(
-        'INSERT INTO breakpoint_mirror(playlist_uuid, song_id, source, source_ref, '
-        'position_ms, updated_at, device_id) VALUES(?,?,?,?,?,?,?) '
+        'INSERT INTO breakpoint_mirror(playlist_uuid, song_id, source_id, source, source_ref, '
+        'position_ms, updated_at, device_id) VALUES(?,?,?,?,?,?,?,?) '
         'ON CONFLICT(playlist_uuid) DO UPDATE SET '
-        'song_id=excluded.song_id, source=excluded.source, source_ref=excluded.source_ref, '
-        'position_ms=excluded.position_ms, updated_at=excluded.updated_at, '
-        'device_id=excluded.device_id',
-        [playlistUuid, songId, source, sourceRef, positionMs, updatedAt, deviceId]);
+        'song_id=excluded.song_id, source_id=excluded.source_id, source=excluded.source, '
+        'source_ref=excluded.source_ref, position_ms=excluded.position_ms, '
+        'updated_at=excluded.updated_at, device_id=excluded.device_id',
+        [playlistUuid, songId, sourceId, source, sourceRef, positionMs, updatedAt, deviceId]);
   }
 
   BreakpointMirrorRow? breakpointMirrorOf(String playlistUuid) {
     final rs = _db!.select(
-        'SELECT playlist_uuid, song_id, source, source_ref, position_ms, updated_at, device_id '
+        'SELECT playlist_uuid, song_id, source_id, source, source_ref, position_ms, updated_at, device_id '
         'FROM breakpoint_mirror WHERE playlist_uuid=?',
         [playlistUuid]);
     if (rs.isEmpty) return null;
@@ -1340,6 +1476,7 @@ class LocalIndex {
     return BreakpointMirrorRow(
       playlistUuid: r['playlist_uuid'] as String,
       songId: r['song_id'] as int?,
+      sourceId: r['source_id'] as String?,
       source: r['source'] as String?,
       sourceRef: r['source_ref'] as String?,
       positionMs: r['position_ms'] as int,
@@ -1586,6 +1723,7 @@ class OutboxRow {
 
 /// pull 歌单条目快照（阶段5；source_key 恒 'server'，由落库方补）。
 class SyncedItem {
+  final String? sourceId;
   final String? source;
   final String songRef;
   final String? title;
@@ -1593,6 +1731,7 @@ class SyncedItem {
   final String? album;
   final int sortOrder;
   const SyncedItem({
+    this.sourceId,
     this.source,
     required this.songRef,
     this.title,
@@ -1606,6 +1745,7 @@ class SyncedItem {
 class BreakpointMirrorRow {
   final String playlistUuid;
   final int? songId;
+  final String? sourceId;
   final String? source;
   final String? sourceRef;
   final int positionMs;
@@ -1614,6 +1754,7 @@ class BreakpointMirrorRow {
   const BreakpointMirrorRow({
     required this.playlistUuid,
     this.songId,
+    this.sourceId,
     this.source,
     this.sourceRef,
     required this.positionMs,

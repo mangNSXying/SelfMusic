@@ -68,6 +68,8 @@ class PlaylistStore {
       'playlist_uuid': uuid,
       'source': s.source,
       'source_ref': s.sourceRef,
+      if (index.sourceUuidOf(s.sourceKey) != null)
+        'source_id': index.sourceUuidOf(s.sourceKey),
       // 影子行展示字段（服务端无此歌时建行用；已有行忽略）。
       'title': s.title,
       if (s.artist != null) 'artist': s.artist,
@@ -84,6 +86,8 @@ class PlaylistStore {
       'playlist_uuid': uuid,
       'source': s.source,
       'source_ref': s.sourceRef,
+      if (index.sourceUuidOf(s.sourceKey) != null)
+        'source_id': index.sourceUuidOf(s.sourceKey),
     });
   }
 
@@ -145,6 +149,8 @@ class PlaylistStore {
       // legacy 行 source 列为空时透传占位，服务端按 source_ref 兜底解析。
       'source': b.source ?? 'server',
       'source_ref': b.songRef,
+      if (index.sourceUuidOf(b.sourceKey) != null)
+        'source_id': index.sourceUuidOf(b.sourceKey),
       'sort_order': _sortOrderOfId(playlistId, itemId),
     });
   }

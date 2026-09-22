@@ -314,6 +314,7 @@ class _DirectSourceCard extends StatelessWidget {
     if (s == null) return const SizedBox.shrink();
     final count = direct.countOf(sourceKey);
     final isLocal = s.kind == SourceKind.local;
+    final needsPwd = direct.sourceNeedsPassword(sourceKey);
 
     final tile = ListTile(
       leading: Icon(isLocal ? Icons.folder : Icons.cloud,
@@ -322,7 +323,9 @@ class _DirectSourceCard extends StatelessWidget {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: Theme.of(context).textTheme.titleMedium),
-      subtitle: Text('直连${isLocal ? ' · 本地文件夹' : ''} · 已索引 $count 首'),
+      subtitle: Text(needsPwd
+          ? '待配置密码 · 点击「编辑」补输后可用'
+          : '直连${isLocal ? ' · 本地文件夹' : ''} · 已索引 $count 首'),
       trailing: _SourceMenu(sourceKey: sourceKey, direct: direct),
       onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
     );
@@ -330,7 +333,9 @@ class _DirectSourceCard extends StatelessWidget {
     // 卡片形态：与专辑/歌手共用方形卡片（SquareCard），菜单叠右上角。
     return SquareCard(
       title: s.name,
-      subtitle: '直连${isLocal ? ' · 本地文件夹' : ''} · 已索引 $count 首',
+      subtitle: needsPwd
+          ? '待配置密码 · 点击「编辑」补输后可用'
+          : '直连${isLocal ? ' · 本地文件夹' : ''} · 已索引 $count 首',
       fallbackIcon: isLocal ? Icons.folder : Icons.cloud,
       onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
       cornerAction: _SourceMenu(sourceKey: sourceKey, direct: direct),

@@ -4,6 +4,28 @@ import 'scan_worker.dart';
 /// 源的分类。决定直连协议与可用的增强能力。
 enum SourceKind { local, webdav, smb }
 
+/// 是否参与跨设备源同步：本地文件夹源与设备绑定（各机独立），
+/// 远端类型（webdav/smb/onedrive…）默认同步。
+bool isSyncableKind(String kind) => kind.isNotEmpty && kind != 'local';
+
+/// 源去重地址（跨设备同步按 kind+地址 识别同一源；名称不参与）：
+/// WebDAV=baseUrl；SMB=host/share；未识别的协议返回空串（不参与去重）。
+String sourceAddressOf(String kind, Map<String, dynamic> cfg) {
+  switch (kind) {
+    case 'webdav':
+      return (cfg['baseUrl'] as String? ?? '')
+          .trim()
+          .replaceAll(RegExp(r'/+$'), '');
+    case 'smb':
+      final host = (cfg['host'] as String? ?? '').trim();
+      final share = (cfg['share'] as String? ?? '').trim();
+      if (host.isEmpty) return '';
+      return share.isEmpty ? host : '$host/$share';
+    default:
+      return '';
+  }
+}
+
 /// 字节范围请求（含起止），用于 Range 起播 / seek。
 class IntRange {
   final int start;

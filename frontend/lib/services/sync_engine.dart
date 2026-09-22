@@ -39,6 +39,10 @@ class SyncEngine {
   int lastPulledSongs = 0;
   int lastPulledPlaylists = 0;
 
+  /// 同步落库后源集合发生变化时的回调（重建内存源列表/刷新 UI）。
+  void Function()? onSourcesApplied;
+  bool _sourcesDirty = false;
+
   SyncEngine({required this.api, required this.index, required this.settings});
 
   void start() {
@@ -150,6 +154,13 @@ class SyncEngine {
         if (v is Map<String, dynamic>) _applySnapshot(v);
       }
     }
+    _flushSources();
+  }
+
+  void _flushSources() {
+    if (!_sourcesDirty) return;
+    _sourcesDirty = false;
+    onSourcesApplied?.call();
   }
 
   Future<void> _pull(String clientId) async {
@@ -167,6 +178,12 @@ class SyncEngine {
             _applySnapshot(s);
             lastPulledSongs++;
           }
+        }
+      }
+      final sources = data['sources'];
+      if (sources is List) {
+        for (final s in sources) {
+          if (s is Map<String, dynamic>) _applySource(s);
         }
       }
       final playlists = data['playlists'];
@@ -189,12 +206,15 @@ class SyncEngine {
       pages++;
       if (data['has_more'] != true || pages >= _maxPullPages) break;
     }
+    _flushSources();
   }
 
   /// 快照形状判分（pull 与 correction 共用）：
-  /// 含 items=歌单，含 position_ms=断点，含 like_streak=歌曲权重。
+  /// 含 kind+address=播放源，含 items=歌单，含 position_ms=断点，含 like_streak=歌曲权重。
   void _applySnapshot(Map<String, dynamic> s) {
-    if (s.containsKey('items')) {
+    if (s.containsKey('kind') && s.containsKey('address')) {
+      _applySource(s);
+    } else if (s.containsKey('items')) {
       _applyPlaylist(s);
     } else if (s.containsKey('position_ms')) {
       _applyPlaystate(s);
@@ -203,12 +223,31 @@ class SyncEngine {
     }
   }
 
+  void _applySource(Map<String, dynamic> s) {
+    final uuid = s['client_uuid'] as String?;
+    final kind = s['kind'] as String?;
+    final address = s['address'] as String?;
+    if (uuid == null || uuid.isEmpty || kind == null || address == null) return;
+    final config = s['config'];
+    final changed = index.applySourceSnapshot(
+      uuid: uuid,
+      kind: kind,
+      name: s['name'] as String?,
+      address: address,
+      config: config is Map ? config.cast<String, dynamic>() : null,
+      enabled: s['enabled'] != false,
+      deleted: s['deleted'] == true,
+    );
+    if (changed) _sourcesDirty = true;
+  }
+
   void _applySong(Map<String, dynamic> s) {
     final ref = s['source_ref'] as String?;
     if (ref == null || ref.isEmpty) return;
     index.applySongSnapshot(
       songRef: ref,
       source: s['source'] as String?,
+      sourceId: s['source_id'] as String?,
       likeStreak: (s['like_streak'] as num?)?.toInt() ?? 0,
       dislikeStreak: (s['dislike_streak'] as num?)?.toInt() ?? 0,
       factor: (s['weight'] as num?)?.toDouble() ?? 1.0,
@@ -229,6 +268,7 @@ class SyncEngine {
         final ref = m['source_ref'] as String?;
         if (ref == null || ref.isEmpty) continue;
         synced.add(SyncedItem(
+          sourceId: m['source_id'] as String?,
           source: m['source'] as String?,
           songRef: ref,
           title: (m['title'] as String?) ?? 'Unknown',
@@ -258,6 +298,7 @@ class SyncEngine {
     index.upsertBreakpointMirror(
       playlistUuid: uuid,
       songId: (st['song_id'] as num?)?.toInt(),
+      sourceId: st['source_id'] as String?,
       source: st['source'] as String?,
       sourceRef: st['source_ref'] as String?,
       positionMs: (st['position_ms'] as num?)?.toInt() ?? 0,

@@ -66,8 +66,11 @@ Future<void> main() async {
   }
 
   // 阶段5 多设备同步引擎：启动即开始（未配对/关开关时内部跳过），回前台追一次。
-  final sync = SyncEngine(api: api, index: direct.index, settings: direct.settings)
-    ..start();
+  final sync = SyncEngine(api: api, index: direct.index, settings: direct.settings);
+  sync.onSourcesApplied = () {
+    unawaited(direct.reloadSourcesFromIndex());
+  };
+  sync.start();
   WidgetsBinding.instance.addObserver(_SyncLifecycleObserver(sync));
 
   runApp(SelfMusicApp(

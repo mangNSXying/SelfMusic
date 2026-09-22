@@ -152,6 +152,7 @@
 | 表 | 说明 |
 |----|------|
 | `song_states` | 直连歌权重/收藏状态（`source_id`+`source_ref` 唯一，无曲库字段） |
+| `sync_sources` | 播放源同步（`client_uuid` 唯一；`kind+address` 去重；config 不含密码） |
 | `playlists` | 歌单 |
 | `playlist_items` | 列表条目（自持 `source_id/source_ref` + 标题/歌手/专辑/时长快照） |
 | `play_states` | 每列表断点（自持歌曲身份 + `device_client_id`） |
@@ -515,6 +516,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 - **冲突（字段级合并，阶段 5 落地）**：权重走**事件重算**而非绝对值覆盖（两设备并发点赞按到达序重放，不互抹）；收藏/歌单元数据/删除墓碑/断点走**行级 LWW**（事件 `occurred_at` vs 行 `last_event_at`，输方收 correction 回执自纠；仲裁时钟为服务端 `arrived_at`）；歌单条目按 seq 到达序重放（后到达胜出）；直接 REST 变更（歌单 CRUD/断点 PUT/调权 POST）同样先记事件再生效，保证 pull 可见
 - **歌曲身份**：数字 `song_id` 优先，否则按 `(source, source_ref)` 唯一键解析；legacy 空 source 按 `source_ref` 兜底
 - **歌曲身份（服务端无曲库）**：统一为 `source_id + source_ref`（source_id=客户端源实例 uuid，旧数据/旧客户端为 `legacy:<协议>`）；权重/收藏落 `song_states`，歌单条目与断点自持身份及展示快照（标题/歌手/专辑/时长，pull 不覆盖客户端本地标题）；pull 身份收集恒不建行（已删歌曲不复活）。未配对（无后端地址）时直连事件不进队，避免 outbox 无限积压；`sync_enabled` 关闭同样全跳
+- **播放源同步**：`source.create/update/delete` + 行级 LWW；身份 `client_uuid`，去重键 `(kind, address)`（名称不参与），本地文件夹源不参与，密码不入服务端（设备本地 SecretStore，新设备显示「待配置密码」）；应用后重建内存源列表；存量远端源接入时补 uuid 并补发一次 create；旧协议级身份（`legacy:<协议>`）在设备重新上报时由服务端懒迁移到源实例 uuid
 - 直连模式（无服务器）：上述全部跳过，数据只在本机
 
 ---
