@@ -119,8 +119,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           player: player,
                           direct: context.watch<DirectSourceManager>(),
                           cs: Theme.of(context).colorScheme),
-                  const Positioned(
-                      top: 6, left: 6, child: _BackToContentButton()),
+                  Positioned(
+                      top: 6,
+                      left: 6,
+                      child: _BackToContentButton(bare: !desktopLandscape)),
                 ],
               )
             : PageView(
@@ -199,22 +201,26 @@ class _PlayerScreenState extends State<PlayerScreen> {
 /// 不参与布局，因此不压缩封面及其他内容的显示空间；点击与下滑返回同路径
 /// （置意图位 → Root 驱动悬浮层下降动画）。
 class _BackToContentButton extends StatelessWidget {
-  const _BackToContentButton();
+  /// 手机横屏三列页：true 时去掉圆形底/阴影（参照稿箭头素显）。
+  final bool bare;
+  const _BackToContentButton({this.bare = false});
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final c = IconButton(
+      tooltip: '回到内容页',
+      iconSize: 26,
+      visualDensity: VisualDensity.compact,
+      icon: const Icon(Icons.keyboard_arrow_down_rounded),
+      onPressed: () => context.read<NavigationProvider>().closePlayer(),
+    );
+    if (bare) return c;
     return Material(
       color: cs.surface.withValues(alpha: 0.78),
       shape: const CircleBorder(),
       elevation: 1,
-      child: IconButton(
-        tooltip: '回到内容页',
-        iconSize: 26,
-        visualDensity: VisualDensity.compact,
-        icon: const Icon(Icons.keyboard_arrow_down_rounded),
-        onPressed: () => context.read<NavigationProvider>().closePlayer(),
-      ),
+      child: c,
     );
   }
 }
@@ -576,44 +582,52 @@ class _LandscapePlayer extends StatelessWidget {
           child: _EmptyState(coverSize: (size.height * 0.3).clamp(96.0, 150.0)));
     }
     final s = player.current!;
-    final leftW = (size.width * 0.34).clamp(200.0, 360.0);
-    final rightW = (size.width * 0.22).clamp(88.0, 132.0);
-    final cover = (size.height * 0.32).clamp(80.0, 120.0);
+    final leftW = (size.width * 0.42).clamp(220.0, 420.0);
+    final rightW = (size.width * 0.16).clamp(70.0, 96.0);
     // 桌面宽屏限宽居中（参照稿 max-width: 820），避免三列被拉得过散。
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 900),
         child: Row(
           children: [
-            // 第一列：封面、信息、进度条（竖屏逻辑）。
+            // 第一列：封面、信息、进度条。不滚动：封面吃掉省下的空间放大显示。
             SizedBox(
               width: leftW,
-              // 矮屏（高度不足时）允许左栏滚动，避免溢出；高屏不滚动。
-              child: SingleChildScrollView(
+              child: Padding(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Center(
-                      child: _Cover(
-                          coverPath: s.coverPath, song: s, cs: cs, size: cover),
-                    ),
-                    const SizedBox(height: 8),
-                    _TitleBlock(
-                        player: player,
-                        direct: direct,
-                        compact: true,
-                        dense: true),
-                    const SizedBox(height: 4),
-                    _MetaLine(player: player, direct: direct, cs: cs, song: s),
-                    _ToolRow(player: player, direct: direct, cs: cs, song: s),
-                    _PlayerSeek(player: player, cs: cs),
-                  ],
+                child: LayoutBuilder(
+                  builder: (context, c) {
+                    // 封面以外的固定高度（标题/工具行/进度条 + 间距）。
+                    final cover = math
+                        .min(c.maxWidth - 24, math.max(64.0, c.maxHeight - 150));
+                    return Column(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Center(
+                          child: _Cover(
+                              coverPath: s.coverPath,
+                              song: s,
+                              cs: cs,
+                              size: cover),
+                        ),
+                        const SizedBox(height: 8),
+                        _TitleBlock(
+                            player: player,
+                            direct: direct,
+                            compact: true,
+                            dense: true),
+                        const SizedBox(height: 4),
+                        _ToolRow(
+                            player: player, direct: direct, cs: cs, song: s),
+                        _PlayerSeek(player: player, cs: cs, showTime: false),
+                      ],
+                    );
+                  },
                 ),
               ),
             ),
-            const VerticalDivider(width: 1),
             // 第二列：歌词区，上下边缘渐隐（参照稿 mask-image）。
             Expanded(
               child: ShaderMask(
@@ -636,7 +650,6 @@ class _LandscapePlayer extends StatelessWidget {
                 ),
               ),
             ),
-            const VerticalDivider(width: 1),
             // 第三列：竖向主控制区（顶部定时 / 中部切歌播放 / 底部模式）。
             SizedBox(
               width: rightW,
@@ -1531,7 +1544,11 @@ class _ModeButton extends StatelessWidget {
 class _PlayerSeek extends StatefulWidget {
   final PlayerProvider player;
   final ColorScheme cs;
-  const _PlayerSeek({required this.player, required this.cs});
+
+  /// 横屏三列页隐藏进度条下方时间，把空间留给封面。
+  final bool showTime;
+  const _PlayerSeek(
+      {required this.player, required this.cs, this.showTime = true});
 
   @override
   State<_PlayerSeek> createState() => _PlayerSeekState();
@@ -1565,18 +1582,19 @@ class _PlayerSeekState extends State<_PlayerSeek> {
                 onChanged: (v) => widget.player.seek(Duration(milliseconds: v.toInt())),
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(formatClock(pos),
-                      style: const TextStyle(fontFamily: 'monospace')),
-                  Text(formatClock(dur),
-                      style: const TextStyle(fontFamily: 'monospace')),
-                ],
+            if (widget.showTime)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(formatClock(pos),
+                        style: const TextStyle(fontFamily: 'monospace')),
+                    Text(formatClock(dur),
+                        style: const TextStyle(fontFamily: 'monospace')),
+                  ],
+                ),
               ),
-            ),
           ],
         );
       },
