@@ -704,7 +704,7 @@ class PlayerProvider extends ChangeNotifier {
     if (_enriching.contains(k)) return;
     _enriching.add(k);
     try {
-      await enrichSongMeta(idx, src, s);
+      await enrichSongMeta(idx, src, s, fullRead: true);
       final updated = idx.songByRef(s.sourceKey, s.sourceRef);
       if (updated != null) {
         final changed = updated.title != s.title ||

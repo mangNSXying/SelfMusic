@@ -159,6 +159,27 @@ void main() {
       expect(meta.cover!.length, greaterThan(400 * 1024));
     });
 
+    test('mp3：>8MB 封面默认读被截断丢封面，fullRead（播放链路）读满恢复', () async {
+      final full = id3WithLargeApic(imgBytes: 9 * 1024 * 1024);
+      Future<Uint8List> range(int s, int l) async => Uint8List.sublistView(
+          full, s, (s + l) > full.length ? full.length : s + l);
+      // 默认（后台补读，上限 8MB）：封面被截断丢弃。
+      final capped = await readAudioMeta(
+          readRange: range, format: 'mp3', fileSize: full.length);
+      expect(capped, isNotNull);
+      expect(capped!.cover, isNull);
+      // fullRead（播放链路）：按提示读到文件末尾，封面完整、无截断。
+      final depthed = await readAudioMeta(
+          readRange: range,
+          format: 'mp3',
+          fileSize: full.length,
+          fullRead: true);
+      expect(depthed, isNotNull);
+      expect(depthed!.cover, isNotNull);
+      expect(depthed.cover!.sublist(0, 2), [0xFF, 0xD8]);
+      expect(depthed.cover!.length, greaterThan(kCoverReadCapBytes));
+    });
+
     test('flac：PICTURE 块被截断时提示块尾；完整后返回 null', () {
       final img = bigJpeg(300 * 1024);
       final picBody = <int>[

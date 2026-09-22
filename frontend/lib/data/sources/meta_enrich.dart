@@ -15,12 +15,15 @@ import 'sibling_cover.dart';
 ///
 /// 返回是否解析成功：成功才标已读；未识别容器（无法解析）返回 false 且不标已读。
 /// 取流失败抛异常，由调用方决定重试策略。
+/// [fullRead] 仅播放链路懒补读开启：正在播放歌曲的封面读到满，不截断。
 Future<bool> enrichSongMeta(
-    LocalIndex index, MusicSource src, Song song) async {
+    LocalIndex index, MusicSource src, Song song,
+    {bool fullRead = false}) async {
   final meta = await readAudioMeta(
     readRange: (start, length) => _readRange(src, song, start, length),
     format: song.format ?? '',
     fileSize: song.fileSize,
+    fullRead: fullRead,
   );
   if (meta == null) return false; // 未识别容器：不标已读，留待后续重试
   var cover = meta.cover;

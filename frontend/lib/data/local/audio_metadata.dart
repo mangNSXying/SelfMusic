@@ -258,6 +258,10 @@ Future<AudioMeta?> readAudioMeta({
   required String format,
   required int fileSize,
   int headBytes = 256 * 1024,
+  /// 播放链路（fullRead=true）：正在播放歌曲优先保证元数据完备，
+  /// 大内嵌封面按提示读满到文件末尾（不受 [kCoverReadCapBytes] 截断）；
+  /// 后台批量补读保持默认上限，避免带宽尖峰。
+  bool fullRead = false,
 }) async {
   var head = await readRange(0, headBytes);
   if (head.isEmpty) return null;
@@ -265,7 +269,8 @@ Future<AudioMeta?> readAudioMeta({
   // 大内嵌封面/标签：按提示补读头部一次。
   if (meta != null && meta.cover == null) {
     final hint = coverReadHint(head, format);
-    if (hint != null && hint > head.length && hint <= kCoverReadCapBytes) {
+    final cap = fullRead ? fileSize : kCoverReadCapBytes;
+    if (hint != null && hint > head.length && hint <= cap) {
       final deeper = await readRange(0, hint);
       if (deeper.length > head.length) {
         final deeperMeta = parseAudioHead(deeper, format, fileSize);
@@ -293,7 +298,9 @@ Future<AudioMeta?> readAudioMeta({
         }
         if (format != 'm4a' && format != 'mp4') break;
         final next = len * 4;
-        if (next <= len || next > kCoverReadCapBytes || len >= fileSize) break;
+        if (next <= len || len >= fileSize) break;
+        // fullRead（播放链路）可一直增大到整个文件；默认后台补读封顶 8MB。
+        if (!fullRead && next > kCoverReadCapBytes) break;
         tailLen = next;
       }
     }
