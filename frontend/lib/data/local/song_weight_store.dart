@@ -8,6 +8,9 @@ import 'sync_event_types.dart';
 ///
 /// - factor 连续取值 0.5 ≤ factor ≤ 1.5，步长 0.1，初始 1.0。
 /// - 事件（complete/skip/liked/unfavorite/reset）驱动 factor 调整，写回 play_meta。
+/// - 完播/跳过按「播放时长 >95% 记完播、<30% 记跳过」（30%~95% 不记）由上层判定后
+///   分发到 [onCompleted]/[onSkipped]；同一首歌的完播与跳过次数互斥——每次事件
+///   都会清零另一侧计数（后来者覆盖先前值），不会同时累计。
 /// - 收藏状态统一收口到 play_meta（直连 + 服务器一致）。
 class SongWeightStore {
   static const double minFactor = 0.5;
@@ -29,7 +32,8 @@ class SongWeightStore {
 
   bool isFavorite(Song s) => metaOf(s).favorite;
 
-  /// 完整播放（≥70% 自然结束）：like_streak++，dislike 清零；streak≥3 → factor+0.1（≤1.5）并清零。
+  /// 完播（播放时长 >95%，通常为自然结束）：like_streak++，dislike 清零（覆盖先前跳过）；
+  /// streak≥3 → factor+0.1（≤1.5）并清零。
   /// 「不喜欢」（frozen）态只记 streak，不自动调权（权重锁定最低）。
   void onCompleted(Song s) {
     final m = metaOf(s);
@@ -47,7 +51,8 @@ class SongWeightStore {
     _emit(s, SyncEventTypes.songComplete);
   }
 
-  /// 中途跳过（<70% 被打断）：dislike_streak++，like 清零；streak≥3 → factor−0.1（≥0.5）并清零。
+  /// 中途跳过（播放时长 <30% 被打断）：dislike_streak++，like 清零（覆盖先前完播）；
+  /// streak≥3 → factor−0.1（≥0.5）并清零。
   /// 「不喜欢」（frozen）态只记 streak，不自动调权。
   void onSkipped(Song s) {
     final m = metaOf(s);

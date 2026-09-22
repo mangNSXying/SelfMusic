@@ -19,6 +19,23 @@ import '../utils/lrc_parser.dart';
 import '../utils/song_title_format.dart';
 import '../widgets/app_toast.dart';
 
+/// 播放时长对一次播放的完播/跳过分档（stage2.md §2.3）：
+/// - >95% 记一次完播；<30% 记一次跳过；30%~95% 不记；
+/// - 时长无效（null 或 0）无法判定（自然结束时由调用方补偿记完播）。
+enum WeightJudgement { complete, skip, none }
+
+/// 按播放时长判定完播/跳过（毫秒比值，临界严格按「大于 95% / 小于 30%」）。
+@visibleForTesting
+WeightJudgement judgeWeightRatio(Duration? duration, Duration position) {
+  if (duration == null || duration.inMilliseconds <= 0) {
+    return WeightJudgement.none;
+  }
+  final ratio = position.inMilliseconds / duration.inMilliseconds;
+  if (ratio > PlayerProvider.completeRatio) return WeightJudgement.complete;
+  if (ratio < PlayerProvider.skipRatio) return WeightJudgement.skip;
+  return WeightJudgement.none;
+}
+
 /// 按源 key 解析播放源的函数：`server` → 服务器代理源；`webdav:<name>` → 对应直连源。
 typedef SourceResolver = MusicSource? Function(String sourceKey);
 
@@ -41,10 +58,13 @@ extension PlayModeParse on PlayMode {
 /// 阶段 2（stage2.md §2/§3/§7）：
 /// - 四种播放模式（顺序/列表循环/单曲循环/加权随机）。
 /// - 加权随机：每步从队列全量（排除上一首）按 factor 权重采样，不连续同一首。
-/// - 事件采集：complete(≥70%)/skip(<70%) → SongWeightStore 调权。
+/// - 事件采集：播放时长 >95% 记完播、<30% 记跳过、30%~95% 不记 → SongWeightStore 调权。
 /// - 断点：节流持久化 play_state，启动恢复为暂停态。
 class PlayerProvider extends ChangeNotifier {
-  static const double completeRatio = 0.7;
+  /// 完播阈值：播放时长 >95% 记一次完播（含自然结束时 100%）。
+  static const double completeRatio = 0.95;
+  /// 跳过阈值：播放时长 <30% 记一次跳过；30%~95% 区间不记。
+  static const double skipRatio = 0.3;
 
   late AudioPlayer player;
   List<Song> _queue = [];
@@ -966,21 +986,14 @@ class PlayerProvider extends ChangeNotifier {
   void _emitWeight(Song s, {required bool completed, required Duration position}) {
     final w = _weight;
     if (w == null) return;
-    final dur = player.duration;
-    final ratio = (dur != null && dur.inMilliseconds > 0)
-        ? position.inMilliseconds / dur.inMilliseconds
-        : 0.0;
-    if (completed) {
-      if (ratio >= completeRatio) {
-        w.onCompleted(s);
-      } else {
-        w.onSkipped(s);
-      }
-      return;
-    }
-    // 手动切歌：<70% 记为 skip 降权；≥70% 视为已听完，不调权。
-    if (ratio < completeRatio) {
+    final j = judgeWeightRatio(player.duration, position);
+    if (j == WeightJudgement.complete) {
+      w.onCompleted(s);
+    } else if (j == WeightJudgement.skip) {
       w.onSkipped(s);
+    } else if (j == WeightJudgement.none && completed) {
+      // 时长不可判定但自然结束：补偿记一次完播。
+      w.onCompleted(s);
     }
   }
 
