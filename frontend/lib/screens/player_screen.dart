@@ -363,7 +363,7 @@ class _TitleBlock extends StatelessWidget {
         ),
         SizedBox(height: dense ? 2 : (compact ? 4 : 6)),
         MarqueeText(
-          // 未读取的元数据标注「未读取」，避免与「读取后发现没有」的留白混淆。
+          // 未读取的元数据标注「待读取」，避免与「读取后发现没有」的留白混淆。
           s.metaDisplay(s.artist) ?? '',
           style: artistStyle,
         ),
@@ -937,7 +937,7 @@ class _SongInfoDialog extends StatelessWidget {
       if (direct.weight.isFavorite(song)) states.add('喜欢');
       if (direct.weight.isDisliked(song)) states.add('不喜欢');
     }
-    // 元数据字段：未读取 → 标注「未读取」；已读取且无值 → 留白（—）。
+    // 元数据字段：未读取 → 标注「待读取」；已读取且无值 → 留白（—）。
     String? optField(String? v) => song.metaDisplay(v);
     final rows = <List<String>>[
       ['标题', song.title],

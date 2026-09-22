@@ -446,6 +446,21 @@ class LocalIndex {
     return _db!.updatedRows;
   }
 
+  /// 块序异常元数据回填补读（旧版解析遇大封面/PICTURE 在 VORBIS_COMMENT
+  /// 之前时提前中断，已标已读却没有歌手等信息）：把始终没有歌手的行重置为
+  /// 未读，交给后台补读用「从头完整读取」重取。[sourceKeys] 限定直连源
+  /// （服务端代理行不参与本地补读）；所有格式统一。
+  /// 返回重置行数。
+  int resetMetaReadForMissingArtist(List<String> sourceKeys) {
+    if (sourceKeys.isEmpty) return 0;
+    final marks = List.filled(sourceKeys.length, '?').join(',');
+    _db!.execute(
+        'UPDATE idx_songs SET meta_read=0 '
+        'WHERE meta_read=1 AND artist IS NULL AND source_key IN ($marks)',
+        sourceKeys);
+    return _db!.updatedRows;
+  }
+
   /// 指定源尚未读取过元数据的歌曲（后台补读用，missing=0）。
   /// [excludeRef] 用于跳过正在播放的歌（播放链路自己会重读，避免重复读流）。
   /// [afterId] 游标：只取 id 更大的行，供后台补读跳过无法解析的批次继续前进。

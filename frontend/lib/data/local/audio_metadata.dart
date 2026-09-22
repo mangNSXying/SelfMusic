@@ -253,24 +253,39 @@ AudioMeta? _parseId3v1(Uint8List tail) {
 /// 头部 + 头部补读 + 尾部补读的统一直读流程（播放补读 / 扫描共用）。
 ///
 /// [readRange] 由调用方实现（本地文件 / WebDAV Range GET）。
+/// [fullRead]（播放/后台补读链路）：先做 [headBytes] 采样；采样不足以拿到
+/// 完整元数据时，直接从文件头完整读取整个文件（`0..fileSize`），不做长度
+/// 推算与上限截断——大内嵌封面、块序异常（如 FLAC 的 PICTURE 在
+/// VORBIS_COMMENT 之前）等都能完整解析；所有格式统一。扫描等批量路径保持
+/// 默认的「按封面提示补读 + [kCoverReadCapBytes] 上限」，以控制带宽与内存。
 Future<AudioMeta?> readAudioMeta({
   required AudioRangeReader readRange,
   required String format,
   required int fileSize,
   int headBytes = 256 * 1024,
-  /// 播放链路（fullRead=true）：正在播放歌曲优先保证元数据完备，
-  /// 大内嵌封面按提示读满到文件末尾（不受 [kCoverReadCapBytes] 截断）；
-  /// 后台批量补读保持默认上限，避免带宽尖峰。
   bool fullRead = false,
 }) async {
   var head = await readRange(0, headBytes);
   if (head.isEmpty) return null;
   var meta = parseAudioHead(head, format, fileSize);
+  if (fullRead && fileSize > 0 && meta != null) {
+    // 采样不足 → 从头完整读取整个文件（不截断、不做补读长度推算）。
+    if (_needsFullRead(head, meta, format, fileSize)) {
+      final all = await readRange(0, fileSize);
+      if (all.length > head.length) {
+        final full = parseAudioHead(all, format, fileSize);
+        if (full != null) meta = _mergeMeta(full, meta);
+        head = all;
+      }
+    }
+    // 尾部信息（m4a moov-at-end / ogg granule 时长 / ID3v1）在完整数据上补全。
+    final t = parseAudioTail(head, format, fileSize, headMeta: meta);
+    return t == null ? meta : _mergeMeta(meta, t);
+  }
   // 大内嵌封面/标签：按提示补读头部一次。
   if (meta != null && meta.cover == null) {
     final hint = coverReadHint(head, format);
-    final cap = fullRead ? fileSize : kCoverReadCapBytes;
-    if (hint != null && hint > head.length && hint <= cap) {
+    if (hint != null && hint > head.length && hint <= kCoverReadCapBytes) {
       final deeper = await readRange(0, hint);
       if (deeper.length > head.length) {
         final deeperMeta = parseAudioHead(deeper, format, fileSize);
@@ -298,14 +313,28 @@ Future<AudioMeta?> readAudioMeta({
         }
         if (format != 'm4a' && format != 'mp4') break;
         final next = len * 4;
-        if (next <= len || len >= fileSize) break;
-        // fullRead（播放链路）可一直增大到整个文件；默认后台补读封顶 8MB。
-        if (!fullRead && next > kCoverReadCapBytes) break;
+        if (next <= len || next > kCoverReadCapBytes || len >= fileSize) break;
         tailLen = next;
       }
     }
   }
   return meta;
+}
+
+/// fullRead 采样是否不足（触发从头完整读取）：
+/// - 标签/封面被采样截断（[coverReadHint] 给出补读提示）；
+/// - 未解析出标题（如 m4a moov-at-end、PICTURE 在 VORBIS_COMMENT 之前的
+///   FLAC——采样在封面块处中断，后续 VORBIS_COMMENT 未读到）；
+/// - m4a/mp4 的 moov 在尾部（标签/封面可能在尾部元数据区）。
+bool _needsFullRead(
+    Uint8List head, AudioMeta meta, String format, int fileSize) {
+  if (coverReadHint(head, format) != null) return true;
+  if (meta.title == null && format != 'wav') return true;
+  if ((format == 'm4a' || format == 'mp4') &&
+      tailReadHint(head, format, fileSize) != null) {
+    return true;
+  }
+  return false;
 }
 
 /// [extra] 非空字段覆盖 [base]；base 为 null 时直接返回 extra。

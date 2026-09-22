@@ -261,6 +261,18 @@ class DirectSourceManager extends ChangeNotifier {
       settings.coverReenrichV1Done = true;
       if (reset > 0) debugPrint('封面回填补读：已重置 $reset 首待重读');
     }
+    // 一次性回填：旧版解析在块序异常（如 FLAC 的 PICTURE 在 VORBIS_COMMENT
+    // 之前）的文件上提前中断，已标已读却读不出歌手。重置这些行，交给后台
+    // 补读用「从头完整读取」重取。仅本机一次（不进 knownKeys）。
+    if (!settings.metaReenrichV2Done) {
+      final keys = _sources
+          .where((s) => s is! ServerProxySource)
+          .map((s) => s.key)
+          .toList();
+      final reset = index.resetMetaReadForMissingArtist(keys);
+      settings.metaReenrichV2Done = true;
+      if (reset > 0) debugPrint('元数据回填补读：已重置 $reset 首待重读');
+    }
     // 后台清理历史无效封面（旧解析缺陷可能写脏数据），清理到的歌标未读待补读。
     unawaited(index.cleanupInvalidCovers().then((cleaned) {
       if (cleaned > 0) {

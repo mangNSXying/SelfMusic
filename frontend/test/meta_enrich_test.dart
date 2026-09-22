@@ -5,7 +5,6 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
-import 'package:selfmusic/data/local/audio_metadata.dart';
 import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/data/sources/meta_enrich.dart';
 import 'package:selfmusic/data/sources/music_source.dart';
@@ -171,7 +170,7 @@ Uint8List noCoverMp3(String title) {
 
 void main() {
   setUp(clearSiblingImageCache);
-  test('播放补读：大内嵌封面按提示补读一次并落盘（cover_path 回填）', () async {
+  test('播放补读：采样不足时从头完整读取整个文件（不截断）并落盘', () async {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
     final dir = await Directory.systemTemp.createTemp('selfmusic_enrich_');
     PathProviderPlatform.instance = _FakePathProvider(dir.path);
@@ -194,11 +193,10 @@ void main() {
 
     final ok = await enrichSongMeta(index, src, song);
     expect(ok, isTrue);
-    // 第一段 256KB → 按 coverReadHint 补读完整标签
+    // 第一段 256KB 采样 → 采样不足（封面被截断）→ 从头完整读取整个文件。
     expect(src.requestedLengths.first, 256 * 1024);
     expect(src.requestedLengths.length, 2);
-    expect(src.requestedLengths.last, greaterThan(256 * 1024));
-    expect(src.requestedLengths.last, lessThanOrEqualTo(kCoverReadCapBytes));
+    expect(src.requestedLengths.last, bytes.length);
 
     final updated = index.songByRef('webdav:t', 'Music/a.mp3')!;
     expect(updated.coverPath, isNotNull);
@@ -254,6 +252,66 @@ void main() {
     expect(reset, 1); // 仅 mp3/flac 且无封面的那一行
     final unread = index.unreadSongs('webdav:t', 10);
     expect(unread.map((s) => s.sourceRef), ['no_cover.flac']);
+
+    index.close();
+    dir.deleteSync(recursive: true);
+  });
+
+  test('元数据回填一次性重置：已读但无歌手的行回到未读（仅限指定直连源）', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir = await Directory.systemTemp.createTemp('selfmusic_meta_reenrich_');
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+
+    index.upsertSongs([
+      DirectSongRow(
+        sourceKey: 'webdav:t',
+        ref: 'has_artist.flac',
+        title: '有歌手',
+        artist: '歌手',
+        format: 'flac',
+        duration: 100,
+        size: 1,
+        mtime: 1,
+      ),
+      DirectSongRow(
+        sourceKey: 'webdav:t',
+        ref: 'no_artist.flac',
+        title: '无歌手',
+        format: 'flac',
+        duration: 100,
+        size: 1,
+        mtime: 2,
+      ),
+      DirectSongRow(
+        sourceKey: 'webdav:t',
+        ref: 'no_artist.m4a',
+        title: '无歌手m4a',
+        format: 'm4a',
+        duration: 100,
+        size: 1,
+        mtime: 3,
+      ),
+      DirectSongRow(
+        sourceKey: 'webdav:other',
+        ref: 'no_artist.mp3',
+        title: '其它源',
+        format: 'mp3',
+        duration: 100,
+        size: 1,
+        mtime: 4,
+      ),
+    ]);
+    // 前置：duration 已使四者 meta_read=1
+    expect(index.unreadSongs('webdav:t', 10), isEmpty);
+
+    final reset = index.resetMetaReadForMissingArtist(['webdav:t']);
+    expect(reset, 2); // 仅该源无歌手的 flac/m4a（所有格式统一）
+    final unread = index.unreadSongs('webdav:t', 10);
+    expect(unread.map((s) => s.sourceRef),
+        containsAll(['no_artist.flac', 'no_artist.m4a']));
+    expect(index.unreadSongs('webdav:other', 10), isEmpty); // 未指定源不动
 
     index.close();
     dir.deleteSync(recursive: true);

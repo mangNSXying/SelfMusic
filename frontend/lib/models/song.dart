@@ -194,7 +194,7 @@ class Song {
       );
 
   /// 未读取元数据时标注的占位文案（区别于「读取后发现没有」的留白）。
-  static const String unreadLabel = '未读取';
+  static const String unreadLabel = '待读取';
 
   /// 元数据字段展示值：
   /// - 有值 → 原值（极简扫描可能已拿到部分标签）；
@@ -202,6 +202,6 @@ class Song {
   /// - 已读取且无值 → null，调用方留白（确认真没有该字段）。
   String? metaDisplay(String? v) => v ?? (metaRead ? null : unreadLabel);
 
-  /// 当前歌曲的元数据是否仍为「未读取」。
+  /// 当前歌曲的元数据是否仍为「待读取」。
   bool get metaUnread => !metaRead;
 }

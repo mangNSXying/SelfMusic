@@ -688,8 +688,8 @@ class PlayerProvider extends ChangeNotifier {
     await player.setAudioSource(DirectAudioSource(source: src, song: s));
   }
 
-  /// 懒补全：播放后把解析出的完整元数据（标题/歌手/专辑/专辑歌手/时长/曲目/年份/封面）
-  /// 回填索引。从头读取（本地直读 / WebDAV Range GET），失败静默不影响播放。
+/// 懒补全：播放后把解析出的完整元数据（标题/歌手/专辑/专辑歌手/时长/曲目/年份/封面）
+/// 回填索引。从头完整读取（采样不足时读满整个文件，不截断），失败静默不影响播放。
   /// 成功后刷新队列与当前歌曲对象并通知，播放页即时展示新读到的信息；
   /// 另有变化时通过 [_onSongMetaRefreshed] 通知全局库就地刷新，并失效旧封面图像缓存。
   Future<void> _enrichLazily(Song s, MusicSource src) async {
@@ -699,7 +699,7 @@ class PlayerProvider extends ChangeNotifier {
     if (_enriching.contains(k)) return;
     _enriching.add(k);
     try {
-      await enrichSongMeta(idx, src, s, fullRead: true);
+      await enrichSongMeta(idx, src, s);
       final updated = idx.songByRef(s.sourceKey, s.sourceRef);
       if (updated != null) {
         final changed = updated.title != s.title ||

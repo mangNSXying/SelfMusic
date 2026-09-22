@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -76,6 +77,56 @@ Uint8List id3WithLargeApic({required int imgBytes}) {
     ...frame,
     // 一个 MPEG 帧头 + 载荷占位（模拟音频数据）
     0xFF, 0xFB, 0x90, 0x00,
+  ]);
+}
+
+/// 构造 PICTURE 在 VORBIS_COMMENT 之前的 FLAC（块序非标准但合法）：
+/// 封面块被采样截断时，旧解析会在 PICTURE 处中断，读不到其后的标题/歌手。
+Uint8List flacPictureBeforeVorbis() {
+  List<int> le32(int v) =>
+      [v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF];
+  final img = bigJpeg(600 * 1024);
+  final picBody = <int>[
+    0, 0, 0, 3, // 图片类型
+    0, 0, 0, 0, // mime 长度 0
+    0, 0, 0, 0, // 描述长度 0
+    ...List.filled(16, 0), // 宽/高/色深/色数占位
+    (img.length >> 24) & 0xFF,
+    (img.length >> 16) & 0xFF,
+    (img.length >> 8) & 0xFF,
+    img.length & 0xFF,
+    ...img,
+  ];
+  final streamInfo = <int>[0, 0, 0, 34, ...List.filled(34, 0)];
+  final picture = <int>[
+    6,
+    (picBody.length >> 16) & 0xFF,
+    (picBody.length >> 8) & 0xFF,
+    picBody.length & 0xFF,
+    ...picBody,
+  ];
+  const vendor = 'test';
+  final tags = ['TITLE=曲名', 'ARTIST=歌手'];
+  final vorbisBody = <int>[
+    ...le32(vendor.length),
+    ...vendor.codeUnits,
+    ...le32(tags.length),
+    for (final t in tags) ...[...le32(utf8.encode(t).length), ...utf8.encode(t)],
+  ];
+  // VORBIS_COMMENT 为最后一个元数据块（last 位）。
+  final vorbis = <int>[
+    0x80 | 4,
+    (vorbisBody.length >> 16) & 0xFF,
+    (vorbisBody.length >> 8) & 0xFF,
+    vorbisBody.length & 0xFF,
+    ...vorbisBody,
+  ];
+  return Uint8List.fromList([
+    ...'fLaC'.codeUnits,
+    ...streamInfo,
+    ...picture,
+    ...vorbis,
+    0xFF, 0xF8, 0x69, 0x00, // 音频数据占位
   ]);
 }
 
@@ -178,6 +229,33 @@ void main() {
       expect(depthed!.cover, isNotNull);
       expect(depthed.cover!.sublist(0, 2), [0xFF, 0xD8]);
       expect(depthed.cover!.length, greaterThan(kCoverReadCapBytes));
+    });
+
+    test('flac：PICTURE 在 VORBIS_COMMENT 之前被采样截断 → fullRead 从头完整读取恢复', () async {
+      final full = flacPictureBeforeVorbis();
+      final lengths = <int>[];
+      Future<Uint8List> range(int s, int l) async {
+        lengths.add(l);
+        final end = (s + l) > full.length ? full.length : s + l;
+        return Uint8List.sublistView(full, s, end);
+      }
+      // 采样（256KB）内封面块未读完：其后的 VORBIS_COMMENT 标题/歌手读不到。
+      final sample = Uint8List.sublistView(full, 0, 256 * 1024);
+      final sampled = parseAudioHead(sample, 'flac', full.length);
+      expect(sampled?.title, isNull);
+      expect(sampled?.cover, isNull);
+      // 完整读取：不做截断/提示推算，标题/歌手/封面全部恢复。
+      final meta = await readAudioMeta(
+          readRange: range,
+          format: 'flac',
+          fileSize: full.length,
+          fullRead: true);
+      expect(meta, isNotNull);
+      expect(meta!.title, '曲名');
+      expect(meta.artist, '歌手');
+      expect(meta.cover, isNotNull);
+      expect(meta.cover!.sublist(0, 2), [0xFF, 0xD8]);
+      expect(lengths, [256 * 1024, full.length]);
     });
 
     test('flac：PICTURE 块被截断时提示块尾；完整后返回 null', () {

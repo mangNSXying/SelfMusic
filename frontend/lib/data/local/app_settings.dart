@@ -91,6 +91,10 @@ class AppSettings {
   /// 大封面回填补读是否已执行（设备本地一次性迁移标记）。
   /// 刻意不进 [knownKeys]：它与本机索引数据绑定，不随设置导出/导入。
   static const String kCoverReenrichV1Done = 'cover_reenrich_v1_done';
+
+  /// 元数据回填补读是否已执行（块序异常歌曲重读，设备本地一次性迁移标记）。
+  /// 同上不进 [knownKeys]。
+  static const String kMetaReenrichV2Done = 'meta_reenrich_v2_done';
   static const String kPlayModeDefault = 'play_mode_default';
   static const String kResumeOnStartup = 'resume_on_startup';
   static const String kPlayerShowWeight = 'player_show_weight';
@@ -211,6 +215,13 @@ class AppSettings {
       (index.settingsGet(kCoverReenrichV1Done) ?? '0') == '1';
   set coverReenrichV1Done(bool v) =>
       index.settingsSet(kCoverReenrichV1Done, v ? '1' : '0');
+
+  /// 元数据回填补读标记：旧版解析在块序异常（PICTURE 在 VORBIS_COMMENT 之前等）
+  /// 的文件上会提前中断、读不出歌手，见 direct_source_manager.init。
+  bool get metaReenrichV2Done =>
+      (index.settingsGet(kMetaReenrichV2Done) ?? '0') == '1';
+  set metaReenrichV2Done(bool v) =>
+      index.settingsSet(kMetaReenrichV2Done, v ? '1' : '0');
 
   // ---------- 收藏自动缓存（settings.md §3.4 歌曲分区） ----------
 

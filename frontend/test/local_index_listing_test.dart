@@ -205,7 +205,7 @@ void main() {
     var unread = index.unreadSongs('webdav:nas', 100);
     expect(unread.map((s) => s.sourceRef), ['/dav/min.mp3']);
 
-    // metaRead 随 `meta_read` 列落 Song：未读歌 artist 为空 → 标注「未读取」；
+    // metaRead 随 `meta_read` 列落 Song：未读歌 artist 为空 → 标注「待读取」；
     // 已读歌 artist 为空 → 留白（null）。
     final unreadSong = index.songByRef('webdav:nas', '/dav/min.mp3')!;
     expect(unreadSong.metaRead, isFalse);
