@@ -10,6 +10,7 @@ import '../models/song.dart';
 import '../data/sources/music_source.dart';
 import '../data/sources/direct_audio_source.dart';
 import '../data/sources/meta_enrich.dart';
+import '../data/sources/webdav_url.dart';
 import '../data/local/local_index.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/song_weight_store.dart';
@@ -544,8 +545,13 @@ class PlayerProvider extends ChangeNotifier {
 
   /// 载入一个播放队列并从 [index] 开始播放。
   /// [playlistUuid]：从已同步歌单播全部/点歌时传入（阶段5 断点归属用），其它队列不传。
+  /// [resumeFromBreakpoint]：打开歌单「播放全部」时开启——若其他设备的断点更新，
+  /// 自动定位到该进度并提示（详情页「从头播放」走默认 false）。
   Future<void> playQueue(List<Song> songs,
-      {int index = 0, MusicSource? source, String? playlistUuid}) async {
+      {int index = 0,
+      MusicSource? source,
+      String? playlistUuid,
+      bool resumeFromBreakpoint = false}) async {
     if (songs.isEmpty) return;
     final start = index.clamp(0, songs.length - 1);
     _syncPlaylistUuid = playlistUuid;
@@ -554,6 +560,9 @@ class PlayerProvider extends ChangeNotifier {
     _idx = start;
     notifyListeners();
     await _play(_queue[_idx], source: source);
+    if (resumeFromBreakpoint && playlistUuid != null) {
+      await _resumeFromMirrorIfAny(playlistUuid);
+    }
   }
 
   Future<void> playAt(int index, {MusicSource? source}) async {
@@ -1053,6 +1062,7 @@ class PlayerProvider extends ChangeNotifier {
       jsonEncode(_queue.map((s) => s.toJson()).toList()),
       _idx,
       pos.inMilliseconds,
+      playlistUuid: _syncPlaylistUuid,
     );
     _maybeEnqueueBreakpoint(idx, pos);
   }
@@ -1088,12 +1098,41 @@ class PlayerProvider extends ChangeNotifier {
     }
   }
 
-  /// 启动恢复：装载上次队列与位置，暂停态不自动播放。
+  /// 启动恢复（仅本机断点）：装载上次队列与位置，暂停态不自动播放。
   Future<void> restoreIfAny() async {
     final idx = _index;
     if (idx == null || _restored) return;
     _restored = true;
-    final st = idx.getPlayState();
+    await _restoreLocal(idx, idx.getPlayState());
+  }
+
+  /// 启动恢复（跨设备优先）：本机与所有镜像断点中取最新者；
+  /// 远端更新且其歌单在本机存在时，重建该歌单队列并从该进度恢复（暂停态）。
+  Future<void> restorePreferRemote() async {
+    final idx = _index;
+    if (idx == null || _restored) return;
+    _restored = true;
+    final local = idx.getPlayState();
+    BreakpointMirrorRow? best;
+    DateTime? bestAt;
+    for (final m in idx.allBreakpointMirrors()) {
+      final t = DateTime.tryParse(m.updatedAt);
+      if (t == null) continue;
+      if (bestAt == null || t.isAfter(bestAt)) {
+        best = m;
+        bestAt = t;
+      }
+    }
+    final localAt = local == null ? null : DateTime.tryParse(local.updatedAt);
+    if (best != null &&
+        bestAt != null &&
+        (localAt == null || bestAt.isAfter(localAt))) {
+      if (await _restoreFromMirror(idx, best)) return;
+    }
+    await _restoreLocal(idx, local);
+  }
+
+  Future<void> _restoreLocal(LocalIndex idx, PlayStateRow? st) async {
     if (st == null || st.queueJson.isEmpty) return;
     try {
       final list = (jsonDecode(st.queueJson) as List)
@@ -1106,8 +1145,11 @@ class PlayerProvider extends ChangeNotifier {
       _queue = list;
       _idx = st.idx.clamp(0, _queue.length - 1);
       _current = _queue[_idx];
-      // 恢复的队列来源不明：清除歌单归属（阶段5 断点不上报）。
-      _syncPlaylistUuid = null;
+      // 归属歌单仍在则保留（断点继续上报），否则清除。
+      _syncPlaylistUuid = (st.playlistUuid != null &&
+              idx.playlistIdOfUuid(st.playlistUuid!) != null)
+          ? st.playlistUuid
+          : null;
       await _play(_current!, play: false);
       await player.seek(Duration(milliseconds: st.positionMs));
       notifyListeners();
@@ -1116,6 +1158,75 @@ class PlayerProvider extends ChangeNotifier {
       AppToast.error(e, '断点恢复失败');
       notifyListeners();
     }
+  }
+
+  /// 用远端断点重建歌单队列并恢复进度；目标歌本机无源时退到其后第一首可播条目。
+  Future<bool> _restoreFromMirror(LocalIndex idx, BreakpointMirrorRow m) async {
+    final pid = idx.playlistIdOfUuid(m.playlistUuid);
+    if (pid == null) return false;
+    final songs = idx.playlistSongs(pid);
+    if (songs.isEmpty) return false;
+    final found = songs.indexWhere((s) => _refMatches(s.sourceRef, m.sourceRef));
+    var start = found < 0 ? 0 : found;
+    while (start < songs.length &&
+        _resolver?.call(songs[start].sourceKey) == null) {
+      start++;
+    }
+    if (start >= songs.length) return false;
+    _queue = List.of(songs);
+    _idx = start;
+    _current = _queue[start];
+    _syncPlaylistUuid = m.playlistUuid;
+    try {
+      await _play(_current!, play: false);
+      final pos = (found >= 0 && start == found) ? m.positionMs : 0;
+      if (pos > 0) await player.seek(Duration(milliseconds: pos));
+      notifyListeners();
+      _syncSystemMedia();
+      AppToast.show('已从其他设备继续播放（${_fmtMs(pos)}）', isError: false);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 「播放全部」：其他设备的断点更新时自动定位到该进度并提示。
+  Future<void> _resumeFromMirrorIfAny(String playlistUuid) async {
+    final idx = _index;
+    if (idx == null) return;
+    final m = idx.breakpointMirrorOf(playlistUuid);
+    if (m == null || m.positionMs <= 0) return;
+    final mAt = DateTime.tryParse(m.updatedAt);
+    if (mAt == null) return;
+    final local = idx.getPlayState();
+    final localAt =
+        (local?.playlistUuid == playlistUuid && local != null)
+            ? DateTime.tryParse(local.updatedAt)
+            : null;
+    if (localAt != null && !mAt.isAfter(localAt)) return;
+    final i = _queue.indexWhere((s) => _refMatches(s.sourceRef, m.sourceRef));
+    if (i < 0) return;
+    try {
+      await playAt(i, source: _curSource);
+      await player.seek(Duration(milliseconds: m.positionMs));
+      AppToast.show('已从其他设备进度继续（${_fmtMs(m.positionMs)}）', isError: false);
+    } catch (_) {
+      // 定位失败不阻断播放。
+    }
+  }
+
+  /// ref 匹配（兼容 WebDAV 编码变体）。
+  static bool _refMatches(String a, String? b) {
+    if (b == null || b.isEmpty) return false;
+    if (a == b) return true;
+    return webdavRefVariants(b).contains(a);
+  }
+
+  static String _fmtMs(int ms) {
+    final d = Duration(milliseconds: ms);
+    final mm = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final ss = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return d.inHours > 0 ? '${d.inHours}:$mm:$ss' : '$mm:$ss';
   }
 
   void clearResumeState() => _index?.clearPlayState();

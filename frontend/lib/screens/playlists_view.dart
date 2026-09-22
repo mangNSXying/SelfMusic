@@ -483,17 +483,34 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
                       ?.copyWith(fontWeight: FontWeight.bold),
                 ),
               ),
-              if (_songs.isNotEmpty)
+              if (_songs.isNotEmpty) ...[
                 TextButton.icon(
                   icon: const Icon(Icons.play_arrow),
                   label: const Text('播放全部'),
                   onPressed: () {
                     player.playQueue(_songs,
                         playlistUuid: provider.store.index
-                            .ensurePlaylistUuid(widget.playlistId));
+                            .ensurePlaylistUuid(widget.playlistId),
+                        resumeFromBreakpoint: true);
                     context.read<NavigationProvider>().openPlayer();
                   },
                 ),
+                PopupMenuButton<String>(
+                  tooltip: '更多播放方式',
+                  icon: const Icon(Icons.more_vert),
+                  onSelected: (v) {
+                    if (v == 'fromStart') {
+                      player.playQueue(_songs,
+                          playlistUuid: provider.store.index
+                              .ensurePlaylistUuid(widget.playlistId));
+                      context.read<NavigationProvider>().openPlayer();
+                    }
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'fromStart', child: Text('从头播放')),
+                  ],
+                ),
+              ],
             ],
           ),
         ),

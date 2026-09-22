@@ -128,9 +128,17 @@ class LocalIndex {
         queue_json  TEXT NOT NULL,
         idx         INTEGER NOT NULL,
         position_ms INTEGER NOT NULL,
-        updated_at  TEXT NOT NULL
+        updated_at  TEXT NOT NULL,
+        playlist_uuid TEXT
       );
     ''');
+    final stateCols = _db!
+        .select('PRAGMA table_info(play_state)')
+        .map((r) => r['name'] as String)
+        .toSet();
+    if (!stateCols.contains('playlist_uuid')) {
+      _db!.execute('ALTER TABLE play_state ADD COLUMN playlist_uuid TEXT');
+    }
     final cacheCols = _db!
         .select('PRAGMA table_info(cache)')
         .map((r) => r['name'] as String)
@@ -1513,18 +1521,20 @@ class LocalIndex {
 
   // ---------- 断点（stage2.md §1.4） ----------
 
-  void savePlayState(String queueJson, int idx, int positionMs) {
+  void savePlayState(String queueJson, int idx, int positionMs,
+      {String? playlistUuid}) {
     _db!.execute(
-        'INSERT INTO play_state(id, queue_json, idx, position_ms, updated_at) '
-        'VALUES(1,?,?,?,?) ON CONFLICT(id) DO UPDATE SET '
+        'INSERT INTO play_state(id, queue_json, idx, position_ms, updated_at, playlist_uuid) '
+        'VALUES(1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET '
         'queue_json=excluded.queue_json, idx=excluded.idx, '
-        'position_ms=excluded.position_ms, updated_at=excluded.updated_at',
-        [queueJson, idx, positionMs, DateTime.now().toIso8601String()]);
+        'position_ms=excluded.position_ms, updated_at=excluded.updated_at, '
+        'playlist_uuid=excluded.playlist_uuid',
+        [queueJson, idx, positionMs, DateTime.now().toIso8601String(), playlistUuid]);
   }
 
   PlayStateRow? getPlayState() {
     final rs = _db!.select(
-        'SELECT queue_json, idx, position_ms, updated_at FROM play_state WHERE id=1');
+        'SELECT queue_json, idx, position_ms, updated_at, playlist_uuid FROM play_state WHERE id=1');
     if (rs.isEmpty) return null;
     final r = rs.first;
     return PlayStateRow(
@@ -1532,7 +1542,54 @@ class LocalIndex {
       idx: r['idx'] as int,
       positionMs: r['position_ms'] as int,
       updatedAt: r['updated_at'] as String,
+      playlistUuid: r['playlist_uuid'] as String?,
     );
+  }
+
+  /// 歌单条目 → 可播放歌曲列表（按 sort_order 排序；给跨设备断点恢复重建队列用）。
+  List<Song> playlistSongs(int playlistId) {
+    final rows = _db!.select(
+        'SELECT source_key, song_ref, title, artist, album, cover_path, source '
+        'FROM playlist_items WHERE playlist_id=? ORDER BY sort_order, id',
+        [playlistId]);
+    return [
+      for (final r in rows)
+        Song(
+          id: 0,
+          sourceKey: r['source_key'] as String,
+          title: (r['title'] as String?) ?? '',
+          artist: r['artist'] as String?,
+          albumName: r['album'] as String?,
+          sourceRef: r['song_ref'] as String,
+          source: (r['source'] as String?) ??
+              ((r['source_key'] as String).contains(':')
+                  ? (r['source_key'] as String)
+                      .substring(0, (r['source_key'] as String).indexOf(':'))
+                  : r['source_key'] as String),
+          fileSize: 0,
+          coverPath: r['cover_path'] as String?,
+        ),
+    ];
+  }
+
+  /// 全部跨设备断点镜像（启动优先最新断点用）。
+  List<BreakpointMirrorRow> allBreakpointMirrors() {
+    final rs = _db!.select(
+        'SELECT playlist_uuid, song_id, source_id, source, source_ref, position_ms, '
+        'updated_at, device_id FROM breakpoint_mirror');
+    return [
+      for (final r in rs)
+        BreakpointMirrorRow(
+          playlistUuid: r['playlist_uuid'] as String,
+          songId: r['song_id'] as int?,
+          sourceId: r['source_id'] as String?,
+          source: r['source'] as String?,
+          sourceRef: r['source_ref'] as String?,
+          positionMs: r['position_ms'] as int,
+          updatedAt: r['updated_at'] as String,
+          deviceId: r['device_id'] as String?,
+        ),
+    ];
   }
 
   void clearPlayState() {
@@ -1699,11 +1756,15 @@ class PlayStateRow {
   final int idx;
   final int positionMs;
   final String updatedAt;
+
+  /// 队列归属的已同步歌单 uuid（跨设备断点归属；通用队列为 null）。
+  final String? playlistUuid;
   const PlayStateRow({
     required this.queueJson,
     required this.idx,
     required this.positionMs,
     required this.updatedAt,
+    this.playlistUuid,
   });
 }
 

@@ -196,11 +196,14 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
     _nav.addListener(_syncPlayerSheet);
     // 启动恢复上次播放队列与位置（暂停态，stage2.md §7）。
     // 受「断点续播」开关控制（settings.md §3.2 `resume_on_startup`）。
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
       final direct = context.read<DirectSourceManager>();
       if (!direct.settings.resumeOnStartup) return;
-      context.read<PlayerProvider>().restoreIfAny();
+      // 先等一轮拉取（带超时），以便跨设备断点参与启动恢复比较。
+      await context.read<SyncEngine>().firstPull();
+      if (!mounted) return;
+      await context.read<PlayerProvider>().restorePreferRemote();
     });
   }
 

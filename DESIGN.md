@@ -517,6 +517,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 - **歌曲身份**：数字 `song_id` 优先，否则按 `(source, source_ref)` 唯一键解析；legacy 空 source 按 `source_ref` 兜底
 - **歌曲身份（服务端无曲库）**：统一为 `source_id + source_ref`（source_id=客户端源实例 uuid，旧数据/旧客户端为 `legacy:<协议>`）；权重/收藏落 `song_states`，歌单条目与断点自持身份及展示快照（标题/歌手/专辑/时长，pull 不覆盖客户端本地标题）；pull 身份收集恒不建行（已删歌曲不复活）。未配对（无后端地址）时直连事件不进队，避免 outbox 无限积压；`sync_enabled` 关闭同样全跳
 - **播放源同步**：`source.create/update/delete` + 行级 LWW；身份 `client_uuid`，去重键 `(kind, address)`（名称不参与），本地文件夹源不参与，密码不入服务端（设备本地 SecretStore，新设备显示「待配置密码」）；应用后重建内存源列表；存量远端源接入时补 uuid 并补发一次 create；旧协议级身份（`legacy:<协议>`）在设备重新上报时由服务端懒迁移到源实例 uuid
+- **跨设备断点消费**：`breakpoint.set` 快照带来源设备；客户端 pull 落 `breakpoint_mirror`；启动恢复与歌单「播放全部」会比较本机 `play_state`（含歌单归属 `playlist_uuid`）与镜像的 `updated_at`，远端更新时自动从该进度续播并 toast 提示（歌单详情保留「从头播放」入口）；目标歌本机无源时退到其后第一首可播条目，全不可播则回落本机恢复
 - 直连模式（无服务器）：上述全部跳过，数据只在本机
 
 ---

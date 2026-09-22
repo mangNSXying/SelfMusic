@@ -552,9 +552,7 @@ public class SyncService {
         st.setSourceId(sourceIdOf(p));
         st.setSource(protocolOf(p));
         st.setSourceRef(ref);
-        if (p.has("device_client_id") && !p.path("device_client_id").isNull()) {
-            st.setDeviceClientId(p.path("device_client_id").asText(null));
-        }
+        st.setDeviceClientId(ev.device_client_id());
         st.setPositionMs(p.path("position_ms").asInt(0));
         st.setLastEventAt(ev.occurred_at());
         playStateRepository.save(st);

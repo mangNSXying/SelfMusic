@@ -74,6 +74,15 @@ class SyncEngine {
     });
   }
 
+  /// 启动序：等待首轮拉取完成（带超时），以便跨设备断点恢复拿到最新镜像。
+  Future<void> firstPull({Duration timeout = const Duration(seconds: 2)}) async {
+    try {
+      await syncNow(pullOnly: false, force: true).timeout(timeout);
+    } catch (_) {
+      // 未配对/网络失败/超时：按本机断点恢复。
+    }
+  }
+
   void _onTick() {
     if (_inflight != null) return;
     final now = DateTime.now();
