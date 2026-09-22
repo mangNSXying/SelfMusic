@@ -137,6 +137,8 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
                       ? Image.file(
                           File(song.coverPath!),
                           fit: BoxFit.cover,
+                          cacheWidth: 92,
+                          cacheHeight: 92,
                           errorBuilder: (_, __, ___) => Container(
                             color: cs.primary.withValues(alpha: 0.12),
                             child: Icon(Icons.music_note, color: cs.primary),

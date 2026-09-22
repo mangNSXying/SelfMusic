@@ -90,12 +90,15 @@ class _AreaSwitcherState extends State<AreaSwitcher>
     if (_forward) {
       return Stack(
         children: [
-          Positioned.fill(child: _prevChild!),
           Positioned.fill(
-            child: SlideTransition(
-              position: Tween<Offset>(begin: _offset, end: Offset.zero)
-                  .animate(_curved),
-              child: ColoredBox(color: bg, child: widget.child),
+              child: RepaintBoundary(child: _prevChild!)),
+          Positioned.fill(
+            child: RepaintBoundary(
+              child: SlideTransition(
+                position: Tween<Offset>(begin: _offset, end: Offset.zero)
+                    .animate(_curved),
+                child: ColoredBox(color: bg, child: widget.child),
+              ),
             ),
           ),
         ],
@@ -103,12 +106,14 @@ class _AreaSwitcherState extends State<AreaSwitcher>
     }
     return Stack(
       children: [
-        Positioned.fill(child: widget.child),
+        Positioned.fill(child: RepaintBoundary(child: widget.child)),
         Positioned.fill(
-          child: SlideTransition(
-            position: Tween<Offset>(begin: Offset.zero, end: -_offset)
-                .animate(_curved),
-            child: ColoredBox(color: bg, child: _prevChild!),
+          child: RepaintBoundary(
+            child: SlideTransition(
+              position: Tween<Offset>(begin: Offset.zero, end: -_offset)
+                  .animate(_curved),
+              child: ColoredBox(color: bg, child: _prevChild!),
+            ),
           ),
         ),
       ],

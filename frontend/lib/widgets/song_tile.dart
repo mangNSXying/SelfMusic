@@ -208,6 +208,9 @@ class CoverThumb extends StatelessWidget {
         width: 44,
         height: 44,
         fit: BoxFit.cover,
+        // 按显示尺寸 ×2 降采样解码，避免整首歌单列表每行全分辨率解码的内存/CPU 尖峰。
+        cacheWidth: 88,
+        cacheHeight: 88,
         errorBuilder: (_, __, ___) => Icon(Icons.music_note, color: color),
       ),
     );

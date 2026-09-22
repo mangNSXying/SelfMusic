@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
+import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
@@ -320,9 +321,26 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
   final Selection<String> _sel = Selection<String>();
 
   /// 歌单内歌曲滚动定位（打开时定位到当前播放歌曲）。
-  final ScrollController _scroll = ScrollController();
-  final Map<int, GlobalKey> _rowKeys = {};
+  ///
+  /// 行高恒定为 72（双行 ListTile）+ 1 分隔线。追焦参考播放队列：进入时
+  /// 直接用 initialScrollOffset 落在追焦处（首帧即渲染目标行，无可见扫描），
+  /// 不再依赖逐行 GlobalKey 估算或首帧后再 jumpTo（曾因行高估算偏差导致
+  /// 定位失败 + 触发两波封面解码尖峰，详见性能排查）。
+  late final ScrollController _scroll;
+  static const double _rowExtent = 72;
+  static const double _sepExtent = 1;
+  /// 已就位（首帧 initialScrollOffset 或顶部）；true 后不再触发兜底追焦。
   bool _located = false;
+
+  /// 歌单数据按 [PlaylistsProvider.dataRevision] 缓存，避免每次重建重查 SQLite。
+  int _songsRevision = -1;
+  List<Song> _songs = const [];
+  List<PlaylistItemRow> _items = const [];
+
+  /// 追焦目标 offset：队列同款固定上边距（目标行置于距顶 96px 处），
+  /// 无需等 viewport；超出列表范围的值交由滚动位置钳位。
+  double _focusOffset(int index) =>
+      (index * (_rowExtent + _sepExtent) - 96).clamp(0.0, double.infinity);
 
   @override
   void dispose() {
@@ -330,27 +348,49 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
     super.dispose();
   }
 
-  /// 先估算跳到目标附近（懒构建列表项），再对已构建的目标行精调。
+  @override
+  void didUpdateWidget(covariant PlaylistDetailView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 切换歌单（原地子视图理论不会，但防御）后强制重取数据。
+    if (widget.playlistId != oldWidget.playlistId) _songsRevision = -1;
+  }
+
+  /// 按数据版本拉取歌单条目；数据未变直接复用缓存（0 次 SQLite）。
+  void _syncSongs(PlaylistsProvider provider) {
+    final rev = provider.dataRevision;
+    if (rev == _songsRevision) return;
+    _songsRevision = rev;
+    _items = provider.itemsOf(widget.playlistId);
+    _songs = List.unmodifiable(_items.map(provider.songOf));
+  }
+
+  /// 兜底定位到第 [index] 行（首次数据未加载时的边缘情况）：
+  /// 一次精确 jumpTo（固定行高保证落点必在视口内）。
   void _scrollToCurrent(int index) {
     if (!mounted || !_scroll.hasClients) return;
-    final estimate = (index * 64.0 - 120)
-        .clamp(0.0, _scroll.position.maxScrollExtent);
-    _scroll.jumpTo(estimate);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final ctx = _rowKeys[index]?.currentContext;
-      if (ctx == null || !mounted) return;
-      Scrollable.ensureVisible(
-        ctx,
-        alignment: 0.3,
-        duration: const Duration(milliseconds: 260),
-        curve: Curves.easeOutCubic,
-      );
-    });
+    _scroll.jumpTo(_focusOffset(index)
+        .clamp(0.0, _scroll.position.maxScrollExtent));
   }
 
   @override
   void initState() {
     super.initState();
+    // 打开即落在当前播放歌曲处：进 state 时同步读取已加载数据算出目标，
+    // 用 initialScrollOffset 让首帧直接渲染追焦处（无可见扫描）。数据
+    // 未加载时置 0，交给 build 里的兜底追焦逻辑。
+    final provider = context.read<PlaylistsProvider>();
+    final player = context.read<PlayerProvider>();
+    var firstIdx = -1;
+    if (provider.loaded && !_located) {
+      _syncSongs(provider);
+      firstIdx = _songs.indexWhere(player.isCurrent);
+    }
+    if (firstIdx >= 0) {
+      _scroll = ScrollController(initialScrollOffset: _focusOffset(firstIdx));
+      _located = true;
+    } else {
+      _scroll = ScrollController();
+    }
     // 首帧后再刷新，避免 refresh() 的 notifyListeners 在 build 期间触发断言。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -406,9 +446,10 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
     for (final p in provider.playlists) {
       if (p.id == widget.playlistId) playlist = p;
     }
-    final songs = provider.songsOf(widget.playlistId);
-    final items = provider.itemsOf(widget.playlistId);
-    final currentIdx = songs.indexWhere((s) => player.isCurrent(s));
+    // 数据版本不变时复用缓存的歌单条目（避免每帧/每次通知重查 SQLite）。
+    _syncSongs(provider);
+    var currentIdx = -1;
+    currentIdx = _songs.indexWhere((s) => player.isCurrent(s));
 
     // 打开歌单后自动定位到当前播放歌曲（仅一次）。
     if (!_located && currentIdx >= 0) {
@@ -442,12 +483,12 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
                       ?.copyWith(fontWeight: FontWeight.bold),
                 ),
               ),
-              if (songs.isNotEmpty)
+              if (_songs.isNotEmpty)
                 TextButton.icon(
                   icon: const Icon(Icons.play_arrow),
                   label: const Text('播放全部'),
                   onPressed: () {
-                    player.playQueue(songs,
+                    player.playQueue(_songs,
                         playlistUuid: provider.store.index
                             .ensurePlaylistUuid(widget.playlistId));
                     context.read<NavigationProvider>().openPlayer();
@@ -456,14 +497,14 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
             ],
           ),
         ),
-        CountHeader(count: songs.length),
+        CountHeader(count: _songs.length),
         if (_sel.active)
-          SelectionBar(            total: items.length,
-            selectedCount: _sel.of(items.map((r) => songKey(provider.songOf(r))))
+          SelectionBar(            total: _items.length,
+            selectedCount: _sel.of(_items.map((r) => songKey(provider.songOf(r))))
                 .length,
             onToggleAll: () => setState(() {
               _sel.active = true;
-              _sel.setAll(items.map((r) => songKey(provider.songOf(r))));
+              _sel.setAll(_items.map((r) => songKey(provider.songOf(r))));
             }),
             onCancel: () => setState(_sel.cancel),
             actions: [
@@ -477,24 +518,24 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
           ),
         const Divider(height: 1),
         Expanded(
-          child: songs.isEmpty
+          child: _songs.isEmpty
               ? const Center(child: Text('歌单为空'))
-              : ListView.separated(
+              // itemExtent 固定行高（含 1px 分隔线）：深位置（首帧定位/跳转）
+              // 只构建可见行，否则 Sliver 会从第 0 行逐行排到目标行——千首歌单
+              // 一帧构建 700+ 行与封面，进入必卡（实测 712 项 vs 16 项）。
+              : ListView.builder(
                   controller: _scroll,
-                  itemCount: items.length,
-                  separatorBuilder: (_, __) =>
-                      const Divider(height: 1, indent: 56),
+                  itemExtent: _rowExtent + _sepExtent,
+                  itemCount: _items.length,
                   itemBuilder: (c, i) {
-                    final row = items[i];
-                    final s = songs[i];
+                    final row = _items[i];
+                    final s = _songs[i];
                     final isFirst = i == 0;
-                    final isLast = i == items.length - 1;
+                    final isLast = i == _items.length - 1;
                     final key = songKey(s);
                     final isCurrent = i == currentIdx;
-                    final rowKey = _rowKeys.putIfAbsent(i, GlobalKey.new);
                     final cs = Theme.of(context).colorScheme;
-                    return ListTile(
-                      key: rowKey,
+                    final tile = ListTile(
                       selected: _sel.active && _sel.contains(key),
                       leading: _sel.active
                           ? Checkbox(
@@ -559,7 +600,7 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
                       onTap: _sel.active
                           ? () => _toggle(key)
                           : () {
-                              player.playQueue(songs,
+                              player.playQueue(_songs,
                                   index: i,
                                   playlistUuid: provider.store.index
                                       .ensurePlaylistUuid(widget.playlistId));
@@ -568,6 +609,13 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
                       onLongPress: _sel.active
                           ? () => _toggle(key)
                           : () => setState(() => _sel.startWith(key)),
+                    );
+                    return Column(
+                      children: [
+                        Expanded(child: tile),
+                        if (!isLast)
+                          const Divider(height: 1, indent: 56),
+                      ],
                     );
                   },
                 ),

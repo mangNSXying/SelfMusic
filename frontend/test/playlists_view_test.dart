@@ -5,8 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:provider/provider.dart';
+import 'package:selfmusic/models/song.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
+import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/providers/playlists_provider.dart';
 import 'package:selfmusic/screens/playlists_view.dart';
 import 'package:sqlite3/open.dart';
@@ -142,6 +144,71 @@ void main() {
     await tester.tap(find.byTooltip('取消选择'));
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('已选 2'), findsNothing);
+
+    await tester.runAsync(() async {
+      direct.dispose();
+      dir.deleteSync(recursive: true);
+    });
+  });
+
+  testWidgets('歌单详情固定行高：深位置定位/跳转不整表构建（回归 itemExtent）',
+      (tester) async {
+    late final Directory dir;
+    late final DirectSourceManager direct;
+    late final int plId;
+    await tester.runAsync(() async {
+      dir = await Directory.systemTemp.createTemp('selfmusic_pld_');
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      direct = DirectSourceManager();
+      await direct.init();
+      plId = direct.playlists.create('大歌单');
+      for (var i = 0; i < 500; i++) {
+        direct.playlists.addSong(
+          plId,
+          Song(
+            id: i,
+            sourceKey: 'local:test',
+            title: '歌曲 $i',
+            artist: '歌手',
+            source: 'local',
+            sourceRef: 'r_$i',
+            fileSize: 0,
+          ),
+        );
+      }
+    });
+
+    final provider = PlaylistsProvider(direct.playlists)..refresh();
+    final nav = NavigationProvider();
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+          ChangeNotifierProvider<PlaylistsProvider>.value(value: provider),
+          ChangeNotifierProvider<NavigationProvider>.value(value: nav),
+          ChangeNotifierProvider<PlayerProvider>(
+              create: (_) => PlayerProvider()),
+        ],
+        child: MaterialApp(
+          home: Scaffold(body: PlaylistDetailView(playlistId: plId)),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.textContaining('歌曲 0'), findsOneWidget);
+    final lv = tester.widget<ListView>(find.byType(ListView));
+    // 无 itemExtent 时 Sliver 为定位深处需从第 0 行逐行排到目标行
+    // （实测深位置首帧构建 712 行 vs 有 itemExtent 16 行），必卡。
+    expect(lv.itemExtent, 73);
+    expect(lv.controller, isNotNull);
+
+    // 深位置跳转仍只构建可见行。
+    lv.controller!.jumpTo(400 * 73.0);
+    await tester.pump();
+    expect(find.textContaining('歌曲 400'), findsOneWidget);
+    expect(find.byType(ListTile).evaluate().length, lessThan(40));
 
     await tester.runAsync(() async {
       direct.dispose();

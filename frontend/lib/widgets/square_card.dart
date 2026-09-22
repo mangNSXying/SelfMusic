@@ -63,6 +63,9 @@ class SquareCard extends StatelessWidget {
                   child: coverPath != null
                       ? Image.file(File(coverPath!),
                           fit: BoxFit.cover,
+                          // 卡片最大 220 宽：按 ~2× 目标尺寸降采样解码，避免网格全分辨率尖峰。
+                          cacheWidth: 440,
+                          cacheHeight: 440,
                           errorBuilder: (_, __, ___) => Icon(fallbackIcon,
                               size: 48,
                               color:

@@ -556,6 +556,8 @@ class _AlbumListTile extends StatelessWidget {
           child: album.coverPath != null
               ? Image.file(File(album.coverPath!),
                   fit: BoxFit.cover,
+                  cacheWidth: 88,
+                  cacheHeight: 88,
                   errorBuilder: (_, __, ___) =>
                       Icon(Icons.album, color: colorScheme.primary))
               : Container(
@@ -755,6 +757,8 @@ class _ArtistListTile extends StatelessWidget {
           child: artist.coverPath != null
               ? Image.file(File(artist.coverPath!),
                   fit: BoxFit.cover,
+                  cacheWidth: 88,
+                  cacheHeight: 88,
                   errorBuilder: (_, __, ___) =>
                       Icon(Icons.person, color: colorScheme.primary))
               : Container(

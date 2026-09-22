@@ -13,6 +13,11 @@ class PlaylistsProvider extends ChangeNotifier {
   Map<int, int> _counts = {};
   bool loaded = false;
 
+  /// 数据版本号：任何改动置数据（歌单列表/条目/计数）的写路径都会自增。
+  /// 详情页用它按版本缓存 `songsOf/itemsOf`，避免每次 provider 通知都重查 SQLite。
+  int _dataRevision = 0;
+  int get dataRevision => _dataRevision;
+
   List<PlaylistRow> get playlists => List.unmodifiable(_playlists);
 
   int countOf(int playlistId) => _counts[playlistId] ?? _countsOf(playlistId);
@@ -23,6 +28,7 @@ class PlaylistsProvider extends ChangeNotifier {
       for (final p in _playlists) p.id: _countsOf(p.id),
     };
     loaded = true;
+    _dataRevision++;
     notifyListeners();
   }
 
@@ -35,6 +41,7 @@ class PlaylistsProvider extends ChangeNotifier {
     _playlists = store.list();
     _counts[id] = 0;
     loaded = true;
+    _dataRevision++;
     notifyListeners();
     return id;
   }
@@ -54,6 +61,7 @@ class PlaylistsProvider extends ChangeNotifier {
         else
           p,
     ];
+    _dataRevision++;
     notifyListeners();
   }
 
@@ -61,6 +69,7 @@ class PlaylistsProvider extends ChangeNotifier {
     store.delete(id);
     _playlists = [for (final p in _playlists) if (p.id != id) p];
     _counts.remove(id);
+    _dataRevision++;
     notifyListeners();
   }
 
@@ -111,12 +120,14 @@ class PlaylistsProvider extends ChangeNotifier {
   void moveItemRow(int playlistId, PlaylistItemRow r, int delta) {
     store.move(playlistId, r.id, delta);
     // 仅顺序变化：计数不动，只通知重排。
+    _dataRevision++;
     notifyListeners();
   }
 
   /// 单歌单计数刷新（1 次查询）：替代全量 refresh 的 N+1 查询。
   void _recount(int playlistId) {
     _counts[playlistId] = _countsOf(playlistId);
+    _dataRevision++;
     notifyListeners();
   }
 }

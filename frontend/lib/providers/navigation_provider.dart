@@ -146,14 +146,14 @@ class NavigationProvider extends ChangeNotifier {
   /// 当前正在浏览的歌单 id（歌单详情子视图）；null 表示位于歌单列表。
   int? get browsingPlaylistId => _browsingPlaylistId;
 
-  /// 进入歌单详情（原地子视图）。
+  /// 进入歌单详情（原地子视图）：整页从右侧滑入。
   void enterPlaylist(int id) {
     _slideOffset = const Offset(1, 0);
     _browsingPlaylistId = id;
     notifyListeners();
   }
 
-  /// 返回歌单列表。
+  /// 返回歌单列表：旧页向左滑出。
   void exitPlaylist() {
     _slideOffset = const Offset(-1, 0);
     _browsingPlaylistId = null;
