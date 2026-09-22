@@ -77,7 +77,6 @@ class PlayerProvider extends ChangeNotifier {
   AppSettings? _appSettings;
   void Function(MusicSource src, Song s)? _onTrackStarted;
   void Function(Song s)? _onSongMetaRefreshed;
-  String? error;
   SelfMusicAudioHandler? _audioHandler;
 
   /// 阶段5：当前队列归属的已同步歌单 uuid（播歌单时由调用方传入，其它队列为 null）。
@@ -553,7 +552,6 @@ class PlayerProvider extends ChangeNotifier {
     _leaveFor(songs[start]);
     _queue = List.of(songs);
     _idx = start;
-    error = null;
     notifyListeners();
     await _play(_queue[_idx], source: source);
   }
@@ -578,7 +576,6 @@ class PlayerProvider extends ChangeNotifier {
       _idx = i;
       await _play(_queue[_idx], source: source);
     } else {
-      error = null;
       await _play(s, source: source);
     }
   }
@@ -619,7 +616,6 @@ class PlayerProvider extends ChangeNotifier {
       _clearSleep();
       notifyListeners();
     }
-    error = null;
     try {
       final src = _resolver?.call(s.sourceKey) ?? source ?? _curSource;
       // 以索引最新行纠正调用方可能携带的旧快照（歌单快照/断点恢复等）：
@@ -667,7 +663,6 @@ class PlayerProvider extends ChangeNotifier {
       _syncSystemMedia();
     } catch (e) {
       if (!alive()) return; // 旧切歌被接管后的 abort：静默丢弃
-      error = e.toString();
       AppToast.error(e, '播放失败');
       notifyListeners();
     }
@@ -1124,13 +1119,12 @@ class PlayerProvider extends ChangeNotifier {
       _current = _queue[_idx];
       // 恢复的队列来源不明：清除歌单归属（阶段5 断点不上报）。
       _syncPlaylistUuid = null;
-      error = null;
       await _play(_current!, play: false);
       await player.seek(Duration(milliseconds: st.positionMs));
       notifyListeners();
       _syncSystemMedia();
     } catch (e) {
-      error = '断点恢复失败：$e';
+      AppToast.error(e, '断点恢复失败');
       notifyListeners();
     }
   }

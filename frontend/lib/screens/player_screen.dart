@@ -320,7 +320,6 @@ class _NowPlaying extends StatelessWidget {
         _PlayerSeek(player: player, cs: cs),
         const SizedBox(height: 6),
         _ControlRow(player: player, cs: cs),
-        _PlayerError(player: player),
       ],
     );
   }
@@ -558,26 +557,6 @@ class _ControlRow extends StatelessWidget {
   }
 }
 
-/// 播放错误行：竖屏/横屏共用。
-class _PlayerError extends StatelessWidget {
-  final PlayerProvider player;
-  const _PlayerError({required this.player});
-
-  @override
-  Widget build(BuildContext context) {
-    final err = player.error;
-    if (err == null) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(top: 12),
-      child: Text(
-        err,
-        style: const TextStyle(color: Colors.red),
-        textAlign: TextAlign.center,
-      ),
-    );
-  }
-}
-
 /// 手机横屏三列（参照更新版 ui-playpage-wide.html，UI10）：
 /// 左列 34% 封面/信息/进度，中列歌词（上下渐隐），右列 22% 竖向控制
 /// （定时 / 上一首·播放·下一首 / 模式）。只在窄屏横屏（手机）使用；
@@ -630,7 +609,6 @@ class _LandscapePlayer extends StatelessWidget {
                     _MetaLine(player: player, direct: direct, cs: cs, song: s),
                     _ToolRow(player: player, direct: direct, cs: cs, song: s),
                     _PlayerSeek(player: player, cs: cs),
-                    _PlayerError(player: player),
                   ],
                 ),
               ),
@@ -738,7 +716,6 @@ class _DesktopLandscapePlayer extends StatelessWidget {
                             player: player, direct: direct, cs: cs, song: s),
                         _PlayerSeek(player: player, cs: cs),
                         _ControlRow(player: player, cs: cs),
-                        _PlayerError(player: player),
                       ],
                     ),
                   ),
