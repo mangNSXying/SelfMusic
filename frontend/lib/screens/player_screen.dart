@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../models/song.dart';
 import '../providers/player_provider.dart';
@@ -47,16 +50,51 @@ class _PlayerScreenState extends State<PlayerScreen> {
   double _dragStartY = 0;
   double _dragStartP = 0;
 
+  /// 平台行为（全屏 / 屏幕常亮）当前已应用状态与合并调度标记。
+  bool _fsOn = false;
+  bool _wakeOn = false;
+  bool _platformSyncScheduled = false;
+
   @override
   void initState() {
     super.initState();
     _pageCtrl = PageController(initialPage: 0);
+    // 首帧后按设置应用全屏/常亮（进入播放页即时生效）。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final s = context.read<DirectSourceManager>().settings;
+      _schedulePlatformSync(s.playerFullscreen, s.playerKeepScreenOn);
+    });
   }
 
   @override
   void dispose() {
+    // 离开播放页恢复系统 UI 与熄屏策略。
+    if (Platform.isAndroid) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    }
+    unawaited(WakelockPlus.disable());
     _pageCtrl.dispose();
     super.dispose();
+  }
+
+  /// 设置变化时合并到下一帧统一应用（build 中调用，避免副作用直接落帧内）。
+  void _schedulePlatformSync(bool fullscreen, bool keepOn) {
+    if (fullscreen == _fsOn && keepOn == _wakeOn) return;
+    _fsOn = fullscreen;
+    _wakeOn = keepOn;
+    if (_platformSyncScheduled) return;
+    _platformSyncScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _platformSyncScheduled = false;
+      if (!mounted) return;
+      if (Platform.isAndroid) {
+        SystemChrome.setEnabledSystemUIMode(_fsOn
+            ? SystemUiMode.immersiveSticky
+            : SystemUiMode.edgeToEdge);
+      }
+      unawaited(_wakeOn ? WakelockPlus.enable() : WakelockPlus.disable());
+    });
   }
 
   /// 播放页下拉跟手：整页随手指下移，底下显露分组区；松手按位移/速度吸附或离场。
@@ -91,8 +129,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final gestureOn =
-        context.watch<DirectSourceManager>().settings.playerGestureSwipe;
+    final direct = context.watch<DirectSourceManager>();
+    final gestureOn = direct.settings.playerGestureSwipe;
+    // 平台行为设置：停留播放页期间应用全屏与常亮（变化时下一帧生效）。
+    _schedulePlatformSync(
+        direct.settings.playerFullscreen, direct.settings.playerKeepScreenOn);
     final player = context.watch<PlayerProvider>();
     final size = MediaQuery.sizeOf(context);
     // 横屏（宽>高）分两套（UI10 平台差异化）：

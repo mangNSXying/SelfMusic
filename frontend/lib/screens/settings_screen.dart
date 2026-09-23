@@ -1243,6 +1243,18 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _pickLyricIdle(context),
         ),
+        SwitchListTile(
+          title: const Text('播放页全屏'),
+          subtitle: const Text('进入播放页隐藏手机状态栏（Android 沉浸式，离开自动恢复）'),
+          value: _settings.playerFullscreen,
+          onChanged: (v) => setState(() => _settings.playerFullscreen = v),
+        ),
+        SwitchListTile(
+          title: const Text('播放页屏幕常亮'),
+          subtitle: const Text('打开播放页期间不熄屏（蓝牙条件后续版本支持）'),
+          value: _settings.playerKeepScreenOn,
+          onChanged: (v) => setState(() => _settings.playerKeepScreenOn = v),
+        ),
         const Divider(height: 32),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
