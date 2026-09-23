@@ -819,6 +819,8 @@ class _Cover extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 更多入口随封面缩放：圆框直径与图标按封面边长比例取，限制在可点范围。
+    final moreSize = (size * 0.13).clamp(28.0, 44.0);
     return SizedBox(
       width: size,
       height: size,
@@ -854,15 +856,24 @@ class _Cover extends StatelessWidget {
             child: Material(
               color: Colors.white.withValues(alpha: 0.6),
               shape: const CircleBorder(),
+              clipBehavior: Clip.antiAlias,
               child: PopupMenuButton<String>(
                 tooltip: '更多',
-                icon: const Icon(Icons.more_horiz, color: Colors.black87, size: 18),
                 padding: EdgeInsets.zero,
                 onSelected: (v) => _onSelected(context, v),
                 itemBuilder: (c) => const [
                   PopupMenuItem(value: 'info', child: Text('歌曲信息')),
                   PopupMenuItem(value: 'edit', child: Text('修改歌曲元数据')),
                 ],
+                child: SizedBox(
+                  width: moreSize,
+                  height: moreSize,
+                  child: Icon(
+                    Icons.more_horiz,
+                    color: Colors.black87,
+                    size: moreSize * 0.5,
+                  ),
+                ),
               ),
             ),
           ),
@@ -927,6 +938,10 @@ class _SongInfoDialog extends StatelessWidget {
     }
     // 元数据字段：未读取 → 标注「待读取」；已读取且无值 → 留白（—）。
     String? optField(String? v) => song.metaDisplay(v);
+    // 路径：优先由对应直连源解析真实可读路径（本地绝对路径/WebDAV URL/UNC），
+    // 源不在本机时回落到持久化完整 URL 或源内引用。
+    final displayPath = direct.sourceByKey(song.sourceKey)?.displayPath(song) ??
+        (song.sourceUrl ?? song.sourceRef);
     final rows = <List<String>>[
       ['标题', song.title],
       ['歌手', optField(song.artist) ?? '—'],
@@ -942,6 +957,7 @@ class _SongInfoDialog extends StatelessWidget {
             song.metaUnread ? Song.unreadLabel : formatDuration(song.duration)],
       if (song.format != null) ['格式', song.format!.toUpperCase()],
       ['来源', '${song.source}（${song.sourceKey}）'],
+      ['路径', displayPath],
       if (song.isDirect)
         ['权重', direct.weight.factorOf(song).toStringAsFixed(1)],
       if (song.isDirect) ['状态', states.isEmpty ? '—' : states.join(' · ')],

@@ -136,6 +136,10 @@ abstract class MusicSource {
   /// 若该歌可直接以 URL 播放（原生 Range/seek），返回 URL 与请求头；否则 null。
   DirectStream? directStream(Song song) => null;
 
+  /// 展示用完整路径（歌曲信息弹窗）。默认回落到持久化完整 URL 或源内引用；
+  /// 各源实现可覆盖为真实可读路径（本机绝对路径 / 完整 WebDAV URL / UNC…）。
+  String displayPath(Song song) => song.sourceUrl ?? song.sourceRef;
+
   /// 依据本地索引检索歌曲。
   Future<List<Song>> search({String? query, int page = 1, int size = 100}) async =>
       const [];

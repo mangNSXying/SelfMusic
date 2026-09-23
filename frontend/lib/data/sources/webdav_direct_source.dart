@@ -147,6 +147,9 @@ class WebdavDirectSource implements MusicSource {
   }
 
   @override
+  String displayPath(Song song) => _playUrl(song) ?? song.sourceRef;
+
+  @override
   Future<OpenedStream> open(Song song, {IntRange? range}) async {
     final url = _playUrl(song)!;
     final client = _newClient(allowSelfSigned);

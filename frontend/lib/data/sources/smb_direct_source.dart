@@ -1,4 +1,5 @@
 import 'dart:convert';
+import '../../models/song.dart';
 import 'music_source.dart';
 
 /// SMB 直连源骨架（DESIGN §6.3，正式实现在阶段 4：Windows UNC / Android smbj 平台通道）。
@@ -42,4 +43,17 @@ class SmbDirectSource extends MusicSource {
   }
 
   String get configJson => jsonEncode(configJ);
+
+  /// 展示路径：Windows UNC 风格（`\\host\share[\path]\ref`）。
+  @override
+  String displayPath(Song song) {
+    final parts = <String>[
+      '\\\\$host',
+      share,
+      if (path != null && path!.isNotEmpty)
+        ...path!.split('/').where((s) => s.isNotEmpty),
+      ...song.sourceRef.split('/').where((s) => s.isNotEmpty),
+    ];
+    return parts.join('\\');
+  }
 }

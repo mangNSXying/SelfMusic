@@ -154,6 +154,9 @@ class LocalDirectSource implements MusicSource {
   @override
   DirectStream? directStream(Song song) => null;
 
+  @override
+  String displayPath(Song song) => _absPath(song.sourceRef);
+
   /// 将源内相对引用安全地拼到根目录（过滤 `..` 防止越界）。
   String _absPath(String ref) {
     final parts = ref

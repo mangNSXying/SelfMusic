@@ -159,7 +159,7 @@ class SongTile extends StatelessWidget {
                             color: disliked ? Colors.orange : null,
                           ),
                           const SizedBox(width: 12),
-                          Text(disliked ? '取消不喜欢' : '不喜欢（权重降到最低）'),
+                          Text(disliked ? '取消不喜欢' : '不喜欢'),
                         ],
                       ),
                     ),
@@ -170,7 +170,7 @@ class SongTile extends StatelessWidget {
                           children: [
                             Icon(Icons.download),
                             SizedBox(width: 12),
-                            Text('缓存以便离线播放'),
+                            Text('缓存'),
                           ],
                         ),
                       ),
@@ -194,28 +194,38 @@ class SongTile extends StatelessWidget {
   }
 }
 
-/// 封面缩略图（直连模式本地缓存封面）；无封面时回退音符图标。
+/// 封面缩略图（直连模式本地缓存封面）；无封面时回退方形容器 + 音符图标，
+/// 与有封面的 44×44 尺寸一致，保证列表文字缩进统一。
 class CoverThumb extends StatelessWidget {
   final String? coverPath;
   const CoverThumb({super.key, this.coverPath});
 
+  static const double _size = 44;
+
   @override
   Widget build(BuildContext context) {
     final color = Theme.of(context).colorScheme.primary;
-    if (coverPath == null) {
-      return Icon(Icons.music_note, color: color);
-    }
+    final placeholder = Container(
+      width: _size,
+      height: _size,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Icon(Icons.music_note, color: color, size: 22),
+    );
+    if (coverPath == null) return placeholder;
     return ClipRRect(
       borderRadius: BorderRadius.circular(6),
       child: Image.file(
         File(coverPath!),
-        width: 44,
-        height: 44,
+        width: _size,
+        height: _size,
         fit: BoxFit.cover,
         // 按显示尺寸 ×2 降采样解码，避免整首歌单列表每行全分辨率解码的内存/CPU 尖峰。
         cacheWidth: 88,
         cacheHeight: 88,
-        errorBuilder: (_, __, ___) => Icon(Icons.music_note, color: color),
+        errorBuilder: (_, __, ___) => placeholder,
       ),
     );
   }
