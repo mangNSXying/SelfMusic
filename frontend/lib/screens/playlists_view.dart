@@ -8,6 +8,7 @@ import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../providers/playlists_provider.dart';
+import '../utils/collection_sort.dart';
 import '../utils/song_title_format.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
@@ -16,6 +17,7 @@ import '../widgets/list_selection.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_tile.dart';
+import '../widgets/sort_menu_button.dart';
 import '../widgets/view_mode_toggle.dart';
 
 /// 歌单栏：列表页（新建 / 重命名 / 删除 / 长按多选删除）与详情原地子视图。
@@ -91,7 +93,16 @@ class _PlaylistsViewState extends State<PlaylistsView> {
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<PlaylistsProvider>();
-    final playlists = provider.playlists;
+    final nav = context.watch<NavigationProvider>();
+    final direct = context.watch<DirectSourceManager>();
+    final q = nav.search.trim().toLowerCase();
+    final all = provider.playlists;
+    final playlists = sortByCollection(
+        q.isEmpty
+            ? all
+            : all.where((p) => p.name.toLowerCase().contains(q)).toList(),
+        direct.settings.sortPlaylists,
+        (p) => p.name);
     final card = _modeOf(context) == CollectionViewMode.card;
 
     return Stack(
@@ -121,18 +132,31 @@ class _PlaylistsViewState extends State<PlaylistsView> {
                 CountHeader(
                   count: playlists.length,
                   unit: '个播放列表',
-                  trailing: ViewModeToggle(
-                    card: card,
-                    onChanged: (v) => _setMode(
-                        context,
-                        v
-                            ? CollectionViewMode.card
-                            : CollectionViewMode.list),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SortMenuButton(
+                        value: direct.settings.sortPlaylists,
+                        onChanged: (v) => setState(
+                            () => direct.settings.sortPlaylists = v),
+                      ),
+                      ViewModeToggle(
+                        card: card,
+                        onChanged: (v) => _setMode(
+                            context,
+                            v
+                                ? CollectionViewMode.card
+                                : CollectionViewMode.list),
+                      ),
+                    ],
                   ),
                 ),
               Expanded(
                 child: playlists.isEmpty
-                    ? const Center(child: Text('暂无歌单，点右下角「+」创建'))
+                    ? Center(
+                        child: Text(all.isEmpty
+                            ? '暂无歌单，点右下角「+」创建'
+                            : '无匹配播放列表'))
                     : card
                         ? SquareCardGrid(
                             itemCount: playlists.length,
@@ -332,8 +356,10 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
   /// 已就位（首帧 initialScrollOffset 或顶部）；true 后不再触发兜底追焦。
   bool _located = false;
 
-  /// 歌单数据按 [PlaylistsProvider.dataRevision] 缓存，避免每次重建重查 SQLite。
+  /// 歌单数据按 [PlaylistsProvider.dataRevision] 缓存，避免每次重建重查 SQLite；
+  /// 排序偏好变化时同样重排（平行数组按同一顺序重排，行与歌不拆散）。
   int _songsRevision = -1;
+  CollectionSort _sort = CollectionSort.defaultOrder;
   List<Song> _songs = const [];
   List<PlaylistItemRow> _items = const [];
 
@@ -355,13 +381,23 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
     if (widget.playlistId != oldWidget.playlistId) _songsRevision = -1;
   }
 
-  /// 按数据版本拉取歌单条目；数据未变直接复用缓存（0 次 SQLite）。
-  void _syncSongs(PlaylistsProvider provider) {
+  /// 按数据版本拉取歌单条目；数据未变且排序未变时直接复用缓存（0 次 SQLite）。
+  void _syncSongs(PlaylistsProvider provider, CollectionSort sort,
+      double Function(Song) factorOf) {
     final rev = provider.dataRevision;
-    if (rev == _songsRevision) return;
+    if (rev == _songsRevision && sort == _sort) return;
     _songsRevision = rev;
-    _items = provider.itemsOf(widget.playlistId);
-    _songs = List.unmodifiable(_items.map(provider.songOf));
+    _sort = sort;
+    final items = provider.itemsOf(widget.playlistId);
+    final songs = [for (final r in items) provider.songOf(r)];
+    if (sort == CollectionSort.defaultOrder) {
+      _items = items;
+      _songs = List.unmodifiable(songs);
+      return;
+    }
+    final order = songSortOrder(songs, sort, factorOf: factorOf);
+    _items = [for (final i in order) items[i]];
+    _songs = List.unmodifiable([for (final i in order) songs[i]]);
   }
 
   /// 兜底定位到第 [index] 行（首次数据未加载时的边缘情况）：
@@ -380,9 +416,11 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
     // 未加载时置 0，交给 build 里的兜底追焦逻辑。
     final provider = context.read<PlaylistsProvider>();
     final player = context.read<PlayerProvider>();
+    final direct = context.read<DirectSourceManager>();
     var firstIdx = -1;
     if (provider.loaded && !_located) {
-      _syncSongs(provider);
+      _syncSongs(provider, direct.settings.sortPlaylistDetail,
+          direct.weight.factorOf);
       firstIdx = _songs.indexWhere(player.isCurrent);
     }
     if (firstIdx >= 0) {
@@ -439,15 +477,16 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
     final nav = context.watch<NavigationProvider>();
     final provider = context.watch<PlaylistsProvider>();
     final player = context.watch<PlayerProvider>();
-    final titleFormat =
-        context.watch<DirectSourceManager>().settings.songTitleFormat;
+    final direct = context.watch<DirectSourceManager>();
+    final titleFormat = direct.settings.songTitleFormat;
 
     PlaylistRow? playlist;
     for (final p in provider.playlists) {
       if (p.id == widget.playlistId) playlist = p;
     }
     // 数据版本不变时复用缓存的歌单条目（避免每帧/每次通知重查 SQLite）。
-    _syncSongs(provider);
+    _syncSongs(provider, direct.settings.sortPlaylistDetail,
+        direct.weight.factorOf);
     var currentIdx = -1;
     currentIdx = _songs.indexWhere((s) => player.isCurrent(s));
 
@@ -514,7 +553,15 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
             ],
           ),
         ),
-        CountHeader(count: _songs.length),
+        CountHeader(
+          count: _songs.length,
+          trailing: SortMenuButton(
+            value: direct.settings.sortPlaylistDetail,
+            withWeight: true,
+            onChanged: (v) => setState(
+                () => direct.settings.sortPlaylistDetail = v),
+          ),
+        ),
         if (_sel.active)
           SelectionBar(            total: _items.length,
             selectedCount: _sel.of(_items.map((r) => songKey(provider.songOf(r))))

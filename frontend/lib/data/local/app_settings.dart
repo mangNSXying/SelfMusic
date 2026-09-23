@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import '../../utils/collection_sort.dart';
 import 'local_index.dart';
 
 /// 播放页（播放/歌词）切换过渡动画。
@@ -118,6 +119,15 @@ class AppSettings {
   static const String kViewModeSources = 'view_mode_sources';
   static const String kViewModeAlbums = 'view_mode_albums';
   static const String kViewModeArtists = 'view_mode_artists';
+
+  /// 内容页排序（按页持久化）：默认 / 字符升降 / 权重升降（权重仅歌曲类）。
+  static const String kSortSongs = 'sort_songs';
+  static const String kSortFavorites = 'sort_favorites';
+  static const String kSortPlaylistDetail = 'sort_playlist_detail';
+  static const String kSortAlbums = 'sort_albums';
+  static const String kSortArtists = 'sort_artists';
+  static const String kSortPlaylists = 'sort_playlists';
+  static const String kSortSources = 'sort_sources';
 
   /// 默认缓存总上限（512 MB）。
   static const int defaultCacheMaxBytes = 512 * 1024 * 1024;
@@ -354,6 +364,35 @@ class AppSettings {
   set viewModeArtists(CollectionViewMode v) =>
       index.settingsSet(kViewModeArtists, v.storeValue);
 
+  // ---------- 内容页排序（按页持久化） ----------
+
+  CollectionSort _sort(String key) =>
+      CollectionSortX.parse(index.settingsGet(key));
+  void _setSort(String key, CollectionSort v) =>
+      index.settingsSet(key, v.name);
+
+  CollectionSort get sortSongs => _sort(kSortSongs);
+  set sortSongs(CollectionSort v) => _setSort(kSortSongs, v);
+
+  CollectionSort get sortFavorites => _sort(kSortFavorites);
+  set sortFavorites(CollectionSort v) => _setSort(kSortFavorites, v);
+
+  CollectionSort get sortPlaylistDetail => _sort(kSortPlaylistDetail);
+  set sortPlaylistDetail(CollectionSort v) =>
+      _setSort(kSortPlaylistDetail, v);
+
+  CollectionSort get sortAlbums => _sort(kSortAlbums);
+  set sortAlbums(CollectionSort v) => _setSort(kSortAlbums, v);
+
+  CollectionSort get sortArtists => _sort(kSortArtists);
+  set sortArtists(CollectionSort v) => _setSort(kSortArtists, v);
+
+  CollectionSort get sortPlaylists => _sort(kSortPlaylists);
+  set sortPlaylists(CollectionSort v) => _setSort(kSortPlaylists, v);
+
+  CollectionSort get sortSources => _sort(kSortSources);
+  set sortSources(CollectionSort v) => _setSort(kSortSources, v);
+
   // ---------- 通知分区（settings.md §3.6） ----------
 
   bool get audioFocusEnabled =>
@@ -401,5 +440,12 @@ class AppSettings {
     kViewModeSources,
     kViewModeAlbums,
     kViewModeArtists,
+    kSortSongs,
+    kSortFavorites,
+    kSortPlaylistDetail,
+    kSortAlbums,
+    kSortArtists,
+    kSortPlaylists,
+    kSortSources,
   ];
 }

@@ -11,6 +11,7 @@ import '../models/song.dart';
 import '../models/album.dart';
 import '../models/artist.dart';
 import '../theme/app_theme.dart';
+import '../utils/collection_sort.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/area_switcher.dart';
@@ -21,6 +22,7 @@ import '../widgets/page_transition.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_tile.dart';
+import '../widgets/sort_menu_button.dart';
 import '../widgets/square_card.dart';
 import '../widgets/view_mode_toggle.dart';
 import 'settings_screen.dart';
@@ -209,6 +211,18 @@ class _SectionPagerState extends State<SectionPager> {
   }
 }
 
+/// 歌曲搜索过滤（标题/歌手，忽略大小写；空白词返回原列表）。
+/// 歌曲页与喜欢页共用，保证两处匹配语义一致。
+List<Song> filterSongs(List<Song> songs, String q) {
+  if (q.trim().isEmpty) return songs;
+  final qq = q.trim().toLowerCase();
+  return songs
+      .where((s) =>
+          (s.title.toLowerCase().contains(qq)) ||
+          (s.artist?.toLowerCase().contains(qq) ?? false))
+      .toList();
+}
+
 /// 喜欢（收藏）列表：统一来自 play_meta.is_favorite（直连 + 服务器）。
 class _LikedView extends StatefulWidget {
   const _LikedView();
@@ -245,16 +259,28 @@ class _LikedViewState extends State<_LikedView> {
   @override
   Widget build(BuildContext context) {
     final direct = context.watch<DirectSourceManager>();
+    final nav = context.watch<NavigationProvider>();
     final player = context.read<PlayerProvider>();
     final lib = context.read<LibraryProvider>();
-    final songs = direct.favoriteSongs();
+    final all = direct.favoriteSongs();
+    final songs = sortSongs(filterSongs(all, nav.search),
+        direct.settings.sortFavorites,
+        factorOf: direct.weight.factorOf);
 
     return Stack(
       children: [
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-              CountHeader(count: songs.length),
+              CountHeader(
+                count: songs.length,
+                trailing: SortMenuButton(
+                  value: direct.settings.sortFavorites,
+                  withWeight: true,
+                  onChanged: (v) =>
+                      setState(() => direct.settings.sortFavorites = v),
+                ),
+              ),
               if (_sel.active)
                 SelectionBar(
                   total: songs.length,
@@ -278,7 +304,10 @@ class _LikedViewState extends State<_LikedView> {
               if (_sel.active) const Divider(height: 1),
               Expanded(
                 child: songs.isEmpty
-                    ? const Center(child: Text('暂无喜欢的歌曲，去歌曲页点 ♡ 收藏'))
+                    ? Center(
+                        child: Text(all.isEmpty
+                            ? '暂无喜欢的歌曲，去歌曲页点 ♡ 收藏'
+                            : '无匹配歌曲'))
                     : ListView.separated(
                         itemCount: songs.length,
                         separatorBuilder: (_, __) => const Divider(height: 1, indent: 72),
@@ -363,16 +392,26 @@ class _SongsViewState extends State<_SongsView> {
     final nav = context.watch<NavigationProvider>();
     final lib = context.watch<LibraryProvider>();
     final player = context.read<PlayerProvider>();
+    final direct = context.watch<DirectSourceManager>();
 
-    // 依据全局搜索词加载（由 LibraryProvider 配合）。
-    final songs = _filter(lib.songs, nav.search);
+    // 依据全局搜索词过滤（喜欢页共用同一匹配函数），再按本页排序偏好排序。
+    final songs = sortSongs(filterSongs(lib.songs, nav.search),
+        direct.settings.sortSongs,
+        factorOf: direct.weight.factorOf);
 
     return Column(
       children: [
         if (lib.loading) const LinearProgressIndicator(minHeight: 2),
         if (lib.error != null)
           Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
-        CountHeader(count: songs.length),
+        CountHeader(
+          count: songs.length,
+          trailing: SortMenuButton(
+            value: direct.settings.sortSongs,
+            withWeight: true,
+            onChanged: (v) => setState(() => direct.settings.sortSongs = v),
+          ),
+        ),
         if (_sel.active)
           SelectionBar(
             total: songs.length,
@@ -424,14 +463,6 @@ class _SongsViewState extends State<_SongsView> {
       ],
     );
   }
-
-  List<Song> _filter(List<Song> songs, String q) {
-    if (q.trim().isEmpty) return songs;
-    final qq = q.trim().toLowerCase();
-    return songs.where((s) =>
-        (s.title.toLowerCase().contains(qq)) ||
-        (s.artist?.toLowerCase().contains(qq) ?? false)).toList();
-  }
 }
 
 class _AlbumsView extends StatefulWidget {
@@ -473,7 +504,10 @@ class _AlbumsViewState extends State<_AlbumsView> {
   Widget build(BuildContext context) {
     final nav = context.watch<NavigationProvider>();
     final lib = context.watch<LibraryProvider>();
-    final albums = _filter(lib.albums, nav.search);
+    final direct = context.watch<DirectSourceManager>();
+    final albums = sortByCollection(
+        _filter(lib.albums, nav.search), direct.settings.sortAlbums,
+        (a) => a.album);
     final card = _modeOf(context) == CollectionViewMode.card;
 
     return Column(
@@ -484,10 +518,19 @@ class _AlbumsViewState extends State<_AlbumsView> {
         CountHeader(
           count: albums.length,
           unit: '张',
-          trailing: ViewModeToggle(
-            card: card,
-            onChanged: (v) => _setMode(
-                context, v ? CollectionViewMode.card : CollectionViewMode.list),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SortMenuButton(
+                value: direct.settings.sortAlbums,
+                onChanged: (v) => setState(() => direct.settings.sortAlbums = v),
+              ),
+              ViewModeToggle(
+                card: card,
+                onChanged: (v) => _setMode(
+                    context, v ? CollectionViewMode.card : CollectionViewMode.list),
+              ),
+            ],
           ),
         ),
         Expanded(
@@ -676,7 +719,10 @@ class _ArtistsViewState extends State<_ArtistsView> {
   Widget build(BuildContext context) {
     final nav = context.watch<NavigationProvider>();
     final lib = context.watch<LibraryProvider>();
-    final artists = _filter(lib.artists, nav.search);
+    final direct = context.watch<DirectSourceManager>();
+    final artists = sortByCollection(
+        _filter(lib.artists, nav.search), direct.settings.sortArtists,
+        (a) => a.name);
     final card = _modeOf(context) == CollectionViewMode.card;
 
     return Column(
@@ -687,10 +733,20 @@ class _ArtistsViewState extends State<_ArtistsView> {
         CountHeader(
           count: artists.length,
           unit: '位',
-          trailing: ViewModeToggle(
-            card: card,
-            onChanged: (v) => _setMode(
-                context, v ? CollectionViewMode.card : CollectionViewMode.list),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SortMenuButton(
+                value: direct.settings.sortArtists,
+                onChanged: (v) =>
+                    setState(() => direct.settings.sortArtists = v),
+              ),
+              ViewModeToggle(
+                card: card,
+                onChanged: (v) => _setMode(
+                    context, v ? CollectionViewMode.card : CollectionViewMode.list),
+              ),
+            ],
           ),
         ),
         Expanded(

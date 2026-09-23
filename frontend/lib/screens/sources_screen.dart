@@ -7,8 +7,10 @@ import '../data/sources/music_source.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../services/api_client.dart';
+import '../utils/collection_sort.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
+import '../widgets/sort_menu_button.dart';
 import '../widgets/square_card.dart';
 import '../widgets/view_mode_toggle.dart';
 
@@ -40,25 +42,37 @@ class _SourcesScreenState extends State<SourcesScreen> {
     final direct = context.watch<DirectSourceManager>();
     final scheme = Theme.of(context).colorScheme;
     final card = _modeOf(context) == CollectionViewMode.card;
+    final sources = sortByCollection(
+        direct.sources, direct.settings.sortSources, (s) => s.name);
 
     return Stack(
       children: [
         Column(
           children: [
               CountHeader(
-                count: direct.sources.length,
+                count: sources.length,
                 unit: '个播放源',
-                trailing: ViewModeToggle(
-                  card: card,
-                  onChanged: (v) => _setMode(
-                      context,
-                      v
-                          ? CollectionViewMode.card
-                          : CollectionViewMode.list),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SortMenuButton(
+                      value: direct.settings.sortSources,
+                      onChanged: (v) =>
+                          setState(() => direct.settings.sortSources = v),
+                    ),
+                    ViewModeToggle(
+                      card: card,
+                      onChanged: (v) => _setMode(
+                          context,
+                          v
+                              ? CollectionViewMode.card
+                              : CollectionViewMode.list),
+                    ),
+                  ],
                 ),
               ),
               Expanded(
-                child: direct.sources.isEmpty
+                child: sources.isEmpty
                     ? Padding(
                         padding: const EdgeInsets.symmetric(vertical: 24),
                         child: Text('尚未添加播放源，点右下角「+」添加',
@@ -67,16 +81,16 @@ class _SourcesScreenState extends State<SourcesScreen> {
                       )
                     : card
                         ? SquareCardGrid(
-                            itemCount: direct.sources.length,
+                            itemCount: sources.length,
                             itemBuilder: (c, i) => _DirectSourceCard(
-                                sourceKey: direct.sources[i].key),
+                                sourceKey: sources[i].key),
                           )
                         : ListView.separated(
-                            itemCount: direct.sources.length,
+                            itemCount: sources.length,
                             separatorBuilder: (_, __) =>
                                 const Divider(height: 1, indent: 56),
                             itemBuilder: (c, i) =>
-                                _DirectSourceTile(sourceKey: direct.sources[i].key),
+                                _DirectSourceTile(sourceKey: sources[i].key),
                           ),
               ),
             ],
