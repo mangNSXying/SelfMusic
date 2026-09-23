@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -83,9 +85,12 @@ class _PlaylistsViewState extends State<PlaylistsView> {
     );
     if (ok != true || !mounted) return;
     final nav = context.read<NavigationProvider>();
+    final player = context.read<PlayerProvider>();
     for (final id in _sel.selected.toList()) {
       if (nav.browsingPlaylistId == id) nav.exitPlaylist();
+      final uuid = provider.store.index.playlistUuidOf(id);
       provider.delete(id);
+      if (uuid != null) player.onPlaylistDeleted(uuid);
     }
     setState(_sel.cancel);
   }
@@ -464,12 +469,27 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
     );
     if (ok != true || !mounted) return;
     // 从后往前移除，避免 store 序号移位问题。
+    final removed = <Song>[];
     for (var i = itemsNow.length - 1; i >= 0; i--) {
       if (_sel.contains(songKey(songsNow[i]))) {
         provider.removeItemRow(widget.playlistId, itemsNow[i]);
+        removed.add(songsNow[i]);
       }
     }
     setState(_sel.cancel);
+    _notifyPlayerRemoved(provider, removed);
+  }
+
+  /// 歌单删歌后联动当前播放（删到当前曲则播新末尾；深层列表移除引用）。
+  void _notifyPlayerRemoved(PlaylistsProvider provider, List<Song> removed) {
+    if (removed.isEmpty) return;
+    final uuid = provider.store.index.playlistUuidOf(widget.playlistId);
+    if (uuid == null) return;
+    final player = context.read<PlayerProvider>();
+    final count = provider.countOf(widget.playlistId);
+    for (final s in removed) {
+      unawaited(player.onPlaylistSongRemoved(uuid, s, newPlaylistCount: count));
+    }
   }
 
   @override
@@ -642,6 +662,8 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
                                   case 'remove':
                                     provider.removeItemRow(
                                         widget.playlistId, row);
+                                    _notifyPlayerRemoved(
+                                        provider, [provider.songOf(row)]);
                                 }
                               },
                               itemBuilder: (_) => [
