@@ -119,10 +119,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           player: player,
                           direct: context.watch<DirectSourceManager>(),
                           cs: Theme.of(context).colorScheme),
-                  Positioned(
-                      top: 6,
-                      left: 6,
-                      child: _BackToContentButton(bare: !desktopLandscape)),
+                  const Positioned(
+                      top: 6, left: 6, child: _BackToContentButton()),
                 ],
               )
             : PageView(
@@ -199,28 +197,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
 /// 播放页左上角「回到内容页」向下箭头：悬浮覆盖（Positioned 入 Stack），
 /// 不参与布局，因此不压缩封面及其他内容的显示空间；点击与下滑返回同路径
-/// （置意图位 → Root 驱动悬浮层下降动画）。
+/// （置意图位 → Root 驱动悬浮层下降动画）。恒素显，无圆形底/阴影。
 class _BackToContentButton extends StatelessWidget {
-  /// 手机横屏三列页：true 时去掉圆形底/阴影（参照稿箭头素显）。
-  final bool bare;
-  const _BackToContentButton({this.bare = false});
+  const _BackToContentButton();
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final c = IconButton(
+    return IconButton(
       tooltip: '回到内容页',
       iconSize: 26,
       visualDensity: VisualDensity.compact,
       icon: const Icon(Icons.keyboard_arrow_down_rounded),
       onPressed: () => context.read<NavigationProvider>().closePlayer(),
-    );
-    if (bare) return c;
-    return Material(
-      color: cs.surface.withValues(alpha: 0.78),
-      shape: const CircleBorder(),
-      elevation: 1,
-      child: c,
     );
   }
 }
