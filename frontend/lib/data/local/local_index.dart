@@ -448,7 +448,12 @@ class LocalIndex {
 
   /// 批量落库（单事务），供扫描结束一次性写入，避免逐行 autocommit。
   ///
-  /// 用户手动改过元数据的行（user_edited=1）：标题/歌手/专辑不再被扫描覆盖。
+  /// 覆盖保护：
+  /// - 用户手动改过元数据的行（user_edited=1）：标题/歌手/专辑不再被扫描覆盖；
+  /// - 其余行：扫描未解析出的空值不覆盖已存值（浅扫描重扫不丢已读元数据）；
+  ///   兜底标题（文件名，[DirectSongRow.titleFromMeta]=false）仅在旧值为空时填入；
+  /// - meta_read：本次解析出时长（完整读取）才标已读，否则重置为未读，
+  ///   交给播放/后台补读做一次完整重读（指纹变化行数据自愈）。
   void upsertSongs(List<DirectSongRow> songs) {
     if (songs.isEmpty) return;
     _db!.execute('BEGIN');
@@ -458,17 +463,26 @@ class LocalIndex {
           genre, duration, format, size, mtime, etag, cover_path, is_favorite, missing, url, meta_read)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,CASE WHEN ? IS NOT NULL THEN 1 ELSE 0 END)
         ON CONFLICT(source_key, ref) DO UPDATE SET
-          title=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.title ELSE excluded.title END,
-          artist=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.artist ELSE excluded.artist END,
-          album=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.album ELSE excluded.album END,
-          album_artist=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.album_artist ELSE excluded.album_artist END,
-          track_no=excluded.track_no, year=excluded.year, genre=excluded.genre,
-          duration=excluded.duration, format=excluded.format, size=excluded.size,
-          mtime=excluded.mtime,
+          title=CASE
+            WHEN idx_songs.user_edited=1 THEN idx_songs.title
+            WHEN ? THEN COALESCE(NULLIF(excluded.title, ''), idx_songs.title)
+            ELSE COALESCE(idx_songs.title, excluded.title)
+          END,
+          artist=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.artist
+            ELSE COALESCE(NULLIF(excluded.artist, ''), idx_songs.artist) END,
+          album=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.album
+            ELSE COALESCE(NULLIF(excluded.album, ''), idx_songs.album) END,
+          album_artist=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.album_artist
+            ELSE COALESCE(NULLIF(excluded.album_artist, ''), idx_songs.album_artist) END,
+          track_no=COALESCE(excluded.track_no, idx_songs.track_no),
+          year=COALESCE(excluded.year, idx_songs.year),
+          genre=COALESCE(excluded.genre, idx_songs.genre),
+          duration=COALESCE(excluded.duration, idx_songs.duration),
+          format=excluded.format, size=excluded.size, mtime=excluded.mtime,
           etag=COALESCE(excluded.etag, idx_songs.etag),
           cover_path=COALESCE(excluded.cover_path, idx_songs.cover_path),
           url=COALESCE(excluded.url, idx_songs.url),
-          meta_read=CASE WHEN idx_songs.meta_read=1 THEN 1 WHEN excluded.duration IS NOT NULL THEN 1 ELSE 0 END,
+          meta_read=CASE WHEN excluded.duration IS NOT NULL THEN 1 ELSE 0 END,
           missing=0
       ''');
       try {
@@ -491,6 +505,7 @@ class LocalIndex {
             s.coverPath,
             s.url,
             s.duration,
+            s.titleFromMeta ? 1 : 0,
           ]);
         }
       } finally {
@@ -1364,6 +1379,16 @@ class LocalIndex {
     _db!.execute(
         'DELETE FROM playlist_items WHERE playlist_id=? AND source_key=?',
         [pid, 'server']);
+    // 服务端快照不含封面：先收集本机已有条目的封面快照，重建时按 (source_key, ref)
+    // 保留；本机索引有该歌时也用其封面回填（首次同步到本机也能直接显示封面）。
+    final existingCovers = <String, String>{};
+    for (final r in _db!.select(
+        'SELECT source_key, song_ref, cover_path FROM playlist_items '
+        'WHERE playlist_id=? AND cover_path IS NOT NULL',
+        [pid])) {
+      existingCovers['${r['source_key']}|${r['song_ref']}'] =
+          r['cover_path'] as String;
+    }
     for (final it in items) {
       // 源实例 uuid 可解析到本机源 → 直接以该源 key 落库（可播放、无重复行）。
       String key = 'server';
@@ -1377,6 +1402,15 @@ class LocalIndex {
             .toList();
         if (peers.length == 1) key = peers.first.key;
       }
+      // 封面保留：精确 ref → WebDAV 编码变体 → 本机索引实时封面。
+      String? cover = existingCovers['$key|${it.songRef}'];
+      if (cover == null) {
+        for (final v in webdavRefVariants(it.songRef)) {
+          cover = existingCovers['$key|$v'];
+          if (cover != null) break;
+        }
+      }
+      cover ??= songByRef(key, it.songRef)?.coverPath;
       _db!.execute(
           'DELETE FROM playlist_items WHERE playlist_id=? AND source_key=? AND song_ref=?',
           [pid, key, it.songRef]);
@@ -1391,7 +1425,7 @@ class LocalIndex {
         it.title,
         it.artist,
         it.album,
-        null,
+        cover,
         it.sortOrder,
         DateTime.now().toIso8601String(),
         it.source,
@@ -1673,6 +1707,9 @@ class DirectSongRow {
   final String ref;
   final String? url;
   final String title;
+
+  /// 标题是否来自真实标签（false=文件名兜底）：兜底标题不覆盖已存标题。
+  final bool titleFromMeta;
   final String? artist;
   final String? album;
   final String? albumArtist;
@@ -1690,6 +1727,7 @@ class DirectSongRow {
     required this.ref,
     this.url,
     required this.title,
+    this.titleFromMeta = true,
     this.artist,
     this.album,
     this.albumArtist,

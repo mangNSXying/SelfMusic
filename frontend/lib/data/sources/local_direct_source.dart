@@ -93,6 +93,7 @@ class LocalDirectSource implements MusicSource {
         sourceKey: item.row.sourceKey,
         ref: item.row.ref,
         title: item.row.title,
+        titleFromMeta: item.row.titleFromMeta,
         artist: item.row.artist,
         album: item.row.album,
         albumArtist: item.row.albumArtist,
@@ -363,13 +364,13 @@ class _LocalCandidate {
 
 DirectSongRow _rowFor(String key, String ref, String ext, int size, int mtime,
     AudioMeta? meta, bool fullMeta, bool fast) {
-  final title = (fast || meta?.title?.isNotEmpty != true)
-      ? fallbackTitle(ref)
-      : meta!.title!;
+  final titleFromMeta = !fast && (meta?.title?.isNotEmpty ?? false);
+  final title = titleFromMeta ? meta!.title! : fallbackTitle(ref);
   return DirectSongRow(
     sourceKey: key,
     ref: ref,
     title: title,
+    titleFromMeta: titleFromMeta,
     artist: meta?.artist,
     album: meta?.album,
     albumArtist: meta?.albumArtist,

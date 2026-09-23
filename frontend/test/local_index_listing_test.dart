@@ -424,4 +424,97 @@ void main() {
     index.close();
     dir.deleteSync(recursive: true);
   });
+
+  test('重扫覆盖保护：浅扫描空值不清空已读字段，兜底标题不覆盖', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir = await Directory.systemTemp.createTemp('selfmusic_upsert_');
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+
+    const key = 'local:test';
+    const ref = 'a.flac';
+    // 已完整读取的行（duration 非空 → meta_read=1）。
+    index.upsertSongs([
+      DirectSongRow(
+        sourceKey: key,
+        ref: ref,
+        title: '真标题',
+        titleFromMeta: true,
+        artist: '歌手',
+        album: '专辑',
+        albumArtist: '专辑歌手',
+        trackNo: 3,
+        year: 2020,
+        genre: '古典',
+        duration: 180,
+        format: 'flac',
+        size: 100,
+        mtime: 1,
+        coverPath: '/tmp/c.jpg',
+      ),
+    ]);
+    expect(index.songByRef(key, ref)!.metaRead, isTrue);
+
+    // 指变化 + minimal 扫描：非空头部值更新，空值不覆盖已读字段；重置未读待自愈。
+    index.upsertSongs([
+      DirectSongRow(
+        sourceKey: key,
+        ref: ref,
+        title: '头部标题',
+        titleFromMeta: true,
+        artist: '头部歌手',
+        format: 'flac',
+        size: 100,
+        mtime: 2,
+      ),
+    ]);
+    final mid = index.songByRef(key, ref)!;
+    expect(mid.title, '头部标题');
+    expect(mid.artist, '头部歌手');
+    expect(mid.albumName, '专辑');
+    expect(mid.duration, 180);
+    expect(mid.trackNo, 3);
+    expect(mid.year, 2020);
+    expect(mid.genre, '古典');
+    expect(mid.coverPath, '/tmp/c.jpg');
+    expect(mid.metaRead, isFalse);
+
+    // fast 兜底标题（titleFromMeta=false）不覆盖已读标题。
+    index.upsertSongs([
+      DirectSongRow(
+        sourceKey: key,
+        ref: ref,
+        title: 'a',
+        titleFromMeta: false,
+        format: 'flac',
+        size: 100,
+        mtime: 3,
+      ),
+    ]);
+    expect(index.songByRef(key, ref)!.title, '头部标题');
+
+    // full 扫描（duration 非空）覆盖并标已读。
+    index.upsertSongs([
+      DirectSongRow(
+        sourceKey: key,
+        ref: ref,
+        title: '重读标题',
+        titleFromMeta: true,
+        artist: '新歌手',
+        duration: 200,
+        format: 'flac',
+        size: 100,
+        mtime: 4,
+      ),
+    ]);
+    final full = index.songByRef(key, ref)!;
+    expect(full.title, '重读标题');
+    expect(full.artist, '新歌手');
+    expect(full.duration, 200);
+    expect(full.metaRead, isTrue);
+
+    index.close();
+    dir.deleteSync(recursive: true);
+  });
 }

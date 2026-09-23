@@ -113,6 +113,7 @@ class WebdavDirectSource implements MusicSource {
         ref: item.row.ref,
         url: item.row.url,
         title: item.row.title,
+        titleFromMeta: item.row.titleFromMeta,
         artist: item.row.artist,
         album: item.row.album,
         albumArtist: item.row.albumArtist,
@@ -445,14 +446,14 @@ enum _OutKind { added, updated, unchanged }
 
 DirectSongRow _rowFor(String key, _WebdavEntry f, AudioMeta? meta,
     bool fullMeta, bool fast) {
-  final title = (fast || meta?.title?.isNotEmpty != true)
-      ? fallbackTitle(f.href)
-      : meta!.title!;
+  final titleFromMeta = !fast && (meta?.title?.isNotEmpty ?? false);
+  final title = titleFromMeta ? meta!.title! : fallbackTitle(f.href);
   return DirectSongRow(
     sourceKey: key,
     ref: f.href,
     url: f.fullUrl,
     title: title,
+    titleFromMeta: titleFromMeta,
     artist: meta?.artist,
     album: meta?.album,
     albumArtist: meta?.albumArtist,

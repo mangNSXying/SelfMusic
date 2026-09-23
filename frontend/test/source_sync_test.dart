@@ -230,6 +230,92 @@ void main() {
     index.close();
   });
 
+  test('歌单同步保留封面：已有条目快照保留；本机索引封面可回填', () async {
+    final index = await _openIndex();
+    index.upsertSource('webdav:NAS', 'webdav', 'NAS',
+        jsonEncode({'name': 'NAS', 'baseUrl': _addr}));
+    final uuid = index.ensureSourceUuid('webdav:NAS');
+
+    index.applyPlaylistSnapshot(
+      uuid: 'puuid-cover',
+      name: 'p',
+      deleted: false,
+      items: [
+        SyncedItem(
+            sourceId: uuid,
+            source: 'webdav',
+            songRef: '/music/a.flac',
+            title: 'A',
+            sortOrder: 1),
+      ],
+    );
+    final pid = index.playlistIdOfUuid('puuid-cover')!;
+
+    // 本机补齐条目封面快照（模拟本地已有封面）。
+    index.removePlaylistItem(pid, 'webdav:NAS', '/music/a.flac');
+    index.addPlaylistItem(pid,
+        sourceKey: 'webdav:NAS',
+        songRef: '/music/a.flac',
+        title: 'A',
+        coverPath: '/tmp/a.jpg',
+        source: 'webdav');
+
+    // 再次同步（服务端快照无封面）→ 保留本机封面快照。
+    index.applyPlaylistSnapshot(
+      uuid: 'puuid-cover',
+      name: 'p',
+      deleted: false,
+      items: [
+        SyncedItem(
+            sourceId: uuid,
+            source: 'webdav',
+            songRef: '/music/a.flac',
+            title: 'A',
+            sortOrder: 1),
+      ],
+    );
+    expect(index.playlistItems(pid).single.coverPath, '/tmp/a.jpg');
+
+    // 本机索引兜底：歌已扫描出封面，同步首次落库即回填。
+    index.upsertSongs([
+      DirectSongRow(
+        sourceKey: 'webdav:NAS',
+        ref: '/music/b.flac',
+        title: 'B',
+        titleFromMeta: true,
+        format: 'flac',
+        size: 1,
+        mtime: 1,
+        coverPath: '/tmp/b.jpg',
+      ),
+    ]);
+    index.applyPlaylistSnapshot(
+      uuid: 'puuid-cover',
+      name: 'p',
+      deleted: false,
+      items: [
+        SyncedItem(
+            sourceId: uuid,
+            source: 'webdav',
+            songRef: '/music/a.flac',
+            title: 'A',
+            sortOrder: 1),
+        SyncedItem(
+            sourceId: uuid,
+            source: 'webdav',
+            songRef: '/music/b.flac',
+            title: 'B',
+            sortOrder: 2),
+      ],
+    );
+    final items = index.playlistItems(pid);
+    expect(items.length, 2);
+    expect(items[0].coverPath, '/tmp/a.jpg');
+    expect(items[1].coverPath, '/tmp/b.jpg');
+
+    index.close();
+  });
+
   test('源去重地址工具：WebDAV=baseUrl，本地源不参与同步', () {
     expect(isSyncableKind('local'), isFalse);
     expect(isSyncableKind('webdav'), isTrue);
