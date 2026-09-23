@@ -102,10 +102,17 @@ class _PlaylistsViewState extends State<PlaylistsView> {
     final direct = context.watch<DirectSourceManager>();
     final q = nav.search.trim().toLowerCase();
     final all = provider.playlists;
+    // 搜索内容是歌单中的具体歌曲（标题/歌手），歌单名同样可命中。
+    final matchIds = q.isEmpty
+        ? const <int>{}
+        : provider.store.index.playlistIdsMatchingSong(q);
     final playlists = sortByCollection(
         q.isEmpty
             ? all
-            : all.where((p) => p.name.toLowerCase().contains(q)).toList(),
+            : all
+                .where((p) =>
+                    p.name.toLowerCase().contains(q) || matchIds.contains(p.id))
+                .toList(),
         direct.settings.sortPlaylists,
         (p) => p.name);
     final card = _modeOf(context) == CollectionViewMode.card;

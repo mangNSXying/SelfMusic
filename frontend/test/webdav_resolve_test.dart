@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:selfmusic/data/sources/webdav_url.dart';
+import 'package:selfmusic/utils/url_display.dart';
 
 void main() {
   group('webdavNormalizeBase', () {
@@ -92,6 +93,27 @@ void main() {
       expect(fromDecoded, contains(encoded));
       // 无需编码的纯 ASCII 路径只有一种形态。
       expect(webdavRefVariants('/dav/song.mp3'), ['/dav/song.mp3']);
+    });
+  });
+
+  group('decodeUrlForDisplay', () {
+    test('百分号编码 URL 解码为可读文本（展示用）', () {
+      expect(
+          decodeUrlForDisplay(
+              'http://h:5005/dav/%E5%8F%A4%E5%85%B8/%E5%A4%9C%E6%9B%B2.flac'),
+          'http://h:5005/dav/古典/夜曲.flac');
+      expect(
+          decodeUrlForDisplay(
+              'http://h/dav/%E4%BD%90%E8%97%A4%20-%20Growing%21.flac'),
+          'http://h/dav/佐藤 - Growing!.flac');
+    });
+
+    test('无编码/非 URL 原样返回，坏编码不抛错', () {
+      expect(decodeUrlForDisplay('/local/path/歌曲.flac'), '/local/path/歌曲.flac');
+      expect(decodeUrlForDisplay('http://h/dav/song.mp3'), 'http://h/dav/song.mp3');
+      expect(decodeUrlForDisplay('http://h/dav/%E5%8F%A4'), 'http://h/dav/古');
+      expect(decodeUrlForDisplay('http://h/dav/%E5%8F%A4%ZZ'),
+          'http://h/dav/%E5%8F%A4%ZZ');
     });
   });
 }

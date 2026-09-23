@@ -15,6 +15,7 @@ import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../utils/duration_format.dart';
 import '../utils/song_title_format.dart';
+import '../utils/url_display.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/lyrics_view.dart';
@@ -980,9 +981,9 @@ class _SongInfoDialog extends StatelessWidget {
     // 元数据字段：未读取 → 标注「待读取」；已读取且无值 → 留白（—）。
     String? optField(String? v) => song.metaDisplay(v);
     // 路径：优先由对应直连源解析真实可读路径（本地绝对路径/WebDAV URL/UNC），
-    // 源不在本机时回落到持久化完整 URL 或源内引用。
+    // 源不在本机时回落到持久化完整 URL 或源内引用；URL 百分号编码展示时解码。
     final displayPath = direct.sourceByKey(song.sourceKey)?.displayPath(song) ??
-        (song.sourceUrl ?? song.sourceRef);
+        decodeUrlForDisplay(song.sourceUrl ?? song.sourceRef);
     final rows = <List<String>>[
       ['标题', song.title],
       ['歌手', optField(song.artist) ?? '—'],

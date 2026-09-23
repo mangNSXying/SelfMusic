@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 import 'package:xml/xml.dart';
 
 import '../../models/song.dart';
+import '../../utils/url_display.dart';
 import 'music_source.dart';
 import 'scan_worker.dart';
 import 'sibling_cover.dart';
@@ -147,7 +148,8 @@ class WebdavDirectSource implements MusicSource {
   }
 
   @override
-  String displayPath(Song song) => _playUrl(song) ?? song.sourceRef;
+  String displayPath(Song song) =>
+      decodeUrlForDisplay(_playUrl(song) ?? song.sourceRef);
 
   @override
   Future<OpenedStream> open(Song song, {IntRange? range}) async {

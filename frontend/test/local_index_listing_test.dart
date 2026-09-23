@@ -394,4 +394,34 @@ void main() {
     index.close();
     dir.deleteSync(recursive: true);
   });
+
+  test('歌单内歌曲搜索：标题/歌手、忽略大小写、特殊字符转义', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir = await Directory.systemTemp.createTemp('selfmusic_plsearch_');
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+
+    index.createPlaylist('古典');
+    index.createPlaylist('流行');
+    final idle = index.listPlaylists()
+        .firstWhere((p) => p.name == '古典')
+        .id;
+    final pop = index.listPlaylists().firstWhere((p) => p.name == '流行').id;
+    index.addPlaylistItem(idle,
+        sourceKey: 'local:x', songRef: 'a', title: 'Nocturne Op.9', artist: 'Chopin');
+    index.addPlaylistItem(pop,
+        sourceKey: 'local:x', songRef: 'b', title: '夜曲', artist: '周杰伦');
+
+    expect(index.playlistIdsMatchingSong('nocturne'), {idle});
+    expect(index.playlistIdsMatchingSong('chopin'), {idle});
+    expect(index.playlistIdsMatchingSong('夜曲'), {pop});
+    expect(index.playlistIdsMatchingSong('不存在'), isEmpty);
+    // 无通配符注入：% / _ 按字面匹配。
+    expect(index.playlistIdsMatchingSong('%'), isEmpty);
+    expect(index.playlistIdsMatchingSong('_'), isEmpty);
+
+    index.close();
+    dir.deleteSync(recursive: true);
+  });
 }
