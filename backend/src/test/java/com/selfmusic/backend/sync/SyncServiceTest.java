@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.selfmusic.backend.common.BizException;
 import com.selfmusic.backend.domain.entity.SongState;
+import com.selfmusic.backend.domain.entity.SyncEvent;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -146,6 +147,23 @@ class SyncServiceTest {
         ObjectNode p = mapper.createObjectNode();
         p.put("title", "  直连歌名  ");
         assertEquals("直连歌名", SyncService.shadowTitle(p, "/music/a.mp3"));
+    }
+
+    @Test
+    void selfEventsAreSkippedInPullCollection() {
+        SyncEvent own = new SyncEvent();
+        own.setDeviceClientId("dev-a");
+        SyncEvent other = new SyncEvent();
+        other.setDeviceClientId("dev-b");
+        SyncEvent legacy = new SyncEvent(); // 设备号缺失：保守保留
+        SyncEvent nullEvent = null;
+
+        assertTrue(SyncService.isSelfEvent("dev-a", own));
+        assertFalse(SyncService.isSelfEvent("dev-a", other));
+        assertFalse(SyncService.isSelfEvent("dev-a", legacy));
+        assertFalse(SyncService.isSelfEvent(null, own));
+        assertFalse(SyncService.isSelfEvent("", own));
+        assertFalse(SyncService.isSelfEvent("dev-a", nullEvent));
     }
 
     @Test

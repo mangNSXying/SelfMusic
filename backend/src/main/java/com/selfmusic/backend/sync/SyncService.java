@@ -135,6 +135,15 @@ public class SyncService {
         return !occurred.isBefore(lastEventAt);
     }
 
+    /**
+     * 自我回灌过滤：本设备产生的事件在 pull 收集实体时跳过（cursor 照常推进）。
+     * push 已强制 device_client_id == authClientId，故比对可靠；历史/缺失设备号保守保留。
+     */
+    public static boolean isSelfEvent(String authClientId, SyncEvent e) {
+        if (authClientId == null || authClientId.isBlank() || e == null) return false;
+        return authClientId.equals(e.getDeviceClientId());
+    }
+
     // ------------------------------------------------------------------
     // push：批量上推（幂等 + 重放 + correction 回执）
     // ------------------------------------------------------------------
@@ -570,6 +579,10 @@ public class SyncService {
         Set<String> playlistUuids = new LinkedHashSet<>();
         Set<String> sourceUuids = new LinkedHashSet<>();
         for (SyncEvent e : page) {
+            // 本设备事件不再回灌（push 已即时应用并同步返回 corrections）：
+            // 避免拉取自己的歌单/权重快照重建本地条目（丢失本机快照字段）。
+            // cursor 照常推进；他人事件正常收敛。
+            if (isSelfEvent(authClientId, e)) continue;
             JsonNode p = parsePayload(e.getPayload());
             if (e.getType().startsWith("song.")) {
                 Long sid = tryResolveStateId(p);
