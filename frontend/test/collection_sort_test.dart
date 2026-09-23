@@ -2,7 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:selfmusic/utils/collection_sort.dart';
 
-Song _song(String title, {String sourceRef = '', double? weight}) => Song(
+Song _song(String title, {String sourceRef = ''}) => Song(
       id: 0,
       sourceKey: 'local:x',
       title: title,

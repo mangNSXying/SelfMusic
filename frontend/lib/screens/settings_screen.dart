@@ -1235,6 +1235,14 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
           value: _settings.playerShowWeight,
           onChanged: (v) => setState(() => _settings.playerShowWeight = v),
         ),
+        ListTile(
+          leading: const Icon(Icons.lyrics_outlined),
+          title: const Text('歌词追焦等待'),
+          subtitle: Text(
+              '拖动歌词后 ${_settings.lyricFocusIdleSec} 秒无操作恢复自动追焦并回中当前行'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _pickLyricIdle(context),
+        ),
         const Divider(height: 32),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -1362,6 +1370,33 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
         PlayMode.loopOne => '单曲循环',
         PlayMode.weighted => '加权随机',
       };
+
+  Future<void> _pickLyricIdle(BuildContext context) async {
+    final current = _settings.lyricFocusIdleSec;
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: const Text('歌词追焦等待'),
+        children: [
+          RadioGroup<int>(
+            groupValue: current,
+            onChanged: (v) {
+              if (v != null) Navigator.of(c).pop(v);
+            },
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final s in AppSettings.lyricFocusIdleOptions)
+                  RadioListTile<int>(title: Text('$s 秒'), value: s),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+    if (picked == null || picked == current || !context.mounted) return;
+    setState(() => _settings.lyricFocusIdleSec = picked);
+  }
 }
 
 /// 常规设置（settings.md §3.5）：设置/歌单导出导入（不含令牌与源凭据）。

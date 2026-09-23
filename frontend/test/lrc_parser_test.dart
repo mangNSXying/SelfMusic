@@ -50,6 +50,44 @@ void main() {
     expect(p.lines[2].time, const Duration(seconds: 3, milliseconds: 123));
   });
 
+  group('翻译歌词', () {
+    test('同行「原文 / 译文」拆分为译文（同一行整体）', () {
+      final p = parseLyrics('[00:01.00]Hello / 你好\n[00:05.00]World');
+      expect(p.lines[0].text, 'Hello');
+      expect(p.lines[0].translation, '你好');
+      expect(p.lines[0].time, const Duration(seconds: 1));
+      expect(p.lines[1].translation, isNull);
+    });
+
+    test('无时间轴独立译文行归属上一行', () {
+      final p = parseLyrics('[00:01.00]Hello\n你好\n[00:05.00]World');
+      expect(p.lines.length, 2);
+      expect(p.lines[0].text, 'Hello');
+      expect(p.lines[0].translation, '你好');
+      expect(p.lines[1].translation, isNull);
+    });
+
+    test('连续无时间轴行作为多行译文拼接', () {
+      final p = parseLyrics('[00:01.00]Hello\n你好\n世界');
+      expect(p.lines.single.translation, '你好\n世界');
+    });
+
+    test('无时间轴行出现在首行时间轴之前时不误挂', () {
+      final p = parseLyrics('作词：某某\n[00:01.00]Hello');
+      expect(p.lines.single.text, 'Hello');
+      expect(p.lines.single.translation, isNull);
+    });
+
+    test('分隔符两侧为空时不当译文拆分', () {
+      final (t1, tr1) = splitLyricTranslation('A / ');
+      expect(tr1, isNull);
+      expect(t1, 'A / ');
+      final (t2, tr2) = splitLyricTranslation(' / 译文');
+      expect(tr2, isNull);
+      expect(t2, ' / 译文');
+    });
+  });
+
   group('lyricIndexAt', () {
     final lines = [
       const LyricLine(Duration(seconds: 1), 'a'),

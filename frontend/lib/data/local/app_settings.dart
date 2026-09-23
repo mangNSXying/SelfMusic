@@ -129,11 +129,17 @@ class AppSettings {
   static const String kSortPlaylists = 'sort_playlists';
   static const String kSortSources = 'sort_sources';
 
+  /// 歌词追焦等待秒数（用户拖动歌词后多久恢复自动跟随；播放设置可调）。
+  static const String kLyricFocusIdleSec = 'lyric_focus_idle_sec';
+
   /// 默认缓存总上限（512 MB）。
   static const int defaultCacheMaxBytes = 512 * 1024 * 1024;
   static const int defaultCacheSongLimit = 200;
 
   static const String defaultPlayMode = 'sequence';
+
+  /// 歌词追焦等待可选秒数。
+  static const List<int> lyricFocusIdleOptions = [2, 3, 5, 10, 15, 30];
 
   /// 均衡器默认频段增益（5 段，dB）。
   static const List<double> defaultEqBands = [0, 0, 0, 0, 0];
@@ -234,6 +240,12 @@ class AppSettings {
   /// （加权随机也先抽样确定，切歌时复用同一结果），开关只决定是否预载。
   bool get preloadNext => (index.settingsGet(kPreloadNext) ?? '1') == '1';
   set preloadNext(bool v) => index.settingsSet(kPreloadNext, v ? '1' : '0');
+
+  /// 歌词追焦等待秒数：用户拖动歌词后多久恢复自动追焦（默认 5 秒）。
+  int get lyricFocusIdleSec =>
+      int.tryParse(index.settingsGet(kLyricFocusIdleSec) ?? '') ?? 5;
+  set lyricFocusIdleSec(int v) =>
+      index.settingsSet(kLyricFocusIdleSec, v.toString());
 
   // ---------- 歌曲分区（settings.md §3.4） ----------
 
@@ -421,6 +433,7 @@ class AppSettings {
     kPlayerGestureSwipe,
     kSleepPlayThroughDefault,
     kPreloadNext,
+    kLyricFocusIdleSec,
     kScanIgnoreMinDurationSec,
     kScanIgnoreMinSizeBytes,
     kScanWifiOnly,
