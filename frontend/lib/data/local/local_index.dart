@@ -207,6 +207,14 @@ class LocalIndex {
         device_id     TEXT
       );
     ''');
+    // 深层列表：每个歌单一条「仅可修改末尾值」的历史栈（JSON 快照，仅本机）。
+    _db!.execute('''
+      CREATE TABLE IF NOT EXISTS deep_lists (
+        playlist_uuid TEXT PRIMARY KEY,
+        entries_json  TEXT NOT NULL,
+        updated_at    TEXT NOT NULL
+      );
+    ''');
     final mirrorCols = _db!
         .select('PRAGMA table_info(breakpoint_mirror)')
         .map((r) => r['name'] as String)
@@ -1125,8 +1133,11 @@ class LocalIndex {
   }
 
   void deletePlaylist(int id) {
+    final uuid = playlistUuidOf(id);
     _db!.execute('DELETE FROM playlist_items WHERE playlist_id=?', [id]);
     _db!.execute('DELETE FROM playlists WHERE id=?', [id]);
+    // 歌单删除同时清理其深层列表（隐藏历史栈）。
+    if (uuid != null) deleteDeepList(uuid);
   }
 
   List<PlaylistRow> listPlaylists() {
@@ -1496,6 +1507,27 @@ class LocalIndex {
   void deleteBreakpointMirror(String playlistUuid) {
     _db!.execute(
         'DELETE FROM breakpoint_mirror WHERE playlist_uuid=?', [playlistUuid]);
+  }
+
+  // ---------- 深层列表（隐藏历史栈，仅本机） ----------
+
+  void saveDeepList(String playlistUuid, String entriesJson) {
+    _db!.execute(
+        'INSERT INTO deep_lists(playlist_uuid, entries_json, updated_at) VALUES(?,?,?) '
+        'ON CONFLICT(playlist_uuid) DO UPDATE SET entries_json=excluded.entries_json, '
+        'updated_at=excluded.updated_at',
+        [playlistUuid, entriesJson, DateTime.now().toIso8601String()]);
+  }
+
+  String? loadDeepList(String playlistUuid) {
+    final rs = _db!.select(
+        'SELECT entries_json FROM deep_lists WHERE playlist_uuid=?',
+        [playlistUuid]);
+    return rs.isEmpty ? null : rs.first['entries_json'] as String;
+  }
+
+  void deleteDeepList(String playlistUuid) {
+    _db!.execute('DELETE FROM deep_lists WHERE playlist_uuid=?', [playlistUuid]);
   }
 
   // ---------- 应用设置（settings.md §3） ----------
