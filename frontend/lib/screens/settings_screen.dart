@@ -12,6 +12,7 @@ import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../providers/playlists_provider.dart';
 import '../services/api_client.dart';
+import '../services/bluetooth_service.dart';
 import '../services/server_settings.dart';
 import '../services/sync_engine.dart';
 import '../theme/app_theme.dart';
@@ -1251,10 +1252,18 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
         ),
         SwitchListTile(
           title: const Text('播放页屏幕常亮'),
-          subtitle: const Text('打开播放页期间不熄屏（蓝牙条件后续版本支持）'),
+          subtitle: const Text('打开播放页期间不熄屏；可限定仅在指定蓝牙设备连接时生效'),
           value: _settings.playerKeepScreenOn,
           onChanged: (v) => setState(() => _settings.playerKeepScreenOn = v),
         ),
+        if (_settings.playerKeepScreenOn)
+          ListTile(
+            leading: const Icon(Icons.bluetooth),
+            title: const Text('常亮限定蓝牙设备'),
+            subtitle: Text(_keepAwakeDeviceLabel()),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: _pickKeepAwakeDevice,
+          ),
         const Divider(height: 32),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -1382,6 +1391,51 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
         PlayMode.loopOne => '单曲循环',
         PlayMode.weighted => '加权随机',
       };
+
+  /// 常亮限定设备展示名（未限定=全局常亮）。
+  String _keepAwakeDeviceLabel() {
+    final d = btDeviceFromSetting(_settings.keepScreenOnDevice);
+    return d == null ? '不限定（打开播放页即常亮）' : '${d.name}（仅连接时生效）';
+  }
+
+  Future<void> _pickKeepAwakeDevice() async {
+    final svc = BluetoothService();
+    final granted = await svc.ensurePermission();
+    if (!mounted) return;
+    if (!granted) {
+      AppToast.show('未授予蓝牙权限，无法读取已配对设备', isError: true);
+      return;
+    }
+    final devices = await svc.bondedDevices();
+    if (!mounted) return;
+    final picked = await showDialog<Object?>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: const Text('常亮限定蓝牙设备'),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.of(c).pop(''),
+            child: const Text('不限定（打开播放页即常亮）'),
+          ),
+          if (devices.isEmpty)
+            const Padding(
+              padding: EdgeInsets.fromLTRB(24, 8, 24, 8),
+              child: Text('未找到已配对设备（请先在系统设置中配对）'),
+            )
+          else
+            for (final d in devices)
+              SimpleDialogOption(
+                onPressed: () => Navigator.of(c).pop(d),
+                child: Text('${d.name}（${d.address}）'),
+              ),
+        ],
+      ),
+    );
+    if (picked == null || !mounted) return;
+    setState(() =>
+        _settings.keepScreenOnDevice =
+            picked is BtDevice ? btDeviceToSetting(picked) : '');
+  }
 
   Future<void> _pickLyricIdle(BuildContext context) async {
     final current = _settings.lyricFocusIdleSec;

@@ -13,6 +13,7 @@ import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
+import '../services/bluetooth_service.dart';
 import '../utils/duration_format.dart';
 import '../utils/song_title_format.dart';
 import '../utils/url_display.dart';
@@ -62,6 +63,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// 避免入场动画期间切换沉浸式导致内容“拉伸跳动”。
   PlayerSheetAnimator? _sheet;
 
+  /// 常亮蓝牙门控：限定设备时轮询其连接状态，仅连接期间保持常亮。
+  final BluetoothService _bt = BluetoothService();
+  BtDevice? _wakeDevice;
+  bool _btConnected = true;
+  Timer? _btPoll;
+
   @override
   void initState() {
     super.initState();
@@ -70,7 +77,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final s = context.read<DirectSourceManager>().settings;
-      _schedulePlatformSync(s.playerFullscreen, s.playerKeepScreenOn);
+      _schedulePlatformSync(
+          s.playerFullscreen, s.playerKeepScreenOn, s.keepScreenOnDevice);
     });
   }
 
@@ -87,6 +95,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   void dispose() {
+    _btPoll?.cancel();
     _sheet?.progress.removeListener(_onSheetTick);
     // 离开播放页恢复系统 UI 与熄屏策略。
     if (Platform.isAndroid) {
@@ -102,10 +111,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   /// 设置变化时合并到下一帧；播放页完全打开后才落地平台调用（全屏/常亮）。
-  void _schedulePlatformSync(bool fullscreen, bool keepOn) {
-    final changed = fullscreen != _wantFs || keepOn != _wantWake;
+  /// 常亮可限定蓝牙设备：[deviceSetting] 变化时重置连接门控并轮询。
+  void _schedulePlatformSync(
+      bool fullscreen, bool keepOn, String deviceSetting) {
+    final device = btDeviceFromSetting(deviceSetting);
+    final deviceChanged = device?.address != _wakeDevice?.address;
+    final changed =
+        fullscreen != _wantFs || keepOn != _wantWake || deviceChanged;
     _wantFs = fullscreen;
     _wantWake = keepOn;
+    _wakeDevice = device;
+    if (deviceChanged) {
+      _btConnected = device == null;
+      _restartBtPoll();
+    }
     if (!changed || _platformSyncScheduled) return;
     _platformSyncScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -125,9 +144,33 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }
       _fsApplied = _wantFs;
     }
-    if (_wantWake != _wakeApplied) {
-      unawaited(_wantWake ? WakelockPlus.enable() : WakelockPlus.disable());
-      _wakeApplied = _wantWake;
+    // 常亮门控：限定了蓝牙设备时，仅其处于连接状态才保持常亮。
+    final wake =
+        _wantWake && (_wakeDevice == null || _btConnected);
+    if (wake != _wakeApplied) {
+      unawaited(wake ? WakelockPlus.enable() : WakelockPlus.disable());
+      _wakeApplied = wake;
+    }
+  }
+
+  /// 限定设备时常亮轮询：每 5 秒核对一次连接状态（进入/离开设备即时切换）。
+  void _restartBtPoll() {
+    _btPoll?.cancel();
+    _btPoll = null;
+    if (!_wantWake || _wakeDevice == null) return;
+    unawaited(_refreshBtConnection());
+    _btPoll = Timer.periodic(
+        const Duration(seconds: 5), (_) => unawaited(_refreshBtConnection()));
+  }
+
+  Future<void> _refreshBtConnection() async {
+    final dev = _wakeDevice;
+    if (dev == null) return;
+    final connected = await _bt.connectedAddresses();
+    final ok = connected.contains(dev.address);
+    if (ok != _btConnected && mounted) {
+      _btConnected = ok;
+      _flushPlatform();
     }
   }
 
@@ -166,8 +209,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final direct = context.watch<DirectSourceManager>();
     final gestureOn = direct.settings.playerGestureSwipe;
     // 平台行为设置：停留播放页期间应用全屏与常亮（变化时下一帧生效）。
-    _schedulePlatformSync(
-        direct.settings.playerFullscreen, direct.settings.playerKeepScreenOn);
+    _schedulePlatformSync(direct.settings.playerFullscreen,
+        direct.settings.playerKeepScreenOn, direct.settings.keepScreenOnDevice);
     final player = context.watch<PlayerProvider>();
     final size = MediaQuery.sizeOf(context);
     // 横屏（宽>高）分两套（UI10 平台差异化）：

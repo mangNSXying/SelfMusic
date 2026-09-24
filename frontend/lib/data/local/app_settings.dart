@@ -135,8 +135,11 @@ class AppSettings {
   /// 播放页全屏（Android 沉浸式隐藏状态栏，离开恢复）。
   static const String kPlayerFullscreen = 'player_fullscreen';
 
-  /// 播放页屏幕常亮（打开播放页期间不熄屏；蓝牙条件后置）。
+  /// 播放页屏幕常亮（打开播放页期间不熄屏）。
   static const String kPlayerKeepScreenOn = 'player_keep_screen_on';
+
+  /// 常亮限定的蓝牙设备（JSON {name,address}；空=不限定，打开播放页即常亮）。
+  static const String kKeepScreenOnDevice = 'keep_screen_on_device';
 
   /// 默认缓存总上限（512 MB）。
   static const int defaultCacheMaxBytes = 512 * 1024 * 1024;
@@ -264,6 +267,12 @@ class AppSettings {
       (index.settingsGet(kPlayerKeepScreenOn) ?? '0') == '1';
   set playerKeepScreenOn(bool v) =>
       index.settingsSet(kPlayerKeepScreenOn, v ? '1' : '0');
+
+  /// 常亮限定的蓝牙设备 JSON（空=不限定）。
+  String get keepScreenOnDevice =>
+      index.settingsGet(kKeepScreenOnDevice) ?? '';
+  set keepScreenOnDevice(String v) =>
+      index.settingsSet(kKeepScreenOnDevice, v);
 
   // ---------- 歌曲分区（settings.md §3.4） ----------
 
@@ -454,6 +463,7 @@ class AppSettings {
     kLyricFocusIdleSec,
     kPlayerFullscreen,
     kPlayerKeepScreenOn,
+    kKeepScreenOnDevice,
     kScanIgnoreMinDurationSec,
     kScanIgnoreMinSizeBytes,
     kScanWifiOnly,
