@@ -12,6 +12,7 @@ import '../models/album.dart';
 import '../models/artist.dart';
 import '../theme/app_theme.dart';
 import '../utils/collection_sort.dart';
+import '../utils/song_search.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/area_switcher.dart';
@@ -209,18 +210,6 @@ class _SectionPagerState extends State<SectionPager> {
       children: _pages,
     );
   }
-}
-
-/// 歌曲搜索过滤（标题/歌手，忽略大小写；空白词返回原列表）。
-/// 歌曲页与喜欢页共用，保证两处匹配语义一致。
-List<Song> filterSongs(List<Song> songs, String q) {
-  if (q.trim().isEmpty) return songs;
-  final qq = q.trim().toLowerCase();
-  return songs
-      .where((s) =>
-          (s.title.toLowerCase().contains(qq)) ||
-          (s.artist?.toLowerCase().contains(qq) ?? false))
-      .toList();
 }
 
 /// 喜欢（收藏）列表：统一来自 play_meta.is_favorite（直连 + 服务器）。

@@ -562,7 +562,7 @@ class PlayerProvider extends ChangeNotifier {
     _syncPlaylistUuid = playlistUuid;
     _bindDeepList(playlistUuid, playlistSize: songs.length);
     _leaveFor(songs[start]);
-    _queue = List.of(songs);
+    _queue = _resolveLiveAll(songs);
     _idx = start;
     notifyListeners();
     await _play(_queue[_idx], source: source);
@@ -584,7 +584,7 @@ class PlayerProvider extends ChangeNotifier {
       // 通用队列：无歌单上下文时清除归属，避免断点误标；
       // 有进行中的歌单深层列表时保留归属（外部点歌=替换末尾，1.3a）。
       if (_deepList == null) _syncPlaylistUuid = null;
-      _queue = List.of(queue);
+      _queue = _resolveLiveAll(queue);
       final found = _queue.indexWhere((x) => _same(x, s));
       final i = index ??
           (found < 0 ? _idx.clamp(0, _queue.length - 1) : found);
@@ -600,6 +600,11 @@ class PlayerProvider extends ChangeNotifier {
   /// 返回可直接播放的歌曲对象；索引中无此歌（服务端歌）时原样返回。
   Song resolveLiveSong(Song s) =>
       _index?.songByRef(s.sourceKey, s.sourceRef) ?? s;
+
+  /// 整队解析：队列装载时统一纠正为本机索引实时行，
+  /// 播放队列面板/后续切歌展示与歌曲页同源（封面/标题格式/歌手·专辑）。
+  List<Song> _resolveLiveAll(List<Song> songs) =>
+      [for (final s in songs) resolveLiveSong(s)];
 
   /// 用户修改元数据后：刷新队列与当前歌曲中的同源对象并通知（含断点快照）。
   void refreshSongMeta(Song updated) {
@@ -1166,7 +1171,7 @@ class PlayerProvider extends ChangeNotifier {
         idx.clearPlayState();
         return;
       }
-      _queue = list;
+      _queue = _resolveLiveAll(list);
       _idx = st.idx.clamp(0, _queue.length - 1);
       _current = _queue[_idx];
       // 归属歌单仍在则保留（断点继续上报），否则清除。

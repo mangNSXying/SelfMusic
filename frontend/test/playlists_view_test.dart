@@ -220,4 +220,72 @@ void main() {
       dir.deleteSync(recursive: true);
     });
   });
+
+  testWidgets('歌单详情搜索：按歌单内歌曲过滤（与歌曲页同源匹配）', (tester) async {
+    late final Directory dir;
+    late final DirectSourceManager direct;
+    late final int plId;
+    await tester.runAsync(() async {
+      dir = await Directory.systemTemp.createTemp('selfmusic_plsearch_');
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      direct = DirectSourceManager();
+      await direct.init();
+      plId = direct.playlists.create('搜索歌单');
+      direct.playlists.addSong(plId, Song(
+        id: 0,
+        sourceKey: 'local:test',
+        title: '夜曲',
+        artist: '周杰伦',
+        source: 'local',
+        sourceRef: 'a',
+        fileSize: 0,
+      ));
+      direct.playlists.addSong(plId, Song(
+        id: 1,
+        sourceKey: 'local:test',
+        title: '晴天',
+        artist: '周杰伦',
+        source: 'local',
+        sourceRef: 'b',
+        fileSize: 0,
+      ));
+    });
+
+    final provider = PlaylistsProvider(direct.playlists)..refresh();
+    final nav = NavigationProvider();
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+          ChangeNotifierProvider<PlaylistsProvider>.value(value: provider),
+          ChangeNotifierProvider<NavigationProvider>.value(value: nav),
+          ChangeNotifierProvider<PlayerProvider>(
+              create: (_) => PlayerProvider()),
+        ],
+        child: MaterialApp(
+          home: Scaffold(body: PlaylistDetailView(playlistId: plId)),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.textContaining('夜曲'), findsOneWidget);
+    expect(find.textContaining('晴天'), findsOneWidget);
+
+    // 搜索命中的歌曲保留，其余过滤；计数头显示命中数。
+    nav.setSearch('夜曲');
+    await tester.pump();
+    expect(find.textContaining('夜曲'), findsOneWidget);
+    expect(find.textContaining('晴天'), findsNothing);
+    expect(find.text('共 1 首歌曲'), findsOneWidget);
+
+    nav.setSearch('');
+    await tester.pump();
+    expect(find.textContaining('晴天'), findsOneWidget);
+
+    await tester.runAsync(() async {
+      direct.dispose();
+      dir.deleteSync(recursive: true);
+    });
+  });
 }

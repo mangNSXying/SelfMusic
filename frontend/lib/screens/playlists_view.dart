@@ -11,6 +11,7 @@ import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../providers/playlists_provider.dart';
 import '../utils/collection_sort.dart';
+import '../utils/song_search.dart';
 import '../utils/song_title_format.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
@@ -401,7 +402,14 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
     _songsRevision = rev;
     _sort = sort;
     final items = provider.itemsOf(widget.playlistId);
-    final songs = [for (final r in items) provider.songOf(r)];
+    // 与歌曲页/喜欢页同源：条目快照优先解析为本机索引实时行
+    // （封面、标题显示格式、歌手·专辑元数据即时可用）；源不在本机时保留快照。
+    final songs = [
+      for (final r in items)
+        provider.store.index.songByRef(
+                provider.songOf(r).sourceKey, r.songRef) ??
+            provider.songOf(r),
+    ];
     if (sort == CollectionSort.defaultOrder) {
       _items = items;
       _songs = List.unmodifiable(songs);
@@ -514,14 +522,20 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
     // 数据版本不变时复用缓存的歌单条目（避免每帧/每次通知重查 SQLite）。
     _syncSongs(provider, direct.settings.sortPlaylistDetail,
         direct.weight.factorOf);
-    var currentIdx = -1;
-    currentIdx = _songs.indexWhere((s) => player.isCurrent(s));
+    // 搜索：过滤歌单内歌曲（与歌曲页/喜欢页同源匹配）；visible 为原始下标映射。
+    final searching = nav.search.trim().isNotEmpty;
+    final visible = <int>[
+      for (var i = 0; i < _songs.length; i++)
+        if (songMatchesQuery(_songs[i], nav.search)) i,
+    ];
+    final currentIdx = _songs.indexWhere((s) => player.isCurrent(s));
+    final visibleCurrent = currentIdx < 0 ? -1 : visible.indexOf(currentIdx);
 
-    // 打开歌单后自动定位到当前播放歌曲（仅一次）。
-    if (!_located && currentIdx >= 0) {
+    // 打开歌单后自动定位到当前播放歌曲（仅一次；按可见下标）。
+    if (!_located && visibleCurrent >= 0) {
       _located = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToCurrent(currentIdx);
+        _scrollToCurrent(visibleCurrent);
       });
     }
 
@@ -581,7 +595,7 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
           ),
         ),
         CountHeader(
-          count: _songs.length,
+          count: searching ? visible.length : _songs.length,
           trailing: SortMenuButton(
             value: direct.settings.sortPlaylistDetail,
             withWeight: true,
@@ -611,20 +625,23 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
         Expanded(
           child: _songs.isEmpty
               ? const Center(child: Text('歌单为空'))
-              // itemExtent 固定行高（含 1px 分隔线）：深位置（首帧定位/跳转）
-              // 只构建可见行，否则 Sliver 会从第 0 行逐行排到目标行——千首歌单
-              // 一帧构建 700+ 行与封面，进入必卡（实测 712 项 vs 16 项）。
-              : ListView.builder(
+              : visible.isEmpty
+                  ? const Center(child: Text('无匹配歌曲'))
+                  // itemExtent 固定行高（含 1px 分隔线）：深位置（首帧定位/跳转）
+                  // 只构建可见行，否则 Sliver 会从第 0 行逐行排到目标行——千首歌单
+                  // 一帧构建 700+ 行与封面，进入必卡（实测 712 项 vs 16 项）。
+                  : ListView.builder(
                   controller: _scroll,
                   itemExtent: _rowExtent + _sepExtent,
-                  itemCount: _items.length,
+                  itemCount: visible.length,
                   itemBuilder: (c, i) {
-                    final row = _items[i];
-                    final s = _songs[i];
+                    final full = visible[i];
+                    final row = _items[full];
+                    final s = _songs[full];
                     final isFirst = i == 0;
-                    final isLast = i == _items.length - 1;
+                    final isLast = i == visible.length - 1;
                     final key = songKey(s);
-                    final isCurrent = i == currentIdx;
+                    final isCurrent = full == currentIdx;
                     final cs = Theme.of(context).colorScheme;
                     final tile = ListTile(
                       selected: _sel.active && _sel.contains(key),
@@ -694,7 +711,7 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
                           ? () => _toggle(key)
                           : () {
                               player.playQueue(_songs,
-                                  index: i,
+                                  index: full,
                                   playlistUuid: provider.store.index
                                       .ensurePlaylistUuid(widget.playlistId));
                               context.read<NavigationProvider>().openPlayer();
