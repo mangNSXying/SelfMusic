@@ -31,6 +31,19 @@ import '../widgets/player_sheet_anim.dart';
 bool useDesktopLandscape(Size size, {required bool isDesktopPlatform}) =>
     isDesktopPlatform || size.width >= 1000;
 
+/// 全屏防闪跳的留白决策：
+/// - [captureNow] 为真（全屏尚未应用、状态栏可见）→ 采用当前系统栏 inset，
+///   作为整段全屏期间钉住的保留值；
+/// - 为假（状态栏已隐藏）→ 沿用先前 [reserved]，忽略引擎报回的变化值，
+///   使 SafeArea/布局不随「隐藏/显示状态栏」重排。
+@visibleForTesting
+EdgeInsets reservedPlayerPadding({
+  required bool captureNow,
+  required EdgeInsets current,
+  required EdgeInsets reserved,
+}) =>
+    captureNow ? current : reserved;
+
 /// 全屏播放页（ui-playpage.html v5）：作为「首页」整屏展示，替换整个壳层。
 ///
 /// 手势交互（可在设置中关闭）：
@@ -58,6 +71,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _fsApplied = false;
   bool _wakeApplied = false;
   bool _platformSyncScheduled = false;
+
+  /// 钉住的系统栏 inset：进入播放页/旋转横屏时捕获一次“状态栏可见”值，
+  /// 之后隐藏/显示状态栏都沿用该值 → SafeArea 与封面布局不随全屏切换重排（防闪跳）。
+  EdgeInsets _reservedInsets = EdgeInsets.zero;
+
+  /// 上次应用的系统栏透明样式；动画/离开时直接复用。
+  SystemUiOverlayStyle _lastOverlayStyle = const SystemUiOverlayStyle();
+
+  /// 上次布局朝向：横/竖切换时重新捕获 inset 并复位全屏应用状态。
+  bool _lastLandscape = false;
 
   /// 播放页悬浮层动画（跟随进入/离开）：平台调用等其完全打开后再落地，
   /// 避免入场动画期间切换沉浸式导致内容“拉伸跳动”。
@@ -97,17 +120,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void dispose() {
     _btPoll?.cancel();
     _sheet?.progress.removeListener(_onSheetTick);
-    // 离开播放页恢复系统 UI 与熄屏策略。
-    if (Platform.isAndroid) {
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    }
+    // 离开播放页恢复系统 UI 与熄屏策略（幂等；通常已在退出动画开始时恢复）。
+    _restoreSystemUi();
     unawaited(WakelockPlus.disable());
     _pageCtrl.dispose();
     super.dispose();
   }
 
   void _onSheetTick() {
-    if ((_sheet?.value ?? 1) <= 0.001) _flushPlatform();
+    final v = _sheet?.value ?? 1;
+    if (v <= 0.001) {
+      _flushPlatform();
+    } else if (_fsApplied) {
+      // 退出播放页：sheet 一开始下滑就立刻恢复系统栏，栏区变化全程被
+      // 仍然盖住的动画遮挡，收尾不再有状态栏突兀闪回。
+      _restoreSystemUi();
+    }
   }
 
   /// 设置变化时合并到下一帧；播放页完全打开后才落地平台调用（全屏/常亮）。
@@ -136,21 +164,49 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   void _flushPlatform() {
     if (!mounted) return;
+    // 系统栏透明样式恒生效：切换瞬间不闪出实体色带（不随全屏开关改变）。
+    _lastOverlayStyle = _overlayStyle();
     if (_wantFs != _fsApplied) {
       if (Platform.isAndroid) {
-        SystemChrome.setEnabledSystemUIMode(_wantFs
-            ? SystemUiMode.immersiveSticky
-            : SystemUiMode.edgeToEdge);
+        if (_wantFs) {
+          // 只隐藏状态栏（leanBack），保留导航手势条：与播放页下拉退出不冲突；
+          // 配合钉住的 inset，布局不动，仅有状态栏淡隐。
+          SystemChrome.setEnabledSystemUIMode(SystemUiMode.leanBack);
+        } else {
+          SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+        }
+        SystemChrome.setSystemUIOverlayStyle(_lastOverlayStyle);
       }
       _fsApplied = _wantFs;
     }
     // 常亮门控：限定了蓝牙设备时，仅其处于连接状态才保持常亮。
-    final wake =
-        _wantWake && (_wakeDevice == null || _btConnected);
+    final wake = _wantWake && (_wakeDevice == null || _btConnected);
     if (wake != _wakeApplied) {
       unawaited(wake ? WakelockPlus.enable() : WakelockPlus.disable());
       _wakeApplied = wake;
     }
+  }
+
+  /// 恢复非全屏系统 UI（edgeToEdge + 透明样式）。幂等；dispose 兜底调用。
+  void _restoreSystemUi() {
+    if (!Platform.isAndroid || !_fsApplied) return;
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    SystemChrome.setSystemUIOverlayStyle(_lastOverlayStyle);
+    _fsApplied = false;
+  }
+
+  /// 透明系统栏 + 随主题的图标明暗：隐藏/显示状态栏时不出现实体色条。
+  SystemUiOverlayStyle _overlayStyle() {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: dark ? Brightness.light : Brightness.dark,
+      statusBarBrightness: dark ? Brightness.dark : Brightness.light,
+      systemNavigationBarColor: Colors.transparent,
+      systemNavigationBarIconBrightness:
+          dark ? Brightness.light : Brightness.dark,
+      systemNavigationBarDividerColor: Colors.transparent,
+    );
   }
 
   /// 限定设备时常亮轮询：每 5 秒核对一次连接状态（进入/离开设备即时切换）。
@@ -222,53 +278,79 @@ class _PlayerScreenState extends State<PlayerScreen> {
         isDesktopPlatform:
             Platform.isLinux || Platform.isWindows || Platform.isMacOS);
 
+    // 全屏防闪跳：状态栏可见时捕获其 inset，隐藏后沿用，SafeArea/布局恒稳定；
+    // 横/竖旋转时切角 inset 会变，按新朝向重新捕获（不动 _fsApplied，
+    // 旋转期间全屏状态由系统保持，退出恢复逻辑照常生效）。
+    final mQuery = MediaQuery.of(context);
+    if (landscape != _lastLandscape) {
+      _lastLandscape = landscape;
+      _reservedInsets = mQuery.padding;
+    }
+    _reservedInsets = reservedPlayerPadding(
+      captureNow: !_fsApplied,
+      current: mQuery.padding,
+      reserved: _reservedInsets,
+    );
+    final pinnedQuery = mQuery.copyWith(
+      padding: EdgeInsets.only(
+        top: _reservedInsets.top,
+        bottom: _reservedInsets.bottom,
+        left: _reservedInsets.left,
+        right: _reservedInsets.right,
+      ),
+    );
+
     return Scaffold(
-      body: SafeArea(
-        child: landscape
-            // 横屏无歌词分页：左上角箭头悬浮于两套横屏布局之上。
-            ? Stack(
-                children: [
-                  desktopLandscape
-                      ? _DesktopLandscapePlayer(
-                          player: player,
-                          direct: context.watch<DirectSourceManager>(),
-                          cs: Theme.of(context).colorScheme)
-                      : _LandscapePlayer(
-                          player: player,
-                          direct: context.watch<DirectSourceManager>(),
-                          cs: Theme.of(context).colorScheme),
-                  const Positioned(
-                      top: 6, left: 6, child: _BackToContentButton()),
-                ],
-              )
-            : PageView(
-                // 横向由内层 PageView 原生跟手（右滑回播放页）；
-                // 竖向仅播放页（第 0 页）跟手下拉，歌词页纵向留给滚动。
-                // 关闭手势后 PageView 禁滑、下拉停用。
-                controller: _pageCtrl,
-          physics: gestureOn
-              ? const PageScrollPhysics()
-              : const NeverScrollableScrollPhysics(),
-          children: [
-            // 箭头悬浮在播放页内容之上（不占布局空间，不压缩封面）；
-            // 歌词页（第 1 页）按先前要求不再放箭头。
-            Stack(
-              children: [
-                GestureDetector(
-                  behavior: HitTestBehavior.translucent,
-                  onVerticalDragStart:
-                      gestureOn ? _onPlayerDragStart : null,
-                  onVerticalDragUpdate:
-                      gestureOn ? _onPlayerDragUpdate : null,
-                  onVerticalDragEnd: gestureOn ? _onPlayerDragEnd : null,
-                  child: _buildPlayerBody(context),
+      body: MediaQuery(
+        data: pinnedQuery,
+        child: SafeArea(
+          child: landscape
+              // 横屏无歌词分页：左上角箭头悬浮于两套横屏布局之上。
+              ? Stack(
+                  children: [
+                    desktopLandscape
+                        ? _DesktopLandscapePlayer(
+                            player: player,
+                            direct: context.watch<DirectSourceManager>(),
+                            cs: Theme.of(context).colorScheme)
+                        : _LandscapePlayer(
+                            player: player,
+                            direct: context.watch<DirectSourceManager>(),
+                            cs: Theme.of(context).colorScheme),
+                    const Positioned(
+                        top: 6, left: 6, child: _BackToContentButton()),
+                  ],
+                )
+              : PageView(
+                  // 横向由内层 PageView 原生跟手（右滑回播放页）；
+                  // 竖向仅播放页（第 0 页）跟手下拉，歌词页纵向留给滚动。
+                  // 关闭手势后 PageView 禁滑、下拉停用。
+                  controller: _pageCtrl,
+                  physics: gestureOn
+                      ? const PageScrollPhysics()
+                      : const NeverScrollableScrollPhysics(),
+                  children: [
+                    // 箭头悬浮在播放页内容之上（不占布局空间，不压缩封面）；
+                    // 歌词页（第 1 页）按先前要求不再放箭头。
+                    Stack(
+                      children: [
+                        GestureDetector(
+                          behavior: HitTestBehavior.translucent,
+                          onVerticalDragStart:
+                              gestureOn ? _onPlayerDragStart : null,
+                          onVerticalDragUpdate:
+                              gestureOn ? _onPlayerDragUpdate : null,
+                          onVerticalDragEnd:
+                              gestureOn ? _onPlayerDragEnd : null,
+                          child: _buildPlayerBody(context),
+                        ),
+                        const Positioned(
+                            top: 6, left: 6, child: _BackToContentButton()),
+                      ],
+                    ),
+                    const _LyricsPage(),
+                  ],
                 ),
-                const Positioned(
-                    top: 6, left: 6, child: _BackToContentButton()),
-              ],
-            ),
-            const _LyricsPage(),
-          ],
         ),
       ),
     );
@@ -347,8 +429,7 @@ class _LyricsPage extends StatelessWidget {
         if (s != null)
           Padding(
             padding: const EdgeInsets.fromLTRB(24, 28, 24, 0),
-            child: _TitleBlock(
-                player: player, direct: direct, compact: true),
+            child: _TitleBlock(player: player, direct: direct, compact: true),
           ),
         const SizedBox(height: 6),
         Expanded(
@@ -385,7 +466,8 @@ class _EmptyState extends StatelessWidget {
             color: cs.primary.withValues(alpha: 0.10),
             borderRadius: BorderRadius.circular(24),
           ),
-          child: Icon(Icons.music_note, size: coverSize * 0.5, color: cs.primary.withValues(alpha: 0.55)),
+          child: Icon(Icons.music_note,
+              size: coverSize * 0.5, color: cs.primary.withValues(alpha: 0.55)),
         ),
         const SizedBox(height: 32),
         Text('未在播放', style: Theme.of(context).textTheme.headlineMedium),
@@ -421,8 +503,8 @@ class _NowPlaying extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Center(
-          child: _Cover(
-              coverPath: s.coverPath, song: s, cs: cs, size: coverSize),
+          child:
+              _Cover(coverPath: s.coverPath, song: s, cs: cs, size: coverSize),
         ),
         const SizedBox(height: 20),
         _TitleBlock(player: player, direct: direct),
@@ -579,26 +661,23 @@ class _ToolRow extends StatelessWidget {
           IconButton(
             iconSize: 22,
             tooltip: favorite ? '取消喜欢' : '喜欢',
-            color: favorite ? Colors.pink : cs.onSurface.withValues(alpha: 0.55),
+            color:
+                favorite ? Colors.pink : cs.onSurface.withValues(alpha: 0.55),
             icon: Icon(favorite ? Icons.favorite : Icons.favorite_border),
             onPressed: () {
               direct.setFavorite(s, !favorite);
-              AppToast.show(!favorite ? '已加入喜欢' : '已取消喜欢',
-                  isError: false);
+              AppToast.show(!favorite ? '已加入喜欢' : '已取消喜欢', isError: false);
             },
           ),
           IconButton(
             iconSize: 22,
             tooltip: disliked ? '取消不喜欢' : '不喜欢（权重降到最低）',
-            color: disliked
-                ? Colors.orange
-                : cs.onSurface.withValues(alpha: 0.55),
-            icon: Icon(
-                disliked ? Icons.thumb_down : Icons.thumb_down_outlined),
+            color:
+                disliked ? Colors.orange : cs.onSurface.withValues(alpha: 0.55),
+            icon: Icon(disliked ? Icons.thumb_down : Icons.thumb_down_outlined),
             onPressed: () {
               direct.setDisliked(s, !disliked);
-              AppToast.show(
-                  !disliked ? '已标记不喜欢，权重降到最低' : '已取消不喜欢',
+              AppToast.show(!disliked ? '已标记不喜欢，权重降到最低' : '已取消不喜欢',
                   isError: false);
             },
           ),
@@ -685,7 +764,8 @@ class _LandscapePlayer extends StatelessWidget {
     final size = MediaQuery.sizeOf(context);
     if (!player.hasCurrent) {
       return Center(
-          child: _EmptyState(coverSize: (size.height * 0.3).clamp(96.0, 150.0)));
+          child:
+              _EmptyState(coverSize: (size.height * 0.3).clamp(96.0, 150.0)));
     }
     final s = player.current!;
     final leftW = (size.width * 0.42).clamp(220.0, 420.0);
@@ -705,8 +785,8 @@ class _LandscapePlayer extends StatelessWidget {
                 child: LayoutBuilder(
                   builder: (context, c) {
                     // 封面以外的固定高度（标题/工具行/进度条 + 间距）。
-                    final cover = math
-                        .min(c.maxWidth - 24, math.max(64.0, c.maxHeight - 150));
+                    final cover = math.min(
+                        c.maxWidth - 24, math.max(64.0, c.maxHeight - 150));
                     return Column(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1069,10 +1149,11 @@ class _SongInfoDialog extends StatelessWidget {
         ['流派', song.metaUnread ? Song.unreadLabel : song.genre!],
       if (song.metaUnread || song.year != null)
         ['年份', song.metaUnread ? Song.unreadLabel : '${song.year}'],
-      if (song.metaUnread ||
-          (song.duration != null && song.duration! > 0))
-        ['时长',
-            song.metaUnread ? Song.unreadLabel : formatDuration(song.duration)],
+      if (song.metaUnread || (song.duration != null && song.duration! > 0))
+        [
+          '时长',
+          song.metaUnread ? Song.unreadLabel : formatDuration(song.duration)
+        ],
       if (song.format != null) ['格式', song.format!.toUpperCase()],
       ['来源', '${song.source}（${song.sourceKey}）'],
       ['路径', displayPath],
@@ -1181,8 +1262,7 @@ class _EditSongMetaDialogState extends State<_EditSongMetaDialog> {
       context.read<PlayerProvider>().refreshSongMeta(updated);
     }
     Navigator.of(context).pop();
-    AppToast.show(
-        widget.song.isDirect ? '已保存歌曲信息（扫描不再覆盖）' : '已保存歌曲信息（本地覆盖）',
+    AppToast.show(widget.song.isDirect ? '已保存歌曲信息（扫描不再覆盖）' : '已保存歌曲信息（本地覆盖）',
         isError: false);
   }
 
@@ -1201,18 +1281,15 @@ class _EditSongMetaDialogState extends State<_EditSongMetaDialog> {
             ),
             TextField(
               controller: _artist,
-              decoration:
-                  const InputDecoration(labelText: '歌手（留空为未知）'),
+              decoration: const InputDecoration(labelText: '歌手（留空为未知）'),
             ),
             TextField(
               controller: _albumArtist,
-              decoration:
-                  const InputDecoration(labelText: '专辑歌手（留空为未知）'),
+              decoration: const InputDecoration(labelText: '专辑歌手（留空为未知）'),
             ),
             TextField(
               controller: _album,
-              decoration:
-                  const InputDecoration(labelText: '专辑（留空为未知）'),
+              decoration: const InputDecoration(labelText: '专辑（留空为未知）'),
             ),
           ],
         ),
@@ -1247,8 +1324,10 @@ class _SleepButton extends StatelessWidget {
       onPressed: () => showDialog<void>(
         context: context,
         builder: (_) => _SleepTimerDialog(
-          playThroughDefault:
-              context.read<DirectSourceManager>().settings.sleepPlayThroughDefault,
+          playThroughDefault: context
+              .read<DirectSourceManager>()
+              .settings
+              .sleepPlayThroughDefault,
         ),
       ),
     );
@@ -1283,9 +1362,8 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
     }
     _minutes = p.sleepMinutes > 0 ? p.sleepMinutes : 30;
     _count = p.sleepCountLeft > 0 ? p.sleepCountLeft : 3;
-    _playThrough = p.sleepTimerActive
-        ? p.sleepPlayThrough
-        : widget.playThroughDefault;
+    _playThrough =
+        p.sleepTimerActive ? p.sleepPlayThrough : widget.playThroughDefault;
   }
 
   @override
@@ -1310,8 +1388,7 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
                       value: SleepTimerKind.time,
                       controlAffinity: ListTileControlAffinity.leading,
                       dense: true,
-                      title: const Text('指定时间',
-                          style: TextStyle(fontSize: 17)),
+                      title: const Text('指定时间', style: TextStyle(fontSize: 17)),
                       subtitle: _timeSubtitle(),
                       secondary: _mode == SleepTimerKind.time
                           ? IconButton(
@@ -1325,8 +1402,7 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
                       value: SleepTimerKind.duration,
                       controlAffinity: ListTileControlAffinity.leading,
                       dense: true,
-                      title: const Text('指定时长',
-                          style: TextStyle(fontSize: 17)),
+                      title: const Text('指定时长', style: TextStyle(fontSize: 17)),
                       subtitle: Text('倒计时 ${_fmtMinutes(_minutes)}后自动停止',
                           style: const TextStyle(fontSize: 15)),
                     ),
@@ -1334,8 +1410,7 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
                       value: SleepTimerKind.count,
                       controlAffinity: ListTileControlAffinity.leading,
                       dense: true,
-                      title: const Text('指定曲数',
-                          style: TextStyle(fontSize: 17)),
+                      title: const Text('指定曲数', style: TextStyle(fontSize: 17)),
                       subtitle: Text('再播放 $_count 首后停止',
                           style: const TextStyle(fontSize: 15)),
                     ),
@@ -1364,8 +1439,7 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
               const SizedBox(height: 8),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const Text('播放完最后的曲目',
-                    style: TextStyle(fontSize: 17)),
+                title: const Text('播放完最后的曲目', style: TextStyle(fontSize: 17)),
                 subtitle: const Text('到点不中断当前歌曲，放完这曲再暂停',
                     style: TextStyle(fontSize: 15)),
                 value: _playThrough || _mode == SleepTimerKind.endOfList,
@@ -1485,7 +1559,8 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
           playThrough: _playThrough,
         );
       case SleepTimerKind.duration:
-        p.setSleepDuration(Duration(minutes: _minutes), playThrough: _playThrough);
+        p.setSleepDuration(Duration(minutes: _minutes),
+            playThrough: _playThrough);
       case SleepTimerKind.count:
         p.setSleepCount(_count, playThrough: _playThrough);
       case SleepTimerKind.endOfList:
@@ -1600,8 +1675,8 @@ class _WheelDialogState extends State<_WheelDialog> {
                   children: [
                     for (final label in widget.columns[c])
                       Center(
-                        child: Text(label,
-                            style: const TextStyle(fontSize: 17)),
+                        child:
+                            Text(label, style: const TextStyle(fontSize: 17)),
                       ),
                   ],
                 ),
@@ -1685,7 +1760,10 @@ class _PlayerSeekState extends State<_PlayerSeek> {
         final pos = snap.data ?? Duration.zero;
         final dur = widget.player.player.duration ?? Duration.zero;
         final max = dur.inMilliseconds.toDouble();
-        final cur = pos.inMilliseconds.toDouble().clamp(0, max == 0 ? 1 : max).toDouble();
+        final cur = pos.inMilliseconds
+            .toDouble()
+            .clamp(0, max == 0 ? 1 : max)
+            .toDouble();
         return Column(
           children: [
             SliderTheme(
@@ -1701,7 +1779,8 @@ class _PlayerSeekState extends State<_PlayerSeek> {
                 min: 0,
                 max: max == 0 ? 1 : max,
                 value: cur,
-                onChanged: (v) => widget.player.seek(Duration(milliseconds: v.toInt())),
+                onChanged: (v) =>
+                    widget.player.seek(Duration(milliseconds: v.toInt())),
               ),
             ),
             if (widget.showTime)
