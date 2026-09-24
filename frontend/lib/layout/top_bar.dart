@@ -3,7 +3,7 @@ import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
 import '../theme/app_theme.dart';
 
-/// 顶栏：上层 = 汉堡 + 搜索框；下层 = 导航（播放列表/喜欢/播放源/歌曲/专辑/歌手）。
+/// 顶栏：上层 = 汉堡 + 搜索框；下层 = 导航（歌单/喜欢/播放源/歌曲/专辑/歌手）。
 class TopBar extends StatelessWidget {
   final VoidCallback onSidebarToggle;
   const TopBar({

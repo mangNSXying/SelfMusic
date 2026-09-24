@@ -4,7 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 /// 内容页共用方形卡片（改进 B6-U6）：封面恒为正方形 + 标题 + 副标题，
-/// 专辑 / 歌手 / 播放源 / 播放列表卡片共用（列表行继续用 SongTile / ListTile）。
+/// 专辑 / 歌手 / 播放源 / 歌单卡片共用（列表行继续用 SongTile / ListTile）。
 class SquareCard extends StatelessWidget {
   final String title;
 

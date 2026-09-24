@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// 列表 / 卡片展示切换按钮（播放列表、播放源、专辑、歌手四页共用）。
+/// 列表 / 卡片展示切换按钮（歌单、播放源、专辑、歌手四页共用）。
 ///
 /// 紧凑尺寸（32px），避免把计数行撑成占位栏（UI4）。
 class ViewModeToggle extends StatelessWidget {

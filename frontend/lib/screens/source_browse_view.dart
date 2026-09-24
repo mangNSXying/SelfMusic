@@ -195,16 +195,16 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                 setState(() => _sel.setAll(songs.map(songKey))),
             onCancel: () => setState(_sel.cancel),
             actions: [
-              IconButton(
-                icon: const Icon(Icons.play_arrow),
-                tooltip: '播放选中',
+              SelectionAction(
+                icon: Icons.play_arrow,
+                label: '播放选中',
                 onPressed: _sel.isEmpty
                     ? null
                     : () => _playSelected(context, source, songs),
               ),
-              IconButton(
-                icon: const Icon(Icons.playlist_add),
-                tooltip: '加入歌单',
+              SelectionAction(
+                icon: Icons.playlist_add,
+                label: '加入歌单',
                 onPressed: _sel.isEmpty
                     ? null
                     : () => _addToPlaylistSelected(songs),

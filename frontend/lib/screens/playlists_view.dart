@@ -69,9 +69,9 @@ class _PlaylistsViewState extends State<PlaylistsView> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
-        title: const Text('删除播放列表'),
-        content: Text('确定删除选中的 ${names.length} 个播放列表？'
-            '（仅移除播放列表，其中歌曲不会被删除。）'),
+        title: const Text('删除歌单'),
+        content: Text('确定删除选中的 ${names.length} 个歌单？'
+            '（仅移除歌单，其中歌曲不会被删除。）'),
         actions: [
           TextButton(
               onPressed: () => Navigator.of(c).pop(false),
@@ -130,9 +130,9 @@ class _PlaylistsViewState extends State<PlaylistsView> {
                       setState(() => _sel.setAll(playlists.map((p) => p.id))),
                   onCancel: () => setState(_sel.cancel),
                   actions: [
-                    IconButton(
-                      icon: const Icon(Icons.delete),
-                      tooltip: '删除选中',
+                    SelectionAction(
+                      icon: Icons.delete,
+                      label: '删除选中',
                       onPressed: _sel.isEmpty
                           ? null
                           : () => _deleteSelected(provider),
@@ -143,7 +143,7 @@ class _PlaylistsViewState extends State<PlaylistsView> {
               if (!_sel.active)
                 CountHeader(
                   count: playlists.length,
-                  unit: '个播放列表',
+                  unit: '个歌单',
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -168,7 +168,7 @@ class _PlaylistsViewState extends State<PlaylistsView> {
                     ? Center(
                         child: Text(all.isEmpty
                             ? '暂无歌单，点右下角「+」创建'
-                            : '无匹配播放列表'))
+                            : '无匹配歌单'))
                     : card
                         ? SquareCardGrid(
                             itemCount: playlists.length,
@@ -190,7 +190,7 @@ class _PlaylistsViewState extends State<PlaylistsView> {
             right: 16,
             bottom: 16,
             child: CornerAddButton(
-              tooltip: '新建播放列表',
+              tooltip: '新建歌单',
               onPressed: () => _createDialog(context, provider),
             ),
           ),
@@ -264,7 +264,7 @@ class _PlaylistsViewState extends State<PlaylistsView> {
     final name = await showDialog<String>(
       context: context,
       builder: (c) => AlertDialog(
-        title: const Text('新建播放列表'),
+        title: const Text('新建歌单'),
         content: TextField(
           controller: ctrl,
           autofocus: true,
@@ -295,7 +295,7 @@ class _PlaylistsViewState extends State<PlaylistsView> {
     final name = await showDialog<String>(
       context: context,
       builder: (c) => AlertDialog(
-        title: const Text('重命名播放列表'),
+        title: const Text('重命名歌单'),
         content: TextField(
           controller: ctrl,
           autofocus: true,
@@ -323,8 +323,8 @@ class _PlaylistsViewState extends State<PlaylistsView> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
-        title: const Text('删除播放列表'),
-        content: Text('确定删除「${p.name}」？其中歌曲不会被删除，仅移除播放列表。'),
+        title: const Text('删除歌单'),
+        content: Text('确定删除「${p.name}」？其中歌曲不会被删除，仅移除歌单。'),
         actions: [
           TextButton(
               onPressed: () => Navigator.of(c).pop(false),
@@ -540,7 +540,7 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
               ),
               Expanded(
                 child: Text(
-                  playlist?.name ?? '播放列表',
+                  playlist?.name ?? '歌单',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context)
@@ -599,9 +599,9 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
             }),
             onCancel: () => setState(_sel.cancel),
             actions: [
-              IconButton(
-                icon: const Icon(Icons.playlist_remove),
-                tooltip: '从歌单移除',
+              SelectionAction(
+                icon: Icons.playlist_remove,
+                label: '从歌单移除',
                 onPressed:
                     _sel.selected.isEmpty ? null : () => _removeSelected(provider),
               ),

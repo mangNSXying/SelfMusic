@@ -5,7 +5,7 @@ String songKey(Song s) => '${s.sourceKey}|${s.sourceRef}|${s.id}';
 
 /// 通用多选状态：页面内的选择集合 + 是否处于「选择模式」。
 ///
-/// 泛型 T 通常是 `String`（歌曲稳定键）或 `int`（播放列表 id）。
+/// 泛型 T 通常是 `String`（歌曲稳定键）或 `int`（歌单 id）。
 class Selection<T> {
   final Set<T> _selected = {};
   bool active = false;

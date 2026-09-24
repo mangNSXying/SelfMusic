@@ -1,12 +1,21 @@
 import 'package:flutter/material.dart';
 
-/// 列表多选模式顶栏：显示已选数量、「全选/取消全选」与批量操作按钮。
+/// 批量操作项：统一收进多选栏右侧的纵向三点菜单。
+class SelectionAction {
+  final IconData icon;
+  final String label;
+  final VoidCallback? onPressed;
+  const SelectionAction(
+      {required this.icon, required this.label, this.onPressed});
+}
+
+/// 列表多选模式顶栏：显示已选数量、「全选/取消全选」，批量操作收进右侧三点菜单。
 class SelectionBar extends StatelessWidget {
   final int total;
   final int selectedCount;
   final VoidCallback? onToggleAll;
   final VoidCallback? onCancel;
-  final List<Widget> actions;
+  final List<SelectionAction> actions;
   const SelectionBar({
     super.key,
     required this.total,
@@ -20,9 +29,8 @@ class SelectionBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return Material(
-      color: scheme.secondaryContainer,
+      color: Theme.of(context).colorScheme.secondaryContainer,
       child: SizedBox(
         height: 48,
         child: Row(
@@ -45,7 +53,28 @@ class SelectionBar extends StatelessWidget {
                 onPressed: onToggleAll,
                 child: Text(_allSelected ? '取消全选' : '全选'),
               ),
-            ...actions,
+            if (actions.isNotEmpty)
+              PopupMenuButton<int>(
+                tooltip: '更多操作',
+                icon: const Icon(Icons.more_vert),
+                onSelected: (i) => actions[i].onPressed?.call(),
+                itemBuilder: (c) => [
+                  for (var i = 0; i < actions.length; i++)
+                    PopupMenuItem(
+                      value: i,
+                      enabled: actions[i].onPressed != null,
+                      child: Row(
+                        children: [
+                          Icon(actions[i].icon),
+                          const SizedBox(width: 12),
+                          Text(actions[i].label),
+                        ],
+                      ),
+                    ),
+                ],
+              )
+            else
+              const SizedBox(width: 8),
           ],
         ),
       ),

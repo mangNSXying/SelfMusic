@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// 页面右下角圆角矩形「+」号按钮（播放列表/喜欢/播放源统一新建入口）。
+/// 页面右下角圆角矩形「+」号按钮（歌单/喜欢/播放源统一新建入口）。
 ///
 /// 配合 Stack + Positioned(right: 16, bottom: 16) 使用。
 class CornerAddButton extends StatelessWidget {

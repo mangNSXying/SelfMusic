@@ -4,7 +4,7 @@ import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
 import '../theme/app_theme.dart';
 
-/// 内容区分组横滑切换：播放列表 ↔ 喜欢 ↔ 播放源 ↔ 歌曲 ↔ 专辑 ↔ 歌手。
+/// 内容区分组横滑切换：歌单 ↔ 喜欢 ↔ 播放源 ↔ 歌曲 ↔ 专辑 ↔ 歌手。
 ///
 /// 纵向 ListView/GridView 只认领纵向手势，横向滑动会冒泡到此层；
 /// 与顶栏导航、条目点击互不干扰。到边界不再循环。

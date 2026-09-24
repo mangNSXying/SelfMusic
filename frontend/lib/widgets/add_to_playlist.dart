@@ -16,7 +16,7 @@ Future<void> showAddToPlaylistSheetForSongs(
         BuildContext context, List<Song> songs) =>
     _showAddToPlaylist(context, songs);
 
-/// 播放页「编辑歌单」：列出全部播放列表，点按行即加入/移出（不关闭弹层）。
+/// 播放页「编辑歌单」：列出全部歌单，点按行即加入/移出（不关闭弹层）。
 Future<void> showEditPlaylistsSheet(BuildContext context, Song song) async {
   final provider = context.read<PlaylistsProvider>();
   if (!provider.loaded) provider.refresh();
@@ -79,7 +79,7 @@ class _AddToPlaylistSheet extends StatelessWidget {
       final name = await showDialog<String>(
         context: context,
         builder: (c) => AlertDialog(
-          title: const Text('新建播放列表'),
+          title: const Text('新建歌单'),
           content: TextField(
             controller: ctrl,
             autofocus: true,
@@ -137,7 +137,7 @@ class _AddToPlaylistSheet extends StatelessWidget {
                         const SizedBox(height: 12),
                         FilledButton.icon(
                           icon: const Icon(Icons.add),
-                          label: const Text('新建播放列表'),
+                          label: const Text('新建歌单'),
                           onPressed: createAndAdd,
                         ),
                       ],
@@ -169,7 +169,7 @@ class _AddToPlaylistSheet extends StatelessWidget {
                         ),
                       ListTile(
                         leading: const Icon(Icons.add),
-                        title: const Text('新建播放列表'),
+                        title: const Text('新建歌单'),
                         onTap: createAndAdd,
                       ),
                     ],

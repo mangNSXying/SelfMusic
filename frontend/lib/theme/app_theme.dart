@@ -63,7 +63,7 @@ class AppColorPalette {
 
 /// 主导航 Section（顶栏下层导航）。
 enum NavSection {
-  playlists('播放列表', Icons.queue_music),
+  playlists('歌单', Icons.queue_music),
   liked('喜欢', Icons.favorite),
   sources('播放源', Icons.storage),
   songs('歌曲', Icons.music_note),

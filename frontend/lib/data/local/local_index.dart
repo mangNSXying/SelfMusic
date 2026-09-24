@@ -1168,7 +1168,7 @@ class LocalIndex {
   }
 
   /// 歌单内歌曲匹配：返回含匹配歌曲（标题/歌手，忽略大小写）的歌单 id 集合。
-  /// 单条 SQL 完成，供播放列表页搜索（搜索内容是歌单中的具体歌曲）。
+  /// 单条 SQL 完成，供歌单页搜索（搜索内容是歌单中的具体歌曲）。
   Set<int> playlistIdsMatchingSong(String query) {
     final q = query.trim().toLowerCase();
     if (q.isEmpty) return const {};

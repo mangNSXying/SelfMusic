@@ -78,7 +78,7 @@ class AppContent extends StatelessWidget {
   }
 }
 
-/// 六个顶级分组的容器（播放列表/喜欢/播放源/歌曲/专辑/歌手）。
+/// 六个顶级分组的容器（歌单/喜欢/播放源/歌曲/专辑/歌手）。
 ///
 /// - 滑动档：跟手 PageView（原生跟手 + 位置/速度吸附）；
 ///   程序驱动（顶栏点击/返回键）`animateToPage`，方向天然正确；
@@ -289,14 +289,14 @@ class _LikedViewState extends State<_LikedView> {
                       setState(() => _sel.setAll(songs.map(songKey))),
                   onCancel: () => setState(_sel.cancel),
                   actions: [
-                    IconButton(
-                      icon: const Icon(Icons.play_arrow),
-                      tooltip: '播放选中',
+                    SelectionAction(
+                      icon: Icons.play_arrow,
+                      label: '播放选中',
                       onPressed: _sel.isEmpty ? null : () => _playSelected(songs),
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.favorite_border),
-                      tooltip: '取消喜欢',
+                    SelectionAction(
+                      icon: Icons.favorite_border,
+                      label: '取消喜欢',
                       onPressed: _sel.isEmpty ? null : () => _unlikeSelected(songs),
                     ),
                   ],
@@ -420,14 +420,14 @@ class _SongsViewState extends State<_SongsView> {
                 setState(() => _sel.setAll(songs.map(songKey))),
             onCancel: () => setState(_sel.cancel),
             actions: [
-              IconButton(
-                icon: const Icon(Icons.play_arrow),
-                tooltip: '播放选中',
+              SelectionAction(
+                icon: Icons.play_arrow,
+                label: '播放选中',
                 onPressed: _sel.isEmpty ? null : () => _playSelected(songs),
               ),
-              IconButton(
-                icon: const Icon(Icons.playlist_add),
-                tooltip: '加入歌单',
+              SelectionAction(
+                icon: Icons.playlist_add,
+                label: '加入歌单',
                 onPressed: _sel.isEmpty
                     ? null
                     : () => _addToPlaylistSelected(songs),

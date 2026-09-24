@@ -31,7 +31,7 @@ enum SongTitleFormat {
       .firstWhere((e) => e.name == v, orElse: () => SongTitleFormat.artistTitle);
 }
 
-/// 集合页（播放列表/播放源/专辑/歌手）展示形式。
+/// 集合页（歌单/播放源/专辑/歌手）展示形式。
 enum CollectionViewMode {
   list('列表', 'list'),
   card('卡片', 'card');
@@ -114,7 +114,7 @@ class AppSettings {
   /// 歌曲标题显示格式（settings.md §3.4 歌曲）：默认 song.artist - song.title。
   static const String kSongTitleFormat = 'song_title_format';
 
-  /// 集合页展示形式（列表/卡片）：播放列表 / 播放源 / 专辑 / 歌手。
+  /// 集合页展示形式（列表/卡片）：歌单 / 播放源 / 专辑 / 歌手。
   static const String kViewModePlaylists = 'view_mode_playlists';
   static const String kViewModeSources = 'view_mode_sources';
   static const String kViewModeAlbums = 'view_mode_albums';
@@ -373,7 +373,7 @@ class AppSettings {
     return CollectionViewMode.parse(raw);
   }
 
-  /// 各集合页展示形式（默认：播放列表=列表，播放源/专辑/歌手=卡片）。
+  /// 各集合页展示形式（默认：歌单=列表，播放源/专辑/歌手=卡片）。
   CollectionViewMode get viewModePlaylists =>
       _viewMode(kViewModePlaylists, CollectionViewMode.list);
   set viewModePlaylists(CollectionViewMode v) =>
