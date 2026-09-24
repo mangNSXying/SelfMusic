@@ -78,8 +78,10 @@ class SongTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final direct = context.watch<DirectSourceManager>();
-    final favorite = direct.weight.isFavorite(song);
-    final disliked = direct.weight.isDisliked(song);
+    // 收藏/不喜欢合并为一次 play_meta 查询（列表滑动期每行尽量减少查询）。
+    final meta = direct.weight.metaOf(song);
+    final favorite = meta.favorite;
+    final disliked = meta.frozen;
     return ListTile(
       selected: selectionMode && selected,
       leading: selectionMode

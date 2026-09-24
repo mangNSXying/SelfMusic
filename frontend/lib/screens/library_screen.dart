@@ -207,7 +207,8 @@ class _SectionPagerState extends State<SectionPager> {
     return PageView(
       controller: _ctrl,
       onPageChanged: _onPageChanged,
-      children: _pages,
+      // 每页独立图层：横滑期间页面平移只重合成、不重栅格化（降低滑动掉帧）。
+      children: [for (final p in _pages) RepaintBoundary(child: p)],
     );
   }
 }
@@ -222,6 +223,18 @@ class _LikedView extends StatefulWidget {
 
 class _LikedViewState extends State<_LikedView> {
   final Selection<String> _sel = Selection<String>();
+
+  /// 收藏列表缓存：仅在收藏版本变化时查库（滑动/重绘不重复全量查询）。
+  int _favVersion = -1;
+  List<Song> _favAll = const [];
+
+  List<Song> _favoritesOf(DirectSourceManager direct) {
+    if (direct.favoriteVersion != _favVersion) {
+      _favVersion = direct.favoriteVersion;
+      _favAll = direct.favoriteSongs();
+    }
+    return _favAll;
+  }
 
   void _toggle(String key) => setState(() {
         _sel.active = true;
@@ -251,7 +264,7 @@ class _LikedViewState extends State<_LikedView> {
     final nav = context.watch<NavigationProvider>();
     final player = context.read<PlayerProvider>();
     final lib = context.read<LibraryProvider>();
-    final all = direct.favoriteSongs();
+    final all = _favoritesOf(direct);
     final songs = sortSongs(filterSongs(all, nav.search),
         direct.settings.sortFavorites,
         factorOf: direct.weight.factorOf);

@@ -45,7 +45,9 @@ class _AppShellState extends State<AppShell> {
 
     final contentColumn = Column(
       children: [
-        TopBar(onSidebarToggle: _toggleSidebar),
+        // 图层隔离：顶栏/迷你条高频重建（滑动跟手、播放进度）不脏内容页，
+        // 内容页横滑/列表滚动各自独立栅格化，降低掉帧。
+        RepaintBoundary(child: TopBar(onSidebarToggle: _toggleSidebar)),
         Expanded(
           // 顶栏已用 SafeArea 消费过状态栏；内容区不能再叠加一次系统安全区。
           // Flutter 的 ListView/GridView 在 padding==null 时会把 MediaQuery.padding
@@ -54,10 +56,10 @@ class _AppShellState extends State<AppShell> {
             context: context,
             removeTop: true,
             removeBottom: true,
-            child: widget.content,
+            child: RepaintBoundary(child: widget.content),
           ),
         ),
-        const MiniPlayerBar(),
+        const RepaintBoundary(child: MiniPlayerBar()),
       ],
     );
 
