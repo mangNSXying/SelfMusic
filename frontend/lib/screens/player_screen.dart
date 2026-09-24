@@ -51,16 +51,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
   double _dragStartY = 0;
   double _dragStartP = 0;
 
-  /// 平台行为（全屏 / 屏幕常亮）当前已应用状态与合并调度标记。
-  bool _fsOn = false;
-  bool _wakeOn = false;
+  /// 平台行为（全屏 / 屏幕常亮）目标值与已应用值；合并调度标记。
+  bool _wantFs = false;
+  bool _wantWake = false;
+  bool _fsApplied = false;
+  bool _wakeApplied = false;
   bool _platformSyncScheduled = false;
+
+  /// 播放页悬浮层动画（跟随进入/离开）：平台调用等其完全打开后再落地，
+  /// 避免入场动画期间切换沉浸式导致内容“拉伸跳动”。
+  PlayerSheetAnimator? _sheet;
 
   @override
   void initState() {
     super.initState();
     _pageCtrl = PageController(initialPage: 0);
-    // 首帧后按设置应用全屏/常亮（进入播放页即时生效）。
+    // 首帧后读取设置目标值（实际应用等悬浮层完全打开）。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final s = context.read<DirectSourceManager>().settings;
@@ -69,7 +75,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final s = context.read<PlayerSheetAnimator>();
+    if (!identical(s, _sheet)) {
+      _sheet?.progress.removeListener(_onSheetTick);
+      _sheet = s;
+      s.progress.addListener(_onSheetTick);
+    }
+  }
+
+  @override
   void dispose() {
+    _sheet?.progress.removeListener(_onSheetTick);
     // 离开播放页恢复系统 UI 与熄屏策略。
     if (Platform.isAndroid) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -79,23 +97,38 @@ class _PlayerScreenState extends State<PlayerScreen> {
     super.dispose();
   }
 
-  /// 设置变化时合并到下一帧统一应用（build 中调用，避免副作用直接落帧内）。
+  void _onSheetTick() {
+    if ((_sheet?.value ?? 1) <= 0.001) _flushPlatform();
+  }
+
+  /// 设置变化时合并到下一帧；播放页完全打开后才落地平台调用（全屏/常亮）。
   void _schedulePlatformSync(bool fullscreen, bool keepOn) {
-    if (fullscreen == _fsOn && keepOn == _wakeOn) return;
-    _fsOn = fullscreen;
-    _wakeOn = keepOn;
-    if (_platformSyncScheduled) return;
+    final changed = fullscreen != _wantFs || keepOn != _wantWake;
+    _wantFs = fullscreen;
+    _wantWake = keepOn;
+    if (!changed || _platformSyncScheduled) return;
     _platformSyncScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _platformSyncScheduled = false;
       if (!mounted) return;
+      if ((_sheet?.value ?? 0) <= 0.001) _flushPlatform();
+    });
+  }
+
+  void _flushPlatform() {
+    if (!mounted) return;
+    if (_wantFs != _fsApplied) {
       if (Platform.isAndroid) {
-        SystemChrome.setEnabledSystemUIMode(_fsOn
+        SystemChrome.setEnabledSystemUIMode(_wantFs
             ? SystemUiMode.immersiveSticky
             : SystemUiMode.edgeToEdge);
       }
-      unawaited(_wakeOn ? WakelockPlus.enable() : WakelockPlus.disable());
-    });
+      _fsApplied = _wantFs;
+    }
+    if (_wantWake != _wakeApplied) {
+      unawaited(_wantWake ? WakelockPlus.enable() : WakelockPlus.disable());
+      _wakeApplied = _wantWake;
+    }
   }
 
   /// 播放页下拉跟手：整页随手指下移，底下显露分组区；松手按位移/速度吸附或离场。
