@@ -3,6 +3,7 @@
 error.log
 key.txt
 /*.txt
+/win10开发机准备.md
 
 # 具体文件夹
 backend/target/

@@ -67,6 +67,11 @@
 - Windows 出包 → ✅ 已就绪（Win10 机器，VS2022 Build Tools + ATL 补装）
 - 鸿蒙 → Win10 机器上并行推进 PoC（DevEco Studio + SDK + 真机）；Ubuntu 上**不要**装鸿蒙 SDK
 
+**Windows 构建网络三坑（新机器必读）：**
+- `media_kit_libs_windows_audio` 在 CMake configure 阶段从 GitHub release 下载 `mpv-dev-*.7z`（约 5MB）并做 MD5 校验，弱网下会留下 0 字节残片并反复报 `Integrity check failed`——删除 `build/windows/x64/mpv-dev-*.7z` 后手动下载放回原位即可（期望 MD5 见该插件 `windows/CMakeLists.txt`）
+- `permission_handler_windows` 用 `find_program` 在 PATH 里找 `nuget.exe`（拉 CppWinRT 头用），找不到就退回 CMake 内置下载器（无超时，弱网下挂死）——把 `nuget.exe` 放在 flutter wrapper 同目录即可，`run-windows.bat` 已做 PATH 注入与 `NUGET_HTTP_CACHE_PATH` 重定向（缓存落 D 盘）
+- configure 中途失败（如上两条）会留下脏 `CMakeCache.txt`：`CMAKE_INSTALL_PREFIX` 停在 `C:/Program Files/selfmusic`，重试构建报 `file cannot create directory ... Maybe need administrative privileges`——把 cache 中该值改回 `build/windows/x64/runner/Debug`，或删整个 `build/windows` 重建
+
 ---
 
 ## 项目结构

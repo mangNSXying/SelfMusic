@@ -1,5 +1,8 @@
 flutter/ephemeral/
 
+# Flutter 构建时自动复制/下载的 NuGet（C++/WinRT 依赖还原工具）。
+nuget.exe
+
 # Visual Studio user-specific files.
 *.suo
 *.user
