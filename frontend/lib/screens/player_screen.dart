@@ -77,11 +77,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void dispose() {
     _btPoll?.cancel();
-    _sheet?.progress.removeListener(_onSheetTick);
-    // 离开播放页恢复系统 UI 与熄屏策略。
-    if (Platform.isAndroid) {
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    }
+    // 离开播放页恢复熄屏策略。
     // ohos 无 wakelock_plus 平台实现，调用会 MissingPluginException（PoC 放弃常亮）。
     if (Platform.operatingSystem != 'ohos') {
       unawaited(WakelockPlus.disable());
