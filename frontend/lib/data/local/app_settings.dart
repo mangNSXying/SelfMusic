@@ -80,6 +80,10 @@ class AppSettings {
   /// 元数据回填补读是否已执行（块序异常歌曲重读，设备本地一次性迁移标记）。
   /// 同上不进 [knownKeys]。
   static const String kMetaReenrichV2Done = 'meta_reenrich_v2_done';
+
+  /// 存量补推已执行的配对 client_id（设备本地标记，不进 [knownKeys]）：
+  /// 同一配对只自动补推一次；换账号重配（client_id 变化）则重新补推。
+  static const String kBackfillClientId = 'backfill_client_id';
   static const String kPlayModeDefault = 'play_mode_default';
   static const String kResumeOnStartup = 'resume_on_startup';
   static const String kPlayerShowWeight = 'player_show_weight';
@@ -208,6 +212,11 @@ class AppSettings {
       (index.settingsGet(kMetaReenrichV2Done) ?? '0') == '1';
   set metaReenrichV2Done(bool v) =>
       index.settingsSet(kMetaReenrichV2Done, v ? '1' : '0');
+
+  /// 存量补推已执行的配对 client_id（空=未执行过）。
+  String get backfillClientId => index.settingsGet(kBackfillClientId) ?? '';
+  set backfillClientId(String v) =>
+      index.settingsSet(kBackfillClientId, v);
 
   // ---------- 收藏自动缓存（settings.md §3.4 歌曲分区） ----------
 

@@ -30,6 +30,9 @@ class AuthProvider extends ChangeNotifier {
   bool get sessionExpired => _sessionExpired;
   String? get error => _error;
 
+  /// 配对成功回调（UI 层接自动补推等善后；失败/无数据由调用方静默）。
+  Future<void> Function()? onPaired;
+
   Future<void> _loadToken() async {
     // Linux/libsecret 冷启动时 keyring 可能尚未解锁，做几次带小延时的重试，
     // 避免一次性读取失败就把用户误判为“未配对”。
@@ -65,6 +68,7 @@ class AuthProvider extends ChangeNotifier {
       _bootstrapped = true;
       _loading = false;
       notifyListeners();
+      await onPaired?.call();
       return true;
     } catch (e) {
       _error = e.toString();

@@ -125,6 +125,25 @@ public class SyncService {
     }
 
     /**
+     * 权重绝对态（song.state，补推/纠偏用）：行级 LWW，判输返回快照纠偏。
+     * 载荷缺键保持行上原值；全键齐备时即整行覆盖。
+     */
+    private Object applySongState(PushEvent ev, SongState song) {
+        if (!eventWins(ev.occurred_at(), song.getLastEventAt())) return songSnapshot(song);
+        JsonNode p = ev.payload();
+        if (p != null) {
+            if (p.has("like_streak")) song.setLikeStreak(p.path("like_streak").asInt(nvl(song.getLikeStreak())));
+            if (p.has("dislike_streak")) song.setDislikeStreak(p.path("dislike_streak").asInt(nvl(song.getDislikeStreak())));
+            if (p.has("weight")) song.setWeight(BigDecimal.valueOf(p.path("weight").asDouble(factor(song).doubleValue())));
+            if (p.has("frozen")) song.setFrozen(p.path("frozen").asBoolean(song.isFrozen()));
+            if (p.has("is_favorite")) song.setFavorite(p.path("is_favorite").asBoolean(song.isFavorite()));
+        }
+        song.setLastEventAt(ev.occurred_at());
+        songStateRepository.save(song);
+        return null;
+    }
+
+    /**
      * LWW 仲裁：当前事件是否胜过行上次应用的事件。
      * lastEventAt 为空=首写恒胜；occurred 缺失恒输；
      * occurred 更大胜出，打平则后处理（到达序）胜出，保证确定性收敛。
@@ -209,6 +228,9 @@ public class SyncService {
         return switch (typeGroup(ev.type())) {
             case "song" -> {
                 SongState song = stateOf(p, true);
+                if (SyncEventTypes.SONG_STATE.equals(ev.type())) {
+                    yield applySongState(ev, song);
+                }
                 applySongEvent(song, ev.type(), p);
                 songStateRepository.save(song);
                 yield null;

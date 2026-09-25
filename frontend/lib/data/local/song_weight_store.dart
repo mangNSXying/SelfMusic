@@ -144,4 +144,31 @@ class SongWeightStore {
   }
 
   static double _clamp(double v) => v.clamp(minFactor, maxFactor).toDouble();
+
+  /// 补推存量权重（配对前数据无事件用）：为非默认 play_meta 行补 song.state
+  /// 绝对态事件（streak/factor/frozen/favorite 全量，服务端 LWW）。
+  /// source_key=='server' 的行走常规 outbox（恒进事件），跳过；
+  /// 门控与 [_emit] 一致。返回补推歌曲数。
+  int backfill() {
+    var n = 0;
+    for (final m in index.listDirtyPlayMeta()) {
+      if (m.sourceKey == 'server') continue;
+      final protocol = index.getSource(m.sourceKey)?.kind ?? '';
+      if (protocol.isEmpty || protocol == 'server') continue;
+      if (!(serverAvailable?.call() ?? false)) continue;
+      final sourceId = index.sourceUuidOf(m.sourceKey);
+      index.enqueueOutbox(SyncEventTypes.songState, {
+        'source': protocol,
+        'source_ref': m.songRef,
+        if (sourceId != null) 'source_id': sourceId,
+        'like_streak': m.likeStreak,
+        'dislike_streak': m.dislikeStreak,
+        'weight': m.factor,
+        'frozen': m.frozen,
+        'is_favorite': m.favorite,
+      });
+      n++;
+    }
+    return n;
+  }
 }

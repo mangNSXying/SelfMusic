@@ -64,18 +64,49 @@ class PlaylistStore {
     );
     if (!_syncable(s)) return;
     final uuid = index.ensurePlaylistUuid(playlistId);
+    _enqueueItemAdd(
+        uuid, s, _sortOrderOf(playlistId, s), index.sourceUuidOf(s.sourceKey));
+  }
+
+  void _enqueueItemAdd(
+      String playlistUuid, Song s, int sortOrder, String? sourceId) {
     index.enqueueOutbox(SyncEventTypes.playlistItemAdd, {
-      'playlist_uuid': uuid,
+      'playlist_uuid': playlistUuid,
       'source': s.source,
       'source_ref': s.sourceRef,
-      if (index.sourceUuidOf(s.sourceKey) != null)
-        'source_id': index.sourceUuidOf(s.sourceKey),
+      if (sourceId != null) 'source_id': sourceId,
       // 影子行展示字段（服务端无此歌时建行用；已有行忽略）。
       'title': s.title,
       if (s.artist != null) 'artist': s.artist,
       if (s.albumName != null) 'album': s.albumName,
-      'sort_order': _sortOrderOf(playlistId, s),
+      'sort_order': sortOrder,
     });
+  }
+
+  /// 补推存量歌单（配对前建单无事件用）：为本地已有歌单补 playlist.create，
+  /// 为其中非 'server' 条目（直连歌，配对前门控跳过未进事件）补 item_add。
+  /// 'server' 行走常规 outbox（恒进事件），跳过。语义以本机为准
+  ///（occurred_at=now，服务端 LWW 胜出）。返回 {playlists, items}。
+  Map<String, int> backfill() {
+    var playlists = 0;
+    var items = 0;
+    for (final p in index.listPlaylists()) {
+      final uuid = index.ensurePlaylistUuid(p.id);
+      index.enqueueOutbox(SyncEventTypes.playlistCreate, {
+        'client_uuid': uuid,
+        'name': p.name,
+        if (p.description != null) 'description': p.description,
+      });
+      playlists++;
+      for (final it in index.playlistItems(p.id)) {
+        if (it.sourceKey == 'server') continue;
+        final s = songOf(it);
+        if (!_syncable(s)) continue;
+        _enqueueItemAdd(uuid, s, it.sortOrder, index.sourceUuidOf(s.sourceKey));
+        items++;
+      }
+    }
+    return {'playlists': playlists, 'items': items};
   }
 
   void removeSong(int playlistId, Song s) {

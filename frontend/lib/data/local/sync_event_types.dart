@@ -10,6 +10,9 @@ abstract final class SyncEventTypes {
   static const songUnfavorite = 'song.unfavorite';
   static const songDisliked = 'song.disliked';
   static const songReset = 'song.reset';
+  // 权重绝对态（补推/纠偏用）：服务端行级 LWW 全量覆盖，
+  // pull 回来仍是普通 songSnapshot，走 _applySong 落地
+  static const songState = 'song.state';
 
   // 歌单元数据（行级 LWW）
   static const playlistCreate = 'playlist.create';

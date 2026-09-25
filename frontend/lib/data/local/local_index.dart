@@ -823,6 +823,29 @@ class LocalIndex {
         cur.frozen ? 1 : 0, fav ? 1 : 0, songJson]);
   }
 
+  /// 非默认权重行（补推用）：streak 非零 / factor 非 1.0 / 锁定 / 收藏。
+  /// 默认态服务端本就是初值，无需补推。
+  List<PlayMetaRow> listDirtyPlayMeta() {
+    final rs = _db!.select(
+        'SELECT source_key, song_ref, like_streak, dislike_streak, factor, '
+        'frozen, is_favorite, song_json FROM play_meta '
+        'WHERE like_streak<>0 OR dislike_streak<>0 OR factor<>1.0 '
+        'OR frozen<>0 OR is_favorite<>0');
+    return [
+      for (final r in rs)
+        PlayMetaRow(
+          sourceKey: r['source_key'] as String,
+          songRef: r['song_ref'] as String,
+          likeStreak: r['like_streak'] as int,
+          dislikeStreak: r['dislike_streak'] as int,
+          factor: (r['factor'] as num).toDouble(),
+          frozen: (r['frozen'] as int) != 0,
+          favorite: (r['is_favorite'] as int) != 0,
+          songJson: r['song_json'] as String?,
+        ),
+    ];
+  }
+
   /// 「喜欢」列表：play_meta 中已收藏歌曲（含服务器歌快照；迁移回填的直连歌查 idx_songs 补全）。
   /// 直连歌优先现查索引，保证后台补读/编辑元数据后喜欢页即时反映最新封面与专辑信息。
   List<Song> likedSongs() {

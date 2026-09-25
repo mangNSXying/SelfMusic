@@ -11,6 +11,9 @@ public final class SyncEventTypes {
     public static final String SONG_UNFAVORITE = "song.unfavorite";
     public static final String SONG_DISLIKED = "song.disliked";
     public static final String SONG_RESET = "song.reset";
+    // 权重绝对态（补推/纠偏用）：行级 LWW，载荷含 like/dislike streak、
+    // weight、frozen、is_favorite 全量字段（缺键保持行上原值）
+    public static final String SONG_STATE = "song.state";
 
     // 歌单元数据：行级 LWW（以 last_event_at 为基准）
     public static final String PLAYLIST_CREATE = "playlist.create";
