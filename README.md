@@ -21,7 +21,7 @@
 
 | 层级 | 技术 | 备注 |
 |------|------|------|
-| 前端 | Flutter 3.6+ / Dart | **同步开发 Linux + Android**（`lib/` 全为跨平台 Dart）；Windows 计划；OpenHarmony 计划 |
+| 前端 | Flutter / Dart ≥3.4 | **Linux + Android + Windows 三平台**（`lib/` 全为跨平台 Dart）；鸿蒙 PoC 进行中 |
 | 后端 | Spring Boot 3.4.4 / JDK 21 | REST API |
 | 构建 | Maven | |
 | 数据库 | MySQL 8.0 | 宿主机已有实例，容器内应用直连 |
@@ -30,7 +30,7 @@
 
 > **平台开发原则**：Linux 桌面与 Android **同步开发、进度对齐**。`frontend/lib/` 的 UI/主题/播放器/鉴权/状态层均为跨平台 Dart，任何特性的落地同时给出双平台平台配套（音频后端/权限/生命周期差异用条件导入收口）。Android 壳工程已重建（DESIGN.md §8 阶段 0 完成），双端同步验收。
 
-**音频后端**：`just_audio` 在 Linux 依赖 `just_audio_mpv`（需 `sudo apt install -y mpv libmpv-dev`），在 Android 使用默认 ExoPlayer 后端。
+**音频后端**：Android 用 ExoPlayer；Linux / Windows 桌面统一 `just_audio_media_kit`（libmpv 随包分发，无需系统安装 mpv）；鸿蒙用 fvp/libmdk 适配层（PoC，见 DEVELOPER.md「鸿蒙适配」）。
 
 ## 快速开始
 

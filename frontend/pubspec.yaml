@@ -4,7 +4,9 @@ publish_to: 'none'
 version: 1.0.1+2
 
 environment:
-  sdk: ^3.6.0
+  # 下限 3.4.0 兼容鸿蒙 ohos 分支工具链（现为 oh-3.41.9-release / Dart 3.11）；
+  # Windows/Android/Linux 用 stable 更高版本不受影响。
+  sdk: ^3.4.0
 
 dependencies:
   flutter:
@@ -12,26 +14,35 @@ dependencies:
   cupertino_icons: ^1.0.8
   dio: ^5.7.0
   provider: ^6.1.2
-  just_audio: ^0.9.42
-  cached_network_image: ^3.4.1
-  flutter_secure_storage: ^9.2.4
-  just_audio_mpv: ^0.1.7
-  just_audio_windows: ^0.2.3
+  just_audio: ^0.9.37
+  just_audio_media_kit: ^2.1.0
+  media_kit_libs_linux: any
+  media_kit_libs_windows_audio: any
+  cached_network_image: ^3.3.0
+  flutter_secure_storage: ^9.2.2
   xml: ^6.5.0
   path: ^1.9.0
-  path_provider: ^2.1.5
+  path_provider: ^2.1.1
   sqlite3: ^2.4.6
   sqlite3_flutter_libs: ^0.5.24
   crypto: ^3.0.6
-  audio_service: ^0.18.19
-  file_selector: ^1.1.0
+  audio_service: ^0.18.15
+  file_selector: ^1.0.3
   permission_handler: ^11.3.1
-  wakelock_plus: ^1.5.2
+  wakelock_plus: ^1.2.0
+  # ---- 鸿蒙（ohos）平台实现桩：仅声明 ohos 平台，其它平台构建自动忽略 ----
+  path_provider_ohos: ^2.2.1        # path_provider 的 ohos 实现（联邦 implements）
+  file_selector_ohos: ^0.5.0        # file_selector 的 ohos 实现
+  fvp:                              # libmdk 播放后端（ohos 音频适配层底座）
+    path: third_party/fvp           # vendored ohos-only 副本，避免其它平台捆绑 libmdk
+  # ohos 适配层（lib/platform/harmonyos/）直接 import 的平台接口（本就是传递依赖）：
+  just_audio_platform_interface: ^4.6.0
+  flutter_secure_storage_platform_interface: ^1.1.2
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^5.0.0
-  path_provider_platform_interface: ^2.1.3
+  flutter_lints: ^4.0.0
+  path_provider_platform_interface: ^2.1.2
 
 flutter:
   uses-material-design: true

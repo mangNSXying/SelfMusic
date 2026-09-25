@@ -1,14 +1,14 @@
 # SelfMusic 前端（Flutter）
 
-跨平台客户端：Linux 桌面 + Android 同步开发，`lib/` 全为可换主题自适应 Dart 代码（Windows / 鸿蒙计划中）。
+跨平台客户端：Linux 桌面 + Android + Windows 三平台，`lib/` 全为可换主题自适应 Dart 代码（鸿蒙 PoC 进行中，见 DEVELOPER.md「鸿蒙适配」）。
 
 ## 运行
 
 ```bash
-sudo apt install -y mpv libmpv-dev   # Linux 桌面音频后端（仅首次）
 flutter pub get
-flutter run -d linux                 # Linux 桌面
+flutter run -d linux                 # Linux 桌面（音频后端 media_kit，libmpv 随包分发）
 flutter run -d <设备id>              # Android（后端联调加 --dart-define=API_BASE_URL=http://<宿主IP>:18089）
+flutter run -d windows               # Windows 桌面（或仓库根 run-windows.bat）
 ```
 
 ## 常用命令
@@ -18,6 +18,8 @@ flutter analyze               # 静态检查
 flutter test                  # 单元/组件测试
 flutter build linux --debug   # Linux 出包（验证用 --release）
 flutter build apk --debug     # Android 出包
+flutter build windows --debug # Windows 出包
+# 鸿蒙：需三方 ohos 分支 Flutter + DevEco 工具链（见 DEVELOPER.md「鸿蒙适配」）
 ```
 
 ## 目录

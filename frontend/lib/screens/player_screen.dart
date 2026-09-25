@@ -77,8 +77,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void dispose() {
     _btPoll?.cancel();
-    // 离开播放页恢复熄屏策略。
-    unawaited(WakelockPlus.disable());
+    _sheet?.progress.removeListener(_onSheetTick);
+    // 离开播放页恢复系统 UI 与熄屏策略。
+    if (Platform.isAndroid) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    }
+    // ohos 无 wakelock_plus 平台实现，调用会 MissingPluginException（PoC 放弃常亮）。
+    if (Platform.operatingSystem != 'ohos') {
+      unawaited(WakelockPlus.disable());
+    }
     _pageCtrl.dispose();
     super.dispose();
   }
@@ -110,7 +117,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final wake =
         _wantWake && (_wakeDevice == null || _btConnected);
     if (wake != _wakeApplied) {
-      unawaited(wake ? WakelockPlus.enable() : WakelockPlus.disable());
+      // ohos 无 wakelock_plus 实现，跳过（见 dispose 处注释）。
+      if (Platform.operatingSystem != 'ohos') {
+        unawaited(wake ? WakelockPlus.enable() : WakelockPlus.disable());
+      }
       _wakeApplied = wake;
     }
   }

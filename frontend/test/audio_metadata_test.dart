@@ -76,7 +76,7 @@ void main() {
       tag.addAll([0xFF, 0xFB, 0x90, 0x00]);
 
       final head = Uint8List.fromList(tag);
-      final fileSize = tag.length + 100_000; // pretend payload beyond head
+      final fileSize = tag.length + 100000; // pretend payload beyond head
       final meta = parseAudioHead(head, 'mp3', fileSize)!;
 
       expect(meta.title, 'Song Title');

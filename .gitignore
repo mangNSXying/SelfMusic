@@ -1,6 +1,8 @@
 # 具体文件
 .env
 error.log
+/todo.txt
+/win10开发机准备.md
 
 # 具体文件夹
 backend/target/
@@ -12,6 +14,9 @@ testmusic/
 nginx/
 
 # 泛匹配
+# 注：曾用 *.md / *.txt / *test* 全局忽略，会静默吞掉 vendored 副本与
+# 模板文件（如 third_party/fvp/CHANGELOG.md、cmake/tests、ohosTest），
+# 已收窄为文件头的显式条目。
 *.log
 *.class
 *.pyc
@@ -20,14 +25,14 @@ nginx/
 .idea/
 *.iml
 **/doc/api/
-*.txt
-*.log
-*.lock
-*.md
-*test*
 *.htm*
+# pubspec.lock 不入库：stable 与 ohos 两套 SDK 的 pub get 会互相改写部分
+# 传递依赖版本（meta/test_api 等），提交 lock 只会制造往返噪音；
+# 版本一致性由 pubspec 约束保证。
+*.lock
 
-# 排除文件
-!frontend/test/
-!frontend/test/**
-!***/CMakeLists.txt
+# 鸿蒙构建产物（hvigor/ohpm 在 vendored fvp 副本内展开的中间物）
+frontend/third_party/fvp/ohos/.cxx/
+frontend/third_party/fvp/ohos/build/
+frontend/third_party/fvp/ohos/oh_modules/
+frontend/third_party/fvp/ohos/oh-package-lock.json5

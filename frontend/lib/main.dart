@@ -5,7 +5,9 @@ import 'package:audio_service/audio_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:just_audio_media_kit/just_audio_media_kit.dart';
 import 'package:provider/provider.dart';
+import 'platform/harmonyos/ohos_bootstrap.dart';
 import 'services/api_client.dart';
 import 'services/server_settings.dart';
 import 'services/selfmusic_audio_handler.dart';
@@ -26,6 +28,15 @@ import 'widgets/player_sheet_anim.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 鸿蒙引导（sqlite3 系统库 / secure storage 文件实现 / just_audio→fvp 适配）：
+  // 必须先于任何存储访问与播放器创建；其它平台内部直接返回。
+  await setupOhos();
+  // 桌面端（Windows/Linux）音频后端统一 media_kit（底层 libmpv）：默认参数即
+  // Windows/Linux 启用、Android 关闭（Android 继续走 ExoPlayer），无需平台判断。
+  // ohos 上其内部 UniversalPlatform 判断为 no-op，由上面的 FvpJustAudio 接管。
+  JustAudioMediaKit.ensureInitialized();
+  // 系统音量混合器 / 进程列表里显示的名字（默认 'JustAudioMediaKit'）。
+  JustAudioMediaKit.title = 'SelfMusic';
   // 先加载「服务端」设置（后端地址）与本地索引（含直连源配置恢复），
   // 避免 UI 首次访问时的初始化竞态。
   final serverSettings = ServerSettings();
