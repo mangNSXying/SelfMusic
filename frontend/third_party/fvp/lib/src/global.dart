@@ -10,7 +10,7 @@ import 'generated_bindings.dart';
 import 'lib.dart';
 
 /// a frame with [timestampEOS] indicates it's the last frame
-// TODO: generate by ffi
+// 待办: generate by ffi
 const double timestampEOS = 1.7976931348623157e+308;
 
 /// Float timestamp unit is second, integer timestamp(for example Player.position, seek) unit is millisecond.
