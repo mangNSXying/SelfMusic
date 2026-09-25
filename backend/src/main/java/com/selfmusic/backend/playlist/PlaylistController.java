@@ -88,7 +88,10 @@ public class PlaylistController {
         @SuppressWarnings("unchecked")
         Map<String, Object> corrections = (Map<String, Object>) r.get("corrections");
         if (!corrections.isEmpty()) {
-            return ApiResponse.ok((Map<String, Object>) corrections.values().iterator().next());
+            @SuppressWarnings("unchecked")
+            Map<String, Object> first =
+                    (Map<String, Object>) corrections.values().iterator().next();
+            return ApiResponse.ok(first);
         }
         Playlist fresh = playlistRepository.findById(id).orElseThrow();
         return ApiResponse.ok(syncService.playlistSnapshot(fresh));
@@ -175,11 +178,6 @@ public class PlaylistController {
     private static String str(Map<String, Object> body, String key) {
         Object v = body.get(key);
         return v == null ? null : v.toString();
-    }
-
-    private static long toLong(Object v) {
-        if (v instanceof Number n) return n.longValue();
-        return Long.parseLong(String.valueOf(v));
     }
 
     private static int toInt(Object v) {

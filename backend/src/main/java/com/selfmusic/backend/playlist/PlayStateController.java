@@ -74,7 +74,10 @@ public class PlayStateController {
         @SuppressWarnings("unchecked")
         Map<String, Object> corrections = (Map<String, Object>) r.get("corrections");
         if (!corrections.isEmpty()) {
-            return ApiResponse.ok((Map<String, Object>) corrections.values().iterator().next());
+            @SuppressWarnings("unchecked")
+            Map<String, Object> first =
+                    (Map<String, Object>) corrections.values().iterator().next();
+            return ApiResponse.ok(first);
         }
         PlayState st = playStateRepository.findById(playlistId).orElseThrow();
         return ApiResponse.ok(SyncService.playstateSnapshot(st, p.getClientUuid()));
