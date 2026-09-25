@@ -195,11 +195,19 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
   /// 播放页悬浮层动画唯一控制器（壳常驻 + 播放页悬浮层跟手共用）。
   late final PlayerSheetAnimator _sheetAnim;
   late final NavigationProvider _nav;
+  late final SyncEngine _syncEngine;
 
   @override
   void initState() {
     super.initState();
     _nav = context.read<NavigationProvider>();
+    _syncEngine = context.read<SyncEngine>();
+    // 同步拉到歌单后刷新 Provider 缓存：落库直写 SQLite，
+    // 不刷则新歌单只进库不进列表（重启前不可见）。
+    _syncEngine.onPlaylistsApplied = () {
+      if (!mounted) return;
+      context.read<PlaylistsProvider>().refresh();
+    };
     _sheetAnim = PlayerSheetAnimator(
       vsync: this,
       progress: _nav.playerProgress,
@@ -221,6 +229,7 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
   @override
   void dispose() {
     _nav.removeListener(_syncPlayerSheet);
+    _syncEngine.onPlaylistsApplied = null;
     _sheetAnim.dispose();
     super.dispose();
   }

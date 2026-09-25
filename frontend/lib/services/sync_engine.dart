@@ -43,6 +43,12 @@ class SyncEngine {
   void Function()? onSourcesApplied;
   bool _sourcesDirty = false;
 
+  /// 歌单快照落库后的回调：PlaylistsProvider 缓存了歌单列表，
+  /// 需显式 refresh 新同步到的歌单才会显示（对标 onSourcesApplied）。
+  /// 仅当本轮真有歌单变更时触发一次。
+  void Function()? onPlaylistsApplied;
+  bool _playlistsDirty = false;
+
   SyncEngine({required this.api, required this.index, required this.settings});
 
   void start() {
@@ -117,6 +123,7 @@ class SyncEngine {
       lastPushed = 0;
       if (!pullOnly) await _push(clientId);
       await _pull(clientId);
+      _flushPlaylists();
       settings.lastSyncAt = DateTime.now().toIso8601String();
       _lastPullAt = DateTime.now();
       _failCount = 0;
@@ -170,6 +177,14 @@ class SyncEngine {
     if (!_sourcesDirty) return;
     _sourcesDirty = false;
     onSourcesApplied?.call();
+  }
+
+  /// 歌单变更统一出口：pull 与 push 回包 corrections 共用，
+  /// 本轮结束时最多触发一次回调。
+  void _flushPlaylists() {
+    if (!_playlistsDirty) return;
+    _playlistsDirty = false;
+    onPlaylistsApplied?.call();
   }
 
   Future<void> _pull(String clientId) async {
@@ -268,6 +283,7 @@ class SyncEngine {
   void _applyPlaylist(Map<String, dynamic> p) {
     final uuid = p['client_uuid'] as String?;
     if (uuid == null || uuid.isEmpty) return;
+    _playlistsDirty = true;
     final items = p['items'];
     final synced = <SyncedItem>[];
     if (items is List) {
