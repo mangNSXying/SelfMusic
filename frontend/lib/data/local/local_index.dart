@@ -129,7 +129,8 @@ class LocalIndex {
         idx         INTEGER NOT NULL,
         position_ms INTEGER NOT NULL,
         updated_at  TEXT NOT NULL,
-        playlist_uuid TEXT
+        playlist_uuid TEXT,
+        anchor_key    TEXT
       );
     ''');
     final stateCols = _db!
@@ -138,6 +139,10 @@ class LocalIndex {
         .toSet();
     if (!stateCols.contains('playlist_uuid')) {
       _db!.execute('ALTER TABLE play_state ADD COLUMN playlist_uuid TEXT');
+    }
+    // 融合队列锚定键（任意列表上下文：playlist:<uuid>/liked/songs/album/artist/source）。
+    if (!stateCols.contains('anchor_key')) {
+      _db!.execute('ALTER TABLE play_state ADD COLUMN anchor_key TEXT');
     }
     final cacheCols = _db!
         .select('PRAGMA table_info(cache)')
@@ -207,7 +212,9 @@ class LocalIndex {
         device_id     TEXT
       );
     ''');
-    // 深层列表：每个歌单一条「仅可修改末尾值」的历史栈（JSON 快照，仅本机）。
+    // 深层列表：每个锚定上下文一条「仅可修改末尾值」的历史栈（JSON 快照，仅本机）。
+    // playlist_uuid 列存储通用锚定键（playlist:<uuid>/liked/songs/album:<id>/
+    // artist:<name>/source:<key>），非歌单锚定亦可持久化。
     _db!.execute('''
       CREATE TABLE IF NOT EXISTS deep_lists (
         playlist_uuid TEXT PRIMARY KEY,
@@ -222,6 +229,10 @@ class LocalIndex {
     if (!mirrorCols.contains('source_id')) {
       _db!.execute(
           'ALTER TABLE breakpoint_mirror ADD COLUMN source_id TEXT');
+    }
+    if (!mirrorCols.contains('deep_list_json')) {
+      _db!.execute(
+          'ALTER TABLE breakpoint_mirror ADD COLUMN deep_list_json TEXT');
     }
     // 歌单跨设备全局标识 + 删除墓碑（本地删除仍硬删，墓碑只活在服务端）。
     final playlistCols = _db!
@@ -1547,22 +1558,25 @@ class LocalIndex {
     String? source,
     String? sourceRef,
     required int positionMs,
+    String? deepListJson,
     required String updatedAt,
     String? deviceId,
   }) {
     _db!.execute(
         'INSERT INTO breakpoint_mirror(playlist_uuid, song_id, source_id, source, source_ref, '
-        'position_ms, updated_at, device_id) VALUES(?,?,?,?,?,?,?,?) '
+        'position_ms, deep_list_json, updated_at, device_id) VALUES(?,?,?,?,?,?,?,?,?) '
         'ON CONFLICT(playlist_uuid) DO UPDATE SET '
         'song_id=excluded.song_id, source_id=excluded.source_id, source=excluded.source, '
         'source_ref=excluded.source_ref, position_ms=excluded.position_ms, '
+        'deep_list_json=excluded.deep_list_json, '
         'updated_at=excluded.updated_at, device_id=excluded.device_id',
-        [playlistUuid, songId, sourceId, source, sourceRef, positionMs, updatedAt, deviceId]);
+        [playlistUuid, songId, sourceId, source, sourceRef, positionMs,
+         deepListJson, updatedAt, deviceId]);
   }
 
   BreakpointMirrorRow? breakpointMirrorOf(String playlistUuid) {
     final rs = _db!.select(
-        'SELECT playlist_uuid, song_id, source_id, source, source_ref, position_ms, updated_at, device_id '
+        'SELECT playlist_uuid, song_id, source_id, source, source_ref, position_ms, deep_list_json, updated_at, device_id '
         'FROM breakpoint_mirror WHERE playlist_uuid=?',
         [playlistUuid]);
     if (rs.isEmpty) return null;
@@ -1574,6 +1588,7 @@ class LocalIndex {
       source: r['source'] as String?,
       sourceRef: r['source_ref'] as String?,
       positionMs: r['position_ms'] as int,
+      deepListJson: r['deep_list_json'] as String?,
       updatedAt: r['updated_at'] as String,
       deviceId: r['device_id'] as String?,
     );
@@ -1584,7 +1599,7 @@ class LocalIndex {
         'DELETE FROM breakpoint_mirror WHERE playlist_uuid=?', [playlistUuid]);
   }
 
-  // ---------- 深层列表（隐藏历史栈，仅本机） ----------
+  // ---------- 深层列表（隐藏历史栈，仅本机，按锚定键键控） ----------
 
   void saveDeepList(String playlistUuid, String entriesJson) {
     _db!.execute(
@@ -1629,19 +1644,20 @@ class LocalIndex {
   // ---------- 断点（stage2.md §1.4） ----------
 
   void savePlayState(String queueJson, int idx, int positionMs,
-      {String? playlistUuid}) {
+      {String? playlistUuid, String? anchorKey}) {
     _db!.execute(
-        'INSERT INTO play_state(id, queue_json, idx, position_ms, updated_at, playlist_uuid) '
-        'VALUES(1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET '
+        'INSERT INTO play_state(id, queue_json, idx, position_ms, updated_at, playlist_uuid, anchor_key) '
+        'VALUES(1,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET '
         'queue_json=excluded.queue_json, idx=excluded.idx, '
         'position_ms=excluded.position_ms, updated_at=excluded.updated_at, '
-        'playlist_uuid=excluded.playlist_uuid',
-        [queueJson, idx, positionMs, DateTime.now().toIso8601String(), playlistUuid]);
+        'playlist_uuid=excluded.playlist_uuid, anchor_key=excluded.anchor_key',
+        [queueJson, idx, positionMs, DateTime.now().toIso8601String(),
+            playlistUuid, anchorKey]);
   }
 
   PlayStateRow? getPlayState() {
     final rs = _db!.select(
-        'SELECT queue_json, idx, position_ms, updated_at, playlist_uuid FROM play_state WHERE id=1');
+        'SELECT queue_json, idx, position_ms, updated_at, playlist_uuid, anchor_key FROM play_state WHERE id=1');
     if (rs.isEmpty) return null;
     final r = rs.first;
     return PlayStateRow(
@@ -1650,6 +1666,7 @@ class LocalIndex {
       positionMs: r['position_ms'] as int,
       updatedAt: r['updated_at'] as String,
       playlistUuid: r['playlist_uuid'] as String?,
+      anchorKey: r['anchor_key'] as String?,
     );
   }
 
@@ -1683,7 +1700,7 @@ class LocalIndex {
   List<BreakpointMirrorRow> allBreakpointMirrors() {
     final rs = _db!.select(
         'SELECT playlist_uuid, song_id, source_id, source, source_ref, position_ms, '
-        'updated_at, device_id FROM breakpoint_mirror');
+        'deep_list_json, updated_at, device_id FROM breakpoint_mirror');
     return [
       for (final r in rs)
         BreakpointMirrorRow(
@@ -1693,6 +1710,7 @@ class LocalIndex {
           source: r['source'] as String?,
           sourceRef: r['source_ref'] as String?,
           positionMs: r['position_ms'] as int,
+          deepListJson: r['deep_list_json'] as String?,
           updatedAt: r['updated_at'] as String,
           deviceId: r['device_id'] as String?,
         ),
@@ -1870,12 +1888,17 @@ class PlayStateRow {
 
   /// 队列归属的已同步歌单 uuid（跨设备断点归属；通用队列为 null）。
   final String? playlistUuid;
+
+  /// 融合队列锚定键（任意列表上下文：playlist:<uuid>/liked/songs/album:<id>/
+  /// artist:<id>/source:<key>；重启恢复锚定与深层历史用）。
+  final String? anchorKey;
   const PlayStateRow({
     required this.queueJson,
     required this.idx,
     required this.positionMs,
     required this.updatedAt,
     this.playlistUuid,
+    this.anchorKey,
   });
 }
 
@@ -1921,6 +1944,7 @@ class BreakpointMirrorRow {
   final String? source;
   final String? sourceRef;
   final int positionMs;
+  final String? deepListJson;
   final String updatedAt;
   final String? deviceId;
   const BreakpointMirrorRow({
@@ -1930,6 +1954,7 @@ class BreakpointMirrorRow {
     this.source,
     this.sourceRef,
     required this.positionMs,
+    this.deepListJson,
     required this.updatedAt,
     this.deviceId,
   });

@@ -327,6 +327,9 @@ class SyncEngine {
       source: st['source'] as String?,
       sourceRef: st['source_ref'] as String?,
       positionMs: (st['position_ms'] as num?)?.toInt() ?? 0,
+      deepListJson: st['deep_list'] is List
+          ? jsonEncode(st['deep_list'] as List)
+          : null,
       updatedAt: (st['updated_at'] as String?) ?? DateTime.now().toIso8601String(),
       deviceId: null,
     );

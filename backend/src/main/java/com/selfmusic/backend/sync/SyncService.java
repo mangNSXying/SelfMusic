@@ -20,6 +20,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -69,6 +70,9 @@ public class SyncService {
     private final PlayStateRepository playStateRepository;
     private final DeviceRepository deviceRepository;
     private final ObjectMapper objectMapper;
+
+    /** 静态纯函数（断点快照等）专用的映射器，避免依赖注入实例上下文。 */
+    private static final ObjectMapper STATIC_MAPPER = new ObjectMapper();
 
     // ------------------------------------------------------------------
     // 纯函数：§7.1 权重状态机（无 DB，可单测）
@@ -189,7 +193,7 @@ public class SyncService {
         for (PushEvent ev : sorted) {
             if (ev.event_uuid() == null || ev.event_uuid().isBlank()
                     || ev.type() == null || ev.type().isBlank()) {
-                rejected.add(reject(ev == null ? "?" : String.valueOf(ev.event_uuid()), "invalid event"));
+                rejected.add(reject(String.valueOf(ev.event_uuid()), "invalid event"));
                 continue;
             }
             if (!authClientId.equals(ev.device_client_id())) {
@@ -433,7 +437,8 @@ public class SyncService {
 
     private Playlist playlistOf(JsonNode p) {
         String uuid = p == null ? null : p.path("client_uuid").asText(null);
-        if (uuid == null || uuid.isBlank()) uuid = p.path("playlist_uuid").asText(null);
+        if (uuid == null || uuid.isBlank())
+            uuid = p == null ? null : p.path("playlist_uuid").asText(null);
         if (uuid == null || uuid.isBlank()) throw new BizException(40001, "playlist uuid required");
         String id = uuid;
         return playlistRepository.findByClientUuid(id)
@@ -585,6 +590,11 @@ public class SyncService {
         st.setSourceRef(ref);
         st.setDeviceClientId(ev.device_client_id());
         st.setPositionMs(p.path("position_ms").asInt(0));
+        // 深层列表（播放历史）：原样保存 JSON 数组（元素 {source, source_ref}），
+        // 对端据此重建融合队列；空/缺失则置空（旧客户端向后兼容）。
+        st.setDeepListJson(p.has("deep_list") && !p.path("deep_list").isNull()
+                ? p.path("deep_list").toString()
+                : null);
         st.setLastEventAt(ev.occurred_at());
         playStateRepository.save(st);
         return null;
@@ -638,7 +648,8 @@ public class SyncService {
         }
         long cursor = page.size() < PULL_EVENT_LIMIT
                 ? syncEventRepository.maxSeq()
-                : page.get(page.size() - 1).getSeq();
+                : page.get(page.size() - 1).getSeq() == null ? 0L
+                        : page.get(page.size() - 1).getSeq();
         touchDevice(authClientId);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("cursor", cursor);
@@ -722,7 +733,23 @@ public class SyncService {
         m.put("device_client_id", st.getDeviceClientId());
         m.put("position_ms", st.getPositionMs());
         m.put("updated_at", st.getUpdatedAt() == null ? null : st.getUpdatedAt().toString());
+        m.put("deep_list", st.getDeepListJson() == null ? null
+                : parseDeepList(st.getDeepListJson()));
         return m;
+    }
+
+    /** 深层列表 JSON 字符串 → 列表（坏数据返回空列表，不抛错）。 */
+    static List<Object> parseDeepList(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        try {
+            JsonNode n = STATIC_MAPPER.readTree(json);
+            if (!n.isArray()) return List.of();
+            List<Object> out = new ArrayList<>();
+            for (JsonNode e : n) out.add(STATIC_MAPPER.convertValue(e, Map.class));
+            return out;
+        } catch (IOException | IllegalArgumentException e) {
+            return List.of();
+        }
     }
 
     // ------------------------------------------------------------------
@@ -752,7 +779,7 @@ public class SyncService {
         if (payload == null || payload.isBlank()) return objectMapper.createObjectNode();
         try {
             return objectMapper.readTree(payload);
-        } catch (Exception e) {
+        } catch (IOException e) {
             return objectMapper.createObjectNode();
         }
     }

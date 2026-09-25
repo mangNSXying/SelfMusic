@@ -32,6 +32,10 @@ public class PlayState {
     @Column(name = "position_ms")
     private Integer positionMs = 0;
 
+    /** 深层列表（播放历史，JSON 数组，元素为 {source, source_ref} 身份），跨设备续播重建队列用。 */
+    @Column(name = "deep_list_json", columnDefinition = "TEXT")
+    private String deepListJson;
+
     @Column(name = "last_event_at")
     private LocalDateTime lastEventAt;
 
@@ -40,7 +44,7 @@ public class PlayState {
 
     @PrePersist
     @PreUpdate
-    void touch() { updatedAt = LocalDateTime.now(); }
+    public void touch() { updatedAt = LocalDateTime.now(); }
 
     public Long getPlaylistId() { return playlistId; }
     public void setPlaylistId(Long playlistId) { this.playlistId = playlistId; }
@@ -59,6 +63,9 @@ public class PlayState {
 
     public Integer getPositionMs() { return positionMs; }
     public void setPositionMs(Integer positionMs) { this.positionMs = positionMs; }
+
+    public String getDeepListJson() { return deepListJson; }
+    public void setDeepListJson(String deepListJson) { this.deepListJson = deepListJson; }
 
     public LocalDateTime getLastEventAt() { return lastEventAt; }
     public void setLastEventAt(LocalDateTime lastEventAt) { this.lastEventAt = lastEventAt; }

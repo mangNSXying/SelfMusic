@@ -568,9 +568,12 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
                   icon: const Icon(Icons.play_arrow),
                   label: const Text('播放全部'),
                   onPressed: () {
+                    final uuid = provider.store.index
+                        .ensurePlaylistUuid(widget.playlistId);
                     player.playQueue(_songs,
-                        playlistUuid: provider.store.index
-                            .ensurePlaylistUuid(widget.playlistId),
+                        playlistUuid: uuid,
+                        contextKey: PlayerProvider.anchorForPlaylist(uuid),
+                        resetAnchor: true,
                         resumeFromBreakpoint: true);
                     context.read<NavigationProvider>().openPlayer();
                   },
@@ -580,9 +583,12 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
                   icon: const Icon(Icons.more_vert),
                   onSelected: (v) {
                     if (v == 'fromStart') {
+                      final uuid = provider.store.index
+                          .ensurePlaylistUuid(widget.playlistId);
                       player.playQueue(_songs,
-                          playlistUuid: provider.store.index
-                              .ensurePlaylistUuid(widget.playlistId));
+                          playlistUuid: uuid,
+                          contextKey: PlayerProvider.anchorForPlaylist(uuid),
+                          resetAnchor: true);
                       context.read<NavigationProvider>().openPlayer();
                     }
                   },
@@ -713,7 +719,11 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
                               player.playQueue(_songs,
                                   index: full,
                                   playlistUuid: provider.store.index
-                                      .ensurePlaylistUuid(widget.playlistId));
+                                      .ensurePlaylistUuid(widget.playlistId),
+                                  contextKey: PlayerProvider.anchorForPlaylist(
+                                      provider.store.index
+                                          .ensurePlaylistUuid(
+                                              widget.playlistId)));
                               context.read<NavigationProvider>().openPlayer();
                             },
                       onLongPress: _sel.active

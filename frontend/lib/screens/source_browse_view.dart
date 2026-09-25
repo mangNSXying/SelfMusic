@@ -121,7 +121,10 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
     // 先进播放页（立即切过去），播放是否成功由 toast/红字提示，避免卡在列表里。
     nav.openPlayer();
     try {
-      await player.playQueue(songs, index: i, source: source);
+      await player.playQueue(songs,
+          index: i,
+          source: source,
+          contextKey: PlayerProvider.anchorForSource(widget.sourceKey));
     } catch (_) {
       // playQueue 内部捕获音频错误；此处分外异常也保证导航已生效。
     }

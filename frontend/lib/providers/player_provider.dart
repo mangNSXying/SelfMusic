@@ -85,9 +85,60 @@ class PlayerProvider extends ChangeNotifier {
   /// 断点事件仅在此非空且当前歌曲有身份时进 outbox。
   String? _syncPlaylistUuid;
 
-  /// 深层列表（隐藏历史栈）：绑定当前歌单 uuid 时启用；通用队列为 null。
-  String? _deepListUuid;
+  /// 深层列表（隐藏历史栈）：绑定当前锚定列表（anchorKey）时启用；未锚定为 null。
+  /// anchorKey 值域：playlist:<uuid>/liked/songs/album:<id>/artist:<name>/source:<key>。
+  String? _anchorKey;
   DeepListController? _deepList;
+
+  /// 融合基座：当前锚定列表的歌曲快照。
+  /// 融合语义「固定首位接续」：队列 = 深层列表（前 N 位）+ 基座第 N+1 位起（后 M-N 位），
+  /// 不按内容去重（重播历史中间的歌可出现两处）。仅锚定时非空。
+  List<Song>? _fusedBase;
+
+  /// 锚定键构造（调用方传入上下文用）。
+  static String anchorForPlaylist(String uuid) => 'playlist:$uuid';
+  static String anchorForLiked() => 'liked';
+  static String anchorForSongs() => 'songs';
+  static String anchorForAlbum(int id) => 'album:$id';
+  static String anchorForArtist(String name) => 'artist:$name';
+  static String anchorForSource(String key) => 'source:$key';
+
+  /// 融合队列：队列 = 深层列表（前 N 位）+ 歌单第 N+1 位起（后 M-N 位），总长=歌单长 M。
+  List<Song> _fusedQueue(List<Song> base) {
+    final dl = _deepList;
+    if (_fusedBase == null || dl == null) return List.of(base);
+    return fusedQueueOf(dl.entries, base);
+  }
+
+  /// 融合队列纯组装（供测试）：不按内容去重；深层过长时余部为空。
+  @visibleForTesting
+  static List<Song> fusedQueueOf(List<Song> deep, List<Song> base) {
+    final n = deep.length;
+    if (n == 0) return List.of(base);
+    final rest = base.length > n ? base.sublist(n) : const <Song>[];
+    return [...deep, ...rest];
+  }
+
+  /// 歌单行 [start] 在融合队列中的位置：深层头部被播放历史占据，
+  /// 尾区位置即自身；历史中已有同曲则取同曲（可两处）；否则退回历史末尾。
+  int _fusedIndexOf(int start, List<Song> base) {
+    final dl = _deepList;
+    final n = dl?.length ?? 0;
+    if (_fusedBase == null || n == 0) return start.clamp(0, _queue.length - 1);
+    if (start >= n) return start.clamp(0, _queue.length - 1);
+    final i = _queue.indexWhere((s) => _same(s, base[start]));
+    return i >= 0 ? i : (n - 1).clamp(0, _queue.length - 1);
+  }
+
+  /// 歌单行 [start] 在融合队列中的位置（纯函数，供测试）。
+  @visibleForTesting
+  static int fusedIndexFor(int start, int deepLen, List<Song> fused,
+      List<Song> base, bool Function(Song a, Song b) same) {
+    if (deepLen == 0) return start.clamp(0, fused.length - 1);
+    if (start >= deepLen) return start.clamp(0, fused.length - 1);
+    final i = fused.indexWhere((s) => same(s, base[start]));
+    return i >= 0 ? i : (deepLen - 1).clamp(0, fused.length - 1);
+  }
 
   /// 阶段5：服务器可达性门控（main 经 [attachServerAvailable] 注入）。
   bool Function()? _serverAvailable;
@@ -552,48 +603,83 @@ class PlayerProvider extends ChangeNotifier {
   /// [playlistUuid]：从已同步歌单播全部/点歌时传入（阶段5 断点归属用），其它队列不传。
   /// [resumeFromBreakpoint]：打开歌单「播放全部」时开启——若其他设备的断点更新，
   /// 自动定位到该进度并提示（详情页「从头播放」走默认 false）。
+  /// [contextKey]：当前点歌所在列表的锚定键（PlayerProvider.anchorForXxx）。
+  /// [resetAnchor]：歌单页「播放全部/从头播放」专用——清空深层历史并切换到该歌单。
+  ///
+  /// 锚定语义（深层列表功能）：
+  /// - 首个列表即锚定；同锚定键点歌推入深层末尾（固定首位接续融合）；
+  /// - 其它列表点歌不切 base、不重建队列，仅替换深层末尾（外部点歌）；
+  /// - resetAnchor 清空深层 + 重锚到目标歌单。
   Future<void> playQueue(List<Song> songs,
       {int index = 0,
       MusicSource? source,
       String? playlistUuid,
-      bool resumeFromBreakpoint = false}) async {
+      bool resumeFromBreakpoint = false,
+      String? contextKey,
+      bool resetAnchor = false}) async {
     if (songs.isEmpty) return;
-    final start = index.clamp(0, songs.length - 1);
-    _syncPlaylistUuid = playlistUuid;
-    _bindDeepList(playlistUuid, playlistSize: songs.length);
-    _leaveFor(songs[start]);
-    _queue = _resolveLiveAll(songs);
-    _idx = start;
-    notifyListeners();
-    await _play(_queue[_idx], source: source);
-    if (resumeFromBreakpoint && playlistUuid != null) {
-      await _resumeFromMirrorIfAny(playlistUuid);
+    final resolved = _resolveLiveAll(songs);
+    final key = contextKey ??
+        (playlistUuid != null ? PlayerProvider.anchorForPlaylist(playlistUuid) : null);
+
+    if (resetAnchor) {
+      // 「播放全部/从头播放」：清空深层历史 + 重锚到目标（歌单）。
+      _syncPlaylistUuid = playlistUuid;
+      _fusedBase = null;
+      _bindDeepList(key, listSize: resolved.length, reset: true);
+      _fusedBase = resolved;
+      _queue = _fusedQueue(resolved);
+      final target = resolved[index.clamp(0, resolved.length - 1)];
+      _idx = _fusedIndexOf(index.clamp(0, resolved.length - 1), resolved);
+      _leaveFor(target);
+      notifyListeners();
+      await _play(target, source: source, fromPlaylist: true);
+      if (resumeFromBreakpoint && playlistUuid != null) {
+        await _resumeFromMirrorIfAny(playlistUuid);
+      }
+      return;
     }
+
+    if (_anchorKey == null) {
+      // 首个列表即锚定：建立融合队列。
+      _syncPlaylistUuid = playlistUuid;
+      _bindDeepList(key, listSize: resolved.length);
+      _fusedBase = resolved;
+      _queue = _fusedQueue(resolved);
+      final target = resolved[index.clamp(0, resolved.length - 1)];
+      _idx = _fusedIndexOf(index.clamp(0, resolved.length - 1), resolved);
+      _leaveFor(target);
+      notifyListeners();
+      await _play(target, source: source, fromPlaylist: true);
+      return;
+    }
+
+    if (key == _anchorKey) {
+      // 同一锚定上下文：保留深层历史，仅随列表长度更新容量后重建融合队列。
+      _syncPlaylistUuid = playlistUuid;
+      _bindDeepList(key, listSize: resolved.length);
+      _fusedBase = resolved;
+      _queue = _fusedQueue(resolved);
+      final target = resolved[index.clamp(0, resolved.length - 1)];
+      _idx = _fusedIndexOf(index.clamp(0, resolved.length - 1), resolved);
+      _leaveFor(target);
+      notifyListeners();
+      await _play(target, source: source, fromPlaylist: true);
+      return;
+    }
+
+    // 其它列表点歌：不切 base、不重建队列，仅替换深层末尾并播放该歌（外部点歌）。
+    final target = resolved[index.clamp(0, resolved.length - 1)];
+    _leaveFor(target);
+    notifyListeners();
+    await _play(target, source: source, fromPlaylist: false);
   }
 
   Future<void> playAt(int index, {MusicSource? source}) async {
     if (index < 0 || index >= _queue.length) return;
     _leaveFor(_queue[index]);
     _idx = index;
-    await _play(_queue[_idx], source: source);
-  }
-
-  Future<void> playSong(Song s,
-      {List<Song>? queue, int? index, MusicSource? source}) async {
-    if (queue != null && queue.isNotEmpty) {
-      // 通用队列：无歌单上下文时清除归属，避免断点误标；
-      // 有进行中的歌单深层列表时保留归属（外部点歌=替换末尾，1.3a）。
-      if (_deepList == null) _syncPlaylistUuid = null;
-      _queue = _resolveLiveAll(queue);
-      final found = _queue.indexWhere((x) => _same(x, s));
-      final i = index ??
-          (found < 0 ? _idx.clamp(0, _queue.length - 1) : found);
-      _leaveFor(_queue[i]);
-      _idx = i;
-      await _play(_queue[_idx], source: source, fromPlaylist: false);
-    } else {
-      await _play(s, source: source, fromPlaylist: false);
-    }
+    await _play(_queue[_idx], source: source, fromPlaylist: true);
   }
 
   /// 以本地索引最新行纠正旧快照（歌单快照/断点恢复可能携带补读前的数据）：
@@ -623,7 +709,7 @@ class PlayerProvider extends ChangeNotifier {
     if (changed) notifyListeners();
   }
 
-  /// [fromPlaylist]：歌单内播放（推入深层列表末尾）；false = 外部点歌（替换末尾）。
+  /// [fromPlaylist]：锚定列表内播放（推入深层末尾）；false = 外部点歌（替换末尾）。
   Future<void> _play(Song s,
       {MusicSource? source, bool play = true, bool fromPlaylist = true}) async {
     // 连按切歌 guard：每次 _play 领一个单调令牌，后续 await 间隙若令牌过期
@@ -933,16 +1019,17 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> prev() {
     _leaveFor(null);
     if (_queue.isEmpty || _current == null) return Future.value();
-    // 深层列表：弹出末尾（当前曲），新末尾成为当前曲并从头播放。
+    // 深层列表（改进.txt 1.4）：上一首 = 弹出深层末尾（当前曲），新末尾从头播放。
+    // 融合队列下同样弹栈——历史在深层中；深层空时退队列线性上一首。
     final dl = _deepList;
-    if (dl != null && _deepListUuid != null && dl.length >= 2) {
+    if (dl != null && dl.length >= 2) {
+      if (_mode == PlayMode.loopOne) return _replay();
       dl.popTail();
       _persistDeepList();
       final target = dl.tail;
       if (target != null) {
-        final i = _queue.indexWhere((s) => _same(s, target));
-        if (i >= 0) _idx = i;
-        return _play(target, source: _curSource);
+        if (_fusedBase != null) _rebuildFusedQueue(target: target);
+        return _play(target, source: _curSource, fromPlaylist: false);
       }
     }
     // 无深层列表/仅一首：沿用队列上一首逻辑。
@@ -1092,6 +1179,7 @@ class PlayerProvider extends ChangeNotifier {
       _idx,
       pos.inMilliseconds,
       playlistUuid: _syncPlaylistUuid,
+      anchorKey: _anchorKey,
     );
     _maybeEnqueueBreakpoint(idx, pos);
   }
@@ -1117,12 +1205,20 @@ class PlayerProvider extends ChangeNotifier {
       _lastBpKey = key;
       _lastBpAtMs = nowMs;
       final sourceId = idx.sourceUuidOf(cur.sourceKey);
+      final dl = _deepList;
+      // 深层列表以身份数组随断点携带（有序 {source, source_ref}），对端按身份重建。
+      final deepList = [
+        for (final s in (dl?.entries ?? const <Song>[]))
+          if (s.source.isNotEmpty && s.sourceRef.isNotEmpty)
+            {'source': s.source, 'source_ref': s.sourceRef},
+      ];
       idx.enqueueOutbox(SyncEventTypes.breakpointSet, {
         'playlist_uuid': uuid,
         'source': cur.source,
         'source_ref': cur.sourceRef,
         if (sourceId != null) 'source_id': sourceId,
         'position_ms': pos.inMilliseconds,
+        'deep_list': deepList,
       });
     }
   }
@@ -1173,14 +1269,47 @@ class PlayerProvider extends ChangeNotifier {
       }
       _queue = _resolveLiveAll(list);
       _idx = st.idx.clamp(0, _queue.length - 1);
-      _current = _queue[_idx];
+      final storedCurrent = _queue[_idx];
       // 归属歌单仍在则保留（断点继续上报），否则清除。
       _syncPlaylistUuid = (st.playlistUuid != null &&
               idx.playlistIdOfUuid(st.playlistUuid!) != null)
           ? st.playlistUuid
           : null;
-      // 恢复该歌单已持久化的深层列表，并把当前曲推入末尾（1.3c）。
-      _bindDeepList(_syncPlaylistUuid, playlistSize: _queue.length);
+      // 锚定键：新版断点携带 anchorKey；旧行按 playlistUuid 推导。
+      final anchorKey = st.anchorKey ??
+          (st.playlistUuid != null
+              ? PlayerProvider.anchorForPlaylist(st.playlistUuid!)
+              : null);
+      _bindDeepList(anchorKey, listSize: _queue.length);
+      // 歌单上下文：用本机深层列表 + 当前歌单重建融合队列（不信任旧快照顺序）；
+      // 找不到歌单时退回旧快照原样（融合基座为空，后续只走快照）。
+      final pid =
+          _syncPlaylistUuid == null ? null : idx.playlistIdOfUuid(_syncPlaylistUuid!);
+      if (_syncPlaylistUuid != null && pid != null) {
+        final base = _resolveLiveAll(idx.playlistSongs(pid));
+        if (base.isNotEmpty) {
+          _fusedBase = base;
+          _queue = _fusedQueue(base);
+          var targetI = _queue.indexWhere((s) => _same(s, storedCurrent));
+          if (targetI < 0) targetI = 0;
+          _idx = targetI.clamp(0, _queue.length - 1);
+          _current = _queue[_idx];
+        }
+      } else if (anchorKey != null) {
+        // 非歌单锚定：深层历史随锚定键恢复；基座无法离线重建，沿用队列快照。
+        _fusedBase = null;
+        var targetI = _queue.indexWhere((s) => _same(s, storedCurrent));
+        if (targetI < 0) targetI = 0;
+        _idx = targetI.clamp(0, _queue.length - 1);
+        _current = _queue[_idx];
+      }
+      if (_current == null) {
+        if (_queue.isEmpty) {
+          idx.clearPlayState();
+          return;
+        }
+        _current = _queue[0];
+      }
       await _play(_current!, play: false);
       await player.seek(Duration(milliseconds: st.positionMs));
       notifyListeners();
@@ -1192,6 +1321,7 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   /// 用远端断点重建歌单队列并恢复进度；目标歌本机无源时退到其后第一首可播条目。
+  /// 镜像携带深层列表时，按身份重建该歌单的深层历史，并重建融合队列。
   Future<bool> _restoreFromMirror(LocalIndex idx, BreakpointMirrorRow m) async {
     final pid = idx.playlistIdOfUuid(m.playlistUuid);
     if (pid == null) return false;
@@ -1204,11 +1334,20 @@ class PlayerProvider extends ChangeNotifier {
       start++;
     }
     if (start >= songs.length) return false;
-    _queue = List.of(songs);
-    _idx = start;
-    _current = _queue[start];
     _syncPlaylistUuid = m.playlistUuid;
-    _bindDeepList(m.playlistUuid, playlistSize: songs.length);
+    _bindDeepList(PlayerProvider.anchorForPlaylist(m.playlistUuid),
+        listSize: songs.length);
+    // 镜像深层列表（按身份匹配到本机歌单）→ 重建深层历史；缺失时保持本机。
+    final dlEntries = _deepListFromMirror(m.deepListJson, songs);
+    if (dlEntries.isNotEmpty) {
+      _deepList = DeepListController(
+          capacity: songs.length, entries: dlEntries);
+      _persistDeepList();
+    }
+    _fusedBase = _resolveLiveAll(songs);
+    _queue = _fusedQueue(_fusedBase!);
+    _idx = _fusedIndexOf(start, songs).clamp(0, _queue.length - 1);
+    _current = _queue[_idx];
     try {
       await _play(_current!, play: false);
       final pos = (found >= 0 && start == found) ? m.positionMs : 0;
@@ -1219,6 +1358,26 @@ class PlayerProvider extends ChangeNotifier {
       return true;
     } catch (_) {
       return false;
+    }
+  }
+
+  /// 镜像身份列表 → 本机歌单匹配后的深层条目（坏行/无匹配跳过，保持顺序）。
+  List<Song> _deepListFromMirror(String? deepListJson, List<Song> songs) {
+    if (deepListJson == null || deepListJson.isEmpty) return const [];
+    try {
+      final raw = jsonDecode(deepListJson);
+      if (raw is! List) return const [];
+      final out = <Song>[];
+      for (final e in raw) {
+        if (e is! Map) continue;
+        final ref = e['source_ref'];
+        if (ref is! String || ref.isEmpty) continue;
+        final i = songs.indexWhere((s) => _refMatches(s.sourceRef, ref));
+        if (i >= 0 && !out.any((x) => _same(x, songs[i]))) out.add(songs[i]);
+      }
+      return out;
+    } catch (_) {
+      return const [];
     }
   }
 
@@ -1263,67 +1422,97 @@ class PlayerProvider extends ChangeNotifier {
 
   void clearResumeState() => _index?.clearPlayState();
 
-  // ---------- 深层列表（隐藏历史栈，仅歌单上下文） ----------
+  // ---------- 深层列表（隐藏历史栈，任意列表锚定上下文） ----------
 
-  /// 绑定（或解绑）当前歌单的深层列表；同一歌单重复绑定仅更新容量。
-  /// [playlistSize]：歌单当前歌曲总数（容量；>0 时更新）。
-  void _bindDeepList(String? playlistUuid, {int playlistSize = 0}) {
-    if (playlistUuid == null) {
+  /// 绑定（或解绑）当前锚定列表的深层列表；同一锚定重复绑定仅更新容量。
+  /// [listSize]：锚定列表当前歌曲总数（容量；>0 时更新）。
+  /// [reset]：切换锚定（播放全部/从头播放）——清空深层历史后按空栈重建。
+  void _bindDeepList(String? anchorKey, {int listSize = 0, bool reset = false}) {
+    if (anchorKey == null) {
       _deepList = null;
-      _deepListUuid = null;
+      _anchorKey = null;
+      _fusedBase = null;
       return;
     }
-    if (_deepList != null && _deepListUuid == playlistUuid) {
-      if (playlistSize > 0) _deepList!.capacity = playlistSize;
+    if (!reset && _deepList != null && _anchorKey == anchorKey) {
+      if (listSize > 0) _deepList!.capacity = listSize;
       return;
     }
-    _deepListUuid = playlistUuid;
-    final raw = _index?.loadDeepList(playlistUuid);
+    _anchorKey = anchorKey;
     List<Song> entries = const [];
-    if (raw != null && raw.isNotEmpty) {
-      try {
-        entries = DeepListController.parseEntries(jsonDecode(raw));
-      } catch (_) {
-        entries = const [];
+    if (!reset) {
+      final raw = _index?.loadDeepList(anchorKey);
+      if (raw != null && raw.isNotEmpty) {
+        try {
+          entries = DeepListController.parseEntries(jsonDecode(raw));
+        } catch (_) {
+          entries = const [];
+        }
       }
     }
     _deepList = DeepListController(
-        capacity: playlistSize > 0 ? playlistSize : entries.length,
+        capacity: listSize > 0 ? listSize : entries.length,
         entries: entries);
+    if (reset) _persistDeepList();
   }
 
   void _persistDeepList() {
     final idx = _index;
-    final uuid = _deepListUuid;
+    final key = _anchorKey;
     final dl = _deepList;
-    if (idx == null || uuid == null || dl == null) return;
-    idx.saveDeepList(uuid, jsonEncode(dl.toJson()));
+    if (idx == null || key == null || dl == null) return;
+    idx.saveDeepList(key, jsonEncode(dl.toJson()));
   }
 
-  /// 播放成功后的深层列表维护：歌单内播放推入末尾，外部点歌替换末尾。
+  /// 播放成功后的深层列表维护：锚定列表内播放推入末尾，外部点歌替换末尾。
   void _trackDeepList(Song s, {required bool push}) {
     final dl = _deepList;
-    if (dl == null || _deepListUuid == null) return;
+    if (dl == null || _anchorKey == null) return;
     if (push) {
       dl.pushPlayed(s, same: _same);
     } else {
       dl.replaceTail(s, same: _same);
     }
     _persistDeepList();
+    // 深层列表变化 → 重建融合队列（深层占前 N，基座第 N+1 位起接续）。
+    _rebuildFusedQueue(target: _current);
   }
 
-  /// 歌单删歌联动：深层列表移除该歌引用；若删的是当前曲，
-  /// 则播放新末尾（从头开始）。
-  Future<void> onPlaylistSongRemoved(String playlistUuid, Song s,
-      {int? newPlaylistCount}) async {
+  /// 融合队列：队列 = 深层列表（前 N 位）+ 基座第 N+1 位起（后 M-N 位），
+  /// 不按内容去重。锚定上下文（[_fusedBase] 非空）时启用；外部队列原样。
+  /// 定位到 [target]（按身份）；找不到则退到深层末尾。返回是否命中目标。
+  bool _rebuildFusedQueue({Song? target}) {
+    final base = _fusedBase;
     final dl = _deepList;
-    if (dl == null || _deepListUuid != playlistUuid) return;
-    if (newPlaylistCount != null && newPlaylistCount > 0) {
-      dl.capacity = newPlaylistCount;
+    if (base == null || dl == null) return false;
+    final n = dl.length;
+    final rest = base.length > n ? base.sublist(n) : const <Song>[];
+    _queue = [...dl.entries, ...rest];
+    final t = target ?? _current;
+    final i = t == null ? -1 : _queue.indexWhere((s) => _same(s, t));
+    if (i >= 0) {
+      _idx = i;
+      _current = _queue[i];
+      return true;
+    }
+    _idx = n > 0 ? n - 1 : 0;
+    if (_queue.isNotEmpty) _current = _queue[_idx.clamp(0, _queue.length - 1)];
+    return false;
+  }
+
+  /// 歌单/锚定列表删歌联动：深层列表移除该歌引用（始终同步删）；
+  /// 若删的是当前曲，则播放新末尾（从头开始）。[anchorKey] 只作用于当前锚定上下文。
+  Future<void> onAnchorSongRemoved(String anchorKey, Song s,
+      {int? newCount}) async {
+    final dl = _deepList;
+    if (_anchorKey != anchorKey || dl == null) return;
+    if (newCount != null && newCount > 0) {
+      dl.capacity = newCount;
     }
     final removedCurrent = _current != null && _same(_current!, s);
     dl.removeRef(s, same: _same);
     _persistDeepList();
+    _rebuildFusedQueue(target: _current);
     if (!removedCurrent) return;
     final target = dl.tail;
     if (target == null) return;
@@ -1332,11 +1521,22 @@ class PlayerProvider extends ChangeNotifier {
     await _play(target, source: _curSource);
   }
 
+  /// 歌单删歌联动（转锚定键统一处理）。
+  Future<void> onPlaylistSongRemoved(String playlistUuid, Song s,
+      {int? newPlaylistCount}) {
+    return onAnchorSongRemoved(PlayerProvider.anchorForPlaylist(playlistUuid),
+        s,
+        newCount: newPlaylistCount);
+  }
+
   /// 歌单被整体删除：解绑其深层列表与断点归属。
   void onPlaylistDeleted(String playlistUuid) {
-    if (_deepListUuid == playlistUuid) {
+    final key = PlayerProvider.anchorForPlaylist(playlistUuid);
+    if (_anchorKey == key) {
       _deepList = null;
-      _deepListUuid = null;
+      _anchorKey = null;
+      _fusedBase = null;
+      _index?.deleteDeepList(key);
     }
     if (_syncPlaylistUuid == playlistUuid) _syncPlaylistUuid = null;
   }

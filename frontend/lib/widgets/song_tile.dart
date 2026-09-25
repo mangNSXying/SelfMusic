@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../data/sources/music_source.dart';
 import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
+import '../providers/player_provider.dart';
 import '../utils/duration_format.dart';
 import '../utils/song_title_format.dart';
 import 'add_to_playlist.dart';
@@ -117,11 +118,16 @@ class SongTile extends StatelessWidget {
                   icon: const Icon(Icons.more_vert),
                   onSelected: (v) {
                     switch (v) {
-                      case 'favorite':
-                        direct.setFavorite(song, !favorite);
-                        AppToast.show(!favorite ? '已加入喜欢' : '已取消喜欢',
-                            isError: false);
-                        break;
+case 'favorite':
+  direct.setFavorite(song, !favorite);
+  if (favorite && context.mounted) {
+    unawaited(context
+        .read<PlayerProvider>()
+        .onAnchorSongRemoved(PlayerProvider.anchorForLiked(), song));
+  }
+  AppToast.show(!favorite ? '已加入喜欢' : '已取消喜欢',
+      isError: false);
+  break;
                       case 'dislike':
                         direct.setDisliked(song, !disliked);
                         AppToast.show(

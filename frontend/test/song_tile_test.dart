@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import 'package:selfmusic/data/sources/music_source.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
+import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/widgets/song_tile.dart';
 import 'package:sqlite3/open.dart';
 
@@ -66,6 +67,8 @@ void main() {
       MultiProvider(
         providers: [
           ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+          ChangeNotifierProvider<PlayerProvider>(
+              create: (_) => PlayerProvider()),
         ],
         child: MaterialApp(
           home: Scaffold(

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -244,7 +245,9 @@ class _LikedViewState extends State<_LikedView> {
   void _playSelected(List<Song> songs) {
     final selected = selectedSongs(_sel, songs);
     _sel.cancel();
-    context.read<PlayerProvider>().playQueue(selected);
+    context
+        .read<PlayerProvider>()
+        .playQueue(selected, contextKey: PlayerProvider.anchorForLiked());
     context.read<NavigationProvider>().openPlayer();
   }
 
@@ -252,8 +255,10 @@ class _LikedViewState extends State<_LikedView> {
     final direct = context.read<DirectSourceManager>();
     final selected = selectedSongs(_sel, songs);
     _sel.cancel();
+    final player = context.read<PlayerProvider>();
     for (final s in selected) {
       direct.setFavorite(s, false);
+      unawaited(player.onAnchorSongRemoved(PlayerProvider.anchorForLiked(), s));
     }
     AppToast.show('已取消喜欢 ${selected.length} 首', isError: false);
   }
@@ -319,7 +324,9 @@ class _LikedViewState extends State<_LikedView> {
                             song: s,
                             source: lib.sourceFor(s.sourceKey),
                             onPlay: () {
-                              player.playQueue(songs, index: i);
+                              player.playQueue(songs,
+                                  index: i,
+                                  contextKey: PlayerProvider.anchorForLiked());
                               context.read<NavigationProvider>().openPlayer();
                             },
                             selectionMode: _sel.active,
@@ -379,7 +386,9 @@ class _SongsViewState extends State<_SongsView> {
   void _playSelected(List<Song> songs) {
     final selected = selectedSongs(_sel, songs);
     _sel.cancel();
-    context.read<PlayerProvider>().playQueue(selected);
+    context
+        .read<PlayerProvider>()
+        .playQueue(selected, contextKey: PlayerProvider.anchorForSongs());
     context.read<NavigationProvider>().openPlayer();
   }
 
@@ -450,7 +459,9 @@ class _SongsViewState extends State<_SongsView> {
                         song: s,
                         source: lib.sourceFor(s.sourceKey),
                         onPlay: () {
-                          player.playQueue(songs, index: i);
+                          player.playQueue(songs,
+                              index: i,
+                              contextKey: PlayerProvider.anchorForSongs());
                           context.read<NavigationProvider>().openPlayer();
                         },
                         selectionMode: _sel.active,
@@ -668,7 +679,9 @@ class _AlbumSongsSheet extends StatelessWidget {
                     source: lib.sourceFor(s.sourceKey),
                     onPlay: () {
                       Navigator.of(c).pop();
-                      player.playQueue(songs, index: i);
+                      player.playQueue(songs,
+                          index: i,
+                          contextKey: PlayerProvider.anchorForAlbum(album.id));
                       context.read<NavigationProvider>().openPlayer();
                     },
                   );
@@ -882,7 +895,10 @@ class _ArtistSongsSheet extends StatelessWidget {
                     source: lib.sourceFor(s.sourceKey),
                     onPlay: () {
                       Navigator.of(c).pop();
-                      player.playQueue(songs, index: i);
+                      player.playQueue(songs,
+                          index: i,
+                          contextKey:
+                              PlayerProvider.anchorForArtist(artist.name));
                       context.read<NavigationProvider>().openPlayer();
                     },
                   );

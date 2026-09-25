@@ -551,6 +551,10 @@ class _ToolRow extends StatelessWidget {
             icon: Icon(favorite ? Icons.favorite : Icons.favorite_border),
             onPressed: () {
               direct.setFavorite(s, !favorite);
+              if (favorite) {
+                context.read<PlayerProvider>().onAnchorSongRemoved(
+                    PlayerProvider.anchorForLiked(), s);
+              }
               AppToast.show(!favorite ? '已加入喜欢' : '已取消喜欢',
                   isError: false);
             },
