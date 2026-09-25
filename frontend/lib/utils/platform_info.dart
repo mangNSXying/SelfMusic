@@ -8,12 +8,16 @@ class PlatformInfo {
   const PlatformInfo._();
 
   /// 上报给后端 `devices.platform` 的值。
+  ///
+  /// ohos 用字符串比较而非 `Platform.isOhos`：stable 工具链的 dart:io
+  /// 没有该 getter，字符串判断在两套 SDK 下都可编译且行为一致。
   static String get platform {
     if (Platform.isAndroid) return 'android';
     if (Platform.isLinux) return 'linux';
     if (Platform.isWindows) return 'windows';
     if (Platform.isMacOS) return 'macos';
     if (Platform.isIOS) return 'ios';
+    if (Platform.operatingSystem == 'ohos') return 'ohos';
     return 'unknown';
   }
 
