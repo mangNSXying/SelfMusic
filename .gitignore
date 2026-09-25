@@ -1,8 +1,8 @@
 # 具体文件
 .env
 error.log
-/todo.txt
-/win10开发机准备.md
+key.txt
+/*.txt
 
 # 具体文件夹
 backend/target/
