@@ -4,7 +4,6 @@ import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -52,16 +51,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
   double _dragStartY = 0;
   double _dragStartP = 0;
 
-  /// 平台行为（全屏 / 屏幕常亮）目标值与已应用值；合并调度标记。
-  bool _wantFs = false;
+  /// 屏幕常亮目标值与已应用值；合并调度标记。
   bool _wantWake = false;
-  bool _fsApplied = false;
   bool _wakeApplied = false;
   bool _platformSyncScheduled = false;
-
-  /// 播放页悬浮层动画（跟随进入/离开）：平台调用等其完全打开后再落地，
-  /// 避免入场动画期间切换沉浸式导致内容“拉伸跳动”。
-  PlayerSheetAnimator? _sheet;
 
   /// 常亮蓝牙门控：限定设备时轮询其连接状态，仅连接期间保持常亮。
   final BluetoothService _bt = BluetoothService();
@@ -73,52 +66,29 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void initState() {
     super.initState();
     _pageCtrl = PageController(initialPage: 0);
-    // 首帧后读取设置目标值（实际应用等悬浮层完全打开）。
+    // 首帧后读取常亮设置目标值。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final s = context.read<DirectSourceManager>().settings;
-      _schedulePlatformSync(
-          s.playerFullscreen, s.playerKeepScreenOn, s.keepScreenOnDevice);
+      _scheduleWakeSync(s.playerKeepScreenOn, s.keepScreenOnDevice);
     });
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final s = context.read<PlayerSheetAnimator>();
-    if (!identical(s, _sheet)) {
-      _sheet?.progress.removeListener(_onSheetTick);
-      _sheet = s;
-      s.progress.addListener(_onSheetTick);
-    }
   }
 
   @override
   void dispose() {
     _btPoll?.cancel();
-    _sheet?.progress.removeListener(_onSheetTick);
-    // 离开播放页恢复系统 UI 与熄屏策略。
-    if (Platform.isAndroid) {
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    }
+    // 离开播放页恢复熄屏策略。
     unawaited(WakelockPlus.disable());
     _pageCtrl.dispose();
     super.dispose();
   }
 
-  void _onSheetTick() {
-    if ((_sheet?.value ?? 1) <= 0.001) _flushPlatform();
-  }
-
-  /// 设置变化时合并到下一帧；播放页完全打开后才落地平台调用（全屏/常亮）。
+  /// 设置变化时合并到下一帧；应用屏幕常亮。
   /// 常亮可限定蓝牙设备：[deviceSetting] 变化时重置连接门控并轮询。
-  void _schedulePlatformSync(
-      bool fullscreen, bool keepOn, String deviceSetting) {
+  void _scheduleWakeSync(bool keepOn, String deviceSetting) {
     final device = btDeviceFromSetting(deviceSetting);
     final deviceChanged = device?.address != _wakeDevice?.address;
-    final changed =
-        fullscreen != _wantFs || keepOn != _wantWake || deviceChanged;
-    _wantFs = fullscreen;
+    final changed = keepOn != _wantWake || deviceChanged;
     _wantWake = keepOn;
     _wakeDevice = device;
     if (deviceChanged) {
@@ -130,21 +100,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _platformSyncScheduled = false;
       if (!mounted) return;
-      if ((_sheet?.value ?? 0) <= 0.001) _flushPlatform();
+      _flushWakeLock();
     });
   }
 
-  void _flushPlatform() {
+  /// 按门控应用屏幕常亮：限定了蓝牙设备时，仅其处于连接状态才保持常亮。
+  void _flushWakeLock() {
     if (!mounted) return;
-    if (_wantFs != _fsApplied) {
-      if (Platform.isAndroid) {
-        SystemChrome.setEnabledSystemUIMode(_wantFs
-            ? SystemUiMode.immersiveSticky
-            : SystemUiMode.edgeToEdge);
-      }
-      _fsApplied = _wantFs;
-    }
-    // 常亮门控：限定了蓝牙设备时，仅其处于连接状态才保持常亮。
     final wake =
         _wantWake && (_wakeDevice == null || _btConnected);
     if (wake != _wakeApplied) {
@@ -170,7 +132,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final ok = connected.contains(dev.address);
     if (ok != _btConnected && mounted) {
       _btConnected = ok;
-      _flushPlatform();
+      _flushWakeLock();
     }
   }
 
@@ -208,8 +170,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Widget build(BuildContext context) {
     final direct = context.watch<DirectSourceManager>();
     final gestureOn = direct.settings.playerGestureSwipe;
-    // 平台行为设置：停留播放页期间应用全屏与常亮（变化时下一帧生效）。
-    _schedulePlatformSync(direct.settings.playerFullscreen,
+    // 屏幕常亮设置：停留播放页期间应用（变化时下一帧生效）。
+    _scheduleWakeSync(
         direct.settings.playerKeepScreenOn, direct.settings.keepScreenOnDevice);
     final player = context.watch<PlayerProvider>();
     final size = MediaQuery.sizeOf(context);

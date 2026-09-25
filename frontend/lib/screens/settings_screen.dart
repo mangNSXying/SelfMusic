@@ -1245,12 +1245,6 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
           onTap: () => _pickLyricIdle(context),
         ),
         SwitchListTile(
-          title: const Text('播放页全屏'),
-          subtitle: const Text('进入播放页隐藏手机状态栏（Android 沉浸式，离开自动恢复）'),
-          value: _settings.playerFullscreen,
-          onChanged: (v) => setState(() => _settings.playerFullscreen = v),
-        ),
-        SwitchListTile(
           title: const Text('播放页屏幕常亮'),
           subtitle: const Text('打开播放页期间不熄屏；可限定仅在指定蓝牙设备连接时生效'),
           value: _settings.playerKeepScreenOn,

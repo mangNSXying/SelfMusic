@@ -132,9 +132,6 @@ class AppSettings {
   /// 歌词追焦等待秒数（用户拖动歌词后多久恢复自动跟随；播放设置可调）。
   static const String kLyricFocusIdleSec = 'lyric_focus_idle_sec';
 
-  /// 播放页全屏（Android 沉浸式隐藏状态栏，离开恢复）。
-  static const String kPlayerFullscreen = 'player_fullscreen';
-
   /// 播放页屏幕常亮（打开播放页期间不熄屏）。
   static const String kPlayerKeepScreenOn = 'player_keep_screen_on';
 
@@ -255,12 +252,6 @@ class AppSettings {
       int.tryParse(index.settingsGet(kLyricFocusIdleSec) ?? '') ?? 5;
   set lyricFocusIdleSec(int v) =>
       index.settingsSet(kLyricFocusIdleSec, v.toString());
-
-  /// 播放页全屏：进入播放页隐藏状态栏（Android 沉浸式），离开恢复（默认关）。
-  bool get playerFullscreen =>
-      (index.settingsGet(kPlayerFullscreen) ?? '0') == '1';
-  set playerFullscreen(bool v) =>
-      index.settingsSet(kPlayerFullscreen, v ? '1' : '0');
 
   /// 播放页屏幕常亮：打开播放页期间不熄屏（默认关）。
   bool get playerKeepScreenOn =>
@@ -461,7 +452,6 @@ class AppSettings {
     kSleepPlayThroughDefault,
     kPreloadNext,
     kLyricFocusIdleSec,
-    kPlayerFullscreen,
     kPlayerKeepScreenOn,
     kKeepScreenOnDevice,
     kScanIgnoreMinDurationSec,
