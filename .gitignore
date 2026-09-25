@@ -35,3 +35,4 @@ nginx/
 frontend/third_party/fvp/ohos/.cxx/
 frontend/third_party/fvp/ohos/build/
 frontend/third_party/fvp/ohos/oh_modules/
+frontend/third_party/fvp/ohos/oh-package-lock.json5
