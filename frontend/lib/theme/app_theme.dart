@@ -80,9 +80,9 @@ enum SettingsItem {
   general('备份', Icons.backup_outlined),
   playback('播放', Icons.play_circle_outline),
   appearance('界面', Icons.palette_outlined),
-  server('服务端', Icons.dns_outlined),
   songs('歌曲', Icons.library_music_outlined),
-  notifications('通知', Icons.notifications_outlined);
+  notifications('通知', Icons.notifications_outlined),
+  server('服务端', Icons.dns_outlined);
 
   const SettingsItem(this.label, this.icon);
   final String label;

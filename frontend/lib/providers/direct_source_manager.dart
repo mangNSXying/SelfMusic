@@ -183,24 +183,13 @@ class DirectSourceManager extends ChangeNotifier {
 
   /// 同步落库后重建内存源列表（源集合可能新增/改名/删除/改配置）。
   /// 存量补推（歌单 + 权重绝对态）：把配对前建的数据补进 outbox，
-  /// 由 SyncEngine 下个 tick 上推。手动随时可重跑（服务端 LWW，同内容安全）。
+  /// 由 SyncEngine 下个 tick 上推。配对成功后由用户弹窗确认触发，
+  /// 每台设备只问一次，内容幂等（服务端 LWW，重跑安全）。
   /// 返回 {playlists, items, songs}。
   Map<String, int> backfillNow() {
     final pl = playlists.backfill();
     final songs = weight.backfill();
     return {'playlists': pl['playlists']!, 'items': pl['items']!, 'songs': songs};
-  }
-
-  /// 配对后自动补推一次：同一 client_id 只补一次；换账号重配则重新补推。
-  /// 无数据/已补过返回全零（调用方静默）。手动按钮走 [backfillNow]。
-  Future<Map<String, int>> backfillIfNeeded() async {
-    final empty = {'playlists': 0, 'items': 0, 'songs': 0};
-    final clientId = await _api?.getClientId();
-    if (clientId == null || clientId.isEmpty) return empty;
-    if (settings.backfillClientId == clientId) return empty;
-    final r = backfillNow();
-    settings.backfillClientId = clientId;
-    return r;
   }
 
   Future<void> reloadSourcesFromIndex() async {

@@ -226,11 +226,12 @@ class _PairingScreenState extends State<PairingScreen> {
               child: FilledButton(
                 onPressed: auth.loading
                     ? null
-                    : () async {
+                    :                     () async {
                         final ok = await auth.pair(_tokenCtrl.text.trim(), _nameCtrl.text.trim());
                         if (!mounted) return;
                         if (ok && context.mounted) {
                           AppToast.show('配对成功', isError: false);
+                          await _askPushExisting(context);
                         }
                       },
                 child: auth.loading ? const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2)) : Text(auth.isPaired ? '重新配对' : '配对'),
@@ -243,6 +244,40 @@ class _PairingScreenState extends State<PairingScreen> {
         ),
       ),
     );
+  }
+
+  /// 配对成功后询问是否推送配对前数据（首配/重配都问）：
+  /// 选“是”→ 补推本机存量歌单与权重（以本机为准），事件进 outbox 后自动上推；
+  /// 选“否”→ 不推（本次配对不再问；重配会再问）。
+  Future<void> _askPushExisting(BuildContext context) async {
+    final push = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('推送配对前的数据？'),
+        content: const Text(
+            '将本机在配对前创建的歌单、收藏与播放权重推送到服务端吗？首台设备建议选“是”，其它设备随后会同步到这些数据（以本机为准）。'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('否')),
+          FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('是')),
+        ],
+      ),
+    );
+    if (!context.mounted) return;
+    if (push != true) return;
+    try {
+      final r = context.read<DirectSourceManager>().backfillNow();
+      if (!context.mounted) return;
+      AppToast.show(
+          '已补推 ${r['playlists']} 个歌单 ${r['items']} 条目 ${r['songs']} 首权重，稍后自动上推',
+          isError: false);
+    } catch (e) {
+      if (!context.mounted) return;
+      AppToast.show('补推失败：$e', isError: true);
+    }
   }
 }
 

@@ -203,6 +203,20 @@ class _ServerSettingsState extends State<_ServerSettings> {
           const Divider(),
           const Align(
             alignment: Alignment.centerLeft,
+            child: Text('多设备同步',
+                style: TextStyle(fontWeight: FontWeight.w600)),
+          ),
+          const SizedBox(height: 4),
+          const _SyncSection(),
+          const SizedBox(height: 32),
+          const Divider(),
+          const _CacheConfigSection(),
+          const Divider(height: 24),
+          const _CacheDirTile(),
+          const SizedBox(height: 16),
+          const Divider(),
+          const Align(
+            alignment: Alignment.centerLeft,
             child: Text('网络与安全',
                 style: TextStyle(fontWeight: FontWeight.w600)),
           ),
@@ -237,20 +251,6 @@ class _ServerSettingsState extends State<_ServerSettings> {
               setState(() {});
             },
           ),
-          const SizedBox(height: 16),
-          const Divider(),
-          const Align(
-            alignment: Alignment.centerLeft,
-            child: Text('多设备同步',
-                style: TextStyle(fontWeight: FontWeight.w600)),
-          ),
-          const SizedBox(height: 4),
-          const _SyncSection(),
-          const SizedBox(height: 32),
-          const Divider(),
-          const _CacheConfigSection(),
-          const Divider(height: 24),
-          const _CacheDirTile(),
         ],
       ),
     );
@@ -267,7 +267,6 @@ class _SyncSection extends StatefulWidget {
 
 class _SyncSectionState extends State<_SyncSection> {
   bool _syncing = false;
-  bool _backfilling = false;
 
   String _subtitle() {
     final settings = context.read<DirectSourceManager>().settings;
@@ -299,31 +298,6 @@ class _SyncSectionState extends State<_SyncSection> {
         isError: err.isNotEmpty);
   }
 
-  /// 手动补推存量歌单与权重（配对前数据无同步事件用；以本机为准）。
-  /// 事件进 outbox 后由引擎自动上推；本操作自身只 toast 结果。
-  Future<void> _backfillNow() async {
-    setState(() => _backfilling = true);
-    try {
-      final direct = context.read<DirectSourceManager>();
-      final clientId = await context.read<ApiClient>().getClientId();
-      if (!mounted) return;
-      if (clientId == null || clientId.isEmpty) {
-        AppToast.show('未配对，请先配对服务器', isError: true);
-        return;
-      }
-      final r = direct.backfillNow();
-      direct.settings.backfillClientId = clientId;
-      AppToast.show(
-          '已补推 ${r['playlists']} 个歌单 ${r['items']} 条目 ${r['songs']} 首权重',
-          isError: false);
-    } catch (e) {
-      if (!mounted) return;
-      AppToast.show('补推失败：$e', isError: true);
-    } finally {
-      if (mounted) setState(() => _backfilling = false);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final settings = context.read<DirectSourceManager>().settings;
@@ -350,18 +324,6 @@ class _SyncSectionState extends State<_SyncSection> {
           title: const Text('立即同步'),
           subtitle: Text(_subtitle()),
           onTap: _syncing ? null : _syncNow,
-        ),
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: _backfilling
-              ? const SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(strokeWidth: 2))
-              : const Icon(Icons.upload),
-          title: const Text('补推本地歌单与权重'),
-          subtitle: const Text('配对前建的数据无同步事件，用此项补推；以本机为准'),
-          onTap: (_syncing || _backfilling) ? null : _backfillNow,
         ),
         ListTile(
           contentPadding: EdgeInsets.zero,

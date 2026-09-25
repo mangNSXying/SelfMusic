@@ -196,22 +196,11 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
   late final PlayerSheetAnimator _sheetAnim;
   late final NavigationProvider _nav;
   late final SyncEngine _syncEngine;
-  late final AuthProvider _auth;
 
   @override
   void initState() {
     super.initState();
     _nav = context.read<NavigationProvider>();
-    _auth = context.read<AuthProvider>();
-    // 配对成功后自动补推存量歌单与权重（同配对只补一次；失败/无数据静默，
-    // toast 只在启动首次同步与手动操作时出现）。
-    _auth.onPaired = () async {
-      try {
-        await context.read<DirectSourceManager>().backfillIfNeeded();
-      } catch (e) {
-        debugPrint('自动补推失败：$e');
-      }
-    };
     _syncEngine = context.read<SyncEngine>();
     // 同步拉到歌单后刷新 Provider 缓存：落库直写 SQLite，
     // 不刷则新歌单只进库不进列表（重启前不可见）。
@@ -250,7 +239,6 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
   void dispose() {
     _nav.removeListener(_syncPlayerSheet);
     _syncEngine.onPlaylistsApplied = null;
-    _auth.onPaired = null;
     _sheetAnim.dispose();
     super.dispose();
   }
