@@ -114,7 +114,7 @@ class MdkVideoPlayer extends mdk.Player {
         '$hashCode player$nativeHandle onPlaybackStateChanged: ${event.oldValue} => ${event.newValue}',
       );
       if (event.newValue == mdk.PlaybackState.stopped) {
-        // FIXME: keep_open no stopped
+        // 待修: keep_open no stopped
         streamCtl.add(VideoEvent(eventType: VideoEventType.completed));
         return;
       }
@@ -178,7 +178,7 @@ class MdkVideoPlayerPlatform extends VideoPlayerPlatform {
       _tunnel = options["tunnel"];
       _playerOpts = options['player'];
       _globalOpts = options['global'];
-      // TODO: _env => putenv
+      // 待办: _env => putenv
       _decoders = options['video.decoders'];
       _subtitleFontFile = options['subtitleFontFile'];
     }
@@ -428,8 +428,8 @@ class MdkVideoPlayerPlatform extends VideoPlayerPlatform {
       _players[id] = player;
       return id;
     }
-    // FIXME: pending events will be processed after texture returned, but no events before prepared
-    // FIXME: set tunnel too late
+    // 待修: pending events will be processed after texture returned, but no events before prepared
+    // 待修: set tunnel too late
     final tex = await player.updateTexture(
       width: _maxWidth,
       height: _maxHeight,

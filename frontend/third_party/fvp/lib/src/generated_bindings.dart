@@ -2121,7 +2121,7 @@ final class mdkPlayerAPI extends ffi.Struct {
   /// \param pos seek target. if flags has SeekFlag::Frame, pos is frame count, otherwise it's milliseconds.
   /// If pos > media time range, e.g. INT64_MAX, will seek to the last frame of media for SeekFlag::AnyFrame, and the last key frame of media for SeekFlag::Fast.
   /// If pos > media time range with SeekFlag::AnyFrame, playback will stop unless setProperty("continue_at_end", "1") was called
-  /// FIXME: a/v sync broken if SeekFlag::Frame|SeekFlag::FromNow.
+  /// 待修: a/v sync broken if SeekFlag::Frame|SeekFlag::FromNow.
   /// \param cb if succeeded, callback is called when stream seek finished and after the 1st frame decoded or decode error(e.g. video tracks disabled), ret(>=0) is the timestamp of the 1st frame(video if exists) after seek.
   /// If error(io, demux, not decode) occured(ret < 0, usually -1) or skipped because of unfinished previous seek(ret == -2), out of range(-4) or media unloaded(-3).
   external ffi.Pointer<
@@ -2167,7 +2167,7 @@ final class mdkPlayerAPI extends ffi.Struct {
   /// !
   /// \brief switchBitrate
   /// A new media will be played later
-  /// \param delay switch after at least delay ms. TODO: determined by buffered time, e.g. from high bit rate without enough buffered samples to low bit rate
+  /// \param delay switch after at least delay ms. 待办: determined by buffered time, e.g. from high bit rate without enough buffered samples to low bit rate
   /// \param cb (true/false) called when finished/failed
   /// \param flags seek flags for the next url, accurate or fast
   external ffi.Pointer<

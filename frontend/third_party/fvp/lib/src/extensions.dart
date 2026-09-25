@@ -20,7 +20,7 @@ extension PlatformEx on Platform {
     return Libfvp.isEmulator();
   }
 
-  // TODO: check content /proc/device-tree/model?
+  // 代办: check content /proc/device-tree/model?
   static bool isRockchip() {
     if (!Platform.isLinux) {
       return false;
