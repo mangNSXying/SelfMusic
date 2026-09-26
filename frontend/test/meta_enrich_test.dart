@@ -152,7 +152,7 @@ void main() {
 
     final bytes = bigCoverMp3();
     final src = _RangeFakeSource(bytes);
-    index.upsertSongs([
+    await index.upsertSongs([
       DirectSongRow(
         sourceKey: 'webdav:t',
         ref: 'Music/a.mp3',
@@ -188,7 +188,7 @@ void main() {
     await index.open();
 
     final cover = File('${dir.path}/cover.jpg')..writeAsBytesSync([1, 2, 3]);
-    index.upsertSongs([
+    await index.upsertSongs([
       DirectSongRow(
         sourceKey: 'webdav:t',
         ref: 'with_cover.mp3',
@@ -221,7 +221,7 @@ void main() {
     // 前置：duration 已使三者 meta_read=1
     expect(index.unreadSongs('webdav:t', 10), isEmpty);
 
-    final reset = index.resetMetaReadForMissingCovers();
+    final reset = await index.resetMetaReadForMissingCovers();
     expect(reset, 1); // 仅 mp3/flac 且无封面的那一行
     final unread = index.unreadSongs('webdav:t', 10);
     expect(unread.map((s) => s.sourceRef), ['no_cover.flac']);
@@ -237,7 +237,7 @@ void main() {
     final index = LocalIndex();
     await index.open();
 
-    index.upsertSongs([
+    await index.upsertSongs([
       DirectSongRow(
         sourceKey: 'webdav:t',
         ref: 'has_artist.flac',
@@ -279,7 +279,7 @@ void main() {
     // 前置：duration 已使四者 meta_read=1
     expect(index.unreadSongs('webdav:t', 10), isEmpty);
 
-    final reset = index.resetMetaReadForMissingArtist(['webdav:t']);
+    final reset = await index.resetMetaReadForMissingArtist(['webdav:t']);
     expect(reset, 2); // 仅该源无歌手的 flac/m4a（所有格式统一）
     final unread = index.unreadSongs('webdav:t', 10);
     expect(unread.map((s) => s.sourceRef),
@@ -307,7 +307,7 @@ void main() {
       'Music/b.mp3': b,
       'Music/cover.jpg': cover,
     });
-    index.upsertSongs([
+    await index.upsertSongs([
       DirectSongRow(
         sourceKey: 'webdav:sib', ref: 'Music/a.mp3', title: 'a',
         format: 'mp3', size: a.length, mtime: 1,

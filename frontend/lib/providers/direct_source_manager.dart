@@ -139,32 +139,32 @@ class DirectSourceManager extends ChangeNotifier {
   /// 关联后补发存量远端源的 source.create（仅一次：uuid 已存在的不再重发）。
   void attachApi(ApiClient api) {
     _api = api;
-    _bootstrapSourceSync();
+    unawaited(_bootstrapSourceSync());
   }
 
   /// 存量远端类型源首次接入同步时补 uuid + source.create。
-  void _bootstrapSourceSync() {
+  Future<void> _bootstrapSourceSync() async {
     if (!isServerAvailable) return;
     for (final r in index.listSources()) {
       if (!isSyncableKind(r.kind)) continue;
       if (index.sourceUuidOf(r.key) != null) continue;
-      index.ensureSourceUuid(r.key);
-      _emitSource(SyncEventTypes.sourceCreate, r.key);
+      await index.ensureSourceUuid(r.key);
+      await _emitSource(SyncEventTypes.sourceCreate, r.key);
     }
   }
 
   /// 远端类型源的同步事件（本地文件夹源各机独立；未连服务器不发）。
-  void _emitSource(String type, String key) {
+  Future<void> _emitSource(String type, String key) async {
     if (!isServerAvailable) return;
     final row = index.getSource(key);
     if (row == null || !isSyncableKind(row.kind)) return;
-    final uuid = index.sourceUuidOf(key) ?? index.ensureSourceUuid(key);
+    final uuid = await index.ensureSourceUuid(key);
     Map<String, dynamic> cfg = const {};
     try {
       cfg = jsonDecode(row.config) as Map<String, dynamic>;
     } catch (_) {}
     final sanitized = Map<String, dynamic>.of(cfg)..remove('password');
-    index.enqueueOutbox(type, {
+    await index.enqueueOutbox(type, {
       'client_uuid': uuid,
       'kind': row.kind,
       if (row.name.isNotEmpty) 'name': row.name,
@@ -186,9 +186,9 @@ class DirectSourceManager extends ChangeNotifier {
   /// 由 SyncEngine 下个 tick 上推。配对成功后由用户弹窗确认触发，
   /// 每台设备只问一次，内容幂等（服务端 LWW，重跑安全）。
   /// 返回 {playlists, items, songs}。
-  Map<String, int> backfillNow() {
-    final pl = playlists.backfill();
-    final songs = weight.backfill();
+  Future<Map<String, int>> backfillNow() async {
+    final pl = await playlists.backfill();
+    final songs = await weight.backfill();
     return {'playlists': pl['playlists']!, 'items': pl['items']!, 'songs': songs};
   }
 
@@ -216,7 +216,7 @@ class DirectSourceManager extends ChangeNotifier {
         }
         if (cfg.containsKey('password')) {
           cfg = Map<String, dynamic>.of(cfg)..remove('password');
-          index.upsertSource(r.key, r.kind, r.name, jsonEncode(cfg));
+          await index.upsertSource(r.key, r.kind, r.name, jsonEncode(cfg));
         }
         _webdavPwds[r.key] = pwd ?? '';
         cfg['password'] = pwd ?? '';
@@ -293,7 +293,7 @@ class DirectSourceManager extends ChangeNotifier {
     // 一次性回填：旧版封面读取受头部采样截断（大内嵌封面丢失）且已标已读的行，
     // 重置为未读，交给后台补读用加深的封面读取重取。仅本机一次（不进 knownKeys）。
     if (!settings.coverReenrichV1Done) {
-      final reset = index.resetMetaReadForMissingCovers();
+      final reset = await index.resetMetaReadForMissingCovers();
       settings.coverReenrichV1Done = true;
       if (reset > 0) debugPrint('封面回填补读：已重置 $reset 首待重读');
     }
@@ -302,7 +302,7 @@ class DirectSourceManager extends ChangeNotifier {
     // 补读用「从头完整读取」重取。仅本机一次（不进 knownKeys）。
     if (!settings.metaReenrichV2Done) {
       final keys = _sources.map((s) => s.key).toList();
-      final reset = index.resetMetaReadForMissingArtist(keys);
+      final reset = await index.resetMetaReadForMissingArtist(keys);
       settings.metaReenrichV2Done = true;
       if (reset > 0) debugPrint('元数据回填补读：已重置 $reset 首待重读');
     }
@@ -396,9 +396,9 @@ class DirectSourceManager extends ChangeNotifier {
     };
     _sources.add(_buildDirect(
         kind: 'webdav', key: key, name: name, cfg: cfg));
-    index.upsertSource(key, 'webdav', name, jsonEncode(cfg));
-    index.ensureSourceUuid(key);
-    _emitSource(SyncEventTypes.sourceCreate, key);
+    await index.upsertSource(key, 'webdav', name, jsonEncode(cfg));
+    await index.ensureSourceUuid(key);
+    await _emitSource(SyncEventTypes.sourceCreate, key);
     restartAutoScan();
     notifyListeners();
   }
@@ -415,7 +415,7 @@ class DirectSourceManager extends ChangeNotifier {
     };
     _sources.add(
         _buildDirect(kind: 'local', key: key, name: name, cfg: cfg));
-    index.upsertSource(key, 'local', name, jsonEncode(cfg));
+    await index.upsertSource(key, 'local', name, jsonEncode(cfg));
     restartAutoScan();
     notifyListeners();
   }
@@ -479,10 +479,10 @@ class DirectSourceManager extends ChangeNotifier {
       ..clear()
       ..addAll(rebuilt);
     if (newKey != key) {
-      index.renameSource(key, newKey);
+      await index.renameSource(key, newKey);
     }
-    index.upsertSource(newKey, row.kind, newName, jsonEncode(cfg));
-    _emitSource(SyncEventTypes.sourceUpdate, newKey);
+    await index.upsertSource(newKey, row.kind, newName, jsonEncode(cfg));
+    await _emitSource(SyncEventTypes.sourceUpdate, newKey);
     restartAutoScan();
     notifyListeners();
   }
@@ -498,7 +498,7 @@ class DirectSourceManager extends ChangeNotifier {
     _sources.removeWhere((s) => s.key == key);
     _webdavPwds.remove(key);
     await secrets.deleteWebdav(key);
-    index.deleteSource(key);
+    await index.deleteSource(key);
     notifyListeners();
   }
 
@@ -537,7 +537,7 @@ class DirectSourceManager extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
-      index.updateSourceScan(key, 'scanning');
+      await index.updateSourceScan(key, 'scanning');
       final options = ScanOptions(
         minSizeBytes: settings.scanIgnoreMinSizeBytes,
         minDurationSec: settings.scanIgnoreMinDurationSec,
@@ -565,11 +565,8 @@ class DirectSourceManager extends ChangeNotifier {
           }
         },
       );
-      if (token.cancelled) {
-        index.updateSourceScan(key, 'cancelled');
-      } else {
-        index.updateSourceScan(key, 'done');
-      }
+      await index.updateSourceScan(
+          key, token.cancelled ? 'cancelled' : 'done');
       // 扫描有增改 → 元数据版本自增（全局库/LibraryProvider 就地刷新）。
       if (summary.added > 0 || summary.updated > 0) _metaVersion++;
       return ScanSummary(
@@ -581,7 +578,7 @@ class DirectSourceManager extends ChangeNotifier {
       );
     } catch (e) {
       error = e.toString();
-      index.updateSourceScan(key, 'failed');
+      await index.updateSourceScan(key, 'failed');
       rethrow;
     } finally {
       scanning = false;
@@ -628,11 +625,11 @@ class DirectSourceManager extends ChangeNotifier {
   }
 
   /// 收藏统一收口到 play_meta；收藏直连歌自动后台缓存。
-  void setFavorite(Song s, bool fav) {
+  Future<void> setFavorite(Song s, bool fav) async {
     if (fav) {
-      weight.setLiked(s);
+      await weight.setLiked(s);
     } else {
-      weight.setUnliked(s);
+      await weight.setUnliked(s);
     }
     _favoriteVersion++;
     notifyListeners();
@@ -649,8 +646,8 @@ class DirectSourceManager extends ChangeNotifier {
   /// 是否处于「不喜欢」态（权重锁定最低）。
   bool isDisliked(Song s) => weight.isDisliked(s);
   /// 手动「不喜欢」开关：开 → 权重降到最低并锁定；关 → 解锁回到 1.0。
-  void setDisliked(Song s, bool disliked) {
-    weight.setDisliked(s, disliked);
+  Future<void> setDisliked(Song s, bool disliked) async {
+    await weight.setDisliked(s, disliked);
     _favoriteVersion++;
     notifyListeners();
   }
@@ -659,12 +656,12 @@ class DirectSourceManager extends ChangeNotifier {
   ///
   /// 落库并标记扫描保护；字段语义：null=不修改，''=清空为未知，其余=新值。
   /// 返回刷新后的歌曲（供播放队列/当前歌曲同步），失败返回 null。
-  Song? updateSongMeta(Song s,
+  Future<Song?> updateSongMeta(Song s,
       {String? title,
       String? artist,
       String? album,
-      String? albumArtist}) {
-    index.updateSongUserMeta(s.sourceKey, s.sourceRef,
+      String? albumArtist}) async {
+    await index.updateSongUserMeta(s.sourceKey, s.sourceRef,
         title: title, artist: artist, album: album, albumArtist: albumArtist);
     _metaVersion++;
     _favoriteVersion++;

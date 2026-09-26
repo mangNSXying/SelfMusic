@@ -43,9 +43,9 @@ void main() {
     final index = await _openIndex();
 
     expect(index.pendingOutboxCount(), 0);
-    final u1 = index.enqueueOutbox(SyncEventTypes.songLiked,
+    final u1 = await index.enqueueOutbox(SyncEventTypes.songLiked,
         {'source': 'webdav', 'source_ref': 'a/b.flac'});
-    final u2 = index.enqueueOutbox(SyncEventTypes.playlistItemAdd,
+    final u2 = await index.enqueueOutbox(SyncEventTypes.playlistItemAdd,
         {'playlist_uuid': 'p1', 'source': 'local', 'source_ref': 'c.mp3'});
     expect(u1, isNotEmpty);
     expect(u1, isNot(equals(u2)));
@@ -61,11 +61,11 @@ void main() {
     expect(payload['source_ref'], 'a/b.flac');
 
     // 服务端接受 → 删队
-    index.deleteOutbox([u1]);
+    await index.deleteOutbox([u1]);
     expect(index.pendingOutboxCount(), 1);
 
     // 服务端拒绝 → 死信，不再出现在待推里
-    index.deadLetterOutbox([u2]);
+    await index.deadLetterOutbox([u2]);
     expect(index.pendingOutboxCount(), 0);
     expect(index.pendingOutbox(), isEmpty);
 
@@ -75,12 +75,12 @@ void main() {
   test('歌单 uuid：新建即带；重复 ensure 不再生', () async {
     final index = await _openIndex();
 
-    final id = index.createPlaylist('测试');
+    final id = await index.createPlaylist('测试');
     final uuid = index.playlistUuidOf(id);
     expect(uuid, isNotNull);
     expect(uuid, isNotEmpty);
     // 已有 uuid 的行：ensure 直接返回，不再生
-    expect(index.ensurePlaylistUuid(id), uuid);
+    expect(await index.ensurePlaylistUuid(id), uuid);
     expect(index.playlistUuidOf(id), uuid);
 
     index.close();
@@ -90,7 +90,7 @@ void main() {
     final index = await _openIndex();
 
     // 新增（含服务端条目）
-    index.applyPlaylistSnapshot(
+    await index.applyPlaylistSnapshot(
       uuid: 'puuid-1',
       name: '远端歌单',
       description: 'd',
@@ -113,12 +113,12 @@ void main() {
     expect(items.single.songRef, 'x/y.flac');
 
     // 本地直连条目：pull 全量替换不得误删
-    index.addPlaylistItem(pid,
+    await index.addPlaylistItem(pid,
         sourceKey: 'webdav:NAS',
         songRef: 'local/z.mp3',
         title: '本地歌',
         source: 'webdav');
-    index.applyPlaylistSnapshot(
+    await index.applyPlaylistSnapshot(
       uuid: 'puuid-1',
       name: '远端歌单改名',
       description: 'd',
@@ -148,7 +148,7 @@ void main() {
         index.listPlaylists().firstWhere((p) => p.id == pid).name, '远端歌单改名');
 
     // 墓碑：本地硬删
-    index.applyPlaylistSnapshot(
+    await index.applyPlaylistSnapshot(
       uuid: 'puuid-1',
       name: 'x',
       deleted: true,
@@ -162,7 +162,7 @@ void main() {
   test('pull 歌曲快照落 play_meta；断点镜像 roundtrip', () async {
     final index = await _openIndex();
 
-    index.applySongSnapshot(
+    await index.applySongSnapshot(
       songRef: 'a/b.flac',
       likeStreak: 0,
       dislikeStreak: 0,
@@ -174,7 +174,7 @@ void main() {
     expect(meta.favorite, isTrue);
     expect(meta.factor, 1.5);
 
-    index.upsertBreakpointMirror(
+    await index.upsertBreakpointMirror(
       playlistUuid: 'puuid-9',
       songId: 42,
       source: 'webdav',
@@ -240,16 +240,16 @@ void main() {
     // 未注门控：服务器歌进，直连歌不进
     var index = await _openIndex();
     var weight = SongWeightStore(index);
-    weight.setLiked(serverSong());
+    await weight.setLiked(serverSong());
     expect(index.pendingOutboxCount(), 1);
-    weight.setLiked(directSong());
+    await weight.setLiked(directSong());
     expect(index.pendingOutboxCount(), 1);
     index.close();
 
     // 门控开：直连歌进队，载荷带身份
     index = await _openIndex();
     weight = SongWeightStore(index, serverAvailable: () => true);
-    weight.onSkipped(directSong());
+    await weight.onSkipped(directSong());
     expect(index.pendingOutboxCount(), 1);
     final payload = jsonDecode(index.pendingOutbox().single.payload)
         as Map<String, dynamic>;
@@ -261,7 +261,7 @@ void main() {
     // 门控关：直连歌不进队（避免未配对用户积压）
     index = await _openIndex();
     weight = SongWeightStore(index, serverAvailable: () => false);
-    weight.setLiked(directSong());
+    await weight.setLiked(directSong());
     expect(index.pendingOutboxCount(), 0);
     index.close();
   });
@@ -269,9 +269,9 @@ void main() {
   test('歌单条目埋点：直连歌随门控进队，载荷带标题', () async {
     var index = await _openIndex();
     var store = PlaylistStore(index, serverAvailable: () => true);
-    final pid = store.create('单');
+    final pid = await store.create('单');
     expect(index.pendingOutboxCount(), 1); // create 恒进
-    store.addSong(pid, directSong());
+    await store.addSong(pid, directSong());
     expect(index.pendingOutboxCount(), 2);
     final payload = jsonDecode(index.pendingOutbox().last.payload)
         as Map<String, dynamic>;
@@ -282,15 +282,15 @@ void main() {
 
     index = await _openIndex();
     store = PlaylistStore(index, serverAvailable: () => false);
-    final pid2 = store.create('单');
-    store.addSong(pid2, directSong());
+    final pid2 = await store.create('单');
+    await store.addSong(pid2, directSong());
     // 只有 create，条目未进
     expect(index.pendingOutboxCount(), 1);
     index.close();
   });
 
   test('pull 歌曲快照：按源协议回写直连行 play_meta', () async {    final index = await _openIndex();
-    index.upsertSongs([
+    await index.upsertSongs([
       DirectSongRow(
           sourceKey: 'webdav:NAS',
           ref: '/music/z.mp3',
@@ -305,7 +305,7 @@ void main() {
           mtime: 1),
     ]);
 
-    index.applySongSnapshot(
+    await index.applySongSnapshot(
       songRef: '/music/z.mp3',
       source: 'webdav',
       likeStreak: 3,
@@ -329,7 +329,7 @@ void main() {
 
   test('信息汇总：metaStats/formatStats 口径', () async {
     final index = await _openIndex();
-    index.upsertSongs([
+    await index.upsertSongs([
       DirectSongRow(
           sourceKey: 'webdav:NAS',
           ref: '/music/full.mp3',
@@ -351,8 +351,8 @@ void main() {
           size: 500,
           mtime: 1),
     ]);
-    index.setLyrics('webdav:NAS', '/music/full.mp3', '[00:01] la');
-    index.enrichSong('webdav:NAS', '/music/full.mp3');
+    await index.setLyrics('webdav:NAS', '/music/full.mp3', '[00:01] la');
+    await index.enrichSong('webdav:NAS', '/music/full.mp3');
 
     final stats = index.metaStats();
     expect(stats['total'], 2);

@@ -269,7 +269,7 @@ class _PairingScreenState extends State<PairingScreen> {
     if (!context.mounted) return;
     if (push != true) return;
     try {
-      final r = context.read<DirectSourceManager>().backfillNow();
+      final r = await context.read<DirectSourceManager>().backfillNow();
       if (!context.mounted) return;
       AppToast.show(
           '已补推 ${r['playlists']} 个歌单 ${r['items']} 条目 ${r['songs']} 首权重，稍后自动上推',

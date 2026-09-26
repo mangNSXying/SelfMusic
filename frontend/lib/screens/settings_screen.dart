@@ -1579,7 +1579,7 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
 
   Future<void> _doExportSettings() async {
     final direct = context.read<DirectSourceManager>();
-    final file = _service(direct).exportSettings();
+    final file = await _service(direct).exportSettings();
     _refresh();
     if (!mounted) return;
     AppToast.show('已导出：${file.path.split('/').last}（不含令牌与源凭据）',
@@ -1588,7 +1588,7 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
 
   Future<void> _doExportPlaylists() async {
     final direct = context.read<DirectSourceManager>();
-    final file = _service(direct).exportPlaylists();
+    final file = await _service(direct).exportPlaylists();
     _refresh();
     if (!mounted) return;
     AppToast.show('已导出：${file.path.split('/').last}', isError: false);

@@ -1128,7 +1128,7 @@ class _EditSongMetaDialogState extends State<_EditSongMetaDialog> {
     super.dispose();
   }
 
-  void _save() {
+  Future<void> _save() async {
     final title = _title.text.trim();
     if (title.isEmpty) {
       AppToast.error(StateError('标题不能为空'));
@@ -1142,13 +1142,14 @@ class _EditSongMetaDialogState extends State<_EditSongMetaDialog> {
     }
 
     final direct = context.read<DirectSourceManager>();
-    final updated = direct.updateSongMeta(
+    final updated = await direct.updateSongMeta(
       widget.song,
       title: delta(title, widget.song.title),
       artist: delta(_artist.text, widget.song.artist),
       albumArtist: delta(_albumArtist.text, widget.song.albumArtist),
       album: delta(_album.text, widget.song.albumName),
     );
+    if (!mounted) return;
     if (updated != null) {
       context.read<PlayerProvider>().refreshSongMeta(updated);
     }

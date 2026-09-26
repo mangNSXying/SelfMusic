@@ -1167,27 +1167,27 @@ class PlayerProvider extends ChangeNotifier {
     if (_lastStateSave == null ||
         now.difference(_lastStateSave!) >= const Duration(seconds: 2)) {
       _lastStateSave = now;
-      _saveState(pos);
+      unawaited(_saveState(pos));
     }
   }
 
-  void _saveState(Duration pos) {
+  Future<void> _saveState(Duration pos) async {
     final idx = _index;
     if (idx == null || _queue.isEmpty || _current == null) return;
-    idx.savePlayState(
+    await idx.savePlayState(
       jsonEncode(_queue.map((s) => s.toJson()).toList()),
       _idx,
       pos.inMilliseconds,
       playlistUuid: _syncPlaylistUuid,
       anchorKey: _anchorKey,
     );
-    _maybeEnqueueBreakpoint(idx, pos);
+    await _maybeEnqueueBreakpoint(idx, pos);
   }
 
   /// 阶段5 断点进 outbox（节流：同歌 25s 一次，切歌立即）。
   /// 队列归属已同步歌单且当前歌曲有身份即上报：服务器模式恒上报，
   /// 直连歌曲需连着服务器；其它情况只活本机。
-  void _maybeEnqueueBreakpoint(LocalIndex idx, Duration pos) {
+  Future<void> _maybeEnqueueBreakpoint(LocalIndex idx, Duration pos) async {
     final uuid = _syncPlaylistUuid;
     final cur = _current;
     if (uuid == null || cur == null) return;
@@ -1212,7 +1212,7 @@ class PlayerProvider extends ChangeNotifier {
           if (s.source.isNotEmpty && s.sourceRef.isNotEmpty)
             {'source': s.source, 'source_ref': s.sourceRef},
       ];
-      idx.enqueueOutbox(SyncEventTypes.breakpointSet, {
+      await idx.enqueueOutbox(SyncEventTypes.breakpointSet, {
         'playlist_uuid': uuid,
         'source': cur.source,
         'source_ref': cur.sourceRef,
@@ -1545,7 +1545,11 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> shutdown() async {
     _fadeTimer?.cancel();
     _sleepTick?.cancel();
-    _saveState(player.position);
+    await _saveState(player.position);
+    // 退出前等写隔离队列落库（否则最后断点/设置随进程一起消失）。
+    try {
+      await _index?.flushWrites();
+    } catch (_) {}
     try {
       await player.stop();
     } catch (_) {}
@@ -1561,7 +1565,7 @@ class PlayerProvider extends ChangeNotifier {
   void dispose() {
     _fadeTimer?.cancel();
     _sleepTick?.cancel();
-    _saveState(player.position);
+    unawaited(_saveState(player.position));
     player.dispose();
     super.dispose();
   }

@@ -36,7 +36,7 @@ Future<LocalIndex> _openIndex() async {
 void main() {
   test('运行时断点带歌单归属：save/get roundtrip（通用队列为 null）', () async {
     final index = await _openIndex();
-    index.savePlayState(
+    await index.savePlayState(
       jsonEncode([
         {'sourceKey': 'webdav:NAS', 'title': 'a', 'source': 'webdav', 'sourceRef': '/x/a.flac'}
       ]),
@@ -48,7 +48,7 @@ void main() {
     expect(st.positionMs, 83000);
     expect(st.playlistUuid, 'puuid-1');
 
-    index.savePlayState('[]', 0, 0);
+    await index.savePlayState('[]', 0, 0);
     st = index.getPlayState()!;
     expect(st.playlistUuid, isNull);
     index.close();
@@ -56,14 +56,14 @@ void main() {
 
   test('playlistSongs：按 sort_order 重建可播放队列；镜像全量可读', () async {
     final index = await _openIndex();
-    index.createPlaylist('p');
+    await index.createPlaylist('p');
     final pid = index.listPlaylists().single.id;
-    index.addPlaylistItem(pid,
+    await index.addPlaylistItem(pid,
         sourceKey: 'server',
         songRef: '/x/a.flac',
         title: 'A',
         source: 'webdav');
-    index.addPlaylistItem(pid,
+    await index.addPlaylistItem(pid,
         sourceKey: 'webdav:NAS',
         songRef: '/x/b.flac',
         title: 'B',
@@ -75,7 +75,7 @@ void main() {
     expect(songs.first.sourceKey, 'server');
     expect(songs.last.sourceKey, 'webdav:NAS');
 
-    index.upsertBreakpointMirror(
+    await index.upsertBreakpointMirror(
       playlistUuid: 'puuid-1',
       songId: null,
       sourceId: 'u1',

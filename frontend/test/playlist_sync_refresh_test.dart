@@ -126,7 +126,7 @@ void main() {
   test('push 回包 corrections 含歌单同样触发一次回调', () async {
     final index = await _openIndex();
     // _push 仅在 outbox 非空时发请求：先塞一个哑事件让流程走到 corrections。
-    index.enqueueOutbox('song.noop', {'source_ref': 'x'});
+    await index.enqueueOutbox('song.noop', {'source_ref': 'x'});
     final api = _FakeApi()
       ..pullData = _emptyPage()
       ..pushData = {

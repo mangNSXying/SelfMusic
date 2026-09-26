@@ -41,9 +41,9 @@ Future<LocalIndex> _openIndex() async {
 
 const _addr = 'https://dav.example.com/music';
 
-void _addWebdavSource(LocalIndex index) {
+Future<void> _addWebdavSource(LocalIndex index) async {
   expect(
-      index.applySourceSnapshot(
+      await index.applySourceSnapshot(
         uuid: 'src-1',
         kind: 'webdav',
         name: 'NAS',
@@ -76,20 +76,20 @@ void main() {
   test('歌单补推：配对前存量建单补 create，直连条目补 item_add（server 行跳过）',
       () async {
     final index = await _openIndex();
-    _addWebdavSource(index);
+    await _addWebdavSource(index);
     // 直写索引模拟“配对前”数据：有行无事件。
-    final pid = index.createPlaylist('老歌单', description: 'd');
-    index.addPlaylistItem(pid,
+    final pid = await index.createPlaylist('老歌单', description: 'd');
+    await index.addPlaylistItem(pid,
         sourceKey: 'webdav:NAS',
         songRef: 'dav:/a.mp3',
         title: 'A',
         source: 'webdav');
-    index.addPlaylistItem(pid,
+    await index.addPlaylistItem(pid,
         sourceKey: 'server', songRef: 'srv:1', title: 'S', source: 'webdav');
     expect(index.pendingOutboxCount(), 0);
 
     final store = PlaylistStore(index, serverAvailable: () => true);
-    final r = store.backfill();
+    final r = await store.backfill();
     expect(r, {'playlists': 1, 'items': 1});
 
     final outbox = index.pendingOutbox();
@@ -113,15 +113,15 @@ void main() {
   test('歌单补推离线门控：直连条目在 serverAvailable 为假时跳过（建单仍补）',
       () async {
     final index = await _openIndex();
-    _addWebdavSource(index);
-    final pid = index.createPlaylist('老歌单');
-    index.addPlaylistItem(pid,
+    await _addWebdavSource(index);
+    final pid = await index.createPlaylist('老歌单');
+    await index.addPlaylistItem(pid,
         sourceKey: 'webdav:NAS',
         songRef: 'dav:/a.mp3',
         title: 'A',
         source: 'webdav');
     final store = PlaylistStore(index, serverAvailable: () => false);
-    final r = store.backfill();
+    final r = await store.backfill();
     expect(r, {'playlists': 1, 'items': 0});
     expect(index.pendingOutbox().map((e) => e.type).toList(),
         [SyncEventTypes.playlistCreate]);
@@ -130,17 +130,17 @@ void main() {
   test('权重补推：脏行补 song.state 绝对态（含 streak/factor），server 行跳过',
       () async {
     final index = await _openIndex();
-    _addWebdavSource(index);
-    index.upsertPlayMeta('webdav:NAS', 'dav:/a.mp3',
+    await _addWebdavSource(index);
+    await index.upsertPlayMeta('webdav:NAS', 'dav:/a.mp3',
         likeStreak: 4, factor: 1.1);
-    index.upsertPlayMeta('webdav:NAS', 'dav:/b.mp3', favorite: true);
-    index.upsertPlayMeta('webdav:NAS', 'dav:/c.mp3',
+    await index.upsertPlayMeta('webdav:NAS', 'dav:/b.mp3', favorite: true);
+    await index.upsertPlayMeta('webdav:NAS', 'dav:/c.mp3',
         dislikeStreak: 2, factor: 0.9, frozen: true);
-    index.upsertPlayMeta('server', 'srv:9', favorite: true);
+    await index.upsertPlayMeta('server', 'srv:9', favorite: true);
     expect(index.pendingOutboxCount(), 0);
 
     final store = SongWeightStore(index, serverAvailable: () => true);
-    expect(store.backfill(), 3);
+    expect(await store.backfill(), 3);
     final outbox = index.pendingOutbox();
     expect(
         outbox.map((e) => e.type).toSet(), {SyncEventTypes.songState});
@@ -162,10 +162,10 @@ void main() {
 
   test('权重补推离线门控：serverAvailable 为假时直连行跳过', () async {
     final index = await _openIndex();
-    _addWebdavSource(index);
-    index.upsertPlayMeta('webdav:NAS', 'dav:/a.mp3', likeStreak: 4);
+    await _addWebdavSource(index);
+    await index.upsertPlayMeta('webdav:NAS', 'dav:/a.mp3', likeStreak: 4);
     final store = SongWeightStore(index, serverAvailable: () => false);
-    expect(store.backfill(), 0);
+    expect(await store.backfill(), 0);
     expect(index.pendingOutboxCount(), 0);
   });
 

@@ -38,6 +38,18 @@ class _FakeSource extends MusicSource {
   SourceKind get kind => SourceKind.webdav;
 }
 
+
+/// 落库走后台写隔离（真实 isolate 往返）：`pump` 不推进真实消息，
+/// 需交替 runAsync（真实事件循环）与 pump（推进回调链）。
+Future<void> settleWriter(WidgetTester tester) async {
+  for (var i = 0; i < 10; i++) {
+    await tester.pump();
+    await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)));
+  }
+  await tester.pumpAndSettle();
+}
+
 void main() {
   testWidgets('三点菜单内切换喜欢态；副标题展示专辑歌手', (tester) async {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
@@ -99,14 +111,14 @@ void main() {
     expect(find.byIcon(Icons.favorite_border), findsOneWidget);
 
     await tester.tap(find.text('喜欢'));
-    await tester.pumpAndSettle();
+    await settleWriter(tester);
 
     await openMenu();
     expect(find.text('取消喜欢'), findsOneWidget);
     expect(find.byIcon(Icons.favorite), findsOneWidget);
 
     await tester.tap(find.text('取消喜欢'));
-    await tester.pumpAndSettle();
+    await settleWriter(tester);
 
     await openMenu();
     expect(find.text('喜欢'), findsOneWidget);

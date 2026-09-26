@@ -33,7 +33,7 @@ Future<bool> enrichSongMeta(
   if (cover != null && cover.isNotEmpty) {
     coverPath = index.persistCover(cover, song.sourceRef);
   }
-  index.enrichSong(song.sourceKey, song.sourceRef,
+  await index.enrichSong(song.sourceKey, song.sourceRef,
       title: meta.title,
       artist: meta.artist,
       album: meta.album,
@@ -48,7 +48,7 @@ Future<bool> enrichSongMeta(
   if (lyrics != null && lyrics.isNotEmpty) {
     final existing = index.lyricsOf(song.sourceKey, song.sourceRef);
     if (existing == null || existing.isEmpty) {
-      index.setLyrics(song.sourceKey, song.sourceRef, lyrics);
+      await index.setLyrics(song.sourceKey, song.sourceRef, lyrics);
     }
   }
   return true;

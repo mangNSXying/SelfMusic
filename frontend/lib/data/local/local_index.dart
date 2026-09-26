@@ -9,9 +9,10 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 import '../../models/song.dart';
-import '../sources/music_source.dart';
 import '../sources/webdav_url.dart';
 import 'audio_metadata.dart';
+import 'db_writer.dart';
+import 'schema.dart';
 
 /// 直连模式本地轻量索引（DESIGN §6.4）。///
 /// SQLite 存放：已配置的直连源（[DirectSourceRow]）、索引歌曲（[Song]）、
@@ -19,6 +20,7 @@ import 'audio_metadata.dart';
 class LocalIndex {
   Database? _db;
   String? _dir;
+  DbWriter? _writer;
 
   Future<void> open() async {
     if (_db != null) return;
@@ -26,262 +28,24 @@ class LocalIndex {
     _dir = p.join(support.path, 'selfmusic');
     Directory(_dir!).createSync(recursive: true);
     final dbPath = p.join(_dir!, 'selfmusic.db');
+    // 读连接（主线程，只读使用；写全部经 _writer 后台隔离，见 db_writer.dart）。
     _db = sqlite3.open(dbPath);
-    _db!.execute('PRAGMA journal_mode=WAL;');
-    _db!.execute('''
-      CREATE TABLE IF NOT EXISTS sources (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        key TEXT NOT NULL UNIQUE,
-        kind TEXT NOT NULL,
-        name TEXT NOT NULL,
-        config TEXT NOT NULL,
-        enabled INTEGER NOT NULL DEFAULT 1,
-        status TEXT NOT NULL DEFAULT '',
-        last_scan_at TEXT,
-        client_uuid TEXT
-      );
-    ''');
-    final sourceCols = _db!
-        .select('PRAGMA table_info(sources)')
-        .map((r) => r['name'] as String)
-        .toSet();
-    if (!sourceCols.contains('client_uuid')) {
-      _db!.execute('ALTER TABLE sources ADD COLUMN client_uuid TEXT');
-    }
-    _db!.execute(
-        'CREATE UNIQUE INDEX IF NOT EXISTS idx_sources_uuid ON sources(client_uuid)');
-    _db!.execute('''
-      CREATE TABLE IF NOT EXISTS idx_songs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        source_key TEXT NOT NULL,
-        ref TEXT NOT NULL,
-        title TEXT NOT NULL,
-        artist TEXT,
-        album TEXT,
-        album_artist TEXT,
-        track_no INTEGER,
-        year INTEGER,
-        genre TEXT,
-        duration INTEGER,
-        format TEXT,
-        size INTEGER NOT NULL DEFAULT 0,
-        mtime INTEGER NOT NULL DEFAULT 0,
-        cover_path TEXT,
-        is_favorite INTEGER NOT NULL DEFAULT 0,
-        missing INTEGER NOT NULL DEFAULT 0,
-        UNIQUE(source_key, ref)
-      );
-    ''');
-    _db!.execute('''
-      CREATE TABLE IF NOT EXISTS cache (
-        cache_key TEXT PRIMARY KEY,
-        path TEXT NOT NULL,
-        size INTEGER NOT NULL DEFAULT 0
-      );
-    ''');
-    // 阶段 2：歌曲播放元数据 / 歌单 / 应用设置 / 断点（DESIGN §7，stage2.md §1）。
-    _db!.execute('''
-      CREATE TABLE IF NOT EXISTS play_meta (
-        source_key   TEXT NOT NULL,
-        song_ref     TEXT NOT NULL,
-        like_streak   INTEGER NOT NULL DEFAULT 0,
-        dislike_streak INTEGER NOT NULL DEFAULT 0,
-        factor        REAL NOT NULL DEFAULT 1.0,
-        frozen        INTEGER NOT NULL DEFAULT 0,
-        is_favorite   INTEGER NOT NULL DEFAULT 0,
-        song_json     TEXT,
-        PRIMARY KEY (source_key, song_ref)
-      );
-    ''');
-    _db!.execute('''
-      CREATE TABLE IF NOT EXISTS playlists (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        name        TEXT NOT NULL,
-        description TEXT,
-        created_at  TEXT NOT NULL
-      );
-    ''');
-    _db!.execute('''
-      CREATE TABLE IF NOT EXISTS playlist_items (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        playlist_id INTEGER NOT NULL,
-        source_key  TEXT NOT NULL,
-        song_ref    TEXT NOT NULL,
-        title       TEXT NOT NULL,
-        artist      TEXT,
-        album       TEXT,
-        cover_path  TEXT,
-        sort_order  INTEGER NOT NULL DEFAULT 0,
-        added_at    TEXT NOT NULL,
-        UNIQUE (playlist_id, source_key, song_ref)
-      );
-    ''');
-    _db!.execute('''
-      CREATE TABLE IF NOT EXISTS app_settings (
-        key   TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-    ''');
-    _db!.execute('''
-      CREATE TABLE IF NOT EXISTS play_state (
-        id          INTEGER PRIMARY KEY CHECK (id = 1),
-        queue_json  TEXT NOT NULL,
-        idx         INTEGER NOT NULL,
-        position_ms INTEGER NOT NULL,
-        updated_at  TEXT NOT NULL,
-        playlist_uuid TEXT,
-        anchor_key    TEXT
-      );
-    ''');
-    final stateCols = _db!
-        .select('PRAGMA table_info(play_state)')
-        .map((r) => r['name'] as String)
-        .toSet();
-    if (!stateCols.contains('playlist_uuid')) {
-      _db!.execute('ALTER TABLE play_state ADD COLUMN playlist_uuid TEXT');
-    }
-    // 融合队列锚定键（任意列表上下文：playlist:<uuid>/liked/songs/album/artist/source）。
-    if (!stateCols.contains('anchor_key')) {
-      _db!.execute('ALTER TABLE play_state ADD COLUMN anchor_key TEXT');
-    }
-    final cacheCols = _db!
-        .select('PRAGMA table_info(cache)')
-        .map((r) => r['name'] as String)
-        .toSet();
-    if (!cacheCols.contains('cached_at')) {
-      _db!.execute('ALTER TABLE cache ADD COLUMN cached_at TEXT');
-    }
-    if (!cacheCols.contains('last_accessed_at')) {
-      _db!.execute('ALTER TABLE cache ADD COLUMN last_accessed_at TEXT');
-    }
-    // idx_songs 增量指纹：getetag（WebDAV）列，mtime/size 已在建表时定义。
-    final songCols = _db!
-        .select('PRAGMA table_info(idx_songs)')
-        .map((r) => r['name'] as String)
-        .toSet();
-    if (!songCols.contains('etag')) {
-      _db!.execute('ALTER TABLE idx_songs ADD COLUMN etag TEXT');
-    }
-    if (!songCols.contains('url')) {
-      _db!.execute('ALTER TABLE idx_songs ADD COLUMN url TEXT');
-    }
-    // 用户手动改过元数据的行：扫描不再覆盖其标题/歌手/专辑。
-    if (!songCols.contains('user_edited')) {
-      _db!.execute(
-          'ALTER TABLE idx_songs ADD COLUMN user_edited INTEGER NOT NULL DEFAULT 0');
-    }
-    // 是否已读取过文件元数据（播放时补读/后台扫描用，N1）。
-    if (!songCols.contains('meta_read')) {
-      _db!.execute(
-          'ALTER TABLE idx_songs ADD COLUMN meta_read INTEGER NOT NULL DEFAULT 0');
-    }
-    // 专辑歌手（mp3 TPE2 / flac ALBUMARTIST）。
-    if (!songCols.contains('album_artist')) {
-      _db!.execute('ALTER TABLE idx_songs ADD COLUMN album_artist TEXT');
-    }
-    // 歌词（内嵌标签 / 同目录 .lrc 原文）：独立表存储，歌曲列表查询不加载大文本。
-    _db!.execute('''
-      CREATE TABLE IF NOT EXISTS song_lyrics (
-        source_key TEXT NOT NULL,
-        ref        TEXT NOT NULL,
-        content    TEXT NOT NULL,
-        updated_at INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (source_key, ref)
-      );
-    ''');
-    // 阶段5 同步：本地变更流水（weight_outbox）+ 远端断点镜像（breakpoint_mirror）。
-    _db!.execute('''
-      CREATE TABLE IF NOT EXISTS weight_outbox (
-        event_uuid  TEXT PRIMARY KEY,
-        type        TEXT NOT NULL,
-        payload     TEXT NOT NULL,
-        occurred_at TEXT NOT NULL,
-        acked       INTEGER NOT NULL DEFAULT 0,
-        created_at  TEXT NOT NULL
-      );
-    ''');
-    _db!.execute('''
-      CREATE TABLE IF NOT EXISTS breakpoint_mirror (
-        playlist_uuid TEXT PRIMARY KEY,
-        song_id       INTEGER,
-        source_id     TEXT,
-        source        TEXT,
-        source_ref    TEXT,
-        position_ms   INTEGER NOT NULL DEFAULT 0,
-        updated_at    TEXT NOT NULL,
-        device_id     TEXT
-      );
-    ''');
-    // 深层列表：每个锚定上下文一条「仅可修改末尾值」的历史栈（JSON 快照，仅本机）。
-    // playlist_uuid 列存储通用锚定键（playlist:<uuid>/liked/songs/album:<id>/
-    // artist:<name>/source:<key>），非歌单锚定亦可持久化。
-    _db!.execute('''
-      CREATE TABLE IF NOT EXISTS deep_lists (
-        playlist_uuid TEXT PRIMARY KEY,
-        entries_json  TEXT NOT NULL,
-        updated_at    TEXT NOT NULL
-      );
-    ''');
-    final mirrorCols = _db!
-        .select('PRAGMA table_info(breakpoint_mirror)')
-        .map((r) => r['name'] as String)
-        .toSet();
-    if (!mirrorCols.contains('source_id')) {
-      _db!.execute(
-          'ALTER TABLE breakpoint_mirror ADD COLUMN source_id TEXT');
-    }
-    if (!mirrorCols.contains('deep_list_json')) {
-      _db!.execute(
-          'ALTER TABLE breakpoint_mirror ADD COLUMN deep_list_json TEXT');
-    }
-    // 歌单跨设备全局标识 + 删除墓碑（本地删除仍硬删，墓碑只活在服务端）。
-    final playlistCols = _db!
-        .select('PRAGMA table_info(playlists)')
-        .map((r) => r['name'] as String)
-        .toSet();
-    if (!playlistCols.contains('client_uuid')) {
-      _db!.execute('ALTER TABLE playlists ADD COLUMN client_uuid TEXT');
-      _db!.execute(
-          'CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_uuid ON playlists(client_uuid)');
-    }
-    if (!playlistCols.contains('deleted')) {
-      _db!.execute(
-          'ALTER TABLE playlists ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');
-    }
-    // 条目归属源（local/smb/webdav）：同步条目事件解析服务端 song_id 用。
-    // 既有行留空（NULL），仅新写入行携带。
-    final itemCols = _db!
-        .select('PRAGMA table_info(playlist_items)')
-        .map((r) => r['name'] as String)
-        .toSet();
-    if (!itemCols.contains('source')) {
-      _db!.execute('ALTER TABLE playlist_items ADD COLUMN source TEXT');
-    }
-    // play_meta 为既有 DB 时可能缺 song_json 快照列。
-    final metaCols = _db!
-        .select('PRAGMA table_info(play_meta)')
-        .map((r) => r['name'] as String)
-        .toSet();
-    if (!metaCols.contains('song_json')) {
-      _db!.execute('ALTER TABLE play_meta ADD COLUMN song_json TEXT');
-    }
-    // 收藏一次性回填迁移：idx_songs.is_favorite → play_meta，此后以 play_meta 为准。
-    _db!.execute('''
-      INSERT OR IGNORE INTO play_meta(source_key, song_ref, is_favorite)
-      SELECT source_key, ref, is_favorite FROM idx_songs WHERE is_favorite = 1
-    ''');
-    _db!.execute('''
-      CREATE INDEX IF NOT EXISTS pli_playlist ON playlist_items(playlist_id);
-    ''');
-    _db!.execute('''
-      CREATE INDEX IF NOT EXISTS idx_songs_source ON idx_songs(source_key);
-    ''');
-    _db!.execute('''
-      CREATE INDEX IF NOT EXISTS idx_songs_ref ON idx_songs(ref);
-    ''');
+    _db!.execute('PRAGMA busy_timeout=30000;');
+    applySchema(_db!);
+    // 写隔离：独立连接 + 自动批事务 + NORMAL 同步（fsync 离开 UI 线程）。
+    _writer = await DbWriter.start(dbPath);
+    // 历史 ENCODE 形态的 play_meta 行一次性迁移到当前 ref（写隔离内执行）。
+    // 之后读路径不再写库，避免 UI 线程出现「读前迁移」的 I/O。
+    await _writer!.op<void>('migrateMetaRefs', const {});
   }
 
+  /// 等待写隔离中排队写全部落库（退出前、导出等需要持久一致性的时点）。
+  Future<void> flushWrites() => _writer!.flush();
+
   void close() {
+    // 写隔离火速回收（未落库排队写丢弃，调用方负责先 flush）。
+    _writer?.dispose();
+    _writer = null;
     _db?.dispose();
     _db = null;
   }
@@ -304,21 +68,22 @@ class LocalIndex {
     return _rowToSource(rs.first);
   }
 
-  void upsertSource(String key, String kind, String name, String config) {
-    _db!.execute('''
-      INSERT INTO sources(key, kind, name, config) VALUES(?,?,?,?)
-      ON CONFLICT(key) DO UPDATE SET name=excluded.name, config=excluded.config, kind=excluded.kind
-    ''', [key, kind, name, config]);
+  Future<void> upsertSource(String key, String kind, String name, String config) {
+    return _writer!.exec(
+        'INSERT INTO sources(key, kind, name, config) VALUES(?,?,?,?) '
+        'ON CONFLICT(key) DO UPDATE SET name=excluded.name, config=excluded.config, kind=excluded.kind',
+        [key, kind, name, config]);
   }
 
-  /// 源实例 uuid（跨设备同步身份）：无则生成并落库。
-  String ensureSourceUuid(String key) {
+  /// 源实例 uuid（跨设备同步身份）：无则生成并落库（写经后台隔离）。
+  Future<String> ensureSourceUuid(String key) async {
     final rs = _db!.select('SELECT client_uuid FROM sources WHERE key=?', [key]);
     if (rs.isEmpty) throw StateError('source not found: $key');
     final cur = rs.first['client_uuid'] as String?;
     if (cur != null && cur.isNotEmpty) return cur;
     final uuid = newEventUuid();
-    _db!.execute('UPDATE sources SET client_uuid=? WHERE key=?', [uuid, key]);
+    await _writer!.exec(
+        'UPDATE sources SET client_uuid=? WHERE key=?', [uuid, key]);
     return uuid;
   }
 
@@ -337,29 +102,23 @@ class LocalIndex {
     return rs.isEmpty ? null : rs.first['key'] as String;
   }
 
-  void updateSourceScan(String key, String status) {
-    _db!.execute('UPDATE sources SET status=?, last_scan_at=? WHERE key=?',
+  Future<void> updateSourceScan(String key, String status) {
+    return _writer!.exec(
+        'UPDATE sources SET status=?, last_scan_at=? WHERE key=?',
         [status, DateTime.now().toIso8601String(), key]);
   }
 
-  void deleteSource(String key) {
-    _db!.execute('DELETE FROM sources WHERE key=?', [key]);
-    _db!.execute('DELETE FROM idx_songs WHERE source_key=?', [key]);
-  }
+  Future<void> deleteSource(String key) =>
+      _writer!.op<void>('deleteSource', {'key': key});
 
   /// 源改名：源 key 由名称派生，改名时同步迁移所有引用该 key 的数据，
   /// 保证已索引歌曲、收藏、歌单条目在改名后仍然有效。
-  void renameSource(String oldKey, String newKey) {
+  Future<void> renameSource(String oldKey, String newKey) async {
     if (oldKey == newKey) return;
-    _db!.execute('UPDATE OR REPLACE sources SET key=? WHERE key=?',
-        [newKey, oldKey]);
-    _db!.execute('UPDATE OR REPLACE idx_songs SET source_key=? WHERE source_key=?',
-        [newKey, oldKey]);
-    _db!.execute('UPDATE OR REPLACE play_meta SET source_key=? WHERE source_key=?',
-        [newKey, oldKey]);
-    _db!.execute(
-        'UPDATE OR REPLACE playlist_items SET source_key=? WHERE source_key=?',
-        [newKey, oldKey]);
+    await _writer!.op<void>('renameSource', {
+      'oldKey': oldKey,
+      'newKey': newKey,
+    });
   }
 
   /// 应用服务端源快照（阶段5 源同步）：
@@ -368,7 +127,8 @@ class LocalIndex {
   /// - 未命中 → 按 (kind, 地址) 去重合并（同址视为同一源，采纳远端 uuid）；
   /// - 均无 → 以 `kind:名称` 建行（重名加后缀）。
   /// 返回是否发生变更（调用方据此重建内存源与 UI）。
-  bool applySourceSnapshot({
+  /// 内部读取全部在写连接上完成，保证与其它入队写的一致性。
+  Future<bool> applySourceSnapshot({
     required String uuid,
     required String kind,
     String? name,
@@ -377,56 +137,15 @@ class LocalIndex {
     required bool enabled,
     required bool deleted,
   }) {
-    if (!isSyncableKind(kind)) return false;
-    Map<String, dynamic>? hit;
-    final rs = _db!
-        .select('SELECT key, config FROM sources WHERE client_uuid=?', [uuid]);
-    if (rs.isNotEmpty) {
-      hit = {'key': rs.first['key'], 'config': rs.first['config']};
-    }
-    if (hit == null && !deleted && address.isNotEmpty) {
-      for (final r in listSources()) {
-        if (r.kind != kind) continue;
-        Map<String, dynamic> cfg = const {};
-        try {
-          cfg = jsonDecode(r.config) as Map<String, dynamic>;
-        } catch (_) {}
-        if (sourceAddressOf(kind, cfg) == address) {
-          _db!.execute('UPDATE sources SET client_uuid=? WHERE key=?',
-              [uuid, r.key]);
-          hit = {'key': r.key, 'config': r.config};
-          break;
-        }
-      }
-    }
-    if (deleted) {
-      if (hit == null) return false;
-      deleteSource(hit['key'] as String);
-      return true;
-    }
-    final cfgJson = jsonEncode(<String, dynamic>{...?config});
-    if (hit != null) {
-      final key = hit['key'] as String;
-      final fallbackName = key.contains(':')
-          ? key.substring(key.indexOf(':') + 1)
-          : key;
-      _db!.execute(
-          'UPDATE sources SET kind=?, name=?, config=?, enabled=? WHERE key=?',
-          [kind, name ?? fallbackName, cfgJson, enabled ? 1 : 0, key]);
-      return true;
-    }
-    final suffix = name == null || name.isEmpty ? uuid.substring(0, 8) : name;
-    var key = '$kind:$suffix';
-    var n = 2;
-    while (_db!.select('SELECT 1 FROM sources WHERE key=?', [key]).isNotEmpty) {
-      key = '$kind:$suffix($n)';
-      n++;
-    }
-    _db!.execute(
-        'INSERT INTO sources(key, kind, name, config, enabled, client_uuid) '
-        'VALUES(?,?,?,?,?,?)',
-        [key, kind, name ?? suffix, cfgJson, enabled ? 1 : 0, uuid]);
-    return true;
+    return _writer!.op<bool>('applySourceSnapshot', {
+      'uuid': uuid,
+      'kind': kind,
+      'name': name,
+      'address': address,
+      'config': config,
+      'enabled': enabled,
+      'deleted': deleted,
+    });
   }
 
   DirectSourceRow _rowToSource(Row r) => DirectSourceRow(
@@ -465,119 +184,62 @@ class LocalIndex {
   ///   兜底标题（文件名，[DirectSongRow.titleFromMeta]=false）仅在旧值为空时填入；
   /// - meta_read：本次解析出时长（完整读取）才标已读，否则重置为未读，
   ///   交给播放/后台补读做一次完整重读（指纹变化行数据自愈）。
-  void upsertSongs(List<DirectSongRow> songs) {
-    if (songs.isEmpty) return;
-    _db!.execute('BEGIN');
-    try {
-      final stmt = _db!.prepare('''
-        INSERT INTO idx_songs(source_key, ref, title, artist, album, album_artist, track_no, year,
-          genre, duration, format, size, mtime, etag, cover_path, is_favorite, missing, url, meta_read)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,?,CASE WHEN ? IS NOT NULL THEN 1 ELSE 0 END)
-        ON CONFLICT(source_key, ref) DO UPDATE SET
-          title=CASE
-            WHEN idx_songs.user_edited=1 THEN idx_songs.title
-            WHEN ? THEN COALESCE(NULLIF(excluded.title, ''), idx_songs.title)
-            ELSE COALESCE(idx_songs.title, excluded.title)
-          END,
-          artist=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.artist
-            ELSE COALESCE(NULLIF(excluded.artist, ''), idx_songs.artist) END,
-          album=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.album
-            ELSE COALESCE(NULLIF(excluded.album, ''), idx_songs.album) END,
-          album_artist=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.album_artist
-            ELSE COALESCE(NULLIF(excluded.album_artist, ''), idx_songs.album_artist) END,
-          track_no=COALESCE(excluded.track_no, idx_songs.track_no),
-          year=COALESCE(excluded.year, idx_songs.year),
-          genre=COALESCE(excluded.genre, idx_songs.genre),
-          duration=COALESCE(excluded.duration, idx_songs.duration),
-          format=excluded.format, size=excluded.size, mtime=excluded.mtime,
-          etag=COALESCE(excluded.etag, idx_songs.etag),
-          cover_path=COALESCE(excluded.cover_path, idx_songs.cover_path),
-          url=COALESCE(excluded.url, idx_songs.url),
-          meta_read=CASE WHEN excluded.duration IS NOT NULL THEN 1 ELSE 0 END,
-          missing=0
-      ''');
-      try {
-        for (final s in songs) {
-          stmt.execute([
-            s.sourceKey,
-            s.ref,
-            s.title,
-            s.artist,
-            s.album,
-            s.albumArtist,
-            s.trackNo,
-            s.year,
-            s.genre,
-            s.duration,
-            s.format,
-            s.size,
-            s.mtime,
-            s.etag,
-            s.coverPath,
-            s.url,
-            s.duration,
-            s.titleFromMeta ? 1 : 0,
-          ]);
-        }
-      } finally {
-        stmt.dispose();
-      }
-      _db!.execute('COMMIT');
-    } catch (_) {
-      _db!.execute('ROLLBACK');
-      rethrow;
-    }
+  /// 复用写隔离的 [DbWriter.opBatch] 单事务整批落库。
+  Future<void> upsertSongs(List<DirectSongRow> songs) {
+    if (songs.isEmpty) return Future.value();
+    return _writer!.op<void>('upsertSongs', {
+      'rows': [for (final s in songs) s.toRowMap()],
+    });
   }
 
   /// 播放懒补全：把播放时解析出的额外元数据（标题/歌手/专辑/专辑歌手/时长/流派/
   /// 曲目/年份/封面）回填，并标记已读（后台不再重复扫描）。
   /// 用户手改过的行（user_edited=1）不回写文本字段，只补技术字段。
-  void enrichSong(String sourceKey, String songRef,
-      {String? title,
-      String? artist,
-      String? album,
-      String? albumArtist,
-      int? duration,
-      String? genre,
-      int? trackNo,
-      int? year,
-      String? coverPath}) {
-    _db!.execute('''
-      UPDATE idx_songs SET
-        title=CASE WHEN user_edited=1 THEN title ELSE COALESCE(NULLIF(?, ''), title) END,
-        artist=CASE WHEN user_edited=1 THEN artist ELSE COALESCE(NULLIF(?, ''), artist) END,
-        album=CASE WHEN user_edited=1 THEN album ELSE COALESCE(NULLIF(?, ''), album) END,
-        album_artist=CASE WHEN user_edited=1 THEN album_artist ELSE COALESCE(NULLIF(?, ''), album_artist) END,
-        duration=COALESCE(?, duration),
-        genre=COALESCE(?, genre),
-        track_no=COALESCE(?, track_no),
-        year=COALESCE(?, year),
-        cover_path=COALESCE(?, cover_path),
-        meta_read=1
-      WHERE source_key=? AND ref=?
-    ''', [
-      title,
-      artist,
-      album,
-      albumArtist,
-      duration,
-      genre,
-      trackNo,
-      year,
-      coverPath,
-      sourceKey,
-      songRef,
-    ]);
-  }
+Future<void> enrichSong(String sourceKey, String songRef,
+    {String? title,
+    String? artist,
+    String? album,
+    String? albumArtist,
+    int? duration,
+    String? genre,
+    int? trackNo,
+    int? year,
+    String? coverPath}) {
+  return _writer!.exec('''
+    UPDATE idx_songs SET
+      title=CASE WHEN user_edited=1 THEN title ELSE COALESCE(NULLIF(?, ''), title) END,
+      artist=CASE WHEN user_edited=1 THEN artist ELSE COALESCE(NULLIF(?, ''), artist) END,
+      album=CASE WHEN user_edited=1 THEN album ELSE COALESCE(NULLIF(?, ''), album) END,
+      album_artist=CASE WHEN user_edited=1 THEN album_artist ELSE COALESCE(NULLIF(?, ''), album_artist) END,
+      duration=COALESCE(?, duration),
+      genre=COALESCE(?, genre),
+      track_no=COALESCE(?, track_no),
+      year=COALESCE(?, year),
+      cover_path=COALESCE(?, cover_path),
+      meta_read=1
+    WHERE source_key=? AND ref=?
+  ''', [
+    title,
+    artist,
+    album,
+    albumArtist,
+    duration,
+    genre,
+    trackNo,
+    year,
+    coverPath,
+    sourceKey,
+    songRef,
+  ]);
+}
 
   /// 大内嵌封面回填补读（旧版头部采样截断缺陷修复）：把已标已读、但没有封面的
   /// mp3/flac 行重置为未读，交给后台补读用加深的封面读取（coverReadHint）重取。
   /// 返回重置行数。
-  int resetMetaReadForMissingCovers() {
-    _db!.execute(
+  Future<int> resetMetaReadForMissingCovers() {
+    return _writer!.execUpdated(
         "UPDATE idx_songs SET meta_read=0 "
         "WHERE meta_read=1 AND cover_path IS NULL AND format IN ('mp3','flac')");
-    return _db!.updatedRows;
   }
 
   /// 块序异常元数据回填补读（旧版解析遇大封面/PICTURE 在 VORBIS_COMMENT
@@ -585,14 +247,13 @@ class LocalIndex {
   /// 未读，交给后台补读用「从头完整读取」重取。[sourceKeys] 限定直连源
   /// （服务端代理行不参与本地补读）；所有格式统一。
   /// 返回重置行数。
-  int resetMetaReadForMissingArtist(List<String> sourceKeys) {
-    if (sourceKeys.isEmpty) return 0;
+  Future<int> resetMetaReadForMissingArtist(List<String> sourceKeys) {
+    if (sourceKeys.isEmpty) return Future.value(0);
     final marks = List.filled(sourceKeys.length, '?').join(',');
-    _db!.execute(
+    return _writer!.execUpdated(
         'UPDATE idx_songs SET meta_read=0 '
         'WHERE meta_read=1 AND artist IS NULL AND source_key IN ($marks)',
         sourceKeys);
-    return _db!.updatedRows;
   }
 
   /// 指定源尚未读取过元数据的歌曲（后台补读用，missing=0）。
@@ -624,60 +285,48 @@ class LocalIndex {
   /// 用户手动修改歌曲元数据：标题/歌手/专辑落库并标记 user_edited=1（扫描不再覆盖），
   /// 同时同步 play_meta 歌曲快照中的对应字段（喜欢列表/断点恢复用快照渲染）。
   /// 字段语义：null=不修改；''=清空（置 NULL，UI 显示为未知）。
-  void updateSongUserMeta(String sourceKey, String songRef,
-      {String? title, String? artist, String? album, String? albumArtist}) {
-    _db!.execute('''
-      UPDATE idx_songs SET
-        title=CASE WHEN ? IS NULL THEN title ELSE NULLIF(?, '') END,
-        artist=CASE WHEN ? IS NULL THEN artist ELSE NULLIF(?, '') END,
-        album=CASE WHEN ? IS NULL THEN album ELSE NULLIF(?, '') END,
-        album_artist=CASE WHEN ? IS NULL THEN album_artist ELSE NULLIF(?, '') END,
-        user_edited=1
-      WHERE source_key=? AND ref=?
-    ''', [
-      title,
-      title,
-      artist,
-      artist,
-      album,
-      album,
-      albumArtist,
-      albumArtist,
-      sourceKey,
-      songRef,
-    ]);
-    syncMetaSnapshot(sourceKey, songRef,
-        title: title, artist: artist, album: album, albumArtist: albumArtist);
-  }
+Future<void> updateSongUserMeta(String sourceKey, String songRef,
+    {String? title, String? artist, String? album, String? albumArtist}) {
+  return _writer!.op<void>('updateSongUserMeta', {
+    'sourceKey': sourceKey,
+    'songRef': songRef,
+    'title': title,
+    'artist': artist,
+    'album': album,
+    'albumArtist': albumArtist,
+  });
+}
 
-  /// 同步 play_meta 歌曲快照中的标题/歌手/专辑/专辑歌手（直连改库用）。
-  /// '' 表示清空为未知（写 null）。
-  void syncMetaSnapshot(String sourceKey, String songRef,
-      {String? title, String? artist, String? album, String? albumArtist}) {
-    final rows = _db!.select(
-        'SELECT song_json FROM play_meta WHERE source_key=? AND song_ref=?',
-        [sourceKey, songRef]);
-    if (rows.isEmpty) return;
-    final raw = rows.first['song_json'] as String?;
-    if (raw == null || raw.isEmpty) return;
-    try {
-      final j = jsonDecode(raw) as Map<String, dynamic>;
-      if (title != null) j['title'] = title.isEmpty ? null : title;
-      if (artist != null) j['artist'] = artist.isEmpty ? null : artist;
-      if (album != null) j['albumName'] = album.isEmpty ? null : album;
-      if (albumArtist != null) {
-        j['albumArtist'] = albumArtist.isEmpty ? null : albumArtist;
-      }
-      _db!.execute(
-          'UPDATE play_meta SET song_json=? WHERE source_key=? AND song_ref=?',
-          [jsonEncode(j), sourceKey, songRef]);
-    } catch (_) {
-      // 快照损坏则忽略（下次收藏时重写）。
+/// 同步 play_meta 歌曲快照中的标题/歌手/专辑/专辑歌手（直连改库用）。
+/// '' 表示清空为未知（写 null）。
+/// 读快照在主连接上进行（song_json 仅此路径写），再经写隔离落库。
+Future<void> syncMetaSnapshot(String sourceKey, String songRef,
+    {String? title, String? artist, String? album, String? albumArtist}) async {
+  final rows = _db!.select(
+      'SELECT song_json FROM play_meta WHERE source_key=? AND song_ref=?',
+      [sourceKey, songRef]);
+  if (rows.isEmpty) return;
+  final raw = rows.first['song_json'] as String?;
+  if (raw == null || raw.isEmpty) return;
+  try {
+    final j = jsonDecode(raw) as Map<String, dynamic>;
+    if (title != null) j['title'] = title.isEmpty ? null : title;
+    if (artist != null) j['artist'] = artist.isEmpty ? null : artist;
+    if (album != null) j['albumName'] = album.isEmpty ? null : album;
+    if (albumArtist != null) {
+      j['albumArtist'] = albumArtist.isEmpty ? null : albumArtist;
     }
+    await _writer!.exec(
+        'UPDATE play_meta SET song_json=? WHERE source_key=? AND song_ref=?',
+        [jsonEncode(j), sourceKey, songRef]);
+  } catch (_) {
+    // 快照损坏则忽略（下次收藏时重写）。
   }
+}
 
   /// 把嵌入封面包装成可跨源复用的落盘（`covers/<md5(ref)>.jpg`），返回路径或 null。
   /// 仅接受图片签名通过的字节（防止描述残留/URL 等脏数据落盘致解码报错）。
+  /// 幂等：已有同尺寸封面则跳过重写（启动期因此免去大量无谓写盘）。
   String? persistCover(Uint8List cover, String ref) {
     if (cover.isEmpty || !looksLikeImageBytes(cover)) return null;
     try {
@@ -685,7 +334,9 @@ class LocalIndex {
       Directory(dir).createSync(recursive: true);
       final h = md5.convert(utf8.encode(ref)).toString();
       final filePath = p.join(dir, '$h.jpg');
-      File(filePath).writeAsBytesSync(cover, flush: true);
+      final f = File(filePath);
+      if (f.existsSync() && f.lengthSync() == cover.length) return filePath;
+      f.writeAsBytesSync(cover, flush: true);
       return filePath;
     } catch (_) {
       return null;
@@ -713,7 +364,7 @@ class LocalIndex {
         raf.closeSync();
         if (!looksLikeImageBytes(sig)) {
           f.deleteSync();
-          _db!.execute(
+          await _writer!.exec(
               'UPDATE idx_songs SET cover_path=NULL, meta_read=0 WHERE cover_path=?',
               [f.path]);
           cleaned++;
@@ -727,25 +378,17 @@ class LocalIndex {
   }
 
   /// 扫描结束后把不再存在的条目标记 missing（DESIGN §6.4 增量）。
-  void markMissingExcept(String sourceKey, List<String> aliveRefs) {
-    final stmt = _db!.prepare(
-        'UPDATE idx_songs SET missing=1 WHERE source_key=? AND ref NOT IN (SELECT value FROM json_each(?))');
-    try {
-      // 用 jsonEncode 生成合法 JSON 数组，避免 ref 含引号/反斜杠时破坏 json_each。
-      stmt.execute([sourceKey, jsonEncode(aliveRefs)]);
-    } finally {
-      stmt.dispose();
-    }
+  Future<void> markMissingExcept(String sourceKey, List<String> aliveRefs) {
+    // 用 jsonEncode 生成合法 JSON 数组，避免 ref 含引号/反斜杠时破坏 json_each。
+    return _writer!.exec(
+        'UPDATE idx_songs SET missing=1 WHERE source_key=? '
+        'AND ref NOT IN (SELECT value FROM json_each(?))',
+        [sourceKey, jsonEncode(aliveRefs)]);
   }
 
-  void clearMissing(String sourceKey) {
-    // 收藏歌曲以 play_meta.is_favorite 为准，收藏中的缺失歌不清理（等待源恢复）。
-    _db!.execute('''
-      DELETE FROM idx_songs WHERE source_key=? AND missing=1
-        AND COALESCE((SELECT p.is_favorite FROM play_meta p
-                      WHERE p.source_key = idx_songs.source_key
-                        AND p.song_ref = idx_songs.ref), 0) = 0
-    ''', [sourceKey]);
+  /// 删除该源下已标记 missing 且未收藏的行（保留收藏中的缺失歌，等源恢复）。
+  Future<void> clearMissing(String sourceKey) {
+    return _writer!.op<void>('clearMissing', {'sourceKey': sourceKey});
   }
 
   /// 读取歌曲歌词原文。三态语义：
@@ -763,8 +406,8 @@ class LocalIndex {
   }
 
   /// 写入歌词原文（内嵌标签 / 同目录 .lrc / 用户编辑）。
-  void setLyrics(String sourceKey, String ref, String content) {
-    _db!.execute('''
+  Future<void> setLyrics(String sourceKey, String ref, String content) {
+    return _writer!.exec('''
       INSERT INTO song_lyrics(source_key, ref, content, updated_at)
       VALUES(?,?,?,?)
       ON CONFLICT(source_key, ref) DO UPDATE SET
@@ -774,8 +417,8 @@ class LocalIndex {
 
   /// 标记「已查过但无歌词」：仅在没有记录时写入空串，
   /// 不覆盖并发补读写回的内嵌歌词。
-  void markLyricsMissing(String sourceKey, String ref) {
-    _db!.execute('''
+  Future<void> markLyricsMissing(String sourceKey, String ref) {
+    return _writer!.exec('''
       INSERT INTO song_lyrics(source_key, ref, content, updated_at)
       VALUES(?,?,'',?)
       ON CONFLICT(source_key, ref) DO NOTHING
@@ -820,18 +463,44 @@ class LocalIndex {
 
   /// 收藏状态统一存 play_meta（直连 + 服务器一致，stage2.md §1.1）。
   /// [songJson] 为该歌快照（收藏服务器歌曲时写入，供「喜欢」列表离线渲染），可空。
-  void setFavorite(String sourceKey, String songRef, bool fav, {String? songJson}) {
-    _migrateMetaRef(sourceKey, songRef);
-    final cur = playMetaOf(sourceKey, songRef);
-    _db!.execute('''
-      INSERT INTO play_meta(source_key, song_ref, like_streak, dislike_streak,
-        factor, frozen, is_favorite, song_json)
-      VALUES(?,?,?,?,?,?,?,?)
-      ON CONFLICT(source_key, song_ref) DO UPDATE SET
-        is_favorite = excluded.is_favorite,
-        song_json = COALESCE(excluded.song_json, play_meta.song_json)
-    ''', [sourceKey, songRef, cur.likeStreak, cur.dislikeStreak, cur.factor,
-        cur.frozen ? 1 : 0, fav ? 1 : 0, songJson]);
+  /// 合并读在写连接内完成（见 db_writer `setFavorite`），避免与权重写互相覆盖。
+  Future<void> setFavorite(String sourceKey, String songRef, bool fav,
+      {String? songJson}) {
+    return _writer!.op<void>('setFavorite', {
+      'sourceKey': sourceKey,
+      'songRef': songRef,
+      'favorite': fav,
+      'songJson': songJson,
+    });
+  }
+
+  /// 权重/收藏事件落库（complete/skip/liked/unfavorite/disliked/reset）。
+  ///
+  /// 读 streak/factor 与写回必须同在写连接内完成：主连接可能读到尚未提交的旧值，
+  /// 连续两次事件（如连续完播）会互相覆盖丢更新。权重上下界由 SongWeightStore
+  /// 传入（单一来源）。
+  Future<void> applyWeightEvent(
+    String sourceKey,
+    String songRef,
+    String event, {
+    bool? enabled,
+    String? songJson,
+    required double minFactor,
+    required double maxFactor,
+    required double step,
+    required double defaultFactor,
+  }) {
+    return _writer!.op<void>('applyWeightEvent', {
+      'sourceKey': sourceKey,
+      'songRef': songRef,
+      'event': event,
+      'enabled': enabled,
+      'songJson': songJson,
+      'minFactor': minFactor,
+      'maxFactor': maxFactor,
+      'step': step,
+      'defaultFactor': defaultFactor,
+    });
   }
 
   /// 非默认权重行（补推用）：streak 非零 / factor 非 1.0 / 锁定 / 收藏。
@@ -981,22 +650,22 @@ class LocalIndex {
     return file.existsSync();
   }
 
-  void cacheSave(String cacheKey, List<int> bytes) {
+  Future<void> cacheSave(String cacheKey, List<int> bytes) {
     final now = DateTime.now().toIso8601String();
     File(cachePathForKey(cacheKey)).writeAsBytesSync(bytes, flush: true);
-    _db!.execute(
+    return _writer!.exec(
         'INSERT INTO cache(cache_key, path, size, cached_at, last_accessed_at) '
         'VALUES(?,?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET size=excluded.size, cached_at=COALESCE(excluded.cached_at, cache.cached_at)',
         [cacheKey, cachePathForKey(cacheKey), bytes.length, now, now]);
   }
 
   /// 把下载好的临时文件移入缓存目录并登记（流式缓存，避免整文件常驻内存）。
-  void cacheCommit(String cacheKey, String tmpFilePath, int size) {
+  Future<void> cacheCommit(String cacheKey, String tmpFilePath, int size) {
     final dst = cachePathForKey(cacheKey);
     if (File(dst).existsSync()) File(dst).deleteSync();
     File(tmpFilePath).renameSync(dst);
     final now = DateTime.now().toIso8601String();
-    _db!.execute(
+    return _writer!.exec(
         'INSERT INTO cache(cache_key, path, size, cached_at, last_accessed_at) '
         'VALUES(?,?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET size=excluded.size',
         [cacheKey, dst, size, now, now]);
@@ -1023,7 +692,7 @@ class LocalIndex {
       if (!src.existsSync()) continue;
       final dstPath = p.join(target.path, '${r.cacheKey}.dat');
       src.renameSync(dstPath);
-      _db!.execute('UPDATE cache SET path=? WHERE cache_key=?',
+      await _writer!.exec('UPDATE cache SET path=? WHERE cache_key=?',
           [dstPath, r.cacheKey]);
       moved++;
     }
@@ -1031,9 +700,9 @@ class LocalIndex {
     return moved;
   }
 
-  /// 播放/访问缓存时刷新最后访问时间（LRU 依据）。
+  /// 播放/访问缓存时刷新最后访问时间（LRU 依据，fire-and-forget 落库）。
   void touchCache(String cacheKey) {
-    _db!.execute(
+    _writer!.execFire(
         'UPDATE cache SET last_accessed_at=? WHERE cache_key=?',
         [DateTime.now().toIso8601String(), cacheKey]);
   }
@@ -1051,59 +720,16 @@ class LocalIndex {
         )).toList();
   }
 
-  void deleteCache(String cacheKey) {
-    _db!.execute('DELETE FROM cache WHERE cache_key=?', [cacheKey]);
+  Future<void> deleteCache(String cacheKey) {
     final f = File(cachePathForKey(cacheKey));
     if (f.existsSync()) f.deleteSync();
+    return _writer!.exec('DELETE FROM cache WHERE cache_key=?', [cacheKey]);
   }
 
   // ---------- play_meta（阶段 2：权重 / 收藏，stage2.md §1.1） ----------
 
-  /// 把历史 ENCODE 形态的旧行迁移到当前 ref（幂等）。
-  ///
-  /// 历史版本曾在 play_meta.song_ref 里存 ENCODE 文本；新扫描入库的 ref 为解码态。
-  /// 若不合并，同一首歌会分裂成两行：旧收藏态读不到、新写行与旧行并存导致
-  /// 「取消喜欢后喜欢列表仍在」。迁移保留最有价值的一行（收藏 > 有快照）。
-  void _migrateMetaRef(String sourceKey, String songRef) {
-    final alts =
-        webdavRefVariants(songRef).where((v) => v != songRef).toList();
-    if (alts.isEmpty) return;
-    final ph = alts.map((_) => '?').join(',');
-    final rows = _db!.select(
-        'SELECT song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json '
-        'FROM play_meta WHERE source_key=? AND song_ref IN ($ph)',
-        [sourceKey, ...alts]);
-    if (rows.isEmpty) return;
-    // 挑选保留行：已收藏优先，其次有歌曲快照，最后取 factor 偏离 1.0 最多。
-    Row best = rows.first;
-    int score(Row r) =>
-        ((r['is_favorite'] as int) == 1 ? 4 : 0) +
-        (((r['song_json'] as String?)?.isNotEmpty ?? false) ? 2 : 0) +
-        ((((r['factor'] as num).toDouble() - 1.0).abs() > 0.01) ? 1 : 0);
-    for (final r in rows.skip(1)) {
-      if (score(r) > score(best)) best = r;
-    }
-    _db!.execute(
-        'DELETE FROM play_meta WHERE source_key=? AND song_ref IN ($ph)',
-        [sourceKey, ...alts]);
-    _db!.execute(
-        'INSERT OR IGNORE INTO play_meta(source_key, song_ref, like_streak, dislike_streak, '
-        'factor, frozen, is_favorite, song_json) VALUES(?,?,?,?,?,?,?,?)',
-        [
-          sourceKey,
-          songRef,
-          best['like_streak'],
-          best['dislike_streak'],
-          best['factor'],
-          best['frozen'],
-          best['is_favorite'],
-          best['song_json']
-        ]);
-  }
-
+  /// 读 play_meta（纯读；历史 ENCODE 旧行迁移见 open() 的 migrateMetaRefs）。
   PlayMetaRow playMetaOf(String sourceKey, String songRef) {
-    // 读前迁移：旧编码行的收藏/权重态对新 ref 可见（图标、喜欢列表正确）。
-    _migrateMetaRef(sourceKey, songRef);
     final rs = _db!.select(
         'SELECT source_key, song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json '
         'FROM play_meta WHERE source_key=? AND song_ref=?', [sourceKey, songRef]);
@@ -1138,55 +764,37 @@ class LocalIndex {
   ///
   /// NOTE：play_meta 各列为 NOT NULL，且 ON CONFLICT 需区分「未传（保持原值）」
   /// 与「传 0（清零）」。VALUES 里用 COALESCE(?,0) 会把「未传」也变成 0，
-  /// 导致 excluded 行覆盖掉刚写入的收藏等状态；因此先读当前行在 Dart 侧合并，
-  /// 再写入全非 null 值，CONFLICT 时直接用 excluded 覆盖。
-  void upsertPlayMeta(String sourceKey, String songRef,
+  /// 导致 excluded 行覆盖掉刚写入的收藏等状态；因此先读当前行再合并。
+  /// 合并读在写连接内完成（见 db_writer `upsertPlayMeta`），保证与收藏等
+  /// 已入队写的一致性。
+  Future<void> upsertPlayMeta(String sourceKey, String songRef,
       {int? likeStreak, int? dislikeStreak, double? factor, bool? frozen,
       bool? favorite, String? songJson}) {
-    final cur = playMetaOf(sourceKey, songRef);
-    _db!.execute('''
-      INSERT INTO play_meta(source_key, song_ref, like_streak, dislike_streak,
-        factor, frozen, is_favorite, song_json)
-      VALUES(?,?,?,?,?,?,?,?)
-      ON CONFLICT(source_key, song_ref) DO UPDATE SET
-        like_streak = excluded.like_streak,
-        dislike_streak = excluded.dislike_streak,
-        factor = excluded.factor,
-        frozen = excluded.frozen,
-        is_favorite = excluded.is_favorite,
-        song_json = COALESCE(excluded.song_json, play_meta.song_json)
-    ''', [
-      sourceKey,
-      songRef,
-      likeStreak ?? cur.likeStreak,
-      dislikeStreak ?? cur.dislikeStreak,
-      factor ?? cur.factor,
-      (frozen ?? cur.frozen) ? 1 : 0,
-      (favorite ?? cur.favorite) ? 1 : 0,
-      songJson ?? cur.songJson,
-    ]);
+    return _writer!.op<void>('upsertPlayMeta', {
+      'sourceKey': sourceKey,
+      'songRef': songRef,
+      'likeStreak': likeStreak,
+      'dislikeStreak': dislikeStreak,
+      'factor': factor,
+      'frozen': frozen,
+      'favorite': favorite,
+      'songJson': songJson,
+    });
   }
 
   // ---------- 歌单（stage2.md §1.2） ----------
 
-  int createPlaylist(String name, {String? description}) {
-    _db!.execute(
-        'INSERT INTO playlists(name, description, created_at, client_uuid, deleted) '
-        'VALUES(?,?,?,?,0)',
-        [name, description, DateTime.now().toIso8601String(), newEventUuid()]);
-    return _db!.lastInsertRowId;
+  Future<int> createPlaylist(String name, {String? description}) {
+    return _writer!.op<int>('createPlaylist',
+        {'name': name, 'description': description});
   }
 
-  void renamePlaylist(int id, String name) {
-    _db!.execute('UPDATE playlists SET name=? WHERE id=?', [name, id]);
+  Future<void> renamePlaylist(int id, String name) {
+    return _writer!.exec('UPDATE playlists SET name=? WHERE id=?', [name, id]);
   }
 
-  void deletePlaylist(int id) {
-    final uuid = playlistUuidOf(id);
-    _db!.execute('DELETE FROM playlist_items WHERE playlist_id=?', [id]);
-    _db!.execute('DELETE FROM playlists WHERE id=?', [id]);
-    // 歌单删除同时清理其深层列表（隐藏历史栈）。
-    if (uuid != null) deleteDeepList(uuid);
+  Future<void> deletePlaylist(int id) {
+    return _writer!.op<void>('deletePlaylist', {'id': id});
   }
 
   List<PlaylistRow> listPlaylists() {
@@ -1219,30 +827,30 @@ class LocalIndex {
     return {for (final r in rs) r['playlist_id'] as int};
   }
 
-  void addPlaylistItem(int playlistId,
+  Future<void> addPlaylistItem(int playlistId,
       {required String sourceKey, required String songRef,
       required String title, String? artist, String? album, String? coverPath,
       String? source}) {
-    final max = _db!
-        .select('SELECT COALESCE(MAX(sort_order),0) m FROM playlist_items WHERE playlist_id=?',
-            [playlistId])
-        .first['m'] as int;
-    final now = DateTime.now().toIso8601String();
-    _db!.execute('''
-      INSERT INTO playlist_items(playlist_id, source_key, song_ref, title, artist,
-        album, cover_path, sort_order, added_at, source)
-      VALUES(?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(playlist_id, source_key, song_ref) DO NOTHING
-    ''', [playlistId, sourceKey, songRef, title, artist, album, coverPath, max + 1, now, source]);
+    return _writer!.op<void>('addPlaylistItem', {
+      'playlistId': playlistId,
+      'sourceKey': sourceKey,
+      'songRef': songRef,
+      'title': title,
+      'artist': artist,
+      'album': album,
+      'coverPath': coverPath,
+      'source': source,
+    });
   }
 
-  void removePlaylistItem(int playlistId, String sourceKey, String songRef) {
-    // 兼容历史 ENCODE/Unicode ref 形态：逐一删除。
-    for (final variant in webdavRefVariants(songRef)) {
-      _db!.execute(
-          'DELETE FROM playlist_items WHERE playlist_id=? AND source_key=? AND song_ref=?',
-          [playlistId, sourceKey, variant]);
-    }
+  Future<void> removePlaylistItem(
+      int playlistId, String sourceKey, String songRef) async {
+    // 兼容历史 ENCODE/Unicode ref 形态：逐一删除（单事务整体提交）。
+    final ph = List.filled(webdavRefVariants(songRef).length, '?').join(',');
+    await _writer!.exec(
+        'DELETE FROM playlist_items WHERE playlist_id=? AND source_key=? '
+        'AND song_ref IN ($ph)',
+        [playlistId, sourceKey, ...webdavRefVariants(songRef)]);
   }
 
   /// 该歌已在哪些歌单中（兼容 WebDAV 历史 ENCODE/Unicode 两种 ref 形态）。
@@ -1281,17 +889,13 @@ class LocalIndex {
   }
 
   /// 上移/下移歌单内条目（交换相邻 sort_order）。
-  void movePlaylistItem(int playlistId, int itemId, int delta) {
-    final items = playlistItems(playlistId);
-    final i = items.indexWhere((x) => x.id == itemId);
-    final j = i + delta;
-    if (i < 0 || j < 0 || j >= items.length) return;
-    _db!.execute(
-        'UPDATE playlist_items SET sort_order=? WHERE id=?',
-        [items[j].sortOrder, items[i].id]);
-    _db!.execute(
-        'UPDATE playlist_items SET sort_order=? WHERE id=?',
-        [items[i].sortOrder, items[j].id]);
+  /// 相邻判定在写连接内完成（见 db_writer `movePlaylistItem`）。
+  Future<void> movePlaylistItem(int playlistId, int itemId, int delta) {
+    return _writer!.op<void>('movePlaylistItem', {
+      'playlistId': playlistId,
+      'itemId': itemId,
+      'delta': delta,
+    });
   }
 
   // ---------- 多设备同步 outbox（阶段5，DESIGN §7.2） ----------
@@ -1305,12 +909,12 @@ class LocalIndex {
     return '${DateTime.now().microsecondsSinceEpoch.toRadixString(16)}-${tail.substring(0, 12)}';
   }
 
-  /// 本地变更入队（同步方法，供权重/歌单/断点写路径直接调用；调用方负责按身份与服务器可达性过滤）。
+  /// 本地变更入队（uuid 同步生成，落库进写隔离后返回）。
   /// 返回 event_uuid。
-  String enqueueOutbox(String type, Map<String, dynamic> payload) {
+  Future<String> enqueueOutbox(String type, Map<String, dynamic> payload) async {
     final uuid = newEventUuid();
     final now = DateTime.now().toIso8601String();
-    _db!.execute(
+    await _writer!.exec(
         'INSERT INTO weight_outbox(event_uuid, type, payload, occurred_at, acked, created_at) '
         'VALUES(?,?,?,?,0,?)',
         [uuid, type, jsonEncode(payload), now, now]);
@@ -1341,33 +945,28 @@ class LocalIndex {
   }
 
   /// 已被服务端接受（含去重命中）：删队，避免表无限增长。
-  void deleteOutbox(Iterable<String> uuids) {
-    for (final uuid in uuids) {
-      _db!.execute('DELETE FROM weight_outbox WHERE event_uuid=?', [uuid]);
-    }
+  Future<void> deleteOutbox(Iterable<String> uuids) {
+    final list = uuids.toList();
+    if (list.isEmpty) return Future.value();
+    return _writer!.exec(
+        'DELETE FROM weight_outbox WHERE event_uuid IN '
+        '(${List.filled(list.length, '?').join(',')})',
+        list);
   }
 
   /// 服务端明确拒绝（游离引用等）：进死信，不再重试，避免毒丸循环。
-  void deadLetterOutbox(Iterable<String> uuids) {
-    for (final uuid in uuids) {
-      _db!.execute(
-          'UPDATE weight_outbox SET acked=2 WHERE event_uuid=?', [uuid]);
-    }
+  Future<void> deadLetterOutbox(Iterable<String> uuids) {
+    final list = uuids.toList();
+    if (list.isEmpty) return Future.value();
+    return _writer!.exec(
+        'UPDATE weight_outbox SET acked=2 WHERE event_uuid IN '
+        '(${List.filled(list.length, '?').join(',')})',
+        list);
   }
 
   /// 歌单跨设备标识： legacy 行按需补发；新建行在 [createPlaylist] 已直接写入。
-  String ensurePlaylistUuid(int id) {
-    final rs = _db!
-        .select('SELECT client_uuid FROM playlists WHERE id=?', [id]);
-    if (rs.isEmpty) throw StateError('playlist not found: $id');
-    var uuid = rs.first['client_uuid'] as String?;
-    if (uuid == null || uuid.isEmpty) {
-      uuid = newEventUuid();
-      _db!.execute(
-          'UPDATE playlists SET client_uuid=? WHERE id=?', [uuid, id]);
-    }
-    return uuid;
-  }
+  Future<String> ensurePlaylistUuid(int id) =>
+      _writer!.op<String>('ensurePlaylistUuid', {'id': id});
 
   String? playlistUuidOf(int id) {
     final rs = _db!
@@ -1386,85 +985,32 @@ class LocalIndex {
   /// pull 歌单快照落库（deleted=true 则本地硬删）。
   /// 条目只替换服务端歌曲行（source_key='server'）：本地直连歌曲行保留，
   /// 由本机 push 事件与服务端收敛（直连歌曲同样参与同步，见 DESIGN §7.2）。
-  void applyPlaylistSnapshot({
+  /// 整段逻辑（源 key 解析 + 封面保留）运行在写连接上，避免读到陈旧歌单条目。
+  Future<void> applyPlaylistSnapshot({
     required String uuid,
     required String name,
     String? description,
     required bool deleted,
     required List<SyncedItem> items,
   }) {
-    final id = playlistIdOfUuid(uuid);
-    if (deleted) {
-      if (id != null) deletePlaylist(id);
-      return;
-    }
-    final int pid;
-    if (id == null) {
-      _db!.execute(
-          'INSERT INTO playlists(name, description, created_at, client_uuid, deleted) '
-          'VALUES(?,?,?,?,0)',
-          [name, description, DateTime.now().toIso8601String(), uuid]);
-      pid = _db!.lastInsertRowId;
-    } else {
-      _db!.execute('UPDATE playlists SET name=?, description=? WHERE id=?',
-          [name, description, id]);
-      pid = id;
-    }
-    _db!.execute(
-        'DELETE FROM playlist_items WHERE playlist_id=? AND source_key=?',
-        [pid, 'server']);
-    // 服务端快照不含封面：先收集本机已有条目的封面快照，重建时按 (source_key, ref)
-    // 保留；本机索引有该歌时也用其封面回填（首次同步到本机也能直接显示封面）。
-    final existingCovers = <String, String>{};
-    for (final r in _db!.select(
-        'SELECT source_key, song_ref, cover_path FROM playlist_items '
-        'WHERE playlist_id=? AND cover_path IS NOT NULL',
-        [pid])) {
-      existingCovers['${r['source_key']}|${r['song_ref']}'] =
-          r['cover_path'] as String;
-    }
-    for (final it in items) {
-      // 源实例 uuid 可解析到本机源 → 直接以该源 key 落库（可播放、无重复行）。
-      String key = 'server';
-      final resolved = it.sourceId == null ? null : sourceKeyOfUuid(it.sourceId!);
-      if (resolved != null) {
-        key = resolved;
-      } else if (it.source != null && it.source!.isNotEmpty) {
-        // 兼容旧数据（无 uuid）：同协议仅一个本地源时用它，否则保留快照行。
-        final peers = listSources()
-            .where((r) => r.kind == it.source)
-            .toList();
-        if (peers.length == 1) key = peers.first.key;
-      }
-      // 封面保留：精确 ref → WebDAV 编码变体 → 本机索引实时封面。
-      String? cover = existingCovers['$key|${it.songRef}'];
-      if (cover == null) {
-        for (final v in webdavRefVariants(it.songRef)) {
-          cover = existingCovers['$key|$v'];
-          if (cover != null) break;
-        }
-      }
-      cover ??= songByRef(key, it.songRef)?.coverPath;
-      _db!.execute(
-          'DELETE FROM playlist_items WHERE playlist_id=? AND source_key=? AND song_ref=?',
-          [pid, key, it.songRef]);
-      _db!.execute('''
-        INSERT INTO playlist_items(playlist_id, source_key, song_ref, title, artist,
-          album, cover_path, sort_order, added_at, source)
-        VALUES(?,?,?,?,?,?,?,?,?,?)
-      ''', [
-        pid,
-        key,
-        it.songRef,
-        it.title,
-        it.artist,
-        it.album,
-        cover,
-        it.sortOrder,
-        DateTime.now().toIso8601String(),
-        it.source,
-      ]);
-    }
+    return _writer!.op<void>('applyPlaylistSnapshot', {
+      'uuid': uuid,
+      'name': name,
+      'description': description,
+      'deleted': deleted,
+      'items': [
+        for (final it in items)
+          {
+            'sourceId': it.sourceId,
+            'source': it.source,
+            'songRef': it.songRef,
+            'title': it.title,
+            'artist': it.artist,
+            'album': it.album,
+            'sortOrder': it.sortOrder,
+          }
+      ],
+    });
   }
 
   /// 元数据读取情况汇总（侧边栏「信息」页，改进 B6-4）。
@@ -1513,7 +1059,7 @@ class LocalIndex {
   /// 再按快照 [source] 协议匹配本地直连行（同 ref 含 WebDAV 编码变体 + 同协议），
   /// 各写各的源 key（运行时按源 key 读权重，见 playMetaOf）。
   /// 直连歌曲在连着服务器时同样参与同步（DESIGN §7.2 影子行）。
-  void applySongSnapshot({
+  Future<void> applySongSnapshot({
     required String songRef,
     String? source,
     String? sourceId,
@@ -1523,35 +1069,27 @@ class LocalIndex {
     required bool frozen,
     required bool favorite,
   }) {
-    void write(String key, String ref) => upsertPlayMeta(key, ref,
-        likeStreak: likeStreak,
-        dislikeStreak: dislikeStreak,
-        factor: factor,
-        frozen: frozen,
-        favorite: favorite);
-    // 源实例 uuid 可解析 → 直接写本机源行（不再写 server 快照行，避免重复）。
-    final byUuid = sourceId == null ? null : sourceKeyOfUuid(sourceId);
-    if (byUuid != null) {
-      write(byUuid, songRef);
-      return;
-    }
-    write('server', songRef);
-    if (source == null || source.isEmpty) return;
-    final refs = <String>{songRef, ...webdavRefVariants(songRef)};
-    for (final v in refs) {
-      final rows = _db!.select(
-          'SELECT source_key, ref FROM idx_songs WHERE ref=?', [v]);
-      for (final r in rows) {
-        final key = r['source_key'] as String;
-        if (key == 'server') continue;
-        if (_sourceOf(key) != source) continue;
-        write(key, r['ref'] as String);
-      }
-    }
+    return _writer!.op<void>('applySongSnapshot', {
+      'songRef': songRef,
+      'source': source,
+      'sourceId': sourceId,
+      'likeStreak': likeStreak,
+      'dislikeStreak': dislikeStreak,
+      'factor': factor,
+      'frozen': frozen,
+      'favorite': favorite,
+    });
+  }
+
+  /// 批量 pull 歌曲权重快照：单事务整批落 play_meta（SyncEngine 每页一次调用，
+  /// 避免逐行事务 fsync）。
+  Future<void> applySongSnapshots(List<Map<String, dynamic>> snapshots) {
+    if (snapshots.isEmpty) return Future.value();
+    return _writer!.opBatch('applySongSnapshots', snapshots);
   }
 
   /// pull 断点写入镜像表（不碰运行时 play_state，见 SyncEngine）。
-  void upsertBreakpointMirror({
+  Future<void> upsertBreakpointMirror({
     required String playlistUuid,
     int? songId,
     String? sourceId,
@@ -1562,7 +1100,7 @@ class LocalIndex {
     required String updatedAt,
     String? deviceId,
   }) {
-    _db!.execute(
+    return _writer!.exec(
         'INSERT INTO breakpoint_mirror(playlist_uuid, song_id, source_id, source, source_ref, '
         'position_ms, deep_list_json, updated_at, device_id) VALUES(?,?,?,?,?,?,?,?,?) '
         'ON CONFLICT(playlist_uuid) DO UPDATE SET '
@@ -1594,15 +1132,15 @@ class LocalIndex {
     );
   }
 
-  void deleteBreakpointMirror(String playlistUuid) {
-    _db!.execute(
+  Future<void> deleteBreakpointMirror(String playlistUuid) {
+    return _writer!.exec(
         'DELETE FROM breakpoint_mirror WHERE playlist_uuid=?', [playlistUuid]);
   }
 
   // ---------- 深层列表（隐藏历史栈，仅本机，按锚定键键控） ----------
 
-  void saveDeepList(String playlistUuid, String entriesJson) {
-    _db!.execute(
+  Future<void> saveDeepList(String playlistUuid, String entriesJson) {
+    return _writer!.exec(
         'INSERT INTO deep_lists(playlist_uuid, entries_json, updated_at) VALUES(?,?,?) '
         'ON CONFLICT(playlist_uuid) DO UPDATE SET entries_json=excluded.entries_json, '
         'updated_at=excluded.updated_at',
@@ -1616,8 +1154,9 @@ class LocalIndex {
     return rs.isEmpty ? null : rs.first['entries_json'] as String;
   }
 
-  void deleteDeepList(String playlistUuid) {
-    _db!.execute('DELETE FROM deep_lists WHERE playlist_uuid=?', [playlistUuid]);
+  Future<void> deleteDeepList(String playlistUuid) {
+    return _writer!.exec('DELETE FROM deep_lists WHERE playlist_uuid=?',
+        [playlistUuid]);
   }
 
   // ---------- 应用设置（settings.md §3） ----------
@@ -1639,11 +1178,13 @@ class LocalIndex {
     return v;
   }
 
+  /// 保持同步（AppSettings 数十个 getter/setter 与 build() 直读依赖），
+  /// 内存缓存立即生效，落库 fire-and-forget 进写隔离。
   void settingsSet(String key, String value) {
-    _db!.execute(
+    _settingsCache[key] = value;
+    _writer!.execFire(
         'INSERT INTO app_settings(key, value) VALUES(?,?) '
         'ON CONFLICT(key) DO UPDATE SET value=excluded.value', [key, value]);
-    _settingsCache[key] = value;
   }
 
   /// 全部已存设置键值（供设置导入导出，settings.md §3.5）。
@@ -1656,9 +1197,9 @@ class LocalIndex {
 
   // ---------- 断点（stage2.md §1.4） ----------
 
-  void savePlayState(String queueJson, int idx, int positionMs,
+  Future<void> savePlayState(String queueJson, int idx, int positionMs,
       {String? playlistUuid, String? anchorKey}) {
-    _db!.execute(
+    return _writer!.exec(
         'INSERT INTO play_state(id, queue_json, idx, position_ms, updated_at, playlist_uuid, anchor_key) '
         'VALUES(1,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET '
         'queue_json=excluded.queue_json, idx=excluded.idx, '
@@ -1730,8 +1271,8 @@ class LocalIndex {
     ];
   }
 
-  void clearPlayState() {
-    _db!.execute('DELETE FROM play_state WHERE id=1');
+  Future<void> clearPlayState() {
+    return _writer!.exec('DELETE FROM play_state WHERE id=1');
   }
 }
 
@@ -1795,6 +1336,27 @@ class DirectSongRow {
     this.etag,
     this.coverPath,
   });
+
+  /// 序列化给写隔离（keys 与 [_opUpsertSongs] 约定的绑定参数一一对应）。
+  Map<String, dynamic> toRowMap() => {
+        'sourceKey': sourceKey,
+        'ref': ref,
+        'url': url,
+        'title': title,
+        'titleFromMeta': titleFromMeta,
+        'artist': artist,
+        'album': album,
+        'albumArtist': albumArtist,
+        'trackNo': trackNo,
+        'year': year,
+        'genre': genre,
+        'duration': duration,
+        'format': format,
+        'size': size,
+        'mtime': mtime,
+        'etag': etag,
+        'coverPath': coverPath,
+      };
 }
 
 /// 增量指纹：远端 `(size, mtime, etag)` 与库中相同则扫描跳过读头。

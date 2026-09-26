@@ -3,11 +3,14 @@ import 'dart:ffi';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:selfmusic/data/local/local_index.dart';
+import 'package:selfmusic/data/local/schema.dart';
 import 'package:selfmusic/data/local/song_weight_store.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:sqlite3/open.dart';
+import 'package:sqlite3/sqlite3.dart';
 
 DynamicLibrary _openOnLinux() {
   try {
@@ -48,7 +51,7 @@ void main() {
           mtime: i,
         ),
     ];
-    index.upsertSongs(rows);
+    await index.upsertSongs(rows);
 
     // 全部返回（不限 200）
     expect(index.searchSongs(sourceKey: 'local:test').length, 250);
@@ -65,13 +68,23 @@ void main() {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
     final dir = await Directory.systemTemp.createTemp('selfmusic_idxfav_');
     PathProviderPlatform.instance = _FakePathProvider(dir.path);
-    final index = LocalIndex();
-    await index.open();
 
     const decodedRef = '/dav/佐藤しずく - Growing!.flac';
     const encodedRef =
         '/dav/%E4%BD%90%E8%97%A4%E3%81%97%E3%81%9A%E3%81%8F%20-%20Growing%21.flac';
-    index.upsertSongs([
+    // 模拟历史库：迁移在 LocalIndex.open() 时由写隔离一次性完成（读路径纯读），
+    // 故旧行必须在 open 之前就存在于库里。
+    Directory(p.join(dir.path, 'selfmusic')).createSync(recursive: true);
+    final legacy = sqlite3.open(p.join(dir.path, 'selfmusic', 'selfmusic.db'));
+    applySchema(legacy);
+    legacy.execute(
+        'INSERT INTO play_meta(source_key, song_ref, is_favorite) VALUES(?,?,1)',
+        ['webdav:nas', encodedRef]);
+    legacy.dispose();
+
+    final index = LocalIndex();
+    await index.open();
+    await index.upsertSongs([
       DirectSongRow(
         sourceKey: 'webdav:nas',
         ref: decodedRef,
@@ -84,10 +97,8 @@ void main() {
         mtime: 1,
       ),
     ]);
-    // 模拟历史版本写入的 ENCODE 收藏行（无歌曲快照）。
-    index.upsertPlayMeta('webdav:nas', encodedRef, favorite: true);
 
-    // 读侧：新 ref 能看到旧收藏态。
+    // 读侧：open() 的启动迁移已把旧行并到新 ref。
     expect(index.playMetaOf('webdav:nas', decodedRef).favorite, isTrue);
     // 喜欢列表：经回查补全出歌曲。
     final liked = index.likedSongs();
@@ -95,7 +106,7 @@ void main() {
     expect(liked.first.title, 'Growing!');
 
     // 写侧：取消喜欢后旧行被合并，不再残留。
-    index.setFavorite('webdav:nas', decodedRef, false);
+    await index.setFavorite('webdav:nas', decodedRef, false);
     expect(index.likedSongs(), isEmpty);
     expect(index.playMetaOf('webdav:nas', decodedRef).favorite, isFalse);
 
@@ -120,24 +131,24 @@ void main() {
     );
 
     // 标记不喜欢 → 权重最低并锁定。
-    weight.setDisliked(song, true);
+    await weight.setDisliked(song, true);
     expect(weight.isDisliked(song), isTrue);
     expect(weight.factorOf(song), SongWeightStore.minFactor);
     // 锁定后跳过/播完只记 streak，不调权重。
-    weight.onSkipped(song);
-    weight.onSkipped(song);
-    weight.onSkipped(song);
+    await weight.onSkipped(song);
+    await weight.onSkipped(song);
+    await weight.onSkipped(song);
     expect(weight.factorOf(song), SongWeightStore.minFactor);
     expect(weight.isDisliked(song), isTrue);
 
     // 再次点击取消 → 解锁回 1.0。
-    weight.setDisliked(song, false);
+    await weight.setDisliked(song, false);
     expect(weight.isDisliked(song), isFalse);
     expect(weight.factorOf(song), SongWeightStore.defaultFactor);
 
     // 喜欢可解冻：先锁再喜欢 → 解锁且 factor 拉满。
-    weight.setDisliked(song, true);
-    weight.setLiked(song);
+    await weight.setDisliked(song, true);
+    await weight.setLiked(song);
     expect(weight.isDisliked(song), isFalse);
     expect(weight.factorOf(song), SongWeightStore.maxFactor);
 
@@ -164,8 +175,8 @@ void main() {
           size: 1024,
           mtime: 1,
         );
-    index.upsertSongs([row('扫描标题', '扫描歌手', '扫描专辑')]);
-    index.updateSongUserMeta('webdav:nas', '/dav/a.flac',
+    await index.upsertSongs([row('扫描标题', '扫描歌手', '扫描专辑')]);
+    await index.updateSongUserMeta('webdav:nas', '/dav/a.flac',
         title: '我的标题', artist: '我的歌手');
 
     var got = index.songByRef('webdav:nas', '/dav/a.flac')!;
@@ -174,7 +185,7 @@ void main() {
     expect(got.albumName, '扫描专辑');
 
     // 再次扫描：标题/歌手/专辑保留用户版，其余字段照常更新。
-    index.upsertSongs([row('新扫描标题', '新扫描歌手', '新扫描专辑')]);
+    await index.upsertSongs([row('新扫描标题', '新扫描歌手', '新扫描专辑')]);
     got = index.songByRef('webdav:nas', '/dav/a.flac')!;
     expect(got.title, '我的标题');
     expect(got.artist, '我的歌手');
@@ -201,7 +212,7 @@ void main() {
           mtime: 1,
         );
     // 极简扫描（无时长）→ 未读；完整扫描（有时长）→ 已读。
-    index.upsertSongs([row('/dav/min.mp3', null), row('/dav/full.mp3', 200)]);
+    await index.upsertSongs([row('/dav/min.mp3', null), row('/dav/full.mp3', 200)]);
     var unread = index.unreadSongs('webdav:nas', 100);
     expect(unread.map((s) => s.sourceRef), ['/dav/min.mp3']);
 
@@ -217,13 +228,13 @@ void main() {
     expect(unreadSong.metaDisplay('已有歌手'), '已有歌手');
 
     // 补读后不再未读。
-    index.enrichSong('webdav:nas', '/dav/min.mp3', duration: 180);
+    await index.enrichSong('webdav:nas', '/dav/min.mp3', duration: 180);
     unread = index.unreadSongs('webdav:nas', 100);
     expect(unread, isEmpty);
     expect(index.songByRef('webdav:nas', '/dav/min.mp3')!.metaRead, isTrue);
 
     // 排除正在播放的歌（后台补读跳过它，播放链路自己会重读）。
-    index.upsertSongs([row('/dav/skip.mp3', null), row('/dav/other.mp3', null)]);
+    await index.upsertSongs([row('/dav/skip.mp3', null), row('/dav/other.mp3', null)]);
     unread = index.unreadSongs('webdav:nas', 100, excludeRef: '/dav/skip.mp3');
     expect(unread.map((s) => s.sourceRef), ['/dav/other.mp3']);
 
@@ -246,10 +257,10 @@ void main() {
           size: 1024,
           mtime: 1,
         );
-    index.upsertSongs([row('/dav/a.mp3'), row('/dav/b.mp3')]);
+    await index.upsertSongs([row('/dav/a.mp3'), row('/dav/b.mp3')]);
 
     // 补读把标签写回（fast 扫描只有文件名也能补全）。
-    index.enrichSong('webdav:nas', '/dav/a.mp3',
+    await index.enrichSong('webdav:nas', '/dav/a.mp3',
         title: '补读标题',
         artist: '补读歌手',
         album: '补读专辑',
@@ -265,8 +276,8 @@ void main() {
     expect(got.coverPath, '/tmp/c.jpg');
 
     // 用户手改过的行：文本字段保持用户版，只补技术字段。
-    index.updateSongUserMeta('webdav:nas', '/dav/b.mp3', artist: '我改的歌手');
-    index.enrichSong('webdav:nas', '/dav/b.mp3',
+    await index.updateSongUserMeta('webdav:nas', '/dav/b.mp3', artist: '我改的歌手');
+    await index.enrichSong('webdav:nas', '/dav/b.mp3',
         title: '标签标题',
         artist: '标签歌手',
         album: '标签专辑',
@@ -290,7 +301,7 @@ void main() {
     final index = LocalIndex();
     await index.open();
 
-    index.upsertSongs([
+    await index.upsertSongs([
       for (var i = 1; i <= 3; i++)
         DirectSongRow(
           sourceKey: 'webdav:nas',
@@ -321,7 +332,7 @@ void main() {
     final index = LocalIndex();
     await index.open();
 
-    index.upsertSongs([
+    await index.upsertSongs([
       DirectSongRow(
         sourceKey: 'webdav:nas',
         ref: '/dav/a.mp3',
@@ -332,7 +343,7 @@ void main() {
       ),
     ]);
     // 收藏时写入的旧快照（无封面/无专辑歌手）。
-    index.setFavorite('webdav:nas', '/dav/a.mp3', true,
+    await index.setFavorite('webdav:nas', '/dav/a.mp3', true,
         songJson: jsonEncode({
           'id': 1,
           'sourceKey': 'webdav:nas',
@@ -345,7 +356,7 @@ void main() {
     var liked = index.likedSongs();
     expect(liked.single.title, '文件名'); // 现查索引优先，不是旧快照
 
-    index.enrichSong('webdav:nas', '/dav/a.mp3',
+    await index.enrichSong('webdav:nas', '/dav/a.mp3',
         title: '新标题',
         artist: '新歌手',
         album: '新专辑',
@@ -372,23 +383,23 @@ void main() {
     const key = 'webdav:nas';
     expect(index.lyricsOf(key, '/dav/a.mp3'), isNull);
 
-    index.setLyrics(key, '/dav/a.mp3', '[00:01.00]第一句');
+    await index.setLyrics(key, '/dav/a.mp3', '[00:01.00]第一句');
     expect(index.lyricsOf(key, '/dav/a.mp3'), '[00:01.00]第一句');
 
     // 覆盖写入（补读到内嵌歌词 / 用户重取）。
-    index.setLyrics(key, '/dav/a.mp3', '[00:02.00]新歌词');
+    await index.setLyrics(key, '/dav/a.mp3', '[00:02.00]新歌词');
     expect(index.lyricsOf(key, '/dav/a.mp3'), '[00:02.00]新歌词');
 
     // 缺歌词标记：空串代表「查过但没有」。
-    index.markLyricsMissing(key, '/dav/b.mp3');
+    await index.markLyricsMissing(key, '/dav/b.mp3');
     expect(index.lyricsOf(key, '/dav/b.mp3'), '');
 
     // 已有内嵌歌词时标记不覆盖。
-    index.markLyricsMissing(key, '/dav/a.mp3');
+    await index.markLyricsMissing(key, '/dav/a.mp3');
     expect(index.lyricsOf(key, '/dav/a.mp3'), '[00:02.00]新歌词');
 
     // 标记后补读到内嵌歌词仍可写入。
-    index.setLyrics(key, '/dav/b.mp3', '[00:05.00]补读歌词');
+    await index.setLyrics(key, '/dav/b.mp3', '[00:05.00]补读歌词');
     expect(index.lyricsOf(key, '/dav/b.mp3'), '[00:05.00]补读歌词');
 
     index.close();
@@ -402,15 +413,15 @@ void main() {
     final index = LocalIndex();
     await index.open();
 
-    index.createPlaylist('古典');
-    index.createPlaylist('流行');
+    await index.createPlaylist('古典');
+    await index.createPlaylist('流行');
     final idle = index.listPlaylists()
         .firstWhere((p) => p.name == '古典')
         .id;
     final pop = index.listPlaylists().firstWhere((p) => p.name == '流行').id;
-    index.addPlaylistItem(idle,
+    await index.addPlaylistItem(idle,
         sourceKey: 'local:x', songRef: 'a', title: 'Nocturne Op.9', artist: 'Chopin');
-    index.addPlaylistItem(pop,
+    await index.addPlaylistItem(pop,
         sourceKey: 'local:x', songRef: 'b', title: '夜曲', artist: '周杰伦');
 
     expect(index.playlistIdsMatchingSong('nocturne'), {idle});
@@ -435,7 +446,7 @@ void main() {
     const key = 'local:test';
     const ref = 'a.flac';
     // 已完整读取的行（duration 非空 → meta_read=1）。
-    index.upsertSongs([
+    await index.upsertSongs([
       DirectSongRow(
         sourceKey: key,
         ref: ref,
@@ -457,7 +468,7 @@ void main() {
     expect(index.songByRef(key, ref)!.metaRead, isTrue);
 
     // 指变化 + minimal 扫描：非空头部值更新，空值不覆盖已读字段；重置未读待自愈。
-    index.upsertSongs([
+    await index.upsertSongs([
       DirectSongRow(
         sourceKey: key,
         ref: ref,
@@ -481,7 +492,7 @@ void main() {
     expect(mid.metaRead, isFalse);
 
     // fast 兜底标题（titleFromMeta=false）不覆盖已读标题。
-    index.upsertSongs([
+    await index.upsertSongs([
       DirectSongRow(
         sourceKey: key,
         ref: ref,
@@ -495,7 +506,7 @@ void main() {
     expect(index.songByRef(key, ref)!.title, '头部标题');
 
     // full 扫描（duration 非空）覆盖并标已读。
-    index.upsertSongs([
+    await index.upsertSongs([
       DirectSongRow(
         sourceKey: key,
         ref: ref,

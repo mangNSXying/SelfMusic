@@ -35,63 +35,29 @@ class SongWeightStore {
   /// 完播（播放时长 >95%，通常为自然结束）：like_streak++，dislike 清零（覆盖先前跳过）；
   /// streak≥3 → factor+0.1（≤1.5）并清零。
   /// 「不喜欢」（frozen）态只记 streak，不自动调权（权重锁定最低）。
-  void onCompleted(Song s) {
-    final m = metaOf(s);
-    var streak = m.likeStreak + 1;
-    var factor = m.factor;
-    if (!m.frozen && streak >= 3) {
-      streak = 0;
-      factor = _clamp(m.factor + step);
-    }
-    index.upsertPlayMeta(s.sourceKey, s.sourceRef,
-        likeStreak: streak,
-        dislikeStreak: 0,
-        factor: factor,
-        frozen: m.frozen);
-    _emit(s, SyncEventTypes.songComplete);
+  Future<void> onCompleted(Song s) async {
+    await _apply(s, 'complete');
+    await _emit(s, SyncEventTypes.songComplete);
   }
 
   /// 中途跳过（播放时长 <30% 被打断）：dislike_streak++，like 清零（覆盖先前完播）；
   /// streak≥3 → factor−0.1（≥0.5）并清零。
   /// 「不喜欢」（frozen）态只记 streak，不自动调权。
-  void onSkipped(Song s) {
-    final m = metaOf(s);
-    var streak = m.dislikeStreak + 1;
-    var factor = m.factor;
-    if (!m.frozen && streak >= 3) {
-      streak = 0;
-      factor = _clamp(m.factor - step);
-    }
-    index.upsertPlayMeta(s.sourceKey, s.sourceRef,
-        likeStreak: 0,
-        dislikeStreak: streak,
-        factor: factor,
-        frozen: m.frozen);
-    _emit(s, SyncEventTypes.songSkipped);
+  Future<void> onSkipped(Song s) async {
+    await _apply(s, 'skip');
+    await _emit(s, SyncEventTypes.songSkipped);
   }
 
   /// 主动喜欢 / 收藏：factor 直接拉到 1.5，同时解除「不喜欢」锁定。
-  void setLiked(Song s) {
-    index.setFavorite(s.sourceKey, s.sourceRef, true,
-        songJson: jsonEncode(s.toJson()));
-    index.upsertPlayMeta(s.sourceKey, s.sourceRef,
-        likeStreak: 0,
-        dislikeStreak: 0,
-        factor: maxFactor,
-        frozen: false);
-    _emit(s, SyncEventTypes.songLiked);
+  Future<void> setLiked(Song s) async {
+    await _apply(s, 'liked', songJson: jsonEncode(s.toJson()));
+    await _emit(s, SyncEventTypes.songLiked);
   }
 
   /// 取消喜欢 / 收藏：非锁定态 factor 回落 1.0；「不喜欢」锁定态保持最低权重。
-  void setUnliked(Song s) {
-    final m = metaOf(s);
-    index.setFavorite(s.sourceKey, s.sourceRef, false);
-    index.upsertPlayMeta(s.sourceKey, s.sourceRef,
-        likeStreak: 0,
-        dislikeStreak: 0,
-        factor: m.frozen ? m.factor : defaultFactor,
-        frozen: m.frozen);
-    _emit(s, SyncEventTypes.songUnfavorite);
+  Future<void> setUnliked(Song s) async {
+    await _apply(s, 'unfavorite');
+    await _emit(s, SyncEventTypes.songUnfavorite);
   }
 
   /// 是否处于「不喜欢」态（权重锁定最低）。
@@ -99,27 +65,15 @@ class SongWeightStore {
 
   /// 手动「不喜欢」开关：开 → 权重直接降到最低并锁定（跳过自动调权）；
   /// 关 → 解锁并回到 1.0；不影响收藏状态。
-  void setDisliked(Song s, bool disliked) {
-    final m = metaOf(s);
-    index.upsertPlayMeta(s.sourceKey, s.sourceRef,
-        likeStreak: 0,
-        dislikeStreak: 0,
-        factor: disliked ? minFactor : defaultFactor,
-        frozen: disliked,
-        favorite: m.favorite);
-    _emit(s, SyncEventTypes.songDisliked, {'enabled': disliked});
+  Future<void> setDisliked(Song s, bool disliked) async {
+    await _apply(s, 'disliked', enabled: disliked);
+    await _emit(s, SyncEventTypes.songDisliked, {'enabled': disliked});
   }
 
   /// 手动重置：双 streak 清零，factor=1.0，解除「不喜欢」锁定。
-  void reset(Song s) {
-    final m = metaOf(s);
-    index.upsertPlayMeta(s.sourceKey, s.sourceRef,
-        likeStreak: 0,
-        dislikeStreak: 0,
-        factor: defaultFactor,
-        frozen: false,
-        favorite: m.favorite);
-    _emit(s, SyncEventTypes.songReset);
+  Future<void> reset(Song s) async {
+    await _apply(s, 'reset');
+    await _emit(s, SyncEventTypes.songReset);
   }
 
   /// 阶段5：有歌曲身份（source/sourceRef 非空、可解析）即进 outbox；服务端按
@@ -127,7 +81,19 @@ class SongWeightStore {
   /// 服务器模式行恒进（行存在即配过服务器）；直连歌曲需连着服务器
   ///（[serverAvailable] 为假时跳过，避免未配对用户 outbox 积压）。
   /// source=='server' 占位（归属源未知）仍跳过，避免跨源误归属。
-  void _emit(Song s, String type, [Map<String, dynamic>? extra]) {
+  /// 权重事件落库：读改写整段在写连接内完成（见 LocalIndex.applyWeightEvent）。
+  Future<void> _apply(Song s, String event,
+      {bool? enabled, String? songJson}) {
+    return index.applyWeightEvent(s.sourceKey, s.sourceRef, event,
+        enabled: enabled,
+        songJson: songJson,
+        minFactor: minFactor,
+        maxFactor: maxFactor,
+        step: step,
+        defaultFactor: defaultFactor);
+  }
+
+  Future<void> _emit(Song s, String type, [Map<String, dynamic>? extra]) async {
     if (s.source.isEmpty || s.source == 'server' || s.sourceRef.isEmpty) {
       return;
     }
@@ -135,7 +101,7 @@ class SongWeightStore {
       return;
     }
     final sourceId = index.sourceUuidOf(s.sourceKey);
-    index.enqueueOutbox(type, {
+    await index.enqueueOutbox(type, {
       'source': s.source,
       'source_ref': s.sourceRef,
       if (sourceId != null) 'source_id': sourceId,
@@ -143,13 +109,11 @@ class SongWeightStore {
     });
   }
 
-  static double _clamp(double v) => v.clamp(minFactor, maxFactor).toDouble();
-
   /// 补推存量权重（配对前数据无事件用）：为非默认 play_meta 行补 song.state
   /// 绝对态事件（streak/factor/frozen/favorite 全量，服务端 LWW）。
   /// source_key=='server' 的行走常规 outbox（恒进事件），跳过；
   /// 门控与 [_emit] 一致。返回补推歌曲数。
-  int backfill() {
+  Future<int> backfill() async {
     var n = 0;
     for (final m in index.listDirtyPlayMeta()) {
       if (m.sourceKey == 'server') continue;
@@ -157,7 +121,7 @@ class SongWeightStore {
       if (protocol.isEmpty || protocol == 'server') continue;
       if (!(serverAvailable?.call() ?? false)) continue;
       final sourceId = index.sourceUuidOf(m.sourceKey);
-      index.enqueueOutbox(SyncEventTypes.songState, {
+      await index.enqueueOutbox(SyncEventTypes.songState, {
         'source': protocol,
         'source_ref': m.songRef,
         if (sourceId != null) 'source_id': sourceId,

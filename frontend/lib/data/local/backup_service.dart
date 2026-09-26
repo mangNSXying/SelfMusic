@@ -66,7 +66,9 @@ class BackupService {
   }
 
   /// 导出设置（app_settings 已知键 + 服务端地址 + 主题偏好）。
-  File exportSettings() {
+  Future<File> exportSettings() async {
+    // 设置写入为 fire-and-forget（内存缓存先行），导出前等排队写落库。
+    await index.flushWrites();
     return _write('settings', {
       'settings': _exportSettings(),
       'server': <String, dynamic>{'baseUrl': server.baseUrl},
@@ -75,7 +77,8 @@ class BackupService {
   }
 
   /// 导出全部歌单（含歌曲快照）。
-  File exportPlaylists() {
+  Future<File> exportPlaylists() async {
+    await index.flushWrites();
     return _write('playlists', {'playlists': _exportPlaylists()});
   }
 
@@ -165,13 +168,13 @@ class BackupService {
     var itemCount = 0;
     for (final raw in playlists) {
       final pl = raw as Map<String, dynamic>;
-      final id = index.createPlaylist(
+      final id = await index.createPlaylist(
           pl['name'] as String? ?? '未命名歌单',
           description: pl['description'] as String?);
       playlistCount++;
       for (final it in (pl['items'] as List<dynamic>? ?? const <dynamic>[])) {
         final m = it as Map<String, dynamic>;
-        index.addPlaylistItem(
+        await index.addPlaylistItem(
           id,
           sourceKey: m['sourceKey'] as String? ?? '',
           songRef: m['ref'] as String? ?? '',

@@ -65,12 +65,13 @@ class _AddToPlaylistSheet extends StatelessWidget {
 
     Future<void> pick(int id) async {
       if (editMode) {
-        provider.toggleSong(id, songs.first);
+        await provider.toggleSong(id, songs.first);
         return;
       }
       for (final s in songs) {
-        provider.addSong(id, s);
+        await provider.addSong(id, s);
       }
+      if (!context.mounted) return;
       Navigator.of(context).pop(id);
     }
 
@@ -99,7 +100,7 @@ class _AddToPlaylistSheet extends StatelessWidget {
         ),
       );
       if (name != null && name.isNotEmpty && context.mounted) {
-        final id = provider.create(name);
+        final id = await provider.create(name);
         await pick(id);
       }
     }

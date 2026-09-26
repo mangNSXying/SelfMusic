@@ -90,13 +90,13 @@ void main() {
     test('先完播后跳过：完播次数被清零，只留跳过', () async {
       final (_, w) = await _openWeightStore();
       final s = _song('a.mp3');
-      w.onCompleted(s);
-      w.onCompleted(s); // like_streak=2
+      await w.onCompleted(s);
+      await w.onCompleted(s); // like_streak=2
       var m = w.metaOf(s);
       expect(m.likeStreak, 2);
       expect(m.dislikeStreak, 0);
 
-      w.onSkipped(s); // 后来者覆盖：完播清零，只留跳过=1
+      await w.onSkipped(s); // 后来者覆盖：完播清零，只留跳过=1
       m = w.metaOf(s);
       expect(m.likeStreak, 0);
       expect(m.dislikeStreak, 1);
@@ -106,13 +106,13 @@ void main() {
     test('先跳过完播后：跳过次数被清零，只留完播', () async {
       final (_, w) = await _openWeightStore();
       final s = _song('b.mp3');
-      w.onSkipped(s);
-      w.onSkipped(s); // dislike_streak=2
+      await w.onSkipped(s);
+      await w.onSkipped(s); // dislike_streak=2
       var m = w.metaOf(s);
       expect(m.dislikeStreak, 2);
       expect(m.likeStreak, 0);
 
-      w.onCompleted(s); // 后来者覆盖：跳过清零，只留完播=1
+      await w.onCompleted(s); // 后来者覆盖：跳过清零，只留完播=1
       m = w.metaOf(s);
       expect(m.dislikeStreak, 0);
       expect(m.likeStreak, 1);
@@ -121,10 +121,10 @@ void main() {
     test('连续 3 次完播调整一次权重 +0.1 并清零', () async {
       final (_, w) = await _openWeightStore();
       final s = _song('c.mp3');
-      w.onCompleted(s);
-      w.onCompleted(s);
+      await w.onCompleted(s);
+      await w.onCompleted(s);
       expect(w.metaOf(s).factor, SongWeightStore.defaultFactor);
-      w.onCompleted(s);
+      await w.onCompleted(s);
       final m = w.metaOf(s);
       expect(m.factor,
           SongWeightStore.defaultFactor + SongWeightStore.step);
@@ -135,10 +135,10 @@ void main() {
     test('连续 3 次跳过调整一次权重 −0.1 并清零', () async {
       final (_, w) = await _openWeightStore();
       final s = _song('d.mp3');
-      w.onSkipped(s);
-      w.onSkipped(s);
+      await w.onSkipped(s);
+      await w.onSkipped(s);
       expect(w.metaOf(s).factor, SongWeightStore.defaultFactor);
-      w.onSkipped(s);
+      await w.onSkipped(s);
       final m = w.metaOf(s);
       expect(m.factor,
           SongWeightStore.defaultFactor - SongWeightStore.step);

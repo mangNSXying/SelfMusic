@@ -37,7 +37,7 @@ void main() {
       PathProviderPlatform.instance = _FakePathProvider(dir.path);
       direct = DirectSourceManager();
       await direct.init();
-      direct.index.upsertSongs([
+      await direct.index.upsertSongs([
         DirectSongRow(
           sourceKey: 'local:t',
           ref: '/music/a.mp3',
@@ -47,7 +47,7 @@ void main() {
           mtime: 1,
         ),
       ]);
-      direct.index.enrichSong('local:t', '/music/a.mp3',
+      await direct.index.enrichSong('local:t', '/music/a.mp3',
           title: '补读歌名', artist: '补读歌手', album: '补读专辑');
     });
 

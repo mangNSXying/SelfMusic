@@ -153,7 +153,7 @@ class SyncEngine {
     if (data == null) throw Exception('push 无响应');
     final applied = _strList(data['applied']);
     final duplicates = _strList(data['duplicates']);
-    index.deleteOutbox([...applied, ...duplicates]);
+    await index.deleteOutbox([...applied, ...duplicates]);
     lastPushed = applied.length + duplicates.length;
     final rejected = data['rejected'];
     if (rejected is List) {
@@ -161,13 +161,13 @@ class SyncEngine {
         for (final r in rejected)
           if (r is Map && r['event_uuid'] is String) r['event_uuid'] as String
       ];
-      index.deadLetterOutbox(uuids);
+      await index.deadLetterOutbox(uuids);
       if (uuids.isNotEmpty) debugPrint('SyncEngine 死信事件：$uuids');
     }
     final corrections = data['corrections'];
     if (corrections is Map) {
       for (final v in corrections.values) {
-        if (v is Map<String, dynamic>) _applySnapshot(v);
+        if (v is Map<String, dynamic>) await _applySnapshot(v);
       }
     }
     _flushSources();
@@ -195,26 +195,30 @@ class SyncEngine {
     while (true) {
       final data = await api.syncPull(cursor);
       if (data == null) throw Exception('pull 无响应');
+      // 歌曲权重：整页收集为一批，单事务落库（一次 fsync 取代逐行 autocommit）。
       final songs = data['songs'];
       if (songs is List) {
+        final batch = <Map<String, dynamic>>[];
         for (final s in songs) {
           if (s is Map<String, dynamic>) {
-            _applySnapshot(s);
+            final snap = _songSnapshot(s);
+            if (snap != null) batch.add(snap);
             lastPulledSongs++;
           }
         }
+        if (batch.isNotEmpty) await index.applySongSnapshots(batch);
       }
       final sources = data['sources'];
       if (sources is List) {
         for (final s in sources) {
-          if (s is Map<String, dynamic>) _applySource(s);
+          if (s is Map<String, dynamic>) await _applySource(s);
         }
       }
       final playlists = data['playlists'];
       if (playlists is List) {
         for (final p in playlists) {
           if (p is Map<String, dynamic>) {
-            _applySnapshot(p);
+            await _applySnapshot(p);
             lastPulledPlaylists++;
           }
         }
@@ -222,7 +226,7 @@ class SyncEngine {
       final states = data['playstates'];
       if (states is List) {
         for (final st in states) {
-          if (st is Map<String, dynamic>) _applySnapshot(st);
+          if (st is Map<String, dynamic>) await _applySnapshot(st);
         }
       }
       cursor = (data['cursor'] as num?)?.toInt() ?? cursor;
@@ -235,25 +239,53 @@ class SyncEngine {
 
   /// 快照形状判分（pull 与 correction 共用）：
   /// 含 kind+address=播放源，含 items=歌单，含 position_ms=断点，含 like_streak=歌曲权重。
-  void _applySnapshot(Map<String, dynamic> s) {
+  Future<void> _applySnapshot(Map<String, dynamic> s) async {
     if (s.containsKey('kind') && s.containsKey('address')) {
-      _applySource(s);
+      await _applySource(s);
     } else if (s.containsKey('items')) {
-      _applyPlaylist(s);
+      await _applyPlaylist(s);
     } else if (s.containsKey('position_ms')) {
-      _applyPlaystate(s);
+      await _applyPlaystate(s);
     } else if (s.containsKey('like_streak')) {
-      _applySong(s);
+      final snap = _songSnapshot(s);
+      if (snap != null) {
+        await index.applySongSnapshot(
+          songRef: snap['songRef'] as String,
+          source: snap['source'] as String?,
+          sourceId: snap['sourceId'] as String?,
+          likeStreak: snap['likeStreak'] as int,
+          dislikeStreak: snap['dislikeStreak'] as int,
+          factor: snap['factor'] as double,
+          frozen: snap['frozen'] as bool,
+          favorite: snap['favorite'] as bool,
+        );
+      }
     }
   }
 
-  void _applySource(Map<String, dynamic> s) {
+  /// 歌曲权重快照参数（pull 批量与 corrections 单条共用）。
+  Map<String, dynamic>? _songSnapshot(Map<String, dynamic> s) {
+    final ref = s['source_ref'] as String?;
+    if (ref == null || ref.isEmpty) return null;
+    return {
+      'songRef': ref,
+      'source': s['source'] as String?,
+      'sourceId': s['source_id'] as String?,
+      'likeStreak': (s['like_streak'] as num?)?.toInt() ?? 0,
+      'dislikeStreak': (s['dislike_streak'] as num?)?.toInt() ?? 0,
+      'factor': (s['weight'] as num?)?.toDouble() ?? 1.0,
+      'frozen': s['frozen'] == true,
+      'favorite': s['is_favorite'] == true,
+    };
+  }
+
+  Future<void> _applySource(Map<String, dynamic> s) async {
     final uuid = s['client_uuid'] as String?;
     final kind = s['kind'] as String?;
     final address = s['address'] as String?;
     if (uuid == null || uuid.isEmpty || kind == null || address == null) return;
     final config = s['config'];
-    final changed = index.applySourceSnapshot(
+    final changed = await index.applySourceSnapshot(
       uuid: uuid,
       kind: kind,
       name: s['name'] as String?,
@@ -265,22 +297,7 @@ class SyncEngine {
     if (changed) _sourcesDirty = true;
   }
 
-  void _applySong(Map<String, dynamic> s) {
-    final ref = s['source_ref'] as String?;
-    if (ref == null || ref.isEmpty) return;
-    index.applySongSnapshot(
-      songRef: ref,
-      source: s['source'] as String?,
-      sourceId: s['source_id'] as String?,
-      likeStreak: (s['like_streak'] as num?)?.toInt() ?? 0,
-      dislikeStreak: (s['dislike_streak'] as num?)?.toInt() ?? 0,
-      factor: (s['weight'] as num?)?.toDouble() ?? 1.0,
-      frozen: s['frozen'] == true,
-      favorite: s['is_favorite'] == true,
-    );
-  }
-
-  void _applyPlaylist(Map<String, dynamic> p) {
+  Future<void> _applyPlaylist(Map<String, dynamic> p) async {
     final uuid = p['client_uuid'] as String?;
     if (uuid == null || uuid.isEmpty) return;
     _playlistsDirty = true;
@@ -303,7 +320,7 @@ class SyncEngine {
         ));
       }
     }
-    index.applyPlaylistSnapshot(
+    await index.applyPlaylistSnapshot(
       uuid: uuid,
       name: (p['name'] as String?) ?? '未命名',
       description: p['description'] as String?,
@@ -312,15 +329,15 @@ class SyncEngine {
     );
   }
 
-  void _applyPlaystate(Map<String, dynamic> st) {
+  Future<void> _applyPlaystate(Map<String, dynamic> st) async {
     final uuid = st['client_uuid'] as String?;
     if (uuid == null || uuid.isEmpty) return;
     // 歌单已在本地删除 → 镜像无意义，清掉。
     if (index.playlistIdOfUuid(uuid) == null) {
-      index.deleteBreakpointMirror(uuid);
+      await index.deleteBreakpointMirror(uuid);
       return;
     }
-    index.upsertBreakpointMirror(
+    await index.upsertBreakpointMirror(
       playlistUuid: uuid,
       songId: (st['song_id'] as num?)?.toInt(),
       sourceId: st['source_id'] as String?,

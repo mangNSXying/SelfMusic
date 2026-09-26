@@ -16,10 +16,11 @@ class PlaylistStore {
 
   PlaylistStore(this.index, {this.serverAvailable});
 
-  int create(String name, {String? description}) {
-    final id = index.createPlaylist(name, description: description);
-    final uuid = index.ensurePlaylistUuid(id);
-    index.enqueueOutbox(SyncEventTypes.playlistCreate, {
+  /// 建单 → 取跨设备 uuid → 入 outbox（写落库后再继续，uuid 必已存在）。
+  Future<int> create(String name, {String? description}) async {
+    final id = await index.createPlaylist(name, description: description);
+    final uuid = await index.ensurePlaylistUuid(id);
+    await index.enqueueOutbox(SyncEventTypes.playlistCreate, {
       'client_uuid': uuid,
       'name': name,
       if (description != null) 'description': description,
@@ -27,22 +28,22 @@ class PlaylistStore {
     return id;
   }
 
-  void rename(int id, String name) {
-    final uuid = index.ensurePlaylistUuid(id);
-    index.renamePlaylist(id, name);
-    index.enqueueOutbox(SyncEventTypes.playlistUpdate, {
+  Future<void> rename(int id, String name) async {
+    final uuid = await index.ensurePlaylistUuid(id);
+    await index.renamePlaylist(id, name);
+    await index.enqueueOutbox(SyncEventTypes.playlistUpdate, {
       'client_uuid': uuid,
       'name': name,
     });
   }
 
-  void delete(int id) {
+  Future<void> delete(int id) async {
     // 先取 uuid：本地是硬删，墓碑只活在服务端。
-    final uuid = index.ensurePlaylistUuid(id);
-    index.enqueueOutbox(SyncEventTypes.playlistDelete, {
+    final uuid = await index.ensurePlaylistUuid(id);
+    await index.enqueueOutbox(SyncEventTypes.playlistDelete, {
       'client_uuid': uuid,
     });
-    index.deletePlaylist(id);
+    await index.deletePlaylist(id);
   }
 
   List<PlaylistRow> list() => index.listPlaylists();
@@ -51,8 +52,8 @@ class PlaylistStore {
       index.playlistItems(playlistId);
 
   /// 把歌曲快照加入歌单（供离线/源失效时展示）。
-  void addSong(int playlistId, Song s) {
-    index.addPlaylistItem(
+  Future<void> addSong(int playlistId, Song s) async {
+    await index.addPlaylistItem(
       playlistId,
       sourceKey: s.sourceKey,
       songRef: s.sourceRef,
@@ -63,14 +64,14 @@ class PlaylistStore {
       source: s.source,
     );
     if (!_syncable(s)) return;
-    final uuid = index.ensurePlaylistUuid(playlistId);
-    _enqueueItemAdd(
+    final uuid = await index.ensurePlaylistUuid(playlistId);
+    await _enqueueItemAdd(
         uuid, s, _sortOrderOf(playlistId, s), index.sourceUuidOf(s.sourceKey));
   }
 
-  void _enqueueItemAdd(
-      String playlistUuid, Song s, int sortOrder, String? sourceId) {
-    index.enqueueOutbox(SyncEventTypes.playlistItemAdd, {
+  Future<void> _enqueueItemAdd(
+      String playlistUuid, Song s, int sortOrder, String? sourceId) async {
+    await index.enqueueOutbox(SyncEventTypes.playlistItemAdd, {
       'playlist_uuid': playlistUuid,
       'source': s.source,
       'source_ref': s.sourceRef,
@@ -87,12 +88,12 @@ class PlaylistStore {
   /// 为其中非 'server' 条目（直连歌，配对前门控跳过未进事件）补 item_add。
   /// 'server' 行走常规 outbox（恒进事件），跳过。语义以本机为准
   ///（occurred_at=now，服务端 LWW 胜出）。返回 {playlists, items}。
-  Map<String, int> backfill() {
+  Future<Map<String, int>> backfill() async {
     var playlists = 0;
     var items = 0;
     for (final p in index.listPlaylists()) {
-      final uuid = index.ensurePlaylistUuid(p.id);
-      index.enqueueOutbox(SyncEventTypes.playlistCreate, {
+      final uuid = await index.ensurePlaylistUuid(p.id);
+      await index.enqueueOutbox(SyncEventTypes.playlistCreate, {
         'client_uuid': uuid,
         'name': p.name,
         if (p.description != null) 'description': p.description,
@@ -102,18 +103,19 @@ class PlaylistStore {
         if (it.sourceKey == 'server') continue;
         final s = songOf(it);
         if (!_syncable(s)) continue;
-        _enqueueItemAdd(uuid, s, it.sortOrder, index.sourceUuidOf(s.sourceKey));
+        await _enqueueItemAdd(
+            uuid, s, it.sortOrder, index.sourceUuidOf(s.sourceKey));
         items++;
       }
     }
     return {'playlists': playlists, 'items': items};
   }
 
-  void removeSong(int playlistId, Song s) {
-    index.removePlaylistItem(playlistId, s.sourceKey, s.sourceRef);
+  Future<void> removeSong(int playlistId, Song s) async {
+    await index.removePlaylistItem(playlistId, s.sourceKey, s.sourceRef);
     if (!_syncable(s)) return;
-    final uuid = index.ensurePlaylistUuid(playlistId);
-    index.enqueueOutbox(SyncEventTypes.playlistItemRemove, {
+    final uuid = await index.ensurePlaylistUuid(playlistId);
+    await index.enqueueOutbox(SyncEventTypes.playlistItemRemove, {
       'playlist_uuid': uuid,
       'source': s.source,
       'source_ref': s.sourceRef,
@@ -133,12 +135,12 @@ class PlaylistStore {
       index.playlistIdsContaining(s.sourceKey, s.sourceRef);
 
   /// 切换「在歌单中」状态；返回切换后是否在歌单中。
-  bool toggleSong(int playlistId, Song s) {
+  Future<bool> toggleSong(int playlistId, Song s) async {
     if (contains(playlistId, s)) {
-      removeSong(playlistId, s);
+      await removeSong(playlistId, s);
       return false;
     }
-    addSong(playlistId, s);
+    await addSong(playlistId, s);
     return true;
   }
 
@@ -159,7 +161,7 @@ class PlaylistStore {
         coverPath: item.coverPath,
       );
 
-  void move(int playlistId, int itemId, int delta) {
+  Future<void> move(int playlistId, int itemId, int delta) async {
     PlaylistItemRow? before;
     for (final it in index.playlistItems(playlistId)) {
       if (it.id == itemId) {
@@ -167,15 +169,15 @@ class PlaylistStore {
         break;
       }
     }
-    index.movePlaylistItem(playlistId, itemId, delta);
+    await index.movePlaylistItem(playlistId, itemId, delta);
     final b = before;
     if (b == null || b.songRef.isEmpty) return;
     // 服务器模式行恒上报；直连行需连着服务器。
     if (b.sourceKey != 'server' && !(serverAvailable?.call() ?? false)) {
       return;
     }
-    final uuid = index.ensurePlaylistUuid(playlistId);
-    index.enqueueOutbox(SyncEventTypes.playlistItemMove, {
+    final uuid = await index.ensurePlaylistUuid(playlistId);
+    await index.enqueueOutbox(SyncEventTypes.playlistItemMove, {
       'playlist_uuid': uuid,
       // legacy 行 source 列为空时透传占位，服务端按 source_ref 兜底解析。
       'source': b.source ?? 'server',

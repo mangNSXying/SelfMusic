@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../data/local/local_index.dart';
@@ -34,8 +36,8 @@ class PlaylistsProvider extends ChangeNotifier {
 
   int _countsOf(int playlistId) => store.itemsOf(playlistId).length;
 
-  int create(String name, {String? description}) {
-    final id = store.create(name, description: description);
+  Future<int> create(String name, {String? description}) async {
+    final id = await store.create(name, description: description);
     // 增量更新：只拉一次列表 + 新歌单计数归零，避免全量 refresh
     //（逐歌单查条目数的 N+1 查询曾导致建单卡顿）。
     _playlists = store.list();
@@ -47,7 +49,7 @@ class PlaylistsProvider extends ChangeNotifier {
   }
 
   void rename(int id, String name) {
-    store.rename(id, name);
+    unawaited(store.rename(id, name));
     // 仅原地改名，不碰计数与其它行。
     _playlists = [
       for (final p in _playlists)
@@ -66,21 +68,21 @@ class PlaylistsProvider extends ChangeNotifier {
   }
 
   void delete(int id) {
-    store.delete(id);
+    unawaited(store.delete(id));
     _playlists = [for (final p in _playlists) if (p.id != id) p];
     _counts.remove(id);
     _dataRevision++;
     notifyListeners();
   }
 
-  /// 加入歌单（无则新建）。
-  void addSong(int playlistId, Song s) {
-    store.addSong(playlistId, s);
+  /// 加入歌单（无则新建）。写入后台隔离完成后再刷新计数。
+  Future<void> addSong(int playlistId, Song s) async {
+    await store.addSong(playlistId, s);
     _recount(playlistId);
   }
 
-  void removeSong(int playlistId, Song s) {
-    store.removeSong(playlistId, s);
+  Future<void> removeSong(int playlistId, Song s) async {
+    await store.removeSong(playlistId, s);
     _recount(playlistId);
   }
 
@@ -91,15 +93,14 @@ class PlaylistsProvider extends ChangeNotifier {
   Set<int> playlistsContaining(Song s) => store.containingPlaylists(s);
 
   /// 切换「在歌单中」；返回切换后是否在歌单中。
-  bool toggleSong(int playlistId, Song s) {
-    final inPlaylist = store.toggleSong(playlistId, s);
+  Future<bool> toggleSong(int playlistId, Song s) async {
+    final inPlaylist = await store.toggleSong(playlistId, s);
     _recount(playlistId);
     return inPlaylist;
   }
 
   void move(int playlistId, int itemId, int delta) {
-    store.move(playlistId, itemId, delta);
-    refresh();
+    unawaited(store.move(playlistId, itemId, delta).then((_) => refresh()));
   }
 
   /// 歌单内条目快照 → Song。

@@ -45,35 +45,35 @@ void main() {
     await index.open();
     final store = PlaylistStore(index);
 
-    final idA = store.create('A');
-    final idB = store.create('B');
+    final idA = await store.create('A');
+    final idB = await store.create('B');
     final song = _song('/dav/中文 名.mp3');
 
     expect(store.containingPlaylists(song), isEmpty);
 
-    store.addSong(idA, song);
+    await store.addSong(idA, song);
     expect(store.contains(idA, song), isTrue);
     expect(store.contains(idB, song), isFalse);
     expect(store.containingPlaylists(song), {idA});
 
-    expect(store.toggleSong(idA, song), isFalse); // 已加入 → 移出
+    expect(await store.toggleSong(idA, song), isFalse); // 已加入 → 移出
     expect(store.contains(idA, song), isFalse);
-    expect(store.toggleSong(idA, song), isTrue); // 未加入 → 加入
+    expect(await store.toggleSong(idA, song), isTrue); // 未加入 → 加入
     expect(store.contains(idA, song), isTrue);
 
     // 多歌单归属一次查全。
-    store.addSong(idB, song);
+    await store.addSong(idB, song);
     expect(store.containingPlaylists(song), {idA, idB});
 
     // 历史 ENCODE 入库的 ref：用解码 ref 也能查到并移除。
-    final idC = store.create('C');
-    index.addPlaylistItem(idC,
+    final idC = await store.create('C');
+    await index.addPlaylistItem(idC,
         sourceKey: 'webdav:nas',
         songRef: '/dav/%E4%B8%AD%E6%96%87%20%E5%90%8D.mp3',
         title: '歌');
     expect(store.contains(idC, song), isTrue);
     expect(store.containingPlaylists(song), {idA, idB, idC});
-    store.removeSong(idC, song);
+    await store.removeSong(idC, song);
     expect(store.contains(idC, song), isFalse);
     expect(index.playlistItems(idC), isEmpty);
 

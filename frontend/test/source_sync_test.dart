@@ -45,7 +45,7 @@ void main() {
     final index = await _openIndex();
 
     expect(
-        index.applySourceSnapshot(
+        await index.applySourceSnapshot(
           uuid: 'u1',
           kind: 'webdav',
           name: 'NAS',
@@ -60,7 +60,7 @@ void main() {
 
     // 另一台设备先有自己的 uuid，收到服务端去重后的权威 uuid（correction）→ 重绑不重复建源。
     expect(
-        index.applySourceSnapshot(
+        await index.applySourceSnapshot(
           uuid: 'u2',
           kind: 'webdav',
           name: 'NAS-alt',
@@ -73,7 +73,7 @@ void main() {
     expect(index.listSources().length, 1);
     expect(index.sourceUuidOf('webdav:NAS'), 'u2');
     expect(
-        index.applySourceSnapshot(
+        await index.applySourceSnapshot(
           uuid: 'u1',
           kind: 'webdav',
           name: 'NAS',
@@ -88,7 +88,7 @@ void main() {
 
     // uuid 命中 → 更新名称/开关（key 由名称派生，不随远端名变化）。
     expect(
-        index.applySourceSnapshot(
+        await index.applySourceSnapshot(
           uuid: 'u1',
           kind: 'webdav',
           name: 'NAS2',
@@ -104,7 +104,7 @@ void main() {
 
     // 本地文件夹源不参与同步。
     expect(
-        index.applySourceSnapshot(
+        await index.applySourceSnapshot(
           uuid: 'u9',
           kind: 'local',
           name: '本地',
@@ -117,7 +117,7 @@ void main() {
 
     // 墓碑：本地硬删（源 + 索引）。
     expect(
-        index.applySourceSnapshot(
+        await index.applySourceSnapshot(
           uuid: 'u1',
           kind: 'webdav',
           name: null,
@@ -134,11 +134,11 @@ void main() {
 
   test('源实例 uuid：权重 / 歌单条目载荷携带 source_id', () async {
     final index = await _openIndex();
-    index.upsertSource('webdav:NAS', 'webdav', 'NAS',
+    await index.upsertSource('webdav:NAS', 'webdav', 'NAS',
         jsonEncode({'name': 'NAS', 'baseUrl': _addr}));
-    final uuid = index.ensureSourceUuid('webdav:NAS');
+    final uuid = await index.ensureSourceUuid('webdav:NAS');
     expect(index.sourceKeyOfUuid(uuid), 'webdav:NAS');
-    expect(index.ensureSourceUuid('webdav:NAS'), uuid); // 稳定不重生成
+    expect(await index.ensureSourceUuid('webdav:NAS'), uuid); // 稳定不重生成
 
     final song = Song.direct(
       id: 1,
@@ -149,20 +149,20 @@ void main() {
       fileSize: 1,
     );
     final weight = SongWeightStore(index, serverAvailable: () => true);
-    weight.setLiked(song);
+    await weight.setLiked(song);
     var payload = jsonDecode(index.pendingOutbox().last.payload)
         as Map<String, dynamic>;
     expect(payload['source_id'], uuid);
     expect(payload['source'], 'webdav');
 
-    index.deleteOutbox(
+    await index.deleteOutbox(
         index.pendingOutbox().map((e) => e.eventUuid).toList());
     final playlists = PlaylistStore(index, serverAvailable: () => true);
-    playlists.create('p');
-    index.deleteOutbox(
+    await playlists.create('p');
+    await index.deleteOutbox(
         index.pendingOutbox().map((e) => e.eventUuid).toList());
     final pid = index.listPlaylists().single.id;
-    playlists.addSong(pid, song);
+    await playlists.addSong(pid, song);
     payload = jsonDecode(index.pendingOutbox().last.payload)
         as Map<String, dynamic>;
     expect(index.pendingOutbox().last.type, SyncEventTypes.playlistItemAdd);
@@ -174,12 +174,12 @@ void main() {
 
   test('源实例 uuid 落库映射：权重写本机源行、歌单条目按源 key 落库（无重复快照行）', () async {
     final index = await _openIndex();
-    index.upsertSource('webdav:NAS', 'webdav', 'NAS',
+    await index.upsertSource('webdav:NAS', 'webdav', 'NAS',
         jsonEncode({'name': 'NAS', 'baseUrl': _addr}));
-    final uuid = index.ensureSourceUuid('webdav:NAS');
+    final uuid = await index.ensureSourceUuid('webdav:NAS');
 
     // 权重快照：uuid 命中 → 写本机源 key，不再写 server 快照行。
-    index.applySongSnapshot(
+    await index.applySongSnapshot(
       songRef: '/music/a.flac',
       source: 'webdav',
       sourceId: uuid,
@@ -193,7 +193,7 @@ void main() {
     expect(index.playMetaOf('server', '/music/a.flac').favorite, isFalse);
 
     // 歌单条目：uuid 命中 → 落本机源 key（可直接播放）。
-    index.applyPlaylistSnapshot(
+    await index.applyPlaylistSnapshot(
       uuid: 'puuid-1',
       name: '远端歌单',
       deleted: false,
@@ -208,7 +208,7 @@ void main() {
       ],
     );
     // 用真实 uuid 重放（const 无法插值）。
-    index.applyPlaylistSnapshot(
+    await index.applyPlaylistSnapshot(
       uuid: 'puuid-1',
       name: '远端歌单',
       deleted: false,
@@ -232,11 +232,11 @@ void main() {
 
   test('歌单同步保留封面：已有条目快照保留；本机索引封面可回填', () async {
     final index = await _openIndex();
-    index.upsertSource('webdav:NAS', 'webdav', 'NAS',
+    await index.upsertSource('webdav:NAS', 'webdav', 'NAS',
         jsonEncode({'name': 'NAS', 'baseUrl': _addr}));
-    final uuid = index.ensureSourceUuid('webdav:NAS');
+    final uuid = await index.ensureSourceUuid('webdav:NAS');
 
-    index.applyPlaylistSnapshot(
+    await index.applyPlaylistSnapshot(
       uuid: 'puuid-cover',
       name: 'p',
       deleted: false,
@@ -252,8 +252,8 @@ void main() {
     final pid = index.playlistIdOfUuid('puuid-cover')!;
 
     // 本机补齐条目封面快照（模拟本地已有封面）。
-    index.removePlaylistItem(pid, 'webdav:NAS', '/music/a.flac');
-    index.addPlaylistItem(pid,
+    await index.removePlaylistItem(pid, 'webdav:NAS', '/music/a.flac');
+    await index.addPlaylistItem(pid,
         sourceKey: 'webdav:NAS',
         songRef: '/music/a.flac',
         title: 'A',
@@ -261,7 +261,7 @@ void main() {
         source: 'webdav');
 
     // 再次同步（服务端快照无封面）→ 保留本机封面快照。
-    index.applyPlaylistSnapshot(
+    await index.applyPlaylistSnapshot(
       uuid: 'puuid-cover',
       name: 'p',
       deleted: false,
@@ -277,7 +277,7 @@ void main() {
     expect(index.playlistItems(pid).single.coverPath, '/tmp/a.jpg');
 
     // 本机索引兜底：歌已扫描出封面，同步首次落库即回填。
-    index.upsertSongs([
+    await index.upsertSongs([
       DirectSongRow(
         sourceKey: 'webdav:NAS',
         ref: '/music/b.flac',
@@ -289,7 +289,7 @@ void main() {
         coverPath: '/tmp/b.jpg',
       ),
     ]);
-    index.applyPlaylistSnapshot(
+    await index.applyPlaylistSnapshot(
       uuid: 'puuid-cover',
       name: 'p',
       deleted: false,

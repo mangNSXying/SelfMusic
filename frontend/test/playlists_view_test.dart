@@ -30,6 +30,18 @@ class _FakePathProvider extends PathProviderPlatform {
   Future<String> getApplicationCachePath() async => dir;
 }
 
+
+/// 落库走后台写隔离（真实 isolate 往返）：`pump` 不推进真实消息，
+/// 需交替 runAsync（真实事件循环）与 pump（推进回调链）。
+Future<void> settleWriter(WidgetTester tester) async {
+  for (var i = 0; i < 10; i++) {
+    await tester.pump();
+    await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)));
+  }
+  await tester.pumpAndSettle();
+}
+
 void main() {
   setUpAll(() {
     if (!Platform.isLinux) return;
@@ -44,7 +56,7 @@ void main() {
       PathProviderPlatform.instance = _FakePathProvider(dir.path);
       direct = DirectSourceManager();
       await direct.init();
-      direct.playlists.create('已有歌单');
+      await direct.playlists.create('已有歌单');
     });
 
     final provider = PlaylistsProvider(direct.playlists);
@@ -72,8 +84,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 200));
     await tester.enterText(find.byType(TextField), '新建歌单');
     await tester.tap(find.text('创建'));
-    await tester.pump(const Duration(milliseconds: 400));
-    await tester.pump(const Duration(milliseconds: 400));
+    await settleWriter(tester);
 
     // 无需重启，新歌单立即可见
     expect(find.text('新建歌单'), findsOneWidget);
@@ -93,8 +104,8 @@ void main() {
       PathProviderPlatform.instance = _FakePathProvider(dir.path);
       direct = DirectSourceManager();
       await direct.init();
-      direct.playlists.create('现有歌单');
-      direct.playlists.create('另一个歌单');
+      await direct.playlists.create('现有歌单');
+      await direct.playlists.create('另一个歌单');
     });
 
     final provider = PlaylistsProvider(direct.playlists);
@@ -166,9 +177,9 @@ void main() {
       PathProviderPlatform.instance = _FakePathProvider(dir.path);
       direct = DirectSourceManager();
       await direct.init();
-      plId = direct.playlists.create('大歌单');
+      plId = await direct.playlists.create('大歌单');
       for (var i = 0; i < 500; i++) {
-        direct.playlists.addSong(
+        await direct.playlists.addSong(
           plId,
           Song(
             id: i,
@@ -230,8 +241,8 @@ void main() {
       PathProviderPlatform.instance = _FakePathProvider(dir.path);
       direct = DirectSourceManager();
       await direct.init();
-      plId = direct.playlists.create('搜索歌单');
-      direct.playlists.addSong(plId, Song(
+      plId = await direct.playlists.create('搜索歌单');
+      await direct.playlists.addSong(plId, Song(
         id: 0,
         sourceKey: 'local:test',
         title: '夜曲',
@@ -240,7 +251,7 @@ void main() {
         sourceRef: 'a',
         fileSize: 0,
       ));
-      direct.playlists.addSong(plId, Song(
+      await direct.playlists.addSong(plId, Song(
         id: 1,
         sourceKey: 'local:test',
         title: '晴天',

@@ -128,10 +128,11 @@ class WebdavDirectSource implements MusicSource {
         coverPath: coverPath ?? item.row.coverPath,
       ));
     }
-    index.upsertSongs(toWrite);
-    index.markMissingExcept(key, alive);
+    // 提交（写隔离批量单事务）：await 保证 scan 返回时行已落库可见。
+    await index.upsertSongs(toWrite);
+    await index.markMissingExcept(key, alive);
     // 删除不再存在的行（保留收藏）。
-    index.clearMissing(key);
+    await index.clearMissing(key);
     return ScanSummary(
         added: added,
         updated: updated,
@@ -210,6 +211,9 @@ class WebdavDirectSource implements MusicSource {
 
   // ---------- 离线缓存（DESIGN §6.5） ----------
 
+  /// 缓存落盘缓冲阈值（攒够才顺序写一次）。
+  static const int _cacheWriteBufBytes = 1 << 20;
+
   /// 该歌的缓存 key（供 CacheManager 跟踪 LRU / 跳过正在播放）。
   String cacheKeyFor(Song song) =>
       md5.convert(utf8.encode('$key|${song.sourceRef}')).toString();
@@ -233,14 +237,24 @@ class WebdavDirectSource implements MusicSource {
         await resp.drain<void>();
         throw HttpException('WebDAV 缓存失败: HTTP ${resp.statusCode}');
       }
+      // 大缓冲顺序写：网络块常为 8~64KB，逐块 writeFromSync 会把「启动缓存」
+      // 变成上万次小写入（CSV：cache\.tmp-* 70.7MB/12952 次写）。攒够 1MB 再落。
       final sink = tmp.openSync(mode: FileMode.write);
+      var buf = BytesBuilder(copy: false);
       int total = 0;
-      await for (final chunk in resp) {
-        sink.writeFromSync(chunk);
-        total += chunk.length;
+      try {
+        await for (final chunk in resp) {
+          buf.add(chunk);
+          total += chunk.length;
+          if (buf.length >= _cacheWriteBufBytes) {
+            sink.writeFromSync(buf.takeBytes());
+          }
+        }
+        if (buf.isNotEmpty) sink.writeFromSync(buf.takeBytes());
+      } finally {
+        sink.closeSync();
       }
-      sink.closeSync();
-      index.cacheCommit(cacheKey, tmp.path, total);
+      await index.cacheCommit(cacheKey, tmp.path, total);
     } finally {
       client.close(force: true);
     }

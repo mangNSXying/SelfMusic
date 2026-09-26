@@ -130,23 +130,23 @@ void main() {
     test('save/load/deleteDeepList 往返', () async {
       final index = await _openIndex();
       expect(index.loadDeepList('puuid-1'), isNull);
-      index.saveDeepList('puuid-1', jsonEncode([_song('a').toJson()]));
+      await index.saveDeepList('puuid-1', jsonEncode([_song('a').toJson()]));
       final raw = index.loadDeepList('puuid-1')!;
       expect(DeepListController.parseEntries(jsonDecode(raw)).single.sourceRef,
           'a');
-      index.deleteDeepList('puuid-1');
+      await index.deleteDeepList('puuid-1');
       expect(index.loadDeepList('puuid-1'), isNull);
       index.close();
     });
 
     test('删除歌单同步清理其深层列表', () async {
       final index = await _openIndex();
-      index.createPlaylist('p');
+      await index.createPlaylist('p');
       final pid = index.listPlaylists().single.id;
-      final uuid = index.ensurePlaylistUuid(pid);
-      index.saveDeepList(uuid, jsonEncode([_song('a').toJson()]));
+      final uuid = await index.ensurePlaylistUuid(pid);
+      await index.saveDeepList(uuid, jsonEncode([_song('a').toJson()]));
       expect(index.loadDeepList(uuid), isNotNull);
-      index.deletePlaylist(pid);
+      await index.deletePlaylist(pid);
       expect(index.loadDeepList(uuid), isNull);
       index.close();
     });
