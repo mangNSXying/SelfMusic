@@ -624,15 +624,8 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
             ],
           ),
         ),
-        CountHeader(
-          count: searching ? visible.length : _songs.length,
-          trailing: SortMenuButton(
-            value: direct.settings.sortPlaylistDetail,
-            withWeight: true,
-            onChanged: (v) => setState(
-                () => direct.settings.sortPlaylistDetail = v),
-          ),
-        ),
+        // 多选栏与计数栏共用同一位置（与歌单列表页/喜欢页/歌曲页一致）：
+        // 进入多选显示「已选」，退出恢复「共 xx 首歌曲」。
         if (_sel.active)
           SelectionBar(
             // 范围 = 当前搜索结果（visible 与 _songs 同下标，键与行渲染一致）。
@@ -651,6 +644,16 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
                     _sel.selected.isEmpty ? null : () => _removeSelected(provider),
               ),
             ],
+          )
+        else
+          CountHeader(
+            count: searching ? visible.length : _songs.length,
+            trailing: SortMenuButton(
+              value: direct.settings.sortPlaylistDetail,
+              withWeight: true,
+              onChanged: (v) => setState(
+                  () => direct.settings.sortPlaylistDetail = v),
+            ),
           ),
         const Divider(height: 1),
         Expanded(

@@ -450,14 +450,19 @@ void main() {
     expect(find.text('已选 1'), findsOneWidget);
     expect(find.text('取消全选'), findsOneWidget);
 
-    // 清搜索后选择集仍是两首（晴天 + 夜曲）。
+    // 清搜索后选择集仍是两首（晴天 + 夜曲）；多选期间计数栏不显示。
     nav.setSearch('');
     await tester.pump();
     expect(find.text('已选 2'), findsOneWidget);
+    expect(find.text('共 2 首歌曲'), findsNothing);
 
-    // 批量「从歌单移除」按同一套键生效：选夜曲 → 移除 → 剩 1 首。
+    // 退出多选恢复计数栏。
     await tester.tap(find.byTooltip('取消选择'));
     await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 2'), findsNothing);
+    expect(find.text('共 2 首歌曲'), findsOneWidget);
+
+    // 批量「从歌单移除」按同一套键生效：选夜曲 → 移除 → 剩 1 首。
     await tester.longPress(find.textContaining('夜曲'));
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('已选 1'), findsOneWidget);

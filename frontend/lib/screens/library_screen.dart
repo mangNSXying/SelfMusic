@@ -310,15 +310,7 @@ class _LikedViewState extends State<_LikedView>
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-              CountHeader(
-                count: songs.length,
-                trailing: SortMenuButton(
-                  value: direct.settings.sortFavorites,
-                  withWeight: true,
-                  onChanged: (v) =>
-                      setState(() => direct.settings.sortFavorites = v),
-                ),
-              ),
+              // 多选栏与计数栏共用同一位置（多选时覆盖「共 xx」，退出恢复）。
               if (_sel.active)
                 SelectionBar(
                   total: songs.length,
@@ -338,6 +330,16 @@ class _LikedViewState extends State<_LikedView>
                       onPressed: _sel.isEmpty ? null : () => _unlikeSelected(songs),
                     ),
                   ],
+                )
+              else
+                CountHeader(
+                  count: songs.length,
+                  trailing: SortMenuButton(
+                    value: direct.settings.sortFavorites,
+                    withWeight: true,
+                    onChanged: (v) =>
+                        setState(() => direct.settings.sortFavorites = v),
+                  ),
                 ),
               if (_sel.active) const Divider(height: 1),
               Expanded(
@@ -482,14 +484,7 @@ class _SongsViewState extends State<_SongsView>
         if (lib.loading) const LinearProgressIndicator(minHeight: 2),
         if (lib.error != null)
           Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
-        CountHeader(
-          count: songs.length,
-          trailing: SortMenuButton(
-            value: direct.settings.sortSongs,
-            withWeight: true,
-            onChanged: (v) => setState(() => direct.settings.sortSongs = v),
-          ),
-        ),
+        // 多选栏与计数栏共用同一位置（多选时覆盖「共 xx」，退出恢复）。
         if (_sel.active)
           SelectionBar(
             total: songs.length,
@@ -511,6 +506,15 @@ class _SongsViewState extends State<_SongsView>
                     : () => _addToPlaylistSelected(songs),
               ),
             ],
+          )
+        else
+          CountHeader(
+            count: songs.length,
+            trailing: SortMenuButton(
+              value: direct.settings.sortSongs,
+              withWeight: true,
+              onChanged: (v) => setState(() => direct.settings.sortSongs = v),
+            ),
           ),
         Expanded(
           child: songs.isEmpty
