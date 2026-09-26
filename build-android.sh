@@ -8,3 +8,6 @@ cd "$(dirname "$0")/frontend"
 flutter build apk --release --split-per-abi --dart-define=BUILD_STAMP="$(date +%F_%T)" "$@"
 ls -lh build/app/outputs/flutter-apk/*-release.apk
 cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ~/ServerSMB/Phone/Software/Selfmusic
+filename=$(date +%Y%m%d)_$(date +%H%M%S)
+rm ~/ServerSMB/Phone/Software/Selfmusic/*.txt
+touch ~/ServerSMB/Phone/Software/Selfmusic/$filename.txt
