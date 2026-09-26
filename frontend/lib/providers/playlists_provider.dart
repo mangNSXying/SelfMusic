@@ -103,19 +103,22 @@ class PlaylistsProvider extends ChangeNotifier {
     unawaited(store.move(playlistId, itemId, delta).then((_) => refresh()));
   }
 
-  /// 歌单内条目快照 → Song。
-  List<Song> songsOf(int playlistId) =>
-      store.itemsOf(playlistId).map((r) => store.songOf(r)).toList();
-
   /// 歌单内条目行（含 itemId，供上移/下移/移除）。
   List<PlaylistItemRow> itemsOf(int playlistId) => store.itemsOf(playlistId);
 
-  /// 条目行 → 对应歌曲（多选去重键用）。
+  /// 条目行 → 对应歌曲快照。
+  ///
+  /// 注意：快照的 `id` 恒为 0，仅供**不参与选择键**的场合用（源定位、移除
+  /// 目标行）；歌单详情的选择键一律取索引实时行（`LocalIndex.songByRef`），
+  /// 否则两套 key 不同源（已选计数恒 0 / 全选变整单）。
   Song songOf(PlaylistItemRow r) => store.songOf(r);
 
   void removeItemRow(int playlistId, PlaylistItemRow r) {
-    store.removeSong(playlistId, store.songOf(r));
-    _recount(playlistId);
+    // 写走后台隔离，必须等落库后再刷新：此前不等写完就 _recount，计数读到
+    // 旧值、列表也要等下一次重建才去掉该行（移除后 UI 短暂仍显示已删歌曲）。
+    unawaited(store
+        .removeSong(playlistId, store.songOf(r))
+        .then((_) => _recount(playlistId)));
   }
 
   void moveItemRow(int playlistId, PlaylistItemRow r, int delta) {

@@ -480,10 +480,14 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
         _sel.toggle(key);
       });
 
+  /// 批量「从歌单移除」。
+  ///
+  /// 选择键一律取自行渲染用的 [_songs]（索引实时行，`id` 为真实 rowid）：此前
+  /// 这里读 `provider.songsOf` 的条目快照（`id` 恒 0），与行 key 不同源，导致
+  /// 「已选」计数恒为 0、点全选后计数变整单大小、移除也删不掉。
   Future<void> _removeSelected(PlaylistsProvider provider) async {
-    final songsNow = provider.songsOf(widget.playlistId);
-    final itemsNow = provider.itemsOf(widget.playlistId);
-    final count = _sel.of(songsNow.map((s) => songKey(s))).length;
+    // 计数含搜索范围外已勾选项（动作作用于整个选择集）。
+    final count = _sel.of(_songs.map(songKey)).length;
     final ok = await showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
@@ -501,12 +505,12 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
       ),
     );
     if (ok != true || !mounted) return;
-    // 从后往前移除，避免 store 序号移位问题。
+    // 从后往前移除，避免 store 序号移位问题（_items 与 _songs 按同序平行）。
     final removed = <Song>[];
-    for (var i = itemsNow.length - 1; i >= 0; i--) {
-      if (_sel.contains(songKey(songsNow[i]))) {
-        provider.removeItemRow(widget.playlistId, itemsNow[i]);
-        removed.add(songsNow[i]);
+    for (var i = _items.length - 1; i >= 0; i--) {
+      if (_sel.contains(songKey(_songs[i]))) {
+        provider.removeItemRow(widget.playlistId, _items[i]);
+        removed.add(_songs[i]);
       }
     }
     setState(_sel.cancel);
@@ -548,6 +552,8 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
     ];
     final currentIdx = _songs.indexWhere((s) => player.isCurrent(s));
     final visibleCurrent = currentIdx < 0 ? -1 : visible.indexOf(currentIdx);
+    // 多选键：与行渲染同源的 _songs 实时行（visible 为下标映射）。
+    final visibleKeys = [for (final i in visible) songKey(_songs[i])];
 
     // 打开歌单后自动定位到当前播放歌曲（仅一次；按可见下标）。
     if (!_located && visibleCurrent >= 0) {
@@ -628,12 +634,13 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
           ),
         ),
         if (_sel.active)
-          SelectionBar(            total: _items.length,
-            selectedCount: _sel.of(_items.map((r) => songKey(provider.songOf(r))))
-                .length,
+          SelectionBar(
+            // 范围 = 当前搜索结果（visible 与 _songs 同下标，键与行渲染一致）。
+            total: visible.length,
+            selectedCount: _sel.of(visibleKeys).length,
             onToggleAll: () => setState(() {
               _sel.active = true;
-              _sel.setAll(_items.map((r) => songKey(provider.songOf(r))));
+              _sel.setAll(visibleKeys);
             }),
             onCancel: () => setState(_sel.cancel),
             actions: [

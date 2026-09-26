@@ -398,4 +398,86 @@ void main() {
       dir.deleteSync(recursive: true);
     });
   });
+
+  testWidgets('歌单详情多选：已选计数随勾选增长，搜索后全选只选命中项（回归 id 分叉）',
+      (tester) async {
+    late final Directory dir;
+    late final DirectSourceManager direct;
+    late final int plId;
+    await tester.runAsync(() async {
+      direct = DirectSourceManager();
+      final seeded = await _seedIndexedPlaylist(direct, 'selfmusic_plsel_');
+      dir = seeded.$1;
+      plId = seeded.$2;
+    });
+
+    final provider = PlaylistsProvider(direct.playlists)..refresh();
+    final nav = NavigationProvider();
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+          ChangeNotifierProvider<PlaylistsProvider>.value(value: provider),
+          ChangeNotifierProvider<NavigationProvider>.value(value: nav),
+          ChangeNotifierProvider<PlayerProvider>(
+              create: (_) => PlayerProvider()),
+        ],
+        child: MaterialApp(
+          home: Scaffold(body: PlaylistDetailView(playlistId: plId)),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.text('共 2 首歌曲'), findsOneWidget);
+
+    // 长按进入多选：已选计数应从 0 增到 1。
+    await tester.longPress(find.textContaining('晴天'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 1'), findsOneWidget);
+    expect(find.text('已选 0'), findsNothing);
+    expect(find.text('全选'), findsOneWidget);
+
+    // 搜索范围内尚无选中 → 按钮为「全选」（选中的是被过滤掉的晴天）。
+    nav.setSearch('夜曲');
+    await tester.pump();
+    expect(find.text('已选 0'), findsOneWidget);
+    expect(find.text('全选'), findsOneWidget);
+
+    // 全选只作用于搜索命中项：计数 = 命中数 1（不是整单 2）。
+    await tester.tap(find.text('全选'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 1'), findsOneWidget);
+    expect(find.text('取消全选'), findsOneWidget);
+
+    // 清搜索后选择集仍是两首（晴天 + 夜曲）。
+    nav.setSearch('');
+    await tester.pump();
+    expect(find.text('已选 2'), findsOneWidget);
+
+    // 批量「从歌单移除」按同一套键生效：选夜曲 → 移除 → 剩 1 首。
+    await tester.tap(find.byTooltip('取消选择'));
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.longPress(find.textContaining('夜曲'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 1'), findsOneWidget);
+    await tester.tap(find.byTooltip('更多操作'));
+    await tester.pumpAndSettle();
+    expect(find.text('从歌单移除'), findsOneWidget);
+    await tester.tap(find.text('从歌单移除'));
+    await tester.pumpAndSettle();
+    expect(find.text('确定从歌单中移除选中的 1 首歌曲？'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, '移除'));
+    await settleWriter(tester);
+
+    expect(find.text('已选 1'), findsNothing);
+    expect(find.text('共 1 首歌曲'), findsOneWidget);
+    expect(find.textContaining('晴天'), findsOneWidget);
+    expect(find.textContaining('夜曲'), findsNothing);
+
+    await tester.runAsync(() async {
+      direct.dispose();
+      dir.deleteSync(recursive: true);
+    });
+  });
 }
