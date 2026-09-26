@@ -1,5 +1,20 @@
 package com.selfmusic.backend.sync;
 
+import java.io.IOException;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.selfmusic.backend.common.BizException;
@@ -16,21 +31,8 @@ import com.selfmusic.backend.domain.repository.PlaylistRepository;
 import com.selfmusic.backend.domain.repository.SongStateRepository;
 import com.selfmusic.backend.domain.repository.SyncEventRepository;
 import com.selfmusic.backend.domain.repository.SyncSourceRepository;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-import java.io.IOException;
-import java.math.BigDecimal;
-import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
+import lombok.RequiredArgsConstructor;
 
 /**
  * 阶段5 同步引擎服务端（DESIGN.md §4.4 / §7.2，字段级合并）。
@@ -646,10 +648,13 @@ public class SyncService {
                         playstates.add(playstateSnapshot(st, pl.getClientUuid())));
             });
         }
-        long cursor = page.size() < PULL_EVENT_LIMIT
-                ? syncEventRepository.maxSeq()
-                : page.get(page.size() - 1).getSeq() == null ? 0L
-                        : page.get(page.size() - 1).getSeq();
+        long cursor;
+        if (page.size() < PULL_EVENT_LIMIT) {
+            cursor = syncEventRepository.maxSeq();
+        } else {
+            Long tailSeq = page.get(page.size() - 1).getSeq();
+            cursor = tailSeq == null ? 0L : tailSeq;
+        }
         touchDevice(authClientId);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("cursor", cursor);
