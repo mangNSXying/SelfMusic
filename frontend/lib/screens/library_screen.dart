@@ -262,7 +262,8 @@ class _LikedViewState extends State<_LikedView>
     if (_sortedKey == key) return _sorted;
     final all = _favoritesOf(direct);
     final songs = sortSongs(filterSongs(all, search), pref,
-        factorOf: direct.weight.factorOf);
+        factorOf: direct.weight.factorOf,
+        playSecOf: direct.weight.playSecOf);
     _sortedKey = key;
     _sorted = _SortedResult(_favAll, songs);
     return _sorted;
@@ -336,7 +337,6 @@ class _LikedViewState extends State<_LikedView>
                   count: songs.length,
                   trailing: SortMenuButton(
                     value: direct.settings.sortFavorites,
-                    withWeight: true,
                     onChanged: (v) =>
                         setState(() => direct.settings.sortFavorites = v),
                   ),
@@ -428,7 +428,8 @@ class _SongsViewState extends State<_SongsView>
     final key = (base.length, search, pref);
     if (_sortedKey == key && identical(base, _lastBase)) return _sorted;
     final songs = sortSongs(filterSongs(base, search), pref,
-        factorOf: direct.weight.factorOf);
+        factorOf: direct.weight.factorOf,
+        playSecOf: direct.weight.playSecOf);
     _sortedKey = key;
     _lastBase = base;
     return _sorted = _SortedResult(base, songs);
@@ -512,7 +513,6 @@ class _SongsViewState extends State<_SongsView>
             count: songs.length,
             trailing: SortMenuButton(
               value: direct.settings.sortSongs,
-              withWeight: true,
               onChanged: (v) => setState(() => direct.settings.sortSongs = v),
             ),
           ),
@@ -597,8 +597,8 @@ class _AlbumsViewState extends State<_AlbumsView>
     if (_sortedKey == key && identical(albums, _lastBase)) return _sorted;
     _lastBase = albums;
     _sortedKey = key;
-    return _sorted =
-        sortByCollection(_filter(albums, search), pref, (a) => a.album);
+    return _sorted = sortByCollection(_filter(albums, search), pref,
+        (a) => a.album, countOf: (a) => a.trackCount);
   }
 
   @override
@@ -640,6 +640,7 @@ class _AlbumsViewState extends State<_AlbumsView>
             children: [
               SortMenuButton(
                 value: direct.settings.sortAlbums,
+                scope: SortScope.collections,
                 onChanged: (v) => setState(() => direct.settings.sortAlbums = v),
               ),
               ViewModeToggle(
@@ -859,8 +860,8 @@ class _ArtistsViewState extends State<_ArtistsView>
     if (_sortedKey == key && identical(artists, _lastBase)) return _sorted;
     _lastBase = artists;
     _sortedKey = key;
-    return _sorted = sortByCollection(
-        _filter(artists, search), pref, (a) => a.name);
+    return _sorted = sortByCollection(_filter(artists, search), pref,
+        (a) => a.name, countOf: (a) => a.songCount);
   }
 
   @override
@@ -902,6 +903,7 @@ class _ArtistsViewState extends State<_ArtistsView>
             children: [
               SortMenuButton(
                 value: direct.settings.sortArtists,
+                scope: SortScope.collections,
                 onChanged: (v) =>
                     setState(() => direct.settings.sortArtists = v),
               ),

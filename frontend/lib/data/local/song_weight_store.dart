@@ -30,6 +30,9 @@ class SongWeightStore {
 
   double factorOf(Song s) => metaOf(s).factor;
 
+  /// 累计播放时长（秒）（播放时长/播放次数排序用；播放次数由其派生）。
+  int playSecOf(Song s) => metaOf(s).playSec;
+
   bool isFavorite(Song s) => metaOf(s).favorite;
 
   /// 完播（播放时长 >95%，通常为自然结束）：like_streak++，dislike 清零（覆盖先前跳过）；

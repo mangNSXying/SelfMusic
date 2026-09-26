@@ -48,8 +48,8 @@ class _SourcesScreenState extends State<SourcesScreen>
     final direct = context.watch<DirectSourceManager>();
     final scheme = Theme.of(context).colorScheme;
     final card = _modeOf(context) == CollectionViewMode.card;
-    final sources = sortByCollection(
-        direct.sources, direct.settings.sortSources, (s) => s.name);
+    final sources = sortByCollection(direct.sources, direct.settings.sortSources,
+        (s) => s.name, countOf: (s) => direct.countOf(s.key));
 
     return Stack(
       children: [
@@ -63,6 +63,7 @@ class _SourcesScreenState extends State<SourcesScreen>
                   children: [
                     SortMenuButton(
                       value: direct.settings.sortSources,
+                      scope: SortScope.collections,
                       onChanged: (v) =>
                           setState(() => direct.settings.sortSources = v),
                     ),

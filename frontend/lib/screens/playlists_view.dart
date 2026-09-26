@@ -122,7 +122,8 @@ class _PlaylistsViewState extends State<PlaylistsView>
                     p.name.toLowerCase().contains(q) || matchIds.contains(p.id))
                 .toList(),
         direct.settings.sortPlaylists,
-        (p) => p.name);
+        (p) => p.name,
+        countOf: (p) => provider.countOf(p.id));
     final card = _modeOf(context) == CollectionViewMode.card;
 
     return Stack(
@@ -157,6 +158,7 @@ class _PlaylistsViewState extends State<PlaylistsView>
                     children: [
                       SortMenuButton(
                         value: direct.settings.sortPlaylists,
+                        scope: SortScope.collections,
                         onChanged: (v) => setState(
                             () => direct.settings.sortPlaylists = v),
                       ),
@@ -414,7 +416,7 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
 
   /// 按数据版本拉取歌单条目；数据未变且排序未变时直接复用缓存（0 次 SQLite）。
   void _syncSongs(PlaylistsProvider provider, CollectionSort sort,
-      double Function(Song) factorOf) {
+      double Function(Song) factorOf, int Function(Song) playSecOf) {
     final rev = provider.dataRevision;
     if (rev == _songsRevision && sort == _sort) return;
     _songsRevision = rev;
@@ -433,7 +435,8 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
       _songs = List.unmodifiable(songs);
       return;
     }
-    final order = songSortOrder(songs, sort, factorOf: factorOf);
+    final order =
+        songSortOrder(songs, sort, factorOf: factorOf, playSecOf: playSecOf);
     _items = [for (final i in order) items[i]];
     _songs = List.unmodifiable([for (final i in order) songs[i]]);
   }
@@ -458,7 +461,7 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
     var firstIdx = -1;
     if (provider.loaded && !_located) {
       _syncSongs(provider, direct.settings.sortPlaylistDetail,
-          direct.weight.factorOf);
+          direct.weight.factorOf, direct.weight.playSecOf);
       firstIdx = _songs.indexWhere(player.isCurrent);
     }
     if (firstIdx >= 0) {
@@ -543,7 +546,7 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
     }
     // 数据版本不变时复用缓存的歌单条目（避免每帧/每次通知重查 SQLite）。
     _syncSongs(provider, direct.settings.sortPlaylistDetail,
-        direct.weight.factorOf);
+        direct.weight.factorOf, direct.weight.playSecOf);
     // 搜索：过滤歌单内歌曲（与歌曲页/喜欢页同源匹配）；visible 为原始下标映射。
     final searching = nav.search.trim().isNotEmpty;
     final visible = <int>[
@@ -650,7 +653,6 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
             count: searching ? visible.length : _songs.length,
             trailing: SortMenuButton(
               value: direct.settings.sortPlaylistDetail,
-              withWeight: true,
               onChanged: (v) => setState(
                   () => direct.settings.sortPlaylistDetail = v),
             ),
