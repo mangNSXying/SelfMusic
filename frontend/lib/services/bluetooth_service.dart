@@ -17,21 +17,46 @@ class BtDevice {
   int get hashCode => address.hashCode;
 }
 
-/// 设置持久化：设备 JSON（{name,address}）；'' 表示不限定。
-BtDevice? btDeviceFromSetting(String raw) {
-  if (raw.trim().isEmpty) return null;
+/// 设置持久化：设备 JSON **数组**（`[{"name":…,"address":…}]`）；空=不限定。
+/// 兼容早期版本的单对象格式（`{"name":…,"address":…}`，当时只能选一个）。
+List<BtDevice> btDevicesFromSetting(String raw) {
+  final t = raw.trim();
+  if (t.isEmpty) return const [];
   try {
-    final m = jsonDecode(raw) as Map<String, dynamic>;
-    final address = m['address'] as String?;
-    if (address == null || address.isEmpty) return null;
-    return BtDevice(name: (m['name'] as String?) ?? address, address: address);
+    final decoded = jsonDecode(t);
+    if (decoded is Map) {
+      final d = _deviceOf(decoded);
+      return d == null ? const [] : [d];
+    }
+    if (decoded is List) {
+      final out = <BtDevice>[];
+      for (final e in decoded) {
+        if (e is! Map) continue;
+        final d = _deviceOf(e);
+        if (d != null) out.add(d);
+      }
+      return out;
+    }
   } catch (_) {
-    return null;
+    // 坏值按「不限定」处理。
   }
+  return const [];
 }
 
-String btDeviceToSetting(BtDevice d) =>
-    jsonEncode({'name': d.name, 'address': d.address});
+BtDevice? _deviceOf(Map<dynamic, dynamic> m) {
+  final address = m['address'] as String?;
+  if (address == null || address.isEmpty) return null;
+  return BtDevice(name: (m['name'] as String?) ?? address, address: address);
+}
+
+String btDevicesToSetting(List<BtDevice> devices) => jsonEncode([
+      for (final d in devices) {'name': d.name, 'address': d.address},
+    ]);
+
+/// 常亮门控纯函数：未限定设备（空表）→ 恒可常亮；
+/// 否则所选设备**任一**处于连接状态即可（多选语义）。
+bool btWakeGateOpen(List<BtDevice> devices, Set<String> connected) =>
+    devices.isEmpty || devices.any((d) => connected.contains(d.address));
 
 /// Android 蓝牙查询通道：已配对设备 + 当前连接的音频设备地址。
 ///
@@ -46,6 +71,21 @@ class BluetoothService {
     if (!Platform.isAndroid) return false;
     final status = await Permission.bluetoothConnect.request();
     return status.isGranted;
+  }
+
+  /// 当前是否已持有 BLUETOOTH_CONNECT。
+  ///
+  /// 权限缺失时 [connectedAddresses] 会静默返回空集 → 「限定设备常亮」永远判定
+  /// 为未连接。调用方据此提示用户，而不是让门控无解释地失效。
+  Future<bool> hasConnectPermission() async {
+    if (!Platform.isAndroid) return false;
+    try {
+      return await _ch.invokeMethod<bool>('hasConnectPermission') ?? false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
   }
 
   /// 已配对设备列表；无权限/蓝牙关闭/非 Android 时为空表。

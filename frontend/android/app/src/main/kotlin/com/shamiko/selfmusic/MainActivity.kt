@@ -24,6 +24,7 @@ class MainActivity : AudioServiceActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
+                    "hasConnectPermission" -> result.success(hasConnectPermission())
                     "listBondedDevices" -> result.success(listBondedDevices())
                     "connectedDevices" -> result.success(connectedDeviceAddresses())
                     else -> result.notImplemented()
@@ -51,16 +52,22 @@ class MainActivity : AudioServiceActivity() {
         }
     }
 
-    /** 当前已连接的音频类设备地址（A2DP/耳机/助听器）。 */
+    /** 当前已连接的音频类设备地址（A2DP/耳机/助听器/LE Audio）。 */
     private fun connectedDeviceAddresses(): List<String> {
         if (!hasConnectPermission()) return emptyList()
         val bm = getSystemService(BluetoothManager::class.java) ?: return emptyList()
         val out = LinkedHashSet<String>()
-        for (profile in intArrayOf(
+        val profiles = arrayListOf(
             BluetoothProfile.A2DP,
             BluetoothProfile.HEADSET,
             BluetoothProfile.HEARING_AID,
-        )) {
+        )
+        // LE Audio（API 33+）：新一代 TWS/耳机只挂在 LE_AUDIO profile 上。漏掉它，
+        // 限定这些设备常亮时会永远判为「未连接」，于是只有「不限定」才生效。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            profiles.add(BluetoothProfile.LE_AUDIO)
+        }
+        for (profile in profiles) {
             try {
                 bm.getConnectedDevices(profile).forEach { out.add(it.address) }
             } catch (_: Exception) {

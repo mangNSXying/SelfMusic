@@ -1388,8 +1388,10 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
 
   /// 常亮限定设备展示名（未限定=全局常亮）。
   String _keepAwakeDeviceLabel() {
-    final d = btDeviceFromSetting(_settings.keepScreenOnDevice);
-    return d == null ? '不限定（打开播放页即常亮）' : '${d.name}（仅连接时生效）';
+    final ds = btDevicesFromSetting(_settings.keepScreenOnDevice);
+    if (ds.isEmpty) return '不限定（打开播放页即常亮）';
+    if (ds.length == 1) return '${ds.first.name}（仅连接时生效）';
+    return '${ds.map((d) => d.name).join('、')}（任一连接时生效）';
   }
 
   Future<void> _pickKeepAwakeDevice() async {
@@ -1402,33 +1404,21 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
     }
     final devices = await svc.bondedDevices();
     if (!mounted) return;
-    final picked = await showDialog<Object?>(
+    if (devices.isEmpty) {
+      AppToast.show('未找到已配对设备（请先在系统设置中配对）', isError: true);
+      return;
+    }
+    final selected = {
+      for (final d in btDevicesFromSetting(_settings.keepScreenOnDevice)) d.address
+    };
+    final picked = await showDialog<List<BtDevice>>(
       context: context,
-      builder: (c) => SimpleDialog(
-        title: const Text('常亮限定蓝牙设备'),
-        children: [
-          SimpleDialogOption(
-            onPressed: () => Navigator.of(c).pop(''),
-            child: const Text('不限定（打开播放页即常亮）'),
-          ),
-          if (devices.isEmpty)
-            const Padding(
-              padding: EdgeInsets.fromLTRB(24, 8, 24, 8),
-              child: Text('未找到已配对设备（请先在系统设置中配对）'),
-            )
-          else
-            for (final d in devices)
-              SimpleDialogOption(
-                onPressed: () => Navigator.of(c).pop(d),
-                child: Text('${d.name}（${d.address}）'),
-              ),
-        ],
-      ),
+      builder: (c) =>
+          _KeepAwakeDeviceDialog(devices: devices, selected: selected),
     );
     if (picked == null || !mounted) return;
     setState(() =>
-        _settings.keepScreenOnDevice =
-            picked is BtDevice ? btDeviceToSetting(picked) : '');
+        _settings.keepScreenOnDevice = btDevicesToSetting(picked));
   }
 
   Future<void> _pickLyricIdle(BuildContext context) async {
@@ -1753,6 +1743,80 @@ class _NotificationsSettingsState extends State<_NotificationsSettings> {
             setState(() => _settings.notificationControls = v);
             AppToast.show('通知栏播放控制将在重启应用后生效', isError: false);
           },
+        ),
+      ],
+    );
+  }
+}
+
+/// 常亮限定蓝牙设备多选弹窗：复选框支持选多个设备；
+/// 所选设备任一处于连接状态即保持常亮；一个都不勾 = 不限定。
+class _KeepAwakeDeviceDialog extends StatefulWidget {
+  const _KeepAwakeDeviceDialog(
+      {required this.devices, required this.selected});
+
+  final List<BtDevice> devices;
+  final Set<String> selected;
+
+  @override
+  State<_KeepAwakeDeviceDialog> createState() => _KeepAwakeDeviceDialogState();
+}
+
+class _KeepAwakeDeviceDialogState extends State<_KeepAwakeDeviceDialog> {
+  late final Set<String> _sel = {...widget.selected};
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('常亮限定蓝牙设备'),
+      content: SizedBox(
+        width: 320,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(bottom: 8),
+              child: Text('可多选：所选设备任一处于连接状态时保持常亮；都不勾 = 不限定',
+                  style: TextStyle(fontSize: 12)),
+            ),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final d in widget.devices)
+                    CheckboxListTile(
+                      dense: true,
+                      title: Text(d.name,
+                          maxLines: 1, overflow: TextOverflow.ellipsis),
+                      subtitle:
+                          Text(d.address, style: const TextStyle(fontSize: 11)),
+                      value: _sel.contains(d.address),
+                      onChanged: (v) => setState(() {
+                        if (v ?? false) {
+                          _sel.add(d.address);
+                        } else {
+                          _sel.remove(d.address);
+                        }
+                      }),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop([
+            for (final d in widget.devices)
+              if (_sel.contains(d.address)) d,
+          ]),
+          child: const Text('确定'),
         ),
       ],
     );

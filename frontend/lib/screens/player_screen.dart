@@ -56,10 +56,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _wakeApplied = false;
   bool _platformSyncScheduled = false;
 
-  /// 常亮蓝牙门控：限定设备时轮询其连接状态，仅连接期间保持常亮。
+  /// 常亮蓝牙门控：限定设备时轮询其连接状态，任一选中设备连接期间保持常亮。
   final BluetoothService _bt = BluetoothService();
-  BtDevice? _wakeDevice;
-  bool _btConnected = true;
+  List<BtDevice> _wakeDevices = const [];
+  bool _btDeviceConnected = true;
+  bool _btPermissionWarned = false;
   Timer? _btPoll;
 
   @override
@@ -87,15 +88,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   /// 设置变化时合并到下一帧；应用屏幕常亮。
-  /// 常亮可限定蓝牙设备：[deviceSetting] 变化时重置连接门控并轮询。
+  /// 常亮可限定蓝牙设备（可多选）：设备集合变化时重置连接门控并轮询。
   void _scheduleWakeSync(bool keepOn, String deviceSetting) {
-    final device = btDeviceFromSetting(deviceSetting);
-    final deviceChanged = device?.address != _wakeDevice?.address;
+    final devices = btDevicesFromSetting(deviceSetting);
+    final deviceChanged = !_sameDeviceSet(devices, _wakeDevices);
     final changed = keepOn != _wantWake || deviceChanged;
     _wantWake = keepOn;
-    _wakeDevice = device;
+    _wakeDevices = devices;
     if (deviceChanged) {
-      _btConnected = device == null;
+      _btDeviceConnected = devices.isEmpty;
       _restartBtPoll();
     }
     if (!changed || _platformSyncScheduled) return;
@@ -111,7 +112,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void _flushWakeLock() {
     if (!mounted) return;
     final wake =
-        _wantWake && (_wakeDevice == null || _btConnected);
+        _wantWake && (_wakeDevices.isEmpty || _btDeviceConnected);
     if (wake != _wakeApplied) {
       // ohos 无 wakelock_plus 实现，跳过（见 dispose 处注释）。
       if (Platform.operatingSystem != 'ohos') {
@@ -125,21 +126,36 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void _restartBtPoll() {
     _btPoll?.cancel();
     _btPoll = null;
-    if (!_wantWake || _wakeDevice == null) return;
+    if (!_wantWake || _wakeDevices.isEmpty) return;
     unawaited(_refreshBtConnection());
     _btPoll = Timer.periodic(
         const Duration(seconds: 5), (_) => unawaited(_refreshBtConnection()));
   }
 
   Future<void> _refreshBtConnection() async {
-    final dev = _wakeDevice;
-    if (dev == null) return;
+    final devices = _wakeDevices;
+    if (devices.isEmpty) return;
+    if (!await _bt.hasConnectPermission()) {
+      // 权限被收回时查询恒为空，门控会把常亮判成「设备未连接」。记一条诊断日志，
+      // 免得用户以为设置坏了（设置页会在申请权限时给出提示）。
+      if (!_btPermissionWarned) {
+        _btPermissionWarned = true;
+        debugPrint('[wake] 缺少 BLUETOOTH_CONNECT 权限，蓝牙连接状态无法判定');
+      }
+      return;
+    }
     final connected = await _bt.connectedAddresses();
-    final ok = connected.contains(dev.address);
-    if (ok != _btConnected && mounted) {
-      _btConnected = ok;
+    final ok = btWakeGateOpen(devices, connected);
+    if (ok != _btDeviceConnected && mounted) {
+      _btDeviceConnected = ok;
       _flushWakeLock();
     }
+  }
+
+  bool _sameDeviceSet(List<BtDevice> a, List<BtDevice> b) {
+    if (a.length != b.length) return false;
+    final addrs = {for (final d in a) d.address};
+    return addrs.containsAll({for (final d in b) d.address});
   }
 
   /// 播放页下拉跟手：整页随手指下移，底下显露分组区；松手按位移/速度吸附或离场。
