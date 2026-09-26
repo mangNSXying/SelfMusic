@@ -600,11 +600,13 @@ class PlayerProvider extends ChangeNotifier {
   // ---------- 队列装载 ----------
 
   /// 载入一个播放队列并从 [index] 开始播放。
+  /// [index]：起始曲下标。歌单「播放」传 [startIndexForPlaylist]（按当前播放
+  /// 顺序算法决定），「从头播放」传 0（默认）；点歌传被点行下标。
   /// [playlistUuid]：从已同步歌单播全部/点歌时传入（阶段5 断点归属用），其它队列不传。
-  /// [resumeFromBreakpoint]：打开歌单「播放全部」时开启——若其他设备的断点更新，
+  /// [resumeFromBreakpoint]：打开歌单「播放」时开启——若其他设备的断点更新，
   /// 自动定位到该进度并提示（详情页「从头播放」走默认 false）。
   /// [contextKey]：当前点歌所在列表的锚定键（PlayerProvider.anchorForXxx）。
-  /// [resetAnchor]：歌单页「播放全部/从头播放」专用——清空深层历史并切换到该歌单。
+  /// [resetAnchor]：歌单页「播放/从头播放」专用——清空深层历史并切换到该歌单。
   ///
   /// 锚定语义（深层列表功能）：
   /// - 首个列表即锚定；同锚定键点歌推入深层末尾（固定首位接续融合）；
@@ -623,7 +625,7 @@ class PlayerProvider extends ChangeNotifier {
         (playlistUuid != null ? PlayerProvider.anchorForPlaylist(playlistUuid) : null);
 
     if (resetAnchor) {
-      // 「播放全部/从头播放」：清空深层历史 + 重锚到目标（歌单）。
+      // 「播放/从头播放」：清空深层历史 + 重锚到目标（歌单）。
       _syncPlaylistUuid = playlistUuid;
       _fusedBase = null;
       _bindDeepList(key, listSize: resolved.length, reset: true);
@@ -1064,15 +1066,24 @@ class PlayerProvider extends ChangeNotifier {
 
   /// 按权重随机抽一首（排除当前曲；只剩当前曲时允许重播）。
   Song? _pickWeighted() {
-    if (_queue.isEmpty) return null;
-    final prev = _current;
-    var candidates =
-        _queue.where((s) => prev == null || !_same(s, prev)).toList();
-    if (candidates.isEmpty) candidates = List.of(_queue);
+    final i = _weightedPickIndex(_queue, _current);
+    return i == null ? null : _queue[i];
+  }
+
+  /// 加权抽样的下标版（队列下一首与歌单起播共用）：
+  /// 在 [pool] 中排除 [exclude] 后按 factor 抽样，返回命中下标；池空返回 null。
+  int? _weightedPickIndex(List<Song> pool, Song? exclude) {
+    if (pool.isEmpty) return null;
+    var candidates = <int>[
+      for (var i = 0; i < pool.length; i++)
+        if (exclude == null || !_same(pool[i], exclude)) i,
+    ];
+    // 只剩当前曲（或全被排除）时退回全量，允许重播。
+    if (candidates.isEmpty) candidates = [for (var i = 0; i < pool.length; i++) i];
     final weights = <double>[];
     var total = 0.0;
-    for (final s in candidates) {
-      final f = _weight?.factorOf(s) ?? SongWeightStore.defaultFactor;
+    for (final i in candidates) {
+      final f = _weight?.factorOf(pool[i]) ?? SongWeightStore.defaultFactor;
       weights.add(f);
       total += f;
     }
@@ -1086,6 +1097,43 @@ class PlayerProvider extends ChangeNotifier {
       }
     }
     return picked;
+  }
+
+  /// 歌单「播放」的起始下标（改进.txt：按当前播放顺序决定，而非固定从头）：
+  /// - 顺序 / 单曲循环：首曲；
+  /// - 列表循环：当前曲在歌单内则接续其后（末尾回绕到首曲），否则首曲；
+  /// - 加权随机：按权重抽样（[weightedIndex] 由调用方给出，null 时退回首曲）。
+  ///
+  /// 纯函数（不依赖实例状态），便于直接单测；实例入口见 [startIndexForPlaylist]。
+  static int startIndexForOrder(PlayMode mode, int length,
+      {int? currentIndex, int? weightedIndex}) {
+    if (length <= 0) return 0;
+    switch (mode) {
+      case PlayMode.loopList:
+        if (currentIndex == null || currentIndex < 0) return 0;
+        return (currentIndex + 1) % length;
+      case PlayMode.weighted:
+        final w = weightedIndex;
+        return (w == null || w < 0 || w >= length) ? 0 : w;
+      case PlayMode.sequence:
+      case PlayMode.loopOne:
+        return 0;
+    }
+  }
+
+  /// 实例版起播下标：把「当前曲在歌单内的位置」与「加权抽样结果」喂给
+  /// [startIndexForOrder]（加权模式在此抽样，与队列下一首同一套权重逻辑）。
+  int startIndexForPlaylist(List<Song> songs) {
+    if (songs.isEmpty) return 0;
+    final cur = _current;
+    final currentIndex =
+        cur == null ? -1 : songs.indexWhere((s) => _same(s, cur));
+    final weightedIndex = _mode == PlayMode.weighted
+        ? _weightedPickIndex(songs, cur)
+        : null;
+    return startIndexForOrder(_mode, songs.length,
+        currentIndex: currentIndex < 0 ? null : currentIndex,
+        weightedIndex: weightedIndex);
   }
 
   // ---------- 事件采集（stage2.md §2.3） ----------
@@ -1381,7 +1429,7 @@ class PlayerProvider extends ChangeNotifier {
     }
   }
 
-  /// 「播放全部」：其他设备的断点更新时自动定位到该进度并提示。
+  /// 「播放」：其他设备的断点更新时自动定位到该进度并提示。
   Future<void> _resumeFromMirrorIfAny(String playlistUuid) async {
     final idx = _index;
     if (idx == null) return;
@@ -1426,7 +1474,7 @@ class PlayerProvider extends ChangeNotifier {
 
   /// 绑定（或解绑）当前锚定列表的深层列表；同一锚定重复绑定仅更新容量。
   /// [listSize]：锚定列表当前歌曲总数（容量；>0 时更新）。
-  /// [reset]：切换锚定（播放全部/从头播放）——清空深层历史后按空栈重建。
+  /// [reset]：切换锚定（播放/从头播放）——清空深层历史后按空栈重建。
   void _bindDeepList(String? anchorKey, {int listSize = 0, bool reset = false}) {
     if (anchorKey == null) {
       _deepList = null;

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:provider/provider.dart';
+import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
@@ -40,6 +41,62 @@ Future<void> settleWriter(WidgetTester tester) async {
         () => Future<void>.delayed(const Duration(milliseconds: 20)));
   }
   await tester.pumpAndSettle();
+}
+
+/// 造一个含两首歌（夜曲/晴天）的歌单并返回临时目录与歌单 id。
+///
+/// 关键前提：两首歌都灌进本地索引，使歌单详情的 `songByRef` 能解析出实时行
+/// （`id` 为真实 rowid）；而歌单条目行是快照（`id` 恒 0）——两套 `songKey`
+/// 不同源，正是「已选」计数恒 0 / 搜索后全选变整单的根因前提。
+Future<(Directory, int)> _seedIndexedPlaylist(
+    DirectSourceManager direct, String prefix) async {
+  final dir = await Directory.systemTemp.createTemp(prefix);
+  PathProviderPlatform.instance = _FakePathProvider(dir.path);
+  await direct.init();
+  final plId = await direct.playlists.create('多选歌单');
+  await direct.index.upsertSongs([
+    DirectSongRow(
+        sourceKey: 'local:test',
+        ref: 'a',
+        title: '夜曲',
+        artist: '周杰伦',
+        album: '十一月的萧邦',
+        duration: 100,
+        format: 'mp3',
+        size: 1024,
+        mtime: 1),
+    DirectSongRow(
+        sourceKey: 'local:test',
+        ref: 'b',
+        title: '晴天',
+        artist: '周杰伦',
+        album: '叶惠美',
+        duration: 120,
+        format: 'mp3',
+        size: 1024,
+        mtime: 2),
+  ]);
+  await direct.playlists.addSong(plId, Song.direct(
+    id: 1,
+    sourceKey: 'local:test',
+    title: '夜曲',
+    artist: '周杰伦',
+    source: 'local',
+    sourceRef: 'a',
+    fileSize: 1024,
+    format: 'mp3',
+  ));
+  await direct.playlists.addSong(plId, Song.direct(
+    id: 2,
+    sourceKey: 'local:test',
+    title: '晴天',
+    artist: '周杰伦',
+    source: 'local',
+    sourceRef: 'b',
+    fileSize: 1024,
+    format: 'mp3',
+  ));
+  return (dir, plId);
 }
 
 void main() {
@@ -293,6 +350,48 @@ void main() {
     nav.setSearch('');
     await tester.pump();
     expect(find.textContaining('晴天'), findsOneWidget);
+
+    await tester.runAsync(() async {
+      direct.dispose();
+      dir.deleteSync(recursive: true);
+    });
+  });
+
+  testWidgets('歌单详情播放入口：播放 + 并列「从头播放」图标（空三点菜单移除）',
+      (tester) async {
+    late final Directory dir;
+    late final DirectSourceManager direct;
+    late final int plId;
+    await tester.runAsync(() async {
+      direct = DirectSourceManager();
+      final seeded = await _seedIndexedPlaylist(direct, 'selfmusic_plplay_');
+      dir = seeded.$1;
+      plId = seeded.$2;
+    });
+
+    final provider = PlaylistsProvider(direct.playlists)..refresh();
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+          ChangeNotifierProvider<PlaylistsProvider>.value(value: provider),
+          ChangeNotifierProvider<NavigationProvider>(
+              create: (_) => NavigationProvider()),
+          ChangeNotifierProvider<PlayerProvider>(
+              create: (_) => PlayerProvider()),
+        ],
+        child: MaterialApp(
+          home: Scaffold(body: PlaylistDetailView(playlistId: plId)),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('播放'), findsOneWidget);
+    expect(find.text('播放全部'), findsNothing);
+    expect(find.byTooltip('从头播放'), findsOneWidget);
+    expect(find.byTooltip('更多播放方式'), findsNothing);
 
     await tester.runAsync(() async {
       direct.dispose();

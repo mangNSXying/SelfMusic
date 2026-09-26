@@ -363,7 +363,7 @@ class _PlaylistsViewState extends State<PlaylistsView>
   }
 }
 
-/// 歌单详情（原地子视图，仿源内浏览）：播放全部 / 移除 / 上移 / 下移。
+/// 歌单详情（原地子视图，仿源内浏览）：播放 / 从头播放 / 多选移除 / 上移 / 下移。
 class PlaylistDetailView extends StatefulWidget {
   final int playlistId;
   const PlaylistDetailView({super.key, required this.playlistId});
@@ -584,12 +584,15 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
               if (_songs.isNotEmpty) ...[
                 TextButton.icon(
                   icon: const Icon(Icons.play_arrow),
-                  label: const Text('播放全部'),
+                  label: const Text('播放'),
                   onPressed: () async {
                     final uuid = await provider.store.index
                         .ensurePlaylistUuid(widget.playlistId);
                     if (!context.mounted) return;
+                    // 起始曲按当前播放顺序算法决定（加权=权重抽样、列表循环=
+                    // 接续当前曲、顺序/单曲=首曲），与「从头播放」固定首曲区分。
                     player.playQueue(_songs,
+                        index: player.startIndexForPlaylist(_songs),
                         playlistUuid: uuid,
                         contextKey: PlayerProvider.anchorForPlaylist(uuid),
                         resetAnchor: true,
@@ -597,24 +600,19 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
                     context.read<NavigationProvider>().openPlayer();
                   },
                 ),
-                PopupMenuButton<String>(
-                  tooltip: '更多播放方式',
-                  icon: const Icon(Icons.more_vert),
-                  onSelected: (v) async {
-                    if (v == 'fromStart') {
-                      final uuid = await provider.store.index
-                          .ensurePlaylistUuid(widget.playlistId);
-                      if (!context.mounted) return;
-                      player.playQueue(_songs,
-                          playlistUuid: uuid,
-                          contextKey: PlayerProvider.anchorForPlaylist(uuid),
-                          resetAnchor: true);
-                      context.read<NavigationProvider>().openPlayer();
-                    }
+                IconButton(
+                  tooltip: '从头播放',
+                  icon: const Icon(Icons.restart_alt),
+                  onPressed: () async {
+                    final uuid = await provider.store.index
+                        .ensurePlaylistUuid(widget.playlistId);
+                    if (!context.mounted) return;
+                    player.playQueue(_songs,
+                        playlistUuid: uuid,
+                        contextKey: PlayerProvider.anchorForPlaylist(uuid),
+                        resetAnchor: true);
+                    context.read<NavigationProvider>().openPlayer();
                   },
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(value: 'fromStart', child: Text('从头播放')),
-                  ],
                 ),
               ],
             ],
