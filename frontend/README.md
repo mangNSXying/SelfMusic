@@ -1,6 +1,7 @@
 # SelfMusic 前端（Flutter）
 
-跨平台客户端：Linux 桌面 + Android + Windows 三平台，`lib/` 全为可换主题自适应 Dart 代码（鸿蒙 PoC 进行中，见 DEVELOPER.md「鸿蒙适配」）。
+跨平台客户端：Linux 桌面 + Android + Windows（`lib/` 全为可换主题自适应 Dart 代码；鸿蒙 PoC 进行中）。
+目录结构与职责注释见 [../DEVELOPER.md「项目结构」](../DEVELOPER.md#项目结构)，设计与数据模型见 [../DESIGN.md](../DESIGN.md)。
 
 ## 运行
 
@@ -19,23 +20,16 @@ flutter test                  # 单元/组件测试
 flutter build linux --debug   # Linux 出包（验证用 --release）
 flutter build apk --debug     # Android 出包
 flutter build windows --debug # Windows 出包
-# 鸿蒙：需三方 ohos 分支 Flutter + DevEco 工具链（见 DEVELOPER.md「鸿蒙适配」）
+# 鸿蒙：需三方 ohos 分支 Flutter + DevEco 工具链，见 DEVELOPER.md「鸿蒙适配」
 ```
 
-## 目录
+## 改代码前必读
 
-```
-lib/
-├── main.dart               入口 + Provider 装配（含 AudioService 通知/后台播放门控注册）
-├── theme/                  可配置主题（app_theme / theme_provider）
-├── layout/                 app_shell / sidebar / top_bar（搜索追焦） / queue_panel（自动定位当前曲） / mini_player_bar
-├── providers/              player / library / navigation / playlists / direct_source_manager / auth
-├── services/               ApiClient（懒刷新拦截器）/ AuthService / ServerSettings
-├── data/                   sources（Source 抽象层）/ local（audio_metadata + local_index + 各封装）
-├── models/                 Song / Album / Artist
-├── utils/                  duration_format / song_title_format / lrc_parser
-├── widgets/                SongTile / CoverThumb / lyrics_view / add_to_playlist（加入·编辑歌单）/ view_mode_toggle 等
-└── screens/                library / playlists_view / sources / source_browse_view / settings / player / pairing
-```
+| 改动涉及 | 必看 |
+|---------|------|
+| 本地库表结构 / 任何写操作 | [DEVELOPER.md「客户端本地数据层（SQLite 写隔离）」](../DEVELOPER.md#客户端本地数据层sqlite-写隔离) —— 写必须走写隔离，读改写用 `op` |
+| 扫描 / 元数据解析 | [DEVELOPER.md「客户端扫描与元数据」](../DEVELOPER.md#客户端扫描与元数据实现要点) —— 跨 isolate 只传可序列化参数 |
+| 同步 / 缓存落盘 | [DEVELOPER.md「客户端同步与缓存批处理」](../DEVELOPER.md#客户端同步与缓存批处理) |
+| 新增平台能力 | [DEVELOPER.md「平台收口层」](../DEVELOPER.md#平台收口层libplatform) —— 禁止在业务层写平台判断 |
 
-架构与设计见根目录 [DESIGN.md](../DESIGN.md)，开发流程见 [DEVELOPER.md](../DEVELOPER.md)，设置体系见 [settings.md](../settings.md)。
+设置项见 [../settings.md](../settings.md)。

@@ -8,7 +8,11 @@
 > 网络安全加固（默认 HTTPS + 允许不安全 HTTP / 信任自签名开关 + 明文凭据收敛到 secure storage，见 §6.7 与 问题.md）。
 > 各阶段交付、验收与落地状态见 §8；文中已用「✅ 已实现 / ⏳ 规划」标注能力与端点到现状。
 
-> **文档地图**：本文 = 整体设计 + 落地状态；设置项完整清单见 [settings.md](settings.md)；环境搭建、常用命令、调试与常见问题见 [DEVELOPER.md](DEVELOPER.md)。
+> **文档地图**：本文 = **为什么这么设计**（架构取舍、数据模型意图、API 契约、播放算法与同步协议、路线图与风险）；
+> 设置项完整清单见 [settings.md](settings.md)；
+> **怎么开发、代码怎么写、改完怎么验证**（环境、命令、SQLite 写隔离、扫描隔离、鸿蒙适配、排障）见 [DEVELOPER.md](DEVELOPER.md)；
+> 快速启动与服务端口见 [README.md](README.md)。
+> 同一段实现细节只在一处出现：本文给机制与取舍，DEVELOPER 给写代码必守的规则。
 
 ## v2 相对 v1 的关键变化
 
@@ -190,7 +194,9 @@ INDEX idx_refresh(refresh_token_hash)
 
 `song_states` 权重相关字段与触发规则见 §7.1。
 
-### 3.2 客户端（SQLite，`sqlite3` 轻量版已落地，见 §6.4）
+### 3.2 客户端（SQLite）
+
+> 表结构权威定义在 `frontend/lib/data/local/schema.dart`（`applySchema()`，主读连接与写隔离共用、幂等）；写代码规则见 [DEVELOPER.md「客户端本地数据层」](DEVELOPER.md#客户端本地数据层sqlite-写隔离)。
 
 | 表 | 说明 |
 |----|------|
@@ -202,6 +208,8 @@ INDEX idx_refresh(refresh_token_hash)
 | `app_settings` | 客户端设置（阶段 2 新增）：键值表，`cache_max_bytes / cache_song_limit / auto_cache_favorites` 等 |
 | `song_lyrics` | 歌词（迭代新增）：`(source_key, song_ref)` 主键 + `content`（LRC 文本）+ `updated_at`；三态收录（内嵌歌词 / 同名 `.lrc` / 标记缺失），避免每次播放重复读文件 |
 | `play_state` | 断点（阶段 2 新增）：单行（`id=1`），`queue_json + index + position_ms` |
+| `weight_outbox` / `breakpoint_mirror` | 同步流水与跨设备断点镜像（阶段 5 新增），语义见 §7.2 |
+| `deep_lists` | 深层列表（见 §7.1 深层列表）：`playlist_uuid` 主键 + 有界历史栈 `entries_json` |
 
 要点：
 
@@ -210,6 +218,8 @@ INDEX idx_refresh(refresh_token_hash)
   此后所有读取（搜索 / 收藏列表 / 歌单解析 / 断点恢复）统一 `LEFT JOIN play_meta`
 - 凭据加密：WebDAV/SMB 密码经 `flutter_secure_storage` 存放，SQLite 只存引用键
 - 离线优先：所有播放决策只查本地表；网络层的角色是把远端变更搬进本地
+- **读写分离（Windows 启动写盘风暴修复）**：主 isolate 的连接**只做读**，所有写经后台写 isolate（`DbWriter`）串行执行并自动合并为单个事务（队列 256 条或 2ms 触发），WAL + `synchronous=NORMAL` 把「逐行 autocommit 的几万次小块写」收敛成少量大块顺序写。
+  推论：**读改写必须在写连接内原子完成**（`applyWeightEvent` / `setFavorite` / `upsertPlayMeta` 等 op），主连接读到的是已提交数据；退出与备份导出前必须 `flushWrites()`。详见 DEVELOPER 同名章节
 - 阶段 5 同步时：权重/歌单改动落 `weight_outbox` 流水上推，服务端按 `event_uuid` 幂等去重（阶段 5 已落地，见 §7.2）
 
 ---
@@ -265,6 +275,8 @@ INDEX idx_refresh(refresh_token_hash)
 
 ### 5.1 包结构（`com.selfmusic.backend`，现状以代码为准）
 
+> 带注释的仓库目录树见 [DEVELOPER.md「项目结构」](DEVELOPER.md#项目结构)。
+
 ```
 auth/         AuthController(pair/refresh/unpair) + DeviceAdminController + SecurityConfig + TokenFilter
 admin/        AdminSettingsController(config/pairing-token)
@@ -308,44 +320,28 @@ TokenFilter (OncePerRequestFilter)
 
 ## 6. Flutter 客户端设计
 
-### 6.1 目录规划（已落地的可换主题自适应结构）
+### 6.1 客户端分层（`lib/`）
 
-```
-lib/
-├── main.dart              入口 + Provider 装配（Theme/Auth/Library/Player/Navigation）
-├── theme/                 ★ 可配置主题核心
-│   ├── app_theme.dart      语义化颜色 token + AppTheme.build()（亮/暗、自定义强调色/背景色）
-│   └── theme_provider.dart 主题状态：运行时切换 + secure_storage 持久化
-├── layout/                ★ 自适应模块化布局框架
-│   ├── app_shell.dart      顶层壳：桌面[侧边栏|内容|队列面板]，窄屏抽屉
-│   ├── sidebar.dart        侧边栏：设置分区(备份/播放/界面/服务端/歌曲/通知)+底部(明暗/退出)
-│   ├── top_bar.dart        顶栏：上层汉堡+搜索（键入保持焦点），下层导航(播放列表/喜欢/播放源/歌曲/专辑/歌手，支持左右滑动切组)
-│   ├── queue_panel.dart    播放队列面板：窄屏底部 0.7 高弹层 / 宽屏右侧常驻；打开自动定位当前曲并强调色
-│   └── mini_player_bar.dart 底部"正在播放"条：播放控制 + 播放队列入口 + 上滑/点按进播放页
-├── providers/            ★ 状态
-│   ├── navigation_provider.dart  分区/设置/播放页视图切换（层级返回）+ 源内文件夹导航(browsingSourceKey) + 歌单详情导航(browsingPlaylistId)
-│   ├── player_provider.dart      全局播放(AudioPlayer+队列) + 睡眠定时 + 歌词加载 + 预载下一首 + 按 sourceKey 解析源 + 四种播放模式 + 断点续播
-│   ├── library_provider.dart     直连源合并库 + 专辑/歌手分组 + sourceFor 解析
-│   ├── direct_source_manager.dart 直连源管理（全部激活，无单一激活态）+ 本地歌单/收藏/播放元数据 + 后台元数据补读 + 预载
-│   ├── playlists_provider.dart   歌单列表/详情状态
-│   └── auth_provider.dart        配对 + 会话过期态
-├── services/             ApiClient(含懒刷新拦截器)、AuthService、ServerSettings(代理后端地址)
-├── data/
-│   ├── sources/          ★ Source 抽象层 (LocalDirect / WebdavDirect / SmbDirect) + DirectAudioSource
-│   └── local/            纯 Dart 头部解析(audio_metadata) + SQLite(local_index) +
-│                         stage2 封装：SongWeightStore / PlaylistStore / CacheManager / AppSettings
-├── models/               Song(含 toJson/fromJson 断点快照) / Album(含 coverPath) / Artist
-├── utils/                纯工具：duration_format（mm:ss/h:mm:ss）、song_title_format（标题显示格式）、lrc_parser（LRC 解析/二分定位）
-├── widgets/              共享组件（SongTile 可收藏/⋮ / CoverThumb / PlayModeSelector / add_to_playlist（加入·编辑歌单）/
-│                         lyrics_view（歌词页） / view_mode_toggle（列表·卡片切换） / player_sheet_anim · marquee_text · section_swipe 等）
-└── screens/              library(内容区 AppContent：分区/歌单详情/喜欢列表，六组跟手滑动) / playlists_view(歌单列表+详情原地子视图，自动定位当前曲)/
-                          sources(源卡片·列表行+三点菜单) / source_browse_view(源内文件夹浏览) / settings / player(封面更多→歌曲信息·修改元数据) / pairing
-```
+客户端按「**UI 壳 → 状态 → 数据**」三层组织，模块与职责如下（文件级目录树见 [DEVELOPER.md「项目结构」](DEVELOPER.md#项目结构)）：
 
-> **平台收口层**（`capabilities`，见下方「为什么要有 platform/ 层」）与 **drift** 均未落地，属后续阶段：
-> 本地库已用 `sqlite3` 轻量版 + 阶段 2 各表落地（见 §6.4 / §3.2），无需 drift。
+| 模块 | 职责 |
+|------|------|
+| `main.dart` | 入口 + Provider 装配（Theme / Auth / Library / Player / Navigation）+ 平台 bootstrap |
+| `theme/` | ★ 可配置主题核心：语义化颜色 token + 亮/暗与自定义强调色，运行时切换并持久化 |
+| `layout/` | ★ 自适应模块化布局：桌面「侧边栏 / 内容 / 队列面板」与窄屏抽屉；顶栏（搜索 + 六分组滑动导航）；队列面板与迷你播放条（自动定位当前曲、强调色） |
+| `providers/` | ★ 状态：导航（层级返回）、播放器（队列 / 四模式 / 睡眠定时 / 歌词 / 预载 / 断点）、曲库（多源合并 + 专辑歌手分组）、直连源管理、歌单、配对与会话过期态 |
+| `services/` | ApiClient（含懒刷新拦截器）、AuthService、ServerSettings、SyncEngine |
+| `data/sources/` | ★ Source 抽象层（LocalDirect / WebdavDirect / SmbDirect）+ DirectAudioSource |
+| `data/local/` | 本地库（`schema` 建表迁移 + `db_writer` 写隔离 + `local_index` 门面）+ 纯 Dart 头部解析 + 各 Store 封装 |
+| `models/` `utils/` | 数据模型（Song / Album / Artist）；纯工具（时长格式、标题显示格式、LRC 解析） |
+| `widgets/` | 共享组件（SongTile、CoverThumb、歌词页、加入·编辑歌单、列表·卡片切换等） |
+| `platform/` | ★ 平台收口层：平台差异收敛于此，新增平台只补 `platform/<target>/`，不动上层 |
+| `screens/` | 内容区 / 歌单 / 播放源 / 源内浏览 / 设置 / 播放页 / 配对 / 设备管理 |
 
-> **为什么要有 `platform/` 层**：鸿蒙走的是三方 Flutter 分支而非官方 target，`Platform.isXxx` 行为、原生插件实现均可能与官方平台不一致。业务代码禁止直接写 `Platform.isAndroid` 之类判断，一律询问 `capabilities`；鸿蒙加入时只需在 `platform/harmonyos/` 提供一套实现，不动上层。
+> **为什么要有 `platform/` 层**：鸿蒙走三方 Flutter 分支而非官方 target，`Platform.isXxx` 行为与原生插件实现均可能与官方平台不一致，
+> 因此业务代码禁止直接写平台判断，一律经 `lib/platform/` 收口。
+> 现状、写法与鸿蒙实现见 [DEVELOPER.md「平台收口层」](DEVELOPER.md#平台收口层libplatform) 与「[鸿蒙适配](DEVELOPER.md#鸿蒙适配poc)」。
+> 本地库用 `sqlite3` 轻量版（schema 统一建表迁移 + 后台写隔离），**不引 drift**；表结构见 §3.2。
 
 ### 6.2 Source 抽象层（双模式的基石）
 
@@ -378,7 +374,7 @@ abstract class MusicSource {
 
 ### 6.4 直连模式本地轻量索引
 
-直连源在客户端建本地索引（SQLite `idx_songs`，表结构见 §3.2），实现约定分四组说明。
+直连源在客户端建本地索引（SQLite `idx_songs`，表结构见 §3.2）。**这一层的设计意图**是：让「直连一堆协议源」在体验上等价于一个一体化本地曲库，而流量与耗电可控。
 
 **扫描流程（首次）**
 
@@ -390,40 +386,38 @@ abstract class MusicSource {
 **增量与扫描模式**
 
 - 增量指纹 `(ref, size, mtime, etag)`：WebDAV 从 PROPFIND 解析 `getlastmodified`/`getetag`/`getcontentlength`；本地扫描 `stat` 取 size/mtime；**四元组未变直接跳过读头 → 二次扫描零音频下载**
-- `scan_mode` 三档：`fast` 仅文件名建索引（零读头，**默认**）/ `minimal` 只解析标题·歌手·专辑（最快补充）/ `full` 解析全部元数据 + 封面（时长/曲目/年份/流派）。六类格式 mp3/flac/m4a/ogg·opus/wav/aac 均支持；解析无果时按「同目录图片 → 文件名」回退
+- `scan_mode` 三档：`fast` 仅文件名建索引（零读头，**默认**）/ `minimal` 只解析标题·歌手·专辑（最快补充）/ `full` 解析全部元数据 + 封面（时长/曲目/年份/流派）。六类格式均支持；解析无果时按「同目录图片 → 文件名」回退
+- **三档的取舍**：`fast` 默认是因为「先让曲库能被搜到」比「元数据齐全」更重要；缺的信息由播放时补读与后台补读补齐，而不是让首扫变慢
 - 播放时懒补全：`minimal` 入库的歌缺 时长/流派/年份/封面 → `PlayerProvider` 播放后后台 `open` 读头解析并 `enrichSong` 回填，失败不影响播放
 - **播放时必然重读**：`_enrichLazily` 不依赖索引缓存，任何歌开始播放都再次读头解析并回填（兼修正断点/歌单旧快照），保证切歌即时刷新
-- **大内嵌封面两段读**：首段采样（256KB）解析缺少封面时，`coverReadHint` 按 ID3 标签声明长度 / FLAC 块头 / ogg comment 包完成度算出「读到封面块尾」所需字节数，补读一次（上限 `kCoverReadCapBytes` 8MB）再解析——高清扫图常见 1~3MB，一段读会整块丢失；**moov-at-end 的 m4a、ogg/opus 时长、无 ID3v2 的 mp3 ID3v1** 走 `tailReadHint` 尾部补读（m4a 按 256KB→1MB→4MB→8MB 逐级增大，ogg 取末页 granule，mp3 取尾 128B）；扫描 `full`+提取封面同样走 `readAudioMeta` 统一读序。旧版已标已读但无封面的 mp3/flac 行由一次性迁移（`kCoverReenrichV1Done`，设备本地标记）重置为未读，交给后台补读重取。**歌词（USLT / LYRICS）与长文本帧同在整段标签内，随两段读一并补全**
-- **同目录图片回退**：解析后仍无封面 → 按「同名图片（`.png/.jpg/.jpeg/.webp`）→ `cover.*`/`folder.*`/`front.*`/`album.*`」顺序取同目录图片（播放补读按会话缓存，扫描按目录清单/下载缓存去重），经图片签名校验后落盘。同名 `.lrc` 歌词回退早已在同目录读取路径（§3.2 song_lyrics / 播放歌词加载）
+- **读头部可能需要多段**：大内嵌封面（常见 1~3MB）一段读会整块丢失，moov-at-end 的 m4a / ogg 时长 / mp3 ID3v1 在文件尾部——因此有「两段读」与「尾部补读」策略。
+  具体的 hint 计算、上限（`kCoverReadCapBytes` 8MB）、逐级增大顺序、同目录图片与 `.lrc` 回退优先级、一次性重取迁移（`kCoverReenrichV1Done`）等实现细节见 [DEVELOPER.md「客户端扫描与元数据」](DEVELOPER.md#客户端扫描与元数据实现要点)
 - **全局后台补读**：任一首开始播放后，后台逐个补读各直连源「尚未读取过元数据」的歌曲（`DirectSourceManager` 分批循环读头回填），专辑/歌手/封面在扫描未覆盖时也能逐步补齐并在 UI 就地刷新（`LibraryProvider` 监听元数据版本号）
-- **修改歌曲元数据**：播放页封面「更多 → 修改歌曲元数据」，标题/歌手/专辑可编辑；落 `user_edited=1`，扫描不再覆盖（`LocalIndex.updateSongUserMeta` / `DirectSourceManager.updateSongMeta`）
+- **用户编辑优先于扫描**：播放页「修改歌曲元数据」落 `user_edited=1`，扫描不再覆盖（`LocalIndex.updateSongUserMeta` / `DirectSourceManager.updateSongMeta`）
 
 **进程隔离与进度**
 
-- 扫描在独立 Isolate（`scan_worker.dart` `runScan`：Isolate.spawn + 握手 `__cancel__` 通道 + 进度 `ScanProgress` 回调，listing/探测两阶段）
+- 扫描在独立 Isolate（`scan_worker.dart` `runScan`：Isolate.spawn + 握手 `__cancel__` 通道 + 进度 `ScanProgress` 回调，listing/探测两阶段）；HTTP 客户端 / DB 句柄 / `LocalIndex` **不得跨 isolate**
 - 进度事件经 `DirectSourceManager.scanProgressStream` 广播，UI（`SourceBrowseView`）节流渲染进度条并支持取消；`_inFlightScan` 全局互斥防重复扫描
-- 探测并发池：WebDAV 6、本地 4；参数只传可序列化原始值（HTTP 客户端 / DB 句柄 / `LocalIndex` 不得跨 isolate）
 
 **本地文件夹源与自动扫描**
 
 - `LocalDirectSource`（全平台）：`key='local:<name>'`、`kind=local`；文件本体即缓存，`cachedFilePath` 直接返回绝对路径走 `setFilePath`；Android 读共享存储需运行时 `READ_MEDIA_AUDIO`(13+)/`READ_EXTERNAL_STORAGE`(≤12) 权限，扫描前申请
 - 自动扫描：本地 `Directory.watch(recursive)` 变化去抖 2s 触发增量；`scan_auto_interval_min` 周期增量（WebDAV 协议无推送，靠周期低流量快扫兜底）
 
-**防护与编码**
+**健壮性取舍**
 
 - 头部越界保护：元数据块声明长度超出头部采样即停止解析，不抛 `RangeError`（大内嵌封面场景）
 - 时长探测：mp3 估算法（文件大小÷码率）或解析 Xing/VBRI 头；flac 读 STREAMINFO
-- 文字编码：mp3 ID3v2 按帧 encoding 选解码（enc==3 → UTF-8；enc==0 → 尝试 UTF-8 再回退 Latin-1）；flac/ogg VORBIS_COMMENT 按规范 UTF-8（失败回退 Latin-1）；m4a 文本原子 UTF-8；无内嵌标签时走文件名/同目录回退
 - 旧索引乱码修复：`idx_songs` 行经 `upsert` 无条件覆写，重新扫描即自动更新，无需手动清库
-
-> **重要**：修复 FLAC VORBIS_COMMENT 乱码（`String.fromCharCodes` → `utf8.decode`）后，需对已有播放源重新执行一次「扫描」以覆写旧乱码行；`upsert` 的 `ON CONFLICT` 会无条件更新 title/artist/album，无需手动删除或重建索引。
+- 各格式的文本编码解码规则见 [DEVELOPER.md「客户端扫描与元数据」](DEVELOPER.md#客户端扫描与元数据实现要点)
 
 ### 6.5 源内文件夹式浏览与全局歌曲合并
 
 - 所有播放源默认激活（移除旧「单一激活源」概念），`direct_source_manager.dart` 仅维护源列表与本地索引，不再持有 `_activeKey`
 - 点击源卡片 → `NavigationProvider.enterSource(key)` 将 `browsingSourceKey` 置为该源 key → `AppContent` 检测到 `sources + browsingSourceKey` → 内容区原地切换为 `SourceBrowseView`（不走 `Navigator.push`）
 - `SourceBrowseView`：顶部返回按钮调用 `exitSource()`、显示源名、扫描/刷新按钮、搜索框、歌曲计数；扫描完成后自动调用 `LibraryProvider.loadSongs()` 刷新全局合并库
-- 源列表页（`SourcesScreen`）支持**列表 / 卡片**两种展示（右上角切换，持久化 `view_mode_sources`，见 §6.7）；列表行复用卡片组件（`plain` 参数）
+- 源列表页（`SourcesScreen`）支持**列表 / 卡片**两种展示（右上角切换，持久化 `view_mode_sources`，见 [settings.md](settings.md)）；列表行复用卡片组件（`plain` 参数）
 - 源卡片右侧 `PopupMenuButton` 三点菜单：编辑、删除源（二次确认弹窗）
 - 新增/编辑源弹窗统一为 `_SourceDialog`：添加态用 `SegmentedButton` 选 WebDAV/本地文件夹（本地态提供「选择目录」走 `file_selector.getDirectoryPath`）；编辑态按 key 从 `LocalIndex` 原始配置预填（密码从 SecretStore 回填），改名会派生新 key 并同步迁移 `sources/idx_songs/play_meta/playlist_items`（`LocalIndex.renameSource`）
 - 全局歌曲/专辑/歌手合并：`LibraryProvider.loadSongs()` 聚合 `DirectSourceManager.allSongs()`；专辑和歌手按合并后的歌曲列表客户端聚合（`Album.fromSongs` / `Artist.fromSongs`），切换到对应栏目时自动拉取
@@ -438,31 +432,24 @@ abstract class MusicSource {
 
 ### 6.7 客户端用户设置（✅ 已实现）
 
-> 以下设置项已提供「设置」入口供用户自定义，键名对应直连模式 `app_settings` 表的 key，
-> 完整清单见 `settings.md`。6 个分区面板已全部落地（含此前暂缓项）：
-> 备份（设置/歌单导出导入）、播放（默认播放模式/断点续播/淡入淡出/均衡器/播放页手势/睡眠定时默认播完）、
-> 服务端（后端地址/配对服务器[含同一份配对密钥]/预载/缓存配置双来源）、
-> 歌曲（收藏自动缓存/扫描模式与头部·封面/忽略音频过滤/仅 Wi-Fi 扫描/标题显示格式/集合页展示形式）、界面、通知。
+> **设置项的权威清单在 [settings.md](settings.md)**（键名、默认值、入口、生效范围、实现顺序），本文不重复抄表。
+> 设计上的两点约定：
+>
+> 1. **单设备体验优先**：客户端设置完全本地闭环、离线可改；与服务器同名的配置项（缓存上限等）采用「跟随服务端 / 自定义」双来源
+> 2. **职责单一**：一个配置只属于一个分区，不在多处重复出现（如配对密钥归入「服务端 → 配对服务器」，设置页只做遮显、副标题复用同一份值）
 
-| 设置项 | 键 | 说明 | 默认 | 入口 |
-|--------|----|------|------|------|
-| 默认播放模式 | `play_mode_default` | `sequence / loopList / loopOne / weighted` 四选一，决定启动后的播放模式 | `sequence` | `设置 → 播放` |
-| 播放页权重信息显示 | `player_show_weight` | 是否在播放页展示当前歌曲 liked / factor 状态 | 显示 | `设置 → 播放` |
-| 断点续播自动恢复 | `resume_on_startup` | 启动时是否自动恢复上次队列与播放位置（恢复为暂停态，不自动播放） | 开 | `设置 → 播放` |
-| 播放页滑动手势 | `player_gesture_swipe` | 播放/歌词页横滑互切、下滑返回、迷你条上滑跟手进播放页 | 开 | `设置 → 播放` |
-| 睡眠定时默认播完最后曲目 | `sleep_play_through_default` | 睡眠弹窗「播放完最后的曲目」默认值；弹窗内可选 指定时间/指定时长/指定曲数/列表结尾 | 开 | `设置 → 播放` |
-| 预载下一首 | `preload_next` | 播放时按播放顺序算法确定下一首并后台缓存（与预载开关无关，算法照常确定） | 开 | `设置 → 服务端` |
-| 淡入淡出 | `fade_enabled` + `fade_duration_ms` | 播放/暂停音量软件渐变（just_audio `setVolume` ramp，全平台，不依赖后端 crossfade） | 开 / 1000 ms（1~3 s） | `设置 → 播放` |
-| 均衡器 | `equalizer_enabled` + `eq_bands` | 5 频段增益（60/230/910/3600/14000 Hz，±12 dB）；**仅 Android**（`AndroidEqualizer` 注入 `AudioPipeline`），Linux/macOS 不生效 | 关 | `设置 → 播放` |
-| 缓存来源模式 | `cache_config_mode` | `custom`=本地自定义值；`follow_server`=服务端建议值（`GET /api/v1/admin/config`） | `custom` | `设置 → 服务端` |
-| 标题显示格式 | `song_title_format` | `fileName / titleOnly / artistTitle / titleArtist`；默认 歌手-歌名，显示层转换不修改存储 | `artistTitle` | `设置 → 歌曲` |
-| 集合页展示形式 | `view_mode_playlists/sources/albums/artists` | 四集合页 列表/卡片 切换的持久化取值（播放列表=`list`，其余=`card`） | 见左 | 对应页面右上角 |
-| 通知栏播放控制 / 后台播放 | `notification_controls` | audio_service 媒体通知 + 前台服务；**启动时门控注册**，改动重启生效；返回桌面续播，停止才真正停 | 开 | `设置 → 通知` |
-| 自动暂停/恢复（音频焦点） | `audio_focus_enabled` | 来电 / 其他 App 抢占的暂停-恢复（just_audio `handleInterruptions`，重建播放器即时生效） | 开 | `设置 → 播放` |
-| 允许不安全 HTTP | `allow_insecure_http` | 关时显式 `http://` 地址被拒并提示；缺 scheme 恒默认补 `https://`；约束后端 / WebDAV / 配对地址 | 关 | `设置 → 服务端` |
-| 信任自签名证书 | `allow_self_signed` | dio API 与直连 WebDAV（dart:io `badCertificateCallback`）接受自签名/自建 TLS；播放器层（ExoPlayer/mpv）不受影响 | 关 | `设置 → 服务端` |
+侧边栏 6 个分区面板均已落地：
 
-来源：§7.1（播放模式与调权）；设置项汇总见 `settings.md §3`。
+| 分区 | 内容 |
+|------|------|
+| 备份 | 设置 / 歌单分开导出导入 |
+| 播放 | 默认播放模式、断点续播、淡入淡出、均衡器（Android）、播放页手势、睡眠定时默认播完、音频焦点 |
+| 服务端 | 后端地址、配对服务器（含配对密钥遮显）、预载、缓存配置双来源、允许不安全 HTTP、信任自签名证书 |
+| 歌曲 | 收藏自动缓存、扫描模式与头部·封面、忽略音频过滤、仅 Wi-Fi 扫描、标题显示格式、集合页展示形式 |
+| 界面 | 主题（亮/暗/强调色）等 |
+| 通知 | 通知栏播放控制 / 后台播放开关 |
+
+网络与凭据相关的两个开关（`allow_insecure_http` / `allow_self_signed`）是**安全边界**而非普通偏好：关时显式 `http://` 地址被拒、缺 scheme 恒默认补 `https://`，约束后端 / WebDAV / 配对地址；自签名信任只作用于 dio 与直连 WebDAV 的 TLS 回调，播放器层不受影响。
 
 ### 6.8 歌词与后台播放
 
@@ -508,17 +495,31 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 播放模式：`sequence`（当前顺序播放，播完即停）/ `loopList`（列表循环）/ `loopOne`（单曲循环）/
 `weighted`（加权随机），切换入口播放页 + 队列面板；`next()` 与自动下一首按当前模式路由。
 
+**歌单起播**（`PlayerProvider.startIndexForPlaylist` → 纯函数 `startIndexForOrder`）：歌单详情「播放」
+的**起始曲**同样按当前模式决定，而非固定从头——加权随机按权重抽样（与队列下一首共用
+`_weightedPickIndex`）、列表循环接续当前曲（末尾回绕）、顺序/单曲循环取首曲。队列本身仍按歌单
+当前排序装载（不按模式重排），「从头播放」是显式例外：固定首曲且不读远端断点。
+
+**深层列表**（`data/deep_list.dart`，隐藏能力）：锚定列表的「仅可修改末尾值」有界历史栈，容量 = 该列表歌曲总数。
+列表内播放推入末尾（超容量视为播完一轮，清空后从当前曲重来）；外部点歌只替换末尾、不切换锚定；「上一首」弹出末尾并重播新的末尾。
+**不影响「下一首」语义**——未来播放顺序仍由队列与加权算法决定。它是显式改动加权随机「同首不连续」观感的手段。
+
+> **写路径**：调权/收藏不是「先算再存」，而是由 `applyWeightEvent` 等 op 在**写连接的单个事务内**完成读改写并同时入 outbox，
+> 避免与并发收藏/歌单写互相覆盖。实现约定见 [DEVELOPER.md「客户端同步与缓存批处理」](DEVELOPER.md#客户端同步与缓存批处理)。
+
 ### 7.2 同步协议
 
 - **方向**：客户端本地 SQLite 是运行时事实源；后端是多设备汇聚点
 - **Pull**：启动全量校准 + 每 30s `GET /api/v1/sync/pull?since_cursor=`；cursor 为服务端 `sync_events.seq` 单调递增变更号
 - **Push**：本地产生权重事件/断点/歌单改动 → 写 `weight_outbox`（带 event_uuid）→ 2s 防抖批量上推；服务端按 uuid 幂等去重
 - **冲突（字段级合并，阶段 5 落地）**：权重走**事件重算**而非绝对值覆盖（两设备并发点赞按到达序重放，不互抹）；收藏/歌单元数据/删除墓碑/断点走**行级 LWW**（事件 `occurred_at` vs 行 `last_event_at`，输方收 correction 回执自纠；仲裁时钟为服务端 `arrived_at`）；歌单条目按 seq 到达序重放（后到达胜出）；直接 REST 变更（歌单 CRUD/断点 PUT/调权 POST）同样先记事件再生效，保证 pull 可见
-- **歌曲身份**：数字 `song_id` 优先，否则按 `(source, source_ref)` 唯一键解析；legacy 空 source 按 `source_ref` 兜底
-- **歌曲身份（服务端无曲库）**：统一为 `source_id + source_ref`（source_id=客户端源实例 uuid，旧数据/旧客户端为 `legacy:<协议>`）；权重/收藏落 `song_states`，歌单条目与断点自持身份及展示快照（标题/歌手/专辑/时长，pull 不覆盖客户端本地标题）；pull 身份收集恒不建行（已删歌曲不复活）。未配对（无后端地址）时直连事件不进队，避免 outbox 无限积压；`sync_enabled` 关闭同样全跳
+- **歌曲身份**：服务端无曲库，统一为 `source_id + source_ref`（source_id=客户端源实例 uuid，旧数据/旧客户端为 `legacy:<协议>`）；权重/收藏落 `song_states`，歌单条目与断点自持身份及展示快照（标题/歌手/专辑/时长，pull 不覆盖客户端本地标题）；pull 身份收集恒不建行（已删歌曲不复活）。未配对（无后端地址）时直连事件不进队，避免 outbox 无限积压；`sync_enabled` 关闭同样全跳
 - **播放源同步**：`source.create/update/delete` + 行级 LWW；身份 `client_uuid`，去重键 `(kind, address)`（名称不参与），本地文件夹源不参与，密码不入服务端（设备本地 SecretStore，新设备显示「待配置密码」）；应用后重建内存源列表；存量远端源接入时补 uuid 并补发一次 create；旧协议级身份（`legacy:<协议>`）在设备重新上报时由服务端懒迁移到源实例 uuid
 - **跨设备断点消费**：`breakpoint.set` 快照带来源设备；客户端 pull 落 `breakpoint_mirror`；启动恢复与歌单「播放全部」会比较本机 `play_state`（含歌单归属 `playlist_uuid`）与镜像的 `updated_at`，远端更新时自动从该进度续播并 toast 提示（歌单详情保留「从头播放」入口）；目标歌本机无源时退到其后第一首可播条目，全不可播则回落本机恢复
 - 直连模式（无服务器）：上述全部跳过，数据只在本机
+
+> 客户端侧实现（先落库再上报、2s 推 / 30s 拉、指数退避、快照 op、缓存攒批）见
+> [DEVELOPER.md「客户端同步与缓存批处理」](DEVELOPER.md#客户端同步与缓存批处理)。
 
 ---
 
@@ -530,6 +531,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 > `lib/` 下的 UI/主题/播放器/鉴权/状态层均为跨平台 Dart 代码，演进时不另起分支；
 > 任何特性在落地时必须有 Linux + Android 双平台的平台层配套（音频后端/权限/生命周期差异分别用条件导入或平台插件收口），
 > 以"两个平台都能跑通验收项"作为阶段完成的判定标准，避免出现平台壳长期空缺、进度脱节。
+> 原因与验收口径只在此处；各平台构建矩阵与所需构建机见 [DEVELOPER.md](DEVELOPER.md#多平台构建矩阵)。
 
 ### 阶段 0：Android 平台对齐
 
@@ -566,7 +568,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 - ✅ 歌单：`PlaylistStore` + `PlaylistsProvider`；`playlists_view.dart` 列表/详情原地子视图（新建/重命名/删除/播放全部/上移/下移/移除）+ SongTile ⋮「加入歌单」弹层
 - ✅ 断点续播：`Song.toJson/fromJson` + `play_state` 单行（2s 节流），启动恢复为**暂停态**不自动播放
 - ✅ 喜欢歌自动缓存 + LRU（`cached_at/last_accessed_at`，跳过正在播放）；收藏自动缓存开关在 `设置 → 歌曲`，缓存上限已迁至 `设置 → 服务端`（双来源，见 settings.md §3.3）
-- ✅ 规划设置项见 §6.7（`play_mode_default` / `player_show_weight` / `resume_on_startup` / 淡入淡出 / 均衡器 / 缓存双来源 / 通知控制）与 settings.md §3 全套面板（含忽略音频过滤 / 仅 Wi-Fi 扫描 / 缓存双来源 / 导入导出）
+- ✅ 设置项面板全部落地（播放模式 / 权重显示 / 断点恢复 / 淡入淡出 / 均衡器 / 缓存双来源 / 通知控制 / 忽略音频过滤 / 仅 Wi-Fi 扫描 / 导入导出），键名与默认值见 [settings.md](settings.md)
 - 验收（蓝图 §三 核心行为）：加权随机按概率选歌、同首不连续播放、喜欢可一轮多次 / 不喜欢可能多轮一次；连续 3 次完整播放 factor 提高（反之降低）；杀 App 重开断点续播；四种模式切换正确
 
 ### 阶段 3：直连 WebDAV + 本地索引（~1 周）

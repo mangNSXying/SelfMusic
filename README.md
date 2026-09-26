@@ -1,11 +1,19 @@
 # SelfMusic
 
-**去中心化的个人音乐服务**：自建单用户媒体服务器（Spring Boot），配合双模式客户端（Flutter，覆盖 Android / Windows / 鸿蒙）。
+**去中心化的个人音乐服务**：自建单用户同步服务（Spring Boot）+ 双模式客户端（Flutter / Linux · Android · Windows，鸿蒙 PoC 中）。
 
-- **多设备同步**：权重/收藏/歌单/播放源/断点的跨设备收敛，设备配对管理（后端不持有曲库）
-- **直连模式**：无后端时 App 直连 WebDAV / SMB / 本地文件夹依然完整可用（所有播放源默认激活；源内文件夹式浏览；源卡片三点菜单切换直连/代理模式、编辑源；全局歌曲/专辑/歌手合并视图；离线缓存）
+- **多设备同步**：权重 / 收藏 / 歌单 / 播放源 / 断点跨设备收敛，设备配对可管理（后端不持有曲库）
+- **直连模式**：没有后端也能完整使用 —— App 直连 WebDAV / SMB / 本地文件夹，源内文件夹式浏览 + 全局歌曲/专辑/歌手合并 + 离线缓存
 
-> 整体设计（数据模型 / API / 播放算法 / 路线图）见 [DESIGN.md](DESIGN.md)，开发环境与日常流程见 [DEVELOPER.md](DEVELOPER.md)，设置体系见 [settings.md](settings.md)。
+## 文档地图
+
+| 文档 | 内容 |
+|------|------|
+| **README.md**（本文） | 项目概览、技术栈、快速启动、服务与端口 |
+| [DEVELOPER.md](DEVELOPER.md) | 环境搭建、构建矩阵、开发流程、客户端实现要点（SQLite 写隔离 / 扫描 / 同步 / 鸿蒙 PoC）、排障 |
+| [DESIGN.md](DESIGN.md) | 整体设计、数据模型、API 契约、播放算法、同步协议、路线图与风险 |
+| [settings.md](settings.md) | 设置项权威清单（键名、默认值、入口、生效范围） |
+| [frontend/README.md](frontend/README.md) | 前端目录速查与常用 flutter 命令 |
 
 ## 主要功能（已实现）
 
@@ -22,15 +30,14 @@
 | 层级 | 技术 | 备注 |
 |------|------|------|
 | 前端 | Flutter / Dart ≥3.4 | **Linux + Android + Windows 三平台**（`lib/` 全为跨平台 Dart）；鸿蒙 PoC 进行中 |
-| 后端 | Spring Boot 3.4.4 / JDK 21 | REST API |
+| 后端 | Spring Boot 3.4.4 / JDK 21 | REST API（仅认证 / 配对 / 状态同步） |
 | 构建 | Maven | |
-| 数据库 | MySQL 8.0 | 宿主机已有实例，容器内应用直连 |
+| 数据库 | MySQL 8.0 | 服务端；客户端另有独立 SQLite 轻量库 |
 | 反向代理 | Nginx | 宿主机已有实例 |
 | 容器 | Docker + Docker Compose | 仅后端容器化 |
 
-> **平台开发原则**：Linux 桌面与 Android **同步开发、进度对齐**。`frontend/lib/` 的 UI/主题/播放器/鉴权/状态层均为跨平台 Dart，任何特性的落地同时给出双平台平台配套（音频后端/权限/生命周期差异用条件导入收口）。Android 壳工程已重建（DESIGN.md §8 阶段 0 完成），双端同步验收。
-
-**音频后端**：Android 用 ExoPlayer；Linux / Windows 桌面统一 `just_audio_media_kit`（libmpv 随包分发，无需系统安装 mpv）；鸿蒙用 fvp/libmdk 适配层（PoC，见 DEVELOPER.md「鸿蒙适配」）。
+> **平台开发原则**：Linux 桌面与 Android 同步开发、双端进度对齐，理由与验收口径见 [DESIGN.md §8](DESIGN.md#8-分阶段路线图)。
+> 各平台构建矩阵、音频后端接线（Android ExoPlayer / 桌面 libmpv / 鸿蒙 fvp）与所需构建机见 [DEVELOPER.md](DEVELOPER.md)。
 
 ## 快速开始
 
@@ -44,48 +51,34 @@ mysql -u root -p < scripts/init.sql
 
 ### 2. 配置环境变量
 
-编辑 `.env` 模板并填入宿主机内网 IP 和 MySQL 密码：
+编辑 `.env` 模板，填入宿主机内网 IP 与 MySQL 密码：
 
 ```bash
-# 编辑 .env，修改 DB_HOST 和 DB_PASSWORD
-# 配对密钥 PAIRING_TOKEN 可选：留空则首次启动随机生成并在启动日志(WARN)打印一次；
+# 必填：DB_HOST / DB_PASSWORD
+# 可选：PAIRING_TOKEN —— 留空则首次启动随机生成并在启动日志(WARN)打印一次；
 # 改动后重启生效，仅影响新设备（已配对设备不受影响）
 ```
 
-### 3. 启动后端（二选一）
-
-**日常开发**（Dev 容器，热重载免 build，端口 18089）：
+### 3. 启动后端
 
 ```bash
-docker compose --env-file .env up -d --build backend-dev
+docker compose --env-file .env up -d --build backend-dev   # 日常开发，端口 18089
+docker compose --env-file .env up -d --build backend       # 生产镜像，端口 18088
+
+curl http://localhost:18089/api/health   # {"status":"UP","service":"SelfMusic API",...}
 ```
 
-**生产模式**（jar 镜像，端口 18088）：
+### 4. 启动前端
 
 ```bash
-docker compose --env-file .env up -d --build backend
-```
-
-验证健康检查：
-
-```bash
-curl http://localhost:18089/api/health   # dev 模式
-curl http://localhost:18088/api/health   # 生产模式
-# 返回 {"status":"UP","service":"SelfMusic API",...}
-```
-
-### 4. 启动前端（Flutter SDK；Linux 首次需装 mpv）
-
-```bash
-sudo apt install -y mpv libmpv-dev   # Linux 桌面音频后端（仅首次）
 cd frontend
 flutter pub get
-flutter run -d linux     # Linux 桌面（当前主力平台）
-flutter run -d android   # Android（壳工程已就绪，见 DESIGN.md §8 阶段 0）
+flutter run -d linux      # Linux 桌面（音频后端 libmpv 随包分发，无需系统装 mpv）
+flutter run -d <设备id>   # Android（联调加 --dart-define=API_BASE_URL=http://<宿主IP>:18089）
 ```
 
-> **同步开发提示**：`frontend/lib/` 为跨平台 Dart 代码，同一份逻辑可同时在 Linux 与 Android 跑；音频后端按平台自动选择（Linux=mpv，Android=ExoPlayer）。
-> 仓库根目录提供 `run-linux.sh` / `run-android.sh` 快捷脚本。
+> 仓库根目录另有 `run-linux.sh` / `run-android.sh` / `run-windows.bat` 快捷脚本。
+> 本地直跑后端（`mvn spring-boot:run`）、Dart-define 联调地址、Windows / 鸿蒙构建机要求见 [DEVELOPER.md](DEVELOPER.md)。
 
 ### 5. 配置 Nginx（可选）
 
@@ -95,63 +88,39 @@ sudo ln -s /etc/nginx/sites-available/selfmusic.conf /etc/nginx/sites-enabled/
 sudo nginx -s reload
 ```
 
+## 服务与端口
+
+| 服务 | 宿主机端口 | 说明 |
+|------|-----------|------|
+| `backend-dev` | 18089 | **日常开发**：容器内 `spring-boot:run` 热重载，改 Java 免 build |
+| `backend` | 18088 | 生产镜像（打包 jar），发布前验证 |
+| 后端本地直跑 | 8080 | `mvn spring-boot:run -f backend/pom.xml`，不用 Docker 时 |
+
+> 启动 / 停止 / 看日志的完整命令见 [DEVELOPER.md「后端开发」](DEVELOPER.md#后端开发)。
+
 ## 项目结构
 
 ```
 selfmusic/
-├── backend/                     # Spring Boot 后端
-│   ├── Dockerfile               # 生产镜像（多阶段构建，JDK 21）
-│   ├── Dockerfile.dev           # Dev 镜像（容器内热重载）
-│   ├── pom.xml
-│   └── src/main/java/com/selfmusic/backend/
-│       ├── SelfMusicApplication.java
-│       ├── config/WebConfig.java
-│       └── controller/HealthController.java
-├── frontend/                    # Flutter 前端（可换主题自适应 UI，跨平台 Dart）
-│   ├── pubspec.yaml
-│   ├── linux/                   # Linux 壳工程（当前主力，完整）
-│   ├── android/                 # Android 壳工程（已重建，双端对齐开发）
-│   └── lib/
-│       ├── main.dart            # 入口 + Provider 装配 / Root
-│       ├── theme/               # 可配置主题（app_theme / theme_provider）
-│       ├── layout/              # 自适应布局（app_shell/sidebar/top_bar/queue_panel/mini_player_bar）
-│       ├── providers/           # 状态（auth/library/player/navigation/playlists/direct_source_manager）
-│       ├── services/            # ApiClient（含懒刷新拦截器）/ AuthService / ServerSettings
-│       ├── data/sources/        # MusicSource 抽象 + WebdavDirect / LocalDirect / SmbDirect
-│       ├── data/local/          # audio_metadata 头部解析 + local_index + 阶段2 封装（weight/playlist/cache/settings）
-│       ├── models/              # Song / Album / Artist
-│       ├── widgets/             # 共享组件（SongTile / CoverThumb / PlayModeSelector / add_to_playlist）
-│       └── screens/             # library / playlists_view / sources / source_browse_view / settings / player / pairing
-├── scripts/
-│   └── init.sql                 # MySQL 建库建表
-├── nginx/
-│   └── selfmusic.conf           # Nginx 反向代理配置
-├── docker-compose.yml           # Docker 编排
-├── .env                         # 环境变量模板
-├── run-linux.sh                 # Linux 快速运行（等价 flutter run -d linux）
-├── run-android.sh               # Android 快速运行（flutter run -d <设备id> --dart-define=API_BASE_URL）
+├── backend/                     # Spring Boot 后端（认证/配对 + 状态同步）
+├── frontend/                    # Flutter 客户端（Linux/Android/Windows 壳工程 + 跨平台 lib/）
+│   ├── lib/data/                # 播放源抽象 + SQLite 本地库 + 元数据解析
+│   ├── lib/providers/           # 播放/曲库/歌单/导航/源管理状态
+│   └── lib/screens/             # 内容区 / 歌单 / 播放源 / 设置 / 播放页 / 配对
+├── scripts/init.sql             # 服务端 MySQL 建库建表（schema 唯一事实源）
+├── nginx/selfmusic.conf         # 反向代理模板
+├── docker-compose.yml           # backend + backend-dev 编排
+├── .env                         # 环境变量模板（不入库）
+├── run-linux.sh / run-android.sh / run-windows.bat
+├── DESIGN.md / DEVELOPER.md / settings.md
 └── README.md
 ```
 
-## Docker 服务
+> 带注释的完整目录树、后端分层约定见 [DEVELOPER.md「项目结构」](DEVELOPER.md#项目结构)。
 
-| 服务 | 启动方式 | 暴露端口 | 说明 |
-|------|---------|---------|------|
-| `backend-dev` | `docker compose --env-file .env up -d --build backend-dev` | `18089` | **日常开发用**，容器内热重载，改代码免 build |
-| `backend` | `docker compose --env-file .env up -d --build backend` | `18088` | 生产镜像（打包 jar），发布前验证 |
+## 环境依赖
 
-## 端口映射
-
-| 端口 | 用途 |
-|------|------|
-| `18089` | Dev 容器后端 API（日常开发） |
-| `18088` | 生产镜像后端 API |
-| `8080` | 本地直跑后端（`mvn spring-boot:run`） |
-
-## 宿主机依赖
-
-- Docker + Docker Compose
-- MySQL 8.0（已安装）
-- Nginx（已安装）
-- Flutter SDK（用于前端开发）
-- JDK 21（宿主机编译用，容器自带的 Maven 镜像也已包含）
+- Docker + Docker Compose、MySQL 8.0、Nginx（后端侧）
+- JDK 21（宿主机编译用）、Flutter SDK（stable，Dart ≥3.4）
+- Windows 出包需 Windows 机器 + VS 2022 C++ 桌面负载；鸿蒙需 DevEco Studio 与三方 Flutter 分支
+- 完整矩阵与搭建顺序见 [DEVELOPER.md「环境要求」](DEVELOPER.md#环境要求)

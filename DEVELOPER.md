@@ -1,9 +1,17 @@
 # SelfMusic 开发者文档
 
-本文档面向项目开发者，介绍**日常开发流程、环境搭建、常用命令与调试排查**。
-架构设计、数据模型、API 设计与落地状态见 [DESIGN.md](DESIGN.md)；设置项完整清单见 [settings.md](settings.md)。
+本文档面向项目开发者，是**开发落地的主文档**：环境搭建、构建矩阵、日常流程、常用命令、客户端实现要点（SQLite 写隔离 / 扫描 / 同步）、调试排查。
 
-环境搭建与快速启动请参考 [README.md](README.md)。
+文档分工：
+
+| 想知道 | 看哪 |
+|--------|------|
+| 快速跑起来、服务与端口 | [README.md](README.md) |
+| **怎么开发、代码怎么写、改完怎么验证** | **本文** |
+| 为什么这么设计、数据模型 / API 契约 / 播放算法 / 路线图 | [DESIGN.md](DESIGN.md) |
+| 设置项键名、默认值、入口、生效范围 | [settings.md](settings.md) |
+
+原则：**机制与取舍留在 DESIGN，写代码时必守的规则与命令留在本文**，同一段实现细节只写一处。
 
 ---
 
@@ -13,6 +21,10 @@
 - [项目结构](#项目结构)
 - [后端开发](#后端开发)
 - [前端开发](#前端开发)
+  - [平台收口层](#平台收口层libplatform)
+  - [客户端本地数据层（SQLite 写隔离）](#客户端本地数据层sqlite-写隔离)
+  - [客户端扫描与元数据](#客户端扫描与元数据实现要点)
+  - [客户端同步与缓存批处理](#客户端同步与缓存批处理)
 - [数据库规范](#数据库规范)
 - [配置说明](#配置说明)
 - [常见问题排查](#常见问题排查)
@@ -97,12 +109,18 @@ selfmusic/
 ├── frontend/                         # Flutter 前端
 │   ├── lib/
 │   │   ├── main.dart                 # 入口 + Provider 装配 / Root
+│   │   ├── platform/                 # ★ 平台收口层（平台差异收敛，bootstrap 装配），当前只有 harmonyos/
 │   │   ├── theme/                    # 可配置主题（app_theme / theme_provider）
 │   │   ├── layout/                   # 自适应布局（app_shell / sidebar / top_bar / queue_panel / mini_player_bar）
 │   │   ├── providers/                # 状态（auth / library / player / navigation / playlists / direct_source_manager）
 │   │   ├── services/                 # dio+懒刷新拦截器(ApiClient)、AuthService、ServerSettings、SyncEngine（阶段5 推拉/cursor/退避）
 │   │   ├── data/sources/             # MusicSource 抽象 + WebdavDirect + LocalDirect + SmbDirect + sibling_cover（同目录图片回退）
-│   │   ├── data/local/               # audio_metadata（mp3/flac/m4a/ogg·opus/wav/aac 头部解析 + 两段/尾读） + local_index + 阶段2 封装（song_weight_store / playlist_store / cache_manager / app_settings）+ 阶段5（sync_event_types / weight_outbox / breakpoint_mirror）
+│   │   ├── data/deep_list.dart       # 深层列表：锚定列表的「仅可改末尾」有界历史栈（见 DESIGN §7.1）
+│   │   ├── data/local/               # ★ 本地数据层：schema（建表迁移唯一事实源）+ db_writer（后台写隔离）
+│   │   │                            #   + local_index（主连接只读/写 API 转发/flushWrites）
+│   │   │                            #   + audio_metadata（mp3/flac/m4a/ogg·opus/wav/aac 头部解析 + 两段/尾读）
+│   │   │                            #   + song_weight_store / playlist_store / cache_manager / app_settings / backup_service
+│   │   │                            #   + 阶段5：sync_event_types / weight_outbox / breakpoint_mirror
 │   │   ├── models/                   # Song / Album / Artist
 │   │   ├── utils/                    # duration_format / song_title_format / lrc_parser
 │   │   ├── widgets/                  # 共享组件（SongTile / CoverThumb / lyrics_view / add_to_playlist / view_mode_toggle 等）
@@ -172,15 +190,10 @@ docker compose restart backend     # 重启
 docker compose down                # 停止并移除
 ```
 
-### 端口汇总
+### 端口与前端联调
 
-| 服务 | 宿主机端口 | 说明 |
-|------|-----------|------|
-| backend-dev | **18089** | Dev 容器，日常开发 |
-| backend | **18088** | 生产镜像 |
-| 本地直跑 | **8080** | 宿主机直接运行 |
-
-前端联调时 `--dart-define=API_BASE_URL` 指向对应端口。
+三种运行方式对应的宿主机端口（dev 18089 / 生产 18088 / 本地直跑 8080）汇总见 [README.md「服务与端口」](README.md#服务与端口)。
+前端联调时用 `--dart-define=API_BASE_URL` 指向对应端口，见「[API 地址配置](#api-地址配置)」。
 
 ### 常用 Maven 命令
 
@@ -269,26 +282,85 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 | flutter_secure_storage | 敏感数据安全存储（token、主题偏好、WebDAV 密码、配对密钥；统一经 `SecretStore` 收口，见 `frontend/lib/services/secret_store.dart`） |
 | audio_service | Android 通知栏 / 后台播放（前台服务 + 媒体通知，`SelfMusicAudioHandler` 自定义处理器） |
 | crypto | 缓存 key / 封面等哈希去重 |
-| sqlite3 / sqlite3_flutter_libs | 客户端本地库（local_index）：源索引 idx_songs + cache + play_meta + playlists + app_settings + song_lyrics + play_state（drift 的轻量替代，见 DESIGN §3.2） |
+| sqlite3 / sqlite3_flutter_libs | 客户端本地库（`data/local/`）：源索引 idx_songs + cache + play_meta + playlists + app_settings + song_lyrics + play_state；读写分离与事务合批见「[客户端本地数据层](#客户端本地数据层sqlite-写隔离)」 |
 | xml | WebDAV PROPFIND XML 解析 |
 | file_selector | 备份导入导出、本地文件夹源「选择目录」 |
 | permission_handler | Android 本地文件夹源运行时权限（READ_MEDIA_AUDIO / READ_EXTERNAL_STORAGE） |
 
+### 平台收口层（`lib/platform/`）
+
+跨平台代码里**不要在业务层写 `Platform.isAndroid` / `Platform.isLinux` 之类判断**：鸿蒙走三方 Flutter 分支，官方 target 的 `Platform` 行为与原生插件实现都可能不一致。平台差异统一收敛到 `lib/platform/<target>/`，启动时由该平台的 bootstrap 装配，新增平台只补一个目录、不动上层。
+
+现状（`lib/platform/harmonyos/`）：
+
+- `ohos_bootstrap.dart`：`setupOhos()` 在 `main()` 里 `runApp` 前调用，装配三件事——sqlite3 `open.overrideForAll`（顶层函数，isolate 安全）、`FlutterSecureStoragePlatform` 桩、`JustAudioPlatform` fvp 适配
+- `just_audio_fvp.dart` / `secure_storage_ohos.dart`：音频后端与安全存储的 ohos 实现
+- 平台判定统一用 `Platform.operatingSystem == 'ohos'`（stable 工具链没有 `Platform.isOhos` getter，见「[鸿蒙适配](#鸿蒙适配poc)」）
+- 其余平台差异目前靠条件导入式的一层封装（`just_audio` 默认 Android 走 ExoPlayer、桌面走 media_kit），尚**未**抽成统一 `capabilities` 接口——新增平台能力时优先考虑在 `lib/platform/` 补齐
+- 少数确实需要平台判断的调用点（音频焦点、wakelock、通知栏）以 `Platform.isAndroid` 门控，并在注释里说明「ohos 走降级路径」
+
+### 客户端本地数据层（SQLite 写隔离）
+
+> 机制背景（为什么有这层）见 [DESIGN.md §3.2](DESIGN.md#32-客户端sqlite)；本节是**写代码时必守的规则**。
+
+结构（`lib/data/local/`）：
+
+| 文件 | 职责 |
+|------|------|
+| `schema.dart` | 建表 + 迁移的**唯一事实源**（`applySchema(db)` 幂等），主读连接与写连接各跑一遍 |
+| `db_writer.dart` | `DbWriter`：后台 isolate 独占第二个连接，串行执行并自动合批 |
+| `local_index.dart` | 主 isolate 侧门面：读用主连接，所有写转发给 `DbWriter` |
+
+**为什么这样切**：逐行 autocommit 写几万条索引会打满磁盘 I/O，Windows 上表现为启动卡死。改为写全部离开主 isolate、队列内多条语句合并成单个事务后，「几万次小块写」收敛为少量大块顺序写。
+
+核心约定：
+
+- **主连接只读**：`_db` 仅用于 SELECT 与 `applySchema`；`LocalIndex` 的所有写方法都走 `_writer`（`exec` / `execUpdated` / `execInsert` / `op` / `opBatch`）
+- **事务合批**：写隔离内队列满 **256 条**或距上次 flush **2ms** 即提交一次（`BEGIN … COMMIT` 裹住整批）；所有调用按到达顺序 **FIFO** 执行
+- **WAL + 降 fsync**：`journal_mode=WAL`、`synchronous=NORMAL`（WAL 下仅 checkpoint fsync）、`busy_timeout=30000`、`wal_autocheckpoint=1000`
+- **Future 语义**：需要回执的写返回 `Future`，**落库后才完成**（主连接经 WAL 立即读到已提交数据）；只有可丢失的旁路写用 `execFire`（如 `app_settings` 内存缓存回写）
+- **复合逻辑用 `op`**：读改写必须在写连接内原子完成，不能「主连接读 → 主线程算 → 写连接写」。已封装的 op：`applyWeightEvent` / `setFavorite` / `upsertPlayMeta` / `upsertSongs` / `clearMissing` / `renameSource` / `deleteSource` / `movePlaylistItem` / `updateSongUserMeta` / `apply*Snapshot` / `migrateMetaRefs` 等（完整清单见 `db_writer.dart` 的 `_runOp`）
+- **落库时机要显式**：`LocalIndex.flushWrites()` 在**导出 / 导入备份**（`backup_service.dart`）与**退出**（`player_provider` 的 `shutdown()`）前必须调用；进程被杀时排队中的写会丢，因此只允许把它用在可重算的派生数据上
+- **数据迁移在写隔离 `init` 里跑**：历史 `play_meta` 的 `ENCODE(ref)` 脏值由 `migrateMetaRefs` 在开连接时修一次（幂等）
+- **平台差异**：写隔离是独立 isolate，拿不到主 isolate 的 `open.overrideFor`（测试正是靠它注入），因此 `_openWriterDb` 自己解析 `libsqlite3`——Linux 依次试 `libsqlite3.so` / `libsqlite3.so.0`（发行版常只有后者）
+
+测试约定：写是异步的，断言落库结果前先 `await index.flushWrites()`；组件测试里用 `settleWriter(tester)` 辅助冲刷写队列（`test/playlists_view_test.dart` / `test/song_tile_test.dart`），不要靠固定 `Future.delayed` 猜时间。
+
 ### 客户端扫描与元数据（实现要点）
 
-> 设计方案与扫描模式见 DESIGN.md §6.4；这里只记**写代码时必守的隔离与数据规则**。
+> 扫描模式与指纹语义见 [DESIGN.md §6.4](DESIGN.md#64-直连模式本地轻量索引)；本节只记**写代码时必守的隔离与数据规则**。
 
 - 扫描在独立 Isolate 运行（`data/sources/scan_worker.dart` 的 `runScan`）：入口函数只收可序列化的原始参数
   （HTTP 客户端 / DB 句柄 / `LocalIndex` 等**不得跨 isolate 发送**）；指纹表由主 isolate 在 `scan()` 前查好以 `Map<String,Object?>` 传入
 - 增量指纹键 `(ref, size, mtime, etag)`：WebDAV 从 PROPFIND 的 `getlastmodified`/`getetag`/`getcontentlength` 解析；
   `scanFingerprint` 主 isolate 查询一次传入，避免 worker 碰 DB
 - WebDAV 列表与探测分别并发（`_mapConcurrent` 并发 6 / 本地探测并发 4）；单文件探测失败不拦截整个扫描
-- 结果回主 isolate 后统一 `upsertSongs`（单事务批量）+ `persistCover` + `markMissingExcept` + `clearMissing`；`LocalIndex` 只允许主 isolate 访问
+- 结果回主 isolate 后统一 `upsertSongs`（**整批单事务**，走 `op('upsertSongs', …)`；同步快照批量用 `opBatch('applySongSnapshots', …)`）+ `persistCover` + `markMissingExcept` + `clearMissing`；
+  `LocalIndex` 只允许主 isolate 访问，写全部转发写隔离
+- `upsertSongs` 的覆盖保护：用户手改过（`user_edited=1`）的标题/歌手/专辑不被扫描覆盖；浅扫描解析出的空值不覆盖已存值；只有本次解析出时长才标 `meta_read`
 - 自动扫描：本地 `Directory.watch(recursive)` 变化去抖 2s 触发 `scanSource(key)`；周期定时器按 `scan_auto_interval_min` 轮询全部直连源；`_inFlightScan` 全局互斥防重复扫描
 - 播放时懒补全：`PlayerProvider._enrichLazily` 只在 `duration == null` 时读头解析并 `enrichSong` 回填，失败静默
 - 测试：`test/webdav_scan_test.dart` 用真 `HttpServer`（PROPFIND/GET/Range + 可变 etag）验证跨 isolate 扫描、增量跳过与 etag 变化仅重探目标文件；`test/audio_metadata_test.dart` 覆盖头部越界与大封面边界；
   另有 `duration_format_test`（时长 mm:ss/h:mm:ss）、`lrc_parser_test`（歌词解析）、`song_title_format_test`（标题格式）、`play_reconcile_test`（播放前最新行纠正）、`top_bar_search_test`（搜索追焦）、`view_mode_settings_test`（集合页视图持久化）、`playlist_membership_test`（歌单归属/切换）与 `playlists_view_test` 等
-- 历史坑：mp3 enc==3 / flac VORBIS_COMMENT 曾用 `String.fromCharCodes` 逐字节解码导致 CJK 乱码——已改 UTF-8 解码（见 DESIGN §6.4「防护与编码」）；修复后需重扫一次覆写旧行
+- 历史坑：mp3 enc==3 / flac VORBIS_COMMENT 曾用 `String.fromCharCodes` 逐字节解码导致 CJK 乱码——已改 UTF-8 解码；修复后需对已有源重扫一次覆写旧行（`upsert` 无条件覆盖 title/artist/album，无需删库）
+
+**读头部的多段策略（`data/local/audio_metadata.dart`）**
+
+- **两段读**：首段采样（256KB）解析后若缺封面，`coverReadHint` 按 ID3 标签声明长度 / FLAC 块头 / ogg comment 包完成度算出「读到封面块尾」所需字节数，补读一次再解析；上限 `kCoverReadCapBytes` = 8MB（高清扫图常见 1~3MB，一段读会整块丢失）。歌词（USLT / LYRICS）与长文本帧同在整段标签内，随两段读一并补全
+- **尾部补读 `tailReadHint`**：moov-at-end 的 m4a（按 256KB→1MB→4MB→8MB 逐级增大）、ogg/opus 时长（取末页 granule）、无 ID3v2 的 mp3 ID3v1（取尾 128B）
+- 扫描 `full` + 提取封面走 `readAudioMeta` 统一读序；旧版已标已读但无封面的 mp3/flac 行由一次性迁移（`kCoverReenrichV1Done`，设备本地标记）重置为未读，交给后台补读重取
+- **同目录回退**：仍无封面 → 「同名图片（`.png/.jpg/.jpeg/.webp`）→ `cover.*`/`folder.*`/`front.*`/`album.*`」顺序取同目录图片（播放补读按会话缓存，扫描按目录清单/下载缓存去重），经图片签名校验后落盘；同名 `.lrc` 歌词回退同在一条路径
+- **编码规则**：mp3 ID3v2 按帧 encoding 选解码（enc==3 → UTF-8；enc==0 → 尝试 UTF-8 再回退 Latin-1）；flac/ogg VORBIS_COMMENT 按规范 UTF-8（失败回退 Latin-1）；m4a 文本原子 UTF-8；无内嵌标签时走文件名/同目录回退
+- **时长探测**：mp3 估算法（文件大小÷码率）或解析 Xing/VBRI 头；flac 读 STREAMINFO
+
+### 客户端同步与缓存批处理
+
+- **先落库再上报**：调权 / 收藏 / 歌单 / 断点先写本地（`applyWeightEvent` 在写连接内原子读改写并同时入 `weight_outbox`），再由 `SyncEngine` 推送——**不要**在 UI 回调里直接调 API
+- **outbox 幂等**：每条事件带 `event_uuid`，服务端按 uuid 去重；直连歌曲**未配对或 `sync_enabled=0` 时不入队**，避免无限积压
+- **推拉节奏**：`SyncEngine` 2s tick 推增量、30s 拉增量、失败指数退避（上限 30s）、启动先做一次全量校准（`since=0`）
+- **拉到的快照走 `apply*Snapshot` op**：身份收集恒不建行（已删歌曲不复活）；远端断点落 `breakpoint_mirror`，不直接改运行时 `play_state`
+- **缓存写入攒批**：WebDAV 缓存下载按 1MiB（`_cacheWriteBufBytes`）攒够再落临时文件，成功后 `cacheCommit` 换入正式路径并更新 `cache` 表——避免逐 chunk 小写入；`persistCover` 同样先写临时文件再改名，保证重复扫描幂等
+- 同步协议语义（LWW / 事件重算 / 歌曲身份）见 [DESIGN.md §7.2](DESIGN.md#72-同步协议)
 
 ### 桌面音频后端（media_kit）
 
@@ -351,12 +423,19 @@ PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV �
 
 ## 数据库规范
 
-> 以下为**服务端 MySQL** 表规范；客户端 SQLite 是独立的轻量库（`local_index`，无 created_at/updated_at 约定），表结构见 `DESIGN.md §3.2`。
+### 服务端 MySQL
 
 - 表结构变更：**修改 `scripts/init.sql` 并同步提交**，同时更新对应 JPA 实体；`application.yml` 中 `ddl-auto: validate` 会校验实体与表结构一致性，不一致启动即报错
 - 字符集统一 `utf8mb4`
 - 所有表带 `id BIGINT AUTO_INCREMENT PRIMARY KEY`、`created_at`、`updated_at`
 - 初始化脚本中的用户创建语句已注释（由管理员手工管理账号），执行前确认账号存在且对 `selfmusic.*` 有权限
+
+### 客户端 SQLite
+
+- 表清单与设计意图见 [DESIGN.md §3.2](DESIGN.md#32-客户端sqlite)，权威定义在 `lib/data/local/schema.dart` 的 `applySchema()`：**改表只改这里**，主读连接与写隔离各跑一遍，幂等（`ALTER TABLE` 先 `PRAGMA table_info` 探测）
+- 无 `created_at/updated_at` 统一约定；时间列按需命名（`last_scan_at` / `cached_at` / `updated_at`）
+- 写必须走写隔离（见「[客户端本地数据层](#客户端本地数据层sqlite-写隔离)」），不要在主 isolate 直接 `db.execute` 写语句
+- 歌曲身份统一 `(source_key, song_ref)` 复合键；收藏状态只认 `play_meta.is_favorite`（旧 `idx_songs.is_favorite` 仅一次性回填）
 
 ---
 
@@ -390,7 +469,7 @@ PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV �
 - 容器内应用监听 8080，对外经 Compose 映射为 18088
 - Hikari 连接池：最大 20、最小空闲 5
 - devtools 热重载已开启，监控 `src/main/java`
-- 业务配置（local/webdav 源、扫描间隔与并发、转码上限等）见 [settings.md §5 服务端全局设置](settings.md)；服务端扫描 env 见 settings.md §5.1
+- 业务配置（`LOCAL_MUSIC_ROOT` / `WEBDAV_*` 等出流代理、缓存建议值来源）见 [settings.md §5 服务端全局设置](settings.md)；服务端已无 `SCAN_*` 扫描 env（扫描只在 APP 侧）
 
 ### Nginx
 
