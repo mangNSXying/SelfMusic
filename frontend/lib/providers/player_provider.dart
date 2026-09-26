@@ -68,7 +68,7 @@ class PlayerProvider extends ChangeNotifier {
   /// 跳过阈值：播放时长 <30% 记一次跳过；30%~95% 区间不记。
   static const double skipRatio = 0.3;
 
-  late AudioPlayer player;
+  AudioPlayer? _player;
   List<Song> _queue = [];
   int _idx = 0;
   Song? _current;
@@ -80,6 +80,10 @@ class PlayerProvider extends ChangeNotifier {
   void Function(MusicSource src, Song s)? _onTrackStarted;
   void Function(Song s)? _onSongMetaRefreshed;
   SelfMusicAudioHandler? _audioHandler;
+
+  /// 当前播放器构造时套用的音频焦点开关（供 [_applyAudioConfigIfNeeded] 比对）。
+  bool _builtAudioFocus = true;
+  bool _builtEq = false;
 
   /// 阶段5：当前队列归属的已同步歌单 uuid（播歌单时由调用方传入，其它队列为 null）。
   /// 断点事件仅在此非空且当前歌曲有身份时进 outbox。
@@ -374,10 +378,8 @@ class PlayerProvider extends ChangeNotifier {
     return false;
   }
 
-  PlayerProvider() {
-    player = _buildPlayer();
-    _setupPlayerStreams();
-  }
+  /// 播放器延迟到首次使用才构造（见 [player]），故构造器不建实例。
+  PlayerProvider();
 
   /// 按用户设置构造播放器：均衡器（Android 原生 AndroidEqualizer）与音频焦点开关
   /// 均需在构造时注入（settings.md §3.2/§3.6），设置变动时经 [applyAudioConfig] 重建。
@@ -385,16 +387,41 @@ class PlayerProvider extends ChangeNotifier {
     final s = _appSettings;
     final eqEnabled = !kIsWeb && Platform.isAndroid && (s?.equalizerEnabled ?? false);
     _eq = eqEnabled ? AndroidEqualizer() : null;
+    // 记录本次构造实际套用的配置：供 [_applyAudioConfigIfNeeded] 判断是否过期。
+    _builtAudioFocus = s?.audioFocusEnabled ?? true;
+    _builtEq = eqEnabled;
     return AudioPlayer(
-      handleInterruptions: s?.audioFocusEnabled ?? true,
+      handleInterruptions: _builtAudioFocus,
       audioPipeline: _eq != null
           ? AudioPipeline(androidAudioEffects: [_eq!])
           : null,
     );
   }
 
-  void _setupPlayerStreams() {
-    player.playerStateStream.listen((st) {
+  /// 播放器已存在、但构造时读到的音频配置与当前设置不一致时重建。
+  /// 正常路径下 [player] 延迟构造已保证一致，这里兜住「设置晚于首次使用注入」
+  /// 与热重排等边界；无当前曲目时只换实例，不打断播放。
+  void _applyAudioConfigIfNeeded() {
+    if (_player == null || _shuttingDown) return;
+    final s = _appSettings;
+    if (s == null) return;
+    final focus = s.audioFocusEnabled;
+    final eq = !kIsWeb && Platform.isAndroid && s.equalizerEnabled;
+    if (focus == _builtAudioFocus && eq == _builtEq) return;
+    if (_current == null) {
+      _fadeTimer?.cancel();
+      final old = _player;
+      _player = null;
+      unawaited(old?.dispose());
+      _buildAndWire();
+      notifyListeners();
+      return;
+    }
+    unawaited(applyAudioConfig());
+  }
+
+  void _setupPlayerStreams(AudioPlayer p) {
+    p.playerStateStream.listen((st) {
       if (st.processingState != ProcessingState.completed) return;
       // 到点暂停会把 playing 置 false 并再发一次 completed：
       // 这种「已暂停」的完成事件不再处理，否则暂停后又被自动切歌。
@@ -410,12 +437,12 @@ class PlayerProvider extends ChangeNotifier {
       if (_handleTrackCompletedSleep()) return;
       _advance(autoAdvanceOnFailure: true);
     });
-    player.positionStream.listen(_maybeSaveState);
+    p.positionStream.listen(_maybeSaveState);
     // just_audio 0.9.x 没有 errorStream：平台侧错误只从 playbackEventStream 的
     // onError 冒出来（playerStateStream 内部 handleError 吞掉，见包的
     // `_processingStateSubject.addStream(...handleError(noop))`）。此前无人监听，
     // ExoPlayer 任何源错误都表现为「playing 仍为 true、界面显示播放中、却没声音」。
-    player.playbackEventStream.listen((_) {}, onError: _onPlaybackError);
+    p.playbackEventStream.listen((_) {}, onError: _onPlaybackError);
   }
 
   /// 播放错误（ExoPlayer 源错误/网络中断）统一入口：诊断日志 + 重新装载当前曲。
@@ -481,13 +508,23 @@ class PlayerProvider extends ChangeNotifier {
           {required bool Function() alive}) =>
       _playDirect(s, src, alive: alive);
 
+  /// 测试：播放器是否已构造。
+  @visibleForTesting
+  bool get debugPlayerBuilt => _player != null;
+
+  /// 测试：播放器构造时套用的音频焦点开关（未构造时为 null）。
+  @visibleForTesting
+  bool? get debugBuiltAudioFocus =>
+      _player == null ? null : _builtAudioFocus;
+
   /// 应用音频相关设置（均衡器/音频焦点/淡入淡出开关变化）：重建播放器并恢复当前曲目。
   Future<void> applyAudioConfig() async {
+    // 还没建播放器：不必重建，首次构造会直接读到新设置。
+    if (_player == null) return;
     if (_current == null) {
       _fadeTimer?.cancel();
-      await player.dispose();
-      player = _buildPlayer();
-      _setupPlayerStreams();
+      await _disposePlayer();
+      _buildAndWire();
       notifyListeners();
       return;
     }
@@ -496,14 +533,22 @@ class PlayerProvider extends ChangeNotifier {
     final current = _current!;
     final source = _curSource;
     _fadeTimer?.cancel();
-    await player.dispose();
-    player = _buildPlayer();
-    _setupPlayerStreams();
+    await _disposePlayer();
+    _buildAndWire();
     await _play(current, source: source, play: wasPlaying);
     try {
       await player.seek(pos);
     } catch (_) {}
     notifyListeners();
+  }
+
+  /// 丢弃当前播放器实例（不自动重建；下次访问 [player] 时按最新设置重建）。
+  Future<void> _disposePlayer() async {
+    final old = _player;
+    _player = null;
+    try {
+      await old?.dispose();
+    } catch (_) {}
   }
 
   // ---------- 淡入淡出（settings.md §3.2） ----------
@@ -612,12 +657,26 @@ class PlayerProvider extends ChangeNotifier {
     _onSongMetaRefreshed = onSongMetaRefreshed;
   }
 
+  /// 播放器实例，**首次使用时才构造**。
+  ///
+  /// 构造 PlayerProvider 时 [attachAppSettings] 还没调用，若此时建播放器，
+  /// 音频焦点/均衡器只能读到默认值——「忽略音频焦点」冷启动永远失效，必须进
+  /// 设置页手动切一次开关才生效。延迟构造保证第一次建时就拿到真实设置。
+  AudioPlayer get player => _player ??= _buildAndWire();
+
+  AudioPlayer _buildAndWire() {
+    final p = _buildPlayer();
+    _setupPlayerStreams(p);
+    return p;
+  }
+
   /// 关联用户设置：套用默认播放模式（settings.md §3.2 `play_mode_default`），
-  /// 之后每次切模式写回。
+  /// 之后每次切模式写回。顺带校正播放器构造时读到的音频配置（冷启动）。
   void attachAppSettings(AppSettings settings) {
     _appSettings = settings;
     final m = PlayModeParse.fromStored(settings.playModeDefault);
     if (_mode != m) _mode = m;
+    _applyAudioConfigIfNeeded();
   }
 
   /// 关联服务器可达性门控（main 注入 `direct.isServerAvailable`）：
@@ -1743,17 +1802,24 @@ class PlayerProvider extends ChangeNotifier {
     _shuttingDown = true;
     _fadeTimer?.cancel();
     _sleepTick?.cancel();
-    await _saveState(player.position);
+    final p = _player;
+    if (p == null) {
+      // 从未播放过：没有实例可停，但断点/写队列仍要落库。
+      await _saveState(Duration.zero);
+      try {
+        await _index?.flushWrites();
+      } catch (_) {}
+      return;
+    }
+    await _saveState(p.position);
     // 退出前等写隔离队列落库（否则最后断点/设置随进程一起消失）。
     try {
       await _index?.flushWrites();
     } catch (_) {}
     try {
-      await player.stop();
+      await p.stop();
     } catch (_) {}
-    try {
-      await player.dispose();
-    } catch (_) {}
+    await _disposePlayer();
   }
 
   bool _same(Song a, Song b) =>
@@ -1763,8 +1829,12 @@ class PlayerProvider extends ChangeNotifier {
   void dispose() {
     _fadeTimer?.cancel();
     _sleepTick?.cancel();
-    unawaited(_saveState(player.position));
-    player.dispose();
+    final p = _player;
+    _player = null;
+    if (p != null) {
+      unawaited(_saveState(p.position));
+      unawaited(p.dispose());
+    }
     super.dispose();
   }
 }
