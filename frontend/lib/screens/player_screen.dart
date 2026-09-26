@@ -516,11 +516,16 @@ class _ToolRow extends StatelessWidget {
   final DirectSourceManager direct;
   final ColorScheme cs;
   final Song song;
+
+  /// 横屏用：按钮紧凑成组居中（列宽较大时 spaceEvenly 会把按钮摊到列两缘，
+  /// 与封面/标题的居中感不齐）；竖屏保持铺满一行均分。
+  final bool center;
   const _ToolRow(
       {required this.player,
       required this.direct,
       required this.cs,
-      required this.song});
+      required this.song,
+      this.center = false});
 
   Future<void> _cache(BuildContext context, Song s) async {
     final src = direct.sourceByKey(s.sourceKey);
@@ -539,10 +544,11 @@ class _ToolRow extends StatelessWidget {
     final s = song;
     final favorite = direct.weight.isFavorite(s);
     final disliked = direct.weight.isDisliked(s);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+    final row = Row(
+        mainAxisSize: center ? MainAxisSize.min : MainAxisSize.max,
+        mainAxisAlignment: center
+            ? MainAxisAlignment.center
+            : MainAxisAlignment.spaceEvenly,
         children: [
           IconButton(
             iconSize: 22,
@@ -589,7 +595,10 @@ class _ToolRow extends StatelessWidget {
             onPressed: () => _cache(context, s),
           ),
         ],
-      ),
+      );
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: center ? Center(child: row) : row,
     );
   }
 }
@@ -698,7 +707,11 @@ class _LandscapePlayer extends StatelessWidget {
                             dense: true),
                         const SizedBox(height: 4),
                         _ToolRow(
-                            player: player, direct: direct, cs: cs, song: s),
+                            player: player,
+                            direct: direct,
+                            cs: cs,
+                            song: s,
+                            center: true),
                         _PlayerSeek(player: player, cs: cs, showTime: false),
                       ],
                     );
@@ -804,7 +817,11 @@ class _DesktopLandscapePlayer extends StatelessWidget {
                         _MetaLine(
                             player: player, direct: direct, cs: cs, song: s),
                         _ToolRow(
-                            player: player, direct: direct, cs: cs, song: s),
+                            player: player,
+                            direct: direct,
+                            cs: cs,
+                            song: s,
+                            center: true),
                         _PlayerSeek(player: player, cs: cs),
                         _ControlRow(player: player, cs: cs),
                       ],
@@ -813,8 +830,7 @@ class _DesktopLandscapePlayer extends StatelessWidget {
                 ),
               ),
             ),
-            const VerticalDivider(width: 1),
-            // 右栏：歌词限宽居中 + 上下边缘渐隐。
+            // 右栏：歌词限宽居中 + 上下边缘渐隐（改进.txt：去掉两栏中间分割线）。
             Expanded(
               child: Center(
                 child: ConstrainedBox(
