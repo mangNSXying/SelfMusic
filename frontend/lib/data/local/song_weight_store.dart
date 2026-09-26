@@ -71,9 +71,19 @@ class SongWeightStore {
   }
 
   /// 手动重置：双 streak 清零，factor=1.0，解除「不喜欢」锁定。
-  Future<void> reset(Song s) async {
-    await _apply(s, 'reset');
-    await _emit(s, SyncEventTypes.songReset);
+  Future<void> reset(Song s) {
+    return _apply(s, 'reset');
+  }
+
+  /// 累计播放时长（秒）入账：改进.txt 要求「播放时长精确到秒、播放次数由它派生」。
+  ///
+  /// 采集侧（[PlayerProvider]）按挂钟累计，只在暂停/切歌/退出时成批落库，
+  /// 不逐秒写。不同步事件：播放时长是本地累计量，同步走 `song.state` 绝对态
+  /// （见 [backfill] 与同步引擎的快照回写），避免 outbox 被逐秒事件刷屏。
+  Future<void> addPlaySec(Song s, int seconds) {
+    if (seconds <= 0) return Future<void>.value();
+    if (s.sourceRef.isEmpty) return Future<void>.value();
+    return index.addPlaySec(s.sourceKey, s.sourceRef, seconds);
   }
 
   /// 阶段5：有歌曲身份（source/sourceRef 非空、可解析）即进 outbox；服务端按
@@ -130,6 +140,7 @@ class SongWeightStore {
         'weight': m.factor,
         'frozen': m.frozen,
         'is_favorite': m.favorite,
+        'play_sec': m.playSec,
       });
       n++;
     }

@@ -508,9 +508,9 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   List<PlayMetaRow> listDirtyPlayMeta() {
     final rs = _db!.select(
         'SELECT source_key, song_ref, like_streak, dislike_streak, factor, '
-        'frozen, is_favorite, song_json FROM play_meta '
+        'frozen, is_favorite, song_json, play_sec FROM play_meta '
         'WHERE like_streak<>0 OR dislike_streak<>0 OR factor<>1.0 '
-        'OR frozen<>0 OR is_favorite<>0');
+        'OR frozen<>0 OR is_favorite<>0 OR play_sec<>0');
     return [
       for (final r in rs)
         PlayMetaRow(
@@ -522,6 +522,7 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
           frozen: (r['frozen'] as int) != 0,
           favorite: (r['is_favorite'] as int) != 0,
           songJson: r['song_json'] as String?,
+          playSec: (r['play_sec'] as int?) ?? 0,
         ),
     ];
   }
@@ -731,7 +732,7 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   /// 读 play_meta（纯读；历史 ENCODE 旧行迁移见 open() 的 migrateMetaRefs）。
   PlayMetaRow playMetaOf(String sourceKey, String songRef) {
     final rs = _db!.select(
-        'SELECT source_key, song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json '
+        'SELECT source_key, song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json, play_sec '
         'FROM play_meta WHERE source_key=? AND song_ref=?', [sourceKey, songRef]);
     if (rs.isEmpty) {
       return PlayMetaRow(
@@ -754,7 +755,17 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
       frozen: (r['frozen'] as int) == 1,
       favorite: (r['is_favorite'] as int) == 1,
       songJson: r['song_json'] as String?,
+      playSec: (r['play_sec'] as int?) ?? 0,
     );
+  }
+
+  /// 累计播放时长（秒）加法：`play_sec += seconds`（写连接内累加，见 db_writer）。
+  Future<void> addPlaySec(String sourceKey, String songRef, int seconds) {
+    return _writer!.op<void>('addPlaySec', {
+      'sourceKey': sourceKey,
+      'songRef': songRef,
+      'seconds': seconds,
+    });
   }
 
   bool isFavoriteOf(String sourceKey, String songRef) =>
@@ -768,8 +779,13 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   /// 合并读在写连接内完成（见 db_writer `upsertPlayMeta`），保证与收藏等
   /// 已入队写的一致性。
   Future<void> upsertPlayMeta(String sourceKey, String songRef,
-      {int? likeStreak, int? dislikeStreak, double? factor, bool? frozen,
-      bool? favorite, String? songJson}) {
+      {int? likeStreak,
+      int? dislikeStreak,
+      double? factor,
+      bool? frozen,
+      bool? favorite,
+      String? songJson,
+      int? playSec}) {
     return _writer!.op<void>('upsertPlayMeta', {
       'sourceKey': sourceKey,
       'songRef': songRef,
@@ -779,6 +795,7 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
       'frozen': frozen,
       'favorite': favorite,
       'songJson': songJson,
+      'playSec': playSec,
     });
   }
 
@@ -1384,6 +1401,9 @@ class PlayMetaRow {
   final bool frozen;
   final bool favorite;
   final String? songJson;
+
+  /// 累计播放时长（秒，整数）。播放次数由它派生：playSec / 歌曲时长（1 位小数）。
+  final int playSec;
   const PlayMetaRow({
     required this.sourceKey,
     required this.songRef,
@@ -1393,6 +1413,7 @@ class PlayMetaRow {
     required this.frozen,
     required this.favorite,
     this.songJson,
+    this.playSec = 0,
   });
 }
 

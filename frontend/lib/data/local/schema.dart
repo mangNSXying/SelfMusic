@@ -69,6 +69,7 @@ void applySchema(Database db) {
       frozen        INTEGER NOT NULL DEFAULT 0,
       is_favorite   INTEGER NOT NULL DEFAULT 0,
       song_json     TEXT,
+      play_sec      INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (source_key, song_ref)
     );
   ''');
@@ -241,6 +242,11 @@ void applySchema(Database db) {
       .toSet();
   if (!metaCols.contains('song_json')) {
     db.execute('ALTER TABLE play_meta ADD COLUMN song_json TEXT');
+  }
+  // 累计播放时长（秒）：改进.txt 要求播放时长精确到秒、播放次数由其派生。
+  if (!metaCols.contains('play_sec')) {
+    db.execute(
+        'ALTER TABLE play_meta ADD COLUMN play_sec INTEGER NOT NULL DEFAULT 0');
   }
   // 收藏一次性回填迁移：idx_songs.is_favorite → play_meta，此后以 play_meta 为准。
   db.execute('''

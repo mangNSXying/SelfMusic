@@ -18,6 +18,7 @@ import '../data/deep_list.dart';
 import '../data/local/sync_event_types.dart';
 import '../services/selfmusic_audio_handler.dart';
 import '../utils/lrc_parser.dart';
+import '../utils/play_stats.dart';
 import '../utils/song_title_format.dart';
 import '../widgets/app_toast.dart';
 
@@ -422,6 +423,8 @@ class PlayerProvider extends ChangeNotifier {
 
   void _setupPlayerStreams(AudioPlayer p) {
     p.playerStateStream.listen((st) {
+      // 暂停/停止：结清当前挂钟窗口（positionStream 停止跳动，不再有 tick）。
+      if (!st.playing) _playSecStop();
       if (st.processingState != ProcessingState.completed) return;
       // 到点暂停会把 playing 置 false 并再发一次 completed：
       // 这种「已暂停」的完成事件不再处理，否则暂停后又被自动切歌。
@@ -437,7 +440,11 @@ class PlayerProvider extends ChangeNotifier {
       if (_handleTrackCompletedSleep()) return;
       _advance(autoAdvanceOnFailure: true);
     });
-    p.positionStream.listen(_maybeSaveState);
+    // 播放时长采集挂在这里：位置流在播放中持续跳动，暂停/停止时停止。
+    p.positionStream.listen((pos) {
+      _maybeSaveState(pos);
+      _playSecReconcile(playing: p.playing);
+    });
     // just_audio 0.9.x 没有 errorStream：平台侧错误只从 playbackEventStream 的
     // onError 冒出来（playerStateStream 内部 handleError 吞掉，见包的
     // `_processingStateSubject.addStream(...handleError(noop))`）。此前无人监听，
@@ -668,6 +675,68 @@ class PlayerProvider extends ChangeNotifier {
     final p = _buildPlayer();
     _setupPlayerStreams(p);
     return p;
+  }
+
+  // ---------- 播放时长采集（改进.txt：播放时长精确到秒） ----------
+
+  /// 累计播放秒数的批量落库阈值：约每 [_playSecFlushAt] 秒写一次库，
+  /// 暂停/切歌/退出时立即结清。
+  static const int _playSecFlushAt = 20;
+
+  /// 当前挂钟窗口起点（只在「正在播」时非空）。
+  DateTime? _playSecWindow;
+
+  /// 已结算但还没落库的秒数。
+  int _playSecPending = 0;
+
+  /// [_playSecPending] 归属的歌曲（切歌时先把上一首结清）。
+  Song? _playSecSong;
+
+  /// 采集 tick（positionStream，播放中约 200ms 一次）：对齐「当前曲 + 是否在播」
+  /// 与挂钟窗口。
+  ///
+  /// 挂在已有的 positionStream 上而不是另起定时器：播放中位置流本身就是稳定的
+  /// 心跳，且自动续播/错误恢复时 `playing` 一直为 true 不产生新事件，靠 playing
+  /// 事件会漏采——这里每次都按 [_current] 重新对账，切歌自动归属到新歌。
+  void _playSecReconcile({required bool playing}) {
+    final s = _current;
+    if (s == null || !playing) {
+      _playSecStop();
+      return;
+    }
+    if (_playSecSong == null || !_same(_playSecSong!, s)) {
+      _playSecFlush(); // 换歌：先结清上一首
+      _playSecSong = s;
+    }
+    final win = _playSecWindow ??= DateTime.now();
+    final r = settlePlaySecWindow(win, DateTime.now());
+    if (r.sec > 0) {
+      _playSecPending += r.sec;
+      _playSecWindow = r.window;
+      if (_playSecPending >= _playSecFlushAt) _playSecFlush();
+    }
+  }
+
+  /// 暂停/停止/退出：结清窗口并立即落库。
+  void _playSecStop() {
+    final win = _playSecWindow;
+    if (win != null) {
+      final r = settlePlaySecWindow(win, DateTime.now());
+      _playSecPending += r.sec;
+      _playSecWindow = null;
+    }
+    _playSecFlush();
+  }
+
+  /// 落库待结算秒数。播放时长是纯本地累计量，不逐次进 outbox；
+  /// 跨设备同步走 `song.state` 绝对态（见 SongWeightStore.backfill / 快照回写）。
+  void _playSecFlush() {
+    final s = _playSecSong;
+    final sec = _playSecPending;
+    final w = _weight;
+    if (s == null || sec <= 0 || w == null) return;
+    _playSecPending = 0;
+    unawaited(w.addPlaySec(s, sec));
   }
 
   /// 关联用户设置：套用默认播放模式（settings.md §3.2 `play_mode_default`），
@@ -1829,6 +1898,8 @@ class PlayerProvider extends ChangeNotifier {
   void dispose() {
     _fadeTimer?.cancel();
     _sleepTick?.cancel();
+    // 退出前把最后一段播放时长结清（与 _saveState 同样不等待）。
+    _playSecStop();
     final p = _player;
     _player = null;
     if (p != null) {

@@ -301,6 +301,9 @@ Object? _runOp(Database db, String name, Map<String, dynamic> a) {
     case 'applyWeightEvent':
       _opApplyWeightEvent(db, a);
       return null;
+    case 'addPlaySec':
+      _opAddPlaySec(db, a);
+      return null;
     case 'applySongSnapshot':
       _opApplySongSnapshot(db, a);
       return null;
@@ -384,13 +387,15 @@ String? _sourceKeyOfUuid(Database db, String uuid) {
 }
 
 /// 读当前 play_meta 行（写前合并用；空行返回默认权重）。
-({int ls, int ds, double f, bool frozen, bool fav, String? sj}) _curMeta(
+({int ls, int ds, double f, bool frozen, bool fav, String? sj, int ps}) _curMeta(
     Database db, String sourceKey, String songRef) {
   final rs = db.select(
-      'SELECT like_streak, dislike_streak, factor, frozen, is_favorite, song_json '
+      'SELECT like_streak, dislike_streak, factor, frozen, is_favorite, song_json, play_sec '
       'FROM play_meta WHERE source_key=? AND song_ref=?',
       [sourceKey, songRef]);
-  if (rs.isEmpty) return (ls: 0, ds: 0, f: 1.0, frozen: false, fav: false, sj: null);
+  if (rs.isEmpty) {
+    return (ls: 0, ds: 0, f: 1.0, frozen: false, fav: false, sj: null, ps: 0);
+  }
   final r = rs.first;
   return (
     ls: r['like_streak'] as int,
@@ -399,6 +404,7 @@ String? _sourceKeyOfUuid(Database db, String uuid) {
     frozen: (r['frozen'] as int) != 0,
     fav: (r['is_favorite'] as int) != 0,
     sj: r['song_json'] as String?,
+    ps: (r['play_sec'] as int?) ?? 0,
   );
 }
 
@@ -408,7 +414,7 @@ void _migrateRef(Database db, String sourceKey, String songRef) {
   if (alts.isEmpty) return;
   final ph = alts.map((_) => '?').join(',');
   final rows = db.select(
-      'SELECT song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json '
+      'SELECT song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json, play_sec '
       'FROM play_meta WHERE source_key=? AND song_ref IN ($ph)',
       [sourceKey, ...alts]);
   if (rows.isEmpty) return;
@@ -424,7 +430,7 @@ void _migrateRef(Database db, String sourceKey, String songRef) {
       [sourceKey, ...alts]);
   db.execute(
       'INSERT OR IGNORE INTO play_meta(source_key, song_ref, like_streak, dislike_streak, '
-      'factor, frozen, is_favorite, song_json) VALUES(?,?,?,?,?,?,?,?)',
+      'factor, frozen, is_favorite, song_json, play_sec) VALUES(?,?,?,?,?,?,?,?,?)',
       [
         sourceKey,
         songRef,
@@ -434,6 +440,7 @@ void _migrateRef(Database db, String sourceKey, String songRef) {
         best['frozen'],
         best['is_favorite'],
         best['song_json'],
+        (best['play_sec'] as int?) ?? 0,
       ]);
 }
 
@@ -448,19 +455,21 @@ void _opUpsertPlayMeta(Database db, Map<String, dynamic> a) {
   final frozen = a['frozen'] as bool?;
   final fav = a['favorite'] as bool?;
   final sj = a['songJson'] as String?;
+  final ps = a['playSec'] as int?;
   _migrateRef(db, sourceKey, songRef);
   final cur = _curMeta(db, sourceKey, songRef);
   db.execute('''
     INSERT INTO play_meta(source_key, song_ref, like_streak, dislike_streak,
-      factor, frozen, is_favorite, song_json)
-    VALUES(?,?,?,?,?,?,?,?)
+      factor, frozen, is_favorite, song_json, play_sec)
+    VALUES(?,?,?,?,?,?,?,?,?)
     ON CONFLICT(source_key, song_ref) DO UPDATE SET
       like_streak = excluded.like_streak,
       dislike_streak = excluded.dislike_streak,
       factor = excluded.factor,
       frozen = excluded.frozen,
       is_favorite = excluded.is_favorite,
-      song_json = COALESCE(excluded.song_json, play_meta.song_json)
+      song_json = COALESCE(excluded.song_json, play_meta.song_json),
+      play_sec = excluded.play_sec
   ''', [
     sourceKey,
     songRef,
@@ -470,6 +479,38 @@ void _opUpsertPlayMeta(Database db, Map<String, dynamic> a) {
     (frozen ?? cur.frozen) ? 1 : 0,
     (fav ?? cur.fav) ? 1 : 0,
     sj ?? cur.sj,
+    ps ?? cur.ps,
+  ]);
+}
+
+/// 累计播放时长（秒）：`play_sec += seconds`。
+///
+/// 在写连接内累加（与 [addPlaySec] 调用方语义一致），不读-改-写两段式，
+/// 避免并发 tick 丢增量。歌曲切换/暂停/退出时由播放器 flush 调用。
+void _opAddPlaySec(Database db, Map<String, dynamic> a) {
+  final sourceKey = a['sourceKey'] as String;
+  final songRef = a['songRef'] as String;
+  final sec = a['seconds'] as int;
+  if (sec <= 0) return;
+  _migrateRef(db, sourceKey, songRef);
+  final cur = _curMeta(db, sourceKey, songRef);
+  db.execute('''
+    INSERT INTO play_meta(source_key, song_ref, like_streak, dislike_streak,
+      factor, frozen, is_favorite, song_json, play_sec)
+    VALUES(?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(source_key, song_ref) DO UPDATE SET
+      play_sec = COALESCE(play_meta.play_sec, 0) + ?
+  ''', [
+    sourceKey,
+    songRef,
+    cur.ls,
+    cur.ds,
+    cur.f,
+    cur.frozen ? 1 : 0,
+    cur.fav ? 1 : 0,
+    cur.sj,
+    sec,
+    sec,
   ]);
 }
 
