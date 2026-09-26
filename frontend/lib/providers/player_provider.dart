@@ -408,13 +408,78 @@ class PlayerProvider extends ChangeNotifier {
       _emitWeight(finished, completed: true,
           position: player.duration ?? Duration.zero);
       if (_handleTrackCompletedSleep()) return;
-      _advance();
+      _advance(autoAdvanceOnFailure: true);
     });
     player.positionStream.listen(_maybeSaveState);
+    // just_audio 0.9.x 没有 errorStream：平台侧错误只从 playbackEventStream 的
+    // onError 冒出来（playerStateStream 内部 handleError 吞掉，见包的
+    // `_processingStateSubject.addStream(...handleError(noop))`）。此前无人监听，
+    // ExoPlayer 任何源错误都表现为「playing 仍为 true、界面显示播放中、却没声音」。
+    player.playbackEventStream.listen((_) {}, onError: _onPlaybackError);
+  }
+
+  /// 播放错误（ExoPlayer 源错误/网络中断）统一入口：诊断日志 + 重新装载当前曲。
+  /// 这类错误发生在装载成功之后，不会抛回 [_playDirect] 的调用点。
+  void _onPlaybackError(dynamic e) {
+    debugPrint('[play] 播放错误: $e');
+    if (_shuttingDown) return;
+    final cur = _current;
+    if (cur == null) return;
+    final now = DateTime.now();
+    final last = _lastRecoverAt;
+    if (last != null && now.difference(last) < _recoverCooldown) return;
+    _lastRecoverAt = now;
+    _loadFailStreak = 0;
+    unawaited(_recoverPlayback(cur));
+  }
+
+  /// 重新装载当前曲（外部点歌语义，不重复推深层历史）；
+  /// 仍装载失败则由 [_autoSkipAfterFailure] 继续跳下一首。
+  Future<void> _recoverPlayback(Song s) async {
+    final src = _curSource;
+    if (src == null || _shuttingDown) return;
+    await _play(s,
+        source: src, fromPlaylist: false, autoAdvanceOnFailure: true);
   }
 
   /// 已处理过 completed 的曲目 key（含暂停导致的二次 completed，见监听器注释）。
   String? _completedKey;
+
+  // ---------- 装载失败与播放错误（改进.txt：后台有概率停止播放） ----------
+
+  /// 装载退避重试间隔：后台网络被回收/连接超时后重建连接再试一次。
+  /// 非常量：测试可临时置零以免真的等待。
+  @visibleForTesting
+  static List<Duration> loadBackoff = const [
+    Duration(seconds: 1),
+    Duration(seconds: 3),
+  ];
+
+  /// 连续装载失败到该首数才停止：个别坏歌不卡住整条队列，
+  /// 整队都不可播时也不会无限跳歌。
+  static const int _loadFailSkipLimit = 3;
+
+  /// 播放错误自动恢复的最小间隔，抑制错误风暴反复重装同一首。
+  static const Duration _recoverCooldown = Duration(seconds: 5);
+
+  /// 连续装载失败计数（成功装载即清零）。
+  int _loadFailStreak = 0;
+
+  /// 上次播放错误自动恢复的时间。
+  DateTime? _lastRecoverAt;
+
+  /// 退出中：不再重试/恢复（避免与 dispose 竞争）。
+  bool _shuttingDown = false;
+
+  /// 装载动作（测试注入；生产恒走 [_loadOnce]）。
+  @visibleForTesting
+  Future<void> Function(Song s, MusicSource src)? loadOverride;
+
+  /// 测试入口：只跑装载重试（不碰队列/UI）。
+  @visibleForTesting
+  Future<void> debugLoadDirect(Song s, MusicSource src,
+          {required bool Function() alive}) =>
+      _playDirect(s, src, alive: alive);
 
   /// 应用音频相关设置（均衡器/音频焦点/淡入淡出开关变化）：重建播放器并恢复当前曲目。
   Future<void> applyAudioConfig() async {
@@ -712,8 +777,13 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   /// [fromPlaylist]：锚定列表内播放（推入深层末尾）；false = 外部点歌（替换末尾）。
+  /// [autoAdvanceOnFailure]：自动续播链路（自然播完/失败跳歌）专用——装载彻底失败
+  /// 时不逐首弹 toast，直接跳下一首（见 [_autoSkipAfterFailure]）。
   Future<void> _play(Song s,
-      {MusicSource? source, bool play = true, bool fromPlaylist = true}) async {
+      {MusicSource? source,
+      bool play = true,
+      bool fromPlaylist = true,
+      bool autoAdvanceOnFailure = false}) async {
     // 连按切歌 guard：每次 _play 领一个单调令牌，后续 await 间隙若令牌过期
     //（更新的切歌已接管），静默丢弃，不报错、不覆盖、不触发副作用。
     // 解决了快速 next/prev 时旧 setUrl 的 connection abort / source error  toast 刷屏。
@@ -745,8 +815,9 @@ class PlayerProvider extends ChangeNotifier {
         // 无本地源（如同步快照行且本机未配置对应源）：不崩，提示后由调用方决定。
         throw StateError('找不到该歌曲的播放源，请先配置对应播放源');
       }
-      await _playDirect(cur, src);
+      await _playDirect(cur, src, alive: alive);
       if (!alive()) return; // 已被更新的切歌接管
+      _loadFailStreak = 0;
       if (play) {
         await player.play();
         _fadeIn();
@@ -764,14 +835,50 @@ class PlayerProvider extends ChangeNotifier {
       _syncSystemMedia();
     } catch (e) {
       if (!alive()) return; // 旧切歌被接管后的 abort：静默丢弃
-      AppToast.error(e, '播放失败');
+      debugPrint('[play] 装载失败《${s.title}》: $e');
+      // 自动续播链路：后台切歌失败不逐首弹 toast（人不在屏幕前），跳下一首；
+      // 连败到上限才提示。手动点播仍逐次提示。
+      if (!autoAdvanceOnFailure) AppToast.error(e, '播放失败');
       notifyListeners();
+      if (autoAdvanceOnFailure) unawaited(_autoSkipAfterFailure());
     }
   }
 
-  /// 直连源播放：优先离线缓存文件，其次原生 URL（Range/seek 更稳），
+  /// 直连源装载（带退避重试）：「切后台后还能播一两首、播完静默停住」的主因是
+  /// 后台网络被回收/连接超时，失败后没有重试也没有下一首兜底。重试会重建连接；
+  /// [alive] 为假（已被更新的切歌接管）或正在退出时立即放弃，不再触碰播放器。
+  Future<void> _playDirect(Song s, MusicSource src,
+      {required bool Function() alive}) async {
+    Object? last;
+    final backoff = loadBackoff;
+    for (var i = 0; i <= backoff.length; i++) {
+      if (!alive() || _shuttingDown) return;
+      if (i > 0) {
+        final wait = backoff[i - 1];
+        debugPrint('[play] ${wait.inSeconds}s 后重试装载《${s.title}》');
+        await Future.delayed(wait);
+        if (!alive() || _shuttingDown) return;
+      }
+      try {
+        final injected = loadOverride;
+        if (injected != null) {
+          await injected(s, src);
+        } else {
+          await _loadOnce(s, src);
+        }
+        return;
+      } catch (e) {
+        // 被更新的装载接管（连按切歌）不是源错误，重试没有意义。
+        if (e is PlayerInterruptedException) rethrow;
+        last = e;
+      }
+    }
+    throw last ?? StateError('装载失败');
+  }
+
+  /// 单次装载：优先离线缓存文件，其次原生 URL（Range/seek 更稳），
   /// 最后回落到自建字节流 [DirectAudioSource]。
-  Future<void> _playDirect(Song s, MusicSource src) async {
+  Future<void> _loadOnce(Song s, MusicSource src) async {
     final cached = await src.cachedFilePath(s);
     if (cached != null) {
       debugPrint('[play] ${src.kind} 缓存文件: $cached');
@@ -997,10 +1104,12 @@ class PlayerProvider extends ChangeNotifier {
     return _advance();
   }
 
-  Future<void> _advance() async {
+  /// 推进到下一首。[autoAdvanceOnFailure] 为 true 表示这是自动续播链路
+  /// （自然播完、失败跳歌、播放错误恢复），装载失败时继续跳下一首而非停住。
+  Future<void> _advance({bool autoAdvanceOnFailure = false}) async {
     if (_queue.isEmpty || _current == null) return;
     if (_mode == PlayMode.weighted) {
-      await _playWeighted();
+      await _playWeighted(autoAdvanceOnFailure: autoAdvanceOnFailure);
       return;
     }
     if (_mode == PlayMode.loopOne) {
@@ -1009,13 +1118,42 @@ class PlayerProvider extends ChangeNotifier {
     }
     if (_mode == PlayMode.loopList) {
       _idx = (_idx + 1) % _queue.length;
-      await _play(_queue[_idx], source: _curSource);
+      await _play(_queue[_idx],
+          source: _curSource, autoAdvanceOnFailure: autoAdvanceOnFailure);
       return;
     }
     if (_idx + 1 < _queue.length) {
       _idx++;
-      await _play(_queue[_idx], source: _curSource);
+      await _play(_queue[_idx],
+          source: _curSource, autoAdvanceOnFailure: autoAdvanceOnFailure);
+      return;
     }
+    // 顺序模式播到队尾：显式收尾。此前这里什么都不做，播放器停在 completed 且
+    // playing 仍为 true，界面一直显示「播放中」却早已没声音。
+    await _finishQueue();
+  }
+
+  /// 队列播完（或连续装载失败放弃）收尾：暂停 + 通知 + 回推媒体会话。
+  Future<void> _finishQueue() async {
+    try {
+      await player.pause();
+    } catch (_) {}
+    notifyListeners();
+    _syncSystemMedia();
+  }
+
+  /// 装载失败后自动跳下一首：连败到 [_loadFailSkipLimit] 首才停，
+  /// 既不让个别坏歌卡住整条队列，也避免整队不可播时无限跳歌。
+  Future<void> _autoSkipAfterFailure() async {
+    _loadFailStreak++;
+    debugPrint('[play] 装载连续失败 $_loadFailStreak 次');
+    if (_loadFailStreak >= _loadFailSkipLimit) {
+      _loadFailStreak = 0;
+      await _finishQueue();
+      AppToast.show('连续 $_loadFailSkipLimit 首无法加载，已停止播放');
+      return;
+    }
+    await _advance(autoAdvanceOnFailure: true);
   }
 
   Future<void> prev() {
@@ -1056,12 +1194,13 @@ class PlayerProvider extends ChangeNotifier {
 
   /// 加权随机下一首（stage2.md §2.2）：优先采用 peekNext 已抽样的结果
   /// （保证预载的就是实际要播的），失效则重新从队列全量排除上一首按 factor 采样。
-  Future<void> _playWeighted() async {
+  Future<void> _playWeighted({bool autoAdvanceOnFailure = false}) async {
     final picked = _takePeeked() ?? _pickWeighted();
     if (picked == null) return;
     _idx = _queue.indexWhere((s) => _same(s, picked));
     if (_idx < 0) _idx = 0;
-    await _play(picked, source: _curSource);
+    await _play(picked,
+        source: _curSource, autoAdvanceOnFailure: autoAdvanceOnFailure);
   }
 
   /// 按权重随机抽一首（排除当前曲；只剩当前曲时允许重播）。
@@ -1167,17 +1306,27 @@ class PlayerProvider extends ChangeNotifier {
     if (player.playing) {
       await _fadeOutThenPause();
     } else {
-      await player.play();
-      _fadeIn();
+      await _resumeOrReplay();
     }
     notifyListeners();
     _syncSystemMedia();
   }
 
-  /// 通知栏「播放」回调（settings.md §3.6）。
-  Future<void> resumeFromNotifier() async {
+  /// 恢复播放：若当前曲已播完（顺序模式队尾收尾或单曲播完），
+  /// 先回到 0 处再播——否则 play() 会立刻再次 completed，表现为「按了没反应」。
+  Future<void> _resumeOrReplay() async {
+    if (player.processingState == ProcessingState.completed) {
+      try {
+        await player.seek(Duration.zero);
+      } catch (_) {}
+    }
     await player.play();
     _fadeIn();
+  }
+
+  /// 通知栏「播放」回调（settings.md §3.6）。
+  Future<void> resumeFromNotifier() async {
+    await _resumeOrReplay();
     notifyListeners();
     _syncSystemMedia();
   }
@@ -1591,6 +1740,7 @@ class PlayerProvider extends ChangeNotifier {
 
   /// 退出软件前清理：保存断点、停止并释放播放器（确保 mpv 等外部子进程退出）。
   Future<void> shutdown() async {
+    _shuttingDown = true;
     _fadeTimer?.cancel();
     _sleepTick?.cancel();
     await _saveState(player.position);
