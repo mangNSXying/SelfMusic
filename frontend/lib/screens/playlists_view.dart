@@ -31,8 +31,14 @@ class PlaylistsView extends StatefulWidget {
   State<PlaylistsView> createState() => _PlaylistsViewState();
 }
 
-class _PlaylistsViewState extends State<PlaylistsView> {
+class _PlaylistsViewState extends State<PlaylistsView>
+    with AutomaticKeepAliveClientMixin {
   final Selection<int> _sel = Selection<int>();
+
+  /// 滑动档横滑时保持存活：离开可视区即销毁 State，重进会重跑 refresh +
+  /// 每行 countOf 首次查询，KeepAlive 使来回滑动零开销。
+  @override
+  bool get wantKeepAlive => true;
 
   /// 本地覆盖的展示形式（null 时读设置）。
   CollectionViewMode? _mode;
@@ -98,6 +104,7 @@ class _PlaylistsViewState extends State<PlaylistsView> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final provider = context.watch<PlaylistsProvider>();
     final nav = context.watch<NavigationProvider>();
     final direct = context.watch<DirectSourceManager>();
@@ -177,12 +184,13 @@ class _PlaylistsViewState extends State<PlaylistsView> {
                             itemBuilder: (c, i) =>
                                 _playlistCard(provider, playlists[i]),
                           )
-                        : ListView.separated(
+                        : ListView.builder(
+                            // 固定行高（含 1px 分隔线）：深层位置只构建可见行。
+                            itemExtent: 73,
                             itemCount: playlists.length,
-                            separatorBuilder: (_, __) =>
-                                const Divider(height: 1, indent: 72),
-                            itemBuilder: (c, i) =>
-                                _playlistTile(provider, playlists[i]),
+                            itemBuilder: (c, i) => _playlistRow(
+                                provider, playlists[i],
+                                isLast: i == playlists.length - 1),
                           ),
               ),
             ],
@@ -219,6 +227,16 @@ class _PlaylistsViewState extends State<PlaylistsView> {
           : () => setState(() => _sel.startWith(p.id)),
     );
   }
+
+  /// 固定行高行：72 高度 ListTile + 1px 分隔线，供 itemExtent 计数。
+  Widget _playlistRow(PlaylistsProvider provider, PlaylistRow p,
+          {required bool isLast}) =>
+      Column(
+        children: [
+          Expanded(child: _playlistTile(provider, p)),
+          if (!isLast) const Divider(height: 1, indent: 72),
+        ],
+      );
 
   Widget _playlistCard(PlaylistsProvider provider, PlaylistRow p) {
     return SquareCard(

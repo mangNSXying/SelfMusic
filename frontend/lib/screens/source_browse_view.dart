@@ -292,20 +292,30 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                         ],
                       ),
                     )
-                  : ListView.separated(
+                  : ListView.builder(
+                      // 固定行高（含 1px 分隔线）：深层位置只构建可见行，
+                      // 万首歌单从第 0 行逐行排到目标行。
+                      itemExtent: 73,
                       itemCount: songs.length,
-                      separatorBuilder: (_, __) =>
-                          const Divider(height: 1, indent: 72),
                       itemBuilder: (c, i) {
                         final s = songs[i];
-                        return SongTile(
-                          song: s,
-                          source: source,
-                          onPlay: () => _play(c, source, songs, i),
-                          selectionMode: _sel.active,
-                          selected: _sel.contains(songKey(s)),
-                          onSelect: () => _toggle(songKey(s)),
-                          onStartSelect: () { setState(() => _sel.startWith(songKey(s))); },
+                        final isLast = i == songs.length - 1;
+                        return Column(
+                          children: [
+                            Expanded(
+                              child: SongTile(
+                                song: s,
+                                source: source,
+                                onPlay: () => _play(c, source, songs, i),
+                                selectionMode: _sel.active,
+                                selected: _sel.contains(songKey(s)),
+                                onSelect: () => _toggle(songKey(s)),
+                                onStartSelect: () { setState(() => _sel.startWith(songKey(s))); },
+                              ),
+                            ),
+                            if (!isLast)
+                              const Divider(height: 1, indent: 72),
+                          ],
                         );
                       },
                     ),

@@ -1622,15 +1622,28 @@ class LocalIndex {
 
   // ---------- 应用设置（settings.md §3） ----------
 
+  /// 设置内存缓存：AppSettings 的每个 getter 都会触发 settingsGet，歌曲列表每行
+  /// 读取标题格式又是一条 SQL——滑动/进入页时几千行 × 1 次同步查询全压在 UI 线程。
+  /// 写入与全部读取统一收口于此方法，缓存恒一致（backup_service 导入同样走 settingsSet）。
+  final Map<String, String> _settingsCache = {};
+  static const String _settingsNull = '\u0000';
+
   String? settingsGet(String key) {
+    if (_settingsCache.containsKey(key)) {
+      final v = _settingsCache[key]!;
+      return v == _settingsNull ? null : v;
+    }
     final rs = _db!.select('SELECT value FROM app_settings WHERE key=?', [key]);
-    return rs.isEmpty ? null : rs.first['value'] as String;
+    final v = rs.isEmpty ? null : rs.first['value'] as String;
+    _settingsCache[key] = v ?? _settingsNull;
+    return v;
   }
 
   void settingsSet(String key, String value) {
     _db!.execute(
         'INSERT INTO app_settings(key, value) VALUES(?,?) '
         'ON CONFLICT(key) DO UPDATE SET value=excluded.value', [key, value]);
+    _settingsCache[key] = value;
   }
 
   /// 全部已存设置键值（供设置导入导出，settings.md §3.5）。

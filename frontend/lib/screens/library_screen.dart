@@ -214,6 +214,13 @@ class _SectionPagerState extends State<SectionPager> {
   }
 }
 
+/// 过滤/排序结果快照（raw = 未过滤全集，用于空态提示）。
+class _SortedResult {
+  const _SortedResult(this.raw, this.songs);
+  final List<Song> raw;
+  final List<Song> songs;
+}
+
 /// 喜欢（收藏）列表：统一来自 play_meta.is_favorite（直连 + 服务器）。
 class _LikedView extends StatefulWidget {
   const _LikedView();
@@ -222,12 +229,23 @@ class _LikedView extends StatefulWidget {
   State<_LikedView> createState() => _LikedViewState();
 }
 
-class _LikedViewState extends State<_LikedView> {
+class _LikedViewState extends State<_LikedView>
+    with AutomaticKeepAliveClientMixin {
+  /// 滑动档横滑时保持存活：PageView 离开可视区即销毁 State，重新进入会重跑
+  /// 全量收藏查询 + 重排（千首 × 多表查询全压在动画帧），KeepAlive 保留之。
+  @override
+  bool get wantKeepAlive => true;
+
   final Selection<String> _sel = Selection<String>();
 
   /// 收藏列表缓存：仅在收藏版本变化时查库（滑动/重绘不重复全量查询）。
   int _favVersion = -1;
   List<Song> _favAll = const [];
+
+  /// 排序/过滤结果按 (收藏版本, 搜索词, 排序偏好) 缓存：build 因 AnyChange 重跑时
+  /// 不重排（权重排序每首一次 SQL，几千首重排一次 = 上万条同步查询）。
+  (int, String, CollectionSort)? _sortedKey;
+  _SortedResult _sorted = const _SortedResult([], []);
 
   List<Song> _favoritesOf(DirectSourceManager direct) {
     if (direct.favoriteVersion != _favVersion) {
@@ -235,6 +253,19 @@ class _LikedViewState extends State<_LikedView> {
       _favAll = direct.favoriteSongs();
     }
     return _favAll;
+  }
+
+  /// 过滤 + 排序，命中缓存直接复用（喜欢页数据不变时 build 重跑 0 次排序/查询）。
+  _SortedResult _sortSongs(DirectSourceManager direct, String search) {
+    final pref = direct.settings.sortFavorites;
+    final key = (_favVersion, search, pref);
+    if (_sortedKey == key) return _sorted;
+    final all = _favoritesOf(direct);
+    final songs = sortSongs(filterSongs(all, search), pref,
+        factorOf: direct.weight.factorOf);
+    _sortedKey = key;
+    _sorted = _SortedResult(_favAll, songs);
+    return _sorted;
   }
 
   void _toggle(String key) => setState(() {
@@ -265,14 +296,14 @@ class _LikedViewState extends State<_LikedView> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final direct = context.watch<DirectSourceManager>();
     final nav = context.watch<NavigationProvider>();
     final player = context.read<PlayerProvider>();
     final lib = context.read<LibraryProvider>();
-    final all = _favoritesOf(direct);
-    final songs = sortSongs(filterSongs(all, nav.search),
-        direct.settings.sortFavorites,
-        factorOf: direct.weight.factorOf);
+    final res = _sortSongs(direct, nav.search);
+    final all = res.raw;
+    final songs = res.songs;
 
     return Stack(
       children: [
@@ -315,25 +346,37 @@ class _LikedViewState extends State<_LikedView> {
                         child: Text(all.isEmpty
                             ? '暂无喜欢的歌曲，去歌曲页点 ♡ 收藏'
                             : '无匹配歌曲'))
-                    : ListView.separated(
+                    // itemExtent 固定行高（含 1px 分隔线）：深位置只构建可见行，
+                    // 否则 Sliver 从第 0 行逐行排到目标行——千首收藏一帧构建
+                    // 700+ 行与封面，进入必卡（歌单详情已验证，见 playlists_view）。
+                    : ListView.builder(
+                        itemExtent: 73,
                         itemCount: songs.length,
-                        separatorBuilder: (_, __) => const Divider(height: 1, indent: 72),
                         itemBuilder: (c, i) {
                           final s = songs[i];
-                          return SongTile(
-                            song: s,
-                            source: lib.sourceFor(s.sourceKey),
-                            onPlay: () {
-                              player.playQueue(songs,
-                                  index: i,
-                                  contextKey: PlayerProvider.anchorForLiked());
-                              context.read<NavigationProvider>().openPlayer();
-                            },
-                            selectionMode: _sel.active,
-                            selected: _sel.contains(songKey(s)),
-                            onSelect: () => _toggle(songKey(s)),
-                            onStartSelect:
-                                () => setState(() => _sel.startWith(songKey(s))),
+                          return Column(
+                            children: [
+                              Expanded(
+                                child: SongTile(
+                                  song: s,
+                                  source: lib.sourceFor(s.sourceKey),
+                                  onPlay: () {
+                                    player.playQueue(songs,
+                                        index: i,
+                                        contextKey:
+                                            PlayerProvider.anchorForLiked());
+                                    context.read<NavigationProvider>().openPlayer();
+                                  },
+                                  selectionMode: _sel.active,
+                                  selected: _sel.contains(songKey(s)),
+                                  onSelect: () => _toggle(songKey(s)),
+                                  onStartSelect: () =>
+                                      setState(() => _sel.startWith(songKey(s))),
+                                ),
+                              ),
+                              if (i != songs.length - 1)
+                                const Divider(height: 1, indent: 72),
+                            ],
                           );
                         },
                       ),
@@ -361,8 +404,33 @@ class _SongsView extends StatefulWidget {
   State<_SongsView> createState() => _SongsViewState();
 }
 
-class _SongsViewState extends State<_SongsView> {
+class _SongsViewState extends State<_SongsView>
+    with AutomaticKeepAliveClientMixin {
+  /// 滑动档横滑时保持存活：离开可视区即销毁 State，重新进入会重跑全库查询
+  /// （allSongs 全表扫描）与万吨排序，KeepAlive 保留使来回滑动 0 查询。
+  @override
+  bool get wantKeepAlive => true;
+
   final Selection<String> _sel = Selection<String>();
+
+  /// 排序/过滤结果缓存（同喜欢页）：
+  /// 键 = (歌曲全集身份, 搜索词, 排序偏好)。build 重跑不重排不重查。
+  List<Song>? _lastBase;
+  (int, String, CollectionSort)? _sortedKey;
+  _SortedResult _sorted = const _SortedResult([], []);
+
+  _SortedResult _sortSongs(LibraryProvider lib, DirectSourceManager direct,
+      String search) {
+    final base = lib.songs;
+    final pref = direct.settings.sortSongs;
+    final key = (base.length, search, pref);
+    if (_sortedKey == key && identical(base, _lastBase)) return _sorted;
+    final songs = sortSongs(filterSongs(base, search), pref,
+        factorOf: direct.weight.factorOf);
+    _sortedKey = key;
+    _lastBase = base;
+    return _sorted = _SortedResult(base, songs);
+  }
 
   @override
   void initState() {
@@ -400,15 +468,14 @@ class _SongsViewState extends State<_SongsView> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final nav = context.watch<NavigationProvider>();
     final lib = context.watch<LibraryProvider>();
     final player = context.read<PlayerProvider>();
     final direct = context.watch<DirectSourceManager>();
 
     // 依据全局搜索词过滤（喜欢页共用同一匹配函数），再按本页排序偏好排序。
-    final songs = sortSongs(filterSongs(lib.songs, nav.search),
-        direct.settings.sortSongs,
-        factorOf: direct.weight.factorOf);
+    final songs = _sortSongs(lib, direct, nav.search).songs;
 
     return Column(
       children: [
@@ -448,26 +515,38 @@ class _SongsViewState extends State<_SongsView> {
         Expanded(
           child: songs.isEmpty
               ? _EmptyHint(onRefresh: () => lib.loadSongs(query: nav.search.isEmpty ? null : nav.search))
+              // itemExtent 固定行高（同喜欢页）：千首歌单只构建可见行，
+              // 否则一帧逐行排布 700+ 行与封面（见 playlists_view 注释）。
               : RefreshIndicator(
                   onRefresh: () => lib.loadSongs(query: nav.search.isEmpty ? null : nav.search),
-                  child: ListView.separated(
+                  child: ListView.builder(
+                    itemExtent: 73,
                     itemCount: songs.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1, indent: 72),
                     itemBuilder: (c, i) {
                       final s = songs[i];
-                      return SongTile(
-                        song: s,
-                        source: lib.sourceFor(s.sourceKey),
-                        onPlay: () {
-                          player.playQueue(songs,
-                              index: i,
-                              contextKey: PlayerProvider.anchorForSongs());
-                          context.read<NavigationProvider>().openPlayer();
-                        },
-                        selectionMode: _sel.active,
-                        selected: _sel.contains(songKey(s)),
-                        onSelect: () => _toggle(songKey(s)),
-                        onStartSelect: () { setState(() => _sel.startWith(songKey(s))); },
+                      return Column(
+                        children: [
+                          Expanded(
+                            child: SongTile(
+                              song: s,
+                              source: lib.sourceFor(s.sourceKey),
+                              onPlay: () {
+                                player.playQueue(songs,
+                                    index: i,
+                                    contextKey: PlayerProvider.anchorForSongs());
+                                context.read<NavigationProvider>().openPlayer();
+                              },
+                              selectionMode: _sel.active,
+                              selected: _sel.contains(songKey(s)),
+                              onSelect: () => _toggle(songKey(s)),
+                              onStartSelect: () {
+                                setState(() => _sel.startWith(songKey(s)));
+                              },
+                            ),
+                          ),
+                          if (i != songs.length - 1)
+                            const Divider(height: 1, indent: 72),
+                        ],
                       );
                     },
                   ),
@@ -485,7 +564,13 @@ class _AlbumsView extends StatefulWidget {
   State<_AlbumsView> createState() => _AlbumsViewState();
 }
 
-class _AlbumsViewState extends State<_AlbumsView> {
+class _AlbumsViewState extends State<_AlbumsView>
+    with AutomaticKeepAliveClientMixin {
+  /// 滑动档横滑时保持存活：离开可视区即销毁 State，重新进入会重跑全量专辑查询
+  /// 与重排，KeepAlive 保留使来回滑动 0 查询。
+  @override
+  bool get wantKeepAlive => true;
+
   /// 本地覆盖的展示形式（null 时读设置）。
   CollectionViewMode? _mode;
 
@@ -495,6 +580,21 @@ class _AlbumsViewState extends State<_AlbumsView> {
   void _setMode(BuildContext c, CollectionViewMode m) {
     c.read<DirectSourceManager>().settings.viewModeAlbums = m;
     setState(() => _mode = m);
+  }
+
+  /// 排序/过滤结果缓存：键 = (专辑全集大小, 搜索词, 排序偏好)，build 重跑不重排。
+  List<Album>? _lastBase;
+  (int, String, CollectionSort)? _sortedKey;
+  List<Album> _sorted = const [];
+
+  List<Album> _filteredSorted(
+      List<Album> albums, String search, CollectionSort pref) {
+    final key = (albums.length, search, pref);
+    if (_sortedKey == key && identical(albums, _lastBase)) return _sorted;
+    _lastBase = albums;
+    _sortedKey = key;
+    return _sorted =
+        sortByCollection(_filter(albums, search), pref, (a) => a.album);
   }
 
   @override
@@ -515,12 +615,12 @@ class _AlbumsViewState extends State<_AlbumsView> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final nav = context.watch<NavigationProvider>();
     final lib = context.watch<LibraryProvider>();
     final direct = context.watch<DirectSourceManager>();
-    final albums = sortByCollection(
-        _filter(lib.albums, nav.search), direct.settings.sortAlbums,
-        (a) => a.album);
+    final albums = _filteredSorted(
+        lib.albums, nav.search, direct.settings.sortAlbums);
     final card = _modeOf(context) == CollectionViewMode.card;
 
     return Column(
@@ -556,12 +656,14 @@ class _AlbumsViewState extends State<_AlbumsView> {
                           itemCount: albums.length,
                           itemBuilder: (c, i) => _AlbumCard(album: albums[i]),
                         )
-                      : ListView.separated(
+                      : ListView.builder(
+                          // 固定行高（含 1px 分隔线）：深层位置只构建可见行，
+                          // 否则千张专辑从第 0 行逐行排到目标行。
+                          itemExtent: 73,
                           itemCount: albums.length,
-                          separatorBuilder: (_, __) =>
-                              const Divider(height: 1, indent: 72),
-                          itemBuilder: (c, i) =>
-                              _AlbumListTile(album: albums[i]),
+                          itemBuilder: (c, i) => _AlbumRow(
+                              album: albums[i],
+                              isLast: i == albums.length - 1),
                         ),
                 ),
         ),
@@ -630,6 +732,21 @@ class _AlbumListTile extends StatelessWidget {
   }
 }
 
+/// 固定行高行：72 高度 ListTile + 1px 分隔线（除末尾行），供 itemExtent 计数。
+class _AlbumRow extends StatelessWidget {
+  final Album album;
+  final bool isLast;
+  const _AlbumRow({required this.album, required this.isLast});
+
+  @override
+  Widget build(BuildContext context) => Column(
+        children: [
+          Expanded(child: _AlbumListTile(album: album)),
+          if (!isLast) const Divider(height: 1, indent: 72),
+        ],
+      );
+}
+
 class _AlbumCard extends StatelessWidget {
   final Album album;
   const _AlbumCard({required this.album});
@@ -668,22 +785,30 @@ class _AlbumSongsSheet extends StatelessWidget {
             CountHeader(count: songs.length),
             const Divider(height: 1),
             Expanded(
-              child: ListView.separated(
+              child: ListView.builder(
                 controller: scrollCtrl,
+                itemExtent: 73,
                 itemCount: songs.length,
-                separatorBuilder: (_, __) => const Divider(height: 1, indent: 56),
                 itemBuilder: (c, i) {
                   final s = songs[i];
-                  return SongTile(
-                    song: s,
-                    source: lib.sourceFor(s.sourceKey),
-                    onPlay: () {
-                      Navigator.of(c).pop();
-                      player.playQueue(songs,
-                          index: i,
-                          contextKey: PlayerProvider.anchorForAlbum(album.id));
-                      context.read<NavigationProvider>().openPlayer();
-                    },
+                  final isLast = i == songs.length - 1;
+                  return Column(
+                    children: [
+                      Expanded(
+                        child: SongTile(
+                          song: s,
+                          source: lib.sourceFor(s.sourceKey),
+                          onPlay: () {
+                            Navigator.of(c).pop();
+                            player.playQueue(songs,
+                                index: i,
+                                contextKey: PlayerProvider.anchorForAlbum(album.id));
+                            context.read<NavigationProvider>().openPlayer();
+                          },
+                        ),
+                      ),
+                      if (!isLast) const Divider(height: 1, indent: 56),
+                    ],
                   );
                 },
               ),
@@ -702,7 +827,12 @@ class _ArtistsView extends StatefulWidget {
   State<_ArtistsView> createState() => _ArtistsViewState();
 }
 
-class _ArtistsViewState extends State<_ArtistsView> {
+class _ArtistsViewState extends State<_ArtistsView>
+    with AutomaticKeepAliveClientMixin {
+  /// 滑动档横滑时保持存活（同专辑页）。
+  @override
+  bool get wantKeepAlive => true;
+
   /// 本地覆盖的展示形式（null 时读设置）。
   CollectionViewMode? _mode;
 
@@ -712,6 +842,21 @@ class _ArtistsViewState extends State<_ArtistsView> {
   void _setMode(BuildContext c, CollectionViewMode m) {
     c.read<DirectSourceManager>().settings.viewModeArtists = m;
     setState(() => _mode = m);
+  }
+
+  /// 排序/过滤结果缓存：键 = (歌手全集大小, 搜索词, 排序偏好)，build 重跑不重排。
+  List<Artist>? _lastBase;
+  (int, String, CollectionSort)? _sortedKey;
+  List<Artist> _sorted = const [];
+
+  List<Artist> _filteredSorted(
+      List<Artist> artists, String search, CollectionSort pref) {
+    final key = (artists.length, search, pref);
+    if (_sortedKey == key && identical(artists, _lastBase)) return _sorted;
+    _lastBase = artists;
+    _sortedKey = key;
+    return _sorted = sortByCollection(
+        _filter(artists, search), pref, (a) => a.name);
   }
 
   @override
@@ -732,12 +877,12 @@ class _ArtistsViewState extends State<_ArtistsView> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final nav = context.watch<NavigationProvider>();
     final lib = context.watch<LibraryProvider>();
     final direct = context.watch<DirectSourceManager>();
-    final artists = sortByCollection(
-        _filter(lib.artists, nav.search), direct.settings.sortArtists,
-        (a) => a.name);
+    final artists = _filteredSorted(
+        lib.artists, nav.search, direct.settings.sortArtists);
     final card = _modeOf(context) == CollectionViewMode.card;
 
     return Column(
@@ -774,12 +919,13 @@ class _ArtistsViewState extends State<_ArtistsView> {
                           itemCount: artists.length,
                           itemBuilder: (c, i) => _ArtistCard(artist: artists[i]),
                         )
-                      : ListView.separated(
+                      : ListView.builder(
+                          // 固定行高（含 1px 分隔线）：深层位置只构建可见行。
+                          itemExtent: 73,
                           itemCount: artists.length,
-                          separatorBuilder: (_, __) =>
-                              const Divider(height: 1, indent: 72),
-                          itemBuilder: (c, i) =>
-                              _ArtistListTile(artist: artists[i]),
+                          itemBuilder: (c, i) => _ArtistRow(
+                              artist: artists[i],
+                              isLast: i == artists.length - 1),
                         ),
                 ),
         ),
@@ -846,6 +992,21 @@ class _ArtistListTile extends StatelessWidget {
   }
 }
 
+/// 固定行高行：72 高度 ListTile + 1px 分隔线（除末尾行），供 itemExtent 计数。
+class _ArtistRow extends StatelessWidget {
+  final Artist artist;
+  final bool isLast;
+  const _ArtistRow({required this.artist, required this.isLast});
+
+  @override
+  Widget build(BuildContext context) => Column(
+        children: [
+          Expanded(child: _ArtistListTile(artist: artist)),
+          if (!isLast) const Divider(height: 1, indent: 72),
+        ],
+      );
+}
+
 class _ArtistCard extends StatelessWidget {
   final Artist artist;
   const _ArtistCard({required this.artist});
@@ -884,23 +1045,31 @@ class _ArtistSongsSheet extends StatelessWidget {
             CountHeader(count: songs.length),
             const Divider(height: 1),
             Expanded(
-              child: ListView.separated(
+              child: ListView.builder(
                 controller: scrollCtrl,
+                itemExtent: 73,
                 itemCount: songs.length,
-                separatorBuilder: (_, __) => const Divider(height: 1, indent: 56),
                 itemBuilder: (c, i) {
                   final s = songs[i];
-                  return SongTile(
-                    song: s,
-                    source: lib.sourceFor(s.sourceKey),
-                    onPlay: () {
-                      Navigator.of(c).pop();
-                      player.playQueue(songs,
-                          index: i,
-                          contextKey:
-                              PlayerProvider.anchorForArtist(artist.name));
-                      context.read<NavigationProvider>().openPlayer();
-                    },
+                  final isLast = i == songs.length - 1;
+                  return Column(
+                    children: [
+                      Expanded(
+                        child: SongTile(
+                          song: s,
+                          source: lib.sourceFor(s.sourceKey),
+                          onPlay: () {
+                            Navigator.of(c).pop();
+                            player.playQueue(songs,
+                                index: i,
+                                contextKey: PlayerProvider.anchorForArtist(
+                                    artist.name));
+                            context.read<NavigationProvider>().openPlayer();
+                          },
+                        ),
+                      ),
+                      if (!isLast) const Divider(height: 1, indent: 56),
+                    ],
                   );
                 },
               ),

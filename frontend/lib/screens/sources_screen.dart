@@ -25,7 +25,12 @@ class SourcesScreen extends StatefulWidget {
   State<SourcesScreen> createState() => _SourcesScreenState();
 }
 
-class _SourcesScreenState extends State<SourcesScreen> {
+class _SourcesScreenState extends State<SourcesScreen>
+    with AutomaticKeepAliveClientMixin {
+  /// 滑动档横滑时保持存活（与其余分组页一致）。
+  @override
+  bool get wantKeepAlive => true;
+
   /// 本地覆盖的展示形式（null 时读设置）。
   CollectionViewMode? _mode;
 
@@ -39,6 +44,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final direct = context.watch<DirectSourceManager>();
     final scheme = Theme.of(context).colorScheme;
     final card = _modeOf(context) == CollectionViewMode.card;
@@ -85,12 +91,13 @@ class _SourcesScreenState extends State<SourcesScreen> {
                             itemBuilder: (c, i) => _DirectSourceCard(
                                 sourceKey: sources[i].key),
                           )
-                        : ListView.separated(
+                        : ListView.builder(
+                            // 固定行高（含 1px 分隔线）：源多时深层位置只构建可见行。
+                            itemExtent: 73,
                             itemCount: sources.length,
-                            separatorBuilder: (_, __) =>
-                                const Divider(height: 1, indent: 56),
-                            itemBuilder: (c, i) =>
-                                _DirectSourceTile(sourceKey: sources[i].key),
+                            itemBuilder: (c, i) => _SourceRow(
+                                sourceKey: sources[i].key,
+                                isLast: i == sources.length - 1),
                           ),
               ),
             ],
@@ -312,6 +319,21 @@ class _DirectSourceTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) =>
       _DirectSourceCard(sourceKey: sourceKey, plain: true);
+}
+
+/// 固定行高行：72 高度 ListTile + 1px 分隔线，供 itemExtent 计数。
+class _SourceRow extends StatelessWidget {
+  final String sourceKey;
+  final bool isLast;
+  const _SourceRow({required this.sourceKey, required this.isLast});
+
+  @override
+  Widget build(BuildContext context) => Column(
+        children: [
+          Expanded(child: _DirectSourceTile(sourceKey: sourceKey)),
+          if (!isLast) const Divider(height: 1, indent: 56),
+        ],
+      );
 }
 
 class _DirectSourceCard extends StatelessWidget {
