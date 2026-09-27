@@ -12,7 +12,8 @@ class DirectAudioSource extends StreamAudioSource {
   final MusicSource source;
   final Song song;
 
-  DirectAudioSource({required this.source, required this.song});
+  /// 通知栏元数据（just_audio_background 从 tag 读标题/封面，见 settings.md §3.6）。
+  DirectAudioSource({required this.source, required this.song, super.tag});
 
   @override
   Duration? get duration => song.duration != null && song.duration! > 0

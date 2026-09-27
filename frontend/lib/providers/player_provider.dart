@@ -4,7 +4,8 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/painting.dart';
+import 'package:flutter/widgets.dart';
+import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 import '../models/song.dart';
 import '../data/sources/music_source.dart';
@@ -63,7 +64,7 @@ extension PlayModeParse on PlayMode {
 /// - 加权随机：每步从队列全量（排除上一首）按 factor 权重采样，不连续同一首。
 /// - 事件采集：播放时长 >95% 记完播、<30% 记跳过、30%~95% 不记 → SongWeightStore 调权。
 /// - 断点：节流持久化 play_state，启动恢复为暂停态。
-class PlayerProvider extends ChangeNotifier {
+class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 完播阈值：播放时长 >95% 记一次完播（含自然结束时 100%）。
   static const double completeRatio = 0.95;
   /// 跳过阈值：播放时长 <30% 记一次跳过；30%~95% 区间不记。
@@ -380,7 +381,9 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   /// 播放器延迟到首次使用才构造（见 [player]），故构造器不建实例。
-  PlayerProvider();
+  PlayerProvider() {
+    if (!kIsWeb) WidgetsBinding.instance.addObserver(this);
+  }
 
   /// 按用户设置构造播放器：均衡器（Android 原生 AndroidEqualizer）与音频焦点开关
   /// 均需在构造时注入（settings.md §3.2/§3.6），设置变动时经 [applyAudioConfig] 重建。
@@ -514,6 +517,28 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> debugLoadDirect(Song s, MusicSource src,
           {required bool Function() alive}) =>
       _playDirect(s, src, alive: alive);
+
+  // ---------- 任务被划掉（Android 通知栏路径） ----------
+
+  /// 已 dispose：生命周期回调可能晚于释放，迟到的通知栏/生命周期事件要挡住。
+  bool _disposed = false;
+
+  /// Android 通知栏改走 just_audio_background 后，audio_service 的 `onTaskRemoved`
+  /// 由该包的处理器接管，而它不实现这个回调——自研 handler 里「最近任务划掉即停止
+  /// 播放」的约定会失效。改由 Flutter 生命周期兜底：划掉任务时 Activity 销毁 →
+  /// detached。
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.detached || _disposed || _shuttingDown) {
+      return;
+    }
+    if (kIsWeb || !Platform.isAndroid) return;
+    // 仅通知栏路径生效：与迁移前 onTaskRemoved 的触发条件一致（关掉通知栏控制时
+    // 不拦截，播放继续）。
+    if (!(_appSettings?.notificationControls ?? false)) return;
+    debugPrint('[play] 任务被划掉，停止播放');
+    unawaited(stopFromNotifier());
+  }
 
   // ---------- 下一首预热（后台切歌不再冷启动） ----------
 
@@ -1115,21 +1140,23 @@ class PlayerProvider extends ChangeNotifier {
   /// 单次装载：优先离线缓存文件，其次原生 URL（Range/seek 更稳），
   /// 最后回落到自建字节流 [DirectAudioSource]。
   Future<void> _loadOnce(Song s, MusicSource src) async {
+    final tag = mediaItemOf(s, title: displayTitle(s));
     final cached = await src.cachedFilePath(s);
     if (cached != null) {
       debugPrint('[play] ${src.kind} 缓存文件: $cached');
-      await player.setFilePath(cached);
+      await player.setFilePath(cached, tag: tag);
       return;
     }
     final direct = src.directStream(s);
     if (direct != null) {
       debugPrint('[play] ${src.kind} URL: ${direct.url}'
           '${direct.headers != null && direct.headers!.isNotEmpty ? ' (headers: ${direct.headers!.keys.join(",")})' : ' (无 headers)'}');
-      await player.setUrl(direct.url, headers: direct.headers);
+      await player.setUrl(direct.url, headers: direct.headers, tag: tag);
       return;
     }
     debugPrint('[play] ${src.kind} 自建字节流: ${s.title}');
-    await player.setAudioSource(DirectAudioSource(source: src, song: s));
+    await player.setAudioSource(
+        DirectAudioSource(source: src, song: s, tag: tag));
   }
 
   /// 懒补全：播放后把解析出的完整元数据（标题/歌手/专辑/专辑歌手/时长/曲目/年份/封面）
@@ -1199,6 +1226,24 @@ class PlayerProvider extends ChangeNotifier {
   void debugApplyLyrics(String content) => _applyLyrics(content);
 
   static String _songKey(Song s) => '${s.sourceKey}\u0000${s.sourceRef}';
+
+  /// 通知栏 / 媒体会话元数据（settings.md §3.6）。
+  ///
+  /// Android 走 just_audio_background 时由它在 `setAudioSource` 时从 **tag** 读取，
+  /// 自研 handler 则是主动回推；两条路径共用这一个构造，避免字段各写一套后漂移。
+  /// `id` 必须唯一且非空（包依赖它标识曲目）。
+  static MediaItem mediaItemOf(Song s, {String? title, Duration? duration}) {
+    // 未给格式化标题时退回歌曲自身标题：通知栏宁可显示原名，也不要空行。
+    final t = (title == null || title.isEmpty) ? s.title : title;
+    return MediaItem(
+      id: '${s.sourceKey}:${s.sourceRef}',
+      album: s.albumName,
+      artist: s.artist,
+      title: t.isEmpty ? '未知曲目' : t,
+      duration: duration,
+      artUri: s.coverPath != null ? Uri.file(s.coverPath!) : null,
+    );
+  }
 
   /// 加载当前歌曲歌词：
   /// 1. 索引已有（内嵌补读 / 上次读取的同名 .lrc）→ 直接展示；
@@ -2017,6 +2062,8 @@ class PlayerProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    if (!kIsWeb) WidgetsBinding.instance.removeObserver(this);
+    _disposed = true;
     _fadeTimer?.cancel();
     _sleepTick?.cancel();
     _warmTimer?.cancel();

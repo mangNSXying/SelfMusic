@@ -29,15 +29,9 @@ class SelfMusicAudioHandler extends BaseAudioHandler {
       final id = _songId(s);
       final cur = mediaItem.valueOrNull;
       if (cur == null || cur.id != id) {
-        final title = p.displayTitle(s);
-        mediaItem.add(MediaItem(
-          id: id,
-          album: s.albumName,
-          artist: s.artist,
-          title: title.isEmpty ? '未知曲目' : title,
-          duration: p.duration,
-          artUri: s.coverPath != null ? Uri.file(s.coverPath!) : null,
-        ));
+        // 与 Android 的 just_audio_background 路径共用同一构造（字段不许各写一套）。
+        mediaItem.add(PlayerProvider.mediaItemOf(s,
+            title: p.displayTitle(s), duration: p.duration));
       }
     }
     final duration = p.duration;

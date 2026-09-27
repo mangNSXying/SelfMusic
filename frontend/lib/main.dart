@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:audio_service/audio_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:just_audio_background/just_audio_background.dart';
 import 'package:just_audio_media_kit/just_audio_media_kit.dart';
 import 'package:provider/provider.dart';
 import 'platform/harmonyos/ohos_bootstrap.dart';
@@ -53,26 +53,31 @@ Future<void> main() async {
   // 信任自签名证书开关（settings.md §3.3）：按 AppSettings 配置 dio 一次。
   api.setSelfSignedPolicy(direct.settings.allowSelfSigned);
 
-  // 通知栏播放控制 / 后台播放（settings.md §3.6）：Android + 开关注册 audio_service。
-  // 处理器本身在 PlayerProvider 创建时再绑定。
+  // 通知栏播放控制 / 后台播放（settings.md §3.6）：Android + 开关注册。
+  //
+  // Android 走 just_audio_background：它接管 just_audio 的平台实例（单播放器场景的
+  // 官方做法），播放命令与通知栏由 audio_service 统一驱动，通知按钮与自研 handler
+  // 一致（上一首/播放暂停/停止/下一首，压缩视图去掉停止）。播放源需带 MediaItem
+  // tag，见 PlayerProvider.mediaItemOf。
+  //
+  // 其余平台（桌面 / 鸿蒙 / Web）保持原样：此前也没有通知栏，迁移不引入未验证的
+  // 行为。自研 [SelfMusicAudioHandler] 保留——它不劫持 just_audio 平台实例，与
+  // media_kit / 鸿蒙 FVP 的自定义平台互不干扰，哪天要给这些平台开通知栏直接接上。
+  //
   // 失败时降级为无通知栏（audioHandler=null），不允许任何通知服务异常拖垮启动（曾致白屏）。
   SelfMusicAudioHandler? audioHandler;
   if (!kIsWeb && Platform.isAndroid && direct.settings.notificationControls) {
     try {
-      audioHandler = await AudioService.init(
-        builder: () => SelfMusicAudioHandler(),
-        config: const AudioServiceConfig(
-          androidNotificationChannelId: 'com.shamiko.selfmusic.channel.audio',
-          androidNotificationChannelName: 'SelfMusic 播放',
-          androidNotificationChannelDescription: '播放控制与后台播放',
-          // 暂停不退出前台服务：回到桌面/锁屏后系统不会回收服务，
-          // 再次恢复播放也不会受 Android 12+ 后台启动前台服务限制。
-          // （前台服务期间通知本就常驻，无需再设 androidNotificationOngoing）
-          androidStopForegroundOnPause: false,
-        ),
+      await JustAudioBackground.init(
+        androidNotificationChannelId: 'com.shamiko.selfmusic.channel.audio',
+        androidNotificationChannelName: 'SelfMusic 播放',
+        androidNotificationChannelDescription: '播放控制与后台播放',
+        // 暂停不退出前台服务：回到桌面/锁屏后系统不会回收服务，
+        // 再次恢复播放也不会受 Android 12+ 后台启动前台服务限制。
+        androidStopForegroundOnPause: false,
       );
     } catch (e) {
-      debugPrint('AudioService.init 失败，通知栏控制降级关闭：$e');
+      debugPrint('just_audio_background 初始化失败，通知栏控制降级关闭：$e');
     }
   }
 
