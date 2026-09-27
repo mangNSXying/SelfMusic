@@ -546,22 +546,18 @@ class _AlbumsView extends StatefulWidget {
 }
 
 class _AlbumsViewState extends State<_AlbumsView>
-    with AutomaticKeepAliveClientMixin {
+    with AutomaticKeepAliveClientMixin, ViewModeState {
   /// 滑动档横滑时保持存活：离开可视区即销毁 State，重新进入会重跑全量专辑查询
   /// 与重排，KeepAlive 保留使来回滑动 0 查询。
   @override
   bool get wantKeepAlive => true;
 
-  /// 本地覆盖的展示形式（null 时读设置）。
-  CollectionViewMode? _mode;
+  @override
+  ViewModeSlot get viewModeSlot => ViewModeSlot.albums;
 
-  CollectionViewMode _modeOf(BuildContext c) =>
-      _mode ?? c.read<DirectSourceManager>().settings.viewModeAlbums;
-
-  void _setMode(BuildContext c, CollectionViewMode m) {
-    c.read<DirectSourceManager>().settings.viewModeAlbums = m;
-    setState(() => _mode = m);
-  }
+  @override
+  AppSettings Function() get appSettings =>
+      () => context.read<DirectSourceManager>().settings;
 
   /// 排序/过滤结果缓存：键 = (专辑全集大小, 搜索词, 排序偏好)，build 重跑不重排。
   List<Album>? _lastBase;
@@ -602,7 +598,7 @@ class _AlbumsViewState extends State<_AlbumsView>
     final direct = context.watch<DirectSourceManager>();
     final albums = _filteredSorted(
         lib.albums, nav.search, direct.settings.sortAlbums);
-    final card = _modeOf(context) == CollectionViewMode.card;
+    final card = isCard;
 
     return Column(
       children: [
@@ -620,11 +616,7 @@ class _AlbumsViewState extends State<_AlbumsView>
                 scope: SortScope.collections,
                 onChanged: (v) => setState(() => direct.settings.sortAlbums = v),
               ),
-              ViewModeToggle(
-                card: card,
-                onChanged: (v) => _setMode(
-                    context, v ? CollectionViewMode.card : CollectionViewMode.list),
-              ),
+              viewModeToggle(),
             ],
           ),
         ),
@@ -768,21 +760,17 @@ class _ArtistsView extends StatefulWidget {
 }
 
 class _ArtistsViewState extends State<_ArtistsView>
-    with AutomaticKeepAliveClientMixin {
+    with AutomaticKeepAliveClientMixin, ViewModeState {
   /// 滑动档横滑时保持存活（同专辑页）。
   @override
   bool get wantKeepAlive => true;
 
-  /// 本地覆盖的展示形式（null 时读设置）。
-  CollectionViewMode? _mode;
+  @override
+  ViewModeSlot get viewModeSlot => ViewModeSlot.artists;
 
-  CollectionViewMode _modeOf(BuildContext c) =>
-      _mode ?? c.read<DirectSourceManager>().settings.viewModeArtists;
-
-  void _setMode(BuildContext c, CollectionViewMode m) {
-    c.read<DirectSourceManager>().settings.viewModeArtists = m;
-    setState(() => _mode = m);
-  }
+  @override
+  AppSettings Function() get appSettings =>
+      () => context.read<DirectSourceManager>().settings;
 
   /// 排序/过滤结果缓存：键 = (歌手全集大小, 搜索词, 排序偏好)，build 重跑不重排。
   List<Artist>? _lastBase;
@@ -823,7 +811,7 @@ class _ArtistsViewState extends State<_ArtistsView>
     final direct = context.watch<DirectSourceManager>();
     final artists = _filteredSorted(
         lib.artists, nav.search, direct.settings.sortArtists);
-    final card = _modeOf(context) == CollectionViewMode.card;
+    final card = isCard;
 
     return Column(
       children: [
@@ -842,11 +830,7 @@ class _ArtistsViewState extends State<_ArtistsView>
                 onChanged: (v) =>
                     setState(() => direct.settings.sortArtists = v),
               ),
-              ViewModeToggle(
-                card: card,
-                onChanged: (v) => _setMode(
-                    context, v ? CollectionViewMode.card : CollectionViewMode.list),
-              ),
+              viewModeToggle(),
             ],
           ),
         ),

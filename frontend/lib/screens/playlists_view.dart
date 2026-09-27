@@ -33,7 +33,7 @@ class PlaylistsView extends StatefulWidget {
 }
 
 class _PlaylistsViewState extends State<PlaylistsView>
-    with AutomaticKeepAliveClientMixin {
+    with AutomaticKeepAliveClientMixin, ViewModeState {
   final Selection<int> _sel = Selection<int>();
 
   /// 滑动档横滑时保持存活：离开可视区即销毁 State，重进会重跑 refresh +
@@ -41,16 +41,12 @@ class _PlaylistsViewState extends State<PlaylistsView>
   @override
   bool get wantKeepAlive => true;
 
-  /// 本地覆盖的展示形式（null 时读设置）。
-  CollectionViewMode? _mode;
+  @override
+  ViewModeSlot get viewModeSlot => ViewModeSlot.playlists;
 
-  CollectionViewMode _modeOf(BuildContext c) =>
-      _mode ?? c.read<DirectSourceManager>().settings.viewModePlaylists;
-
-  void _setMode(BuildContext c, CollectionViewMode m) {
-    c.read<DirectSourceManager>().settings.viewModePlaylists = m;
-    setState(() => _mode = m);
-  }
+  @override
+  AppSettings Function() get appSettings =>
+      () => context.read<DirectSourceManager>().settings;
 
   @override
   void initState() {
@@ -127,7 +123,7 @@ class _PlaylistsViewState extends State<PlaylistsView>
         direct.settings.sortPlaylists,
         (p) => p.name,
         countOf: (p) => provider.countOf(p.id));
-    final card = _modeOf(context) == CollectionViewMode.card;
+    final card = isCard;
 
     return Stack(
       children: [
@@ -166,14 +162,7 @@ class _PlaylistsViewState extends State<PlaylistsView>
                         onChanged: (v) => setState(
                             () => direct.settings.sortPlaylists = v),
                       ),
-                      ViewModeToggle(
-                        card: card,
-                        onChanged: (v) => _setMode(
-                            context,
-                            v
-                                ? CollectionViewMode.card
-                                : CollectionViewMode.list),
-                      ),
+                      viewModeToggle(),
                     ],
                   ),
                 ),

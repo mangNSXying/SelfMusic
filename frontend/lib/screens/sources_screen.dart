@@ -27,28 +27,24 @@ class SourcesScreen extends StatefulWidget {
 }
 
 class _SourcesScreenState extends State<SourcesScreen>
-    with AutomaticKeepAliveClientMixin {
+    with AutomaticKeepAliveClientMixin, ViewModeState {
   /// 滑动档横滑时保持存活（与其余分组页一致）。
   @override
   bool get wantKeepAlive => true;
 
-  /// 本地覆盖的展示形式（null 时读设置）。
-  CollectionViewMode? _mode;
+  @override
+  ViewModeSlot get viewModeSlot => ViewModeSlot.sources;
 
-  CollectionViewMode _modeOf(BuildContext c) =>
-      _mode ?? c.read<DirectSourceManager>().settings.viewModeSources;
-
-  void _setMode(BuildContext c, CollectionViewMode m) {
-    c.read<DirectSourceManager>().settings.viewModeSources = m;
-    setState(() => _mode = m);
-  }
+  @override
+  AppSettings Function() get appSettings =>
+      () => context.read<DirectSourceManager>().settings;
 
   @override
   Widget build(BuildContext context) {
     super.build(context);
     final direct = context.watch<DirectSourceManager>();
     final scheme = Theme.of(context).colorScheme;
-    final card = _modeOf(context) == CollectionViewMode.card;
+    final card = isCard;
     final sources = sortByCollection(direct.sources, direct.settings.sortSources,
         (s) => s.name, countOf: (s) => direct.countOf(s.key));
 
@@ -68,14 +64,7 @@ class _SourcesScreenState extends State<SourcesScreen>
                       onChanged: (v) =>
                           setState(() => direct.settings.sortSources = v),
                     ),
-                    ViewModeToggle(
-                      card: card,
-                      onChanged: (v) => _setMode(
-                          context,
-                          v
-                              ? CollectionViewMode.card
-                              : CollectionViewMode.list),
-                    ),
+                    viewModeToggle(),
                   ],
                 ),
               ),

@@ -51,6 +51,11 @@ class SquareCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final sub = subtitle;
+    // 降采样按「卡片最大宽 × 设备像素比」算：3x 机上 440 偏小（封面发虚），
+    // 2x 机保持 440 不变。
+    final decodeWidth =
+        (SquareCardGrid.maxItemWidth * MediaQuery.devicePixelRatioOf(context))
+            .round();
     return InkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: onTap,
@@ -82,9 +87,9 @@ class SquareCard extends StatelessWidget {
                   child: coverPath != null
                       ? Image.file(File(coverPath!),
                           fit: BoxFit.cover,
-                          // 卡片最大 220 宽：按 ~2× 目标尺寸降采样解码，避免网格全分辨率尖峰。
-                          cacheWidth: 440,
-                          cacheHeight: 440,
+                          // 按目标显示尺寸降采样解码，避免网格全分辨率尖峰。
+                          cacheWidth: decodeWidth,
+                          cacheHeight: decodeWidth,
                           errorBuilder: (_, __, ___) => Icon(fallbackIcon,
                               size: 48,
                               color:
