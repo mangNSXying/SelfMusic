@@ -12,6 +12,7 @@ import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/providers/playlists_provider.dart';
 import 'package:selfmusic/screens/playlists_view.dart';
+import 'package:selfmusic/widgets/song_tile.dart';
 import 'package:sqlite3/open.dart';
 
 DynamicLibrary _openOnLinux() {
@@ -282,6 +283,64 @@ void main() {
     await tester.pump();
     expect(find.textContaining('歌曲 400'), findsOneWidget);
     expect(find.byType(ListTile).evaluate().length, lessThan(40));
+
+    await tester.runAsync(() async {
+      direct.dispose();
+      dir.deleteSync(recursive: true);
+    });
+  });
+
+  testWidgets('歌单详情行并回 SongTile：内置菜单 + 上移/下移/移除', (tester) async {
+    late final Directory dir;
+    late final DirectSourceManager direct;
+    late final int plId;
+    await tester.runAsync(() async {
+      direct = DirectSourceManager();
+      final seeded = await _seedIndexedPlaylist(direct, 'selfmusic_plrow_');
+      dir = seeded.$1;
+      plId = seeded.$2;
+    });
+
+    final provider = PlaylistsProvider(direct.playlists)..refresh();
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+          ChangeNotifierProvider<PlaylistsProvider>.value(value: provider),
+          ChangeNotifierProvider<NavigationProvider>(
+              create: (_) => NavigationProvider()),
+          ChangeNotifierProvider<PlayerProvider>(
+              create: (_) => PlayerProvider()),
+        ],
+        child: MaterialApp(
+          home: Scaffold(body: PlaylistDetailView(playlistId: plId)),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    // 行本体是共用的 SongTile（不再自绘 ListTile）
+    expect(find.byType(SongTile), findsNWidgets(2));
+    // 行内已有封面 + 播放指示位
+    expect(find.byType(CoverThumb), findsNWidgets(2));
+
+    // 首行三点菜单：内置项（喜欢/不喜欢/加入歌单）+ 顺序项（上移/下移/移除）
+    await tester.tap(find.byIcon(Icons.more_vert).first);
+    await tester.pumpAndSettle();
+    expect(find.text('喜欢'), findsOneWidget);
+    expect(find.text('不喜欢'), findsOneWidget);
+    expect(find.text('加入歌单'), findsOneWidget);
+    expect(find.text('上移'), findsOneWidget);
+    expect(find.text('下移'), findsOneWidget);
+    expect(find.text('移除'), findsOneWidget);
+    // 首行不可上移、可以下移
+    bool enabled(String label) => tester
+        .widget<PopupMenuItem<String>>(find.ancestor(
+            of: find.text(label), matching: find.byType(PopupMenuItem<String>)))
+        .enabled;
+    expect(enabled('上移'), isFalse);
+    expect(enabled('下移'), isTrue);
 
     await tester.runAsync(() async {
       direct.dispose();

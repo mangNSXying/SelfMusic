@@ -12,7 +12,6 @@ import '../providers/player_provider.dart';
 import '../providers/playlists_provider.dart';
 import '../utils/collection_sort.dart';
 import '../utils/song_search.dart';
-import '../utils/song_title_format.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
 import '../widgets/row_list.dart';
@@ -382,8 +381,6 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
   /// 不再依赖逐行 GlobalKey 估算或首帧后再 jumpTo（曾因行高估算偏差导致
   /// 定位失败 + 触发两波封面解码尖峰，详见性能排查）。
   late final ScrollController _scroll;
-  static const double _rowExtent = 72;
-  static const double _sepExtent = 1;
   /// 已就位（首帧 initialScrollOffset 或顶部）；true 后不再触发兜底追焦。
   bool _located = false;
 
@@ -397,7 +394,7 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
   /// 追焦目标 offset：队列同款固定上边距（目标行置于距顶 96px 处），
   /// 无需等 viewport；超出列表范围的值交由滚动位置钳位。
   double _focusOffset(int index) =>
-      (index * (_rowExtent + _sepExtent) - 96).clamp(0.0, double.infinity);
+      (index * kRowExtent - 96).clamp(0.0, double.infinity);
 
   @override
   void dispose() {
@@ -536,7 +533,6 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
     final provider = context.watch<PlaylistsProvider>();
     final player = context.watch<PlayerProvider>();
     final direct = context.watch<DirectSourceManager>();
-    final titleFormat = direct.settings.songTitleFormat;
 
     PlaylistRow? playlist;
     for (final p in provider.playlists) {
@@ -664,119 +660,78 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
                   // itemExtent 固定行高（含 1px 分隔线）：深位置（首帧定位/跳转）
                   // 只构建可见行，否则 Sliver 会从第 0 行逐行排到目标行——千首歌单
                   // 一帧构建 700+ 行与封面，进入必卡（实测 712 项 vs 16 项）。
-                  : ListView.builder(
-                  controller: _scroll,
-                  itemExtent: _rowExtent + _sepExtent,
-                  itemCount: visible.length,
-                  itemBuilder: (c, i) {
-                    final full = visible[i];
-                    final row = _items[full];
-                    final s = _songs[full];
-                    final isFirst = i == 0;
-                    final isLast = i == visible.length - 1;
-                    final key = songKey(s);
-                    final isCurrent = full == currentIdx;
-                    final cs = Theme.of(context).colorScheme;
-                    final tile = ListTile(
-                      selected: _sel.active && _sel.contains(key),
-                      leading: _sel.active
-                          ? Checkbox(
-                              value: _sel.contains(key),
-                              onChanged: (_) => _toggle(key),
-                            )
-                          : CoverThumb(coverPath: s.coverPath),
-                      // 播放指示在标题后：封面位恒为封面（改进.txt）。
-                      title: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              formatSongTitle(s, titleFormat),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: isCurrent
-                                  ? TextStyle(
-                                      color: cs.primary,
-                                      fontWeight: FontWeight.w600)
-                                  : null,
+                  : RowList(
+                      controller: _scroll,
+                      count: visible.length,
+                      // itemExtent 固定行高（含 1px 分隔线）：深位置（首帧定位/跳转）
+                      // 只构建可见行，否则 Sliver 会从第 0 行逐行排到目标行——千首歌单
+                      // 一帧构建 700+ 行与封面，进入必卡（实测 712 项 vs 16 项）。
+                      itemBuilder: (c, i) {
+                        final full = visible[i];
+                        final row = _items[full];
+                        final s = _songs[full];
+                        final isFirst = i == 0;
+                        final isLast = i == visible.length - 1;
+                        final key = songKey(s);
+                        return SongTile(
+                          song: s,
+                          // 歌单详情取自本地索引，不提供直连源（不显示「缓存」项）。
+                          source: null,
+                          playing: full == currentIdx,
+                          selectionMode: _sel.active,
+                          selected: _sel.contains(key),
+                          onSelect: () => _toggle(key),
+                          onStartSelect: () =>
+                              setState(() => _sel.startWith(key)),
+                          onPlay: () async {
+                            final uuid = await provider.store.index
+                                .ensurePlaylistUuid(widget.playlistId);
+                            if (!context.mounted) return;
+                            player.playQueue(_songs,
+                                index: full,
+                                playlistUuid: uuid,
+                                contextKey:
+                                    PlayerProvider.anchorForPlaylist(uuid));
+                            context.read<NavigationProvider>().openPlayer();
+                          },
+                          // 歌单顺序相关操作：上移/下移/移除，追加在内置项之后。
+                          extraMenuItems: [
+                            PopupMenuItem(
+                              value: 'row:up',
+                              enabled: !isFirst,
+                              child: const Text('上移'),
                             ),
-                          ),
-                          if (isCurrent) ...[
-                            const SizedBox(width: 4),
-                            Icon(Icons.graphic_eq, size: 15, color: cs.primary),
+                            PopupMenuItem(
+                              value: 'row:down',
+                              enabled: !isLast,
+                              child: const Text('下移'),
+                            ),
+                            const PopupMenuItem(
+                              value: 'row:remove',
+                              child: Text('移除'),
+                            ),
                           ],
-                        ],
-                      ),
-                      subtitle: Text(
-                        '${s.artist ?? "Unknown"} · ${s.albumName ?? ""}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      trailing: _sel.active
-                          ? null
-                          : PopupMenuButton<String>(
-                              tooltip: '更多',
-                              onSelected: (v) {
-                                switch (v) {
-                                  case 'up':
-                                    if (!isFirst) {
-                                      provider.moveItemRow(
-                                          widget.playlistId, row, -1);
-                                    }
-                                  case 'down':
-                                    if (!isLast) {
-                                      provider.moveItemRow(
-                                          widget.playlistId, row, 1);
-                                    }
-                                  case 'remove':
-                                    provider.removeItemRow(
-                                        widget.playlistId, row);
-                                    _notifyPlayerRemoved(
-                                        provider, [provider.songOf(row)]);
+                          onExtraMenu: (v) {
+                            switch (v) {
+                              case 'row:up':
+                                if (!isFirst) {
+                                  provider.moveItemRow(
+                                      widget.playlistId, row, -1);
                                 }
-                              },
-                              itemBuilder: (_) => [
-                                PopupMenuItem(
-                                  value: 'up',
-                                  enabled: !isFirst,
-                                  child: const Text('上移'),
-                                ),
-                                PopupMenuItem(
-                                  value: 'down',
-                                  enabled: !isLast,
-                                  child: const Text('下移'),
-                                ),
-                                const PopupMenuItem(
-                                  value: 'remove',
-                                  child: Text('移除'),
-                                ),
-                              ],
-                            ),
-                      onTap: _sel.active
-                          ? () => _toggle(key)
-                          : () async {
-                              final uuid = await provider.store.index
-                                  .ensurePlaylistUuid(widget.playlistId);
-                              if (!context.mounted) return;
-                              player.playQueue(_songs,
-                                  index: full,
-                                  playlistUuid: uuid,
-                                  contextKey:
-                                      PlayerProvider.anchorForPlaylist(uuid));
-                              context.read<NavigationProvider>().openPlayer();
-                            },
-                      onLongPress: _sel.active
-                          ? () => _toggle(key)
-                          : () => setState(() => _sel.startWith(key)),
-                    );
-                    return Column(
-                      children: [
-                        Expanded(child: tile),
-                        if (!isLast)
-                          const Divider(height: 1, indent: 56),
-                      ],
-                    );
-                  },
-                ),
+                              case 'row:down':
+                                if (!isLast) {
+                                  provider.moveItemRow(
+                                      widget.playlistId, row, 1);
+                                }
+                              case 'row:remove':
+                                provider.removeItemRow(widget.playlistId, row);
+                                _notifyPlayerRemoved(
+                                    provider, [provider.songOf(row)]);
+                            }
+                          },
+                        );
+                      },
+                    ),
         ),
         ],
       ),
