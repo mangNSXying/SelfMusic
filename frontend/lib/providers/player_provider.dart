@@ -1078,6 +1078,18 @@ class PlayerProvider extends ChangeNotifier {
   String? get plainLyrics => _plainLyrics;
   bool get lyricsLoading => _lyricsLoading;
 
+  /// 歌词页位置流（生产走 [player]，懒构造不额外建播放器）。
+  Stream<Duration> get lyricPositionStream =>
+      lyricsPositionOverride ?? player.positionStream;
+
+  /// 歌词页位置流覆盖（仅测试：避免 widget 测试构造真实 AudioPlayer）。
+  @visibleForTesting
+  Stream<Duration>? lyricsPositionOverride;
+
+  /// 测试注入歌词内容（生产走 [song_lyrics] / 同目录 `.lrc`）。
+  @visibleForTesting
+  void debugApplyLyrics(String content) => _applyLyrics(content);
+
   static String _songKey(Song s) => '${s.sourceKey}\u0000${s.sourceRef}';
 
   /// 加载当前歌曲歌词：

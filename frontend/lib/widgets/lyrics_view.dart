@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/direct_source_manager.dart';
@@ -23,7 +24,25 @@ class _LyricsViewState extends State<LyricsView> {
 
   /// 歌词内容标识：变化时重建行 key（切歌/重新加载）。
   String? _contentKey;
+
+  /// 当前高亮行（-1 = 尚无高亮行，如歌还没到第一句歌词）。
   int _current = -1;
+
+  /// 本段内容的首次归位用瞬时跳转（进歌词页 / 切歌），之后换行才用动画，
+  /// 避免从顶部一路滑到很后面。
+  bool _firstAlign = true;
+
+  /// 目标行还没被 ListView 构建出来时临时加宽 cacheExtent（见 [_followCurrent]）。
+  bool _wideCache = false;
+
+  /// 目标行未构建时的补滚重试次数上限。
+  int _retry = 0;
+
+  /// 一帧内只安排一次跟焦（位置事件比帧频快）。
+  bool _followScheduled = false;
+
+  /// 正在飞向的目标偏移：动画途中位置事件不再重复发起同目标的滚动。
+  double? _flying;
 
   /// 用户拖动歌词后到空闲计时结束前暂停自动跟随，避免与手指抢滚动；
   /// 计时时长由「播放」设置里的歌词追焦等待决定。
@@ -33,6 +52,14 @@ class _LyricsViewState extends State<LyricsView> {
 
   /// 当前行二次校正（等放大/折行样式动画结束后回中）。
   Timer? _recenter;
+
+  /// 当前行在视口中的对齐位（与列表上下留白一致）。
+  static const double _align = 0.42;
+
+  /// 目标行未构建时临时把 cacheExtent 提到这个值（约 300 行歌词），
+  /// 正常状态用 ListView 默认的 250。
+  static const ScrollCacheExtent _wideCacheExtent =
+      ScrollCacheExtent.pixels(12000);
 
   @override
   void dispose() {
@@ -102,58 +129,49 @@ class _LyricsViewState extends State<LyricsView> {
     if (key != _contentKey) {
       _contentKey = key;
       _current = -1;
+      _firstAlign = true;
+      _flying = null;
       _keys
         ..clear()
         ..addEntries(
             List.generate(lines.length, (i) => MapEntry(i, GlobalKey())));
-      // 切歌/重载后先回到顶部，再由同步逻辑滚到当前行。
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _scroll.hasClients) _scroll.jumpTo(0);
-      });
+      // 切歌/重载不预跳顶部：本次内容的第一帧会瞬时归位到当前行。
     }
 
     return NotificationListener<ScrollNotification>(
       onNotification: (n) {
         if (n is ScrollStartNotification) {
-          if (n.dragDetails != null) {
-            // 手指开始拖动：暂停跟随并取消空闲计时（含惯性滚动期间）。
-            _followSuppressed = true;
-            _idleTimer?.cancel();
-            _idleTimer = null;
-          }
-        } else if (n is ScrollEndNotification &&
-            _followSuppressed &&
-            _idleTimer == null) {
-          // 拖动/惯性滚动结束后开始计时，超时恢复追焦并立即回中当前行。
-          _idleTimer = Timer(Duration(seconds: _idleSec), () {
-            _idleTimer = null;
-            _followSuppressed = false;
-            if (mounted) _scrollToCurrent(_current);
-          });
+          if (n.dragDetails != null) _suppressFollow();
+        } else if (_followSuppressed &&
+            (n is ScrollUpdateNotification || n is ScrollEndNotification)) {
+          // 拖动/惯性期间不断续期：即使手势被中断（没有 ScrollEnd）也能恢复。
+          _armIdleTimer();
+        } else if (n is ScrollMetricsNotification) {
+          // 视口尺寸变化（转屏、歌词页刚可见）：重新核对当前行位置。
+          _scheduleFollow();
         }
         return false;
       },
       child: StreamBuilder<Duration>(
-        stream: p.player.positionStream,
+        stream: p.lyricPositionStream,
         builder: (context, snap) {
           final pos = snap.data ?? Duration.zero;
-          final idx = lyricIndexAt(lines, pos);
-          if (idx != _current) {
-            _current = idx;
-            WidgetsBinding.instance
-                .addPostFrameCallback((_) => _scrollToCurrent(idx));
-          }
+          _current = lyricIndexAt(lines, pos);
+          // 每次位置事件都核对「当前行是否真的在位」：行号没变也可能滚丢了
+          // （懒构建导致上次跟焦取不到 context、页面刚可见等）。
+          _scheduleFollow();
           return LayoutBuilder(
             builder: (context, c) {
               // 上下留出近半屏空白，使当前行始终居中。
-              final pad = c.maxHeight * 0.42;
+              final pad = c.maxHeight * _align;
               return ListView.builder(
                 controller: _scroll,
                 padding: EdgeInsets.symmetric(vertical: pad),
+                scrollCacheExtent: _wideCache ? _wideCacheExtent : null,
                 itemCount: lines.length,
                 itemBuilder: (context, i) {
-                  final active = i == idx;
-                  final near = (i - idx).abs() <= 1;
+                  final active = i == _current;
+                  final near = (i - _current).abs() <= 1;
                   return InkWell(
                     key: _keys[i],
                     borderRadius: BorderRadius.circular(10),
@@ -210,29 +228,102 @@ class _LyricsViewState extends State<LyricsView> {
     );
   }
 
-  void _scrollToCurrent(int idx) {
-    if (idx < 0 || _followSuppressed || !mounted) return;
-    final ctx = _keys[idx]?.currentContext;
-    if (ctx == null) return;
-    Scrollable.ensureVisible(
-      ctx,
-      alignment: 0.42,
-      duration: const Duration(milliseconds: 320),
-      curve: Curves.easeOutCubic,
-    );
+  /// 把跟焦安排到本帧末执行（build 期间不能直接动滚动/ setState）。
+  void _scheduleFollow() {
+    if (_followScheduled) return;
+    _followScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _followScheduled = false;
+      _followCurrent();
+    });
+  }
+
+  /// 自愈式跟焦：核对当前行是否已在 [_align] 对齐位，不在就滚过去。
+  ///
+  /// 不再以「行号是否变化」为触发条件——行号已经记住但滚动失败时（如 ListView
+  /// 懒构建导致目标行尚未构建、从播放页滑入时该页才刚创建）会永久卡住，
+  /// 必须每次都按真实布局状态复核。
+  void _followCurrent({bool quick = false}) {
+    if (!mounted || _followSuppressed) return;
+    final idx = _current;
+    final pos = _scroll.position;
+    if (idx < 0 || !_scroll.hasClients) return;
+    // 视口/内容尺寸未就绪时算出的目标偏移不可信，等下一次触发。
+    if (!pos.hasViewportDimension || !pos.hasContentDimensions) return;
+
+    final ro = _keys[idx]?.currentContext?.findRenderObject();
+    if (ro == null) {
+      // 目标行不在已构建范围内：先加宽 cacheExtent 让它被构建出来再滚。
+      if (!_wideCache) {
+        setState(() => _wideCache = true);
+        _scheduleFollow();
+      } else if (_retry < 3) {
+        _retry++;
+        _scheduleFollow();
+      }
+      return;
+    }
+    final vp = RenderAbstractViewport.maybeOf(ro);
+    if (vp == null) return;
+    final target = vp
+        .getOffsetToReveal(ro, _align)
+        .offset
+        .clamp(pos.minScrollExtent, pos.maxScrollExtent);
+    _retry = 0;
+    if ((target - pos.pixels).abs() <= 0.5) {
+      _flying = null;
+      // 目标行已构建，把临时加宽的 cacheExtent 收回去。
+      if (_wideCache) setState(() => _wideCache = false);
+      return;
+    }
+    // 已在飞向同一目标：等动画自己走完（位置事件比帧频快，别打断它）。
+    if (_flying != null && (_flying! - target).abs() <= 0.5) return;
+
+    _flying = target;
+    if (_firstAlign) {
+      // 首次归位（进页面/切歌）：瞬时到位，避免长距离滑行。
+      _firstAlign = false;
+      pos.jumpTo(target);
+      if (_wideCache) setState(() => _wideCache = false);
+      return;
+    }
+    unawaited(pos
+        .animateTo(
+          target,
+          duration: quick
+              ? const Duration(milliseconds: 140)
+              : const Duration(milliseconds: 320),
+          curve: quick ? Curves.easeOut : Curves.easeOutCubic,
+        )
+        .then<void>((_) => _flying = null, onError: (Object e, StackTrace s) {
+          _flying = null;
+          debugPrint('[lyrics] 跟焦滚动失败: $e');
+        }));
+    if (_wideCache) setState(() => _wideCache = false);
     // 当前行放大/长句折行的样式动画（200ms）结束后行高才稳定；
     // 二次校正一次，避免「行高变化导致居中像素偏掉」。
     _recenter?.cancel();
     _recenter = Timer(const Duration(milliseconds: 300), () {
       if (!mounted || _followSuppressed || _current != idx) return;
-      final ctx2 = _keys[idx]?.currentContext;
-      if (ctx2 == null) return;
-      Scrollable.ensureVisible(
-        ctx2,
-        alignment: 0.42,
-        duration: const Duration(milliseconds: 140),
-        curve: Curves.easeOut,
-      );
+      _followCurrent(quick: true);
+    });
+  }
+
+  /// 用户开始拖动：暂停跟焦并开始空闲计时。
+  void _suppressFollow() {
+    _followSuppressed = true;
+    _recenter?.cancel();
+    _armIdleTimer();
+  }
+
+  /// 空闲计时（续期式）：拖动/惯性期间反复重置，超时后恢复跟焦并立即回中当前行。
+  /// 计时在 ScrollStart 就启动，因此手势被中断（收不到 ScrollEnd）时也不会卡住。
+  void _armIdleTimer() {
+    _idleTimer?.cancel();
+    _idleTimer = Timer(Duration(seconds: _idleSec), () {
+      _idleTimer = null;
+      _followSuppressed = false;
+      _followCurrent();
     });
   }
 }
