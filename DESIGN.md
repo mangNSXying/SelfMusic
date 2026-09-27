@@ -465,6 +465,50 @@ abstract class MusicSource {
 - **歌词跟焦为自愈式**（`lyrics_view.dart`）：每次位置事件都按真实布局复核当前行是否在位，不以「行号是否变化」为触发条件——`ListView.builder` 懒构建导致目标行尚未构建（`PageView` 滑入时该页才刚创建）时，先临时把 `scrollCacheExtent` 加宽让目标行被构建出来（最多补滚 3 次），再用 `RenderAbstractViewport.getOffsetToReveal` 只滚歌词列表（不用 `Scrollable.ensureVisible`，避免遍历祖先把外层 `PageView` 一起拖动）；首次归位 `jumpTo`、换行 `animateTo`，行高动画后再快速二次校正一次；拖动抑制为续期式空闲计时（`ScrollStart` 即启动，拖动/惯性中不断续期），手势被打断收不到 `ScrollEnd` 也不会永久卡住
 - **后台播放**：Android 走 `audio_service` 自定义处理器（`SelfMusicAudioHandler`，通知按钮转发 `PlayerProvider`）；返回桌面/切后台**继续播放**（`androidStopForegroundOnPause=false` 暂停不撤前台服务，与 `androidNotificationOngoing` 互斥故弃用 ongoing）；通知栏「停止」/ 划掉任务（`onTaskRemoved`）/ 侧边栏「退出」（先 `shutdown()` 再 `exit(0)`）才真正停止并置空闲；`notification_controls=false` 时不注册前台服务、后台保活不成立
 
+### 6.9 列表 / 卡片 / 多选（✅ 已统一）
+
+> 此前同一形态在 10 处各写一遍：行高与分隔线缩进字面量、4 份逐字相同的行包装器
+> （`_AlbumRow`/`_ArtistRow`/`_playlistRow`/`_SourceRow`）、歌单详情与队列两处自绘歌曲
+> 行、4 页各自的视图模式样板。现在按「外壳 / 行 / 卡片 / 多选」四层收口。
+
+**四层职责**
+
+| 层 | 载体 | 约定 |
+|----|------|------|
+| 外壳 | `widgets/row_list.dart` 的 `RowList` | 唯一固定行高列表外壳：统一 `itemExtent`、分隔线缩进、末行不带线、可选下拉刷新；行本体由调用方给 |
+| 行 | `widgets/song_tile.dart` 的 `SongTile` | 唯一歌曲行：封面 + 标题 + 副标题 + 时长/菜单；集合类行（歌单 / 专辑 / 歌手 / 播放源）用 `ListTile` + `CoverThumb` |
+| 卡片 | `widgets/square_card.dart` 的 `SquareCard` / `SquareCardGrid` | 唯一方形卡片：封面恒 1:1（列宽按可用宽度算，不写死 `childAspectRatio`）、标题 2 行上限、按「最大宽 × 设备像素比」降采样解码 |
+| 多选 | `widgets/list_selection.dart` 的 `Selection<T>` + `widgets/selection_bar.dart` | 选择状态内核与批量栏；勾选标记统一 `widgets/selection_badge.dart` |
+
+**几何常量**（`row_list.dart`，改动须同步 `playlists_view_test` 的 `itemExtent` 断言）
+
+| 常量 | 值 | 含义 |
+|------|-----|------|
+| `kRowHeight` | 72 | 行高（双行 `ListTile`） |
+| `kRowSeparatorHeight` | 1 | 分隔线 |
+| `kRowExtent` | 73 | `itemExtent`，供 Sliver 虚拟化与深位置定位 |
+| `kRowDividerIndent` | 72 | 分隔线缩进（与 44 封面 + 左右内边距对齐） |
+| `kListHeaderHeight` | 44 | 计数头与多选栏等高（进出多选模式内容不跳动） |
+
+**为什么 `itemExtent` 不能省**：没有它时 Sliver 为定位深处目标需从第 0 行逐行排到目标行——千首歌单一帧构建 700+ 行与封面，进入必卡（实测 712 项 vs 16 项，`playlists_view_test` 有回归用例）。
+
+**行形态**
+
+- 标题**常驻加粗**（`w600`），播放中 / 选中只再叠主色区分，不靠字重跳变；卡片标题同为 `w600`，两形态一致。
+- 封面位恒为封面（改进.txt）：播放指示（`graphic_eq`）排在标题之后，不顶替封面。
+- `SongTile.compact`：队列面板用的紧凑形态（无封面、副标题仅歌手、无尾部菜单），行高与分隔线仍走标准 73，删掉队列原本第 4 份自绘行。
+- `SongTile.extraMenuItems` / `onExtraMenu`：歌单详情的上移 / 下移 / 移除追加在内置项之后（自定义 value 用 `row:` 前缀避免撞名）。
+- 集合类 leading 统一 `CoverThumb`（`shape` 圆形/圆角 + `fallbackIcon`），歌手保留圆形。
+
+**多选语义**
+
+- 勾选框**叠在封面左上角**（`SelectionBadge`，半透明圆形底衬），不再用勾选框顶替封面——多选时仍能靠封面认出是哪首；无封面的行（歌单行的 `queue_music` 图标）才由勾选框顶替。
+- 多选态隐藏单曲三点菜单（防误触），保留时长作为信息；卡片隐藏右上角角标菜单。
+- 「已选 N」、全选与批量动作的口径统一为**当前可见项**：搜索过滤后不统计、也不作用于被过滤掉的项。
+- 队列面板不参与多选。
+
+**视图模式**：`ViewModeState` mixin + `ViewModeSlot`（`view_mode_toggle.dart`）收口歌单 / 播放源 / 专辑 / 歌手四页的切换逻辑；切换写 SQLite 设置不触发 provider 通知，故 mixin 内保留 `setState` 本地覆盖。
+
 ---
 
 ## 7. 播放算法与同步协议
