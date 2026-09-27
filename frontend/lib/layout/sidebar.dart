@@ -16,18 +16,22 @@ class Sidebar extends StatelessWidget {
     final nav = context.watch<NavigationProvider>();
     final theme = context.watch<ThemeProvider>();
 
-    return Container(
-      width: 260,
+    // 用 Material 承载底色：ListTile 的选中底色/墨迹画在最近的 Material 上，
+    // 若外层是 ColoredBox 会被盖住（选中分区看不出高亮）。
+    return Material(
       color: Theme.of(context).colorScheme.surface,
-      child: SafeArea(
-        child: Column(
-          children: [
-            const _Header(),
-            const Divider(height: 1),
-            Expanded(child: _SettingsList(nav: nav)),
-            const Divider(height: 1),
-            _BottomBar(theme: theme, nav: nav),
-          ],
+      child: SizedBox(
+        width: 260,
+        child: SafeArea(
+          child: Column(
+            children: [
+              const _Header(),
+              const Divider(height: 1),
+              Expanded(child: _SettingsList(nav: nav)),
+              const Divider(height: 1),
+              _BottomBar(theme: theme, nav: nav),
+            ],
+          ),
         ),
       ),
     );
@@ -41,6 +45,8 @@ class _Header extends StatelessWidget {
   Widget build(BuildContext context) {
     final title = Text(
       'SelfMusic',
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
       style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
     );
     // 浅色背景用 selfmusic.png，深色背景用 selfmusic-black.png。
@@ -57,7 +63,8 @@ class _Header extends StatelessWidget {
         children: [
           ClipRRect(borderRadius: BorderRadius.circular(8), child: logo),
           const SizedBox(width: 10),
-          title,
+          // 大字号下标题不撑破 260 宽的侧栏
+          Expanded(child: title),
         ],
       ),
     );

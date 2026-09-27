@@ -78,9 +78,9 @@ enum NavSection {
 /// 侧边栏设置分区条目。
 enum SettingsItem {
   general('备份', Icons.backup_outlined),
+  songs('歌曲', Icons.library_music_outlined),
   playback('播放', Icons.play_circle_outline),
   appearance('界面', Icons.palette_outlined),
-  songs('歌曲', Icons.library_music_outlined),
   notifications('通知', Icons.notifications_outlined),
   server('服务端', Icons.dns_outlined);
 
