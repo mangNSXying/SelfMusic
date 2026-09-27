@@ -36,6 +36,11 @@ class SongTile extends StatelessWidget {
   /// 多选模式下切换本条目选中状态；非多选时为空。
   final VoidCallback? onSelect;
 
+  /// 是否正在播放（标题后显示播放指示）。
+  ///
+  /// 指示**不再占用封面位**（改进.txt）：封面位置恒为封面，指示跟在标题后面。
+  final bool playing;
+
   /// 长按进入多选模式并选中本条目（非多选模式下生效）。
   final VoidCallback? onStartSelect;
 
@@ -48,6 +53,7 @@ class SongTile extends StatelessWidget {
     this.selected = false,
     this.onSelect,
     this.onStartSelect,
+    this.playing = false,
   });
 
   /// 副标题：歌手 · 专辑（· 专辑歌手，仅当与歌手不同时展示，避免冗余）。
@@ -91,16 +97,28 @@ class SongTile extends StatelessWidget {
               onChanged: (_) => onSelect?.call(),
             )
           : CoverThumb(coverPath: song.coverPath),
-      title: Text(
-        formatSongTitle(song, direct.settings.songTitleFormat),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: selectionMode && selected
-            ? TextStyle(
-                color: Theme.of(context).colorScheme.primary,
-                fontWeight: FontWeight.w600,
-              )
-            : null,
+      // 标题 + 播放指示：指示在标题后（封面位留给封面）。
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              formatSongTitle(song, direct.settings.songTitleFormat),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: (selectionMode && selected) || playing
+                  ? TextStyle(
+                      color: Theme.of(context).colorScheme.primary,
+                      fontWeight: FontWeight.w600,
+                    )
+                  : null,
+            ),
+          ),
+          if (playing) ...[
+            const SizedBox(width: 4),
+            Icon(Icons.graphic_eq,
+                size: 15, color: Theme.of(context).colorScheme.primary),
+          ],
+        ],
       ),
       subtitle: Text(
         _subtitle,

@@ -51,6 +51,75 @@ Future<void> settleWriter(WidgetTester tester) async {
 }
 
 void main() {
+
+  testWidgets('播放中：封面保留，指示在标题后（改进.txt）', (tester) async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    late final Directory dir;
+    late final DirectSourceManager direct;
+    await tester.runAsync(() async {
+      dir = await Directory.systemTemp.createTemp('selfmusic_tileplay_');
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      direct = DirectSourceManager();
+      await direct.init();
+    });
+
+    final song = Song(
+      id: 1,
+      sourceKey: 'webdav:t',
+      title: '测试歌',
+      artist: '歌手',
+      duration: 200,
+      source: 'webdav',
+      sourceRef: '/dav/play.mp3',
+      fileSize: 1024,
+    );
+
+    Future<void> pumpTile(bool playing) async {
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+            ChangeNotifierProvider<PlayerProvider>(
+                create: (_) => PlayerProvider()),
+          ],
+          child: MaterialApp(
+            home: Scaffold(
+              body: SongTile(
+                song: song,
+                source: _FakeSource(),
+                playing: playing,
+                onPlay: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    await pumpTile(false);
+    // 普通行：无播放指示，封面缩略图在位
+    expect(find.byIcon(Icons.graphic_eq), findsNothing);
+    expect(find.byType(CoverThumb), findsOneWidget);
+
+    await pumpTile(true);
+    // 播放行：封面仍在（指示不再替换封面）
+    expect(find.byType(CoverThumb), findsOneWidget);
+    expect(find.byIcon(Icons.graphic_eq), findsOneWidget);
+
+    // 指示排在标题之后：标题右边界 ≤ 指示左边界
+    final titleRect = tester.getRect(find.textContaining('测试歌'));
+    final eqRect = tester.getRect(find.byIcon(Icons.graphic_eq));
+    expect(eqRect.left, greaterThanOrEqualTo(titleRect.right));
+    // 指示用强调色（与标题同色）
+    final cs = Theme.of(tester.element(find.byIcon(Icons.graphic_eq))).colorScheme;
+    expect(tester.widget<Icon>(find.byIcon(Icons.graphic_eq)).color, cs.primary);
+
+    await tester.runAsync(() async {
+      direct.dispose();
+      dir.deleteSync(recursive: true);
+    });
+  });
   testWidgets('三点菜单内切换喜欢态；副标题展示专辑歌手', (tester) async {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
     late final Directory dir;

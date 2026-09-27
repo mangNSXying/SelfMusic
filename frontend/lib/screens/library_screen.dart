@@ -369,6 +369,7 @@ class _LikedViewState extends State<_LikedView>
                                             PlayerProvider.anchorForLiked());
                                     context.read<NavigationProvider>().openPlayer();
                                   },
+                                  playing: player.isCurrent(s),
                                   selectionMode: _sel.active,
                                   selected: _sel.contains(songKey(s)),
                                   onSelect: () => _toggle(songKey(s)),
@@ -540,6 +541,7 @@ class _SongsViewState extends State<_SongsView>
                                     contextKey: PlayerProvider.anchorForSongs());
                                 context.read<NavigationProvider>().openPlayer();
                               },
+                              playing: player.isCurrent(s),
                               selectionMode: _sel.active,
                               selected: _sel.contains(songKey(s)),
                               onSelect: () => _toggle(songKey(s)),
@@ -803,6 +805,7 @@ class _AlbumSongsSheet extends StatelessWidget {
                         child: SongTile(
                           song: s,
                           source: lib.sourceFor(s.sourceKey),
+                          playing: player.isCurrent(s),
                           onPlay: () {
                             Navigator.of(c).pop();
                             player.playQueue(songs,
@@ -1064,6 +1067,7 @@ class _ArtistSongsSheet extends StatelessWidget {
                         child: SongTile(
                           song: s,
                           source: lib.sourceFor(s.sourceKey),
+                          playing: player.isCurrent(s),
                           onPlay: () {
                             Navigator.of(c).pop();
                             player.playQueue(songs,

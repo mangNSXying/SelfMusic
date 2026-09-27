@@ -134,6 +134,8 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
   Widget build(BuildContext context) {
     final nav = context.watch<NavigationProvider>();
     final direct = context.watch<DirectSourceManager>();
+    // watch：播放指示（标题后的 graphic_eq）要随当前播放曲变化重建。
+    final player = context.watch<PlayerProvider>();
     final source = direct.sourceByKey(widget.sourceKey);
     if (source == null) {
       return const Center(child: Text('源不存在'));
@@ -307,6 +309,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                                 song: s,
                                 source: source,
                                 onPlay: () => _play(c, source, songs, i),
+                                playing: player.isCurrent(s),
                                 selectionMode: _sel.active,
                                 selected: _sel.contains(songKey(s)),
                                 onSelect: () => _toggle(songKey(s)),

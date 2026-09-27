@@ -686,18 +686,28 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
                               value: _sel.contains(key),
                               onChanged: (_) => _toggle(key),
                             )
-                          : isCurrent
-                              ? Icon(Icons.graphic_eq, color: cs.primary)
-                              : CoverThumb(coverPath: s.coverPath),
-                      title: Text(
-                          formatSongTitle(s, titleFormat),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: isCurrent
-                              ? TextStyle(
-                                  color: cs.primary,
-                                  fontWeight: FontWeight.w600)
-                              : null),
+                          : CoverThumb(coverPath: s.coverPath),
+                      // 播放指示在标题后：封面位恒为封面（改进.txt）。
+                      title: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              formatSongTitle(s, titleFormat),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: isCurrent
+                                  ? TextStyle(
+                                      color: cs.primary,
+                                      fontWeight: FontWeight.w600)
+                                  : null,
+                            ),
+                          ),
+                          if (isCurrent) ...[
+                            const SizedBox(width: 4),
+                            Icon(Icons.graphic_eq, size: 15, color: cs.primary),
+                          ],
+                        ],
+                      ),
                       subtitle: Text(
                         '${s.artist ?? "Unknown"} · ${s.albumName ?? ""}',
                         maxLines: 1,

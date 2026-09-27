@@ -127,26 +127,35 @@ class _QueuePanelState extends State<QueuePanel> {
                                 ),
                           child: Row(
                             children: [
-                              Icon(
-                                  isCurrent
-                                      ? Icons.graphic_eq
-                                      : Icons.music_note,
-                                  color: isCurrent ? colorScheme.primary : null),
+                              // 队列行不放封面，指示统一放在标题后（与各列表一致）。
+                              const Icon(Icons.music_note),
                               const SizedBox(width: 14),
                               Expanded(
                                 child: Column(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text(
-                                      formatSongTitle(s, titleFormat),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: isCurrent
-                                          ? TextStyle(
-                                              color: colorScheme.primary,
-                                              fontWeight: FontWeight.w600)
-                                          : null,
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            formatSongTitle(s, titleFormat),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: isCurrent
+                                                ? TextStyle(
+                                                    color: colorScheme.primary,
+                                                    fontWeight: FontWeight.w600)
+                                                : null,
+                                          ),
+                                        ),
+                                        if (isCurrent) ...[
+                                          const SizedBox(width: 4),
+                                          Icon(Icons.graphic_eq,
+                                              size: 14,
+                                              color: colorScheme.primary),
+                                        ],
+                                      ],
                                     ),
                                     Text(
                                       s.artist ?? 'Unknown',
