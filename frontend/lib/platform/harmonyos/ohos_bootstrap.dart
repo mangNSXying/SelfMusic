@@ -4,9 +4,11 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:just_audio_platform_interface/just_audio_platform_interface.dart';
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:sqlite3/open.dart' as sqlite3_open;
 
 import 'just_audio_fvp.dart';
+import 'path_provider_ohos_retry.dart';
 import 'secure_storage_ohos.dart';
 
 /// 当前是否运行在 HarmonyOS（ohos）。
@@ -23,13 +25,16 @@ DynamicLibrary _openSqliteOnOhos() => DynamicLibrary.open('libsqlite3.so');
 
 /// HarmonyOS（ohos）启动引导：在 runApp 前、任何插件/存储使用前调用。
 ///
-/// 三件事（全部仅 ohos 生效，其它平台零影响）：
+/// 四件事（全部仅 ohos 生效，其它平台零影响）：
 /// 1. sqlite3：package:sqlite3 在 ohos 上默认 `throw UnsupportedError`
 ///    （OperatingSystem 枚举无 ohos），override 为加载系统 `libsqlite3.so`
 ///    （本地索引 local_index.dart 依赖）
 /// 2. flutter_secure_storage：官方 ohos 桩全版本 sdk<3.0.0 不可用，
 ///    换 [OhosSecureStorage] 文件实现（PoC 级 base64 混淆，见该文件说明）
 /// 3. just_audio：无 ohos 实现，接 [FvpJustAudio]（fvp/libmdk 适配层）
+/// 4. path_provider：引擎启动竞态会导致启动早期的平台消息回复被
+///    libflutter.so 静默丢弃（main 卡死白屏，见 [OhosRetryingPathProvider]
+///    文件头取证记录），包装为超时重发版本自愈
 ///
 /// 其余已在别处收口的 ohos 差异（无需在此处理）：
 /// - audio_session：`AudioSession.instance` 在无插件平台 catch 掉
@@ -42,4 +47,8 @@ Future<void> setupOhos() async {
   sqlite3_open.open.overrideForAll(_openSqliteOnOhos);
   FlutterSecureStoragePlatform.instance = OhosSecureStorage();
   JustAudioPlatform.instance = FvpJustAudio();
+  // 先捕获引擎注册的 PathProviderOhos 作委托，再换成超时重发包装
+  // （启动链所有路径调用均经 PathProviderPlatform.instance，单点收口）。
+  PathProviderPlatform.instance =
+      OhosRetryingPathProvider(PathProviderPlatform.instance);
 }

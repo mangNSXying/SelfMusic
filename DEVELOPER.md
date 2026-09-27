@@ -377,7 +377,7 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 
 | 依赖 | ohos 方案 | 状态 |
 |------|-----------|------|
-| path_provider | `path_provider_ohos` 2.2.1 | ✅ 直接用 |
+| path_provider | `path_provider_ohos` 2.2.1 + 超时重试包装（引擎启动竞态吞回复，见下方取证记录） | ✅ 直接用 + 自救 |
 | file_selector | `file_selector_ohos` 0.5.0+2 | ✅ 直接用 |
 | **just_audio（音频后端）** | **fvp**（libmdk 后端，官方支持 HarmonyOS 5.0+）+ 自写纯 Dart 适配层 `just_audio_platform_interface` → fvp Player，无 ArkTS | ✅ 已实现（`lib/platform/harmonyos/just_audio_fvp.dart`） |
 | flutter_secure_storage | 桩包全版本 `sdk <3.0.0` 装不上 → Dart 文件 shim（`FlutterSecureStoragePlatform` 实现，PoC 级；后续换 Asset Store Kit） | ✅ 已实现（`secure_storage_ohos.dart`） |
@@ -396,15 +396,26 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 - fvp 用 vendored 副本 `frontend/third_party/fvp`（ohos-only 平台声明 + 删除 video_player 依赖链），升级 = 重新复制 0.38.1 源码 + 重打两个补丁（见该目录 pubspec.yaml / lib/fvp.dart 头部注释）
 
 适配层实现（`lib/platform/harmonyos/`，2026-09）：
-- `ohos_bootstrap.dart`：`setupOhos()` 在 `main()` 里 runApp 前调用，三件事全部仅 ohos 生效——sqlite3 overrideForAll（顶层函数，isolate 安全）、`FlutterSecureStoragePlatform.instance = OhosSecureStorage()`、`JustAudioPlatform.instance = FvpJustAudio()`
+- `ohos_bootstrap.dart`：`setupOhos()` 在 `main()` 里 runApp 前调用，四件事全部仅 ohos 生效——sqlite3 overrideForAll（顶层函数，isolate 安全）、`FlutterSecureStoragePlatform.instance = OhosSecureStorage()`、`JustAudioPlatform.instance = FvpJustAudio()`、`PathProviderPlatform.instance = OhosRetryingPathProvider(原实现)`（单点收口：启动链全部路径调用均经该 instance）
+- `path_provider_ohos_retry.dart`：引擎启动竞态的自救包装，根因与取证见下节
 - `just_audio_fvp.dart`：`FvpJustAudio.init/disposePlayer` 管理播放器表；`FvpAudioPlayer` 实现负载面 load/play/pause/seek/setVolume（+speed/loop 顺带），pitch/shuffle/skipSilence 静默 no-op；mdk 状态映射：`prepare()<0` 抛 PlatformException、`state=stopped` 且非加载复位/错误 → `completed`（自动切歌依赖）、`MediaStatus.invalid`/`onEvent error` → 错误上报、位置用 200ms Timer 轮询（mdk 无位置流）、同一媒体重复 load 前先回 stopped 复位（mdk prepare 对已加载返回 -1）；音量两侧语义一致（0.0-1.0）
 - `secure_storage_ohos.dart`：文档目录单 JSON 文件 + 整文件 base64 混淆，内存即权威源；读写失败不抛（密钥问题不崩登录/配对流程）；对应 platform_interface 1.1.2 Map-options 签名（flutter_secure_storage 9.2.4 锁定该版本，`*Params` API 是 1.2+ 才有，勿混淆）
 
+引擎启动竞态：平台消息回复被静默丢弃 → 启动白屏（2026-09 真机取证，已修复）：
+
+- 症状：真机冷启一直白屏不退。`flutter_ohos` fork `62357a9`（HAR `1.0.0-4cbeea6a36f1`）启动早期，XComponent Surface 创建风暴后 ~130ms 窗口内发出的平台消息，**响应回调路由在 libflutter.so 内部丢失**——ArkTS 插件侧 handler 与 `reply.reply()` 均正常执行，`nativeInvokePlatformMessageResponseCallback` 查响应 ID 失败且无任何日志
+- 表现：`main()` 卡死在 `ServerSettings.load()` → `getApplicationSupportDirectory()` 的 await（Dart VM service 取栈为证：isolate 空闲、无异常、无后续消息，runApp 从未执行）；窗口外启动完全正常 → 纯时序竞态，非 Dart/ArkTS 代码 bug
+- 自救（`path_provider_ohos_retry.dart`）：单次 1s 超时（正常响应毫秒级）× 最多 5 次重发（窗口 ~130ms，首次重发必在窗口外，路径查询幂等）+ 全超时回退沙盒路径 `/data/storage/el2/base/haps/entry/files`（保 main 走完，白屏比目录语义不精确更糟）；仅 `TimeoutException` 重试，`UnsupportedError` 等原样透传
+- 根修建议：携证据链上报 openharmony-sig/flutter_ohos（Surface attach 窗口内响应回调注册竞态）；根修落地后可移除包装
+- 验证：修复后连续 6 轮冷启（force-stop → aa start）全部进入 UI（hilog 判定 documents 调用出现 + 截图像素判定非白屏）；`[ohos] path_provider.* 响应超时` 日志是竞态命中的取证信号
+
 构建验证状态（2026-09）：
 - 双 SDK `flutter analyze` 零问题（ohos 3.41.9 与 stable 各自通过；两 SDK 的 pub get 会对 meta/test_api/vector_math 等 4 个 flutter_test 传递依赖来回改写 lock，属已知无害现象）
-- `flutter build hap --debug` 编译链全通：ArkTS（三插件 GeneratedPluginRegistrant）+ native（libfvp.so/libmdk.so arm64-v8a）+ Dart（kernel_blob 76MB JIT）；**当前唯一缺口 = 调试签名**（hvigor assembleHap 需 signingConfigs）
+- `flutter build hap --debug` 编译链全通：ArkTS（三插件 GeneratedPluginRegistrant）+ native（libfvp.so/libmdk.so arm64-v8a）+ Dart（kernel_blob JIT），assembleHap 出 signed hap
+- 真机部署已走通：`devecocli signature generate`（签名材料落 `~/.ohos/config/`）→ 出包 → `hdc install -r` / `devecocli run`
+- 启动白屏已修复（引擎竞态，见上）：修复后 6/6 冷启通过
 
-真机部署步骤（待执行）：
+真机部署步骤：
 ```powershell
 # 0. 真机开启开发者模式 + USB 调试，USB 连电脑（首次连接手机上确认授权弹窗）
 # 1. 检查设备识别
