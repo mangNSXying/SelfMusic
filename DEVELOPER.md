@@ -320,6 +320,7 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 - **WAL + 降 fsync**：`journal_mode=WAL`、`synchronous=NORMAL`（WAL 下仅 checkpoint fsync）、`busy_timeout=30000`、`wal_autocheckpoint=1000`
 - **Future 语义**：需要回执的写返回 `Future`，**落库后才完成**（主连接经 WAL 立即读到已提交数据）；只有可丢失的旁路写用 `execFire`（如 `app_settings` 内存缓存回写）
 - **复合逻辑用 `op`**：读改写必须在写连接内原子完成，不能「主连接读 → 主线程算 → 写连接写」。已封装的 op：`applyWeightEvent` / `setFavorite` / `upsertPlayMeta` / `upsertSongs` / `clearMissing` / `renameSource` / `deleteSource` / `movePlaylistItem` / `updateSongUserMeta` / `apply*Snapshot` / `migrateMetaRefs` 等（完整清单见 `db_writer.dart` 的 `_runOp`）
+- **播放统计用挂钟 + 写连接累加**：`play_meta.play_sec` 由 `player_provider` 在「暂停 / 切歌 / 退出 / 位置事件」处结算（`DateTime.now` 差值，非位置采样，故后台节流不影响），经 `DbWriter.addPlaySec` 在写连接内累加；`shutdown()` 需先 flush 再关写连接。**不要为它开周期定时器**——`fake_async` 下会留下 pending timer 导致测试失败
 - **落库时机要显式**：`LocalIndex.flushWrites()` 在**导出 / 导入备份**（`backup_service.dart`）与**退出**（`player_provider` 的 `shutdown()`）前必须调用；进程被杀时排队中的写会丢，因此只允许把它用在可重算的派生数据上
 - **数据迁移在写隔离 `init` 里跑**：历史 `play_meta` 的 `ENCODE(ref)` 脏值由 `migrateMetaRefs` 在开连接时修一次（幂等）
 - **平台差异**：写隔离是独立 isolate，拿不到主 isolate 的 `open.overrideFor`（测试正是靠它注入），因此 `_openWriterDb` 自己解析 `libsqlite3`——Linux 依次试 `libsqlite3.so` / `libsqlite3.so.0`（发行版常只有后者）
@@ -381,7 +382,7 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 | **just_audio（音频后端）** | **fvp**（libmdk 后端，官方支持 HarmonyOS 5.0+）+ 自写纯 Dart 适配层 `just_audio_platform_interface` → fvp Player，无 ArkTS | ✅ 已实现（`lib/platform/harmonyos/just_audio_fvp.dart`） |
 | flutter_secure_storage | 桩包全版本 `sdk <3.0.0` 装不上 → Dart 文件 shim（`FlutterSecureStoragePlatform` 实现，PoC 级；后续换 Asset Store Kit） | ✅ 已实现（`secure_storage_ohos.dart`） |
 | permission_handler | 桩包同样不兼容；应用内调用点均已 `Platform.isAndroid` 门控，ohos 不触发 | ✅ 无需处理 |
-| wakelock_plus | 桩包不兼容 → player_screen 调用点 guard（PoC 放弃屏幕常亮） | ✅ 已处理 |
+| wakelock_plus | 桩包不兼容 → `player_screen` 调用点按 `Platform.operatingSystem != 'ohos'` guard（ohos 放弃屏幕常亮） | ✅ 已处理 |
 | audio_service | 无 ohos 实现 → 按预案降级「无通知栏」（代码已按 `Platform.isAndroid` 门控） | ✅ |
 | sqlite3 | ohos 上默认 `throw UnsupportedError` → `open.overrideForAll()` 加载系统 `libsqlite3.so` | ✅ 已实现（`ohos_bootstrap.dart`） |
 | audio_session | `AudioSession.instance` 在无插件平台 catch 掉 `MissingPluginException` 返回空实现，just_audio 的 `handleInterruptions` 安全（与 Windows/Linux 同路径） | ✅ 已验证，无需处理 |

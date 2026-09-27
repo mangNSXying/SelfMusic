@@ -203,7 +203,7 @@ INDEX idx_refresh(refresh_token_hash)
 | `sources` | 源配置：`type(local/webdav/smb)`、名称、凭据引用键、enabled、last_scan_at（同步后含 `client_uuid`） |
 | `idx_songs` | 直连模式本地索引：`source_key, ref, title, artist, album, track_no, year, genre, duration, format, size, mtime, etag, cover_path, missing`（增量指纹含 `mtime,size,etag`；`is_favorite` 旧列仅用于一次性回填迁移，阶段 2 起不再读写） |
 | `cache` | 已缓存歌曲：`cache_key, source_key, ref, local path, size_bytes` + `cached_at, last_accessed_at`（阶段 2 补列，LRU 用） |
-| `play_meta` | 歌曲播放元数据（阶段 2 新增）：`(source_key, song_ref)` 主键 + `like_streak, dislike_streak, factor, frozen, is_favorite`（**收藏统一收口**）+ `song_json`（同步快照；本机未配置对应源时用于展示） |
+| `play_meta` | 歌曲播放元数据（阶段 2 新增）：`(source_key, song_ref)` 主键 + `like_streak, dislike_streak, factor, frozen, is_favorite`（**收藏统一收口**）+ `play_sec`（累计播放秒数，播放次数由此派生）+ `song_json`（同步快照；本机未配置对应源时用于展示） |
 | `playlists` / `playlist_items` | 歌单与条目（阶段 2 新增）：条目含歌曲快照字段 + `sort_order`；播放时按 `(source_key, song_ref)` 重新解析 |
 | `app_settings` | 客户端设置（阶段 2 新增）：键值表，`cache_max_bytes / cache_song_limit / auto_cache_favorites` 等 |
 | `song_lyrics` | 歌词（迭代新增）：`(source_key, song_ref)` 主键 + `content`（LRC 文本）+ `updated_at`；三态收录（内嵌歌词 / 同名 `.lrc` / 标记缺失），避免每次播放重复读文件 |
@@ -334,7 +334,7 @@ TokenFilter (OncePerRequestFilter)
 | `data/sources/` | ★ Source 抽象层（LocalDirect / WebdavDirect / SmbDirect）+ DirectAudioSource |
 | `data/local/` | 本地库（`schema` 建表迁移 + `db_writer` 写隔离 + `local_index` 门面）+ 纯 Dart 头部解析 + 各 Store 封装 |
 | `models/` `utils/` | 数据模型（Song / Album / Artist）；纯工具（时长格式、标题显示格式、LRC 解析） |
-| `widgets/` | 共享组件（SongTile、CoverThumb、歌词页、加入·编辑歌单、列表·卡片切换等） |
+| `widgets/` | 共享组件（SongTile、CoverThumb、歌词页、加入·编辑歌单、列表·卡片切换、SortMenuButton 等）。`SongTile` 的 leading 恒为 `CoverThumb`（多选态为复选框），**播放指示 `Icons.graphic_eq` 跟在标题之后**而非顶替封面，由调用方传 `playing`（`PlayerProvider.isCurrent(s)`）；`SortMenuButton` 为两行合一弹窗：字段行 + 行内上下箭头，点箭头选方向、点字段名翻转方向 |
 | `platform/` | ★ 平台收口层：平台差异收敛于此，新增平台只补 `platform/<target>/`，不动上层 |
 | `screens/` | 内容区 / 歌单 / 播放源 / 源内浏览 / 设置 / 播放页 / 配对 / 设备管理 |
 
@@ -421,6 +421,13 @@ abstract class MusicSource {
 - 源卡片右侧 `PopupMenuButton` 三点菜单：编辑、删除源（二次确认弹窗）
 - 新增/编辑源弹窗统一为 `_SourceDialog`：添加态用 `SegmentedButton` 选 WebDAV/本地文件夹（本地态提供「选择目录」走 `file_selector.getDirectoryPath`）；编辑态按 key 从 `LocalIndex` 原始配置预填（密码从 SecretStore 回填），改名会派生新 key 并同步迁移 `sources/idx_songs/play_meta/playlist_items`（`LocalIndex.renameSource`）
 - 全局歌曲/专辑/歌手合并：`LibraryProvider.loadSongs()` 聚合 `DirectSourceManager.allSongs()`；专辑和歌手按合并后的歌曲列表客户端聚合（`Album.fromSongs` / `Artist.fromSongs`），切换到对应栏目时自动拉取
+- **列表排序**（`utils/collection_sort.dart` + `widgets/sort_menu_button.dart`）：按 `SortScope` 开放字段——
+  歌曲类内容页（喜欢 / 歌曲 / 歌单详情）为 默认排序 / 字符 / 权重 / 播放时长 / 播放次数 / 时长，
+  集合类内容页（歌单 / 播放源 / 专辑 / 歌手）为 默认排序 / 字符 / 曲数，每个字段各有升降序；
+  选择逐页持久化在 `app_settings`（`sort_songs / sort_favorites / sort_playlist_detail / sort_albums /
+  sort_artists / sort_playlists / sort_sources`，值存枚举名，`CollectionSort.parse` 对未知值回落默认排序）。
+  播放时长与播放次数都来自 `play_meta.play_sec`（见 §7.1），由调用方注入 `playSecOf` / `countOf` 读取函数，
+  取不到值的行排在末尾。菜单为「字段 + 行内方向箭头」两行合一（点箭头选方向、点字段翻方向），当前方向以强调色标出
 - 播放路由：`PlayerProvider.attachSourceResolver` 注册解析函数，按歌曲 `sourceKey` 逐首从 `DirectSourceManager.sourceByKey` 解析源实现；无本机源的快照行不参与播放
 
 ### 6.6 网络与离线
@@ -500,6 +507,12 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 `_weightedPickIndex`）、列表循环接续当前曲（末尾回绕）、顺序/单曲循环取首曲。队列本身仍按歌单
 当前排序装载（不按模式重排），「从头播放」是显式例外：固定首曲且不读远端断点。
 
+**播放统计**（`play_meta.play_sec` + `utils/play_stats.dart`）：播放次数不单独落库，由**累计播放秒数**派生——
+`播放次数 = play_sec / duration`，展示保留 1 位小数（= 四舍五入的「次」），同时可显示 `x 小时 y 分` / `y 分 z 秒` 标签。
+采集用**挂钟口径**（`DateTime.now` 差值，不采样播放位置），因此后台/息屏节流不影响统计；结算点为
+「暂停 / 切歌 / 退出 / 播放位置事件」四类，落库走 `DbWriter.addPlaySec`（写连接内累加），
+写隔离关闭前 flush。挂钟口径的代价是「暂停后立刻切歌」会按 0 秒结算，故以 `>=1s` 为有效增量。
+
 **深层列表**（`data/deep_list.dart`，隐藏能力）：锚定列表的「仅可修改末尾值」有界历史栈，容量 = 该列表歌曲总数。
 列表内播放推入末尾（超容量视为播完一轮，清空后从当前曲重来）；外部点歌只替换末尾、不切换锚定；「上一首」弹出末尾并重播新的末尾。
 **不影响「下一首」语义**——未来播放顺序仍由队列与加权算法决定。它是显式改动加权随机「同首不连续」观感的手段。
@@ -512,6 +525,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 - **方向**：客户端本地 SQLite 是运行时事实源；后端是多设备汇聚点
 - **Pull**：启动全量校准 + 每 30s `GET /api/v1/sync/pull?since_cursor=`；cursor 为服务端 `sync_events.seq` 单调递增变更号
 - **Push**：本地产生权重事件/断点/歌单改动 → 写 `weight_outbox`（带 event_uuid）→ 2s 防抖批量上推；服务端按 uuid 幂等去重
+- **累计播放时长**：`play_sec` 随 `song.state` 上下推（服务端 `song_states.play_sec` 行级 LWW），客户端应用快照时取 `max(本地, 服务端)` 单调合并，累计值不会因乱序/旧快照倒退
 - **冲突（字段级合并，阶段 5 落地）**：权重走**事件重算**而非绝对值覆盖（两设备并发点赞按到达序重放，不互抹）；收藏/歌单元数据/删除墓碑/断点走**行级 LWW**（事件 `occurred_at` vs 行 `last_event_at`，输方收 correction 回执自纠；仲裁时钟为服务端 `arrived_at`）；歌单条目按 seq 到达序重放（后到达胜出）；直接 REST 变更（歌单 CRUD/断点 PUT/调权 POST）同样先记事件再生效，保证 pull 可见
 - **歌曲身份**：服务端无曲库，统一为 `source_id + source_ref`（source_id=客户端源实例 uuid，旧数据/旧客户端为 `legacy:<协议>`）；权重/收藏落 `song_states`，歌单条目与断点自持身份及展示快照（标题/歌手/专辑/时长，pull 不覆盖客户端本地标题）；pull 身份收集恒不建行（已删歌曲不复活）。未配对（无后端地址）时直连事件不进队，避免 outbox 无限积压；`sync_enabled` 关闭同样全跳
 - **播放源同步**：`source.create/update/delete` + 行级 LWW；身份 `client_uuid`，去重键 `(kind, address)`（名称不参与），本地文件夹源不参与，密码不入服务端（设备本地 SecretStore，新设备显示「待配置密码」）；应用后重建内存源列表；存量远端源接入时补 uuid 并补发一次 create；旧协议级身份（`legacy:<协议>`）在设备重新上报时由服务端懒迁移到源实例 uuid
