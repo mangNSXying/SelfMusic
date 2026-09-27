@@ -11,6 +11,7 @@ import '../utils/collection_sort.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
 import '../widgets/sort_menu_button.dart';
+import '../widgets/row_list.dart';
 import '../widgets/square_card.dart';
 import '../widgets/view_mode_toggle.dart';
 
@@ -92,13 +93,10 @@ class _SourcesScreenState extends State<SourcesScreen>
                             itemBuilder: (c, i) => _DirectSourceCard(
                                 sourceKey: sources[i].key),
                           )
-                        : ListView.builder(
-                            // 固定行高（含 1px 分隔线）：源多时深层位置只构建可见行。
-                            itemExtent: 73,
-                            itemCount: sources.length,
-                            itemBuilder: (c, i) => _SourceRow(
-                                sourceKey: sources[i].key,
-                                isLast: i == sources.length - 1),
+                        : RowList(
+                            count: sources.length,
+                            itemBuilder: (c, i) => _DirectSourceTile(
+                                sourceKey: sources[i].key),
                           ),
               ),
             ],
@@ -322,21 +320,6 @@ class _DirectSourceTile extends StatelessWidget {
       _DirectSourceCard(sourceKey: sourceKey, plain: true);
 }
 
-/// 固定行高行：72 高度 ListTile + 1px 分隔线，供 itemExtent 计数。
-class _SourceRow extends StatelessWidget {
-  final String sourceKey;
-  final bool isLast;
-  const _SourceRow({required this.sourceKey, required this.isLast});
-
-  @override
-  Widget build(BuildContext context) => Column(
-        children: [
-          Expanded(child: _DirectSourceTile(sourceKey: sourceKey)),
-          if (!isLast) const Divider(height: 1, indent: 56),
-        ],
-      );
-}
-
 class _DirectSourceCard extends StatelessWidget {
   final String sourceKey;
 
@@ -359,7 +342,10 @@ class _DirectSourceCard extends StatelessWidget {
       title: Text(s.name,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: Theme.of(context).textTheme.titleMedium),
+          style: Theme.of(context)
+              .textTheme
+              .titleMedium
+              ?.copyWith(fontWeight: FontWeight.w600)),
       subtitle: Text(needsPwd
           ? '待配置密码 · 点击「编辑」补输后可用'
           : '直连${isLocal ? ' · 本地文件夹' : ''} · 已索引 $count 首'),

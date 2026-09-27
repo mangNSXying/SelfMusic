@@ -15,6 +15,7 @@ import '../utils/song_search.dart';
 import '../utils/song_title_format.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
+import '../widgets/row_list.dart';
 import '../widgets/square_card.dart';
 import '../widgets/list_selection.dart';
 import '../widgets/section_swipe.dart';
@@ -186,13 +187,10 @@ class _PlaylistsViewState extends State<PlaylistsView>
                             itemBuilder: (c, i) =>
                                 _playlistCard(provider, playlists[i]),
                           )
-                        : ListView.builder(
-                            // 固定行高（含 1px 分隔线）：深层位置只构建可见行。
-                            itemExtent: 73,
-                            itemCount: playlists.length,
-                            itemBuilder: (c, i) => _playlistRow(
-                                provider, playlists[i],
-                                isLast: i == playlists.length - 1),
+                        : RowList(
+                            count: playlists.length,
+                            itemBuilder: (c, i) =>
+                                _playlistTile(provider, playlists[i]),
                           ),
               ),
             ],
@@ -218,7 +216,13 @@ class _PlaylistsViewState extends State<PlaylistsView>
               onChanged: (_) => _toggleSelect(p.id),
             )
           : const Icon(Icons.queue_music),
-      title: Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      title: Text(p.name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context)
+              .textTheme
+              .bodyLarge
+              ?.copyWith(fontWeight: FontWeight.w600)),
       subtitle: Text('${provider.countOf(p.id)} 首'),
       trailing: _sel.active ? null : _playlistMenu(provider, p),
       onTap: _sel.active
@@ -229,16 +233,6 @@ class _PlaylistsViewState extends State<PlaylistsView>
           : () => setState(() => _sel.startWith(p.id)),
     );
   }
-
-  /// 固定行高行：72 高度 ListTile + 1px 分隔线，供 itemExtent 计数。
-  Widget _playlistRow(PlaylistsProvider provider, PlaylistRow p,
-          {required bool isLast}) =>
-      Column(
-        children: [
-          Expanded(child: _playlistTile(provider, p)),
-          if (!isLast) const Divider(height: 1, indent: 72),
-        ],
-      );
 
   Widget _playlistCard(PlaylistsProvider provider, PlaylistRow p) {
     return SquareCard(

@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
-import '../utils/song_title_format.dart';
+import '../widgets/row_list.dart';
+import '../widgets/song_tile.dart';
 
 /// 切换播放队列面板：窄屏竖屏底部弹层（0.7 高），宽屏/横屏右侧常驻面板开关。
 ///
@@ -43,7 +43,6 @@ class QueuePanel extends StatefulWidget {
 }
 
 class _QueuePanelState extends State<QueuePanel> {
-  static const double _rowExtent = 64;
   final ScrollController _scroll = ScrollController();
 
   @override
@@ -55,7 +54,7 @@ class _QueuePanelState extends State<QueuePanel> {
       final player = context.read<PlayerProvider>();
       final idx = _currentIndex(player);
       if (idx <= 0) return;
-      final target = (idx * _rowExtent - 96)
+      final target = (idx * kRowExtent - 96)
           .clamp(0.0, _scroll.position.maxScrollExtent);
       _scroll.jumpTo(target);
     });
@@ -77,14 +76,11 @@ class _QueuePanelState extends State<QueuePanel> {
   @override
   Widget build(BuildContext context) {
     final player = context.watch<PlayerProvider>();
-    final titleFormat =
-        context.watch<DirectSourceManager>().settings.songTitleFormat;
-    final colorScheme = Theme.of(context).colorScheme;
     final queue = player.queue;
 
     return Container(
       width: widget.width,
-      color: colorScheme.surface,
+      color: Theme.of(context).colorScheme.surface,
       child: Column(
         children: [
           Padding(
@@ -105,77 +101,18 @@ class _QueuePanelState extends State<QueuePanel> {
           Expanded(
             child: queue.isEmpty
                 ? const Center(child: Text('队列为空'))
-                : ListView.builder(
+                : RowList(
                     controller: _scroll,
-                    itemExtent: _rowExtent,
-                    itemCount: queue.length,
+                    count: queue.length,
                     itemBuilder: (c, i) {
                       final s = queue[i];
                       final isCurrent = player.isCurrent(s);
-                      return InkWell(
-                        onTap: () => player.playAt(i),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 16),
-                          decoration: i == queue.length - 1
-                              ? null
-                              : BoxDecoration(
-                                  border: Border(
-                                    bottom: BorderSide(
-                                        color: colorScheme.outlineVariant
-                                            .withValues(alpha: 0.5)),
-                                  ),
-                                ),
-                          child: Row(
-                            children: [
-                              // 队列行不放封面，指示统一放在标题后（与各列表一致）。
-                              const Icon(Icons.music_note),
-                              const SizedBox(width: 14),
-                              Expanded(
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      children: [
-                                        Expanded(
-                                          child: Text(
-                                            formatSongTitle(s, titleFormat),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: isCurrent
-                                                ? TextStyle(
-                                                    color: colorScheme.primary,
-                                                    fontWeight: FontWeight.w600)
-                                                : null,
-                                          ),
-                                        ),
-                                        if (isCurrent) ...[
-                                          const SizedBox(width: 4),
-                                          Icon(Icons.graphic_eq,
-                                              size: 14,
-                                              color: colorScheme.primary),
-                                        ],
-                                      ],
-                                    ),
-                                    Text(
-                                      s.artist ?? 'Unknown',
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodySmall
-                                          ?.copyWith(
-                                              color: isCurrent
-                                                  ? colorScheme.primary
-                                                      .withValues(alpha: 0.8)
-                                                  : null),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
+                      return SongTile(
+                        song: s,
+                        source: null,
+                        compact: true,
+                        playing: isCurrent,
+                        onPlay: () => player.playAt(i),
                       );
                     },
                   ),

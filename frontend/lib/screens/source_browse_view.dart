@@ -14,6 +14,7 @@ import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/list_selection.dart';
+import '../widgets/row_list.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_tile.dart';
 
@@ -294,31 +295,19 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                         ],
                       ),
                     )
-                  : ListView.builder(
-                      // 固定行高（含 1px 分隔线）：深层位置只构建可见行，
-                      // 万首歌单从第 0 行逐行排到目标行。
-                      itemExtent: 73,
-                      itemCount: songs.length,
+                  : RowList(
+                      count: songs.length,
                       itemBuilder: (c, i) {
                         final s = songs[i];
-                        final isLast = i == songs.length - 1;
-                        return Column(
-                          children: [
-                            Expanded(
-                              child: SongTile(
-                                song: s,
-                                source: source,
-                                onPlay: () => _play(c, source, songs, i),
-                                playing: player.isCurrent(s),
-                                selectionMode: _sel.active,
-                                selected: _sel.contains(songKey(s)),
-                                onSelect: () => _toggle(songKey(s)),
-                                onStartSelect: () { setState(() => _sel.startWith(songKey(s))); },
-                              ),
-                            ),
-                            if (!isLast)
-                              const Divider(height: 1, indent: 72),
-                          ],
+                        return SongTile(
+                          song: s,
+                          source: source,
+                          onPlay: () => _play(c, source, songs, i),
+                          playing: player.isCurrent(s),
+                          selectionMode: _sel.active,
+                          selected: _sel.contains(songKey(s)),
+                          onSelect: () => _toggle(songKey(s)),
+                          onStartSelect: () { setState(() => _sel.startWith(songKey(s))); },
                         );
                       },
                     ),

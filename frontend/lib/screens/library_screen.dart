@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -19,6 +18,7 @@ import '../widgets/app_toast.dart';
 import '../widgets/area_switcher.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
+import '../widgets/row_list.dart';
 import '../widgets/list_selection.dart';
 import '../widgets/page_transition.dart';
 import '../widgets/section_swipe.dart';
@@ -348,38 +348,25 @@ class _LikedViewState extends State<_LikedView>
                         child: Text(all.isEmpty
                             ? '暂无喜欢的歌曲，去歌曲页点 ♡ 收藏'
                             : '无匹配歌曲'))
-                    // itemExtent 固定行高（含 1px 分隔线）：深位置只构建可见行，
-                    // 否则 Sliver 从第 0 行逐行排到目标行——千首收藏一帧构建
-                    // 700+ 行与封面，进入必卡（歌单详情已验证，见 playlists_view）。
-                    : ListView.builder(
-                        itemExtent: 73,
-                        itemCount: songs.length,
+                    : RowList(
+                        count: songs.length,
                         itemBuilder: (c, i) {
                           final s = songs[i];
-                          return Column(
-                            children: [
-                              Expanded(
-                                child: SongTile(
-                                  song: s,
-                                  source: lib.sourceFor(s.sourceKey),
-                                  onPlay: () {
-                                    player.playQueue(songs,
-                                        index: i,
-                                        contextKey:
-                                            PlayerProvider.anchorForLiked());
-                                    context.read<NavigationProvider>().openPlayer();
-                                  },
-                                  playing: player.isCurrent(s),
-                                  selectionMode: _sel.active,
-                                  selected: _sel.contains(songKey(s)),
-                                  onSelect: () => _toggle(songKey(s)),
-                                  onStartSelect: () =>
-                                      setState(() => _sel.startWith(songKey(s))),
-                                ),
-                              ),
-                              if (i != songs.length - 1)
-                                const Divider(height: 1, indent: 72),
-                            ],
+                          return SongTile(
+                            song: s,
+                            source: lib.sourceFor(s.sourceKey),
+                            onPlay: () {
+                              player.playQueue(songs,
+                                  index: i,
+                                  contextKey: PlayerProvider.anchorForLiked());
+                              context.read<NavigationProvider>().openPlayer();
+                            },
+                            playing: player.isCurrent(s),
+                            selectionMode: _sel.active,
+                            selected: _sel.contains(songKey(s)),
+                            onSelect: () => _toggle(songKey(s)),
+                            onStartSelect: () =>
+                                setState(() => _sel.startWith(songKey(s))),
                           );
                         },
                       ),
@@ -520,42 +507,30 @@ class _SongsViewState extends State<_SongsView>
         Expanded(
           child: songs.isEmpty
               ? _EmptyHint(onRefresh: () => lib.loadSongs(query: nav.search.isEmpty ? null : nav.search))
-              // itemExtent 固定行高（同喜欢页）：千首歌单只构建可见行，
-              // 否则一帧逐行排布 700+ 行与封面（见 playlists_view 注释）。
-              : RefreshIndicator(
-                  onRefresh: () => lib.loadSongs(query: nav.search.isEmpty ? null : nav.search),
-                  child: ListView.builder(
-                    itemExtent: 73,
-                    itemCount: songs.length,
-                    itemBuilder: (c, i) {
-                      final s = songs[i];
-                      return Column(
-                        children: [
-                          Expanded(
-                            child: SongTile(
-                              song: s,
-                              source: lib.sourceFor(s.sourceKey),
-                              onPlay: () {
-                                player.playQueue(songs,
-                                    index: i,
-                                    contextKey: PlayerProvider.anchorForSongs());
-                                context.read<NavigationProvider>().openPlayer();
-                              },
-                              playing: player.isCurrent(s),
-                              selectionMode: _sel.active,
-                              selected: _sel.contains(songKey(s)),
-                              onSelect: () => _toggle(songKey(s)),
-                              onStartSelect: () {
-                                setState(() => _sel.startWith(songKey(s)));
-                              },
-                            ),
-                          ),
-                          if (i != songs.length - 1)
-                            const Divider(height: 1, indent: 72),
-                        ],
-                      );
-                    },
-                  ),
+              : RowList(
+                  count: songs.length,
+                  onRefresh: () => lib.loadSongs(
+                      query: nav.search.isEmpty ? null : nav.search),
+                  itemBuilder: (c, i) {
+                    final s = songs[i];
+                    return SongTile(
+                      song: s,
+                      source: lib.sourceFor(s.sourceKey),
+                      onPlay: () {
+                        player.playQueue(songs,
+                            index: i,
+                            contextKey: PlayerProvider.anchorForSongs());
+                        context.read<NavigationProvider>().openPlayer();
+                      },
+                      playing: player.isCurrent(s),
+                      selectionMode: _sel.active,
+                      selected: _sel.contains(songKey(s)),
+                      onSelect: () => _toggle(songKey(s)),
+                      onStartSelect: () {
+                        setState(() => _sel.startWith(songKey(s)));
+                      },
+                    );
+                  },
                 ),
         ),
       ],
@@ -656,23 +631,21 @@ class _AlbumsViewState extends State<_AlbumsView>
         Expanded(
           child: albums.isEmpty
               ? _EmptyHint(onRefresh: () => lib.loadAlbums(query: nav.search.isEmpty ? null : nav.search))
-              : RefreshIndicator(
-                  onRefresh: () => lib.loadAlbums(query: nav.search.isEmpty ? null : nav.search),
-                  child: card
-                      ? SquareCardGrid(
-                          itemCount: albums.length,
-                          itemBuilder: (c, i) => _AlbumCard(album: albums[i]),
-                        )
-                      : ListView.builder(
-                          // 固定行高（含 1px 分隔线）：深层位置只构建可见行，
-                          // 否则千张专辑从第 0 行逐行排到目标行。
-                          itemExtent: 73,
-                          itemCount: albums.length,
-                          itemBuilder: (c, i) => _AlbumRow(
-                              album: albums[i],
-                              isLast: i == albums.length - 1),
-                        ),
-                ),
+              : card
+                  ? RefreshIndicator(
+                      onRefresh: () => lib.loadAlbums(
+                          query: nav.search.isEmpty ? null : nav.search),
+                      child: SquareCardGrid(
+                        itemCount: albums.length,
+                        itemBuilder: (c, i) => _AlbumCard(album: albums[i]),
+                      ),
+                    )
+                  : RowList(
+                      count: albums.length,
+                      onRefresh: () => lib.loadAlbums(
+                          query: nav.search.isEmpty ? null : nav.search),
+                      itemBuilder: (c, i) => _AlbumListTile(album: albums[i]),
+                    ),
         ),
       ],
     );
@@ -705,26 +678,9 @@ class _AlbumListTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
     return ListTile(
-      leading: ClipRRect(
-        borderRadius: BorderRadius.circular(6),
-        child: SizedBox(
-          width: 44,
-          height: 44,
-          child: album.coverPath != null
-              ? Image.file(File(album.coverPath!),
-                  fit: BoxFit.cover,
-                  cacheWidth: 88,
-                  cacheHeight: 88,
-                  errorBuilder: (_, __, ___) =>
-                      Icon(Icons.album, color: colorScheme.primary))
-              : Container(
-                  color: colorScheme.primary.withValues(alpha: 0.15),
-                  child: Icon(Icons.album, color: colorScheme.primary),
-                ),
-        ),
-      ),
+      leading: CoverThumb(
+          coverPath: album.coverPath, fallbackIcon: Icons.album),
       title: Text(album.album,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
@@ -737,21 +693,6 @@ class _AlbumListTile extends StatelessWidget {
       onTap: () => _openAlbum(context, album),
     );
   }
-}
-
-/// 固定行高行：72 高度 ListTile + 1px 分隔线（除末尾行），供 itemExtent 计数。
-class _AlbumRow extends StatelessWidget {
-  final Album album;
-  final bool isLast;
-  const _AlbumRow({required this.album, required this.isLast});
-
-  @override
-  Widget build(BuildContext context) => Column(
-        children: [
-          Expanded(child: _AlbumListTile(album: album)),
-          if (!isLast) const Divider(height: 1, indent: 72),
-        ],
-      );
 }
 
 class _AlbumCard extends StatelessWidget {
@@ -792,31 +733,22 @@ class _AlbumSongsSheet extends StatelessWidget {
             CountHeader(count: songs.length),
             const Divider(height: 1),
             Expanded(
-              child: ListView.builder(
+              child: RowList(
                 controller: scrollCtrl,
-                itemExtent: 73,
-                itemCount: songs.length,
+                count: songs.length,
                 itemBuilder: (c, i) {
                   final s = songs[i];
-                  final isLast = i == songs.length - 1;
-                  return Column(
-                    children: [
-                      Expanded(
-                        child: SongTile(
-                          song: s,
-                          source: lib.sourceFor(s.sourceKey),
-                          playing: player.isCurrent(s),
-                          onPlay: () {
-                            Navigator.of(c).pop();
-                            player.playQueue(songs,
-                                index: i,
-                                contextKey: PlayerProvider.anchorForAlbum(album.id));
-                            context.read<NavigationProvider>().openPlayer();
-                          },
-                        ),
-                      ),
-                      if (!isLast) const Divider(height: 1, indent: 56),
-                    ],
+                  return SongTile(
+                    song: s,
+                    source: lib.sourceFor(s.sourceKey),
+                    playing: player.isCurrent(s),
+                    onPlay: () {
+                      Navigator.of(c).pop();
+                      player.playQueue(songs,
+                          index: i,
+                          contextKey: PlayerProvider.anchorForAlbum(album.id));
+                      context.read<NavigationProvider>().openPlayer();
+                    },
                   );
                 },
               ),
@@ -921,22 +853,21 @@ class _ArtistsViewState extends State<_ArtistsView>
         Expanded(
           child: artists.isEmpty
               ? _EmptyHint(onRefresh: () => lib.loadArtists(query: nav.search.isEmpty ? null : nav.search))
-              : RefreshIndicator(
-                  onRefresh: () => lib.loadArtists(query: nav.search.isEmpty ? null : nav.search),
-                  child: card
-                      ? SquareCardGrid(
-                          itemCount: artists.length,
-                          itemBuilder: (c, i) => _ArtistCard(artist: artists[i]),
-                        )
-                      : ListView.builder(
-                          // 固定行高（含 1px 分隔线）：深层位置只构建可见行。
-                          itemExtent: 73,
-                          itemCount: artists.length,
-                          itemBuilder: (c, i) => _ArtistRow(
-                              artist: artists[i],
-                              isLast: i == artists.length - 1),
-                        ),
-                ),
+              : card
+                  ? RefreshIndicator(
+                      onRefresh: () => lib.loadArtists(
+                          query: nav.search.isEmpty ? null : nav.search),
+                      child: SquareCardGrid(
+                        itemCount: artists.length,
+                        itemBuilder: (c, i) => _ArtistCard(artist: artists[i]),
+                      ),
+                    )
+                  : RowList(
+                      count: artists.length,
+                      onRefresh: () => lib.loadArtists(
+                          query: nav.search.isEmpty ? null : nav.search),
+                      itemBuilder: (c, i) => _ArtistListTile(artist: artists[i]),
+                    ),
         ),
       ],
     );
@@ -967,25 +898,12 @@ class _ArtistListTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
     return ListTile(
-      leading: ClipRRect(
-        borderRadius: BorderRadius.circular(22),
-        child: SizedBox(
-          width: 44,
-          height: 44,
-          child: artist.coverPath != null
-              ? Image.file(File(artist.coverPath!),
-                  fit: BoxFit.cover,
-                  cacheWidth: 88,
-                  cacheHeight: 88,
-                  errorBuilder: (_, __, ___) =>
-                      Icon(Icons.person, color: colorScheme.primary))
-              : Container(
-                  color: colorScheme.primary.withValues(alpha: 0.15),
-                  child: Icon(Icons.person, color: colorScheme.primary),
-                ),
-        ),
+      // 歌手用圆形头像（其余集合行统一圆角方形）。
+      leading: CoverThumb(
+        coverPath: artist.coverPath,
+        fallbackIcon: Icons.person,
+        shape: CoverShape.circle,
       ),
       title: Text(artist.name,
           maxLines: 1,
@@ -999,21 +917,6 @@ class _ArtistListTile extends StatelessWidget {
       onTap: () => _openArtist(context, artist),
     );
   }
-}
-
-/// 固定行高行：72 高度 ListTile + 1px 分隔线（除末尾行），供 itemExtent 计数。
-class _ArtistRow extends StatelessWidget {
-  final Artist artist;
-  final bool isLast;
-  const _ArtistRow({required this.artist, required this.isLast});
-
-  @override
-  Widget build(BuildContext context) => Column(
-        children: [
-          Expanded(child: _ArtistListTile(artist: artist)),
-          if (!isLast) const Divider(height: 1, indent: 72),
-        ],
-      );
 }
 
 class _ArtistCard extends StatelessWidget {
@@ -1054,32 +957,22 @@ class _ArtistSongsSheet extends StatelessWidget {
             CountHeader(count: songs.length),
             const Divider(height: 1),
             Expanded(
-              child: ListView.builder(
+              child: RowList(
                 controller: scrollCtrl,
-                itemExtent: 73,
-                itemCount: songs.length,
+                count: songs.length,
                 itemBuilder: (c, i) {
                   final s = songs[i];
-                  final isLast = i == songs.length - 1;
-                  return Column(
-                    children: [
-                      Expanded(
-                        child: SongTile(
-                          song: s,
-                          source: lib.sourceFor(s.sourceKey),
-                          playing: player.isCurrent(s),
-                          onPlay: () {
-                            Navigator.of(c).pop();
-                            player.playQueue(songs,
-                                index: i,
-                                contextKey: PlayerProvider.anchorForArtist(
-                                    artist.name));
-                            context.read<NavigationProvider>().openPlayer();
-                          },
-                        ),
-                      ),
-                      if (!isLast) const Divider(height: 1, indent: 56),
-                    ],
+                  return SongTile(
+                    song: s,
+                    source: lib.sourceFor(s.sourceKey),
+                    playing: player.isCurrent(s),
+                    onPlay: () {
+                      Navigator.of(c).pop();
+                      player.playQueue(songs,
+                          index: i,
+                          contextKey: PlayerProvider.anchorForArtist(artist.name));
+                      context.read<NavigationProvider>().openPlayer();
+                    },
                   );
                 },
               ),
