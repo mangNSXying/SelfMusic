@@ -258,6 +258,7 @@ class SyncEngine {
           factor: snap['factor'] as double,
           frozen: snap['frozen'] as bool,
           favorite: snap['favorite'] as bool,
+          playSec: snap['playSec'] as int?,
         );
       }
     }
@@ -276,6 +277,8 @@ class SyncEngine {
       'factor': (s['weight'] as num?)?.toDouble() ?? 1.0,
       'frozen': s['frozen'] == true,
       'favorite': s['is_favorite'] == true,
+      // 老服务端快照没有 play_sec（null = 不参与覆盖，本地累计值保留）
+      'playSec': (s['play_sec'] as num?)?.toInt(),
     };
   }
 

@@ -143,6 +143,8 @@ public class SyncService {
             if (p.has("weight")) song.setWeight(BigDecimal.valueOf(p.path("weight").asDouble(factor(song).doubleValue())));
             if (p.has("frozen")) song.setFrozen(p.path("frozen").asBoolean(song.isFrozen()));
             if (p.has("is_favorite")) song.setFavorite(p.path("is_favorite").asBoolean(song.isFavorite()));
+            // 累计播放时长（秒）：与其它字段同样走行级 LWW（载荷缺键保持行上原值）。
+            if (p.has("play_sec")) song.setPlaySec(p.path("play_sec").asInt(nvl(song.getPlaySec())));
         }
         song.setLastEventAt(ev.occurred_at());
         songStateRepository.save(song);
@@ -681,6 +683,7 @@ public class SyncService {
         m.put("weight", s.getWeight() == null ? 1.0 : s.getWeight().doubleValue());
         m.put("frozen", s.isFrozen());
         m.put("is_favorite", s.isFavorite());
+        m.put("play_sec", nvl(s.getPlaySec()));
         return m;
     }
 

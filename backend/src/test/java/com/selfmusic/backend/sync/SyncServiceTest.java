@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -177,5 +178,32 @@ class SyncServiceTest {
         ObjectNode blank = mapper.createObjectNode();
         blank.put("title", "   ");
         assertEquals("b.flac", SyncService.shadowTitle(blank, "b.flac"));
+    }
+
+    @Test
+    void songSnapshotCarriesPlaySec() {
+        SongState s = freshState();
+        s.setSourceId("uuid-1");
+        s.setSourceRef("/music/a.mp3");
+        s.setPlaySec(600);
+
+        Map<String, Object> m = SyncService.songSnapshot(s);
+        assertEquals(600, m.get("play_sec"));
+
+        // 旧行 play_sec 为 null → 快照给 0（客户端按缺键/0 处理都不会崩）
+        s.setPlaySec(null);
+        assertEquals(0, SyncService.songSnapshot(s).get("play_sec"));
+    }
+
+    @Test
+    void weightEventsDoNotTouchPlaySec() {
+        SongState s = freshState();
+        s.setPlaySec(3600);
+        ObjectNode empty = mapper.createObjectNode();
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE, empty);
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_SKIP, empty);
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_RESET, empty);
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_LIKED, empty);
+        assertEquals(3600, s.getPlaySec());
     }
 }

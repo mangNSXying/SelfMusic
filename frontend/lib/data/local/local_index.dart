@@ -1076,6 +1076,9 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   /// 再按快照 [source] 协议匹配本地直连行（同 ref 含 WebDAV 编码变体 + 同协议），
   /// 各写各的源 key（运行时按源 key 读权重，见 playMetaOf）。
   /// 直连歌曲在连着服务器时同样参与同步（DESIGN §7.2 影子行）。
+  ///
+  /// [playSec] 累计播放时长（秒）取 `max(本地, 服务端)`：它是单调累计量，
+  /// 被别的设备的旧值覆盖会丢真实数据（服务端按行级 LWW 收敛，值可能更小）。
   Future<void> applySongSnapshot({
     required String songRef,
     String? source,
@@ -1085,6 +1088,7 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
     required double factor,
     required bool frozen,
     required bool favorite,
+    int? playSec,
   }) {
     return _writer!.op<void>('applySongSnapshot', {
       'songRef': songRef,
@@ -1095,6 +1099,7 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
       'factor': factor,
       'frozen': frozen,
       'favorite': favorite,
+      'playSec': playSec,
     });
   }
 

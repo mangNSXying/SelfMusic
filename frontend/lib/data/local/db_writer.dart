@@ -641,16 +641,22 @@ void _opApplySongSnapshot(Database db, Map<String, dynamic> a) {
   final factor = a['factor'] as double;
   final frozen = a['frozen'] as bool;
   final favorite = a['favorite'] as bool;
+  final playSec = a['playSec'] as int?;
 
-  void write(String key, String ref) => _opUpsertPlayMeta(db, {
-        'sourceKey': key,
-        'songRef': ref,
-        'likeStreak': ls,
-        'dislikeStreak': ds,
-        'factor': factor,
-        'frozen': frozen,
-        'favorite': favorite,
-      });
+  void write(String key, String ref) {
+    // 累计播放时长是单调量：快照值只增不减（服务端行级 LWW 可能比本地小）。
+    final cur = _curMeta(db, key, ref);
+    _opUpsertPlayMeta(db, {
+      'sourceKey': key,
+      'songRef': ref,
+      'likeStreak': ls,
+      'dislikeStreak': ds,
+      'factor': factor,
+      'frozen': frozen,
+      'favorite': favorite,
+      'playSec': playSec == null ? null : (playSec > cur.ps ? playSec : cur.ps),
+    });
+  }
 
   final byUuid = sourceId == null ? null : _sourceKeyOfUuid(db, sourceId);
   if (byUuid != null) {

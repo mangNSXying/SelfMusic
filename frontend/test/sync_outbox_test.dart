@@ -191,6 +191,61 @@ void main() {
     index.close();
   });
 
+  test('pull 歌曲快照带 play_sec；累计值只增不减（单调量不被旧值覆盖）', () async {
+    final index = await _openIndex();
+
+    await index.applySongSnapshot(
+      songRef: 'st/x.flac',
+      source: 'webdav',
+      likeStreak: 0,
+      dislikeStreak: 0,
+      factor: 1.0,
+      frozen: false,
+      favorite: false,
+      playSec: 600,
+    );
+    expect(index.playMetaOf('server', 'st/x.flac').playSec, 600);
+
+    // 更小的服务端值（别的设备没听过）不覆盖本地累计
+    await index.applySongSnapshot(
+      songRef: 'st/x.flac',
+      likeStreak: 0,
+      dislikeStreak: 0,
+      factor: 1.0,
+      frozen: false,
+      favorite: false,
+      playSec: 120,
+    );
+    expect(index.playMetaOf('server', 'st/x.flac').playSec, 600);
+
+    // 更大的值正常覆盖
+    await index.applySongSnapshot(
+      songRef: 'st/x.flac',
+      likeStreak: 0,
+      dislikeStreak: 0,
+      factor: 1.0,
+      frozen: false,
+      favorite: false,
+      playSec: 900,
+    );
+    expect(index.playMetaOf('server', 'st/x.flac').playSec, 900);
+
+    // 老服务端快照无 play_sec（null）→ 本地值保持
+    await index.applySongSnapshot(
+      songRef: 'st/x.flac',
+      likeStreak: 1,
+      dislikeStreak: 0,
+      factor: 1.0,
+      frozen: false,
+      favorite: false,
+    );
+    final m = index.playMetaOf('server', 'st/x.flac');
+    expect(m.playSec, 900);
+    expect(m.likeStreak, 1);
+
+    index.close();
+  });
+
   test('AppSettings 同步三键：默认值、持久化、白名单', () async {    final index = await _openIndex();
     final s = AppSettings(index);
     expect(s.syncCursor, 0);

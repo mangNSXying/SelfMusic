@@ -47,6 +47,10 @@ public class SongState {
     @Column(name = "is_favorite")
     private boolean favorite = false;
 
+    /** 累计播放时长（秒）。随 song.state 绝对态同步（客户端按挂钟累计后成批上报）。 */
+    @Column(name = "play_sec")
+    private Integer playSec = 0;
+
     @Column(name = "last_event_at")
     private LocalDateTime lastEventAt;
 
@@ -92,6 +96,9 @@ public class SongState {
 
     public boolean isFavorite() { return favorite; }
     public void setFavorite(boolean favorite) { this.favorite = favorite; }
+
+    public Integer getPlaySec() { return playSec; }
+    public void setPlaySec(Integer playSec) { this.playSec = playSec; }
 
     public LocalDateTime getLastEventAt() { return lastEventAt; }
     public void setLastEventAt(LocalDateTime lastEventAt) { this.lastEventAt = lastEventAt; }
