@@ -153,6 +153,36 @@ class WebdavDirectSource implements MusicSource {
   String displayPath(Song song) =>
       decodeUrlForDisplay(_playUrl(song) ?? song.sourceRef);
 
+  /// 预热：1 字节 Range 请求——够走完 DNS/TCP/TLS/鉴权与路由，又不下载音频。
+  ///
+  /// 用 GET+Range 而不是 HEAD：部分 WebDAV 服务对 HEAD 返回 405，却正常支持
+  /// Range（与 [open] 的取流路径完全一致，避免预热与实际装载口径不同）。
+  @override
+  Future<void> probe(Song song) async {
+    final url = _playUrl(song);
+    if (url == null) throw StateError('WebDAV 缺少播放地址，无法预热');
+    final client = _newClient(allowSelfSigned);
+    try {
+      final req = await client.getUrl(Uri.parse(url));
+      _auth(req, username, password);
+      req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-0');
+      final resp = await req.close();
+      if (resp.statusCode != 200 && resp.statusCode != 206) {
+        throw HttpException('WebDAV 预热失败: HTTP ${resp.statusCode}',
+            uri: Uri.parse(url));
+      }
+      // 只取到第一块数据就收手：Range 被忽略时这里是 200 + 整首，drain 会把整首
+      // 读下来（预热反而成了隐藏的整曲下载）。读完即取消订阅，最后强制关 client。
+      try {
+        await resp.first;
+      } on StateError {
+        // 空响应体：状态码已确认可达，不算失败。
+      }
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   @override
   Future<OpenedStream> open(Song song, {IntRange? range}) async {
     final url = _playUrl(song)!;

@@ -136,6 +136,16 @@ abstract class MusicSource {
   /// 若该歌可直接以 URL 播放（原生 Range/seek），返回 URL 与请求头；否则 null。
   DirectStream? directStream(Song song) => null;
 
+  /// 预热：确认该曲可取（连通 / 鉴权 / 可达），不产生任何播放副作用。
+  ///
+  /// 切歌要新发起一次取流请求，而后台受 Doze / 应用待机限流，冷启动请求容易
+  /// 被拖到超时——这正是「切后台后还能播一两首，播完静默停住」的触发点。调用方
+  /// 在本曲播放期间先 probe 一次，把连接打通，失败还有时间退避重试
+  /// （见 [PlayerProvider] 的下一首预热）。
+  ///
+  /// 默认实现什么都不做：本地文件等走缓存路径的源无需预热，视作已就绪。
+  Future<void> probe(Song song) async {}
+
   /// 展示用完整路径（歌曲信息弹窗）。默认回落到持久化完整 URL 或源内引用；
   /// 各源实现可覆盖为真实可读路径（本机绝对路径 / 完整 WebDAV URL / UNC…）。
   String displayPath(Song song) => song.sourceUrl ?? song.sourceRef;

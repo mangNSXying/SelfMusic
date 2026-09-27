@@ -156,6 +156,10 @@ class LocalDirectSource implements MusicSource {
   @override
   DirectStream? directStream(Song song) => null;
 
+  /// 本地文件无需预热：装载时读的是本地路径，不存在网络握手。
+  @override
+  Future<void> probe(Song song) async {}
+
   @override
   String displayPath(Song song) => _absPath(song.sourceRef);
 
