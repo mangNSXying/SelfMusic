@@ -461,7 +461,8 @@ abstract class MusicSource {
 ### 6.8 歌词与后台播放
 
 - **歌词三通道**：内嵌标签（mp3 `USLT` / FLAC `LYRICS`·`UNSYNCEDLYRICS`）→ 同目录同名 `.lrc`（local/WebDAV 通用，UTF-8/UTF-16 BOM 兼容）（后端不提供歌词）；解析为 LRC 文本入库 `song_lyrics`（`(source_key,song_ref)` 主键，三态：内容 / 显式标记缺失 / 未读取），缺失标记避免每次播放重复读文件
-- **歌词页**：与播放进度同步滚动 + 居中高亮当前行 + 点击任意行 seek；手动拖动暂停跟随，切歌归位；`lrc_parser.dart` 支持多标签 / `offset` / 毫秒位数 / 纯文本退化 / 二分定位
+- **歌词页**：与播放进度同步滚动 + 居中高亮当前行 + 点击任意行 seek；手动拖动暂停跟随，空闲「歌词追焦等待」超时后回中，切歌归位；`lrc_parser.dart` 支持多标签 / `offset` / 毫秒位数 / 纯文本退化 / 二分定位
+- **歌词跟焦为自愈式**（`lyrics_view.dart`）：每次位置事件都按真实布局复核当前行是否在位，不以「行号是否变化」为触发条件——`ListView.builder` 懒构建导致目标行尚未构建（`PageView` 滑入时该页才刚创建）时，先临时把 `scrollCacheExtent` 加宽让目标行被构建出来（最多补滚 3 次），再用 `RenderAbstractViewport.getOffsetToReveal` 只滚歌词列表（不用 `Scrollable.ensureVisible`，避免遍历祖先把外层 `PageView` 一起拖动）；首次归位 `jumpTo`、换行 `animateTo`，行高动画后再快速二次校正一次；拖动抑制为续期式空闲计时（`ScrollStart` 即启动，拖动/惯性中不断续期），手势被打断收不到 `ScrollEnd` 也不会永久卡住
 - **后台播放**：Android 走 `audio_service` 自定义处理器（`SelfMusicAudioHandler`，通知按钮转发 `PlayerProvider`）；返回桌面/切后台**继续播放**（`androidStopForegroundOnPause=false` 暂停不撤前台服务，与 `androidNotificationOngoing` 互斥故弃用 ongoing）；通知栏「停止」/ 划掉任务（`onTaskRemoved`）/ 侧边栏「退出」（先 `shutdown()` 再 `exit(0)`）才真正停止并置空闲；`notification_controls=false` 时不注册前台服务、后台保活不成立
 
 ---
