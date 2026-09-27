@@ -10,6 +10,10 @@ import 'package:selfmusic/layout/top_bar.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
+import 'package:selfmusic/widgets/count_header.dart';
+import 'package:selfmusic/widgets/row_list.dart';
+import 'package:selfmusic/widgets/selection_badge.dart';
+import 'package:selfmusic/widgets/selection_bar.dart';
 import 'package:selfmusic/widgets/square_card.dart';
 import 'package:sqlite3/open.dart';
 
@@ -38,6 +42,8 @@ Future<DirectSourceManager> _openDirect() async {
   await direct.init();
   return direct;
 }
+
+void _noop() {}
 
 void main() {
   testWidgets('UI4 回归：内容区列表不再叠加系统安全区（顶栏已消费状态栏）',
@@ -109,5 +115,97 @@ void main() {
     final placeholder = tester.getSize(find.byIcon(Icons.album).first);
     expect(placeholder.width, closeTo(cover.width, 0.5));
     expect(placeholder.height, closeTo(cover.height, 0.5));
+  });
+
+  testWidgets('方形卡片多选：勾选框叠封面左上角，隐藏角标菜单', (tester) async {
+    const card = SizedBox(
+      width: 120,
+      child: SquareCard(
+        title: '普通',
+        onTap: _noop,
+        cornerAction: Icon(Icons.settings),
+      ),
+    );
+
+    // 普通态：角标菜单在位，无勾选框
+    await tester.pumpWidget(
+        const MaterialApp(home: Scaffold(body: Column(children: [card]))));
+    await tester.pump();
+    expect(find.byIcon(Icons.settings), findsOneWidget);
+    expect(find.byType(SelectionBadge), findsNothing);
+
+    // 多选态：角标菜单隐藏（防误触），勾选框改叠在封面左上角
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              SizedBox(
+                width: 120,
+                child: SquareCard(
+                  title: '未选中',
+                  onTap: _noop,
+                  selectionMode: true,
+                  cornerAction: Icon(Icons.settings),
+                ),
+              ),
+              SizedBox(
+                width: 120,
+                child: SquareCard(
+                  title: '选中',
+                  onTap: _noop,
+                  selectionMode: true,
+                  selected: true,
+                  cornerAction: Icon(Icons.settings),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.byIcon(Icons.settings), findsNothing);
+    expect(find.byType(SelectionBadge), findsNWidgets(2));
+
+    final cover1 = tester.getRect(find.byType(AspectRatio).at(0));
+    final badge1 = tester.getRect(find.byType(SelectionBadge).at(0));
+    expect(badge1.left, lessThan(cover1.center.dx));
+    expect(badge1.top, lessThan(cover1.center.dy));
+    expect(
+        tester.widget<Checkbox>(find.byType(Checkbox).at(0)).value, isFalse);
+    expect(
+        tester.widget<Checkbox>(find.byType(Checkbox).at(1)).value, isTrue);
+
+    // 未选中态不描边（与既有卡片外观一致），选中态套 2px 主色环
+    List<double> ringWidths() => tester
+        .widgetList<Container>(find.byType(Container))
+        .map((c) => c.decoration)
+        .whereType<BoxDecoration>()
+        .where((d) => d.border is Border)
+        .map((d) => (d.border! as Border).top.width)
+        .toList();
+    expect(ringWidths(), [0, 2]);
+  });
+
+  testWidgets('计数头与多选栏等高：进出多选模式内容区不跳动', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              CountHeader(count: 12),
+              SelectionBar(total: 12, selectedCount: 3),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final headerH = tester.getSize(find.byType(CountHeader)).height;
+    final barH = tester.getSize(find.byType(SelectionBar)).height;
+    expect(headerH, closeTo(kListHeaderHeight, 0.01));
+    expect(barH, closeTo(headerH, 0.01));
   });
 }

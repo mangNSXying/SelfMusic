@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'row_list.dart';
+
 /// 批量操作项：统一收进多选栏右侧的纵向三点菜单。
 class SelectionAction {
   final IconData icon;
@@ -32,7 +34,8 @@ class SelectionBar extends StatelessWidget {
     return Material(
       color: Theme.of(context).colorScheme.secondaryContainer,
       child: SizedBox(
-        height: 48,
+        // 与计数头等高（[kListHeaderHeight]）：进出多选模式内容不跳动。
+        height: kListHeaderHeight,
         child: Row(
           children: [
             IconButton(

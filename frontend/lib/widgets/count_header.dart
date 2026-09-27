@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'row_list.dart';
+
 /// 内容页共用计数头（改进 B6-U5 / 效果修复）：图标 + 「共 N …」一行。
 ///
 /// 歌曲 / 喜欢 / 歌单详情 / 专辑 / 歌手 / 歌单 / 播放源共用同一套；
@@ -40,10 +42,12 @@ class CountHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final muted = Theme.of(context).colorScheme.onSurfaceVariant;
+    // 总高与多选栏一致（[kListHeaderHeight]）：进出多选模式时下方内容不跳动。
+    const inner = kListHeaderHeight - 12;
     return Padding(
-      padding: EdgeInsets.fromLTRB(16, 4, trailing == null ? 16 : 8, 4),
+      padding: EdgeInsets.fromLTRB(16, 6, trailing == null ? 16 : 8, 6),
       child: SizedBox(
-        height: 32,
+        height: inner,
         child: Row(
           children: [
             Icon(_icon, size: 17, color: muted),

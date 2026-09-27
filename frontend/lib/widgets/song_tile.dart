@@ -79,7 +79,8 @@ class SongTile extends StatelessWidget {
   String get _subtitle {
     final artist = song.artist ?? 'Unknown';
     final parts = <String>[artist];
-    final album = compact ? null : song.albumName;
+    if (compact) return artist;
+    final album = song.albumName;
     if (album != null && album.isNotEmpty) parts.add(album);
     final albumArtist = song.albumArtist;
     if (albumArtist != null && albumArtist.isNotEmpty && albumArtist != artist) {

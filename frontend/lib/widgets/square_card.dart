@@ -3,6 +3,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import 'selection_badge.dart';
+
 /// 内容页共用方形卡片（改进 B6-U6）：封面恒为正方形 + 标题 + 副标题，
 /// 专辑 / 歌手 / 播放源 / 歌单卡片共用（列表行继续用 SongTile / ListTile）。
 class SquareCard extends StatelessWidget {
@@ -21,6 +23,15 @@ class SquareCard extends StatelessWidget {
   /// 叠加在封面右上角的小控件（如播放源的设置菜单），无则不叠加。
   final Widget? cornerAction;
 
+  /// 多选模式：隐藏右上角菜单、左上角固定勾选框（与列表行同一形态）。
+  final bool selectionMode;
+
+  /// 多选态被选中：封面描边加粗高亮（勾选框见 [selectionMode]）。
+  final bool selected;
+
+  /// 勾选标记点击回调（默认走卡片自身的 [onTap]）。
+  final VoidCallback? onToggleSelect;
+
   const SquareCard({
     super.key,
     required this.title,
@@ -31,6 +42,9 @@ class SquareCard extends StatelessWidget {
     required this.onTap,
     this.onLongPress,
     this.cornerAction,
+    this.selectionMode = false,
+    this.selected = false,
+    this.onToggleSelect,
   });
 
   @override
@@ -58,6 +72,11 @@ class SquareCard extends StatelessWidget {
                   decoration: BoxDecoration(
                     color: colorScheme.primary.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(12),
+                    // 未选中态不描边（与既有卡片外观一致），选中时才套 2px 主色环。
+                    border: Border.all(
+                      color: colorScheme.primary,
+                      width: selected ? 2 : 0,
+                    ),
                   ),
                   clipBehavior: Clip.antiAlias,
                   child: coverPath != null
@@ -74,8 +93,18 @@ class SquareCard extends StatelessWidget {
                           size: 48,
                           color: colorScheme.primary.withValues(alpha: 0.6)),
                 ),
-                if (cornerAction != null)
+                // 多选态隐藏角标菜单（避免误触），勾选框统一叠在左上角。
+                if (cornerAction != null && !selectionMode)
                   Positioned(top: 2, right: 2, child: cornerAction!),
+                if (selectionMode)
+                  Positioned(
+                    left: 2,
+                    top: 2,
+                    child: SelectionBadge(
+                      selected: selected,
+                      onTap: onToggleSelect ?? onTap,
+                    ),
+                  ),
               ],
             ),
           ),

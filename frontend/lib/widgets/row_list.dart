@@ -6,6 +6,10 @@ import 'package:flutter/material.dart';
 /// [RowList] 与这两个常量，避免行高/分隔线缩进在各页各写一份。
 const double kRowHeight = 72;
 
+/// 列表顶栏总高度：计数头（`CountHeader`）与多选栏（`SelectionBar`）共用，
+/// 保证进出多选模式时内容区不跳动。
+const double kListHeaderHeight = 44;
+
 /// 行间分隔线高度（计入 [kRowExtent]）。
 const double kRowSeparatorHeight = 1;
 

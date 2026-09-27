@@ -16,6 +16,7 @@ import '../utils/song_title_format.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
 import '../widgets/row_list.dart';
+import '../widgets/selection_badge.dart';
 import '../widgets/square_card.dart';
 import '../widgets/list_selection.dart';
 import '../widgets/section_swipe.dart';
@@ -68,7 +69,9 @@ class _PlaylistsViewState extends State<PlaylistsView>
         _sel.toggle(id);
       });
 
-  Future<void> _deleteSelected(PlaylistsProvider provider) async {
+  /// 只作用于当前筛选后可见的歌单（与「已选 N」口径一致）。
+  Future<void> _deleteSelected(
+      PlaylistsProvider provider, List<PlaylistRow> visible) async {
     final playlists = provider.playlists;
     final names = _sel
         .of(playlists.map((p) => p.id))
@@ -94,7 +97,7 @@ class _PlaylistsViewState extends State<PlaylistsView>
     if (ok != true || !mounted) return;
     final nav = context.read<NavigationProvider>();
     final player = context.read<PlayerProvider>();
-    for (final id in _sel.selected.toList()) {
+    for (final id in _sel.of(visible.map((p) => p.id)).toList()) {
       if (nav.browsingPlaylistId == id) nav.exitPlaylist();
       final uuid = provider.store.index.playlistUuidOf(id);
       provider.delete(id);
@@ -135,7 +138,8 @@ class _PlaylistsViewState extends State<PlaylistsView>
               if (_sel.active)
                 SelectionBar(
                   total: playlists.length,
-                  selectedCount: _sel.count,
+                  // 「已选 N」只数可见项；批量动作也只作用于可见项。
+                  selectedCount: _sel.of(playlists.map((p) => p.id)).length,
                   onToggleAll: () =>
                       setState(() => _sel.setAll(playlists.map((p) => p.id))),
                   onCancel: () => setState(_sel.cancel),
@@ -143,9 +147,9 @@ class _PlaylistsViewState extends State<PlaylistsView>
                     SelectionAction(
                       icon: Icons.delete,
                       label: '删除选中',
-                      onPressed: _sel.isEmpty
+                      onPressed: _sel.of(playlists.map((p) => p.id)).isEmpty
                           ? null
-                          : () => _deleteSelected(provider),
+                          : () => _deleteSelected(provider, playlists),
                     ),
                   ],
                 ),
@@ -210,10 +214,12 @@ class _PlaylistsViewState extends State<PlaylistsView>
   Widget _playlistTile(PlaylistsProvider provider, PlaylistRow p) {
     return ListTile(
       selected: _sel.active && _sel.contains(p.id),
+      // 歌单行无封面，勾选框顶替图标行首；有封面的行改为叠在封面左上角
+      // （见 SongTile / SquareCard）。
       leading: _sel.active
-          ? Checkbox(
-              value: _sel.contains(p.id),
-              onChanged: (_) => _toggleSelect(p.id),
+          ? SelectionBadge(
+              selected: _sel.contains(p.id),
+              onTap: () => _toggleSelect(p.id),
             )
           : const Icon(Icons.queue_music),
       title: Text(p.name,
@@ -246,12 +252,10 @@ class _PlaylistsViewState extends State<PlaylistsView>
       onLongPress: _sel.active
           ? () => _toggleSelect(p.id)
           : () => setState(() => _sel.startWith(p.id)),
-      cornerAction: _sel.active
-          ? Checkbox(
-              value: _sel.contains(p.id),
-              onChanged: (_) => _toggleSelect(p.id),
-            )
-          : _playlistMenu(provider, p),
+      cornerAction: _playlistMenu(provider, p),
+      selectionMode: _sel.active,
+      selected: _sel.contains(p.id),
+      onToggleSelect: () => _toggleSelect(p.id),
     );
   }
 
