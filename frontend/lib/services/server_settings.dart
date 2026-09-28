@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'api_client.dart';
 import 'secret_store.dart';
+import '../platform/harmonyos/path_provider_ohos_retry.dart';
 
 /// 「服务端」设置：后端地址等运行时可配项。
 ///
@@ -36,6 +37,11 @@ class ServerSettings extends ChangeNotifier {
 
   Future<String?> _resolveDir() async {
     try {
+      // 启动链第一个路径调用：现场断言 ohos 重试包装在位（verify-4 实证
+      // 引擎注册器在 main() 之前已跑完、从未覆盖包装；此断言是防未来引擎
+      // 行为变化的保险，取证记录见 path_provider_ohos_retry.dart 头注释）。
+      // ohos 之外为 no-op。
+      ensureOhosPathWrapper('resolveDir');
       final support = await getApplicationSupportDirectory();
       return support.path;
     } catch (_) {
@@ -76,12 +82,19 @@ class ServerSettings extends ChangeNotifier {
         debugPrint('server settings load failed: $e');
       }
     }
-    _pairingKey = (await secret.pairingKey()) ?? '';
-    if (_pairingKey.isEmpty &&
-        legacyPairingKey != null &&
-        legacyPairingKey.isNotEmpty) {
-      _pairingKey = legacyPairingKey;
-      await secret.setPairingKey(legacyPairingKey);
+    // 安全存储读取失败不拖垮启动（白屏真凶曾在此：ohos 上包前端
+    // UnsupportedError 未捕获即静默死亡，见 secure_storage_ohos.dart；
+    // 已绕过包前端，此处兜底防未来未知异常，失败按未配对继续）。
+    try {
+      _pairingKey = (await secret.pairingKey()) ?? '';
+      if (_pairingKey.isEmpty &&
+          legacyPairingKey != null &&
+          legacyPairingKey.isNotEmpty) {
+        _pairingKey = legacyPairingKey;
+        await secret.setPairingKey(legacyPairingKey);
+      }
+    } catch (e, s) {
+      debugPrint('[boot] 配对密钥读取失败，按未配对处理: $e\n$s');
     }
     _loaded = true;
     // 回写一次：清理 json 中残留的明文 pairingKey。
