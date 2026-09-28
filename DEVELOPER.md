@@ -405,6 +405,14 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 
 > 翻案史：最初据"启动早期平台消息无回复"假设引擎竞态吞回复（~130ms 窗口），据此写了超时重试包装。verify-5 逐消息对账推翻该假设——**67 条 FlutterNapi 回执无一丢失**，引擎消息通道全程正常；旧取证里"挂起的 documentsPath 调用"其实来自 `OhosSecureStorage._ensureLoaded`，回复本身送达了，死的是其后的前端读取。重试包装保留为无害保险层。
 
+**白屏故障模型**（两颗雷都"只是抛异常"，为何表现为永久白屏 + 零日志）：
+
+- **白屏 = 渲染从未开始**：ArkTS 侧窗口/Surface 早已建好，内容全靠 `runApp()` 挂载组件树后才有人画；而 `main()` 的全部初始化都在 runApp 之前逐个 await——**链上任何一环抛异常，其后代码（runApp、markBootReady）全部不执行**
+- **僵尸态**：Dart 的 async 异常只终止 `main()` 这个 Future 的续体，**不退出 isolate**——事件循环、平台通道、已注册回调全部存活。verify-5 铁证：看门狗 60 次 poke 全被 Dart 收到并处理，而 markBootReady（位于 runApp 之后）永不触发；进程健在 → 系统无理由弹崩溃框 → 活进程 + 永远空白的窗口
+- **零日志**：fork 启动早期未捕获异常的 stderr→hilog 转发缺失——verify-1~5 全文检索 Unhandled/UnsupportedError 为 0 命中，但异常确定抛出（修复后同一行代码立即复活）；只能靠间接痕迹定位（雷① 看消息对账断在哪条回执后；雷② 看 MUSL-LDSO 行）
+- **同类前科**：Android 时代通知服务异常拖垮启动（`main.dart` "曾致白屏" 注释，修法 try/catch）——同一故障类别，鸿蒙两雷只是死得更隐蔽
+- **死亡链**（函数级定位，修复后回溯验证）：雷① `main()` 的 `await ServerSettings.load()` → `server_settings.dart` load() 内 `secret.pairingKey()` → `secret_store.dart` 直通 `storage.read` → 前端 `_selectOptions` throw；雷② `main()` 的 `await direct.init()` → `local_index.dart` 索引库 `sqlite3.open` → override 的 `DynamicLibrary.open('libsqlite3.so')` → dlopen errno=2
+
 - **雷① flutter_secure_storage 前端类在 ohos 直接 throw**：上游 9.2.4 的 `_selectOptions()` 对 ohos 不在预置平台表内时无条件抛错，且 `_platform` 是逐调用 getter——包级注册平台实例救不了前端。启动链 `ServerSettings.load()` 读配对密钥时 Future 链**静默断裂**（无 Unhandled/UnsupportedError 日志）。修复：`OhosFlutterSecureStorage` 子类覆写 write/read/containsKey/delete/readAll/deleteAll 六入口直调平台实例 + `createSecureStorage()` 工厂收口（`secret_store` / `api_client` / `theme_provider` 三处构造点）；`server_settings.load()` 另加读失败按未配对继续的兜底
 - **雷② libsqlite3.so 缺失**：sqlite3 包在 ohos 走 `DynamicLibrary.open('libsqlite3.so')`，而设备系统 7 个候选路径全无此库、DevEco SDK 无、`sqlite3_flutter_libs`（0.5.42）只有 android/darwin/linux/windows 目录。`direct.init()` 内 dlopen 失败同样**静默死亡**，唯一线索是 hilog 里应用 pid 的 `MUSL-LDSO: load libsqlite3.so failed ... errno=2` 三行。修复：自编译 musl 版 .so 随包分发（配方见下）
 - **静默死亡取证方法学**（下一颗雷照此排）：① `main()` 全链 `[boot]` 里程碑 debugPrint；② ArkTS 启动看门狗（`EntryAbility.ets` 每 1000ms poke，Dart 侧 `markBootReady()` 解除——未解除即 main 未走完）；③ hilog 逐消息对账：发送 = `DartMessenger --> Received message from Dart over channel '...'`，回复 = `FlutterNapi --> called handlePlatformMessage ... Response ID`；④ 原生库加载失败只看应用 pid 的 `MUSL-LDSO` 行（系统进程噪音极多）；⑤ 疑似卡死时 `hdc fport` + VM service 取栈
