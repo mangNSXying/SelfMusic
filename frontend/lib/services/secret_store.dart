@@ -1,10 +1,14 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../platform/harmonyos/secure_storage_ohos.dart'
+    show createSecureStorage;
+
 /// 敏感凭据的统一存储（flutter_secure_storage），替代明文落盘（问题.md B1/B2）：
 /// - WebDAV 密码：`webdav_pwd:<sourceKey>`（`sources.config` 不再含明文密码）
 /// - 配对密钥：`pairing_key`（`server_settings.json` 不再含明文密钥，仅存非敏感 baseUrl）
 ///
-/// 构造可注入 [FlutterSecureStorage]，便于测试用 fake 替换。
+/// 构造可注入 [FlutterSecureStorage]，便于测试用 fake 替换；默认实例走
+/// [createSecureStorage]（ohos 上绕过包前端，见 secure_storage_ohos.dart）。
 class SecretStore {
   static const String pairingKeyId = 'pairing_key';
   static const String _webdavPwdPrefix = 'webdav_pwd:';
@@ -12,7 +16,7 @@ class SecretStore {
   final FlutterSecureStorage storage;
 
   SecretStore({FlutterSecureStorage? storage})
-      : storage = storage ?? const FlutterSecureStorage();
+      : storage = storage ?? createSecureStorage();
 
   String _webdavKey(String sourceKey) => '$_webdavPwdPrefix$sourceKey';
 

@@ -377,14 +377,14 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 
 | 依赖 | ohos 方案 | 状态 |
 |------|-----------|------|
-| path_provider | `path_provider_ohos` 2.2.1 | ✅ 直接用 |
+| path_provider | `path_provider_ohos` 2.2.1 + 超时重试包装（保险层：1s 超时 × 5 次重发 + 沙盒回退；旧"引擎吞回复"根因已被实测翻案，见下节） | ✅ 直接用 + 保险 |
 | file_selector | `file_selector_ohos` 0.5.0+2 | ✅ 直接用 |
 | **just_audio（音频后端）** | **fvp**（libmdk 后端，官方支持 HarmonyOS 5.0+）+ 自写纯 Dart 适配层 `just_audio_platform_interface` → fvp Player，无 ArkTS | ✅ 已实现（`lib/platform/harmonyos/just_audio_fvp.dart`） |
-| flutter_secure_storage | 桩包全版本 `sdk <3.0.0` 装不上 → Dart 文件 shim（`FlutterSecureStoragePlatform` 实现，PoC 级；后续换 Asset Store Kit） | ✅ 已实现（`secure_storage_ohos.dart`） |
+| flutter_secure_storage | 两层适配：① `FlutterSecureStoragePlatform` 文件 shim；② **前端类绕过**——上游 9.2.4 的 `_selectOptions()` 对 ohos 无条件 throw 且 `_platform` 是逐调用 getter（包级注册平台实例救不了前端），子类 `OhosFlutterSecureStorage` 覆写六入口直调平台实例 + `createSecureStorage()` 工厂收口构造点 | ✅ 已实现（`secure_storage_ohos.dart`） |
 | permission_handler | 桩包同样不兼容；应用内调用点均已 `Platform.isAndroid` 门控，ohos 不触发 | ✅ 无需处理 |
 | wakelock_plus | 桩包不兼容 → `player_screen` 调用点按 `Platform.operatingSystem != 'ohos'` guard（ohos 放弃屏幕常亮） | ✅ 已处理 |
 | audio_service | 无 ohos 实现 → 按预案降级「无通知栏」（代码已按 `Platform.isAndroid` 门控） | ✅ |
-| sqlite3 | ohos 上默认 `throw UnsupportedError` → `open.overrideForAll()` 加载系统 `libsqlite3.so` | ✅ 已实现（`ohos_bootstrap.dart`） |
+| sqlite3 | `open.overrideForAll()` 按名 dlopen `libsqlite3.so`——**设备系统无此库**（7 路径实测全无），命中的是随包分发的自编译副本（构建配方见下节） | ✅ 已实现（`ohos_bootstrap.dart` + `entry/libs/arm64-v8a/libsqlite3.so`） |
 | audio_session | `AudioSession.instance` 在无插件平台 catch 掉 `MissingPluginException` 返回空实现，just_audio 的 `handleInterruptions` 安全（与 Windows/Linux 同路径） | ✅ 已验证，无需处理 |
 | cached_network_image | 传递依赖 sqflite 无 ohos 实现 → 封面降级显示，不阻塞点播验收 | ⚠️ 已知问题 |
 
@@ -396,15 +396,47 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 - fvp 用 vendored 副本 `frontend/third_party/fvp`（ohos-only 平台声明 + 删除 video_player 依赖链），升级 = 重新复制 0.38.1 源码 + 重打两个补丁（见该目录 pubspec.yaml / lib/fvp.dart 头部注释）
 
 适配层实现（`lib/platform/harmonyos/`，2026-09）：
-- `ohos_bootstrap.dart`：`setupOhos()` 在 `main()` 里 runApp 前调用，三件事全部仅 ohos 生效——sqlite3 overrideForAll（顶层函数，isolate 安全）、`FlutterSecureStoragePlatform.instance = OhosSecureStorage()`、`JustAudioPlatform.instance = FvpJustAudio()`
+- `ohos_bootstrap.dart`：`setupOhos()` 在 `main()` 里 runApp 前调用，四件事全部仅 ohos 生效——sqlite3 overrideForAll（顶层函数，**仅本 isolate 有效**：不随 Isolate.spawn 传入子 isolate，ohos 写层因此退化内联，见 `db_writer.dart` 头注释）、`FlutterSecureStoragePlatform.instance = OhosSecureStorage()`（包级注册只覆盖平台侧，前端类另需绕过，见上表）、`JustAudioPlatform.instance = FvpJustAudio()`、`PathProviderPlatform.instance = OhosRetryingPathProvider(原实现)`（单点收口：启动链全部路径调用均经该 instance）
+- `path_provider_ohos_retry.dart`：1s 超时 × 5 次重发的保险包装 + 全超时沙盒路径回退（命中时日志 `[ohos] path_provider.* 响应超时`）；旧"引擎竞态吞回复"根因已被 verify-5/6 逐消息对账翻案（见下节），保留理由：路径查询幂等、成本为零、覆盖未证实的极端时序
 - `just_audio_fvp.dart`：`FvpJustAudio.init/disposePlayer` 管理播放器表；`FvpAudioPlayer` 实现负载面 load/play/pause/seek/setVolume（+speed/loop 顺带），pitch/shuffle/skipSilence 静默 no-op；mdk 状态映射：`prepare()<0` 抛 PlatformException、`state=stopped` 且非加载复位/错误 → `completed`（自动切歌依赖）、`MediaStatus.invalid`/`onEvent error` → 错误上报、位置用 200ms Timer 轮询（mdk 无位置流）、同一媒体重复 load 前先回 stopped 复位（mdk prepare 对已加载返回 -1）；音量两侧语义一致（0.0-1.0）
 - `secure_storage_ohos.dart`：文档目录单 JSON 文件 + 整文件 base64 混淆，内存即权威源；读写失败不抛（密钥问题不崩登录/配对流程）；对应 platform_interface 1.1.2 Map-options 签名（flutter_secure_storage 9.2.4 锁定该版本，`*Params` API 是 1.2+ 才有，勿混淆）
 
+启动白屏根因（2026-09 真机取证定稿）：两颗应用/生态层地雷，引擎无辜。
+
+> 翻案史：最初据"启动早期平台消息无回复"假设引擎竞态吞回复（~130ms 窗口），据此写了超时重试包装。verify-5 逐消息对账推翻该假设——**67 条 FlutterNapi 回执无一丢失**，引擎消息通道全程正常；旧取证里"挂起的 documentsPath 调用"其实来自 `OhosSecureStorage._ensureLoaded`，回复本身送达了，死的是其后的前端读取。重试包装保留为无害保险层。
+
+**白屏故障模型**（两颗雷都"只是抛异常"，为何表现为永久白屏 + 零日志）：
+
+- **白屏 = 渲染从未开始**：ArkTS 侧窗口/Surface 早已建好，内容全靠 `runApp()` 挂载组件树后才有人画；而 `main()` 的全部初始化都在 runApp 之前逐个 await——**链上任何一环抛异常，其后代码（runApp、markBootReady）全部不执行**
+- **僵尸态**：Dart 的 async 异常只终止 `main()` 这个 Future 的续体，**不退出 isolate**——事件循环、平台通道、已注册回调全部存活。verify-5 铁证：看门狗 60 次 poke 全被 Dart 收到并处理，而 markBootReady（位于 runApp 之后）永不触发；进程健在 → 系统无理由弹崩溃框 → 活进程 + 永远空白的窗口
+- **零日志**：fork 启动早期未捕获异常的 stderr→hilog 转发缺失——verify-1~5 全文检索 Unhandled/UnsupportedError 为 0 命中，但异常确定抛出（修复后同一行代码立即复活）；只能靠间接痕迹定位（雷① 看消息对账断在哪条回执后；雷② 看 MUSL-LDSO 行）
+- **同类前科**：Android 时代通知服务异常拖垮启动（`main.dart` "曾致白屏" 注释，修法 try/catch）——同一故障类别，鸿蒙两雷只是死得更隐蔽
+- **死亡链**（函数级定位，修复后回溯验证）：雷① `main()` 的 `await ServerSettings.load()` → `server_settings.dart` load() 内 `secret.pairingKey()` → `secret_store.dart` 直通 `storage.read` → 前端 `_selectOptions` throw；雷② `main()` 的 `await direct.init()` → `local_index.dart` 索引库 `sqlite3.open` → override 的 `DynamicLibrary.open('libsqlite3.so')` → dlopen errno=2
+
+- **雷① flutter_secure_storage 前端类在 ohos 直接 throw**：上游 9.2.4 的 `_selectOptions()` 对 ohos 不在预置平台表内时无条件抛错，且 `_platform` 是逐调用 getter——包级注册平台实例救不了前端。启动链 `ServerSettings.load()` 读配对密钥时 Future 链**静默断裂**（无 Unhandled/UnsupportedError 日志）。修复：`OhosFlutterSecureStorage` 子类覆写 write/read/containsKey/delete/readAll/deleteAll 六入口直调平台实例 + `createSecureStorage()` 工厂收口（`secret_store` / `api_client` / `theme_provider` 三处构造点）；`server_settings.load()` 另加读失败按未配对继续的兜底
+- **雷② libsqlite3.so 缺失**：sqlite3 包在 ohos 走 `DynamicLibrary.open('libsqlite3.so')`，而设备系统 7 个候选路径全无此库、DevEco SDK 无、`sqlite3_flutter_libs`（0.5.42）只有 android/darwin/linux/windows 目录。`direct.init()` 内 dlopen 失败同样**静默死亡**，唯一线索是 hilog 里应用 pid 的 `MUSL-LDSO: load libsqlite3.so failed ... errno=2` 三行。修复：自编译 musl 版 .so 随包分发（配方见下）
+- **静默死亡取证方法学**（下一颗雷照此排）：① `main()` 全链 `[boot]` 里程碑 debugPrint；② ArkTS 启动看门狗（`EntryAbility.ets` 每 1000ms poke，Dart 侧 `markBootReady()` 解除——未解除即 main 未走完）；③ hilog 逐消息对账：发送 = `DartMessenger --> Received message from Dart over channel '...'`，回复 = `FlutterNapi --> called handlePlatformMessage ... Response ID`；④ 原生库加载失败只看应用 pid 的 `MUSL-LDSO` 行（系统进程噪音极多）；⑤ 疑似卡死时 `hdc fport` + VM service 取栈
+- **libsqlite3.so 构建配方**（sqlite.org 官网 Download 页 amalgamation 包，当前 3.53.4；产物 NEEDED 仅 libc.so——musl 全并入 libc，无需 -lm/-ldl）：
+
+  ```powershell
+  # <DevEco> = DevEco Studio 安装目录；升级 sqlite 版本时照抄换源码即可
+  & "<DevEco>\sdk\default\openharmony\native\llvm\bin\clang.exe" `
+    --target=aarch64-linux-ohos "--sysroot=<DevEco>\sdk\default\openharmony\native\sysroot" `
+    -march=armv8-a -fPIC -shared -O2 -D__MUSL__ '-Wl,-soname,libsqlite3.so' `
+    sqlite3.c -o frontend/ohos/entry/libs/arm64-v8a/libsqlite3.so
+  ```
+
+  hvigor 自动把 `entry/libs/arm64-v8a/` 打进 hap（与 fvp 的 .so 同机制），应用 dlopen 按名命中包内副本
+- 上游反馈（待办）：① flutter_secure_storage 支持 ohos（`_selectOptions` 放行或官方 ohos 分支）；② `sqlite3_flutter_libs` ohos 移植
+- **验证（verify-6）**：启动引导 → 服务端设置加载完成 → db-writer 内联就绪 → 直连源就绪 → 进入 runApp → 看门狗解除，全链 1.4s 点亮；进程存活无崩溃标记，FlutterView 持续输出 `Display on` / `avoidAreaChangeCallback`（视图真实渲染非白屏）
+
 构建验证状态（2026-09）：
 - 双 SDK `flutter analyze` 零问题（ohos 3.41.9 与 stable 各自通过；两 SDK 的 pub get 会对 meta/test_api/vector_math 等 4 个 flutter_test 传递依赖来回改写 lock，属已知无害现象）
-- `flutter build hap --debug` 编译链全通：ArkTS（三插件 GeneratedPluginRegistrant）+ native（libfvp.so/libmdk.so arm64-v8a）+ Dart（kernel_blob 76MB JIT）；**当前唯一缺口 = 调试签名**（hvigor assembleHap 需 signingConfigs）
+- `flutter build hap --debug` 编译链全通：ArkTS（三插件 GeneratedPluginRegistrant）+ native（libfvp.so/libmdk.so arm64-v8a）+ Dart（kernel_blob JIT），assembleHap 出 signed hap
+- 真机部署已走通：`devecocli signature generate`（签名材料落 `~/.ohos/config/`）→ 出包 → `hdc install -r` / `devecocli run`
+- 启动白屏已修复（两颗应用/生态层地雷，见上）：verify-6 全链路点亮，看门狗 1 次 poke 即解除
 
-真机部署步骤（待执行）：
+真机部署步骤：
 ```powershell
 # 0. 真机开启开发者模式 + USB 调试，USB 连电脑（首次连接手机上确认授权弹窗）
 # 1. 检查设备识别
@@ -416,6 +448,9 @@ devecocli signature generate --product default
 flutter-ohos build hap --debug
 # 4. 安装并启动（或 DevEco Studio 直接 Run）
 devecocli run   # 或 hdc install <hap 路径> 后手动启动
+# 5. 远程（锁屏）启动：aa start 报 10106102 (unlock screen failed) 时先唤醒屏幕
+#    hdc shell power-shell wakeup
+#    hdc shell aa start -a EntryAbility -b com.shamiko.selfmusic
 ```
 
 PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV 浏览 + 本地索引 + 真机点播一首歌；跑不通则按 DESIGN §9 R2 降级「仅 WebDAV 直连」。重点观察：fvp 重复 load 复位逻辑（重播同一首）、completed→自动切歌、WebDAV Basic 鉴权折叠是否被服务端/FFmpeg 接受。
@@ -435,7 +470,7 @@ PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV �
 
 - 表清单与设计意图见 [DESIGN.md §3.2](DESIGN.md#32-客户端sqlite)，权威定义在 `lib/data/local/schema.dart` 的 `applySchema()`：**改表只改这里**，主读连接与写隔离各跑一遍，幂等（`ALTER TABLE` 先 `PRAGMA table_info` 探测）
 - 无 `created_at/updated_at` 统一约定；时间列按需命名（`last_scan_at` / `cached_at` / `updated_at`）
-- 写必须走写隔离（见「[客户端本地数据层](#客户端本地数据层sqlite-写隔离)」），不要在主 isolate 直接 `db.execute` 写语句
+- 写必须走写隔离（见「[客户端本地数据层](#客户端本地数据层sqlite-写隔离)」），不要在主 isolate 直接 `db.execute` 写语句（**例外：ohos**——`DbWriter` 在 ohos 退化内联写：sqlite override 不进子 isolate + fork 引擎子 isolate 可靠性存疑，见「鸿蒙适配」与 `db_writer.dart`）
 - 歌曲身份统一 `(source_key, song_ref)` 复合键；收藏状态只认 `play_meta.is_favorite`（旧 `idx_songs.is_favorite` 仅一次性回填）
 
 ---

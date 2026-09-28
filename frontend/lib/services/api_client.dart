@@ -4,6 +4,9 @@ import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../platform/harmonyos/secure_storage_ohos.dart'
+    show createSecureStorage;
+
 /// 表示会话已过期且无法续签，需重新配对。
 class SessionExpiredException implements Exception {
   final String message;
@@ -65,7 +68,7 @@ class ApiClient {
               connectTimeout: const Duration(seconds: 10),
               receiveTimeout: const Duration(seconds: 30),
             )),
-        storage = storage ?? const FlutterSecureStorage() {
+        storage = storage ?? createSecureStorage() {
     this.dio.interceptors.add(InterceptorsWrapper(
       onRequest: (opts, h) async {
         final token = await getAccessToken();

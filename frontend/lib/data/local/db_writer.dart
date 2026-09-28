@@ -13,18 +13,69 @@ import '../sources/webdav_url.dart';
 import 'artist_names.dart';
 import 'schema.dart';
 
-/// 常驻 SQLite 写隔离（后台 isolate 独占第二个连接）。
+/// SQLite 写层：主线程只读，写按平台走两种实现之一（[DbWriter.start] 分派）。
 ///
 /// 目标（DESIGN：启动磁盘 I/O 风暴修复）：
-/// 1. 所有写/fsync 离开 UI 线程——主线程的连接只做读，写全部经此隔离排队；
+/// 1. 写/fsync 不与 UI 帧竞争——桌面/移动常规平台经后台 isolate（见
+///    [_IsolateDbWriter]）离开 UI 线程；ohos 因引擎/包限制退化为同 isolate
+///    内联写（见 [_InlineDbWriter] 头注释）；
 /// 2. 队列内多条语句自动合并为**单个事务**（WAL 下一次顺序追加 + 一次 checkpoint
 ///    fsync），把「逐行 autocommit 的几万次小块写」收敛成少量大块顺序写；
 /// 3. `PRAGMA synchronous=NORMAL`：WAL 模式下仅 checkpoint 才 fsync。
 ///
 /// 一致性约定：全部调用按到达顺序 FIFO 执行；需要回执的调用在**落库后**才完成
 /// Future（主线程读连接通过 WAL 立刻可见已提交数据）；纯 fire 的写仅保证最终一致。
-class DbWriter {
-  DbWriter._(this._cmd, this._isolate) {
+abstract class DbWriter {
+  /// 启动并初始化写层。
+  ///
+  /// - 非 ohos：后台写隔离 [_IsolateDbWriter]（fsync/写盘离开 UI 线程）。
+  /// - ohos：同 isolate 内联写 [_InlineDbWriter]（fork 引擎上跨 isolate 方案
+  ///   不可用，见该类头注释——曾致 main() 挂死、白屏）。
+  ///
+  /// print 分段日志：写层是启动链白屏排查的关键分段，本文件保持纯 Dart
+  /// 不依赖 foundation，故用 print。
+  static Future<DbWriter> start(String dbPath) async {
+    if (Platform.operatingSystem == 'ohos') {
+      return _InlineDbWriter.start(dbPath);
+    }
+    return _IsolateDbWriter.start(dbPath);
+  }
+
+  // ---------- 主线程侧 API ----------
+
+  /// 排队写并等待落库（自动与其他排队写合并为单事务）。
+  Future<void> exec(String sql, [List<Object?>? args]);
+
+  /// 排队写，不等落库（最终一致；settings 内存缓存/outbox uuid 等场景用）。
+  void execFire(String sql, [List<Object?>? args]);
+
+  /// 写并返回受影响行数。
+  Future<int> execUpdated(String sql, [List<Object?>? args]);
+
+  /// 写并返回 lastInsertRowId。
+  Future<int> execInsert(String sql, List<Object?> args);
+
+  /// 执行一条复合写操作（多语句/内部读依赖，运行在写连接上保证一致性）。
+  Future<T> op<T>(String name, Map<String, dynamic> args);
+
+  /// 批量执行同类复合操作：合并为**单个事务**（同步 pull 落库主路径）。
+  Future<void> opBatch(String name, List<Map<String, dynamic>> argList);
+
+  /// 等待当前排队写全部落库。
+  Future<void> flush();
+
+  /// 优雅关闭：等待排队写落库后释放写层。
+  Future<void> close();
+
+  /// 立即关闭（fire-and-forget）：丢弃未落库排队写。
+  /// 调用方负责先 [flush]；供同步 close()（如测试收尾）使用。
+  void dispose();
+}
+
+// ---------- 后台写隔离实现（非 ohos） ----------
+
+class _IsolateDbWriter implements DbWriter {
+  _IsolateDbWriter._(this._cmd, this._isolate) {
     _resp.listen((raw) => _onResp(raw));
   }
 
@@ -38,23 +89,25 @@ class DbWriter {
   /// 启动并初始化：开连接 → WAL/NORMAL/busy_timeout → 建表迁移（幂等）。
   static Future<DbWriter> start(String dbPath) async {
     final boot = ReceivePort();
+    print('[db-writer] spawning');
     final isolate = await Isolate.spawn(_writerEntry, boot.sendPort,
         debugName: 'local-db-writer');
+    print('[db-writer] spawn done');
     final cmd = await boot.first as SendPort;
+    print('[db-writer] boot port received');
     boot.close();
-    final w = DbWriter._(cmd, isolate);
+    final w = _IsolateDbWriter._(cmd, isolate);
     await w._send('init', {'path': dbPath});
+    print('[db-writer] init done');
     return w;
   }
 
-  // ---------- 主线程侧 API ----------
-
-  /// 排队写并等待落库（自动与其他排队写合并为单事务）。
+  @override
   Future<void> exec(String sql, [List<Object?>? args]) async {
     await _send('exec', {'sql': sql, 'args': args ?? const []});
   }
 
-  /// 排队写，不等落库（最终一致；settings 内存缓存/outbox uuid 等场景用）。
+  @override
   void execFire(String sql, [List<Object?>? args]) {
     _cmd.send({
       't': 'execFire',
@@ -64,36 +117,36 @@ class DbWriter {
     });
   }
 
-  /// 写并返回受影响行数。
+  @override
   Future<int> execUpdated(String sql, [List<Object?>? args]) async {
     final v = await _send('execUpdated', {'sql': sql, 'args': args ?? const []});
     return v as int;
   }
 
-  /// 写并返回 lastInsertRowId。
+  @override
   Future<int> execInsert(String sql, List<Object?> args) async {
     final v = await _send('execInsert', {'sql': sql, 'args': args});
     return v as int;
   }
 
-  /// 执行一条复合写操作（多语句/内部读依赖，运行在写连接上保证一致性）。
+  @override
   Future<T> op<T>(String name, Map<String, dynamic> args) async {
     final v = await _send('op', {'name': name, 'args': args});
     return v as T;
   }
 
-  /// 批量执行同类复合操作：合并为**单个事务**（同步 pull 落库主路径）。
+  @override
   Future<void> opBatch(String name, List<Map<String, dynamic>> argList) async {
     if (argList.isEmpty) return;
     await _send('opBatch', {'name': name, 'argList': argList});
   }
 
-  /// 等待当前排队写全部落库。
+  @override
   Future<void> flush() async {
     await _send('flush', const {});
   }
 
-  /// 优雅关闭：等待排队写落库后退出写隔离。
+  @override
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
@@ -105,8 +158,7 @@ class DbWriter {
     }
   }
 
-  /// 立即关闭（fire-and-forget）：丢弃未落库排队写并杀掉写隔离。
-  /// 调用方负责先 [flush]；供同步 close()（如测试收尾）使用。
+  @override
   void dispose() {
     if (_closed) return;
     _closed = true;
@@ -141,6 +193,94 @@ class DbWriter {
   }
 }
 
+// ---------- ohos 内联写实现 ----------
+
+/// ohos 上的写层退化实现：同 isolate 第二条连接直写（PoC 级）。
+///
+/// 为什么不用写隔离（真机取证 2026-09，白屏根因链第二层）：
+/// 1. `open.overrideForAll`（setupOhos 注入的 libsqlite3.so 加载）是库级
+///    可变状态，**不随 Isolate.spawn 进入子 isolate**——子 isolate 里
+///    `sqlite3.open` 走默认加载器，'ohos' 不在 sqlite3 2.9.4 的已知平台
+///    枚举内，必抛 `UnsupportedError`（load_library.dart `_defaultOpen`）；
+/// 2. fork 引擎（HAR 1.0.0-4cbeea6a36f1）上子 isolate 能否可靠拉起存疑
+///    （VM service 实测 isolate 组内无子 isolate 成员）。
+/// 两者叠加：写隔离的 init 回执必然失败/缺席，而 [DbWriter.start] 位于
+/// main() 的 await 链上（无兜底）→ runApp 永不执行 → 永久白屏。
+///
+/// PoC 取舍：写在本 isolate 同步执行。WAL 下与主读连接并发安全
+/// （busy_timeout=30s），复合操作复用隔离版的 `_runOp`/`_runOpBatch`；
+/// 缺点是写盘短暂占用 UI 线程——PoC 量级（千级行数）可接受，正式版随
+/// 引擎 isolate 修复切回 [_IsolateDbWriter]。
+class _InlineDbWriter implements DbWriter {
+  _InlineDbWriter._(this._db);
+
+  final Database _db;
+  bool _closed = false;
+
+  static Future<DbWriter> start(String dbPath) async {
+    // 加载 override 已由 setupOhos 在本 isolate 注入（main() 首步）。
+    final db = sqlite3.open(dbPath);
+    db.execute('PRAGMA synchronous=NORMAL;');
+    db.execute('PRAGMA busy_timeout=30000;');
+    db.execute('PRAGMA wal_autocheckpoint=1000;');
+    applySchema(db);
+    print('[db-writer] ohos 内联模式就绪');
+    return _InlineDbWriter._(db);
+  }
+
+  @override
+  Future<void> exec(String sql, [List<Object?>? args]) async {
+    _db.execute(sql, args ?? const []);
+  }
+
+  @override
+  void execFire(String sql, [List<Object?>? args]) {
+    _db.execute(sql, args ?? const []);
+  }
+
+  @override
+  Future<int> execUpdated(String sql, [List<Object?>? args]) async {
+    _db.execute(sql, args ?? const []);
+    return _db.updatedRows;
+  }
+
+  @override
+  Future<int> execInsert(String sql, List<Object?> args) async {
+    _db.execute(sql, args);
+    return _db.lastInsertRowId;
+  }
+
+  @override
+  Future<T> op<T>(String name, Map<String, dynamic> args) async {
+    return _runOp(_db, name, args) as T;
+  }
+
+  @override
+  Future<void> opBatch(String name, List<Map<String, dynamic>> argList) async {
+    if (argList.isEmpty) return;
+    _runOpBatch(_db, name, argList);
+  }
+
+  @override
+  Future<void> flush() async {
+    // 内联写同步落库，无排队，无需冲刷。
+  }
+
+  @override
+  Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
+    _db.dispose();
+  }
+
+  @override
+  void dispose() {
+    if (_closed) return;
+    _closed = true;
+    _db.dispose();
+  }
+}
+
 // ---------- 写隔离入口 ----------
 
 /// 写隔离内打开连接。
@@ -166,6 +306,7 @@ Database _openWriterDb(String path) {
 }
 
 void _writerEntry(SendPort boot) {
+  print('[db-writer] entry running');
   final cmd = ReceivePort();
   boot.send(cmd.sendPort);
   Database? db;

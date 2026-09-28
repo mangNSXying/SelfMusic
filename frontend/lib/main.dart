@@ -42,6 +42,7 @@ Future<void> main() async {
   // 避免 UI 首次访问时的初始化竞态。
   final serverSettings = ServerSettings();
   await serverSettings.load();
+  debugPrint('[boot] 服务端设置加载完成');
 
   final api = ApiClient();
   if (serverSettings.baseUrl.isNotEmpty) {
@@ -50,6 +51,7 @@ Future<void> main() async {
 
   final direct = DirectSourceManager();
   await direct.init();
+  debugPrint('[boot] 直连源管理器就绪');
   direct.attachApi(api);
   // 信任自签名证书开关（settings.md §3.3）：按 AppSettings 配置 dio 一次。
   api.setSelfSignedPolicy(direct.settings.allowSelfSigned);
@@ -97,13 +99,17 @@ Future<void> main() async {
   sync.start();
   WidgetsBinding.instance.addObserver(_SyncLifecycleObserver(sync));
 
+  debugPrint('[boot] 进入 runApp');
   runApp(SelfMusicApp(
       direct: direct,
       settings: serverSettings,
       api: api,
       audioHandler: audioHandler,
-      sync: sync,
-      artistResolver: artistResolver));
+      artistResolver: artistResolver,
+      sync: sync));
+  // main() 全链（含所有 await）走完的最终信号：ArkTS 启动看门狗据此解除
+  // （超时未收到则向 Dart 发消息唤醒可能停滞的事件循环，见 ohos_bootstrap）。
+  markBootReady();
 }
 
 /// 回前台触发同步（阶段5）：无 connectivity 依赖，切后台期间的变更在恢复后追上。

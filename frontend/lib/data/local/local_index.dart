@@ -30,15 +30,19 @@ class LocalIndex {
     _dir = p.join(support.path, 'selfmusic');
     Directory(_dir!).createSync(recursive: true);
     final dbPath = p.join(_dir!, 'selfmusic.db');
-    // 读连接（主线程，只读使用；写全部经 _writer 后台隔离，见 db_writer.dart）。
+    // 读连接（主线程，只读使用；写经 _writer：常规平台后台隔离、ohos 内联，
+    // 见 db_writer.dart）。
     _db = sqlite3.open(dbPath);
+    print('[index] 主连接已打开');
     _db!.execute('PRAGMA busy_timeout=30000;');
     applySchema(_db!);
     // 写隔离：独立连接 + 自动批事务 + NORMAL 同步（fsync 离开 UI 线程）。
     _writer = await DbWriter.start(dbPath);
+    print('[index] 写隔离就绪');
     // 历史 ENCODE 形态的 play_meta 行一次性迁移到当前 ref（写隔离内执行）。
     // 之后读路径不再写库，避免 UI 线程出现「读前迁移」的 I/O。
     await _writer!.op<void>('migrateMetaRefs', const {});
+    print('[index] 迁移完成');
   }
 
   /// 等待写隔离中排队写全部落库（退出前、导出等需要持久一致性的时点）。

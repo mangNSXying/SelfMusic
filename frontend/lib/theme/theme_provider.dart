@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+import '../platform/harmonyos/secure_storage_ohos.dart'
+    show createSecureStorage;
 import 'app_theme.dart';
 
 /// 主题状态：管理强调色/背景色/亮暗，运行时实时切换并持久化到 secure storage。
@@ -15,7 +18,7 @@ class ThemeProvider extends ChangeNotifier {
   AppTheme? _cached;
 
   ThemeProvider({FlutterSecureStorage? storage, bool autoLoad = true})
-      : _storage = storage ?? const FlutterSecureStorage() {
+      : _storage = storage ?? createSecureStorage() {
     if (autoLoad) load();
   }
 
