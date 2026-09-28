@@ -8,10 +8,12 @@ import '../data/local/app_settings.dart';
 import '../data/local/backup_service.dart';
 import '../providers/auth_provider.dart';
 import '../providers/direct_source_manager.dart';
+import '../providers/library_provider.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../providers/playlists_provider.dart';
 import '../services/api_client.dart';
+import '../services/artist_resolver.dart';
 import '../services/bluetooth_service.dart';
 import '../services/server_settings.dart';
 import '../services/sync_engine.dart';
@@ -958,6 +960,48 @@ class _SongsSettingsState extends State<_SongsSettings> {
               : '关闭（手动扫描 / 打开源页触发）'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _editScanInterval(context),
+        ),
+        const Divider(height: 32),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('歌手解析',
+              style: TextStyle(
+                  color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        SwitchListTile(
+          title: const Text('歌手身份聚合'),
+          subtitle: const Text('按归一化后的真实歌手身份合并歌手页条目'
+              '（别名/不同写法/声优角色自动并组；离线也生效）'),
+          value: _settings.artistIdentity,
+          onChanged: (v) {
+            setState(() => _settings.artistIdentity = v);
+            if (context.mounted) {
+              context.read<LibraryProvider>().refreshDirect();
+            }
+          },
+        ),
+        SwitchListTile(
+          title: const Text('自动后台解析'),
+          subtitle: const Text('向 MusicBrainz 查询歌手身份（需联网；限流 1 次/秒，'
+              '失败自动退避重试）。关闭后仅保留本地归一去重'),
+          value: _settings.artistResolveAuto,
+          onChanged: (v) {
+            setState(() => _settings.artistResolveAuto = v);
+            if (v) {
+              context.read<ArtistResolver>().wake();
+            }
+          },
+        ),
+        ListTile(
+          title: const Text('立即重新解析全部'),
+          subtitle: const Text('把未命中/待确认的歌手重置为重新解析'),
+          trailing: const Icon(Icons.refresh),
+          onTap: () async {
+            await context.read<ArtistResolver>().retryAll();
+            if (context.mounted) {
+              AppToast.show('已开始重新解析歌手', isError: false);
+            }
+          },
         ),
       ],
     );

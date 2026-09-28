@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/direct_source_manager.dart';
+import '../services/artist_resolver.dart';
 import '../utils/build_stamp.dart';
 
 /// 侧边栏「信息」页（改进 B6-4）：汇总全部歌曲的元数据读取情况。
@@ -27,8 +28,11 @@ class LibraryInfoScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final index = context.watch<DirectSourceManager>().index;
+    // 歌手解析进度实时跟随（后台循环/人工绑定完成即刷新）。
+    context.watch<ArtistResolver>();
     final stats = index.metaStats();
     final formats = index.formatStats();
+    final artistStats = index.artistStats();
     final total = stats['total'] ?? 0;
     final valid = total - (stats['missing'] ?? 0);
     final cs = Theme.of(context).colorScheme;
@@ -64,6 +68,14 @@ class LibraryInfoScreen extends StatelessWidget {
                       got: stats[d.$1] ?? 0,
                       total: valid,
                       accent: cs.primary),
+                const SizedBox(height: 12),
+                Text('歌手身份',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleSmall
+                        ?.copyWith(fontWeight: FontWeight.w600)),
+                const SizedBox(height: 4),
+                _ArtistStatusRow(artistStats),
                 const SizedBox(height: 12),
                 Text('格式分布',
                     style: Theme.of(context)
@@ -159,4 +171,63 @@ class _DimRow extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 歌手身份解析进度（歌手处理.txt）：状态分布 + 歌曲映射覆盖率。
+class _ArtistStatusRow extends StatelessWidget {
+  final Map<String, int> s;
+  const _ArtistStatusRow(this.s);
+
+  @override
+  Widget build(BuildContext context) {
+    final total = s['total'] ?? 0;
+    if (total <= 0) {
+      return const Text('暂无歌手数据');
+    }
+    final mapped = s['mapped'] ?? 0;
+    final withArtist = s['withArtist'] ?? 0;
+    final cs = Theme.of(context).colorScheme;
+    final pct = withArtist <= 0 ? 0.0 : (mapped / withArtist).clamp(0.0, 1.0);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                _chip(context, '已解析 ${s['resolved'] ?? 0}', cs.primary),
+                const SizedBox(width: 6),
+                _chip(context, '待确认 ${s['ambiguous'] ?? 0}', Colors.orange),
+                const SizedBox(width: 6),
+                _chip(context, '未命中 ${s['local'] ?? 0}',
+                    cs.onSurfaceVariant),
+                const SizedBox(width: 6),
+                _chip(context, '待解析 ${s['pending'] ?? 0}', cs.outline),
+              ],
+            ),
+            const SizedBox(height: 10),
+            LinearProgressIndicator(value: pct),
+            const SizedBox(height: 4),
+            Text('歌曲映射 $mapped / $withArtist 首 · ${(pct * 100).toStringAsFixed(0)}%',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: cs.onSurface.withValues(alpha: 0.6))),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _chip(BuildContext context, String text, Color color) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Text(text,
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: color)),
+      );
 }

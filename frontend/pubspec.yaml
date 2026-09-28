@@ -32,6 +32,8 @@ dependencies:
   file_selector: ^1.0.3
   permission_handler: ^11.3.1
   wakelock_plus: ^1.2.0
+  # 歌手身份归一化键（歌手处理.txt）：NFKC 纯 Dart 实现，隔离/各平台通用。锁版本防行为漂移。
+  unorm_dart: 0.3.2
   # ---- 鸿蒙（ohos）平台实现桩：仅声明 ohos 平台，其它平台构建自动忽略 ----
   path_provider_ohos: ^2.2.1        # path_provider 的 ohos 实现（联邦 implements）
   file_selector_ohos: ^0.5.0        # file_selector 的 ohos 实现

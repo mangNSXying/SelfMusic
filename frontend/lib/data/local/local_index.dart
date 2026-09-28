@@ -9,6 +9,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 import '../../models/song.dart';
+import '../../models/artist.dart';
+import '../../utils/collection_sort.dart';
 import '../sources/webdav_url.dart';
 import 'audio_metadata.dart';
 import 'db_writer.dart';
@@ -1296,6 +1298,251 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   Future<void> clearPlayState() {
     return _writer!.exec('DELETE FROM play_state WHERE id=1');
   }
+
+  // ---------- 歌手处理.txt：身份聚合 ----------
+
+  /// 对 idx_songs 校准歌手身份映射（扫描结束 / 元数据回填批 / 用户编辑后触发；
+  /// 幂等，写连接单事务）。
+  Future<void> reconcileArtists() {
+    return _writer!.op<void>('artistReconcile', const {});
+  }
+
+  /// 待解析工作集：pending 优先，其次按 next_at 退避到的 local/ambiguous。
+  List<ArtistWorkItem> artistWorkSet(
+      {int limit = 8, int? nowEpochMs}) {
+    final rs = _db!.select('''
+      SELECT artist_key, canonical_key, display_name, status, error_count, next_at, mbid
+      FROM artists
+      WHERE status IN ('pending','local','ambiguous') AND next_at <= ?
+      ORDER BY CASE WHEN status='pending' THEN 0 WHEN status='local' THEN 1 ELSE 2 END,
+               next_at, error_count
+      LIMIT ?
+    ''', [nowEpochMs ?? DateTime.now().millisecondsSinceEpoch, limit]);
+    return [
+      for (final r in rs)
+        ArtistWorkItem(
+          artistKey: r['artist_key'] as String,
+          canonicalKey: r['canonical_key'] as String,
+          displayName: r['display_name'] as String,
+          status: r['status'] as String,
+          errorCount: r['error_count'] as int,
+          nextAt: r['next_at'] as int,
+          mbid: r['mbid'] as String?,
+        )
+    ];
+  }
+
+  /// 最早退避时刻（local/ambiguous 且未来到期的最小 next_at；null=近期无工作）。
+  int? minArtistNextAt() {
+    final rs = _db!.select(
+        "SELECT MIN(next_at) v FROM artists WHERE status IN ('local','ambiguous') AND next_at>0");
+    return rs.isEmpty ? null : (rs.first['v'] as int?);
+  }
+
+  /// 按 artist_key 读完整身份行（解析服务用）。
+  ArtistRow? artistRowByKey(String artistKey) {
+    final rs = _db!.select('SELECT * FROM artists WHERE artist_key=?', [artistKey]);
+    return rs.isEmpty ? null : _rowToArtist(rs.first);
+  }
+
+  /// 按归一化键经 artist_canon 桥读身份行。
+  ArtistRow? artistRowByCanonical(String canonicalKey) {
+    final rs = _db!.select('''
+      SELECT a.* FROM artist_canon c JOIN artists a ON a.artist_key=c.artist_key
+      WHERE c.canonical_key=?
+    ''', [canonicalKey]);
+    return rs.isEmpty ? null : _rowToArtist(rs.first);
+  }
+
+  /// 已有身份的歌手聚合（identity 模式，歌手页主数据源）：
+  /// 已解析 + 占位（local/pending）+ 歧义行，按歌曲数聚合。
+  List<Artist> identityArtistGroups({String? query, CollectionSort? sort}) {
+    final q = query?.trim() ?? '';
+    final like = q.isEmpty ? '%' : '%$q%';
+    final rs = _db!.select('''
+      SELECT a.artist_key, a.display_name, a.status, a.mbid,
+        COUNT(*) song_count,
+        COUNT(DISTINCT COALESCE(NULLIF(s.album,''),'\u0001')) album_count,
+        (SELECT s2.cover_path FROM artist_song_map m2
+           JOIN idx_songs s2 ON s2.source_key=m2.source_key AND s2.ref=m2.ref
+            AND s2.missing=0 AND s2.cover_path IS NOT NULL
+           WHERE m2.artist_key=a.artist_key ORDER BY s2.id LIMIT 1) cover_path
+      FROM artist_song_map m
+      JOIN idx_songs s ON s.source_key=m.source_key AND s.ref=m.ref AND s.missing=0
+      JOIN artists a ON a.artist_key=m.artist_key
+      WHERE m.role='main' AND a.display_name LIKE ?
+      GROUP BY a.artist_key
+    ''', [like]);
+    final list = [
+      for (final r in rs)
+        Artist(
+          name: r['display_name'] as String,
+          songCount: r['song_count'] as int,
+          albumCount: r['album_count'] as int,
+          coverPath: r['cover_path'] as String?,
+          identityKey: r['artist_key'] as String,
+          status: r['status'] as String,
+          mbid: r['mbid'] as String?,
+        ),
+    ];
+    final pref = sort ?? CollectionSort.charAsc;
+    return sortByCollection(list, pref, (a) => a.name,
+        countOf: (a) => a.songCount);
+  }
+
+  /// identity 模式某身份对应的歌曲（走映射，天然含别名/角色合并）。
+  List<Song> identitySongs(String artistKey) {
+    final rows = _db!.select('''
+      SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
+             i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
+             i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
+      FROM artist_song_map m
+      JOIN idx_songs i ON i.source_key=m.source_key AND i.ref=m.ref AND i.missing=0
+      LEFT JOIN play_meta p ON p.source_key=i.source_key AND p.song_ref=i.ref
+      WHERE m.artist_key=? AND m.role='main'
+      ORDER BY i.artist, i.album, i.track_no, i.title
+    ''', [artistKey]);
+    return rows.map(_rowToSong).toList();
+  }
+
+  /// identity 模式无映射（本地聚合键未命中的残留）按原字符串分组；正常应为空，
+  /// 兜底保证 aggregation 开启后歌手页仍完整。
+  List<Artist> identityFallbackGroups() {
+    final rs = _db!.select('''
+      SELECT s.artist raw, COUNT(*) n,
+        COUNT(DISTINCT COALESCE(NULLIF(s.album,''),'\u0001')) al,
+        (SELECT cover_path FROM idx_songs WHERE artist=s.artist AND cover_path IS NOT NULL
+          ORDER BY id LIMIT 1) c
+      FROM idx_songs s
+      WHERE s.missing=0 AND s.artist IS NOT NULL AND s.artist<>''
+        AND NOT EXISTS (SELECT 1 FROM artist_song_map m
+                         WHERE m.source_key=s.source_key AND m.ref=s.ref AND m.role='main')
+      GROUP BY s.artist
+    ''');
+    return [
+      for (final r in rs)
+        Artist(
+          name: r['raw'] as String,
+          songCount: r['n'] as int,
+          albumCount: r['al'] as int,
+          coverPath: r['c'] as String?,
+        ),
+    ];
+  }
+
+  /// 身份数量/状态汇总（信息页）。
+  Map<String, int> artistStats() {
+    int cnt(dynamic v) => (v as num?)?.toInt() ?? 0;
+    final r = _db!.select('''
+      SELECT COUNT(*) total,
+        COALESCE(SUM(status='resolved'),0) resolved,
+        COALESCE(SUM(status='ambiguous'),0) ambiguous,
+        COALESCE(SUM(status='local'),0) local,
+        COALESCE(SUM(status='pending'),0) pending
+      FROM artists
+    ''').first;
+    final mapped = _db!.select(
+        "SELECT COUNT(*) c FROM artist_song_map WHERE role='main'").first['c'];
+    final withArtist = _db!.select(
+        "SELECT COUNT(*) c FROM idx_songs WHERE missing=0 AND artist IS NOT NULL AND artist<>''")
+        .first['c'];
+    return {
+      'total': cnt(r['total']),
+      'resolved': cnt(r['resolved']),
+      'ambiguous': cnt(r['ambiguous']),
+      'local': cnt(r['local']),
+      'pending': cnt(r['pending']),
+      'mapped': cnt(mapped),
+      'withArtist': cnt(withArtist),
+    };
+  }
+
+  /// 解析结果整行走写隔离落库（占位更新 / 首次解析 / 人工绑定全新 mbid）。
+  Future<void> artistUpsert({
+    required String artistKey,
+    required String canonicalKey,
+    required String displayName,
+    required String status,
+    required int errorCount,
+    required int nextAt,
+    String? mbid,
+    List<Map<String, dynamic>>? names,
+    List<Map<String, dynamic>>? groups,
+    String? type,
+    String? disambiguation,
+    String? resolvedAt,
+  }) {
+    return _writer!.op<void>('artistUpsert', {
+      'artistKey': artistKey,
+      'canonicalKey': canonicalKey,
+      'displayName': displayName,
+      'status': status,
+      'errorCount': errorCount,
+      'nextAt': nextAt,
+      'mbid': mbid,
+      'names': names ?? const [],
+      'groups': groups ?? const [],
+      'type': type ?? 'person',
+      'disambiguation': disambiguation,
+      'resolvedAt': resolvedAt,
+    });
+  }
+
+  /// 把某 canonical 的解析结果并入已存在的 mbid 身份行（同真人别名合流）。
+  /// 返回是否命中已存在 mbid 行；false 时调用方改用 [artistUpsert]。
+  Future<bool> artistMergeMbid({
+    required String canonicalKey,
+    required String fromArtistKey,
+    required String mbid,
+    String? displayName,
+    String? type,
+    String? disambiguation,
+    List<Map<String, dynamic>>? names,
+    List<Map<String, dynamic>>? groups,
+  }) {
+    return _writer!.op<bool>('artistMergeMbid', {
+      'canonicalKey': canonicalKey,
+      'fromArtistKey': fromArtistKey,
+      'mbid': mbid,
+      'displayName': displayName,
+      'type': type ?? 'person',
+      'disambiguation': disambiguation,
+      'names': names ?? const [],
+      'groups': groups ?? const [],
+      'update': true,
+    });
+  }
+
+  /// 重置 local/ambiguous 为 pending 重新解析（canonicalKey=null 表示全部）。
+  Future<void> artistRetry({String? canonicalKey}) {
+    return _writer!.op<void>('artistRetry',
+        {'canonicalKey': canonicalKey});
+  }
+
+  ArtistRow _rowToArtist(Row r) => ArtistRow(
+        artistKey: r['artist_key'] as String,
+        mbid: r['mbid'] as String?,
+        canonicalKey: r['canonical_key'] as String,
+        displayName: r['display_name'] as String,
+        names: _jsonMapList(r['names']),
+        groups: _jsonMapList(r['groups']),
+        type: r['type'] as String,
+        disambiguation: r['disambiguation'] as String?,
+        status: r['status'] as String,
+        errorCount: r['error_count'] as int,
+        nextAt: r['next_at'] as int,
+        resolvedAt: r['resolved_at'] as String?,
+      );
+
+  List<Map<String, dynamic>> _jsonMapList(Object? raw) {
+    if (raw == null) return const [];
+    try {
+      return (jsonDecode(raw as String) as List)
+          .cast<Map<String, dynamic>>();
+    } catch (_) {
+      return const [];
+    }
+  }
 }
 
 /// 一张已配置的直连源记录。
@@ -1558,5 +1805,58 @@ class BreakpointMirrorRow {
     this.deepListJson,
     required this.updatedAt,
     this.deviceId,
+  });
+}
+
+/// 歌手处理.txt：ARTISTS 精炼身份行（names/groups 为 JSON 数组）。
+class ArtistRow {
+  final String artistKey;
+  final String? mbid;
+  final String canonicalKey;
+  final String displayName;
+  final List<Map<String, dynamic>> names;
+  final List<Map<String, dynamic>> groups;
+  final String type;
+  final String? disambiguation;
+  final String status;
+  final int errorCount;
+  final int nextAt;
+  final String? resolvedAt;
+  const ArtistRow({
+    required this.artistKey,
+    this.mbid,
+    required this.canonicalKey,
+    required this.displayName,
+    this.names = const [],
+    this.groups = const [],
+    this.type = 'person',
+    this.disambiguation,
+    this.status = 'pending',
+    this.errorCount = 0,
+    this.nextAt = 0,
+    this.resolvedAt,
+  });
+
+  bool get isResolved => status == 'resolved';
+  bool get isAmbiguous => status == 'ambiguous';
+}
+
+/// 歌手处理.txt：待解析工作项（解析服务轮询用）。
+class ArtistWorkItem {
+  final String artistKey;
+  final String canonicalKey;
+  final String displayName;
+  final String status;
+  final int errorCount;
+  final int nextAt;
+  final String? mbid;
+  const ArtistWorkItem({
+    required this.artistKey,
+    required this.canonicalKey,
+    required this.displayName,
+    required this.status,
+    required this.errorCount,
+    required this.nextAt,
+    this.mbid,
   });
 }

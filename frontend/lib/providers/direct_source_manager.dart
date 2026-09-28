@@ -17,6 +17,7 @@ import '../data/local/song_weight_store.dart';
 import '../data/local/playlist_store.dart';
 import '../models/song.dart';
 import '../services/api_client.dart';
+import '../services/artist_resolver.dart';
 import '../services/secret_store.dart';
 
 /// 直连源管理（阶段 3 / 阶段 4 接收器）。
@@ -36,6 +37,15 @@ class DirectSourceManager extends ChangeNotifier {
   late CacheManager cache;
   late SongWeightStore weight;
   late PlaylistStore playlists;
+
+  /// 歌手身份解析服务（歌手处理.txt）：扫描/补读后经 [_reconcileArtists] 唤醒。
+  ArtistResolver? artistResolver;
+  void attachArtistResolver(ArtistResolver r) => artistResolver = r;
+
+  /// 扫描/元数据回填变更后：校准歌手身份映射并唤醒后台解析（幂等、静默）。
+  void _reconcileArtists() {
+    unawaited(index.reconcileArtists().then((_) => artistResolver?.wake()));
+  }
 
   ApiClient? _api;
 
@@ -568,7 +578,10 @@ class DirectSourceManager extends ChangeNotifier {
       await index.updateSourceScan(
           key, token.cancelled ? 'cancelled' : 'done');
       // 扫描有增改 → 元数据版本自增（全局库/LibraryProvider 就地刷新）。
-      if (summary.added > 0 || summary.updated > 0) _metaVersion++;
+      if (summary.added > 0 || summary.updated > 0) {
+        _metaVersion++;
+        _reconcileArtists();
+      }
       return ScanSummary(
         added: summary.added,
         updated: summary.updated,
@@ -763,6 +776,7 @@ class DirectSourceManager extends ChangeNotifier {
           _metaVersion++;
           notifyListeners();
         }
+        _reconcileArtists();
       }
     } finally {
       _enrichRunning = false;

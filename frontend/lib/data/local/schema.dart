@@ -262,4 +262,56 @@ void applySchema(Database db) {
   db.execute('''
     CREATE INDEX IF NOT EXISTS idx_songs_ref ON idx_songs(ref);
   ''');
+  // 歌手处理.txt：歌手身份聚合。artists 为唯一精炼身份表（每「真人/占位」一行，
+  // 主角/别名/角色名折进 names JSON 列）；artist_canon 为 归一化键→身份 桥
+  // （别名拼写合并进同一身份后仍需持久指向，避免 reconcile 反复重建占位）；
+  // artist_song_map 为歌曲→身份联结。
+  // artists.status：pending=待解析 / local=未命中（占位）/ resolved=已解析 /
+  // ambiguous=待人工。
+  db.execute('''
+    CREATE TABLE IF NOT EXISTS artists (
+      artist_key     TEXT PRIMARY KEY,
+      mbid           TEXT,
+      canonical_key  TEXT NOT NULL,
+      display_name   TEXT NOT NULL,
+      names          TEXT NOT NULL DEFAULT '[]',
+      groups         TEXT NOT NULL DEFAULT '[]',
+      type           TEXT NOT NULL DEFAULT 'person',
+      disambiguation TEXT,
+      status         TEXT NOT NULL DEFAULT 'pending',
+      error_count    INTEGER NOT NULL DEFAULT 0,
+      next_at        INTEGER NOT NULL DEFAULT 0,
+      resolved_at    TEXT,
+      updated_at     TEXT NOT NULL,
+      UNIQUE (mbid)
+    );
+  ''');
+  db.execute('''
+    CREATE INDEX IF NOT EXISTS idx_artists_canonical ON artists(canonical_key);
+  ''');
+  db.execute('''
+    CREATE INDEX IF NOT EXISTS idx_artists_rescan ON artists(status, next_at);
+  ''');
+  db.execute('''
+    CREATE TABLE IF NOT EXISTS artist_canon (
+      canonical_key TEXT PRIMARY KEY,
+      artist_key    TEXT NOT NULL,
+      updated_at    INTEGER NOT NULL DEFAULT 0
+    );
+  ''');
+  db.execute('''
+    CREATE INDEX IF NOT EXISTS idx_acanon_artist ON artist_canon(artist_key);
+  ''');
+  db.execute('''
+    CREATE TABLE IF NOT EXISTS artist_song_map (
+      source_key TEXT NOT NULL,
+      ref        TEXT NOT NULL,
+      artist_key TEXT NOT NULL,
+      role       TEXT NOT NULL DEFAULT 'main',
+      PRIMARY KEY (source_key, ref, artist_key, role)
+    );
+  ''');
+  db.execute('''
+    CREATE INDEX IF NOT EXISTS idx_asong_artist ON artist_song_map(artist_key);
+  ''');
 }

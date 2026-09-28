@@ -10,6 +10,7 @@ import 'package:sqlite3/sqlite3.dart';
 
 import '../sources/music_source.dart';
 import '../sources/webdav_url.dart';
+import 'artist_names.dart';
 import 'schema.dart';
 
 /// 常驻 SQLite 写隔离（后台 isolate 独占第二个连接）。
@@ -339,6 +340,17 @@ Object? _runOp(Database db, String name, Map<String, dynamic> a) {
       return null;
     case 'renameSource':
       _opRenameSource(db, a['oldKey'] as String, a['newKey'] as String);
+      return null;
+    case 'artistReconcile':
+      _opArtistReconcile(db);
+      return null;
+    case 'artistUpsert':
+      _opArtistUpsert(db, a);
+      return null;
+    case 'artistMergeMbid':
+      return _opArtistMergeMbid(db, a);
+    case 'artistRetry':
+      _opArtistRetry(db, a);
       return null;
   }
   throw StateError('unknown writer op: $name');
@@ -985,6 +997,8 @@ void _opUpdateSongUserMeta(Database db, Map<String, dynamic> a) {
   } catch (_) {
     // 快照损坏则忽略（下次收藏时重写）。
   }
+  // 歌手字段被用户修改：身份映射随之校准（歌手处理.txt，与落库同事务提交）。
+  _opArtistReconcile(db);
 }
 
 /// 全表一次性迁移历史 ENCODE 形态的 play_meta 行（启动时由 LocalIndex.open 触发）。
@@ -1052,6 +1066,8 @@ void _opDeletePlaylist(Database db, int id) {
 void _opDeleteSource(Database db, String key) {
   db.execute('DELETE FROM sources WHERE key=?', [key]);
   db.execute('DELETE FROM idx_songs WHERE source_key=?', [key]);
+  // 歌手身份映射随源删除清理（歌手处理.txt）。
+  db.execute('DELETE FROM artist_song_map WHERE source_key=?', [key]);
 }
 
 void _opRenameSource(Database db, String oldKey, String newKey) {
@@ -1063,4 +1079,257 @@ void _opRenameSource(Database db, String oldKey, String newKey) {
   db.execute(
       'UPDATE OR REPLACE playlist_items SET source_key=? WHERE source_key=?',
       [newKey, oldKey]);
+  db.execute('UPDATE OR REPLACE artist_song_map SET source_key=? WHERE source_key=?',
+      [newKey, oldKey]);
+}
+
+// ---------- 歌手处理.txt：身份聚合写操作（写连接内一次性算完） ----------
+
+/// 歌手串 → 聚合用的归一化键：声优注记（CV:x）以「角色|人物」为键（不同拼写合
+/// 并成同一调查项），其余情况取整串 NFKC 键。
+String _artistCanonicalOf(String raw) {
+  final p = splitArtistPart(raw);
+  if (p.hasCv) {
+    final b = p.base.isEmpty ? p.cvName! : '${p.base}|${p.cvName}';
+    return artistCanonicalKey(b);
+  }
+  return artistCanonicalKey(raw);
+}
+
+void _opArtistGc(Database db) {
+  db.execute('DELETE FROM artist_song_map WHERE (source_key, ref) NOT IN ('
+      '  SELECT source_key, ref FROM idx_songs'
+      '  WHERE missing=0 AND artist IS NOT NULL AND artist<>\'\')');
+  db.execute('''
+    DELETE FROM artist_canon WHERE artist_key IN (
+      SELECT artist_key FROM artists a WHERE NOT EXISTS (
+        SELECT 1 FROM artist_song_map m WHERE m.artist_key = a.artist_key
+      ) AND a.status = 'pending'
+    )
+  ''');
+  db.execute('''
+    DELETE FROM artists WHERE status='pending' AND NOT EXISTS (
+      SELECT 1 FROM artist_song_map m WHERE m.artist_key = artists.artist_key
+    )
+  ''');
+}
+
+/// 对 idx_songs 的当前（源,引用,歌手）集合校准身份映射：
+/// 1. 缺失 canonical 建占位身份行（status='pending'）与 artist_canon 桥；
+/// 2. 每（源,引用）单元格按当前 canonical 校准 artist_song_map（身份变即旧映射
+///    删除重写）；
+/// 3. 清理已不存在的歌曲/已清空歌手的映射，并回收孤儿占位身份。
+///
+/// 单事务内完成（好比对 5k 行的全量重建，但走 INSERT OR IGNORE 增量）；由扫描
+/// 结束、元数据回填批、用户编辑歌手后触发。
+void _opArtistReconcile(Database db) {
+  db.execute('BEGIN');
+  try {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final nowIso = DateTime.now().toIso8601String();
+    final rows = db.select(
+        'SELECT source_key, ref, artist FROM idx_songs '
+        'WHERE missing=0 AND artist IS NOT NULL AND artist<>\'\'');
+
+    final keyOfCanon = <String, String>{};
+    for (final r in db
+        .select('SELECT canonical_key, artist_key FROM artist_canon')) {
+      keyOfCanon[r['canonical_key'] as String] = r['artist_key'] as String;
+    }
+    final canonDisplay = <String, String>{};
+    final cells = <(String, String, String)>[];
+    // (source_key, ref) 去重：同一首歌只校准一次（先 putIfAbsent 再 add）。
+    final seen = <String, Set<String>>{};
+    for (final r in rows) {
+      final raw = r['artist'] as String;
+      final canon = _artistCanonicalOf(raw);
+      canonDisplay.putIfAbsent(canon, () => raw);
+      final sk = r['source_key'] as String;
+      final ref = r['ref'] as String;
+      if (seen.putIfAbsent(sk, () => <String>{}).add(ref)) {
+        cells.add((sk, ref, canon));
+      }
+    }
+
+    for (final entry in canonDisplay.entries) {
+      if (keyOfCanon.containsKey(entry.key)) continue;
+      final ak = _newUuid();
+      keyOfCanon[entry.key] = ak;
+      db.execute(
+          'INSERT INTO artists(artist_key, canonical_key, display_name, names, status, updated_at) '
+          'VALUES(?,?,?,?,?,?)', [
+        ak,
+        entry.key,
+        entry.value,
+        jsonEncode([
+          {'name': entry.value, 'name_type': 'primary', 'is_primary': 1}
+        ]),
+        'pending',
+        nowIso,
+      ]);
+      db.execute(
+          'INSERT INTO artist_canon(canonical_key, artist_key, updated_at) '
+          'VALUES(?,?,?)',
+          [entry.key, ak, now]);
+    }
+
+    final insStmt = db.prepare(
+        'INSERT OR IGNORE INTO artist_song_map(source_key, ref, artist_key, role) '
+        'VALUES(?,?,?,\'main\')');
+    final delStmt = db.prepare(
+        "DELETE FROM artist_song_map WHERE role='main' AND source_key=? AND ref=? AND artist_key<>?");
+    try {
+      for (final (sk, ref, canon) in cells) {
+        final ak = keyOfCanon[canon]!;
+        delStmt.execute([sk, ref, ak]);
+        insStmt.execute([sk, ref, ak]);
+      }
+    } finally {
+      insStmt.dispose();
+      delStmt.dispose();
+    }
+
+    // 清理失效映射与最近回收的占位（pending 且无歌引用 = 已合并/删除的孤儿）。
+    _opArtistGc(db);
+    db.execute('COMMIT');
+  } catch (_) {
+    db.execute('ROLLBACK');
+    rethrow;
+  }
+}
+
+/// 解析结果整行落库（占位更新 / 首次解析 / 人工绑定到全新 mbid）：
+/// 更新 artists 全字段并 upsert artist_canon 桥。names/groups 为 JSON 数组。
+void _opArtistUpsert(Database db, Map<String, dynamic> a) {
+  final nowIso = DateTime.now().toIso8601String();
+  final ak = a['artistKey'] as String;
+  final canon = a['canonicalKey'] as String;
+  final now = DateTime.now().millisecondsSinceEpoch;
+  db.execute('''
+    INSERT INTO artists(artist_key, mbid, canonical_key, display_name, names,
+      groups, type, disambiguation, status, error_count, next_at, resolved_at, updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(artist_key) DO UPDATE SET
+      mbid=excluded.mbid, display_name=excluded.display_name, names=excluded.names,
+      groups=excluded.groups, type=excluded.type,
+      disambiguation=excluded.disambiguation, status=excluded.status,
+      error_count=excluded.error_count, next_at=excluded.next_at,
+      resolved_at=excluded.resolved_at, updated_at=excluded.updated_at
+  ''', [
+    ak,
+    a['mbid'],
+    canon,
+    a['displayName'],
+    jsonEncode(a['names']),
+    jsonEncode(a['groups']),
+    a['type'],
+    a['disambiguation'],
+    a['status'],
+    a['errorCount'],
+    a['nextAt'],
+    a['resolvedAt'],
+    nowIso,
+  ]);
+  db.execute(
+      'INSERT INTO artist_canon(canonical_key, artist_key, updated_at) '
+      'VALUES(?,?,?) ON CONFLICT(canonical_key) DO UPDATE SET '
+      'artist_key=excluded.artist_key, updated_at=excluded.updated_at',
+      [canon, ak, now]);
+}
+
+/// 把某 canonical 解析结果合并进已存在的 mbid 身份行（同一真人不同拼写的别名合流）：
+/// 迁移歌曲映射 → 删除占位身份 → 桥改指向 → （可选）把新名字/角色/小组并入目标行。
+/// 不存在该 mbid 行时返回 false（调用方走 artistUpsert）。
+bool _opArtistMergeMbid(Database db, Map<String, dynamic> a) {
+  final mbid = a['mbid'] as String;
+  final target = db.select('SELECT artist_key FROM artists WHERE mbid=?', [mbid]);
+  if (target.isEmpty) return false;
+  final targetAk = target.first['artist_key'] as String;
+  final fromAk = a['fromArtistKey'] as String;
+  db.execute('UPDATE artist_song_map SET artist_key=? WHERE artist_key=?',
+      [targetAk, fromAk]);
+  final canon = a['canonicalKey'] as String;
+  final now = DateTime.now().millisecondsSinceEpoch;
+  db.execute(
+      'UPDATE artist_canon SET artist_key=?, updated_at=? WHERE canonical_key=?',
+      [targetAk, now, canon]);
+  if (a['update'] == true) {
+    final row = db.select('SELECT names, groups, display_name, type, disambiguation '
+        'FROM artists WHERE artist_key=?', [targetAk]);
+    if (row.isNotEmpty) {
+      final r = row.first;
+      final names = _mergeNameLists(
+          _jsonList(r['names']), (a['names'] as List).cast<Map<dynamic, dynamic>>());
+      final groups = _mergeJsonList(
+          _jsonList(r['groups']), (a['groups'] as List).cast<Map<dynamic, dynamic>>());
+      final nowIso = DateTime.now().toIso8601String();
+      db.execute('''
+        UPDATE artists SET names=?, groups=?, display_name=?, type=?, 
+          disambiguation=?, status='resolved', error_count=0, resolved_at=?, updated_at=?
+        WHERE artist_key=?
+      ''', [
+        jsonEncode(names),
+        jsonEncode(groups),
+        (r['display_name'] as String?)?.isNotEmpty == true ? r['display_name'] : a['displayName'],
+        a['type'],
+        (r['disambiguation'] as String?) ?? a['disambiguation'],
+        nowIso,
+        nowIso,
+        targetAk,
+      ]);
+    }
+  }
+  db.execute('DELETE FROM artists WHERE artist_key=?', [fromAk]);
+  return true;
+}
+
+/// 重试：把 local/ambiguous 状态重置为 pending（空 canonicalKey=全部）。
+/// 人工「重试解析」按钮即调用此入口。
+void _opArtistRetry(Database db, Map<String, dynamic> a) {
+  final canon = a['canonicalKey'] as String?;
+  final nowIso = DateTime.now().toIso8601String();
+  if (canon == null) {
+    db.execute(
+        "UPDATE artists SET status='pending', error_count=0, next_at=0, updated_at=? "
+        "WHERE status IN ('local','ambiguous')", [nowIso]);
+    return;
+  }
+  db.execute(
+      "UPDATE artists SET status='pending', error_count=0, next_at=0, updated_at=? "
+      "WHERE canonical_key=? AND status IN ('local','ambiguous')",
+      [nowIso, canon]);
+}
+
+/// DB 行里的 JSON 列表（容错：损坏返回空列表）。
+List<Map<dynamic, dynamic>> _jsonList(Object? raw) {
+  if (raw == null) return [];
+  try {
+    return (jsonDecode(raw as String) as List).cast<Map<dynamic, dynamic>>();
+  } catch (_) {
+    return [];
+  }
+}
+
+/// 名字列表合并去重（按 name+name_type），覆盖时以新值为准。
+List<Map<dynamic, dynamic>> _mergeNameLists(
+    List<Map<dynamic, dynamic>> old, List<Map<dynamic, dynamic>> fresh) {
+  final out = <Map<dynamic, dynamic>>[];
+  final keys = <String>{};
+  for (final n in [...fresh, ...old]) {
+    final k = '${n['name']}\u0000${n['name_type']}';
+    if (keys.add(k)) out.add(n);
+  }
+  return out;
+}
+
+/// 通用 JSON 条目合并去重（groups 用；按首个键去重）。
+List<Map<dynamic, dynamic>> _mergeJsonList(
+    List<Map<dynamic, dynamic>> old, List<Map<dynamic, dynamic>> fresh) {
+  final out = <Map<dynamic, dynamic>>[];
+  final keys = <String>{};
+  for (final n in [...fresh, ...old]) {
+    final k = n.keys.isEmpty ? '' : '${n.values.first}';
+    if (keys.add(k)) out.add(n);
+  }
+  return out;
 }

@@ -140,6 +140,13 @@ class AppSettings {
   /// 常亮限定的蓝牙设备（JSON {name,address}；空=不限定，打开播放页即常亮）。
   static const String kKeepScreenOnDevice = 'keep_screen_on_device';
 
+  /// 歌手身份聚合（歌手处理.txt）：开=歌手页按解析出的「真人」身份聚合、
+  /// 别名/角色并组；关=按原歌手字符串分组。默认开（不联网也以归一键去重）。
+  static const String kArtistIdentity = 'artist_identity';
+
+  /// 歌手自动后台解析（歌手处理.txt）：向 MusicBrainz 搜索请求解析身份。
+  static const String kArtistResolveAuto = 'artist_resolve_auto';
+
   /// 默认缓存总上限（512 MB）。
   static const int defaultCacheMaxBytes = 512 * 1024 * 1024;
   static const int defaultCacheSongLimit = 200;
@@ -266,6 +273,17 @@ class AppSettings {
       index.settingsGet(kKeepScreenOnDevice) ?? '';
   set keepScreenOnDevice(String v) =>
       index.settingsSet(kKeepScreenOnDevice, v);
+
+  // ---------- 歌手身份聚合（歌手处理.txt） ----------
+
+  bool get artistIdentity => (index.settingsGet(kArtistIdentity) ?? '1') == '1';
+  set artistIdentity(bool v) =>
+      index.settingsSet(kArtistIdentity, v ? '1' : '0');
+
+  bool get artistResolveAuto =>
+      (index.settingsGet(kArtistResolveAuto) ?? '1') == '1';
+  set artistResolveAuto(bool v) =>
+      index.settingsSet(kArtistResolveAuto, v ? '1' : '0');
 
   // ---------- 歌曲分区（settings.md §3.4） ----------
 
@@ -456,6 +474,8 @@ class AppSettings {
     kLyricFocusIdleSec,
     kPlayerKeepScreenOn,
     kKeepScreenOnDevice,
+    kArtistIdentity,
+    kArtistResolveAuto,
     kScanIgnoreMinDurationSec,
     kScanIgnoreMinSizeBytes,
     kScanWifiOnly,

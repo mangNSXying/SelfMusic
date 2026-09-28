@@ -10,6 +10,7 @@ import '../data/local/app_settings.dart';
 import '../models/song.dart';
 import '../models/album.dart';
 import '../models/artist.dart';
+import '../services/artist_resolver.dart';
 import '../theme/app_theme.dart';
 import '../utils/collection_sort.dart';
 import '../utils/song_search.dart';
@@ -801,6 +802,20 @@ class _ArtistsViewState extends State<_ArtistsView>
                 : context.read<NavigationProvider>().search);
       }
     });
+    // 身份解析后台完成（含歧义人工绑定）后就地刷新歌手分组，不重扫歌曲。
+    final resolver = context.read<ArtistResolver>();
+    resolver.addListener(_onResolverChanged);
+  }
+
+  @override
+  void dispose() {
+    context.read<ArtistResolver>().removeListener(_onResolverChanged);
+    super.dispose();
+  }
+
+  void _onResolverChanged() {
+    final lib = context.read<LibraryProvider>();
+    if (!lib.loading) lib.refreshArtists();
   }
 
   @override
@@ -865,7 +880,19 @@ class _ArtistsViewState extends State<_ArtistsView>
 }
 
 /// 打开歌手歌曲弹层（卡片/列表两种形态共用）。
-void _openArtist(BuildContext context, Artist artist) {
+///
+/// 歌手身份歧义（歌手处理.txt）：先弹候选选择页人工绑定；
+/// 未命中/待解析可在此手动触发重试。
+void _openArtist(BuildContext context, Artist artist, ArtistResolver resolver) {
+  if (artist.status == 'ambiguous') {
+    _showAmbiguousPicker(context, artist, resolver);
+    return;
+  }
+  if (artist.status == 'local' ||
+      (artist.status == 'pending' && artist.identityKey != null)) {
+    _showRetryConfirm(context, artist, resolver);
+    return;
+  }
   final lib = context.read<LibraryProvider>();
   final songs = lib.artistSongs(artist);
   if (!context.mounted) return;
@@ -874,6 +901,93 @@ void _openArtist(BuildContext context, Artist artist) {
     isScrollControlled: true,
     builder: (c) => _ArtistSongsSheet(artist: artist, songs: songs),
   );
+}
+
+/// 歧义身份候选选择（候选来自 MB 搜索 hit，零额外请求）。
+Future<void> _showAmbiguousPicker(
+    BuildContext context, Artist artist, ArtistResolver resolver) async {
+  final candidates = await resolver.candidatesFor(artist.identityKey!);
+  if (!context.mounted) return;
+  await showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    builder: (c) => DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.7,
+      builder: (c2, scrollCtrl) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            child: Text('选择「${artist.name}」对应的真人',
+                style: Theme.of(c).textTheme.titleLarge
+                    ?.copyWith(fontWeight: FontWeight.bold)),
+          ),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child: Text('本地多个不同写法的歌手指向同名的可能身份，请选择其一；'
+                '未列出的可稍后重试。'),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: candidates.isEmpty
+                ? const Center(child: Text('暂无可选候选，稍后自动重试'))
+                : RowList(
+                    controller: scrollCtrl,
+                    count: candidates.length,
+                    itemBuilder: (c3, i) {
+                      final h = candidates[i];
+                      return ListTile(
+                        leading: const CircleAvatar(child: Icon(Icons.person)),
+                        title: Text(h.name,
+                            maxLines: 1, overflow: TextOverflow.ellipsis),
+                        subtitle: Text(
+                          [
+                            if (h.sortName != null && h.sortName != h.name)
+                              h.sortName,
+                            if (h.type != null) h.type,
+                            if (h.disambiguation != null) h.disambiguation,
+                            if (h.beginYear != null)
+                              '${h.beginYear}—${h.endYear ?? '…'}',
+                          ].join(' · '),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        onTap: () async {
+                          await resolver.bindManual(artist.identityKey!, h);
+                          if (c3.mounted) Navigator.of(c3).pop();
+                        },
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+/// 未命中/待解析歌手：手动立即重试确认。
+Future<void> _showRetryConfirm(
+    BuildContext context, Artist artist, ArtistResolver resolver) async {
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (c) => AlertDialog(
+      title: Text('重新解析「${artist.name}」？'),
+      content: Text(artist.status == 'local'
+          ? '上次解析未找到可靠身份（MusicBrainz 可能未收录），确认后立即重试。'
+          : '该歌手尚未解析，确认后立即尝试。'),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.of(c).pop(true), child: const Text('重试')),
+        TextButton(
+            onPressed: () => Navigator.of(c).pop(false), child: const Text('取消')),
+      ],
+    ),
+  );
+  if (ok == true && artist.identityKey != null) {
+    await resolver.retryOne(artist.identityKey!);
+  }
 }
 
 class _ArtistListTile extends StatelessWidget {
@@ -896,12 +1010,45 @@ class _ArtistListTile extends StatelessWidget {
               .textTheme
               .bodyLarge
               ?.copyWith(fontWeight: FontWeight.w600)),
-      subtitle: Text('${artist.songCount}首 · ${artist.albumCount}张专辑',
-          maxLines: 1, overflow: TextOverflow.ellipsis),
-      onTap: () => _openArtist(context, artist),
+      subtitle: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('${artist.songCount}首 · ${artist.albumCount}张专辑',
+              maxLines: 1, overflow: TextOverflow.ellipsis),
+          if (artist.status == 'ambiguous') ..._statusChip(context),
+        ],
+      ),
+      trailing:
+          artist.status == 'local' || artist.status == 'pending'
+          ? IconButton(
+              icon: const Icon(Icons.refresh, size: 20),
+              tooltip: '重试解析',
+              onPressed: () =>
+                  _openArtist(context, artist, context.read<ArtistResolver>()),
+            )
+          : (artist.status == 'ambiguous'
+              ? const Icon(Icons.help_outline, size: 20,
+                  color: Colors.orange)
+              : null),
+      onTap: () =>
+          _openArtist(context, artist, context.read<ArtistResolver>()),
     );
   }
 }
+
+/// 身份状态小徽标（歧义/未匹配在地图右侧展示）。
+List<Widget> _statusChip(BuildContext context) => [
+      const SizedBox(width: 8),
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+        decoration: BoxDecoration(
+          color: Colors.orange.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: const Text('需确认',
+            style: TextStyle(fontSize: 11, color: Colors.orange)),
+      ),
+    ];
 
 class _ArtistCard extends StatelessWidget {
   final Artist artist;
@@ -910,10 +1057,13 @@ class _ArtistCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) => SquareCard(
         title: artist.name,
-        subtitle: '${artist.songCount}首 · ${artist.albumCount}张专辑',
+        subtitle: artist.status == 'ambiguous'
+            ? '${artist.songCount}首 · ${artist.albumCount}张专辑 · 需确认'
+            : '${artist.songCount}首 · ${artist.albumCount}张专辑',
         coverPath: artist.coverPath,
         fallbackIcon: Icons.person,
-        onTap: () => _openArtist(context, artist),
+        onTap: () =>
+            _openArtist(context, artist, context.read<ArtistResolver>()),
       );
 }
 

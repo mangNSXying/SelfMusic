@@ -12,6 +12,7 @@ import 'services/api_client.dart';
 import 'services/server_settings.dart';
 import 'services/selfmusic_audio_handler.dart';
 import 'services/sync_engine.dart';
+import 'services/artist_resolver.dart';
 import 'providers/auth_provider.dart';
 import 'providers/library_provider.dart';
 import 'providers/direct_source_manager.dart';
@@ -52,6 +53,13 @@ Future<void> main() async {
   direct.attachApi(api);
   // 信任自签名证书开关（settings.md §3.3）：按 AppSettings 配置 dio 一次。
   api.setSelfSignedPolicy(direct.settings.allowSelfSigned);
+
+  // 歌手身份解析（歌手处理.txt）：后台循环向 MusicBrainz 解析歌手身份；
+  // 与 direct 互绑（扫描/补读后校准映射并唤醒），随应用生命周期运行。
+  final artistResolver = ArtistResolver(direct.index)
+    ..attachSettings(direct.settings);
+  direct.attachArtistResolver(artistResolver);
+  artistResolver.start();
 
   // 通知栏播放控制 / 后台播放（settings.md §3.6）：Android + 开关注册。
   //
@@ -94,7 +102,8 @@ Future<void> main() async {
       settings: serverSettings,
       api: api,
       audioHandler: audioHandler,
-      sync: sync));
+      sync: sync,
+      artistResolver: artistResolver));
 }
 
 /// 回前台触发同步（阶段5）：无 connectivity 依赖，切后台期间的变更在恢复后追上。
@@ -114,6 +123,7 @@ class SelfMusicApp extends StatelessWidget {
   final ApiClient api;
   final SelfMusicAudioHandler? audioHandler;
   final SyncEngine sync;
+  final ArtistResolver artistResolver;
   const SelfMusicApp({
     super.key,
     required this.direct,
@@ -121,14 +131,15 @@ class SelfMusicApp extends StatelessWidget {
     required this.api,
     this.audioHandler,
     required this.sync,
+    required this.artistResolver,
   });
 
   @override
   Widget build(BuildContext context) {
-    final auth = AuthProvider(api);
-    // 播放流式取 token 依赖 Auth（懒读）。
-    final lib = LibraryProvider()..attachDirectManager(direct);
-    final nav = NavigationProvider();
+final auth = AuthProvider(api);
+  // 播放流式取 token 依赖 Auth（懒读）。
+  final lib = LibraryProvider()..attachDirectManager(direct);
+  final nav = NavigationProvider();
     final player = PlayerProvider()
       ..attachSourceResolver((key) => direct.sourceByKey(key))
       ..attachAppSettings(direct.settings)
@@ -160,6 +171,7 @@ class SelfMusicApp extends StatelessWidget {
         ChangeNotifierProvider<AuthProvider>.value(value: auth),
         ChangeNotifierProvider<LibraryProvider>.value(value: lib),
         ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+        ChangeNotifierProvider<ArtistResolver>.value(value: artistResolver),
         ChangeNotifierProvider<PlaylistsProvider>(
           create: (_) => PlaylistsProvider(direct.playlists),
         ),

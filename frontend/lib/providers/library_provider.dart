@@ -125,9 +125,49 @@ class LibraryProvider extends ChangeNotifier {
       .toList();
 
   /// 歌手对应的歌曲列表。
-  List<Song> artistSongs(Artist artist) => songs
-      .where((s) => _blank(s.artist, 'Unknown') == artist.name)
-      .toList();
+  ///
+  /// identity 模式（歌手处理.txt）：带 identityKey 的歌手走 artist_song_map
+  /// 映射（别名/角色/归一化并组自动合并）；否则退回原字符串匹配。
+  List<Song> artistSongs(Artist artist) {
+    if (artist.identityKey != null) {
+      return _directManager?.index.identitySongs(artist.identityKey!) ??
+          const <Song>[];
+    }
+    return songs
+        .where((s) => _blank(s.artist, 'Unknown') == artist.name)
+        .toList();
+  }
+
+  void _recomputeGroups() {
+    albums = Album.fromSongs(songs);
+    if (_identityEnabled) {
+      artists = _identityGroupsFromDb(_lastQuery);
+    } else {
+      artists = Artist.fromSongs(songs);
+    }
+  }
+
+  /// 歌手分组是否走身份聚合（列=DB 身份行，源=歌曲映射；保真/合并别名）。
+  bool get _identityEnabled =>
+      _directManager?.settings.artistIdentity ?? false;
+
+  List<Artist> _identityGroupsFromDb(String? query) {
+    final m = _directManager;
+    if (m == null) return const [];
+    final out = <Artist>[
+      ...m.index.identityArtistGroups(query: query),
+    ];
+    // 无映射残留兜底（通常为空）：保证身份聚合开启时歌手页仍完整。
+    out.addAll(m.index.identityFallbackGroups());
+    return out;
+  }
+
+  /// 歌手身份解析结果变化后（无需重扫歌曲）刷新歌手分组。
+  void refreshArtists() {
+    if (!_identityEnabled) return;
+    artists = _identityGroupsFromDb(_lastQuery);
+    notifyListeners();
+  }
 
   /// 依据匹配的 sourceKey 解析播放源。
   MusicSource? sourceFor(String sourceKey) =>
@@ -153,11 +193,6 @@ class LibraryProvider extends ChangeNotifier {
     } catch (e) {
       debugPrint('library cache save failed: $e');
     }
-  }
-
-  void _recomputeGroups() {
-    albums = Album.fromSongs(songs);
-    artists = Artist.fromSongs(songs);
   }
 
   static String _blank(String? v, String fallback) =>
