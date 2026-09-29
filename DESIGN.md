@@ -329,7 +329,7 @@ TokenFilter (OncePerRequestFilter)
 | `main.dart` | 入口 + Provider 装配（Theme / Auth / Library / Player / Navigation）+ 平台 bootstrap |
 | `theme/` | ★ 可配置主题核心：语义化颜色 token + 亮/暗与自定义强调色，运行时切换并持久化 |
 | `layout/` | ★ 自适应模块化布局：桌面「侧边栏 / 内容 / 队列面板」与窄屏抽屉；顶栏（搜索 + 六分组滑动导航）；队列面板与迷你播放条（自动定位当前曲、强调色） |
-| `providers/` | ★ 状态：导航（层级返回）、播放器（队列 / 四模式 / 睡眠定时 / 歌词 / 预载 / 断点）、曲库（多源合并 + 专辑歌手分组）、直连源管理、歌单、配对与会话过期态 |
+| `providers/` | ★ 状态：导航（层级返回）、播放器（队列 / 四模式 / 睡眠定时（含到时退出软件）/ 歌词 / 预载 / 断点）、曲库（多源合并 + 专辑歌手分组）、直连源管理、歌单、配对与会话过期态 |
 | `services/` | ApiClient（含懒刷新拦截器）、AuthService、ServerSettings、SyncEngine |
 | `data/sources/` | ★ Source 抽象层（LocalDirect / WebdavDirect / SmbDirect）+ DirectAudioSource |
 | `data/local/` | 本地库（`schema` 建表迁移 + `db_writer` 写隔离 + `local_index` 门面）+ 纯 Dart 头部解析 + 各 Store 封装 |
@@ -450,7 +450,7 @@ abstract class MusicSource {
 | 分区 | 内容 |
 |------|------|
 | 备份 | 设置 / 歌单分开导出导入 |
-| 播放 | 默认播放模式、断点续播、淡入淡出、均衡器（Android）、播放页手势、睡眠定时默认播完、音频焦点 |
+| 播放 | 默认播放模式、断点续播、淡入淡出、均衡器（Android）、播放页手势、睡眠定时（四模式 + 时长/曲数记忆 + 播完退出）、音频焦点 |
 | 服务端 | 后端地址、配对服务器（含配对密钥遮显）、预载、缓存配置双来源、允许不安全 HTTP、信任自签名证书 |
 | 歌曲 | 收藏自动缓存、扫描模式与头部·封面、忽略音频过滤、仅 Wi-Fi 扫描、标题显示格式、集合页展示形式 |
 | 界面 | 主题（亮/暗/强调色）等 |
@@ -463,7 +463,11 @@ abstract class MusicSource {
 - **歌词三通道**：内嵌标签（mp3 `USLT` / FLAC `LYRICS`·`UNSYNCEDLYRICS`）→ 同目录同名 `.lrc`（local/WebDAV 通用，UTF-8/UTF-16 BOM 兼容）（后端不提供歌词）；解析为 LRC 文本入库 `song_lyrics`（`(source_key,song_ref)` 主键，三态：内容 / 显式标记缺失 / 未读取），缺失标记避免每次播放重复读文件
 - **歌词页**：与播放进度同步滚动 + 居中高亮当前行 + 点击任意行 seek；手动拖动暂停跟随，空闲「歌词追焦等待」超时后回中，切歌归位；`lrc_parser.dart` 支持多标签 / `offset` / 毫秒位数 / 纯文本退化 / 二分定位
 - **歌词跟焦为自愈式**（`lyrics_view.dart`）：每次位置事件都按真实布局复核当前行是否在位，不以「行号是否变化」为触发条件——`ListView.builder` 懒构建导致目标行尚未构建（`PageView` 滑入时该页才刚创建）时，先临时把 `scrollCacheExtent` 加宽让目标行被构建出来（最多补滚 3 次），再用 `RenderAbstractViewport.getOffsetToReveal` 只滚歌词列表（不用 `Scrollable.ensureVisible`，避免遍历祖先把外层 `PageView` 一起拖动）；首次归位 `jumpTo`、换行 `animateTo`，行高动画后再快速二次校正一次；拖动抑制为续期式空闲计时（`ScrollStart` 即启动，拖动/惯性中不断续期），手势被打断收不到 `ScrollEnd` 也不会永久卡住
-- **后台播放**：Android 走 `audio_service` 自定义处理器（`SelfMusicAudioHandler`，通知按钮转发 `PlayerProvider`）；返回桌面/切后台**继续播放**（`androidStopForegroundOnPause=false` 暂停不撤前台服务，与 `androidNotificationOngoing` 互斥故弃用 ongoing）；通知栏「停止」/ 划掉任务（`onTaskRemoved`）/ 侧边栏「退出」（先 `shutdown()` 再 `exit(0)`）才真正停止并置空闲；`notification_controls=false` 时不注册前台服务、后台保活不成立
+- **后台播放**：Android 走 `audio_service` 自定义处理器（`SelfMusicAudioHandler`，通知按钮转发 `PlayerProvider`）；返回桌面/切后台**继续播放**（`androidStopForegroundOnPause=false` 暂停不撤前台服务，与 `androidNotificationOngoing` 互斥故弃用 ongoing）；通知栏「退出软件」/ 划掉任务（`onTaskRemoved`）/ 侧边栏「退出」（先 `shutdown()` 再 `exit(0)`）才真正停止并置空闲；`notification_controls=false` 时不注册前台服务、后台保活不成立
+- **通知栏 5 键（自定义 `SelfMusicAudioHandler`）**：`main()`（Android 开关注册）用 `AudioService.init(builder:)` 装自研 handler，不再走 `just_audio_background` 的默认 4 键。`sync()` 回推的 `PlaybackState.controls` 为 5 键——上一首 / 播放·暂停（随播放态二选一）/ 下一首 / 播放模式 / 退出软件，`androidCompactActionIndices=[0,1,2]`；前四个与「退出软件」用 `MediaControl` 自绘品牌矢量图标（`ic_np_previous/play/pause/next/mode/exit.xml`，`0xFF00A098`），播放模式与退出是 `MediaAction.custom` + `CustomMediaAction(name: 'play_mode'/'exit_app')`，回调经 `customAction` 转发 provider：`play_mode`→`cycleMode()`（与播放页模式按钮同序循环），`exit_app`→`shutdown()` 落盘断点后 `super.stop()` 收前台服务再 `exit(0)`。不劫持 just_audio 平台实例，状态变化全由 provider 的 `_syncSystemMedia()` 调 `sync()` 驱动（Android `MediaSession` 自动外推 position，无需逐 tick 上报）
+- **睡眠定时（含到时退出）**：四模式无变化（指定时间 / 时长 / 曲数 / 列表结尾 + 播放完最后曲目），新增弹窗 UI 与语义——四种模式卡片改用小字号正文 + 灰色提示行；「指定时长/曲数」用滚轮选择并**记忆上次值**（持久化 `sleep_default_duration_minutes` / `sleep_default_count`，下次打开预选）；新增「播放结束退出软件」开关（仅当次生效）。到时行为：退出开关开时 `_sleepStop()` 先读 `_sleepExitApp` 落局部再清睡眠态，走 `_quitAfterSleep()` = `await shutdown()`（落盘断点/队列）后 `exit(0)`；否则维持原有「暂停并驻留后台」
+- **播放页控件自动隐藏（`player_auto_hide_idle_sec`，默认 5，0=不隐藏）**：仅播放页（竖屏第 0 页 / 横屏整页）计静置；超时淡出左上「返回内容」与封面右上「更多」两个纯入口（封面/进度条/控制键常显）；根布局 `Listener(translucent)` 任何触摸都 `_rearmAutoHide()`（取消旧定时 → 恢复显示 → 重设定时），进入歌词页 / 切到内容区不参与隐藏
+- **播放页右滑 → 当前歌单全屏页（`lib/screens/queue_page.dart`）**：根 `Listener` **被动**追踪原始指针（`onPointerDown` 记录起点，移动时 `dx>80` 且横向占优即触发），不注册竞争手势，故不抢 `PageView` 的左滑进歌词页。仅竖屏第 0 页 / 横屏整页（`_onPlayerPage`）且按下起点即落在播放页时生效。目标页全屏 + 顶部搜索框（按展示标题 / 歌手过滤）+ `SongTile(compact)` 行（当前曲高亮、点行按原始序号 `playAt`），等价既有队列面板能力
 
 ### 6.9 列表 / 卡片 / 多选（✅ 已统一）
 
