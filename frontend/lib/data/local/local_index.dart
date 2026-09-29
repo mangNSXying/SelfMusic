@@ -832,7 +832,7 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
         )).toList();
   }
 
-  /// 歌单内歌曲匹配：返回含匹配歌曲（标题/歌手，忽略大小写）的歌单 id 集合。
+  /// 歌单内歌曲匹配：返回含匹配歌曲（标题/歌手/专辑，忽略大小写）的歌单 id 集合。
   /// 单条 SQL 完成，供歌单页搜索（搜索内容是歌单中的具体歌曲）。
   Set<int> playlistIdsMatchingSong(String query) {
     final q = query.trim().toLowerCase();
@@ -845,8 +845,9 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
     final rs = _db!.select(
         "SELECT DISTINCT playlist_id FROM playlist_items "
         r"WHERE lower(title) LIKE ? ESCAPE '\' "
-        r"OR lower(IFNULL(artist,'')) LIKE ? ESCAPE '\'",
-        [like, like]);
+        r"OR lower(IFNULL(artist,'')) LIKE ? ESCAPE '\' "
+        r"OR lower(IFNULL(album,'')) LIKE ? ESCAPE '\'",
+        [like, like, like]);
     return {for (final r in rs) r['playlist_id'] as int};
   }
 

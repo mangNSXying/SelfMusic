@@ -12,6 +12,7 @@ import '../providers/player_provider.dart';
 import '../providers/navigation_provider.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/content_shell.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/list_selection.dart';
 import '../widgets/row_list.dart';
@@ -144,7 +145,8 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
     final songs = direct.songsOf(widget.sourceKey, query: _query);
     final count = direct.countOf(widget.sourceKey);
 
-    return SectionSwipe(
+    return ContentShell(
+      child: SectionSwipe(
       child: Column(
         children: [
         Padding(
@@ -313,6 +315,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                     ),
         ),
         ],
+      ),
       ),
     );
   }

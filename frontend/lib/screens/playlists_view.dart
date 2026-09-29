@@ -13,6 +13,7 @@ import '../providers/playlists_provider.dart';
 import '../utils/collection_sort.dart';
 import '../utils/song_search.dart';
 import '../widgets/corner_add_button.dart';
+import '../widgets/content_shell.dart';
 import '../widgets/count_header.dart';
 import '../widgets/row_list.dart';
 import '../widgets/selection_badge.dart';
@@ -125,78 +126,80 @@ class _PlaylistsViewState extends State<PlaylistsView>
         countOf: (p) => provider.countOf(p.id));
     final card = isCard;
 
-    return Stack(
-      children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-              if (_sel.active)
-                SelectionBar(
-                  total: playlists.length,
-                  // 「已选 N」只数可见项；批量动作也只作用于可见项。
-                  selectedCount: _sel.of(playlists.map((p) => p.id)).length,
-                  onToggleAll: () =>
-                      setState(() => _sel.setAll(playlists.map((p) => p.id))),
-                  onCancel: () => setState(_sel.cancel),
-                  actions: [
-                    SelectionAction(
-                      icon: Icons.delete,
-                      label: '删除选中',
-                      onPressed: _sel.of(playlists.map((p) => p.id)).isEmpty
-                          ? null
-                          : () => _deleteSelected(provider, playlists),
-                    ),
-                  ],
-                ),
-              if (_sel.active) const Divider(height: 1),
-              if (!_sel.active)
-                CountHeader(
-                  count: playlists.length,
-                  unit: '个歌单',
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SortMenuButton(
-                        value: direct.settings.sortPlaylists,
-                        scope: SortScope.collections,
-                        onChanged: (v) => setState(
-                            () => direct.settings.sortPlaylists = v),
+    return ContentShell(
+      child: Stack(
+        children: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+                if (_sel.active)
+                  SelectionBar(
+                    total: playlists.length,
+                    // 「已选 N」只数可见项；批量动作也只作用于可见项。
+                    selectedCount: _sel.of(playlists.map((p) => p.id)).length,
+                    onToggleAll: () =>
+                        setState(() => _sel.setAll(playlists.map((p) => p.id))),
+                    onCancel: () => setState(_sel.cancel),
+                    actions: [
+                      SelectionAction(
+                        icon: Icons.delete,
+                        label: '删除选中',
+                        onPressed: _sel.of(playlists.map((p) => p.id)).isEmpty
+                            ? null
+                            : () => _deleteSelected(provider, playlists),
                       ),
-                      viewModeToggle(),
                     ],
                   ),
+                if (_sel.active) const Divider(height: 1),
+                if (!_sel.active)
+                  CountHeader(
+                    count: playlists.length,
+                    unit: '个歌单',
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SortMenuButton(
+                          value: direct.settings.sortPlaylists,
+                          scope: SortScope.collections,
+                          onChanged: (v) => setState(
+                              () => direct.settings.sortPlaylists = v),
+                        ),
+                        viewModeToggle(),
+                      ],
+                    ),
+                  ),
+                Expanded(
+                  child: playlists.isEmpty
+                      ? Center(
+                          child: Text(all.isEmpty
+                              ? '暂无歌单，点右下角「+」创建'
+                              : '无匹配歌单'))
+                      : card
+                          ? SquareCardGrid(
+                              itemCount: playlists.length,
+                              titleMaxLines: 2,
+                              itemBuilder: (c, i) =>
+                                  _playlistCard(provider, playlists[i]),
+                            )
+                          : RowList(
+                              count: playlists.length,
+                              itemBuilder: (c, i) =>
+                                  _playlistTile(provider, playlists[i]),
+                            ),
                 ),
-              Expanded(
-                child: playlists.isEmpty
-                    ? Center(
-                        child: Text(all.isEmpty
-                            ? '暂无歌单，点右下角「+」创建'
-                            : '无匹配歌单'))
-                    : card
-                        ? SquareCardGrid(
-                            itemCount: playlists.length,
-                            titleMaxLines: 2,
-                            itemBuilder: (c, i) =>
-                                _playlistCard(provider, playlists[i]),
-                          )
-                        : RowList(
-                            count: playlists.length,
-                            itemBuilder: (c, i) =>
-                                _playlistTile(provider, playlists[i]),
-                          ),
-              ),
-            ],
-          ),
-          Positioned(
-            right: 16,
-            bottom: 16,
-            child: CornerAddButton(
-              tooltip: '新建歌单',
-              onPressed: () => _createDialog(context, provider),
+              ],
             ),
-          ),
-        ],
-      );
+            Positioned(
+              right: 16,
+              bottom: 16,
+              child: CornerAddButton(
+                tooltip: '新建歌单',
+                onPressed: () => _createDialog(context, provider),
+              ),
+            ),
+          ],
+        ),
+    );
   }
 
   Widget _playlistTile(PlaylistsProvider provider, PlaylistRow p) {
@@ -549,7 +552,8 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
       });
     }
 
-    return SectionSwipe(
+    return ContentShell(
+      child: SectionSwipe(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -723,6 +727,7 @@ class _PlaylistDetailViewState extends State<PlaylistDetailView> {
                     ),
         ),
         ],
+      ),
       ),
     );
   }

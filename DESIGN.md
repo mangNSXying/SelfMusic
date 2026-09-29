@@ -537,8 +537,8 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 | 事件 | 触发 | 效果 |
 |------|------|------|
-| complete | 自然结束且播放比例 ≥70% | like_streak++，dislike_streak=0；非锁定态 like_streak≥3 → factor=min(1.5, factor+0.1)、streak 清零；不喜欢锁定态只记 streak 不调权 |
-| skip | 被 next/prev/换歌打断且比例 <70% | dislike_streak++，like_streak=0；非锁定态 dislike_streak≥3 → factor=max(0.5, factor−0.1)、streak 清零；不喜欢锁定态只记 streak 不调权 |
+| complete | 自然结束且播放比例 >95% | like_streak++，dislike_streak=0；非锁定态 like_streak≥3 → factor=min(1.5, factor+0.1)、streak 清零；不喜欢锁定态只记 streak 不调权 |
+| skip | 被 next/prev/换歌打断且比例 <30% | dislike_streak++，like_streak=0；非锁定态 dislike_streak≥3 → factor=max(0.5, factor−0.1)、streak 清零；不喜欢锁定态只记 streak 不调权 |
 | liked | 手动喜欢 / 收藏 | favorite=true，factor=1.5，解除「不喜欢」锁定（frozen=false） |
 | unfavorite | 取消喜欢 / 收藏 | favorite=false；非锁定态 factor 回 1.0；不喜欢锁定态保持最低权重 |
 | disliked | 手动不喜欢（开关式） | favorite 不变；开 → factor=0.5 且 **frozen=true（权重锁定最低、跳过自动调权）**；关 → 解锁回 1.0 |

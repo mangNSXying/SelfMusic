@@ -423,10 +423,18 @@ void main() {
         sourceKey: 'local:x', songRef: 'a', title: 'Nocturne Op.9', artist: 'Chopin');
     await index.addPlaylistItem(pop,
         sourceKey: 'local:x', songRef: 'b', title: '夜曲', artist: '周杰伦');
+    await index.addPlaylistItem(idle,
+        sourceKey: 'local:x',
+        songRef: 'c',
+        title: '圆舞曲',
+        artist: 'Chopin',
+        album: '夜曲与圆舞曲集');
 
     expect(index.playlistIdsMatchingSong('nocturne'), {idle});
     expect(index.playlistIdsMatchingSong('chopin'), {idle});
-    expect(index.playlistIdsMatchingSong('夜曲'), {pop});
+    expect(index.playlistIdsMatchingSong('夜曲'), {pop, idle});
+    // 专辑名列同样参与匹配。
+    expect(index.playlistIdsMatchingSong('圆舞曲集'), {idle});
     expect(index.playlistIdsMatchingSong('不存在'), isEmpty);
     // 无通配符注入：% / _ 按字面匹配。
     expect(index.playlistIdsMatchingSong('%'), isEmpty);
