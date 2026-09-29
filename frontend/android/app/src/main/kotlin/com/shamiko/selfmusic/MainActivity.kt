@@ -27,21 +27,20 @@ class MainActivity : AudioServiceActivity() {
                 when (call.method) {
                     "hasConnectPermission" -> result.success(hasConnectPermission())
                     "listBondedDevices" -> result.success(listBondedDevices())
-                    "connectedDevices" -> result.success(connectedDevicesAddresses())
+                    "connectedDevices" -> result.success(connectedDeviceAddresses())
                     else -> result.notImplemented()
                 }
             }
-        // 返回手势转后台：moveTaskToBackground 与 home 键等效，Activity 不
-        // 销毁、audio_service 前台服务不受影响（侧滑返回曾直接退出应用，
-        // 无法后台播放，2026-09-29 用户反馈）。
+// 返回手势转后台：moveTaskToBack 与 home 键等效，Activity 不
+// 销毁、audio_service 前台服务不受影响（侧滑返回曾直接退出应用，
+// 无法后台播放，2026-09-29 用户反馈）。
+//（API 37 起 Activity.moveTaskToBackground 已移除，统一用 moveTaskToBack。）
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, appChannelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "moveToBackground" -> result.success(moveTaskToBackground(true))
+                    "moveToBackground" -> result.success(moveTaskToBack(true))
                     else -> result.notImplemented()
                 }
-            }
-    }
             }
     }
 
