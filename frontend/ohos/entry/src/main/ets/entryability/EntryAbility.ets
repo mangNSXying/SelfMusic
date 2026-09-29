@@ -9,6 +9,7 @@ import {
   MethodResult
 } from '@ohos/flutter_ohos';
 import { GeneratedPluginRegistrant } from '../plugins/GeneratedPluginRegistrant';
+import AvSessionBridge from '../media/AvSessionBridge';
 
 const TAG = 'SelfMusicBoot';
 /** 与 Dart 侧（ohos_bootstrap.dart）约定的启动上报通道。 */
@@ -78,17 +79,24 @@ export default class EntryAbility extends FlutterAbility {
   private bootReady: boolean = false;
   private bootTimerId: number = -1;
   private pokeCount: number = 0;
+  private avSessionBridge: AvSessionBridge | null = null;
 
   configureFlutterEngine(flutterEngine: FlutterEngine): void {
     super.configureFlutterEngine(flutterEngine)
     GeneratedPluginRegistrant.registerWith(flutterEngine)
     this.setupBootWatchdog(flutterEngine)
+    this.avSessionBridge = new AvSessionBridge(this.context);
+    this.avSessionBridge.setup(flutterEngine)
   }
 
   onDestroy(): void {
     if (this.bootTimerId >= 0) {
       clearTimeout(this.bootTimerId);
       this.bootTimerId = -1;
+    }
+    if (this.avSessionBridge) {
+      this.avSessionBridge.shutdown();
+      this.avSessionBridge = null;
     }
     super.onDestroy();
   }

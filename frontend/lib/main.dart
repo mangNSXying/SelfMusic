@@ -8,6 +8,7 @@ import 'package:just_audio_background/just_audio_background.dart';
 import 'package:just_audio_media_kit/just_audio_media_kit.dart';
 import 'package:provider/provider.dart';
 import 'platform/harmonyos/ohos_bootstrap.dart';
+import 'platform/harmonyos/ohos_media_session.dart';
 import 'services/api_client.dart';
 import 'services/server_settings.dart';
 import 'services/selfmusic_audio_handler.dart';
@@ -85,10 +86,23 @@ Future<void> main() async {
         // 暂停不退出前台服务：回到桌面/锁屏后系统不会回收服务，
         // 再次恢复播放也不会受 Android 12+ 后台启动前台服务限制。
         androidStopForegroundOnPause: false,
+        // 状态栏小图标：白色剪影矢量（通知图标仅取 alpha 通道染色），
+        // 默认 mipmap 应用图标在浅色状态栏上会糊成灰色方块。
+        androidNotificationIcon: 'drawable/ic_stat_selfmusic',
+        // 通知强调色：品牌 teal（与 App 主题 defaultAccent 一致）。
+        notificationColor: const Color(0xFF00A098),
       );
     } catch (e) {
       debugPrint('just_audio_background 初始化失败，通知栏控制降级关闭：$e');
     }
+  }
+
+  // 鸿蒙 AVSession 媒体播控（通知栏/锁屏/播控中心 + 后台长时任务）：
+  // 桥与自研 handler 同模式不劫持播放器；ArkTS 侧 AvSessionBridge 挂系统
+  // 会话。构造仅注册通道回调，通道调用异常由桥内部兜底，不影响播放主流程。
+  OhosMediaSessionBridge? ohosMediaSession;
+  if (!kIsWeb && isOhos && direct.settings.notificationControls) {
+    ohosMediaSession = OhosMediaSessionBridge(direct);
   }
 
   // 阶段5 多设备同步引擎：启动即开始（未配对/关开关时内部跳过），回前台追一次。
@@ -105,6 +119,7 @@ Future<void> main() async {
       settings: serverSettings,
       api: api,
       audioHandler: audioHandler,
+      ohosMediaSession: ohosMediaSession,
       artistResolver: artistResolver,
       sync: sync));
   // main() 全链（含所有 await）走完的最终信号：ArkTS 启动看门狗据此解除
@@ -128,6 +143,7 @@ class SelfMusicApp extends StatelessWidget {
   final ServerSettings settings;
   final ApiClient api;
   final SelfMusicAudioHandler? audioHandler;
+  final OhosMediaSessionBridge? ohosMediaSession;
   final SyncEngine sync;
   final ArtistResolver artistResolver;
   const SelfMusicApp({
@@ -136,6 +152,7 @@ class SelfMusicApp extends StatelessWidget {
     required this.settings,
     required this.api,
     this.audioHandler,
+    this.ohosMediaSession,
     required this.sync,
     required this.artistResolver,
   });
@@ -167,6 +184,9 @@ final auth = AuthProvider(api);
         onSongMetaRefreshed: (s) => direct.notifySongMetaChanged(),
       )
       ..attachAudioHandlerIfAny(audioHandler);
+    // 鸿蒙 AVSession 桥接线：attach 注册回推钩子与 direct 监听，
+    // 此后播放/暂停/切歌/seek/模式/收藏变化自动同步系统播控卡。
+    ohosMediaSession?.attach(player);
 
     return MultiProvider(
       providers: [

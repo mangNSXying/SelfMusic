@@ -170,7 +170,18 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (handler != null) attachAudioHandler(handler);
   }
 
-  void _syncSystemMedia() => _audioHandler?.sync();
+  /// 鸿蒙 AVSession 桥的回推挂钩（ohos_media_session.dart）：状态变化时与
+  /// audio_handler 一起被 [_syncSystemMedia] 调用（非鸿蒙/开关关闭时为空）。
+  void Function()? _systemMediaSync;
+
+  void attachSystemMediaSync(void Function()? sync) {
+    _systemMediaSync = sync;
+  }
+
+  void _syncSystemMedia() {
+    _audioHandler?.sync();
+    _systemMediaSync?.call();
+  }
 
   PlayMode _mode = PlayMode.sequence;
   DateTime? _lastStateSave;
@@ -915,6 +926,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       s.playModeDefault = m.name;
     }
     notifyListeners();
+    // 播控卡循环模式按钮需要跟随（鸿蒙 AVSession 经 systemMediaSync 回推）。
+    _syncSystemMedia();
   }
 
   // ---------- 队列装载 ----------
