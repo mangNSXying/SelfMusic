@@ -6,6 +6,8 @@ abstract final class SyncEventTypes {
   // 权重事件（服务端事件重算，两设备并发不互抹）
   static const songComplete = 'song.complete';
   static const songSkipped = 'song.skip';
+  /// 手动点播后自然完播（改进.txt 功能7）：权重直接 +0.1 一档并清空双 streak。
+  static const songCompleteManual = 'song.complete_manual';
   static const songLiked = 'song.liked';
   static const songUnfavorite = 'song.unfavorite';
   static const songDisliked = 'song.disliked';

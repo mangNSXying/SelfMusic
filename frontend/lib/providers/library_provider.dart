@@ -34,18 +34,27 @@ class LibraryProvider extends ChangeNotifier {
     _directManager?.removeListener(_onDirectChanged);
     _directManager = m;
     _seenMetaVersion = m.metaVersion;
+    _seenSettingsVersion = m.settingsVersion;
     m.addListener(_onDirectChanged);
     notifyListeners();
   }
 
   int _seenMetaVersion = 0;
+  int _seenSettingsVersion = 0;
   bool _loadedOnce = false;
   String? _lastQuery;
 
   void _onDirectChanged() {
     final m = _directManager;
-    if (m == null || m.metaVersion == _seenMetaVersion) return;
+    if (m == null) return;
+    // 扫描/元数据变化重建；设置变化（忽略音频过滤等）同样重建，保证已入库歌曲
+    // 按新规则过滤（改进.txt 功能6）。
+    if (m.metaVersion == _seenMetaVersion &&
+        m.settingsVersion == _seenSettingsVersion) {
+      return;
+    }
     _seenMetaVersion = m.metaVersion;
+    _seenSettingsVersion = m.settingsVersion;
     // 首次 loadSongs 前不重建：避免与启动加载竞争。
     if (!_loadedOnce) return;
     refreshDirect();
@@ -130,7 +139,9 @@ class LibraryProvider extends ChangeNotifier {
   /// 映射（别名/角色/归一化并组自动合并）；否则退回原字符串匹配。
   List<Song> artistSongs(Artist artist) {
     if (artist.identityKey != null) {
-      return _directManager?.index.identitySongs(artist.identityKey!) ??
+      return _directManager?.index.identitySongs(artist.identityKey!,
+              minDurationSec: _directManager!.settings.scanIgnoreMinDurationSec,
+              minSizeBytes: _directManager!.settings.scanIgnoreMinSizeBytes) ??
           const <Song>[];
     }
     return songs
@@ -155,10 +166,17 @@ class LibraryProvider extends ChangeNotifier {
     final m = _directManager;
     if (m == null) return const [];
     final out = <Artist>[
-      ...m.index.identityArtistGroups(query: query),
+      ...m.index.identityArtistGroups(
+        query: query,
+        minDurationSec: m.settings.scanIgnoreMinDurationSec,
+        minSizeBytes: m.settings.scanIgnoreMinSizeBytes,
+      ),
     ];
     // 无映射残留兜底（通常为空）：保证身份聚合开启时歌手页仍完整。
-    out.addAll(m.index.identityFallbackGroups());
+    out.addAll(m.index.identityFallbackGroups(
+      minDurationSec: m.settings.scanIgnoreMinDurationSec,
+      minSizeBytes: m.settings.scanIgnoreMinSizeBytes,
+    ));
     return out;
   }
 

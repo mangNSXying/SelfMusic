@@ -733,6 +733,13 @@ void _opApplyWeightEvent(Database db, Map<String, dynamic> a) {
         f = _clampDb(cur.f - step, minF, maxF);
       }
       break;
+    case 'complete_manual':
+      // 手动点播自然完播：直接提高一档权重 + 清空双 streak（不依赖门槛）。
+      // 「不喜欢」锁定态不动权重（与 complete/skip 一致，锁定最低优先级最高）。
+      ls = 0;
+      ds = 0;
+      if (!cur.frozen) f = _clampDb(cur.f + step, minF, maxF);
+      break;
     case 'liked':
       ls = 0;
       ds = 0;

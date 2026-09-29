@@ -146,4 +146,52 @@ void main() {
       expect(m.likeStreak, 0);
     });
   });
+
+  group('手动完播 complete_manual（改进.txt 功能7）', () {
+    test('直接 +0.1 一档并清零累计双 streak（不依赖 3 次门槛）', () async {
+      final (_, w) = await _openWeightStore();
+      final s = _song('m.mp3');
+      await w.onCompleted(s);
+      await w.onCompleted(s); // like_streak=2（尚不够 3，不调权）
+      await w.onSkipped(s); // 混入一次跳过（dislike_streak=1）
+      await w.onCompletedManual(s); // 手动完播：+0.1 且双 streak 清零
+      final m = w.metaOf(s);
+      expect(m.factor,
+          SongWeightStore.defaultFactor + SongWeightStore.step);
+      expect(m.likeStreak, 0);
+      expect(m.dislikeStreak, 0);
+    });
+
+    test('连续手动完播逐次上调 → +0.2', () async {
+      final (_, w) = await _openWeightStore();
+      final s = _song('m2.mp3');
+      await w.onCompletedManual(s);
+      await w.onCompletedManual(s);
+      expect(
+          w.metaOf(s).factor,
+          closeTo(
+              SongWeightStore.defaultFactor + 2 * SongWeightStore.step, 1e-9));
+    });
+
+    test('上限 1.5 处 clamp', () async {
+      final (_, w) = await _openWeightStore();
+      final s = _song('n.mp3');
+      for (var i = 0; i < 6; i++) {
+        await w.onCompletedManual(s);
+      }
+      expect(w.metaOf(s).factor, SongWeightStore.maxFactor);
+    });
+
+    test('「不喜欢」锁定态：清双 streak 但不动权重', () async {
+      final (_, w) = await _openWeightStore();
+      final s = _song('k.mp3');
+      await w.setDisliked(s, true);
+      expect(w.metaOf(s).frozen, isTrue);
+      await w.onCompletedManual(s);
+      final m = w.metaOf(s);
+      expect(m.factor, SongWeightStore.minFactor);
+      expect(m.likeStreak, 0);
+      expect(m.dislikeStreak, 0);
+    });
+  });
 }

@@ -536,4 +536,77 @@ void main() {
     index.close();
     dir.deleteSync(recursive: true);
   });
+
+  group('忽略音频在已入库歌曲上过滤（改进.txt 功能6）', () {
+    test('时长/大小阈值对已扫描歌曲生效；时长未知一律放过', () async {
+      open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+      final dir = await Directory.systemTemp.createTemp('selfmusic_ignore_');
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      final index = LocalIndex();
+      await index.open();
+      await index.upsertSongs([
+        DirectSongRow(
+            sourceKey: 'local:ignore',
+            ref: 'short.mp3',
+            title: '短歌',
+            duration: 40,
+            format: 'mp3',
+            size: 1024,
+            mtime: 1),
+        DirectSongRow(
+            sourceKey: 'local:ignore',
+            ref: 'long.mp3',
+            title: '长歌',
+            duration: 400,
+            format: 'mp3',
+            size: 2 * 1024 * 1024,
+            mtime: 2),
+        // 快扫/补读前：时长未知（null），按「未知放过」规则不该被过滤。
+        DirectSongRow(
+            sourceKey: 'local:ignore',
+            ref: 'unknown.mp3',
+            title: '未知时长',
+            format: 'mp3',
+            size: 300 * 1024,
+            mtime: 3),
+      ]);
+      await index.flushWrites();
+
+      // 默认不过滤
+      expect(index.countSongs('local:ignore'), 3);
+
+      // 时长 <300 被过滤；未知时长放过
+      expect(index.countSongs('local:ignore', minDurationSec: 300), 2);
+      final byDur = index
+          .searchSongs(sourceKey: 'local:ignore', minDurationSec: 300)
+          .map((s) => s.sourceRef)
+          .toList();
+      expect(byDur, containsAll(['long.mp3', 'unknown.mp3']));
+      expect(byDur, isNot(contains('short.mp3')));
+
+      // 大小 <1MB 被过滤（仅 long 2MB 通过）
+      expect(index.countSongs('local:ignore', minSizeBytes: 1024 * 1024), 1);
+      expect(
+          index
+              .searchSongs(sourceKey: 'local:ignore',
+                  minSizeBytes: 1024 * 1024)
+              .single
+              .sourceRef,
+          'long.mp3');
+
+      // 喜欢列表同样按规则过滤
+      await index.setFavorite('local:ignore', 'short.mp3', true);
+      await index.setFavorite('local:ignore', 'long.mp3', true);
+      await index.flushWrites();
+      final fav = index
+          .favorites('local:ignore', minDurationSec: 300)
+          .map((s) => s.sourceRef)
+          .toList();
+      expect(fav, contains('long.mp3'));
+      expect(fav, isNot(contains('short.mp3')));
+
+      index.close();
+      dir.deleteSync(recursive: true);
+    });
+  });
 }

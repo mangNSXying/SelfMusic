@@ -51,6 +51,14 @@ class SongWeightStore {
     await _emit(s, SyncEventTypes.songSkipped);
   }
 
+  /// 手动点播后自然完播（改进.txt 功能7）：与 [onCompleted] 的 streak 门槛制不同，
+  /// 权重直接提高一档（f=clamp(f+0.1)）并清零累计的完播/切歌次数——用户主动
+  /// 点选并听完一首，本身就是强正面信号。「不喜欢」锁定态不动权重。
+  Future<void> onCompletedManual(Song s) async {
+    await _apply(s, 'complete_manual');
+    await _emit(s, SyncEventTypes.songCompleteManual);
+  }
+
   /// 主动喜欢 / 收藏：factor 直接拉到 1.5，同时解除「不喜欢」锁定。
   Future<void> setLiked(Song s) async {
     await _apply(s, 'liked', songJson: jsonEncode(s.toJson()));

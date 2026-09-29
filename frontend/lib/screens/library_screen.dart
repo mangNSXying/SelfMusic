@@ -240,18 +240,22 @@ class _LikedViewState extends State<_LikedView>
 
   final Selection<String> _sel = Selection<String>();
 
-  /// 收藏列表缓存：仅在收藏版本变化时查库（滑动/重绘不重复全量查询）。
+  /// 收藏列表缓存：仅在（收藏版本, 设置版本）变化时查库（滑动/重绘不重复全量查询）。
+  /// 设置版本同步忽略排除规则的生效：忽略音频改动后喜欢页即时过滤（改进.txt 功能6）。
   int _favVersion = -1;
+  int _favSettingsVer = -1;
   List<Song> _favAll = const [];
 
-  /// 排序/过滤结果按 (收藏版本, 搜索词, 排序偏好) 缓存：build 因 AnyChange 重跑时
+  /// 排序/过滤结果按 (收藏版本, 设置版本, 搜索词, 排序偏好) 缓存：build 因 AnyChange 重跑时
   /// 不重排（权重排序每首一次 SQL，几千首重排一次 = 上万条同步查询）。
-  (int, String, CollectionSort)? _sortedKey;
+  (int, int, String, CollectionSort)? _sortedKey;
   _SortedResult _sorted = const _SortedResult([], []);
 
   List<Song> _favoritesOf(DirectSourceManager direct) {
-    if (direct.favoriteVersion != _favVersion) {
+    if (direct.favoriteVersion != _favVersion ||
+        direct.settingsVersion != _favSettingsVer) {
       _favVersion = direct.favoriteVersion;
+      _favSettingsVer = direct.settingsVersion;
       _favAll = direct.favoriteSongs();
     }
     return _favAll;
@@ -260,7 +264,7 @@ class _LikedViewState extends State<_LikedView>
   /// 过滤 + 排序，命中缓存直接复用（喜欢页数据不变时 build 重跑 0 次排序/查询）。
   _SortedResult _sortSongs(DirectSourceManager direct, String search) {
     final pref = direct.settings.sortFavorites;
-    final key = (_favVersion, search, pref);
+    final key = (_favVersion, _favSettingsVer, search, pref);
     if (_sortedKey == key) return _sorted;
     final all = _favoritesOf(direct);
     final songs = sortSongs(filterSongs(all, search), pref,
