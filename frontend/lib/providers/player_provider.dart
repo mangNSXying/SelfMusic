@@ -961,6 +961,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _syncSystemMedia();
   }
 
+  /// 通知栏「播放模式」按钮：与播放页模式按钮一致的循环切换。
+  void cycleMode() {
+    final m = _mode;
+    final next = PlayMode.values[(m.index + 1) % PlayMode.values.length];
+    setMode(next);
+  }
+
   // ---------- 队列装载 ----------
 
   /// 载入一个播放队列并从 [index] 开始播放。
