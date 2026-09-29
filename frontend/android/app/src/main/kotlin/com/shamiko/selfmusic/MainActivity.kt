@@ -18,6 +18,7 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : AudioServiceActivity() {
 
     private val channelName = "com.shamiko.selfmusic/bluetooth"
+    private val appChannelName = "com.shamiko.selfmusic/app"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -26,9 +27,21 @@ class MainActivity : AudioServiceActivity() {
                 when (call.method) {
                     "hasConnectPermission" -> result.success(hasConnectPermission())
                     "listBondedDevices" -> result.success(listBondedDevices())
-                    "connectedDevices" -> result.success(connectedDeviceAddresses())
+                    "connectedDevices" -> result.success(connectedDevicesAddresses())
                     else -> result.notImplemented()
                 }
+            }
+        // 返回手势转后台：moveTaskToBackground 与 home 键等效，Activity 不
+        // 销毁、audio_service 前台服务不受影响（侧滑返回曾直接退出应用，
+        // 无法后台播放，2026-09-29 用户反馈）。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, appChannelName)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "moveToBackground" -> result.success(moveTaskToBackground(true))
+                    else -> result.notImplemented()
+                }
+            }
+    }
             }
     }
 

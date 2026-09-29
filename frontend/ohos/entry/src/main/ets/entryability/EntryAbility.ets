@@ -8,12 +8,15 @@ import {
   MethodChannel,
   MethodResult
 } from '@ohos/flutter_ohos';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { GeneratedPluginRegistrant } from '../plugins/GeneratedPluginRegistrant';
 import AvSessionBridge from '../media/AvSessionBridge';
 
 const TAG = 'SelfMusicBoot';
 /** 与 Dart 侧（ohos_bootstrap.dart）约定的启动上报通道。 */
 const BOOT_CHANNEL = 'selfmusic/boot';
+/** 与 Dart 侧（app_background.dart）约定的返回手势转后台通道。 */
+const APP_CHANNEL = 'selfmusic/app';
 /** 首次敲击时限：正常冷启动 main() 约 2-3 秒走完；敲击本身无害，宜早不宜迟。 */
 const BOOT_TIMEOUT_MS = 1500;
 /** 敲击间隔：1 秒——停滞时每秒冲开一次投递管线，恢复延迟约等于一个间隔。 */
@@ -34,6 +37,24 @@ class BootCallHandler implements MethodCallHandler {
     if (call.method === 'ready') {
       this.onReady();
       result.success(null);
+    } else {
+      result.notImplemented();
+    }
+  }
+}
+
+/** Dart → ArkTS：返回手势转后台（selfmusic/app 通道）。 */
+class AppCallHandler implements MethodCallHandler {
+  private readonly moveToBackground: () => void;
+
+  constructor(moveToBackground: () => void) {
+    this.moveToBackground = moveToBackground;
+  }
+
+  onMethodCall(call: MethodCall, result: MethodResult): void {
+    if (call.method === 'moveToBackground') {
+      this.moveToBackground();
+      result.success(true);
     } else {
       result.notImplemented();
     }
@@ -87,6 +108,20 @@ export default class EntryAbility extends FlutterAbility {
     this.setupBootWatchdog(flutterEngine)
     this.avSessionBridge = new AvSessionBridge(this.context);
     this.avSessionBridge.setup(flutterEngine)
+    // 返回手势转后台：moveAbilityToBackground 与 home 键等效，UIAbility 与
+    // 进程存活、播放链路不中断（侧滑返回曾落进 Dart 桌面退出分支 exit(0)
+    // 直接杀进程，无法后台播放，2026-09-29 用户反馈；安卓同修）。
+    const appChannel = new MethodChannel(
+      flutterEngine.getDartExecutor().getBinaryMessenger(), APP_CHANNEL);
+    appChannel.setMethodCallHandler(new AppCallHandler((): void => {
+      this.context.moveAbilityToBackground()
+        .then((): void => {
+          Log.i(TAG, '应用已移至后台（返回手势）');
+        })
+        .catch((err: BusinessError): void => {
+          Log.w(TAG, `移至后台失败：${err.code} ${err.message}`);
+        });
+    }));
   }
 
   onDestroy(): void {

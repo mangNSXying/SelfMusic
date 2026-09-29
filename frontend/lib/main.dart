@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:just_audio_media_kit/just_audio_media_kit.dart';
 import 'package:provider/provider.dart';
+import 'platform/app_background.dart';
 import 'platform/harmonyos/ohos_bootstrap.dart';
 import 'platform/harmonyos/ohos_media_session.dart';
 import 'services/api_client.dart';
@@ -304,14 +305,27 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
   void _onPopInvoked(bool didPop, Object? result) {
     if (didPop) return;
     if (context.read<NavigationProvider>().backToPrevious()) return;
-    if (Platform.isAndroid) {
-      // 只结束 Activity：audio_service 前台服务继续，后台播放不中断。
-      SystemNavigator.pop();
-    } else {
-      // 桌面端退出前先释放播放器（mpv 子进程），再终止进程。
+    if (Platform.isAndroid || isOhos) {
+      // 移动端返回手势 = 移到后台（与 home 键等效）：音乐后台续播，不销毁
+      // 应用。曾直接退出（Android SystemNavigator.pop 销毁 Activity；ohos
+      // 误入桌面退出分支 exit(0) 杀进程），侧滑返回无法后台播放
+      // （2026-09-29 用户反馈，安卓平台同样存在，一并修复）。
       final player = context.read<PlayerProvider>();
-      player.shutdown().whenComplete(() => exit(0));
+      unawaited(moveAppToBackground().then((ok) {
+        if (ok) return;
+        // 兜底（通道异常的极端环境）：保持旧行为。
+        if (Platform.isAndroid) {
+          // 只结束 Activity：audio_service 前台服务继续，后台播放不中断。
+          SystemNavigator.pop();
+        } else {
+          player.shutdown().whenComplete(() => exit(0));
+        }
+      }));
+      return;
     }
+    // 桌面端退出前先释放播放器（mpv 子进程），再终止进程。
+    final player = context.read<PlayerProvider>();
+    player.shutdown().whenComplete(() => exit(0));
   }
 
   @override
