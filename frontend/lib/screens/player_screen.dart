@@ -12,6 +12,7 @@ import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
+import 'queue_page.dart';
 import '../services/bluetooth_service.dart';
 import '../utils/duration_format.dart';
 import '../utils/song_title_format.dart';
@@ -63,6 +64,60 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool get _onPlayerPage =>
       _landscapeMode ||
       (_pageCtrl.hasClients && (_pageCtrl.page ?? 0).round() == 0);
+
+  /// 播放页右滑 → 当前歌单全屏页（改进.txt UI6）的原始指针追踪。
+  /// 用 Listener 被动观察（不进手势竞技场），避免抢走 PageView 的左右翻页。
+  int? _swipePointer;
+  Offset? _swipeStart;
+  bool _swipeStartOnPlayer = false;
+  bool _swipeConsumed = false;
+  static const double _queueSwipeThreshold = 80;
+
+  void _onPlayerPointerDown(PointerDownEvent e) {
+    _rearmAutoHide();
+    _swipePointer = e.pointer;
+    _swipeStart = e.position;
+    _swipeStartOnPlayer = _onPlayerPage;
+    _swipeConsumed = false;
+  }
+
+  void _onPlayerPointerMove(PointerMoveEvent e) {
+    if (e.pointer != _swipePointer ||
+        _swipeConsumed ||
+        !_swipeStartOnPlayer ||
+        !_onPlayerPage) {
+      return;
+    }
+    final start = _swipeStart;
+    if (start == null) return;
+    final dx = e.position.dx - start.dx;
+    if (dx < _queueSwipeThreshold) return;
+    final dy = e.position.dy - start.dy;
+    if (dx < dy.abs() * 1.2) return;
+    if (!context.read<NavigationProvider>().playerView) return;
+    _swipeConsumed = true;
+    _openQueuePage();
+  }
+
+  void _onPlayerPointerEnd(PointerUpEvent e) {
+    if (e.pointer == _swipePointer) {
+      _swipePointer = null;
+      _swipeStart = null;
+    }
+  }
+
+  void _onPlayerPointerCancel(PointerCancelEvent e) {
+    if (e.pointer == _swipePointer) {
+      _swipePointer = null;
+      _swipeStart = null;
+    }
+  }
+
+  void _openQueuePage() {
+    if (!mounted) return;
+    Navigator.of(context)
+        .push(MaterialPageRoute<void>(builder: (_) => const QueuePage()));
+  }
 
   /// 屏幕常亮目标值与已应用值；合并调度标记。
   bool _wantWake = false;
@@ -263,11 +318,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
             Platform.isLinux || Platform.isWindows || Platform.isMacOS);
 
     // 播放页控件静置隐藏（改进.txt UI3）：任何触摸都视为交互并重新计时。
+    // 同时被动追踪右滑进入当前歌单页（UI6，不抢 PageView 手势）。
     _landscapeMode = landscape;
     return Scaffold(
       body: Listener(
         behavior: HitTestBehavior.translucent,
-        onPointerDown: (_) => _rearmAutoHide(),
+        onPointerDown: _onPlayerPointerDown,
+        onPointerMove: _onPlayerPointerMove,
+        onPointerUp: _onPlayerPointerEnd,
+        onPointerCancel: _onPlayerPointerCancel,
         child: SafeArea(
           child: _PlayerControlsHidden(
             hidden: _controlsHidden,
