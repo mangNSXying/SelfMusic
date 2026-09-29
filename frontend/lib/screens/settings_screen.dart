@@ -542,11 +542,14 @@ class _AppearanceSettings extends StatefulWidget {
 
 class _AppearanceSettingsState extends State<_AppearanceSettings> {
   late PlayerTransition _transition;
+  late AppSettings _settings;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _transition = context.read<DirectSourceManager>().settings.playerTransition;
+    final s = context.read<DirectSourceManager>().settings;
+    _transition = s.playerTransition;
+    _settings = s;
   }
 
   @override
@@ -659,6 +662,39 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _pickTransition(context),
           ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('播放页滑动手势'),
+            subtitle: const Text('横滑切换播放页与歌词页、下滑返回列表（关闭后仅用按钮操作）'),
+            value: _settings.playerGestureSwipe,
+            onChanged: (v) => setState(() => _settings.playerGestureSwipe = v),
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('播放页显示权重信息'),
+            subtitle: const Text('播放页展示当前歌曲喜欢 / 权重状态'),
+            value: _settings.playerShowWeight,
+            onChanged: (v) => setState(() => _settings.playerShowWeight = v),
+          ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.title),
+            title: const Text('标题显示格式'),
+            subtitle: Text('当前：${_settings.songTitleFormat.label}'
+                '（补读元数据后按此格式展示，不修改存储字段）'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _pickTitleFormat(context),
+          ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.timer_outlined),
+            title: const Text('播放页控件自动隐藏'),
+            subtitle: Text(_settings.playerAutoHideIdleSec > 0
+                ? '播放页无操作 ${_settings.playerAutoHideIdleSec} 秒后自动隐藏左上返回与右上更多按钮，触摸即恢复'
+                : '关闭（控制按钮常驻显示）'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _pickPlayerAutoHide(context),
+          ),
           const Divider(),
           const SizedBox(height: 12),
 
@@ -725,6 +761,65 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
     // 通知全局监听者（根路由切换器）即时生效。
     context.read<DirectSourceManager>().refresh();
     setState(() => _transition = picked);
+  }
+
+  /// 标题显示格式选择（从 设置>歌曲 迁入 设置>界面，改进.txt UI4）。
+  Future<void> _pickTitleFormat(BuildContext context) async {
+    final chosen = await showDialog<SongTitleFormat>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: const Text('标题显示格式'),
+        children: [
+          for (final f in SongTitleFormat.values)
+            SimpleDialogOption(
+              onPressed: () => Navigator.of(c).pop(f),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  children: [
+                    Expanded(child: Text(f.label)),
+                    if (f == _settings.songTitleFormat)
+                      Icon(Icons.check, color: Theme.of(c).colorScheme.primary),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (chosen == null || !context.mounted) return;
+    setState(() => _settings.songTitleFormat = chosen);
+    // 设置写入后通知全局重建（AppSettings 非 ChangeNotifier）。
+    context.read<DirectSourceManager>().refresh();
+  }
+
+  /// 播放页控件静置自动隐藏秒数（0=不隐藏）。
+  Future<void> _pickPlayerAutoHide(BuildContext context) async {
+    final chosen = await showDialog<int>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: const Text('播放页控件自动隐藏'),
+        children: [
+          for (final sec in AppSettings.playerAutoHideIdleOptions)
+            SimpleDialogOption(
+              onPressed: () => Navigator.of(c).pop(sec),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  children: [
+                    Expanded(child: Text(sec == 0 ? '不自动隐藏' : '$sec 秒')),
+                    if (sec == _settings.playerAutoHideIdleSec)
+                      Icon(Icons.check, color: Theme.of(c).colorScheme.primary),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (chosen == null || !context.mounted) return;
+    setState(() => _settings.playerAutoHideIdleSec = chosen);
+    context.read<DirectSourceManager>().refresh();
   }
 
   String _rgb(Color c) =>
@@ -909,13 +1004,6 @@ class _SongsSettingsState extends State<_SongsSettings> {
           child: Text('歌曲显示与扫描',
               style: TextStyle(
                   color: cs.primary, fontWeight: FontWeight.w600)),
-        ),
-        ListTile(
-          title: const Text('标题显示格式'),
-          subtitle: Text('当前：${_settings.songTitleFormat.label}'
-              '（补读元数据后按此格式展示，不修改存储字段）'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => _pickTitleFormat(context),
         ),
         ListTile(
           title: const Text('忽略音频（时长过滤）'),
@@ -1245,35 +1333,6 @@ class _SongsSettingsState extends State<_SongsSettings> {
     }
   }
 
-  Future<void> _pickTitleFormat(BuildContext context) async {
-    final chosen = await showDialog<SongTitleFormat>(
-      context: context,
-      builder: (c) => SimpleDialog(
-        title: const Text('标题显示格式'),
-        children: [
-          for (final f in SongTitleFormat.values)
-            SimpleDialogOption(
-              onPressed: () => Navigator.of(c).pop(f),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Row(
-                  children: [
-                    Expanded(child: Text(f.label)),
-                    if (f == _settings.songTitleFormat)
-                      Icon(Icons.check, color: Theme.of(c).colorScheme.primary),
-                  ],
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-    if (chosen == null || !context.mounted) return;
-    setState(() => _settings.songTitleFormat = chosen);
-    // 设置写入后通知全局重建（AppSettings 非 ChangeNotifier）。
-    context.read<DirectSourceManager>().refresh();
-  }
-
   Future<void> _pickScanMode(BuildContext context) async {
     final chosen = await showDialog<String>(
       context: context,
@@ -1429,22 +1488,10 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
           onChanged: (v) => setState(() => _settings.preloadNext = v),
         ),
         SwitchListTile(
-          title: const Text('播放页滑动手势'),
-          subtitle: const Text('横滑切换播放页与歌词页、下滑返回列表（关闭后仅用按钮操作）'),
-          value: _settings.playerGestureSwipe,
-          onChanged: (v) => setState(() => _settings.playerGestureSwipe = v),
-        ),
-        SwitchListTile(
           title: const Text('睡眠定时默认播完最后曲目'),
           subtitle: const Text('到点不中断当前歌曲，放完这曲再暂停（弹窗内可单独调整）'),
           value: _settings.sleepPlayThroughDefault,
           onChanged: (v) => setState(() => _settings.sleepPlayThroughDefault = v),
-        ),
-        SwitchListTile(
-          title: const Text('播放页显示权重信息'),
-          subtitle: const Text('播放页展示当前歌曲喜欢 / 权重状态'),
-          value: _settings.playerShowWeight,
-          onChanged: (v) => setState(() => _settings.playerShowWeight = v),
         ),
         ListTile(
           leading: const Icon(Icons.lyrics_outlined),

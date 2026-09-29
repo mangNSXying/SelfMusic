@@ -51,6 +51,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
   double _dragStartY = 0;
   double _dragStartP = 0;
 
+  /// 播放页控件静置自动隐藏（改进.txt UI3）：无操作 N 秒后隐藏
+  /// 左上返回箭头与封面右上「更多」。触摸即恢复并重新计时。
+  bool _landscapeMode = false;
+  bool _controlsHidden = false;
+  bool _prevPlayerView = true;
+  int _autoHideSec = 0;
+  Timer? _autoHideTimer;
+
+  /// 是否停在播放页（第 0 页/横屏无分页）——只在播放页上计时隐藏。
+  bool get _onPlayerPage =>
+      _landscapeMode ||
+      (_pageCtrl.hasClients && (_pageCtrl.page ?? 0).round() == 0);
+
   /// 屏幕常亮目标值与已应用值；合并调度标记。
   bool _wantWake = false;
   bool _wakeApplied = false;
@@ -78,6 +91,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void dispose() {
     _btPoll?.cancel();
+    _autoHideTimer?.cancel();
     // 离开播放页恢复熄屏策略。
     // ohos 无 wakelock_plus 平台实现，调用会 MissingPluginException（PoC 放弃常亮）。
     if (Platform.operatingSystem != 'ohos') {
@@ -85,6 +99,48 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
     _pageCtrl.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final visibility = context.watch<NavigationProvider>().playerView;
+    final sec =
+        context.read<DirectSourceManager>().settings.playerAutoHideIdleSec;
+    if (sec != _autoHideSec) {
+      _autoHideSec = sec;
+      if (visibility) _rearmAutoHide();
+    }
+    if (!visibility) {
+      // 播放页不可见（悬浮层收起/换列表页）：停表并复位显示。
+      _autoHideTimer?.cancel();
+      _autoHideTimer = null;
+      _controlsHidden = false;
+    } else if (!_prevPlayerView) {
+      // 从收起切回播放页：复位显示并重新计时。
+      _rearmAutoHide();
+    }
+    _prevPlayerView = visibility;
+  }
+
+  /// 播放页控件静置隐藏计时（改进.txt UI3）：任何触摸视为交互并重新计时。
+  void _rearmAutoHide() {
+    _autoHideTimer?.cancel();
+    _autoHideTimer = null;
+    if (!mounted) return;
+    final visible = context.read<NavigationProvider>().playerView;
+    if (!visible || !_onPlayerPage || _autoHideSec <= 0) {
+      if (_controlsHidden) setState(() => _controlsHidden = false);
+      return;
+    }
+    if (_controlsHidden) setState(() => _controlsHidden = false);
+    _autoHideTimer = Timer(Duration(seconds: _autoHideSec), () {
+      if (!mounted) return;
+      if (!_onPlayerPage || !context.read<NavigationProvider>().playerView) {
+        return;
+      }
+      if (!_controlsHidden) setState(() => _controlsHidden = true);
+    });
   }
 
   /// 设置变化时合并到下一帧；应用屏幕常亮。
@@ -206,53 +262,64 @@ class _PlayerScreenState extends State<PlayerScreen> {
         isDesktopPlatform:
             Platform.isLinux || Platform.isWindows || Platform.isMacOS);
 
+    // 播放页控件静置隐藏（改进.txt UI3）：任何触摸都视为交互并重新计时。
+    _landscapeMode = landscape;
     return Scaffold(
-      body: SafeArea(
-        child: landscape
-            // 横屏无歌词分页：左上角箭头悬浮于两套横屏布局之上。
-            ? Stack(
-                children: [
-                  desktopLandscape
-                      ? _DesktopLandscapePlayer(
-                          player: player,
-                          direct: context.watch<DirectSourceManager>(),
-                          cs: Theme.of(context).colorScheme)
-                      : _LandscapePlayer(
-                          player: player,
-                          direct: context.watch<DirectSourceManager>(),
-                          cs: Theme.of(context).colorScheme),
-                  const Positioned(
-                      top: 6, left: 6, child: _BackToContentButton()),
-                ],
-              )
-            : PageView(
-                // 横向由内层 PageView 原生跟手（右滑回播放页）；
-                // 竖向仅播放页（第 0 页）跟手下拉，歌词页纵向留给滚动。
-                // 关闭手势后 PageView 禁滑、下拉停用。
-                controller: _pageCtrl,
-          physics: gestureOn
-              ? const PageScrollPhysics()
-              : const NeverScrollableScrollPhysics(),
-          children: [
-            // 箭头悬浮在播放页内容之上（不占布局空间，不压缩封面）；
-            // 歌词页（第 1 页）按先前要求不再放箭头。
-            Stack(
-              children: [
-                GestureDetector(
-                  behavior: HitTestBehavior.translucent,
-                  onVerticalDragStart:
-                      gestureOn ? _onPlayerDragStart : null,
-                  onVerticalDragUpdate:
-                      gestureOn ? _onPlayerDragUpdate : null,
-                  onVerticalDragEnd: gestureOn ? _onPlayerDragEnd : null,
-                  child: _buildPlayerBody(context),
-                ),
-                const Positioned(
-                    top: 6, left: 6, child: _BackToContentButton()),
-              ],
-            ),
-            const _LyricsPage(),
-          ],
+      body: Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: (_) => _rearmAutoHide(),
+        child: SafeArea(
+          child: _PlayerControlsHidden(
+            hidden: _controlsHidden,
+            child: landscape
+                // 横屏无歌词分页：左上角箭头悬浮于两套横屏布局之上。
+                ? Stack(
+                    children: [
+                      desktopLandscape
+                          ? _DesktopLandscapePlayer(
+                              player: player,
+                              direct: context.watch<DirectSourceManager>(),
+                              cs: Theme.of(context).colorScheme)
+                          : _LandscapePlayer(
+                              player: player,
+                              direct: context.watch<DirectSourceManager>(),
+                              cs: Theme.of(context).colorScheme),
+                      const Positioned(
+                          top: 6, left: 6, child: _BackToContentButton()),
+                    ],
+                  )
+                : PageView(
+                    // 横向由内层 PageView 原生跟手（右滑回播放页）；
+                    // 竖向仅播放页（第 0 页）跟手下拉，歌词页纵向留给滚动。
+                    // 关闭手势后 PageView 禁滑、下拉停用。
+                    controller: _pageCtrl,
+                    physics: gestureOn
+                        ? const PageScrollPhysics()
+                        : const NeverScrollableScrollPhysics(),
+                    children: [
+                      // 箭头悬浮在播放页内容之上（不占布局空间，不压缩封面）；
+                      // 歌词页（第 1 页）按先前要求不再放箭头。
+                      Stack(
+                        children: [
+                          GestureDetector(
+                            behavior: HitTestBehavior.translucent,
+                            onVerticalDragStart:
+                                gestureOn ? _onPlayerDragStart : null,
+                            onVerticalDragUpdate:
+                                gestureOn ? _onPlayerDragUpdate : null,
+                            onVerticalDragEnd: gestureOn
+                                ? _onPlayerDragEnd
+                                : null,
+                            child: _buildPlayerBody(context),
+                          ),
+                          const Positioned(
+                              top: 6, left: 6, child: _BackToContentButton()),
+                        ],
+                      ),
+                      const _LyricsPage(),
+                    ],
+                  ),
+          ),
         ),
       ),
     );
@@ -297,20 +364,45 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 }
 
+/// 播放页控件静置隐藏标记（改进.txt UI3）：下行控件据此淡出并停止响应。
+/// 用 InheritedWidget 避免把状态穿过 _NowPlaying/横屏两套玩家组件层层下传。
+class _PlayerControlsHidden extends InheritedWidget {
+  final bool hidden;
+  const _PlayerControlsHidden({required this.hidden, required super.child});
+
+  static bool isHidden(BuildContext context) =>
+      context
+          .dependOnInheritedWidgetOfExactType<_PlayerControlsHidden>()
+          ?.hidden ??
+      false;
+
+  @override
+  bool updateShouldNotify(_PlayerControlsHidden old) => hidden != old.hidden;
+}
+
 /// 播放页左上角「回到内容页」向下箭头：悬浮覆盖（Positioned 入 Stack），
 /// 不参与布局，因此不压缩封面及其他内容的显示空间；点击与下滑返回同路径
 /// （置意图位 → Root 驱动悬浮层下降动画）。恒素显，无圆形底/阴影。
+/// 静置隐藏时淡出并忽略命中。
 class _BackToContentButton extends StatelessWidget {
   const _BackToContentButton();
 
   @override
   Widget build(BuildContext context) {
-    return IconButton(
-      tooltip: '回到内容页',
-      iconSize: 26,
-      visualDensity: VisualDensity.compact,
-      icon: const Icon(Icons.keyboard_arrow_down_rounded),
-      onPressed: () => context.read<NavigationProvider>().closePlayer(),
+    final hidden = _PlayerControlsHidden.isHidden(context);
+    return IgnorePointer(
+      ignoring: hidden,
+      child: AnimatedOpacity(
+        opacity: hidden ? 0 : 1,
+        duration: const Duration(milliseconds: 200),
+        child: IconButton(
+          tooltip: '回到内容页',
+          iconSize: 26,
+          visualDensity: VisualDensity.compact,
+          icon: const Icon(Icons.keyboard_arrow_down_rounded),
+          onPressed: () => context.read<NavigationProvider>().closePlayer(),
+        ),
+      ),
     );
   }
 }
@@ -975,25 +1067,33 @@ class _Cover extends StatelessWidget {
           Positioned(
             top: size * 0.04,
             right: size * 0.04,
-            child: Material(
-              color: Colors.white.withValues(alpha: 0.6),
-              shape: const CircleBorder(),
-              clipBehavior: Clip.antiAlias,
-              child: PopupMenuButton<String>(
-                tooltip: '更多',
-                padding: EdgeInsets.zero,
-                onSelected: (v) => _onSelected(context, v),
-                itemBuilder: (c) => const [
-                  PopupMenuItem(value: 'info', child: Text('歌曲信息')),
-                  PopupMenuItem(value: 'edit', child: Text('修改歌曲元数据')),
-                ],
-                child: SizedBox(
-                  width: moreSize,
-                  height: moreSize,
-                  child: Icon(
-                    Icons.more_horiz,
-                    color: Colors.black87,
-                    size: moreSize * 0.5,
+            // 静置隐藏时淡出并停止命中（改进.txt UI3）。
+            child: IgnorePointer(
+              ignoring: _PlayerControlsHidden.isHidden(context),
+              child: AnimatedOpacity(
+                opacity: _PlayerControlsHidden.isHidden(context) ? 0 : 1,
+                duration: const Duration(milliseconds: 200),
+                child: Material(
+                  color: Colors.white.withValues(alpha: 0.6),
+                  shape: const CircleBorder(),
+                  clipBehavior: Clip.antiAlias,
+                  child: PopupMenuButton<String>(
+                    tooltip: '更多',
+                    padding: EdgeInsets.zero,
+                    onSelected: (v) => _onSelected(context, v),
+                    itemBuilder: (c) => const [
+                      PopupMenuItem(value: 'info', child: Text('歌曲信息')),
+                      PopupMenuItem(value: 'edit', child: Text('修改歌曲元数据')),
+                    ],
+                    child: SizedBox(
+                      width: moreSize,
+                      height: moreSize,
+                      child: Icon(
+                        Icons.more_horiz,
+                        color: Colors.black87,
+                        size: moreSize * 0.5,
+                      ),
+                    ),
                   ),
                 ),
               ),

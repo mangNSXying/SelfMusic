@@ -90,6 +90,9 @@ class AppSettings {
   static const String kSleepDefaultDurationMinutes =
       'sleep_default_duration_minutes';
   static const String kSleepDefaultCount = 'sleep_default_count';
+
+  /// 播放页控件静置自动隐藏（改进.txt：无操作 N 秒后隐藏返回/更多按钮）。
+  static const String kPlayerAutoHideIdleSec = 'player_auto_hide_idle_sec';
   static const String kPreloadNext = 'preload_next';
   static const String kScanIgnoreMinDurationSec = 'scan_ignore_min_duration_sec';
   static const String kScanIgnoreMinSizeBytes = 'scan_ignore_min_size_bytes';
@@ -162,6 +165,9 @@ class AppSettings {
 
   /// 歌词追焦等待可选秒数。
   static const List<int> lyricFocusIdleOptions = [2, 3, 5, 10, 15, 30];
+
+  /// 播放页控件静置自动隐藏可选秒数（0=不隐藏）。
+  static const List<int> playerAutoHideIdleOptions = [0, 3, 5, 10, 15, 30];
 
   /// 均衡器默认频段增益（5 段，dB）。
   static const List<double> defaultEqBands = [0, 0, 0, 0, 0];
@@ -285,6 +291,13 @@ class AppSettings {
       (index.settingsGet(kPlayerKeepScreenOn) ?? '0') == '1';
   set playerKeepScreenOn(bool v) =>
       index.settingsSet(kPlayerKeepScreenOn, v ? '1' : '0');
+
+  /// 播放页控件静置自动隐藏（默认 5 秒；0=不隐藏）：无操作 N 秒后隐藏
+  /// 左上返回箭头与右上「更多」按钮，触摸即恢复。
+  int get playerAutoHideIdleSec =>
+      int.tryParse(index.settingsGet(kPlayerAutoHideIdleSec) ?? '') ?? 5;
+  set playerAutoHideIdleSec(int v) =>
+      index.settingsSet(kPlayerAutoHideIdleSec, v.toString());
 
   /// 常亮限定的蓝牙设备 JSON（空=不限定）。
   String get keepScreenOnDevice =>
@@ -523,6 +536,7 @@ class AppSettings {
     kSleepPlayThroughDefault,
     kSleepDefaultDurationMinutes,
     kSleepDefaultCount,
+    kPlayerAutoHideIdleSec,
     kPreloadNext,
     kLyricFocusIdleSec,
     kPlayerKeepScreenOn,
