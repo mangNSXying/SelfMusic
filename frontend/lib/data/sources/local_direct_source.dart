@@ -208,6 +208,10 @@ void _localWalkEntry(Map<String, Object?> msg) async {
       isCancelled: () => cancelled,
     );
     send.send(out);
+  } catch (e) {
+    // 隔离内异常以 {'__error__'} 回传主 isolate 转抛：worker 必须自行 catch，
+    // 否则带 uncaught error 死掉后 runScan 干等 10 分钟超时。
+    send.send({'__error__': e.toString()});
   } finally {
     cancelReq.close();
   }

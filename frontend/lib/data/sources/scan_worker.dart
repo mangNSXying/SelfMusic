@@ -44,7 +44,10 @@ class ScanToken {
 /// 结果）、`progress`（SendPort，进度）。worker 契约：
 /// 1. 先向 `send` 回发握手 `{'__cancel__': SendPort}`（worker 的取消监听口）；
 /// 2. 探测期间可向 `progress` 发 [ScanProgress]；
-/// 3. 结束向 `send` 发最终结果 `R`。
+/// 3. 结束向 `send` 发最终结果 `R`；
+/// 4. 失败向 `send` 发 `{'__error__': <异常 toString>}`，主 isolate 侧转抛
+///    [ScanWorkerException]——worker 必须自行 catch，否则带 uncaught error
+///    死掉后主 isolate 只能干等 [timeout] 超时（曾实测挂 10 分钟）。
 ///
 /// 主 isolate 在握手后把 [ScanToken] 的取消事件转发到 worker；扫描超时抛
 /// [TimeoutException]。worker 结束或超时后必定 kill，不留孤儿 isolate。
@@ -76,6 +79,12 @@ Future<R> runScan<R>({
       }
       return;
     }
+    // worker 侧异常以 {'__error__'} 回传：转抛 ScanWorkerException，避免
+    // worker 带 uncaught error 死掉后这里干等 10 分钟超时。
+    if (msg is Map && msg['__error__'] is String) {
+      if (!done.isCompleted) done.complete((false, msg['__error__']));
+      return;
+    }
     if (!done.isCompleted) done.complete((true, msg));
   });
 
@@ -97,6 +106,7 @@ Future<R> runScan<R>({
 
   try {
     final res = await done.future.timeout(timeout);
+    if (!res.$1) throw ScanWorkerException(res.$2 as String);
     return res.$2 as R;
   } finally {
     await tokenSub?.cancel();
@@ -106,4 +116,14 @@ Future<R> runScan<R>({
     token?.close();
     isolate.kill(priority: Isolate.immediate);
   }
+}
+
+/// worker isolate 内抛出的异常以字符串回传后在主 isolate 侧重建的载体：
+/// toString 只含原始消息（UI 直接展示，不带 StateError/Exception 前缀）。
+class ScanWorkerException implements Exception {
+  final String message;
+  const ScanWorkerException(this.message);
+
+  @override
+  String toString() => message;
 }

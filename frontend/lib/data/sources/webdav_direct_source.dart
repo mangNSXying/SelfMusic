@@ -70,6 +70,7 @@ class WebdavDirectSource implements MusicSource {
       ScanToken? token,
       void Function(ScanProgress)? onProgress}) async {
     // 只传可跨 isolate 发送的原始值（不含 this）。
+    final known = index.scanFingerprint(key);
     final out = await runScan<List<_WebdavWalkOut>>(
       entry: _webdavWalkEntry,
       params: <String, Object?>{
@@ -84,11 +85,22 @@ class WebdavDirectSource implements MusicSource {
         'fullMeta': options.fullMeta,
         'fast': options.fast,
         'collectCover': options.collectCover,
-        'known': index.scanFingerprint(key),
+        'known': known,
       },
       token: token,
       onProgress: onProgress,
     );
+
+    // 数据安全闸：扫描正常完成但结果为空、而本地库该源已有曲目时，大概率是
+    // 指到了空目录/配错路径——中止并报错，绝不静默清库（markMissingExcept +
+    // clearMissing 会把整库当「全部消失」删除）。取消的半途扫描不在此列。
+    // 如确认服务器目录确实已清空，删除并重建该源即可。
+    if (out.isEmpty &&
+        known.isNotEmpty &&
+        !(token?.cancelled ?? false)) {
+      throw ScanWorkerException('扫描结果为 0，但本地库已有 ${known.length} 首；'
+          '为防止误清库已中止。如确认服务器目录已清空，请删除并重建该源');
+    }
 
     final alive = <String>[];
     final toWrite = <DirectSongRow>[];
@@ -168,8 +180,10 @@ class WebdavDirectSource implements MusicSource {
       req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-0');
       final resp = await req.close();
       if (resp.statusCode != 200 && resp.statusCode != 206) {
-        throw HttpException('WebDAV 预热失败: HTTP ${resp.statusCode}',
-            uri: Uri.parse(url));
+        if (resp.statusCode == 401 || resp.statusCode == 403) {
+          throw SourceAuthException(WebdavStatusException(resp.statusCode, url).toString());
+        }
+        throw WebdavStatusException(resp.statusCode, url);
       }
       // 只取到第一块数据就收手：Range 被忽略时这里是 200 + 整首，drain 会把整首
       // 读下来（预热反而成了隐藏的整曲下载）。读完即取消订阅，最后强制关 client。
@@ -197,8 +211,10 @@ class WebdavDirectSource implements MusicSource {
     if (resp.statusCode != 200 && resp.statusCode != 206) {
       await resp.drain<void>();
       client.close(force: true);
-      throw HttpException('WebDAV 播放失败: HTTP ${resp.statusCode}',
-          uri: Uri.parse(url));
+      if (resp.statusCode == 401 || resp.statusCode == 403) {
+        throw SourceAuthException(WebdavStatusException(resp.statusCode, url).toString());
+      }
+      throw WebdavStatusException(resp.statusCode, url);
     }
     final contentType =
         resp.headers.contentType?.mimeType ?? 'application/octet-stream';
@@ -265,7 +281,10 @@ class WebdavDirectSource implements MusicSource {
       final resp = await req.close();
       if (resp.statusCode != 200 && resp.statusCode != 206) {
         await resp.drain<void>();
-        throw HttpException('WebDAV 缓存失败: HTTP ${resp.statusCode}');
+        if (resp.statusCode == 401 || resp.statusCode == 403) {
+          throw SourceAuthException(WebdavStatusException(resp.statusCode, _playUrl(song)!).toString());
+        }
+        throw WebdavStatusException(resp.statusCode, _playUrl(song)!);
       }
       // 大缓冲顺序写：网络块常为 8~64KB，逐块 writeFromSync 会把「启动缓存」
       // 变成上万次小写入（CSV：cache\.tmp-* 70.7MB/12952 次写）。攒够 1MB 再落。
@@ -331,6 +350,10 @@ void _webdavWalkEntry(Map<String, Object?> msg) async {
       isCancelled: () => cancelled,
     );
     send.send(out);
+  } catch (e) {
+    // 隔离内异常以 {'__error__'} 回传主 isolate 转抛：曾无 catch，worker 带
+    // uncaught error 死掉后 runScan 干等 10 分钟超时（连接异常即此表现）。
+    send.send({'__error__': e.toString()});
   } finally {
     cancelReq.close();
   }
@@ -537,6 +560,28 @@ class _WebdavEntry {
   }
 }
 
+/// WebDAV 非 2xx 响应：携带状态码，供上层按语义分流（子目录 404 竞态容忍）。
+/// toString 面向用户（扫描错误 / 播放 toast 直接展示，无 Exception 前缀）。
+class WebdavStatusException implements Exception {
+  final int status;
+  final String url;
+  const WebdavStatusException(this.status, this.url);
+
+  @override
+  String toString() {
+    switch (status) {
+      case 401:
+      case 403:
+        return 'WebDAV 鉴权失败（HTTP $status）：用户名或密码可能已更改，'
+            '请在「源管理」编辑该源重新输入密码';
+      case 404:
+        return 'WebDAV 路径不存在（HTTP 404）：请检查源地址与服务器目录';
+      default:
+        return 'WebDAV 请求失败（HTTP $status，$url）';
+    }
+  }
+}
+
 HttpClient _newClient(bool allowSelfSigned) => HttpClient()
   ..connectionTimeout = const Duration(seconds: 15)
   ..userAgent = 'SelfMusic'
@@ -591,8 +636,14 @@ Future<void> _listRecursive(HttpClient client, String url,
   // 目录递归并发（有界 6），显著缩短大目录树的枚举时间。
   await _mapConcurrent(dirs, 6, (d) async {
     if (isCancelled?.call() ?? false) return;
-    await _listRecursive(client, d, out, username, password,
-        isCancelled: isCancelled);
+    try {
+      await _listRecursive(client, d, out, username, password,
+          isCancelled: isCancelled);
+    } on WebdavStatusException catch (e) {
+      // 子目录在遍历中途被删（404）属正常竞态，跳过该分支继续；
+      // 401/5xx 等其余错误上抛终止整源扫描。
+      if (e.status != 404) rethrow;
+    }
   });
 }
 
@@ -604,7 +655,10 @@ Future<List<_WebdavEntry>> _propfind(
   final resp = await req.close().timeout(const Duration(seconds: 30));
   if (resp.statusCode != 207 && resp.statusCode != 200) {
     await resp.drain<void>();
-    return const [];
+    // 鉴权/路径/服务端错误必须响亮失败：曾静默返回空列表，上层把整库当
+    // 「全部消失」清掉（2026-09-29 真机：密码过期 401 → 扫描"成功"0 首 →
+    // 清空本地曲库，且 UI 无任何报错）。
+    throw WebdavStatusException(resp.statusCode, url);
   }
   final body = await utf8.decodeStream(resp).timeout(const Duration(seconds: 30));
   return _parsePropfind(body, url);

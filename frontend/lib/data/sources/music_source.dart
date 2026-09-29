@@ -26,6 +26,16 @@ String sourceAddressOf(String kind, Map<String, dynamic> cfg) {
   }
 }
 
+/// 直连源明确拒绝访问（如 WebDAV 401/403 凭据失效）：重试没有意义，
+/// 装载链路应快速失败并直接把 [message] 展示给用户（无 Exception 前缀）。
+class SourceAuthException implements Exception {
+  final String message;
+  const SourceAuthException(this.message);
+
+  @override
+  String toString() => message;
+}
+
 /// 字节范围请求（含起止），用于 Range 起播 / seek。
 class IntRange {
   final int start;

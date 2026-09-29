@@ -1155,6 +1155,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       } catch (e) {
         // 被更新的装载接管（连按切歌）不是源错误，重试没有意义。
         if (e is PlayerInterruptedException) rethrow;
+        // 鉴权被拒（401/403）重试也不会好：立即失败让提示尽早出现。
+        if (e is SourceAuthException) rethrow;
         last = e;
       }
     }
@@ -1175,6 +1177,17 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (direct != null) {
       debugPrint('[play] ${src.kind} URL: ${direct.url}'
           '${direct.headers != null && direct.headers!.isNotEmpty ? ' (headers: ${direct.headers!.keys.join(",")})' : ' (无 headers)'}');
+      // 装载前快速鉴权探针：1 字节 Range 走完 DNS/TCP/TLS/鉴权。401/403
+      // 直接失败——原生播放器（fvp/ExoPlayer）对错误响应只会无限缓冲，
+      // 进度停 0:00 无任何提示（2026-09-29 真机实测，密码过期即此表现）。
+      // 其余探针异常不阻塞装载（网络抖动交给播放器自身重试）。
+      try {
+        await src.probe(s);
+      } on SourceAuthException {
+        rethrow;
+      } catch (e) {
+        debugPrint('[play] 装载前探针失败（忽略，继续装载）: $e');
+      }
       await player.setUrl(direct.url, headers: direct.headers, tag: tag);
       return;
     }

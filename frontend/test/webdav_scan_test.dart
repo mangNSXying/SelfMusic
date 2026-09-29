@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:selfmusic/data/local/local_index.dart';
+import 'package:selfmusic/data/sources/scan_worker.dart';
 import 'package:selfmusic/data/sources/webdav_direct_source.dart';
 import 'package:sqlite3/open.dart';
 
@@ -265,5 +266,126 @@ void main() {
     final summary = await src.scan();
     expect(summary.added, 1, reason: '301 重定向的目录也应能扫描出根下音频');
     expect(index.countSongs(src.key), 1);
+  });
+
+  test('PROPFIND 401 时扫描响亮报错且不清库（密码过期回归）', () async {
+    // 2026-09-29 真机事故：WebDAV 密码在服务器侧被改，App 存的旧密码 401，
+    // _propfind 曾静默返回空 → 扫描"成功"0 首 → 上层把整库当「全部消失」清掉，
+    // 且 UI 无任何报错。修复后必须：扫描抛鉴权错误 + 本地库原样保留。
+    var authOk = true;
+    final authServer = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => authServer.close(force: true));
+    authServer.listen((req) async {
+      final resp = req.response;
+      if (req.method == 'PROPFIND') {
+        if (!authOk) {
+          resp.statusCode = HttpStatus.unauthorized; // 401
+          await resp.close();
+          return;
+        }
+        resp.statusCode = HttpStatus.multiStatus;
+        resp.headers.contentType = ContentType('application', 'xml');
+        resp.write('''<d:multistatus xmlns:d="DAV:">
+ <d:response><d:href>/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+ <d:response><d:href>/test.mp3</d:href><d:propstat><d:prop><d:getcontentlength>12345</d:getcontentlength></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+</d:multistatus>''');
+        await resp.close();
+        return;
+      }
+      final b = _mp3Bytes('Song One');
+      resp.statusCode = HttpStatus.partialContent;
+      resp.headers.set(HttpHeaders.contentRangeHeader,
+          'bytes 0-${b.length - 1}/${b.length}');
+      resp.contentLength = b.length;
+      resp.headers.contentType = ContentType('audio', 'mpeg');
+      resp.add(b);
+      await resp.close();
+    });
+
+    open.overrideFor(OperatingSystem.linux, _openOnLinux);
+    final tmp = Directory.systemTemp.createTempSync('selftest-auth401');
+    addTearDown(() => tmp.deleteSync(recursive: true));
+    PathProviderPlatform.instance = _FakePathProvider(tmp.path);
+
+    final index = LocalIndex();
+    final src = WebdavDirectSource(
+      name: 'auth401',
+      baseUrl: 'http://127.0.0.1:${authServer.port}',
+      index: index,
+    );
+    await index.open();
+    addTearDown(index.close);
+
+    final s1 = await src.scan();
+    expect(s1.added, 1);
+    expect(index.countSongs(src.key), 1);
+
+    // 密码失效：扫描必须抛鉴权错误，而不是"成功"0 首并清库。
+    authOk = false;
+    await expectLater(
+        src.scan(),
+        throwsA(isA<ScanWorkerException>().having(
+            (e) => e.toString(), 'message', contains('鉴权失败'))));
+    expect(index.countSongs(src.key), 1, reason: '鉴权失败绝不能清空本地曲库');
+  });
+
+  test('扫描结果为空时防误清库（指向空目录回归）', () async {
+    // baseUrl 指到存在但为空的目录（如路径手误）时，PROPFIND 是正常的 207
+    // 但列不出任何音频——此时若照常提交会 markMissingExcept(空)+clearMissing
+    // 把整库清掉。修复后：中止并报错，本地库原样保留。
+    var emptyListing = false;
+    final emptyServer = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => emptyServer.close(force: true));
+    emptyServer.listen((req) async {
+      final resp = req.response;
+      if (req.method == 'PROPFIND') {
+        resp.statusCode = HttpStatus.multiStatus;
+        resp.headers.contentType = ContentType('application', 'xml');
+        resp.write(emptyListing
+            ? '''<d:multistatus xmlns:d="DAV:">
+ <d:response><d:href>/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+</d:multistatus>'''
+            : '''<d:multistatus xmlns:d="DAV:">
+ <d:response><d:href>/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+ <d:response><d:href>/test.mp3</d:href><d:propstat><d:prop><d:getcontentlength>12345</d:getcontentlength></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+</d:multistatus>''');
+        await resp.close();
+        return;
+      }
+      final b = _mp3Bytes('Song One');
+      resp.statusCode = HttpStatus.partialContent;
+      resp.headers.set(HttpHeaders.contentRangeHeader,
+          'bytes 0-${b.length - 1}/${b.length}');
+      resp.contentLength = b.length;
+      resp.headers.contentType = ContentType('audio', 'mpeg');
+      resp.add(b);
+      await resp.close();
+    });
+
+    open.overrideFor(OperatingSystem.linux, _openOnLinux);
+    final tmp = Directory.systemTemp.createTempSync('selftest-emptyguard');
+    addTearDown(() => tmp.deleteSync(recursive: true));
+    PathProviderPlatform.instance = _FakePathProvider(tmp.path);
+
+    final index = LocalIndex();
+    final src = WebdavDirectSource(
+      name: 'emptyguard',
+      baseUrl: 'http://127.0.0.1:${emptyServer.port}',
+      index: index,
+    );
+    await index.open();
+    addTearDown(index.close);
+
+    final s1 = await src.scan();
+    expect(s1.added, 1);
+    expect(index.countSongs(src.key), 1);
+
+    // 服务器目录变空：扫描中止报错，不许静默清库。
+    emptyListing = true;
+    await expectLater(
+        src.scan(),
+        throwsA(isA<ScanWorkerException>().having(
+            (e) => e.toString(), 'message', contains('误清库'))));
+    expect(index.countSongs(src.key), 1, reason: '空结果防误清库闸门失效');
   });
 }
