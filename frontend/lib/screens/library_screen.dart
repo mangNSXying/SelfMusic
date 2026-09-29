@@ -17,6 +17,7 @@ import '../utils/song_search.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/area_switcher.dart';
+import '../widgets/content_shell.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
 import '../widgets/row_list.dart';
@@ -239,18 +240,22 @@ class _LikedViewState extends State<_LikedView>
 
   final Selection<String> _sel = Selection<String>();
 
-  /// 收藏列表缓存：仅在收藏版本变化时查库（滑动/重绘不重复全量查询）。
+  /// 收藏列表缓存：仅在（收藏版本, 设置版本）变化时查库（滑动/重绘不重复全量查询）。
+  /// 设置版本同步忽略排除规则的生效：忽略音频改动后喜欢页即时过滤（改进.txt 功能6）。
   int _favVersion = -1;
+  int _favSettingsVer = -1;
   List<Song> _favAll = const [];
 
-  /// 排序/过滤结果按 (收藏版本, 搜索词, 排序偏好) 缓存：build 因 AnyChange 重跑时
+  /// 排序/过滤结果按 (收藏版本, 设置版本, 搜索词, 排序偏好) 缓存：build 因 AnyChange 重跑时
   /// 不重排（权重排序每首一次 SQL，几千首重排一次 = 上万条同步查询）。
-  (int, String, CollectionSort)? _sortedKey;
+  (int, int, String, CollectionSort)? _sortedKey;
   _SortedResult _sorted = const _SortedResult([], []);
 
   List<Song> _favoritesOf(DirectSourceManager direct) {
-    if (direct.favoriteVersion != _favVersion) {
+    if (direct.favoriteVersion != _favVersion ||
+        direct.settingsVersion != _favSettingsVer) {
       _favVersion = direct.favoriteVersion;
+      _favSettingsVer = direct.settingsVersion;
       _favAll = direct.favoriteSongs();
     }
     return _favAll;
@@ -259,7 +264,7 @@ class _LikedViewState extends State<_LikedView>
   /// 过滤 + 排序，命中缓存直接复用（喜欢页数据不变时 build 重跑 0 次排序/查询）。
   _SortedResult _sortSongs(DirectSourceManager direct, String search) {
     final pref = direct.settings.sortFavorites;
-    final key = (_favVersion, search, pref);
+    final key = (_favVersion, _favSettingsVer, search, pref);
     if (_sortedKey == key) return _sorted;
     final all = _favoritesOf(direct);
     final songs = sortSongs(filterSongs(all, search), pref,
@@ -307,84 +312,86 @@ class _LikedViewState extends State<_LikedView>
     final all = res.raw;
     final songs = res.songs;
 
-    return Stack(
-      children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-              // 多选栏与计数栏共用同一位置（多选时覆盖「共 xx」，退出恢复）。
-              if (_sel.active)
-                SelectionBar(
-                  total: songs.length,
-                  selectedCount: _sel.of(songs.map(songKey)).length,
-                  onToggleAll: () =>
-                      setState(() => _sel.setAll(songs.map(songKey))),
-                  onCancel: () => setState(_sel.cancel),
-                  actions: [
-                    SelectionAction(
-                      icon: Icons.play_arrow,
-                      label: '播放选中',
-                      onPressed: _sel.isEmpty ? null : () => _playSelected(songs),
-                    ),
-                    SelectionAction(
-                      icon: Icons.favorite_border,
-                      label: '取消喜欢',
-                      onPressed: _sel.isEmpty ? null : () => _unlikeSelected(songs),
-                    ),
-                  ],
-                )
-              else
-                CountHeader(
-                  count: songs.length,
-                  trailing: SortMenuButton(
-                    value: direct.settings.sortFavorites,
-                    onChanged: (v) =>
-                        setState(() => direct.settings.sortFavorites = v),
-                  ),
-                ),
-              if (_sel.active) const Divider(height: 1),
-              Expanded(
-                child: songs.isEmpty
-                    ? Center(
-                        child: Text(all.isEmpty
-                            ? '暂无喜欢的歌曲，去歌曲页点 ♡ 收藏'
-                            : '无匹配歌曲'))
-                    : RowList(
-                        count: songs.length,
-                        itemBuilder: (c, i) {
-                          final s = songs[i];
-                          return SongTile(
-                            song: s,
-                            source: lib.sourceFor(s.sourceKey),
-                            onPlay: () {
-                              player.playQueue(songs,
-                                  index: i,
-                                  contextKey: PlayerProvider.anchorForLiked());
-                              context.read<NavigationProvider>().openPlayer();
-                            },
-                            playing: player.isCurrent(s),
-                            selectionMode: _sel.active,
-                            selected: _sel.contains(songKey(s)),
-                            onSelect: () => _toggle(songKey(s)),
-                            onStartSelect: () =>
-                                setState(() => _sel.startWith(songKey(s))),
-                          );
-                        },
+    return ContentShell(
+      child: Stack(
+        children: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+                // 多选栏与计数栏共用同一位置（多选时覆盖「共 xx」，退出恢复）。
+                if (_sel.active)
+                  SelectionBar(
+                    total: songs.length,
+                    selectedCount: _sel.of(songs.map(songKey)).length,
+                    onToggleAll: () =>
+                        setState(() => _sel.setAll(songs.map(songKey))),
+                    onCancel: () => setState(_sel.cancel),
+                    actions: [
+                      SelectionAction(
+                        icon: Icons.play_arrow,
+                        label: '播放选中',
+                        onPressed: _sel.isEmpty ? null : () => _playSelected(songs),
                       ),
-              ),
-            ],
-          ),
-          Positioned(
-            right: 16,
-            bottom: 16,
-            child: CornerAddButton(
-              tooltip: '去歌曲页收藏',
-              onPressed: () =>
-                  context.read<NavigationProvider>().select(NavSection.songs),
+                      SelectionAction(
+                        icon: Icons.favorite_border,
+                        label: '取消喜欢',
+                        onPressed: _sel.isEmpty ? null : () => _unlikeSelected(songs),
+                      ),
+                    ],
+                  )
+                else
+                  CountHeader(
+                    count: songs.length,
+                    trailing: SortMenuButton(
+                      value: direct.settings.sortFavorites,
+                      onChanged: (v) =>
+                          setState(() => direct.settings.sortFavorites = v),
+                    ),
+                  ),
+                if (_sel.active) const Divider(height: 1),
+                Expanded(
+                  child: songs.isEmpty
+                      ? Center(
+                          child: Text(all.isEmpty
+                              ? '暂无喜欢的歌曲，去歌曲页点 ♡ 收藏'
+                              : '无匹配歌曲'))
+                      : RowList(
+                          count: songs.length,
+                          itemBuilder: (c, i) {
+                            final s = songs[i];
+                            return SongTile(
+                              song: s,
+                              source: lib.sourceFor(s.sourceKey),
+                              onPlay: () {
+                                player.playQueue(songs,
+                                    index: i,
+                                    contextKey: PlayerProvider.anchorForLiked());
+                                context.read<NavigationProvider>().openPlayer();
+                              },
+                              playing: player.isCurrent(s),
+                              selectionMode: _sel.active,
+                              selected: _sel.contains(songKey(s)),
+                              onSelect: () => _toggle(songKey(s)),
+                              onStartSelect: () =>
+                                  setState(() => _sel.startWith(songKey(s))),
+                            );
+                          },
+                        ),
+                ),
+              ],
             ),
-          ),
-        ],
-      );
+            Positioned(
+              right: 16,
+              bottom: 16,
+              child: CornerAddButton(
+                tooltip: '去歌曲页收藏',
+                onPressed: () =>
+                    context.read<NavigationProvider>().select(NavSection.songs),
+              ),
+            ),
+          ],
+        ),
+    );
   }
 }
 
@@ -432,8 +439,7 @@ class _SongsViewState extends State<_SongsView>
       if (!mounted) return;
       final lib = context.read<LibraryProvider>();
       if (lib.songs.isEmpty && !lib.loading) {
-        final nav = context.read<NavigationProvider>();
-        lib.startup(query: nav.search.isEmpty ? null : nav.search);
+        lib.startup();
       }
     });
   }
@@ -469,72 +475,73 @@ class _SongsViewState extends State<_SongsView>
     // 依据全局搜索词过滤（喜欢页共用同一匹配函数），再按本页排序偏好排序。
     final songs = _sortSongs(lib, direct, nav.search).songs;
 
-    return Column(
-      children: [
-        if (lib.loading) const LinearProgressIndicator(minHeight: 2),
-        if (lib.error != null)
-          Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
-        // 多选栏与计数栏共用同一位置（多选时覆盖「共 xx」，退出恢复）。
-        if (_sel.active)
-          SelectionBar(
-            total: songs.length,
-            selectedCount: _sel.of(songs.map(songKey)).length,
-            onToggleAll: () =>
-                setState(() => _sel.setAll(songs.map(songKey))),
-            onCancel: () => setState(_sel.cancel),
-            actions: [
-              SelectionAction(
-                icon: Icons.play_arrow,
-                label: '播放选中',
-                onPressed: _sel.isEmpty ? null : () => _playSelected(songs),
-              ),
-              SelectionAction(
-                icon: Icons.playlist_add,
-                label: '加入歌单',
-                onPressed: _sel.isEmpty
-                    ? null
-                    : () => _addToPlaylistSelected(songs),
-              ),
-            ],
-          )
-        else
-          CountHeader(
-            count: songs.length,
-            trailing: SortMenuButton(
-              value: direct.settings.sortSongs,
-              onChanged: (v) => setState(() => direct.settings.sortSongs = v),
-            ),
-          ),
-        Expanded(
-          child: songs.isEmpty
-              ? _EmptyHint(onRefresh: () => lib.loadSongs(query: nav.search.isEmpty ? null : nav.search))
-              : RowList(
-                  count: songs.length,
-                  onRefresh: () => lib.loadSongs(
-                      query: nav.search.isEmpty ? null : nav.search),
-                  itemBuilder: (c, i) {
-                    final s = songs[i];
-                    return SongTile(
-                      song: s,
-                      source: lib.sourceFor(s.sourceKey),
-                      onPlay: () {
-                        player.playQueue(songs,
-                            index: i,
-                            contextKey: PlayerProvider.anchorForSongs());
-                        context.read<NavigationProvider>().openPlayer();
-                      },
-                      playing: player.isCurrent(s),
-                      selectionMode: _sel.active,
-                      selected: _sel.contains(songKey(s)),
-                      onSelect: () => _toggle(songKey(s)),
-                      onStartSelect: () {
-                        setState(() => _sel.startWith(songKey(s)));
-                      },
-                    );
-                  },
+    return ContentShell(
+      child: Column(
+        children: [
+          if (lib.loading) const LinearProgressIndicator(minHeight: 2),
+          if (lib.error != null)
+            Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
+          // 多选栏与计数栏共用同一位置（多选时覆盖「共 xx」，退出恢复）。
+          if (_sel.active)
+            SelectionBar(
+              total: songs.length,
+              selectedCount: _sel.of(songs.map(songKey)).length,
+              onToggleAll: () =>
+                  setState(() => _sel.setAll(songs.map(songKey))),
+              onCancel: () => setState(_sel.cancel),
+              actions: [
+                SelectionAction(
+                  icon: Icons.play_arrow,
+                  label: '播放选中',
+                  onPressed: _sel.isEmpty ? null : () => _playSelected(songs),
                 ),
-        ),
-      ],
+                SelectionAction(
+                  icon: Icons.playlist_add,
+                  label: '加入歌单',
+                  onPressed: _sel.isEmpty
+                      ? null
+                      : () => _addToPlaylistSelected(songs),
+                ),
+              ],
+            )
+          else
+            CountHeader(
+              count: songs.length,
+              trailing: SortMenuButton(
+                value: direct.settings.sortSongs,
+                onChanged: (v) => setState(() => direct.settings.sortSongs = v),
+              ),
+            ),
+          Expanded(
+            child: songs.isEmpty
+                ? _EmptyHint(onRefresh: lib.loadSongs)
+                : RowList(
+                    count: songs.length,
+                    onRefresh: lib.loadSongs,
+                    itemBuilder: (c, i) {
+                      final s = songs[i];
+                      return SongTile(
+                        song: s,
+                        source: lib.sourceFor(s.sourceKey),
+                        onPlay: () {
+                          player.playQueue(songs,
+                              index: i,
+                              contextKey: PlayerProvider.anchorForSongs());
+                          context.read<NavigationProvider>().openPlayer();
+                        },
+                        playing: player.isCurrent(s),
+                        selectionMode: _sel.active,
+                        selected: _sel.contains(songKey(s)),
+                        onSelect: () => _toggle(songKey(s)),
+                        onStartSelect: () {
+                          setState(() => _sel.startWith(songKey(s)));
+                        },
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -583,10 +590,7 @@ class _AlbumsViewState extends State<_AlbumsView>
       if (!mounted) return;
       final lib = context.read<LibraryProvider>();
       if (lib.albums.isEmpty && !lib.loading) {
-        lib.startup(
-            query: context.read<NavigationProvider>().search.isEmpty
-                ? null
-                : context.read<NavigationProvider>().search);
+        lib.startup();
       }
     });
   }
@@ -601,46 +605,46 @@ class _AlbumsViewState extends State<_AlbumsView>
         lib.albums, nav.search, direct.settings.sortAlbums);
     final card = isCard;
 
-    return Column(
-      children: [
-        if (lib.loading) const LinearProgressIndicator(minHeight: 2),
-        if (lib.error != null)
-          Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
-        CountHeader(
-          count: albums.length,
-          unit: '张',
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SortMenuButton(
-                value: direct.settings.sortAlbums,
-                scope: SortScope.collections,
-                onChanged: (v) => setState(() => direct.settings.sortAlbums = v),
-              ),
-              viewModeToggle(),
-            ],
+    return ContentShell(
+      child: Column(
+        children: [
+          if (lib.loading) const LinearProgressIndicator(minHeight: 2),
+          if (lib.error != null)
+            Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
+          CountHeader(
+            count: albums.length,
+            unit: '张',
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SortMenuButton(
+                  value: direct.settings.sortAlbums,
+                  scope: SortScope.collections,
+                  onChanged: (v) => setState(() => direct.settings.sortAlbums = v),
+                ),
+                viewModeToggle(),
+              ],
+            ),
           ),
-        ),
-        Expanded(
-          child: albums.isEmpty
-              ? _EmptyHint(onRefresh: () => lib.loadAlbums(query: nav.search.isEmpty ? null : nav.search))
-              : card
-                  ? RefreshIndicator(
-                      onRefresh: () => lib.loadAlbums(
-                          query: nav.search.isEmpty ? null : nav.search),
-                      child: SquareCardGrid(
-                        itemCount: albums.length,
-                        itemBuilder: (c, i) => _AlbumCard(album: albums[i]),
+          Expanded(
+            child: albums.isEmpty
+                ? _EmptyHint(onRefresh: lib.loadAlbums)
+                : card
+                    ? RefreshIndicator(
+                        onRefresh: lib.loadAlbums,
+                        child: SquareCardGrid(
+                          itemCount: albums.length,
+                          itemBuilder: (c, i) => _AlbumCard(album: albums[i]),
+                        ),
+                      )
+                    : RowList(
+                        count: albums.length,
+                        onRefresh: lib.loadAlbums,
+                        itemBuilder: (c, i) => _AlbumListTile(album: albums[i]),
                       ),
-                    )
-                  : RowList(
-                      count: albums.length,
-                      onRefresh: () => lib.loadAlbums(
-                          query: nav.search.isEmpty ? null : nav.search),
-                      itemBuilder: (c, i) => _AlbumListTile(album: albums[i]),
-                    ),
-        ),
-      ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -796,10 +800,7 @@ class _ArtistsViewState extends State<_ArtistsView>
       if (!mounted) return;
       final lib = context.read<LibraryProvider>();
       if (lib.artists.isEmpty && !lib.loading) {
-        lib.startup(
-            query: context.read<NavigationProvider>().search.isEmpty
-                ? null
-                : context.read<NavigationProvider>().search);
+        lib.startup();
       }
     });
     // 身份解析后台完成（含歧义人工绑定）后就地刷新歌手分组，不重扫歌曲。
@@ -828,47 +829,47 @@ class _ArtistsViewState extends State<_ArtistsView>
         lib.artists, nav.search, direct.settings.sortArtists);
     final card = isCard;
 
-    return Column(
-      children: [
-        if (lib.loading) const LinearProgressIndicator(minHeight: 2),
-        if (lib.error != null)
-          Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
-        CountHeader(
-          count: artists.length,
-          unit: '位',
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SortMenuButton(
-                value: direct.settings.sortArtists,
-                scope: SortScope.collections,
-                onChanged: (v) =>
-                    setState(() => direct.settings.sortArtists = v),
-              ),
-              viewModeToggle(),
-            ],
+    return ContentShell(
+      child: Column(
+        children: [
+          if (lib.loading) const LinearProgressIndicator(minHeight: 2),
+          if (lib.error != null)
+            Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
+          CountHeader(
+            count: artists.length,
+            unit: '位',
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SortMenuButton(
+                  value: direct.settings.sortArtists,
+                  scope: SortScope.collections,
+                  onChanged: (v) =>
+                      setState(() => direct.settings.sortArtists = v),
+                ),
+                viewModeToggle(),
+              ],
+            ),
           ),
-        ),
-        Expanded(
-          child: artists.isEmpty
-              ? _EmptyHint(onRefresh: () => lib.loadArtists(query: nav.search.isEmpty ? null : nav.search))
-              : card
-                  ? RefreshIndicator(
-                      onRefresh: () => lib.loadArtists(
-                          query: nav.search.isEmpty ? null : nav.search),
-                      child: SquareCardGrid(
-                        itemCount: artists.length,
-                        itemBuilder: (c, i) => _ArtistCard(artist: artists[i]),
+          Expanded(
+            child: artists.isEmpty
+                ? _EmptyHint(onRefresh: lib.loadArtists)
+                : card
+                    ? RefreshIndicator(
+                        onRefresh: lib.loadArtists,
+                        child: SquareCardGrid(
+                          itemCount: artists.length,
+                          itemBuilder: (c, i) => _ArtistCard(artist: artists[i]),
+                        ),
+                      )
+                    : RowList(
+                        count: artists.length,
+                        onRefresh: lib.loadArtists,
+                        itemBuilder: (c, i) => _ArtistListTile(artist: artists[i]),
                       ),
-                    )
-                  : RowList(
-                      count: artists.length,
-                      onRefresh: () => lib.loadArtists(
-                          query: nav.search.isEmpty ? null : nav.search),
-                      itemBuilder: (c, i) => _ArtistListTile(artist: artists[i]),
-                    ),
-        ),
-      ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -879,19 +880,22 @@ class _ArtistsViewState extends State<_ArtistsView>
   }
 }
 
-/// 打开歌手歌曲弹层（卡片/列表两种形态共用）。
+/// 打开歌手（卡片/列表两种形态共用，唯一分流入口）。
 ///
-/// 歌手身份歧义（歌手处理.txt）：先弹候选选择页人工绑定；
-/// 未命中/待解析可在此手动触发重试。
+/// 按 [Artist.resolveState] 分流，未解析成功的歌手一律不进歌曲列表：
+/// - confirm（同名多真人需人工确认）→ 弹候选选择页；
+/// - retry（待解析/未命中）→ 弹「重新解析」确认窗；
+/// - normal（已解析/非 identity 模式）→ 打开歌曲弹层。
 void _openArtist(BuildContext context, Artist artist, ArtistResolver resolver) {
-  if (artist.status == 'ambiguous') {
-    _showAmbiguousPicker(context, artist, resolver);
-    return;
-  }
-  if (artist.status == 'local' ||
-      (artist.status == 'pending' && artist.identityKey != null)) {
-    _showRetryConfirm(context, artist, resolver);
-    return;
+  switch (artist.resolveState) {
+    case ArtistResolveState.confirm:
+      _showAmbiguousPicker(context, artist, resolver);
+      return;
+    case ArtistResolveState.retry:
+      _showRetryConfirm(context, artist, resolver);
+      return;
+    case ArtistResolveState.normal:
+      break;
   }
   final lib = context.read<LibraryProvider>();
   final songs = lib.artistSongs(artist);
@@ -906,7 +910,9 @@ void _openArtist(BuildContext context, Artist artist, ArtistResolver resolver) {
 /// 歧义身份候选选择（候选来自 MB 搜索 hit，零额外请求）。
 Future<void> _showAmbiguousPicker(
     BuildContext context, Artist artist, ArtistResolver resolver) async {
-  final candidates = await resolver.candidatesFor(artist.identityKey!);
+  final canonicalKey = artist.canonicalKey;
+  if (canonicalKey == null) return;
+  final candidates = await resolver.candidatesFor(canonicalKey);
   if (!context.mounted) return;
   await showModalBottomSheet<void>(
     context: context,
@@ -931,7 +937,10 @@ Future<void> _showAmbiguousPicker(
           const Divider(height: 1),
           Expanded(
             child: candidates.isEmpty
-                ? const Center(child: Text('暂无可选候选，稍后自动重试'))
+                ? _AmbiguousEmptyState(
+                    resolver: resolver,
+                    canonicalKey: canonicalKey,
+                  )
                 : RowList(
                     controller: scrollCtrl,
                     count: candidates.length,
@@ -954,7 +963,7 @@ Future<void> _showAmbiguousPicker(
                           overflow: TextOverflow.ellipsis,
                         ),
                         onTap: () async {
-                          await resolver.bindManual(artist.identityKey!, h);
+                          await resolver.bindManual(canonicalKey, h);
                           if (c3.mounted) Navigator.of(c3).pop();
                         },
                       );
@@ -965,6 +974,44 @@ Future<void> _showAmbiguousPicker(
       ),
     ),
   );
+}
+
+/// 候选为空（重试后仍无可选）时的空态：
+/// 网络不可用与“确实无候选”分开提示，并给出「重新解析」立即再试。
+class _AmbiguousEmptyState extends StatelessWidget {
+  final ArtistResolver resolver;
+  final String canonicalKey;
+  const _AmbiguousEmptyState({
+    required this.resolver,
+    required this.canonicalKey,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final offline = resolver.networkDown;
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(offline ? Icons.wifi_off : Icons.search_off,
+              size: 40, color: cs.onSurfaceVariant),
+          const SizedBox(height: 12),
+          Text(offline ? '网络不可用，可稍后再试' : '暂无可选候选，稍后自动重试',
+              style: TextStyle(color: cs.onSurfaceVariant)),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            icon: const Icon(Icons.refresh, size: 18),
+            label: const Text('重新解析'),
+            onPressed: () async {
+              await resolver.retryOne(canonicalKey);
+              if (context.mounted) Navigator.of(context).pop();
+            },
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// 未命中/待解析歌手：手动立即重试确认。
@@ -985,8 +1032,9 @@ Future<void> _showRetryConfirm(
       ],
     ),
   );
-  if (ok == true && artist.identityKey != null) {
-    await resolver.retryOne(artist.identityKey!);
+  if (ok == true) {
+    final canonicalKey = artist.canonicalKey;
+    if (canonicalKey != null) await resolver.retryOne(canonicalKey);
   }
 }
 
@@ -1015,21 +1063,21 @@ class _ArtistListTile extends StatelessWidget {
         children: [
           Text('${artist.songCount}首 · ${artist.albumCount}张专辑',
               maxLines: 1, overflow: TextOverflow.ellipsis),
-          if (artist.status == 'ambiguous') ..._statusChip(context),
+          if (artist.resolveState == ArtistResolveState.confirm)
+            ..._statusChip(context),
         ],
       ),
-      trailing:
-          artist.status == 'local' || artist.status == 'pending'
-          ? IconButton(
-              icon: const Icon(Icons.refresh, size: 20),
-              tooltip: '重试解析',
-              onPressed: () =>
-                  _openArtist(context, artist, context.read<ArtistResolver>()),
-            )
-          : (artist.status == 'ambiguous'
-              ? const Icon(Icons.help_outline, size: 20,
-                  color: Colors.orange)
-              : null),
+      trailing: switch (artist.resolveState) {
+        ArtistResolveState.retry => IconButton(
+            icon: const Icon(Icons.refresh, size: 20),
+            tooltip: '重试解析',
+            onPressed: () =>
+                _openArtist(context, artist, context.read<ArtistResolver>()),
+          ),
+        ArtistResolveState.confirm =>
+          const Icon(Icons.help_outline, size: 20, color: Colors.orange),
+        ArtistResolveState.normal => null,
+      },
       onTap: () =>
           _openArtist(context, artist, context.read<ArtistResolver>()),
     );
@@ -1057,13 +1105,44 @@ class _ArtistCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) => SquareCard(
         title: artist.name,
-        subtitle: artist.status == 'ambiguous'
+        subtitle: artist.resolveState == ArtistResolveState.confirm
             ? '${artist.songCount}首 · ${artist.albumCount}张专辑 · 需确认'
             : '${artist.songCount}首 · ${artist.albumCount}张专辑',
         coverPath: artist.coverPath,
         fallbackIcon: Icons.person,
+        // 未解析成功的歌手：封面右上角叠状态角标（重试/需确认），
+        // 点击角标与整卡一致走 _openArtist（只弹解析交互，不进歌曲）。
+        cornerAction: switch (artist.resolveState) {
+          ArtistResolveState.normal => null,
+          ArtistResolveState.confirm => const _StatusBadge(
+              icon: Icons.help_outline, color: Colors.orange),
+          ArtistResolveState.retry =>
+            const _StatusBadge(icon: Icons.refresh, color: Colors.white),
+        },
         onTap: () =>
             _openArtist(context, artist, context.read<ArtistResolver>()),
+      );
+}
+
+/// 卡片封面的圆形状态角标（深色底衬保证在各种封面上可见）。
+class _StatusBadge extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  const _StatusBadge({required this.icon, required this.color});
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.all(4),
+        child: DecoratedBox(
+          decoration: const BoxDecoration(
+            color: Colors.black45,
+            shape: BoxShape.circle,
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(4),
+            child: Icon(icon, size: 16, color: color),
+          ),
+        ),
       );
 }
 

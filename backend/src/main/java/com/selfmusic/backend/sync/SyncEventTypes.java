@@ -7,6 +7,8 @@ public final class SyncEventTypes {
     // 权重事件：服务端按 §7.1 做事件重算（非绝对值覆盖），天然可合并
     public static final String SONG_COMPLETE = "song.complete";
     public static final String SONG_SKIP = "song.skip";
+    /** 手动点播后自然完播（改进.txt 功能7）：权重直接 +0.1 一档并清空双 streak。 */
+    public static final String SONG_COMPLETE_MANUAL = "song.complete_manual";
     public static final String SONG_LIKED = "song.liked";
     public static final String SONG_UNFAVORITE = "song.unfavorite";
     public static final String SONG_DISLIKED = "song.disliked";

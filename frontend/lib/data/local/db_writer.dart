@@ -733,6 +733,13 @@ void _opApplyWeightEvent(Database db, Map<String, dynamic> a) {
         f = _clampDb(cur.f - step, minF, maxF);
       }
       break;
+    case 'complete_manual':
+      // 手动点播自然完播：直接提高一档权重 + 清空双 streak（不依赖门槛）。
+      // 「不喜欢」锁定态不动权重（与 complete/skip 一致，锁定最低优先级最高）。
+      ls = 0;
+      ds = 0;
+      if (!cur.frozen) f = _clampDb(cur.f + step, minF, maxF);
+      break;
     case 'liked':
       ls = 0;
       ds = 0;
@@ -1226,17 +1233,6 @@ void _opRenameSource(Database db, String oldKey, String newKey) {
 
 // ---------- 歌手处理.txt：身份聚合写操作（写连接内一次性算完） ----------
 
-/// 歌手串 → 聚合用的归一化键：声优注记（CV:x）以「角色|人物」为键（不同拼写合
-/// 并成同一调查项），其余情况取整串 NFKC 键。
-String _artistCanonicalOf(String raw) {
-  final p = splitArtistPart(raw);
-  if (p.hasCv) {
-    final b = p.base.isEmpty ? p.cvName! : '${p.base}|${p.cvName}';
-    return artistCanonicalKey(b);
-  }
-  return artistCanonicalKey(raw);
-}
-
 void _opArtistGc(Database db) {
   db.execute('DELETE FROM artist_song_map WHERE (source_key, ref) NOT IN ('
       '  SELECT source_key, ref FROM idx_songs'
@@ -1257,8 +1253,8 @@ void _opArtistGc(Database db) {
 
 /// 对 idx_songs 的当前（源,引用,歌手）集合校准身份映射：
 /// 1. 缺失 canonical 建占位身份行（status='pending'）与 artist_canon 桥；
-/// 2. 每（源,引用）单元格按当前 canonical 校准 artist_song_map（身份变即旧映射
-///    删除重写）；
+/// 2. 每（源,引用）按当前身份集校准 artist_song_map——合作串 `A & B`/
+///    `A feat. B` 逐段各挂一个 role='main'；身份变即旧映射删除重写；
 /// 3. 清理已不存在的歌曲/已清空歌手的映射，并回收孤儿占位身份。
 ///
 /// 单事务内完成（好比对 5k 行的全量重建，但走 INSERT OR IGNORE 增量）；由扫描
@@ -1278,17 +1274,16 @@ void _opArtistReconcile(Database db) {
       keyOfCanon[r['canonical_key'] as String] = r['artist_key'] as String;
     }
     final canonDisplay = <String, String>{};
-    final cells = <(String, String, String)>[];
-    // (source_key, ref) 去重：同一首歌只校准一次（先 putIfAbsent 再 add）。
-    final seen = <String, Set<String>>{};
+    // (source_key, ref) → 该歌归属的身份 canonical 集合（合作串逐段各一）。
+    final songCanons = <(String, String), Set<String>>{};
     for (final r in rows) {
       final raw = r['artist'] as String;
-      final canon = _artistCanonicalOf(raw);
-      canonDisplay.putIfAbsent(canon, () => raw);
       final sk = r['source_key'] as String;
       final ref = r['ref'] as String;
-      if (seen.putIfAbsent(sk, () => <String>{}).add(ref)) {
-        cells.add((sk, ref, canon));
+      final targets = songCanons.putIfAbsent((sk, ref), () => <String>{});
+      for (final (canon, display) in artistCollabCanonicals(raw)) {
+        canonDisplay.putIfAbsent(canon, () => display);
+        targets.add(canon);
       }
     }
 
@@ -1314,16 +1309,20 @@ void _opArtistReconcile(Database db) {
           [entry.key, ak, now]);
     }
 
+    // 每（源,引用）整体同步：整歌清掉 role='main' 旧映射，再逐身份重插。
+    // 不能按身份单条「删异留同」——合作串两个身份会互相删掉刚插入的行。
+    final delStmt = db.prepare(
+        "DELETE FROM artist_song_map WHERE role='main' AND source_key=? AND ref=?");
     final insStmt = db.prepare(
         'INSERT OR IGNORE INTO artist_song_map(source_key, ref, artist_key, role) '
         'VALUES(?,?,?,\'main\')');
-    final delStmt = db.prepare(
-        "DELETE FROM artist_song_map WHERE role='main' AND source_key=? AND ref=? AND artist_key<>?");
     try {
-      for (final (sk, ref, canon) in cells) {
-        final ak = keyOfCanon[canon]!;
-        delStmt.execute([sk, ref, ak]);
-        insStmt.execute([sk, ref, ak]);
+      for (final entry in songCanons.entries) {
+        final (sk, ref) = entry.key;
+        delStmt.execute([sk, ref]);
+        for (final canon in entry.value) {
+          insStmt.execute([sk, ref, keyOfCanon[canon]!]);
+        }
       }
     } finally {
       insStmt.dispose();

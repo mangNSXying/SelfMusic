@@ -10,6 +10,7 @@ import 'package:selfmusic/layout/top_bar.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
+import 'package:selfmusic/widgets/content_shell.dart';
 import 'package:selfmusic/widgets/count_header.dart';
 import 'package:selfmusic/widgets/row_list.dart';
 import 'package:selfmusic/widgets/selection_badge.dart';
@@ -207,5 +208,41 @@ void main() {
     final barH = tester.getSize(find.byType(SelectionBar)).height;
     expect(headerH, closeTo(kListHeaderHeight, 0.01));
     expect(barH, closeTo(headerH, 0.01));
+  });
+
+  testWidgets('UI1 内容页列表宽度上限：宽屏收窄到 80%（封顶 1500），窄屏退化为整宽',
+      (tester) async {
+    const probe = SizedBox(
+          key: Key('probe'),
+          width: double.infinity,
+          height: 100,
+        );
+    Future<void> pump() => tester.pumpWidget(
+          const MaterialApp(
+            home: Scaffold(
+              body: ContentShell(child: probe),
+            ),
+          ),
+        );
+
+    // 宽屏 2000：80% = 1600 → 封顶 1500。
+    tester.view.physicalSize = const Size(2000, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    await pump();
+    expect(tester.getSize(find.byKey(const Key('probe'))).width,
+        closeTo(kContentMaxWidth, 0.5));
+
+    // 中等屏 1200：80% = 960。
+    tester.view.physicalSize = const Size(1200, 900);
+    await pump();
+    expect(tester.getSize(find.byKey(const Key('probe'))).width,
+        closeTo(960, 0.5));
+
+    // 窄屏 400：不足 500 下限，退化为整宽（不横向溢出）。
+    tester.view.physicalSize = const Size(400, 800);
+    await pump();
+    expect(tester.getSize(find.byKey(const Key('probe'))).width,
+        closeTo(400, 0.5));
   });
 }

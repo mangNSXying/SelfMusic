@@ -91,7 +91,12 @@ class _UpperRowState extends State<_UpperRow> {
               controller: _searchCtrl,
               focusNode: _searchFocus,
               onChanged: (v) => nav.setSearch(v),
-              onSubmitted: (v) => nav.setSearch(v),
+              onSubmitted: (v) {
+                nav.setSearch(v);
+                // 键盘「搜索/完成」视为手动收起输入框 → 失焦（焦点保持仅限搜索期）。
+                _searchFocus.unfocus();
+              },
+              onTapOutside: (_) => _searchFocus.unfocus(),
               textInputAction: TextInputAction.search,
               decoration: InputDecoration(
                 hintText: '搜索标题 / 艺术家',

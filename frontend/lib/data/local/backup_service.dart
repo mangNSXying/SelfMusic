@@ -217,7 +217,11 @@ class BackupService {
       await theme.clearBackgroundOverride();
     }
     if (mode != null) {
-      await theme.setMode(mode == 'dark' ? Brightness.dark : Brightness.light);
+      await theme.setThemeMode(switch (mode) {
+        'dark' => ThemeMode.dark,
+        'light' => ThemeMode.light,
+        _ => ThemeMode.system, // 'system' 或旧备份无明暗 → 跟随系统
+      });
     }
   }
 

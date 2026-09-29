@@ -140,25 +140,25 @@ class ArtistResolver extends ChangeNotifier {
   }
 
   /// 全部 local/ambiguous 重置为 pending 重新解析。
+  /// 手动路径不依赖「自动后台解析」开关：重置后立即直跑一轮。
   Future<void> retryAll() async {
     await _index.artistRetry();
-    wake();
+    await runOnceNow();
   }
 
   /// 单个（歧义/未命中）重试。
+  /// 手动路径不依赖「自动后台解析」开关：重置后立即直跑一轮。
   Future<void> retryOne(String canonicalKey) async {
     await _index.artistRetry(canonicalKey: canonicalKey);
-    wake();
+    await runOnceNow();
   }
 
   /// 歧义人工选择的候选（不复原搜索结果，只读）。
   Future<List<MbArtistHit>> candidatesFor(String canonicalKey) async {
     final row = _index.artistRowByCanonical(canonicalKey);
     if (row == null) return const [];
-    final part = splitArtistPart(row.displayName);
-    final name = part.hasCv ? part.cvName! : row.displayName;
     try {
-      return await _search(name, limit: 10);
+      return await _search(row.displayName, limit: 10);
     } catch (_) {
       return const [];
     }
@@ -255,8 +255,7 @@ class ArtistResolver extends ChangeNotifier {
   }
 
   Future<void> _resolveOne(ArtistWorkItem item) async {
-    final part = splitArtistPart(item.displayName);
-    final searchName = part.hasCv ? part.cvName! : item.displayName;
+    final searchName = item.displayName;
     final hits = await _search(searchName, limit: 10);
     final key = artistCanonicalKey(searchName);
     final strong = hits
@@ -278,7 +277,7 @@ class ArtistResolver extends ChangeNotifier {
         displayName: h.name,
         type: h.type ?? 'person',
         disambiguation: h.disambiguation,
-        names: h.toNames(role: part.hasCv ? part.base : null),
+        names: h.toNames(),
         groups: groups,
       );
       if (!merged) {
@@ -290,7 +289,7 @@ class ArtistResolver extends ChangeNotifier {
           status: 'resolved',
           errorCount: 0,
           nextAt: 0,
-          names: h.toNames(role: part.hasCv ? part.base : null),
+          names: h.toNames(),
           groups: groups,
           type: h.type ?? 'person',
           disambiguation: h.disambiguation,

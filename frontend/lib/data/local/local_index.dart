@@ -431,17 +431,35 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
     ''', [sourceKey, ref, DateTime.now().millisecondsSinceEpoch]);
   }
 
+  /// 「忽略音频（时长/大小）」过滤子句（改进.txt 功能6）：设置变更后，
+  /// 已扫描入库的歌曲也按规则过滤——时长未知（NULL/0，快扫未读头）一律放过。
+  /// 返回 `(sqlFragment, extraArgs)`；两个阈值均为 0 时条件恒真（零开销兜底）。
+  ({String sql, List<Object?> args}) _ignoreFilterSql(
+      int minDurationSec, int minSizeBytes) {
+    return (
+      sql: '''
+      AND (i.duration IS NULL OR i.duration<=0 OR ?<=0 OR i.duration>=?)
+      AND (i.size IS NULL OR i.size<=0 OR ?<=0 OR i.size>=?)
+      ''',
+      args: [minDurationSec, minDurationSec, minSizeBytes, minSizeBytes],
+    );
+  }
+
   List<Song> searchSongs({
     required String sourceKey,
     String? query,
     int page = 1,
     int? size,
+    int minDurationSec = 0,
+    int minSizeBytes = 0,
   }) {
     final q = query?.trim().toLowerCase() ?? '';
     final like = q.isEmpty ? '%' : '%$q%';
     // size==null 时不设 LIMIT（返回全部，供列表无限滚动 / 全选）。
     final limitSql = size == null ? '' : 'LIMIT ? OFFSET ?';
+    final ignore = _ignoreFilterSql(minDurationSec, minSizeBytes);
     final args = <Object?>[sourceKey, like, like, like];
+    args.addAll(ignore.args);
     if (size != null) {
       args.add(size);
       args.add((page - 1) * size);
@@ -454,16 +472,22 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
       LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
       WHERE i.source_key=? AND i.missing=0
         AND (i.title LIKE ? OR COALESCE(i.artist,'') LIKE ? OR COALESCE(i.album,'') LIKE ?)
+        ${ignore.sql}
       ORDER BY i.artist, i.album, i.track_no, i.title
       $limitSql
     ''', args);
     return rows.map(_rowToSong).toList();
   }
 
-  int countSongs(String sourceKey) {
+  int countSongs(String sourceKey,
+      {int minDurationSec = 0, int minSizeBytes = 0}) {
+    final ignore = _ignoreFilterSql(minDurationSec, minSizeBytes);
     final rs = _db!.select(
-        'SELECT COUNT(*) c FROM idx_songs WHERE source_key=? AND missing=0',
-        [sourceKey]);
+        '''
+        SELECT COUNT(*) c FROM idx_songs i
+        WHERE i.source_key=? AND i.missing=0 ${ignore.sql}
+        ''',
+        [sourceKey, ...ignore.args]);
     return (rs.first['c'] as int);
   }
 
@@ -535,7 +559,8 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
 
   /// 「喜欢」列表：play_meta 中已收藏歌曲（含服务器歌快照；迁移回填的直连歌查 idx_songs 补全）。
   /// 直连歌优先现查索引，保证后台补读/编辑元数据后喜欢页即时反映最新封面与专辑信息。
-  List<Song> likedSongs() {
+  /// 忽略音频过滤（改进.txt 功能6）只作用于索引落库的直连歌（服务器歌快照非本地扫描产物不放行拦截）。
+  List<Song> likedSongs({int minDurationSec = 0, int minSizeBytes = 0}) {
     final rows = _db!.select(
         'SELECT source_key, song_ref, song_json FROM play_meta WHERE is_favorite=1');
     final out = <Song>[];
@@ -544,18 +569,24 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
       final ref = r['song_ref'] as String;
       final live = srcKey == 'server' ? null : _songByRef(srcKey, ref);
       if (live != null) {
-        out.add(live);
+        if (_passesIgnoreFilter(live, minDurationSec, minSizeBytes)) {
+          out.add(live);
+        }
         continue;
       }
       final json = r['song_json'] as String?;
       if (json != null && json.isNotEmpty) {
         try {
-          out.add(Song.fromJson(jsonDecode(json) as Map<String, dynamic>));
+          final s = Song.fromJson(jsonDecode(json) as Map<String, dynamic>);
+          // 服务器歌不占 idx_songs，规则对其不适用（见方法注释）。
+          out.add(s);
           continue;
         } catch (_) {}
       }
       final s = _songByRef(srcKey, ref);
-      if (s != null) out.add(s);
+      if (s != null && _passesIgnoreFilter(s, minDurationSec, minSizeBytes)) {
+        out.add(s);
+      }
     }
     return out;
   }
@@ -579,7 +610,9 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
     return null;
   }
 
-  List<Song> favorites(String sourceKey) {
+  List<Song> favorites(String sourceKey,
+      {int minDurationSec = 0, int minSizeBytes = 0}) {
+    final ignore = _ignoreFilterSql(minDurationSec, minSizeBytes);
     final rows = _db!.select('''
       SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
              i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
@@ -587,9 +620,21 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
       FROM idx_songs i
       LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
       WHERE i.source_key=? AND i.missing=0 AND COALESCE(p.is_favorite, 0) = 1
+        ${ignore.sql}
       ORDER BY i.artist, i.album, i.track_no
-    ''', [sourceKey]);
+    ''', [sourceKey, ...ignore.args]);
     return rows.map(_rowToSong).toList();
+  }
+
+  /// 忽略音频规则是否放行（改进.txt 功能6）：时长/大小未知（NULL/0）一律放过。
+  static bool _passesIgnoreFilter(Song s, int minDurationSec, int minSizeBytes) {
+    final d = s.duration;
+    if (minDurationSec > 0 && d != null && d > 0 && d < minDurationSec) {
+      return false;
+    }
+    final size = s.fileSize;
+    if (minSizeBytes > 0 && size > 0 && size < minSizeBytes) return false;
+    return true;
   }
 
   Song _rowToSong(Row r) => Song.direct(
@@ -832,7 +877,7 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
         )).toList();
   }
 
-  /// 歌单内歌曲匹配：返回含匹配歌曲（标题/歌手，忽略大小写）的歌单 id 集合。
+  /// 歌单内歌曲匹配：返回含匹配歌曲（标题/歌手/专辑，忽略大小写）的歌单 id 集合。
   /// 单条 SQL 完成，供歌单页搜索（搜索内容是歌单中的具体歌曲）。
   Set<int> playlistIdsMatchingSong(String query) {
     final q = query.trim().toLowerCase();
@@ -845,8 +890,9 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
     final rs = _db!.select(
         "SELECT DISTINCT playlist_id FROM playlist_items "
         r"WHERE lower(title) LIKE ? ESCAPE '\' "
-        r"OR lower(IFNULL(artist,'')) LIKE ? ESCAPE '\'",
-        [like, like]);
+        r"OR lower(IFNULL(artist,'')) LIKE ? ESCAPE '\' "
+        r"OR lower(IFNULL(album,'')) LIKE ? ESCAPE '\'",
+        [like, like, like]);
     return {for (final r in rs) r['playlist_id'] as int};
   }
 
@@ -1360,23 +1406,26 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
 
   /// 已有身份的歌手聚合（identity 模式，歌手页主数据源）：
   /// 已解析 + 占位（local/pending）+ 歧义行，按歌曲数聚合。
-  List<Artist> identityArtistGroups({String? query, CollectionSort? sort}) {
+  List<Artist> identityArtistGroups({String? query, CollectionSort? sort,
+      int minDurationSec = 0, int minSizeBytes = 0}) {
     final q = query?.trim() ?? '';
     final like = q.isEmpty ? '%' : '%$q%';
+    final ignore = _ignoreFilterSql(minDurationSec, minSizeBytes);
     final rs = _db!.select('''
-      SELECT a.artist_key, a.display_name, a.status, a.mbid,
+      SELECT a.artist_key, a.canonical_key, a.display_name, a.status, a.mbid,
         COUNT(*) song_count,
         COUNT(DISTINCT COALESCE(NULLIF(s.album,''),'\u0001')) album_count,
         (SELECT s2.cover_path FROM artist_song_map m2
            JOIN idx_songs s2 ON s2.source_key=m2.source_key AND s2.ref=m2.ref
-            AND s2.missing=0 AND s2.cover_path IS NOT NULL
+            AND s2.missing=0 ${ignore.sql.replaceAll('i.', 's2.')} AND s2.cover_path IS NOT NULL
            WHERE m2.artist_key=a.artist_key ORDER BY s2.id LIMIT 1) cover_path
       FROM artist_song_map m
       JOIN idx_songs s ON s.source_key=m.source_key AND s.ref=m.ref AND s.missing=0
+        ${ignore.sql.replaceAll('i.', 's.')}
       JOIN artists a ON a.artist_key=m.artist_key
       WHERE m.role='main' AND a.display_name LIKE ?
       GROUP BY a.artist_key
-    ''', [like]);
+    ''', [...ignore.args, ...ignore.args, like]);
     final list = [
       for (final r in rs)
         Artist(
@@ -1385,6 +1434,7 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
           albumCount: r['album_count'] as int,
           coverPath: r['cover_path'] as String?,
           identityKey: r['artist_key'] as String,
+          canonicalKey: r['canonical_key'] as String,
           status: r['status'] as String,
           mbid: r['mbid'] as String?,
         ),
@@ -1395,34 +1445,46 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   }
 
   /// identity 模式某身份对应的歌曲（走映射，天然含别名/角色合并）。
-  List<Song> identitySongs(String artistKey) {
+  List<Song> identitySongs(String artistKey,
+      {int minDurationSec = 0, int minSizeBytes = 0}) {
+    final ignore = _ignoreFilterSql(minDurationSec, minSizeBytes);
     final rows = _db!.select('''
       SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
              i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
              i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
       FROM artist_song_map m
-      JOIN idx_songs i ON i.source_key=m.source_key AND i.ref=m.ref AND i.missing=0
+      JOIN idx_songs i ON i.source_key=m.source_key AND i.ref=m.ref AND i.missing=0 ${ignore.sql}
       LEFT JOIN play_meta p ON p.source_key=i.source_key AND p.song_ref=i.ref
       WHERE m.artist_key=? AND m.role='main'
       ORDER BY i.artist, i.album, i.track_no, i.title
-    ''', [artistKey]);
+    ''', [...ignore.args, artistKey]);
     return rows.map(_rowToSong).toList();
   }
 
   /// identity 模式无映射（本地聚合键未命中的残留）按原字符串分组；正常应为空，
   /// 兜底保证 aggregation 开启后歌手页仍完整。
-  List<Artist> identityFallbackGroups() {
+  List<Artist> identityFallbackGroups(
+      {int minDurationSec = 0, int minSizeBytes = 0}) {
+    final ignore = _ignoreFilterSql(minDurationSec, minSizeBytes);
+    final fallback = ignore.sql
+        .replaceAll('i.', 's.');
+    final cover = ignore.sql
+        .replaceAll('i.', '')
+        .replaceAll('s.duration', 'duration')
+        .replaceAll('s.size', 'size')
+        .replaceAll('s.cover', 'cover');
     final rs = _db!.select('''
       SELECT s.artist raw, COUNT(*) n,
         COUNT(DISTINCT COALESCE(NULLIF(s.album,''),'\u0001')) al,
         (SELECT cover_path FROM idx_songs WHERE artist=s.artist AND cover_path IS NOT NULL
-          ORDER BY id LIMIT 1) c
+          $cover ORDER BY id LIMIT 1) c
       FROM idx_songs s
       WHERE s.missing=0 AND s.artist IS NOT NULL AND s.artist<>''
         AND NOT EXISTS (SELECT 1 FROM artist_song_map m
                          WHERE m.source_key=s.source_key AND m.ref=s.ref AND m.role='main')
+        $fallback
       GROUP BY s.artist
-    ''');
+    ''', [...ignore.args, ...ignore.args]);
     return [
       for (final r in rs)
         Artist(

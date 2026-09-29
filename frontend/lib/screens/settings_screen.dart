@@ -565,15 +565,23 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
               style: Theme.of(context).textTheme.bodySmall?.copyWith(color: colorScheme.onSurface.withValues(alpha: 0.6))),
           const SizedBox(height: 24),
 
-          // 明暗模式
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('暗色模式'),
-            subtitle: const Text('切换明暗主题'),
-            value: theme.isDark,
-            onChanged: (v) => theme.setMode(v ? Brightness.dark : Brightness.light),
-            secondary: Icon(theme.isDark ? Icons.dark_mode : Icons.light_mode),
+          // 明暗模式：跟随系统 / 浅色 / 深色
+          Text('明暗模式', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 12),
+          SegmentedButton<ThemeMode>(
+            segments: const [
+              ButtonSegment(value: ThemeMode.system, label: Text('跟随系统'), icon: Icon(Icons.brightness_auto)),
+              ButtonSegment(value: ThemeMode.light, label: Text('浅色'), icon: Icon(Icons.light_mode_outlined)),
+              ButtonSegment(value: ThemeMode.dark, label: Text('深色'), icon: Icon(Icons.dark_mode_outlined)),
+            ],
+            selected: {theme.themeMode},
+            onSelectionChanged: (s) => theme.setThemeMode(s.first),
           ),
+          const SizedBox(height: 8),
+          Text(theme.themeMode == ThemeMode.system
+              ? '随手机 / 电脑系统自动切换明暗'
+              : '固定使用当前所选明暗，不跟随系统',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: colorScheme.onSurface.withValues(alpha: 0.6))),
           const Divider(),
           const SizedBox(height: 8),
 
@@ -964,6 +972,27 @@ class _SongsSettingsState extends State<_SongsSettings> {
         const Divider(height: 32),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('权重·时长削弱',
+              style: TextStyle(
+                  color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        SwitchListTile(
+          title: const Text('时长削弱'),
+          subtitle: const Text('开启后加权随机按歌曲时长乘削弱系数（长歌权重降低；抽样即时生效，不落库）'),
+          value: _settings.weightCurveEnabled,
+          onChanged: (v) {
+            setState(() => _settings.weightCurveEnabled = v);
+          },
+        ),
+        ListTile(
+          title: const Text('权重-时长曲线'),
+          subtitle: Text(_weightCurveSummary(_settings.weightCurveSegments)),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _editWeightCurve(context),
+        ),
+        const Divider(height: 32),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Text('歌手解析',
               style: TextStyle(
                   color: cs.primary, fontWeight: FontWeight.w600)),
@@ -1029,8 +1058,10 @@ class _SongsSettingsState extends State<_SongsSettings> {
         ],
       ),
     );
-    if (result != null && result >= 0 && mounted) {
+    if (result != null && result >= 0 && context.mounted) {
       setState(() => _settings.scanIgnoreMinDurationSec = result);
+      // 忽略规则变更：让已入库歌曲按新规则过滤（喜欢/歌曲/专辑/歌手/源浏览即时生效）。
+      context.read<DirectSourceManager>().settingsChanged();
     }
   }
 
@@ -1056,9 +1087,144 @@ class _SongsSettingsState extends State<_SongsSettings> {
         ],
       ),
     );
-    if (result != null && result >= 0 && mounted) {
+    if (result != null && result >= 0 && context.mounted) {
       setState(() => _settings.scanIgnoreMinSizeBytes = result * 1024 * 1024);
+      // 忽略规则变更：让已入库歌曲按新规则过滤（喜欢/歌曲/专辑/歌手/源浏览即时生效）。
+      context.read<DirectSourceManager>().settingsChanged();
     }
+  }
+
+  static double? _segNum(Object? v) {
+    if (v is num) return v.toDouble();
+    if (v is String) return double.tryParse(v);
+    return null;
+  }
+
+  static String _weightCurveSummary(List<Map<String, Object?>> segs) {
+    if (segs.isEmpty) return '未配置（不削弱）';
+    return '${segs.length} 段区间；按时长乘系数抽样';
+  }
+
+  static String _segmentLabel(Map<String, Object?> m) {
+    final min = _segNum(m['min_sec']);
+    final max = _segNum(m['max_sec']);
+    final f = _segNum(m['factor']);
+    final range = max == null
+        ? '≥ ${min?.toStringAsFixed(0) ?? '?'} 秒'
+        : '${min?.toStringAsFixed(0) ?? '?'} - ${max.toStringAsFixed(0)} 秒';
+    return '$range → ×${f == null ? '?' : f.toStringAsFixed(2)}';
+  }
+
+  Future<void> _editWeightCurve(BuildContext context) async {
+    final working = List<Map<String, Object?>>.from(_settings.weightCurveSegments);
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (c) => StatefulBuilder(
+        builder: (c, setDialog) => AlertDialog(
+          title: const Text('权重-时长曲线'),
+          content: SizedBox(
+            width: 380,
+            child: working.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Text('尚未配置区间：所有歌曲权重按 1.0（不削弱）。'),
+                  )
+                : ListView(
+                    shrinkWrap: true,
+                    children: [
+                      for (var i = 0; i < working.length; i++) ...[
+                        ListTile(
+                          dense: true,
+                          leading: IconButton(
+                            icon: const Icon(Icons.delete_outline,
+                                color: Colors.redAccent),
+                            onPressed: () => setDialog(() => working.removeAt(i)),
+                          ),
+                          title: Text(_segmentLabel(working[i])),
+                          onTap: () async {
+                            final edited =
+                                await _editWeightSegment(c, working[i]);
+                            if (edited != null) setDialog(() => working[i] = edited);
+                          },
+                        ),
+                      ],
+                    ],
+                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => setDialog(() => working.add(
+                  const {'min_sec': 300.0, 'max_sec': null, 'factor': 0.5})),
+              child: const Text('+ 添加区间'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(c).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(c).pop(true),
+              child: const Text('保存'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (saved == true && mounted) {
+      setState(() => _settings.weightCurveSegments = working);
+    }
+  }
+
+  Future<Map<String, Object?>?> _editWeightSegment(
+      BuildContext c, Map<String, Object?> current) async {
+    final minC =
+        TextEditingController(text: _segNum(current['min_sec'])?.toStringAsFixed(0) ?? '');
+    final maxC =
+        TextEditingController(text: _segNum(current['max_sec'])?.toStringAsFixed(0) ?? '');
+    final fC =
+        TextEditingController(text: _segNum(current['factor'])?.toStringAsFixed(2) ?? '');
+    const kt = TextInputType.numberWithOptions(decimal: true);
+    final result = await showDialog<bool>(
+      context: c,
+      builder: (d) => AlertDialog(
+        title: const Text('编辑区间'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+                controller: minC,
+                keyboardType: kt,
+                decoration: const InputDecoration(labelText: '起始时长（秒，必填）')),
+            TextField(
+                controller: maxC,
+                keyboardType: kt,
+                decoration:
+                    const InputDecoration(labelText: '结束时长（秒，留空=无上限）')),
+            TextField(
+                controller: fC,
+                keyboardType: kt,
+                decoration:
+                    const InputDecoration(labelText: '系数（0.5 - 1.5）')),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(d).pop(false),
+              child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.of(d).pop(true),
+              child: const Text('保存')),
+        ],
+      ),
+    );
+    if (result != true) return null;
+    final min = double.tryParse(minC.text.trim());
+    final max = maxC.text.trim().isEmpty
+        ? null
+        : double.tryParse(maxC.text.trim());
+    final f = double.tryParse(fC.text.trim());
+    if (min == null || min <= 0 || f == null || f <= 0) return current;
+    if (max != null && max <= min) return current;
+    return {'min_sec': min, 'max_sec': max, 'factor': f.clamp(0.5, 1.5)};
   }
 
   static String _labelBytes(int bytes) {

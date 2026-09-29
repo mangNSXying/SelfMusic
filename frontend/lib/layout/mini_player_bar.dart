@@ -11,6 +11,12 @@ import '../widgets/player_sheet_anim.dart';
 import '../widgets/pressable.dart';
 import 'queue_panel.dart';
 
+/// 队列按钮区上滑判定：向上速度或累计上移距离足够即视为「上滑打开播放队列」。
+/// 与整条迷你条的上滑（打开播放页）阈值一致（velocity < -700）。
+@visibleForTesting
+bool isQueueUpSwipe(double? primaryVelocity, double startY, double lastY) =>
+    (primaryVelocity ?? 0) < -700 || startY - lastY > 40;
+
 /// 底部“正在播放”迷你条：点击进入全屏播放页；提供播放控制。
 /// 尺寸较大（72 高 + 封面缩略图），便于移动端点击。
 class MiniPlayerBar extends StatefulWidget {
@@ -23,6 +29,31 @@ class MiniPlayerBar extends StatefulWidget {
 class _MiniPlayerBarState extends State<MiniPlayerBar> {
   double _dragStartY = 0;
   double _dragStartP = 1;
+
+  /// 队列按钮区域的上滑手势（子手势在竞技场胜过外层整条上滑 → 打开队列而非播放页）。
+  double? _queueDragStartY;
+  double? _queueDragLastY;
+
+  void _onQueueDragStart(DragStartDetails d) {
+    _queueDragStartY = d.globalPosition.dy;
+    _queueDragLastY = d.globalPosition.dy;
+  }
+
+  void _onQueueDragUpdate(DragUpdateDetails d) {
+    _queueDragLastY = d.globalPosition.dy;
+  }
+
+  void _onQueueDragEnd(DragEndDetails d) {
+    final start = _queueDragStartY;
+    final last = _queueDragLastY;
+    _queueDragStartY = null;
+    _queueDragLastY = null;
+    if (start == null || last == null || !mounted) return;
+    // 上滑（速度或累计位移）→ 打开播放队列；点按仍由 IconButton 原样处理开关。
+    if (isQueueUpSwipe(d.primaryVelocity, start, last)) {
+      toggleQueuePanel(context);
+    }
+  }
 
   /// 上滑跟手：播放页从底部随手指升起；松手按位移/速度吸附或落回。
   void _onDragStart(DragStartDetails d) {
@@ -190,14 +221,21 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
                 tooltip: '下一首',
                 child: const Icon(Icons.skip_next, size: 30),
               ),
-              IconButton(
-                icon: Icon(nav.queueOpen
-                    ? Icons.queue_music
-                    : Icons.queue_music_outlined),
-                iconSize: 28,
-                color: nav.queueOpen ? cs.primary : null,
-                tooltip: '播放队列',
-                onPressed: () => toggleQueuePanel(context),
+              GestureDetector(
+                // 队列按钮区上滑打开队列（子手势先命中即胜出，不触发外层播放页上滑）。
+                behavior: HitTestBehavior.translucent,
+                onVerticalDragStart: _onQueueDragStart,
+                onVerticalDragUpdate: _onQueueDragUpdate,
+                onVerticalDragEnd: _onQueueDragEnd,
+                child: IconButton(
+                  icon: Icon(nav.queueOpen
+                      ? Icons.queue_music
+                      : Icons.queue_music_outlined),
+                  iconSize: 28,
+                  color: nav.queueOpen ? cs.primary : null,
+                  tooltip: '播放队列',
+                  onPressed: () => toggleQueuePanel(context),
+                ),
               ),
             ],
           ),

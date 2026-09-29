@@ -122,6 +122,39 @@ class SyncServiceTest {
     }
 
     @Test
+    void completeManualRaisesOneNotchAndClearsStreaks() {
+        SongState s = freshState();
+        ObjectNode empty = new ObjectMapper().createObjectNode();
+        // 先累计完播/跳过各 2 次
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE, empty);
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE, empty);
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_SKIP, empty);
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_SKIP, empty);
+        // 手动完播：不依赖 streak 门槛，直接 +0.1 并清空双 streak
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE_MANUAL, empty);
+        assertEquals(0, s.getLikeStreak());
+        assertEquals(0, s.getDislikeStreak());
+        assertEquals(0, new BigDecimal("1.1").compareTo(s.getWeight()));
+    }
+
+    @Test
+    void completeManualClampedAtMaxAndFrozenKeepsWeight() {
+        SongState s = freshState();
+        ObjectNode empty = new ObjectMapper().createObjectNode();
+        s.setWeight(new BigDecimal("1.5"));
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE_MANUAL, empty);
+        assertEquals(0, new BigDecimal("1.5").compareTo(s.getWeight()));
+
+        SongState f = freshState();
+        f.setFrozen(true);
+        f.setWeight(new BigDecimal("0.5"));
+        SyncService.applySongEvent(f, SyncEventTypes.SONG_COMPLETE_MANUAL, empty);
+        assertEquals(0, new BigDecimal("0.5").compareTo(f.getWeight()));
+        assertEquals(0, f.getLikeStreak());
+        assertEquals(0, f.getDislikeStreak());
+    }
+
+    @Test
     void unknownSongEventThrows() {
         SongState s = freshState();
         BizException ex = assertThrows(BizException.class, () ->

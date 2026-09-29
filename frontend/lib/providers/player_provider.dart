@@ -21,6 +21,7 @@ import '../services/selfmusic_audio_handler.dart';
 import '../utils/lrc_parser.dart';
 import '../utils/play_stats.dart';
 import '../utils/song_title_format.dart';
+import '../utils/weight_curve.dart';
 import '../widgets/app_toast.dart';
 
 /// 播放时长对一次播放的完播/跳过分档（stage2.md §2.3）：
@@ -493,6 +494,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 已处理过 completed 的曲目 key（含暂停导致的二次 completed，见监听器注释）。
   String? _completedKey;
 
+  /// 当前曲是否用户手动点播（playAt/playQueue；next/prev/自动/失败重试=非手动）。
+  /// 自然完播（>95%）时在此基础上额外累计 `complete_manual` 权重 +0.1 一档。
+  bool _startedManual = false;
+
   // ---------- 装载失败与播放错误（改进.txt：后台有概率停止播放） ----------
 
   /// 装载退避重试间隔：后台网络被回收/连接超时后重建连接再试一次。
@@ -534,10 +539,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 已 dispose：生命周期回调可能晚于释放，迟到的通知栏/生命周期事件要挡住。
   bool _disposed = false;
 
-  /// Android 通知栏改走 just_audio_background 后，audio_service 的 `onTaskRemoved`
-  /// 由该包的处理器接管，而它不实现这个回调——自研 handler 里「最近任务划掉即停止
-  /// 播放」的约定会失效。改由 Flutter 生命周期兜底：划掉任务时 Activity 销毁 →
-  /// detached。
+  /// 任务被划掉（Android 通知栏路径）：停止播放但**保留断点/队列**。
+  ///
+  /// 之前这里走 `stopFromNotifier()`（会清断点），导致划掉/退出后再进入是空队列
+  /// 重新从头播放（改进.txt 修复项）。划掉任务只是结束可见 Activity，用户没说要
+  /// 丢掉进度——下次启动由断点恢复接回队列（受 resumeOnStartup 开关控制）。
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.detached || _disposed || _shuttingDown) {
@@ -547,8 +553,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 仅通知栏路径生效：与迁移前 onTaskRemoved 的触发条件一致（关掉通知栏控制时
     // 不拦截，播放继续）。
     if (!(_appSettings?.notificationControls ?? false)) return;
-    debugPrint('[play] 任务被划掉，停止播放');
-    unawaited(stopFromNotifier());
+    debugPrint('[play] 任务被划掉，停止播放（保留断点）');
+    unawaited(stopFromNotifier(clearResume: false));
   }
 
   // ---------- 下一首预热（后台切歌不再冷启动） ----------
@@ -968,7 +974,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _idx = _fusedIndexOf(index.clamp(0, resolved.length - 1), resolved);
       _leaveFor(target);
       notifyListeners();
-      await _play(target, source: source, fromPlaylist: true);
+      await _play(target, source: source, fromPlaylist: true, manual: true);
       if (resumeFromBreakpoint && playlistUuid != null) {
         await _resumeFromMirrorIfAny(playlistUuid);
       }
@@ -985,7 +991,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _idx = _fusedIndexOf(index.clamp(0, resolved.length - 1), resolved);
       _leaveFor(target);
       notifyListeners();
-      await _play(target, source: source, fromPlaylist: true);
+      await _play(target, source: source, fromPlaylist: true, manual: true);
       return;
     }
 
@@ -999,7 +1005,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _idx = _fusedIndexOf(index.clamp(0, resolved.length - 1), resolved);
       _leaveFor(target);
       notifyListeners();
-      await _play(target, source: source, fromPlaylist: true);
+      await _play(target, source: source, fromPlaylist: true, manual: true);
       return;
     }
 
@@ -1007,14 +1013,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final target = resolved[index.clamp(0, resolved.length - 1)];
     _leaveFor(target);
     notifyListeners();
-    await _play(target, source: source, fromPlaylist: false);
+    await _play(target, source: source, fromPlaylist: false, manual: true);
   }
 
   Future<void> playAt(int index, {MusicSource? source}) async {
     if (index < 0 || index >= _queue.length) return;
     _leaveFor(_queue[index]);
     _idx = index;
-    await _play(_queue[_idx], source: source, fromPlaylist: true);
+    await _play(_queue[_idx], source: source, fromPlaylist: true, manual: true);
   }
 
   /// 以本地索引最新行纠正旧快照（歌单快照/断点恢复可能携带补读前的数据）：
@@ -1047,11 +1053,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// [fromPlaylist]：锚定列表内播放（推入深层末尾）；false = 外部点歌（替换末尾）。
   /// [autoAdvanceOnFailure]：自动续播链路（自然播完/失败跳歌）专用——装载彻底失败
   /// 时不逐首弹 toast，直接跳下一首（见 [_autoSkipAfterFailure]）。
+  /// [manual]：本曲是否用户手动点播（playAt/playQueue）——自然完播时额外走
+  /// `complete_manual` 权重 +0.1 一档（改进.txt 功能7）；next/prev/自动/失败重试均非手动。
   Future<void> _play(Song s,
       {MusicSource? source,
       bool play = true,
       bool fromPlaylist = true,
-      bool autoAdvanceOnFailure = false}) async {
+      bool autoAdvanceOnFailure = false,
+      bool manual = false}) async {
     // 连按切歌 guard：每次 _play 领一个单调令牌，后续 await 间隙若令牌过期
     //（更新的切歌已接管），静默丢弃，不报错、不覆盖、不触发副作用。
     // 解决了快速 next/prev 时旧 setUrl 的 connection abort / source error  toast 刷屏。
@@ -1082,6 +1091,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 立即切换当前曲目并通知：后面的网络装载/缓冲再慢，播放页也先显示新曲。
       _current = cur;
       _curSource = src;
+      // 记录本次起始是否用户手动点播（改进.txt 功能7 完播判定用；任何新起始都会覆盖）。
+      _startedManual = manual;
       notifyListeners();
       if (src == null || !src.supportsDirect) {
         // 无本地源（如同步快照行且本机未配置对应源）：不崩，提示后由调用方决定。
@@ -1517,8 +1528,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 加权抽样的下标版（队列下一首与歌单起播共用）：
   /// 在 [pool] 中排除 [exclude] 后按 factor 抽样，返回命中下标；池空返回 null。
+  /// 已应用时长削弱（改进.txt 功能8）：effective = factor × 时长系数，钳回 [0.5,1.5]。
   int? _weightedPickIndex(List<Song> pool, Song? exclude) {
     if (pool.isEmpty) return null;
+    final curve = _durationCurve;
     var candidates = <int>[
       for (var i = 0; i < pool.length; i++)
         if (exclude == null || !_same(pool[i], exclude)) i,
@@ -1529,8 +1542,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     var total = 0.0;
     for (final i in candidates) {
       final f = _weight?.factorOf(pool[i]) ?? SongWeightStore.defaultFactor;
-      weights.add(f);
-      total += f;
+      final effective = (f *
+              curve.multiplierFor(pool[i].duration?.toDouble()))
+          .clamp(SongWeightStore.minFactor, SongWeightStore.maxFactor);
+      weights.add(effective);
+      total += effective;
     }
     var rnd = Random().nextDouble() * total;
     var picked = candidates.first;
@@ -1542,6 +1558,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
     return picked;
+  }
+
+  /// 时长削弱曲线（设置>歌曲）：仅影响加权抽样的即时计算，不落库。
+  WeightCurve get _durationCurve {
+    final s = _appSettings;
+    if (s == null || !s.weightCurveEnabled) return const WeightCurve();
+    return WeightCurve.fromSettings(true, s.weightCurveSegments);
   }
 
   /// 歌单「播放」的起始下标（改进.txt：按当前播放顺序决定，而非固定从头）：
@@ -1587,14 +1610,20 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final w = _weight;
     if (w == null) return;
     final j = judgeWeightRatio(player.duration, position);
+    // 用户手动点播并自然完播（>95%）：额外记一次 complete_manual——权重直接 +0.1
+    // 一档并清空双 streak（改进.txt 功能7）。非手动起点（next/prev/自动/失败重试）不触发。
+    final manual = _startedManual;
     if (j == WeightJudgement.complete) {
       w.onCompleted(s);
+      if (manual) w.onCompletedManual(s);
     } else if (j == WeightJudgement.skip) {
       w.onSkipped(s);
     } else if (j == WeightJudgement.none && completed) {
       // 时长不可判定但自然结束：补偿记一次完播。
       w.onCompleted(s);
+      if (manual) w.onCompletedManual(s);
     }
+    _startedManual = false;
   }
 
   /// 手动离开当前歌前调用（避免对同一首重复判定）。
@@ -1644,9 +1673,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _syncSystemMedia();
   }
 
-  /// 通知栏「停止」/ 划掉最近任务：停止播放并清除断点，
+  /// 通知栏「停止」/ 任务被划掉：停止播放；默认清断点（通知栏「停止」= 用户显式
+  /// 停掉，与丢弃队列一致），划掉任务路径传 `clearResume: false` 保留断点/队列。
   /// 处理器的 `super.stop()` 随后把状态置 idle，前台服务/通知随之结束。
-  Future<void> stopFromNotifier() async {
+  Future<void> stopFromNotifier({bool clearResume = true}) async {
     _fadeTimer?.cancel();
     _fadingPause = false;
     try {
@@ -1654,7 +1684,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) {
       // 平台停止失败不阻塞退出流程。
     }
-    clearResumeState();
+    if (clearResume) clearResumeState();
     notifyListeners();
   }
 

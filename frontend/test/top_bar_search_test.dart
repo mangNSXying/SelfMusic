@@ -43,4 +43,46 @@ void main() {
     expect(nav.search, '');
     expect(editable.focusNode.hasFocus, isTrue);
   });
+
+  testWidgets('顶栏搜索：点击搜索框外 / 键盘提交后失焦，还原输入法收起',
+      (tester) async {
+    final nav = NavigationProvider();
+    await tester.pumpWidget(
+      ChangeNotifierProvider<NavigationProvider>.value(
+        value: nav,
+        child: MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                TopBar(onSidebarToggle: () {}),
+                const Expanded(child: Center(child: Text('空白区'))),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.enterText(find.byType(TextField), 'abc');
+    await tester.pump();
+    var editable = tester.widget<EditableText>(find.byType(EditableText));
+    expect(editable.focusNode.hasFocus, isTrue);
+
+    // 点击搜索框外 → 失焦（onTapOutside）。
+    await tester.tapAt(tester.getCenter(find.text('空白区')));
+    await tester.pump();
+    editable = tester.widget<EditableText>(find.byType(EditableText));
+    expect(editable.focusNode.hasFocus, isFalse);
+
+    // 再次聚焦并键盘「搜索」提交 → 与手动收起输入框等价，失焦。
+    await tester.tap(find.byType(TextField));
+    await tester.pump();
+    editable = tester.widget<EditableText>(find.byType(EditableText));
+    expect(editable.focusNode.hasFocus, isTrue);
+    await tester.testTextInput.receiveAction(TextInputAction.search);
+    await tester.pump();
+    editable = tester.widget<EditableText>(find.byType(EditableText));
+    expect(editable.focusNode.hasFocus, isFalse);
+    expect(nav.search, 'abc');
+  });
 }

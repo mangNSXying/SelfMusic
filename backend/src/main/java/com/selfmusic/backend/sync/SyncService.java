@@ -101,6 +101,15 @@ public class SyncService {
                     song.setDislikeStreak(0);
                 }
             }
+            case SyncEventTypes.SONG_COMPLETE_MANUAL -> {
+                // 手动点播自然完播：直接提高一档权重 + 清空双 streak。
+                // 「不喜欢」锁定态不动权重（与 complete/skip 一致，锁定最低优先级最高）。
+                song.setLikeStreak(0);
+                song.setDislikeStreak(0);
+                if (!song.isFrozen()) {
+                    song.setWeight(factor(song).add(FACTOR_STEP).min(FACTOR_MAX));
+                }
+            }
             case SyncEventTypes.SONG_LIKED -> {
                 song.setFavorite(true);
                 song.setWeight(FACTOR_MAX);

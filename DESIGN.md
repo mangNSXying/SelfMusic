@@ -334,7 +334,7 @@ TokenFilter (OncePerRequestFilter)
 | `data/sources/` | ★ Source 抽象层（LocalDirect / WebdavDirect / SmbDirect）+ DirectAudioSource |
 | `data/local/` | 本地库（`schema` 建表迁移 + `db_writer` 写隔离 + `local_index` 门面）+ 纯 Dart 头部解析 + 各 Store 封装 |
 | `models/` `utils/` | 数据模型（Song / Album / Artist）；纯工具（时长格式、标题显示格式、LRC 解析） |
-| `widgets/` | 共享组件（SongTile、CoverThumb、歌词页、加入·编辑歌单、列表·卡片切换、SortMenuButton 等）。`SongTile` 的 leading 恒为 `CoverThumb`（多选态为复选框），**播放指示 `Icons.graphic_eq` 跟在标题之后**而非顶替封面，由调用方传 `playing`（`PlayerProvider.isCurrent(s)`）；`SortMenuButton` 为两行合一弹窗：字段行 + 行内上下箭头，点箭头选方向、点字段名翻转方向 |
+| `widgets/` | 共享组件（SongTile、CoverThumb、歌词页、加入·编辑歌单、列表·卡片切换、SortMenuButton、**AppToast 浮层弹窗**等）。`SongTile` 的 leading 恒为 `CoverThumb`（多选态为复选框），**播放指示 `Icons.graphic_eq` 跟在标题之后**而非顶替封面，由调用方传 `playing`（`PlayerProvider.isCurrent(s)`）；`SortMenuButton` 为两行合一弹窗：字段行 + 行内上下箭头，点箭头选方向、点字段名翻转方向。**AppToast**（改进.txt §1-1/1-2）：错误与成功统一 toast、不侵占 UI 文字；等宽浮层弹窗——强调色半透明背景（错误保留红 + 加透明度）、文字居中、`IgnorePointer` **点击穿透不阻碍被遮挡控件**；经根 `appNavigatorKey` 弹入 Overlay，同一时刻仅最新一条 |
 | `platform/` | ★ 平台收口层：平台差异收敛于此，新增平台只补 `platform/<target>/`，不动上层 |
 | `screens/` | 内容区 / 歌单 / 播放源 / 源内浏览 / 设置 / 播放页 / 配对 / 设备管理 |
 
@@ -533,16 +533,27 @@ factor ∈ [0.5, 1.5]，连续取值、步长 0.1，初始 1.0：
 n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮中播放多次、不喜欢的歌可能要若干轮才播一次，
 无固定"单轮"长度，每步独立随机采样。
 
+**时长削弱**（改进.txt 功能8，设置`>歌曲`：`curve_weight_enabled` + `curve_weight_segments`）：
+`_weightedPickIndex` 在抽样时按歌曲时长乘分段系数 `effective = factor × curve(duration)` 再钳回 [0.5,1.5]。
+分段作用域 `[min,max)` 命中第一段即止，`max=null` 表示「超过 min 恒生效」（即「超过设定值」的开启要点），
+未命中 / 时长未知 = 1.0（不削弱）。**仅抽样侧即时计算**：不落库、不改 `play_meta`、服务端零改动；
+队列下一首与歌单加权起播共用同一入口。
+
 事件规则（阶段 2 为**纯客户端本地**落地，后端逻辑与服务端一致、以服务端为准，阶段 5 再接同步上推）：
 
 | 事件 | 触发 | 效果 |
 |------|------|------|
-| complete | 自然结束且播放比例 ≥70% | like_streak++，dislike_streak=0；非锁定态 like_streak≥3 → factor=min(1.5, factor+0.1)、streak 清零；不喜欢锁定态只记 streak 不调权 |
-| skip | 被 next/prev/换歌打断且比例 <70% | dislike_streak++，like_streak=0；非锁定态 dislike_streak≥3 → factor=max(0.5, factor−0.1)、streak 清零；不喜欢锁定态只记 streak 不调权 |
+| complete | 自然结束且播放比例 >95% | like_streak++，dislike_streak=0；非锁定态 like_streak≥3 → factor=min(1.5, factor+0.1)、streak 清零；不喜欢锁定态只记 streak 不调权 |
+| complete_manual | **用户手动点播**且自然完播（>95%；时长不可判定而自然结束也按手动完播记一行）+0.1 直达一档 | **like_streak=0、dislike_streak=0，factor=min(1.5, factor+0.1)**（不依赖 3 次门槛——主动点选并听完本身就是强正面信号，改进.txt 功能7）；不喜欢锁定态不动权重 |
+| skip | 被 next/prev/换歌打断且比例 <30% | dislike_streak++，like_streak=0；非锁定态 dislike_streak≥3 → factor=max(0.5, factor−0.1)、streak 清零；不喜欢锁定态只记 streak 不调权 |
 | liked | 手动喜欢 / 收藏 | favorite=true，factor=1.5，解除「不喜欢」锁定（frozen=false） |
 | unfavorite | 取消喜欢 / 收藏 | favorite=false；非锁定态 factor 回 1.0；不喜欢锁定态保持最低权重 |
 | disliked | 手动不喜欢（开关式） | favorite 不变；开 → factor=0.5 且 **frozen=true（权重锁定最低、跳过自动调权）**；关 → 解锁回 1.0 |
 | reset | 手动重置 | 双 streak 清零，factor 回 1.0，解除「不喜欢」锁定 |
+
+> complete_manual 的触发集合：仅**用户主动选择**（playAt / playQueue / 播放页点行 / 歌单「播放全部」）——`_play(manual: true)`
+> 起始的歌自然完播才计数；`next()`/`prev()`/自动下一首/失败重试均为非手动起点（`manual: false`），不算。后端 `SyncService`
+> 与本地 `db_writer` 严格镜像同一语义（含「不喜欢」锁定态不动权重），事件经 `song.complete_manual` 同步。
 
 播放模式：`sequence`（当前顺序播放，播完即停）/ `loopList`（列表循环）/ `loopOne`（单曲循环）/
 `weighted`（加权随机），切换入口播放页 + 队列面板；`next()` 与自动下一首按当前模式路由。

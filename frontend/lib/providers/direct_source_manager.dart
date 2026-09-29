@@ -64,6 +64,17 @@ class DirectSourceManager extends ChangeNotifier {
   int _metaVersion = 0;
   int get metaVersion => _metaVersion;
 
+  /// 「忽略音频（时长/大小）」等会影响列表内容的设置变更版本号：列表类 UI
+  /// 监听它重查（改进.txt 功能6：设置变更后已入库歌曲也按新规则过滤）。
+  int _settingsVersion = 0;
+  int get settingsVersion => _settingsVersion;
+
+  /// 设置变更后调用：通知列表类页面重查（歌曲/专辑/歌手/喜欢/源浏览 + 计数）。
+  void settingsChanged() {
+    _settingsVersion++;
+    notifyListeners();
+  }
+
   // ---------- 扫描：进度 / 取消 / 自动触发 ----------
 
   final Map<String, ScanToken> _scanTokens = {};
@@ -611,28 +622,51 @@ class DirectSourceManager extends ChangeNotifier {
     }
   }
 
+  /// 「忽略音频（时长/大小）」读取期过滤（改进.txt 功能6）：已入库歌曲
+  /// 按当前设置即时过滤；设置本身就是阈值，0=关。
+  ({int minDurationSec, int minSizeBytes}) get _ignoreFilters => (
+        minDurationSec: settings.scanIgnoreMinDurationSec,
+        minSizeBytes: settings.scanIgnoreMinSizeBytes,
+      );
+
   /// 检索某源索引的歌（本地索引）。
   List<Song> songsOf(String? sourceKey, {String? query}) {
     if (sourceKey == null) return const [];
-    return index.searchSongs(sourceKey: sourceKey, query: query);
+    final f = _ignoreFilters;
+    return index.searchSongs(
+        sourceKey: sourceKey,
+        query: query,
+        minDurationSec: f.minDurationSec,
+        minSizeBytes: f.minSizeBytes);
   }
 
-  int countOf(String sourceKey) => index.countSongs(sourceKey);
+  int countOf(String sourceKey) {
+    final f = _ignoreFilters;
+    return index.countSongs(sourceKey,
+        minDurationSec: f.minDurationSec, minSizeBytes: f.minSizeBytes);
+  }
 
   /// 所有直连源本地索引歌曲的总和（供全局图库合并）。
   List<Song> allSongs({String? query}) {
+    final f = _ignoreFilters;
     final out = <Song>[];
     for (final s in _sources) {
-      out.addAll(index.searchSongs(sourceKey: s.key, query: query));
+      out.addAll(index.searchSongs(
+          sourceKey: s.key,
+          query: query,
+          minDurationSec: f.minDurationSec,
+          minSizeBytes: f.minSizeBytes));
     }
     return out;
   }
 
   /// 所有直连源歌曲总数。
   int get allSongsCount {
+    final f = _ignoreFilters;
     var n = 0;
     for (final s in _sources) {
-      n += index.countSongs(s.key);
+      n += index.countSongs(s.key,
+          minDurationSec: f.minDurationSec, minSizeBytes: f.minSizeBytes);
     }
     return n;
   }
@@ -653,8 +687,12 @@ class DirectSourceManager extends ChangeNotifier {
     }
   }
 
-  /// 全部已收藏歌曲（统一来自 play_meta 快照）。
-  List<Song> favoriteSongs() => index.likedSongs();
+  /// 全部已收藏歌曲（统一来自 play_meta 快照，忽略音频规则仅作用于直连歌）。
+  List<Song> favoriteSongs() {
+    final f = _ignoreFilters;
+    return index.likedSongs(
+        minDurationSec: f.minDurationSec, minSizeBytes: f.minSizeBytes);
+  }
 
   /// 是否处于「不喜欢」态（权重锁定最低）。
   bool isDisliked(Song s) => weight.isDisliked(s);

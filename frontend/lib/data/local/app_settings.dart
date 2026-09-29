@@ -116,6 +116,10 @@ class AppSettings {
   /// 歌曲标题显示格式（settings.md §3.4 歌曲）：默认 song.artist - song.title。
   static const String kSongTitleFormat = 'song_title_format';
 
+  /// 时长削弱（改进.txt 功能8）：加权抽样时按歌曲时长乘以分段削弱系数。
+  static const String kCurveWeightEnabled = 'curve_weight_enabled';
+  static const String kCurveWeightSegments = 'curve_weight_segments';
+
   /// 集合页展示形式（列表/卡片）：歌单 / 播放源 / 专辑 / 歌手。
   static const String kViewModePlaylists = 'view_mode_playlists';
   static const String kViewModeSources = 'view_mode_sources';
@@ -373,6 +377,39 @@ class AppSettings {
     index.settingsSet(kEqBands, jsonEncode(norm.map((e) => e.round())));
   }
 
+  // ---------- 播放分区·时长削弱（改进.txt 功能8） ----------
+
+  /// 时长削弱总开关（默认关）。开启且配置了分段时，加权抽样按歌曲时长乘系数。
+  bool get weightCurveEnabled =>
+      (index.settingsGet(kCurveWeightEnabled) ?? '0') == '1';
+  set weightCurveEnabled(bool v) =>
+      index.settingsSet(kCurveWeightEnabled, v ? '1' : '0');
+
+  /// 时长-权重分段函数（默认空=不削弱）。条目 `{min_sec, max_sec|null, factor}`，
+  /// 作用域为 [min_sec, max_sec)（max_sec 为空=时长 ≥ min_sec 起恒生效，可作「超过
+  /// 设定值」的开启要点）；区间不重叠，命中第一段即止，未命中返回 1.0（不削弱）。
+  /// 非法/空数据回退空列表。
+  List<Map<String, Object?>> get weightCurveSegments {
+    final raw = index.settingsGet(kCurveWeightSegments);
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      final l = jsonDecode(raw) as List;
+      return [
+        for (final e in l)
+          if (e is Map)
+            Map<String, Object?>.from(e)
+                .cast<String, Object?>()
+                .map((k, v) => MapEntry(k, v)),
+      ];
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  set weightCurveSegments(List<Map<String, Object?>> v) {
+    index.settingsSet(kCurveWeightSegments, jsonEncode(v));
+  }
+
   // ---------- 界面分区（settings.md §3.7） ----------
 
   /// 播放页（播放/歌词）切换过渡动画（默认淡入）。
@@ -487,6 +524,8 @@ class AppSettings {
     kFadeDurationMs,
     kEqualizerEnabled,
     kEqBands,
+    kCurveWeightEnabled,
+    kCurveWeightSegments,
     kAudioFocusEnabled,
     kNotificationControls,
     kPlayerTransition,
