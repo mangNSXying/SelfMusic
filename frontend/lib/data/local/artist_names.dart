@@ -21,6 +21,93 @@ String normalizeArtistName(String raw) {
 /// 需求移除，避免不同真实身份被错误的字符折叠捏合成一个。）
 String artistCanonicalKey(String raw) => raw;
 
+/// 歌手原串 → 聚合身份键（canonical_key）：CV 注记按「角色|人物」（不同拼写仍
+/// 各自成身份，经 mbid 合流）；其余取整串原样。
+String artistCanonicalOf(String raw) {
+  final p = splitArtistPart(raw);
+  if (p.hasCv) {
+    final b = p.base.isEmpty ? p.cvName! : '${p.base}|${p.cvName}';
+    return artistCanonicalKey(b);
+  }
+  return artistCanonicalKey(raw);
+}
+
+/// 合作串拆分（「A & B」「A feat. B」）：识别 [&]/[＆] 与独立 token
+/// feat./feat（词边界，defeat 不误拆）。返回原串子串（trim），空段丢弃；
+/// 无分隔符或无实质拆分时返回 [raw] 原样（非合作歌行为不变）。
+///
+/// 分隔符只做 `＆→&` 一层折半，各部分保留原字符——与「不做归一化」决策一致
+/// （`ＡＢＢＡ & 内田真礼` → `ＡＢＢＡ`、`内田真礼`）。
+List<String> artistCollabParts(String raw) {
+  final out = <String>[];
+  final n = raw.length;
+  final lower = raw.toLowerCase();
+  var start = 0;
+  var i = 0;
+  var sawSep = false;
+  void cut(int before) {
+    final seg = raw.substring(start, before).trim();
+    if (seg.isNotEmpty) out.add(seg);
+  }
+
+  bool wordChar(int cu) =>
+      (cu >= 0x30 && cu <= 0x39) || // 0-9
+      (cu >= 0x41 && cu <= 0x5A) ||
+      (cu >= 0x61 && cu <= 0x7A) ||
+      cu == 0x5F; // _
+
+  bool ws(int cu) =>
+      cu == 0x20 || cu == 0x09 || cu == 0x0A || cu == 0x0D || cu == 0x3000;
+
+  while (i < n) {
+    final c = lower.codeUnitAt(i);
+    if (c == 0x26 || c == 0xFF06) {
+      // '&' / 全角 '＆'：单码点分隔符。
+      cut(i);
+      start = i + 1;
+      i += 1;
+      sawSep = true;
+      continue;
+    }
+    if (i + 4 <= n &&
+        lower.startsWith('feat', i) &&
+        (i == 0 || !wordChar(lower.codeUnitAt(i - 1)))) {
+      var end = i + 4;
+      if (end < n && lower.codeUnitAt(end) == 0x2E) {
+        // `feat.` 后不要求空白：`A feat.B` 也拆。
+        end += 1;
+      } else if (end < n && !ws(lower.codeUnitAt(end)) &&
+          lower.codeUnitAt(end) != 0x29) {
+        // `featX` 视为一个词，不拆。
+        i += 1;
+        continue;
+      }
+      cut(i);
+      start = end;
+      i = end;
+      sawSep = true;
+      continue;
+    }
+    i += 1;
+  }
+  cut(n);
+  // 真的消费了分隔符（含首尾空段）按拆分结果走；否则视为非合作串原样返回。
+  return sawSep ? out : [raw];
+}
+
+/// 歌手原串 → (canonical, 显示名) 身份列表：合作串逐段一个身份（段内去重，
+/// 如 `A & A`），非合作串单个。显示名取对应原串段，供身份行 display_name。
+List<(String, String)> artistCollabCanonicals(String raw) {
+  final out = <(String, String)>[];
+  final seen = <String>{};
+  for (final part in artistCollabParts(raw)) {
+    final canon = artistCanonicalOf(part);
+    if (canon.isEmpty || !seen.add(canon)) continue;
+    out.add((canon, part));
+  }
+  return out;
+}
+
 /// 「歌手名 × 声优」拆分结果：基名与括号内人物名。
 /// 例：`纱路（CV:内田真礼）` → base=`纱路`，cvName=`内田真礼`。
 /// 无显式声优注记时 cvName 为 null（整串视为基名，括号原样保留）。

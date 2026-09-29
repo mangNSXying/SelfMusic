@@ -61,6 +61,33 @@ void main() {
     expect(artistCanonicalKey('  ABBA  '), '  ABBA  ');
   });
 
+  test('合作串拆分：& / 全角＆ / feat. / feat，只剩一段则原样', () {
+    expect(artistCollabParts('周杰伦 & 费玉清'), ['周杰伦', '费玉清']);
+    expect(artistCollabParts('ABBA＆Boney M'), ['ABBA', 'Boney M']);
+    expect(artistCollabParts('A&B'), ['A', 'B']);
+    expect(artistCollabParts('A & B & C'), ['A', 'B', 'C']);
+    expect(artistCollabParts('A feat. B'), ['A', 'B']);
+    expect(artistCollabParts('A feat B'), ['A', 'B']);
+    expect(artistCollabParts('A feat.B'), ['A', 'B']);
+    // 空段丢弃；无实质拆分返回原串（非合作歌行为不变）。
+    expect(artistCollabParts(' & A'), ['A']);
+    expect(artistCollabParts('ABBA'), ['ABBA']);
+    expect(artistCollabParts('defeat'), ['defeat']);
+    expect(artistCollabParts('Bread & Butter Shop'), ['Bread', 'Butter Shop']);
+  });
+
+  test('合作串身份键：各段独立 canonical，段内去重', () {
+    expect(artistCollabCanonicals('周杰伦 & 费玉清'),
+        [('周杰伦', '周杰伦'), ('费玉清', '费玉清')]);
+    // CV 注记挂在末段：`A & 纱路(CV:X)` → A 与 纱路|X。
+    expect(artistCollabCanonicals('宇多田光 & 纱路(CV:内田真礼)'),
+        [('宇多田光', '宇多田光'), ('纱路|内田真礼', '纱路(CV:内田真礼)')]);
+    // 段内去重：A & A 只留一个。
+    expect(artistCollabCanonicals('A & A'), [('A', 'A')]);
+    // 非合作串：单个身份、显示名=原串。
+    expect(artistCollabCanonicals('ABBA'), [('ABBA', 'ABBA')]);
+  });
+
   test('括号人直解：CV 全角/半角都解出人物名，feat./作品名括号不误判', () {
     final full = splitArtistPart('纱路（ＣＶ：内田真礼）');
     expect(full.hasCv, isTrue);
@@ -271,6 +298,106 @@ void main() {
       // names JSON 已按「primary + 别名」写出可读结构。
       final row = index.artistRowByCanonical('AAA')!;
       expect(row.names.single['name'], 'AAA');
+    } finally {
+      index.close();
+      dir.deleteSync(recursive: true);
+    }
+  });
+
+  test('合作串：A & B 拆成两个独立身份，各自映射齐全', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([_song('a', '周杰伦 & 费玉清')]);
+      await index.reconcileArtists();
+
+      final stats = index.artistStats();
+      expect(stats['total'], 2);
+      expect(stats['mapped'], 2);
+      expect(stats['pending'], 2);
+
+      final a = index.artistRowByCanonical('周杰伦')!;
+      final b = index.artistRowByCanonical('费玉清')!;
+      expect(a.artistKey, isNot(b.artistKey));
+      expect(a.displayName, '周杰伦');
+      expect(b.displayName, '费玉清');
+
+      final groups = index.identityArtistGroups();
+      expect(groups, hasLength(2));
+      expect(groups.map((g) => g.name).toSet(), {'周杰伦', '费玉清'});
+      expect(groups.every((g) => g.songCount == 1), isTrue);
+      // 同一首歌同时挂在两身份下。
+      expect(index.identitySongs(a.artistKey), hasLength(1));
+      expect(index.identitySongs(b.artistKey), hasLength(1));
+
+      // 幂等：二次 reconcile 不重建、映射稳定。
+      await index.reconcileArtists();
+      expect(index.artistStats()['total'], 2);
+      expect(index.identityArtistGroups(), hasLength(2));
+    } finally {
+      index.close();
+      dir.deleteSync(recursive: true);
+    }
+  });
+
+  test('合作串与独立出现合并：周杰伦 & 费玉清 + 独唱周杰伦 → songCount=2', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([
+        _song('a', '周杰伦 & 费玉清'),
+        _song('b', '周杰伦'),
+      ]);
+      await index.reconcileArtists();
+
+      final groups = index.identityArtistGroups();
+      expect(groups, hasLength(2));
+      final zhou = groups.firstWhere((g) => g.name == '周杰伦');
+      final fei = groups.firstWhere((g) => g.name == '费玉清');
+      expect(zhou.songCount, 2);
+      expect(fei.songCount, 1);
+    } finally {
+      index.close();
+      dir.deleteSync(recursive: true);
+    }
+  });
+
+  test('合作串 feat/全角＆/CV 段：都能独立成身份', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([
+        _song('a', 'A feat. B'),
+        _song('b', '宇多田光＆纱路(CV:内田真礼)'),
+      ]);
+      await index.reconcileArtists();
+
+      final rows = index.identityArtistGroups();
+      expect(rows.map((g) => g.name).toSet(),
+          {'A', 'B', '宇多田光', '纱路(CV:内田真礼)'});
+      expect(index.artistRowByCanonical('A'), isNotNull);
+      expect(index.artistRowByCanonical('B'), isNotNull);
+      expect(index.artistRowByCanonical('宇多田光'), isNotNull);
+      expect(index.artistRowByCanonical('纱路|内田真礼'), isNotNull);
+      expect(index.artistStats()['total'], 4);
+      expect(index.artistStats()['mapped'], 4);
+    } finally {
+      index.close();
+      dir.deleteSync(recursive: true);
+    }
+  });
+
+  test('合作串清空歌手后：两身份与映射一并回收', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([_song('a', 'A & B')]);
+      await index.reconcileArtists();
+      expect(index.identityArtistGroups(), hasLength(2));
+
+      await index.updateSongUserMeta('local:test', 'a', artist: '');
+      await index.reconcileArtists();
+
+      expect(index.artistRowByCanonical('A'), isNull);
+      expect(index.artistRowByCanonical('B'), isNull);
+      expect(index.artistStats()['mapped'], 0);
+      expect(index.identityArtistGroups(), isEmpty);
     } finally {
       index.close();
       dir.deleteSync(recursive: true);
