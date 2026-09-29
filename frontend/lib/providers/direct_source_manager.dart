@@ -214,12 +214,18 @@ class DirectSourceManager extends ChangeNotifier {
   }
 
   Future<void> reloadSourcesFromIndex() async {
-    _sources.clear();
+    // 先完整重建新列表再整体替换：_sources 全程非空，避免「先 clear 再逐个 await
+    // 重建」留下的空窗被并发读取（如启动断点恢复的 sourceByKey）命中，误报
+    // 「找不到该歌曲的播放源」。webdav 源重建含 SecretStore 异步读，空隙真实存在。
+    final rebuilt = <MusicSource>[];
     for (final r in index.listSources()) {
       if (!r.enabled) continue;
       final src = await _buildRowFromRow(r);
-      if (src != null) _sources.add(src);
+      if (src != null) rebuilt.add(src);
     }
+    _sources
+      ..clear()
+      ..addAll(rebuilt);
     restartAutoScan();
     notifyListeners();
   }

@@ -820,6 +820,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _resolver = resolver;
   }
 
+  /// 该歌曲在本机是否有可直连的播放源（断点恢复跳过不可播曲目用）。
+  bool _playable(MusicSource? src) => src != null && src.supportsDirect;
+
   /// 关联本地索引（断点持久化/恢复）与权重存储（事件调权）。
   void attachPersistence({
     required LocalIndex index,
@@ -1888,8 +1891,23 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
         _current = _queue[0];
       }
-      await _play(_current!, play: false);
-      await player.seek(Duration(milliseconds: st.positionMs));
+      // 从断点位置起装载（暂停态）：目标歌曲本机无源（如同步来的歌单行但未配置
+      // 对应源）时，静默退到其后第一首可播曲目（与 _restoreFromMirror 一致），
+      // 全部不可播则保持队列暂停、不装载——启动恢复不弹「播放失败」。
+      var resume = _idx;
+      while (resume < _queue.length &&
+          !_playable(_resolver?.call(_queue[resume].sourceKey))) {
+        resume++;
+      }
+      if (resume < _queue.length) {
+        final atBreakpoint = resume == _idx;
+        _idx = resume;
+        _current = _queue[resume];
+        await _play(_current!, play: false);
+        if (atBreakpoint && st.positionMs > 0) {
+          await player.seek(Duration(milliseconds: st.positionMs));
+        }
+      }
       notifyListeners();
       _syncSystemMedia();
     } catch (e) {
@@ -1908,7 +1926,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final found = songs.indexWhere((s) => _refMatches(s.sourceRef, m.sourceRef));
     var start = found < 0 ? 0 : found;
     while (start < songs.length &&
-        _resolver?.call(songs[start].sourceKey) == null) {
+        !_playable(_resolver?.call(songs[start].sourceKey))) {
       start++;
     }
     if (start >= songs.length) return false;
