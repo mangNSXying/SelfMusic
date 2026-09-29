@@ -152,8 +152,27 @@ class _BottomBar extends StatelessWidget {
     );
   }
 
-  /// 退出软件：先停止播放并释放播放器（避免 mpv 等子进程残留），再终止进程。
+  /// 退出软件：二次确认后先停止播放并释放播放器（避免 mpv 等子进程残留），再终止进程。
   Future<void> _exitApp(BuildContext context) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('退出软件'),
+        content: const Text('确定要退出吗？退出后播放队列会保留，下次启动可继续。'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(c).pop(false),
+              child: const Text('取消')),
+          FilledButton(
+            style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(c).colorScheme.error),
+            onPressed: () => Navigator.of(c).pop(true),
+            child: const Text('退出'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
     await context.read<PlayerProvider>().shutdown();
     exit(0);
   }

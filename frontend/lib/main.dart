@@ -215,7 +215,6 @@ class Root extends StatefulWidget {
 
 class _RootState extends State<Root> with TickerProviderStateMixin {
   bool _expiryDialogShown = false;
-  DateTime? _lastBackPressed;
 
   /// 播放页悬浮层动画唯一控制器（壳常驻 + 播放页悬浮层跟手共用）。
   late final PlayerSheetAnimator _sheetAnim;
@@ -279,25 +278,19 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
   }
 
   /// 统一返回：先按层级逐级回退（设置 → 队列 → 源内/歌单详情 → 内容页 → 播放页），
-  /// 已在最底层（播放页）时「再按一次退出」（2 秒内再次按下才真正退出）。
+  /// 已在最底层时不再二次确认：Android 直接 `SystemNavigator.pop()` 回桌面
+  /// （audio_service 前台服务继续、播放不中断）；桌面端直接退出进程。
   void _onPopInvoked(bool didPop, Object? result) {
     if (didPop) return;
     if (context.read<NavigationProvider>().backToPrevious()) return;
-    final now = DateTime.now();
-    if (_lastBackPressed != null &&
-        now.difference(_lastBackPressed!) < const Duration(seconds: 2)) {
-      if (Platform.isAndroid) {
-        // 只结束 Activity：audio_service 前台服务继续，后台播放不中断。
-        SystemNavigator.pop();
-      } else {
-        // 桌面端退出前先释放播放器（mpv 子进程），再终止进程。
-        final player = context.read<PlayerProvider>();
-        player.shutdown().whenComplete(() => exit(0));
-      }
-      return;
+    if (Platform.isAndroid) {
+      // 只结束 Activity：audio_service 前台服务继续，后台播放不中断。
+      SystemNavigator.pop();
+    } else {
+      // 桌面端退出前先释放播放器（mpv 子进程），再终止进程。
+      final player = context.read<PlayerProvider>();
+      player.shutdown().whenComplete(() => exit(0));
     }
-    _lastBackPressed = now;
-    AppToast.show('再按一次退出软件', isError: false);
   }
 
   @override

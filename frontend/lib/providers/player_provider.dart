@@ -523,10 +523,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 已 dispose：生命周期回调可能晚于释放，迟到的通知栏/生命周期事件要挡住。
   bool _disposed = false;
 
-  /// Android 通知栏改走 just_audio_background 后，audio_service 的 `onTaskRemoved`
-  /// 由该包的处理器接管，而它不实现这个回调——自研 handler 里「最近任务划掉即停止
-  /// 播放」的约定会失效。改由 Flutter 生命周期兜底：划掉任务时 Activity 销毁 →
-  /// detached。
+  /// 任务被划掉（Android 通知栏路径）：停止播放但**保留断点/队列**。
+  ///
+  /// 之前这里走 `stopFromNotifier()`（会清断点），导致划掉/退出后再进入是空队列
+  /// 重新从头播放（改进.txt 修复项）。划掉任务只是结束可见 Activity，用户没说要
+  /// 丢掉进度——下次启动由断点恢复接回队列（受 resumeOnStartup 开关控制）。
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.detached || _disposed || _shuttingDown) {
@@ -536,8 +537,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 仅通知栏路径生效：与迁移前 onTaskRemoved 的触发条件一致（关掉通知栏控制时
     // 不拦截，播放继续）。
     if (!(_appSettings?.notificationControls ?? false)) return;
-    debugPrint('[play] 任务被划掉，停止播放');
-    unawaited(stopFromNotifier());
+    debugPrint('[play] 任务被划掉，停止播放（保留断点）');
+    unawaited(stopFromNotifier(clearResume: false));
   }
 
   // ---------- 下一首预热（后台切歌不再冷启动） ----------
@@ -1631,9 +1632,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _syncSystemMedia();
   }
 
-  /// 通知栏「停止」/ 划掉最近任务：停止播放并清除断点，
+  /// 通知栏「停止」/ 任务被划掉：停止播放；默认清断点（通知栏「停止」= 用户显式
+  /// 停掉，与丢弃队列一致），划掉任务路径传 `clearResume: false` 保留断点/队列。
   /// 处理器的 `super.stop()` 随后把状态置 idle，前台服务/通知随之结束。
-  Future<void> stopFromNotifier() async {
+  Future<void> stopFromNotifier({bool clearResume = true}) async {
     _fadeTimer?.cancel();
     _fadingPause = false;
     try {
@@ -1641,7 +1643,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) {
       // 平台停止失败不阻塞退出流程。
     }
-    clearResumeState();
+    if (clearResume) clearResumeState();
     notifyListeners();
   }
 

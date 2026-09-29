@@ -77,9 +77,11 @@ class SelfMusicAudioHandler extends BaseAudioHandler {
     await super.stop();
   }
 
-  /// 手动杀后台（最近任务划掉）：停止播放，不继续驻留后台。
+  /// 手动杀后台（最近任务划掉）：停止播放，但保留断点/队列（下次启动续播）。
+  /// 仅通知栏「停止」按钮会真正丢弃断点。
   @override
   Future<void> onTaskRemoved() async {
-    await stop();
+    await _player?.stopFromNotifier(clearResume: false);
+    await super.stop();
   }
 }
