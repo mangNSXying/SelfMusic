@@ -430,6 +430,11 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 - 上游反馈（待办）：① flutter_secure_storage 支持 ohos（`_selectOptions` 放行或官方 ohos 分支）；② `sqlite3_flutter_libs` ohos 移植
 - **验证（verify-6）**：启动引导 → 服务端设置加载完成 → db-writer 内联就绪 → 直连源就绪 → 进入 runApp → 看门狗解除，全链 1.4s 点亮；进程存活无崩溃标记，FlutterView 持续输出 `Display on` / `avoidAreaChangeCallback`（视图真实渲染非白屏）
 
+其他鸿蒙配置事实（2026-09 收尾两连修，真机已验收）：
+
+- 横竖屏：module.json5 abilities 的 `orientation` 字段 **fork 模板默认缺失 = 窗口不随传感器旋转**（与 Android manifest 无 screenOrientation 的行为不一致，勿想当然）；补 `"orientation": "auto_rotation"` 即放行（Flutter 侧 `player_screen.dart` 横屏分支本就存在，纯配置层问题），控制中心旋转锁定关闭时横屏 UI 正常触发。HAP 内 module.json 可明文核对该字段
+- 应用图标：`AppScope/resources/base/media/app_icon.png` + `entry/src/main/resources/base/media/icon.png` 两个文件（模板默认 = Flutter 默认图 144×144），直接覆盖内容即可，`$media:app_icon`/`$media:icon` 引用与资源 ID 不动；图标源 `frontend/assets/selfmusic.png`（1277×1287 满铺圆角+透明四角）整幅缩放 288×288，非等比畸变 0.8% 不可见
+
 构建验证状态（2026-09）：
 - 双 SDK `flutter analyze` 零问题（ohos 3.41.9 与 stable 各自通过；两 SDK 的 pub get 会对 meta/test_api/vector_math 等 4 个 flutter_test 传递依赖来回改写 lock，属已知无害现象）
 - `flutter build hap --debug` 编译链全通：ArkTS（三插件 GeneratedPluginRegistrant）+ native（libfvp.so/libmdk.so arm64-v8a）+ Dart（kernel_blob JIT），assembleHap 出 signed hap
@@ -451,6 +456,8 @@ devecocli run   # 或 hdc install <hap 路径> 后手动启动
 # 5. 远程（锁屏）启动：aa start 报 10106102 (unlock screen failed) 时先唤醒屏幕
 #    hdc shell power-shell wakeup
 #    hdc shell aa start -a EntryAbility -b com.shamiko.selfmusic
+#    注意：无密码锁屏 wakeup 即可放行；安全锁屏（密码/指纹）下 wakeup + uitest 上滑
+#    均无效，10106102 仍复现——只能人工解锁设备（2026-09-29 实测）
 ```
 
 PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV 浏览 + 本地索引 + 真机点播一首歌；跑不通则按 DESIGN §9 R2 降级「仅 WebDAV 直连」。重点观察：fvp 重复 load 复位逻辑（重播同一首）、completed→自动切歌、WebDAV Basic 鉴权折叠是否被服务端/FFmpeg 接受。
