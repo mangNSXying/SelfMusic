@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 通知栏/状态栏小图标（just_audio_background androidNotificationIcon）：
+     白色音符剪影矢量。Android 通知小图标仅取 alpha 通道、由系统染色，
+     默认的 mipmap 应用图标在浅色状态栏上会糊成灰色方块。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,3v10.55c-0.59,-0.34 -1.27,-0.55 -2,-0.55 -2.21,0 -4,1.79 -4,4s1.79,4 4,4 4,-1.79 4,-4V7h4V3h-6z" />
+</vector>
