@@ -435,6 +435,17 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 - 横竖屏：module.json5 abilities 的 `orientation` 字段 **fork 模板默认缺失 = 窗口不随传感器旋转**（与 Android manifest 无 screenOrientation 的行为不一致，勿想当然）；补 `"orientation": "auto_rotation"` 即放行（Flutter 侧 `player_screen.dart` 横屏分支本就存在，纯配置层问题），控制中心旋转锁定关闭时横屏 UI 正常触发。HAP 内 module.json 可明文核对该字段
 - 应用图标：`AppScope/resources/base/media/app_icon.png` + `entry/src/main/resources/base/media/icon.png` 两个文件（模板默认 = Flutter 默认图 144×144），直接覆盖内容即可，`$media:app_icon`/`$media:icon` 引用与资源 ID 不动；图标源 `frontend/assets/selfmusic.png`（1277×1287 满铺圆角+透明四角）整幅缩放 288×288，非等比畸变 0.8% 不可见
 
+通知栏媒体播控（AVSession 桥，2026-09-29 真机验收）：
+
+- 形态差异：鸿蒙没有 Android 式应用自绘媒体通知，媒体卡由系统统一渲染（通知栏/锁屏/播控中心三处），第三方只能喂 `AVSession` 数据、不能自定义布局；接入 AVSession 后后台长时任务的常驻通知也被 AVSession 接管，**不会**再出一条"播放中"通知——媒体卡本身就是鸿蒙的通知形态
+- 架构（与 audio_handler 同构的非劫持薄转发）：`AvSessionBridge.ets`（通道 `selfmusic/avsession`，生命周期 create→元数据+播放态+命令注册→activate→`backgroundTaskManager` AUDIO_PLAYBACK 长时任务；destroy 收卡）+ `ohos_media_session.dart`（Dart 全量 sync 推送）+ `PlayerProvider.attachSystemMediaSync` 挂 `_syncSystemMedia` 既有时机；direct 监听补推收藏与内嵌歌词晚到
+- int 映射（ArkTS 侧 switch 显式映射防非法值）：播放态 playing?2:3（`PlaybackState.PLAY=2/PAUSE=3`）；LoopMode sequence→0（LOOP_MODE_SEQUENCE）/loopOne→1（**SINGLE**）/loopList→2（**LIST 非 ALL**）/weighted→3（SHUFFLE）
+- 歌词：AVMetadata.lyric 只收内嵌 LRC 文本，服务端 40960 字节上限，Dart 侧按 UTF-8 40000 截断后下发
+- module.json5：backgroundModes 必须写在 **abilities[] 条目内**（`"backgroundModes": ["audioPlayback"]`；三重证据：官方属性表/modulecheck 白名单/FAQ），配 `ohos.permission.KEEP_BACKGROUND_RUNNING`（system_grant 免 reason）
+- **封面坑（未解，暂不下发）**：AVMetadata.mediaImage 三种格式全触发服务端校验异常——PixelMap 序列化通过但 `GetMediaImageTopic checkFail`；裸路径/`file://` string 均 `isImageValid checkFail`（WriteToParcel/Unmarshalling 层）→ `AVSessionNotifyUpdateNotification failed ret=980000502`，**单个字段的校验失败会阻断整个播控卡**。当前不传封面（卡片显示应用图标），卡片机制已验证正常
+- ArkTS 坑：`MethodCall.argument()` 返回 Any，hvigor 编译器拒 Any 推断（`arkts-no-any-unknown`，**hvigor 比 arkts_check 严**）——用 argString/argNumber/argBool 类型化取参
+- 验收（2026-09-29 真机）：卡片三处出现/播放暂停上一首下一首真控制/循环模式双向同步 ✓；收藏/后台持续/歌词因 WebDAV 服务器内容缺失暂无法验收（环境问题非回归：歌单同步正常证明主服务器 API 在线，WebDAV 扫描 0 首+流缓冲无声）；启动链零回归（桥就绪与看门狗同毫秒，Dart ready 1.65s）
+
 构建验证状态（2026-09）：
 - 双 SDK `flutter analyze` 零问题（ohos 3.41.9 与 stable 各自通过；两 SDK 的 pub get 会对 meta/test_api/vector_math 等 4 个 flutter_test 传递依赖来回改写 lock，属已知无害现象）
 - `flutter build hap --debug` 编译链全通：ArkTS（三插件 GeneratedPluginRegistrant）+ native（libfvp.so/libmdk.so arm64-v8a）+ Dart（kernel_blob JIT），assembleHap 出 signed hap
