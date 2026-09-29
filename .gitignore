@@ -27,6 +27,8 @@ nginx/
 *.iml
 **/doc/api/
 *.htm*
+**temp**
+**tmp**
 # pubspec.lock 不入库：stable 与 ohos 两套 SDK 的 pub get 会互相改写部分
 # 传递依赖版本（meta/test_api 等），提交 lock 只会制造往返噪音；
 # 版本一致性由 pubspec 约束保证。

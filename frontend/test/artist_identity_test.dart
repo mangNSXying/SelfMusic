@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:selfmusic/data/local/artist_names.dart';
 import 'package:selfmusic/data/local/local_index.dart';
+import 'package:selfmusic/models/artist.dart';
 import 'package:sqlite3/open.dart';
 
 DynamicLibrary _openOnLinux() {
@@ -46,13 +47,7 @@ DirectSongRow _song(String ref, String artist) => DirectSongRow(
     );
 
 void main() {
-  // ---------- 歌手处理.txt：名称归一化 / 括号人直解（纯 Dart） ----------
-
-  test('NFKC 归一化：全角括号/冒号/CV 折半角（（ＣＶ：→(CV:）', () {
-    expect(normalizeArtistName('  纱路（ＣＶ：内田真礼）  '),
-        '纱路(CV:内田真礼)');
-    expect(normalizeArtistName('ＡＢＢＡ'), 'ABBA');
-  });
+  // ---------- 歌手处理.txt：名称预处理（剥括号 / 合作串拆分 / 原串键） ----------
 
   test('聚合键：不做归一化，原样返回（不同写法各自成身份）', () {
     expect(artistCanonicalKey('ABBA'), 'ABBA');
@@ -61,7 +56,19 @@ void main() {
     expect(artistCanonicalKey('  ABBA  '), '  ABBA  ');
   });
 
-  test('合作串拆分：& / 全角＆ / feat. / feat，只剩一段则原样', () {
+  test('剥括号：CV/声优/版本/feat 注解一律剔除，括号内分隔符不再干扰', () {
+    expect(stripParens('ココア(CV.佐倉綾音)'), 'ココア');
+    expect(stripParens('ココア(佐倉綾音)'), 'ココア');
+    expect(stripParens('ココア（佐倉綾音）'), 'ココア');
+    expect(stripParens('ココア (佐倉綾音)'), 'ココア');
+    expect(stripParens('群青(anime size)'), '群青');
+    expect(stripParens('A (feat. B)'), 'A');
+    expect(stripParens('ココア&モカ (佐倉綾音&茅野愛衣)'), 'ココア&モカ');
+    expect(stripParens('(CV:内田真礼)'), '');
+    expect(stripParens('ABBA'), 'ABBA');
+  });
+
+  test('合作串拆分：& / 全角＆ / feat. /，/、/・，只剩一段则原样', () {
     expect(artistCollabParts('周杰伦 & 费玉清'), ['周杰伦', '费玉清']);
     expect(artistCollabParts('ABBA＆Boney M'), ['ABBA', 'Boney M']);
     expect(artistCollabParts('A&B'), ['A', 'B']);
@@ -69,6 +76,11 @@ void main() {
     expect(artistCollabParts('A feat. B'), ['A', 'B']);
     expect(artistCollabParts('A feat B'), ['A', 'B']);
     expect(artistCollabParts('A feat.B'), ['A', 'B']);
+    expect(artistCollabParts('ココア (佐倉綾音), チノ (水瀬いのり)'),
+        ['ココア (佐倉綾音)', 'チノ (水瀬いのり)']);
+    expect(artistCollabParts('ココア、チノ、 リゼ'), ['ココア', 'チノ', 'リゼ']);
+    expect(artistCollabParts('ココア・千夜'), ['ココア', '千夜']);
+    expect(artistCollabParts('A，B'), ['A', 'B']);
     // 空段丢弃；无实质拆分返回原串（非合作歌行为不变）。
     expect(artistCollabParts(' & A'), ['A']);
     expect(artistCollabParts('ABBA'), ['ABBA']);
@@ -76,46 +88,76 @@ void main() {
     expect(artistCollabParts('Bread & Butter Shop'), ['Bread', 'Butter Shop']);
   });
 
+  test('身份键：剥括号后逐段原样定键（CV 不再特殊解析）', () {
+    expect(artistCanonicalOf('ココア(CV.佐倉綾音)'), 'ココア');
+    expect(artistCanonicalOf('ココア(佐倉綾音)'), 'ココア');
+    expect(artistCanonicalOf('ココア (佐倉綾音)'), 'ココア');
+    expect(artistCanonicalOf('ＡＢＢＡ(ＷＥＳＴ)'), 'ＡＢＢＡ');
+    expect(artistCanonicalOf('ABBA'), 'ABBA');
+    expect(artistCanonicalOf('ＡＢＢＡ'), 'ＡＢＢＡ');
+  });
+
   test('合作串身份键：各段独立 canonical，段内去重', () {
     expect(artistCollabCanonicals('周杰伦 & 费玉清'),
         [('周杰伦', '周杰伦'), ('费玉清', '费玉清')]);
-    // CV 注记挂在末段：`A & 纱路(CV:X)` → A 与 纱路|X。
+    // 括号内容（含 CV 名单）剥除后各段原样定键。
     expect(artistCollabCanonicals('宇多田光 & 纱路(CV:内田真礼)'),
-        [('宇多田光', '宇多田光'), ('纱路|内田真礼', '纱路(CV:内田真礼)')]);
+        [('宇多田光', '宇多田光'), ('纱路', '纱路')]);
+    // 括号内 & 名单不参与拆分：成员外 & 才切。
+    expect(artistCollabCanonicals('ココア&モカ (佐倉綾音&茅野愛衣)'),
+        [('ココア', 'ココア'), ('モカ', 'モカ')]);
+    // 全角 ＆ + 全角括号 + CV. 名单：同样干净分成两身份。
+    expect(artistCollabCanonicals('ココア＆モカ（CV.佐倉綾音＆茅野愛衣）'),
+        [('ココア', 'ココア'), ('モカ', 'モカ')]);
+    // 无前缀括号与 `・` 分隔。
+    expect(artistCollabCanonicals('ココア(佐倉綾音)・千夜(佐藤聡美)'),
+        [('ココア', 'ココア'), ('千夜', '千夜')]);
+    // 逗号多名表。
+    expect(artistCollabCanonicals('ココア (佐倉綾音), チノ (水瀬いのり)'),
+        [('ココア', 'ココア'), ('チノ', 'チノ')]);
     // 段内去重：A & A 只留一个。
     expect(artistCollabCanonicals('A & A'), [('A', 'A')]);
     // 非合作串：单个身份、显示名=原串。
     expect(artistCollabCanonicals('ABBA'), [('ABBA', 'ABBA')]);
   });
 
-  test('括号人直解：CV 全角/半角都解出人物名，feat./作品名括号不误判', () {
-    final full = splitArtistPart('纱路（ＣＶ：内田真礼）');
-    expect(full.hasCv, isTrue);
-    expect(full.base, '纱路');
-    expect(full.cvName, '内田真礼');
+  // ---------- 歌手页点击分流：Artist.resolveState ----------
 
-    final ascii = splitArtistPart('紗路(CV:内田真礼)');
-    expect(ascii.hasCv, isTrue);
-    expect(ascii.base, '紗路');
-    expect(ascii.cvName, '内田真礼');
-
-    // 双括号取最后一个 CV；非 CV 括号（NFKC 已折半角）原样保留。
-    final multi = splitArtistPart('纱路（Vol.2）(CV:内田真礼)');
-    expect(multi.hasCv, isTrue);
-    expect(multi.base, '纱路(Vol.2)');
-    expect(multi.cvName, '内田真礼');
-
-    expect(splitArtistPart('夏祭 feat. 初音ミク').cvName, isNull);
-    expect(splitArtistPart('群青(anime size)').cvName, isNull);
-    expect(splitArtistPart('Bocchi the Rock!').cvName, isNull);
+  test('resolveState：未解析一律不进歌曲，resolved/无状态可正常查看', () {
+    Artist mk(String status, {String? canonical = 'c'}) => Artist(
+        name: 'x',
+        songCount: 1,
+        albumCount: 1,
+        canonicalKey: canonical,
+        status: status);
+    expect(mk('').resolveState, ArtistResolveState.normal);
+    expect(mk('resolved').resolveState, ArtistResolveState.normal);
+    // local/pending（重试图标）→ 重试态。
+    expect(mk('local').resolveState, ArtistResolveState.retry);
+    expect(mk('pending').resolveState, ArtistResolveState.retry);
+    // ambiguous（需确认）→ 候选表。
+    expect(mk('ambiguous').resolveState, ArtistResolveState.confirm);
+    // 防御：pending/local 无 canonicalKey（非 identity 模式数据缺失）→ normal，
+    // 避免弹了重试框也无处下发。
+    expect(mk('pending', canonical: null).resolveState, ArtistResolveState.normal);
+    expect(mk('local', canonical: null).resolveState, ArtistResolveState.normal);
   });
 
-  test('无显式 CV 时整串为基名；纯人物（无基名）归一整串', () {
-    expect(splitArtistPart('内田真礼').base, '内田真礼');
-    final cvOnly = splitArtistPart('(CV:内田真礼)');
-    expect(cvOnly.hasCv, isTrue);
-    expect(cvOnly.base, '(CV:内田真礼)');
-    expect(cvOnly.cvName, '内田真礼');
+  test('Artist JSON 往返保留 canonicalKey/identityKey/状态', () {
+    const a = Artist(
+        name: 'ABBA',
+        songCount: 2,
+        albumCount: 1,
+        identityKey: 'u1',
+        canonicalKey: 'ABBA',
+        status: 'ambiguous',
+        mbid: 'm1');
+    final b = Artist.fromJson(a.toJson());
+    expect(b.name, 'ABBA');
+    expect(b.identityKey, 'u1');
+    expect(b.canonicalKey, 'ABBA');
+    expect(b.status, 'ambiguous');
+    expect(b.mbid, 'm1');
   });
 
   // ---------- 歌手处理.txt：身份映射 / 合并 / 重试 / 回收 ----------
@@ -143,6 +185,10 @@ void main() {
       expect(groups, hasLength(1));
       expect(groups.first.name, 'ABBA');
       expect(groups.first.songCount, 2);
+      // identityArtistGroups 必须带出 canonical_key（解析服务按它寻址）。
+      expect(groups.first.canonicalKey, 'ABBA');
+      // pending 身份 → 重试态：点击只弹重新解析，不进歌曲列表。
+      expect(groups.first.resolveState, ArtistResolveState.retry);
       expect(index.identitySongs(groups.first.identityKey!), hasLength(2));
       expect(index.identityFallbackGroups(), isEmpty);
     } finally {
@@ -151,23 +197,43 @@ void main() {
     }
   });
 
-  test('reconcile：CV 写法 canonical 独立于纯人物名，合并走 mbid', () async {
+  test('reconcile：剥括号后同角色写法并成一身份', () async {
     final (index, dir) = await _openIndex();
     try {
       await index.upsertSongs([
         _song('c', '纱路（CV:内田真礼）'),
+        _song('d', '纱路'),
+      ]);
+      await index.reconcileArtists();
+
+      // CV 注记被剥除 → 两首歌并成一个 canonical 身份。
+      final row = index.artistRowByCanonical('纱路');
+      expect(row, isNotNull);
+      expect(index.artistStats()['total'], 1);
+      expect(index.artistStats()['mapped'], 2);
+      expect(index.identityArtistGroups().first.songCount, 2);
+    } finally {
+      index.close();
+      dir.deleteSync(recursive: true);
+    }
+  });
+
+  test('reconcile：同名实体两种 canonical 经 mbid 合流', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([
+        _song('c', '纱路'),
         _song('d', '内田真礼'),
       ]);
       await index.reconcileArtists();
 
-      final cvRow = index.artistRowByCanonical(
-          artistCanonicalKey('纱路|内田真礼'));
+      final charRow = index.artistRowByCanonical('纱路');
       final personRow = index.artistRowByCanonical('内田真礼');
-      expect(cvRow, isNotNull);
+      expect(charRow, isNotNull);
       expect(personRow, isNotNull);
-      expect(cvRow!.artistKey, isNot(personRow!.artistKey));
+      expect(charRow!.artistKey, isNot(personRow!.artistKey));
 
-      // 纯人物名率先解析。CV 行随后解析到同一 mbid → 合流。
+      // 真人先解析，角色随后解析到同一 mbid → 合流（跨 canonical 归并）。
       await index.artistUpsert(
         artistKey: personRow.artistKey,
         canonicalKey: '内田真礼',
@@ -183,8 +249,8 @@ void main() {
         resolvedAt: DateTime.now().toIso8601String(),
       );
       final merged = await index.artistMergeMbid(
-        canonicalKey: '纱路|内田真礼',
-        fromArtistKey: cvRow.artistKey,
+        canonicalKey: '纱路',
+        fromArtistKey: charRow.artistKey,
         mbid: 'mb-x',
         displayName: '内田真礼',
         type: 'person',
@@ -197,16 +263,15 @@ void main() {
       );
       expect(merged, isTrue);
 
-      // CV 占位已被删除，桥改指向真人行；两首歌都挂在真人身份下。
+      // 角色占位已被删除，桥改指向真人行；两首歌都挂在真人身份下。
       final stats = index.artistStats();
       expect(stats['total'], 1);
       expect(stats['resolved'], 1);
       expect(stats['mapped'], 2);
       final target = index.artistRowByCanonical('内田真礼');
       expect(target, isNotNull);
-      // CV canonical 仍能经桥解析到真人行（防后 reconcile 重建占位）。
-      expect(index.artistRowByCanonical('纱路|内田真礼')!.artistKey,
-          target!.artistKey);
+      // 角色 canonical 仍能经桥解析到真人行（防后 reconcile 重建占位）。
+      expect(index.artistRowByCanonical('纱路')!.artistKey, target!.artistKey);
       final groups = index.identityArtistGroups();
       expect(groups, hasLength(1));
       expect(groups.first.songCount, 2);
@@ -360,7 +425,7 @@ void main() {
     }
   });
 
-  test('合作串 feat/全角＆/CV 段：都能独立成身份', () async {
+  test('合作串 feat/全角＆/括号注记：都能独立成身份', () async {
     final (index, dir) = await _openIndex();
     try {
       await index.upsertSongs([
@@ -370,12 +435,11 @@ void main() {
       await index.reconcileArtists();
 
       final rows = index.identityArtistGroups();
-      expect(rows.map((g) => g.name).toSet(),
-          {'A', 'B', '宇多田光', '纱路(CV:内田真礼)'});
+      expect(rows.map((g) => g.name).toSet(), {'A', 'B', '宇多田光', '纱路'});
       expect(index.artistRowByCanonical('A'), isNotNull);
       expect(index.artistRowByCanonical('B'), isNotNull);
       expect(index.artistRowByCanonical('宇多田光'), isNotNull);
-      expect(index.artistRowByCanonical('纱路|内田真礼'), isNotNull);
+      expect(index.artistRowByCanonical('纱路'), isNotNull);
       expect(index.artistStats()['total'], 4);
       expect(index.artistStats()['mapped'], 4);
     } finally {

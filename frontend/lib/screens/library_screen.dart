@@ -879,19 +879,22 @@ class _ArtistsViewState extends State<_ArtistsView>
   }
 }
 
-/// 打开歌手歌曲弹层（卡片/列表两种形态共用）。
+/// 打开歌手（卡片/列表两种形态共用，唯一分流入口）。
 ///
-/// 歌手身份歧义（歌手处理.txt）：先弹候选选择页人工绑定；
-/// 未命中/待解析可在此手动触发重试。
+/// 按 [Artist.resolveState] 分流，未解析成功的歌手一律不进歌曲列表：
+/// - confirm（同名多真人需人工确认）→ 弹候选选择页；
+/// - retry（待解析/未命中）→ 弹「重新解析」确认窗；
+/// - normal（已解析/非 identity 模式）→ 打开歌曲弹层。
 void _openArtist(BuildContext context, Artist artist, ArtistResolver resolver) {
-  if (artist.status == 'ambiguous') {
-    _showAmbiguousPicker(context, artist, resolver);
-    return;
-  }
-  if (artist.status == 'local' ||
-      (artist.status == 'pending' && artist.identityKey != null)) {
-    _showRetryConfirm(context, artist, resolver);
-    return;
+  switch (artist.resolveState) {
+    case ArtistResolveState.confirm:
+      _showAmbiguousPicker(context, artist, resolver);
+      return;
+    case ArtistResolveState.retry:
+      _showRetryConfirm(context, artist, resolver);
+      return;
+    case ArtistResolveState.normal:
+      break;
   }
   final lib = context.read<LibraryProvider>();
   final songs = lib.artistSongs(artist);
@@ -906,7 +909,9 @@ void _openArtist(BuildContext context, Artist artist, ArtistResolver resolver) {
 /// 歧义身份候选选择（候选来自 MB 搜索 hit，零额外请求）。
 Future<void> _showAmbiguousPicker(
     BuildContext context, Artist artist, ArtistResolver resolver) async {
-  final candidates = await resolver.candidatesFor(artist.identityKey!);
+  final canonicalKey = artist.canonicalKey;
+  if (canonicalKey == null) return;
+  final candidates = await resolver.candidatesFor(canonicalKey);
   if (!context.mounted) return;
   await showModalBottomSheet<void>(
     context: context,
@@ -931,7 +936,10 @@ Future<void> _showAmbiguousPicker(
           const Divider(height: 1),
           Expanded(
             child: candidates.isEmpty
-                ? const Center(child: Text('暂无可选候选，稍后自动重试'))
+                ? _AmbiguousEmptyState(
+                    resolver: resolver,
+                    canonicalKey: canonicalKey,
+                  )
                 : RowList(
                     controller: scrollCtrl,
                     count: candidates.length,
@@ -954,7 +962,7 @@ Future<void> _showAmbiguousPicker(
                           overflow: TextOverflow.ellipsis,
                         ),
                         onTap: () async {
-                          await resolver.bindManual(artist.identityKey!, h);
+                          await resolver.bindManual(canonicalKey, h);
                           if (c3.mounted) Navigator.of(c3).pop();
                         },
                       );
@@ -965,6 +973,44 @@ Future<void> _showAmbiguousPicker(
       ),
     ),
   );
+}
+
+/// 候选为空（重试后仍无可选）时的空态：
+/// 网络不可用与“确实无候选”分开提示，并给出「重新解析」立即再试。
+class _AmbiguousEmptyState extends StatelessWidget {
+  final ArtistResolver resolver;
+  final String canonicalKey;
+  const _AmbiguousEmptyState({
+    required this.resolver,
+    required this.canonicalKey,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final offline = resolver.networkDown;
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(offline ? Icons.wifi_off : Icons.search_off,
+              size: 40, color: cs.onSurfaceVariant),
+          const SizedBox(height: 12),
+          Text(offline ? '网络不可用，可稍后再试' : '暂无可选候选，稍后自动重试',
+              style: TextStyle(color: cs.onSurfaceVariant)),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            icon: const Icon(Icons.refresh, size: 18),
+            label: const Text('重新解析'),
+            onPressed: () async {
+              await resolver.retryOne(canonicalKey);
+              if (context.mounted) Navigator.of(context).pop();
+            },
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// 未命中/待解析歌手：手动立即重试确认。
@@ -985,8 +1031,9 @@ Future<void> _showRetryConfirm(
       ],
     ),
   );
-  if (ok == true && artist.identityKey != null) {
-    await resolver.retryOne(artist.identityKey!);
+  if (ok == true) {
+    final canonicalKey = artist.canonicalKey;
+    if (canonicalKey != null) await resolver.retryOne(canonicalKey);
   }
 }
 
@@ -1015,21 +1062,21 @@ class _ArtistListTile extends StatelessWidget {
         children: [
           Text('${artist.songCount}首 · ${artist.albumCount}张专辑',
               maxLines: 1, overflow: TextOverflow.ellipsis),
-          if (artist.status == 'ambiguous') ..._statusChip(context),
+          if (artist.resolveState == ArtistResolveState.confirm)
+            ..._statusChip(context),
         ],
       ),
-      trailing:
-          artist.status == 'local' || artist.status == 'pending'
-          ? IconButton(
-              icon: const Icon(Icons.refresh, size: 20),
-              tooltip: '重试解析',
-              onPressed: () =>
-                  _openArtist(context, artist, context.read<ArtistResolver>()),
-            )
-          : (artist.status == 'ambiguous'
-              ? const Icon(Icons.help_outline, size: 20,
-                  color: Colors.orange)
-              : null),
+      trailing: switch (artist.resolveState) {
+        ArtistResolveState.retry => IconButton(
+            icon: const Icon(Icons.refresh, size: 20),
+            tooltip: '重试解析',
+            onPressed: () =>
+                _openArtist(context, artist, context.read<ArtistResolver>()),
+          ),
+        ArtistResolveState.confirm =>
+          const Icon(Icons.help_outline, size: 20, color: Colors.orange),
+        ArtistResolveState.normal => null,
+      },
       onTap: () =>
           _openArtist(context, artist, context.read<ArtistResolver>()),
     );
@@ -1057,13 +1104,44 @@ class _ArtistCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) => SquareCard(
         title: artist.name,
-        subtitle: artist.status == 'ambiguous'
+        subtitle: artist.resolveState == ArtistResolveState.confirm
             ? '${artist.songCount}首 · ${artist.albumCount}张专辑 · 需确认'
             : '${artist.songCount}首 · ${artist.albumCount}张专辑',
         coverPath: artist.coverPath,
         fallbackIcon: Icons.person,
+        // 未解析成功的歌手：封面右上角叠状态角标（重试/需确认），
+        // 点击角标与整卡一致走 _openArtist（只弹解析交互，不进歌曲）。
+        cornerAction: switch (artist.resolveState) {
+          ArtistResolveState.normal => null,
+          ArtistResolveState.confirm => const _StatusBadge(
+              icon: Icons.help_outline, color: Colors.orange),
+          ArtistResolveState.retry =>
+            const _StatusBadge(icon: Icons.refresh, color: Colors.white),
+        },
         onTap: () =>
             _openArtist(context, artist, context.read<ArtistResolver>()),
+      );
+}
+
+/// 卡片封面的圆形状态角标（深色底衬保证在各种封面上可见）。
+class _StatusBadge extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  const _StatusBadge({required this.icon, required this.color});
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.all(4),
+        child: DecoratedBox(
+          decoration: const BoxDecoration(
+            color: Colors.black45,
+            shape: BoxShape.circle,
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(4),
+            child: Icon(icon, size: 16, color: color),
+          ),
+        ),
       );
 }
 

@@ -1364,7 +1364,7 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
     final q = query?.trim() ?? '';
     final like = q.isEmpty ? '%' : '%$q%';
     final rs = _db!.select('''
-      SELECT a.artist_key, a.display_name, a.status, a.mbid,
+      SELECT a.artist_key, a.canonical_key, a.display_name, a.status, a.mbid,
         COUNT(*) song_count,
         COUNT(DISTINCT COALESCE(NULLIF(s.album,''),'\u0001')) album_count,
         (SELECT s2.cover_path FROM artist_song_map m2
@@ -1385,6 +1385,7 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
           albumCount: r['album_count'] as int,
           coverPath: r['cover_path'] as String?,
           identityKey: r['artist_key'] as String,
+          canonicalKey: r['canonical_key'] as String,
           status: r['status'] as String,
           mbid: r['mbid'] as String?,
         ),
