@@ -565,15 +565,23 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
               style: Theme.of(context).textTheme.bodySmall?.copyWith(color: colorScheme.onSurface.withValues(alpha: 0.6))),
           const SizedBox(height: 24),
 
-          // 明暗模式
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('暗色模式'),
-            subtitle: const Text('切换明暗主题'),
-            value: theme.isDark,
-            onChanged: (v) => theme.setMode(v ? Brightness.dark : Brightness.light),
-            secondary: Icon(theme.isDark ? Icons.dark_mode : Icons.light_mode),
+          // 明暗模式：跟随系统 / 浅色 / 深色
+          Text('明暗模式', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 12),
+          SegmentedButton<ThemeMode>(
+            segments: const [
+              ButtonSegment(value: ThemeMode.system, label: Text('跟随系统'), icon: Icon(Icons.brightness_auto)),
+              ButtonSegment(value: ThemeMode.light, label: Text('浅色'), icon: Icon(Icons.light_mode_outlined)),
+              ButtonSegment(value: ThemeMode.dark, label: Text('深色'), icon: Icon(Icons.dark_mode_outlined)),
+            ],
+            selected: {theme.themeMode},
+            onSelectionChanged: (s) => theme.setThemeMode(s.first),
           ),
+          const SizedBox(height: 8),
+          Text(theme.themeMode == ThemeMode.system
+              ? '随手机 / 电脑系统自动切换明暗'
+              : '固定使用当前所选明暗，不跟随系统',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: colorScheme.onSurface.withValues(alpha: 0.6))),
           const Divider(),
           const SizedBox(height: 8),
 

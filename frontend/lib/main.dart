@@ -200,6 +200,8 @@ class _ThemedApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       scaffoldMessengerKey: toastMessengerKey,
       theme: theme.themeData,
+      darkTheme: theme.darkThemeData,
+      themeMode: theme.themeMode,
       home: const Root(),
     );
   }

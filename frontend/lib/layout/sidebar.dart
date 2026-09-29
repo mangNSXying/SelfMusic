@@ -138,9 +138,9 @@ class _BottomBar extends StatelessWidget {
         ),
         ListTile(
           dense: true,
-          leading: Icon(isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined),
-          title: Text(isDark ? '切换亮色' : '切换暗色'),
-          onTap: theme.toggleMode,
+          leading: Icon(_iconFor(theme.mode)),
+          title: Text(_labelFor(theme.mode, isDark)),
+          onTap: theme.cycleMode,
         ),
         ListTile(
           dense: true,
@@ -159,8 +159,21 @@ class _BottomBar extends StatelessWidget {
   }
 }
 
+IconData _iconFor(ThemeMode m) => switch (m) {
+      ThemeMode.system => Icons.brightness_auto,
+      ThemeMode.light => Icons.light_mode_outlined,
+      ThemeMode.dark => Icons.dark_mode_outlined,
+    };
+
+String _labelFor(ThemeMode m, bool effectiveDark) {
+  return switch (m) {
+    ThemeMode.system => '跟随系统（当前${effectiveDark ? '深色' : '浅色'}）',
+    ThemeMode.light => '切换深色',
+    ThemeMode.dark => '切换浅色',
+  };
+}
+
 /// 便于 Sidebar 判断是否处于移动端抽屉（窄屏）。
-/// 与 AppShell.isWide 取反一致：横屏一律桌面布局，无抽屉可关。
 class NavigationProviderHelper {
   static bool isNarrow(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
