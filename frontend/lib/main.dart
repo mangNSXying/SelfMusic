@@ -199,6 +199,7 @@ class _ThemedApp extends StatelessWidget {
       title: 'SelfMusic',
       debugShowCheckedModeBanner: false,
       scaffoldMessengerKey: toastMessengerKey,
+      navigatorKey: appNavigatorKey,
       theme: theme.themeData,
       darkTheme: theme.darkThemeData,
       themeMode: theme.themeMode,
