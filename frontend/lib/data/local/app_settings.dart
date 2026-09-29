@@ -87,6 +87,9 @@ class AppSettings {
   static const String kPlayerShowWeight = 'player_show_weight';
   static const String kPlayerGestureSwipe = 'player_gesture_swipe';
   static const String kSleepPlayThroughDefault = 'sleep_play_through_default';
+  static const String kSleepDefaultDurationMinutes =
+      'sleep_default_duration_minutes';
+  static const String kSleepDefaultCount = 'sleep_default_count';
   static const String kPreloadNext = 'preload_next';
   static const String kScanIgnoreMinDurationSec = 'scan_ignore_min_duration_sec';
   static const String kScanIgnoreMinSizeBytes = 'scan_ignore_min_size_bytes';
@@ -254,6 +257,17 @@ class AppSettings {
       (index.settingsGet(kSleepPlayThroughDefault) ?? '1') == '1';
   set sleepPlayThroughDefault(bool v) =>
       index.settingsSet(kSleepPlayThroughDefault, v ? '1' : '0');
+
+  /// 睡眠定时弹窗「指定时长」模式的默认分钟数与「指定曲数」模式的默认首数
+  /// （已在弹窗内调整过则记忆上次值，下次打开预选）。
+  int get sleepDefaultDurationMinutes =>
+      int.tryParse(index.settingsGet(kSleepDefaultDurationMinutes) ?? '') ?? 30;
+  set sleepDefaultDurationMinutes(int v) =>
+      index.settingsSet(kSleepDefaultDurationMinutes, v.toString());
+  int get sleepDefaultCount =>
+      int.tryParse(index.settingsGet(kSleepDefaultCount) ?? '') ?? 3;
+  set sleepDefaultCount(int v) =>
+      index.settingsSet(kSleepDefaultCount, v.toString());
 
   /// 预载下一首（默认开）：播放某首歌时按播放顺序算法确定下一首并后台缓存
   /// （加权随机也先抽样确定，切歌时复用同一结果），开关只决定是否预载。
@@ -507,6 +521,8 @@ class AppSettings {
     kPlayerShowWeight,
     kPlayerGestureSwipe,
     kSleepPlayThroughDefault,
+    kSleepDefaultDurationMinutes,
+    kSleepDefaultCount,
     kPreloadNext,
     kLyricFocusIdleSec,
     kPlayerKeepScreenOn,

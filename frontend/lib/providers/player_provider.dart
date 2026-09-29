@@ -201,6 +201,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   int _sleepCountLeft = 0;        // 指定曲数：剩余曲目数
   bool _sleepPlayThrough = false; // 播放完最后的曲目（到点不中断当前曲）
   bool _sleepPendingStop = false; // play-through 已触发，等当前曲放完暂停
+  bool _sleepExitApp = false;     // 到时退出软件（落盘断点后结束进程，不驻留后台）
 
   bool get sleepTimerActive => _sleepKind != null;
 
@@ -215,6 +216,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 是否「播放完最后的曲目」。
   bool get sleepPlayThrough => _sleepPlayThrough;
 
+  /// 是否「播放结束退出软件」。
+  bool get sleepExitApp => _sleepExitApp;
+
   /// 倒计时剩余分钟（指定时长模式，随秒跳变取整）。
   int get sleepMinutes {
     if (_sleepKind == SleepTimerKind.duration && _sleepDeadline != null) {
@@ -227,18 +231,21 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 当前定时的可读摘要（用于按钮 tooltip / 弹窗标识）。
-  String? get sleepSummaryText => switch (_sleepKind) {
-        SleepTimerKind.time => _sleepUntil == null
-            ? null
-            : '到 ${_fmtTime(_sleepUntil!)} 停止'
-                '${_sleepPlayThrough ? '（播完当前曲）' : ''}',
-        SleepTimerKind.duration => '$sleepMinutes 分钟后停止'
-            '${_sleepPlayThrough ? '（播完当前曲）' : ''}',
-        SleepTimerKind.count => '播放 $_sleepCountLeft 首后停止'
-            '${_sleepPlayThrough ? '（播完当前曲）' : ''}',
-        SleepTimerKind.endOfList => '列表结尾停止',
-        null => null,
-      };
+  String? get sleepSummaryText {
+    final exitAppSuffix = _sleepExitApp ? '，到时退出软件' : '';
+    return switch (_sleepKind) {
+      SleepTimerKind.time => _sleepUntil == null
+          ? null
+          : '到 ${_fmtTime(_sleepUntil!)} 停止'
+              '${_sleepPlayThrough ? '（播完当前曲）' : ''}$exitAppSuffix',
+      SleepTimerKind.duration => '$sleepMinutes 分钟后停止'
+          '${_sleepPlayThrough ? '（播完当前曲）' : ''}$exitAppSuffix',
+      SleepTimerKind.count => '播放 $_sleepCountLeft 首后停止'
+          '${_sleepPlayThrough ? '（播完当前曲）' : ''}$exitAppSuffix',
+      SleepTimerKind.endOfList => '列表结尾停止$exitAppSuffix',
+      null => null,
+    };
+  }
 
   static String _fmtTime(DateTime t) {
     final h = t.hour.toString().padLeft(2, '0');
@@ -247,19 +254,22 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 指定时间：到 [target] 时刻停止（早于当前时间视为次日）。
-  void setSleepTime(DateTime target, {bool playThrough = false}) {
+  void setSleepTime(DateTime target,
+      {bool playThrough = false, bool exitApp = false}) {
     var when = target;
     if (!when.isAfter(DateTime.now())) when = when.add(const Duration(days: 1));
     _setSleepStart();
     _sleepKind = SleepTimerKind.time;
     _sleepUntil = when;
     _sleepPlayThrough = playThrough;
+    _sleepExitApp = exitApp;
     _startSleepTick();
     notifyListeners();
   }
 
   /// 指定时长：倒计时 [duration] 后停止。
-  void setSleepDuration(Duration duration, {bool playThrough = false}) {
+  void setSleepDuration(Duration duration,
+      {bool playThrough = false, bool exitApp = false}) {
     if (duration.inSeconds <= 0) {
       cancelSleepTimer();
       return;
@@ -268,24 +278,28 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _sleepKind = SleepTimerKind.duration;
     _sleepDeadline = DateTime.now().add(duration);
     _sleepPlayThrough = playThrough;
+    _sleepExitApp = exitApp;
     _startSleepTick();
     notifyListeners();
   }
 
   /// 指定曲数：再播放 [count] 首后停止。
-  void setSleepCount(int count, {bool playThrough = false}) {
+  void setSleepCount(int count,
+      {bool playThrough = false, bool exitApp = false}) {
     _setSleepStart();
     _sleepKind = SleepTimerKind.count;
     _sleepCountLeft = count > 0 ? count : 0;
     _sleepPlayThrough = playThrough;
+    _sleepExitApp = exitApp;
     notifyListeners();
   }
 
   /// 列表结尾：播完队列最后一首即停止（天然播完）。
-  void setSleepEndOfList() {
+  void setSleepEndOfList({bool exitApp = false}) {
     _setSleepStart();
     _sleepKind = SleepTimerKind.endOfList;
     _sleepPlayThrough = true;
+    _sleepExitApp = exitApp;
     notifyListeners();
   }
 
@@ -300,6 +314,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _sleepUntil = null;
     _sleepDeadline = null;
     _sleepCountLeft = 0;
+    _sleepExitApp = false;
   }
 
   void _clearSleep() {
@@ -311,6 +326,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _sleepCountLeft = 0;
     _sleepPlayThrough = false;
     _sleepPendingStop = false;
+    _sleepExitApp = false;
   }
 
   /// 时间/时长模式：每秒检查到期；时长模式剩余分钟变化时刷新 UI。
@@ -345,7 +361,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     });
   }
 
-  /// 到期执行：play-through 时等当前曲放完；否则立即暂停。
+  /// 到期执行：play-through 时等当前曲放完；否则立即停止（按开关退出/暂停）。
   Future<void> _stopForSleep({required bool atBoundary}) async {
     if (player.playing && _sleepPlayThrough && !atBoundary && !_sleepPendingStop) {
       _sleepPendingStop = true;
@@ -353,8 +369,21 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
       return;
     }
+    _sleepStop();
+  }
+
+  /// 睡眠定时最终收口：先读退出开关再清定时（清空会复位该位），
+  /// 「播放结束退出软件」为开则退出进程，否则暂停。
+  void _sleepStop() {
+    final exitApp = _sleepExitApp;
     _clearSleep();
-    await _pauseNowForSleep();
+    unawaited(exitApp ? _quitAfterSleep() : _pauseNowForSleep());
+  }
+
+  /// 「播放结束退出软件」：先走正常停机（落库断点/停播放器），再退进程。
+  Future<void> _quitAfterSleep() async {
+    await shutdown();
+    exit(0);
   }
 
   Future<void> _pauseNowForSleep() async {
@@ -366,17 +395,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 曲目自然播放结束时被调用：返回 true 表示由睡眠定时接管（不再自动切歌）。
   bool _handleTrackCompletedSleep() {
     if (_sleepPendingStop) {
-      _sleepPendingStop = false;
-      _clearSleep();
-      unawaited(_pauseNowForSleep());
+      _sleepStop();
       return true;
     }
     final kind = _sleepKind;
     if (kind == SleepTimerKind.count) {
       if (_sleepCountLeft > 0) _sleepCountLeft--;
       if (_sleepCountLeft <= 0) {
-        _clearSleep();
-        unawaited(_pauseNowForSleep());
+        _sleepStop();
         return true;
       }
       notifyListeners();
@@ -385,8 +411,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (kind == SleepTimerKind.endOfList &&
         _idx == _queue.length - 1 &&
         _current != null) {
-      _clearSleep();
-      unawaited(_pauseNowForSleep());
+      _sleepStop();
       return true;
     }
     return false;

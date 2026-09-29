@@ -1276,6 +1276,7 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
   late int _minutes;
   late int _count;
   late bool _playThrough;
+  late bool _exitApp;
 
   @override
   void initState() {
@@ -1286,15 +1287,22 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
       final t = p.sleepUntilTime!;
       _time = TimeOfDay(hour: t.hour, minute: t.minute);
     }
-    _minutes = p.sleepMinutes > 0 ? p.sleepMinutes : 30;
-    _count = p.sleepCountLeft > 0 ? p.sleepCountLeft : 3;
+    // 指定时长/曲数：活动定时沿用剩余值；新建时回退到上次选择（改进.txt UI2）。
+    final s = context.read<DirectSourceManager>().settings;
+    _minutes = p.sleepMinutes > 0 ? p.sleepMinutes : s.sleepDefaultDurationMinutes;
+    _count = p.sleepCountLeft > 0 ? p.sleepCountLeft : s.sleepDefaultCount;
     _playThrough = p.sleepTimerActive
         ? p.sleepPlayThrough
         : widget.playThroughDefault;
+    _exitApp = p.sleepTimerActive ? p.sleepExitApp : false;
   }
 
   @override
   Widget build(BuildContext context) {
+    // 提示文字统一灰、13 号（改进.txt UI1）；选项标题缩小。
+    final cs = Theme.of(context).colorScheme;
+    final hintColor = cs.onSurface.withValues(alpha: 0.6);
+    final hint = TextStyle(fontSize: 13, color: hintColor);
     return AlertDialog(
       title: const Text('睡眠定时', style: TextStyle(fontSize: 21)),
       content: SizedBox(
@@ -1316,7 +1324,7 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
                       controlAffinity: ListTileControlAffinity.leading,
                       dense: true,
                       title: const Text('指定时间',
-                          style: TextStyle(fontSize: 17)),
+                          style: TextStyle(fontSize: 15)),
                       subtitle: _timeSubtitle(),
                       secondary: _mode == SleepTimerKind.time
                           ? IconButton(
@@ -1331,52 +1339,63 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
                       controlAffinity: ListTileControlAffinity.leading,
                       dense: true,
                       title: const Text('指定时长',
-                          style: TextStyle(fontSize: 17)),
+                          style: TextStyle(fontSize: 15)),
                       subtitle: Text('倒计时 ${_fmtMinutes(_minutes)}后自动停止',
-                          style: const TextStyle(fontSize: 15)),
+                          style: hint),
+                      secondary: _mode == SleepTimerKind.duration
+                          ? IconButton(
+                              icon: const Icon(Icons.av_timer, size: 30),
+                              tooltip: '选择时长',
+                              onPressed: _pickDurationWheel,
+                            )
+                          : null,
                     ),
                     RadioListTile<SleepTimerKind>(
                       value: SleepTimerKind.count,
                       controlAffinity: ListTileControlAffinity.leading,
                       dense: true,
                       title: const Text('指定曲数',
-                          style: TextStyle(fontSize: 17)),
-                      subtitle: Text('再播放 $_count 首后停止',
-                          style: const TextStyle(fontSize: 15)),
+                          style: TextStyle(fontSize: 15)),
+                      subtitle: Text('再播放 $_count 首后停止', style: hint),
+                      secondary: _mode == SleepTimerKind.count
+                          ? IconButton(
+                              icon:
+                                  const Icon(Icons.format_list_numbered, size: 30),
+                              tooltip: '选择曲数',
+                              onPressed: _pickCountWheel,
+                            )
+                          : null,
                     ),
-                    const RadioListTile<SleepTimerKind>(
+                    RadioListTile<SleepTimerKind>(
                       value: SleepTimerKind.endOfList,
                       controlAffinity: ListTileControlAffinity.leading,
                       dense: true,
-                      title: Text('列表结尾', style: TextStyle(fontSize: 17)),
-                      subtitle:
-                          Text('播完队列最后一首即停止', style: TextStyle(fontSize: 15)),
+                      title: const Text('列表结尾',
+                          style: TextStyle(fontSize: 15)),
+                      subtitle: Text('播完队列最后一首即停止', style: hint),
                     ),
                   ],
                 ),
               ),
               const SizedBox(height: 8),
-              if (_mode == SleepTimerKind.duration)
-                _WheelOpener(
-                  label: _fmtMinutes(_minutes),
-                  onTap: () => _pickDurationWheel(),
-                ),
-              if (_mode == SleepTimerKind.count)
-                _WheelOpener(
-                  label: '$_count 首',
-                  onTap: () => _pickCountWheel(),
-                ),
-              const SizedBox(height: 8),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('播放完最后的曲目',
-                    style: TextStyle(fontSize: 17)),
-                subtitle: const Text('到点不中断当前歌曲，放完这曲再暂停',
                     style: TextStyle(fontSize: 15)),
+                subtitle: Text('到点不中断当前歌曲，放完这曲再暂停', style: hint),
                 value: _playThrough || _mode == SleepTimerKind.endOfList,
                 onChanged: _mode == SleepTimerKind.endOfList
                     ? null
                     : (v) => setState(() => _playThrough = v),
+              ),
+              const SizedBox(height: 4),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('播放结束退出软件',
+                    style: TextStyle(fontSize: 15)),
+                subtitle: Text('定时结束后自动退出 App，不再驻留后台', style: hint),
+                value: _exitApp,
+                onChanged: (v) => setState(() => _exitApp = v),
               ),
             ],
           ),
@@ -1397,11 +1416,14 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
 
   /// 指定时间副标题（时刻 + 选择按钮）。
   Widget _timeSubtitle() {
+    final hintColor =
+        Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6);
+    final hint = TextStyle(fontSize: 13, color: hintColor);
     if (_time == null) {
-      return const Text('选择停止时刻', style: TextStyle(fontSize: 15));
+      return Text('选择停止时刻', style: hint);
     }
     return Row(children: [
-      Text(_fmtTime(_time!), style: const TextStyle(fontSize: 15)),
+      Text(_fmtTime(_time!), style: hint),
       const SizedBox(width: 4),
       TextButton(
         style: TextButton.styleFrom(
@@ -1409,7 +1431,7 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
           padding: const EdgeInsets.symmetric(horizontal: 6),
         ),
         onPressed: _pickTime,
-        child: const Text('选择', style: TextStyle(fontSize: 15)),
+        child: Text('选择', style: hint),
       ),
     ]);
   }
@@ -1488,15 +1510,24 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
         p.setSleepTime(
           DateTime(now.year, now.month, now.day, t.hour, t.minute),
           playThrough: _playThrough,
+          exitApp: _exitApp,
         );
       case SleepTimerKind.duration:
-        p.setSleepDuration(Duration(minutes: _minutes), playThrough: _playThrough);
+        p.setSleepDuration(Duration(minutes: _minutes),
+            playThrough: _playThrough, exitApp: _exitApp);
       case SleepTimerKind.count:
-        p.setSleepCount(_count, playThrough: _playThrough);
+        p.setSleepCount(_count, playThrough: _playThrough, exitApp: _exitApp);
       case SleepTimerKind.endOfList:
-        p.setSleepEndOfList();
+        p.setSleepEndOfList(exitApp: _exitApp);
       case null:
         return;
+    }
+    // 记忆时长/曲数选择（改进.txt UI2）：下次打开睡眠定时就近预选。
+    final s = context.read<DirectSourceManager>().settings;
+    if (_mode == SleepTimerKind.duration) {
+      s.sleepDefaultDurationMinutes = _minutes;
+    } else if (_mode == SleepTimerKind.count) {
+      s.sleepDefaultCount = _count;
     }
     final summary = '睡眠定时：${p.sleepSummaryText ?? '已设置'}';
     Navigator.of(context).pop();
@@ -1512,31 +1543,6 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
     final h = t.hour.toString().padLeft(2, '0');
     final m = t.minute.toString().padLeft(2, '0');
     return '$h:$m';
-  }
-}
-
-/// 当前值展示 + 打开滚轮选择器的行（时长 / 曲数模式下）。
-class _WheelOpener extends StatelessWidget {
-  final String label;
-  final VoidCallback onTap;
-  const _WheelOpener({required this.label, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      child: Row(
-        children: [
-          Text(label, style: const TextStyle(fontSize: 16)),
-          const Spacer(),
-          FilledButton.tonalIcon(
-            icon: const Icon(Icons.unfold_more, size: 20),
-            label: const Text('滚轮选择', style: TextStyle(fontSize: 15)),
-            onPressed: onTap,
-          ),
-        ],
-      ),
-    );
   }
 }
 
