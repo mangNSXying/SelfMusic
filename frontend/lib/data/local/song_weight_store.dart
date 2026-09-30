@@ -30,6 +30,22 @@ class SongWeightStore {
 
   double factorOf(Song s) => metaOf(s).factor;
 
+  /// 批量读整队权重（加权抽样用）：按 sourceKey 分组各一次批量查询，
+  /// 返回 map<sourceKey, map<songRef, factor>>；未记录的歌曲不放入，
+  /// 上层取 [defaultFactor]，避免对每首歌在主连接做一次同步查库。
+  Map<String, Map<String, double>> factorsOf(List<Song> songs) {
+    final bySource = <String, List<String>>{};
+    for (final s in songs) {
+      bySource.putIfAbsent(s.sourceKey, () => []).add(s.sourceRef);
+    }
+    final result = <String, Map<String, double>>{};
+    bySource.forEach((key, refs) {
+      final factors = index.playFactorsOf(key, refs);
+      if (factors.isNotEmpty) result[key] = factors;
+    });
+    return result;
+  }
+
   /// 累计播放时长（秒）（播放时长/播放次数排序用；播放次数由其派生）。
   int playSecOf(Song s) => metaOf(s).playSec;
 

@@ -84,6 +84,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   void Function(Song s)? _onSongMetaRefreshed;
   SelfMusicAudioHandler? _audioHandler;
 
+  /// 加权抽样的随机源：种子取构造时刻的时间戳（同其他语言 `Random(seed)` 的
+  /// 因子），整实例复用同一条 PRNG 流；构造参数 [rng] 可注入固定种子的实例，
+  /// 用于确定性单测复现序列。
+  final Random _rng;
+
   /// 当前播放器构造时套用的音频焦点开关（供 [_applyAudioConfigIfNeeded] 比对）。
   bool _builtAudioFocus = true;
   bool _builtEq = false;
@@ -418,7 +423,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 播放器延迟到首次使用才构造（见 [player]），故构造器不建实例。
-  PlayerProvider() {
+  PlayerProvider({Random? rng})
+      : _rng = rng ?? Random(DateTime.now().microsecondsSinceEpoch) {
     if (!kIsWeb) WidgetsBinding.instance.addObserver(this);
   }
 
@@ -1586,22 +1592,38 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     ];
     // 只剩当前曲（或全被排除）时退回全量，允许重播。
     if (candidates.isEmpty) candidates = [for (var i = 0; i < pool.length; i++) i];
+    final store = _weight;
+    // 整队一次性取回权重向量（按 sourceKey 分组批量查询），循环内不再逐首同步查库。
+    final factors =
+        store == null ? const <String, Map<String, double>>{} : store.factorsOf(pool);
     final weights = <double>[];
-    var total = 0.0;
     for (final i in candidates) {
-      final f = _weight?.factorOf(pool[i]) ?? SongWeightStore.defaultFactor;
-      final effective = (f *
-              curve.multiplierFor(pool[i].duration?.toDouble()))
-          .clamp(SongWeightStore.minFactor, SongWeightStore.maxFactor);
-      weights.add(effective);
-      total += effective;
+      final f = factors[pool[i].sourceKey]?[pool[i].sourceRef] ??
+          SongWeightStore.defaultFactor;
+      weights.add((f * curve.multiplierFor(pool[i].duration?.toDouble()))
+          .clamp(SongWeightStore.minFactor, SongWeightStore.maxFactor));
     }
-    var rnd = Random().nextDouble() * total;
-    var picked = candidates.first;
-    for (var i = 0; i < candidates.length; i++) {
-      rnd -= weights[i];
-      if (rnd <= 0) {
-        picked = candidates[i];
+    return weightedPickByWheel(weights, _rng.nextDouble());
+  }
+
+  /// 加权轮盘：把 [weights] 按比例铺成 `[0,total)` 上的连续区段，取随机点 [r]
+  /// （`[0,1)`，由调用方注入）落中哪段即返回该下标。
+  ///
+  /// 纯函数（不依赖实例状态），随机值由调用方注入——同 [startIndexForOrder]
+  /// 的约定，便于确定性单测。每次命中概率 = `weights[i] / total`。
+  /// [weights] 需非空（调用方已保证池非空），且各权重恒为正（上层钳回
+  /// `[minFactor, maxFactor]`，杜绝零概率空槽）。
+  static int weightedPickByWheel(List<double> weights, double r) {
+    var total = 0.0;
+    for (final w in weights) {
+      total += w;
+    }
+    var pos = r * total;
+    var picked = 0;
+    for (var i = 0; i < weights.length; i++) {
+      pos -= weights[i];
+      if (pos <= 0) {
+        picked = i;
         break;
       }
     }

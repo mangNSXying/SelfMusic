@@ -810,6 +810,29 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
     );
   }
 
+  /// 批量读 factor（纯读）：一次查询拿回 [refs] 内已记录歌曲的权重，未命中不放入。
+  /// 返回 map<songRef, factor>；`refs` 过大会超 SQLITE_MAX_VARIABLE_NUMBER，
+  /// 因此按 500 分片多次查询（播放队列可达数千首，逐首查是主连接 n 次同步 I/O）。
+  Map<String, double> playFactorsOf(String sourceKey, Iterable<String> refs) {
+    final refsList = refs.toSet().toList();
+    if (refsList.isEmpty) return const {};
+    final result = <String, double>{};
+    const chunkSize = 500;
+    for (var start = 0; start < refsList.length; start += chunkSize) {
+      final end = min(start + chunkSize, refsList.length);
+      final chunk = refsList.sublist(start, end);
+      final placeholders = List.filled(chunk.length, '?').join(',');
+      final rs = _db!.select(
+          'SELECT song_ref, factor FROM play_meta '
+          'WHERE source_key=? AND song_ref IN ($placeholders)',
+          [sourceKey, ...chunk]);
+      for (final r in rs) {
+        result[r['song_ref'] as String] = (r['factor'] as num).toDouble();
+      }
+    }
+    return result;
+  }
+
   /// 累计播放时长（秒）加法：`play_sec += seconds`（写连接内累加，见 db_writer）。
   Future<void> addPlaySec(String sourceKey, String songRef, int seconds) {
     return _writer!.op<void>('addPlaySec', {
