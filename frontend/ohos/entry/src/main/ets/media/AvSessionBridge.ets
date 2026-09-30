@@ -11,6 +11,8 @@ import { avSession } from '@kit.AVSessionKit';
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
 import { common, Want, wantAgent, WantAgent } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { image } from '@kit.ImageKit';
+import { fileIo } from '@kit.CoreFileKit';
 
 const TAG = 'SelfMusicAVSession';
 /** 与 Dart 侧（ohos_media_session.dart）约定的媒体播控通道。 */
@@ -45,12 +47,24 @@ const ABILITY_NAME = 'EntryAbility';
  * 进度：系统按 position{elapsedTime, updateTime} 自算，仅在状态变化时推送。
  * 歌词：标准 LRC 文本经 AVMetadata.lyric 下发（上限 40960 字节由 Dart 侧
  * 按 UTF-8 截断保证，ArkTS 侧信任传入）。
+ * 封面（两段式，2026-09-30 定稿）：元数据先行（卡片秒出，缺封面显示应用
+ * 图标），封面异步解码后经第二次 setAVMetadata 补推。coverPath 为本应用
+ * 沙箱绝对路径，走 fd→ImageSource→PixelMap 进 IPC 共享内存——string uri
+ * 形式要求 av_session 服务进程能访问该路径，沙箱路径它读不了（实测
+ * isImageValid 判非法，980000502 阻断整卡）；PixelMap 保持引用至替换完成
+ * 才 release（过早释放疑似首轮 GetMediaImageTopic checkFail 死因）。
  */
 export default class AvSessionBridge implements MethodCallHandler {
   private context: common.UIAbilityContext;
   private channel: MethodChannel | null = null;
   private session: avSession.AVSession | null = null;
   private backgroundRunning: boolean = false;
+  /** 当前已生效封面（保持引用防送显失败，替换完成后才 release）。 */
+  private currentCover: image.PixelMap | null = null;
+  /** 上次封面路径（去重：同曲重复 updateMetadata 不重解码）。 */
+  private lastCoverPath: string | null = null;
+  /** 封面任务票据（快速切歌竞态：仅最新任务可生效）。 */
+  private coverJob: number = 0;
 
   constructor(context: common.UIAbilityContext) {
     this.context = context;
@@ -66,6 +80,9 @@ export default class AvSessionBridge implements MethodCallHandler {
 
   /** EntryAbility.onDestroy / Dart destroy 后的资源回收。 */
   shutdown(): void {
+    this.lastCoverPath = null;
+    this.coverJob++;
+    this.releaseCover();
     if (this.backgroundRunning) {
       this.backgroundRunning = false;
       backgroundTaskManager.stopBackgroundRunning(this.context)
@@ -126,6 +143,9 @@ export default class AvSessionBridge implements MethodCallHandler {
         await this.startBackgroundTask();
         Log.i(TAG, `AVSession 已激活（assetId=${AvSessionBridge.argString(call, 'assetId') ?? ''}）`);
         result.success(null);
+        this.updateCover(call).catch((): void => {
+          // updateCover 内部全量兜底，此处仅为满足 Promise 必须处理。
+        });
       })
       .catch((err: BusinessError): void => {
         Log.e(TAG, `启动 AVSession 失败：${err.code} ${err.message}`);
@@ -144,6 +164,9 @@ export default class AvSessionBridge implements MethodCallHandler {
     session.setAVMetadata(this.buildMetadata(call))
       .then((): void => {
         result.success(null);
+        this.updateCover(call).catch((): void => {
+          // updateCover 内部全量兜底，此处仅为满足 Promise 必须处理。
+        });
       })
       .catch((err: BusinessError): void => {
         Log.w(TAG, `更新元数据失败：${err.code} ${err.message}`);
@@ -236,11 +259,93 @@ export default class AvSessionBridge implements MethodCallHandler {
     if (lyric != null) {
       metadata.lyric = lyric;
     }
-    // 封面（coverPath）暂不下发：实测三种格式（PixelMap / 裸路径 / file://
-    // string）均触发服务端封面校验异常（PixelMap → GetMediaImageTopic 失败，
-    // string → isImageValid 判非法 → 通知更新失败 980000502），待卡片机制
-    // 跑通后单攻封面格式。缺省时播控卡显示应用图标。
+    // 封面不走本方法（两段式，见 updateCover）：先推文字卡片，封面异步补。
     return metadata;
+  }
+
+  /**
+   * 封面异步补推（两段式第二段）。同曲去重；快速切歌用票据竞态淘汰过期
+   * 解码；任何失败仅记日志——封面不应当有能力影响卡片与播放。
+   */
+  private async updateCover(call: MethodCall): Promise<void> {
+    const path = AvSessionBridge.argString(call, 'coverPath');
+    const session = this.session;
+    if (!session) {
+      return;
+    }
+    if (path == null || path === '') {
+      // 无封面曲目：释放持有的 PixelMap；后续元数据不含 mediaImage，封面
+      // 由系统回落（是否立即回落由系统决定，不影响功能）。
+      this.lastCoverPath = null;
+      this.releaseCover();
+      return;
+    }
+    if (path === this.lastCoverPath && this.currentCover != null) {
+      return;
+    }
+    const job = ++this.coverJob;
+    try {
+      const pixelMap = await this.decodeCover(path);
+      if (job !== this.coverJob || this.session !== session) {
+        pixelMap.release().catch((): void => {
+        });
+        return;
+      }
+      const metadata = this.buildMetadata(call);
+      metadata.mediaImage = pixelMap;
+      await session.setAVMetadata(metadata);
+      // 新封面已过 IPC：释放上一张、接住新引用（保持引用直至下次替换）。
+      this.releaseCover();
+      this.currentCover = pixelMap;
+      this.lastCoverPath = path;
+      Log.i(TAG, '封面已补推');
+    } catch (err) {
+      const e = err as BusinessError;
+      Log.w(TAG, `封面补推失败（忽略）：${e.code} ${e.message}`);
+    }
+  }
+
+  /**
+   * 沙箱封面文件 → PixelMap：fd → ImageSource → 解码。PixelMap 送显序列化
+   * 上限 128MB=宽*高*每像素字节（FAQ faqs-avsession-26，超限系统自动压缩，
+   * 但直接拒收更稳）；封面为内嵌专辑图通常 <1500px，48MB 防线仅御异常大图
+   * （DecodingOptions.sampleSize 实际仅支持 1，故解码后用 scale 等比缩）。
+   */
+  private async decodeCover(path: string): Promise<image.PixelMap> {
+    const file = fileIo.openSync(path, fileIo.OpenMode.READ_ONLY);
+    try {
+      const source = image.createImageSource(file.fd);
+      try {
+        const pixelMap = await source.createPixelMap();
+        const info = await pixelMap.getImageInfo();
+        const w = info.size.width;
+        const h = info.size.height;
+        const bytes = w * h * 4;
+        const maxBytes = 48 * 1024 * 1024;
+        if (bytes > maxBytes) {
+          const factor = Math.sqrt(maxBytes / bytes);
+          await pixelMap.scale(factor, factor);
+          Log.i(TAG, `封面超大已等比缩放：${w}x${h} → x${factor.toFixed(2)}`);
+        }
+        Log.i(TAG, `封面解码：${w}x${h} ${path}`);
+        return pixelMap;
+      } finally {
+        await source.release();
+      }
+    } finally {
+      fileIo.closeSync(file);
+    }
+  }
+
+  /** 释放上一张封面（IPC 完成后释放己方引用，共享内存系统侧自持）。 */
+  private releaseCover(): void {
+    const cover = this.currentCover;
+    this.currentCover = null;
+    if (cover != null) {
+      cover.release().catch((err: BusinessError): void => {
+        Log.w(TAG, `旧封面释放失败（忽略）：${err.code} ${err.message}`);
+      });
+    }
   }
 
   private buildPlaybackState(call: MethodCall): avSession.AVPlaybackState {
