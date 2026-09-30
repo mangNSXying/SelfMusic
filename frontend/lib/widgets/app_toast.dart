@@ -39,8 +39,18 @@ class AppToast {
     _current = entry;
     overlay.insert(entry);
     _timer = Timer(Duration(milliseconds: ms), () {
-      if (entry.mounted) entry.remove();
       if (_current == entry) _current = null;
+      // 不能用 `entry.mounted` 当摘除前提：它取决于该条目**是否已被构建**
+      // （_OverlayEntryWidgetState 挂载）。弹入后到计时到期之间没有产出帧
+      // 时（启动期同步/DB isolate 往返、后台重入等无帧区间），条目尚未构建 →
+      // mounted=false → 跳过 remove，条目永久滞留 _entries，等下一帧才渲染
+      // 出来且计时器已消费，表现为「同步完成」等 toast 不再消失。
+      // 故无条件摘除；已移除/overlay 已销毁的边界由 try/catch 兜底。
+      try {
+        entry.remove();
+      } catch (_) {
+        // 已被移除或 Overlay 已销毁：无需再摘。
+      }
     });
   }
 
