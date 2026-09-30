@@ -10,7 +10,7 @@ import 'package:selfmusic/models/song.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/widgets/selection_badge.dart';
-import 'package:selfmusic/widgets/song_tile.dart';
+import 'package:selfmusic/widgets/song_list.dart';
 import 'package:sqlite3/open.dart';
 
 DynamicLibrary _openOnLinux() {
@@ -192,7 +192,7 @@ void main() {
     });
   });
 
-  testWidgets('紧凑形态（队列）：无封面、副标题仅歌手、无尾部菜单', (tester) async {
+  testWidgets('队列行与列表行统一完整形态：有封面、副标题歌手·专辑、有菜单', (tester) async {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
     late final Directory dir;
     late final DirectSourceManager direct;
@@ -224,21 +224,20 @@ void main() {
         ],
         child: MaterialApp(
           home: Scaffold(
-            body: SongTile(
-                song: song, source: _FakeSource(), onPlay: () {}, compact: true),
+            body: SongTile(song: song, source: _FakeSource(), onPlay: () {}),
           ),
         ),
       ),
     );
     await tester.pump();
 
-    expect(find.byType(CoverThumb), findsNothing);
-    expect(find.byIcon(Icons.music_note), findsOneWidget);
-    // 副标题只剩歌手（无「歌手 · 专辑」）
-    final sub = tester.widget<Text>(find.byType(Text).last);
-    expect(sub.data, '曲目歌手');
-    // 无尾部菜单与时长
-    expect(find.byType(PopupMenuButton<String>), findsNothing);
+    // 与内容区歌曲列表同形态：封面在位
+    expect(find.byType(CoverThumb), findsOneWidget);
+    // 副标题为「歌手 · 专辑 · 专辑歌手」
+    expect(find.text('曲目歌手 · 测试专辑 · 专辑歌手：专辑歌手'), findsOneWidget);
+    // 尾部菜单与时长在位
+    expect(find.byType(PopupMenuButton<String>), findsOneWidget);
+    expect(find.text('03:20'), findsOneWidget);
 
     await tester.runAsync(() async {
       direct.dispose();

@@ -466,8 +466,8 @@ abstract class MusicSource {
 - **后台播放**：Android 走 `audio_service` 自定义处理器（`SelfMusicAudioHandler`，通知按钮转发 `PlayerProvider`）；返回桌面/切后台**继续播放**（`androidStopForegroundOnPause=false` 暂停不撤前台服务，与 `androidNotificationOngoing` 互斥故弃用 ongoing）；通知栏「退出软件」/ 划掉任务（`onTaskRemoved`）/ 侧边栏「退出」（先 `shutdown()` 再 `exit(0)`）才真正停止并置空闲；`notification_controls=false` 时不注册前台服务、后台保活不成立
 - **通知栏 5 键（自定义 `SelfMusicAudioHandler`）**：`main()`（Android 开关注册）用 `AudioService.init(builder:)` 装自研 handler，不再走 `just_audio_background` 的默认 4 键。`sync()` 回推的 `PlaybackState.controls` 为 5 键——上一首 / 播放·暂停（随播放态二选一）/ 下一首 / 播放模式 / 退出软件，`androidCompactActionIndices=[0,1,2]`；前四个与「退出软件」用 `MediaControl` 自绘品牌矢量图标（`ic_np_previous/play/pause/next/mode/exit.xml`，`0xFF00A098`），播放模式与退出是 `MediaAction.custom` + `CustomMediaAction(name: 'play_mode'/'exit_app')`，回调经 `customAction` 转发 provider：`play_mode`→`cycleMode()`（与播放页模式按钮同序循环），`exit_app`→`shutdown()` 落盘断点后 `super.stop()` 收前台服务再 `exit(0)`。不劫持 just_audio 平台实例，状态变化全由 provider 的 `_syncSystemMedia()` 调 `sync()` 驱动（Android `MediaSession` 自动外推 position，无需逐 tick 上报）
 - **睡眠定时（含到时退出）**：四模式无变化（指定时间 / 时长 / 曲数 / 列表结尾 + 播放完最后曲目），新增弹窗 UI 与语义——四种模式卡片改用小字号正文 + 灰色提示行；「指定时长/曲数」用滚轮选择并**记忆上次值**（持久化 `sleep_default_duration_minutes` / `sleep_default_count`，下次打开预选）；新增「播放结束退出软件」开关（仅当次生效）。到时行为：退出开关开时 `_sleepStop()` 先读 `_sleepExitApp` 落局部再清睡眠态，走 `_quitAfterSleep()` = `await shutdown()`（落盘断点/队列）后 `exit(0)`；否则维持原有「暂停并驻留后台」
-- **播放页控件自动隐藏（`player_auto_hide_idle_sec`，默认 5，0=不隐藏）**：仅播放页（竖屏第 0 页 / 横屏整页）计静置；超时淡出左上「返回内容」与封面右上「更多」两个纯入口（封面/进度条/控制键常显）；根布局 `Listener(translucent)` 任何触摸都 `_rearmAutoHide()`（取消旧定时 → 恢复显示 → 重设定时），进入歌词页 / 切到内容区不参与隐藏
-- **播放页右滑 → 当前歌单全屏页（`lib/screens/queue_page.dart`）**：根 `Listener` **被动**追踪原始指针（`onPointerDown` 记录起点，移动时 `dx>80` 且横向占优即触发），不注册竞争手势，故不抢 `PageView` 的左滑进歌词页。仅竖屏第 0 页 / 横屏整页（`_onPlayerPage`）且按下起点即落在播放页时生效。目标页全屏 + 顶部搜索框（按展示标题 / 歌手过滤）+ `SongTile(compact)` 行（当前曲高亮、点行按原始序号 `playAt`），等价既有队列面板能力
+- **播放页（带式）控件自动隐藏（`player_auto_hide_idle_sec`，默认 5，0=不隐藏）**：仅播放页（滑带的第 1 页，竖屏/横屏同位）计静置；超时淡出左上「返回内容」与封面右上「更多」两个纯入口（封面/进度条/控制键常显）；根布局 `Listener(translucent)` 任何触摸都 `_rearmAutoHide()`（取消旧定时 → 恢复显示 → 重设定时），进入歌单页 / 歌词页 / 切到内容区不参与隐藏
+- **歌单页并入播放器横滑带（`lib/screens/player_screen.dart`）**：竖屏 `PageView` 三页 `[歌单页 | 播放页 | 歌词页]`、横屏两页 `[歌单页 | 整幅播放布局]`，切换全部由内层 `PageView` 原生跟手（与播放页↔歌词页一致的横向拖动体验，**不受「页面切换动画」设置影响**；手势关闭时禁滑、封面「更多」菜单补「歌单」入口点按跳页）。歌单页在**有绑定歌单**时展示持久化歌单——与内容区歌单详情共用 `widgets/song_list.dart` 的 `SongList`：同源（`PlaylistsProvider` + `LocalIndex`）、同行形态（完整 `SongTile`）、同写回语义（移除/上移/下移改写真实歌单并经 `onPlaylistSongRemoved` 联动播放器）；保留「播放 / 从头播放」按钮，**无**左上返回箭头与右上关闭（右滑即回播放页）。**无绑定歌单**（全部歌曲/喜欢/专辑/歌手/播放源点播）时兜底展示运行时播放队列（`lib/screens/queue_page.dart`：搜索 / 排序 / 当前曲高亮 / 单曲移除 / 清空 / 多选批量移除）
 
 ### 6.9 列表 / 卡片 / 多选（✅ 已统一）
 
@@ -480,7 +480,7 @@ abstract class MusicSource {
 | 层 | 载体 | 约定 |
 |----|------|------|
 | 外壳 | `widgets/row_list.dart` 的 `RowList` | 唯一固定行高列表外壳：统一 `itemExtent`、分隔线缩进、末行不带线、可选下拉刷新；行本体由调用方给 |
-| 行 | `widgets/song_tile.dart` 的 `SongTile` | 唯一歌曲行：封面 + 标题 + 副标题 + 时长/菜单；集合类行（歌单 / 专辑 / 歌手 / 播放源）用 `ListTile` + `CoverThumb` |
+| 行 | `widgets/song_list.dart` 的 `SongTile` | 唯一歌曲行：封面 + 标题 + 副标题 + 时长/菜单；集合类行（歌单 / 专辑 / 歌手 / 播放源）用 `ListTile` + `CoverThumb` |
 | 卡片 | `widgets/square_card.dart` 的 `SquareCard` / `SquareCardGrid` | 唯一方形卡片：封面恒 1:1（列宽按可用宽度算，不写死 `childAspectRatio`）、标题 2 行上限、按「最大宽 × 设备像素比」降采样解码 |
 | 多选 | `widgets/list_selection.dart` 的 `Selection<T>` + `widgets/selection_bar.dart` | 选择状态内核与批量栏；勾选标记统一 `widgets/selection_badge.dart` |
 
@@ -500,7 +500,7 @@ abstract class MusicSource {
 
 - 标题**常驻加粗**（`w600`），播放中 / 选中只再叠主色区分，不靠字重跳变；卡片标题同为 `w600`，两形态一致。
 - 封面位恒为封面（改进.txt）：播放指示（`graphic_eq`）排在标题之后，不顶替封面。
-- `SongTile.compact`：队列面板用的紧凑形态（无封面、副标题仅歌手、无尾部菜单），行高与分隔线仍走标准 73，删掉队列原本第 4 份自绘行。
+- 播放页 / 队列面板 / 队列兜底页与内容区歌曲列表**同一完整行形态**（封面 + 标题 + 副标题 + 时长/菜单）：`SongTile` 不再有 `compact` 紧凑形态，队列原有第 4 份自绘行与其一并移除。
 - `SongTile.extraMenuItems` / `onExtraMenu`：歌单详情的上移 / 下移 / 移除追加在内置项之后（自定义 value 用 `row:` 前缀避免撞名）。
 - 集合类 leading 统一 `CoverThumb`（`shape` 圆形/圆角 + `fallbackIcon`），歌手保留圆形。
 

@@ -17,7 +17,7 @@ import '../widgets/section_swipe.dart';
 import '../widgets/list_selection.dart';
 import '../widgets/row_list.dart';
 import '../widgets/selection_bar.dart';
-import '../widgets/song_tile.dart';
+import '../widgets/song_list.dart';
 
 /// 源内浏览组件（文件夹式导航）：在 AppContent 内容区原地渲染。
 ///

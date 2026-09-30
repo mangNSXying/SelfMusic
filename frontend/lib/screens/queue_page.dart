@@ -3,16 +3,23 @@ import 'package:provider/provider.dart';
 
 import '../models/song.dart';
 import '../data/local/app_settings.dart';
+import '../data/local/song_weight_store.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
+import '../utils/collection_sort.dart';
 import '../utils/song_title_format.dart';
+import '../widgets/list_selection.dart';
 import '../widgets/row_list.dart';
-import '../widgets/song_tile.dart';
+import '../widgets/selection_bar.dart';
+import '../widgets/song_list.dart';
+import '../widgets/sort_menu_button.dart';
 
-/// 当前播放队列全屏页（改进.txt UI6）：播放页右滑进入。
+/// 当前播放队列页（改进.txt UI6）：无绑定歌单（全部歌曲/喜欢/专辑/歌手/播放源
+/// 点播等）时右滑进入的兜底页，展示运行时播放队列。
 ///
-/// 全屏 + 顶部搜索框，保留队列面板的能力：点行 [PlayerProvider.playAt] 切歌、
-/// 当前播放曲高亮。搜索按展示标题/歌手过滤当前队列，不影响原始播放顺序。
+/// 全屏 + 顶部搜索框 + 排序（按设置规则，仅展示层重排，不影响播放顺序），
+/// 点行按真实队列序号切歌、当前曲高亮；支持单曲移除 / 清空 / 多选批量移除
+/// （只改运行时队列）。行统一为完整形态（[SongTile] 完整行）。
 class QueuePage extends StatefulWidget {
   const QueuePage({super.key});
 
@@ -23,6 +30,21 @@ class QueuePage extends StatefulWidget {
 class _QueuePageState extends State<QueuePage> {
   final TextEditingController _search = TextEditingController();
   String _query = '';
+  late CollectionSort _sort;
+
+  /// 多选状态：key 一律取「真实队列下标」（可含同名歌，规避按 ref 撞键）。
+  final Selection<int> _sel = Selection<int>();
+
+  /// 可见序列缓存守卫：队列长度 / 查询词 / 排序任一变化才重算
+  /// （播放事件频繁 notify，避免每次 build 重查权重库）。
+  (CollectionSort, String, int)? _sig;
+  List<int> _visible = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _sort = context.read<DirectSourceManager>().settings.sortQueue;
+  }
 
   @override
   void dispose() {
@@ -37,76 +59,184 @@ class _QueuePageState extends State<QueuePage> {
     return artist.contains(q);
   }
 
+  /// 先搜索过滤、再按设置排序，产出「真实队列下标」的展示序列。
+  /// 排序仅作用于展示层：行状态只与真实序列（positives 原序）挂接，播放顺序不动。
+  void _rebuildVisible(List<Song> queue, String q, DirectSourceManager direct) {
+    final searched = <int>[
+      for (var i = 0; i < queue.length; i++)
+        if (_matches(queue[i], q, direct.settings.songTitleFormat)) i,
+    ];
+    if (searched.length < 2 || _sort == CollectionSort.defaultOrder) {
+      _visible = searched;
+      return;
+    }
+    final weight = direct.weight;
+    // 权重排序用整队批量读取（按 sourceKey 分组），避免逐首同步查库。
+    final factors =
+        _sort.isWeight ? weight.factorsOf(queue) : const <String, Map<String, double>>{};
+    double factorOf(Song s) => factors[s.sourceKey]?[s.sourceRef] ??
+        SongWeightStore.defaultFactor;
+    final songs = [for (final i in searched) queue[i]];
+    _visible = [
+      for (final i in songSortOrder(songs, _sort,
+          factorOf: _sort.isWeight ? factorOf : null, playSecOf: weight.playSecOf))
+        searched[i],
+    ];
+  }
+
+  Future<bool> _confirm(String title, String content, String okLabel) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: Text(title),
+        content: Text(content),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(c).pop(false),
+              child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.of(c).pop(true),
+              child: Text(okLabel)),
+        ],
+      ),
+    );
+    return ok == true && mounted;
+  }
+
+  Future<void> _removeOne(PlayerProvider player, int realIndex) async {
+    if (!await _confirm('移除歌曲', '确定从队列中移除这首歌曲？', '移除')) return;
+    player.removeAt(realIndex);
+  }
+
+  Future<void> _clearQueue(PlayerProvider player) async {
+    if (!await _confirm('清空队列', '确定清空整个播放队列并停止播放？', '清空')) return;
+    player.clearQueue();
+  }
+
+  Future<void> _removeSelected(PlayerProvider player) async {
+    final selected = _sel.selected.toList()..sort((a, b) => b.compareTo(a));
+    if (selected.isEmpty) return;
+    if (!await _confirm('移除选中', '确定从队列中移除选中的 ${selected.length} 首歌曲？',
+        '移除')) {
+      return;
+    }
+    // 从大到小逐删：已删的更大下标不会影响仍待删的较小下标有效性。
+    for (final i in selected) {
+      player.removeAt(i);
+    }
+    setState(_sel.cancel);
+  }
+
   @override
   Widget build(BuildContext context) {
     final player = context.watch<PlayerProvider>();
     final direct = context.watch<DirectSourceManager>();
     final queue = player.queue;
     final q = _query.trim().toLowerCase();
-    late final List<int> indices;
-    if (q.isEmpty) {
-      indices = [for (var i = 0; i < queue.length; i++) i];
-    } else {
-      indices = [
-        for (var i = 0; i < queue.length; i++)
-          if (_matches(queue[i], q, direct.settings.songTitleFormat)) i,
-      ];
+    final sig = (_sort, q, queue.length);
+    if (sig != _sig) {
+      _sig = sig;
+      _rebuildVisible(queue, q, direct);
     }
 
     return Scaffold(
       appBar: AppBar(
         title: Text('播放队列（${queue.length}）'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.close),
-            tooltip: '关闭',
-            onPressed: () => Navigator.of(context).pop(),
-          ),
+          if (queue.isNotEmpty) ...[
+            SortMenuButton(
+              value: direct.settings.sortQueue,
+              scope: SortScope.songs,
+              onChanged: (v) {
+                setState(() => _sort = v);
+                direct.settings.sortQueue = v;
+              },
+            ),
+            IconButton(
+              icon: const Icon(Icons.delete_outline),
+              tooltip: '清空队列',
+              onPressed: () => _clearQueue(player),
+            ),
+          ],
         ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(56),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-            child: TextField(
-              controller: _search,
-              onChanged: (v) => setState(() => _query = v),
-              decoration: InputDecoration(
-                hintText: '搜索当前队列',
-                prefixIcon: const Icon(Icons.search),
-                suffixIcon: _query.isEmpty
-                    ? null
-                    : IconButton(
-                        icon: const Icon(Icons.clear),
-                        tooltip: '清除',
-                        onPressed: () {
-                          _search.clear();
-                          setState(() => _query = '');
-                        },
+          child: _sel.active
+              ? SelectionBar(
+                  total: _visible.length,
+                  selectedCount: _sel.of(_visible).length,
+                  onToggleAll: () => setState(() {
+                    _sel.active = true;
+                    _sel.setAll(_visible);
+                  }),
+                  onCancel: () => setState(_sel.cancel),
+                  actions: [
+                    SelectionAction(
+                      icon: Icons.playlist_remove,
+                      label: '移除选中',
+                      onPressed:
+                          _sel.selected.isEmpty ? null : () => _removeSelected(player),
+                    ),
+                  ],
+                )
+              : Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                  child: TextField(
+                    controller: _search,
+                    onChanged: (v) => setState(() => _query = v),
+                    decoration: InputDecoration(
+                      hintText: '搜索当前队列',
+                      prefixIcon: const Icon(Icons.search),
+                      suffixIcon: _query.isEmpty
+                          ? null
+                          : IconButton(
+                              icon: const Icon(Icons.clear),
+                              tooltip: '清除',
+                              onPressed: () {
+                                _search.clear();
+                                setState(() => _query = '');
+                              },
+                            ),
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(24),
                       ),
-                isDense: true,
-                contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(24),
+                    ),
+                  ),
                 ),
-              ),
-            ),
-          ),
         ),
       ),
-      body: indices.isEmpty
-          ? const Center(child: Text('队列为空'))
+      body: _visible.isEmpty
+          ? Center(child: Text(queue.isEmpty ? '队列为空' : '无匹配歌曲'))
           : RowList(
-              count: indices.length,
+              count: _visible.length,
               itemBuilder: (c, i) {
-                final realIndex = indices[i];
+                final realIndex = _visible[i];
                 final s = queue[realIndex];
                 final isCurrent = player.isCurrent(s);
                 return SongTile(
                   song: s,
                   source: null,
-                  compact: true,
                   playing: isCurrent,
+                  selectionMode: _sel.active,
+                  selected: _sel.contains(realIndex),
+                  onSelect: () => setState(() {
+                    _sel.active = true;
+                    _sel.toggle(realIndex);
+                  }),
+                  onStartSelect: () =>
+                      setState(() => _sel.startWith(realIndex)),
                   onPlay: () => player.playAt(realIndex),
+                  extraMenuItems: const [
+                    PopupMenuItem(
+                      value: 'row:remove',
+                      child: Text('移除'),
+                    ),
+                  ],
+                  onExtraMenu: (v) {
+                    if (v == 'row:remove') _removeOne(player, realIndex);
+                  },
                 );
               },
             ),

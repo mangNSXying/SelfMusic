@@ -25,7 +25,7 @@ import '../widgets/list_selection.dart';
 import '../widgets/page_transition.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
-import '../widgets/song_tile.dart';
+import '../widgets/song_list.dart';
 import '../widgets/sort_menu_button.dart';
 import '../widgets/square_card.dart';
 import '../widgets/view_mode_toggle.dart';
