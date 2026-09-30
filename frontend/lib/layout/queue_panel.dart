@@ -3,7 +3,7 @@ import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../widgets/row_list.dart';
-import '../widgets/song_tile.dart';
+import '../widgets/song_list.dart';
 
 /// 切换播放队列面板：窄屏竖屏底部弹层（0.7 高），宽屏/横屏右侧常驻面板开关。
 ///
@@ -110,7 +110,6 @@ class _QueuePanelState extends State<QueuePanel> {
                       return SongTile(
                         song: s,
                         source: null,
-                        compact: true,
                         playing: isCurrent,
                         onPlay: () => player.playAt(i),
                       );

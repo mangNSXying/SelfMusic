@@ -97,6 +97,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 断点事件仅在此非空且当前歌曲有身份时进 outbox。
   String? _syncPlaylistUuid;
 
+  /// 当前队列绑定的歌单 uuid（歌单页展示用）：从已同步歌单播全部/点歌时非空，
+  /// 其它来源播放（全部歌曲/喜欢/专辑/歌手/播放源）为 null —— 此时歌单页兜底
+  /// 展示运行时播放队列。
+  String? get syncPlaylistUuid => _syncPlaylistUuid;
+
   /// 深层列表（隐藏历史栈）：绑定当前锚定列表（anchorKey）时启用；未锚定为 null。
   /// anchorKey 值域：playlist:<uuid>/liked/songs/album:<id>/artist:<name>/source:<key>。
   String? _anchorKey;
@@ -1074,6 +1079,63 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _idx = index;
     await _play(_queue[_idx], source: source, fromPlaylist: true, manual: true);
   }
+
+  /// 移除队列中第 [index] 首（右滑歌单页单曲移除/多选批量共用）。
+  /// 只改运行时队列，不改写持久化歌单（与歌单详情不同源）。
+  /// - 非当前曲：仅修正 [nextIndexAfterRemove] 并通知；
+  /// - 当前曲：记一次离开事件后，续播同位置（滑入的那首）；队列被删光则收尾停止。
+  void removeAt(int index) {
+    if (index < 0 || index >= _queue.length) return;
+    final removingCurrent = index == _idx;
+    if (removingCurrent) _leaveFor(null);
+    _queue.removeAt(index);
+    if (removingCurrent) {
+      if (_queue.isEmpty) {
+        unawaited(_clearStoppedState());
+        return;
+      }
+      _idx = index.clamp(0, _queue.length - 1);
+      unawaited(
+          _play(_queue[_idx], source: _curSource, autoAdvanceOnFailure: true));
+      return;
+    }
+    _idx = nextIndexAfterRemove(_idx, index);
+    notifyListeners();
+    _syncSystemMedia();
+  }
+
+  /// 清空队列：记录离开事件后停播、清当前曲与断点残留。
+  /// 不动持久化歌单，仅运行时播放队列。
+  void clearQueue() {
+    if (_queue.isEmpty) return;
+    _leaveFor(null);
+    _queue = [];
+    _idx = 0;
+    unawaited(_clearStoppedState());
+  }
+
+  /// 队列被清空/当前曲被删光时收尾：停播、清当前曲与断点残留，通知 + 回推媒体会话。
+  Future<void> _clearStoppedState() async {
+    _fadeTimer?.cancel();
+    _fadingPause = false;
+    _peekedNext = null;
+    _warmTimer?.cancel();
+    _warmTimer = null;
+    _current = null;
+    _curSource = null;
+    clearResumeState();
+    try {
+      await player.stop();
+    } catch (_) {}
+    notifyListeners();
+    _syncSystemMedia();
+  }
+
+  /// 从队列移除 [removed]（非当前曲）后，当前下标 [cur] 的修正值：
+  /// 移除位在当前位置之前 → 左移一位；之后 → 不变。
+  /// 纯函数（不依赖实例状态），便于直接单测（同 [startIndexForOrder] 约定）。
+  static int nextIndexAfterRemove(int cur, int removed) =>
+      removed < cur ? cur - 1 : cur;
 
   /// 以本地索引最新行纠正旧快照（歌单快照/断点恢复可能携带补读前的数据）：
   /// 返回可直接播放的歌曲对象；索引中无此歌（服务端歌）时原样返回。

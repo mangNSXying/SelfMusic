@@ -12,6 +12,7 @@ import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
+import '../providers/playlists_provider.dart';
 import 'queue_page.dart';
 import '../services/bluetooth_service.dart';
 import '../utils/duration_format.dart';
@@ -23,6 +24,7 @@ import '../widgets/lyrics_view.dart';
 import '../widgets/marquee_text.dart';
 import '../widgets/pressable.dart';
 import '../widgets/player_sheet_anim.dart';
+import '../widgets/song_list.dart';
 
 /// 横屏播放页布局分流（UI10 平台差异化）：
 /// 桌面平台（鼠标+大窗口）或超宽屏（≥1000，大平板）→ 双栏居中布局；
@@ -54,69 +56,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   /// 播放页控件静置自动隐藏（改进.txt UI3）：无操作 N 秒后隐藏
   /// 左上返回箭头与封面右上「更多」。触摸即恢复并重新计时。
-  bool _landscapeMode = false;
   bool _controlsHidden = false;
   bool _prevPlayerView = true;
   int _autoHideSec = 0;
   Timer? _autoHideTimer;
 
-  /// 是否停在播放页（第 0 页/横屏无分页）——只在播放页上计时隐藏。
+  /// 是否停在播放页（播放器带的第 1 页，竖屏分页/横屏整页同位置）——
+  /// 只在播放页上计时隐藏。
   bool get _onPlayerPage =>
-      _landscapeMode ||
-      (_pageCtrl.hasClients && (_pageCtrl.page ?? 0).round() == 0);
+      _pageCtrl.hasClients && (_pageCtrl.page ?? 1).round() == 1;
 
-  /// 播放页右滑 → 当前歌单全屏页（改进.txt UI6）的原始指针追踪。
-  /// 用 Listener 被动观察（不进手势竞技场），避免抢走 PageView 的左右翻页。
-  int? _swipePointer;
-  Offset? _swipeStart;
-  bool _swipeStartOnPlayer = false;
-  bool _swipeConsumed = false;
-  static const double _queueSwipeThreshold = 80;
-
-  void _onPlayerPointerDown(PointerDownEvent e) {
+  /// 歌单页/播放页/歌词页已并入同一条横向跟手带（PageView），右滑进歌单页
+  /// 由原生翻页接管（与播放↔歌词一致），不再需要被动右滑追踪。
+  void _onBandPointerDown(PointerDownEvent _) {
     _rearmAutoHide();
-    _swipePointer = e.pointer;
-    _swipeStart = e.position;
-    _swipeStartOnPlayer = _onPlayerPage;
-    _swipeConsumed = false;
-  }
-
-  void _onPlayerPointerMove(PointerMoveEvent e) {
-    if (e.pointer != _swipePointer ||
-        _swipeConsumed ||
-        !_swipeStartOnPlayer ||
-        !_onPlayerPage) {
-      return;
-    }
-    final start = _swipeStart;
-    if (start == null) return;
-    final dx = e.position.dx - start.dx;
-    if (dx < _queueSwipeThreshold) return;
-    final dy = e.position.dy - start.dy;
-    if (dx < dy.abs() * 1.2) return;
-    if (!context.read<NavigationProvider>().playerView) return;
-    _swipeConsumed = true;
-    _openQueuePage();
-  }
-
-  void _onPlayerPointerEnd(PointerUpEvent e) {
-    if (e.pointer == _swipePointer) {
-      _swipePointer = null;
-      _swipeStart = null;
-    }
-  }
-
-  void _onPlayerPointerCancel(PointerCancelEvent e) {
-    if (e.pointer == _swipePointer) {
-      _swipePointer = null;
-      _swipeStart = null;
-    }
-  }
-
-  void _openQueuePage() {
-    if (!mounted) return;
-    Navigator.of(context)
-        .push(MaterialPageRoute<void>(builder: (_) => const QueuePage()));
   }
 
   /// 屏幕常亮目标值与已应用值；合并调度标记。
@@ -134,7 +87,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void initState() {
     super.initState();
-    _pageCtrl = PageController(initialPage: 0);
+    _pageCtrl = PageController(initialPage: 1);
     // 首帧后读取常亮设置目标值。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -318,21 +271,28 @@ class _PlayerScreenState extends State<PlayerScreen> {
             Platform.isLinux || Platform.isWindows || Platform.isMacOS);
 
     // 播放页控件静置隐藏（改进.txt UI3）：任何触摸都视为交互并重新计时。
-    // 同时被动追踪右滑进入当前歌单页（UI6，不抢 PageView 手势）。
-    _landscapeMode = landscape;
+    // 歌单页/播放页/歌词页同一页横滑带，进入歌单页由 PageView 原生右滑接管。
     return Scaffold(
       body: Listener(
         behavior: HitTestBehavior.translucent,
-        onPointerDown: _onPlayerPointerDown,
-        onPointerMove: _onPlayerPointerMove,
-        onPointerUp: _onPlayerPointerEnd,
-        onPointerCancel: _onPlayerPointerCancel,
+        onPointerDown: _onBandPointerDown,
         child: SafeArea(
           child: _PlayerControlsHidden(
             hidden: _controlsHidden,
-            child: landscape
-                // 横屏无歌词分页：左上角箭头悬浮于两套横屏布局之上。
-                ? Stack(
+            child: PageView(
+              // 横向由内层 PageView 原生跟手（右滑回播放页/进歌单页）；
+              // 竖向仅播放页（第 1 页）跟手下拉，歌词页纵向留给滚动。
+              // 关闭手势后 PageView 禁滑、下拉停用。
+              controller: _pageCtrl,
+              physics: gestureOn
+                  ? const PageScrollPhysics()
+                  : const NeverScrollableScrollPhysics(),
+              children: [
+                const _BandSongPage(),
+                if (landscape)
+                  // 横屏无歌词分页（歌词内嵌）：歌单页与整幅播放布局两页滑动；
+                  // 左上角返回箭头悬浮于两套横屏布局之上。
+                  Stack(
                     children: [
                       desktopLandscape
                           ? _DesktopLandscapePlayer(
@@ -347,37 +307,29 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           top: 6, left: 6, child: _BackToContentButton()),
                     ],
                   )
-                : PageView(
-                    // 横向由内层 PageView 原生跟手（右滑回播放页）；
-                    // 竖向仅播放页（第 0 页）跟手下拉，歌词页纵向留给滚动。
-                    // 关闭手势后 PageView 禁滑、下拉停用。
-                    controller: _pageCtrl,
-                    physics: gestureOn
-                        ? const PageScrollPhysics()
-                        : const NeverScrollableScrollPhysics(),
+                else
+                  Stack(
+                    // 箭头悬浮在播放页内容之上（不占布局空间，不压缩封面）；
+                    // 歌词页（第 2 页）按先前要求不再放箭头。
                     children: [
-                      // 箭头悬浮在播放页内容之上（不占布局空间，不压缩封面）；
-                      // 歌词页（第 1 页）按先前要求不再放箭头。
-                      Stack(
-                        children: [
-                          GestureDetector(
-                            behavior: HitTestBehavior.translucent,
-                            onVerticalDragStart:
-                                gestureOn ? _onPlayerDragStart : null,
-                            onVerticalDragUpdate:
-                                gestureOn ? _onPlayerDragUpdate : null,
-                            onVerticalDragEnd: gestureOn
-                                ? _onPlayerDragEnd
-                                : null,
-                            child: _buildPlayerBody(context),
-                          ),
-                          const Positioned(
-                              top: 6, left: 6, child: _BackToContentButton()),
-                        ],
+                      GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onVerticalDragStart:
+                            gestureOn ? _onPlayerDragStart : null,
+                        onVerticalDragUpdate:
+                            gestureOn ? _onPlayerDragUpdate : null,
+                        onVerticalDragEnd: gestureOn
+                            ? _onPlayerDragEnd
+                            : null,
+                        child: _buildPlayerBody(context),
                       ),
-                      const _LyricsPage(),
+                      const Positioned(
+                          top: 6, left: 6, child: _BackToContentButton()),
                     ],
                   ),
+                if (!landscape) const _LyricsPage(),
+              ],
+            ),
           ),
         ),
       ),
@@ -387,6 +339,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// 自适应播放页：整页不滚动，封面尺寸按可用空间计算以恰好放满一屏。
   Widget _buildPlayerBody(BuildContext context) {
     final player = context.watch<PlayerProvider>();
+    final direct = context.watch<DirectSourceManager>();
+    // 手势关闭时 PageView 禁滑，歌单页无法右滑进入：封面「更多」菜单补
+    // 「歌单」入口，点按跳转第 0 页。
+    final onOpenSongs = direct.settings.playerGestureSwipe
+        ? null
+        : () {
+            _rearmAutoHide();
+            _pageCtrl.animateToPage(0,
+                duration: const Duration(milliseconds: 250),
+                curve: Curves.easeOut);
+          };
 
     return Center(
       child: ConstrainedBox(
@@ -402,9 +365,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
               child: player.hasCurrent
                   ? _NowPlaying(
                       player: player,
-                      direct: context.watch<DirectSourceManager>(),
+                      direct: direct,
                       cs: Theme.of(context).colorScheme,
                       coverSize: coverSize,
+                      onOpenSongs: onOpenSongs,
                     )
                   : _EmptyState(coverSize: coverSize),
             );
@@ -437,6 +401,30 @@ class _PlayerControlsHidden extends InheritedWidget {
 
   @override
   bool updateShouldNotify(_PlayerControlsHidden old) => hidden != old.hidden;
+}
+
+/// 播放器带的「歌单页」（PageView 首页，左邻播放页）。
+///
+/// - 有绑定歌单（[PlayerProvider.syncPlaylistUuid] 非空且本地存在）：展示该
+///   持久化歌单——与内容区歌单详情共用 [SongList]，同源、同行形态、同写回
+///   语义（移除/上移/下移会改写真实歌单并联动播放器）；保留「播放 / 从头播放」
+///   按钮；**无**左上返回箭头与右上关闭（横向滑动即返回播放页，切换体验与
+///   播放页↔歌词页一致）。
+/// - 无绑定歌单（全部歌曲/喜欢/专辑/歌手/播放源点播）：兜底展示运行时播放
+///   队列（[QueuePage]），其行同样为完整形态。
+class _BandSongPage extends StatelessWidget {
+  const _BandSongPage();
+
+  @override
+  Widget build(BuildContext context) {
+    final player = context.watch<PlayerProvider>();
+    final uuid = player.syncPlaylistUuid;
+    if (uuid == null) return const QueuePage();
+    final pid =
+        context.watch<PlaylistsProvider>().store.index.playlistIdOfUuid(uuid);
+    if (pid == null) return const QueuePage();
+    return SongList(playlistId: pid);
+  }
 }
 
 /// 播放页左上角「回到内容页」向下箭头：悬浮覆盖（Positioned 入 Stack），
@@ -540,12 +528,14 @@ class _NowPlaying extends StatelessWidget {
   final DirectSourceManager direct;
   final ColorScheme cs;
   final double coverSize;
+  final VoidCallback? onOpenSongs;
 
   const _NowPlaying({
     required this.player,
     required this.direct,
     required this.cs,
     required this.coverSize,
+    this.onOpenSongs,
   });
 
   @override
@@ -557,7 +547,12 @@ class _NowPlaying extends StatelessWidget {
       children: [
         Center(
           child: _Cover(
-              coverPath: s.coverPath, song: s, cs: cs, size: coverSize),
+              coverPath: s.coverPath,
+              song: s,
+              cs: cs,
+              size: coverSize,
+              showSongsEntry: onOpenSongs != null,
+              onOpenSongs: onOpenSongs),
         ),
         const SizedBox(height: 20),
         _TitleBlock(player: player, direct: direct),
@@ -1082,12 +1077,16 @@ class _Cover extends StatelessWidget {
   final Song song;
   final ColorScheme cs;
   final double size;
+  final bool showSongsEntry;
+  final VoidCallback? onOpenSongs;
 
   const _Cover({
     required this.coverPath,
     required this.song,
     required this.cs,
     required this.size,
+    this.showSongsEntry = false,
+    this.onOpenSongs,
   });
 
   @override
@@ -1140,9 +1139,13 @@ class _Cover extends StatelessWidget {
                     tooltip: '更多',
                     padding: EdgeInsets.zero,
                     onSelected: (v) => _onSelected(context, v),
-                    itemBuilder: (c) => const [
-                      PopupMenuItem(value: 'info', child: Text('歌曲信息')),
-                      PopupMenuItem(value: 'edit', child: Text('修改歌曲元数据')),
+                    itemBuilder: (c) => [
+                      if (showSongsEntry)
+                        const PopupMenuItem(
+                            value: 'songs', child: Text('歌单')),
+                      const PopupMenuItem(value: 'info', child: Text('歌曲信息')),
+                      const PopupMenuItem(
+                          value: 'edit', child: Text('修改歌曲元数据')),
                     ],
                     child: SizedBox(
                       width: moreSize,
@@ -1164,7 +1167,9 @@ class _Cover extends StatelessWidget {
   }
 
   void _onSelected(BuildContext context, String v) {
-    if (v == 'info') {
+    if (v == 'songs') {
+      onOpenSongs?.call();
+    } else if (v == 'info') {
       showDialog<void>(
         context: context,
         builder: (_) => _SongInfoDialog(song: song),

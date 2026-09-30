@@ -136,6 +136,7 @@ class AppSettings {
   static const String kSortSongs = 'sort_songs';
   static const String kSortFavorites = 'sort_favorites';
   static const String kSortPlaylistDetail = 'sort_playlist_detail';
+  static const String kSortQueue = 'sort_queue';
   static const String kSortAlbums = 'sort_albums';
   static const String kSortArtists = 'sort_artists';
   static const String kSortPlaylists = 'sort_playlists';
@@ -495,6 +496,9 @@ class AppSettings {
   set sortPlaylistDetail(CollectionSort v) =>
       _setSort(kSortPlaylistDetail, v);
 
+  CollectionSort get sortQueue => _sort(kSortQueue);
+  set sortQueue(CollectionSort v) => _setSort(kSortQueue, v);
+
   CollectionSort get sortAlbums => _sort(kSortAlbums);
   set sortAlbums(CollectionSort v) => _setSort(kSortAlbums, v);
 
@@ -567,6 +571,7 @@ class AppSettings {
     kSortSongs,
     kSortFavorites,
     kSortPlaylistDetail,
+    kSortQueue,
     kSortAlbums,
     kSortArtists,
     kSortPlaylists,

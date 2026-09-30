@@ -12,7 +12,7 @@ import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/providers/playlists_provider.dart';
 import 'package:selfmusic/screens/playlists_view.dart';
-import 'package:selfmusic/widgets/song_tile.dart';
+import 'package:selfmusic/widgets/song_list.dart';
 import 'package:sqlite3/open.dart';
 
 DynamicLibrary _openOnLinux() {
