@@ -68,7 +68,11 @@ class _AppShellState extends State<AppShell> {
             children: [
               if (_sidebarVisible) const Sidebar(),
               Expanded(child: contentColumn),
-              if (nav.queueOpen) QueuePanel(onClose: nav.closeQueue),
+              if (nav.queueOpen)
+                // 宽屏必须有界宽度：Row 非 flex 子项是无界宽度，width=null
+                // 会让面板内部 Spacer/Expanded 抛 unbounded 布局异常（整面板
+                // 空白）。窄屏底部弹层不受影响（Sheet 有界）。
+                QueuePanel(onClose: nav.closeQueue, width: kQueuePanelWidth),
             ],
           )
         : Stack(

@@ -5,6 +5,16 @@ import '../providers/player_provider.dart';
 import '../widgets/row_list.dart';
 import '../widgets/song_list.dart';
 
+/// 宽屏右侧常驻面板宽度（[AppShell] 横排传入；窄屏底部弹层不传 width，
+/// 撑满可用宽度）。
+///
+/// 历史坑（2026-09-30 平板真机）：宽屏分支曾以 width=null 塞进 Row——
+/// Row 的非 flex 子项拿到**无界宽度**，面板头部 Row 里的 Spacer(flex)
+/// 直接抛 unbounded 布局异常，整棵子树布局失败 → 面板空白。窄屏走
+/// ModalBottomSheet（有界约束）不受影响——恒宽屏的平板才会踩中。
+/// 宽屏必须传有界宽度（回归测试 test/queue_panel_wide_test.dart）。
+const double kQueuePanelWidth = 360;
+
 /// 切换播放队列面板：窄屏竖屏底部弹层（0.7 高），宽屏/横屏右侧常驻面板开关。
 ///
 /// 顶栏队列按钮已移除，统一由迷你播放栏进入；AppShell 与迷你栏共用此入口。
@@ -81,42 +91,48 @@ class _QueuePanelState extends State<QueuePanel> {
     return Container(
       width: widget.width,
       color: Theme.of(context).colorScheme.surface,
-      child: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 4, 4),
-            child: Row(
-              children: [
-                Text('播放队列',
-                    style: Theme.of(context)
-                        .textTheme
-                        .titleMedium
-                        ?.copyWith(fontWeight: FontWeight.bold)),
-                const Spacer(),
-                IconButton(icon: const Icon(Icons.close), onPressed: widget.onClose),
-              ],
+      // 宽屏侧板形态整高直达屏幕顶（与内容列并排，TopBar 的 SafeArea
+      // 管不到这里），顶部内容需自行让开状态栏；底色仍满高。
+      // 窄屏底部弹层形态下 BottomSheet 会移除 top padding，此处无副作用。
+      child: SafeArea(
+        top: true,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 4, 4),
+              child: Row(
+                children: [
+                  Text('播放队列',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(fontWeight: FontWeight.bold)),
+                  const Spacer(),
+                  IconButton(icon: const Icon(Icons.close), onPressed: widget.onClose),
+                ],
+              ),
             ),
-          ),
-          const Divider(height: 1),
-          Expanded(
-            child: queue.isEmpty
-                ? const Center(child: Text('队列为空'))
-                : RowList(
-                    controller: _scroll,
-                    count: queue.length,
-                    itemBuilder: (c, i) {
-                      final s = queue[i];
-                      final isCurrent = player.isCurrent(s);
-                      return SongTile(
-                        song: s,
-                        source: null,
-                        playing: isCurrent,
-                        onPlay: () => player.playAt(i),
-                      );
-                    },
-                  ),
-          ),
-        ],
+            const Divider(height: 1),
+            Expanded(
+              child: queue.isEmpty
+                  ? const Center(child: Text('队列为空'))
+                  : RowList(
+                      controller: _scroll,
+                      count: queue.length,
+                      itemBuilder: (c, i) {
+                        final s = queue[i];
+                        final isCurrent = player.isCurrent(s);
+                        return SongTile(
+                          song: s,
+                          source: null,
+                          playing: isCurrent,
+                          onPlay: () => player.playAt(i),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
       ),
     );
   }
