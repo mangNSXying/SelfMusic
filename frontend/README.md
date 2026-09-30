@@ -1,6 +1,6 @@
 # SelfMusic 前端（Flutter）
 
-跨平台客户端：Linux 桌面 + Android + Windows（`lib/` 全为可换主题自适应 Dart 代码；鸿蒙 PoC 进行中）。
+跨平台客户端：Linux 桌面 + Android + Windows + HarmonyOS NEXT（`lib/` 全为可换主题自适应 Dart 代码；鸿蒙经三方分支 + 平台收口层接入，PoC 验收已通过）。
 目录结构与职责注释见 [../DEVELOPER.md「项目结构」](../DEVELOPER.md#项目结构)，设计与数据模型见 [../DESIGN.md](../DESIGN.md)。
 
 ## 运行
@@ -20,7 +20,8 @@ flutter test                  # 单元/组件测试
 flutter build linux --debug   # Linux 出包（验证用 --release）
 flutter build apk --debug     # Android 出包
 flutter build windows --debug # Windows 出包
-# 鸿蒙：需三方 ohos 分支 Flutter + DevEco 工具链，见 DEVELOPER.md「鸿蒙适配」
+# 鸿蒙：需三方 ohos 分支 Flutter + DevEco 工具链，见 DEVELOPER.md「鸿蒙适配」；
+#   debug：flutter build hap --debug；release 三架构：仓库根 build-ohos.bat
 ```
 
 ## 改代码前必读

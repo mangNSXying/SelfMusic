@@ -1,6 +1,6 @@
 # SelfMusic
 
-**去中心化的个人音乐服务**：自建单用户同步服务（Spring Boot）+ 双模式客户端（Flutter / Linux · Android · Windows，鸿蒙 PoC 中）。
+**去中心化的个人音乐服务**：自建单用户同步服务（Spring Boot）+ 双模式客户端（Flutter / Linux · Android · Windows · HarmonyOS NEXT）。
 
 - **多设备同步**：权重 / 收藏 / 歌单 / 播放源 / 断点跨设备收敛，设备配对可管理（后端不持有曲库）
 - **直连模式**：没有后端也能完整使用 —— App 直连 WebDAV / SMB / 本地文件夹，源内文件夹式浏览 + 全局歌曲/专辑/歌手合并 + 离线缓存
@@ -23,13 +23,13 @@
 - **交互**：六分组左右滑动切换、播放页/歌词页跟手滑动（可关）、标题显示格式（文件名 / 歌名 / 歌手-歌名 / 歌名-歌手）、播放列表 / 播放源 / 专辑 / 歌手四页列表·卡片切换、进入播放队列与歌单自动定位当前曲并强调色
 - **歌单**：播放页「编辑歌单」（列出全部播放列表，点按加入/移出），列表页长按多选批量管理；设置 / 歌单导出导入
 - **歌词**：内嵌标签 / 同名 `.lrc` 读取，歌词页同步滚动高亮、点词跳转
-- **后台播放**：返回桌面继续播放（Android 通知栏常驻，通知栏「停止」或退出才真正停止）
+- **后台播放**：返回桌面继续播放（Android 通知栏 5 键常驻；鸿蒙走系统 AVSession 媒体卡——通知栏/锁屏/播控中心；通知栏「停止/退出」或退出软件才真正停止）
 
 ## 技术栈
 
 | 层级 | 技术 | 备注 |
 |------|------|------|
-| 前端 | Flutter / Dart ≥3.4 | **Linux + Android + Windows 三平台**（`lib/` 全为跨平台 Dart）；鸿蒙 PoC 进行中 |
+| 前端 | Flutter / Dart ≥3.4 | **Linux + Android + Windows + HarmonyOS NEXT 四端**（`lib/` 全为跨平台 Dart；鸿蒙经三方分支 + `lib/platform/harmonyos/` 收口层接入，PoC 验收已通过） |
 | 后端 | Spring Boot 3.4.4 / JDK 21 | REST API（仅认证 / 配对 / 状态同步） |
 | 构建 | Maven | |
 | 数据库 | MySQL 8.0 | 服务端；客户端另有独立 SQLite 轻量库 |
@@ -103,15 +103,18 @@ sudo nginx -s reload
 ```
 selfmusic/
 ├── backend/                     # Spring Boot 后端（认证/配对 + 状态同步）
-├── frontend/                    # Flutter 客户端（Linux/Android/Windows 壳工程 + 跨平台 lib/）
+├── frontend/                    # Flutter 客户端（Linux/Android/Windows/ohos 壳工程 + 跨平台 lib/）
 │   ├── lib/data/                # 播放源抽象 + SQLite 本地库 + 元数据解析
 │   ├── lib/providers/           # 播放/曲库/歌单/导航/源管理状态
-│   └── lib/screens/             # 内容区 / 歌单 / 播放源 / 设置 / 播放页 / 配对
+│   ├── lib/screens/             # 内容区 / 歌单 / 播放源 / 设置 / 播放页 / 配对
+│   ├── third_party/             # vendored fork：fvp（ohos 平台声明 + 删视频依赖链）、audio_service（通知栏 5 键）
+│   └── ohos/                    # 鸿蒙壳工程（build-profile.json5 含签名材料不入库，模板 .example）
 ├── scripts/init.sql             # 服务端 MySQL 建库建表（schema 唯一事实源）
 ├── nginx/selfmusic.conf         # 反向代理模板
 ├── docker-compose.yml           # backend + backend-dev 编排
 ├── .env                         # 环境变量模板（不入库）
-├── run-linux.sh / run-android.sh / run-windows.bat
+├── run-linux.sh / run-android.sh / run-windows.bat   # 三端快速运行
+├── build-ohos.bat                                     # 鸿蒙 release 出包（三架构）
 ├── DESIGN.md / DEVELOPER.md / settings.md
 └── README.md
 ```

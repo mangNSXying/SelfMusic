@@ -26,6 +26,7 @@
   - [客户端本地数据层（SQLite 写隔离）](#客户端本地数据层sqlite-写隔离)
   - [客户端扫描与元数据](#客户端扫描与元数据实现要点)
   - [客户端同步与缓存批处理](#客户端同步与缓存批处理)
+  - [鸿蒙适配](#鸿蒙适配)
 - [数据库规范](#数据库规范)
 - [配置说明](#配置说明)
 - [常见问题排查](#常见问题排查)
@@ -48,7 +49,7 @@
 
 > 注意区分：**Visual Studio 2022**（Windows 原生编译工具链，MSVC + Windows SDK + CMake/Ninja）≠ **VS Code**（日常写 Dart/Java 的编辑器）。Flutter 官方 Windows Desktop 构建依赖前者。
 >
-> 鸿蒙（HarmonyOS NEXT）：Flutter 官方不支持，经三方分支 `CPF-Flutter/flutter_flutter`（`oh-3.41.9-release`）适配；工具链已就绪、PoC 进行中，详见「鸿蒙适配」一节。
+> 鸿蒙（HarmonyOS NEXT）：Flutter 官方不支持，经三方分支 `CPF-Flutter/flutter_flutter`（`oh-3.41.9-release`）适配；**PoC 验收已通过、真机日常使用中**，详见「鸿蒙适配」一节。
 
 ### 多平台构建矩阵
 
@@ -62,7 +63,7 @@
 | Linux Desktop | 本机 Ubuntu（clang + GTK + cmake + ninja） | ✅ 当前主力平台（UI/主题/播放器/鉴权已落地） |
 | Web | 不做 | ❌ 明确排除 |
 | Windows Desktop | Win10 开发机：Flutter stable + VS2022 Build Tools（C++ 桌面负载 + ATL） | ✅ 已就绪：`flutter build windows` 可出包；音频后端 media_kit；日常联调用根目录 `run-windows.bat` |
-| HarmonyOS | Win10 开发机：DevEco Studio + HarmonyOS SDK + 真机 + 三方 Flutter 分支（`oh-3.41.9-release`） | 🔶 PoC 进行中：工具链 / ohos 壳 / pub get 就绪，桩接线与音频适配层实施中（验收口径见 `win10开发机准备.md` §2.4） |
+| HarmonyOS | Win10 开发机：DevEco Studio + HarmonyOS SDK + 真机 + 三方 Flutter 分支（`oh-3.41.9-release`） | ✅ PoC 验收通过（2026-09-30）：真机点播 / 启动白屏修复 / AVSession 媒体播控 / 横竖屏 / 应用图标 / 自动切歌 / 装载看门狗 / 宽屏队列面板全链走通，真机日常使用中；详见「鸿蒙适配」 |
 
 ### 环境搭建顺序
 
@@ -76,9 +77,9 @@
 **暂时不需要：**
 - Chrome / Web SDK（不做 Web）
 
-**平台扩展（进行中）：**
+**平台扩展：**
 - Windows 出包 → ✅ 已就绪（Win10 机器，VS2022 Build Tools + ATL 补装）
-- 鸿蒙 → Win10 机器上并行推进 PoC（DevEco Studio + SDK + 真机）；Ubuntu 上**不要**装鸿蒙 SDK
+- 鸿蒙 → ✅ PoC 验收通过、真机日常使用中（DevEco Studio + SDK + 真机，Win10 机器）；Ubuntu 上**不要**装鸿蒙 SDK
 
 **Windows 构建网络三坑（新机器必读）：**
 - `media_kit_libs_windows_audio` 在 CMake configure 阶段从 GitHub release 下载 `mpv-dev-*.7z`（约 5MB）并做 MD5 校验，弱网下会留下 0 字节残片并反复报 `Integrity check failed`——删除 `build/windows/x64/mpv-dev-*.7z` 后手动下载放回原位即可（期望 MD5 见该插件 `windows/CMakeLists.txt`）
@@ -126,7 +127,8 @@ selfmusic/
 │   │   ├── utils/                    # duration_format / song_title_format / lrc_parser
 │   │   ├── widgets/                  # 共享组件（SongTile / CoverThumb / lyrics_view / add_to_playlist / view_mode_toggle 等）
 │   │   └── screens/                  # library / playlists_view / sources / source_browse_view / settings / player / pairing / devices（阶段5 设备管理）
-│   ├── android/ linux/ windows/ web/ # 各平台壳工程（安卓壳已重建）
+│   ├── android/ linux/ windows/ ohos/   # 各平台壳工程（ohos 的 build-profile.json5 含本机签名材料不入库，模板 build-profile.json5.example）
+│   ├── third_party/               # vendored fork：fvp（ohos 平台声明 + 删 video_player 依赖链）、audio_service（通知栏 5 键自定义按钮）
 │   └── pubspec.yaml
 ├── scripts/init.sql                  # 数据库初始化脚本（v2 schema + 阶段5 sync_events / playlists.client_uuid+deleted+last_event_at / play_states.last_event_at）
 ├── scripts/migration_003_sync.sql    # 存量库补表/补列（阶段5；新部署只需 init.sql）
@@ -252,6 +254,7 @@ flutter test                    # 单元测试
 flutter build linux --release   # Linux 出包
 flutter build apk --release     # Android 出包（壳工程已就绪）
 flutter build windows --release # Windows 出包（需 Windows 环境，见"多平台构建矩阵"）
+flutter build hap --debug     # 鸿蒙出包（Windows + ohos 分支；release 三架构用根目录 build-ohos.bat）
 ```
 
 ### API 地址配置
@@ -281,7 +284,7 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 | just_audio_media_kit（+ media_kit_libs_linux / media_kit_libs_windows_audio） | 桌面音频后端（Linux/Windows 统一 libmpv，库随包分发，`main()` 中 `ensureInitialized()` 注册） |
 | cached_network_image | 图片缓存 |
 | flutter_secure_storage | 敏感数据安全存储（token、主题偏好、WebDAV 密码、配对密钥；统一经 `SecretStore` 收口，见 `frontend/lib/services/secret_store.dart`） |
-| audio_service | Android 通知栏 / 后台播放（前台服务 + 媒体通知，`SelfMusicAudioHandler` 自定义处理器） |
+| audio_service（vendored fork，`third_party/audio_service`） | Android 通知栏 / 后台播放（前台服务 + 媒体通知，`SelfMusicAudioHandler` 5 键自定义处理器）；鸿蒙不适用——走自建 AVSession 桥（见「鸿蒙适配」） |
 | crypto | 缓存 key / 封面等哈希去重 |
 | sqlite3 / sqlite3_flutter_libs | 客户端本地库（`data/local/`）：源索引 idx_songs + cache + play_meta + playlists + app_settings + song_lyrics + play_state；读写分离与事务合批见「[客户端本地数据层](#客户端本地数据层sqlite-写隔离)」 |
 | xml | WebDAV PROPFIND XML 解析 |
@@ -296,7 +299,7 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 
 - `ohos_bootstrap.dart`：`setupOhos()` 在 `main()` 里 `runApp` 前调用，装配三件事——sqlite3 `open.overrideForAll`（顶层函数，isolate 安全）、`FlutterSecureStoragePlatform` 桩、`JustAudioPlatform` fvp 适配
 - `just_audio_fvp.dart` / `secure_storage_ohos.dart`：音频后端与安全存储的 ohos 实现
-- 平台判定统一用 `Platform.operatingSystem == 'ohos'`（stable 工具链没有 `Platform.isOhos` getter，见「[鸿蒙适配](#鸿蒙适配poc)」）
+- 平台判定统一用 `Platform.operatingSystem == 'ohos'`（stable 工具链没有 `Platform.isOhos` getter，见「[鸿蒙适配](#鸿蒙适配)」）
 - 其余平台差异目前靠条件导入式的一层封装（`just_audio` 默认 Android 走 ExoPlayer、桌面走 media_kit），尚**未**抽成统一 `capabilities` 接口——新增平台能力时优先考虑在 `lib/platform/` 补齐
 - 少数确实需要平台判断的调用点（音频焦点、wakelock、通知栏）以 `Platform.isAndroid` 门控，并在注释里说明「ohos 走降级路径」
 
@@ -377,7 +380,7 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 - **自动切歌 play 空转坑（2026-09-30）**：just_audio 的 `play()` 首行 `if (playing) return`——上一首自然播完 playing 不会自动复位，装载下一首后 `play()` 静默空转、平台层收不到播放指令。ohos 表现为切歌无声 + 进度条靠 Dart 时钟插值假走（暂停时回跳 0）；Android 靠 ExoPlayer `playWhenReady` 跨装载持久而侥幸正常。修复在 `PlayerProvider._play`：装载完成需要播放时先 `pause()` 复位 playing 再 `play()`——**勿删勿"优化"**，详见该处注释
 - **返回手势 = 转后台**：移动端侧滑/返回键不退出应用（后台续播），收口在 `platform/app_background.dart`（Android 通道 `com.shamiko.selfmusic/app`、ohos 通道 `selfmusic/app`，均为 `moveToBackground`），`main.dart` 的 `_onPopInvoked` 是唯一调用点、通道失败兜底原行为；桌面端恒 false。调整退出行为只动这两处
 
-### 鸿蒙适配（PoC）
+### 鸿蒙适配
 
 工具链：`CPF-Flutter/flutter_flutter` 三方分支 `oh-3.41.9-release`（Dart 3.11，与 stable 并存，独立 wrapper 切换）+ DevEco Studio（ohpm/hvigor/node）+ 真机联调（Windows 上无模拟器）。壳工程 `frontend/ohos/` 已由 `flutter create --platforms ohos .` 生成。
 
@@ -398,6 +401,7 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 
 关键事实：
 - **跨 SDK 兼容铁律**：stable 工具链的 `dart:io` 没有 `Platform.isOhos` getter，所有 ohos 判断必须写 `Platform.operatingSystem == 'ohos'`（两套 SDK 都可编译且行为一致），见 `lib/platform/harmonyos/ohos_bootstrap.dart` 的 `isOhos`
+- **stable 新 API 在 ohos 分支可能不存在**：同一 `lib/` 要在两套 SDK 下编译，新 API 先查 ohos 分支（3.41.9）有没有——实例：`ScrollCacheExtent` 类 ohos 分支没有，`lyrics_view.dart` 的 cacheExtent 改回经典 `double` 写法（2026-09-30）。analyze 双跑（stable + ohos 分支）是这类问题的验收闸门
 - WebDAV 直连鉴权只有 `Authorization: Basic` → 适配层解码回 user:pass percent-encode 折进 URL userinfo（FFmpeg 原生承载，mdk 不支持自定义请求头）；`DirectAudioSource` 字节流（just_audio 内建 localhost 代理）为兜底，三种音源形态（file://、https://+Basic、127.0.0.1 代理）都到达 `ProgressiveAudioSourceMessage` 统一处理
 - fvp 构建期经 CMake 从 sourceforge 下载 mdk 预编译库（可用 `FVP_DEPS_URL` 环境变量换镜像）；libmdk.so/libfvp.so/libffmpeg.so 打入 hap，ohos FFI 加载层已内置。实测下载成功：libfvp.so 2.8MB + libmdk.so 2MB + libffmpeg.so 7.4MB（arm64-v8a）
 - flutter 工具自动把带 ohos 模块的插件写入 `ohos/build-profile.json5` modules 与 har overrides，无需手工接线
@@ -456,8 +460,9 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 
 构建验证状态（2026-09）：
 - 双 SDK `flutter analyze` 零问题（ohos 3.41.9 与 stable 各自通过；两 SDK 的 pub get 会对 meta/test_api/vector_math 等 4 个 flutter_test 传递依赖来回改写 lock，属已知无害现象）
-- `flutter build hap --debug` 编译链全通：ArkTS（三插件 GeneratedPluginRegistrant）+ native（libfvp.so/libmdk.so arm64-v8a）+ Dart（kernel_blob JIT），assembleHap 出 signed hap
+- `flutter build hap --debug` 编译链全通：ArkTS（三插件 GeneratedPluginRegistrant）+ native（libfvp.so/libmdk.so arm64-v8a）+ Dart（kernel_blob JIT），assembleHap 出 signed hap；release 三架构（arm64/armv7/x86）出包用根目录 `build-ohos.bat`
 - 真机部署已走通：`devecocli signature generate`（签名材料落 `~/.ohos/config/`）→ 出包 → `hdc install -r` / `devecocli run`
+- **签名材料不入库**：`devecocli signature generate` 会把本机材料路径写进 `ohos/build-profile.json5`，该文件已 gitignore；仓库只留 `build-profile.json5.example` 模板（新机器复制一份改名即可）
 - 启动白屏已修复（两颗应用/生态层地雷，见上）：verify-6 全链路点亮，看门狗 1 次 poke 即解除
 
 真机部署步骤：
@@ -479,7 +484,9 @@ devecocli run   # 或 hdc install <hap 路径> 后手动启动
 #    均无效，10106102 仍复现——只能人工解锁设备（2026-09-29 实测）
 ```
 
-PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV 浏览 + 本地索引 + 真机点播一首歌；跑不通则按 DESIGN §9 R2 降级「仅 WebDAV 直连」。重点观察：fvp 重复 load 复位逻辑（重播同一首）、completed→自动切歌、WebDAV Basic 鉴权折叠是否被服务端/FFmpeg 接受。
+PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV 浏览 + 本地索引 + 真机点播一首歌；跑不通则按 DESIGN §9 R2 降级「仅 WebDAV 直连」。
+
+**验收结论（2026-09-30 全部通过，PoC 转日常使用）**：直连 WebDAV 浏览/扫描/点播 ✓；fvp 重复 load 复位（重播同一首）✓；completed→自动切歌 ✓（初版 play 空转无声已修，见「客户端播放要点」）；WebDAV Basic 鉴权折叠被 FFmpeg 接受 ✓。此外装载看门狗（不可达主机 15s 有界失败）、AVSession 播控、横竖屏、应用图标、宽屏队列面板（无界宽度布局崩溃 + 状态栏让位）均已真机验收。后续问题按普通 bug 修，不再按 PoC 口径管理。
 
 ---
 

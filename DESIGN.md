@@ -5,7 +5,9 @@
 > 状态：**阶段 0–3、阶段 5 已完成**（Android 壳对齐 / 认证·配对 / 客户端本地闭环·歌单·喜欢列表 / 直连 WebDAV·本地索引·增量扫描优化 / 多设备状态同步）；阶段 4（SMB）、阶段 6（转码+管理闭环）待实施。
 > 在此之上，后续迭代全部落地：元数据后台补读与全源编辑、歌词、后台播放、睡眠定时四模式、播放页与集合页交互
 > （层级返回 / 分组左右滑切 / 列表·卡片切换 / 队列·歌单自动定位高亮 / 标题显示格式 / 搜索追焦 / 编辑歌单）、
-> 网络安全加固（默认 HTTPS + 允许不安全 HTTP / 信任自签名开关 + 明文凭据收敛到 secure storage，见 §6.7 与 问题.md）。
+> 网络安全加固（默认 HTTPS + 允许不安全 HTTP / 信任自签名开关 + 明文凭据收敛到 secure storage，见 §6.7 与 问题.md）、
+> 歌手身份聚合与 MusicBrainz 后台解析、通知栏 5 键（播放模式 / 退出软件）、歌单页并入播放器横滑带。
+> **平台支线：鸿蒙 NEXT 端已落地**（2026-09 PoC 验收通过——fvp 播放 / AVSession 媒体播控 / 真机日常使用，见 §8 平台支线与 [DEVELOPER.md「鸿蒙适配」](DEVELOPER.md#鸿蒙适配)）。
 > 各阶段交付、验收与落地状态见 §8；文中已用「✅ 已实现 / ⏳ 规划」标注能力与端点到现状。
 
 > **文档地图**：本文 = **为什么这么设计**（架构取舍、数据模型意图、API 契约、播放算法与同步协议、路线图与风险）；
@@ -340,7 +342,7 @@ TokenFilter (OncePerRequestFilter)
 
 > **为什么要有 `platform/` 层**：鸿蒙走三方 Flutter 分支而非官方 target，`Platform.isXxx` 行为与原生插件实现均可能与官方平台不一致，
 > 因此业务代码禁止直接写平台判断，一律经 `lib/platform/` 收口。
-> 现状、写法与鸿蒙实现见 [DEVELOPER.md「平台收口层」](DEVELOPER.md#平台收口层libplatform) 与「[鸿蒙适配](DEVELOPER.md#鸿蒙适配poc)」。
+> 现状、写法与鸿蒙实现见 [DEVELOPER.md「平台收口层」](DEVELOPER.md#平台收口层libplatform) 与「[鸿蒙适配](DEVELOPER.md#鸿蒙适配)」。
 > 本地库用 `sqlite3` 轻量版（schema 统一建表迁移 + 后台写隔离），**不引 drift**；表结构见 §3.2。
 
 ### 6.2 Source 抽象层（双模式的基石）
@@ -462,9 +464,10 @@ abstract class MusicSource {
 
 - **歌词三通道**：内嵌标签（mp3 `USLT` / FLAC `LYRICS`·`UNSYNCEDLYRICS`）→ 同目录同名 `.lrc`（local/WebDAV 通用，UTF-8/UTF-16 BOM 兼容）（后端不提供歌词）；解析为 LRC 文本入库 `song_lyrics`（`(source_key,song_ref)` 主键，三态：内容 / 显式标记缺失 / 未读取），缺失标记避免每次播放重复读文件
 - **歌词页**：与播放进度同步滚动 + 居中高亮当前行 + 点击任意行 seek；手动拖动暂停跟随，空闲「歌词追焦等待」超时后回中，切歌归位；`lrc_parser.dart` 支持多标签 / `offset` / 毫秒位数 / 纯文本退化 / 二分定位
-- **歌词跟焦为自愈式**（`lyrics_view.dart`）：每次位置事件都按真实布局复核当前行是否在位，不以「行号是否变化」为触发条件——`ListView.builder` 懒构建导致目标行尚未构建（`PageView` 滑入时该页才刚创建）时，先临时把 `scrollCacheExtent` 加宽让目标行被构建出来（最多补滚 3 次），再用 `RenderAbstractViewport.getOffsetToReveal` 只滚歌词列表（不用 `Scrollable.ensureVisible`，避免遍历祖先把外层 `PageView` 一起拖动）；首次归位 `jumpTo`、换行 `animateTo`，行高动画后再快速二次校正一次；拖动抑制为续期式空闲计时（`ScrollStart` 即启动，拖动/惯性中不断续期），手势被打断收不到 `ScrollEnd` 也不会永久卡住
+- **歌词跟焦为自愈式**（`lyrics_view.dart`）：每次位置事件都按真实布局复核当前行是否在位，不以「行号是否变化」为触发条件——`ListView.builder` 懒构建导致目标行尚未构建（`PageView` 滑入时该页才刚创建）时，先临时把 `cacheExtent` 加宽让目标行被构建出来（经典 `double` 写法以兼容 ohos 分支，最多补滚 3 次），再用 `RenderAbstractViewport.getOffsetToReveal` 只滚歌词列表（不用 `Scrollable.ensureVisible`，避免遍历祖先把外层 `PageView` 一起拖动）；首次归位 `jumpTo`、换行 `animateTo`，行高动画后再快速二次校正一次；拖动抑制为续期式空闲计时（`ScrollStart` 即启动，拖动/惯性中不断续期），手势被打断收不到 `ScrollEnd` 也不会永久卡住
 - **后台播放**：Android 走 `audio_service` 自定义处理器（`SelfMusicAudioHandler`，通知按钮转发 `PlayerProvider`）；返回桌面/切后台**继续播放**（`androidStopForegroundOnPause=false` 暂停不撤前台服务，与 `androidNotificationOngoing` 互斥故弃用 ongoing）；通知栏「退出软件」/ 划掉任务（`onTaskRemoved`）/ 侧边栏「退出」（先 `shutdown()` 再 `exit(0)`）才真正停止并置空闲；`notification_controls=false` 时不注册前台服务、后台保活不成立
 - **通知栏 5 键（自定义 `SelfMusicAudioHandler`）**：`main()`（Android 开关注册）用 `AudioService.init(builder:)` 装自研 handler，不再走 `just_audio_background` 的默认 4 键。`sync()` 回推的 `PlaybackState.controls` 为 5 键——上一首 / 播放·暂停（随播放态二选一）/ 下一首 / 播放模式 / 退出软件，`androidCompactActionIndices=[0,1,2]`；前四个与「退出软件」用 `MediaControl` 自绘品牌矢量图标（`ic_np_previous/play/pause/next/mode/exit.xml`，`0xFF00A098`），播放模式与退出是 `MediaAction.custom` + `CustomMediaAction(name: 'play_mode'/'exit_app')`，回调经 `customAction` 转发 provider：`play_mode`→`cycleMode()`（与播放页模式按钮同序循环），`exit_app`→`shutdown()` 落盘断点后 `super.stop()` 收前台服务再 `exit(0)`。不劫持 just_audio 平台实例，状态变化全由 provider 的 `_syncSystemMedia()` 调 `sync()` 驱动（Android `MediaSession` 自动外推 position，无需逐 tick 上报）
+- **鸿蒙媒体播控（AVSession 桥，与 Android 同构的非劫持薄转发）**：鸿蒙没有应用自绘媒体通知，媒体卡由系统统一渲染（通知栏 / 锁屏 / 播控中心三处）——provider 同一 `_syncSystemMedia` 时机全量推送元数据 / 播放态 / 收藏 / 内嵌歌词至 ArkTS `AvSessionBridge` 喂 `AVSession`，配 `backgroundTaskManager` AUDIO_PLAYBACK 长时任务（媒体卡即鸿蒙的通知形态，无第二条常驻通知）；LoopMode 显式 int 映射（sequence→SEQUENCE / loopOne→SINGLE / loopList→LIST / weighted→SHUFFLE）；封面两段式（元数据先行秒出卡片，PixelMap 异步解码补推，同曲去重 + 快速切歌票据竞态淘汰）。实现细节与真机验收见 [DEVELOPER.md「鸿蒙适配」](DEVELOPER.md#鸿蒙适配)
 - **睡眠定时（含到时退出）**：四模式无变化（指定时间 / 时长 / 曲数 / 列表结尾 + 播放完最后曲目），新增弹窗 UI 与语义——四种模式卡片改用小字号正文 + 灰色提示行；「指定时长/曲数」用滚轮选择并**记忆上次值**（持久化 `sleep_default_duration_minutes` / `sleep_default_count`，下次打开预选）；新增「播放结束退出软件」开关（仅当次生效）。到时行为：退出开关开时 `_sleepStop()` 先读 `_sleepExitApp` 落局部再清睡眠态，走 `_quitAfterSleep()` = `await shutdown()`（落盘断点/队列）后 `exit(0)`；否则维持原有「暂停并驻留后台」
 - **播放页（带式）控件自动隐藏（`player_auto_hide_idle_sec`，默认 5，0=不隐藏）**：仅播放页（滑带的第 1 页，竖屏/横屏同位）计静置；超时淡出左上「返回内容」与封面右上「更多」两个纯入口（封面/进度条/控制键常显）；根布局 `Listener(translucent)` 任何触摸都 `_rearmAutoHide()`（取消旧定时 → 恢复显示 → 重设定时），进入歌单页 / 歌词页 / 切到内容区不参与隐藏
 - **歌单页并入播放器横滑带（`lib/screens/player_screen.dart`）**：竖屏 `PageView` 三页 `[歌单页 | 播放页 | 歌词页]`、横屏两页 `[歌单页 | 整幅播放布局]`，切换全部由内层 `PageView` 原生跟手（与播放页↔歌词页一致的横向拖动体验，**不受「页面切换动画」设置影响**；手势关闭时禁滑、封面「更多」菜单补「歌单」入口点按跳页）。歌单页在**有绑定歌单**时展示持久化歌单——与内容区歌单详情共用 `widgets/song_list.dart` 的 `SongList`：同源（`PlaylistsProvider` + `LocalIndex`）、同行形态（完整 `SongTile`）、同写回语义（移除/上移/下移改写真实歌单并经 `onPlaylistSongRemoved` 联动播放器）；保留「播放 / 从头播放」按钮，**无**左上返回箭头与右上关闭（右滑即回播放页）。**无绑定歌单**（全部歌曲/喜欢/专辑/歌手/播放源点播）时兜底展示运行时播放队列（`lib/screens/queue_page.dart`：搜索 / 排序 / 当前曲高亮 / 单曲移除 / 清空 / 多选批量移除）
@@ -684,6 +687,12 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 - 管理端设置：`GET /api/v1/admin/config`（缓存建议值）与 `GET /api/v1/admin/pairing-token` **已随暂缓项提前落地**；`PUT /admin/settings` 与设置页仍在本阶段
 - 验收：FLAC 源按 128k 出流实测流量达标；上传 50MB 文件入库可播
 
+### 平台支线：鸿蒙 NEXT 端（2026-09 完成 PoC 验收）
+
+> **状态：PoC 验收通过、真机日常使用中✅** —— 不占用原六阶段排期，在阶段 5 之后独立推进；SMB 直连的鸿蒙通道方案仍归阶段 4。
+> 原风险 R2（三方分支通道兼容 + 插件生态缺口）已逐项验证可控：核心依赖全部落地——fvp 音频后端 / secure_storage 双层适配 / sqlite3 随包分发 / path_provider 重试包装 / audio_session 容错 / audio_service 由自建 AVSession 桥替代；仅 `cached_network_image`（sqflite 传递依赖缺失）曲库封面降级为已知问题。
+> 交付清单：启动白屏双地雷修复、直连 WebDAV 全链（扫描/点播/鉴权折叠）、AVSession 媒体播控（§6.8）、横竖屏、应用图标、自动切歌修复、装载看门狗、宽屏队列面板。细节全记录在 [DEVELOPER.md「鸿蒙适配」](DEVELOPER.md#鸿蒙适配)。
+
 ### 暂缓项：已配对设备设置页明文显示配对密钥
 
 > **状态：已实现✅**（`GET /api/v1/admin/pairing-token` + `设置→服务端→配对服务器` 副标题遮显、配对页明文可复制，与淡入淡出/均衡器/通知控制等暂缓项一并落地；功能 7「设置整理」后密钥归入服务端分区，不再放常规）。
@@ -699,7 +708,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 | # | 风险 | 影响 | 缓解 |
 |---|------|------|------|
 | R1 | smbj×Android 平台通道（性能/稳定性未知） | 阶段 4 可能返工 | PoC 硬门槛前置；备选 jSMB/系统 smbclient 子进程；最坏降级"移动端直连仅 WebDAV" |
-| R2 | 鸿蒙三方 Flutter 分支的平台通道兼容性，以及 **pub 插件生态缺口**（path_provider/file_picker/audio_session 等常用包在鸿蒙分支可能无实现） | 鸿蒙直连受限、依赖选型受约束 | 阶段 4 明确验证节点：逐个核对核心依赖的鸿蒙实现，无实现则找替代或自行补通道；选型期优先纯 Dart 包；降级路径清晰（仅 WebDAV） |
+| R2 | 鸿蒙三方 Flutter 分支的平台通道兼容性 + **pub 插件生态缺口** —— **已验证可控（2026-09 PoC 验收，见 §8 平台支线）**：核心依赖全部落地（fvp / secure_storage 双层适配 / sqlite3 随包 / path_provider / audio_session / AVSession 替代 audio_service），仅 `cached_network_image` 封面降级 | 鸿蒙端已可日常使用；选型仍受「优先纯 Dart 包」约束 | 逐项核对结论与实现见 DEVELOPER「鸿蒙适配」；stable 新 API 须双 SDK analyze 验证；SMB 直连的鸿蒙通道方案仍待阶段 4 验证 |
 | R3 | WebDAV 服务端差异（PROPFIND 深度/鉴权/限流） | 个别云盘不可用 | 连接测试按钮 + 超时重试封装；适配名单维护在文档 |
 | R4 | 直连扫描耗流量/电量 | 用户感知差 | 仅 Wi-Fi 扫描开关；增量指纹（size/mtime/etag）跳过未变文件；`minimal`/`fast` 减流量；头部严格 Range（`head_bytes` 可配）；单源上限 |
 | R5 | ffmpeg 容器 CPU 占用 | 多设备并发卡顿 | 全局并发上限默认 2；超限降级透传 |
