@@ -9,7 +9,6 @@ import '../providers/navigation_provider.dart';
 import '../services/api_client.dart';
 import '../utils/collection_sort.dart';
 import '../widgets/corner_add_button.dart';
-import '../widgets/content_shell.dart';
 import '../widgets/count_header.dart';
 import '../widgets/sort_menu_button.dart';
 import '../widgets/row_list.dart';
@@ -49,60 +48,58 @@ class _SourcesScreenState extends State<SourcesScreen>
     final sources = sortByCollection(direct.sources, direct.settings.sortSources,
         (s) => s.name, countOf: (s) => direct.countOf(s.key));
 
-    return ContentShell(
-      child: Stack(
-        children: [
-          Column(
-            children: [
-                CountHeader(
-                  count: sources.length,
-                  unit: '个播放源',
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SortMenuButton(
-                        value: direct.settings.sortSources,
-                        scope: SortScope.collections,
-                        onChanged: (v) =>
-                            setState(() => direct.settings.sortSources = v),
-                      ),
-                      viewModeToggle(),
-                    ],
-                  ),
+    return Stack(
+      children: [
+        Column(
+          children: [
+              CountHeader(
+                count: sources.length,
+                unit: '个播放源',
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SortMenuButton(
+                      value: direct.settings.sortSources,
+                      scope: SortScope.collections,
+                      onChanged: (v) =>
+                          setState(() => direct.settings.sortSources = v),
+                    ),
+                    viewModeToggle(),
+                  ],
                 ),
-                Expanded(
-                  child: sources.isEmpty
-                      ? Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 24),
-                          child: Text('尚未添加播放源，点右下角「+」添加',
-                              textAlign: TextAlign.center,
-                              style: TextStyle(color: scheme.onSurfaceVariant)),
-                        )
-                      : card
-                          ? SquareCardGrid(
-                              itemCount: sources.length,
-                              itemBuilder: (c, i) => _DirectSourceCard(
-                                  sourceKey: sources[i].key),
-                            )
-                          : RowList(
-                              count: sources.length,
-                              itemBuilder: (c, i) => _DirectSourceTile(
-                                  sourceKey: sources[i].key),
-                            ),
-                ),
-              ],
-            ),
-            Positioned(
-              right: 16,
-              bottom: 16,
-              child: CornerAddButton(
-                tooltip: '添加播放源',
-                onPressed: () => showDialog<void>(
-                    context: context, builder: (_) => const _SourceDialog()),
               ),
+              Expanded(
+                child: sources.isEmpty
+                    ? Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 24),
+                        child: Text('尚未添加播放源，点右下角「+」添加',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: scheme.onSurfaceVariant)),
+                      )
+                    : card
+                        ? SquareCardGrid(
+                            itemCount: sources.length,
+                            itemBuilder: (c, i) => _DirectSourceCard(
+                                sourceKey: sources[i].key),
+                          )
+                        : RowList(
+                            count: sources.length,
+                            itemBuilder: (c, i) => _DirectSourceTile(
+                                sourceKey: sources[i].key),
+                          ),
+              ),
+            ],
+          ),
+          Positioned(
+            right: 16,
+            bottom: 16,
+            child: CornerAddButton(
+              tooltip: '添加播放源',
+              onPressed: () => showDialog<void>(
+                  context: context, builder: (_) => const _SourceDialog()),
             ),
-          ],
-        ),
+          ),
+        ],
     );
   }
 }

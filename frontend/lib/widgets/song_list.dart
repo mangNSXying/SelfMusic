@@ -24,10 +24,17 @@ import 'selection_bar.dart';
 import 'sort_menu_button.dart';
 import 'app_toast.dart';
 
+/// SongTile 行宽达到该值时，在时长左侧补充技术信息（格式 · 码率 · 大小）。
+///
+/// 阈值按行实际宽度判定（LayoutBuilder）：桌面/平板整宽列表满足；队列面板
+/// （固定 360）等窄容器自动不显示。
+const double kSongTileWideInfoWidth = 800;
+
 /// 通用歌曲列表：封面缩略图 + 标题 + 歌手/专辑/专辑歌手 + 时长时间器。
 ///
 /// 收藏/不喜欢/缓存等操作统一收进右侧三点菜单（列表保持清爽，方便多选）。
 /// 收藏（喜欢）对所有歌曲生效（统一收口到 play_meta）；缓存仅直连歌曲。
+/// 宽行（≥ [kSongTileWideInfoWidth]）额外在时长左侧显示格式/码率/大小。
 ///
 /// 多选模式：当 [selectionMode] 为 true 时，leading 变为选择框，
 /// 点击列表切换勾选，[onSelect] 负责切换 [selected]。
@@ -228,6 +235,33 @@ class SongTile extends StatelessWidget {
     );
   }
 
+  /// 宽行技术信息：`格式 · 码率 · 大小`，置于时长左侧。
+  ///
+  /// 全部可由 Song 现有字段计算：格式为扫描存下的文件扩展名（大写展示）；
+  /// 码率 = fileSize×8 / 时长（无时长则省略）；大小按 MB（不足 1 MB 降为 KB）。
+  /// 缺失的部分跳过，全缺返回 null（只显示时长）。
+  Widget? _wideInfo(BuildContext context) {
+    final parts = <String>[];
+    final fmt = song.format;
+    if (fmt != null && fmt.isNotEmpty) parts.add(fmt.toUpperCase());
+    final size = song.fileSize;
+    final duration = song.duration;
+    if (size > 0 && duration != null && duration > 0) {
+      parts.add('${(size * 8 / 1024 / duration).round()} kbps');
+    }
+    if (size > 0) {
+      parts.add(size >= 1024 * 1024
+          ? '${(size / 1024 / 1024).toStringAsFixed(1)} MB'
+          : '${size ~/ 1024} KB');
+    }
+    if (parts.isEmpty) return null;
+    return Text(
+      parts.join(' · '),
+      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+          color: Theme.of(context).colorScheme.onSurfaceVariant),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final direct = context.watch<DirectSourceManager>();
@@ -235,53 +269,57 @@ class SongTile extends StatelessWidget {
     final meta = direct.weight.metaOf(song);
     final favorite = meta.favorite;
     final disliked = meta.frozen;
-    return ListTile(
-      selected: selectionMode && selected,
-      // 封面恒为封面（改进.txt）：多选态勾选框叠在封面左上角。
-      leading: _leading(),
-      // 标题 + 播放指示：指示在标题后（封面位留给封面）。
-      title: Row(
-        children: [
-          Expanded(
-            child: Text(
-              formatSongTitle(song, direct.settings.songTitleFormat),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              // 标题常驻加粗；播放中/选中只再叠主色区分，不靠字重。
-              style: TextStyle(
-                fontWeight: FontWeight.w600,
-                color: (selectionMode && selected) || playing
-                    ? Theme.of(context).colorScheme.primary
-                    : null,
+    // 行宽按实际约束判定：宽行在时长左侧补充技术信息。
+    return LayoutBuilder(builder: (context, constraints) {
+      final info =
+          constraints.maxWidth >= kSongTileWideInfoWidth ? _wideInfo(context) : null;
+      return ListTile(
+        selected: selectionMode && selected,
+        // 封面恒为封面（改进.txt）：多选态勾选框叠在封面左上角。
+        leading: _leading(),
+        // 标题 + 播放指示：指示在标题后（封面位留给封面）。
+        title: Row(
+          children: [
+            Expanded(
+              child: Text(
+                formatSongTitle(song, direct.settings.songTitleFormat),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                // 标题常驻加粗；播放中/选中只再叠主色区分，不靠字重。
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  color: (selectionMode && selected) || playing
+                      ? Theme.of(context).colorScheme.primary
+                      : null,
+                ),
               ),
             ),
-          ),
-          if (playing) ...[
-            const SizedBox(width: 4),
-            Icon(Icons.graphic_eq,
-                size: 15, color: Theme.of(context).colorScheme.primary),
+            if (playing) ...[
+              const SizedBox(width: 4),
+              Icon(Icons.graphic_eq,
+                  size: 15, color: Theme.of(context).colorScheme.primary),
+            ],
           ],
-        ],
-      ),
-      subtitle: Text(
-        _subtitle,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      // 尾部：多选态保留时长（信息）但隐藏单曲菜单（防误触）；
-      // 普通态是时长 + 三点菜单。
-      trailing: selectionMode
-          ? Text(formatDuration(song.duration))
-          : Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(formatDuration(song.duration)),
-                _menu(context, direct, favorite, disliked),
-              ],
-            ),
-      onTap: selectionMode ? onSelect : onPlay,
-      onLongPress: selectionMode ? onSelect : onStartSelect,
-    );
+        ),
+        subtitle: Text(
+          _subtitle,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        // 尾部：多选态保留时长（信息）但隐藏单曲菜单（防误触）；
+        // 普通态是 [宽行信息] + 时长 + 三点菜单。
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (info != null) ...[info, const SizedBox(width: 12)],
+            Text(formatDuration(song.duration)),
+            if (!selectionMode) _menu(context, direct, favorite, disliked),
+          ],
+        ),
+        onTap: selectionMode ? onSelect : onPlay,
+        onLongPress: selectionMode ? onSelect : onStartSelect,
+      );
+    });
   }
 }
 

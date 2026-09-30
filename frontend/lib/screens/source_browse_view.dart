@@ -12,7 +12,6 @@ import '../providers/player_provider.dart';
 import '../providers/navigation_provider.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
-import '../widgets/content_shell.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/list_selection.dart';
 import '../widgets/row_list.dart';
@@ -145,178 +144,176 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
     final songs = direct.songsOf(widget.sourceKey, query: _query);
     final count = direct.countOf(widget.sourceKey);
 
-    return ContentShell(
-      child: SectionSwipe(
-      child: Column(
-        children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(8, 8, 16, 0),
-          child: Row(
-            children: [
-              IconButton(
-                icon: const Icon(Icons.arrow_back),
-                tooltip: '返回播放源',
-                onPressed: nav.exitSource,
+    return SectionSwipe(
+    child: Column(
+      children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(8, 8, 16, 0),
+        child: Row(
+          children: [
+            IconButton(
+              icon: const Icon(Icons.arrow_back),
+              tooltip: '返回播放源',
+              onPressed: nav.exitSource,
+            ),
+            const SizedBox(width: 4),
+            Icon(Icons.folder_outlined,
+                size: 20, color: Theme.of(context).colorScheme.primary),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                source.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.titleMedium,
               ),
-              const SizedBox(width: 4),
-              Icon(Icons.folder_outlined,
-                  size: 20, color: Theme.of(context).colorScheme.primary),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  source.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-              ),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  FilledButton.icon(
-                    onPressed: _scanning ? null : () => _scan(source),
-                    icon: _scanning
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.refresh, size: 18),
-                    label: const Text('扫描'),
-                  ),
-                  if (_scanning)
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      tooltip: '取消扫描',
-                      onPressed: _cancel,
-                    ),
-                ],
-              ),
-            ],
-          ),
-        ),
-        if (_sel.active)
-          SelectionBar(
-            total: songs.length,
-            selectedCount: _sel.of(songs.map(songKey)).length,
-            onToggleAll: () =>
-                setState(() => _sel.setAll(songs.map(songKey))),
-            onCancel: () => setState(_sel.cancel),
-            actions: [
-              SelectionAction(
-                icon: Icons.play_arrow,
-                label: '播放选中',
-                onPressed: _sel.isEmpty
-                    ? null
-                    : () => _playSelected(context, source, songs),
-              ),
-              SelectionAction(
-                icon: Icons.playlist_add,
-                label: '加入歌单',
-                onPressed: _sel.isEmpty
-                    ? null
-                    : () => _addToPlaylistSelected(songs),
-              ),
-            ],
-          ),
-        // 扫描进度：枚举阶段为不确定进度条；探测阶段显示比例与数字。
-        if (_scanning)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
-            child: Column(
+            ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                LinearProgressIndicator(
-                  value: _progress?.value,
+                FilledButton.icon(
+                  onPressed: _scanning ? null : () => _scan(source),
+                  icon: _scanning
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh, size: 18),
+                  label: const Text('扫描'),
                 ),
-                if (_progress != null && !_progress!.listing)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text(
-                      '已处理 ${_progress!.done}/${_progress!.total}',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
+                if (_scanning)
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    tooltip: '取消扫描',
+                    onPressed: _cancel,
                   ),
               ],
             ),
-          ),
-        const Divider(height: 16),
+          ],
+        ),
+      ),
+      if (_sel.active)
+        SelectionBar(
+          total: songs.length,
+          selectedCount: _sel.of(songs.map(songKey)).length,
+          onToggleAll: () =>
+              setState(() => _sel.setAll(songs.map(songKey))),
+          onCancel: () => setState(_sel.cancel),
+          actions: [
+            SelectionAction(
+              icon: Icons.play_arrow,
+              label: '播放选中',
+              onPressed: _sel.isEmpty
+                  ? null
+                  : () => _playSelected(context, source, songs),
+            ),
+            SelectionAction(
+              icon: Icons.playlist_add,
+              label: '加入歌单',
+              onPressed: _sel.isEmpty
+                  ? null
+                  : () => _addToPlaylistSelected(songs),
+            ),
+          ],
+        ),
+      // 扫描进度：枚举阶段为不确定进度条；探测阶段显示比例与数字。
+      if (_scanning)
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-          child: Row(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+          child: Column(
             children: [
-              Expanded(
-                child: TextField(
-                  decoration: const InputDecoration(
-                    hintText: '搜索该源曲目（标题/歌手/专辑）',
-                    prefixIcon: Icon(Icons.search),
-                    isDense: true,
-                    border: OutlineInputBorder(),
-                  ),
-                  onChanged: (v) => setState(() => _query = v),
-                ),
+              LinearProgressIndicator(
+                value: _progress?.value,
               ),
+              if (_progress != null && !_progress!.listing)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    '已处理 ${_progress!.done}/${_progress!.total}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
             ],
           ),
         ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: Text(
-              '已索引 $count 首 · ${source.name}',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant),
+      const Divider(height: 16),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+        child: Row(
+          children: [
+            Expanded(
+              child: TextField(
+                decoration: const InputDecoration(
+                  hintText: '搜索该源曲目（标题/歌手/专辑）',
+                  prefixIcon: Icon(Icons.search),
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (v) => setState(() => _query = v),
+              ),
             ),
+          ],
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            '已索引 $count 首 · ${source.name}',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant),
           ),
         ),
-        const Divider(height: 16),
-        if (direct.error != null)
-          Padding(
-            padding: const EdgeInsets.all(8),
-            child: Text(direct.error!,
-                style: const TextStyle(color: Colors.red),
-                textAlign: TextAlign.center),
-          ),
-        Expanded(
-          child: songs.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.library_music_outlined,
-                              size: 64,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .primary
-                                  .withValues(alpha: 0.4)),
-                          const SizedBox(height: 12),
-                          const Text(
-                            '暂无索引曲目，点击"扫描"建立本地索引',
-                            textAlign: TextAlign.center,
-                          ),
-                        ],
-                      ),
-                    )
-                  : RowList(
-                      count: songs.length,
-                      itemBuilder: (c, i) {
-                        final s = songs[i];
-                        return SongTile(
-                          song: s,
-                          source: source,
-                          onPlay: () => _play(c, source, songs, i),
-                          playing: player.isCurrent(s),
-                          selectionMode: _sel.active,
-                          selected: _sel.contains(songKey(s)),
-                          onSelect: () => _toggle(songKey(s)),
-                          onStartSelect: () { setState(() => _sel.startWith(songKey(s))); },
-                        );
-                      },
+      ),
+      const Divider(height: 16),
+      if (direct.error != null)
+        Padding(
+          padding: const EdgeInsets.all(8),
+          child: Text(direct.error!,
+              style: const TextStyle(color: Colors.red),
+              textAlign: TextAlign.center),
+        ),
+      Expanded(
+        child: songs.isEmpty
+                ? Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.library_music_outlined,
+                            size: 64,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .primary
+                                .withValues(alpha: 0.4)),
+                        const SizedBox(height: 12),
+                        const Text(
+                          '暂无索引曲目，点击"扫描"建立本地索引',
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
                     ),
-        ),
-        ],
+                  )
+                : RowList(
+                    count: songs.length,
+                    itemBuilder: (c, i) {
+                      final s = songs[i];
+                      return SongTile(
+                        song: s,
+                        source: source,
+                        onPlay: () => _play(c, source, songs, i),
+                        playing: player.isCurrent(s),
+                        selectionMode: _sel.active,
+                        selected: _sel.contains(songKey(s)),
+                        onSelect: () => _toggle(songKey(s)),
+                        onStartSelect: () { setState(() => _sel.startWith(songKey(s))); },
+                      );
+                    },
+                  ),
       ),
-      ),
+      ],
+    ),
     );
   }
 }
