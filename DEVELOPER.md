@@ -22,6 +22,7 @@
 - [后端开发](#后端开发)
 - [前端开发](#前端开发)
   - [平台收口层](#平台收口层libplatform)
+  - [客户端播放要点（装载/切歌/返回）](#客户端播放要点装载切歌返回)
   - [客户端本地数据层（SQLite 写隔离）](#客户端本地数据层sqlite-写隔离)
   - [客户端扫描与元数据](#客户端扫描与元数据实现要点)
   - [客户端同步与缓存批处理](#客户端同步与缓存批处理)
@@ -369,6 +370,13 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 
 > 历史注：pubspec 里的 `just_audio_mpv`（0.1.7）从未接线（无 import、无初始化），已删除；Linux 桌面播放随 media_kit 真正接通。
 
+### 客户端播放要点（装载/切歌/返回）
+
+- **装载前置鉴权探针**：原生装载器（fvp/ExoPlayer）对 401/403 错误响应只会无限缓冲，进度停 0:00 且无任何提示（2026-09-29 密码过期真机实测）。`_loadOnce` 在 setUrl 前先发 1 字节 Range 探针（`MusicSource.probe`，与取流路径同口径）：401/403 立即失败提示，其余探针异常忽略后继续装载（网络抖动交给播放器重试）
+- **装载看门狗（2026-09-30）**：mdk/mpv 对「主机不可达/无响应」的 open 没有应用层超时——真机实测 IPv6 路由丢失时 mdk prepare 永久挂起，UI 卡 00:00/00:00、点播放无响应。setUrl 统一裹 15s 超时（`PlayerProvider._loadUrlTimeout`），超时按装载失败进入 `loadBackoff` 退避重试、耗尽后走失败提示/自动跳曲；被放弃的迟到结果用 `Future.ignore()` 吞掉防 unhandled。ExoPlayer 自带连接超时通常先报错，对 Android 无感
+- **自动切歌 play 空转坑（2026-09-30）**：just_audio 的 `play()` 首行 `if (playing) return`——上一首自然播完 playing 不会自动复位，装载下一首后 `play()` 静默空转、平台层收不到播放指令。ohos 表现为切歌无声 + 进度条靠 Dart 时钟插值假走（暂停时回跳 0）；Android 靠 ExoPlayer `playWhenReady` 跨装载持久而侥幸正常。修复在 `PlayerProvider._play`：装载完成需要播放时先 `pause()` 复位 playing 再 `play()`——**勿删勿"优化"**，详见该处注释
+- **返回手势 = 转后台**：移动端侧滑/返回键不退出应用（后台续播），收口在 `platform/app_background.dart`（Android 通道 `com.shamiko.selfmusic/app`、ohos 通道 `selfmusic/app`，均为 `moveToBackground`），`main.dart` 的 `_onPopInvoked` 是唯一调用点、通道失败兜底原行为；桌面端恒 false。调整退出行为只动这两处
+
 ### 鸿蒙适配（PoC）
 
 工具链：`CPF-Flutter/flutter_flutter` 三方分支 `oh-3.41.9-release`（Dart 3.11，与 stable 并存，独立 wrapper 切换）+ DevEco Studio（ohpm/hvigor/node）+ 真机联调（Windows 上无模拟器）。壳工程 `frontend/ohos/` 已由 `flutter create --platforms ohos .` 生成。
@@ -398,7 +406,7 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 适配层实现（`lib/platform/harmonyos/`，2026-09）：
 - `ohos_bootstrap.dart`：`setupOhos()` 在 `main()` 里 runApp 前调用，四件事全部仅 ohos 生效——sqlite3 overrideForAll（顶层函数，**仅本 isolate 有效**：不随 Isolate.spawn 传入子 isolate，ohos 写层因此退化内联，见 `db_writer.dart` 头注释）、`FlutterSecureStoragePlatform.instance = OhosSecureStorage()`（包级注册只覆盖平台侧，前端类另需绕过，见上表）、`JustAudioPlatform.instance = FvpJustAudio()`、`PathProviderPlatform.instance = OhosRetryingPathProvider(原实现)`（单点收口：启动链全部路径调用均经该 instance）
 - `path_provider_ohos_retry.dart`：1s 超时 × 5 次重发的保险包装 + 全超时沙盒路径回退（命中时日志 `[ohos] path_provider.* 响应超时`）；旧"引擎竞态吞回复"根因已被 verify-5/6 逐消息对账翻案（见下节），保留理由：路径查询幂等、成本为零、覆盖未证实的极端时序
-- `just_audio_fvp.dart`：`FvpJustAudio.init/disposePlayer` 管理播放器表；`FvpAudioPlayer` 实现负载面 load/play/pause/seek/setVolume（+speed/loop 顺带），pitch/shuffle/skipSilence 静默 no-op；mdk 状态映射：`prepare()<0` 抛 PlatformException、`state=stopped` 且非加载复位/错误 → `completed`（自动切歌依赖）、`MediaStatus.invalid`/`onEvent error` → 错误上报、位置用 200ms Timer 轮询（mdk 无位置流）、同一媒体重复 load 前先回 stopped 复位（mdk prepare 对已加载返回 -1）；音量两侧语义一致（0.0-1.0）
+- `just_audio_fvp.dart`：`FvpJustAudio.init/disposePlayer` 管理播放器表；`FvpAudioPlayer` 实现负载面 load/play/pause/seek/setVolume（+speed/loop 顺带），pitch/shuffle/skipSilence 静默 no-op；mdk 状态映射：`prepare()<0` 抛 PlatformException、`state=stopped` 且非加载复位/错误 → `completed`（自动切歌依赖）、`MediaStatus.invalid`/`onEvent error` → 错误上报、位置用 200ms Timer 轮询（mdk 无位置流）、同一媒体重复 load 前先回 stopped 复位（mdk prepare 对已加载返回 -1）；音量两侧语义一致（0.0-1.0）；mdk prepare 对不可达主机**无超时**——应用层看门狗兜底（见「[客户端播放要点](#客户端播放要点装载切歌返回)」）
 - `secure_storage_ohos.dart`：文档目录单 JSON 文件 + 整文件 base64 混淆，内存即权威源；读写失败不抛（密钥问题不崩登录/配对流程）；对应 platform_interface 1.1.2 Map-options 签名（flutter_secure_storage 9.2.4 锁定该版本，`*Params` API 是 1.2+ 才有，勿混淆）
 
 启动白屏根因（2026-09 真机取证定稿）：两颗应用/生态层地雷，引擎无辜。
@@ -442,7 +450,7 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 - int 映射（ArkTS 侧 switch 显式映射防非法值）：播放态 playing?2:3（`PlaybackState.PLAY=2/PAUSE=3`）；LoopMode sequence→0（LOOP_MODE_SEQUENCE）/loopOne→1（**SINGLE**）/loopList→2（**LIST 非 ALL**）/weighted→3（SHUFFLE）
 - 歌词：AVMetadata.lyric 只收内嵌 LRC 文本，服务端 40960 字节上限，Dart 侧按 UTF-8 40000 截断后下发
 - module.json5：backgroundModes 必须写在 **abilities[] 条目内**（`"backgroundModes": ["audioPlayback"]`；三重证据：官方属性表/modulecheck 白名单/FAQ），配 `ohos.permission.KEEP_BACKGROUND_RUNNING`（system_grant 免 reason）
-- **封面坑（未解，暂不下发）**：AVMetadata.mediaImage 三种格式全触发服务端校验异常——PixelMap 序列化通过但 `GetMediaImageTopic checkFail`；裸路径/`file://` string 均 `isImageValid checkFail`（WriteToParcel/Unmarshalling 层）→ `AVSessionNotifyUpdateNotification failed ret=980000502`，**单个字段的校验失败会阻断整个播控卡**。当前不传封面（卡片显示应用图标），卡片机制已验证正常
+- **封面（两段式，2026-09-30 定稿）**：元数据先行（卡片秒出，缺封面显示应用图标），封面异步解码后经第二次 `setAVMetadata` 补推。此前踩坑：`mediaImage` 传裸路径/`file://` string 时 `isImageValid checkFail`（av_session 服务进程读不了应用沙箱路径）→ `980000502`，**单字段校验失败会阻断整个播控卡**；PixelMap 方案首轮又因过早 release 触发 `GetMediaImageTopic checkFail`。定稿要点：coverPath 传应用沙箱绝对路径，ArkTS 侧 fd→ImageSource→PixelMap 进 IPC 共享内存；PixelMap **保持引用至替换完成才 release**；同曲按路径去重、快速切歌用任务票据竞态淘汰过期解码（`AvSessionBridge.ets` 的 updateCover/decodeCover）
 - ArkTS 坑：`MethodCall.argument()` 返回 Any，hvigor 编译器拒 Any 推断（`arkts-no-any-unknown`，**hvigor 比 arkts_check 严**）——用 argString/argNumber/argBool 类型化取参
 - 验收（2026-09-29 真机）：卡片三处出现/播放暂停上一首下一首真控制/循环模式双向同步 ✓；收藏/后台持续/歌词因 WebDAV 服务器内容缺失暂无法验收（环境问题非回归：歌单同步正常证明主服务器 API 在线，WebDAV 扫描 0 首+流缓冲无声）；启动链零回归（桥就绪与看门狗同毫秒，Dart ready 1.65s）
 
