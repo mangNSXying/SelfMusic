@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 通知栏 5 键「播放模式=列表循环」图标：品牌 teal 剪影矢量，repeat 循环示意
+     （与旧 ic_np_mode 完全一致，顺序不变时图标不变）。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF00A098"
+        android:pathData="M7,7h10v3l4,-4 -4,-4v3H5v6h2v-4zM17,17H7v-3l-4,4 4,4v-3h12v-6h-2v4z" />
+</vector>

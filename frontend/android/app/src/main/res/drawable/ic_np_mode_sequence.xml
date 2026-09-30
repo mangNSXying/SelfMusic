@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 通知栏 5 键「播放模式=顺序播放」图标：品牌 teal 剪影矢量，播放列表示意。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF00A098"
+        android:pathData="M3,6h11v2H3V6zM3,10h11v2H3v-2zM3,14h7v2H3v-2zM16,13v8l6,-4z" />
+</vector>

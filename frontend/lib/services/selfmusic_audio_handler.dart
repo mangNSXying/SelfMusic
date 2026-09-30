@@ -48,12 +48,26 @@ class SelfMusicAudioHandler extends BaseAudioHandler {
     action: MediaAction.skipToNext,
   );
 
-  static const MediaControl _mode = MediaControl(
-    androidIcon: 'drawable/ic_np_mode',
-    label: '播放模式',
-    action: MediaAction.custom,
-    customAction: CustomMediaAction(name: 'play_mode'),
-  );
+  /// 「播放模式」按钮按当前 [PlayMode] 出对应图标/文案（图标与播放页一致）：
+  /// 顺序/列表循环/单曲循环/随机。图标随模式变化 → 通知每次重发不同的
+  /// CustomAction 图标资源，Android 端据此重建按钮（MediaControl.equals
+  /// 比较 icon，setState 检测到变化即 updateNotification 换图标）。
+  static MediaControl _modeControl(PlayMode m) => MediaControl(
+        androidIcon: switch (m) {
+          PlayMode.sequence => 'drawable/ic_np_mode_sequence',
+          PlayMode.loopList => 'drawable/ic_np_mode_loop_list',
+          PlayMode.loopOne => 'drawable/ic_np_mode_loop_one',
+          PlayMode.weighted => 'drawable/ic_np_mode_weighted',
+        },
+        label: switch (m) {
+          PlayMode.sequence => '顺序播放',
+          PlayMode.loopList => '列表循环',
+          PlayMode.loopOne => '单曲循环',
+          PlayMode.weighted => '随机播放',
+        },
+        action: MediaAction.custom,
+        customAction: const CustomMediaAction(name: 'play_mode'),
+      );
 
   static const MediaControl _exit = MediaControl(
     androidIcon: 'drawable/ic_np_exit',
@@ -81,7 +95,7 @@ class SelfMusicAudioHandler extends BaseAudioHandler {
         _prev,
         if (p.playing) _pause else _play,
         _next,
-        _mode,
+        _modeControl(p.mode),
         _exit,
       ],
       systemActions: const {MediaAction.seek},
