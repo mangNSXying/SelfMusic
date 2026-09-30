@@ -39,3 +39,6 @@ frontend/third_party/fvp/ohos/.cxx/
 frontend/third_party/fvp/ohos/build/
 frontend/third_party/fvp/ohos/oh_modules/
 frontend/third_party/fvp/ohos/oh-package-lock.json5
+
+# Gradle 在 vendored audio_service 副本内展开的同步缓存
+frontend/third_party/audio_service/android/.gradle/
