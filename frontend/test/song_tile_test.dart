@@ -9,6 +9,7 @@ import 'package:selfmusic/data/sources/music_source.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/player_provider.dart';
+import 'package:selfmusic/widgets/app_toast.dart';
 import 'package:selfmusic/widgets/selection_badge.dart';
 import 'package:selfmusic/widgets/song_list.dart';
 import 'package:sqlite3/open.dart';
@@ -316,6 +317,65 @@ void main() {
 
     await openMenu();
     expect(find.text('喜欢'), findsOneWidget);
+
+    await tester.runAsync(() async {
+      direct.dispose();
+      dir.deleteSync(recursive: true);
+    });
+  });
+
+  testWidgets('三点菜单含「下一首播放」；点击后提示已加入', (tester) async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    late final Directory dir;
+    late final DirectSourceManager direct;
+    await tester.runAsync(() async {
+      dir = await Directory.systemTemp.createTemp('selfmusic_tilenext_');
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      direct = DirectSourceManager();
+      await direct.init();
+    });
+
+    final song = Song(
+      id: 1,
+      sourceKey: 'webdav:t',
+      title: '测试歌',
+      duration: 200,
+      source: 'webdav',
+      sourceRef: '/dav/next.mp3',
+      fileSize: 1024,
+    );
+
+    final player = PlayerProvider();
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+          ChangeNotifierProvider<PlayerProvider>.value(value: player),
+        ],
+        child: MaterialApp(
+          navigatorKey: appNavigatorKey,
+          home: Scaffold(
+            body: SongTile(
+              song: song,
+              source: _FakeSource(),
+              onPlay: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    expect(find.text('下一首播放'), findsOneWidget);
+    expect(find.byIcon(Icons.playlist_play), findsOneWidget);
+
+    await tester.tap(find.text('下一首播放'));
+    await tester.pump();
+    expect(find.text('已加入下一首播放'), findsOneWidget);
+    // toast 自带消失计时器：推到过期，避免测试结束时仍有 pending timer。
+    await tester.pump(const Duration(milliseconds: 3000));
 
     await tester.runAsync(() async {
       direct.dispose();

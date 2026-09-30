@@ -104,7 +104,7 @@ class SongTile extends StatelessWidget {
     }
   }
 
-  /// 三点菜单：喜欢 / 不喜欢 / 缓存（仅直连）/ 加入歌单。
+  /// 三点菜单：下一首播放 / 喜欢 / 不喜欢 / 缓存（仅直连）/ 加入歌单。
   ///
   /// 歌单详情等需要「追加」自定义项时传 [extraMenuItems]，其回调走 [onExtraMenu]。
   Widget _menu(BuildContext context, DirectSourceManager direct,
@@ -115,6 +115,11 @@ class SongTile extends StatelessWidget {
       icon: const Icon(Icons.more_vert),
       onSelected: (v) {
         switch (v) {
+          case 'play_next':
+            final added = context.read<PlayerProvider>().playNext(song);
+            AppToast.show(
+                added ? '已加入下一首播放' : '已在下一首播放队列中',
+                isError: false);
           case 'favorite':
             direct.setFavorite(song, !favorite);
             if (favorite && context.mounted) {
@@ -138,6 +143,16 @@ class SongTile extends StatelessWidget {
         }
       },
       itemBuilder: (_) => [
+        const PopupMenuItem(
+          value: 'play_next',
+          child: Row(
+            children: [
+              Icon(Icons.playlist_play),
+              SizedBox(width: 12),
+              Text('下一首播放'),
+            ],
+          ),
+        ),
         PopupMenuItem(
           value: 'favorite',
           child: Row(

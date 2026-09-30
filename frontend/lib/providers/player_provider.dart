@@ -112,6 +112,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 不按内容去重（重播历史中间的歌可出现两处）。仅锚定时非空。
   List<Song>? _fusedBase;
 
+  /// 「下一首播放」预载槽：占用融合队列中深层历史之后的那一位（见 [_nextUpOffset]）。
+  /// 锚定上下文下 [_queue] 是深层+基座的融合投影且总长恒等于基座长度，直接 `_queue.insert`
+  /// 会被下次 [_rebuildFusedQueue] 整段重算冲掉，故由本字段承载并参与拼接。
+  ///
+  /// 语义是「替换」而非「插入」：只有一格，排新的会顶掉原先排的那首，队列长度不变
+  /// （原 [_nextUpOffset] 位上的基座歌曲被挤掉，基座整体左移一位）。播完即出队；
+  /// 未播放任何内容时不用（退化为「立即播放」）。
+  Song? _nextUp;
+
   /// 锚定键构造（调用方传入上下文用）。
   static String anchorForPlaylist(String uuid) => 'playlist:$uuid';
   static String anchorForLiked() => 'liked';
@@ -120,20 +129,35 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   static String anchorForArtist(String name) => 'artist:$name';
   static String anchorForSource(String key) => 'source:$key';
 
-  /// 融合队列：队列 = 深层列表（前 N 位）+ 歌单第 N+1 位起（后 M-N 位），总长=歌单长 M。
+  /// 融合队列：队列 = 深层列表（前 N 位）+ [_nextUp]（可选，占第 N 位）+ 歌单第 N+1 位起（后 M-N-1 位）。
+  /// [_nextUp] 为空时与旧的「深层 ‖ 基座」完全等价，总长=歌单长 M；
+  /// 非空时「替换」掉基座第 N+1 首，总长仍是 M（预载语义：换人、不加位）。
   List<Song> _fusedQueue(List<Song> base) {
     final dl = _deepList;
     if (_fusedBase == null || dl == null) return List.of(base);
-    return fusedQueueOf(dl.entries, base);
+    return fusedQueueOf(dl.entries, base, nextUp: _nextUp);
   }
 
+  /// [_nextUp] 在融合队列中占的位：深层历史长度（即当前曲之后第一位）。
+  /// 深层为空（锚定后尚未播任何曲）时退化为队首。
+  int get _nextUpOffset => _deepList?.length ?? 0;
+
   /// 融合队列纯组装（供测试）：不按内容去重；深层过长时余部为空。
+  /// [nextUp] 为「下一首播放」预载项，**替换**掉基座第 N+1 首（总长守恒 = base.length）；
+  /// 为 null 时退化为「深层 ‖ 基座」。
   @visibleForTesting
-  static List<Song> fusedQueueOf(List<Song> deep, List<Song> base) {
+  static List<Song> fusedQueueOf(List<Song> deep, List<Song> base,
+      {Song? nextUp}) {
     final n = deep.length;
-    if (n == 0) return List.of(base);
-    final rest = base.length > n ? base.sublist(n) : const <Song>[];
-    return [...deep, ...rest];
+    final at = n.clamp(0, deep.length);
+    if (nextUp == null) {
+      if (n == 0) return List.of(base);
+      final rest = base.length > n ? base.sublist(n) : const <Song>[];
+      return [...deep, ...rest];
+    }
+    // 预载换人：基座从 n+1 接续（被顶掉的是原第 n+1 首），总长 = deep + 1 + (base-n-1) = base。
+    final rest = base.length > n + 1 ? base.sublist(n + 1) : const <Song>[];
+    return [...deep.sublist(0, at), nextUp, ...deep.sublist(at), ...rest];
   }
 
   /// 歌单行 [start] 在融合队列中的位置：深层头部被播放历史占据，
@@ -1017,6 +1041,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       bool resetAnchor = false}) async {
     if (songs.isEmpty) return;
     final resolved = _resolveLiveAll(songs);
+    // 起播一批新歌 = 换上下文：旧的「下一首播放」暂存项不再有意义。
+    _nextUp = null;
     final key = contextKey ??
         (playlistUuid != null ? PlayerProvider.anchorForPlaylist(playlistUuid) : null);
 
@@ -1080,12 +1106,58 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _play(_queue[_idx], source: source, fromPlaylist: true, manual: true);
   }
 
+  /// 「下一首播放」：把 [s] 排到当前曲之后（尚未播放任何内容时直接起播）。
+  ///
+  /// 锚定上下文里 [_queue] 是「深层历史 ‖ 基座续播段」的融合投影且总长恒等于基座长度，
+  /// 直接 `_queue.insert` 会被下次 [_rebuildFusedQueue] 整段重算冲掉。因此这里只写
+  /// [_nextUp]，由 [_fusedQueue]/[_rebuildFusedQueue] 在 [_nextUpOffset] 处替换拼接，
+  /// 队列面板看到的顺序与实际播出一致。
+  ///
+  /// 语义是**替换**：「下一首播放」只有一格，再排别的就顶掉原先那首，队列不腾位置。
+  ///
+  /// 只改运行时队列，不改写持久化歌单（与 [removeAt] 同源）。已排过的同一首幂等（不重复替换）。
+  bool playNext(Song s) {
+    if (_current == null || _queue.isEmpty) {
+      // 没有当前曲：「下一首播放」无从谈起，退化为直接起播。
+      unawaited(playQueue([s]));
+      return true;
+    }
+    if (_fusedBase != null && _deepList != null) {
+      // 已排在这一格上：幂等，不重复替换自己。
+      if (_nextUp != null && _same(_nextUp!, s)) return false;
+      // 预载只有一格：排新的会顶掉原先排的那首（替换语义，队列长度不变）。
+      _nextUp = s;
+      _rebuildFusedQueue(target: _current);
+    } else {
+      // 非锚定队列不会被重算：直接把「当前曲之后那一格」换成新歌即可。
+      // 注意这里不能碰 [_nextUp]——非锚定时 [_nextUpOffset] 恒为 0，
+      // 留在槽里会让 [_advance] 跳回队首。
+      final at = _idx + 1;
+      if (at < _queue.length) {
+        if (_same(_queue[at], s)) return false;
+        _queue[at] = s;
+      } else {
+        _queue.add(s);
+      }
+    }
+    // 下一首变了：作废旧的预取/预热，避免预热到已经不该播的那首。
+    _peekedNext = null;
+    _warmTimer?.cancel();
+    _warmTimer = null;
+    notifyListeners();
+    _syncSystemMedia();
+    _scheduleWarmup();
+    return true;
+  }
+
   /// 移除队列中第 [index] 首（右滑歌单页单曲移除/多选批量共用）。
   /// 只改运行时队列，不改写持久化歌单（与歌单详情不同源）。
   /// - 非当前曲：仅修正 [nextIndexAfterRemove] 并通知；
   /// - 当前曲：记一次离开事件后，续播同位置（滑入的那首）；队列被删光则收尾停止。
   void removeAt(int index) {
     if (index < 0 || index >= _queue.length) return;
+    // 删掉的若是「下一首播放」预载项，清空槽位，否则重建后又冒出来。
+    if (_nextUp != null && _same(_nextUp!, _queue[index])) _nextUp = null;
     final removingCurrent = index == _idx;
     if (removingCurrent) _leaveFor(null);
     _queue.removeAt(index);
@@ -1107,6 +1179,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 清空队列：记录离开事件后停播、清当前曲与断点残留。
   /// 不动持久化歌单，仅运行时播放队列。
   void clearQueue() {
+    _nextUp = null;
     if (_queue.isEmpty) return;
     _leaveFor(null);
     _queue = [];
@@ -1542,7 +1615,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 切歌时复用同一结果，保证预载命中。
   Song? peekNext() {
     if (_queue.isEmpty || _current == null) return null;
+    // 单曲循环与 [_advance] 口径一致：连预载也压住，否则会预热一首永远不会播的歌。
     if (_mode == PlayMode.loopOne) return _current;
+    // 「下一首播放」优先：预热/系统媒体「下一首」都要与 [_advance] 的口径一致。
+    if (_nextUp != null) {
+      _peekedNext = _nextUp;
+      return _peekedNext;
+    }
     if (_mode == PlayMode.loopList) {
       _peekedNext = _queue[(_idx + 1) % _queue.length];
       return _peekedNext;
@@ -1576,12 +1655,24 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// （自然播完、失败跳歌、播放错误恢复），装载失败时继续跳下一首而非停住。
   Future<void> _advance({bool autoAdvanceOnFailure = false}) async {
     if (_queue.isEmpty || _current == null) return;
-    if (_mode == PlayMode.weighted) {
-      await _playWeighted(autoAdvanceOnFailure: autoAdvanceOnFailure);
-      return;
-    }
+    // 单曲循环是显式的「不要推进」：连 [_nextUp] 也压住，等用户切模式或手动下一首。
     if (_mode == PlayMode.loopOne) {
       await _replay();
+      return;
+    }
+    // 「下一首播放」优先于随机抽样与列表循环：无论何种模式，用户排的那首都先播。
+    if (_nextUp != null) {
+      _idx = _nextUpOffset.clamp(0, _queue.length - 1);
+      final target = _queue[_idx];
+      // 先出队再播：装载失败时 [_autoSkipAfterFailure] 会重入 [_advance]，
+      // 槽位若还在就会一直重播同一首。播成后由 [_rebuildFusedQueue] 让基座补位。
+      _nextUp = null;
+      await _play(target,
+          source: _curSource, autoAdvanceOnFailure: autoAdvanceOnFailure);
+      return;
+    }
+    if (_mode == PlayMode.weighted) {
+      await _playWeighted(autoAdvanceOnFailure: autoAdvanceOnFailure);
       return;
     }
     if (_mode == PlayMode.loopList) {
@@ -2144,6 +2235,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// [reset]：切换锚定（播放/从头播放）——清空深层历史后按空栈重建。
   void _bindDeepList(String? anchorKey, {int listSize = 0, bool reset = false}) {
     if (anchorKey == null) {
+      // 解锚后 [_queue] 保留（其中已含「下一首播放」实际位置），暂存区必须清空：
+      // 否则 [_nextUpOffset] 会退化成 0，推进时跳回队首。
+      _nextUp = null;
       _deepList = null;
       _anchorKey = null;
       _fusedBase = null;
@@ -2201,8 +2295,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final dl = _deepList;
     if (base == null || dl == null) return false;
     final n = dl.length;
-    final rest = base.length > n ? base.sublist(n) : const <Song>[];
-    _queue = [...dl.entries, ...rest];
+    // 「下一首播放」预载项已播完（推进到它之后自然出队并让基座补位），避免重复出现在融合队列里。
+    if (_nextUp != null && _current != null && _same(_nextUp!, _current!)) {
+      _nextUp = null;
+    }
+    // 预载占掉基座第 n+1 首，故续播段从 n+1（或无预载时的 n）接续，总长守恒。
+    final cut = n + (_nextUp != null ? 1 : 0);
+    final rest = base.length > cut ? base.sublist(cut) : const <Song>[];
+    _queue = [...dl.entries, if (_nextUp != null) _nextUp!, ...rest];
     final t = target ?? _current;
     final i = t == null ? -1 : _queue.indexWhere((s) => _same(s, t));
     if (i >= 0) {
@@ -2221,6 +2321,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       {int? newCount}) async {
     final dl = _deepList;
     if (_anchorKey != anchorKey || dl == null) return;
+    // 歌单里删掉的这首若正排在「下一首播放」，一并撤掉。
+    if (_nextUp != null && _same(_nextUp!, s)) _nextUp = null;
     if (newCount != null && newCount > 0) {
       dl.capacity = newCount;
     }
@@ -2248,6 +2350,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   void onPlaylistDeleted(String playlistUuid) {
     final key = PlayerProvider.anchorForPlaylist(playlistUuid);
     if (_anchorKey == key) {
+      _nextUp = null;
       _deepList = null;
       _anchorKey = null;
       _fusedBase = null;
