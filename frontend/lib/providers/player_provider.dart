@@ -1143,6 +1143,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (!alive()) return; // 已被更新的切歌接管
       _loadFailStreak = 0;
       if (play) {
+        // just_audio 的 play() 在内部 playing==true 时空转。上一首自然播完
+        // 时 playing 不会自动复位，直接 play() 会静默跳过：平台层（ohos 的
+        // mdk 停在 prepare 后的 paused、Android 的 ExoPlayer 也不发 play）
+        // 收不到播放指令——表现为自动切歌无声、进度条靠 just_audio 时钟
+        // 插值假走。装载新曲后先复位 playing 再播。
+        if (player.playing) {
+          await player.pause();
+        }
         await player.play();
         _fadeIn();
       }
