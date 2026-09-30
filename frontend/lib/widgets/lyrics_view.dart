@@ -58,8 +58,9 @@ class _LyricsViewState extends State<LyricsView> {
 
   /// 目标行未构建时临时把 cacheExtent 提到这个值（约 300 行歌词），
   /// 正常状态用 ListView 默认的 250。
-  static const ScrollCacheExtent _wideCacheExtent =
-      ScrollCacheExtent.pixels(12000);
+  /// 经典 double cacheExtent：stable 3.47 与 ohos 3.41.9 双 SDK 兼容
+  /// （ohos 分支无 ScrollCacheExtent/scrollCacheExtent 新 API）。
+  static const double _wideCacheExtent = 12000;
 
   @override
   void dispose() {
@@ -167,7 +168,7 @@ class _LyricsViewState extends State<LyricsView> {
               return ListView.builder(
                 controller: _scroll,
                 padding: EdgeInsets.symmetric(vertical: pad),
-                scrollCacheExtent: _wideCache ? _wideCacheExtent : null,
+                cacheExtent: _wideCache ? _wideCacheExtent : null,
                 itemCount: lines.length,
                 itemBuilder: (context, i) {
                   final active = i == _current;
