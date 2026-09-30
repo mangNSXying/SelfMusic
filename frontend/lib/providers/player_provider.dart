@@ -543,6 +543,17 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 整队都不可播时也不会无限跳歌。
   static const int _loadFailSkipLimit = 3;
 
+  /// 装载看门狗：原生装载器（ohos fvp/mdk、桌面 mpv）对「主机不可达/
+  /// 无响应」的 open 没有应用层超时——真机实测 IPv6 路由丢失时 mdk
+  /// prepare 永久挂起，UI 卡 00:00/00:00、点播放无响应（2026-09-30）。
+  /// 超时后交 [loadBackoff] 退避重试，重试耗尽走既有装载失败提示/跳曲。
+  /// ExoPlayer 自带连接超时通常先于此报错（对 Android 无感）。
+  static const Duration _loadUrlTimeout = Duration(seconds: 15);
+
+  /// 预热探针看门狗：[MusicSource.probe] 的 HttpClient 只有 15s 连接超时，
+  /// 不覆盖「连上但无响应」；探针失败本就不阻塞装载，超时同按失败忽略。
+  static const Duration _probeTimeout = Duration(seconds: 10);
+
   /// 播放错误自动恢复的最小间隔，抑制错误风暴反复重装同一首。
   static const Duration _recoverCooldown = Duration(seconds: 5);
 
@@ -1231,13 +1242,29 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 进度停 0:00 无任何提示（2026-09-29 真机实测，密码过期即此表现）。
       // 其余探针异常不阻塞装载（网络抖动交给播放器自身重试）。
       try {
-        await src.probe(s);
+        final probe = src.probe(s);
+        try {
+          await probe.timeout(_probeTimeout);
+        } on TimeoutException {
+          probe.ignore(); // 看门狗放弃后，迟到的失败静默丢弃防 unhandled
+          rethrow;
+        }
       } on SourceAuthException {
         rethrow;
       } catch (e) {
         debugPrint('[play] 装载前探针失败（忽略，继续装载）: $e');
       }
-      await player.setUrl(direct.url, headers: direct.headers, tag: tag);
+      // 装载看门狗（_loadUrlTimeout）：超时按装载失败进入退避重试；迟到
+      // 的完成/错误 ignore() 吞掉——若期间用户切了歌，旧 future 会被
+      // just_audio 以 PlayerInterruptedException 打断，也不能变 unhandled。
+      final load = player.setUrl(direct.url, headers: direct.headers, tag: tag);
+      try {
+        await load.timeout(_loadUrlTimeout);
+      } on TimeoutException {
+        load.ignore();
+        throw TimeoutException(
+            '装载超时（${_loadUrlTimeout.inSeconds}s）：服务器无响应或网络不可达');
+      }
       return;
     }
     debugPrint('[play] ${src.kind} 自建字节流: ${s.title}');
