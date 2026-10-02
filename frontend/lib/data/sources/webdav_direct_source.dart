@@ -289,7 +289,7 @@ class WebdavDirectSource implements MusicSource {
       index.cachedPath(cacheKeyFor(song));
 
   @override
-  Future<void> cacheSong(Song song) async {
+  Future<void> cacheSong(Song song, {bool Function()? shouldAbort}) async {
     final cacheKey = cacheKeyFor(song);
     if (index.isCached(cacheKey)) return;
     final client = _newClient(allowSelfSigned);
@@ -319,6 +319,10 @@ class WebdavDirectSource implements MusicSource {
         await _withDeadline(
           () async {
             await for (final chunk in resp) {
+              // 换歌后这份预载已作废：整曲下载能把队列里的当前曲元数据拖到几分钟后。
+              if (shouldAbort?.call() == true) {
+                throw const PreloadAbortedException();
+              }
               buf.add(chunk);
               total += chunk.length;
               if (buf.length >= _cacheWriteBufBytes) {

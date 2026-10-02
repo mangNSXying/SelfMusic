@@ -141,7 +141,7 @@ class LocalDirectSource implements MusicSource {
   }
 
   @override
-  Future<void> cacheSong(Song song) async {
+  Future<void> cacheSong(Song song, {bool Function()? shouldAbort}) async {
     // 本地文件本身即可离线播放，无需缓存。
   }
 

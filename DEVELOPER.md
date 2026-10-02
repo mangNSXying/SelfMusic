@@ -117,6 +117,7 @@ selfmusic/
 │   │   ├── providers/                # 状态（auth / library / player / navigation / playlists / direct_source_manager）
 │   │   ├── services/                 # dio+懒刷新拦截器(ApiClient)、AuthService、ServerSettings、SyncEngine（阶段5 推拉/cursor/退避）
 │   │   ├── data/sources/             # MusicSource 抽象 + WebdavDirect + LocalDirect + SmbDirect + sibling_cover（同目录图片回退）
+│   │   ├── providers/direct_task_queue.dart  # 直连补读的串行优先级队列（当前曲 → 下一首 → 全库）
 │   │   ├── data/deep_list.dart       # 深层列表：锚定列表的「仅可改末尾」有界历史栈（见 DESIGN §7.1）
 │   │   ├── data/local/               # ★ 本地数据层：schema（建表迁移唯一事实源）+ db_writer（后台写隔离）
 │   │   │                            #   + local_index（主连接只读/写 API 转发/flushWrites）
@@ -362,6 +363,10 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 - 扫描 `full` + 提取封面走 `readAudioMeta` 统一读序；旧版已标已读但无封面的 mp3/flac 行由一次性迁移（`kCoverReenrichV1Done`，设备本地标记）重置为未读，交给后台补读重取
 - **同目录回退**：仍无封面 → 「同名图片（`.png/.jpg/.jpeg/.webp`）→ `cover.*`/`folder.*`/`front.*`/`album.*`」顺序取同目录图片（会话级缓存，含否定结果），经校验后落盘；同名 `.lrc` 歌词回退同在一条路径
 - **图片必须完整才落盘**：`isImageBytes` 除图片签名外还要求字节数不少于资源的**真实总长度**。范围读取时 `OpenedStream.contentLength` 只是「这次拿到多少」，新增的 `OpenedStream.totalLength` 才是总长度（本地源给文件大小，WebDAV 从 `Content-Range: bytes 0-…/total` 尾部取，服务端不回该头时为 null）。否则一张比读取上限大的图被截断后只凭前 12 字节签名就能通过，Android `ImageDecoder` 解码失败 → 界面上没有封面，而这行已标「已读」永不重试。读满上限或流短于总长同样判为「读不全」
+- **补读的并发与优先级（`DirectTaskQueue`）**：当前曲补读、下一首预载、全库后台补读**串行**执行，一次只跑一个，跑之前重挑最高优先级：当前曲音频（阻塞装载）→ 当前曲元数据/封面 → 下一首音频（`preloadNext` 开启时）→ 下一首元数据/封面 → 全库后台补读。串行的理由是 `open`/`cacheSong`/`probe` 各建各的 HttpClient，并发就是同时开 N 条连接抢同一条链路。三个易错点：
+  - 队列开跑前先 `await` 一轮事件循环：切歌那一刻四级任务是同一个同步块里陆续提交的，不让这一轮落地就先到的全库任务抢到了当前曲前面
+  - 换歌/插队/删曲时作废未开始的「下一首」任务；在途的整曲下载用 `cacheSong(shouldAbort:)` + 自增票据号放弃（半截 `.tmp-` 由 `cacheSong` 自己的 `finally` 清理）——队列不能中断正在跑的任务，而整曲几十 MB 能把当前曲的元数据堵到几分钟后
+  - 全库补读每首一个任务、整批先排队再 `await tasks.idle()` 取下一批（保持游标语义），且**每批只通知一次** UI（一批 100 首逐首通知会让整库页重建 100 次）
 - **编码规则**：mp3 ID3v2 按帧 encoding 选解码（enc==3 → UTF-8；enc==0 → 尝试 UTF-8 再回退 Latin-1）；flac/ogg VORBIS_COMMENT 按规范 UTF-8（失败回退 Latin-1）；m4a 文本原子 UTF-8；无内嵌标签时走文件名/同目录回退
 - **时长探测**：mp3 估算法（文件大小÷码率）或解析 Xing/VBRI 头；flac 读 STREAMINFO
 

@@ -221,16 +221,13 @@ final auth = AuthProvider(api);
         index: direct.index,
         weight: direct.weight,
         onTrackStarted: (src, s) {
-          direct.onTrackPlaying(src, s);
-          // 预载下一首（开关在设置→服务端；与当前同首/随机模式跳过）。
-          final next = player.peekNext();
-          if (next != null &&
-              (next.sourceKey != s.sourceKey ||
-                  next.sourceRef != s.sourceRef)) {
-            unawaited(direct.preloadSong(next));
-          }
+          // 切歌后由直连任务队列重排：当前曲元数据（最高）→ 下一首完整音频预载
+          // → 下一首元数据/封面 → 全库后台补读。
+          direct.onTrackPlaying(src, s, next: player.nextUpSong);
         },
         onSongMetaRefreshed: (s) => direct.notifySongMetaChanged(),
+        onNextChanged: (next) => direct.onNextChanged(next),
+        submitCurrentMeta: direct.submitCurrentMeta,
       )
       ..attachAudioHandlerIfAny(audioHandler);
     // 鸿蒙 AVSession 桥接线：attach 注册回推钩子与 direct 监听，

@@ -164,8 +164,20 @@ abstract class MusicSource {
   Future<String?> cachedFilePath(Song song) async => null;
 
   /// 把直连音频下载缓存到本地（断网可播）。
-  Future<void> cacheSong(Song song) async =>
+  ///
+  /// [shouldAbort] 给「预载下一首」用：换歌后那份预载已经没意义了（预载到的
+  /// 不是会播的那首），但串行队列里它还占着连接，整曲几十 MB 的下载能把当前曲
+  /// 的元数据/封面拖到几分钟后。实现应按传输块轮询它，返回 true 即放弃
+  /// （并清理半截临时文件），抛 [PreloadAbortedException]。
+  Future<void> cacheSong(Song song, {bool Function()? shouldAbort}) async =>
       throw UnimplementedError('$key 不支持直连缓存');
 
   Future<void> close() async {}
+}
+
+/// 预载被放弃（换歌/下一首变了）：不是错误，不提示、不重试。
+class PreloadAbortedException implements Exception {
+  const PreloadAbortedException();
+  @override
+  String toString() => '预载已放弃（下一首变了）';
 }

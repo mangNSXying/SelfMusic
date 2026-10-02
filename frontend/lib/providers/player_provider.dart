@@ -590,7 +590,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// ExoPlayer 自带连接超时通常先于此报错（对 Android 无感）。
   static const Duration _loadUrlTimeout = Duration(seconds: 15);
 
-  /// 预热探针看门狗：[MusicSource.probe] 的 HttpClient 只有 15s 连接超时，
+  /// 装载前探针看门狗：[MusicSource.probe] 的 HttpClient 只有 15s 连接超时，
   /// 不覆盖「连上但无响应」；探针失败本就不阻塞装载，超时同按失败忽略。
   static const Duration _probeTimeout = Duration(seconds: 10);
 
@@ -687,107 +687,20 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(stopFromNotifier(clearResume: false));
   }
 
-  // ---------- 下一首预热（后台切歌不再冷启动） ----------
+  // ---------- 下一首预载/预读（由 DirectSourceManager 的优先级队列统一调度） ----------
 
-  /// 预热成功后的免重复窗口：同一首在 TTL 内不重复握手。
-  static const Duration _warmTtl = Duration(minutes: 10);
-
-  /// 预热失败后的重试间隔：后台网络恢复要时间，摊在本曲播放期间慢慢试，
-  /// 别等到切歌那一刻才两手空空。非常量：测试可临时置零。
-  @visibleForTesting
-  static Duration warmRetryDelay = const Duration(seconds: 20);
-
-  /// 预热最多尝试次数（含首次）。用尽即放弃，交给装载重试兜底。
-  static const int _warmMaxAttempts = 3;
-
-  /// 单次预热超时：预热是「提前打招呼」，不能拖慢任何东西。
-  static const Duration _warmTimeout = Duration(seconds: 15);
-
-  /// 已预热成功的曲目（key → 时间）。
-  final Map<String, DateTime> _warmed = {};
-
-  /// 预热退避重试的定时器（切歌/退出时取消）。
-  Timer? _warmTimer;
-
-  /// 正在预热的曲目（并发去重）。
-  String? _warmingKey;
-
-  /// 预热动作（测试注入；生产恒走 [MusicSource.probe]）。
-  @visibleForTesting
-  Future<void> Function(Song s, MusicSource src)? probeOverride;
-
-  /// 测试入口：只跑预热（不碰播放器/队列）。
-  @visibleForTesting
-  Future<void> debugWarmNext(Song s, MusicSource src) =>
-      _warmTarget(s, src, attempt: 1);
-
-  /// 测试入口：按当前模式算出的「下一首」（不预热）。
-  @visibleForTesting
-  Song? debugPeekWarmTarget() => _peekWarmTarget();
-
-  /// 按当前播放模式算出「下一首会是谁」（不消耗 [_peekedNext]）。
-  Song? _peekWarmTarget() {
-    if (_queue.isEmpty || _current == null) return null;
-    // 单曲循环：下一首还是它自己，播放器里已有缓冲，没有可预热的连接。
-    if (_mode == PlayMode.loopOne) return null;
-    // 其余模式复用 [peekNext]：加权随机在这里定下预采样结果，切歌时播的正是
-    // 这一首（口径必须一致，不能另采一次样导致预热落空）。
-    return peekNext();
-  }
-
-  /// 切歌成功后预热下一首：把取流请求从「切歌那一刻」提前到「本曲播放期间」。
+  /// 「下一首」：当前播放模式下接下来会是谁。预载与预读都按它来，
+  /// 不能另采一次随机样本，否则预载会落到不会播的那首。
   ///
-  /// 修的是后台停播的另一半原因：ee15375 让失败不再静默（重试 + 跳歌 + 报错），
-  /// 但切歌仍要等一次冷启动请求，而后台这条请求容易被 Doze / 应用待机拖到超时。
-  /// 提前预热既缩短了关键路径，也给失败留出退避重试的窗口。
-  void _scheduleWarmup() {
-    _warmTimer?.cancel();
-    _warmTimer = null;
-    _warmingKey = null;
-    if (_shuttingDown) return;
-    final next = _peekWarmTarget();
-    if (next == null) return;
-    final src = _resolver?.call(next.sourceKey);
-    if (src == null || !src.supportsDirect) return;
-    unawaited(_warmTarget(next, src, attempt: 1));
-  }
+  /// 单曲循环没有下一首（播放器里已有缓冲，也没有不同的歌要准备）。
+  Song? get nextUpSong => _mode == PlayMode.loopOne ? null : peekNext();
 
-  Future<void> _warmTarget(Song s, MusicSource src,
-      {required int attempt}) async {
-    final key = _songKey(s);
-    if (_warmingKey == key) return; // 同一首已在预热中
-    _warmingKey = key;
-    try {
-      final done = _warmed[key];
-      if (done != null && DateTime.now().difference(done) < _warmTtl) return;
-      // 已离线缓存的曲目走本地文件，没有可预热的连接。
-      if (await src.cachedFilePath(s) != null) {
-        _warmed[key] = DateTime.now();
-        return;
-      }
-      final injected = probeOverride;
-      if (injected != null) {
-        await injected(s, src).timeout(_warmTimeout);
-      } else {
-        await src.probe(s).timeout(_warmTimeout);
-      }
-      _warmed[key] = DateTime.now();
-      debugPrint('[play] 已预热下一首《${s.title}》');
-    } catch (e) {
-      final again = attempt + 1;
-      if (_shuttingDown || again > _warmMaxAttempts) {
-        debugPrint('[play] 预热下一首失败（放弃，等装载重试兜底）: $e');
-        return;
-      }
-      debugPrint('[play] 预热失败，${warmRetryDelay.inSeconds}s 后再试: $e');
-      _warmTimer = Timer(warmRetryDelay, () {
-        if (_shuttingDown) return;
-        unawaited(_warmTarget(s, src, attempt: again));
-      });
-    } finally {
-      if (_warmingKey == key) _warmingKey = null;
-    }
-  }
+  /// 「当前曲元数据/封面」排进直连任务队列（最高优先级，接线见 main.dart）。
+  /// 未接线时退回裸并发执行（单测与未接 manager 的场景）。
+  void Function(String key, Future<void> Function() body)? _submitCurrentMeta;
+
+  /// 下一首变了（插队/删曲/切模式）：通知外部重排下一两级任务。
+  void Function(Song? next)? _onNextChanged;
 
   /// 测试：播放器是否已构造。
   @visibleForTesting
@@ -934,11 +847,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     required SongWeightStore weight,
     void Function(MusicSource src, Song s)? onTrackStarted,
     void Function(Song s)? onSongMetaRefreshed,
+    void Function(Song? next)? onNextChanged,
+    void Function(String key, Future<void> Function() body)? submitCurrentMeta,
   }) {
     _index = index;
     _weight = weight;
     _onTrackStarted = onTrackStarted;
     _onSongMetaRefreshed = onSongMetaRefreshed;
+    _onNextChanged = onNextChanged;
+    _submitCurrentMeta = submitCurrentMeta;
   }
 
   /// 播放器实例，**首次使用时才构造**。
@@ -1201,11 +1118,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     // 下一首变了：作废旧的预取/预热，避免预热到已经不该播的那首。
     _peekedNext = null;
-    _warmTimer?.cancel();
-    _warmTimer = null;
     notifyListeners();
     _syncSystemMedia();
-    _scheduleWarmup();
+    _onNextChanged?.call(nextUpSong);
     return true;
   }
 
@@ -1251,8 +1166,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _fadeTimer?.cancel();
     _fadingPause = false;
     _peekedNext = null;
-    _warmTimer?.cancel();
-    _warmTimer = null;
+    _onNextChanged?.call(null);
     _current = null;
     _curSource = null;
     clearResumeState();
@@ -1315,10 +1229,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 新曲开始前清掉上一首的预取结果与 completed 去重标记。
     _peekedNext = null;
     _completedKey = null;
-    // 上一首的预热目标已作废，撤掉在途的退避重试（本曲装载成功后再预热新的）。
-    _warmTimer?.cancel();
-    _warmTimer = null;
-    _warmingKey = null;
+    // 上一首的预载/预读目标已作废（新曲装载成功后由 _onTrackStarted 重排）。
+    _onNextChanged?.call(null);
     // 睡眠定时处于「等当前曲放完」的挂起态时，手动切歌视为用户接管：取消定时。
     if (_sleepPendingStop) {
       _clearSleep();
@@ -1366,10 +1278,16 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _trackDeepList(cur, push: fromPlaylist);
       _onTrackStarted?.call(src, cur);
       // 播放即重读当前歌曲元数据（不管之前是否读过，保证展示最新）。
-      unawaited(_enrichLazily(cur, src));
+      // 走直连任务队列：它必须抢在「下一首预载」和全库后台补读前面——
+      // 界面上正显示着的那一行的标题/封面，比什么都急。
+      Future<void> enrichCurrent() => _enrichLazily(cur, src);
+      final submitMeta = _submitCurrentMeta;
+      if (submitMeta != null) {
+        submitMeta('${cur.sourceKey}\u0000${cur.sourceRef}', enrichCurrent);
+      } else {
+        unawaited(enrichCurrent());
+      }
       unawaited(_loadLyrics(cur, src));
-      // 趁本曲在播，把下一首的连接/鉴权打通（后台切歌不再冷启动）。
-      _scheduleWarmup();
       notifyListeners();
       _syncSystemMedia();
     } catch (e) {
@@ -2451,7 +2369,6 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _shuttingDown = true;
     _fadeTimer?.cancel();
     _sleepTick?.cancel();
-    _warmTimer?.cancel();
     final p = _player;
     if (p == null) {
       // 从未播放过：没有实例可停，但断点/写队列仍要落库。
@@ -2481,7 +2398,6 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _disposed = true;
     _fadeTimer?.cancel();
     _sleepTick?.cancel();
-    _warmTimer?.cancel();
     // 退出前把最后一段播放时长结清（与 _saveState 同样不等待）。
     _playSecStop();
     final p = _player;

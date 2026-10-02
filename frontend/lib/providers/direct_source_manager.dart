@@ -19,6 +19,7 @@ import '../models/song.dart';
 import '../services/api_client.dart';
 import '../services/artist_resolver.dart';
 import '../services/secret_store.dart';
+import 'direct_task_queue.dart';
 
 /// 直连源管理（阶段 3 / 阶段 4 接收器）。
 ///
@@ -29,6 +30,9 @@ import '../services/secret_store.dart';
 class DirectSourceManager extends ChangeNotifier {
   final LocalIndex index = LocalIndex();
   final List<MusicSource> _sources = [];
+
+  /// 直连补读的串行优先级队列（当前曲元数据 → 下一首音频 → 下一首元数据 → 全库）。
+  final DirectTaskQueue tasks = DirectTaskQueue();
   bool _ready = false;
   bool scanning = false;
   String? error;
@@ -741,9 +745,11 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 预载指定歌曲（播放开始后对 peekNext() 的结果调用）：
+  /// 预载指定歌曲（完整下载整曲）：
   /// 开关关闭/非直连歌/已缓存直接返回；下载后走 LRU 淘汰（预载条目受保护），失败静默。
-  Future<void> preloadSong(Song s) async {
+  /// 由 [_scheduleNextTrack] 以 [DirectTaskPriority.nextAudio] 排队调用
+  /// （原先是切歌时直接并发开跑，会跟当前曲的补读抢同一条链路）。
+  Future<void> preloadSong(Song s, {bool Function()? shouldAbort}) async {
     if (!settings.preloadNext) return;
     if (!s.isDirect) return;
     final src = sourceByKey(s.sourceKey);
@@ -756,14 +762,30 @@ class DirectSourceManager extends ChangeNotifier {
         cache.preloadCacheKey = cache.cacheKeyOf(src, s);
         return;
       }
-      await src.cacheSong(s);
+      await src.cacheSong(s, shouldAbort: shouldAbort);
       final k = cache.cacheKeyOf(src, s);
       if (k != null) index.touchCache(k);
       cache.preloadCacheKey = k;
       cache.evictIfNeeded();
+    } on PreloadAbortedException {
+      // 下一首变了，这份预载作废：不提示、不重试（缓存目录里的半截临时文件
+      // 已由 cacheSong 自己清掉）。
+      debugPrint('[preload] 放弃预载《${s.title}》（下一首已变）');
     } catch (_) {
       // 预载失败静默，不影响当前播放。
     }
+  }
+
+  /// 预载票据：换歌时作废在途的那一份（见 [_scheduleNextTrack]）。
+  /// 用自增票据而不是一个布尔位——新预载开始时会清位，若只靠布尔位，
+  /// 老预载下一轮轮询就会看到「已恢复」而继续下载，白占连接。
+  int _preloadTicket = 0;
+  bool _preloadAborted = false;
+
+  Future<void> _runPreloadTask(Song s) async {
+    final ticket = ++_preloadTicket;
+    _preloadAborted = false;
+    await preloadSong(s, shouldAbort: () => _preloadAborted || ticket != _preloadTicket);
   }
 
   String? cachedPathOf(MusicSource src, Song s) {
@@ -772,8 +794,11 @@ class DirectSourceManager extends ChangeNotifier {
   }
 
   /// 播放某直连歌时登记其缓存访问时间与当前 key（LRU 保留当前播放），
-  /// 并触发后台元数据补读（未读过的歌曲逐个读头回填）。
-  void onTrackPlaying(MusicSource src, Song s) {
+  /// 并按优先级重排「下一首」与全库后台补读（[DirectTaskQueue]）。
+  ///
+  /// [next] 是当前模式下接下来会播的那首（单曲循环为 null）：它要排在当前曲
+  /// 元数据之后、全库后台补读之前。接线见 main.dart，由播放器算出后传入。
+  void onTrackPlaying(MusicSource src, Song s, {Song? next}) {
     cache.currentCacheKey = cache.cacheKeyOf(src, s);
     // 预载曲开始播放：解除预载保护（它现在由 currentCacheKey 保护）。
     final k = cache.cacheKeyOf(src, s);
@@ -781,21 +806,73 @@ class DirectSourceManager extends ChangeNotifier {
     cache.touch(src, s);
     _playingSourceKey = s.sourceKey;
     _playingRef = s.sourceRef;
+    _scheduleNextTrack(next);
+  }
+
+  /// 下一首变了（插队/删曲/切模式）：作废过期的预载与预读，排新的。
+  void onNextChanged(Song? next) {
+    if (_playingSourceKey == null) return;
+    _scheduleNextTrack(next);
+  }
+
+  void _scheduleNextTrack(Song? next) {
+    // 换歌后旧任务已无意义（预载到不再会播的那首、给它补的封面也用不上）。
+    tasks.dropPending((p, _) =>
+        p == DirectTaskPriority.nextAudio || p == DirectTaskPriority.nextMeta);
+    // 队列只能作废「还没开始」的任务；在途的整曲下载还在占连接，让它跑完会把
+    // 当前曲的元数据/封面（最高优先级）堵到几分钟后。通知源放弃。
+    _preloadAborted = true;
+    final sameSong = next != null &&
+        next.sourceKey == _playingSourceKey &&
+        next.sourceRef == _playingRef;
+    if (next != null && !sameSong) {
+      final key = '${next.sourceKey}\u0000${next.sourceRef}';
+      if (settings.preloadNext && next.isDirect) {
+        tasks.submit(DirectTaskPriority.nextAudio,
+            key: 'nextAudio/$key', body: () => _runPreloadTask(next));
+      }
+      tasks.submit(DirectTaskPriority.nextMeta,
+          key: 'nextMeta/$key', body: () => enrichNextSongMeta(next));
+    }
     enrichUnreadInBackground();
+  }
+
+  /// 下一首的元数据/封面补读：已读过的不重复（当前曲才每次强制重读）。
+  Future<void> enrichNextSongMeta(Song s) async {
+    final src = sourceByKey(s.sourceKey);
+    if (src == null || !src.supportsDirect) return;
+    final row = index.songByRef(s.sourceKey, s.sourceRef);
+    if (row == null || row.metaRead) return;
+    if (row.sourceKey == _playingSourceKey && row.sourceRef == _playingRef) return;
+    try {
+      await enrichSongMeta(index, src, row);
+    } catch (_) {
+      return; // 失败不标已读：下次切到它时再试。
+    }
+    _metaVersion++;
+    notifyListeners();
+  }
+
+  /// 供 PlayerProvider 把「当前曲元数据/封面」排到队列最前（接线见 main.dart）。
+  void submitCurrentMeta(String key, Future<void> Function() body) {
+    tasks.submit(DirectTaskPriority.currentMeta, key: 'currentMeta/$key', body: body);
   }
 
   bool _enrichRunning = false;
   String? _playingSourceKey;
   String? _playingRef;
 
-  /// 后台补读：各直连源未读取过元数据的歌曲逐个读头回填，分批循环直到读完。
+  /// 后台补读：各直连源未读取过元数据的歌曲逐个补齐，分批循环直到读完。
   /// 播放开始后触发；单例运行；跳过正在播放的歌（播放链路自己会重读）；
-  /// 解析失败不标已读，靠 id 游标跳过继续处理后面的歌（不整批卡死）；
-  /// 每批成功即通知 UI 就地刷新。
+  /// 解析失败不标已读，靠 id 游标跳过继续处理后面的歌（不整批卡死）。
+  ///
+  /// 每一首都是一个独立的 [DirectTaskPriority.background] 任务：整批先排队，
+  /// 再等这一批跑完才取下一批。这样切歌插进来的当前曲/下一首任务总能插到两首之间，
+  /// 而不会等全库读完（原先是一个长循环，中途插进来的东西只能等它跑完整库）。
   void enrichUnreadInBackground() {
     if (_enrichRunning) return;
     _enrichRunning = true;
-    unawaited(_doEnrichUnread());
+    unawaited(_pumpUnread());
   }
 
   /// 播放链路懒补读成功后调用：元数据版本号 +1，驱动全局库/列表就地刷新。
@@ -804,7 +881,7 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _doEnrichUnread() async {
+  Future<void> _pumpUnread() async {
     try {
       for (final s in _sources) {
         if (!s.supportsDirect) continue;
@@ -814,25 +891,43 @@ class DirectSourceManager extends ChangeNotifier {
           final unread = index.unreadSongs(s.key, 100,
               excludeRef: skipRef, afterId: afterId > 0 ? afterId : null);
           if (unread.isEmpty) break;
+          var enriched = 0;
           for (final song in unread) {
             // 游标始终前进：不可解析/失败的歌本轮跳过，下次播放再重试。
             if (song.id > afterId) afterId = song.id;
-            try {
-              await enrichSongMeta(index, s, song);
-            } catch (_) {
-              // 单首失败跳过，不标已读。
-            }
-            // 让出事件循环，避免长循环卡 UI。
-            await Future.delayed(Duration.zero);
+            _submitBackgroundSong(s, song, onEnriched: () => enriched++);
           }
-          _metaVersion++;
-          notifyListeners();
+          // 等这批真正跑完再取下一批：保持游标语义，也避免一次性排几百个任务。
+          await tasks.idle();
+          // 每批通知一次（不是每首一次）：一批 100 首逐首通知会让整库页重建 100 次。
+          if (enriched > 0) {
+            _metaVersion++;
+            notifyListeners();
+          }
         }
         _reconcileArtists();
       }
     } finally {
       _enrichRunning = false;
     }
+  }
+
+  void _submitBackgroundSong(MusicSource src, Song song,
+      {required void Function() onEnriched}) {
+    // 正在播放的那首由播放链路自己重读（还排在最高优先级），这里不重复排。
+    if (song.sourceKey == _playingSourceKey && song.sourceRef == _playingRef) {
+      return;
+    }
+    tasks.submit(DirectTaskPriority.background,
+        key: 'background/${song.sourceKey}\u0000${song.sourceRef}',
+        body: () async {
+      try {
+        await enrichSongMeta(index, src, song);
+      } catch (_) {
+        return; // 单首失败跳过，不标已读。
+      }
+      onEnriched();
+    });
   }
 }
 
