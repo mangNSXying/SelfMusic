@@ -381,15 +381,15 @@ abstract class MusicSource {
 **扫描流程（首次）**
 
 - 列目录：WebDAV `PROPFIND Depth:1` 递归 + `_mapConcurrent` 并发（并发 6）；本地文件夹 `Directory.list(recursive:true)`
-- 逐文件 Range 取头部（`head_bytes`≈64KB，可配 `scan_head_bytes`）→ `audio_metadata`（纯 Dart 解析 mp3(ID3v2) / flac / m4a(mp4) / ogg·opus / wav / aac(ADTS)）得标题/歌手/专辑
+- **不读音频内容**：快速扫描只用枚举结果（ref/size/mtime/etag）落库，歌名取文件名，零 Range 请求。音频解析（`audio_metadata`，纯 Dart 支持 mp3(ID3v2) / flac / m4a(mp4) / ogg·opus / wav / aac(ADTS)）全部推迟到播放时补读与后台补读，按结构定位后精确 Range（见下方「补读」）
 - 单事务批量 `upsertSongs` 落库 → `persistCover`（封面落 `covers/<hash>.jpg`，SQLite 存路径）→ `markMissingExcept`/`clearMissing` 标记消失项（保留缓存歌可播性）
 - 大目录保护：单源上限 20k 首，超出提示分目录添加
 
-**增量与扫描模式**
+**增量与扫描方式**
 
 - 增量指纹 `(ref, size, mtime, etag)`：WebDAV 从 PROPFIND 解析 `getlastmodified`/`getetag`/`getcontentlength`；本地扫描 `stat` 取 size/mtime；**四元组未变直接跳过读头 → 二次扫描零音频下载**
-- `scan_mode` 三档：`fast` 仅文件名建索引（零读头，**默认**）/ `minimal` 只解析标题·歌手·专辑（最快补充）/ `full` 解析全部元数据 + 封面（时长/曲目/年份/流派）。六类格式均支持；解析无果时按「同目录图片 → 文件名」回退
-- **三档的取舍**：`fast` 默认是因为「先让曲库能被搜到」比「元数据齐全」更重要；缺的信息由播放时补读与后台补读补齐，而不是让首扫变慢
+- 扫描方式**写死「快速：只建索引」**（原 `scan_mode`/`scan_head_bytes`/`scan_embed_cover` 三个设置项已删除）：只用枚举拿到的 ref/size/mtime/etag 落库，零读头请求。六类格式均支持
+- **取舍**：首扫只求「先让曲库能被搜到」，不求元数据齐全。缺的信息由播放时补读与后台补读按结构定位后精确读取补齐（那两条链路知道歌马上要放），而不是让首扫对整库盲目读头。代价：首扫无时长，故时长过滤要等补读到时长后才生效
 - 播放时懒补全：`minimal` 入库的歌缺 时长/流派/年份/封面 → `PlayerProvider` 播放后后台 `open` 读头解析并 `enrichSong` 回填，失败不影响播放
 - **播放时必然重读**：`_enrichLazily` 不依赖索引缓存，任何歌开始播放都再次读头解析并回填（兼修正断点/歌单旧快照），保证切歌即时刷新
 - **读头部可能需要多段**：大内嵌封面（常见 1~3MB）一段读会整块丢失，moov-at-end 的 m4a / ogg 时长 / mp3 ID3v1 在文件尾部——因此有「两段读」与「尾部补读」策略。
@@ -454,7 +454,7 @@ abstract class MusicSource {
 | 备份 | 设置 / 歌单分开导出导入 |
 | 播放 | 默认播放模式、断点续播、淡入淡出、均衡器（Android）、播放页手势、睡眠定时（四模式 + 时长/曲数记忆 + 播完退出）、音频焦点 |
 | 服务端 | 后端地址、配对服务器（含配对密钥遮显）、预载、缓存配置双来源、允许不安全 HTTP、信任自签名证书 |
-| 歌曲 | 收藏自动缓存、扫描模式与头部·封面、忽略音频过滤、仅 Wi-Fi 扫描、标题显示格式、集合页展示形式 |
+| 歌曲 | 收藏自动缓存、扫描方式（写死快速：只建索引）、忽略音频过滤、仅 Wi-Fi 扫描、标题显示格式、集合页展示形式 |
 | 界面 | 主题（亮/暗/强调色）等 |
 | 通知 | 通知栏播放控制 / 后台播放开关 |
 
@@ -651,13 +651,13 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 ### 阶段 3：直连 WebDAV + 本地索引（~1 周）
 
 > **状态：已完成✅（含后续扫描优化迭代）** —— 直连 WebDAV/本地源 + 本地索引全链路落地（§6.4 / §6.5），
-> 增量指纹（size/mtime/etag）、`minimal/fast/full` 扫描模式、播放时懒补全、进度/取消、本地变化自动扫描均已落地（均为 APP 侧扫描；服务端不再扫描入库）。
+> 增量指纹（size/mtime/etag）、快速只建索引扫描、播放时懒补全、进度/取消、本地变化自动扫描均已落地（均为 APP 侧扫描；服务端不再扫描入库）。
 > 双端构建通过、`webdav_scan_test` 3 条 + `audio_metadata_test` 8 条全部通过。
 > 早期附加 mp3/flac 乱码修复：需对已有源重新扫描一次覆写旧索引行（`upsert` 无条件覆盖）。
 
 - ✅ `WebdavDirectSource`：dart:io `PROPFIND Depth:1` 并发递归（`package:xml`）+ `Range` 流式（seek/断点）+ 纯 Dart 头部元数据解析（mp3 ID3v2 / flac STREAMINFO+VORBIS_COMMENT），头部越界保护
 - ✅ 本地轻量索引（§6.4）：`LocalIndex`（sources/idx_songs/cache）、Isolate 扫描器（`scan_worker.dart`）、`(ref,size,mtime,etag)` 增量与 missing 标记、封面落 `covers/<hash>.jpg`
-- ✅ 扫描优化：三档模式 + `head_bytes` 配置、批量 `upsertSongs`、进度/取消、并发池、自动扫描（本地 watcher + 周期快扫）、播放时 `enrichSong` 懒补全（§6.4）
+- ✅ 扫描优化：快速只建索引（零读头）、批量 `upsertSongs`、进度/取消、并发池、自动扫描（本地 watcher + 周期快扫）、播放时 `enrichSong` 懒补全（§6.4）
 - ~~✅ 后端扫描增量：`MusicScanner` 指纹跳过 + `getlastmodified` 解析 + 并发探测 + album 缓存 + `@Scheduled` 定时（§4.5 / settings.md §5.1）~~ 已移除（服务端不再扫描；歌曲只由 APP 在播放源处扫描）
 - ✅ 直连浏览：`SourcesScreen` 卡片三点菜单 + `SourceBrowseView` 文件夹式内页（扫描/进度/取消 → 搜索 → 播放 → 收藏 → 缓存全链路）；离线缓存（§6.6）
 - ✅ 全局库合并（§6.5）：`LibraryProvider` 聚合直连源（去重），专辑/歌手客户端聚合；按 `sourceKey` 逐首解析源实现
@@ -710,7 +710,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 | R1 | smbj×Android 平台通道（性能/稳定性未知） | 阶段 4 可能返工 | PoC 硬门槛前置；备选 jSMB/系统 smbclient 子进程；最坏降级"移动端直连仅 WebDAV" |
 | R2 | 鸿蒙三方 Flutter 分支的平台通道兼容性 + **pub 插件生态缺口** —— **已验证可控（2026-09 PoC 验收，见 §8 平台支线）**：核心依赖全部落地（fvp / secure_storage 双层适配 / sqlite3 随包 / path_provider / audio_session / AVSession 替代 audio_service），仅 `cached_network_image` 封面降级 | 鸿蒙端已可日常使用；选型仍受「优先纯 Dart 包」约束 | 逐项核对结论与实现见 DEVELOPER「鸿蒙适配」；stable 新 API 须双 SDK analyze 验证；SMB 直连的鸿蒙通道方案仍待阶段 4 验证 |
 | R3 | WebDAV 服务端差异（PROPFIND 深度/鉴权/限流） | 个别云盘不可用 | 连接测试按钮 + 超时重试封装；适配名单维护在文档 |
-| R4 | 直连扫描耗流量/电量 | 用户感知差 | 仅 Wi-Fi 扫描开关；增量指纹（size/mtime/etag）跳过未变文件；`minimal`/`fast` 减流量；头部严格 Range（`head_bytes` 可配）；单源上限 |
+| R4 | 直连扫描耗流量/电量 | 用户感知差 | 仅 Wi-Fi 扫描开关；增量指纹（size/mtime/etag）跳过未变文件；快速只建索引扫描零读头；补读走严格 Range（按结构定位，不整读）；单源上限 |
 | R5 | ffmpeg 容器 CPU 占用 | 多设备并发卡顿 | 全局并发上限默认 2；超限降级透传 |
 | R6 | 大曲库查询性能 | 列表慢 | 索引齐备；`q` 前缀匹配；预留 FTS 开关 |
 | R7 | 公网暴露 | 曲库/上传被滥用 | Bearer 认证已是第一道门；文档仍建议叠加 IP 白名单 |

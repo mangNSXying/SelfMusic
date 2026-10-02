@@ -333,18 +333,19 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 
 ### 客户端扫描与元数据（实现要点）
 
-> 扫描模式与指纹语义见 [DESIGN.md §6.4](DESIGN.md#64-直连模式本地轻量索引)；本节只记**写代码时必守的隔离与数据规则**。
+> 扫描方式与指纹语义见 [DESIGN.md §6.4](DESIGN.md#64-直连模式本地轻量索引)；本节只记**写代码时必守的隔离与数据规则**。
 
 - 扫描在独立 Isolate 运行（`data/sources/scan_worker.dart` 的 `runScan`）：入口函数只收可序列化的原始参数
   （HTTP 客户端 / DB 句柄 / `LocalIndex` 等**不得跨 isolate 发送**）；指纹表由主 isolate 在 `scan()` 前查好以 `Map<String,Object?>` 传入
 - 增量指纹键 `(ref, size, mtime, etag)`：WebDAV 从 PROPFIND 的 `getlastmodified`/`getetag`/`getcontentlength` 解析；
   `scanFingerprint` 主 isolate 查询一次传入，避免 worker 碰 DB
-- WebDAV 列表与探测分别并发（`_mapConcurrent` 并发 6 / 本地探测并发 4）；单文件探测失败不拦截整个扫描
+- 快速只建索引：worker 内**不打开任何音频文件、不发任何 Range 请求**，只用枚举 + stat 的 ref/size/mtime/etag 落库。音频解析与封面提取只在播放时补读/后台补读链路发生
+- WebDAV 列目录并发（`_mapConcurrent` 并发 6）
 - 结果回主 isolate 后统一 `upsertSongs`（**整批单事务**，走 `op('upsertSongs', …)`；同步快照批量用 `opBatch('applySongSnapshots', …)`）+ `persistCover` + `markMissingExcept` + `clearMissing`；
   `LocalIndex` 只允许主 isolate 访问，写全部转发写隔离
-- `upsertSongs` 的覆盖保护：用户手改过（`user_edited=1`）的标题/歌手/专辑不被扫描覆盖；浅扫描解析出的空值不覆盖已存值；只有本次解析出时长才标 `meta_read`
+- `upsertSongs` 的覆盖保护：用户手改过（`user_edited=1`）的标题/歌手/专辑不被扫描覆盖；补读解析出的空值不覆盖已存值；只有本次解析出时长才标 `meta_read`
 - 自动扫描：本地 `Directory.watch(recursive)` 变化去抖 2s 触发 `scanSource(key)`；周期定时器按 `scan_auto_interval_min` 轮询全部直连源；`_inFlightScan` 全局互斥防重复扫描
-- 播放时懒补全：`PlayerProvider._enrichLazily` 只在 `duration == null` 时读头解析并 `enrichSong` 回填，失败静默
+- 播放时懒补全：`PlayerProvider._enrichLazily` 播放后按结构定位精确 Range 读取（`readAudioMeta`），`enrichSong` 回填，失败静默
 - 测试：`test/webdav_scan_test.dart` 用真 `HttpServer`（PROPFIND/GET/Range + 可变 etag）验证跨 isolate 扫描、增量跳过与 etag 变化仅重探目标文件；`test/audio_metadata_test.dart` 覆盖头部越界与大封面边界；
   另有 `duration_format_test`（时长 mm:ss/h:mm:ss）、`lrc_parser_test`（歌词解析）、`song_title_format_test`（标题格式）、`play_reconcile_test`（播放前最新行纠正）、`top_bar_search_test`（搜索追焦）、`view_mode_settings_test`（集合页视图持久化）、`playlist_membership_test`（歌单归属/切换）与 `playlists_view_test` 等
 - 历史坑：mp3 enc==3 / flac VORBIS_COMMENT 曾用 `String.fromCharCodes` 逐字节解码导致 CJK 乱码——已改 UTF-8 解码；修复后需对已有源重扫一次覆写旧行（`upsert` 无条件覆盖 title/artist/album，无需删库）

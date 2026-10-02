@@ -1008,7 +1008,7 @@ class _SongsSettingsState extends State<_SongsSettings> {
         ListTile(
           title: const Text('忽略音频（时长过滤）'),
           subtitle: Text(_settings.scanIgnoreMinDurationSec > 0
-              ? '扫描时忽略短于 ${_settings.scanIgnoreMinDurationSec} 秒的音频'
+              ? '补读到时长后忽略短于 ${_settings.scanIgnoreMinDurationSec} 秒的音频（首扫只建索引，不读文件，此时不生效）'
               : '关闭（按时长不过滤）'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _editIgnoreDuration(context),
@@ -1029,25 +1029,12 @@ class _SongsSettingsState extends State<_SongsSettings> {
             setState(() => _settings.scanWifiOnly = v);
           },
         ),
-        ListTile(
-          title: const Text('扫描模式'),
-          subtitle: Text(_scanModeLabel(_settings.scanMode)),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => _pickScanMode(context),
-        ),
-        ListTile(
-          title: const Text('读取音频头部'),
-          subtitle: Text('扫描时每个文件最多下载 ${_settings.scanHeadBytes ~/ 1024} KB（完整模式才解析全部元数据）'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => _editScanHead(context),
-        ),
-        SwitchListTile(
-          title: const Text('扫描时提取内嵌封面'),
-          subtitle: const Text('完整模式下把封面另存到本地；关闭可加快大曲库扫描'),
-          value: _settings.scanEmbedCover,
-          onChanged: (v) {
-            setState(() => _settings.scanEmbedCover = v);
-          },
+        const ListTile(
+          title: Text('扫描方式'),
+          subtitle: Text('快速：只建索引（文件名建索引，不读音频内容）。'
+              '元数据与封面由播放时和后台补读补齐'),
+          trailing: Icon(Icons.check, size: 20),
+          enabled: false,
         ),
         ListTile(
           title: const Text('自动扫描间隔'),
@@ -1320,81 +1307,6 @@ class _SongsSettingsState extends State<_SongsSettings> {
       return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
     }
     return '${(bytes / (1024 * 1024)).toStringAsFixed(0)} MB';
-  }
-
-  static String _scanModeLabel(String mode) {
-    switch (mode) {
-      case 'fast':
-        return '快速：只建索引，不读文件头部（歌名取文件名，最快）';
-      case 'full':
-        return '完整：读取全部元数据（时长/专辑/年份/封面）';
-      default:
-        return '最小：只读歌名/歌手/专辑，其余播放时再补全（推荐）';
-    }
-  }
-
-  Future<void> _pickScanMode(BuildContext context) async {
-    final chosen = await showDialog<String>(
-      context: context,
-      builder: (c) => SimpleDialog(
-        title: const Text('扫描模式'),
-        children: [
-          for (final m in ['minimal', 'fast', 'full'])
-            SimpleDialogOption(
-              onPressed: () => Navigator.of(c).pop(m),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Row(
-                  children: [
-                    Expanded(child: Text(_scanModeLabel(m))),
-                    if (m == _settings.scanMode)
-                      Icon(Icons.check, color: Theme.of(c).colorScheme.primary),
-                  ],
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-    if (chosen != null && chosen != _settings.scanMode && mounted) {
-      setState(() => _settings.scanMode = chosen);
-    }
-  }
-
-  Future<void> _editScanHead(BuildContext context) async {
-    final kb = _settings.scanHeadBytes ~/ 1024;
-    final controller = TextEditingController(text: kb.toString());
-    final result = await showDialog<int>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('读取音频头部（KB）'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            TextField(
-              controller: controller,
-              keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-              autofocus: true,
-            ),
-            const SizedBox(height: 8),
-            const Text('每个音频扫描时最多读取的字节数。越小扫描越快，'
-                '但大于该值的内嵌封面/尾置元数据可能缺失（建议 ≥64）。'),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.of(c)
-                  .pop(int.tryParse(controller.text) ?? 0),
-              child: const Text('确定')),
-        ],
-      ),
-    );
-    if (result != null && result >= 16 && mounted) {
-      setState(() => _settings.scanHeadBytes = result * 1024);
-    }
   }
 
   Future<void> _editScanInterval(BuildContext context) async {

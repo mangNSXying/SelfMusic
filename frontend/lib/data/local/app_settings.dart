@@ -97,9 +97,6 @@ class AppSettings {
   static const String kScanIgnoreMinDurationSec = 'scan_ignore_min_duration_sec';
   static const String kScanIgnoreMinSizeBytes = 'scan_ignore_min_size_bytes';
   static const String kScanWifiOnly = 'scan_wifi_only';
-  static const String kScanMode = 'scan_mode';
-  static const String kScanHeadBytes = 'scan_head_bytes';
-  static const String kScanEmbedCover = 'scan_embed_cover';
   static const String kScanAutoIntervalMin = 'scan_auto_interval_min';
 
   /// 淡入淡出（settings.md §3.2）：开/关与时长（ms）。
@@ -341,25 +338,6 @@ class AppSettings {
   set scanWifiOnly(bool v) =>
       index.settingsSet(kScanWifiOnly, v ? '1' : '0');
 
-  /// 扫描元数据深度（settings.md §3.4）：minimal（只读标题/歌手/专辑，默认）/
-  /// full（含时长/曲目/年份/流派/封面）/ fast（仅文件名，零读头请求）。
-  String get scanMode => index.settingsGet(kScanMode) ?? 'fast';
-  set scanMode(String v) => index.settingsSet(kScanMode, v);
-
-  bool get scanModeFull => scanMode == 'full';
-  bool get scanModeFast => scanMode == 'fast';
-
-  /// 扫描头部采样上限（字节）。默认 64KB：足够标题/歌手/专辑，且是旧 256KB 的 1/4。
-  int get scanHeadBytes =>
-      int.tryParse(index.settingsGet(kScanHeadBytes) ?? '') ?? 64 * 1024;
-  set scanHeadBytes(int v) => index.settingsSet(kScanHeadBytes, v.toString());
-
-  /// full 模式下是否提取并落盘嵌入封面。
-  bool get scanEmbedCover =>
-      (index.settingsGet(kScanEmbedCover) ?? '1') == '1';
-  set scanEmbedCover(bool v) =>
-      index.settingsSet(kScanEmbedCover, v ? '1' : '0');
-
   /// 周期自动扫描间隔（分钟）。0=关。增量指纹使其成本极低（无变化的文件零下载），
   /// 相当于「目录变化检测」；本地源另有 FileSystem watcher 即时触发。
   int get scanAutoIntervalMin =>
@@ -550,9 +528,6 @@ class AppSettings {
     kScanIgnoreMinDurationSec,
     kScanIgnoreMinSizeBytes,
     kScanWifiOnly,
-    kScanMode,
-    kScanHeadBytes,
-    kScanEmbedCover,
     kScanAutoIntervalMin,
     kFadeEnabled,
     kFadeDurationMs,

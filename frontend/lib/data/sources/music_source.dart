@@ -64,35 +64,20 @@ class ScanSummary {
   });
 }
 
-/// 扫描过滤与速度选项（settings.md §3.4）。
+/// 扫描过滤选项（settings.md §3.4）。
 ///
-/// - 只读必要参数：非 [fullMeta] 时仅解析 标题/歌手/专辑，时长/曲目/年份/流派/封面
-///   留待播放时 `enrich`（下载量与解析量最小化）。
-/// - [fast] 仅用文件名建索引，不发任何读头请求（零网络）。
-/// - [headBytes] 头部采样上限（默认 64KB，替代旧的固定 256KB）。
-/// - [collectCover] 仅 fullMeta 且 true 时提取并落盘封面。
+/// 扫描方式写死「快速：只建索引」：只用枚举拿到的 ref/size/mtime/etag 落库，
+/// 不发任何读音频内容的请求（零网络）。原「扫描模式 / 读取音频头部 / 提取内嵌封面」
+/// 三个设置项已随之删除——它们让首扫在整库上盲目读头，代价与收益倒挂；元数据
+/// 与封面由播放时补读、后台补读按结构定位后精确读取（见 [readAudioMeta]）。
+///
+/// [minSizeBytes] 仍生效：枚举已经带了大小，不需要读文件。
+/// [minDurationSec] 保留但不参与过滤：快速扫描读不到时长，时长过滤等补读出
+/// 时长后才具备判据（见设置项文案）。
 class ScanOptions {
   final int minSizeBytes;
   final int minDurationSec;
-  final int headBytes;
-  final bool fullMeta;
-  final bool fast;
-  final bool collectCover;
-  const ScanOptions({
-    this.minSizeBytes = 0,
-    this.minDurationSec = 0,
-    this.headBytes = 64 * 1024,
-    this.fullMeta = false,
-    this.fast = false,
-    this.collectCover = false,
-  });
-  const ScanOptions.none()
-      : minSizeBytes = 0,
-        minDurationSec = 0,
-        headBytes = 64 * 1024,
-        fullMeta = false,
-        fast = false,
-        collectCover = false;
+  const ScanOptions({this.minSizeBytes = 0, this.minDurationSec = 0});
 }
 
 /// 打开音频流（直接流式传输的统一返回结构）。
@@ -134,7 +119,7 @@ abstract class MusicSource {
   /// 建本地索引（增量）。默认抛"不支持直连"。
   /// [token] 用于取消（可选），[onProgress] 接收进度（可选，跨 isolate 由 runScan 转发）。
   Future<ScanSummary> scan(
-      {ScanOptions options = const ScanOptions.none(),
+      {ScanOptions options = const ScanOptions(),
       ScanToken? token,
       void Function(ScanProgress)? onProgress}) async =>
       throw UnimplementedError('$key 不支持直连扫描');

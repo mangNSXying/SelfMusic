@@ -123,7 +123,7 @@ void main() {
     await server.close(force: true);
   });
 
-  test('扫描把 WebDAV 目录递归落库（跨 isolate）', () async {
+  test('扫描把 WebDAV 目录递归落库（跨 isolate），且不读音频内容', () async {
     open.overrideFor(OperatingSystem.linux, _openOnLinux);
     final tmp = Directory.systemTemp.createTempSync('selftest-webdav');
     addTearDown(() => tmp.deleteSync(recursive: true));
@@ -144,12 +144,20 @@ void main() {
     expect(index.countSongs(src.key), 2);
     final all = index.searchSongs(sourceKey: src.key);
     final titles = all.map((s) => s.title).toSet();
-    expect(titles, contains('Song One'));
-    expect(titles, contains('Song Two'));
+    // 快速：只建索引 → 歌名取文件名，元数据一律留空（等播放/后台补读回填）。
+    expect(titles, contains('test'));
+    expect(titles, contains('song'));
+    for (final s in all) {
+      expect(s.artist, isNull);
+      expect(s.albumName, isNull);
+      expect(s.duration, isNull);
+    }
+    // 核心：整次扫描一个字节的音频内容都没读（PROPFIND 已给足 ref/size/mtime）。
+    expect(log.where((l) => l.startsWith('GET')), isEmpty,
+        reason: '快速扫描不得发起任何读音频内容的请求');
 
     // 增量：指纹（size/mtime/etag）未变 → 二次扫描零读头（GET 不再增加）。
     final getsAfterFirst = log.where((l) => l.startsWith('GET')).length;
-    expect(getsAfterFirst, 2);
     final summary2 = await src.scan();
     expect(summary2.unchanged, 2, reason: '未变化的文件应直接跳过读头');
     expect(summary2.added, 0);

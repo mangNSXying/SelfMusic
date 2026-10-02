@@ -12,7 +12,6 @@ import '../../models/song.dart';
 import '../../utils/url_display.dart';
 import 'music_source.dart';
 import 'scan_worker.dart';
-import 'sibling_cover.dart';
 import 'webdav_url.dart';
 import '../local/local_index.dart';
 import '../local/audio_metadata.dart';
@@ -23,7 +22,8 @@ import '../local/audio_metadata.dart';
 ///   [runScan] 驱动（可汇报进度 / 可取消），产出 [_WebdavWalkOut] 列表，
 ///   主 isolate 批量落库到 [LocalIndex]。
 /// - 增量：比对 `(size, mtime, etag)` 指纹，未变化直接跳过读头（零音频下载）。
-/// - 只读必要参数：非 fullMeta 时仅解析 标题/歌手/专辑（[parseMinimalHead]），
+/// - 快速：只建索引——只用 PROPFIND 的 ref/size/mtime/etag 落库，不读音频内容，
+///   元数据与封面全部留空，交给播放时补读与后台补读；
 ///   时长/封面等留待播放时懒补全。
 /// - 播放：dart:io HTTP Range GET，支持 seek/断点；或直接交给原生播放器。
 class WebdavDirectSource implements MusicSource {
@@ -67,7 +67,7 @@ class WebdavDirectSource implements MusicSource {
 
   @override
   Future<ScanSummary> scan(
-      {ScanOptions options = const ScanOptions.none(),
+      {ScanOptions options = const ScanOptions(),
       ScanToken? token,
       void Function(ScanProgress)? onProgress}) async {
     // 只传可跨 isolate 发送的原始值（不含 this）。
@@ -81,11 +81,6 @@ class WebdavDirectSource implements MusicSource {
         'password': password,
         'allowSelfSigned': allowSelfSigned,
         'minSizeBytes': options.minSizeBytes,
-        'minDurationSec': options.minDurationSec,
-        'headBytes': options.headBytes,
-        'fullMeta': options.fullMeta,
-        'fast': options.fast,
-        'collectCover': options.collectCover,
         'known': known,
       },
       token: token,
@@ -117,8 +112,8 @@ class WebdavDirectSource implements MusicSource {
         case _OutKind.updated:
           updated++;
       }
-      final coverPath = (item.cover == null || item.cover!.isEmpty ||
-              !options.collectCover)
+      // 快速扫描不取封面（item.cover 恒为 null），此分支保留给未来取值方式变化。
+      final coverPath = item.cover == null || item.cover!.isEmpty
           ? null
           : index.persistCover(item.cover!, item.row.ref);
       toWrite.add(DirectSongRow(
@@ -361,11 +356,6 @@ void _webdavWalkEntry(Map<String, Object?> msg) async {
       password: params['password']! as String,
       allowSelfSigned: params['allowSelfSigned']! as bool,
       minSizeBytes: params['minSizeBytes']! as int,
-      minDurationSec: params['minDurationSec']! as int,
-      headBytes: params['headBytes']! as int,
-      fullMeta: params['fullMeta']! as bool,
-      fast: params['fast']! as bool,
-      collectCover: params['collectCover']! as bool,
       known: (params['known']! as Map<Object?, Object?>)
           .map((k, v) => MapEntry(k as String, v as ScanFingerprint)),
       onProgress: (p) => progress.send(p),
@@ -389,11 +379,6 @@ Future<List<_WebdavWalkOut>> _webdavWalk({
   required String password,
   required bool allowSelfSigned,
   required int minSizeBytes,
-  required int minDurationSec,
-  required int headBytes,
-  required bool fullMeta,
-  required bool fast,
-  required bool collectCover,
   required Map<String, ScanFingerprint> known,
   void Function(ScanProgress)? onProgress,
   bool Function()? isCancelled,
@@ -401,7 +386,6 @@ Future<List<_WebdavWalkOut>> _webdavWalk({
   final client = _newClient(allowSelfSigned);
   final files = <_WebdavEntry>[];
   final out = <_WebdavWalkOut>[];
-  final imageCache = <String, Uint8List?>{}; // 同目录图片探测缓存（候选 URL → 字节/null）
   onProgress?.call(const ScanProgress(listing: true, done: 0, total: 0));
   try {
     await _listRecursive(client, baseUrl, files, username, password,
@@ -414,112 +398,24 @@ Future<List<_WebdavWalkOut>> _webdavWalk({
       if (isCancelled?.call() ?? false) break;
       onProgress?.call(
           ScanProgress(listing: false, done: done, total: files.length));
-      // 已存在且指纹未变 → 跳过探测（零音频下载）。
+      // 快速：只建索引。已存在且指纹未变 → 原样回传；否则仅用枚举信息落库，
+      // 一个字节的音频内容都不读（PROPFIND 已经给了 ref/size/mtime/etag）。
       final fp = known[f.href];
-      if (fp != null &&
-          fp.same(f.size, f.mtime, f.etag)) {
-        out.add(_WebdavWalkOut(
-          _rowFor(key, f, null, fullMeta, fast),
-          null,
-          _OutKind.unchanged,
-        ));
-        continue;
-      }
-      // 「忽略音频」大小过滤：不响应探测的过小文件直接跳过。
+      final kind = fp == null ? _OutKind.added : _OutKind.updated;
+      // 「忽略音频」大小过滤：枚举已带 size，无需读文件。
       if (minSizeBytes > 0 && f.size > 0 && f.size < minSizeBytes) continue;
-      if (fast) {
-        out.add(_WebdavWalkOut(
-          _rowFor(key, f, null, false, true),
-          null,
-          fp == null ? _OutKind.added : _OutKind.updated,
-        ));
-        continue;
-      }
-      AudioMeta? meta;
-      if (!fullMeta) {
-        // 最小模式：仅头部标签（时长仍用于过滤，不入库由 _rowFor 处理）。
-        try {
-          final head =
-              await _getHead(client, f.fullUrl, username, password, headBytes);
-          if (head.isNotEmpty) meta = parseAudioHead(head, f.ext, f.size);
-        } catch (_) {
-          // 单文件探测失败跳过（不中断整源扫描）。
-        }
-      } else {
-        // 完整模式：头部补读（大封面）+ 尾部补读（m4a moov-at-end / ogg 时长）+ 同目录图片回退。
-        try {
-          meta = await readAudioMeta(
-            readRange: (start, length) => _getHead(
-                client, f.fullUrl, username, password, length,
-                start: start),
-            format: f.ext,
-            fileSize: f.size,
-            headBytes: headBytes,
-          );
-        } catch (_) {
-          // 单文件读取失败跳过（不中断整源扫描）。
-        }
-        if (meta != null) {
-          if (!collectCover) {
-            meta.cover = null;
-          } else {
-            meta.cover ??= await _siblingImageWebdav(
-                client, f, username, password, imageCache);
-          }
-        }
-      }
-      // 时长过滤：仅在解析出时长时生效，避免误杀探测失败的文件。
-      final dur = meta?.duration ?? 0;
-      if (minDurationSec > 0 && dur > 0 && dur < minDurationSec) continue;
       out.add(_WebdavWalkOut(
-        _rowFor(key, f, meta, fullMeta, false),
-        meta?.cover,
-        fp == null ? _OutKind.added : _OutKind.updated,
+        _rowFor(key, f),
+        null,
+        fp != null && fp.same(f.size, f.mtime, f.etag)
+            ? _OutKind.unchanged
+            : kind,
       ));
     }
   } finally {
     client.close(force: true);
   }
   return out;
-}
-
-/// 扫描期同目录图片回退（WebDAV）：候选 URL 按次探测，命中缓存（跨歌单目录去重）。
-Future<Uint8List?> _siblingImageWebdav(HttpClient client, _WebdavEntry f,
-    String username, String password, Map<String, Uint8List?> cache) async {
-  final slash = f.fullUrl.lastIndexOf('/');
-  if (slash < 0) return null;
-  final base = f.fullUrl.substring(0, slash + 1);
-  final name = f.fullUrl.substring(slash + 1);
-  final dot = name.lastIndexOf('.');
-  final stem = dot > 0 ? name.substring(0, dot) : name;
-  final candidates = <String>[
-    if (stem.isNotEmpty)
-      for (final ext in const [
-        '.png', '.jpg', '.jpeg', '.webp', '.PNG', '.JPG',
-      ])
-        '$base$stem$ext',
-    for (final n in const [
-      'cover.jpg', 'cover.png', 'folder.jpg', 'folder.png',
-      'front.jpg', 'album.jpg',
-    ])
-      '$base$n',
-  ];
-  for (final url in candidates) {
-    if (url == f.fullUrl) continue;
-    if (cache.containsKey(url)) {
-      final hit = cache[url];
-      if (hit != null) return hit;
-      continue;
-    }
-    final bytes = await _getHead(
-        client, url, username, password, kCoverReadCapBytes);
-    if (isImageBytes(bytes)) {
-      cache[url] = bytes;
-      return bytes;
-    }
-    cache[url] = null;
-  }
-  return null;
 }
 
 /// isolate 产出：一行歌曲数据 + 可选封面字节（封面落盘在主 isolate 完成）。
@@ -533,23 +429,22 @@ class _WebdavWalkOut {
 /// 落库动作分类（增量统计用）。
 enum _OutKind { added, updated, unchanged }
 
-DirectSongRow _rowFor(String key, _WebdavEntry f, AudioMeta? meta,
-    bool fullMeta, bool fast) {
-  final titleFromMeta = !fast && (meta?.title?.isNotEmpty ?? false);
-  final title = titleFromMeta ? meta!.title! : fallbackTitle(f.href);
+/// 快速：只建索引 —— 全部字段只来自枚举信息与文件名，元数据一律留空
+/// （时长/曲目/年份/流派/封面全交给播放时补读与后台补读回填）。
+DirectSongRow _rowFor(String key, _WebdavEntry f) {
   return DirectSongRow(
     sourceKey: key,
     ref: f.href,
     url: f.fullUrl,
-    title: title,
-    titleFromMeta: titleFromMeta,
-    artist: meta?.artist,
-    album: meta?.album,
-    albumArtist: meta?.albumArtist,
-    trackNo: fullMeta ? meta?.trackNo : null,
-    year: fullMeta ? meta?.year : null,
-    genre: fullMeta ? meta?.genre : null,
-    duration: fullMeta ? meta?.duration : null,
+    title: fallbackTitle(f.href),
+    titleFromMeta: false,
+    artist: null,
+    album: null,
+    albumArtist: null,
+    trackNo: null,
+    year: null,
+    genre: null,
+    duration: null,
     format: f.ext,
     size: f.size,
     mtime: f.mtime,
@@ -638,28 +533,6 @@ void _auth(HttpClientRequest req, String username, String password) {
   if (username.isEmpty) return;
   final cred = base64Encode(utf8.encode('$username:$password'));
   req.headers.set(HttpHeaders.authorizationHeader, 'Basic $cred');
-}
-
-Future<Uint8List> _getHead(HttpClient client, String url, String username,
-    String password, int headBytes, {int start = 0}) async {
-  final req = await client.getUrl(Uri.parse(url));
-  _auth(req, username, password);
-  req.headers.set(HttpHeaders.rangeHeader,
-      'bytes=$start-${start + headBytes - 1}');
-  // 取头部字节原先完全没有时限：服务器 accept 后不吐数据就永久挂起，而这条
-  // 路径在后台补读（enrich/meta）链路上被反复调用，是后台空转的主要来源之一。
-  final resp = await _withDeadline(
-      req.close(), _kRequestDeadline, 'WebDAV 取头部（$url）');
-  if (resp.statusCode != 200 && resp.statusCode != 206) {
-    await resp.drain<void>();
-    return Uint8List(0);
-  }
-  final builder = BytesBuilder(copy: false);
-  await for (final chunk in resp) {
-    builder.add(chunk);
-    if (builder.length >= headBytes) break;
-  }
-  return builder.takeBytes();
 }
 
 Future<void> _listRecursive(HttpClient client, String url,

@@ -565,16 +565,17 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
     try {
       await index.updateSourceScan(key, 'scanning');
-      final options = ScanOptions(
-        minSizeBytes: settings.scanIgnoreMinSizeBytes,
-        minDurationSec: settings.scanIgnoreMinDurationSec,
-        headBytes: settings.scanHeadBytes,
-        fullMeta: settings.scanModeFull,
-        fast: settings.scanModeFast,
-        collectCover: settings.scanEmbedCover && settings.scanModeFull,
-      );
+      // 扫描方式写死「快速：只建索引」（原「扫描模式 / 读取音频头部 / 提取内嵌封面」
+      // 三个设置项已随之删除）：PROPFIND/枚举拿到 ref/size/mtime/etag 就落库，一个
+      // 字节的音频内容都不读，零读头请求。元数据与封面交给播放时补读与后台补读——
+      // 那两条链路知道歌马上要放，按结构定位后精确读取（见 readAudioMeta），比在
+      // 首扫里对整库盲目读头划算。代价：首扫没有时长，故时长过滤要等补读到时长后
+      // 才生效（见设置项文案）。
       final summary = await src.scan(
-        options: options,
+        options: ScanOptions(
+          minSizeBytes: settings.scanIgnoreMinSizeBytes,
+          minDurationSec: settings.scanIgnoreMinDurationSec,
+        ),
         token: token,
         onProgress: (p) {
           // 节流：距上次通知 >250ms 或进度比例/阶段发生变化时才通知 UI。
