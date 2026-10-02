@@ -468,11 +468,22 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _builtEq = eqEnabled;
     return AudioPlayer(
       handleInterruptions: _builtAudioFocus,
+      // Android 上让 ExoPlayer 自带请求头（setDefaultRequestProperties），
+      // 绕开 just_audio 的 Dart 回环代理。该代理用自己的 HttpClient，不认
+      // 我们的「允许自签」开关，故自签 NAS（https + 权威 CA 不认的证书）
+      // 走代理必然 TLS 失败——扫描/探测都好好的，一到播放就报错。
+      // 顺带好处：原生 Range/seek 比代理转发的自建字节流更稳。
+      // 仅 Android 关代理：ExoPlayer 原生支持请求头，其它平台（桌面
+      // mpv/fvp 等）仍依赖代理转发，不能一起关。
+      useProxyForRequestHeaders: !_nativeRequestHeadersSupported,
       audioPipeline: _eq != null
           ? AudioPipeline(androidAudioEffects: [_eq!])
           : null,
     );
   }
+
+  /// 当前平台能否由原生播放器直接发送请求头（不经过 just_audio 的 Dart 代理）。
+  static bool get _nativeRequestHeadersSupported => !kIsWeb && Platform.isAndroid;
 
   /// 播放器已存在、但构造时读到的音频配置与当前设置不一致时重建。
   /// 正常路径下 [player] 延迟构造已保证一致，这里兜住「设置晚于首次使用注入」
