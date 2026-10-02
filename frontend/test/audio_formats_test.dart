@@ -262,12 +262,14 @@ void main() {
       expect(meta.cover, isNull);
     });
 
-    test('超大 comment 包（封面 > 首段采样）：提示补读并按上限加深', () async {
+    test('超大 comment 包（封面 > 首段采样）：按几何阶梯补读', () async {
       final bytes = oggBytes(withPicture: true, pictureBytes: 40 * 1024);
       expect(bytes.length, greaterThan(50 * 1024));
-      // 头部只读 1KB → comment 包截断
+      // 头部只读 1KB → comment 包截断，段表算不出确切位置：给一个 4 倍档位。
+      // 原实现在这里直接返回 kCoverReadCapBytes（当时 8MB），于是每个头被截断的
+      // ogg 都被一次性请求上限那么大的区间。
       final head = Uint8List.sublistView(bytes, 0, 1024);
-      expect(coverReadHint(head, 'ogg'), kCoverReadCapBytes);
+      expect(coverReadHint(head, 'ogg'), 4096);
       final meta = (await readAudioMeta(
         readRange: readerOf(bytes),
         format: 'ogg',

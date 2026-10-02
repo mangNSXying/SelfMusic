@@ -78,7 +78,18 @@ AudioMeta? parseMinimalHead(Uint8List head, String format) {
   }
 }
 
-/// 封面深度读取上限（防止恶意/异常文件把标签声明撑到 GB 级）。
+/// 单个音频文件里「元数据区」的读取上限（字节）。
+///
+/// 这不是封面块大小的估计，而是**声明值的合理性边界**：补读要跳到多远，是文件
+/// 自己说的（mp3 的 ID3v2 synchsafe 总长、flac 元数据块的 24 位长度、m4a 的 moov
+/// 原子大小），正常文件报出来的都是几 KB 到几 MB。但损坏或构造的文件可以声明
+/// 任意大，没有边界就会一路读到 GB 级并把整段塞进内存（`_readRange` 用
+/// BytesBuilder 累积）。16MB 足以容下 24MP 无损内嵌封面这种真实上限，同时挡住
+/// 声明异常值。
+const int kMetaRegionCapBytes = 16 * 1024 * 1024;
+
+/// 同目录图片的单次读取上限（字节）。与 [kMetaRegionCapBytes] 分开：图片是按
+/// 「先读一段看签名」探测的，不需要完整内容，超限只是拿不到图，不影响标签。
 const int kCoverReadCapBytes = 8 * 1024 * 1024;
 
 /// 封面读取提示（播放补读 / 扫描的「两段读」用）：
@@ -101,8 +112,15 @@ int? coverReadHint(Uint8List head, String format) {
   }
 }
 
-/// ogg/opus：comment 包（第二逻辑包）未在采样内结束 → 需按上限补读；
-/// 完整读到即无需补读（有封面会已解析，无封面则是真的没有）。
+/// ogg/opus：comment 包（第二逻辑包）未在采样内结束 → 需要更多字节。
+/// 完整读到即无需更多（有封面会已解析，无封面则是真的没有）。
+///
+/// 与 mp3/flac 不同，ogg 的段表在**读完段表之后**才知道 payload 落在哪，所以
+/// 采样被截断时**无法算出**还需要多少字节。这里返回「按 4 倍放大」这一个档位，
+/// 由 [readAudioMeta] 的阶梯循环反复重算——而不是像原先那样直接返回上限：
+/// 直接跳上限会让每个头被截断的 ogg 一次性请求上限那么大的区间，于是 8–16MB
+/// 的普通 ogg 全被整首下完（服务端按 min(请求长度, 文件大小) 返回）。放大阶梯
+/// 从 64KB 起步，够用即止。
 int? _oggCoverReadHint(Uint8List head) {
   var i = 0;
   var packets = 0;
@@ -113,11 +131,11 @@ int? _oggCoverReadHint(Uint8List head) {
     }
     final segCount = head[i + 26];
     final tableStart = i + 27;
-    if (tableStart + segCount > head.length) return kCoverReadCapBytes;
+    if (tableStart + segCount > head.length) return head.length * 4;
     var payload = tableStart + segCount;
     for (var s = 0; s < segCount; s++) {
       final seg = head[tableStart + s];
-      if (payload + seg > head.length) return kCoverReadCapBytes;
+      if (payload + seg > head.length) return head.length * 4;
       payload += seg;
       if (seg < 255) {
         packets++;
@@ -126,7 +144,7 @@ int? _oggCoverReadHint(Uint8List head) {
     }
     i = payload;
   }
-  return kCoverReadCapBytes;
+  return head.length * 4;
 }
 
 int? _mp3CoverReadHint(Uint8List head) {
@@ -136,6 +154,17 @@ int? _mp3CoverReadHint(Uint8List head) {
   return tagEnd > head.length ? tagEnd : null;
 }
 
+/// flac：沿 STREAMINFO → PICTURE → VORBIS_COMMENT 的块列表往下走，返回「需要读到
+/// 哪里才能把块列表走完」。
+///
+/// 三种结局，区别很重要（决定了 [readAudioMeta] 的阶梯还该不该继续）：
+/// - 某个块被采样截断 → 返回该块**声明的**结束位置；
+/// - 走到带 last 位的块（块列表完整）→ null，元数据区到此为止，没有更多可读；
+/// - 块列表中途、下一个块的块头都还没读到 → 无法算位置，返回按 4 倍放大的档位。
+///
+/// 早期实现在读到完整 PICTURE 块时就 return null，于是「PICTURE 排在
+/// VORBIS_COMMENT 之前」这种合法块序下会误判成已到头：封面拿到了，**排在它后面
+/// 的标题/歌手永远读不到**（这正是旧实现必须靠整读兜底的原因之一）。
 int? _flacCoverReadHint(Uint8List head) {
   if (head.length < 8 || String.fromCharCodes(head.sublist(0, 4)) != 'fLaC') {
     return null;
@@ -145,16 +174,15 @@ int? _flacCoverReadHint(Uint8List head) {
   while (!last && i + 4 <= head.length) {
     final hdr = head[i];
     last = (hdr & 0x80) != 0;
-    final blockType = hdr & 0x7F;
     final len = _be24(head, i + 1);
     if (i + 4 + len > head.length) {
-      // 该块被采样截断：PICTURE 可能在后续块，提示补到本块结束再继续解析。
+      // 该块被采样截断：后续块（可能是 VORBIS_COMMENT）还没读到，提示补到本块尾。
       return i + 4 + len;
     }
-    if (blockType == 6) return null; // PICTURE 已完整读入；缺封面说明块内无有效图
     i += 4 + len;
   }
-  return null;
+  if (last) return null; // 块列表完整：标签与封面该有的都在采样内了
+  return head.length * 4; // 还在块列表中途：下一个块头都没读到，放大一档
 }
 
 /// 字节范围读取器（起址 + 长度）→ 字节；读不满允许返回实际长度。
@@ -250,81 +278,65 @@ AudioMeta? _parseId3v1(Uint8List tail) {
   return meta;
 }
 
-/// [fullRead] 的整首完整读取上限（字节）。超过就只加大采样，剩下交给
-/// 「按封面提示补读 + 尾部补读」。
+/// 按结构定位元数据、**绝不整读**的统一读取流程（播放补读 / 后台补读共用）。
 ///
-/// 原实现对 fullRead 一律从 0 读到 fileSize、不截断，是为拿到大内嵌封面、
-/// FLAC 里 PICTURE 排在 VORBIS_COMMENT 之前这类块序异常。但这条链路是
-/// **后台补读**（meta_enrich 逐首跑），采样稍微不够就整首下几十 MB 甚至
-/// 上百 MB，既烧流量又长时间占着直连源的连接；而命中的恰恰是「大文件」，
-/// 于是代价与收益正好倒挂。绝大多数曲目远小于本上限，行为不变。
-const int kFullReadCapBytes = 16 * 1024 * 1024;
-
-/// 整首超过 [kFullReadCapBytes] 时的加大采样量：多读一点是为了跨过大封面块
-/// 够到后面的 VORBIS_COMMENT，再由下面的按提示补读接手封面本身。
-const int kBigFileHeadBytes = 1024 * 1024;
-
-/// 头部 + 头部补读 + 尾部补读的统一直读流程（播放补读 / 扫描共用）。
+/// 策略来自「各格式的标签与封面都待在文件头尾附近的定长结构里」这一事实：
+/// mp3 的 ID3v2 头里写着整个标签多长、flac 每个元数据块头里写着块多长、m4a 的
+/// moov 原子头里写着原子多大。所以只要先读一小段做魔数识别，再顺着文件自己声明
+/// 的长度去取，就足够拿全标签与封面，不需要碰音频数据本身。
 ///
-/// [readRange] 由调用方实现（本地文件 / WebDAV Range GET）。
-/// [fullRead]（播放/后台补读链路）：先做 [headBytes] 采样；采样不足以拿到
-/// 完整元数据时，从文件头完整读取整个文件（`0..fileSize`），不做长度
-/// 推算与上限截断——大内嵌封面、块序异常（如 FLAC 的 PICTURE 在
-/// VORBIS_COMMENT 之前）等都能完整解析；所有格式统一。但整读以
-/// [kFullReadCapBytes] 为上限：超过则改为加大采样到 [kBigFileHeadBytes]
-/// 后走按提示补读，避免后台为几十 MB 的曲子整首下网。扫描等批量路径保持
-/// 默认的「按封面提示补读 + [kCoverReadCapBytes] 上限」，以控制带宽与内存。
+/// 头部阶梯由 [coverReadHint] 单线驱动，反复重算直到「结构上到头」或触到
+/// [kMetaRegionCapBytes]：
+/// - **结构跳**：封面/标签块被采样截断时给出**文件自己声明的**结束位置，直接跳过去
+///   （mp3 的 ID3v2 总长、flac 的块长）；
+/// - **几何放大**：块列表/包表中途结束、算不出确切位置时按 4 倍放大一档。例如 FLAC
+///   的 PICTURE 排在 VORBIS_COMMENT 之前——读完封面块后标题还在更后面，而下一块的
+///   块头尚未读到，只能放大再解析一次。ogg 的 comment 包同理。
+///
+/// hint 返回 null 即「结构上到头」，此时不再放大（详见阶梯循环内的说明）。全程用
+/// [kMetaRegionCapBytes] 封顶：声明值异常大的文件不会把读取撑到 GB 级。
+///
+/// **不存在**「采样不足就整读整个文件」这条退路——原实现有（`fullRead`），它会在
+/// 后台补读链路上为拿几个标签把几十上百 MB 整首下下来，且命中的恰恰是大文件，
+/// 代价与收益倒挂。
+///
+/// [readRange] 由调用方实现（本地文件 / WebDAV Range GET），读不满允许返回实际
+/// 长度（阶梯据此停止，不会死循环）。
 Future<AudioMeta?> readAudioMeta({
   required AudioRangeReader readRange,
   required String format,
   required int fileSize,
   int headBytes = 256 * 1024,
-  bool fullRead = false,
 }) async {
   var head = await readRange(0, headBytes);
   if (head.isEmpty) return null;
   var meta = parseAudioHead(head, format, fileSize);
-  if (fullRead && fileSize > 0 && meta != null) {
-    // 整首在 [kFullReadCapBytes] 以内才真读整个文件（不截断、不做补读长度推算）。
-    final wholeFileFits = fileSize <= kFullReadCapBytes;
-    if (wholeFileFits && _needsFullRead(head, meta, format, fileSize)) {
-      final all = await readRange(0, fileSize);
-      if (all.length > head.length) {
-        final full = parseAudioHead(all, format, fileSize);
-        if (full != null) meta = _mergeMeta(full, meta);
-        head = all;
-      }
-      // 尾部信息（m4a moov-at-end / ogg granule 时长 / ID3v1）在完整数据上补全。
-      final t = parseAudioTail(head, format, fileSize, headMeta: meta);
-      return t == null ? meta : _mergeMeta(meta, t);
-    }
-    if (!wholeFileFits && fileSize > kBigFileHeadBytes) {
-      // 整首太大：不整读，只把采样加大到 [kBigFileHeadBytes] 重新解析，
-      // 然后走下面的「按封面提示补读 + 尾部补读」（封面读不满就放弃封面，
-      // 换标签/时长）。
-      final more = await readRange(0, kBigFileHeadBytes);
-      if (more.length > head.length) {
-        final deeper = parseAudioHead(more, format, fileSize);
-        if (deeper != null) meta = deeper;
-        head = more;
-      }
-    }
-  }
-  // 大内嵌封面/标签：按提示补读头部一次。
-  if (meta != null && meta.cover == null) {
+
+  // ---- 头部阶梯 ----
+  // 循环条件同时盯封面与标题：封面块读完了不等于元数据区读完了（PICTURE 可能
+  // 排在 VORBIS_COMMENT 之前，这时标题在封面**后面**）。
+  // 每一轮的目标一律由 [coverReadHint] 给出，不再另开「放大分支」：hint 为 null
+  // 就表示结构上已到头（mp3 标签读完 / flac 块列表走完 / ogg comment 包完整 /
+  // 无结构可循的格式），此时继续放大纯属白读——m4a 的 moov 在文件尾，走的是
+  // 下面的尾部阶梯，不该在头部一路放大到上限。
+  while (meta != null && (meta.cover == null || !_hasTitle(meta))) {
+    final len = head.length;
+    if (len >= kMetaRegionCapBytes) break;
     final hint = coverReadHint(head, format);
-    if (hint != null && hint > head.length && hint <= kCoverReadCapBytes) {
-      final deeper = await readRange(0, hint);
-      if (deeper.length > head.length) {
-        final deeperMeta = parseAudioHead(deeper, format, fileSize);
-        if (deeperMeta != null) {
-          meta = deeperMeta;
-          head = deeper;
-        }
-      }
-    }
+    if (hint == null) break; // 结构上到头：再读也拿不到更多头部元数据
+    var target = hint;
+    if (target > kMetaRegionCapBytes) target = kMetaRegionCapBytes;
+    if (target <= len) break;
+    final deeper = await readRange(0, target);
+    if (deeper.length <= len) break; // 没读到更多（文件已到底）：停，避免死循环
+    final parsed = parseAudioHead(deeper, format, fileSize);
+    if (parsed != null) meta = parsed;
+    head = deeper;
   }
-  // moov-at-end / ogg 时长：尾部补读（m4a 按 256KB→1MB→4MB→8MB 逐级增大）。
+
+  // ---- 尾部阶梯：moov-at-end / ogg·opus 时长 / mp3 ID3v1 兜底 ----
+  // 入口条件与原先一致：还缺封面或缺时长才需要尾读（标签与封面在头部拿全时
+  // 不必为确认时长再多读一次——那是一次覆盖尾部的 Range 请求）。
   if (meta == null || meta.cover == null || meta.duration == null) {
     final first = tailReadHint(head, format, fileSize);
     if (first != null && first > 0) {
@@ -340,8 +352,10 @@ Future<AudioMeta?> readAudioMeta({
           break;
         }
         if (format != 'm4a' && format != 'mp4') break;
+        // moov 可能整个落在采样之外（moov-at-end），逐级放大尾读窗口；
+        // 上限与头部同一套声明值边界。
         final next = len * 4;
-        if (next <= len || next > kCoverReadCapBytes || len >= fileSize) break;
+        if (next <= len || next > kMetaRegionCapBytes || len >= fileSize) break;
         tailLen = next;
       }
     }
@@ -349,21 +363,9 @@ Future<AudioMeta?> readAudioMeta({
   return meta;
 }
 
-/// fullRead 采样是否不足（触发从头完整读取）：
-/// - 标签/封面被采样截断（[coverReadHint] 给出补读提示）；
-/// - 未解析出标题（如 m4a moov-at-end、PICTURE 在 VORBIS_COMMENT 之前的
-///   FLAC——采样在封面块处中断，后续 VORBIS_COMMENT 未读到）；
-/// - m4a/mp4 的 moov 在尾部（标签/封面可能在尾部元数据区）。
-bool _needsFullRead(
-    Uint8List head, AudioMeta meta, String format, int fileSize) {
-  if (coverReadHint(head, format) != null) return true;
-  if (meta.title == null && format != 'wav') return true;
-  if ((format == 'm4a' || format == 'mp4') &&
-      tailReadHint(head, format, fileSize) != null) {
-    return true;
-  }
-  return false;
-}
+/// 是否已从头部拿到可用标题（几何放大的停止条件）。
+bool _hasTitle(AudioMeta meta) =>
+    meta.title != null && meta.title!.isNotEmpty;
 
 /// [extra] 非空字段覆盖 [base]；base 为 null 时直接返回 extra。
 AudioMeta _mergeMeta(AudioMeta? base, AudioMeta extra) {

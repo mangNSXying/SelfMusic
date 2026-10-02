@@ -126,7 +126,8 @@ Uint8List flacPictureBeforeVorbis() {
     ...streamInfo,
     ...picture,
     ...vorbis,
-    0xFF, 0xF8, 0x69, 0x00, // 音频数据占位
+    0xFF, 0xF8, 0x69, 0x00, // 音频数据占位：给足 5MB，避免「读完元数据区」
+    ...List.filled(5 * 1024 * 1024, 0), // 恰好等于整读，掩盖住无谓的整读
   ]);
 }
 
@@ -202,7 +203,7 @@ void main() {
       // 二段读（按提示读取完整标签）：封面恢复
       final hint = coverReadHint(truncated, 'mp3')!;
       expect(hint, greaterThan(256 * 1024));
-      expect(hint, lessThanOrEqualTo(kCoverReadCapBytes));
+      expect(hint, lessThanOrEqualTo(kMetaRegionCapBytes));
       final deeper = Uint8List.sublistView(full, 0, hint);
       final meta = parseAudioHead(deeper, 'mp3', full.length);
       expect(meta?.cover, isNotNull);
@@ -210,28 +211,26 @@ void main() {
       expect(meta.cover!.length, greaterThan(400 * 1024));
     });
 
-    test('mp3：>8MB 封面默认读被截断丢封面，fullRead（播放链路）读满恢复', () async {
+    test('mp3：9MB 封面正常恢复（元数据区上限 16MB，不再有 8MB 丢封面）', () async {
       final full = id3WithLargeApic(imgBytes: 9 * 1024 * 1024);
-      Future<Uint8List> range(int s, int l) async => Uint8List.sublistView(
-          full, s, (s + l) > full.length ? full.length : s + l);
-      // 默认（后台补读，上限 8MB）：封面被截断丢弃。
-      final capped = await readAudioMeta(
+      final lengths = <int>[];
+      Future<Uint8List> range(int s, int l) async {
+        lengths.add(l);
+        return Uint8List.sublistView(
+            full, s, (s + l) > full.length ? full.length : s + l);
+      }
+      // 原行为：默认路径封面被 8MB 上限截断丢弃，只有播放链路的 fullRead 能拿到。
+      // 现在两条链路都是同一个结构化读取，9MB 封面一样拿得到。
+      final meta = await readAudioMeta(
           readRange: range, format: 'mp3', fileSize: full.length);
-      expect(capped, isNotNull);
-      expect(capped!.cover, isNull);
-      // fullRead（播放链路）：按提示读到文件末尾，封面完整、无截断。
-      final depthed = await readAudioMeta(
-          readRange: range,
-          format: 'mp3',
-          fileSize: full.length,
-          fullRead: true);
-      expect(depthed, isNotNull);
-      expect(depthed!.cover, isNotNull);
-      expect(depthed.cover!.sublist(0, 2), [0xFF, 0xD8]);
-      expect(depthed.cover!.length, greaterThan(kCoverReadCapBytes));
+      expect(meta, isNotNull);
+      expect(meta!.cover, isNotNull);
+      expect(meta.cover!.sublist(0, 2), [0xFF, 0xD8]);
+      expect(meta.cover!.length, greaterThan(9 * 1024 * 1024 - 1024));
+      expect(lengths.every((l) => l <= kMetaRegionCapBytes), isTrue);
     });
 
-    test('flac：PICTURE 在 VORBIS_COMMENT 之前被采样截断 → fullRead 从头完整读取恢复', () async {
+    test('flac：PICTURE 在 VORBIS_COMMENT 之前被采样截断 → 结构阶梯恢复（不整读）', () async {
       final full = flacPictureBeforeVorbis();
       final lengths = <int>[];
       Future<Uint8List> range(int s, int l) async {
@@ -244,18 +243,18 @@ void main() {
       final sampled = parseAudioHead(sample, 'flac', full.length);
       expect(sampled?.title, isNull);
       expect(sampled?.cover, isNull);
-      // 完整读取：不做截断/提示推算，标题/歌手/封面全部恢复。
+      // 现在靠结构阶梯恢复：跳到 PICTURE 声明的块尾，再放大够到其后的
+      // VORBIS_COMMENT——全程不出现覆盖整首的读取区间。
       final meta = await readAudioMeta(
-          readRange: range,
-          format: 'flac',
-          fileSize: full.length,
-          fullRead: true);
+          readRange: range, format: 'flac', fileSize: full.length);
       expect(meta, isNotNull);
       expect(meta!.title, '曲名');
       expect(meta.artist, '歌手');
       expect(meta.cover, isNotNull);
       expect(meta.cover!.sublist(0, 2), [0xFF, 0xD8]);
-      expect(lengths, [256 * 1024, full.length]);
+      expect(lengths.every((l) => l < full.length), isTrue,
+          reason: '不能为了拿标签把整个文件读下来');
+      expect(lengths.length, greaterThanOrEqualTo(2));
     });
 
     test('flac：PICTURE 块被截断时提示块尾；完整后返回 null', () {
@@ -272,7 +271,7 @@ void main() {
         ...img,
       ];
       final picHeader = <int>[
-        6, // PICTURE，非最后块
+        0x80 | 6, // PICTURE，带 last 位：块列表到此结束
         (picBody.length >> 16) & 0xFF,
         (picBody.length >> 8) & 0xFF,
         picBody.length & 0xFF,
@@ -292,7 +291,8 @@ void main() {
       final truncated = Uint8List.sublistView(flac, 0, 256 * 1024);
       expect(coverReadHint(truncated, 'flac'), picEnd);
       final deeper = Uint8List.sublistView(flac, 0, picEnd);
-      expect(coverReadHint(deeper, 'flac'), isNull);
+      expect(coverReadHint(deeper, 'flac'), isNull,
+          reason: '走到 last 块 = 元数据区完整，不该再提示补读');
       final meta = parseAudioHead(deeper, 'flac', flac.length);
       expect(meta?.cover, isNotNull);
     });

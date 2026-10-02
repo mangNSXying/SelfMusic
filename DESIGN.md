@@ -393,7 +393,7 @@ abstract class MusicSource {
 - 播放时懒补全：`minimal` 入库的歌缺 时长/流派/年份/封面 → `PlayerProvider` 播放后后台 `open` 读头解析并 `enrichSong` 回填，失败不影响播放
 - **播放时必然重读**：`_enrichLazily` 不依赖索引缓存，任何歌开始播放都再次读头解析并回填（兼修正断点/歌单旧快照），保证切歌即时刷新
 - **读头部可能需要多段**：大内嵌封面（常见 1~3MB）一段读会整块丢失，moov-at-end 的 m4a / ogg 时长 / mp3 ID3v1 在文件尾部——因此有「两段读」与「尾部补读」策略。
-  具体的 hint 计算、上限（`kCoverReadCapBytes` 8MB）、逐级增大顺序、同目录图片与 `.lrc` 回退优先级、一次性重取迁移（`kCoverReenrichV1Done`）等实现细节见 [DEVELOPER.md「客户端扫描与元数据」](DEVELOPER.md#客户端扫描与元数据实现要点)
+  具体的 hint 计算、声明值上限（`kMetaRegionCapBytes` 16MB）、几何放大与结构跳的分工、同目录图片与 `.lrc` 回退优先级、一次性重取迁移（`kCoverReenrichV1Done`）等实现细节见 [DEVELOPER.md「客户端扫描与元数据」](DEVELOPER.md#客户端扫描与元数据实现要点)
 - **全局后台补读**：任一首开始播放后，后台逐个补读各直连源「尚未读取过元数据」的歌曲（`DirectSourceManager` 分批循环读头回填），专辑/歌手/封面在扫描未覆盖时也能逐步补齐并在 UI 就地刷新（`LibraryProvider` 监听元数据版本号）
 - **用户编辑优先于扫描**：播放页「修改歌曲元数据」落 `user_edited=1`，扫描不再覆盖（`LocalIndex.updateSongUserMeta` / `DirectSourceManager.updateSongMeta`）
 

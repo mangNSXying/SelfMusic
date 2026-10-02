@@ -352,8 +352,11 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 
 **读头部的多段策略（`data/local/audio_metadata.dart`）**
 
-- **两段读**：首段采样（256KB）解析后若缺封面，`coverReadHint` 按 ID3 标签声明长度 / FLAC 块头 / ogg comment 包完成度算出「读到封面块尾」所需字节数，补读一次再解析；上限 `kCoverReadCapBytes` = 8MB（高清扫图常见 1~3MB，一段读会整块丢失）。歌词（USLT / LYRICS）与长文本帧同在整段标签内，随两段读一并补全
-- **尾部补读 `tailReadHint`**：moov-at-end 的 m4a（按 256KB→1MB→4MB→8MB 逐级增大）、ogg/opus 时长（取末页 granule）、无 ID3v2 的 mp3 ID3v1（取尾 128B）
+- **结构化阶梯读（`readAudioMeta`，播放补读与后台补读共用同一函数）**：首段采样（256KB）→ `coverReadHint` 按**文件自己声明的长度**（mp3 的 ID3v2 synchsafe 总长 / flac 元数据块的 24 位块长）给出「读到封面块尾」所需字节数，跳过去再解析。不够就继续阶梯，直到 `coverReadHint` 返回 null（结构上到头）或触到 `kMetaRegionCapBytes` = 16MB。歌词（USLT / LYRICS）与长文本帧同在整段标签内，随阶梯一并补全
+- **两条补读驱动**：(1) **结构跳**——按声明长度精确落点；(2) **几何放大（×4）**——结构上算不出落点时。典型是 FLAC 的 `PICTURE` 排在 `VORBIS_COMMENT` 之前：读完封面块标题还在更后面；ogg/opus 的段表在读完段表之后才知道 payload 落在哪，采样截断时同样只能放大
+- **`coverReadHint` 返回 null = 结构上到头**，此时不再放大：mp3 标签读完 / flac 块列表走到 last 块 / ogg comment 包完整 / 无结构可循的格式（m4a 的 moov 在文件尾，走尾部阶梯，不在头部放大到上限）
+- **绝不整读**：没有「采样不足就从 0 读到 fileSize」的退路（旧实现有 `fullRead`，在后台逐首补读链路上为拿几个标签把几十上百 MB 整首下下来，且命中的恰恰是大文件）。单次读取上限 `kMetaRegionCapBytes` = 16MB，是**声明值**的合理性边界，不是文件大小上限
+- **尾部补读 `tailReadHint`**：moov-at-end 的 m4a（按 256KB→1MB→4MB 逐级放大，上限同上）、ogg/opus 时长（取末页 granule）、无 ID3v2 的 mp3 ID3v1（取尾 128B）
 - 扫描 `full` + 提取封面走 `readAudioMeta` 统一读序；旧版已标已读但无封面的 mp3/flac 行由一次性迁移（`kCoverReenrichV1Done`，设备本地标记）重置为未读，交给后台补读重取
 - **同目录回退**：仍无封面 → 「同名图片（`.png/.jpg/.jpeg/.webp`）→ `cover.*`/`folder.*`/`front.*`/`album.*`」顺序取同目录图片（播放补读按会话缓存，扫描按目录清单/下载缓存去重），经图片签名校验后落盘；同名 `.lrc` 歌词回退同在一条路径
 - **编码规则**：mp3 ID3v2 按帧 encoding 选解码（enc==3 → UTF-8；enc==0 → 尝试 UTF-8 再回退 Latin-1）；flac/ogg VORBIS_COMMENT 按规范 UTF-8（失败回退 Latin-1）；m4a 文本原子 UTF-8；无内嵌标签时走文件名/同目录回退

@@ -143,7 +143,7 @@ Uint8List noCoverMp3(String title) {
 
 void main() {
   setUp(clearSiblingImageCache);
-  test('播放补读：采样不足时从头完整读取整个文件（不截断）并落盘', () async {
+  test('播放补读：采样截断时按结构补读（不整读）并落盘', () async {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
     final dir = await Directory.systemTemp.createTemp('selfmusic_enrich_');
     PathProviderPlatform.instance = _FakePathProvider(dir.path);
@@ -166,10 +166,13 @@ void main() {
 
     final ok = await enrichSongMeta(index, src, song);
     expect(ok, isTrue);
-    // 第一段 256KB 采样 → 采样不足（封面被截断）→ 从头完整读取整个文件。
+    // 第一段 256KB 采样 → 封面被截断 → 跳到 ID3v2 头里声明的标签末尾补读。
+    // 原实现是「采样不足就从头完整读取整个文件」，为拿封面把整首下下来。
     expect(src.requestedLengths.first, 256 * 1024);
     expect(src.requestedLengths.length, 2);
-    expect(src.requestedLengths.last, bytes.length);
+    expect(src.requestedLengths.last, lessThan(bytes.length),
+        reason: '按声明长度补读，不该整读文件');
+    expect(src.requestedLengths.last, greaterThan(400 * 1024));
 
     final updated = index.songByRef('webdav:t', 'Music/a.mp3')!;
     expect(updated.coverPath, isNotNull);
