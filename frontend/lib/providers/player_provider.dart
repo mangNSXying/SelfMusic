@@ -1319,7 +1319,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 连败到上限才提示。手动点播仍逐次提示。
       if (!autoAdvanceOnFailure) AppToast.error(e, '播放失败');
       notifyListeners();
-      if (autoAdvanceOnFailure) unawaited(_autoSkipAfterFailure());
+      if (autoAdvanceOnFailure) unawaited(_autoSkipAfterFailure(e));
     }
   }
 
@@ -1330,6 +1330,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       {required bool Function() alive}) async {
     Object? last;
     final backoff = loadBackoff;
+    // 探针是否还值得做：超时过一次说明这台源当前无响应，后续重试不再重复白等
+    // [_probeTimeout]。原先每次尝试都先白等 10s 再去装载，单首最坏
+    // 10+15 / 1+10+15 / 3+10+15 ≈ 79s；现为 10 + 16 + 18 ≈ 44s。
+    // 不因探针超时就放弃装载——「首字节慢 12s」的源探针必超时而装载本可成功，
+    // 放弃会把它们误杀成「整队都播不了」。
+    var probeUsable = true;
     for (var i = 0; i <= backoff.length; i++) {
       if (!alive() || _shuttingDown) return;
       if (i > 0) {
@@ -1343,7 +1349,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (injected != null) {
           await injected(s, src);
         } else {
-          await _loadOnce(s, src);
+          await _loadOnce(s, src, probe: probeUsable);
         }
         return;
       } catch (e) {
@@ -1352,14 +1358,22 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         // 鉴权被拒（401/403）重试也不会好：立即失败让提示尽早出现。
         if (e is SourceAuthException) rethrow;
         last = e;
+        if (probeTimedOut) {
+          probeUsable = false;
+          probeTimedOut = false;
+        }
       }
     }
     throw last ?? StateError('装载失败');
   }
 
+  /// 本次 [_loadOnce] 探针是否以超时收场（供 [_playDirect] 决定后续尝试还做不做）。
+  bool probeTimedOut = false;
+
   /// 单次装载：优先离线缓存文件，其次原生 URL（Range/seek 更稳），
   /// 最后回落到自建字节流 [DirectAudioSource]。
-  Future<void> _loadOnce(Song s, MusicSource src) async {
+  /// [probe] 为 false 时跳过装载前探针（该源已探明无响应，别再白等）。
+  Future<void> _loadOnce(Song s, MusicSource src, {bool probe = true}) async {
     final tag = mediaItemOf(s, title: displayTitle(s));
     final cached = await src.cachedFilePath(s);
     if (cached != null) {
@@ -1375,18 +1389,24 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 直接失败——原生播放器（fvp/ExoPlayer）对错误响应只会无限缓冲，
       // 进度停 0:00 无任何提示（2026-09-29 真机实测，密码过期即此表现）。
       // 其余探针异常不阻塞装载（网络抖动交给播放器自身重试）。
-      try {
-        final probe = src.probe(s);
+      probeTimedOut = false;
+      if (probe) {
         try {
-          await probe.timeout(_probeTimeout);
-        } on TimeoutException {
-          probe.ignore(); // 看门狗放弃后，迟到的失败静默丢弃防 unhandled
+          final probeTask = src.probe(s);
+          try {
+            await probeTask.timeout(_probeTimeout);
+          } on TimeoutException {
+            probeTask.ignore(); // 看门狗放弃后，迟到的失败静默丢弃防 unhandled
+            // 记下超时：仍在本次尝试里继续装载（首字节慢的源本可成功），
+            // 但让 [_playDirect] 后续重试别再重复白等这 10s。
+            probeTimedOut = true;
+            rethrow;
+          }
+        } on SourceAuthException {
           rethrow;
+        } catch (e) {
+          debugPrint('[play] 装载前探针失败（忽略，继续装载）: $e');
         }
-      } on SourceAuthException {
-        rethrow;
-      } catch (e) {
-        debugPrint('[play] 装载前探针失败（忽略，继续装载）: $e');
       }
       // 装载看门狗（_loadUrlTimeout）：超时按装载失败进入退避重试；迟到
       // 的完成/错误 ignore() 吞掉——若期间用户切了歌，旧 future 会被
@@ -1702,14 +1722,22 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 装载失败后自动跳下一首：连败到 [_loadFailSkipLimit] 首才停，
   /// 既不让个别坏歌卡住整条队列，也避免整队不可播时无限跳歌。
-  Future<void> _autoSkipAfterFailure() async {
+  Future<void> _autoSkipAfterFailure([Object? reason]) async {
     _loadFailStreak++;
-    debugPrint('[play] 装载连续失败 $_loadFailStreak 次');
+    debugPrint('[play] 装载连续失败 $_loadFailStreak 次: $reason');
     if (_loadFailStreak >= _loadFailSkipLimit) {
       _loadFailStreak = 0;
       await _finishQueue();
       AppToast.show('连续 $_loadFailSkipLimit 首无法加载，已停止播放');
       return;
+    }
+    // 自动续播链路每首都弹 toast 会在后台连刷屏，故只在开始跳歌时说明一次：
+    // 原先从第一次失败到最终「已停止」之间完全无反馈，而这段最坏要几十秒
+    // （每首 3 次尝试 × 探针/装载超时 + 退避），人不在屏幕前时看着像程序死了。
+    if (_loadFailStreak == 1) {
+      final hint =
+          reason is TimeoutException ? '（网络超时）' : '';
+      AppToast.show('无法加载，正在尝试下一首$hint');
     }
     await _advance(autoAdvanceOnFailure: true);
   }
