@@ -17,7 +17,9 @@ import 'api_client.dart';
 /// 启动/回前台/手动 [syncNow]。无 connectivity 依赖：断网时请求抛错进退避，
 /// 恢复后下一次 tick 自动追上（退避上限 30s）。
 class SyncEngine {
-  static const _tickFast = Duration(seconds: 2);
+  /// 定时器周期。非常量：测试可临时调小，免得像生产那样真等 2s。
+  @visibleForTesting
+  static Duration tickFast = const Duration(seconds: 2);
   static const _pullInterval = Duration(seconds: 30);
   static const _maxBackoff = Duration(seconds: 30);
   static const _maxPullPages = 10;
@@ -51,11 +53,39 @@ class SyncEngine {
 
   SyncEngine({required this.api, required this.index, required this.settings});
 
+  /// 应用是否在前台。false 时 [start] 的定时器不触发同步，避免应用退到后台
+  /// 后仍每 [tickFast]（2s）醒来一次做网络 IO——后台没有前台服务撑着，
+  /// 纯烧流量/电，且 Android 后台限制下大概率直接失败重试。
+  /// 前台服务只为「播放」而开，不该顺带把同步也拖进后台。
+  bool _appForeground = true;
+
+  /// 退到后台：停表。已在飞行中的一轮不打断（_inflight 自会收尾），
+  /// 只是不再发起新的。
+  void pause() {
+    if (!_appForeground) return;
+    _appForeground = false;
+    _tick?.cancel();
+    _tick = null;
+  }
+
+  /// 回到前台：重新起表；若积压了 outbox 或已过拉取间隔，立刻补一轮。
+  void resume() {
+    if (_appForeground) return;
+    _appForeground = true;
+    _tick ??= Timer.periodic(tickFast, (_) => _onTick());
+    _onTick();
+  }
+
   void start() {
     stop();
-    _tick = Timer.periodic(_tickFast, (_) => _onTick());
+    if (!_appForeground) return; // 后台启动：等 resume()
+    _tick = Timer.periodic(tickFast, (_) => _onTick());
     unawaited(syncNow());
   }
+
+  /// 定时器当前是否在跑（供测试断言后台确实停了轮询）。
+  @visibleForTesting
+  bool get isPolling => _tick != null;
 
   void stop() {
     _tick?.cancel();
@@ -90,6 +120,7 @@ class SyncEngine {
   }
 
   void _onTick() {
+    if (!_appForeground) return;
     if (_inflight != null) return;
     final now = DateTime.now();
     final failAt = _lastFailAt;

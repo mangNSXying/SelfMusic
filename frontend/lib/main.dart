@@ -148,7 +148,20 @@ class _SyncLifecycleObserver extends WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) unawaited(sync.syncNow());
+    switch (state) {
+      case AppLifecycleState.resumed:
+        // 后台期间定时器是停的（见 [SyncEngine.pause]），恢复时补一轮：
+        // 积压的 outbox 与已过期的拉取间隔都在 [_onTick] 里判，够不到就不发请求。
+        sync.resume();
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+      case AppLifecycleState.hidden:
+        sync.pause();
+      case AppLifecycleState.inactive:
+        // 短暂失去焦点（通知栏下拉、来电、多任务切换）不暂停：继续播的关键是
+        // 后台音频，此时停表反而会漏掉 outbox 上传。
+        break;
+    }
   }
 }
 
