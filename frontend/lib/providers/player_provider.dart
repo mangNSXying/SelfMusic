@@ -621,9 +621,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     if (kIsWeb || !Platform.isAndroid) return;
-    // 仅通知栏路径生效：与迁移前 onTaskRemoved 的触发条件一致（关掉通知栏控制时
-    // 不拦截，播放继续）。
-    if (!(_appSettings?.notificationControls ?? false)) return;
+    // 不再按 notificationControls 分流：前台服务恒注册（见 main.dart），
+    // 划掉任务一律按媒体应用惯例收尾，但保留断点/队列供下次启动续播。
     debugPrint('[play] 任务被划掉，停止播放（保留断点）');
     unawaited(stopFromNotifier(clearResume: false));
   }

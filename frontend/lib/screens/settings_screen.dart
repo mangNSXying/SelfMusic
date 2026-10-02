@@ -1994,7 +1994,9 @@ class _NotificationsSettingsState extends State<_NotificationsSettings> {
         ),
         SwitchListTile(
           title: const Text('通知栏播放控制'),
-          subtitle: const Text('通知栏常驻播放控制与后台播放（修改后重启生效）'),
+          subtitle: const Text(
+              '在通知栏显示播放控制按钮（修改后重启生效）。关闭只隐藏按钮——'
+              '后台播放所需的前台服务与唤醒锁始终保持，不受影响。'),
           value: _settings.notificationControls,
           onChanged: (v) {
             setState(() => _settings.notificationControls = v);

@@ -14,8 +14,19 @@ import '../providers/player_provider.dart';
 ///
 /// 通知栏为自研 5 键（改进.txt UI5）：上一首 / 播放·暂停 / 下一首 / 播放模式 /
 /// 退出软件，收起(compact)视图取前三个；图标为品牌色矢量（ic_np_*）。
+///
+/// 处理器**始终注册**（前台服务 + 播放期 wake lock 是后台播放的根基，与用户是否
+/// 想看通知栏按钮无关——此前用 notificationControls 一起 gate 掉，用户一关开关
+/// 就没有前台服务也没有 wake lock，息屏/Doze 下必然被回收）。[showControls] 只
+/// 控制通知里渲不渲染那 5 个按钮：关掉时仍照常起前台服务、发媒体通知、持锁，
+/// 只是通知变成无按钮的纯信息条。
 class SelfMusicAudioHandler extends BaseAudioHandler {
   PlayerProvider? _player;
+
+  /// 通知栏是否渲染控制按钮。为 false 时仍注册前台服务，仅隐藏按钮。
+  bool showControls;
+
+  SelfMusicAudioHandler({this.showControls = true});
 
   void attach(PlayerProvider player) {
     _player = player;
@@ -91,15 +102,19 @@ class SelfMusicAudioHandler extends BaseAudioHandler {
     }
     final duration = p.duration;
     playbackState.add(PlaybackState(
-      controls: [
-        _prev,
-        if (p.playing) _pause else _play,
-        _next,
-        _modeControl(p.mode),
-        _exit,
-      ],
-      systemActions: const {MediaAction.seek},
-      androidCompactActionIndices: const [0, 1, 2],
+      // 通知栏按钮按设置开关：关掉时给空列表——前台服务/唤醒锁由 playing 驱动
+      // （AudioService.enterPlayingState），与按钮无关，后台播放不受影响。
+      controls: showControls
+          ? [
+              _prev,
+              if (p.playing) _pause else _play,
+              _next,
+              _modeControl(p.mode),
+              _exit,
+            ]
+          : const [],
+      systemActions: showControls ? const {MediaAction.seek} : const {},
+      androidCompactActionIndices: showControls ? const [0, 1, 2] : const [],
       processingState: AudioProcessingState.ready,
       playing: p.playing,
       updatePosition: p.position,
