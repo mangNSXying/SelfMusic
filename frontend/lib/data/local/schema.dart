@@ -314,4 +314,37 @@ void applySchema(Database db) {
   db.execute('''
     CREATE INDEX IF NOT EXISTS idx_asong_artist ON artist_song_map(artist_key);
   ''');
+  // artist_member：组合/角色 → 成员 的有向边（歌手处理.txt 第 43-47 行）。
+  // 一次 lookup(inc=artist-rels) 拿到的关系直接建边：关系自带 mbid，成员身份因此
+  // 一出生就带 mbid、status='resolved'，不必再为每个成员单独搜 MB。
+  // 歌手页沿这张图把组合一路递归到 Person；成员没有自己的 role='main' 歌曲映射，
+  // 歌曲归属在查询期沿 parent 反向继承（见 LocalIndex.identityArtistGroups）。
+  db.execute('''
+    CREATE TABLE IF NOT EXISTS artist_member (
+      parent_key TEXT NOT NULL,
+      member_key TEXT NOT NULL,
+      relation   TEXT NOT NULL,
+      updated_at INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (parent_key, member_key, relation)
+    );
+  ''');
+  db.execute('''
+    CREATE INDEX IF NOT EXISTS idx_amember_member ON artist_member(member_key);
+  ''');
+  // 已展开的成员数：0 表示「没展开出成员」，歌手页据此决定是否回落显示组合本身。
+  final artistCols = db
+      .select("PRAGMA table_info(artists)")
+      .map((r) => r['name'] as String)
+      .toSet();
+  if (!artistCols.contains('member_count')) {
+    db.execute(
+        'ALTER TABLE artists ADD COLUMN member_count INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!artistCols.contains('expanded_at')) {
+    db.execute('ALTER TABLE artists ADD COLUMN expanded_at TEXT');
+  }
+  // 采纳该身份时 MusicBrainz 给的检索分数（脏数据过滤后的第一个候选）。
+  if (!artistCols.contains('match_score')) {
+    db.execute('ALTER TABLE artists ADD COLUMN match_score REAL');
+  }
 }

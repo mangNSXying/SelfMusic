@@ -74,7 +74,8 @@ class LocalIndex {
     return _rowToSource(rs.first);
   }
 
-  Future<void> upsertSource(String key, String kind, String name, String config) {
+  Future<void> upsertSource(
+      String key, String kind, String name, String config) {
     return _writer!.exec(
         'INSERT INTO sources(key, kind, name, config) VALUES(?,?,?,?) '
         'ON CONFLICT(key) DO UPDATE SET name=excluded.name, config=excluded.config, kind=excluded.kind',
@@ -83,19 +84,21 @@ class LocalIndex {
 
   /// 源实例 uuid（跨设备同步身份）：无则生成并落库（写经后台隔离）。
   Future<String> ensureSourceUuid(String key) async {
-    final rs = _db!.select('SELECT client_uuid FROM sources WHERE key=?', [key]);
+    final rs =
+        _db!.select('SELECT client_uuid FROM sources WHERE key=?', [key]);
     if (rs.isEmpty) throw StateError('source not found: $key');
     final cur = rs.first['client_uuid'] as String?;
     if (cur != null && cur.isNotEmpty) return cur;
     final uuid = newEventUuid();
-    await _writer!.exec(
-        'UPDATE sources SET client_uuid=? WHERE key=?', [uuid, key]);
+    await _writer!
+        .exec('UPDATE sources SET client_uuid=? WHERE key=?', [uuid, key]);
     return uuid;
   }
 
   /// 源实例 uuid（未生成返回 null）。
   String? sourceUuidOf(String key) {
-    final rs = _db!.select('SELECT client_uuid FROM sources WHERE key=?', [key]);
+    final rs =
+        _db!.select('SELECT client_uuid FROM sources WHERE key=?', [key]);
     if (rs.isEmpty) return null;
     final v = rs.first['client_uuid'] as String?;
     return (v == null || v.isEmpty) ? null : v;
@@ -104,7 +107,8 @@ class LocalIndex {
   /// 按源实例 uuid 反查本地源 key（未配置对应源返回 null）。
   String? sourceKeyOfUuid(String uuid) {
     if (uuid.isEmpty) return null;
-    final rs = _db!.select('SELECT key FROM sources WHERE client_uuid=?', [uuid]);
+    final rs =
+        _db!.select('SELECT key FROM sources WHERE client_uuid=?', [uuid]);
     return rs.isEmpty ? null : rs.first['key'] as String;
   }
 
@@ -201,17 +205,17 @@ class LocalIndex {
   /// 播放懒补全：把播放时解析出的额外元数据（标题/歌手/专辑/专辑歌手/时长/流派/
   /// 曲目/年份/封面）回填，并标记已读（后台不再重复扫描）。
   /// 用户手改过的行（user_edited=1）不回写文本字段，只补技术字段。
-Future<void> enrichSong(String sourceKey, String songRef,
-    {String? title,
-    String? artist,
-    String? album,
-    String? albumArtist,
-    int? duration,
-    String? genre,
-    int? trackNo,
-    int? year,
-    String? coverPath}) {
-  return _writer!.exec('''
+  Future<void> enrichSong(String sourceKey, String songRef,
+      {String? title,
+      String? artist,
+      String? album,
+      String? albumArtist,
+      int? duration,
+      String? genre,
+      int? trackNo,
+      int? year,
+      String? coverPath}) {
+    return _writer!.exec('''
     UPDATE idx_songs SET
       title=CASE WHEN user_edited=1 THEN title ELSE COALESCE(NULLIF(?, ''), title) END,
       artist=CASE WHEN user_edited=1 THEN artist ELSE COALESCE(NULLIF(?, ''), artist) END,
@@ -225,26 +229,25 @@ Future<void> enrichSong(String sourceKey, String songRef,
       meta_read=1
     WHERE source_key=? AND ref=?
   ''', [
-    title,
-    artist,
-    album,
-    albumArtist,
-    duration,
-    genre,
-    trackNo,
-    year,
-    coverPath,
-    sourceKey,
-    songRef,
-  ]);
-}
+      title,
+      artist,
+      album,
+      albumArtist,
+      duration,
+      genre,
+      trackNo,
+      year,
+      coverPath,
+      sourceKey,
+      songRef,
+    ]);
+  }
 
   /// 大内嵌封面回填补读（旧版头部采样截断缺陷修复）：把已标已读、但没有封面的
   /// mp3/flac 行重置为未读，交给后台补读用加深的封面读取（coverReadHint）重取。
   /// 返回重置行数。
   Future<int> resetMetaReadForMissingCovers() {
-    return _writer!.execUpdated(
-        "UPDATE idx_songs SET meta_read=0 "
+    return _writer!.execUpdated("UPDATE idx_songs SET meta_read=0 "
         "WHERE meta_read=1 AND cover_path IS NULL AND format IN ('mp3','flac')");
   }
 
@@ -253,8 +256,7 @@ Future<void> enrichSong(String sourceKey, String songRef,
   /// 从来读不到，而这些行已标已读 → 不会被补读。把它们重置为未读。
   /// 返回重置行数。
   Future<int> resetMetaReadForRiffTailTags() {
-    return _writer!.execUpdated(
-        "UPDATE idx_songs SET meta_read=0 "
+    return _writer!.execUpdated("UPDATE idx_songs SET meta_read=0 "
         "WHERE meta_read=1 AND (cover_path IS NULL OR artist IS NULL) "
         "AND format IN ('wav','aif','aiff','aifc')");
   }
@@ -302,44 +304,47 @@ Future<void> enrichSong(String sourceKey, String songRef,
   /// 用户手动修改歌曲元数据：标题/歌手/专辑落库并标记 user_edited=1（扫描不再覆盖），
   /// 同时同步 play_meta 歌曲快照中的对应字段（喜欢列表/断点恢复用快照渲染）。
   /// 字段语义：null=不修改；''=清空（置 NULL，UI 显示为未知）。
-Future<void> updateSongUserMeta(String sourceKey, String songRef,
-    {String? title, String? artist, String? album, String? albumArtist}) {
-  return _writer!.op<void>('updateSongUserMeta', {
-    'sourceKey': sourceKey,
-    'songRef': songRef,
-    'title': title,
-    'artist': artist,
-    'album': album,
-    'albumArtist': albumArtist,
-  });
-}
-
-/// 同步 play_meta 歌曲快照中的标题/歌手/专辑/专辑歌手（直连改库用）。
-/// '' 表示清空为未知（写 null）。
-/// 读快照在主连接上进行（song_json 仅此路径写），再经写隔离落库。
-Future<void> syncMetaSnapshot(String sourceKey, String songRef,
-    {String? title, String? artist, String? album, String? albumArtist}) async {
-  final rows = _db!.select(
-      'SELECT song_json FROM play_meta WHERE source_key=? AND song_ref=?',
-      [sourceKey, songRef]);
-  if (rows.isEmpty) return;
-  final raw = rows.first['song_json'] as String?;
-  if (raw == null || raw.isEmpty) return;
-  try {
-    final j = jsonDecode(raw) as Map<String, dynamic>;
-    if (title != null) j['title'] = title.isEmpty ? null : title;
-    if (artist != null) j['artist'] = artist.isEmpty ? null : artist;
-    if (album != null) j['albumName'] = album.isEmpty ? null : album;
-    if (albumArtist != null) {
-      j['albumArtist'] = albumArtist.isEmpty ? null : albumArtist;
-    }
-    await _writer!.exec(
-        'UPDATE play_meta SET song_json=? WHERE source_key=? AND song_ref=?',
-        [jsonEncode(j), sourceKey, songRef]);
-  } catch (_) {
-    // 快照损坏则忽略（下次收藏时重写）。
+  Future<void> updateSongUserMeta(String sourceKey, String songRef,
+      {String? title, String? artist, String? album, String? albumArtist}) {
+    return _writer!.op<void>('updateSongUserMeta', {
+      'sourceKey': sourceKey,
+      'songRef': songRef,
+      'title': title,
+      'artist': artist,
+      'album': album,
+      'albumArtist': albumArtist,
+    });
   }
-}
+
+  /// 同步 play_meta 歌曲快照中的标题/歌手/专辑/专辑歌手（直连改库用）。
+  /// '' 表示清空为未知（写 null）。
+  /// 读快照在主连接上进行（song_json 仅此路径写），再经写隔离落库。
+  Future<void> syncMetaSnapshot(String sourceKey, String songRef,
+      {String? title,
+      String? artist,
+      String? album,
+      String? albumArtist}) async {
+    final rows = _db!.select(
+        'SELECT song_json FROM play_meta WHERE source_key=? AND song_ref=?',
+        [sourceKey, songRef]);
+    if (rows.isEmpty) return;
+    final raw = rows.first['song_json'] as String?;
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final j = jsonDecode(raw) as Map<String, dynamic>;
+      if (title != null) j['title'] = title.isEmpty ? null : title;
+      if (artist != null) j['artist'] = artist.isEmpty ? null : artist;
+      if (album != null) j['albumName'] = album.isEmpty ? null : album;
+      if (albumArtist != null) {
+        j['albumArtist'] = albumArtist.isEmpty ? null : albumArtist;
+      }
+      await _writer!.exec(
+          'UPDATE play_meta SET song_json=? WHERE source_key=? AND song_ref=?',
+          [jsonEncode(j), sourceKey, songRef]);
+    } catch (_) {
+      // 快照损坏则忽略（下次收藏时重写）。
+    }
+  }
 
   /// 把嵌入封面包装成可跨源复用的落盘（`covers/<md5(ref)>.jpg`），返回路径或 null。
   /// 仅接受图片签名通过的字节（防止描述残留/URL 等脏数据落盘致解码报错）。
@@ -493,12 +498,10 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   int countSongs(String sourceKey,
       {int minDurationSec = 0, int minSizeBytes = 0}) {
     final ignore = _ignoreFilterSql(minDurationSec, minSizeBytes);
-    final rs = _db!.select(
-        '''
+    final rs = _db!.select('''
         SELECT COUNT(*) c FROM idx_songs i
         WHERE i.source_key=? AND i.missing=0 ${ignore.sql}
-        ''',
-        [sourceKey, ...ignore.args]);
+        ''', [sourceKey, ...ignore.args]);
     return (rs.first['c'] as int);
   }
 
@@ -638,7 +641,8 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   }
 
   /// 忽略音频规则是否放行（改进.txt 功能6）：时长/大小未知（NULL/0）一律放过。
-  static bool _passesIgnoreFilter(Song s, int minDurationSec, int minSizeBytes) {
+  static bool _passesIgnoreFilter(
+      Song s, int minDurationSec, int minSizeBytes) {
     final d = s.duration;
     if (minDurationSec > 0 && d != null && d > 0 && d < minDurationSec) {
       return false;
@@ -726,7 +730,8 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   }
 
   /// 把下载好的临时文件移入缓存目录并登记（流式缓存，避免整文件常驻内存）。
-  Future<void> cacheCommit(String cacheKey, String tmpFilePath, int size) async {
+  Future<void> cacheCommit(
+      String cacheKey, String tmpFilePath, int size) async {
     final dst = cachePathForKey(cacheKey);
     if (File(dst).existsSync()) File(dst).deleteSync();
     _moveFile(tmpFilePath, dst);
@@ -784,8 +789,8 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
       if (!src.existsSync()) continue;
       final dstPath = p.join(target.path, '${r.cacheKey}.dat');
       _moveFile(src.path, dstPath);
-      await _writer!.exec('UPDATE cache SET path=? WHERE cache_key=?',
-          [dstPath, r.cacheKey]);
+      await _writer!.exec(
+          'UPDATE cache SET path=? WHERE cache_key=?', [dstPath, r.cacheKey]);
       moved++;
     }
     settingsSet(kCacheDirCustom, target.path);
@@ -794,8 +799,7 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
 
   /// 播放/访问缓存时刷新最后访问时间（LRU 依据，fire-and-forget 落库）。
   void touchCache(String cacheKey) {
-    _writer!.execFire(
-        'UPDATE cache SET last_accessed_at=? WHERE cache_key=?',
+    _writer!.execFire('UPDATE cache SET last_accessed_at=? WHERE cache_key=?',
         [DateTime.now().toIso8601String(), cacheKey]);
   }
 
@@ -803,13 +807,15 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   List<CachedRow> listCache() {
     final rs = _db!.select(
         'SELECT cache_key, path, size, cached_at, last_accessed_at FROM cache');
-    return rs.map((r) => CachedRow(
-          cacheKey: r['cache_key'] as String,
-          path: r['path'] as String,
-          size: r['size'] as int,
-          cachedAt: r['cached_at'] as String?,
-          lastAccessedAt: r['last_accessed_at'] as String?,
-        )).toList();
+    return rs
+        .map((r) => CachedRow(
+              cacheKey: r['cache_key'] as String,
+              path: r['path'] as String,
+              size: r['size'] as int,
+              cachedAt: r['cached_at'] as String?,
+              lastAccessedAt: r['last_accessed_at'] as String?,
+            ))
+        .toList();
   }
 
   /// 已登记缓存的权威路径（以库里的 path 列为准）。
@@ -819,8 +825,8 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   /// 会让两者分叉——此时按派生路径删文件会「文件没删到、行却没了」，
   /// 真实文件留在磁盘上成了永远看不到的孤儿，白占空间。
   String? cachePathOfKey(String cacheKey) {
-    final rs = _db!
-        .select('SELECT path FROM cache WHERE cache_key=?', [cacheKey]);
+    final rs =
+        _db!.select('SELECT path FROM cache WHERE cache_key=?', [cacheKey]);
     if (rs.isEmpty) return null;
     final v = rs.first['path'];
     return v is String && v.isNotEmpty ? v : null;
@@ -848,7 +854,8 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   PlayMetaRow playMetaOf(String sourceKey, String songRef) {
     final rs = _db!.select(
         'SELECT source_key, song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json, play_sec '
-        'FROM play_meta WHERE source_key=? AND song_ref=?', [sourceKey, songRef]);
+        'FROM play_meta WHERE source_key=? AND song_ref=?',
+        [sourceKey, songRef]);
     if (rs.isEmpty) {
       return PlayMetaRow(
         sourceKey: sourceKey,
@@ -940,8 +947,8 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   // ---------- 歌单（stage2.md §1.2） ----------
 
   Future<int> createPlaylist(String name, {String? description}) {
-    return _writer!.op<int>('createPlaylist',
-        {'name': name, 'description': description});
+    return _writer!
+        .op<int>('createPlaylist', {'name': name, 'description': description});
   }
 
   Future<void> renamePlaylist(int id, String name) {
@@ -955,13 +962,15 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   List<PlaylistRow> listPlaylists() {
     final rs = _db!.select(
         'SELECT id, name, description, created_at, client_uuid FROM playlists ORDER BY id');
-    return rs.map((r) => PlaylistRow(
-          id: r['id'] as int,
-          name: r['name'] as String,
-          description: r['description'] as String?,
-          createdAt: r['created_at'] as String,
-          clientUuid: r['client_uuid'] as String?,
-        )).toList();
+    return rs
+        .map((r) => PlaylistRow(
+              id: r['id'] as int,
+              name: r['name'] as String,
+              description: r['description'] as String?,
+              createdAt: r['created_at'] as String,
+              clientUuid: r['client_uuid'] as String?,
+            ))
+        .toList();
   }
 
   /// 歌单内歌曲匹配：返回含匹配歌曲（标题/歌手/专辑，忽略大小写）的歌单 id 集合。
@@ -969,10 +978,8 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   Set<int> playlistIdsMatchingSong(String query) {
     final q = query.trim().toLowerCase();
     if (q.isEmpty) return const {};
-    final escaped = q
-        .replaceAll(r'\', r'\\')
-        .replaceAll('%', r'\%')
-        .replaceAll('_', r'\_');
+    final escaped =
+        q.replaceAll(r'\', r'\\').replaceAll('%', r'\%').replaceAll('_', r'\_');
     final like = '%$escaped%';
     final rs = _db!.select(
         "SELECT DISTINCT playlist_id FROM playlist_items "
@@ -984,8 +991,12 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   }
 
   Future<void> addPlaylistItem(int playlistId,
-      {required String sourceKey, required String songRef,
-      required String title, String? artist, String? album, String? coverPath,
+      {required String sourceKey,
+      required String songRef,
+      required String title,
+      String? artist,
+      String? album,
+      String? coverPath,
       String? source}) {
     return _writer!.op<void>('addPlaylistItem', {
       'playlistId': playlistId,
@@ -1030,18 +1041,20 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
       FROM playlist_items WHERE playlist_id=?
       ORDER BY sort_order, id
     ''', [playlistId]);
-    return rs.map((r) => PlaylistItemRow(
-          id: r['id'] as int,
-          playlistId: r['playlist_id'] as int,
-          sourceKey: r['source_key'] as String,
-          songRef: r['song_ref'] as String,
-          title: r['title'] as String,
-          artist: r['artist'] as String?,
-          album: r['album'] as String?,
-          coverPath: r['cover_path'] as String?,
-          sortOrder: r['sort_order'] as int,
-          source: r['source'] as String?,
-        )).toList();
+    return rs
+        .map((r) => PlaylistItemRow(
+              id: r['id'] as int,
+              playlistId: r['playlist_id'] as int,
+              sourceKey: r['source_key'] as String,
+              songRef: r['song_ref'] as String,
+              title: r['title'] as String,
+              artist: r['artist'] as String?,
+              album: r['album'] as String?,
+              coverPath: r['cover_path'] as String?,
+              sortOrder: r['sort_order'] as int,
+              source: r['source'] as String?,
+            ))
+        .toList();
   }
 
   /// 上移/下移歌单内条目（交换相邻 sort_order）。
@@ -1059,15 +1072,16 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   /// 事件 uuid（服务端 event_uuid 幂等键；36 列内唯一即可，不需标准 UUID 形态）。
   static String newEventUuid() {
     final r = Random.secure();
-    final tail = List.generate(3,
-            (_) => r.nextInt(0xffffffff).toRadixString(16).padLeft(8, '0'))
+    final tail = List.generate(
+            3, (_) => r.nextInt(0xffffffff).toRadixString(16).padLeft(8, '0'))
         .join();
     return '${DateTime.now().microsecondsSinceEpoch.toRadixString(16)}-${tail.substring(0, 12)}';
   }
 
   /// 本地变更入队（uuid 同步生成，落库进写隔离后返回）。
   /// 返回 event_uuid。
-  Future<String> enqueueOutbox(String type, Map<String, dynamic> payload) async {
+  Future<String> enqueueOutbox(
+      String type, Map<String, dynamic> payload) async {
     final uuid = newEventUuid();
     final now = DateTime.now().toIso8601String();
     await _writer!.exec(
@@ -1125,15 +1139,15 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
       _writer!.op<String>('ensurePlaylistUuid', {'id': id});
 
   String? playlistUuidOf(int id) {
-    final rs = _db!
-        .select('SELECT client_uuid FROM playlists WHERE id=?', [id]);
+    final rs =
+        _db!.select('SELECT client_uuid FROM playlists WHERE id=?', [id]);
     if (rs.isEmpty) return null;
     return rs.first['client_uuid'] as String?;
   }
 
   int? playlistIdOfUuid(String uuid) {
-    final rs = _db!
-        .select('SELECT id FROM playlists WHERE client_uuid=?', [uuid]);
+    final rs =
+        _db!.select('SELECT id FROM playlists WHERE client_uuid=?', [uuid]);
     if (rs.isEmpty) return null;
     return rs.first['id'] as int;
   }
@@ -1194,8 +1208,19 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
     ''').first;
     return {
       for (final k in [
-        'total', 'missing', 'meta_read', 'artist', 'album', 'album_artist',
-        'genre', 'track_no', 'year', 'duration', 'cover', 'lyrics', 'format',
+        'total',
+        'missing',
+        'meta_read',
+        'artist',
+        'album',
+        'album_artist',
+        'genre',
+        'track_no',
+        'year',
+        'duration',
+        'cover',
+        'lyrics',
+        'format',
         'bitrate',
       ])
         k: bit(r[k]),
@@ -1269,8 +1294,17 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
         'source_ref=excluded.source_ref, position_ms=excluded.position_ms, '
         'deep_list_json=excluded.deep_list_json, '
         'updated_at=excluded.updated_at, device_id=excluded.device_id',
-        [playlistUuid, songId, sourceId, source, sourceRef, positionMs,
-         deepListJson, updatedAt, deviceId]);
+        [
+          playlistUuid,
+          songId,
+          sourceId,
+          source,
+          sourceRef,
+          positionMs,
+          deepListJson,
+          updatedAt,
+          deviceId
+        ]);
   }
 
   BreakpointMirrorRow? breakpointMirrorOf(String playlistUuid) {
@@ -1316,8 +1350,8 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   }
 
   Future<void> deleteDeepList(String playlistUuid) {
-    return _writer!.exec('DELETE FROM deep_lists WHERE playlist_uuid=?',
-        [playlistUuid]);
+    return _writer!
+        .exec('DELETE FROM deep_lists WHERE playlist_uuid=?', [playlistUuid]);
   }
 
   // ---------- 应用设置（settings.md §3） ----------
@@ -1345,7 +1379,8 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
     _settingsCache[key] = value;
     _writer!.execFire(
         'INSERT INTO app_settings(key, value) VALUES(?,?) '
-        'ON CONFLICT(key) DO UPDATE SET value=excluded.value', [key, value]);
+        'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+        [key, value]);
   }
 
   /// 全部已存设置键值（供设置导入导出，settings.md §3.5）。
@@ -1366,8 +1401,14 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
         'queue_json=excluded.queue_json, idx=excluded.idx, '
         'position_ms=excluded.position_ms, updated_at=excluded.updated_at, '
         'playlist_uuid=excluded.playlist_uuid, anchor_key=excluded.anchor_key',
-        [queueJson, idx, positionMs, DateTime.now().toIso8601String(),
-            playlistUuid, anchorKey]);
+        [
+          queueJson,
+          idx,
+          positionMs,
+          DateTime.now().toIso8601String(),
+          playlistUuid,
+          anchorKey
+        ]);
   }
 
   PlayStateRow? getPlayState() {
@@ -1445,8 +1486,7 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   }
 
   /// 待解析工作集：pending 优先，其次按 next_at 退避到的 local/ambiguous。
-  List<ArtistWorkItem> artistWorkSet(
-      {int limit = 8, int? nowEpochMs}) {
+  List<ArtistWorkItem> artistWorkSet({int limit = 8, int? nowEpochMs}) {
     final rs = _db!.select('''
       SELECT artist_key, canonical_key, display_name, status, error_count, next_at, mbid
       FROM artists
@@ -1478,7 +1518,8 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
 
   /// 按 artist_key 读完整身份行（解析服务用）。
   ArtistRow? artistRowByKey(String artistKey) {
-    final rs = _db!.select('SELECT * FROM artists WHERE artist_key=?', [artistKey]);
+    final rs =
+        _db!.select('SELECT * FROM artists WHERE artist_key=?', [artistKey]);
     return rs.isEmpty ? null : _rowToArtist(rs.first);
   }
 
@@ -1491,36 +1532,131 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
     return rs.isEmpty ? null : _rowToArtist(rs.first);
   }
 
-  /// 已有身份的歌手聚合（identity 模式，歌手页主数据源）：
-  /// 已解析 + 占位（local/pending）+ 歧义行，按歌曲数聚合。
-  List<Artist> identityArtistGroups({String? query, CollectionSort? sort,
-      int minDurationSec = 0, int minSizeBytes = 0}) {
+  /// 按任一名字（primary / sort_name / alias / role）查本地已解析身份。
+  ///
+  /// 歌手处理.txt 第 3 步的「本地别名表」不需要另建表：别名一直存在
+  /// `artists.names` JSON 里（`MbArtistHit.toNames` 写入，带 lang/is_primary），
+  /// 缺的只是这一查。命中即直接 resolved、完全不打 MusicBrainz。
+  /// 命中多个时优先已绑 mbid 的身份（占位身份也可能同名）。
+  ArtistRow? artistRowByAnyName(String name) {
+    final rs = _db!.select('''
+      SELECT a.* FROM artists a JOIN json_each(a.names) n
+        ON json_extract(n.value,'\$.name')=?
+      ORDER BY (a.mbid IS NULL), a.updated_at DESC LIMIT 1
+    ''', [name]);
+    return rs.isEmpty ? null : _rowToArtist(rs.first);
+  }
+
+  /// 按 mbid 读身份行（成员递归时把 MB 关系里的 mbid 换成本地身份键）。
+  ArtistRow? artistRowByMbid(String mbid) {
+    final rs =
+        _db!.select('SELECT * FROM artists WHERE mbid=? LIMIT 1', [mbid]);
+    return rs.isEmpty ? null : _rowToArtist(rs.first);
+  }
+
+  /// 全量替换 [artistKey] 的成员边（解析服务展开社团/角色时调用），
+  /// 返回与 [members] 等长的成员身份键列表（未建边处为空串），调用方据此递归下一跳。
+  /// 传空列表即「该身份确实无成员」，会清掉旧边。
+  Future<List<String>> artistSetMembers(
+          {required String artistKey,
+          required List<Map<String, dynamic>> members}) =>
+      _writer!.op<List<String>>(
+          'artistSetMembers', {'parentKey': artistKey, 'members': members});
+
+  /// 只标记 [artistKey] 已展开过关系，不改动任何成员边。
+  /// 切勿用 artistSetMembers(members: []) 代替：那是全量替换，会把刚建的边删掉。
+  Future<void> artistMarkExpanded(String artistKey) =>
+      _writer!.op<void>('artistMarkExpanded', {'artistKey': artistKey});
+
+  /// 已有身份的歌手聚合（identity 模式，歌手页主数据源）。
+  ///
+  /// 显示集合不是「有歌的身份」而是「**歌手**」：组合/角色沿 [artist_member] 递归
+  /// 展开，只显示 type='person' 的末端；整条链一个 Person 都没有（没展开出成员、
+  /// MB 无成员数据）时才回落显示该身份本身。歌曲归属反向继承——成员身份自己没有
+  /// role='main' 映射，计数与列表都算上其所有祖先身份的歌曲。
+  List<Artist> identityArtistGroups(
+      {String? query,
+      CollectionSort? sort,
+      int minDurationSec = 0,
+      int minSizeBytes = 0}) {
     final q = query?.trim() ?? '';
     final like = q.isEmpty ? '%' : '%$q%';
     final ignore = _ignoreFilterSql(minDurationSec, minSizeBytes);
-    final rs = _db!.select('''
-      SELECT a.artist_key, a.canonical_key, a.display_name, a.status, a.mbid,
-        COUNT(*) song_count,
-        COUNT(DISTINCT COALESCE(NULLIF(s.album,''),'\u0001')) album_count,
-        (SELECT s2.cover_path FROM artist_song_map m2
-           JOIN idx_songs s2 ON s2.source_key=m2.source_key AND s2.ref=m2.ref
-            AND s2.missing=0 ${ignore.sql.replaceAll('i.', 's2.')} AND s2.cover_path IS NOT NULL
-           WHERE m2.artist_key=a.artist_key ORDER BY s2.id LIMIT 1) cover_path
-      FROM artist_song_map m
-      JOIN idx_songs s ON s.source_key=m.source_key AND s.ref=m.ref AND s.missing=0
-        ${ignore.sql.replaceAll('i.', 's.')}
-      JOIN artists a ON a.artist_key=m.artist_key
-      WHERE m.role='main' AND a.display_name LIKE ?
-      GROUP BY a.artist_key
-    ''', [...ignore.args, ...ignore.args, like]);
-    final list = [
-      for (final r in rs)
+    final db = _db;
+    if (db == null) return const [];
+
+    final types = <String, String>{};
+    for (final r in db.select('SELECT artist_key, type FROM artists')) {
+      types[r['artist_key'] as String] = (r['type'] as String?) ?? 'person';
+    }
+    final children = <String, List<String>>{};
+    for (final r
+        in db.select('SELECT parent_key, member_key FROM artist_member')) {
+      (children[r['parent_key'] as String] ??= <String>[])
+          .add(r['member_key'] as String);
+    }
+    final owners = <String>[
+      for (final r in db.select(
+          "SELECT DISTINCT artist_key FROM artist_song_map WHERE role='main'"))
+        r['artist_key'] as String
+    ];
+
+    // owner → 应显示的身份；无 Person 可达时回落 owner 自己。
+    final pairs = <List<String>>[];
+    final seen = <String>{};
+    for (final o in owners) {
+      final display = _personsUnder(o, children, types);
+      for (final d in (display.isEmpty ? <String>[o] : display)) {
+        if (seen.add(d)) pairs.add([d, o]);
+      }
+    }
+    if (pairs.isEmpty) return const [];
+
+    final stats = <String, Row>{};
+    for (final r in db.select('''
+      WITH pairs(dk, ok) AS (
+        SELECT json_extract(value,'\$[0]'), json_extract(value,'\$[1]')
+        FROM json_each(?)
+      )
+      SELECT p.dk AS dk, a.canonical_key, a.display_name, a.status, a.mbid,
+             COUNT(DISTINCT m.source_key || char(1) || m.ref) AS song_count,
+             COUNT(DISTINCT COALESCE(NULLIF(i.album,''),char(1))) AS album_count
+      FROM pairs p
+      JOIN artists a ON a.artist_key=p.dk AND a.display_name LIKE ?
+      JOIN artist_song_map m ON m.artist_key=p.ok AND m.role='main'
+      JOIN idx_songs i ON i.source_key=m.source_key AND i.ref=m.ref AND i.missing=0
+        ${ignore.sql}
+      GROUP BY p.dk
+    ''', [jsonEncode(pairs), like, ...ignore.args])) {
+      stats[r['dk'] as String] = r;
+    }
+    if (stats.isEmpty) return const [];
+    // 封面：同一身份的多首歌取最早入库的那张（成员继承自祖先的歌）。
+    final covers = <String, String?>{};
+    for (final r in db.select('''
+      WITH pairs(dk, ok) AS (
+        SELECT json_extract(value,'\$[0]'), json_extract(value,'\$[1]')
+        FROM json_each(?)
+      )
+      SELECT p.dk AS dk, i.cover_path AS c
+      FROM pairs p
+      JOIN artists a ON a.artist_key=p.dk AND a.display_name LIKE ?
+      JOIN artist_song_map m ON m.artist_key=p.ok AND m.role='main'
+      JOIN idx_songs i ON i.source_key=m.source_key AND i.ref=m.ref AND i.missing=0
+        AND i.cover_path IS NOT NULL
+      ORDER BY i.id
+    ''', [jsonEncode(pairs), like])) {
+      covers.putIfAbsent(r['dk'] as String, () => r['c'] as String?);
+    }
+
+    final list = <Artist>[
+      for (final r in stats.values)
         Artist(
           name: r['display_name'] as String,
           songCount: r['song_count'] as int,
           albumCount: r['album_count'] as int,
-          coverPath: r['cover_path'] as String?,
-          identityKey: r['artist_key'] as String,
+          coverPath: covers[r['dk'] as String],
+          identityKey: r['dk'] as String,
           canonicalKey: r['canonical_key'] as String,
           status: r['status'] as String,
           mbid: r['mbid'] as String?,
@@ -1531,20 +1667,45 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
         countOf: (a) => a.songCount);
   }
 
+  /// 从 [root] 沿成员边广度展开出所有 type='person' 的身份（含 root 自身若是 Person）。
+  /// visited 按 artist_key 防环；成员表很小，深度不设限也不会失控。
+  List<String> _personsUnder(String root, Map<String, List<String>> children,
+      Map<String, String> types) {
+    final out = <String>[];
+    final seen = <String>{};
+    final queue = <String>[root];
+    while (queue.isNotEmpty) {
+      final cur = queue.removeAt(0);
+      if (!seen.add(cur)) continue;
+      if (types[cur] == 'person') out.add(cur);
+      queue.addAll(children[cur] ?? const <String>[]);
+    }
+    return out;
+  }
+
   /// identity 模式某身份对应的歌曲（走映射，天然含别名/角色合并）。
+  ///
+  /// 成员身份自己没有 role='main' 映射（歌曲只标了组合名），所以沿 [artist_member]
+  /// 反向递归到所有祖先身份，把它们的歌一并算作该身份的歌——歌手页点开声优/成员
+  /// 时看到的正是社团名下那批歌。非成员身份退化为原来的单身份查询。
   List<Song> identitySongs(String artistKey,
       {int minDurationSec = 0, int minSizeBytes = 0}) {
     final ignore = _ignoreFilterSql(minDurationSec, minSizeBytes);
     final rows = _db!.select('''
-      SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
-             i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
-             i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
-      FROM artist_song_map m
+      WITH RECURSIVE up(key) AS (
+        SELECT ?
+        UNION
+        SELECT am.parent_key FROM up u JOIN artist_member am ON am.member_key=u.key
+      )
+      SELECT DISTINCT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist,
+             i.track_no, i.year, i.genre, i.duration, i.format, i.size, i.cover_path,
+             i.url, i.missing, i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
+      FROM up
+      JOIN artist_song_map m ON m.artist_key=up.key AND m.role='main'
       JOIN idx_songs i ON i.source_key=m.source_key AND i.ref=m.ref AND i.missing=0 ${ignore.sql}
       LEFT JOIN play_meta p ON p.source_key=i.source_key AND p.song_ref=i.ref
-      WHERE m.artist_key=? AND m.role='main'
       ORDER BY i.artist, i.album, i.track_no, i.title
-    ''', [...ignore.args, artistKey]);
+    ''', [artistKey, ...ignore.args]);
     return rows.map(_rowToSong).toList();
   }
 
@@ -1553,8 +1714,7 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   List<Artist> identityFallbackGroups(
       {int minDurationSec = 0, int minSizeBytes = 0}) {
     final ignore = _ignoreFilterSql(minDurationSec, minSizeBytes);
-    final fallback = ignore.sql
-        .replaceAll('i.', 's.');
+    final fallback = ignore.sql.replaceAll('i.', 's.');
     final cover = ignore.sql
         .replaceAll('i.', '')
         .replaceAll('s.duration', 'duration')
@@ -1594,11 +1754,21 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
         COALESCE(SUM(status='pending'),0) pending
       FROM artists
     ''').first;
-    final mapped = _db!.select(
-        "SELECT COUNT(*) c FROM artist_song_map WHERE role='main'").first['c'];
-    final withArtist = _db!.select(
-        "SELECT COUNT(*) c FROM idx_songs WHERE missing=0 AND artist IS NOT NULL AND artist<>''")
+    final mapped = _db!
+        .select("SELECT COUNT(*) c FROM artist_song_map WHERE role='main'")
         .first['c'];
+    final withArtist = _db!
+        .select(
+            "SELECT COUNT(*) c FROM idx_songs WHERE missing=0 AND artist IS NOT NULL AND artist<>''")
+        .first['c'];
+    // 成员图进度：mated 关系条数 / 已展开身份数 / 展开不出成员（歌手页回落显示组合）的身份数。
+    final memberRows = _db!.select('''
+      SELECT (SELECT COUNT(*) FROM artist_member) members,
+             (SELECT COUNT(*) FROM artists WHERE expanded_at IS NOT NULL) expanded,
+             (SELECT COUNT(*) FROM artists a WHERE a.member_count=0
+                AND EXISTS (SELECT 1 FROM artist_song_map m WHERE m.artist_key=a.artist_key)
+                AND a.type<>'person') fallback
+    ''').first;
     return {
       'total': cnt(r['total']),
       'resolved': cnt(r['resolved']),
@@ -1607,6 +1777,9 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
       'pending': cnt(r['pending']),
       'mapped': cnt(mapped),
       'withArtist': cnt(withArtist),
+      'members': cnt(memberRows['members']),
+      'expanded': cnt(memberRows['expanded']),
+      'fallback': cnt(memberRows['fallback']),
     };
   }
 
@@ -1624,6 +1797,7 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
     String? type,
     String? disambiguation,
     String? resolvedAt,
+    double? matchScore,
   }) {
     return _writer!.op<void>('artistUpsert', {
       'artistKey': artistKey,
@@ -1638,6 +1812,7 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
       'type': type ?? 'person',
       'disambiguation': disambiguation,
       'resolvedAt': resolvedAt,
+      'matchScore': matchScore,
     });
   }
 
@@ -1652,6 +1827,7 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
     String? disambiguation,
     List<Map<String, dynamic>>? names,
     List<Map<String, dynamic>>? groups,
+    double? matchScore,
   }) {
     return _writer!.op<bool>('artistMergeMbid', {
       'canonicalKey': canonicalKey,
@@ -1662,14 +1838,14 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
       'disambiguation': disambiguation,
       'names': names ?? const [],
       'groups': groups ?? const [],
+      'matchScore': matchScore,
       'update': true,
     });
   }
 
   /// 重置 local/ambiguous 为 pending 重新解析（canonicalKey=null 表示全部）。
   Future<void> artistRetry({String? canonicalKey}) {
-    return _writer!.op<void>('artistRetry',
-        {'canonicalKey': canonicalKey});
+    return _writer!.op<void>('artistRetry', {'canonicalKey': canonicalKey});
   }
 
   ArtistRow _rowToArtist(Row r) => ArtistRow(
@@ -1685,13 +1861,13 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
         errorCount: r['error_count'] as int,
         nextAt: r['next_at'] as int,
         resolvedAt: r['resolved_at'] as String?,
+        matchScore: (r['match_score'] as num?)?.toDouble(),
       );
 
   List<Map<String, dynamic>> _jsonMapList(Object? raw) {
     if (raw == null) return const [];
     try {
-      return (jsonDecode(raw as String) as List)
-          .cast<Map<String, dynamic>>();
+      return (jsonDecode(raw as String) as List).cast<Map<String, dynamic>>();
     } catch (_) {
       return const [];
     }
@@ -1975,6 +2151,9 @@ class ArtistRow {
   final int errorCount;
   final int nextAt;
   final String? resolvedAt;
+
+  /// 采纳该身份时 MusicBrainz 给的检索分数（脏数据过滤后取首个候选）。
+  final double? matchScore;
   const ArtistRow({
     required this.artistKey,
     this.mbid,
@@ -1988,6 +2167,7 @@ class ArtistRow {
     this.errorCount = 0,
     this.nextAt = 0,
     this.resolvedAt,
+    this.matchScore,
   });
 
   bool get isResolved => status == 'resolved';

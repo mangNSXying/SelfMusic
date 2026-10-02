@@ -4,7 +4,6 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 import '../data/local/app_settings.dart';
-import '../data/local/artist_names.dart';
 import '../data/local/local_index.dart';
 
 /// MusicBrainz 搜索结果命中（选型 / 歧义人工选择共用）。
@@ -73,7 +72,11 @@ class MbResolveResult {
 /// 歌手处理.txt：歌手身份解析服务。
 ///
 /// - 后台循环拉取 [LocalIndex.artistWorkSet] 待解析项，逐个走
-///   括号人直解 → MB 搜索 → 判定（单强命中=resolved / 多强=ambiguous / 无=local）；
+///   本地别名直查（[LocalIndex.artistRowByAnyName]）→ MB 搜索 → 脏数据过滤后取首个候选；
+/// - 采纳策略不做本地字符归一化（canonicalKey 保持原始拼写）：名字对不上的活交给
+///   MB 检索侧的归一化，所以 `Petit Rabbit's` 能命中 `Petit Rabbit’s`；
+/// - 解析成功后沿 artist-rels 递归展开成员（Group→Character→Person），成员身份直接
+///   按关系里的 mbid 建为 resolved，不再单独搜索；
 /// - 全局令牌桶限流 **1 req/s**（MB 服务端硬限流），尊重 429/503 与 Retry-After，
 ///   失败按 error_count 指数退避（10s→30s→60s→5min）；
 /// - names/groups 为 JSON 数组，alias 合流走 [LocalIndex.artistMergeMbid]。
@@ -88,6 +91,68 @@ class ArtistResolver extends ChangeNotifier {
   /// UA 携带可回访的 repo 标识；MB 明确要求有意义 UA，否则封锁 IP。
   static const String _userAgent =
       'SelfMusic/1.0.1 (self-hosted music player; contact via project homepage)';
+
+  /// 脏数据过滤后的最低分：MB 对精确匹配给 100，近似 80+，再往下基本是噪声。
+  static const double _minScore = 60;
+
+  /// 占位名（MB 数据里常见的「无主」条目）：这些实体一旦被采纳，歌手页会多出
+  /// 一堆叫「[no artist]」的假歌手。
+  static const _placeholderNames = {
+    '[no artist]',
+    '[unknown]',
+    '[none]',
+    '[noartist]',
+    '[no name]',
+    'unknown',
+    'unknown artist',
+    'various artists',
+    'various',
+    'various artists.',
+    'alias',
+    'n/a',
+    'na',
+    'none',
+    'null',
+    'unspecified',
+    'unknown artist.',
+    '未知',
+    '未知艺术家',
+    '不详',
+  };
+
+  /// MB 的 type 白名单（落到 `artists.type`；表里的语义是 MB 原始类型）。
+  /// 'artist' 是 MB 对类型未知的旧式实体，保留可用。
+  static const _allowedTypes = {
+    'person',
+    'group',
+    'character',
+    'orchestra',
+    'choir',
+    'other',
+    'artist',
+  };
+
+  /// 可作为「所属团体/角色」记进 groups JSON 的关系类型。
+  static const _groupRelTypes = {
+    'member of band',
+    'former member of band',
+    'voice actor',
+    'collaboration',
+    'subgroup',
+    'member of',
+    'vote held in',
+    'performing orchestra',
+    'conductor of',
+  };
+
+  /// 单轮展开最多递归几跳：Group(0) → Character(1) → Person(2) 足够。
+  static const int kMaxMemberDepth = 2;
+
+  /// 单轮展开最多新查的实体数（MB 1 req/s，这个上限就是时间上限，防止超大社团拖死循环）。
+  static const int kMaxExpansion = 500;
+
+  /// 本轮已展开过的 mbid（visited，防环 + 配 [kMaxExpansion] 计数）。
+  final Set<String> _expandedMbids = <String>{};
 
   final Dio _dio = Dio(BaseOptions(
     baseUrl: kDefaultBase,
@@ -168,32 +233,7 @@ class ArtistResolver extends ChangeNotifier {
   Future<void> bindManual(String canonicalKey, MbArtistHit hit) async {
     final row = _index.artistRowByCanonical(canonicalKey);
     if (row == null) return;
-    final merged = await _index.artistMergeMbid(
-      canonicalKey: canonicalKey,
-      fromArtistKey: row.artistKey,
-      mbid: hit.mbid,
-      displayName: hit.name,
-      type: hit.type ?? 'person',
-      disambiguation: hit.disambiguation,
-      names: hit.toNames(),
-      groups: const [],
-    );
-    if (!merged) {
-      await _index.artistUpsert(
-        artistKey: row.artistKey,
-        canonicalKey: canonicalKey,
-        mbid: hit.mbid,
-        displayName: hit.name,
-        status: 'resolved',
-        errorCount: 0,
-        nextAt: 0,
-        names: hit.toNames(),
-        groups: const [],
-        type: hit.type ?? 'person',
-        disambiguation: hit.disambiguation,
-        resolvedAt: DateTime.now().toIso8601String(),
-      );
-    }
+    await _bind(canonicalKey, row.artistKey, hit);
     resolvedCount++;
     notifyListeners();
     wake();
@@ -256,70 +296,160 @@ class ArtistResolver extends ChangeNotifier {
 
   Future<void> _resolveOne(ArtistWorkItem item) async {
     final searchName = item.displayName;
-    final hits = await _search(searchName, limit: 10);
-    final key = artistCanonicalKey(searchName);
-    final strong = hits
-        .where((h) =>
-            artistCanonicalKey(h.name) == key ||
-            h.aliases.any(
-                (al) => (al['name'] as String?) != null && artistCanonicalKey(al['name'] as String) == key))
-        .toList();
-    final nowIso = DateTime.now().toIso8601String();
-    if (strong.length == 1) {
-      final h = strong.first;
-      // P2：对已解析身份做一次 lookup，按白名单关系类型（团体/成员/CD 角色）填
-      // groups JSON（供歌手页信息与后续展示）；失败不影响本次 resolved 结果。
-      final groups = await _lookupGroups(h);
-      final merged = await _index.artistMergeMbid(
-        canonicalKey: item.canonicalKey,
-        fromArtistKey: item.artistKey,
-        mbid: h.mbid,
-        displayName: h.name,
-        type: h.type ?? 'person',
-        disambiguation: h.disambiguation,
-        names: h.toNames(),
-        groups: groups,
-      );
-      if (!merged) {
-        await _index.artistUpsert(
-          artistKey: item.artistKey,
-          canonicalKey: item.canonicalKey,
-          mbid: h.mbid,
-          displayName: h.name,
-          status: 'resolved',
-          errorCount: 0,
-          nextAt: 0,
-          names: h.toNames(),
-          groups: groups,
-          type: h.type ?? 'person',
-          disambiguation: h.disambiguation,
-          resolvedAt: nowIso,
-        );
-      }
+
+    // 歌手处理.txt 第 3 步：本地别名表直查（别名已在 artists.names JSON 里）。
+    // 命中已解析身份就直接合流，省掉一次 artist 搜索（仍会 lookup 一次关系来展开成员）。
+    final local = _index.artistRowByAnyName(searchName);
+    if (local != null && local.isResolved && local.mbid != null) {
+      await _bind(
+          item.canonicalKey,
+          item.artistKey,
+          MbArtistHit(
+            mbid: local.mbid!,
+            name: local.displayName,
+            type: local.type,
+            score: local.matchScore ?? 0,
+            aliases: [
+              for (final n in local.names)
+                if (n['name'] != null && n['name'] != local.displayName)
+                  {
+                    'name': n['name'],
+                    if (n['lang'] != null) 'locale': n['lang']
+                  },
+            ],
+          ));
       resolvedCount++;
       lastResolveAt = DateTime.now();
-    } else if (strong.length > 1) {
-      // 同名多真人：不自动合并，留给人工选择（下一次重试 24h 后）。
-      await _index.artistUpsert(
-        artistKey: item.artistKey,
-        canonicalKey: item.canonicalKey,
-        displayName: item.displayName,
-        status: 'ambiguous',
-        errorCount: item.errorCount,
-        nextAt: DateTime.now()
-            .add(const Duration(hours: 24))
-            .millisecondsSinceEpoch,
-        names: const [],
-        groups: const [],
-      );
-      ambiguousCount++;
+      return;
+    }
+
+    final hits = await _search(searchName, limit: 10);
+    final hit = pickFirstUsable(hits);
+    if (hit != null) {
+      await _bind(item.canonicalKey, item.artistKey, hit);
+      resolvedCount++;
       lastResolveAt = DateTime.now();
     } else {
-      // 无可靠命中：占位 local，指数退避后再试（MB 数据可能后来补上）。
+      // 脏数据过滤后无可用候选：占位 local，指数退避后再试（MB 数据可能后来补上）。
       await _markBackoff(item, 0);
       missCount++;
     }
   }
+
+  /// 脏数据过滤后取第一个可用候选（用户确认：不再判断 strong，MB 已做检索归一化）。
+  ///
+  /// 过滤掉：空 mbid / 空名、占位名（`[no artist]`、`Unknown Artist`、
+  /// `Various Artists` 等）、MB 不认的类型、以及低分噪声。
+  static MbArtistHit? pickFirstUsable(List<MbArtistHit> hits) {
+    for (final h in hits) {
+      if (h.mbid.isEmpty) continue;
+      final name = h.name.trim();
+      if (name.isEmpty) continue;
+      if (_isPlaceholder(name)) continue;
+      final t = _normType(h.type);
+      if (t != null && !_allowedTypes.contains(t)) continue;
+      if (h.score < _minScore) continue;
+      return h;
+    }
+    return null;
+  }
+
+  static bool _isPlaceholder(String name) {
+    final k = name.toLowerCase();
+    return _placeholderNames.any((p) => k == p);
+  }
+
+  /// 绑定命中结果：合流到已有 mbid 身份，没有就 upsert；随后展开成员关系。
+  ///
+  /// members 展开失败（429/网络）不影响本次 resolved——身份已定，成员边下次再补。
+  Future<void> _bind(
+      String canonicalKey, String fromArtistKey, MbArtistHit h) async {
+    // P2：对已解析身份做一次 lookup，按白名单关系类型（团体/成员/CD 角色）填
+    // groups JSON（供歌手页信息与后续展示）；失败不影响本次 resolved 结果。
+    final rels = await _fetchRelations(h.mbid);
+    final groups = parseGroupRelations(rels);
+    // 本地别名合流来的 score 是 0（没搜过），别把已记录的分数抹成 0。
+    final score = h.score > 0 ? h.score : null;
+    // MB 的 type 是 `Group`/`Character`/`Person`，统一小写落库。
+    final selfType = _normType(h.type) ?? 'person';
+    final merged = await _index.artistMergeMbid(
+      canonicalKey: canonicalKey,
+      fromArtistKey: fromArtistKey,
+      mbid: h.mbid,
+      displayName: h.name,
+      type: selfType,
+      disambiguation: h.disambiguation,
+      names: h.toNames(),
+      groups: groups,
+      matchScore: score,
+    );
+    String? key;
+    if (!merged) {
+      await _index.artistUpsert(
+        artistKey: fromArtistKey,
+        canonicalKey: canonicalKey,
+        mbid: h.mbid,
+        displayName: h.name,
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        names: h.toNames(),
+        groups: groups,
+        type: selfType,
+        disambiguation: h.disambiguation,
+        resolvedAt: DateTime.now().toIso8601String(),
+        matchScore: score,
+      );
+      key = fromArtistKey;
+    } else {
+      key = _index.artistRowByCanonical(canonicalKey)?.artistKey;
+    }
+    if (key != null) {
+      await _expandMembers(key, h.mbid, selfType: selfType, rels: rels);
+    }
+  }
+
+  /// 成员递归展开（歌手处理.txt 第 41-45 行）。
+  ///
+  /// 一次 artist-rels 就把关系里的成员身份建出来（自带 mbid → 直接 resolved），
+  /// 不为每个成员单独搜索 MB；Group 的成员是 Character 时再查一层拿 voice actor，
+  /// 落到 Person 停手。visited 防环，展开规模封顶 [kMaxExpansion]。
+  Future<void> _expandMembers(String artistKey, String mbid,
+      {required String selfType,
+      List<Map<String, dynamic>>? rels,
+      int depth = 0}) async {
+    final members =
+        parseMemberRelations(rels ?? await _fetchRelations(mbid), selfType);
+    if (members.isEmpty) {
+      // 查过关系确实没成员：清掉可能存在的旧边，记 expanded_at，歌手页据此回落显示本实体。
+      await _index.artistSetMembers(artistKey: artistKey, members: const []);
+      return;
+    }
+    final keys =
+        await _index.artistSetMembers(artistKey: artistKey, members: members);
+    await _markExpanded(artistKey);
+    if (depth >= kMaxMemberDepth) return;
+    for (var i = 0; i < members.length && i < keys.length; i++) {
+      final key = keys[i];
+      if (key.isEmpty) continue;
+      final type = (members[i]['type'] as String?) ?? 'person';
+      final childMbid = members[i]['mbid'] as String?;
+      if (childMbid == null) continue;
+      // Person 就是歌手页要显示的末端，到此为止；Group/Character 再往下走一层。
+      if (type == 'person') continue;
+      if (_expandedMbids.length >= kMaxExpansion) break;
+      _expandedMbids.add(childMbid);
+      final childKey = _index.artistRowByMbid(childMbid)?.artistKey;
+      if (childKey == null) continue;
+      await _expandMembers(childKey, childMbid,
+          selfType: type, depth: depth + 1);
+    }
+  }
+
+  /// 标记「已查过关系」。只写 expanded_at，不碰成员边。
+  /// （曾经写成 artistSetMembers(members: [])，那是全量替换，会把刚建好的边删光。）
+  Future<void> _markExpanded(String artistKey) =>
+      _index.artistMarkExpanded(artistKey);
 
   Future<void> _markBackoff(ArtistWorkItem item, int extraMs) async {
     final err = item.errorCount + 1;
@@ -330,8 +460,8 @@ class ArtistResolver extends ChangeNotifier {
       displayName: item.displayName,
       status: 'local',
       errorCount: err,
-      nextAt:
-          DateTime.now().millisecondsSinceEpoch + (extraMs > base ? extraMs : base),
+      nextAt: DateTime.now().millisecondsSinceEpoch +
+          (extraMs > base ? extraMs : base),
       names: const [],
       groups: const [],
     );
@@ -392,20 +522,12 @@ class ArtistResolver extends ChangeNotifier {
   /// P2：lookup 一次已解析身份的关系（member_of/former/voice actor/
   /// collaboration/subgroup 白名单），折成 groups JSON。硬限流 1 次/秒由全局
   /// 令牌桶保证；超限/失败静默返回空（本次 resolved 已成立）。
-  Future<List<Map<String, dynamic>>> _lookupGroups(MbArtistHit h) async {
-    const whitelist = {
-      'member of band',
-      'former member of band',
-      'voice actor',
-      'collaboration',
-      'subgroup',
-      'member of',
-      'vote held in',
-      'performing orchestra',
-      'conductor of',
-    };
+  /// 一次 lookup 取回该实体的全部关系（同一份数据两用：groups JSON + 成员展开）。
+  /// 限流由全局令牌桶保证；失败/超限静默返回空（本次 resolved 已成立，成员下次补）。
+  Future<List<Map<String, dynamic>>> _fetchRelations(String mbid) async {
+    if (mbid.isEmpty) return const [];
     try {
-      final resp = await _get('/artist/${h.mbid}', {
+      final resp = await _get('/artist/$mbid', {
         'inc': 'artist-rels+aliases',
         'fmt': 'json',
       });
@@ -413,32 +535,103 @@ class ArtistResolver extends ChangeNotifier {
       if (data is! Map<String, dynamic>) return const [];
       final rels = data['relations'];
       if (rels is! List) return const [];
-      final out = <Map<String, dynamic>>[];
-      final seen = <String>{};
-      for (final rel in rels.cast<Map<String, dynamic>>()) {
-        final type = rel['type'] as String?;
-        if (type == null || !whitelist.contains(type)) continue;
-        final target = rel['target'];
-        if (target is! Map<String, dynamic>) continue;
-        final name = target['name'] as String?;
-        final id = target['id'] as String?;
-        final t = target['type'] as String?;
-        if (name == null) continue;
-        final k = '\u0000$type\u0000$id';
-        if (!seen.add(k)) continue;
-        out.add({
-          'name': name,
-          'name_type': 'member' == type || type.endsWith('band') ? 'member' : 'related',
-          'type': type,
-          if (id != null) 'mbid': id,
-          if (t != null) 'target_type': t,
-          if (rel['direction'] != null) 'direction': rel['direction'],
-        });
-      }
-      return out;
+      return rels.cast<Map<String, dynamic>>();
     } catch (_) {
       return const [];
     }
+  }
+
+  /// 折成 groups JSON（信息页展示用的「所属团体/角色」）。
+  static List<Map<String, dynamic>> parseGroupRelations(
+      List<Map<String, dynamic>> rels) {
+    final out = <Map<String, dynamic>>[];
+    final seen = <String>{};
+    for (final rel in rels) {
+      final type = rel['type'] as String?;
+      if (type == null || !_groupRelTypes.contains(type)) continue;
+      final other = _otherArtist(rel);
+      if (other == null) continue;
+      final name = other['name'] as String?;
+      final id = other['id'] as String?;
+      if (name == null) continue;
+      final k = '$type\u0000$id';
+      if (!seen.add(k)) continue;
+      out.add({
+        'name': name,
+        'name_type': type.endsWith('band') ? 'member' : 'related',
+        'type': type,
+        if (id != null) 'mbid': id,
+        if (other['type'] != null) 'target_type': other['type'],
+        if (rel['direction'] != null) 'direction': rel['direction'],
+      });
+    }
+    return out;
+  }
+
+  /// MB 的关系里，对端实体放在 `artist` 键下（`target` 是给 work/recording 用的）。
+  static Map<String, dynamic>? _otherArtist(Map<String, dynamic> rel) {
+    final a = rel['artist'];
+    if (a is Map<String, dynamic>) return a;
+    final t = rel['target'];
+    return t is Map<String, dynamic> ? t : null;
+  }
+
+  /// MB 的 type 是首字母大写（`Group`/`Person`/`Character`），库里统一小写
+  /// （schema 默认 'person'，歌手页按 `type='person'` 判定）。两边都按小写比对。
+  static String? _normType(Object? raw) {
+    if (raw is! String || raw.isEmpty) return null;
+    return raw.toLowerCase();
+  }
+
+  /// 成员边数据（歌手处理.txt 第 43 行：artist-rels 的 member 类关系直接建边）。
+  ///
+  /// **不能用 `direction` 字段判断上下级**。MB 的 `direction` 只说明「当前实体是
+  /// 关系的哪一端」，而「哪端是成员」取决于关系类型的语义 + 对端实体的 type。
+  /// 实测（2026-10）：`振り回され隊` 名下三条 `member of band` 全是
+  /// `direction=backward`（当前实体是被加入的那一方，即组合本身），
+  /// `シャロ` 的 `voice actor` 也是 `backward`（声优是关系发起方）。
+  /// 所以这里按「关系类型 + 对端 type」判定谁是成员：
+  ///
+  /// - `member of band` 对端是 Person/Character → 对方是本组合的成员（建边）；
+  ///   对端是 Group/Orchestra/Choir → 反向，本实体属于那个团体（不建边，落 groups）。
+  /// - `voice actor` 仅当「本实体是 Character 且对端是 Person」时建边
+  ///   （声优是角色的成员）；Person 声优过的角色属于反向信息。
+  /// - `subgroup` 对端是 Group → 对方是子团体，建边。
+  /// - `collaboration` / `performing orchestra` 双方同级，语义不构成上下级，一律不建边。
+  ///
+  /// 不建反向边，个人与团体就不会互为成员形成环。
+  static List<Map<String, dynamic>> parseMemberRelations(
+      List<Map<String, dynamic>> rels, String selfType) {
+    const bandTypes = {'group', 'orchestra', 'choir'};
+    final out = <Map<String, dynamic>>[];
+    final seen = <String>{};
+    for (final rel in rels) {
+      final type = rel['type'] as String?;
+      if (type == null) continue;
+      final other = _otherArtist(rel);
+      if (other == null) continue;
+      final otherType = _normType(other['type']);
+      final isMember = switch (type) {
+        'member of band' => otherType != null && !bandTypes.contains(otherType),
+        'subgroup' => bandTypes.contains(otherType),
+        'voice actor' => selfType == 'character' && otherType == 'person',
+        _ => false,
+      };
+      if (!isMember) continue;
+      final name = (other['name'] as String?)?.trim() ?? '';
+      final id = (other['id'] as String?)?.trim() ?? '';
+      // 无 mbid 的关系建不了可追溯的成员身份（下次展开会重复建），直接跳过。
+      if (name.isEmpty || id.isEmpty) continue;
+      if (!seen.add(id)) continue;
+      out.add({
+        'mbid': id,
+        'name': name,
+        'type': otherType ?? 'person',
+        'relation': type,
+      });
+      if (out.length >= kMaxExpansion) break;
+    }
+    return out;
   }
 
   /// 全局令牌桶：任意两次请求间隔 ≥1 秒（MB 硬限流）。

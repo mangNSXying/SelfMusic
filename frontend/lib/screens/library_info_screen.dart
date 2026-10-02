@@ -206,6 +206,18 @@ class _ArtistStatusRow extends StatelessWidget {
                 _chip(context, '待解析 ${s['pending'] ?? 0}', cs.outline),
               ],
             ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                _chip(context, '成员 ${s['members'] ?? 0} 条', cs.primary),
+                const SizedBox(width: 6),
+                _chip(context, '已展开 ${s['expanded'] ?? 0} 个组合',
+                    cs.onSurfaceVariant),
+                const SizedBox(width: 6),
+                // 展开不出成员的身份：歌手页回落显示组合本身（如纯创作歌手）。
+                _chip(context, '回落组合 ${s['fallback'] ?? 0}', cs.outline),
+              ],
+            ),
             const SizedBox(height: 10),
             LinearProgressIndicator(value: pct),
             const SizedBox(height: 4),

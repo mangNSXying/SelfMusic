@@ -34,6 +34,23 @@ Future<(LocalIndex, Directory)> _openIndex() async {
   return (index, dir);
 }
 
+/// 关库并删临时目录。
+///
+/// 写隔离进程退出后句柄释放有延迟，Windows 上立刻删目录会撞 errno=32
+/// （另一个程序正在使用此文件）。这里带退避重试，让断言结果不被清理报错盖掉。
+Future<void> _dispose(LocalIndex index, Directory dir) async {
+  index.close();
+  for (var i = 0; i < 20; i++) {
+    try {
+      if (!dir.existsSync()) return;
+      dir.deleteSync(recursive: true);
+      return;
+    } on FileSystemException {
+      await Future<void>.delayed(Duration(milliseconds: 50 * (i + 1)));
+    }
+  }
+}
+
 DirectSongRow _song(String ref, String artist) => DirectSongRow(
       sourceKey: 'local:test',
       ref: ref,
@@ -98,8 +115,8 @@ void main() {
   });
 
   test('合作串身份键：各段独立 canonical，段内去重', () {
-    expect(artistCollabCanonicals('周杰伦 & 费玉清'),
-        [('周杰伦', '周杰伦'), ('费玉清', '费玉清')]);
+    expect(
+        artistCollabCanonicals('周杰伦 & 费玉清'), [('周杰伦', '周杰伦'), ('费玉清', '费玉清')]);
     // 括号内容（含 CV 名单）剥除后各段原样定键。
     expect(artistCollabCanonicals('宇多田光 & 纱路(CV:内田真礼)'),
         [('宇多田光', '宇多田光'), ('纱路', '纱路')]);
@@ -139,8 +156,10 @@ void main() {
     expect(mk('ambiguous').resolveState, ArtistResolveState.confirm);
     // 防御：pending/local 无 canonicalKey（非 identity 模式数据缺失）→ normal，
     // 避免弹了重试框也无处下发。
-    expect(mk('pending', canonical: null).resolveState, ArtistResolveState.normal);
-    expect(mk('local', canonical: null).resolveState, ArtistResolveState.normal);
+    expect(
+        mk('pending', canonical: null).resolveState, ArtistResolveState.normal);
+    expect(
+        mk('local', canonical: null).resolveState, ArtistResolveState.normal);
   });
 
   test('Artist JSON 往返保留 canonicalKey/identityKey/状态', () {
@@ -192,8 +211,7 @@ void main() {
       expect(index.identitySongs(groups.first.identityKey!), hasLength(2));
       expect(index.identityFallbackGroups(), isEmpty);
     } finally {
-      index.close();
-      dir.deleteSync(recursive: true);
+      await _dispose(index, dir);
     }
   });
 
@@ -213,8 +231,7 @@ void main() {
       expect(index.artistStats()['mapped'], 2);
       expect(index.identityArtistGroups().first.songCount, 2);
     } finally {
-      index.close();
-      dir.deleteSync(recursive: true);
+      await _dispose(index, dir);
     }
   });
 
@@ -277,8 +294,7 @@ void main() {
       expect(groups.first.songCount, 2);
       expect(groups.first.mbid, 'mb-x');
     } finally {
-      index.close();
-      dir.deleteSync(recursive: true);
+      await _dispose(index, dir);
     }
   });
 
@@ -292,8 +308,7 @@ void main() {
       expect(stats['total'], 1);
       expect(stats['mapped'], 1);
     } finally {
-      index.close();
-      dir.deleteSync(recursive: true);
+      await _dispose(index, dir);
     }
   });
 
@@ -313,8 +328,8 @@ void main() {
         names: const [],
         groups: const [],
       );
-      expect(index.artistWorkSet(limit: 10).where((w) => w.nextAt == 0),
-          isEmpty);
+      expect(
+          index.artistWorkSet(limit: 10).where((w) => w.nextAt == 0), isEmpty);
 
       await index.artistRetry();
       final back = index.artistRowByCanonical('某独立音乐人')!;
@@ -323,8 +338,7 @@ void main() {
       expect(back.nextAt, 0);
       expect(index.artistWorkSet(limit: 10), hasLength(1));
     } finally {
-      index.close();
-      dir.deleteSync(recursive: true);
+      await _dispose(index, dir);
     }
   });
 
@@ -342,8 +356,7 @@ void main() {
       expect(index.artistStats()['mapped'], 0);
       expect(index.identityArtistGroups(), isEmpty);
     } finally {
-      index.close();
-      dir.deleteSync(recursive: true);
+      await _dispose(index, dir);
     }
   });
 
@@ -364,8 +377,7 @@ void main() {
       final row = index.artistRowByCanonical('AAA')!;
       expect(row.names.single['name'], 'AAA');
     } finally {
-      index.close();
-      dir.deleteSync(recursive: true);
+      await _dispose(index, dir);
     }
   });
 
@@ -399,8 +411,7 @@ void main() {
       expect(index.artistStats()['total'], 2);
       expect(index.identityArtistGroups(), hasLength(2));
     } finally {
-      index.close();
-      dir.deleteSync(recursive: true);
+      await _dispose(index, dir);
     }
   });
 
@@ -420,8 +431,7 @@ void main() {
       expect(zhou.songCount, 2);
       expect(fei.songCount, 1);
     } finally {
-      index.close();
-      dir.deleteSync(recursive: true);
+      await _dispose(index, dir);
     }
   });
 
@@ -443,8 +453,7 @@ void main() {
       expect(index.artistStats()['total'], 4);
       expect(index.artistStats()['mapped'], 4);
     } finally {
-      index.close();
-      dir.deleteSync(recursive: true);
+      await _dispose(index, dir);
     }
   });
 
@@ -463,8 +472,242 @@ void main() {
       expect(index.artistStats()['mapped'], 0);
       expect(index.identityArtistGroups(), isEmpty);
     } finally {
-      index.close();
-      dir.deleteSync(recursive: true);
+      await _dispose(index, dir);
+    }
+  });
+
+  // ---------- 成员展开与歌手页只显示 Person ----------
+
+  /// 解析服务落库用的关系数据形状（_membersFromRels 的输出）。
+  Map<String, dynamic> memberOf(String mbid, String name, String type) =>
+      {'mbid': mbid, 'name': name, 'type': type, 'relation': 'member of band'};
+
+  test('成员展开：Group→Character→Person，歌手页只出现 Person', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      // 振り回され隊 名下的歌（音乐标签里写的是组合名）。
+      await index.upsertSongs([
+        _song('a', '振り回され隊'),
+        _song('b', '振り回され隊'),
+      ]);
+      await index.reconcileArtists();
+      final group = index.artistRowByCanonical('振り回され隊')!;
+      await index.artistUpsert(
+        artistKey: group.artistKey,
+        canonicalKey: group.canonicalKey,
+        mbid: 'g1',
+        displayName: '振り回され隊',
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'group',
+        matchScore: 100,
+      );
+
+      // 一次 artist-rels 建边：成员是 Character（不是 Person）。
+      await index.artistSetMembers(artistKey: group.artistKey, members: [
+        memberOf('c1', 'チノ', 'character'),
+        memberOf('c2', 'リゼ', 'character'),
+        memberOf('c3', 'シャロ', 'character'),
+      ]);
+
+      // Character 不能直接显示 —— 还得再往下取声优 Person。
+      expect(index.identityArtistGroups().map((a) => a.name),
+          isNot(contains('チノ')));
+
+      // 第二跳：每个 Character 的 voice actor。
+      for (final m in [
+        ['c1', 'チノ'],
+        ['c2', 'リゼ'],
+        ['c3', 'シャロ'],
+      ]) {
+        final ch = index.artistRowByMbid(m[0])!;
+        await index.artistSetMembers(artistKey: ch.artistKey, members: [
+          memberOf('p-${m[0]}', m[1] == 'シャロ' ? '内田真礼' : '声優${m[1]}', 'person')
+        ]);
+      }
+
+      final groups = index.identityArtistGroups();
+      final names = groups.map((a) => a.name).toList();
+      // 组合和 Character 都不显示，只留 Person。
+      expect(names, isNot(contains('振り回され隊')));
+      expect(names, isNot(contains('チノ')));
+      expect(names, contains('内田真礼'));
+      // 社团那两首歌归到 Person 名下（成员继承祖先的歌）。
+      final person = groups.firstWhere((a) => a.name == '内田真礼');
+      expect(person.songCount, 2);
+      expect(index.identitySongs(person.identityKey!), hasLength(2));
+      // 歌曲原始组合名不变（播放页/歌曲列表仍显示原名）。
+      expect(index.identitySongs(person.identityKey!).first.artist, '振り回され隊');
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
+
+  test('成员展开：整条链无 Person 时回落显示组合本身', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([_song('a', 'Anonymous Club')]);
+      await index.reconcileArtists();
+      final group = index.artistRowByCanonical('Anonymous Club')!;
+      await index.artistUpsert(
+        artistKey: group.artistKey,
+        canonicalKey: group.canonicalKey,
+        mbid: 'g2',
+        displayName: 'Anonymous Club',
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'group',
+      );
+      // 成员全是 Character，没有声优：无处可落到 Person。
+      await index.artistSetMembers(artistKey: group.artistKey, members: [
+        memberOf('c9', '謎の役', 'character'),
+      ]);
+
+      final groups = index.identityArtistGroups();
+      expect(groups.map((a) => a.name), ['Anonymous Club']);
+      expect(groups.first.songCount, 1);
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
+
+  test('成员展开：无成员关系的 resolved 组合也直接显示自己', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([_song('a', 'Solo Artist')]);
+      await index.reconcileArtists();
+      final row = index.artistRowByCanonical('Solo Artist')!;
+      await index.artistUpsert(
+        artistKey: row.artistKey,
+        canonicalKey: row.canonicalKey,
+        mbid: 'p9',
+        displayName: 'Solo Artist',
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'person',
+      );
+      // expanded_at 有值但 member_count=0（MB 查过、确实没成员）。
+      await index.artistSetMembers(artistKey: row.artistKey, members: []);
+
+      final groups = index.identityArtistGroups();
+      expect(groups.single.name, 'Solo Artist');
+      expect(index.artistStats()['members'], 0);
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
+
+  test('成员展开：重新展开全量替换旧边，悬挂边被 GC', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([_song('a', 'Club X')]);
+      await index.reconcileArtists();
+      final group = index.artistRowByCanonical('Club X')!;
+      await index.artistSetMembers(artistKey: group.artistKey, members: [
+        memberOf('m1', '旧成员', 'person'),
+        memberOf('m2', '保留成员', 'person'),
+      ]);
+      expect(index.artistStats()['members'], 2);
+
+      // MB 关系变了：旧成员退出。全量替换后只剩一条边。
+      await index.artistSetMembers(artistKey: group.artistKey, members: [
+        memberOf('m2', '保留成员', 'person'),
+      ]);
+      expect(index.artistStats()['members'], 1);
+      expect(index.artistRowByCanonical('旧成员'), isNull);
+
+      // 成员身份回收后边也不能留下悬挂引用。
+      await index.updateSongUserMeta('local:test', 'a', artist: '');
+      await index.reconcileArtists();
+      expect(index.artistStats()['members'], 0);
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
+
+  test('成员身份：同名占位被就地认领，不分裂成两个身份', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      // 「振り回され隊」和「チノ」各自独立出现在歌里
+      // → 两个 pending 占位。
+      await index.upsertSongs([
+        _song('a', '振り回され隊'),
+        _song('b', 'チノ'),
+      ]);
+      await index.reconcileArtists();
+      final pendingChino = index.artistRowByCanonical('チノ')!;
+      final pendingGroup = index.artistRowByCanonical('振り回され隊')!;
+      expect(pendingChino.status, 'pending');
+      final total = index.artistStats()['total'];
+
+      // 组合先解析出来，展开成员时成员自带 mbid →
+      // 「チノ」占位应被原地升级成 resolved，而不是另起一行
+      // （否则同一个人会被算到两个身份名下）。
+      await index.artistUpsert(
+        artistKey: pendingGroup.artistKey,
+        canonicalKey: pendingGroup.canonicalKey,
+        mbid: 'g3',
+        displayName: '振り回され隊',
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'group',
+      );
+      await index.artistSetMembers(
+          artistKey: pendingGroup.artistKey,
+          members: [memberOf('c1', 'チノ', 'character')]);
+
+      expect(index.artistStats()['total'], total);
+      final chino = index.artistRowByCanonical('チノ')!;
+      expect(chino.artistKey, pendingChino.artistKey);
+      expect(chino.isResolved, isTrue);
+      expect(chino.mbid, 'c1');
+      expect(chino.type, 'character');
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
+
+  // 回归：解析服务展开完成员后会补记「已展开过」。这个标记必须是独立写，
+  // 不能借用 artistSetMembers(members: [])——那是全量替换，会把刚建的边删光，
+  // 结果 expanded_at 写上了、成员却一条不剩，歌手页回落显示组合本身。
+  test('成员展开：标记已展开后成员边仍在（不得被清空）', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([_song('a', '振り回され隊')]);
+      await index.reconcileArtists();
+      final group = index.artistRowByCanonical('振り回され隊')!;
+      await index.artistUpsert(
+        artistKey: group.artistKey,
+        canonicalKey: group.canonicalKey,
+        mbid: 'g4',
+        displayName: '振り回され隊',
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'group',
+      );
+      await index.artistSetMembers(artistKey: group.artistKey, members: [
+        memberOf('p1', '水瀬いのり', 'person'),
+        memberOf('p2', '佐倉綾音', 'person'),
+      ]);
+
+      await index.artistMarkExpanded(group.artistKey);
+
+      expect(index.artistStats()['members'], greaterThan(0));
+      expect(index.artistStats()['expanded'], 1);
+      expect(index.artistStats()['fallback'], 0);
+      final shown = index.identityArtistGroups().map((a) => a.name).toSet();
+      expect(shown, {'水瀬いのり', '佐倉綾音'});
+      // 成员自己没有 role='main' 映射，歌曲要能反向继承到成员名下。
+      expect(
+          index.identitySongs(index.artistRowByCanonical('水瀬いのり')!.artistKey),
+          hasLength(1));
+    } finally {
+      await _dispose(index, dir);
     }
   });
 }

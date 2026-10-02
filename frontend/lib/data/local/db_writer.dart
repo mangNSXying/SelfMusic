@@ -125,7 +125,8 @@ class _IsolateDbWriter implements DbWriter {
 
   @override
   Future<int> execUpdated(String sql, [List<Object?>? args]) async {
-    final v = await _send('execUpdated', {'sql': sql, 'args': args ?? const []});
+    final v =
+        await _send('execUpdated', {'sql': sql, 'args': args ?? const []});
     return v as int;
   }
 
@@ -178,8 +179,7 @@ class _IsolateDbWriter implements DbWriter {
     // 这里直接失败，让调用方拿到明确的 StateError 而不是挂死——退出流程里
     // 收尾顺序略有出入就会静默卡住，非常难查。
     if (_closed) {
-      return Future<Object?>.error(
-          StateError('db-writer: 写层已关闭，拒绝执行 $t'));
+      return Future<Object?>.error(StateError('db-writer: 写层已关闭，拒绝执行 $t'));
     }
     final seq = _seq++;
     final c = Completer<Object?>();
@@ -452,8 +452,10 @@ void _writerEntry(SendPort boot) {
           reply(m, v);
         case 'op':
           flushNow();
-          reply(m,
-              _runOp(db!, m['name'] as String, (m['args'] as Map).cast<String, dynamic>()));
+          reply(
+              m,
+              _runOp(db!, m['name'] as String,
+                  (m['args'] as Map).cast<String, dynamic>()));
         case 'opBatch':
           flushNow();
           _runOpBatch(db!, m['name'] as String,
@@ -570,6 +572,11 @@ Object? _runOp(Database db, String name, Map<String, dynamic> a) {
     case 'artistRetry':
       _opArtistRetry(db, a);
       return null;
+    case 'artistSetMembers':
+      return _opArtistSetMembers(db, a);
+    case 'artistMarkExpanded':
+      _opArtistMarkExpanded(db, a);
+      return null;
   }
   throw StateError('unknown writer op: $name');
 }
@@ -599,8 +606,7 @@ void _runOpBatch(Database db, String name, List<Map<String, dynamic>> argList) {
 String _newUuid() {
   final r = Random.secure();
   final tail = List.generate(
-          3, (_) => r.nextInt(0xffffffff).toRadixString(16).padLeft(8, '0'))
-      .join();
+      3, (_) => r.nextInt(0xffffffff).toRadixString(16).padLeft(8, '0')).join();
   return '${DateTime.now().microsecondsSinceEpoch.toRadixString(16)}-${tail.substring(0, 12)}';
 }
 
@@ -611,14 +617,13 @@ String _sourceOfKey(String key) {
 
 String? _sourceKeyOfUuid(Database db, String uuid) {
   if (uuid.isEmpty) return null;
-  final rs =
-      db.select('SELECT key FROM sources WHERE client_uuid=?', [uuid]);
+  final rs = db.select('SELECT key FROM sources WHERE client_uuid=?', [uuid]);
   return rs.isEmpty ? null : rs.first['key'] as String;
 }
 
 /// 读当前 play_meta 行（写前合并用；空行返回默认权重）。
-({int ls, int ds, double f, bool frozen, bool fav, String? sj, int ps}) _curMeta(
-    Database db, String sourceKey, String songRef) {
+({int ls, int ds, double f, bool frozen, bool fav, String? sj, int ps})
+    _curMeta(Database db, String sourceKey, String songRef) {
   final rs = db.select(
       'SELECT like_streak, dislike_streak, factor, frozen, is_favorite, song_json, play_sec '
       'FROM play_meta WHERE source_key=? AND song_ref=?',
@@ -904,8 +909,8 @@ void _opApplySongSnapshot(Database db, Map<String, dynamic> a) {
   if (source == null || source.isEmpty) return;
   final refs = <String>{songRef, ...webdavRefVariants(songRef)};
   for (final v in refs) {
-    final rows = db.select(
-        'SELECT source_key, ref FROM idx_songs WHERE ref=?', [v]);
+    final rows =
+        db.select('SELECT source_key, ref FROM idx_songs WHERE ref=?', [v]);
     for (final r in rows) {
       final key = r['source_key'] as String;
       if (key == 'server') continue;
@@ -986,8 +991,8 @@ void _opApplyPlaylistSnapshot(Database db, Map<String, dynamic> a) {
   final deleted = a['deleted'] as bool;
   final items = (a['items'] as List).cast<Map<String, dynamic>>();
 
-  final existing = db.select(
-      'SELECT id FROM playlists WHERE client_uuid=?', [uuid]);
+  final existing =
+      db.select('SELECT id FROM playlists WHERE client_uuid=?', [uuid]);
   final id = existing.isEmpty ? null : existing.first['id'] as int;
   if (deleted) {
     if (id != null) _opDeletePlaylist(db, id);
@@ -1005,8 +1010,7 @@ void _opApplyPlaylistSnapshot(Database db, Map<String, dynamic> a) {
         [name, description, id]);
     pid = id;
   }
-  db.execute(
-      'DELETE FROM playlist_items WHERE playlist_id=? AND source_key=?',
+  db.execute('DELETE FROM playlist_items WHERE playlist_id=? AND source_key=?',
       [pid, 'server']);
 
   final existingCovers = <String, String>{};
@@ -1019,14 +1023,14 @@ void _opApplyPlaylistSnapshot(Database db, Map<String, dynamic> a) {
   }
   for (final it in items) {
     String key = 'server';
-    final resolved =
-        it['sourceId'] == null ? null : _sourceKeyOfUuid(db, it['sourceId'] as String);
+    final resolved = it['sourceId'] == null
+        ? null
+        : _sourceKeyOfUuid(db, it['sourceId'] as String);
     if (resolved != null) {
       key = resolved;
     } else if (it['source'] != null && (it['source'] as String).isNotEmpty) {
       final kind = it['source'] as String;
-      final peers = db
-          .select('SELECT key FROM sources WHERE kind=?', [kind]);
+      final peers = db.select('SELECT key FROM sources WHERE kind=?', [kind]);
       if (peers.length == 1) key = peers.first['key'] as String;
     }
     final songRef = it['songRef'] as String;
@@ -1075,21 +1079,21 @@ bool _opApplySourceSnapshot(Database db, Map<String, dynamic> a) {
   final deleted = a['deleted'] as bool;
   if (!isSyncableKind(kind)) return false;
   String? hitKey;
-  final rs = db.select(
-      'SELECT key, config FROM sources WHERE client_uuid=?', [uuid]);
+  final rs =
+      db.select('SELECT key, config FROM sources WHERE client_uuid=?', [uuid]);
   if (rs.isNotEmpty) {
     hitKey = rs.first['key'] as String;
   }
   if (hitKey == null && !deleted && addr.isNotEmpty) {
-    for (final r in db.select(
-        'SELECT key, kind, config FROM sources WHERE kind=?', [kind])) {
+    for (final r in db
+        .select('SELECT key, kind, config FROM sources WHERE kind=?', [kind])) {
       Map<String, dynamic> cfg = const {};
       try {
         cfg = jsonDecode(r['config'] as String) as Map<String, dynamic>;
       } catch (_) {}
       if (sourceAddressOf(kind, cfg) == addr) {
-        db.execute('UPDATE sources SET client_uuid=? WHERE key=?',
-            [uuid, r['key']]);
+        db.execute(
+            'UPDATE sources SET client_uuid=? WHERE key=?', [uuid, r['key']]);
         hitKey = r['key'] as String;
         break;
       }
@@ -1102,15 +1106,15 @@ bool _opApplySourceSnapshot(Database db, Map<String, dynamic> a) {
   }
   final cfgJson = jsonEncode(<String, dynamic>{...?config});
   if (hitKey != null) {
-    final fallbackName =
-        hitKey.contains(':') ? hitKey.substring(hitKey.indexOf(':') + 1) : hitKey;
+    final fallbackName = hitKey.contains(':')
+        ? hitKey.substring(hitKey.indexOf(':') + 1)
+        : hitKey;
     db.execute(
         'UPDATE sources SET kind=?, name=?, config=?, enabled=? WHERE key=?',
         [kind, name ?? fallbackName, cfgJson, enabled ? 1 : 0, hitKey]);
     return true;
   }
-  final suffix =
-      name == null || name.isEmpty ? uuid.substring(0, 8) : name;
+  final suffix = name == null || name.isEmpty ? uuid.substring(0, 8) : name;
   var key = '$kind:$suffix';
   var n = 2;
   while (db.select('SELECT 1 FROM sources WHERE key=?', [key]).isNotEmpty) {
@@ -1139,8 +1143,7 @@ int _opCreatePlaylist(Database db, Map<String, dynamic> a) {
 
 String _opEnsurePlaylistUuid(Database db, Map<String, dynamic> a) {
   final id = a['id'] as int;
-  final rs =
-      db.select('SELECT client_uuid FROM playlists WHERE id=?', [id]);
+  final rs = db.select('SELECT client_uuid FROM playlists WHERE id=?', [id]);
   if (rs.isEmpty) throw StateError('playlist not found: $id');
   var uuid = rs.first['client_uuid'] as String?;
   if (uuid == null || uuid.isEmpty) {
@@ -1152,10 +1155,9 @@ String _opEnsurePlaylistUuid(Database db, Map<String, dynamic> a) {
 
 void _opAddPlaylistItem(Database db, Map<String, dynamic> a) {
   final playlistId = a['playlistId'] as int;
-  final max = db
-      .select('SELECT COALESCE(MAX(sort_order),0) m FROM playlist_items WHERE playlist_id=?',
-          [playlistId])
-      .first['m'] as int;
+  final max = db.select(
+      'SELECT COALESCE(MAX(sort_order),0) m FROM playlist_items WHERE playlist_id=?',
+      [playlistId]).first['m'] as int;
   db.execute('''
     INSERT INTO playlist_items(playlist_id, source_key, song_ref, title, artist,
       album, cover_path, sort_order, added_at, source)
@@ -1277,8 +1279,7 @@ void _opMovePlaylistItem(Database db, Map<String, dynamic> a) {
 }
 
 void _opDeletePlaylist(Database db, int id) {
-  final rs =
-      db.select('SELECT client_uuid FROM playlists WHERE id=?', [id]);
+  final rs = db.select('SELECT client_uuid FROM playlists WHERE id=?', [id]);
   final uuid = rs.isEmpty ? null : rs.first['client_uuid'] as String?;
   db.execute('DELETE FROM playlist_items WHERE playlist_id=?', [id]);
   db.execute('DELETE FROM playlists WHERE id=?', [id]);
@@ -1296,7 +1297,8 @@ void _opDeleteSource(Database db, String key) {
 }
 
 void _opRenameSource(Database db, String oldKey, String newKey) {
-  db.execute('UPDATE OR REPLACE sources SET key=? WHERE key=?', [newKey, oldKey]);
+  db.execute(
+      'UPDATE OR REPLACE sources SET key=? WHERE key=?', [newKey, oldKey]);
   db.execute('UPDATE OR REPLACE idx_songs SET source_key=? WHERE source_key=?',
       [newKey, oldKey]);
   db.execute('UPDATE OR REPLACE play_meta SET source_key=? WHERE source_key=?',
@@ -1304,7 +1306,8 @@ void _opRenameSource(Database db, String oldKey, String newKey) {
   db.execute(
       'UPDATE OR REPLACE playlist_items SET source_key=? WHERE source_key=?',
       [newKey, oldKey]);
-  db.execute('UPDATE OR REPLACE artist_song_map SET source_key=? WHERE source_key=?',
+  db.execute(
+      'UPDATE OR REPLACE artist_song_map SET source_key=? WHERE source_key=?',
       [newKey, oldKey]);
 }
 
@@ -1321,10 +1324,39 @@ void _opArtistGc(Database db) {
       ) AND a.status = 'pending'
     )
   ''');
+  // 回收身份：只有「挂在有歌身份下」的成员链才有意义。
+  //
+  // 从有歌曲映射的身份出发沿成员边递归 —— 这批身份及其可达的成员全部保留
+  // （Person 自己没有歌，歌记在组合名下，正是靠这条链继承）；
+  // 不在这批里的身份是残留：从未命中的占位、成员退出/换人后掉队的旧成员、
+  // 以及解析失败后无歌可挂的边。先删边再删身份，链上更深的成员随之失效。
   db.execute('''
-    DELETE FROM artists WHERE status='pending' AND NOT EXISTS (
-      SELECT 1 FROM artist_song_map m WHERE m.artist_key = artists.artist_key
+    WITH RECURSIVE live(key) AS (
+      SELECT artist_key FROM artists WHERE EXISTS (
+        SELECT 1 FROM artist_song_map m WHERE m.artist_key=artists.artist_key
+      )
+      UNION
+      SELECT am.member_key FROM artist_member am JOIN live l ON am.parent_key = l.key
     )
+    DELETE FROM artist_member
+      WHERE parent_key NOT IN (SELECT key FROM live)
+         OR member_key NOT IN (SELECT key FROM live)
+  ''');
+  db.execute('''
+    DELETE FROM artists WHERE artist_key NOT IN (
+      WITH RECURSIVE live(key) AS (
+        SELECT artist_key FROM artists WHERE EXISTS (
+          SELECT 1 FROM artist_song_map m WHERE m.artist_key=artists.artist_key
+        )
+        UNION
+        SELECT am.member_key FROM artist_member am JOIN live l ON am.parent_key = l.key
+      )
+      SELECT key FROM live
+    )
+  ''');
+  // 刚被删掉的身份在桥表里的行。
+  db.execute('''
+    DELETE FROM artist_canon WHERE artist_key NOT IN (SELECT artist_key FROM artists)
   ''');
 }
 
@@ -1341,13 +1373,12 @@ void _opArtistReconcile(Database db) {
   try {
     final now = DateTime.now().millisecondsSinceEpoch;
     final nowIso = DateTime.now().toIso8601String();
-    final rows = db.select(
-        'SELECT source_key, ref, artist FROM idx_songs '
+    final rows = db.select('SELECT source_key, ref, artist FROM idx_songs '
         'WHERE missing=0 AND artist IS NOT NULL AND artist<>\'\'');
 
     final keyOfCanon = <String, String>{};
-    for (final r in db
-        .select('SELECT canonical_key, artist_key FROM artist_canon')) {
+    for (final r
+        in db.select('SELECT canonical_key, artist_key FROM artist_canon')) {
       keyOfCanon[r['canonical_key'] as String] = r['artist_key'] as String;
     }
     final canonDisplay = <String, String>{};
@@ -1370,16 +1401,17 @@ void _opArtistReconcile(Database db) {
       keyOfCanon[entry.key] = ak;
       db.execute(
           'INSERT INTO artists(artist_key, canonical_key, display_name, names, status, updated_at) '
-          'VALUES(?,?,?,?,?,?)', [
-        ak,
-        entry.key,
-        entry.value,
-        jsonEncode([
-          {'name': entry.value, 'name_type': 'primary', 'is_primary': 1}
-        ]),
-        'pending',
-        nowIso,
-      ]);
+          'VALUES(?,?,?,?,?,?)',
+          [
+            ak,
+            entry.key,
+            entry.value,
+            jsonEncode([
+              {'name': entry.value, 'name_type': 'primary', 'is_primary': 1}
+            ]),
+            'pending',
+            nowIso,
+          ]);
       db.execute(
           'INSERT INTO artist_canon(canonical_key, artist_key, updated_at) '
           'VALUES(?,?,?)',
@@ -1424,14 +1456,16 @@ void _opArtistUpsert(Database db, Map<String, dynamic> a) {
   final now = DateTime.now().millisecondsSinceEpoch;
   db.execute('''
     INSERT INTO artists(artist_key, mbid, canonical_key, display_name, names,
-      groups, type, disambiguation, status, error_count, next_at, resolved_at, updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+      groups, type, disambiguation, status, error_count, next_at, resolved_at,
+      match_score, updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(artist_key) DO UPDATE SET
       mbid=excluded.mbid, display_name=excluded.display_name, names=excluded.names,
       groups=excluded.groups, type=excluded.type,
       disambiguation=excluded.disambiguation, status=excluded.status,
       error_count=excluded.error_count, next_at=excluded.next_at,
-      resolved_at=excluded.resolved_at, updated_at=excluded.updated_at
+      resolved_at=excluded.resolved_at, match_score=excluded.match_score,
+      updated_at=excluded.updated_at
   ''', [
     ak,
     a['mbid'],
@@ -1445,6 +1479,7 @@ void _opArtistUpsert(Database db, Map<String, dynamic> a) {
     a['errorCount'],
     a['nextAt'],
     a['resolvedAt'],
+    a['matchScore'],
     nowIso,
   ]);
   db.execute(
@@ -1459,7 +1494,8 @@ void _opArtistUpsert(Database db, Map<String, dynamic> a) {
 /// 不存在该 mbid 行时返回 false（调用方走 artistUpsert）。
 bool _opArtistMergeMbid(Database db, Map<String, dynamic> a) {
   final mbid = a['mbid'] as String;
-  final target = db.select('SELECT artist_key FROM artists WHERE mbid=?', [mbid]);
+  final target =
+      db.select('SELECT artist_key FROM artists WHERE mbid=?', [mbid]);
   if (target.isEmpty) return false;
   final targetAk = target.first['artist_key'] as String;
   final fromAk = a['fromArtistKey'] as String;
@@ -1471,26 +1507,32 @@ bool _opArtistMergeMbid(Database db, Map<String, dynamic> a) {
       'UPDATE artist_canon SET artist_key=?, updated_at=? WHERE canonical_key=?',
       [targetAk, now, canon]);
   if (a['update'] == true) {
-    final row = db.select('SELECT names, groups, display_name, type, disambiguation '
-        'FROM artists WHERE artist_key=?', [targetAk]);
+    final row = db.select(
+        'SELECT names, groups, display_name, type, disambiguation '
+        'FROM artists WHERE artist_key=?',
+        [targetAk]);
     if (row.isNotEmpty) {
       final r = row.first;
-      final names = _mergeNameLists(
-          _jsonList(r['names']), (a['names'] as List).cast<Map<dynamic, dynamic>>());
-      final groups = _mergeJsonList(
-          _jsonList(r['groups']), (a['groups'] as List).cast<Map<dynamic, dynamic>>());
+      final names = _mergeNameLists(_jsonList(r['names']),
+          (a['names'] as List).cast<Map<dynamic, dynamic>>());
+      final groups = _mergeJsonList(_jsonList(r['groups']),
+          (a['groups'] as List).cast<Map<dynamic, dynamic>>());
       final nowIso = DateTime.now().toIso8601String();
       db.execute('''
         UPDATE artists SET names=?, groups=?, display_name=?, type=?, 
-          disambiguation=?, status='resolved', error_count=0, resolved_at=?, updated_at=?
+          disambiguation=?, status='resolved', error_count=0, resolved_at=?,
+          match_score=?, updated_at=?
         WHERE artist_key=?
       ''', [
         jsonEncode(names),
         jsonEncode(groups),
-        (r['display_name'] as String?)?.isNotEmpty == true ? r['display_name'] : a['displayName'],
+        (r['display_name'] as String?)?.isNotEmpty == true
+            ? r['display_name']
+            : a['displayName'],
         a['type'],
         (r['disambiguation'] as String?) ?? a['disambiguation'],
         nowIso,
+        a['matchScore'],
         nowIso,
         targetAk,
       ]);
@@ -1508,13 +1550,133 @@ void _opArtistRetry(Database db, Map<String, dynamic> a) {
   if (canon == null) {
     db.execute(
         "UPDATE artists SET status='pending', error_count=0, next_at=0, updated_at=? "
-        "WHERE status IN ('local','ambiguous')", [nowIso]);
+        "WHERE status IN ('local','ambiguous')",
+        [nowIso]);
     return;
   }
   db.execute(
       "UPDATE artists SET status='pending', error_count=0, next_at=0, updated_at=? "
       "WHERE canonical_key=? AND status IN ('local','ambiguous')",
       [nowIso, canon]);
+}
+
+/// 全量替换某身份的成员边（歌手处理.txt 第 43 行：一次 artist-rels 拿回的关系直接建边）。
+/// 成员元数据自带 mbid，所以成员身份一出生就是 resolved——不必为每个成员再单独搜 MB，
+/// 也就不会进工作集反复重试。返回与 members 等长的成员身份键列表（调用方据此递归展开），
+/// 未能建边的位置为空串；parent 已不存在时返回空列表。
+List<String> _opArtistSetMembers(Database db, Map<String, dynamic> a) {
+  final parentKey = a['parentKey'] as String;
+  final members = (a['members'] as List).cast<Map<String, dynamic>>();
+  final now = DateTime.now().millisecondsSinceEpoch;
+  final nowIso = DateTime.now().toIso8601String();
+  db.execute('BEGIN');
+  try {
+    db.execute('DELETE FROM artist_member WHERE parent_key=?', [parentKey]);
+    if (db.select(
+        'SELECT 1 FROM artists WHERE artist_key=?', [parentKey]).isEmpty) {
+      db.execute('ROLLBACK');
+      return const [];
+    }
+    final ins = db.prepare(
+        'INSERT OR IGNORE INTO artist_member(parent_key, member_key, relation, updated_at) '
+        'VALUES(?,?,?,?)');
+    final keys = <String>[];
+    try {
+      for (final m in members) {
+        final mk = _ensureMemberIdentity(db, m, nowIso, now) ?? '';
+        keys.add(mk);
+        if (mk.isEmpty) continue;
+        ins.execute([parentKey, mk, m['relation'] as String, now]);
+      }
+    } finally {
+      ins.dispose();
+    }
+    db.execute(
+        'UPDATE artists SET member_count=?, expanded_at=?, updated_at=? WHERE artist_key=?',
+        [keys.where((k) => k.isNotEmpty).length, nowIso, nowIso, parentKey]);
+    // 全量替换后回收：这次退出的成员若既没歌也没有别的边，身份行应当消失
+    // （否则 MB 换人/成员退出后，歌手页会一直挂着早已不在的成员）。
+    _opArtistGc(db);
+    db.execute('COMMIT');
+    return keys;
+  } catch (_) {
+    db.execute('ROLLBACK');
+    rethrow;
+  }
+}
+
+/// 只补记「已展开过」，绝不碰成员边。
+/// 与 _opArtistSetMembers 分开是因为后者是全量替换语义：把「标记已展开」实现成传空
+/// 成员列表，会把刚建好的边整批删掉（expanded_at 反而写上了，看起来像成功）。
+void _opArtistMarkExpanded(Database db, Map<String, dynamic> a) {
+  final parentKey = a['artistKey'] as String;
+  final nowIso = DateTime.now().toIso8601String();
+  db.execute(
+      'UPDATE artists SET expanded_at=?, updated_at=? WHERE artist_key=?',
+      [nowIso, nowIso, parentKey]);
+}
+
+/// 取或建成员身份，优先按 mbid 复用（MB 里同实体跨名字只有一条），其次按原始拼写。
+/// 同名但 mbid 不同视为两个实体：各自建行，但 artist_canon 键只指向前者（PK 冲突忽略），
+/// 边本身走 artist_key，不受影响。
+String? _ensureMemberIdentity(
+    Database db, Map<String, dynamic> m, String nowIso, int now) {
+  final name = (m['name'] as String?)?.trim() ?? '';
+  if (name.isEmpty) return null;
+  final mbid = m['mbid'] as String?;
+  final type = (m['type'] as String?)?.isNotEmpty == true
+      ? m['type'] as String
+      : 'person';
+  if (mbid != null) {
+    final r = db.select('SELECT artist_key FROM artists WHERE mbid=?', [mbid]);
+    if (r.isNotEmpty) return r.first['artist_key'] as String;
+  }
+  final same = db.select(
+      'SELECT artist_key, mbid FROM artists WHERE canonical_key=?', [name]);
+  if (same.isNotEmpty) {
+    final row = same.first;
+    final ak = row['artist_key'] as String;
+    final rowMbid = row['mbid'] as String?;
+    if (rowMbid == null) {
+      // 占位身份首次拿到 MB 实体：原地升级，别再建一行把歌分到两个身份上。
+      db.execute('''
+        UPDATE artists SET mbid=?, type=?, status='resolved', error_count=0,
+          next_at=0, resolved_at=?, names=?, updated_at=? WHERE artist_key=?
+      ''', [
+        mbid,
+        type,
+        nowIso,
+        jsonEncode([
+          {'name': name, 'name_type': 'primary', 'is_primary': 1}
+        ]),
+        nowIso,
+        ak,
+      ]);
+    }
+    return ak;
+  }
+  final ak = _newUuid();
+  db.execute('''
+    INSERT INTO artists(artist_key, mbid, canonical_key, display_name, names,
+      groups, type, status, error_count, next_at, resolved_at, updated_at)
+    VALUES(?,?,?,?,?,'[]',?,'resolved',0,0,?,?)
+  ''', [
+    ak,
+    mbid,
+    name,
+    name,
+    jsonEncode([
+      {'name': name, 'name_type': 'primary', 'is_primary': 1}
+    ]),
+    type,
+    nowIso,
+    nowIso,
+  ]);
+  db.execute(
+      'INSERT INTO artist_canon(canonical_key, artist_key, updated_at) VALUES(?,?,?) '
+      'ON CONFLICT(canonical_key) DO NOTHING',
+      [name, ak, now]);
+  return ak;
 }
 
 /// DB 行里的 JSON 列表（容错：损坏返回空列表）。
