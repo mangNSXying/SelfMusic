@@ -697,9 +697,12 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
 
   String cachePathForKey(String cacheKey) => p.join(_cacheDir, '$cacheKey.dat');
 
+  /// 是否已缓存：按库里的权威路径判（见 [cachePathOfKey]），不用当前缓存目录
+  /// 派生——否则 SD 卡掉线/改目录后，缓存明明还在磁盘上却被判为未缓存，
+  /// 白白重新下载一遍。
   bool isCached(String cacheKey) {
-    final file = File(cachePathForKey(cacheKey));
-    return file.existsSync();
+    final stored = cachePathOfKey(cacheKey) ?? cachePathForKey(cacheKey);
+    return File(stored).existsSync();
   }
 
   Future<void> cacheSave(String cacheKey, List<int> bytes) {
@@ -749,8 +752,8 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   static const int _exdev = 18; // POSIX EXDEV（Linux）
 
   String? cachedPath(String cacheKey) {
-    if (!isCached(cacheKey)) return null;
-    return cachePathForKey(cacheKey);
+    final stored = cachePathOfKey(cacheKey) ?? cachePathForKey(cacheKey);
+    return File(stored).existsSync() ? stored : null;
   }
 
   /// 迁移缓存目录：建新目录（含可写校验）→ 逐个移动 .dat 并更新 path 列 →
@@ -765,7 +768,8 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
     if (p.normalize(oldDir) == p.normalize(target.path)) return 0;
     var moved = 0;
     for (final r in listCache()) {
-      final src = File(cachePathForKey(r.cacheKey));
+      // 源用行里记的路径（权威），目标才是新目录。
+      final src = File(r.path);
       if (!src.existsSync()) continue;
       final dstPath = p.join(target.path, '${r.cacheKey}.dat');
       _moveFile(src.path, dstPath);
@@ -797,9 +801,33 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
         )).toList();
   }
 
-  Future<void> deleteCache(String cacheKey) {
-    final f = File(cachePathForKey(cacheKey));
-    if (f.existsSync()) f.deleteSync();
+  /// 已登记缓存的权威路径（以库里的 path 列为准）。
+  ///
+  /// 派生路径 [cachePathForKey] 只在「设置里的缓存目录 == 写库时的目录」时才对。
+  /// 用户在设置里改目录、SD 卡掉线导致 [\_cacheDir] 回退、或历史遗留数据，都
+  /// 会让两者分叉——此时按派生路径删文件会「文件没删到、行却没了」，
+  /// 真实文件留在磁盘上成了永远看不到的孤儿，白占空间。
+  String? cachePathOfKey(String cacheKey) {
+    final rs = _db!
+        .select('SELECT path FROM cache WHERE cache_key=?', [cacheKey]);
+    if (rs.isEmpty) return null;
+    final v = rs.first['path'];
+    return v is String && v.isNotEmpty ? v : null;
+  }
+
+  Future<void> deleteCache(String cacheKey) async {
+    // 先按库里记的路径删真实文件；没有登记行才退回派生路径。
+    final stored = cachePathOfKey(cacheKey) ?? cachePathForKey(cacheKey);
+    final f = File(stored);
+    if (f.existsSync()) {
+      try {
+        f.deleteSync();
+      } on FileSystemException {
+        // 删不掉（占用/权限）就别把登记行抹掉——那样文件还在、库却查不到，
+        // 彻底变成看不见的孤儿。下次用户重试仍能看到这条缓存。
+        rethrow;
+      }
+    }
     return _writer!.exec('DELETE FROM cache WHERE cache_key=?', [cacheKey]);
   }
 
