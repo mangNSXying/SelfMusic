@@ -333,6 +333,13 @@ class DirectSourceManager extends ChangeNotifier {
       settings.metaReenrichV2Done = true;
       if (reset > 0) debugPrint('元数据回填补读：已重置 $reset 首待重读');
     }
+    // 一次性回填：wav/aiff 的标签/封面常写在音频块之后的 `id3 ` 块里，旧版解析
+    // 遇到 `data`/`SSND` 就 break，读不到却又标了已读。重置这些行交给后台补读。
+    if (!settings.riffTailMetaV1Done) {
+      final reset = await index.resetMetaReadForRiffTailTags();
+      settings.riffTailMetaV1Done = true;
+      if (reset > 0) debugPrint('wav/aiFF 尾块标签回填：已重置 $reset 首待重读');
+    }
     // 后台清理历史无效封面（旧解析缺陷可能写脏数据），清理到的歌标未读待补读。
     unawaited(index.cleanupInvalidCovers().then((cleaned) {
       if (cleaned > 0) {

@@ -26,7 +26,8 @@ class AudioMeta {
   bool truncatedContainer = false;
 }
 
-/// 纯 Dart 头部解析：mp3(ID3v2) / flac / m4a(mp4) / ogg·opus / wav / aac(ADTS)。
+/// 纯 Dart 头部解析：
+/// mp3(ID3v2) / flac / m4a(mp4) / ogg·opus / wav(RIFF) / aiff·aifc(FORM) / aac(ADTS)。
 /// 未识别容器返回 null（调用方做文件名回退）。
 ///
 /// [head] 为文件头部字节（扫描时取 ~256KB），[format] 为扩展名，[fileSize] 为完整大小。
@@ -45,6 +46,10 @@ AudioMeta? parseAudioHead(Uint8List head, String format, int fileSize) {
       return _parseOgg(head);
     case 'wav':
       return _parseWav(head);
+    case 'aiff':
+    case 'aif':
+    case 'aifc':
+      return _parseAiff(head);
     case 'aac':
       return _parseAac(head, fileSize);
     default:
@@ -71,6 +76,10 @@ AudioMeta? parseMinimalHead(Uint8List head, String format) {
       return _parseOggMinimal(head);
     case 'wav':
       return _parseWavMinimal(head);
+    case 'aiff':
+    case 'aif':
+    case 'aifc':
+      return _parseAiffMinimal(head);
     case 'aac':
       return _parseMp3Minimal(head); // aac 通常带 ID3v2 头
     default:
@@ -191,6 +200,10 @@ typedef AudioRangeReader = Future<Uint8List> Function(int start, int length);
 /// 尾部补读提示（字节数，自文件末尾起）：
 /// - m4a：moov 不在头部采样内（常见 moov-at-end）→ 先试 256KB，调用方逐级增大；
 /// - ogg/opus：头部无法得时长，读末尾页取 granule → 64KB；
+/// - wav/aiff：`data`/`SSND` 音频块之后可能还有 `id3 ` 块（ID3v2 标签与内嵌
+///   封面，ffmpeg `-write_id3v2 1` 等工具就是这么写的）。这类容器的块头里写着
+///   音频块的**声明长度**，所以能算出音频块之后的元数据区有多长，一次读准，
+///   不必盲扫整个尾部；
 /// - 其余 null（无需尾读）。
 int? tailReadHint(Uint8List head, String format, int fileSize) {
   switch (format) {
@@ -210,9 +223,45 @@ int? tailReadHint(Uint8List head, String format, int fileSize) {
         return null;
       }
       return fileSize >= 128 ? 128 : null;
+    case 'wav':
+      return _afterAudioChunkLen(head, fileSize, le: true);
+    case 'aiff':
+    case 'aif':
+    case 'aifc':
+      return _afterAudioChunkLen(head, fileSize, le: false);
     default:
       return null;
   }
+}
+
+/// wav（RIFF，小端块长）与 aiff（FORM，大端块长）的音频块之后还有多少字节。
+///
+/// 两种容器都是「块列表」：块头 4 字节 id + 4 字节声明长度 + 块体，音频块是
+/// `data`（wav）/ `SSND`（aiff），工具追加的 ID3v2 标签一般在它**后面**。块头自带
+/// 长度，所以按声明长度跳过音频块就能精确算出后面元数据区的起点与长度——不需要
+/// 读音频数据，也不需要盲扫尾部。
+///
+/// 返回 null 表示「头部没给出足够信息算准」或「音频块之后没有别的块」。
+int? _afterAudioChunkLen(Uint8List head, int fileSize, {required bool le}) {
+  final audioId = le ? 'data' : 'SSND';
+  var i = le ? 12 : 12; // RIFF/FORM 头都是 12 字节
+  while (i + 8 <= head.length) {
+    final id = String.fromCharCodes(head.sublist(i, i + 4));
+    final size = le ? _le32(head, i + 4) : _be32(head, i + 4);
+    if (size < 0) return null; // 声明长度异常（>2GB 的有符号溢出等），不猜
+    final body = i + 8;
+    if (id == audioId) {
+      // 音频块之后（含 pad 字节）的长度；声明长度可疑时只信文件大小。
+      final declaredEnd = body + size + (size.isOdd ? 1 : 0);
+      if (declaredEnd <= body || declaredEnd >= fileSize) return null;
+      final len = fileSize - declaredEnd;
+      return len > kMetaRegionCapBytes ? kMetaRegionCapBytes : len;
+    }
+    // fmt / COMM 等其他块：头部采样内的按声明长度跳过，采样外的算不出来。
+    if (body + size > head.length) return null;
+    i = body + size + (size.isOdd ? 1 : 0);
+  }
+  return null;
 }
 
 /// 解析文件尾部（m4a moov-at-end 的标签/封面/时长；ogg 末页 granule 时长；
@@ -235,8 +284,110 @@ AudioMeta? parseAudioTail(Uint8List tail, String format, int fileSize,
       return meta;
     case 'mp3':
       return _parseId3v1(tail);
+    case 'wav':
+      return _parseRiffTail(tail, le: true);
+    case 'aiff':
+    case 'aif':
+    case 'aifc':
+      return _parseRiffTail(tail, le: false);
   }
   return null;
+}
+
+/// 解析尾读窗口内的 RIFF(wav, 小端)/FORM(aiff, 大端) 块列表。
+///
+/// 调用方读的窗口是 `[fileSize - tail.length, fileSize)`，也就是（按
+/// [tailReadHint] 算出的）音频块之后的元数据区。取 `id3 `/`ID3 ` 块里的
+/// ID3v2 标签（标题/歌手/专辑/年份/曲目/歌词/APIC 封面）；wav 的 `LIST INFO`
+/// 块也一并解析（与头部同一套 [_parseWavInfo]）。
+///
+/// 两条路：
+/// 1. **按块列表走**（正常情况）。窗口起点可能正好是容器头（窗口放大到覆盖
+///    整个文件时），这时跳过 12 字节 RIFF/FORM 头再走。
+/// 2. **兜底扫签名**：老设备的 RIFF 总长与 `data` 声明长度经常不准（写 0、
+///    写 0xFFFFFFFF），块列表一旦对不上就再也走不下去。这时在窗口内找 `id3 `
+///    标记，按 ID3v2 头里**自己声明的**长度校验（必须完整落在窗口内、至少能
+///    解析出帧）才认，避免把音频数据里碰巧出现的 `id3 ` 误当标签。
+///
+/// 返回 null 表示窗口里没有可识别的标签——调用方据此放大窗口再试（见
+/// [readAudioMeta] 的尾部阶梯）。
+AudioMeta? _parseRiffTail(Uint8List tail, {required bool le}) {
+  var i = 0;
+  // 窗口起点可能是容器头本身（放大到覆盖整个文件时）。
+  if (tail.length >= 12) {
+    final magic = String.fromCharCodes(tail.sublist(0, 4));
+    final kind = String.fromCharCodes(tail.sublist(8, 12));
+    if ((magic == 'RIFF' && (kind == 'WAVE')) ||
+        (magic == 'FORM' && (kind == 'AIFF' || kind == 'AIFC'))) {
+      i = 12;
+    }
+  }
+  var found = false;
+  final meta = AudioMeta();
+  while (i + 8 <= tail.length) {
+    final id = String.fromCharCodes(tail.sublist(i, i + 4));
+    final size = le ? _le32(tail, i + 4) : _be32(tail, i + 4);
+    if (size < 0) break;
+    final body = i + 8;
+    if (body + size > tail.length) break; // 块体被窗口截断：窗口不够，交给上层放大
+    if (id == 'id3 ' || id == 'ID3 ') {
+      if (_applyId3Chunk(tail, body, body + size, meta)) found = true;
+    } else if (le && id == 'LIST' && size >= 4 &&
+        String.fromCharCodes(tail.sublist(body, body + 4)) == 'INFO') {
+      _parseWavInfo(tail, body + 4, body + size, meta);
+      found = true;
+    }
+    i = body + size + (size.isOdd ? 1 : 0);
+  }
+  if (found) return meta;
+  return _scanId3ChunkInRiff(tail, meta);
+}
+
+/// 兜底：在 RIFF/FORM 尾部窗口内找 `id3 ` 块（块列表已对不上时用）。
+///
+/// 命中后按 ID3v2 头自己声明的长度校验：长度必须为正、完整落在窗口内，且至少
+/// 解析出一个文本帧或封面——否则视为音频数据里的巧合字节。
+AudioMeta? _scanId3ChunkInRiff(Uint8List tail, AudioMeta meta) {
+  for (var i = 0; i + 10 <= tail.length; i++) {
+    if (tail[i] != 0x69 && tail[i] != 0x49) continue; // 'i' / 'I'
+    if (tail[i + 1] != 0x64 || tail[i + 2] != 0x33) continue; // 'd' '3'
+    if (tail[i + 3] != 0x20) continue; // ' '
+    // i 是块 id 起点，块头 8 字节之后才是 ID3v2 头。
+    final body = i + 8;
+    final declared = 10 + _syncsafe(tail, body + 6);
+    if (declared < 10 || body + declared > tail.length) continue; // 声明长度越界，不认
+    if (_applyId3Chunk(tail, body, body + declared, meta)) {
+      if (meta.title != null || meta.cover != null) return meta;
+    }
+  }
+  return null;
+}
+
+/// 把位于 [start, end) 的 ID3v2 标签并入 [meta]（已有字段不覆盖）。
+///
+/// 复用 mp3 那套帧解析：切出以 'ID3' 开头的视图后，帧偏移与 syncsafe 长度字段的
+/// 相对位置就和 mp3 完全一致。
+bool _applyId3Chunk(Uint8List b, int start, int end, AudioMeta meta) {
+  if (end - start < 10) return false;
+  if (b[start] != 0x49 || b[start + 1] != 0x44 || b[start + 2] != 0x33) {
+    return false; // 不是 ID3v2（无 v1 支持：RIFF 容器里不写 ID3v1）
+  }
+  // 标签总长以块内 ID3 头声明为准，但不越过本块末尾。
+  final declared = start + 10 + _syncsafe(b, start + 6);
+  final tagEnd = declared > end ? end : declared;
+  if (tagEnd <= start + 10) return false;
+  final tag = Uint8List.sublistView(b, start, tagEnd);
+  final frames = _id3TagToFrames(tag, 10);
+  meta.title ??= frames['TIT2'];
+  meta.artist ??= frames['TPE1'];
+  meta.albumArtist ??= frames['TPE2'];
+  meta.album ??= frames['TALB'];
+  meta.genre ??= frames['TCON'];
+  meta.year ??= _yearOf(frames['TYER'] ?? frames['TDRC']);
+  meta.trackNo ??= _trackOf(frames['TRCK']);
+  meta.lyrics ??= frames['USLT'];
+  meta.cover ??= _apicOf(tag);
+  return true;
 }
 
 /// ID3v1（文件尾 128 字节，'TAG' 开头）：老 mp3 的兜底标签。
@@ -351,9 +502,10 @@ Future<AudioMeta?> readAudioMeta({
           meta = _mergeMeta(meta, t);
           break;
         }
-        if (format != 'm4a' && format != 'mp4') break;
-        // moov 可能整个落在采样之外（moov-at-end），逐级放大尾读窗口；
-        // 上限与头部同一套声明值边界。
+        if (!_tailEscalates(format)) break;
+        // 尾读窗口不够：moov 可能整个落在采样之外，或 wav/aiff 的元数据块在
+        // 音频块之后且第一个窗口没覆盖住；逐级放大尾读窗口，上限与头部同一套
+        // 声明值边界。
         final next = len * 4;
         if (next <= len || next > kMetaRegionCapBytes || len >= fileSize) break;
         tailLen = next;
@@ -366,6 +518,18 @@ Future<AudioMeta?> readAudioMeta({
 /// 是否已从头部拿到可用标题（几何放大的停止条件）。
 bool _hasTitle(AudioMeta meta) =>
     meta.title != null && meta.title!.isNotEmpty;
+
+/// 尾读窗口不够时是否值得放大重试。
+///
+/// 只有「尾部元数据可能整体落在首个窗口之外」的格式才放大：
+/// - m4a/mp4：moov-at-end 时 moov 可能整个在采样之外；
+/// - wav/aiff：`id3 ` 块在音频块之后，声明长度可疑（如 RIFF 总长写 0）时
+///   [tailReadHint] 只能给一个保守窗口，块体更大就得放大才能读全。
+/// mp3（ID3v1 固定 128B）、ogg（末页 granule 在 64KB 内）不需要。
+bool _tailEscalates(String format) => switch (format) {
+      'm4a' || 'mp4' || 'wav' || 'aiff' || 'aif' || 'aifc' => true,
+      _ => false,
+    };
 
 /// [extra] 非空字段覆盖 [base]；base 为 null 时直接返回 extra。
 AudioMeta _mergeMeta(AudioMeta? base, AudioMeta extra) {
@@ -1096,6 +1260,9 @@ AudioMeta _parseWav(Uint8List head) {
     } else if (id == 'LIST' && size >= 4 && body + size <= head.length &&
         _startsWith(head.sublist(body), 'INFO'.codeUnits)) {
       _parseWavInfo(head, body + 4, body + size, meta);
+    } else if (id == 'id3 ' || id == 'ID3 ') {
+      // 也有工具把 ID3v2 放在音频块**之前**（wav 标签位置不固定）。
+      if (body + size <= head.length) _applyId3Chunk(head, body, body + size, meta);
     }
     if (body + size > head.length) break;
     i = body + size + (size.isOdd ? 1 : 0);
@@ -1107,6 +1274,92 @@ AudioMeta _parseWavMinimal(Uint8List head) {
   final meta = _parseWav(head);
   meta.duration = null;
   return meta;
+}
+
+// ---------- AIFF / AIFC（FORM 容器，大端块长）----------
+
+/// AIFF / AIFC：`FORM....AIFF|AIFC` 块列表，**大端**块长。
+///
+/// 与 WAV 同源但字节序相反，且没有 `LIST INFO` 那套 RIFF 文本标签——文本信息
+/// 全靠尾部（或头部）的 `ID3 ` 块里的 ID3v2，所以本函数只负责：
+/// - `COMM` 块 → 时长（采样帧数 ÷ 采样率，采样率是 80 位扩展浮点）；
+/// - `NAME`/`AUTH`（`AIFC` 是 `ANNO`）块 → 名称/作者，兜底标题；
+/// - 头部采样内的 `ID3 ` 块 → 标签与封面（与 mp3 共用 ID3v2 规范）。
+/// 音频块 `SSND` 之后的标签由尾部阶梯负责（见 [tailReadHint]）。
+AudioMeta _parseAiff(Uint8List head) {
+  final meta = AudioMeta();
+  if (head.length < 12 || !_startsWith(head, 'FORM'.codeUnits)) return meta;
+  final kind = String.fromCharCodes(head.sublist(8, 12));
+  if (kind != 'AIFF' && kind != 'AIFC') return meta;
+  var i = 12;
+  while (i + 8 <= head.length) {
+    final id = String.fromCharCodes(head.sublist(i, i + 4));
+    final size = _be32(head, i + 4);
+    if (size < 0) break;
+    final body = i + 8;
+    if (body + size > head.length) break;
+    if (id == 'COMM' && size >= 18) {
+      // COMM: numChannels(2) numSampleFrames(4) sampleSize(2) sampleRate(10 扩展浮点)
+      final frames = _be32(head, body + 2);
+      final rate = _ieee80ToDouble(head, body + 8);
+      if (rate > 0) meta.sampleRate = rate.round();
+      if (rate > 0 && frames > 0) meta.duration = (frames / rate).round();
+    } else if (id == 'ID3 ' || id == 'id3 ') {
+      _applyId3Chunk(head, body, body + size, meta);
+    } else if (id == 'NAME' || id == 'AUTH' || id == 'ANNO') {
+      final v = utf8
+          .decode(head.sublist(body, body + size), allowMalformed: true)
+          .replaceAll('\u0000', '')
+          .trim();
+      if (v.isNotEmpty) {
+        if (id == 'NAME') {
+          meta.title ??= v;
+        } else {
+          meta.artist ??= v;
+        }
+      }
+    }
+    i = body + size + (size.isOdd ? 1 : 0);
+  }
+  return meta;
+}
+
+AudioMeta _parseAiffMinimal(Uint8List head) {
+  final meta = _parseAiff(head);
+  meta.duration = null;
+  return meta;
+}
+
+/// 80 位 IEEE 扩展精度浮点（AIFF 的采样率用这种编码）→ double。
+///
+/// 格式：1 位符号 + 15 位指数（偏移 16383）+ 64 位尾数（隐含最高位 1），
+/// 指数 0 且尾数 0 表示 0，指数 0 而尾数非 0 是非规格化数。
+double _ieee80ToDouble(Uint8List b, int o) {
+  if (o + 10 > b.length) return 0;
+  final exp = ((b[o] & 0x7F) << 8) | b[o + 1];
+  var mant = 0.0;
+  for (var i = 0; i < 8; i++) {
+    mant = mant * 256 + b[o + 2 + i];
+  }
+  if (exp == 0 && mant == 0) return 0;
+  final sign = (b[o] & 0x80) != 0 ? -1.0 : 1.0;
+  // 尾数隐含最高位 1（即 64 位当作 [1,2) 区间）→ 指数再减 63。
+  final e = exp == 0 ? -16382 - 63 : exp - 16383 - 63;
+  return sign * mant * _pow2(e);
+}
+
+double _pow2(int n) {
+  var r = 1.0;
+  if (n >= 0) {
+    for (var i = 0; i < n; i++) {
+      r *= 2;
+    }
+  } else {
+    for (var i = 0; i < -n; i++) {
+      r /= 2;
+    }
+  }
+  return r;
 }
 
 void _parseWavInfo(Uint8List b, int start, int end, AudioMeta meta) {

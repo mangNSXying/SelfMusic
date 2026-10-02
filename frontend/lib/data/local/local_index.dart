@@ -248,6 +248,17 @@ Future<void> enrichSong(String sourceKey, String songRef,
         "WHERE meta_read=1 AND cover_path IS NULL AND format IN ('mp3','flac')");
   }
 
+  /// wav/aiFF 尾块标签回填补读（新增能力）：旧版只在头部找 RIFF/FORM 块，遇到
+  /// `data`/`SSND` 就 break，工具写在音频块**之后**的 `id3 ` 块（标题/歌手/封面）
+  /// 从来读不到，而这些行已标已读 → 不会被补读。把它们重置为未读。
+  /// 返回重置行数。
+  Future<int> resetMetaReadForRiffTailTags() {
+    return _writer!.execUpdated(
+        "UPDATE idx_songs SET meta_read=0 "
+        "WHERE meta_read=1 AND (cover_path IS NULL OR artist IS NULL) "
+        "AND format IN ('wav','aif','aiff','aifc')");
+  }
+
   /// 块序异常元数据回填补读（旧版解析遇大封面/PICTURE 在 VORBIS_COMMENT
   /// 之前时提前中断，已标已读却没有歌手等信息）：把始终没有歌手的行重置为
   /// 未读，交给后台补读用「从头完整读取」重取。[sourceKeys] 限定直连源

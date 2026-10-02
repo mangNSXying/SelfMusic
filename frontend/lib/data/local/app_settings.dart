@@ -81,6 +81,9 @@ class AppSettings {
   /// 同上不进 [knownKeys]。
   static const String kMetaReenrichV2Done = 'meta_reenrich_v2_done';
 
+  /// wav/aiff 尾块 `id3 ` 标签补读是否已回填过（一次性，本机标记）。
+  static const String kRiffTailMetaV1Done = 'riff_tail_meta_v1_done';
+
   /// 存量补推已执行的配对 client_id（设备本地标记，不进 [knownKeys]）：
   static const String kPlayModeDefault = 'play_mode_default';
   static const String kResumeOnStartup = 'resume_on_startup';
@@ -228,6 +231,11 @@ class AppSettings {
       (index.settingsGet(kMetaReenrichV2Done) ?? '0') == '1';
   set metaReenrichV2Done(bool v) =>
       index.settingsSet(kMetaReenrichV2Done, v ? '1' : '0');
+
+  bool get riffTailMetaV1Done =>
+      (index.settingsGet(kRiffTailMetaV1Done) ?? '0') == '1';
+  set riffTailMetaV1Done(bool v) =>
+      index.settingsSet(kRiffTailMetaV1Done, v ? '1' : '0');
 
   // ---------- 收藏自动缓存（settings.md §3.4 歌曲分区） ----------
 

@@ -295,7 +295,7 @@ Future<void> _ensureAudioPermission() async {
 }
 
 bool _audioExt(String path) =>
-    RegExp(r'\.(mp3|flac|m4a|aac|ogg|wav)$', caseSensitive: false)
+    RegExp(r'\.(mp3|flac|m4a|aac|ogg|wav|aif|aiff|aifc)$', caseSensitive: false)
         .hasMatch(path);
 
 String _extOf(String path) {
@@ -314,6 +314,10 @@ String _mimeOf(String ext) {
       return 'audio/ogg';
     case 'wav':
       return 'audio/wav';
+    case 'aif':
+    case 'aiff':
+    case 'aifc':
+      return 'audio/aiff';
     default:
       return 'audio/mpeg';
   }

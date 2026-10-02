@@ -660,5 +660,5 @@ Future<void> _mapConcurrent<T>(
 }
 
 bool _audioExt(String href) =>
-    RegExp(r'\.(mp3|flac|m4a|aac|ogg|wav)$', caseSensitive: false)
+    RegExp(r'\.(mp3|flac|m4a|aac|ogg|wav|aif|aiff|aifc)$', caseSensitive: false)
         .hasMatch(href);

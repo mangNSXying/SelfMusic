@@ -381,7 +381,7 @@ abstract class MusicSource {
 **扫描流程（首次）**
 
 - 列目录：WebDAV `PROPFIND Depth:1` 递归 + `_mapConcurrent` 并发（并发 6）；本地文件夹 `Directory.list(recursive:true)`
-- **不读音频内容**：快速扫描只用枚举结果（ref/size/mtime/etag）落库，歌名取文件名，零 Range 请求。音频解析（`audio_metadata`，纯 Dart 支持 mp3(ID3v2) / flac / m4a(mp4) / ogg·opus / wav / aac(ADTS)）全部推迟到播放时补读与后台补读，按结构定位后精确 Range（见下方「补读」）
+- **不读音频内容**：快速扫描只用枚举结果（ref/size/mtime/etag）落库，歌名取文件名，零 Range 请求。音频解析（`audio_metadata`，纯 Dart 支持 mp3(ID3v2) / flac / m4a(mp4) / ogg·opus / wav(RIFF) / aiff·aifc(FORM) / aac(ADTS)；wav/aiff 的 ID3v2 标签常在音频块之后的 `id3 ` 块里，按块头声明长度定位后尾读）全部推迟到播放时补读与后台补读，按结构定位后精确 Range（见下方「补读」）
 - 单事务批量 `upsertSongs` 落库 → `persistCover`（封面落 `covers/<hash>.jpg`，SQLite 存路径）→ `markMissingExcept`/`clearMissing` 标记消失项（保留缓存歌可播性）
 - 大目录保护：单源上限 20k 首，超出提示分目录添加
 
