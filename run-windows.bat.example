@@ -1,0 +1,18 @@
+@echo off
+rem Run the Windows desktop build.
+rem Copy this file to run-windows.bat and edit FLUTTER_BIN + the backend address.
+rem FLUTTER_BIN points to your own flutter.bat (an isolated wrapper is fine, so the
+rem official stable SDK and the HarmonyOS fork can live side by side).
+set "FLUTTER_BIN=C:/path/to/flutter/bin/flutter.bat"
+rem permission_handler_windows needs nuget.exe (it fetches CppWinRT headers).
+rem Keep nuget.exe next to the wrapper and prepend its folder to PATH, so
+rem CMake find_program() picks it up instead of hanging in its own
+rem FetchContent downloader (its downloader has no timeout and hangs on slow links).
+for %%i in ("%FLUTTER_BIN%") do set "FLUTTER_DIR=%%~dpi"
+set "PATH=%FLUTTER_DIR%;%PATH%"
+rem Keep nuget's HTTP cache on the toolchain drive, not in C:\Users\...\AppData.
+set "NUGET_HTTP_CACHE_PATH=%FLUTTER_DIR%NuGetHttpCache"
+cd /d "%~dp0frontend"
+rem No --dart-define=API_BASE_URL: the empty default means "use the paired device /
+rem ServerSettings", which is what you want for 直连模式 (no backend at all).
+call "%FLUTTER_BIN%" run -d windows %*

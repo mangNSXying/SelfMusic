@@ -3,11 +3,11 @@
 # 产物：frontend/build/app/outputs/flutter-apk/app-<abi>-release.apk
 # 真机（arm64）装 app-arm64-v8a-release.apk，约 22MB。
 # 注意：flutter run / app-debug.apk 是 debug 包，含 JIT 快照与全部 ABI，约 200MB，勿用于分发。
+# 源文件不入库，模板见本文件；复制为 build-android.sh 后按需改产物拷贝段。
 set -e
 cd "$(dirname "$0")/frontend"
 flutter build apk --release --split-per-abi --dart-define=BUILD_STAMP="$(date +%F_%T)" "$@"
 ls -lh build/app/outputs/flutter-apk/*-release.apk
-cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ~/ServerSMB/Phone/Software/Selfmusic
-filename=$(date +%Y%m%d)_$(date +%H%M%S)
-rm ~/ServerSMB/Phone/Software/Selfmusic/*.txt
-touch ~/ServerSMB/Phone/Software/Selfmusic/$filename.txt
+
+# 拷贝到自建分发位置（按本机实际路径改；不需要就整段删掉）：
+# cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk <分发目录>/Selfmusic

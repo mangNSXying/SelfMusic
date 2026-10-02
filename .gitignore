@@ -10,7 +10,8 @@ backend/target/
 frontend/build/
 frontend/covers/
 frontend/.dart_tool/
-scripts/
+scripts/*
+!scripts/*.sql
 testmusic/
 nginx/
 
@@ -42,3 +43,10 @@ frontend/third_party/fvp/ohos/oh-package-lock.json5
 
 # Gradle 在 vendored audio_service 副本内展开的同步缓存
 frontend/third_party/audio_service/android/.gradle/
+
+# 本机相关文件：源文件不入库，模板以 *.example 入库（新机器复制后改名再改）
+# 注：frontend/android/gradle.properties 含 AGP 9 必需开关，Flutter 不会自动生成，别忘了复制
+/frontend/android/gradle.properties
+/run-windows.bat
+/run-android.sh
+/build-android.sh

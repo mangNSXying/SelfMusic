@@ -1,0 +1,15 @@
+# 复制为 gradle.properties 后按本机情况修改（源文件不入库，模板见本文件）。
+#
+# 必需：android.useAndroidX 与下面两个 AGP 9 开关——AGP 9 默认走新 DSL + 内置 Kotlin，
+# 与 app/build.gradle.kts 里的 kotlin { compilerOptions { ... } } 冲突，缺任一项构建即失败。
+# Flutter 只会自动注入 gradlew / gradle-wrapper.*，不会生成本文件，别忘了先复制。
+#
+# JDK：不设置则用 JAVA_HOME（或 Android Studio 自带的 JBR）。需要指定时取消下面这行注释。
+# Windows 示例：#org.gradle.java.home=C:/Program Files/Microsoft/jdk-21.0.7-hotspot
+# Linux 示例：  #org.gradle.java.home=/usr/lib/jvm/java-21-openjdk-amd64
+org.gradle.jvmargs=-Xmx4G -XX:MaxMetaspaceSize=1G -XX:ReservedCodeCacheSize=256m -XX:+HeapDumpOnOutOfMemoryError
+android.useAndroidX=true
+# This newDsl flag was added by the Flutter template
+android.newDsl=false
+# This builtInKotlin flag was added by the Flutter template
+android.builtInKotlin=false
