@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio_media_kit/just_audio_media_kit.dart';
 import 'package:provider/provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'platform/app_background.dart';
 import 'platform/harmonyos/ohos_bootstrap.dart';
 import 'platform/harmonyos/ohos_media_session.dart';
@@ -109,6 +110,11 @@ Future<void> main() async {
       audioHandler = null;
       debugPrint('audio_service 初始化失败，通知栏控制降级关闭：$e');
     }
+    // Android 13+（API 33）不授予 POST_NOTIFICATIONS 就不显示任何通知，
+    // 前台服务照跑但通知栏里空空如也——播放控制、锁屏播控全部消失，只剩任务管理
+    // 里一行灰字。随播放能力一起申请最自然（用户此刻正要听歌），而不是冷启动
+    // 就弹权限框。33 以下 Permission.notification 直接 granted，不会打扰。
+    unawaited(_ensureNotificationPermission());
   }
 
   // 鸿蒙 AVSession 媒体播控（通知栏/锁屏/播控中心 + 后台长时任务）：
@@ -162,6 +168,22 @@ class _SyncLifecycleObserver extends WidgetsBindingObserver {
         // 后台音频，此时停表反而会漏掉 outbox 上传。
         break;
     }
+  }
+}
+
+/// 申请 Android 13+ 通知权限。
+///
+/// 已授予 / 不需要 / 系统弹过「不再询问」三种情况都在这里静默返回——权限框只弹
+/// 一次，用户拒了不该每次启动再纠缠。拒绝也不影响播放：前台服务照常注册，只是
+/// 通知栏里不显示。
+Future<void> _ensureNotificationPermission() async {
+  try {
+    if (await Permission.notification.isGranted) return;
+    final st = await Permission.notification.request();
+    debugPrint('[boot] POST_NOTIFICATIONS：$st');
+  } catch (e) {
+    // 权限通道异常不许影响启动与播放。
+    debugPrint('通知权限申请失败（忽略）：$e');
   }
 }
 
