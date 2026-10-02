@@ -274,8 +274,9 @@ class WebdavDirectSource implements MusicSource {
     final cacheKey = cacheKeyFor(song);
     if (index.isCached(cacheKey)) return;
     final client = _newClient(allowSelfSigned);
+    final tmp = File(p.join(index.cacheDir, '.tmp-$cacheKey'));
+    var committed = false;
     try {
-      final tmp = File(p.join(index.cacheDir, '.tmp-$cacheKey'));
       final req =
           await client.getUrl(Uri.parse(_playUrl(song)!));
       _auth(req, username, password);
@@ -314,8 +315,19 @@ class WebdavDirectSource implements MusicSource {
         sink.closeSync();
       }
       await index.cacheCommit(cacheKey, tmp.path, total);
+      committed = true;
     } finally {
       client.close(force: true);
+      // 半途失败（超时/断流/非 2xx）会留下 .tmp-<key>：它是整曲大小，且永远
+      // 不会被回收——下一次缓存同 key 时又写一个，缓存目录被撑爆且不计入
+      // cacheTotalBytes（那里只数已登记的 .dat），设置页看不出来。
+      if (!committed && tmp.existsSync()) {
+        try {
+          tmp.deleteSync();
+        } catch (_) {
+          // 删除失败（占用/只读）不该盖掉真正的失败原因
+        }
+      }
     }
   }
 

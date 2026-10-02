@@ -712,16 +712,41 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
   }
 
   /// 把下载好的临时文件移入缓存目录并登记（流式缓存，避免整文件常驻内存）。
-  Future<void> cacheCommit(String cacheKey, String tmpFilePath, int size) {
+  Future<void> cacheCommit(String cacheKey, String tmpFilePath, int size) async {
     final dst = cachePathForKey(cacheKey);
     if (File(dst).existsSync()) File(dst).deleteSync();
-    File(tmpFilePath).renameSync(dst);
+    _moveFile(tmpFilePath, dst);
     final now = DateTime.now().toIso8601String();
     return _writer!.exec(
         'INSERT INTO cache(cache_key, path, size, cached_at, last_accessed_at) '
         'VALUES(?,?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET size=excluded.size',
         [cacheKey, dst, size, now, now]);
   }
+
+  /// 移动文件，跨文件系统时回退到「复制 + 删除」。
+  ///
+  /// [File.renameSync] 在跨设备（EXDEV）时直接抛错——不同分区/不同挂载点之间
+  /// 的 rename 是 POSIX 就不支持的（Linux EXDEV），不是「偶发失败」。自定义缓存
+  /// 目录选到 SD 卡 / 外置存储时，临时文件与目标天然不同盘，必须走复制。
+  static void _moveFile(String srcPath, String dstPath) {
+    final src = File(srcPath);
+    try {
+      src.renameSync(dstPath);
+      return;
+    } on FileSystemException catch (e) {
+      // 仅跨文件系统才回退；权限/占用等其它错误照旧抛出，别把真问题糊过去。
+      if (e.osError?.errorCode != _exdev) rethrow;
+    }
+    final dst = File(dstPath);
+    final tmpDst = File('$dstPath.moving');
+    src.copySync(tmpDst.path);
+    // rename 在同目录内一定成功；用它替换目标，保证不出现「半个文件」。
+    if (dst.existsSync()) dst.deleteSync();
+    tmpDst.renameSync(dstPath);
+    src.deleteSync();
+  }
+
+  static const int _exdev = 18; // POSIX EXDEV（Linux）
 
   String? cachedPath(String cacheKey) {
     if (!isCached(cacheKey)) return null;
@@ -743,7 +768,7 @@ Future<void> syncMetaSnapshot(String sourceKey, String songRef,
       final src = File(cachePathForKey(r.cacheKey));
       if (!src.existsSync()) continue;
       final dstPath = p.join(target.path, '${r.cacheKey}.dat');
-      src.renameSync(dstPath);
+      _moveFile(src.path, dstPath);
       await _writer!.exec('UPDATE cache SET path=? WHERE cache_key=?',
           [dstPath, r.cacheKey]);
       moved++;
