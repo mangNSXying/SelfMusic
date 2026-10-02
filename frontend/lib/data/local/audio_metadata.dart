@@ -250,13 +250,29 @@ AudioMeta? _parseId3v1(Uint8List tail) {
   return meta;
 }
 
+/// [fullRead] 的整首完整读取上限（字节）。超过就只加大采样，剩下交给
+/// 「按封面提示补读 + 尾部补读」。
+///
+/// 原实现对 fullRead 一律从 0 读到 fileSize、不截断，是为拿到大内嵌封面、
+/// FLAC 里 PICTURE 排在 VORBIS_COMMENT 之前这类块序异常。但这条链路是
+/// **后台补读**（meta_enrich 逐首跑），采样稍微不够就整首下几十 MB 甚至
+/// 上百 MB，既烧流量又长时间占着直连源的连接；而命中的恰恰是「大文件」，
+/// 于是代价与收益正好倒挂。绝大多数曲目远小于本上限，行为不变。
+const int kFullReadCapBytes = 16 * 1024 * 1024;
+
+/// 整首超过 [kFullReadCapBytes] 时的加大采样量：多读一点是为了跨过大封面块
+/// 够到后面的 VORBIS_COMMENT，再由下面的按提示补读接手封面本身。
+const int kBigFileHeadBytes = 1024 * 1024;
+
 /// 头部 + 头部补读 + 尾部补读的统一直读流程（播放补读 / 扫描共用）。
 ///
 /// [readRange] 由调用方实现（本地文件 / WebDAV Range GET）。
 /// [fullRead]（播放/后台补读链路）：先做 [headBytes] 采样；采样不足以拿到
-/// 完整元数据时，直接从文件头完整读取整个文件（`0..fileSize`），不做长度
+/// 完整元数据时，从文件头完整读取整个文件（`0..fileSize`），不做长度
 /// 推算与上限截断——大内嵌封面、块序异常（如 FLAC 的 PICTURE 在
-/// VORBIS_COMMENT 之前）等都能完整解析；所有格式统一。扫描等批量路径保持
+/// VORBIS_COMMENT 之前）等都能完整解析；所有格式统一。但整读以
+/// [kFullReadCapBytes] 为上限：超过则改为加大采样到 [kBigFileHeadBytes]
+/// 后走按提示补读，避免后台为几十 MB 的曲子整首下网。扫描等批量路径保持
 /// 默认的「按封面提示补读 + [kCoverReadCapBytes] 上限」，以控制带宽与内存。
 Future<AudioMeta?> readAudioMeta({
   required AudioRangeReader readRange,
@@ -269,18 +285,30 @@ Future<AudioMeta?> readAudioMeta({
   if (head.isEmpty) return null;
   var meta = parseAudioHead(head, format, fileSize);
   if (fullRead && fileSize > 0 && meta != null) {
-    // 采样不足 → 从头完整读取整个文件（不截断、不做补读长度推算）。
-    if (_needsFullRead(head, meta, format, fileSize)) {
+    // 整首在 [kFullReadCapBytes] 以内才真读整个文件（不截断、不做补读长度推算）。
+    final wholeFileFits = fileSize <= kFullReadCapBytes;
+    if (wholeFileFits && _needsFullRead(head, meta, format, fileSize)) {
       final all = await readRange(0, fileSize);
       if (all.length > head.length) {
         final full = parseAudioHead(all, format, fileSize);
         if (full != null) meta = _mergeMeta(full, meta);
         head = all;
       }
+      // 尾部信息（m4a moov-at-end / ogg granule 时长 / ID3v1）在完整数据上补全。
+      final t = parseAudioTail(head, format, fileSize, headMeta: meta);
+      return t == null ? meta : _mergeMeta(meta, t);
     }
-    // 尾部信息（m4a moov-at-end / ogg granule 时长 / ID3v1）在完整数据上补全。
-    final t = parseAudioTail(head, format, fileSize, headMeta: meta);
-    return t == null ? meta : _mergeMeta(meta, t);
+    if (!wholeFileFits && fileSize > kBigFileHeadBytes) {
+      // 整首太大：不整读，只把采样加大到 [kBigFileHeadBytes] 重新解析，
+      // 然后走下面的「按封面提示补读 + 尾部补读」（封面读不满就放弃封面，
+      // 换标签/时长）。
+      final more = await readRange(0, kBigFileHeadBytes);
+      if (more.length > head.length) {
+        final deeper = parseAudioHead(more, format, fileSize);
+        if (deeper != null) meta = deeper;
+        head = more;
+      }
+    }
   }
   // 大内嵌封面/标签：按提示补读头部一次。
   if (meta != null && meta.cover == null) {
