@@ -151,6 +151,9 @@ class ArtistResolver extends ChangeNotifier {
   /// 单轮展开最多新查的实体数（MB 1 req/s，这个上限就是时间上限，防止超大社团拖死循环）。
   static const int kMaxExpansion = 500;
 
+  /// 任意两次 MB 请求之间的最小间隔（毫秒）。MB 硬限流 1 req/s，留 10ms 余量。
+  static const int _kMinRequestGapMs = 1010;
+
   /// 本轮已展开过的 mbid（visited，防环 + 配 [kMaxExpansion] 计数）。
   final Set<String> _expandedMbids = <String>{};
 
@@ -634,13 +637,17 @@ class ArtistResolver extends ChangeNotifier {
     return out;
   }
 
-  /// 全局令牌桶：任意两次请求间隔 ≥1 秒（MB 硬限流）。
+  /// 全局令牌桶：任意两次请求间隔 ≥ [_kMinRequestGapMs]。
+  /// MB 的硬限流是 1 req/s，按「服务端整秒」计；本地恰好排到 1000ms 会在偶发情况下
+  /// 撞进同一个服务端秒而被 503 打回（退避能自愈，但会白白浪费一整轮），
+  /// 故留 10ms 余量。
   Future<void> _throttle() async {
     final now = DateTime.now().millisecondsSinceEpoch;
     if (now < _nextAllowedAtMs) {
       await Future.delayed(Duration(milliseconds: _nextAllowedAtMs - now));
     }
-    _nextAllowedAtMs = DateTime.now().millisecondsSinceEpoch + 1000;
+    _nextAllowedAtMs =
+        DateTime.now().millisecondsSinceEpoch + _kMinRequestGapMs;
   }
 
   static String? _lifeSpanYear(Object? span, String field) {
