@@ -628,12 +628,61 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 丢掉进度——下次启动由断点恢复接回队列（受 resumeOnStartup 开关控制）。
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.detached || _disposed || _shuttingDown) {
-      return;
+    if (_disposed || _shuttingDown) return;
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.hidden:
+        // 退到后台（后台播放照常继续），但先把在途的本地累计/落库结清：
+        // Android 常在进程被杀时根本不给 detached，这段就白丢了；同时把写隔离
+        // 里攒的批量落盘，别指望它在后台还能按时刷。
+        _playSecStop();
+        unawaited(_flushWritesQuietly());
+      case AppLifecycleState.resumed:
+        // 回前台：对账播放时长窗口（后台被节流后位置流可能停过），
+        // 并补写断点。注意 [playing]/[position] 都会构造播放器，所以先看有没有
+        // 播放现场——冷启动时不该为了这两个值把 AudioPlayer 建出来。
+        if (_hasPlayScene) {
+          _playSecReconcile(playing: playing);
+          unawaited(_saveStateNow());
+        }
+      case AppLifecycleState.detached:
+        _onDetached();
+      case AppLifecycleState.inactive:
+        // 短暂失去焦点（通知栏下拉、来电、多任务切换）：播放与累计都不该被打断。
+        break;
     }
+  }
+
+  /// 有没有可持久化的播放现场（没有就别去碰 [player]——那会为了读一个 position
+  /// 把播放器构造出来，冷启动时纯属白做）。
+  bool get _hasPlayScene => _queue.isNotEmpty && _current != null;
+
+  /// 落库待结算的播放时长与断点，失败只记日志（生命周期回调不该抛）。
+  Future<void> _flushWritesQuietly() async {
+    final idx = _index;
+    if (idx == null) return;
+    try {
+      await idx.flushWrites();
+      if (_hasPlayScene) await _saveState(player.position);
+    } catch (e) {
+      debugPrint('[play] 退后台落库失败（忽略）: $e');
+    }
+  }
+
+  /// 回前台：强制写一次断点（跳过 [_maybeSaveState] 的 2s 节流）。
+  Future<void> _saveStateNow() async {
+    if (!_hasPlayScene) return;
+    try {
+      await _saveState(player.position);
+    } catch (e) {
+      debugPrint('[play] 回前台写断点失败（忽略）: $e');
+    }
+  }
+
+  /// 任务被划掉：按媒体应用惯例停止播放，但保留断点/队列供下次启动续播。
+  void _onDetached() {
     if (kIsWeb || !Platform.isAndroid) return;
-    // 不再按 notificationControls 分流：前台服务恒注册（见 main.dart），
-    // 划掉任务一律按媒体应用惯例收尾，但保留断点/队列供下次启动续播。
+    // 不再按 notificationControls 分流：前台服务恒注册（见 main.dart）。
     debugPrint('[play] 任务被划掉，停止播放（保留断点）');
     unawaited(stopFromNotifier(clearResume: false));
   }
