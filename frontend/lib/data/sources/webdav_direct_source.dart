@@ -221,6 +221,29 @@ class WebdavDirectSource implements MusicSource {
       contentLength = (range.length ??
           (resp.contentLength > 0 ? resp.contentLength : 0));
     }
+    // 范围读取时 contentLength 只是「这次拿到多少」，资源真实大小在
+    // Content-Range 尾部（`bytes 0-8388607/20971520`）。调用方（如同目录图片
+    // 探测）要靠它判断读到的字节是不是被截断的片段。
+    int? totalLength;
+    if (range == null) {
+      if (resp.contentLength > 0) totalLength = resp.contentLength;
+    } else {
+      final cr = resp.headers.value(HttpHeaders.contentRangeHeader);
+      if (cr != null) {
+        final slash = cr.lastIndexOf('/');
+        if (slash >= 0 && slash + 1 < cr.length) {
+          final t = int.tryParse(cr.substring(slash + 1).trim());
+          if (t != null && t > 0) totalLength = t;
+        }
+      }
+      // 服务端忽略 Range 直接返回 200 全量时，contentLength 就是资源大小。
+      if (totalLength == null &&
+          resp.statusCode == 200 &&
+          resp.contentLength > 0 &&
+          resp.contentLength > contentLength) {
+        totalLength = resp.contentLength;
+      }
+    }
     final broadcast = resp.map((b) => b).asBroadcastStream();
     // 流结束后释放 HttpClient 连接（避免跨 request 累积）。
     broadcast.listen(
@@ -233,6 +256,7 @@ class WebdavDirectSource implements MusicSource {
       contentLength: contentLength,
       contentType: contentType,
       stream: broadcast,
+      totalLength: totalLength,
     );
   }
 

@@ -28,9 +28,22 @@ List<String> siblingImageCandidates(String ref) {
   ];
 }
 
-/// 只接受通过图片签名校验的字节（与嵌入封面同一防线）。
-bool isImageBytes(List<int> bytes) =>
-    bytes.length >= 12 && looksLikeImageBytes(bytes);
+/// 只接受**完整**的图片字节。
+///
+/// [totalLength] 是资源的真实总长度（[OpenedStream.totalLength]，未知传 null）。
+/// 返回 false 的两种情况：
+/// - 读到的字节连图片签名都不像（不是图片，或被截断在签名之前）；
+/// - 读到的字节**少于真实总长度**（服务端/上限把图截断了）。
+///
+/// 第二条是关键：只看前 12 字节签名的话，一张 20MB 的图被 8MB 上限截断后照样
+/// 通过校验并落盘，Android `ImageDecoder` 解码失败 → 界面上一张封面都没有，而且
+/// 这行已被标成「已读」，再也不会重试。宁可判定「这张图太大/读不全」也不要写坏
+/// 缓存。
+bool isImageBytes(List<int> bytes, {int? totalLength}) {
+  if (bytes.length < 12 || !looksLikeImageBytes(bytes)) return false;
+  if (totalLength != null && totalLength > bytes.length) return false;
+  return true;
+}
 
 /// 会话级缓存：候选 ref → 字节/null（否定缓存避免反复探测）。
 final Map<String, Uint8List?> _siblingCache = {};
@@ -70,11 +83,19 @@ Future<Uint8List?> _tryReadImage(
     final opened =
         await src.open(probe, range: const IntRange(0, kCoverReadCapBytes));
     final bytes = <int>[];
+    var hitCap = false;
     await for (final chunk in opened.stream) {
       bytes.addAll(chunk);
-      if (bytes.length >= kCoverReadCapBytes) break;
+      if (bytes.length >= kCoverReadCapBytes) {
+        hitCap = true;
+        break;
+      }
     }
-    if (!isImageBytes(bytes)) {
+    // 截断判定：拿到上限说明可能只读到片段；流自然结束但短于资源真实大小，说明
+    // 服务端提前断了。两种情况都当「这张图读不全」，不落盘（详见 [isImageBytes]）。
+    final total = opened.totalLength;
+    final maybeTruncated = hitCap || (total != null && total > bytes.length);
+    if (maybeTruncated || !isImageBytes(bytes, totalLength: total)) {
       _siblingCache[key] = null;
       return null;
     }

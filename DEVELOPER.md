@@ -360,7 +360,8 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 - **wav / aiff / aifc（RIFF/FORM 容器）**：这两种容器没有官方标签规范，工具把 ID3v2 塞进一个 `id3 ` 块（RIFF/FORM 块 id 是 4 字节 ASCII，wav 块长小端、FORM 块长大端），位置也不固定（ffmpeg `-write_id3v2 1` 写在音频块**之后**）。`tailReadHint` 按音频块（`data`/`SSND`）**声明的长度**跳过音频，算出后面元数据区的长度并一次读准，不碰音频数据；尾读窗口解析 `id3 `（复用 mp3 那套 ID3v2 帧/APIC 解析）与 `LIST INFO`。老设备常把 RIFF 总长或 `data` 声明写错，块列表对不上时兜底在窗口内扫 `id3 ` 标记并按 ID3v2 头自己声明的长度严格校验，避免把音频数据里巧合的字节误当标签。aiff 另解析 `COMM` 的采样帧数与 80 位扩展浮点采样率算时长，`NAME`/`AUTH` 兜底标题/歌手
 - **不误报**：音频块声明长度 ≥ 文件实际大小、声明溢出为负、或尾部没有别的块时 `tailReadHint` 返回 null（不做无用尾读）
 - 扫描 `full` + 提取封面走 `readAudioMeta` 统一读序；旧版已标已读但无封面的 mp3/flac 行由一次性迁移（`kCoverReenrichV1Done`，设备本地标记）重置为未读，交给后台补读重取
-- **同目录回退**：仍无封面 → 「同名图片（`.png/.jpg/.jpeg/.webp`）→ `cover.*`/`folder.*`/`front.*`/`album.*`」顺序取同目录图片（播放补读按会话缓存，扫描按目录清单/下载缓存去重），经图片签名校验后落盘；同名 `.lrc` 歌词回退同在一条路径
+- **同目录回退**：仍无封面 → 「同名图片（`.png/.jpg/.jpeg/.webp`）→ `cover.*`/`folder.*`/`front.*`/`album.*`」顺序取同目录图片（会话级缓存，含否定结果），经校验后落盘；同名 `.lrc` 歌词回退同在一条路径
+- **图片必须完整才落盘**：`isImageBytes` 除图片签名外还要求字节数不少于资源的**真实总长度**。范围读取时 `OpenedStream.contentLength` 只是「这次拿到多少」，新增的 `OpenedStream.totalLength` 才是总长度（本地源给文件大小，WebDAV 从 `Content-Range: bytes 0-…/total` 尾部取，服务端不回该头时为 null）。否则一张比读取上限大的图被截断后只凭前 12 字节签名就能通过，Android `ImageDecoder` 解码失败 → 界面上没有封面，而这行已标「已读」永不重试。读满上限或流短于总长同样判为「读不全」
 - **编码规则**：mp3 ID3v2 按帧 encoding 选解码（enc==3 → UTF-8；enc==0 → 尝试 UTF-8 再回退 Latin-1）；flac/ogg VORBIS_COMMENT 按规范 UTF-8（失败回退 Latin-1）；m4a 文本原子 UTF-8；无内嵌标签时走文件名/同目录回退
 - **时长探测**：mp3 估算法（文件大小÷码率）或解析 Xing/VBRI 头；flac 读 STREAMINFO
 

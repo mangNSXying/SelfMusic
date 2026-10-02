@@ -82,13 +82,24 @@ class ScanOptions {
 
 /// 打开音频流（直接流式传输的统一返回结构）。
 class OpenedStream {
+  /// 本次响应体的字节数（范围读取时 = 返回区间长度，不等于资源大小）。
   final int contentLength;
   final String contentType;
   final Stream<List<int>> stream;
+
+  /// 资源的**真实总长度**（字节），未知为 null。
+  ///
+  /// 范围读取时 [contentLength] 只是「这次拿到多少」，无法回答「资源一共多大」，
+  /// 于是调用方无法判断自己读到的是不是被截断的片段。本地源直接给文件大小；
+  /// WebDAV 从 `Content-Range: bytes 0-8388607/20971520` 的尾部取，服务端不回该
+  /// 头时为 null（此时调用方只能按「读到流自然结束」判断）。
+  final int? totalLength;
+
   const OpenedStream({
     required this.contentLength,
     required this.contentType,
     required this.stream,
+    this.totalLength,
   });
 }
 

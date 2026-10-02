@@ -135,6 +135,8 @@ class LocalDirectSource implements MusicSource {
       contentLength: contentLength,
       contentType: _mimeOf(_extOf(song.sourceRef)),
       stream: file.openRead(start, end),
+      // 文件大小已知 → 调用方能精确判断范围读取有没有被截断。
+      totalLength: len,
     );
   }
 
