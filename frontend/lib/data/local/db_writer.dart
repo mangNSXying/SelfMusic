@@ -109,8 +109,14 @@ class _IsolateDbWriter implements DbWriter {
 
   @override
   void execFire(String sql, [List<Object?>? args]) {
+    // seq 必须带：写隔离侧按 `m['seq'] as int` 取标识，缺失会在类型转换处抛错，
+    // 而这条命令是 fire（reply 为 null）——原先没有任何人回包也没有日志，于是
+    // **整条写被静默丢弃**：settingsSet / touchCache 等全靠 fire 的写入从来没
+    // 落过盘，只有进程内的内存缓存看着是对的，一重启就丢（同步游标、播放模式、
+    // 缓存 LRU 时间等）。
     _cmd.send({
       't': 'execFire',
+      'seq': _seq++,
       'sql': sql,
       'args': args ?? const [],
       'reply': null,
@@ -149,10 +155,11 @@ class _IsolateDbWriter implements DbWriter {
   @override
   Future<void> close() async {
     if (_closed) return;
-    _closed = true;
     try {
+      // 先发 close 再置 _closed：_send 会拒绝已关闭的写层。
       await _send('close', const {});
     } finally {
+      _closed = true;
       _resp.close();
       _isolate.kill(priority: Isolate.immediate);
     }
@@ -167,6 +174,13 @@ class _IsolateDbWriter implements DbWriter {
   }
 
   Future<Object?> _send(String t, Map<String, dynamic> extra) {
+    // close()/dispose() 之后回包端口已关、隔离已杀：再排队就永远等不到回包。
+    // 这里直接失败，让调用方拿到明确的 StateError 而不是挂死——退出流程里
+    // 收尾顺序略有出入就会静默卡住，非常难查。
+    if (_closed) {
+      return Future<Object?>.error(
+          StateError('db-writer: 写层已关闭，拒绝执行 $t'));
+    }
     final seq = _seq++;
     final c = Completer<Object?>();
     _out[seq] = c;
@@ -327,26 +341,69 @@ void _writerEntry(SendPort boot) {
     // 注意：必须复制一份，不能 `final ops = pending`（同一 List，clear 会把 ops 一起清空）。
     final ops = List<_PendOp>.of(pending);
     pending.clear();
-    final conn = db!;
-    if (ops.length == 1 && ops.single.reply == null) {
-      // 单条 fire：autocommit，省一次 BEGIN/COMMIT。
-      conn.execute(ops.single.sql, ops.single.args);
+    final conn = db;
+    if (conn == null) {
+      // 连接已被 close：如实回绝，绝不让等待方挂着。
+      for (final o in ops) {
+        o.reply?.send({'seq': o.seq, 'ok': false, 'error': '写连接已关闭'});
+      }
       return;
     }
+    if (ops.length == 1 && ops.single.reply == null) {
+      // 单条 fire：autocommit，省一次 BEGIN/COMMIT。
+      try {
+        conn.execute(ops.single.sql, ops.single.args);
+      } catch (e, st) {
+        // 单条 fire 没有等待方，但失败必须留下痕迹——否则写丢了完全没人知道。
+        _logWriteFailure(ops.single, e, st);
+      }
+      return;
+    }
+    // 每条一个 SAVEPOINT：单条失败（唯一键冲突、字段超长等）只回滚它自己，
+    // 同批其余照常提交。
+    //
+    // 原来是一条失败就整批 ROLLBACK 再 rethrow，有两个后果：
+    //   1) 同批最多 255 条无关的成功写入一起丢；
+    //   2) rethrow 冒到 cmd.listen 的 catch，那里回的是「触发这次 flush 的那条
+    //      消息」（第 257 条 / flush / close），而不是批里等回复的那些——于是
+    //      批内所有 exec() 的 Future 永远收不到回包，调用方直接卡死。
     conn.execute('BEGIN');
-    try {
-      for (final o in ops) {
+    var sp = 0;
+    for (final o in ops) {
+      final name = 'sp_${sp++}';
+      try {
+        conn.execute('SAVEPOINT $name');
         conn.execute(o.sql, o.args);
+        conn.execute('RELEASE $name');
+      } catch (e, st) {
+        try {
+          conn.execute('ROLLBACK TO $name');
+          conn.execute('RELEASE $name');
+        } catch (_) {}
+        o.error = '$e\n$st';
+        _logWriteFailure(o, e, st);
       }
+    }
+    try {
       conn.execute('COMMIT');
-      for (final o in ops) {
-        o.reply?.send({'seq': o.seq, 'ok': true, 'value': null});
-      }
-    } catch (_) {
+    } catch (e, st) {
+      // 致命错误（磁盘满 / IO 错）：整批都没落库，如实回报给所有等待方。
       try {
         conn.execute('ROLLBACK');
       } catch (_) {}
-      rethrow;
+      for (final o in ops) {
+        o.error ??= '批量提交失败：$e';
+        _logWriteFailure(o, e, st);
+      }
+    }
+    // 逐条回包：每条带 reply 的 op 都必须收到且只收到一个结果，绝不漏。
+    for (final o in ops) {
+      final err = o.error;
+      if (err != null) {
+        o.reply?.send({'seq': o.seq, 'ok': false, 'error': err});
+      } else {
+        o.reply?.send({'seq': o.seq, 'ok': true, 'value': null});
+      }
     }
   }
 
@@ -377,7 +434,9 @@ void _writerEntry(SendPort boot) {
               m['sql'] as String,
               (m['args'] as List).cast<Object?>(),
               m['reply'] is SendPort ? m['reply'] as SendPort : null,
-              m['seq'] as int));
+              // seq 只用于标识与回包配对；缺失时给个占位值，绝不能因为取不到它
+              // 就把这条写整个丢掉（那正是之前 fire 全丢的根因）。
+              m['seq'] is int ? m['seq'] as int : -1));
           armFlush();
         case 'execInsert':
         case 'execUpdated':
@@ -414,8 +473,15 @@ void _writerEntry(SendPort boot) {
       final rp = m['reply'];
       if (rp is SendPort) {
         rp.send({'seq': m['seq'], 'ok': false, 'error': '$e\n$st'});
+      } else {
+        print('[db-writer] 命令处理失败（无回包方）: $e\n$st');
       }
     }
+  }, onError: (Object e, StackTrace st) {
+    // 原先没有 onError：消息处理过程中抛出且未被上面 catch 覆盖的错误会变成
+    // 未捕获的 isolate 异常，写隔离就此静默死掉——之后所有写入都只进队列，
+    // 再无任何报错，看起来像「设置没保存」。
+    print('[db-writer] 监听错误（写隔离即将不可用）: $e\n$st');
   });
 }
 
@@ -425,6 +491,17 @@ class _PendOp {
   final SendPort? reply;
   final int seq;
   _PendOp(this.sql, this.args, this.reply, this.seq);
+
+  /// 本条自身的执行错误（逐条隔离后才有意义）；非空表示这条没落库。
+  String? error;
+}
+
+/// 写失败的可见化：fire 类写入没有等待方，失败若不记就等于凭空消失。
+/// 保留原有的 `[db-writer]` 前缀，便于和既有日志一起过滤。
+void _logWriteFailure(_PendOp op, Object e, StackTrace st) {
+  final sql = op.sql.length > 120 ? '${op.sql.substring(0, 120)}…' : op.sql;
+  print('[db-writer] 写入失败（seq=${op.seq}, reply=${op.reply != null}）: $e\n'
+      '  sql: $sql');
 }
 
 // ---------- 复合写操作（全部运行在写连接上） ----------
