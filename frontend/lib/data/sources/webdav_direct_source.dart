@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
@@ -274,11 +275,12 @@ class WebdavDirectSource implements MusicSource {
     if (index.isCached(cacheKey)) return;
     final client = _newClient(allowSelfSigned);
     try {
-      final tmp = File('${p.join(index.dir, 'cache')}/.tmp-$cacheKey');
+      final tmp = File(p.join(index.cacheDir, '.tmp-$cacheKey'));
       final req =
           await client.getUrl(Uri.parse(_playUrl(song)!));
       _auth(req, username, password);
-      final resp = await req.close();
+      final resp = await _withDeadline(
+          req.close(), _kRequestDeadline, 'WebDAV 缓存取流（${_playUrl(song)}）');
       if (resp.statusCode != 200 && resp.statusCode != 206) {
         await resp.drain<void>();
         if (resp.statusCode == 401 || resp.statusCode == 403) {
@@ -292,13 +294,21 @@ class WebdavDirectSource implements MusicSource {
       var buf = BytesBuilder(copy: false);
       int total = 0;
       try {
-        await for (final chunk in resp) {
-          buf.add(chunk);
-          total += chunk.length;
-          if (buf.length >= _cacheWriteBufBytes) {
-            sink.writeFromSync(buf.takeBytes());
-          }
-        }
+        // 整曲下载原先没有总时限：后台预热遇到半死不活的连接会一直挂着，
+        // 既占连接也拖住预热槽位（_warmingKey 一占就是整首的时长）。
+        await _withDeadline(
+          () async {
+            await for (final chunk in resp) {
+              buf.add(chunk);
+              total += chunk.length;
+              if (buf.length >= _cacheWriteBufBytes) {
+                sink.writeFromSync(buf.takeBytes());
+              }
+            }
+          }(),
+          _kCacheDownloadDeadline,
+          'WebDAV 缓存整曲下载',
+        );
         if (buf.isNotEmpty) sink.writeFromSync(buf.takeBytes());
       } finally {
         sink.closeSync();
@@ -582,11 +592,35 @@ class WebdavStatusException implements Exception {
   }
 }
 
+/// 套接字空档时限：两段数据之间超过这么久没有收发就判定连接死了。
+/// dart:io 默认也是 15s，这里显式写死——它同时是「大文件中途断流」的兜底，
+/// 不依赖 SDK 默认值。
+const Duration _kIdleTimeout = Duration(seconds: 15);
+
+/// 单次「小请求」总时限（连接 + 响应头 + 传输），覆盖 [_getHead] 这类
+/// 取头部/采样字节的调用。[_kIdleTimeout] 只管数据间的空档，管不住「一直慢吞吞
+/// 地传」，也管不住那些并不经过字节流的路径，故再补一道总闸。
+const Duration _kRequestDeadline = Duration(seconds: 30);
+
+/// 整曲缓存下载的总时限。缓存是后台预热，失败可重来，绝不能无限期占着连接；
+/// 但慢速网络下几十 MB 的歌也要给够余量，故取宽松值。
+const Duration _kCacheDownloadDeadline = Duration(minutes: 15);
+
 HttpClient _newClient(bool allowSelfSigned) => HttpClient()
   ..connectionTimeout = const Duration(seconds: 15)
+  ..idleTimeout = _kIdleTimeout
   ..userAgent = 'SelfMusic'
   ..badCertificateCallback =
       allowSelfSigned ? (cert, host, port) => true : null;
+
+/// 给 [future] 加总时限，超时抛 [TimeoutException] 并带上可读原因。
+/// 注意 Dart 的 `.timeout` 不会真正掐断底层 socket（真正的回收靠调用方
+/// `finally` 里的 `client.close(force: true)`），这里只保证「不会无限期挂着」。
+Future<T> _withDeadline<T>(Future<T> future, Duration limit, String what) {
+  return future.timeout(limit, onTimeout: () {
+    throw TimeoutException('$what 超时（${limit.inSeconds}s）');
+  });
+}
 
 void _auth(HttpClientRequest req, String username, String password) {
   if (username.isEmpty) return;
@@ -600,7 +634,10 @@ Future<Uint8List> _getHead(HttpClient client, String url, String username,
   _auth(req, username, password);
   req.headers.set(HttpHeaders.rangeHeader,
       'bytes=$start-${start + headBytes - 1}');
-  final resp = await req.close();
+  // 取头部字节原先完全没有时限：服务器 accept 后不吐数据就永久挂起，而这条
+  // 路径在后台补读（enrich/meta）链路上被反复调用，是后台空转的主要来源之一。
+  final resp = await _withDeadline(
+      req.close(), _kRequestDeadline, 'WebDAV 取头部（$url）');
   if (resp.statusCode != 200 && resp.statusCode != 206) {
     await resp.drain<void>();
     return Uint8List(0);

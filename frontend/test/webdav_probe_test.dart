@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:selfmusic/data/local/local_index.dart';
+import 'package:selfmusic/data/sources/music_source.dart';
 import 'package:selfmusic/data/sources/webdav_direct_source.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:sqlite3/open.dart';
@@ -158,6 +159,9 @@ void main() {
     await index.open();
     addTearDown(index.close);
 
+    // 401/403 一律抛 SourceAuthException（密码过期要能响亮失败并触发上层退避
+    // 重试；曾静默返回空列表导致上层把整库当「全部消失」清掉）。此处断言的是
+    // 异常类型而非具体消息，避免后续改文案就红。
     await expectLater(
       src.probe(Song(
         id: 0,
@@ -167,7 +171,7 @@ void main() {
         sourceRef: 'a.mp3',
         fileSize: 10,
       )),
-      throwsA(isA<HttpException>()),
+      throwsA(isA<SourceAuthException>()),
     );
   });
 }
