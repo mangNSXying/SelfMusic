@@ -6,6 +6,27 @@ import 'package:flutter/foundation.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
 
+/// 按 MBID 取到的实体 + 关系（**一次请求**，Lookup 与 artist-rels 合并的结果）。
+///
+/// 以前重解析要先 lookup 拿实体、再单独拉一次关系，等于同一个 MBID 打了两次；
+/// `inc=artist-rels+aliases` 一次就给全，所以合成一个对象往下传。
+class MbArtistEntity {
+  final MbArtistHit hit;
+
+  /// MB 原始关系（已校验过结构，失败会抛出而不是折成空）。
+  final List<Map<String, dynamic>> relations;
+
+  /// 匹配分：只有「先搜索再取实体」这条路有值，按已知 MBID 重取时是 0
+  /// （拿不到搜索分就不写分，别把已记录的分数抹成 0）。
+  final double score;
+
+  const MbArtistEntity({
+    required this.hit,
+    required this.relations,
+    this.score = 0,
+  });
+}
+
 /// MusicBrainz 搜索结果命中（选型 / 歧义人工选择共用）。
 class MbArtistHit {
   final String mbid;
@@ -81,7 +102,18 @@ class MbResolveResult {
 ///   失败按 error_count 指数退避（10s→30s→60s→5min）；
 /// - names/groups 为 JSON 数组，alias 合流走 [LocalIndex.artistMergeMbid]。
 class ArtistResolver extends ChangeNotifier {
-  ArtistResolver(this._index);
+  /// [dio] 只给测试注入假适配器用；正式跑固定用带 UA / 超时的默认实例。
+  ArtistResolver(this._index, {Dio? dio})
+      : _dio = dio ??
+            Dio(BaseOptions(
+              baseUrl: kDefaultBase,
+              connectTimeout: const Duration(seconds: 10),
+              receiveTimeout: const Duration(seconds: 20),
+              headers: {
+                'User-Agent': _userAgent,
+                'Accept': 'application/json'
+              },
+            ));
 
   final LocalIndex _index;
   AppSettings? _settings;
@@ -157,12 +189,7 @@ class ArtistResolver extends ChangeNotifier {
   /// 本轮已展开过的 mbid（visited，防环 + 配 [kMaxExpansion] 计数）。
   final Set<String> _expandedMbids = <String>{};
 
-  final Dio _dio = Dio(BaseOptions(
-    baseUrl: kDefaultBase,
-    connectTimeout: const Duration(seconds: 10),
-    receiveTimeout: const Duration(seconds: 20),
-    headers: {'User-Agent': _userAgent, 'Accept': 'application/json'},
-  ));
+  final Dio _dio;
 
   bool _busy = false;
   Timer? _wake;
@@ -252,7 +279,8 @@ class ArtistResolver extends ChangeNotifier {
   Future<void> bindManual(String canonicalKey, MbArtistHit hit) async {
     final row = _index.artistRowByCanonical(canonicalKey);
     if (row == null) return;
-    await _bind(canonicalKey, row.artistKey, hit);
+    await _bind(canonicalKey, row.artistKey,
+        await _requireEntity(hit.mbid, score: hit.score));
     resolvedCount++;
     notifyListeners();
     wake();
@@ -320,23 +348,9 @@ class ArtistResolver extends ChangeNotifier {
     // 命中已解析身份就直接合流，省掉一次 artist 搜索（仍会 lookup 一次关系来展开成员）。
     final local = _index.artistRowByAnyName(searchName);
     if (local != null && local.isResolved && local.mbid != null) {
-      await _bind(
-          item.canonicalKey,
-          item.artistKey,
-          MbArtistHit(
-            mbid: local.mbid!,
-            name: local.displayName,
-            type: local.type,
-            score: local.matchScore ?? 0,
-            aliases: [
-              for (final n in local.names)
-                if (n['name'] != null && n['name'] != local.displayName)
-                  {
-                    'name': n['name'],
-                    if (n['lang'] != null) 'locale': n['lang']
-                  },
-            ],
-          ));
+      final entity = await _requireEntity(local.mbid!,
+          score: (local.matchScore ?? 0).toDouble());
+      await _bind(item.canonicalKey, item.artistKey, entity);
       resolvedCount++;
       lastResolveAt = DateTime.now();
       return;
@@ -346,9 +360,11 @@ class ArtistResolver extends ChangeNotifier {
     // 搜索榜首会随 MB 数据变化，重新解析不该悄悄换成另一个真人。
     final known = item.mbid;
     if (known != null && known.isNotEmpty) {
-      final hit = await _lookupByMbid(known);
-      if (hit != null) {
-        await _bind(item.canonicalKey, item.artistKey, hit);
+      // 一次请求同时拿实体和关系：以前这里先 lookup、再在 _bind 里拉一次关系，
+      // 同一个 MBID 打了两次。
+      final entity = await _fetchEntity(known);
+      if (entity != null) {
+        await _bind(item.canonicalKey, item.artistKey, entity);
         resolvedCount++;
         lastResolveAt = DateTime.now();
         return;
@@ -358,7 +374,8 @@ class ArtistResolver extends ChangeNotifier {
     final hits = await _search(searchName, limit: 10);
     final hit = pickFirstUsable(hits);
     if (hit != null) {
-      await _bind(item.canonicalKey, item.artistKey, hit);
+      final entity = await _requireEntity(hit.mbid, score: hit.score);
+      await _bind(item.canonicalKey, item.artistKey, entity);
       resolvedCount++;
       lastResolveAt = DateTime.now();
     } else {
@@ -394,14 +411,15 @@ class ArtistResolver extends ChangeNotifier {
   /// 绑定命中结果：合流到已有 mbid 身份，没有就 upsert；随后展开成员关系。
   ///
   /// members 展开失败（429/网络）不影响本次 resolved——身份已定，成员边下次再补。
-  Future<void> _bind(
-      String canonicalKey, String fromArtistKey, MbArtistHit h) async {
-    // P2：对已解析身份做一次 lookup，按白名单关系类型（团体/成员/CD 角色）填
-    // groups JSON（供歌手页信息与后续展示）；失败不影响本次 resolved 结果。
-    final rels = await _fetchRelations(h.mbid);
-    final groups = parseGroupRelations(rels);
+  Future<void> _bind(String canonicalKey, String fromArtistKey,
+      MbArtistEntity entity) async {
+    final h = entity.hit;
+    // P2：按白名单关系类型（团体/成员/CD 角色）填 groups JSON（供歌手页信息与
+    // 后续展示）；失败不影响本次 resolved 结果。关系由 [entity] 自带，
+    // 这里不再发第二次 MB 请求。
+    final groups = parseGroupRelations(entity.relations);
     // 本地别名合流来的 score 是 0（没搜过），别把已记录的分数抹成 0。
-    final score = h.score > 0 ? h.score : null;
+    final score = entity.score > 0 ? entity.score : null;
     // MB 的 type 是 `Group`/`Character`/`Person`，统一小写落库。
     final selfType = _normType(h.type) ?? 'person';
     final merged = await _index.artistMergeMbid(
@@ -437,7 +455,8 @@ class ArtistResolver extends ChangeNotifier {
       key = _index.artistRowByCanonical(canonicalKey)?.artistKey;
     }
     if (key != null) {
-      await _expandMembers(key, h.mbid, selfType: selfType, rels: rels);
+      await _expandMembers(key, h.mbid,
+          selfType: selfType, rels: entity.relations);
     }
   }
 
@@ -451,7 +470,7 @@ class ArtistResolver extends ChangeNotifier {
       List<Map<String, dynamic>>? rels,
       int depth = 0}) async {
     final members =
-        parseMemberRelations(rels ?? await _fetchRelations(mbid), selfType);
+        parseMemberRelations(rels ?? (await _requireEntity(mbid)).relations, selfType);
     if (members.isEmpty) {
       // 查过关系确实没成员：清掉可能存在的旧边，记 expanded_at，歌手页据此回落显示本实体。
       await _index.artistSetMembers(artistKey: artistKey, members: const []);
@@ -537,24 +556,45 @@ class ArtistResolver extends ChangeNotifier {
     ];
   }
 
-  /// 按已知 MBID 取实体（重试/强制解析走这条，不重新搜索，避免漂到别的真人）。
-  /// 请求失败照常抛出，交由退避重试；实体不存在/已合并（404/空）返回 null，退回搜索。
-  Future<MbArtistHit?> _lookupByMbid(String mbid) async {
+  /// 按已知 MBID 取实体+关系（重试/强制解析走这条，不重新搜索，避免漂到别的真人）。
+  ///
+  /// 一次请求搞定：`inc=artist-rels+aliases` 同时给实体字段、别名和关系，
+  /// 不用再单独拉一遍关系。
+  /// 实体不存在/已合并（404/400）返回 null 退回搜索；**其余失败照常抛出**，
+  /// 交由退避重试——不能折成「无关系」，否则组合会被永久记成「没成员」
+  /// 而不再重试展开（调用方靠「空 = 确实无成员」来记 expanded_at）。
+  /// MB 对真无关系的实体照样返回 200 + 空 relations，所以重试不会失控。
+  Future<MbArtistEntity?> _fetchEntity(String mbid, {double score = 0}) async {
+    if (mbid.isEmpty) return null;
     try {
-      final resp =
-          await _get('/artist/$mbid', {'fmt': 'json', 'inc': 'aliases'});
+      final resp = await _get('/artist/$mbid', {
+        'inc': 'artist-rels+aliases',
+        'fmt': 'json',
+      });
       final data = resp.data;
-      if (data is! Map<String, dynamic>) return null;
-      return MbArtistHit(
-        mbid: (data['id'] as String?) ?? mbid,
-        name: (data['name'] as String?) ?? '',
-        type: data['type'] as String?,
-        sortName: data['sort-name'] as String?,
-        disambiguation: data['disambiguation'] as String?,
-        country: data['country'] as String?,
-        beginYear: _lifeSpanYear(data['life-span'], 'begin'),
-        endYear: _lifeSpanYear(data['life-span'], 'end'),
-        aliases: (data['aliases'] as List?)?.cast<Map<String, dynamic>>() ?? [],
+      if (data is! Map<String, dynamic>) {
+        throw StateError('artist 响应不是对象: ${data.runtimeType}');
+      }
+      final rels = data['relations'];
+      if (rels != null && rels is! List) {
+        throw StateError('artist.relations 不是数组: ${rels.runtimeType}');
+      }
+      return MbArtistEntity(
+        hit: MbArtistHit(
+          mbid: (data['id'] as String?) ?? mbid,
+          name: (data['name'] as String?) ?? '',
+          type: data['type'] as String?,
+          sortName: data['sort-name'] as String?,
+          disambiguation: data['disambiguation'] as String?,
+          country: data['country'] as String?,
+          beginYear: _lifeSpanYear(data['life-span'], 'begin'),
+          endYear: _lifeSpanYear(data['life-span'], 'end'),
+          aliases:
+              (data['aliases'] as List?)?.cast<Map<String, dynamic>>() ?? [],
+        ),
+        relations:
+            rels == null ? const [] : rels.cast<Map<String, dynamic>>(),
+        score: score,
       );
     } on DioException catch (e) {
       // 实体确实没了才退回搜索；其余（限流/断网）继续抛给退避。
@@ -564,6 +604,13 @@ class ArtistResolver extends ChangeNotifier {
     }
   }
 
+  /// 同 [_fetchEntity]，但实体取不到就算失败（调用方已定好要用哪个实体，不退回搜索）。
+  Future<MbArtistEntity> _requireEntity(String mbid, {double score = 0}) async {
+    final e = await _fetchEntity(mbid, score: score);
+    if (e == null) throw StateError('MB 实体取不到（404）: $mbid');
+    return e;
+  }
+
   Future<Response<dynamic>> _get(String path, Map<String, dynamic> q) async {
     await _throttle();
     try {
@@ -571,29 +618,6 @@ class ArtistResolver extends ChangeNotifier {
     } on DioException {
       rethrow;
     }
-  }
-
-  /// 拉实体关系（歌手处理.txt 第 3 步：一次 artist-rels 覆盖 Search + Lookup）。
-  ///
-  /// **失败必须抛出**，不能吞成空列表：调用方靠「空 = 确实无成员」来记 expanded_at，
-  /// 一旦把网络失败也折成空，组合会被永久标记成「无成员」而不再重试展开。
-  /// MB 对真无关系的实体照样返回 200 + 空 relations，所以重试不会失控。
-  Future<List<Map<String, dynamic>>> _fetchRelations(String mbid) async {
-    if (mbid.isEmpty) return const [];
-    final resp = await _get('/artist/$mbid', {
-      'inc': 'artist-rels+aliases',
-      'fmt': 'json',
-    });
-    final data = resp.data;
-    if (data is! Map<String, dynamic>) {
-      throw StateError('artist-rels 响应不是对象: ${data.runtimeType}');
-    }
-    final rels = data['relations'];
-    if (rels == null) return const [];
-    if (rels is! List) {
-      throw StateError('artist-rels.relations 不是数组: ${rels.runtimeType}');
-    }
-    return rels.cast<Map<String, dynamic>>();
   }
 
   /// 折成 groups JSON（信息页展示用的「所属团体/角色」）。
@@ -618,6 +642,10 @@ class ArtistResolver extends ChangeNotifier {
         if (id != null) 'mbid': id,
         if (other['type'] != null) 'target_type': other['type'],
         if (rel['direction'] != null) 'direction': rel['direction'],
+        // 对端的消歧义串：角色是作品名（`ご注文はうさぎですか？`），组合是副标题。
+        // 歌手详情页的「角色/组合」栏靠它区分同名的不同角色。
+        if (other['disambiguation'] != null)
+          'disambiguation': other['disambiguation'],
       });
     }
     return out;

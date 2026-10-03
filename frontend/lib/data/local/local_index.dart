@@ -1602,12 +1602,16 @@ class LocalIndex {
     ];
 
     // owner → 应显示的身份；无 Person 可达时回落 owner 自己。
+    //
+    // 同一身份可能挂在**多个** owner 下（成员同时属于两个组合），每个 owner 都要留
+    // 一条 pair：下面的 GROUP BY p.dk 会把它们合并，歌曲数/专辑数一起累加。
+    // 之前按显示身份去重，只剩第一个 owner 的歌，于是「A&B 组」下的歌在成员名下
+    // 少算一半。这里只让 _personsUnder 内部按 artist_key 去重（防环），不再全局去重。
     final pairs = <List<String>>[];
-    final seen = <String>{};
     for (final o in owners) {
       final display = _personsUnder(o, children, types);
       for (final d in (display.isEmpty ? <String>[o] : display)) {
-        if (seen.add(d)) pairs.add([d, o]);
+        pairs.add([d, o]);
       }
     }
     if (pairs.isEmpty) return const [];
@@ -1644,8 +1648,9 @@ class LocalIndex {
       JOIN artist_song_map m ON m.artist_key=p.ok AND m.role='main'
       JOIN idx_songs i ON i.source_key=m.source_key AND i.ref=m.ref AND i.missing=0
         AND i.cover_path IS NOT NULL
+        ${ignore.sql}
       ORDER BY i.id
-    ''', [jsonEncode(pairs), like])) {
+    ''', [jsonEncode(pairs), like, ...ignore.args])) {
       covers.putIfAbsent(r['dk'] as String, () => r['c'] as String?);
     }
 
@@ -1667,6 +1672,13 @@ class LocalIndex {
         countOf: (a) => a.songCount);
   }
 
+  /// 空串当 null：MB 里「有字段但为空串」和「没这个字段」意思一样。
+  static String? _emptyToNull(String? v) {
+    if (v == null) return null;
+    final t = v.trim();
+    return t.isEmpty ? null : t;
+  }
+
   /// 从 [root] 沿成员边广度展开出所有 type='person' 的身份（含 root 自身若是 Person）。
   /// visited 按 artist_key 防环；成员表很小，深度不设限也不会失控。
   List<String> _personsUnder(String root, Map<String, List<String>> children,
@@ -1683,7 +1695,183 @@ class LocalIndex {
     return out;
   }
 
-  /// identity 模式某身份对应的歌曲（走映射，天然含别名/角色合并）。
+  /// 各身份在歌手页的展示曲目数（一条查询算完，详情页给关联行填数字用）。
+  ///
+  /// 语义与 [identitySongs] 完全一致：算「自己 + 全部祖先」名下的歌——成员身份自己
+  /// 没有 `role='main'` 映射（歌曲只标了组合名），所以它显示的是所属组合那批歌。
+  /// 成员同时属于多个组合时，这里按 owner 去重后合并，不会漏（见 [identityArtistGroups]
+  /// 里 pairs 的去重说明）。没有映射的身份不在结果里，取默认 0。
+  Map<String, int> identityDisplayCounts(
+      {int minDurationSec = 0, int minSizeBytes = 0}) {
+    final db = _db;
+    if (db == null) return const {};
+    final ignore = _ignoreFilterSql(minDurationSec, minSizeBytes);
+    final out = <String, int>{};
+    for (final r in db.select('''
+      WITH RECURSIVE up(k, owner) AS (
+        SELECT artist_key, artist_key FROM artists
+        UNION
+        SELECT u.k, am.parent_key FROM up u JOIN artist_member am ON am.member_key=u.k
+      )
+      SELECT u.k AS k,
+             COUNT(DISTINCT m.source_key || char(1) || m.ref) AS n
+      FROM up u
+      JOIN artist_song_map m ON m.artist_key=u.owner AND m.role='main'
+      JOIN idx_songs i ON i.source_key=m.source_key AND i.ref=m.ref AND i.missing=0
+        ${ignore.sql}
+      GROUP BY u.k
+    ''', ignore.args)) {
+      out[r['k'] as String] = r['n'] as int;
+    }
+    return out;
+  }
+
+  /// 已解析**人物**身份的详情（歌手详情页展示组合 / 角色 / 成员）。
+  ///
+  /// 只对 `type='person'` 的身份返回：组合/角色自身的关系挂在成员树上，弹页不
+  /// 渲染它们的详情。三栏的数据来源分开：
+  ///
+  /// - 组合 / 角色：取 MusicBrainz 原始关系（`artists.groups`），因此**包含本地
+  ///   从没展开过的关联**（MB 报了 5 个组合，本地可能只建了 1 个身份行）。另把本地
+  ///   成员树里自己的祖先组合、及这些组合的上级组合一并并进来（递归到底）。
+  /// - 成员：取本地成员树里同组合的其他人（排除自己），按歌手页的 Person 口径。
+  ///
+  /// 每一行都尽量带上本地身份键与展示曲目数；带不上的说明本地没这条身份，
+  /// 只能展示不能点进去。
+  ArtistDetail? artistDetail(String artistKey,
+      {int minDurationSec = 0, int minSizeBytes = 0}) {
+    final db = _db;
+    if (db == null) return null;
+    final row = artistRowByKey(artistKey);
+    if (row == null || !row.isResolved || row.type != 'person') return null;
+
+    final counts = identityDisplayCounts(
+        minDurationSec: minDurationSec, minSizeBytes: minSizeBytes);
+    final children = <String, List<String>>{};
+    final parents = <String, List<String>>{};
+    for (final r
+        in db.select('SELECT parent_key, member_key FROM artist_member')) {
+      final p = r['parent_key'] as String;
+      final m = r['member_key'] as String;
+      (children[p] ??= <String>[]).add(m);
+      (parents[m] ??= <String>[]).add(p);
+    }
+    final types = <String, String>{};
+    final rows = <String, ArtistRow>{};
+    final byMbid = <String, ArtistRow>{};
+    for (final r in db.select('SELECT * FROM artists')) {
+      final a = _rowToArtist(r);
+      rows[a.artistKey] = a;
+      types[a.artistKey] = a.type;
+      if (a.mbid != null && a.mbid!.isNotEmpty) byMbid[a.mbid!] = a;
+    }
+
+    ArtistRef refOf(ArtistRow r, {List<String> rels = const []}) => ArtistRef(
+          name: r.displayName,
+          mbid: r.mbid,
+          type: r.type,
+          disambiguation: _emptyToNull(r.disambiguation),
+          artistKey: r.artistKey,
+          songCount: counts[r.artistKey] ?? 0,
+          relations: rels,
+        );
+
+    // ---- 组合 / 角色：MB 原始关系 ----
+    const bandTypes = {'group', 'orchestra', 'choir'};
+    const bandRelTypes = {
+      'member of band',
+      'former member of band',
+      'subgroup',
+      'performing orchestra',
+      'conductor of',
+      'collaboration',
+    };
+    final bands = <String, ArtistRef>{};
+    final roles = <String, ArtistRef>{};
+    for (final g in row.groups) {
+      final name = (g['name'] as String?)?.trim() ?? '';
+      if (name.isEmpty) continue;
+      final relType = (g['type'] as String?) ?? '';
+      final targetType = ((g['target_type'] as String?) ?? '').toLowerCase();
+      final mbid = _emptyToNull((g['mbid'] as String?)?.trim());
+      final local = mbid == null ? null : byMbid[mbid];
+      final ref = local != null
+          ? refOf(local, rels: [relType])
+          : ArtistRef(
+              name: name,
+              mbid: mbid,
+              type: targetType.isEmpty ? 'group' : targetType,
+              disambiguation: _emptyToNull(g['disambiguation'] as String?),
+            );
+      if (relType == 'voice actor' && targetType == 'character') {
+        roles.putIfAbsent(ref.mbid ?? ref.name, () => ref);
+      } else if (bandTypes.contains(targetType) &&
+          bandRelTypes.contains(relType)) {
+        bands.putIfAbsent(ref.mbid ?? ref.name, () => ref);
+      }
+    }
+
+    // ---- 组合：并入本地成员树里的祖先组合，并递归到根 ----
+    // 成员树是「组合 → 角色 → 人物」三层，所以往上走会先撞到角色节点：角色不算组合，
+    // 但**不能因此停下**，得继续往上把真正的组合、以及组合的上级组合一并捞出来。
+    final bandKeys = <String>{};
+    final walked = <String>{};
+    void walkUp(String key, String relLabel) {
+      if (!walked.add(key)) return;
+      final r = rows[key];
+      final isBand = r != null && bandTypes.contains(r.type);
+      if (isBand) {
+        bands.putIfAbsent(
+            r.mbid ?? r.artistKey, () => refOf(r, rels: [relLabel]));
+        bandKeys.add(key);
+      }
+      for (final up in parents[key] ?? const <String>[]) {
+        // 穿过角色节点时标签不变（那还是本人的「所属组合」）；已到组合再往上是「上级组合」。
+        walkUp(up, isBand ? '上级组合' : relLabel);
+      }
+    }
+
+    for (final p in parents[artistKey] ?? const <String>[]) {
+      walkUp(p, '所属组合');
+    }
+    for (final b in bands.values.toList()) {
+      final k = b.artistKey;
+      if (k != null) walkUp(k, '上级组合');
+    }
+
+    // ---- 成员：同组合的其他人物（排除自己）----
+    final members = <String, ArtistRef>{};
+    for (final k in bandKeys) {
+      for (final p in _personsUnder(k, children, types)) {
+        if (p == artistKey) continue;
+        final r = rows[p];
+        if (r != null) members.putIfAbsent(p, () => refOf(r));
+      }
+    }
+
+    List<ArtistRef> ordered(Map<String, ArtistRef> m) {
+      final list = m.values.toList()
+        ..sort((a, b) {
+          // 本地有身份行的排前面（能点进去），再按曲目数、名字排。
+          final l = a.artistKey == null ? 1 : 0;
+          final r = b.artistKey == null ? 1 : 0;
+          if (l != r) return l - r;
+          final c = (b.songCount ?? -1).compareTo(a.songCount ?? -1);
+          if (c != 0) return c;
+          return a.name.compareTo(b.name);
+        });
+      return list;
+    }
+
+    final out = ArtistDetail(
+      bands: ordered(bands),
+      roles: ordered(roles),
+      members: ordered(members),
+    );
+    return out.isEmpty ? null : out;
+  }
+
+  /// 某身份对应的歌曲（走映射，天然含别名/角色合并）。
   ///
   /// 成员身份自己没有 role='main' 映射（歌曲只标了组合名），所以沿 [artist_member]
   /// 反向递归到所有祖先身份，把它们的歌一并算作该身份的歌——歌手页点开声优/成员
@@ -2196,6 +2384,52 @@ class ArtistRow {
 
   bool get isResolved => status == 'resolved';
   bool get isAmbiguous => status == 'ambiguous';
+}
+
+/// 详情页里的一条关联（组合 / 角色 / 成员）。
+///
+/// [artistKey] 为空表示本地还没这条身份（MusicBrainz 报了但没展开过），只能展示
+/// 不能点进去；[songCount] 为空同理——没身份就没法算它在歌手页的展示曲目数。
+class ArtistRef {
+  final String name;
+  final String? mbid;
+  final String type;
+  final String? disambiguation;
+
+  /// 本地身份键；null = 本地没这条身份。
+  final String? artistKey;
+
+  /// 歌手页展示曲目数；null = 本地没这条身份，算不出来。
+  final int? songCount;
+
+  /// 与本人的关系描述（如 `上级组合`、`member of band`）。
+  final List<String> relations;
+
+  const ArtistRef({
+    required this.name,
+    this.mbid,
+    this.type = 'person',
+    this.disambiguation,
+    this.artistKey,
+    this.songCount,
+    this.relations = const [],
+  });
+}
+
+/// 人物身份的详情（[LocalIndex.artistDetail] 的结果）。
+class ArtistDetail {
+  final List<ArtistRef> bands;
+  final List<ArtistRef> roles;
+  final List<ArtistRef> members;
+
+  const ArtistDetail({
+    this.bands = const [],
+    this.roles = const [],
+    this.members = const [],
+  });
+
+  /// 三栏都没内容时不渲染详情区（免得点开是个空壳）。
+  bool get isEmpty => bands.isEmpty && roles.isEmpty && members.isEmpty;
 }
 
 /// 歌手处理.txt：待解析工作项（解析服务轮询用）。

@@ -1,11 +1,15 @@
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:selfmusic/data/local/artist_names.dart';
 import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/models/artist.dart';
+import 'package:selfmusic/services/artist_resolver.dart';
 import 'package:sqlite3/open.dart';
 
 DynamicLibrary _openOnLinux() {
@@ -51,17 +55,55 @@ Future<void> _dispose(LocalIndex index, Directory dir) async {
   }
 }
 
-DirectSongRow _song(String ref, String artist) => DirectSongRow(
+DirectSongRow _song(String ref, String artist, {String? album}) => DirectSongRow(
       sourceKey: 'local:test',
       ref: ref,
       title: '标题 $ref',
       artist: artist,
-      album: '专辑',
+      album: album ?? '专辑',
       duration: 100,
       format: 'mp3',
       size: 1024,
       mtime: 1,
     );
+
+/// 记录请求并回固定 JSON 的假 MB 适配器。
+class _RecordingAdapter implements HttpClientAdapter {
+  final Map<String, dynamic> body;
+
+  /// 按路径的额外行为（返回状态码=报错，不给 body）。
+  final int? Function(Uri uri)? failOn;
+
+  /// 搜索响应（`/artist/`）之外的实体响应（`/artist/<mbid>`）。
+  final Map<String, dynamic>? entity;
+
+  final List<Uri> calls = [];
+
+  _RecordingAdapter(this.body, {this.failOn, this.entity});
+
+  @override
+  Future<ResponseBody> fetch(RequestOptions options,
+      Stream<Uint8List>? requestStream, Future<void>? cancelFuture) async {
+    calls.add(options.uri);
+    final code = failOn?.call(options.uri);
+    if (code != null) return ResponseBody.fromString('{}', code);
+    // 搜索打的是 `/artist/`（结尾斜杠），按 MBID 取实体才是 `/artist/<mbid>`。
+    final isSearch = options.uri.path.endsWith('/artist/');
+    final data = isSearch ? body : entity ?? body;
+    return ResponseBody.fromString(jsonEncode(data), 200, headers: {
+      Headers.contentTypeHeader: [Headers.jsonContentType],
+    });
+  }
+
+  @override
+  void close({bool force = false}) {}
+}
+
+Dio _dioOf(HttpClientAdapter adapter) {
+  final dio = Dio(BaseOptions(baseUrl: 'https://mb.test/ws/2'));
+  dio.httpClientAdapter = adapter;
+  return dio;
+}
 
 void main() {
   // ---------- 歌手处理.txt：名称预处理（剥括号 / 合作串拆分 / 原串键） ----------
@@ -866,6 +908,415 @@ void main() {
       // 歌还挂在这个身份下。
       expect(
           index.identityArtistGroups().map((a) => a.name), contains('振り回され隊'));
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
+  // ---------- 歌手页曲目数：跨组合不许漏算 ----------
+
+  test('歌手页曲目数：同一成员挂在多个组合下要合并计数', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      // 两个组合各一首不同专辑的歌，同一个成员（同一 mbid）在两边都有位置。
+      await index.upsertSongs([
+        _song('a', '组合A', album: '专辑A'),
+        _song('b', '组合B', album: '专辑B'),
+      ]);
+      await index.reconcileArtists();
+      final ga = index.artistRowByCanonical('组合A')!;
+      final gb = index.artistRowByCanonical('组合B')!;
+      await index.artistUpsert(
+        artistKey: ga.artistKey,
+        canonicalKey: ga.canonicalKey,
+        mbid: 'mb-ga',
+        displayName: '组合A',
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'group',
+      );
+      await index.artistUpsert(
+        artistKey: gb.artistKey,
+        canonicalKey: gb.canonicalKey,
+        mbid: 'mb-gb',
+        displayName: '组合B',
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'group',
+      );
+      await index.artistSetMembers(artistKey: ga.artistKey, members: [
+        {
+          'mbid': 'p-shared',
+          'name': '共用成员',
+          'type': 'person',
+          'relation': 'member of band',
+        },
+      ]);
+      await index.artistSetMembers(artistKey: gb.artistKey, members: [
+        {
+          'mbid': 'p-shared',
+          'name': '共用成员',
+          'type': 'person',
+          'relation': 'member of band',
+        },
+      ]);
+
+      final rows = index.identityArtistGroups();
+      final shared = rows.firstWhere((a) => a.name == '共用成员');
+      // 之前按显示身份去重，只剩第一个 owner 的歌：这里会少算成 1 首。
+      expect(shared.songCount, 2);
+      expect(shared.albumCount, 2);
+      // 详情里的展示曲目数要走同一条口径。
+      expect(index.identityDisplayCounts()[shared.identityKey!], 2);
+      expect(index.identitySongs(shared.identityKey!).length, 2);
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
+
+  // ---------- 歌手详情页（组合 / 角色 / 成员） ----------
+
+  /// 造一棵 Group→Character→Person 的本地成员树：组合 [bandCanonical] 名下每个角色
+  /// 一个声优（[roles] 是 [角色名, 声优] 列表），[extraPerson] 是直接挂在组合下的
+  /// 真人。组合行复用 canonical 占位行（reconcile 建的），别新造 key —— 没有歌映射
+  /// 的孤立身份会被 GC 回收，成员边一起没了。
+  Future<void> seedBand(
+    LocalIndex index, {
+    required String bandCanonical,
+    required List<List<String>> roles,
+    String? extraPerson,
+  }) async {
+    final key = index.artistRowByCanonical(bandCanonical)?.artistKey ??
+        'k-$bandCanonical';
+    await index.artistUpsert(
+      artistKey: key,
+      canonicalKey: bandCanonical,
+      mbid: 'mb-$bandCanonical',
+      displayName: bandCanonical,
+      status: 'resolved',
+      errorCount: 0,
+      nextAt: 0,
+      type: 'group',
+    );
+    await index.artistSetMembers(artistKey: key, members: [
+      for (final r in roles)
+        {
+          'mbid': 'mb-role-${r[0]}',
+          'name': r[0],
+          'type': 'character',
+          'relation': 'member of band',
+        },
+      if (extraPerson != null)
+        {
+          'mbid': 'mb-other-$extraPerson',
+          'name': extraPerson,
+          'type': 'person',
+          'relation': 'member of band',
+        },
+    ]);
+    for (final r in roles) {
+      final chara = index.artistRowByMbid('mb-role-${r[0]}')!;
+      await index.artistSetMembers(artistKey: chara.artistKey, members: [
+        {
+          'mbid': 'mb-va-${r[1]}',
+          'name': r[1],
+          'type': 'person',
+          'relation': 'voice actor',
+        },
+      ]);
+      // 声优本人身上的 MB 原始关系（配过哪些角色）——「角色」栏就靠它。
+      final va = index.artistRowByMbid('mb-va-${r[1]}')!;
+      await index.artistUpsert(
+        artistKey: va.artistKey,
+        canonicalKey: va.canonicalKey,
+        mbid: va.mbid,
+        displayName: va.displayName,
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'person',
+        groups: [
+          {
+            'name': r[0],
+            'mbid': 'mb-role-${r[0]}',
+            'type': 'voice actor',
+            'target_type': 'Character',
+          },
+        ],
+      );
+    }
+  }
+
+  test('歌手详情：人物身份给出组合/角色/成员三栏', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([_song('a', 'Band X', album: '专辑X')]);
+      await index.reconcileArtists();
+      await seedBand(index, bandCanonical: 'Band X', roles: [
+        ['Riko', '内田真礼'],
+        ['Saki', '佐藤聡美'],
+      ], extraPerson: '斉藤朱夏');
+
+      final va = index.artistRowByMbid('mb-va-内田真礼')!;
+      final detail = index.artistDetail(va.artistKey);
+      expect(detail, isNotNull);
+
+      // 组合：本地成员树里的祖先组合（经过角色这一跳）。
+      expect(detail!.bands.map((b) => b.name), ['Band X']);
+      // 歌挂在组合名下，所以这个成员名下展示的曲目数是组合那 1 首。
+      expect(detail.bands.single.songCount, 1);
+
+      // 角色：MB 原始关系里「这个声优配过谁」。
+      expect(detail.roles.map((r) => r.name), contains('Riko'));
+      expect(detail.roles.first.artistKey, isNotNull);
+
+      // 成员：同组合的其他人（另一个声优 + 直接挂组合的真人），排除自己。
+      expect(detail.members.map((m) => m.name),
+          containsAll(['佐藤聡美', '斉藤朱夏']));
+      expect(detail.members.map((m) => m.name), isNot(contains('内田真礼')));
+      expect(detail.members, hasLength(2));
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
+
+  test('歌手详情：组合/角色/未解析身份都不返回详情', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([_song('a', 'Band Y')]);
+      await index.reconcileArtists();
+      await seedBand(index, bandCanonical: 'Band Y', roles: [
+        ['Mio', '水瀬いのり'],
+      ]);
+      expect(index.artistDetail('k-Band Y'), isNull);
+      final chara = index.artistRowByMbid('mb-role-Mio')!;
+      expect(index.artistDetail(chara.artistKey), isNull);
+      // 没解析成功的身份也没有详情。
+      expect(index.artistDetail('k-不存在'), isNull);
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
+
+  test('歌手详情：组合栏并入 MB 原始关系里本地没展开的关联', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([
+        _song('a', 'Solo'),
+        _song('b', 'Band Z', album: '专辑Z'),
+      ]);
+      await index.reconcileArtists();
+      await seedBand(index, bandCanonical: 'Band Z', roles: [
+        ['Rin', '徳井青空'],
+      ]);
+
+      // Solo 的 MB 原始关系：2 个组合（只有 Band Z 本地有身份行）、1 个角色，
+      // 外加一条 married（不属于任何一栏，不该混进来）。
+      final row = index.artistRowByCanonical('Solo')!;
+      await index.artistUpsert(
+        artistKey: row.artistKey,
+        canonicalKey: row.canonicalKey,
+        mbid: 'mb-solo',
+        displayName: 'Solo',
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'person',
+        groups: [
+          {
+            'name': 'Band Z',
+            'mbid': 'mb-Band Z',
+            'type': 'member of band',
+            'target_type': 'Group',
+          },
+          {
+            'name': 'Untouched Band',
+            'mbid': 'mb-untouched',
+            'type': 'member of band',
+            'target_type': 'Group',
+          },
+          {
+            'name': 'Solo Role',
+            'mbid': 'mb-solorole',
+            'type': 'voice actor',
+            'target_type': 'Character',
+            'disambiguation': '有效期限和组织',
+          },
+          {
+            'name': 'Spouse',
+            'mbid': 'mb-spouse',
+            'type': 'married',
+            'target_type': 'Person',
+          },
+        ],
+      );
+
+      final detail = index.artistDetail(row.artistKey)!;
+      expect(detail.bands.map((b) => b.name),
+          containsAll(['Band Z', 'Untouched Band']));
+      expect(detail.bands.map((b) => b.name), isNot(contains('Spouse')));
+      // 本地建过身份的排前面，且能带上曲目数。
+      expect(detail.bands.first.name, 'Band Z');
+      expect(detail.bands.first.songCount, 1);
+      final untouched =
+          detail.bands.firstWhere((b) => b.name == 'Untouched Band');
+      expect(untouched.artistKey, isNull, reason: '没展开过，不能跳进去');
+      expect(untouched.songCount, isNull);
+      // 角色栏带上 MB 的 disambiguation（区分同名不同作品的角色）。
+      expect(detail.roles.single.name, 'Solo Role');
+      expect(detail.roles.single.disambiguation, '有效期限和组织');
+      // Band Z 的声优也算 Solo 的同组合成员。
+      expect(detail.members.map((m) => m.name), ['徳井青空']);
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
+
+  test('歌手详情：组合栏递归到根（子组合的上级也在）', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([
+        _song('a', 'Big Band'),
+        _song('b', 'Sub Band', album: '专辑Sub'),
+      ]);
+      await index.reconcileArtists();
+      await seedBand(index, bandCanonical: 'Sub Band', roles: [
+        ['Nana', '田中真奈美'],
+      ]);
+      // Big Band → Sub Band 是 subgroup 边（子团体算组合的成员）。
+      final big = index.artistRowByCanonical('Big Band')!;
+      await index.artistUpsert(
+        artistKey: big.artistKey,
+        canonicalKey: big.canonicalKey,
+        mbid: 'mb-Big Band',
+        displayName: 'Big Band',
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'group',
+      );
+      await index.artistSetMembers(artistKey: big.artistKey, members: [
+        {
+          'mbid': 'mb-Sub Band',
+          'name': 'Sub Band',
+          'type': 'group',
+          'relation': 'subgroup',
+        },
+      ]);
+
+      final va = index.artistRowByMbid('mb-va-田中真奈美')!;
+      final detail = index.artistDetail(va.artistKey)!;
+      expect(detail.bands.map((b) => b.name),
+          containsAll(['Sub Band', 'Big Band']));
+      expect(detail.bands.firstWhere((b) => b.name == 'Big Band').relations,
+          contains('上级组合'));
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
+
+  // ---------- 重新解析的 MB 请求数 ----------
+
+  test('重解析已知 MBID：一次请求就拿全实体+关系', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([_song('a', 'Band Q')]);
+      await index.reconcileArtists();
+      final band = index.artistRowByCanonical('Band Q')!;
+      await index.artistUpsert(
+        artistKey: band.artistKey,
+        canonicalKey: band.canonicalKey,
+        mbid: 'mb-BandQ',
+        displayName: 'Band Q',
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'group',
+        matchScore: 100,
+      );
+
+      // 同一个 MBID 以前要打两次：先 lookup 拿实体，再单独拉 artist-rels。
+      final adapter = _RecordingAdapter({
+        'id': 'mb-BandQ',
+        'name': 'Band Q',
+        'type': 'Group',
+        'relations': [
+          {
+            'type': 'member of band',
+            'direction': 'backward',
+            'artist': {'name': '成员A', 'type': 'Person', 'id': 'mb-A'},
+          },
+        ],
+      });
+      final resolver = ArtistResolver(index, dio: _dioOf(adapter));
+      try {
+        await resolver.forceRetryOne(artistKey: band.artistKey);
+      } finally {
+        resolver.dispose();
+      }
+
+      expect(adapter.calls.map((u) => u.path), ['/ws/2/artist/mb-BandQ']);
+      // 关系也一并处理掉了（没为它再发第二次请求）：成员身份建好、边写上。
+      expect(index.artistRowByMbid('mb-A')?.displayName, '成员A');
+      // 边写上了：歌手页因此能显示这个 Person（它自己没有歌，靠组合继承）。
+      expect(index.identityArtistGroups().map((a) => a.name), contains('成员A'));
+      expect(index.artistRowByKey(band.artistKey)!.matchScore, 100,
+          reason: '重解析不能把已记录的分数抹掉');
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
+
+  test('重解析：MB 实体 404 时退回搜索并重绑', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([_song('a', 'Band R')]);
+      await index.reconcileArtists();
+      final band = index.artistRowByCanonical('Band R')!;
+      await index.artistUpsert(
+        artistKey: band.artistKey,
+        canonicalKey: band.canonicalKey,
+        mbid: 'mb-gone',
+        displayName: 'Band R',
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'group',
+      );
+
+      final adapter = _RecordingAdapter(
+        {
+          'artists': [
+            {'id': 'mb-new', 'name': 'Band R', 'type': 'Group', 'score': 100},
+          ],
+        },
+        // 旧 MBID 已合并/删除：404 → 退回搜索。
+        failOn: (u) => u.path.endsWith('/artist/mb-gone') ? 404 : null,
+        entity: {
+          'id': 'mb-new',
+          'name': 'Band R',
+          'type': 'Group',
+          'relations': <Object>[],
+        },
+      );
+      final resolver = ArtistResolver(index, dio: _dioOf(adapter));
+      try {
+        await resolver.forceRetryOne(artistKey: band.artistKey);
+      } finally {
+        resolver.dispose();
+      }
+
+      // 先打旧 MBID（404），再搜索，最后取新实体 —— 顺序固定。
+      expect(adapter.calls.map((u) => u.path), [
+        '/ws/2/artist/mb-gone',
+        '/ws/2/artist/',
+        '/ws/2/artist/mb-new',
+      ]);
+      final row = index.artistRowByKey(band.artistKey)!;
+      expect(row.mbid, 'mb-new', reason: '实体没了就重绑到搜到的那个');
+      expect(row.status, 'resolved');
+      expect(row.matchScore, 100, reason: '搜索分要落到 match_score');
     } finally {
       await _dispose(index, dir);
     }

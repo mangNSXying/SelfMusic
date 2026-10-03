@@ -14,7 +14,7 @@ enum ArtistResolveState {
 
 /// 歌手（客户端分组聚合，非后端实体）。
 ///
-/// identity 模式（歌手处理.txt：歌曲身份聚合开关开启）：[identityKey] 为
+/// 歌手页恒按身份聚合（歌手处理.txt）：[identityKey] 为
 /// artist_song_map 关联的艺术家身份键，歌曲列表走映射（含别名/角色合并）；
 /// [canonicalKey] 为归一化键，解析服务（candidatesFor/bindManual/retryOne）
 /// 均按它取身份行；[status]/[mbid] 供「待确认/已解析」徽标与人工绑定决策。

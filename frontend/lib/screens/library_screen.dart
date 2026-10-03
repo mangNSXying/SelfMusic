@@ -7,6 +7,7 @@ import '../providers/player_provider.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/direct_source_manager.dart';
 import '../data/local/app_settings.dart';
+import '../data/local/local_index.dart';
 import '../models/song.dart';
 import '../models/album.dart';
 import '../models/artist.dart';
@@ -1137,31 +1138,6 @@ class _StatusBadge extends StatelessWidget {
       );
 }
 
-/// 歌手弹页「重新解析」：把这个身份打回 pending（连 resolved 一起），并清掉
-/// expanded_at 让组合成员重新展开。已有 MBID 的按该实体重取，不会漂到别的真人。
-Future<void> _forceReParse(BuildContext context, Artist artist) async {
-  final resolver = context.read<ArtistResolver>();
-  final ok = await showDialog<bool>(
-    context: context,
-    builder: (c) => AlertDialog(
-      title: Text('重新解析「${artist.name}」？'),
-      content: const Text('会按 MusicBrainz 重新拉取该歌手，组合成员也会重新展开。'),
-      actions: [
-        TextButton(
-            onPressed: () => Navigator.of(c).pop(false),
-            child: const Text('取消')),
-        FilledButton(
-            onPressed: () => Navigator.of(c).pop(true),
-            child: const Text('开始')),
-      ],
-    ),
-  );
-  if (ok != true || !context.mounted) return;
-  Navigator.of(context).pop();
-  await resolver.forceRetryOne(
-      artistKey: artist.identityKey, canonicalKey: artist.canonicalKey);
-}
-
 class _ArtistSongsSheet extends StatelessWidget {
   final Artist artist;
   final List<Song> songs;
@@ -1175,50 +1151,230 @@ class _ArtistSongsSheet extends StatelessWidget {
       builder: (c, scrollCtrl) {
         final player = context.read<PlayerProvider>();
         final lib = context.read<LibraryProvider>();
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        // 详情只在人物身份下有内容（组合/角色的关系挂在成员树上，不在这里展开）。
+        // 只查一次：artistDetail 会跑展示曲目数统计，别在 build 里查两遍。
+        final detail = lib.artistDetail(artist);
+        return Stack(
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text(artist.name,
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
-            ),
-            CountHeader(count: songs.length),
-            if (artist.canonicalKey != null || artist.identityKey != null)
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  icon: const Icon(Icons.sync_alt, size: 18),
-                  label: const Text('重新解析'),
-                  onPressed: () => _forceReParse(context, artist),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                  child: Text(artist.name,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
                 ),
-              ),
-            const Divider(height: 1),
-            Expanded(
-              child: RowList(
-                controller: scrollCtrl,
-                count: songs.length,
-                itemBuilder: (c, i) {
-                  final s = songs[i];
-                  return SongTile(
-                    song: s,
-                    source: lib.sourceFor(s.sourceKey),
-                    playing: player.isCurrent(s),
-                    onPlay: () {
-                      Navigator.of(c).pop();
-                      player.playQueue(songs,
-                          index: i,
-                          contextKey: PlayerProvider.anchorForArtist(artist.name));
-                      context.read<NavigationProvider>().openPlayer();
+                CountHeader(count: songs.length),
+                if (detail != null) _ArtistDetailBlock(detail: detail),
+                const Divider(height: 1),
+                Expanded(
+                  child: RowList(
+                    controller: scrollCtrl,
+                    count: songs.length,
+                    itemBuilder: (c, i) {
+                      final s = songs[i];
+                      return SongTile(
+                        song: s,
+                        source: lib.sourceFor(s.sourceKey),
+                        playing: player.isCurrent(s),
+                        onPlay: () {
+                          Navigator.of(c).pop();
+                          player.playQueue(songs,
+                              index: i,
+                              contextKey: PlayerProvider.anchorForArtist(artist.name));
+                          context.read<NavigationProvider>().openPlayer();
+                        },
+                      );
                     },
-                  );
-                },
+                  ),
+                ),
+              ],
+            ),
+            // 「重新解析」放歌手详情页右下角：只重拉这一位（含成员展开），
+            // 已有 mbid 的按该实体重取，不会漂到别的真人。
+            Positioned(
+              right: 16,
+              bottom: 16,
+              child: CornerAddButton(
+                icon: Icons.sync_alt,
+                label: '重新解析',
+                tooltip: '重新解析 ${artist.name}',
+                onPressed: () => _forceReParse(context, artist),
               ),
             ),
           ],
         );
       },
     );
+  }
+
+  /// 把这一位歌手打回 pending 并直跑一轮（含已解析成功的），受 MB 1 req/s 限流。
+  Future<void> _forceReParse(BuildContext context, Artist artist) async {
+    final resolver = context.read<ArtistResolver>();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: Text('重新解析「${artist.name}」？'),
+        content: const Text('会把这一位歌手（含已解析成功的）按 MusicBrainz 重新拉取一遍，组合成员也会重新展开。'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(c).pop(false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.of(c).pop(true),
+              child: const Text('开始')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    // 弹页里的歌曲/详情是打开那一刻的快照，解析完身份可能变（合流、改判真人），
+    // 留着旧数据容易误读：先关掉，歌手页会就地刷新。
+    if (context.mounted) Navigator.of(context).pop();
+    await resolver.forceRetryOne(
+        artistKey: artist.identityKey, canonicalKey: artist.canonicalKey);
+    AppToast.show('已开始重新解析 ${artist.name}', isError: false);
+  }
+}
+
+/// 歌手弹页里的「详情」区：只在人物身份下有内容，默认收起，展开后是
+/// 组合 / 角色 / 成员三栏。带本地身份键的行可以点进去。
+class _ArtistDetailBlock extends StatefulWidget {
+  final ArtistDetail detail;
+  const _ArtistDetailBlock({required this.detail});
+
+  @override
+  State<_ArtistDetailBlock> createState() => _ArtistDetailBlockState();
+}
+
+class _ArtistDetailBlockState extends State<_ArtistDetailBlock> {
+  bool _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final d = widget.detail;
+    if (d.isEmpty) return const SizedBox.shrink();
+    final n = d.bands.length + d.roles.length + d.members.length;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          onTap: () => setState(() => _open = !_open),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+            child: Row(
+              children: [
+                Icon(_open ? Icons.expand_less : Icons.expand_more,
+                    size: 20, color: Theme.of(context).colorScheme.primary),
+                const SizedBox(width: 4),
+                const Text('详情',
+                    style: TextStyle(fontWeight: FontWeight.w600)),
+                const SizedBox(width: 8),
+                Text('($n)',
+                    style: TextStyle(
+                        color: Theme.of(context).colorScheme.primary)),
+              ],
+            ),
+          ),
+        ),
+        if (_open)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _refSection(context, '组合', d.bands, Icons.groups) ??
+                    const SizedBox.shrink(),
+                _refSection(context, '角色', d.roles, Icons.theater_comedy) ??
+                    const SizedBox.shrink(),
+                _refSection(context, '成员', d.members, Icons.person) ??
+                    const SizedBox.shrink(),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget? _refSection(
+      BuildContext context, String title, List<ArtistRef> refs, IconData icon) {
+    if (refs.isEmpty) return null;
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title,
+              style: TextStyle(
+                  fontSize: 12, color: cs.primary, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 2),
+          for (final r in refs) _refRow(context, r, icon),
+        ],
+      ),
+    );
+  }
+
+  Widget _refRow(BuildContext context, ArtistRef r, IconData icon) {
+    final sub = _subtitle(r);
+    return InkWell(
+      // 本地没这条身份的行只能看，不能点进去。
+      onTap: r.artistKey == null ? null : () => _openArtistByKey(context, r),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(
+          children: [
+            Icon(icon, size: 16, color: Theme.of(context).disabledColor),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(r.name,
+                      style: const TextStyle(fontSize: 13),
+                      overflow: TextOverflow.ellipsis),
+                  if (sub != null)
+                    Text(sub,
+                        style: TextStyle(
+                            fontSize: 11,
+                            color: Theme.of(context).disabledColor)),
+                ],
+              ),
+            ),
+            if (r.artistKey != null)
+              const Icon(Icons.chevron_right, size: 18),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 第二行：作品名/副标题 + 曲目数。本地没身份就没有曲目数。
+  String? _subtitle(ArtistRef r) {
+    final parts = <String>[];
+    if (r.disambiguation != null) parts.add(r.disambiguation!);
+    if (r.songCount != null) {
+      parts.add('${r.songCount} 首');
+    } else {
+      parts.add('未建档');
+    }
+    return parts.join(' · ');
+  }
+
+  void _openArtistByKey(BuildContext context, ArtistRef ref) {
+    final key = ref.artistKey!;
+    // 详情里的关联身份未必在歌手页当前列表里（没歌、没被筛进来），所以带
+    // 显示名/曲目数兜一个临时条目，弹页标题和列表才对得上。
+    _openArtist(
+        context,
+        Artist(
+          name: ref.name,
+          songCount: ref.songCount ?? 0,
+          albumCount: 0,
+          identityKey: key,
+          canonicalKey: key,
+          status: 'resolved',
+        ),
+        context.read<ArtistResolver>());
   }
 }
 

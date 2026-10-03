@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import '../data/sources/music_source.dart';
+import '../data/local/local_index.dart';
 import '../models/song.dart';
 import '../models/album.dart';
 import '../models/artist.dart';
@@ -135,8 +136,8 @@ class LibraryProvider extends ChangeNotifier {
 
   /// 歌手对应的歌曲列表。
   ///
-  /// identity 模式（歌手处理.txt）：带 identityKey 的歌手走 artist_song_map
-  /// 映射（别名/角色/归一化并组自动合并）；否则退回原字符串匹配。
+  /// 带 identityKey 的歌手走 artist_song_map 映射（别名/角色/归一化并组自动
+  /// 合并）；否则退回原字符串匹配。
   List<Song> artistSongs(Artist artist) {
     if (artist.identityKey != null) {
       return _directManager?.index.identitySongs(artist.identityKey!,
@@ -149,22 +150,26 @@ class LibraryProvider extends ChangeNotifier {
         .toList();
   }
 
-  void _recomputeGroups() {
-    albums = Album.fromSongs(songs);
-    if (_identityEnabled) {
-      artists = _identityGroupsFromDb(_lastQuery);
-    } else {
-      artists = Artist.fromSongs(songs);
-    }
+  /// 人物身份的详情（组合/角色/成员），非人物身份返回 null。
+  ArtistDetail? artistDetail(Artist artist) {
+    final m = _directManager;
+    final key = artist.identityKey;
+    if (m == null || key == null) return null;
+    return m.index.artistDetail(key,
+        minDurationSec: m.settings.scanIgnoreMinDurationSec,
+        minSizeBytes: m.settings.scanIgnoreMinSizeBytes);
   }
 
-  /// 歌手分组是否走身份聚合（列=DB 身份行，源=歌曲映射；保真/合并别名）。
-  bool get _identityEnabled =>
-      _directManager?.settings.artistIdentity ?? false;
+  void _recomputeGroups() {
+    albums = Album.fromSongs(songs);
+    artists = _identityGroupsFromDb(_lastQuery);
+  }
 
   List<Artist> _identityGroupsFromDb(String? query) {
     final m = _directManager;
-    if (m == null) return const [];
+    // 索引还没挂上（纯网页源、或启动时序早于 attachDirectManager）：退回按歌曲原始
+    // 歌手名分组。身份聚合是默认路径，但这里空掉的话歌手页会直接没内容。
+    if (m == null) return Artist.fromSongs(songs);
     final out = <Artist>[
       ...m.index.identityArtistGroups(
         query: query,
@@ -182,7 +187,6 @@ class LibraryProvider extends ChangeNotifier {
 
   /// 歌手身份解析结果变化后（无需重扫歌曲）刷新歌手分组。
   void refreshArtists() {
-    if (!_identityEnabled) return;
     artists = _identityGroupsFromDb(_lastQuery);
     notifyListeners();
   }
