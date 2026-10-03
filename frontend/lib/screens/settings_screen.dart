@@ -1097,13 +1097,40 @@ class _SongsSettingsState extends State<_SongsSettings> {
           },
         ),
         ListTile(
-          title: const Text('立即重新解析全部'),
-          subtitle: const Text('把未命中/待确认的歌手重置为重新解析'),
+          title: const Text('立即重试解析全部'),
+          subtitle: const Text('把未命中/待确认的歌手重置为重试解析'),
           trailing: const Icon(Icons.refresh),
           onTap: () async {
             await context.read<ArtistResolver>().retryAll();
             if (context.mounted) {
-              AppToast.show('已开始重新解析歌手', isError: false);
+              AppToast.show('已开始重试解析歌手', isError: false);
+            }
+          },
+        ),
+        ListTile(
+          title: const Text('强制解析'),
+          subtitle: const Text('连已解析的歌手一起按 MB 重新拉取，成员也会重新展开；受 MB 限流，逐个顺序进行'),
+          trailing: const Icon(Icons.playlist_add_check),
+          onTap: () async {
+            final ok = await showDialog<bool>(
+              context: context,
+              builder: (c) => AlertDialog(
+                title: const Text('强制解析全部歌手？'),
+                content: const Text('会把所有歌手（含已解析成功的）重新拉取一遍，并重新展开组合成员。请求受 MusicBrainz 限流，歌手多时需要跑一阵。'),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.of(c).pop(false),
+                      child: const Text('取消')),
+                  FilledButton(
+                      onPressed: () => Navigator.of(c).pop(true),
+                      child: const Text('开始')),
+                ],
+              ),
+            );
+            if (ok != true || !context.mounted) return;
+            await context.read<ArtistResolver>().forceRetryAll();
+            if (context.mounted) {
+              AppToast.show('已开始强制解析歌手', isError: false);
             }
           },
         ),

@@ -710,4 +710,164 @@ void main() {
       await _dispose(index, dir);
     }
   });
+
+  // 回归：某一轮解析失败只能「记待重试」。旧实现走 artistUpsert 全字段覆盖，
+  // 传空的 names/groups 和空 mbid 会把已经合流好的身份整个抹掉——
+  // 一次网络抖动就丢了别名表，成员元数据也归零。
+  test('记失败待重试：不清掉已合流的 mbid/names/type', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([_song('a', '振り回され隊')]);
+      await index.reconcileArtists();
+      final group = index.artistRowByCanonical('振り回され隊')!;
+      await index.artistUpsert(
+        artistKey: group.artistKey,
+        canonicalKey: group.canonicalKey,
+        mbid: 'g5',
+        displayName: '振り回され隊',
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'group',
+        matchScore: 100,
+        names: [
+          {'name': '振り回され隊', 'name_type': 'primary', 'is_primary': 1}
+        ],
+        groups: [
+          {'name': 'チノ', 'mbid': 'c1', 'type': 'member of band'}
+        ],
+      );
+
+      await index.artistMarkError(
+          artistKey: group.artistKey, errorCount: 1, nextAt: 123456);
+
+      final row = index.artistRowByKey(group.artistKey)!;
+      expect(row.status, 'local');
+      expect(row.errorCount, 1);
+      expect(row.nextAt, 123456);
+      expect(row.mbid, 'g5');
+      expect(row.type, 'group');
+      expect(row.matchScore, 100);
+      expect(row.names, isNotEmpty);
+      expect(row.groups, isNotEmpty);
+      // 状态退回 local → 重新进入工作集，会被自动重试捞起来。
+      expect(
+          index.artistWorkSet().map((w) => w.canonicalKey), contains('振り回され隊'));
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
+
+  test('强制解析：resolved 被打回 pending 且清 expanded_at，成员边先留着', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([_song('a', '振り回され隊')]);
+      await index.reconcileArtists();
+      final group = index.artistRowByCanonical('振り回され隊')!;
+      await index.artistUpsert(
+        artistKey: group.artistKey,
+        canonicalKey: group.canonicalKey,
+        mbid: 'g6',
+        displayName: '振り回され隊',
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'group',
+      );
+      await index.artistSetMembers(artistKey: group.artistKey, members: [
+        memberOf('p1', '水瀬いのり', 'person'),
+      ]);
+      expect(index.artistStats()['members'], 1);
+
+      await index.artistForceRetry(all: true);
+
+      final row = index.artistRowByKey(group.artistKey)!;
+      expect(row.status, 'pending');
+      expect(row.errorCount, 0);
+      // mbid 必须还在：解析服务靠它按原实体重取，不重新搜索。
+      expect(row.mbid, 'g6');
+      // expanded_at 清了 → 会重新展开；边先留着，展开成功后由全量替换覆盖。
+      expect(index.artistStats()['expanded'], 0);
+      expect(index.artistStats()['members'], 1);
+      expect(
+          index.artistWorkSet().map((w) => w.canonicalKey), contains('振り回され隊'));
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
+
+  test('强制解析：只影响指定身份', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([_song('a', 'A'), _song('b', 'B')]);
+      await index.reconcileArtists();
+      for (final (key, canon) in [('A', 'A'), ('B', 'B')]) {
+        final row = index.artistRowByCanonical(canon)!;
+        await index.artistUpsert(
+          artistKey: row.artistKey,
+          canonicalKey: row.canonicalKey,
+          mbid: key,
+          displayName: canon,
+          status: 'resolved',
+          errorCount: 0,
+          nextAt: 0,
+          type: 'person',
+        );
+      }
+      final a = index.artistRowByCanonical('A')!;
+
+      await index.artistForceRetry(artistKey: a.artistKey);
+
+      expect(index.artistRowByCanonical('A')!.status, 'pending');
+      expect(index.artistRowByCanonical('B')!.status, 'resolved');
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
+
+  // 回归：重新解析一个「已经有 mbid」的身份时，合流的目标就是它自己。
+  // 旧实现无条件 DELETE FROM artists WHERE artist_key=fromAk —— 等于把刚刷新的
+  // 身份连同它的歌曲映射一起删掉，歌手直接从库里消失。
+  test('合流到自身：身份和歌曲映射都不该被删', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([_song('a', '振り回され隊')]);
+      await index.reconcileArtists();
+      final group = index.artistRowByCanonical('振り回され隊')!;
+      await index.artistUpsert(
+        artistKey: group.artistKey,
+        canonicalKey: group.canonicalKey,
+        mbid: 'g7',
+        displayName: '振り回され隊',
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'group',
+        matchScore: 100,
+      );
+
+      // 模拟重新解析：同一个 mbid 合流回同一行，且这次没拿到分数。
+      final merged = await index.artistMergeMbid(
+        canonicalKey: group.canonicalKey,
+        fromArtistKey: group.artistKey,
+        mbid: 'g7',
+        displayName: '振り回され隊',
+        type: 'group',
+        matchScore: null,
+      );
+
+      expect(merged, isTrue);
+      final row = index.artistRowByKey(group.artistKey);
+      expect(row, isNotNull, reason: '身份不能被合流成自删');
+      expect(row!.mbid, 'g7');
+      expect(row.status, 'resolved');
+      // 这次没分数，原分数不能被抹掉。
+      expect(row.matchScore, 100);
+      // 歌还挂在这个身份下。
+      expect(
+          index.identityArtistGroups().map((a) => a.name), contains('振り回され隊'));
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
 }

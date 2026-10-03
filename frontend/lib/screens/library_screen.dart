@@ -875,7 +875,7 @@ class _ArtistsViewState extends State<_ArtistsView>
 ///
 /// 按 [Artist.resolveState] 分流，未解析成功的歌手一律不进歌曲列表：
 /// - confirm（同名多真人需人工确认）→ 弹候选选择页；
-/// - retry（待解析/未命中）→ 弹「重新解析」确认窗；
+/// - retry（待解析/未命中）→ 弹「重试解析」确认窗；
 /// - normal（已解析/非 identity 模式）→ 打开歌曲弹层。
 void _openArtist(BuildContext context, Artist artist, ArtistResolver resolver) {
   switch (artist.resolveState) {
@@ -968,7 +968,7 @@ Future<void> _showAmbiguousPicker(
 }
 
 /// 候选为空（重试后仍无可选）时的空态：
-/// 网络不可用与“确实无候选”分开提示，并给出「重新解析」立即再试。
+/// 网络不可用与“确实无候选”分开提示，并给出「重试解析」立即再试。
 class _AmbiguousEmptyState extends StatelessWidget {
   final ArtistResolver resolver;
   final String canonicalKey;
@@ -993,7 +993,7 @@ class _AmbiguousEmptyState extends StatelessWidget {
           const SizedBox(height: 16),
           FilledButton.icon(
             icon: const Icon(Icons.refresh, size: 18),
-            label: const Text('重新解析'),
+            label: const Text('重试解析'),
             onPressed: () async {
               await resolver.retryOne(canonicalKey);
               if (context.mounted) Navigator.of(context).pop();
@@ -1011,7 +1011,7 @@ Future<void> _showRetryConfirm(
   final ok = await showDialog<bool>(
     context: context,
     builder: (c) => AlertDialog(
-      title: Text('重新解析「${artist.name}」？'),
+      title: Text('重试解析「${artist.name}」？'),
       content: Text(artist.status == 'local'
           ? '上次解析未找到可靠身份（MusicBrainz 可能未收录），确认后立即重试。'
           : '该歌手尚未解析，确认后立即尝试。'),
@@ -1137,6 +1137,31 @@ class _StatusBadge extends StatelessWidget {
       );
 }
 
+/// 歌手弹页「重新解析」：把这个身份打回 pending（连 resolved 一起），并清掉
+/// expanded_at 让组合成员重新展开。已有 MBID 的按该实体重取，不会漂到别的真人。
+Future<void> _forceReParse(BuildContext context, Artist artist) async {
+  final resolver = context.read<ArtistResolver>();
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (c) => AlertDialog(
+      title: Text('重新解析「${artist.name}」？'),
+      content: const Text('会按 MusicBrainz 重新拉取该歌手，组合成员也会重新展开。'),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.of(c).pop(false),
+            child: const Text('取消')),
+        FilledButton(
+            onPressed: () => Navigator.of(c).pop(true),
+            child: const Text('开始')),
+      ],
+    ),
+  );
+  if (ok != true || !context.mounted) return;
+  Navigator.of(context).pop();
+  await resolver.forceRetryOne(
+      artistKey: artist.identityKey, canonicalKey: artist.canonicalKey);
+}
+
 class _ArtistSongsSheet extends StatelessWidget {
   final Artist artist;
   final List<Song> songs;
@@ -1159,6 +1184,15 @@ class _ArtistSongsSheet extends StatelessWidget {
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
             ),
             CountHeader(count: songs.length),
+            if (artist.canonicalKey != null || artist.identityKey != null)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  icon: const Icon(Icons.sync_alt, size: 18),
+                  label: const Text('重新解析'),
+                  onPressed: () => _forceReParse(context, artist),
+                ),
+              ),
             const Divider(height: 1),
             Expanded(
               child: RowList(

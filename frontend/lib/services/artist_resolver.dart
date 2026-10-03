@@ -207,7 +207,7 @@ class ArtistResolver extends ChangeNotifier {
     _scheduleNext(idle: true);
   }
 
-  /// 全部 local/ambiguous 重置为 pending 重新解析。
+  /// 全部 local/ambiguous 重置为 pending 重试解析。
   /// 手动路径不依赖「自动后台解析」开关：重置后立即直跑一轮。
   Future<void> retryAll() async {
     await _index.artistRetry();
@@ -218,6 +218,22 @@ class ArtistResolver extends ChangeNotifier {
   /// 手动路径不依赖「自动后台解析」开关：重置后立即直跑一轮。
   Future<void> retryOne(String canonicalKey) async {
     await _index.artistRetry(canonicalKey: canonicalKey);
+    await runOnceNow();
+  }
+
+  /// 强制解析全部歌手（设置页「强制解析」按钮）：连 resolved 一起打回 pending 并清
+  /// expanded_at，成员随之重新展开。已有 mbid 的按该实体重取（不会漂到别的真人）。
+  /// 后台循环会按批顺序推进（MB 1 req/s，大库需要跑一阵）。
+  Future<void> forceRetryAll() async {
+    await _index.artistForceRetry(all: true);
+    await runOnceNow();
+  }
+
+  /// 重新解析单个歌手（歌手页「重新解析」按钮）。
+  /// [artistKey] 为空时退回 [canonicalKey]。
+  Future<void> forceRetryOne({String? artistKey, String? canonicalKey}) async {
+    await _index.artistForceRetry(
+        all: false, artistKey: artistKey, canonicalKey: canonicalKey);
     await runOnceNow();
   }
 
@@ -324,6 +340,19 @@ class ArtistResolver extends ChangeNotifier {
       resolvedCount++;
       lastResolveAt = DateTime.now();
       return;
+    }
+
+    // 已经拿到过 MBID（重试/强制解析）：直接按该实体重取，不要再搜索——
+    // 搜索榜首会随 MB 数据变化，重新解析不该悄悄换成另一个真人。
+    final known = item.mbid;
+    if (known != null && known.isNotEmpty) {
+      final hit = await _lookupByMbid(known);
+      if (hit != null) {
+        await _bind(item.canonicalKey, item.artistKey, hit);
+        resolvedCount++;
+        lastResolveAt = DateTime.now();
+        return;
+      }
     }
 
     final hits = await _search(searchName, limit: 10);
@@ -457,16 +486,11 @@ class ArtistResolver extends ChangeNotifier {
   Future<void> _markBackoff(ArtistWorkItem item, int extraMs) async {
     final err = item.errorCount + 1;
     final base = err >= 4 ? 300000 : 10000 * (1 << (err - 1).clamp(0, 3));
-    await _index.artistUpsert(
+    await _index.artistMarkError(
       artistKey: item.artistKey,
-      canonicalKey: item.canonicalKey,
-      displayName: item.displayName,
-      status: 'local',
       errorCount: err,
       nextAt: DateTime.now().millisecondsSinceEpoch +
           (extraMs > base ? extraMs : base),
-      names: const [],
-      groups: const [],
     );
   }
 
@@ -513,6 +537,33 @@ class ArtistResolver extends ChangeNotifier {
     ];
   }
 
+  /// 按已知 MBID 取实体（重试/强制解析走这条，不重新搜索，避免漂到别的真人）。
+  /// 请求失败照常抛出，交由退避重试；实体不存在/已合并（404/空）返回 null，退回搜索。
+  Future<MbArtistHit?> _lookupByMbid(String mbid) async {
+    try {
+      final resp =
+          await _get('/artist/$mbid', {'fmt': 'json', 'inc': 'aliases'});
+      final data = resp.data;
+      if (data is! Map<String, dynamic>) return null;
+      return MbArtistHit(
+        mbid: (data['id'] as String?) ?? mbid,
+        name: (data['name'] as String?) ?? '',
+        type: data['type'] as String?,
+        sortName: data['sort-name'] as String?,
+        disambiguation: data['disambiguation'] as String?,
+        country: data['country'] as String?,
+        beginYear: _lifeSpanYear(data['life-span'], 'begin'),
+        endYear: _lifeSpanYear(data['life-span'], 'end'),
+        aliases: (data['aliases'] as List?)?.cast<Map<String, dynamic>>() ?? [],
+      );
+    } on DioException catch (e) {
+      // 实体确实没了才退回搜索；其余（限流/断网）继续抛给退避。
+      final code = e.response?.statusCode;
+      if (code == 404 || code == 400) return null;
+      rethrow;
+    }
+  }
+
   Future<Response<dynamic>> _get(String path, Map<String, dynamic> q) async {
     await _throttle();
     try {
@@ -522,26 +573,27 @@ class ArtistResolver extends ChangeNotifier {
     }
   }
 
-  /// P2：lookup 一次已解析身份的关系（member_of/former/voice actor/
-  /// collaboration/subgroup 白名单），折成 groups JSON。硬限流 1 次/秒由全局
-  /// 令牌桶保证；超限/失败静默返回空（本次 resolved 已成立）。
-  /// 一次 lookup 取回该实体的全部关系（同一份数据两用：groups JSON + 成员展开）。
-  /// 限流由全局令牌桶保证；失败/超限静默返回空（本次 resolved 已成立，成员下次补）。
+  /// 拉实体关系（歌手处理.txt 第 3 步：一次 artist-rels 覆盖 Search + Lookup）。
+  ///
+  /// **失败必须抛出**，不能吞成空列表：调用方靠「空 = 确实无成员」来记 expanded_at，
+  /// 一旦把网络失败也折成空，组合会被永久标记成「无成员」而不再重试展开。
+  /// MB 对真无关系的实体照样返回 200 + 空 relations，所以重试不会失控。
   Future<List<Map<String, dynamic>>> _fetchRelations(String mbid) async {
     if (mbid.isEmpty) return const [];
-    try {
-      final resp = await _get('/artist/$mbid', {
-        'inc': 'artist-rels+aliases',
-        'fmt': 'json',
-      });
-      final data = resp.data;
-      if (data is! Map<String, dynamic>) return const [];
-      final rels = data['relations'];
-      if (rels is! List) return const [];
-      return rels.cast<Map<String, dynamic>>();
-    } catch (_) {
-      return const [];
+    final resp = await _get('/artist/$mbid', {
+      'inc': 'artist-rels+aliases',
+      'fmt': 'json',
+    });
+    final data = resp.data;
+    if (data is! Map<String, dynamic>) {
+      throw StateError('artist-rels 响应不是对象: ${data.runtimeType}');
     }
+    final rels = data['relations'];
+    if (rels == null) return const [];
+    if (rels is! List) {
+      throw StateError('artist-rels.relations 不是数组: ${rels.runtimeType}');
+    }
+    return rels.cast<Map<String, dynamic>>();
   }
 
   /// 折成 groups JSON（信息页展示用的「所属团体/角色」）。

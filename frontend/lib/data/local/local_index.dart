@@ -1843,9 +1843,33 @@ class LocalIndex {
     });
   }
 
-  /// 重置 local/ambiguous 为 pending 重新解析（canonicalKey=null 表示全部）。
+  /// 重置 local/ambiguous 为 pending 重试解析（canonicalKey=null 表示全部）。
+  /// 已解析成功的身份不受影响。
   Future<void> artistRetry({String? canonicalKey}) {
     return _writer!.op<void>('artistRetry', {'canonicalKey': canonicalKey});
+  }
+
+  /// 强制解析：连 resolved 一起打回 pending，并清 expanded_at 让成员重新展开。
+  /// 三选一传参：[all]=true 全部、[artistKey] 单个身份、[canonicalKey] 单个归一化键。
+  Future<void> artistForceRetry(
+      {bool all = false, String? artistKey, String? canonicalKey}) {
+    return _writer!.op<void>('artistForceRetry',
+        {'all': all, 'artistKey': artistKey, 'canonicalKey': canonicalKey});
+  }
+
+  /// 记某一轮失败待重试；不动 mbid/names/groups/type（见 writer 侧 _opArtistMarkError）。
+  Future<void> artistMarkError({
+    required String artistKey,
+    required int errorCount,
+    required int nextAt,
+    String status = 'local',
+  }) {
+    return _writer!.op<void>('artistMarkError', {
+      'artistKey': artistKey,
+      'errorCount': errorCount,
+      'nextAt': nextAt,
+      'status': status,
+    });
   }
 
   ArtistRow _rowToArtist(Row r) => ArtistRow(

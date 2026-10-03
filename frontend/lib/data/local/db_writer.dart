@@ -572,6 +572,12 @@ Object? _runOp(Database db, String name, Map<String, dynamic> a) {
     case 'artistRetry':
       _opArtistRetry(db, a);
       return null;
+    case 'artistForceRetry':
+      _opArtistForceRetry(db, a);
+      return null;
+    case 'artistMarkError':
+      _opArtistMarkError(db, a);
+      return null;
     case 'artistSetMembers':
       return _opArtistSetMembers(db, a);
     case 'artistMarkExpanded':
@@ -1521,7 +1527,7 @@ bool _opArtistMergeMbid(Database db, Map<String, dynamic> a) {
       db.execute('''
         UPDATE artists SET names=?, groups=?, display_name=?, type=?, 
           disambiguation=?, status='resolved', error_count=0, resolved_at=?,
-          match_score=?, updated_at=?
+          match_score=COALESCE(?, match_score), updated_at=?
         WHERE artist_key=?
       ''', [
         jsonEncode(names),
@@ -1532,13 +1538,19 @@ bool _opArtistMergeMbid(Database db, Map<String, dynamic> a) {
         a['type'],
         (r['disambiguation'] as String?) ?? a['disambiguation'],
         nowIso,
+        // 按已有 mbid 重取实体拿不到分数（score=0 → null），此时保留原分数，
+        // 别被一次重新解析抹成空。
         a['matchScore'],
         nowIso,
         targetAk,
       ]);
     }
   }
-  db.execute('DELETE FROM artists WHERE artist_key=?', [fromAk]);
+  // 合流目标就是来源本身（重新解析一个已解析身份）时**不能删**：
+  // 删掉就等于把刚刷新的身份连同它的歌曲映射一起抹了。
+  if (targetAk != fromAk) {
+    db.execute('DELETE FROM artists WHERE artist_key=?', [fromAk]);
+  }
   return true;
 }
 
@@ -1558,6 +1570,48 @@ void _opArtistRetry(Database db, Map<String, dynamic> a) {
       "UPDATE artists SET status='pending', error_count=0, next_at=0, updated_at=? "
       "WHERE canonical_key=? AND status IN ('local','ambiguous')",
       [nowIso, canon]);
+}
+
+/// 某一轮解析失败：只记「待重试」，绝不碰 mbid/names/groups/type/match_score。
+///
+/// 不能复用 _opArtistUpsert——那是全字段覆盖，传空 names/groups 和空 mbid 会把
+/// 已经合流好的身份整个抹掉，等于一次网络抖动就丢掉别名表和成员元数据。
+void _opArtistMarkError(Database db, Map<String, dynamic> a) {
+  final nowIso = DateTime.now().toIso8601String();
+  db.execute(
+      'UPDATE artists SET status=?, error_count=?, next_at=?, updated_at=? '
+      'WHERE artist_key=?',
+      [
+        a['status'] ?? 'local',
+        a['errorCount'] ?? 0,
+        a['nextAt'] ?? 0,
+        nowIso,
+        a['artistKey'],
+      ]);
+}
+
+/// 强制重新解析：把指定范围（全部 / 单个身份 / 单个 canonical）的歌手打回 pending。
+///
+/// 与 _opArtistRetry 的区别是**连 resolved 一起重置**，并清 expanded_at 让成员重新
+/// 展开；成员边本身先留着——展开成功时 _opArtistSetMembers 全量替换，失败时旧的
+/// 可用成员不至于被提前抹掉。
+void _opArtistForceRetry(Database db, Map<String, dynamic> a) {
+  final nowIso = DateTime.now().toIso8601String();
+  const head = "UPDATE artists SET status='pending', error_count=0, next_at=0, "
+      'expanded_at=NULL, updated_at=? WHERE ';
+  if (a['all'] == true) {
+    db.execute('$head 1=1', [nowIso]);
+    return;
+  }
+  final ak = a['artistKey'] as String?;
+  if (ak != null && ak.isNotEmpty) {
+    db.execute('$head artist_key=?', [nowIso, ak]);
+    return;
+  }
+  final canon = a['canonicalKey'] as String?;
+  if (canon != null && canon.isNotEmpty) {
+    db.execute('$head canonical_key=?', [nowIso, canon]);
+  }
 }
 
 /// 全量替换某身份的成员边（歌手处理.txt 第 43 行：一次 artist-rels 拿回的关系直接建边）。

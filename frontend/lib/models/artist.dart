@@ -5,7 +5,7 @@ enum ArtistResolveState {
   /// 已解析 / 非 identity 模式：正常查看歌曲。
   normal,
 
-  /// 待解析 / 未命中（pending / local）：点开弹「重新解析」确认。
+  /// 待解析 / 未命中（pending / local）：点开弹「重试解析」确认。
   retry,
 
   /// 同名多真人待人工确认（ambiguous）：点开弹候选表。
