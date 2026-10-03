@@ -1,1 +1,0 @@
-cd frontend && flutter run -d linux
