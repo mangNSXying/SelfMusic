@@ -1271,7 +1271,21 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (player.playing) {
           await player.pause();
         }
-        await player.play();
+        // play() 的 Future 要到本曲播完/被暂停才 complete（just_audio 契约；
+        // Android 插件把 playResult 延迟到 STATE_ENDED/pause 才回调）。不能
+        // await：否则后面的 _syncSystemMedia()（驱动 audio_service 前台服务 +
+        // 播放期 wake lock）、元数据补读、下一首预热全被推迟到曲末——后台播放
+        // 期间没有前台服务/唤醒锁，息屏/Doze 下进程被冻结回收，表现为
+        // 「放着放着就没声了」。错误仍按原 catch 的口径处理（toast/自动跳歌）。
+        unawaited(player.play().catchError((Object e) {
+          if (!alive() || _shuttingDown) return;
+          debugPrint('[play] play 调用异常《${cur.title}》: $e');
+          if (!autoAdvanceOnFailure) {
+            AppToast.error(e, '播放失败');
+          } else {
+            unawaited(_autoSkipAfterFailure(e));
+          }
+        }));
         _fadeIn();
       }
       if (!alive()) return;
@@ -1921,7 +1935,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         await player.seek(Duration.zero);
       } catch (_) {}
     }
-    await player.play();
+    // 同 [_play]：play() 的 Future 到播完/暂停才 complete，不能 await，否则
+    // toggle()/通知栏「播放」的 _syncSystemMedia() 被推迟（前台服务/唤醒锁
+    // 起不来，后台播放不成立）。
+    unawaited(player.play().catchError((Object e) {
+      debugPrint('[play] play 调用异常（忽略）：$e');
+    }));
     _fadeIn();
   }
 

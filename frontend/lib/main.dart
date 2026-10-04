@@ -95,11 +95,11 @@ Future<void> main() async {
           androidNotificationChannelId: 'com.shamiko.selfmusic.channel.audio',
           androidNotificationChannelName: 'SelfMusic 播放',
           androidNotificationChannelDescription: '播放控制与后台播放',
-          // 暂停不退出前台服务：回到桌面/锁屏后系统不会回收服务，
-          // 再次恢复播放也不会受 Android 12+ 后台启动前台服务限制。
-          androidStopForegroundOnPause: true,
-          // 将通知标记为 ongoing，降低被系统清理/杀死时的优先级风险
-          androidNotificationOngoing: true,
+          // 暂停不退出前台服务：回到桌面/锁屏后系统不会回收服务，再次恢复
+          // 播放也不会受 Android 12+ 后台启动前台服务限制。（audio_service 中
+          // 与 androidNotificationOngoing 互斥——ongoing 通知并不阻止进程
+          // 回收，前台服务才是保活根基，故不用 ongoing。）
+          androidStopForegroundOnPause: false,
           // 状态栏小图标：白色剪影矢量（通知图标仅取 alpha 通道染色），
           // 默认 mipmap 应用图标在浅色状态栏上会糊成灰色方块。
           androidNotificationIcon: 'drawable/ic_stat_selfmusic',
