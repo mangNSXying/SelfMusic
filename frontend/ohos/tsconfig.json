@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2019",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "paths": {
+      "flutter-hvigor-plugin": ["./hvigor-types/flutter-hvigor-plugin.d.ts"]
+    },
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "noEmit": true,
+    "types": []
+  },
+  "files": [
+    "hvigorfile.ts",
+    "hvigorconfig.ts",
+    "entry/hvigorfile.ts",
+    "hvigor-types.d.ts"
+  ]
+}
