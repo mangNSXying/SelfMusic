@@ -255,7 +255,7 @@ flutter test                    # 单元测试
 flutter build linux --release   # Linux 出包
 flutter build apk --release     # Android 出包（壳工程已就绪）
 flutter build windows --release # Windows 出包（需 Windows 环境，见"多平台构建矩阵"）
-flutter build hap --debug     # 鸿蒙出包（Windows + ohos 分支；release 三架构用根目录 build-ohos.bat）
+flutter build hap --debug     # 鸿蒙出包（Windows + ohos 分支；release 出包用根目录 build-ohos.ps1）
 ```
 
 ### API 地址配置
@@ -472,7 +472,7 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 
 构建验证状态（2026-09）：
 - 双 SDK `flutter analyze` 零问题（ohos 3.41.9 与 stable 各自通过；两 SDK 的 pub get 会对 meta/test_api/vector_math 等 4 个 flutter_test 传递依赖来回改写 lock，属已知无害现象）
-- `flutter build hap --debug` 编译链全通：ArkTS（三插件 GeneratedPluginRegistrant）+ native（libfvp.so/libmdk.so arm64-v8a）+ Dart（kernel_blob JIT），assembleHap 出 signed hap；release 三架构（arm64/armv7/x86）出包用根目录 `build-ohos.bat`
+- `flutter build hap --debug` 编译链全通：ArkTS（三插件 GeneratedPluginRegistrant）+ native（libfvp.so/libmdk.so arm64-v8a）+ Dart（kernel_blob JIT），assembleHap 出 signed hap；release 出包用根目录 `build-ohos.ps1`（`hap` 参数出三架构 arm64/armv7/x86，缺省出 AGC 发布签名 .app）
 - 真机部署已走通：`devecocli signature generate`（签名材料落 `~/.ohos/config/`）→ 出包 → `hdc install -r` / `devecocli run`
 - **签名材料不入库**：`devecocli signature generate` 会把本机材料路径写进 `ohos/build-profile.json5`，该文件已 gitignore；仓库只留 `build-profile.json5.example` 模板（新机器复制一份改名即可）
 - 启动白屏已修复（两颗应用/生态层地雷，见上）：verify-6 全链路点亮，看门狗 1 次 poke 即解除
@@ -547,6 +547,14 @@ PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV �
 
    在干净 git 工作区执行，`git status` 复核无意外改动。`local.properties` 首次构建时由工具按 `DEVECO_SDK_HOME` 自动写入，不用手建。
 
+   根目录的出包脚本同样是模板入库、本机私有，一并复制后改工具链路径：
+
+   ```powershell
+   copy build-ohos.ps1.example build-ohos.ps1
+   notepad build-ohos.ps1        # 改 $Flutter / $DevEco 两个路径
+   Unblock-File .\build-ohos.ps1 # 执行策略拦下时先解封，否则用 -ExecutionPolicy Bypass -File
+   ```
+
 6. **账号与调试签名（GUI 自动签名，不依赖 devecocli）**：
    - DevEco Studio 登录共用华为账号；
    - 真机开开发者模式 + USB/无线调试连接电脑（无线：手机上看端口，`hdc tconn <ip:端口>`；首连在设备上点允许；端口每次重开无线调试会变）；
@@ -563,7 +571,9 @@ PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV �
 
 8. **日常**：日志 `hdc shell hilog`（Dart `debugPrint` 进 hilog）；截图/布局树可用 devecocli（可选，需另装 DevEco Code，本流程不依赖）。首次构建 fvp 经 CMake 从 sourceforge 下载 mdk 预编译库（约 12MB，arm64-v8a），网络受限时设 `FVP_DEPS_URL` 换镜像。
 
-团队约定：`build-profile.json5` / `local.properties` / `*.bat` / `pubspec.lock` 均本机私有不提交；ohos 平台判断一律 `Platform.operatingSystem == 'ohos'`（「跨 SDK 兼容铁律」）；共用账号的 AGC 调试证书/Profile 有配额，废弃设备与过期 Profile 及时在 AGC「设备管理」清理。
+团队约定：`build-profile.json5` / `local.properties` / `*.bat` / `*.ps1` / `pubspec.lock` 均本机私有不提交；ohos 平台判断一律 `Platform.operatingSystem == 'ohos'`（「跨 SDK 兼容铁律」）；共用账号的 AGC 调试证书/Profile 有配额，废弃设备与过期 Profile 及时在 AGC「设备管理」清理。
+
+> 仓库里的 `.ps1` 一律 **UTF-8 with BOM + CRLF**：Windows PowerShell 5.1 按 ANSI 读无 BOM 文件，中文注释会被解成乱码并直接报「字符串缺少终止符」。`.gitattributes` 已用 `*.ps1 text eol=crlf` 钉住换行，但 BOM 属于文件内容，clone 后若仍是乱码，检查编辑器是否把 BOM 删了。
 
 ---
 

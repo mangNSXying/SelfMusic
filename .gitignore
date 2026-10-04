@@ -54,3 +54,4 @@ frontend/third_party/audio_service/android/.gradle/
 /run-windows.bat
 /run-android.sh
 /build-android.sh
+/build-ohos.ps1

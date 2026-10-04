@@ -1,0 +1,71 @@
+﻿# 鸿蒙出包脚本（模板，入库；本机副本不入库）
+# 复制为 build-ohos.ps1 后改下面的工具链路径：
+#   Copy-Item build-ohos.ps1.example build-ohos.ps1
+#   notepad build-ohos.ps1
+# 用法：
+#   .\build-ohos.ps1          AGC 发布签名 .app（arm64；出包前临时切发布签名，结束无条件还原 debug 签名）
+#   .\build-ohos.ps1 hap      release 三架构 HAP（arm64/armv7/x86，日常分发/直装转正用）
+# 执行策略拦下的话：powershell -ExecutionPolicy Bypass -File .\build-ohos.ps1 [hap]
+param(
+    [string]$Target
+)
+
+$ErrorActionPreference = 'Stop'
+Set-Location -Path (Join-Path $PSScriptRoot 'frontend')
+
+# 本机工具链路径（换机器改这里）
+# FLUTTER 指向 ohos 分支的 flutter.bat（stable 与 Harmony fork 两套 SDK 可并存，
+# 用独立 wrapper 目录分开，见 run-windows.bat.example 里的 FLUTTER_BIN 说明）。
+$Flutter = 'C:/path/to/flutter-ohos/bin/flutter.bat'
+$DevEco = 'C:/path/to/DevEco Studio'
+$env:DEVECO_SDK_HOME = Join-Path $DevEco 'sdk'
+$env:PATH = (@(
+        (Join-Path $DevEco 'jbr\bin'),
+        (Join-Path $DevEco 'tools\hvigor\bin'),
+        (Join-Path $DevEco 'tools\ohpm\bin'),
+        (Join-Path $DevEco 'tools\node')
+    ) + $env:PATH) -join ';'
+
+if (-not $Target) { $Target = 'app' }
+if ($Target -ne 'app' -and $Target -ne 'hap') {
+    Write-Host '用法：.\build-ohos.ps1 [hap]   缺省出 AGC 发布签名 .app'
+    exit 1
+}
+
+# ---- hap：release 三架构，签名材料原样不动 ----
+if ($Target -eq 'hap') {
+    & $Flutter build hap --release --target-arch=arm64 --target-arch=armv7 --target-arch=x86
+    exit $LASTEXITCODE
+}
+
+# ---- app：临时切发布签名 - 出包 - 无条件还原 ----
+# release.cer / release.p7b 放 %USERPROFILE%\.ohos\config\，由 AGC 签发。
+# 脚本只把 build-profile.json5 里的 default_ohos_*.cer / *.p7b 换成 release.*，
+# storeFile、keyAlias 保持 debug 侧原值；出包结束（含失败）无条件还原原文件。
+$ConfigDir = Join-Path $env:USERPROFILE '.ohos\config'
+if (-not (Test-Path (Join-Path $ConfigDir 'release.cer'))) {
+    Write-Host "[缺发布材料] $ConfigDir\release.cer 不存在"
+    Write-Host '先在 AGC 签发发布证书/发布 Profile，命名为 release.cer / release.p7b 放入上述目录'
+    exit 1
+}
+
+$Profile = Join-Path (Get-Location) 'ohos\build-profile.json5'
+$Backup = Join-Path $env:TEMP 'build-profile.json5.bak'
+Copy-Item -Path $Profile -Destination $Backup -Force
+
+try {
+    $Text = [System.IO.File]::ReadAllText($Profile)
+    $Text = $Text -replace 'default_ohos_[^\\]+\.cer', 'release.cer' `
+        -replace 'default_ohos_[^\\]+\.p7b', 'release.p7b'
+    [System.IO.File]::WriteAllText($Profile, $Text, (New-Object System.Text.UTF8Encoding($false)))
+    & $Flutter build app --release --target-platform ohos-arm64
+    $ExitCode = $LASTEXITCODE
+}
+finally {
+    Copy-Item -Path $Backup -Destination $Profile -Force
+}
+
+if ($ExitCode -eq 0) {
+    Write-Host '出包完成：frontend\build\ohos\app\ohos-default-signed.app'
+}
+exit $ExitCode

@@ -114,7 +114,7 @@ selfmusic/
 ├── docker-compose.yml           # backend + backend-dev 编排
 ├── .env                         # 环境变量模板（不入库）
 ├── run-linux.sh / run-android.sh / run-windows.bat   # 三端快速运行
-├── build-ohos.bat                                     # 鸿蒙 release 出包（三架构）
+├── build-ohos.ps1                                     # 鸿蒙 release 出包（三架构 / AGC 发布签名 .app）
 ├── DESIGN.md / DEVELOPER.md / settings.md
 └── README.md
 ```
@@ -126,4 +126,5 @@ selfmusic/
 - Docker + Docker Compose、MySQL 8.0、Nginx（后端侧）
 - JDK 21（宿主机编译用）、Flutter SDK（stable，Dart ≥3.4）
 - Windows 出包需 Windows 机器 + VS 2022 C++ 桌面负载；鸿蒙需 DevEco Studio 与三方 Flutter 分支
+- 根目录 `build-ohos.ps1` 等 `.ps1` 脚本若被执行策略拦下，先 `Unblock-File .\build-ohos.ps1`，或用 `powershell -ExecutionPolicy Bypass -File .\build-ohos.ps1 [hap]`
 - 完整矩阵与搭建顺序见 [DEVELOPER.md「环境要求」](DEVELOPER.md#环境要求)
