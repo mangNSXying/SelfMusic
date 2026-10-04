@@ -500,6 +500,71 @@ PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV �
 
 **验收结论（2026-09-30 全部通过，PoC 转日常使用）**：直连 WebDAV 浏览/扫描/点播 ✓；fvp 重复 load 复位（重播同一首）✓；completed→自动切歌 ✓（初版 play 空转无声已修，见「客户端播放要点」）；WebDAV Basic 鉴权折叠被 FFmpeg 接受 ✓。此外装载看门狗（不可达主机 15s 有界失败）、AVSession 播控、横竖屏、应用图标、宽屏队列面板（无界宽度布局崩溃 + 状态栏让位）均已真机验收。后续问题按普通 bug 修，不再按 PoC 口径管理。
 
+### 新机接入（团队协作，2026-10）
+
+> 面向只做鸿蒙端的协作者：新电脑 + 新真机 + 共用华为开发者账号。全程约 1-2 小时（大头是 SDK 下载）。前置：已装 DevEco Studio，且「Settings > SDK」里可见 API 26（过低先升级，否则 hvigor 构建失败）。
+
+1. **ohos 分支 Flutter SDK**（独立目录，勿与其它 Flutter 混放）：
+
+   ```powershell
+   git clone https://gitcode.com/CPF-Flutter/flutter_flutter.git
+   git checkout oh-3.41.9-release
+   git checkout 62357a93d653bf844f730bb1f4b7cc9e2139d14e
+   ```
+
+   固定 commit：上游分支在动，engine 二进制必须与团队一致（framework 3.41.9 / Dart 3.11.5）。
+
+2. **自建 wrapper**（`*.bat` 不入库，每机一份；路径换成自己的）：
+
+   ```bat
+   @echo off
+   set "TOOL_HOME=<DevEco Studio 安装目录>"
+   set "DEVECO_SDK_HOME=%TOOL_HOME%\sdk"
+   set "HOS_SDK_HOME=%TOOL_HOME%\sdk"
+   set "JAVA_HOME=%TOOL_HOME%\jbr"
+   set "FLUTTER_STORAGE_BASE_URL=https://storage.flutter-io.cn"
+   set "PUB_HOSTED_URL=https://pub.dev"
+   set "PUB_CACHE=<pub 缓存目录，可省略用默认>"
+   set "PATH=%TOOL_HOME%\tools\ohpm\bin;%TOOL_HOME%\tools\hvigor\bin;%TOOL_HOME%\tools\node;%JAVA_HOME%\bin;%PATH%"
+   call "<ohos Flutter SDK>\bin\flutter.bat" %*
+   ```
+
+   `PUB_HOSTED_URL` 必须直连 pub.dev（CN pub 镜像对 ohos 桩包持续 502）；`FLUTTER_STORAGE_BASE_URL` 是引擎/Dart 工件镜像。
+
+3. **PATH**：wrapper 所在目录 + `%TOOL_HOME%\sdk\default\openharmony\toolchains`（hdc）。
+
+4. **验工具链**：`flutter-ohos doctor`——只看 HarmonyOS toolchain 一行全绿（OpenHarmony SDK / ohpm / node / hvigorw）；Android/Chrome 缺失不影响鸿蒙开发。
+
+5. **取代码并重建本机文件**（`build-profile.json5`、`local.properties` 等被 gitignore，clone 后缺失，必须重建）：
+
+   ```powershell
+   git clone <仓库地址>
+   cd frontend
+   flutter-ohos create --platforms ohos .   # 只补缺失的本机文件，已入库文件不动
+   copy ohos\build-profile.json5.example ohos\build-profile.json5
+   flutter-ohos pub get                     # 自动把 ohos 插件写进 modules
+   ```
+
+   在干净 git 工作区执行，`git status` 复核无意外改动。`local.properties` 首次构建时由工具按 `DEVECO_SDK_HOME` 自动写入，不用手建。
+
+6. **账号与调试签名（GUI 自动签名，不依赖 devecocli）**：
+   - DevEco Studio 登录共用华为账号；
+   - 真机开开发者模式 + USB/无线调试连接电脑（无线：手机上看端口，`hdc tconn <ip:端口>`；首连在设备上点允许；端口每次重开无线调试会变）；
+   - 打开 `frontend/ohos` 工程 → File > Project Structure > Signing Configs → 勾选 **Automatically generate signature** → 共用账号登录确认。自动生成本机 p12/csr、下载云调试证书、创建调试 Profile，**并把已连接设备自动注册进 AGC 设备管理**；signingConfigs 写入本机 `build-profile.json5`（该文件不入库）；
+   - 若报证书/Profile 配额错误（AGC 错误码 205389872 / 205389938）：共用账号下多机多套材料会累积，到 AGC 控制台「用户与访问」清理旧的 auto_debug 调试 Profile 后重试。
+
+7. **构建装机**（与「真机部署步骤」一致）：
+
+   ```powershell
+   flutter-ohos build hap --debug
+   hdc install -r build\ohos\hap\entry-default-signed.hap
+   hdc shell aa start -a EntryAbility -b com.shamiko.selfmusic
+   ```
+
+8. **日常**：日志 `hdc shell hilog`（Dart `debugPrint` 进 hilog）；截图/布局树可用 devecocli（可选，需另装 DevEco Code，本流程不依赖）。首次构建 fvp 经 CMake 从 sourceforge 下载 mdk 预编译库（约 12MB，arm64-v8a），网络受限时设 `FVP_DEPS_URL` 换镜像。
+
+团队约定：`build-profile.json5` / `local.properties` / `*.bat` / `pubspec.lock` 均本机私有不提交；ohos 平台判断一律 `Platform.operatingSystem == 'ohos'`（「跨 SDK 兼容铁律」）；共用账号的 AGC 调试证书/Profile 有配额，废弃设备与过期 Profile 及时在 AGC「设备管理」清理。
+
 ---
 
 ## 数据库规范

@@ -78,8 +78,9 @@ Future<void> main() async {
   // just_audio 的 ExoPlayer 不设 setWakeMode，息屏/Doze 下必然被系统回收，
   // 表现为「后台放一会儿就没声了」）。开关语义是「按钮」，不是「后台播放」。
   //
-  // 其余平台（桌面 / 鸿蒙 / Web）保持原样：此前也没有通知栏，迁移不引入未验证的
-  // 行为。鸿蒙走 OhosMediaSessionBridge。自研 handler 与 media_kit / 鸿蒙 FVP 的
+  // 其余平台：桌面 / Web 保持原样（此前也没有通知栏）；鸿蒙走
+  // OhosMediaSessionBridge，同款恒注册语义（开关只控制播控卡，长时任务保活
+  // 恒在，见下方鸿蒙段）。自研 handler 与 media_kit / 鸿蒙 FVP 的
   // 自定义平台互不干扰，哪天要给这些平台开通知栏直接接上。
   //
   // 失败时降级为无通知栏（audioHandler=null），不允许任何通知服务异常拖垮启动（曾致白屏）。
@@ -122,9 +123,16 @@ Future<void> main() async {
   // 鸿蒙 AVSession 媒体播控（通知栏/锁屏/播控中心 + 后台长时任务）：
   // 桥与自研 handler 同模式不劫持播放器；ArkTS 侧 AvSessionBridge 挂系统
   // 会话。构造仅注册通道回调，通道调用异常由桥内部兜底，不影响播放主流程。
+  //
+  // 与 Android 同语义（恒注册）：**不再按 notificationControls gate 整个桥**——
+  // 桥还承担 AUDIO_PLAYBACK 长时任务（息屏保活的根基），一并 gate 掉后关开关
+  // = 无长时任务，息屏即被系统挂起、播放自动终止（与安卓修复前的旧 bug 同型，
+  // 设置文案「关闭只隐藏按钮」在鸿蒙侧曾不成立）。开关现在只经 [showControls]
+  // 控制建不建 AVSession（播控卡渲不渲染），长时任务恒随播放申请；重启生效。
   OhosMediaSessionBridge? ohosMediaSession;
-  if (!kIsWeb && isOhos && direct.settings.notificationControls) {
-    ohosMediaSession = OhosMediaSessionBridge(direct);
+  if (!kIsWeb && isOhos) {
+    ohosMediaSession = OhosMediaSessionBridge(direct,
+        showControls: direct.settings.notificationControls);
   }
 
   // 阶段5 多设备同步引擎：启动即开始（未配对/关开关时内部跳过），回前台追一次。

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ffi';
 import 'dart:io';
 
@@ -38,9 +39,33 @@ bool get isOhos => !kIsWeb && Platform.operatingSystem == 'ohos';
 /// isolate 引用（当前仅主 isolate 同步 open，仍按规范写顶层）。
 DynamicLibrary _openSqliteOnOhos() => DynamicLibrary.open('libsqlite3.so');
 
+/// ohos 版 Dart VM 不内嵌 Mozilla 根证书包，只在 `/etc/ssl/certs/cacert.pem`
+/// 等 Linux 惯例路径探测（libflutter.so 二进制实证：零内嵌证书 + 仅有这些路径
+/// 字符串），而 HarmonyOS 上这些路径不存在（系统证书在
+/// `/system/etc/security/cacerts/`）——dart:io 的公共 CA HTTPS 全部握手失败
+/// （CERTIFICATE_VERIFY_FAILED）。首个受害者：歌手身份解析（Dio→musicbrainz.org）。
+///
+/// 修复：打包 Mozilla CA bundle（assets/ca/ca-bundle.crt，121 张根证书含
+/// ISRG Root X1）启动时注入 [SecurityContext.defaultContext]——dart:io 全部
+/// HTTPS（Dio/HttpClient）握手时共享该上下文。自签名旁路
+/// （WebDAV 的 badCertificateCallback）不受影响。
+///
+/// 不 await：rootBundle 平台消息不押注启动链（见下方保守约束）；注入晚于
+/// 首个 HTTPS 请求也只造成一次退避重试，自愈。
+Future<void> _loadRootCerts() async {
+  try {
+    final data = await rootBundle.load('assets/ca/ca-bundle.crt');
+    SecurityContext.defaultContext
+        .setTrustedCertificatesBytes(data.buffer.asUint8List());
+    debugPrint('[ohos] HTTPS 根证书注入完成（Mozilla CA bundle）');
+  } catch (e) {
+    debugPrint('[ohos] HTTPS 根证书注入失败: $e');
+  }
+}
+
 /// HarmonyOS（ohos）启动引导：在 runApp 前、任何插件/存储使用前调用。
 ///
-/// 四件事（全部仅 ohos 生效，其它平台零影响）：
+/// 五件事（全部仅 ohos 生效，其它平台零影响）：
 /// 1. sqlite3：package:sqlite3 在 ohos 上默认 `throw UnsupportedError`
 ///    （OperatingSystem 枚举无 ohos），override 为加载系统 `libsqlite3.so`
 ///    （本地索引 local_index.dart 依赖）
@@ -53,6 +78,7 @@ DynamicLibrary _openSqliteOnOhos() => DynamicLibrary.open('libsqlite3.so');
 ///    注册器在 main 前已跑完、从未覆盖；断言防未来引擎行为变化），在途
 ///    调用由看门狗 poke 驱动重发；超时重发与兜底路径仅作附加保险
 ///    （取证与定位史见 [OhosRetryingPathProvider] 文件头）
+/// 5. HTTPS 根证书：dart:io 公共 CA 信任根注入（见 [_loadRootCerts]）
 ///
 /// 其余已在别处收口的 ohos 差异（无需在此处理）：
 /// - audio_session：`AudioSession.instance` 在无插件平台 catch 掉
@@ -69,6 +95,8 @@ Future<void> setupOhos() async {
   // verify-4 实证引擎注册器在 main() 之前已跑完、不会覆盖包装；多点断言
   // （此处 / 每次 poke / 首次路径调用现场）仅防未来引擎行为变化。
   ensureOhosPathWrapper('setupOhos');
+  // HTTPS 根证书注入（fire-and-forget，见 _loadRootCerts 注释）。
+  unawaited(_loadRootCerts());
   // 看门狗 poke 的落点，三个作用：
   // 1. 证明消息通道存活（poke 自身收发回执全程毫秒级正常）；
   // 2. 断言包装在位（防未来引擎行为变化的保险）；

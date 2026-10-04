@@ -39,6 +39,7 @@ nginx/
 *.lock
 
 # 鸿蒙构建产物（hvigor/ohpm 在 vendored fvp 副本内展开的中间物）
+frontend/third_party/fvp/ohos/BuildProfile.ets
 frontend/third_party/fvp/ohos/.cxx/
 frontend/third_party/fvp/ohos/build/
 frontend/third_party/fvp/ohos/oh_modules/

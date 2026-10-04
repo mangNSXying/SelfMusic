@@ -1,40 +1,43 @@
-
+// 新机接入模板：复制为本目录下 build-profile.json5（该文件 gitignore，本机私有）。
+// - signingConfigs：DevEco Studio 自动签名（或 devecocli signature generate）写入，勿手工填
+// - modules：flutter pub get / build 按 ohos 插件自动追加，初始只需 entry
+// - products 的 SDK 版本值为项目基准，与本文件保持一致
 {
-  "app": {
-    "signingConfigs": [],
-    "products": [
+  app: {
+    signingConfigs: [],
+    products: [
       {
-        "name": "default",
-        "signingConfig": "default",
-        "compatibleSdkVersion": "5.0.5(17)",
-        "targetSdkVersion": "26.0.0",
-        "runtimeOS": "HarmonyOS",
-      }
+        name: 'default',
+        signingConfig: 'default',
+        compatibleSdkVersion: '5.0.5(17)',
+        targetSdkVersion: '26.0.0',
+        runtimeOS: 'HarmonyOS',
+      },
     ],
-    "buildModeSet": [
+    buildModeSet: [
       {
-        "name": "debug"
+        name: 'debug',
       },
       {
-        "name": "profile"
+        name: 'profile',
       },
       {
-        "name": "release"
-      }
-    ]
+        name: 'release',
+      },
+    ],
   },
-  "modules": [
+  modules: [
     {
-      "name": "entry",
-      "srcPath": "./entry",
-      "targets": [
+      name: 'entry',
+      srcPath: './entry',
+      targets: [
         {
-          "name": "default",
-          "applyToProducts": [
-            "default"
-          ]
-        }
-      ]
-    }
-  ]
+          name: 'default',
+          applyToProducts: [
+            'default',
+          ],
+        },
+      ],
+    },
+  ],
 }
