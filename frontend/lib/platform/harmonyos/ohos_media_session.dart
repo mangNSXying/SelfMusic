@@ -30,6 +30,12 @@ class OhosMediaSessionBridge {
   static const _lyricMaxBytes = 40000;
 
   final DirectSourceManager _direct;
+
+  /// 是否渲染系统播控卡（通知栏/锁屏/播控中心）。为 false 时不建 AVSession
+  /// （无播控卡），但 AUDIO_PLAYBACK 长时任务照常申请——后台播放的进程保活
+  /// 与按钮开关解耦（与 Android 前台服务恒注册同一语义，重启生效）。
+  final bool showControls;
+
   PlayerProvider? _player;
 
   /// 会话是否已启动（首次播放 start，停止 destroy 后复位）。
@@ -38,7 +44,7 @@ class OhosMediaSessionBridge {
   /// 上次推送的曲目 id（切歌判定：变化才推 updateMetadata）。
   String? _lastAssetId;
 
-  OhosMediaSessionBridge(this._direct) {
+  OhosMediaSessionBridge(this._direct, {this.showControls = true}) {
     _channel.setMethodCallHandler(_onCommand);
   }
 
@@ -80,7 +86,7 @@ class OhosMediaSessionBridge {
     };
     if (!_started) {
       _started = true;
-      _invoke('start', {...metadata, ..._stateMap(p, s)});
+      _invoke('start', {...metadata, ..._stateMap(p, s), 'showControls': showControls});
     } else {
       if (item.id != _lastAssetId) {
         _invoke('updateMetadata', metadata);

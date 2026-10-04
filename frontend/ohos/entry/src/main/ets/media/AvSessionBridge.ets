@@ -31,7 +31,8 @@ const ABILITY_NAME = 'EntryAbility';
  * 通道协议（selfmusic/avsession）：
  * - Dart → ArkTS：
  *   - start：首次播放时创建会话。参数=元数据+播放态全集（见 buildMetadata/
- *     buildPlaybackState）；幂等——会话已存在时降级为 updateMetadata+updateState。
+ *     buildPlaybackState）+ showControls（false=播控卡隐藏模式：不建会话，
+ *     仅申请长时任务保活）；幂等——会话已存在时降级为 updateMetadata+updateState。
  *   - updateMetadata：切歌时推元数据（assetId/title/artist/album/duration/
  *     coverPath/lyric）。
  *   - updateState：播放/暂停/进度/收藏/循环模式变化时推播放态。
@@ -131,6 +132,20 @@ export default class AvSessionBridge implements MethodCallHandler {
     if (this.session) {
       // 幂等：会话已存在时等价于全量刷新。
       this.handleUpdateMetadata(call, result);
+      return;
+    }
+    // 播控卡隐藏模式（Dart 侧 showControls=false，设置开关关）：不建 AVSession
+    // （通知栏/锁屏/播控中心无卡片），仅申请 AUDIO_PLAYBACK 长时任务保活——
+    // 后台播放与按钮开关解耦（与 Android 前台服务恒注册同一语义）。
+    if (AvSessionBridge.argBool(call, 'showControls') === false) {
+      this.startBackgroundTask()
+        .then((): void => {
+          Log.i(TAG, '播控卡隐藏模式：仅长时任务保活');
+          result.success(null);
+        })
+        .catch((): void => {
+          // startBackgroundTask 内部已记录失败不阻断，此处仅为满足 Promise 必须处理。
+        });
       return;
     }
     avSession.createAVSession(this.context, 'SelfMusic', 'audio')
@@ -419,6 +434,9 @@ export default class AvSessionBridge implements MethodCallHandler {
    * 本身已接管通知与播控（且实测 fvp 音频路径切后台本就不停）。
    */
   private async startBackgroundTask(): Promise<void> {
+    if (this.backgroundRunning) {
+      return;
+    }
     const wantItem: Want = {
       bundleName: BUNDLE_NAME,
       abilityName: ABILITY_NAME

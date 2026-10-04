@@ -162,7 +162,7 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 
 | 设置项 | 键 | 默认 | 说明 |
 |--------|----|------|------|
-| 通知栏播放控制 / 后台播放 | `notification_controls` | `true` | **启动时生效**：开启则 `main()` 注册 `AudioService`（媒体通知 + 前台服务），自作 `SelfMusicAudioHandler` 把通知按钮转发到 `PlayerProvider`，播放状态/媒体信息（含标题显示格式）回推通知；关闭则不注册。**通知栏 5 键（`SelfMusicAudioHandler` 自绘）**：上一首 / 播放·暂停（随播放态切换）/ 下一首 / 播放模式（循环切换）/ 退出软件（落盘断点后结束进程），收起视图取前三个；图标为品牌色（`0xFF00A098`）矢量 `ic_np_*`。**后台播放语义**：返回桌面 / 切后台继续播放（`androidStopForegroundOnPause=false`，暂停不撤前台服务；audio_service 断言禁止与 `androidNotificationOngoing:true` 同用）；通知栏「退出软件」、划掉任务（`onTaskRemoved`）或侧边栏「退出」才**真正停止**并置空闲。改动后重启应用生效 |
+| 通知栏播放控制 / 后台播放 | `notification_controls` | `true` | **启动时生效，开关只控「按钮」，不控「后台播放」**：Android 侧 `AudioService`/`SelfMusicAudioHandler`（前台服务 + 播放期 wake lock）**恒注册**——此前关开关会一并 gate 掉前台服务与唤醒锁，息屏/Doze 下播放必被回收（已修）；鸿蒙侧 `OhosMediaSessionBridge` 同语义恒建，开关只控制建不建 AVSession（通知栏/锁屏/播控中心播控卡），`AUDIO_PLAYBACK` 长时任务恒随播放申请。**通知栏 5 键（`SelfMusicAudioHandler` 自绘，仅按钮渲染受开关控制）**：上一首 / 播放·暂停（随播放态切换）/ 下一首 / 播放模式（循环切换）/ 退出软件（落盘断点后结束进程），收起视图取前三个；图标为品牌色（`0xFF00A098`）矢量 `ic_np_*`。**后台播放语义**：返回桌面 / 切后台继续播放（Android `androidStopForegroundOnPause=false`，暂停不撤前台服务；audio_service 断言禁止与 `androidNotificationOngoing:true` 同用）；通知栏「退出软件」、划掉任务（`onTaskRemoved`）或侧边栏「退出」才**真正停止**并置空闲。改动后重启应用生效 |
 
 ---
 
