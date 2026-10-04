@@ -334,36 +334,47 @@ class DirectSourceManager extends ChangeNotifier {
     _ready = true;
     restartAutoScan();
     notifyListeners();
-    // 一次性回填：旧版封面读取受头部采样截断（大内嵌封面丢失）且已标已读的行，
-    // 重置为未读，交给后台补读用加深的封面读取重取。仅本机一次（不进 knownKeys）。
-    if (!settings.coverReenrichV1Done) {
-      final reset = await index.resetMetaReadForMissingCovers();
-      settings.coverReenrichV1Done = true;
-      if (reset > 0) debugPrint('封面回填补读：已重置 $reset 首待重读');
-    }
-    // 一次性回填：旧版解析在块序异常（如 FLAC 的 PICTURE 在 VORBIS_COMMENT
-    // 之前）的文件上提前中断，已标已读却读不出歌手。重置这些行，交给后台
-    // 补读用「从头完整读取」重取。仅本机一次（不进 knownKeys）。
-    if (!settings.metaReenrichV2Done) {
-      final keys = _sources.map((s) => s.key).toList();
-      final reset = await index.resetMetaReadForMissingArtist(keys);
-      settings.metaReenrichV2Done = true;
-      if (reset > 0) debugPrint('元数据回填补读：已重置 $reset 首待重读');
-    }
-    // 一次性回填：wav/aiff 的标签/封面常写在音频块之后的 `id3 ` 块里，旧版解析
-    // 遇到 `data`/`SSND` 就 break，读不到却又标了已读。重置这些行交给后台补读。
-    if (!settings.riffTailMetaV1Done) {
-      final reset = await index.resetMetaReadForRiffTailTags();
-      settings.riffTailMetaV1Done = true;
-      if (reset > 0) debugPrint('wav/aiFF 尾块标签回填：已重置 $reset 首待重读');
-    }
-    // 后台清理历史无效封面（旧解析缺陷可能写脏数据），清理到的歌标未读待补读。
-    unawaited(index.cleanupInvalidCovers().then((cleaned) {
+    // 一次性回填与封面清理不阻塞启动链：首启可能重置大量行（旧解析缺陷兜底），
+    // 原先是 await 在 main() 的 init 链上。重置只改 meta_read 标记，随后播放/
+    // 后台补读会重读；清理完成有变化再通知列表刷新。
+    unawaited(_runOneTimeBackfills());
+  }
+
+  /// 一次性回填（封面/元数据/RIFF 尾块）+ 历史无效封面清理（版本标记保证只跑一次）。
+  Future<void> _runOneTimeBackfills() async {
+    try {
+      // 一次性回填：旧版封面读取受头部采样截断（大内嵌封面丢失）且已标已读的行，
+      // 重置为未读，交给后台补读用加深的封面读取重取。仅本机一次（不进 knownKeys）。
+      if (!settings.coverReenrichV1Done) {
+        final reset = await index.resetMetaReadForMissingCovers();
+        settings.coverReenrichV1Done = true;
+        if (reset > 0) debugPrint('封面回填补读：已重置 $reset 首待重读');
+      }
+      // 一次性回填：旧版解析在块序异常（如 FLAC 的 PICTURE 在 VORBIS_COMMENT
+      // 之前）的文件上提前中断，已标已读却读不出歌手。重置这些行，交给后台
+      // 补读用「从头完整读取」重取。仅本机一次（不进 knownKeys）。
+      if (!settings.metaReenrichV2Done) {
+        final keys = _sources.map((s) => s.key).toList();
+        final reset = await index.resetMetaReadForMissingArtist(keys);
+        settings.metaReenrichV2Done = true;
+        if (reset > 0) debugPrint('元数据回填补读：已重置 $reset 首待重读');
+      }
+      // 一次性回填：wav/aiff 的标签/封面常写在音频块之后的 `id3 ` 块里，旧版解析
+      // 遇到 `data`/`SSND` 就 break，读不到却又标了已读。重置这些行交给后台补读。
+      if (!settings.riffTailMetaV1Done) {
+        final reset = await index.resetMetaReadForRiffTailTags();
+        settings.riffTailMetaV1Done = true;
+        if (reset > 0) debugPrint('wav/aiFF 尾块标签回填：已重置 $reset 首待重读');
+      }
+      // 后台清理历史无效封面（旧解析缺陷可能写脏数据），清理到的歌标未读待补读。
+      final cleaned = await index.cleanupInvalidCovers();
       if (cleaned > 0) {
         _metaVersion++;
         notifyListeners();
       }
-    }));
+    } catch (e) {
+      debugPrint('[direct] 一次性回填失败（忽略）：$e');
+    }
   }
 
   @override

@@ -323,7 +323,13 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
       if (!mounted) return;
       final direct = context.read<DirectSourceManager>();
       if (!direct.settings.resumeOnStartup) return;
-      // 先等一轮拉取（带超时），以便跨设备断点参与启动恢复比较。
+      final player = context.read<PlayerProvider>();
+      // 先按本机/上轮镜像断点立即恢复：不占首屏、不等网络（此前先 await
+      // firstPull，服务器不可达时要 2s 超时才恢复）。
+      await player.restorePreferRemote();
+      if (!mounted) return;
+      // 首轮同步带 2s 超时在后台拉；拉到更新的远端断点且用户尚未接管播放时，
+      // applyNewerMirrorIfAny 再切过去（不打断用户主动操作）。
       final syncedAtBefore = direct.settings.lastSyncAt;
       await context.read<SyncEngine>().firstPull();
       if (!mounted) return;
@@ -335,7 +341,7 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
               syncedAtBefore) {
         AppToast.show('同步完成', isError: false);
       }
-      await context.read<PlayerProvider>().restorePreferRemote();
+      await player.applyNewerMirrorIfAny();
     });
   }
 

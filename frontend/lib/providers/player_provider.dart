@@ -222,6 +222,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   DateTime? _lastStateSave;
   bool _restored = false;
 
+  /// 用户在启动恢复后是否主动接管过播放（播放/暂停/切歌/seek/改队列）：
+  /// 首轮同步晚到的远端断点此时不再回切，避免打断用户操作。
+  bool _userTookOver = false;
+
   Timer? _fadeTimer;
   bool _fadingPause = false;
   AndroidEqualizer? _eq;
@@ -1096,6 +1100,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   ///
   /// 只改运行时队列，不改写持久化歌单（与 [removeAt] 同源）。已排过的同一首幂等（不重复替换）。
   bool playNext(Song s) {
+    _userTookOver = true;
     if (_current == null || _queue.isEmpty) {
       // 没有当前曲：「下一首播放」无从谈起，退化为直接起播。
       unawaited(playQueue([s]));
@@ -1254,6 +1259,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _curSource = src;
       // 记录本次起始是否用户手动点播（改进.txt 功能7 完播判定用；任何新起始都会覆盖）。
       _startedManual = manual;
+      // 用户主动起播 → 首轮同步晚到的远端断点不再回切。
+      if (manual) _userTookOver = true;
       notifyListeners();
       if (src == null || !src.supportsDirect) {
         // 无本地源（如同步快照行且本机未配置对应源）：不崩，提示后由调用方决定。
@@ -1661,6 +1668,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> next() {
+    _userTookOver = true;
     _leaveFor(null);
     return _advance();
   }
@@ -1738,6 +1746,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> prev() {
+    _userTookOver = true;
     _leaveFor(null);
     if (_queue.isEmpty || _current == null) return Future.value();
     // 深层列表（改进.txt 1.4）：上一首 = 弹出深层末尾（当前曲），新末尾从头播放。
@@ -1918,6 +1927,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> toggle() async {
     if (_fadingPause) return;
+    _userTookOver = true;
     if (player.playing) {
       await _fadeOutThenPause();
     } else {
@@ -1946,6 +1956,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 通知栏「播放」回调（settings.md §3.6）。
   Future<void> resumeFromNotifier() async {
+    _userTookOver = true;
     await _resumeOrReplay();
     notifyListeners();
     _syncSystemMedia();
@@ -1953,6 +1964,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 通知栏「暂停/停止」回调（settings.md §3.6）。
   Future<void> pauseFromNotifier() async {
+    _userTookOver = true;
     await _fadeOutThenPause();
     notifyListeners();
     _syncSystemMedia();
@@ -1974,6 +1986,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> seek(Duration d) async {
+    _userTookOver = true;
     await player.seek(d);
     _syncSystemMedia();
   }
@@ -2073,6 +2086,32 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (await _restoreFromMirror(idx, best)) return;
     }
     await _restoreLocal(idx, local);
+  }
+
+  /// 首轮同步（`SyncEngine.firstPull`）完成后调用：有比本机断点更新的远端镜像、
+  /// 且用户还没接管播放时切过去。
+  ///
+  /// 启动恢复不再等网络（此前先 await firstPull，服务器不可达要 2s 超时才恢复）：
+  /// 先 [restorePreferRemote] 出内容，同步拉到更新的镜像再补切。用户已主动播放/
+  /// 暂停/切歌/seek（[_userTookOver]）时不打断。
+  Future<void> applyNewerMirrorIfAny() async {
+    final idx = _index;
+    if (idx == null || !_restored || _shuttingDown || _userTookOver) return;
+    final local = idx.getPlayState();
+    final localAt = local == null ? null : DateTime.tryParse(local.updatedAt);
+    BreakpointMirrorRow? best;
+    DateTime? bestAt;
+    for (final m in idx.allBreakpointMirrors()) {
+      final t = DateTime.tryParse(m.updatedAt);
+      if (t == null) continue;
+      if (bestAt == null || t.isAfter(bestAt)) {
+        best = m;
+        bestAt = t;
+      }
+    }
+    if (best == null || bestAt == null) return;
+    if (localAt != null && !bestAt.isAfter(localAt)) return;
+    await _restoreFromMirror(idx, best);
   }
 
   Future<void> _restoreLocal(LocalIndex idx, PlayStateRow? st) async {

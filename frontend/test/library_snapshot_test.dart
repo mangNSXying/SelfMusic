@@ -7,6 +7,7 @@ import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/models/album.dart';
 import 'package:selfmusic/models/artist.dart';
 import 'package:selfmusic/models/song.dart';
+import 'package:selfmusic/utils/off_thread.dart';
 import 'package:sqlite3/open.dart';
 
 /// 启动聚焦的读写分离回归（UI 卡顿治理）：
@@ -47,6 +48,10 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test('后台快照：歌曲/专辑/歌手与同步查询完全一致', () async {
+    // 本用例专测后台 isolate 路径：测试环境默认内联（见 off_thread.dart），
+    // 这里强制走真实 Isolate.run。
+    forceOffThreadIsolateInTests = true;
+    addTearDown(() => forceOffThreadIsolateInTests = false);
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
     final dir = await Directory.systemTemp.createTemp('selfmusic_snap_');
     PathProviderPlatform.instance = _FakePathProvider(dir.path);

@@ -16,7 +16,6 @@ import '../../utils/off_thread.dart';
 import '../sources/webdav_url.dart';
 import 'audio_metadata.dart';
 import 'db_writer.dart';
-import 'schema.dart';
 
 /// 直连模式本地轻量索引（DESIGN §6.4）。///
 /// SQLite 存放：已配置的直连源（[DirectSourceRow]）、索引歌曲（[Song]）、
@@ -36,18 +35,26 @@ class LocalIndex {
     Directory(_dir!).createSync(recursive: true);
     final dbPath = p.join(_dir!, 'selfmusic.db');
     _dbPath = dbPath;
+    // 写隔离与主读连接并行启动（spawn 期间主连接即可打开）：schema 迁移统一
+    // 在写隔离连接上跑一次（写隔离 init 内置 applySchema），主连接不再重复
+    // 一遍 CREATE/ALTER/PRAGMA。
+    final writerFuture = DbWriter.start(dbPath);
     // 读连接（主线程，只读使用；写经 _writer：常规平台后台隔离、ohos 内联，
     // 见 db_writer.dart）。
     _db = sqlite3.open(dbPath);
     print('[index] 主连接已打开');
     _db!.execute('PRAGMA busy_timeout=30000;');
-    applySchema(_db!);
-    // 写隔离：独立连接 + 自动批事务 + NORMAL 同步（fsync 离开 UI 线程）。
-    _writer = await DbWriter.start(dbPath);
+    _writer = await writerFuture;
     print('[index] 写隔离就绪');
     // 历史 ENCODE 形态的 play_meta 行一次性迁移到当前 ref（写隔离内执行）。
+    // 先主连接探测有无含 `%` 的 ref（解码只可能改变这类串）：没有就跳过，
+    // 不等一次全表解码扫描——这是启动链上最后一段同步等待。
     // 之后读路径不再写库，避免 UI 线程出现「读前迁移」的 I/O。
-    await _writer!.op<void>('migrateMetaRefs', const {});
+    final legacy = _db!
+        .select("SELECT 1 FROM play_meta WHERE instr(song_ref, '%') > 0 LIMIT 1");
+    if (legacy.isNotEmpty) {
+      await _writer!.op<void>('migrateMetaRefs', const {});
+    }
     print('[index] 迁移完成');
   }
 
