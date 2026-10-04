@@ -332,9 +332,14 @@ class ArtistResolver extends ChangeNotifier {
         await _resolveOne(item);
         networkDown = false;
       } on DioException catch (e) {
+        // 静默退避是「鸿蒙根证书缺失数日定位不出去」的直接教训：每个失败
+        // 都要留下类型与原因（hilog 可见），再进退避。
+        debugPrint(
+            '[artist-resolve] ${item.displayName} 失败: ${e.type.name} ${e.message ?? ''} ${e.error ?? ''}');
         networkDown = e.error is DioException;
         await _markBackoff(item, _retryAfterMs(e));
-      } catch (_) {
+      } catch (e) {
+        debugPrint('[artist-resolve] ${item.displayName} 异常: $e');
         await _markBackoff(item, 0);
       }
       notifyListeners();

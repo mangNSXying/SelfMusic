@@ -63,3 +63,4 @@ flutter:
   assets:
     - assets/selfmusic.png
     - assets/selfmusic-black.png
+    - assets/ca/ca-bundle.crt
