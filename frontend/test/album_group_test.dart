@@ -38,4 +38,19 @@ void main() {
     ]);
     expect(albums.length, 2);
   });
+
+  test('containsSong 与 fromSongs 分组一致：每首歌恰属一组', () {
+    final songs = [
+      _song('A', '张三', '群星', '合辑'),
+      _song('B', '李四', '群星', '合辑'),
+      _song('C', '王五', null, '独唱'),
+      _song('D', '王五', null, null),
+    ];
+    final albums = Album.fromSongs(songs);
+    expect(albums.fold(0, (n, a) => n + a.trackCount), songs.length);
+    for (final a in albums) {
+      expect(songs.where(a.containsSong).length, a.trackCount,
+          reason: '歌手详情页按 containsSong 取专辑歌曲，必须与分组数一致');
+    }
+  });
 }

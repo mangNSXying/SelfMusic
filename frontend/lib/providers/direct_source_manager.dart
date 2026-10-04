@@ -47,8 +47,14 @@ class DirectSourceManager extends ChangeNotifier {
   void attachArtistResolver(ArtistResolver r) => artistResolver = r;
 
   /// 扫描/元数据回填变更后：校准歌手身份映射并唤醒后台解析（幂等、静默）。
+  /// 映射写完才自增 [artistsVersion]：歌手页计数改由身份映射驱动，提前通知会
+  /// 让列表先按旧映射算一遍数（详情页读实时数据，两处对不上）。
   void _reconcileArtists() {
-    unawaited(index.reconcileArtists().then((_) => artistResolver?.wake()));
+    unawaited(index.reconcileArtists().then((_) {
+      _artistsVersion++;
+      notifyListeners();
+      artistResolver?.wake();
+    }));
   }
 
   ApiClient? _api;
@@ -67,6 +73,11 @@ class DirectSourceManager extends ChangeNotifier {
   /// 歌曲元数据版本号：扫描/补读/编辑后自增，[LibraryProvider] 监听它就地重建。
   int _metaVersion = 0;
   int get metaVersion => _metaVersion;
+
+  /// 歌手身份映射版本号：reconcile（扫描/补读/编辑后重建歌曲↔身份映射）写完自增，
+  /// [LibraryProvider] 监听它只重算歌手列表（不动歌曲列表）。
+  int _artistsVersion = 0;
+  int get artistsVersion => _artistsVersion;
 
   /// 「忽略音频（时长/大小）」等会影响列表内容的设置变更版本号：列表类 UI
   /// 监听它重查（改进.txt 功能6：设置变更后已入库歌曲也按新规则过滤）。
@@ -734,6 +745,10 @@ class DirectSourceManager extends ChangeNotifier {
         title: title, artist: artist, album: album, albumArtist: albumArtist);
     _metaVersion++;
     _favoriteVersion++;
+    // 改了歌手名 → 身份映射要跟着校准，否则歌手页/计数还挂在旧身份上。
+    if (artist != null) {
+      _reconcileArtists();
+    }
     notifyListeners();
     return index.songByRef(s.sourceKey, s.sourceRef);
   }

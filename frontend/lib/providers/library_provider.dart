@@ -10,6 +10,7 @@ import '../data/local/local_index.dart';
 import '../models/song.dart';
 import '../models/album.dart';
 import '../models/artist.dart';
+import '../services/artist_resolver.dart';
 import 'direct_source_manager.dart';
 
 /// 全局图库数据源：合并所有直连源的歌曲，并在客户端按 专辑/歌手 分组聚合，
@@ -36,28 +37,52 @@ class LibraryProvider extends ChangeNotifier {
     _directManager = m;
     _seenMetaVersion = m.metaVersion;
     _seenSettingsVersion = m.settingsVersion;
+    _seenArtistsVersion = m.artistsVersion;
     m.addListener(_onDirectChanged);
     notifyListeners();
   }
 
+  /// 关联歌手身份解析服务：解析/成员展开/合流落库后逐批通知，歌手列表就地重算。
+  /// 挂在 provider 层（而不是某个页面）——不在歌手页时也要保持数据新鲜，
+  /// 否则下次进页面前列表还挂着解析前的旧曲目数/专辑数。
+  void attachArtistResolver(ArtistResolver r) {
+    if (identical(_artistResolver, r)) return;
+    _artistResolver?.removeListener(_onArtistResolverChanged);
+    _artistResolver = r;
+    r.addListener(_onArtistResolverChanged);
+  }
+
+  ArtistResolver? _artistResolver;
+
   int _seenMetaVersion = 0;
   int _seenSettingsVersion = 0;
+  int _seenArtistsVersion = 0;
   bool _loadedOnce = false;
   String? _lastQuery;
+
+  void _onArtistResolverChanged() {
+    // 首批加载前不重算：startup/loadSongs 会读到最新数据。
+    if (!_loadedOnce) return;
+    refreshArtists();
+  }
 
   void _onDirectChanged() {
     final m = _directManager;
     if (m == null) return;
-    // 扫描/元数据变化重建；设置变化（忽略音频过滤等）同样重建，保证已入库歌曲
-    // 按新规则过滤（改进.txt 功能6）。
-    if (m.metaVersion == _seenMetaVersion &&
-        m.settingsVersion == _seenSettingsVersion) {
-      return;
-    }
+    final metaChanged = m.metaVersion != _seenMetaVersion;
+    final settingsChanged = m.settingsVersion != _seenSettingsVersion;
+    final artistsChanged = m.artistsVersion != _seenArtistsVersion;
+    if (!metaChanged && !settingsChanged && !artistsChanged) return;
     _seenMetaVersion = m.metaVersion;
     _seenSettingsVersion = m.settingsVersion;
+    _seenArtistsVersion = m.artistsVersion;
     // 首次 loadSongs 前不重建：避免与启动加载竞争。
     if (!_loadedOnce) return;
+    // 只有身份映射变化（歌曲没变）：只重算歌手列表，不动歌曲/专辑。
+    if (!metaChanged && !settingsChanged && artistsChanged) {
+      refreshArtists();
+      return;
+    }
     refreshDirect();
   }
 

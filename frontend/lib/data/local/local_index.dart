@@ -1604,9 +1604,8 @@ class LocalIndex {
     // owner → 应显示的身份；无 Person 可达时回落 owner 自己。
     //
     // 同一身份可能挂在**多个** owner 下（成员同时属于两个组合），每个 owner 都要留
-    // 一条 pair：下面的 GROUP BY p.dk 会把它们合并，歌曲数/专辑数一起累加。
-    // 之前按显示身份去重，只剩第一个 owner 的歌，于是「A&B 组」下的歌在成员名下
-    // 少算一半。这里只让 _personsUnder 内部按 artist_key 去重（防环），不再全局去重。
+    // 一条 pair；计数由 [identityDisplayStats] 按显示身份合并（自己 + 全部祖先），
+    // 不会少算。这里只让 _personsUnder 内部按 artist_key 去重（防环），不再全局去重。
     final pairs = <List<String>>[];
     for (final o in owners) {
       final display = _personsUnder(o, children, types);
@@ -1616,25 +1615,28 @@ class LocalIndex {
     }
     if (pairs.isEmpty) return const [];
 
-    final stats = <String, Row>{};
-    for (final r in db.select('''
-      WITH pairs(dk, ok) AS (
-        SELECT json_extract(value,'\$[0]'), json_extract(value,'\$[1]')
-        FROM json_each(?)
-      )
-      SELECT p.dk AS dk, a.canonical_key, a.display_name, a.status, a.mbid,
-             COUNT(DISTINCT m.source_key || char(1) || m.ref) AS song_count,
-             COUNT(DISTINCT COALESCE(NULLIF(i.album,''),char(1))) AS album_count
-      FROM pairs p
-      JOIN artists a ON a.artist_key=p.dk AND a.display_name LIKE ?
-      JOIN artist_song_map m ON m.artist_key=p.ok AND m.role='main'
-      JOIN idx_songs i ON i.source_key=m.source_key AND i.ref=m.ref AND i.missing=0
-        ${ignore.sql}
-      GROUP BY p.dk
-    ''', [jsonEncode(pairs), like, ...ignore.args])) {
-      stats[r['dk'] as String] = r;
+    // 显示身份的计数：与 [identitySongs]/详情页完全同一口径（沿成员边向上递归到
+    // 「自己 + 全部祖先」）。以前列表按 pairs 逐 owner 累加，是与详情页各写一套的
+    // 近似口径，重解析/合流后两处可能漂移（列表旧数、详情新数）。
+    final stats = identityDisplayStats(
+        minDurationSec: minDurationSec, minSizeBytes: minSizeBytes);
+
+    // 展示集合：pairs 里的 display 身份去重后按名字 LIKE 过滤；无歌（或全被忽略
+    // 规则过滤）的身份不展示。
+    final displayRows = <String, ArtistRow>{};
+    for (final r in db.select(
+        'SELECT * FROM artists WHERE display_name LIKE ?', [like])) {
+      final a = _rowToArtist(r);
+      displayRows[a.artistKey] = a;
     }
-    if (stats.isEmpty) return const [];
+    final displays = <String, ArtistRow>{};
+    for (final p in pairs) {
+      if (!stats.containsKey(p[0])) continue;
+      final a = displayRows[p[0]];
+      if (a == null) continue;
+      displays.putIfAbsent(p[0], () => a);
+    }
+    if (displays.isEmpty) return const [];
     // 封面：同一身份的多首歌取最早入库的那张（成员继承自祖先的歌）。
     final covers = <String, String?>{};
     for (final r in db.select('''
@@ -1655,16 +1657,16 @@ class LocalIndex {
     }
 
     final list = <Artist>[
-      for (final r in stats.values)
+      for (final e in displays.entries)
         Artist(
-          name: r['display_name'] as String,
-          songCount: r['song_count'] as int,
-          albumCount: r['album_count'] as int,
-          coverPath: covers[r['dk'] as String],
-          identityKey: r['dk'] as String,
-          canonicalKey: r['canonical_key'] as String,
-          status: r['status'] as String,
-          mbid: r['mbid'] as String?,
+          name: e.value.displayName,
+          songCount: stats[e.key]!.songs,
+          albumCount: stats[e.key]!.albums,
+          coverPath: covers[e.key],
+          identityKey: e.key,
+          canonicalKey: e.value.canonicalKey,
+          status: e.value.status,
+          mbid: e.value.mbid,
         ),
     ];
     final pref = sort ?? CollectionSort.charAsc;
@@ -1695,36 +1697,56 @@ class LocalIndex {
     return out;
   }
 
-  /// 各身份在歌手页的展示曲目数（一条查询算完，详情页给关联行填数字用）。
+  /// 各身份的展示口径统计（歌曲数 + 专辑数）：与 [identitySongs] 完全同源——
+  /// 沿成员边向上递归到「自己 + 全部祖先」，统计祖先名下 role='main' 的歌曲。
+  /// 成员身份自己没有映射（歌曲只标了组合/角色名），所以它显示的是所属上级那批歌；
+  /// 成员同时属于多个上级时按 k 合并去重，不会漏。没有映射的身份不在结果里。
   ///
-  /// 语义与 [identitySongs] 完全一致：算「自己 + 全部祖先」名下的歌——成员身份自己
-  /// 没有 `role='main'` 映射（歌曲只标了组合名），所以它显示的是所属组合那批歌。
-  /// 成员同时属于多个组合时，这里按 owner 去重后合并，不会漏（见 [identityArtistGroups]
-  /// 里 pairs 的去重说明）。没有映射的身份不在结果里，取默认 0。
-  Map<String, int> identityDisplayCounts(
+  /// 歌手页列表与详情页共用这一口径（列表的 songCount/albumCount 来自这里，
+  /// 详情页的歌曲列表来自 [identitySongs]），避免两处各写一套计数后漂移。
+  ///
+  /// 专辑数按全局专辑分组键统计（专辑歌手? 否则曲目歌手 + 专辑名），与
+  /// [Album.fromSongs] 一致——详情页的专辑分区按同一键分组，数字才对得上。
+  Map<String, ({int songs, int albums})> identityDisplayStats(
       {int minDurationSec = 0, int minSizeBytes = 0}) {
     final db = _db;
     if (db == null) return const {};
     final ignore = _ignoreFilterSql(minDurationSec, minSizeBytes);
-    final out = <String, int>{};
+    final out = <String, ({int songs, int albums})>{};
     for (final r in db.select('''
       WITH RECURSIVE up(k, owner) AS (
         SELECT artist_key, artist_key FROM artists
         UNION
-        SELECT u.k, am.parent_key FROM up u JOIN artist_member am ON am.member_key=u.k
+        SELECT u.k, am.parent_key FROM up u JOIN artist_member am ON am.member_key=u.owner
       )
       SELECT u.k AS k,
-             COUNT(DISTINCT m.source_key || char(1) || m.ref) AS n
+             COUNT(DISTINCT m.source_key || char(1) || m.ref) AS n,
+             COUNT(DISTINCT
+               COALESCE(NULLIF(i.album_artist,''), NULLIF(i.artist,''), 'Unknown')
+               || char(1) ||
+               COALESCE(NULLIF(i.album,''), 'Unknown Album')) AS albums
       FROM up u
       JOIN artist_song_map m ON m.artist_key=u.owner AND m.role='main'
       JOIN idx_songs i ON i.source_key=m.source_key AND i.ref=m.ref AND i.missing=0
         ${ignore.sql}
       GROUP BY u.k
     ''', ignore.args)) {
-      out[r['k'] as String] = r['n'] as int;
+      out[r['k'] as String] =
+          (songs: r['n'] as int, albums: r['albums'] as int);
     }
     return out;
   }
+
+  /// 各身份在歌手页的展示曲目数（详情页给关联行填数字用）。
+  /// 语义与 [identitySongs] 完全一致，见 [identityDisplayStats]。
+  Map<String, int> identityDisplayCounts(
+          {int minDurationSec = 0, int minSizeBytes = 0}) =>
+      {
+        for (final e in identityDisplayStats(
+                minDurationSec: minDurationSec, minSizeBytes: minSizeBytes)
+            .entries)
+          e.key: e.value.songs,
+      };
 
   /// 已解析**人物**身份的详情（歌手详情页展示组合 / 角色 / 成员）。
   ///
@@ -1910,7 +1932,10 @@ class LocalIndex {
         .replaceAll('s.cover', 'cover');
     final rs = _db!.select('''
       SELECT s.artist raw, COUNT(*) n,
-        COUNT(DISTINCT COALESCE(NULLIF(s.album,''),'\u0001')) al,
+        COUNT(DISTINCT
+          COALESCE(NULLIF(s.album_artist,''), NULLIF(s.artist,''), 'Unknown')
+          || char(1) ||
+          COALESCE(NULLIF(s.album,''), 'Unknown Album')) al,
         (SELECT cover_path FROM idx_songs WHERE artist=s.artist AND cover_path IS NOT NULL
           $cover ORDER BY id LIMIT 1) c
       FROM idx_songs s

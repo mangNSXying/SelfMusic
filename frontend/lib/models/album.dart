@@ -66,6 +66,11 @@ class Album {
   static String _albumArtistOf(Song s) =>
       _blank(s.albumArtist, _blank(s.artist, 'Unknown'));
 
+  /// 该歌是否属于本专辑（按与 [fromSongs] 相同的分组键判断）。
+  bool containsSong(Song s) =>
+      _albumArtistOf(s) == artist &&
+      _blank(s.albumName, 'Unknown Album') == album;
+
   static String _blank(String? v, String fallback) =>
       (v == null || v.isEmpty) ? fallback : v;
 }

@@ -220,7 +220,10 @@ class SelfMusicApp extends StatelessWidget {
   Widget build(BuildContext context) {
 final auth = AuthProvider(api);
   // 播放流式取 token 依赖 Auth（懒读）。
-  final lib = LibraryProvider()..attachDirectManager(direct);
+  final lib = LibraryProvider()
+    ..attachDirectManager(direct)
+    // 歌手解析/成员展开落库后就地重算歌手列表（停在旧计数的问题，见 library_provider）。
+    ..attachArtistResolver(artistResolver);
   final nav = NavigationProvider();
     final player = PlayerProvider()
       ..attachSourceResolver((key) => direct.sourceByKey(key))

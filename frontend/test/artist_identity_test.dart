@@ -586,6 +586,49 @@ void main() {
     }
   });
 
+  test('多级祖先（组合→角色→声优）计数与详情同口径：歌曲数/专辑数', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([
+        _song('a', '组合X', album: '专辑一'),
+        _song('b', '组合X', album: '专辑一'),
+        _song('c', '组合X', album: '专辑二'),
+      ]);
+      await index.reconcileArtists();
+      final group = index.artistRowByCanonical('组合X')!;
+      await index.artistUpsert(
+        artistKey: group.artistKey,
+        canonicalKey: group.canonicalKey,
+        mbid: 'gx',
+        displayName: '组合X',
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'group',
+      );
+      await index.artistSetMembers(artistKey: group.artistKey, members: [
+        memberOf('cx', '角色X', 'character'),
+      ]);
+      final ch = index.artistRowByMbid('cx')!;
+      await index.artistSetMembers(artistKey: ch.artistKey, members: [
+        memberOf('px', '声优X', 'person'),
+      ]);
+
+      final person =
+          index.identityArtistGroups().firstWhere((a) => a.name == '声优X');
+      final songs = index.identitySongs(person.identityKey!);
+      // 组合的 3 首歌 2 张专辑经两级祖先继承到声优；列表计数必须与详情完全一致
+      // （此前展示数统计的递归只向上走了一跳，二级链算不到组合的歌）。
+      expect(person.songCount, 3);
+      expect(person.songCount, songs.length);
+      expect(person.albumCount, 2);
+      expect(person.albumCount,
+          songs.map((s) => s.albumName).toSet().length);
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
+
   test('成员展开：整条链无 Person 时回落显示组合本身', () async {
     final (index, dir) = await _openIndex();
     try {

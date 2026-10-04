@@ -797,20 +797,8 @@ class _ArtistsViewState extends State<_ArtistsView>
         lib.startup();
       }
     });
-    // 身份解析后台完成（含歧义人工绑定）后就地刷新歌手分组，不重扫歌曲。
-    final resolver = context.read<ArtistResolver>();
-    resolver.addListener(_onResolverChanged);
-  }
-
-  @override
-  void dispose() {
-    context.read<ArtistResolver>().removeListener(_onResolverChanged);
-    super.dispose();
-  }
-
-  void _onResolverChanged() {
-    final lib = context.read<LibraryProvider>();
-    if (!lib.loading) lib.refreshArtists();
+    // 身份解析完成后的刷新挂在 LibraryProvider（解析结果落库即重算，不重扫歌曲；
+    // 不在歌手页时也能保持新鲜），这里不再重复监听。
   }
 
   @override
@@ -1154,6 +1142,9 @@ class _ArtistSongsSheet extends StatelessWidget {
         // 详情只在人物身份下有内容（组合/角色的关系挂在成员树上，不在这里展开）。
         // 只查一次：artistDetail 会跑展示曲目数统计，别在 build 里查两遍。
         final detail = lib.artistDetail(artist);
+        // 本歌手的专辑：与列表行「N 张专辑」同一分组口径（Album.fromSongs），
+        // 所以这里的专辑个数应与 artist.albumCount 一致。
+        final albums = Album.fromSongs(songs);
         return Stack(
           children: [
             Column(
@@ -1165,6 +1156,8 @@ class _ArtistSongsSheet extends StatelessWidget {
                       style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
                 ),
                 CountHeader(count: songs.length),
+                if (albums.isNotEmpty)
+                  _ArtistAlbumsStrip(albums: albums, artistSongs: songs),
                 if (detail != null) _ArtistDetailBlock(detail: detail),
                 const Divider(height: 1),
                 Expanded(
@@ -1233,6 +1226,78 @@ class _ArtistSongsSheet extends StatelessWidget {
     await resolver.forceRetryOne(
         artistKey: artist.identityKey, canonicalKey: artist.canonicalKey);
     AppToast.show('已开始重新解析 ${artist.name}', isError: false);
+  }
+}
+
+/// 歌手弹页的「专辑」区：把该歌手的歌曲按全局专辑分组键（专辑歌手? 否则曲目
+/// 歌手 + 专辑名）聚合，与列表行「N 张专辑」同一口径。点专辑打开其歌曲弹层
+/// （只含该歌手的曲目，合辑不会带进同专辑的其他歌手）。
+class _ArtistAlbumsStrip extends StatelessWidget {
+  final List<Album> albums;
+  final List<Song> artistSongs;
+  const _ArtistAlbumsStrip({required this.albums, required this.artistSongs});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+          child: Text('专辑 (${albums.length})',
+              style: TextStyle(
+                  fontSize: 12,
+                  color: cs.primary,
+                  fontWeight: FontWeight.w600)),
+        ),
+        SizedBox(
+          height: 104,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: albums.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 12),
+            itemBuilder: (c, i) {
+              final album = albums[i];
+              return InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: () => _openAlbumOfArtist(context, album),
+                child: SizedBox(
+                  width: 72,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      CoverThumb(
+                          coverPath: album.coverPath,
+                          fallbackIcon: Icons.album),
+                      const SizedBox(height: 4),
+                      Text(album.album,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 12)),
+                      Text('${album.trackCount}首',
+                          style: TextStyle(
+                              fontSize: 11,
+                              color: Theme.of(context).disabledColor)),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _openAlbumOfArtist(BuildContext context, Album album) {
+    final songs = artistSongs.where((s) => album.containsSong(s)).toList();
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => _AlbumSongsSheet(album: album, songs: songs),
+    );
   }
 }
 
