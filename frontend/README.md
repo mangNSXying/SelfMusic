@@ -21,7 +21,7 @@ flutter build linux --debug   # Linux 出包（验证用 --release）
 flutter build apk --debug     # Android 出包
 flutter build windows --debug # Windows 出包
 # 鸿蒙：需三方 ohos 分支 Flutter + DevEco 工具链，见 DEVELOPER.md「鸿蒙适配」；
-#   debug：flutter build hap --debug；release 三架构：仓库根 build-ohos.bat
+#   debug：flutter build hap --debug；release 出包：仓库根 .\build-ohos.ps1 [hap]
 ```
 
 ## 改代码前必读

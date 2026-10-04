@@ -1,9 +1,10 @@
 # 换行符按文件类型钉死：Windows 的 core.autocrlf=true 会把 .sh 检出成 CRLF，
-# Git Bash 下执行直接报 `$'\r': command not found`；.bat/.cmd 反之需要 CRLF。
+# Git Bash 下执行直接报 `$'\r': command not found`；.bat/.cmd/.ps1 反之需要 CRLF。
 * text=auto
 *.sh text eol=lf
 *.bat text eol=crlf
 *.cmd text eol=crlf
+*.ps1 text eol=crlf
 
 # 这几个是 flutter pub get / build 生成的，仓库里却被跟踪了。它们每次 pub get 都会以 LF
 # 重写，跟 autocrlf=true 互相打脸，git status 长期挂着假 modified。标 -text 让 git
