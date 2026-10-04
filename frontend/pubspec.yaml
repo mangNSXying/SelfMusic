@@ -1,7 +1,7 @@
 name: selfmusic
 description: SelfMusic - A cross-platform music player
 publish_to: 'none'
-version: 1.0.1+2
+version: 1.0.1+3
 
 environment:
   # 下限 3.4.0 兼容鸿蒙 ohos 分支工具链（现为 oh-3.41.9-release / Dart 3.11）；
