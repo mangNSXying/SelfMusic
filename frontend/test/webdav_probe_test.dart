@@ -51,8 +51,10 @@ void main() {
           .set(HttpHeaders.contentRangeHeader, 'bytes 0-0/${body.length}');
       resp.contentLength = 1;
       resp.add(body.take(1).toList());
-      await resp.close();
+      // 先记账再 close：预热按设计读 1 字节就断开，Windows 上对端已关连接时
+      // close() 会抛 SocketException，若赋值在后将永远执行不到（假红）。
       bytesWritten = 1;
+      await resp.close();
     });
 
     open.overrideFor(OperatingSystem.linux, _openOnLinux);
