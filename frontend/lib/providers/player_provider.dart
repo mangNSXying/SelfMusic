@@ -627,7 +627,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 重新从头播放（改进.txt 修复项）。划掉任务只是结束可见 Activity，用户没说要
   /// 丢掉进度——下次启动由断点恢复接回队列（受 resumeOnStartup 开关控制）。
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
+  void didChangeAppLifecycleState(AppLifecycleState state) async {
     if (_disposed || _shuttingDown) return;
     switch (state) {
       case AppLifecycleState.paused:
@@ -635,8 +635,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         // 退到后台（后台播放照常继续），但先把在途的本地累计/落库结清：
         // Android 常在进程被杀时根本不给 detached，这段就白丢了；同时把写隔离
         // 里攒的批量落盘，别指望它在后台还能按时刷。
+        // 必须等待断点落盘：避免进程被 LMK/Doze 在写入完成前杀掉导致断点丢失。
         _playSecStop();
-        unawaited(_flushWritesQuietly());
+        await _flushWritesQuietly();
+        break;
       case AppLifecycleState.resumed:
         // 回前台：对账播放时长窗口（后台被节流后位置流可能停过），
         // 并补写断点。注意 [playing]/[position] 都会构造播放器，所以先看有没有
@@ -645,6 +647,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           _playSecReconcile(playing: playing);
           unawaited(_saveStateNow());
         }
+        break;
       case AppLifecycleState.detached:
         _onDetached();
       case AppLifecycleState.inactive:
