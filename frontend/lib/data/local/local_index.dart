@@ -9,8 +9,10 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 import '../../models/song.dart';
+import '../../models/album.dart';
 import '../../models/artist.dart';
 import '../../utils/collection_sort.dart';
+import '../../utils/off_thread.dart';
 import '../sources/webdav_url.dart';
 import 'audio_metadata.dart';
 import 'db_writer.dart';
@@ -22,6 +24,9 @@ import 'schema.dart';
 class LocalIndex {
   Database? _db;
   String? _dir;
+
+  /// 数据库文件路径（后台 isolate 快照读时另开连接用；open 后非空）。
+  String? _dbPath;
   DbWriter? _writer;
 
   Future<void> open() async {
@@ -30,6 +35,7 @@ class LocalIndex {
     _dir = p.join(support.path, 'selfmusic');
     Directory(_dir!).createSync(recursive: true);
     final dbPath = p.join(_dir!, 'selfmusic.db');
+    _dbPath = dbPath;
     // 读连接（主线程，只读使用；写经 _writer：常规平台后台隔离、ohos 内联，
     // 见 db_writer.dart）。
     _db = sqlite3.open(dbPath);
@@ -367,34 +373,20 @@ class LocalIndex {
 
   /// 清理历史无效封面（旧解析缺陷曾把描述残留/URL 写盘，Android 解码器会刷错误日志）：
   /// 删除签名不符的封面文件，并把引用它们的歌标为未读，让补读用修复后的解析重取。
-  /// 分块让出事件循环，避免大封面目录一次性阻塞 UI。
+  ///
+  /// 目录遍历与逐文件读签名（同步 IO，封面目录可能上万文件）放后台 isolate；
+  /// 原来在主 isolate 分块让出事件循环仍会穿插卡 UI。ohos 无子 isolate 退化为内联。
   Future<int> cleanupInvalidCovers() async {
     final root = _dir;
     if (root == null || _db == null) return 0;
-    final dir = Directory(p.join(root, 'covers'));
-    if (!dir.existsSync()) return 0;
+    final stale = await runOffThread(
+        () => collectInvalidCoverPaths(p.join(root, 'covers')));
     var cleaned = 0;
-    var processed = 0;
-    final now = DateTime.now();
-    for (final f in dir.listSync()) {
-      if (f is! File) continue;
-      try {
-        // 跳过刚落盘的文件，避免与正在进行的扫描/补读写盘竞争。
-        if (now.difference(f.statSync().modified).inMinutes < 5) continue;
-        final raf = f.openSync();
-        final sig = raf.readSync(16);
-        raf.closeSync();
-        if (!looksLikeImageBytes(sig)) {
-          f.deleteSync();
-          await _writer!.exec(
-              'UPDATE idx_songs SET cover_path=NULL, meta_read=0 WHERE cover_path=?',
-              [f.path]);
-          cleaned++;
-        }
-      } catch (_) {
-        // 单文件失败忽略，继续清理其余。
-      }
-      if (++processed % 50 == 0) await Future.delayed(Duration.zero);
+    for (final path in stale) {
+      await _writer!.exec(
+          'UPDATE idx_songs SET cover_path=NULL, meta_read=0 WHERE cover_path=?',
+          [path]);
+      cleaned++;
     }
     return cleaned;
   }
@@ -450,16 +442,10 @@ class LocalIndex {
   /// 「忽略音频（时长/大小）」过滤子句（改进.txt 功能6）：设置变更后，
   /// 已扫描入库的歌曲也按规则过滤——时长未知（NULL/0，快扫未读头）一律放过。
   /// 返回 `(sqlFragment, extraArgs)`；两个阈值均为 0 时条件恒真（零开销兜底）。
+  /// 实现见顶层 [ignoreFilterSql]（后台 isolate 读快照共用同一份 SQL）。
   ({String sql, List<Object?> args}) _ignoreFilterSql(
-      int minDurationSec, int minSizeBytes) {
-    return (
-      sql: '''
-      AND (i.duration IS NULL OR i.duration<=0 OR ?<=0 OR i.duration>=?)
-      AND (i.size IS NULL OR i.size<=0 OR ?<=0 OR i.size>=?)
-      ''',
-      args: [minDurationSec, minDurationSec, minSizeBytes, minSizeBytes],
-    );
-  }
+          int minDurationSec, int minSizeBytes) =>
+      ignoreFilterSql(minDurationSec, minSizeBytes);
 
   List<Song> searchSongs({
     required String sourceKey,
@@ -468,32 +454,14 @@ class LocalIndex {
     int? size,
     int minDurationSec = 0,
     int minSizeBytes = 0,
-  }) {
-    final q = query?.trim().toLowerCase() ?? '';
-    final like = q.isEmpty ? '%' : '%$q%';
-    // size==null 时不设 LIMIT（返回全部，供列表无限滚动 / 全选）。
-    final limitSql = size == null ? '' : 'LIMIT ? OFFSET ?';
-    final ignore = _ignoreFilterSql(minDurationSec, minSizeBytes);
-    final args = <Object?>[sourceKey, like, like, like];
-    args.addAll(ignore.args);
-    if (size != null) {
-      args.add(size);
-      args.add((page - 1) * size);
-    }
-    final rows = _db!.select('''
-      SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
-             i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
-             i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
-      FROM idx_songs i
-      LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
-      WHERE i.source_key=? AND i.missing=0
-        AND (i.title LIKE ? OR COALESCE(i.artist,'') LIKE ? OR COALESCE(i.album,'') LIKE ?)
-        ${ignore.sql}
-      ORDER BY i.artist, i.album, i.track_no, i.title
-      $limitSql
-    ''', args);
-    return rows.map(_rowToSong).toList();
-  }
+  }) =>
+      querySongs(_db!,
+          sourceKey: sourceKey,
+          query: query,
+          page: page,
+          size: size,
+          minDurationSec: minDurationSec,
+          minSizeBytes: minSizeBytes);
 
   int countSongs(String sourceKey,
       {int minDurationSec = 0, int minSizeBytes = 0}) {
@@ -652,32 +620,8 @@ class LocalIndex {
     return true;
   }
 
-  Song _rowToSong(Row r) => Song.direct(
-        id: r['id'] as int,
-        sourceKey: r['source_key'] as String,
-        title: r['title'] as String,
-        artist: r['artist'] as String?,
-        albumName: r['album'] as String?,
-        albumArtist: r['album_artist'] as String?,
-        trackNo: r['track_no'] as int?,
-        year: r['year'] as int?,
-        genre: r['genre'] as String?,
-        duration: r['duration'] as int?,
-        source: _sourceOf(r['source_key'] as String),
-        sourceRef: r['ref'] as String,
-        fileSize: r['size'] as int,
-        format: r['format'] as String?,
-        favorite: r['favorite'] == 1,
-        coverPath: r['cover_path'] as String?,
-        sourceUrl: r['url'] as String?,
-        metaRead: (r['meta_read'] as int? ?? 0) == 1,
-      );
-
-  /// 从 source_key（'webdav:name'）取协议名（'webdav'）。
-  String _sourceOf(String key) {
-    final i = key.indexOf(':');
-    return i > 0 ? key.substring(0, i) : key;
-  }
+  /// 行 → 歌曲模型。实现见顶层 [songFromRow]（后台 isolate 读快照共用）。
+  Song _rowToSong(Row r) => songFromRow(r);
 
   // ---------- offline cache ----------
 
@@ -1575,104 +1519,17 @@ class LocalIndex {
   /// MB 无成员数据）时才回落显示该身份本身。歌曲归属反向继承——成员身份自己没有
   /// role='main' 映射，计数与列表都算上其所有祖先身份的歌曲。
   List<Artist> identityArtistGroups(
-      {String? query,
-      CollectionSort? sort,
-      int minDurationSec = 0,
-      int minSizeBytes = 0}) {
-    final q = query?.trim() ?? '';
-    final like = q.isEmpty ? '%' : '%$q%';
-    final ignore = _ignoreFilterSql(minDurationSec, minSizeBytes);
-    final db = _db;
-    if (db == null) return const [];
-
-    final types = <String, String>{};
-    for (final r in db.select('SELECT artist_key, type FROM artists')) {
-      types[r['artist_key'] as String] = (r['type'] as String?) ?? 'person';
-    }
-    final children = <String, List<String>>{};
-    for (final r
-        in db.select('SELECT parent_key, member_key FROM artist_member')) {
-      (children[r['parent_key'] as String] ??= <String>[])
-          .add(r['member_key'] as String);
-    }
-    final owners = <String>[
-      for (final r in db.select(
-          "SELECT DISTINCT artist_key FROM artist_song_map WHERE role='main'"))
-        r['artist_key'] as String
-    ];
-
-    // owner → 应显示的身份；无 Person 可达时回落 owner 自己。
-    //
-    // 同一身份可能挂在**多个** owner 下（成员同时属于两个组合），每个 owner 都要留
-    // 一条 pair；计数由 [identityDisplayStats] 按显示身份合并（自己 + 全部祖先），
-    // 不会少算。这里只让 _personsUnder 内部按 artist_key 去重（防环），不再全局去重。
-    final pairs = <List<String>>[];
-    for (final o in owners) {
-      final display = _personsUnder(o, children, types);
-      for (final d in (display.isEmpty ? <String>[o] : display)) {
-        pairs.add([d, o]);
-      }
-    }
-    if (pairs.isEmpty) return const [];
-
-    // 显示身份的计数：与 [identitySongs]/详情页完全同一口径（沿成员边向上递归到
-    // 「自己 + 全部祖先」）。以前列表按 pairs 逐 owner 累加，是与详情页各写一套的
-    // 近似口径，重解析/合流后两处可能漂移（列表旧数、详情新数）。
-    final stats = identityDisplayStats(
-        minDurationSec: minDurationSec, minSizeBytes: minSizeBytes);
-
-    // 展示集合：pairs 里的 display 身份去重后按名字 LIKE 过滤；无歌（或全被忽略
-    // 规则过滤）的身份不展示。
-    final displayRows = <String, ArtistRow>{};
-    for (final r in db.select(
-        'SELECT * FROM artists WHERE display_name LIKE ?', [like])) {
-      final a = _rowToArtist(r);
-      displayRows[a.artistKey] = a;
-    }
-    final displays = <String, ArtistRow>{};
-    for (final p in pairs) {
-      if (!stats.containsKey(p[0])) continue;
-      final a = displayRows[p[0]];
-      if (a == null) continue;
-      displays.putIfAbsent(p[0], () => a);
-    }
-    if (displays.isEmpty) return const [];
-    // 封面：同一身份的多首歌取最早入库的那张（成员继承自祖先的歌）。
-    final covers = <String, String?>{};
-    for (final r in db.select('''
-      WITH pairs(dk, ok) AS (
-        SELECT json_extract(value,'\$[0]'), json_extract(value,'\$[1]')
-        FROM json_each(?)
-      )
-      SELECT p.dk AS dk, i.cover_path AS c
-      FROM pairs p
-      JOIN artists a ON a.artist_key=p.dk AND a.display_name LIKE ?
-      JOIN artist_song_map m ON m.artist_key=p.ok AND m.role='main'
-      JOIN idx_songs i ON i.source_key=m.source_key AND i.ref=m.ref AND i.missing=0
-        AND i.cover_path IS NOT NULL
-        ${ignore.sql}
-      ORDER BY i.id
-    ''', [jsonEncode(pairs), like, ...ignore.args])) {
-      covers.putIfAbsent(r['dk'] as String, () => r['c'] as String?);
-    }
-
-    final list = <Artist>[
-      for (final e in displays.entries)
-        Artist(
-          name: e.value.displayName,
-          songCount: stats[e.key]!.songs,
-          albumCount: stats[e.key]!.albums,
-          coverPath: covers[e.key],
-          identityKey: e.key,
-          canonicalKey: e.value.canonicalKey,
-          status: e.value.status,
-          mbid: e.value.mbid,
-        ),
-    ];
-    final pref = sort ?? CollectionSort.charAsc;
-    return sortByCollection(list, pref, (a) => a.name,
-        countOf: (a) => a.songCount);
-  }
+          {String? query,
+          CollectionSort? sort,
+          int minDurationSec = 0,
+          int minSizeBytes = 0}) =>
+      _db == null
+          ? const []
+          : identityArtistGroupsOf(_db!,
+              query: query,
+              sort: sort,
+              minDurationSec: minDurationSec,
+              minSizeBytes: minSizeBytes);
 
   /// 空串当 null：MB 里「有字段但为空串」和「没这个字段」意思一样。
   static String? _emptyToNull(String? v) {
@@ -1683,19 +1540,10 @@ class LocalIndex {
 
   /// 从 [root] 沿成员边广度展开出所有 type='person' 的身份（含 root 自身若是 Person）。
   /// visited 按 artist_key 防环；成员表很小，深度不设限也不会失控。
+  /// 实现见顶层 [personsUnder]（后台 isolate 快照共用）。
   List<String> _personsUnder(String root, Map<String, List<String>> children,
-      Map<String, String> types) {
-    final out = <String>[];
-    final seen = <String>{};
-    final queue = <String>[root];
-    while (queue.isNotEmpty) {
-      final cur = queue.removeAt(0);
-      if (!seen.add(cur)) continue;
-      if (types[cur] == 'person') out.add(cur);
-      queue.addAll(children[cur] ?? const <String>[]);
-    }
-    return out;
-  }
+          Map<String, String> types) =>
+      personsUnder(root, children, types);
 
   /// 各身份的展示口径统计（歌曲数 + 专辑数）：与 [identitySongs] 完全同源——
   /// 沿成员边向上递归到「自己 + 全部祖先」，统计祖先名下 role='main' 的歌曲。
@@ -1707,35 +1555,13 @@ class LocalIndex {
   ///
   /// 专辑数按全局专辑分组键统计（专辑歌手? 否则曲目歌手 + 专辑名），与
   /// [Album.fromSongs] 一致——详情页的专辑分区按同一键分组，数字才对得上。
+  /// 实现见顶层 [identityDisplayStatsOf]。
   Map<String, ({int songs, int albums})> identityDisplayStats(
-      {int minDurationSec = 0, int minSizeBytes = 0}) {
-    final db = _db;
-    if (db == null) return const {};
-    final ignore = _ignoreFilterSql(minDurationSec, minSizeBytes);
-    final out = <String, ({int songs, int albums})>{};
-    for (final r in db.select('''
-      WITH RECURSIVE up(k, owner) AS (
-        SELECT artist_key, artist_key FROM artists
-        UNION
-        SELECT u.k, am.parent_key FROM up u JOIN artist_member am ON am.member_key=u.owner
-      )
-      SELECT u.k AS k,
-             COUNT(DISTINCT m.source_key || char(1) || m.ref) AS n,
-             COUNT(DISTINCT
-               COALESCE(NULLIF(i.album_artist,''), NULLIF(i.artist,''), 'Unknown')
-               || char(1) ||
-               COALESCE(NULLIF(i.album,''), 'Unknown Album')) AS albums
-      FROM up u
-      JOIN artist_song_map m ON m.artist_key=u.owner AND m.role='main'
-      JOIN idx_songs i ON i.source_key=m.source_key AND i.ref=m.ref AND i.missing=0
-        ${ignore.sql}
-      GROUP BY u.k
-    ''', ignore.args)) {
-      out[r['k'] as String] =
-          (songs: r['n'] as int, albums: r['albums'] as int);
-    }
-    return out;
-  }
+          {int minDurationSec = 0, int minSizeBytes = 0}) =>
+      _db == null
+          ? const {}
+          : identityDisplayStatsOf(_db!,
+              minDurationSec: minDurationSec, minSizeBytes: minSizeBytes);
 
   /// 各身份在歌手页的展示曲目数（详情页给关联行填数字用）。
   /// 语义与 [identitySongs] 完全一致，见 [identityDisplayStats]。
@@ -1922,38 +1748,77 @@ class LocalIndex {
   /// identity 模式无映射（本地聚合键未命中的残留）按原字符串分组；正常应为空，
   /// 兜底保证 aggregation 开启后歌手页仍完整。
   List<Artist> identityFallbackGroups(
-      {int minDurationSec = 0, int minSizeBytes = 0}) {
-    final ignore = _ignoreFilterSql(minDurationSec, minSizeBytes);
-    final fallback = ignore.sql.replaceAll('i.', 's.');
-    final cover = ignore.sql
-        .replaceAll('i.', '')
-        .replaceAll('s.duration', 'duration')
-        .replaceAll('s.size', 'size')
-        .replaceAll('s.cover', 'cover');
-    final rs = _db!.select('''
-      SELECT s.artist raw, COUNT(*) n,
-        COUNT(DISTINCT
-          COALESCE(NULLIF(s.album_artist,''), NULLIF(s.artist,''), 'Unknown')
-          || char(1) ||
-          COALESCE(NULLIF(s.album,''), 'Unknown Album')) al,
-        (SELECT cover_path FROM idx_songs WHERE artist=s.artist AND cover_path IS NOT NULL
-          $cover ORDER BY id LIMIT 1) c
-      FROM idx_songs s
-      WHERE s.missing=0 AND s.artist IS NOT NULL AND s.artist<>''
-        AND NOT EXISTS (SELECT 1 FROM artist_song_map m
-                         WHERE m.source_key=s.source_key AND m.ref=s.ref AND m.role='main')
-        $fallback
-      GROUP BY s.artist
-    ''', [...ignore.args, ...ignore.args]);
-    return [
-      for (final r in rs)
-        Artist(
-          name: r['raw'] as String,
-          songCount: r['n'] as int,
-          albumCount: r['al'] as int,
-          coverPath: r['c'] as String?,
-        ),
-    ];
+          {int minDurationSec = 0, int minSizeBytes = 0}) =>
+      _db == null
+          ? const []
+          : identityFallbackGroupsOf(_db!,
+              minDurationSec: minDurationSec, minSizeBytes: minSizeBytes);
+
+  // ---------- 后台 isolate 快照读（启动/刷新不阻塞 UI） ----------
+
+  /// 启动/刷新用后台快照：在后台 isolate 里一次完成「歌曲查询 + 专辑分组 +
+  /// 歌手分组」，UI isolate 只接收模型列表。主连接的同步小查询（详情页/源浏览）
+  /// 不受影响；只有全量读这类大活走这里。
+  Future<({List<Song> songs, List<Album> albums, List<Artist> artists})>
+      librarySnapshotInBackground({
+    required List<String> sourceKeys,
+    String? query,
+    CollectionSort? artistSort,
+    int minDurationSec = 0,
+    int minSizeBytes = 0,
+  }) {
+    final path = _dbPath;
+    if (path == null) {
+      return Future.value((
+        songs: const <Song>[],
+        albums: const <Album>[],
+        artists: const <Artist>[],
+      ));
+    }
+    return runOffThread(() {
+      final db = openIsolateDatabase(path);
+      try {
+        final songs = queryAllSongs(db,
+            sourceKeys: sourceKeys,
+            query: query,
+            minDurationSec: minDurationSec,
+            minSizeBytes: minSizeBytes);
+        return (
+          songs: songs,
+          albums: Album.fromSongs(songs),
+          artists: artistGroupsOf(db,
+              query: query,
+              sort: artistSort,
+              minDurationSec: minDurationSec,
+              minSizeBytes: minSizeBytes),
+        );
+      } finally {
+        db.dispose();
+      }
+    });
+  }
+
+  /// 只重算歌手分组（身份解析完成后逐批刷新用），同样在后台 isolate。
+  Future<List<Artist>> artistGroupsInBackground({
+    String? query,
+    CollectionSort? sort,
+    int minDurationSec = 0,
+    int minSizeBytes = 0,
+  }) {
+    final path = _dbPath;
+    if (path == null) return Future.value(const <Artist>[]);
+    return runOffThread(() {
+      final db = openIsolateDatabase(path);
+      try {
+        return artistGroupsOf(db,
+            query: query,
+            sort: sort,
+            minDurationSec: minDurationSec,
+            minSizeBytes: minSizeBytes);
+      } finally {
+        db.dispose();
+      }
+    });
   }
 
   /// 身份数量/状态汇总（信息页）。
@@ -2085,30 +1950,8 @@ class LocalIndex {
     });
   }
 
-  ArtistRow _rowToArtist(Row r) => ArtistRow(
-        artistKey: r['artist_key'] as String,
-        mbid: r['mbid'] as String?,
-        canonicalKey: r['canonical_key'] as String,
-        displayName: r['display_name'] as String,
-        names: _jsonMapList(r['names']),
-        groups: _jsonMapList(r['groups']),
-        type: r['type'] as String,
-        disambiguation: r['disambiguation'] as String?,
-        status: r['status'] as String,
-        errorCount: r['error_count'] as int,
-        nextAt: r['next_at'] as int,
-        resolvedAt: r['resolved_at'] as String?,
-        matchScore: (r['match_score'] as num?)?.toDouble(),
-      );
-
-  List<Map<String, dynamic>> _jsonMapList(Object? raw) {
-    if (raw == null) return const [];
-    try {
-      return (jsonDecode(raw as String) as List).cast<Map<String, dynamic>>();
-    } catch (_) {
-      return const [];
-    }
-  }
+  /// 行 → 身份模型。实现见顶层 [artistRowFrom]（后台 isolate 快照共用）。
+  ArtistRow _rowToArtist(Row r) => artistRowFrom(r);
 }
 
 /// 一张已配置的直连源记录。
@@ -2475,4 +2318,371 @@ class ArtistWorkItem {
     required this.nextAt,
     this.mbid,
   });
+}
+
+// ---------- 顶层查询实现（读写分离） ----------
+//
+// 这些函数不依赖 LocalIndex 实例：主连接方法（LocalIndex 内的同步读）与后台
+// isolate 快照（另开连接读同一份库）共用同一份 SQL 与映射逻辑，避免两处漂移。
+// 见 LocalIndex.librarySnapshotInBackground / artistGroupsInBackground。
+
+/// 「忽略音频（时长/大小）」过滤子句（改进.txt 功能6）：设置变更后，
+/// 已扫描入库的歌曲也按规则过滤——时长未知（NULL/0，快扫未读头）一律放过。
+/// 返回 `(sqlFragment, extraArgs)`；两个阈值均为 0 时条件恒真（零开销兜底）。
+({String sql, List<Object?> args}) ignoreFilterSql(
+    int minDurationSec, int minSizeBytes) {
+  return (
+    sql: '''
+      AND (i.duration IS NULL OR i.duration<=0 OR ?<=0 OR i.duration>=?)
+      AND (i.size IS NULL OR i.size<=0 OR ?<=0 OR i.size>=?)
+      ''',
+    args: [minDurationSec, minDurationSec, minSizeBytes, minSizeBytes],
+  );
+}
+
+/// 从 source_key（'webdav:name'）取协议名（'webdav'）。
+String sourceOf(String key) {
+  final i = key.indexOf(':');
+  return i > 0 ? key.substring(0, i) : key;
+}
+
+/// 数据库行 → 歌曲模型（列名与 [querySongs] 的 SELECT 对齐）。
+Song songFromRow(Row r) => Song.direct(
+      id: r['id'] as int,
+      sourceKey: r['source_key'] as String,
+      title: r['title'] as String,
+      artist: r['artist'] as String?,
+      albumName: r['album'] as String?,
+      albumArtist: r['album_artist'] as String?,
+      trackNo: r['track_no'] as int?,
+      year: r['year'] as int?,
+      genre: r['genre'] as String?,
+      duration: r['duration'] as int?,
+      source: sourceOf(r['source_key'] as String),
+      sourceRef: r['ref'] as String,
+      fileSize: r['size'] as int,
+      format: r['format'] as String?,
+      favorite: r['favorite'] == 1,
+      coverPath: r['cover_path'] as String?,
+      sourceUrl: r['url'] as String?,
+      metaRead: (r['meta_read'] as int? ?? 0) == 1,
+    );
+
+/// 按源查询歌曲（主连接与后台快照共用）。
+List<Song> querySongs(
+  Database db, {
+  required String sourceKey,
+  String? query,
+  int page = 1,
+  int? size,
+  int minDurationSec = 0,
+  int minSizeBytes = 0,
+}) {
+  final q = query?.trim().toLowerCase() ?? '';
+  final like = q.isEmpty ? '%' : '%$q%';
+  // size==null 时不设 LIMIT（返回全部，供列表无限滚动 / 全选）。
+  final limitSql = size == null ? '' : 'LIMIT ? OFFSET ?';
+  final ignore = ignoreFilterSql(minDurationSec, minSizeBytes);
+  final args = <Object?>[sourceKey, like, like, like];
+  args.addAll(ignore.args);
+  if (size != null) {
+    args.add(size);
+    args.add((page - 1) * size);
+  }
+  final rows = db.select('''
+      SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
+             i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
+             i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
+      FROM idx_songs i
+      LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
+      WHERE i.source_key=? AND i.missing=0
+        AND (i.title LIKE ? OR COALESCE(i.artist,'') LIKE ? OR COALESCE(i.album,'') LIKE ?)
+        ${ignore.sql}
+      ORDER BY i.artist, i.album, i.track_no, i.title
+      $limitSql
+    ''', args);
+  return rows.map(songFromRow).toList();
+}
+
+/// 多源合并查询（启动/刷新快照用）：逐源查询后拼接，与
+/// `DirectSourceManager.allSongs` 同序。
+List<Song> queryAllSongs(
+  Database db, {
+  required List<String> sourceKeys,
+  String? query,
+  int minDurationSec = 0,
+  int minSizeBytes = 0,
+}) {
+  final out = <Song>[];
+  for (final key in sourceKeys) {
+    out.addAll(querySongs(db,
+        sourceKey: key,
+        query: query,
+        minDurationSec: minDurationSec,
+        minSizeBytes: minSizeBytes));
+  }
+  return out;
+}
+
+/// 数据库行 → 身份模型。
+ArtistRow artistRowFrom(Row r) => ArtistRow(
+      artistKey: r['artist_key'] as String,
+      mbid: r['mbid'] as String?,
+      canonicalKey: r['canonical_key'] as String,
+      displayName: r['display_name'] as String,
+      names: _jsonMapList(r['names']),
+      groups: _jsonMapList(r['groups']),
+      type: r['type'] as String,
+      disambiguation: r['disambiguation'] as String?,
+      status: r['status'] as String,
+      errorCount: r['error_count'] as int,
+      nextAt: r['next_at'] as int,
+      resolvedAt: r['resolved_at'] as String?,
+      matchScore: (r['match_score'] as num?)?.toDouble(),
+    );
+
+List<Map<String, dynamic>> _jsonMapList(Object? raw) {
+  if (raw == null) return const [];
+  try {
+    return (jsonDecode(raw as String) as List).cast<Map<String, dynamic>>();
+  } catch (_) {
+    return const [];
+  }
+}
+
+/// 从 [root] 沿成员边广度展开出所有 type='person' 的身份（含 root 自身若是 Person）。
+/// visited 按 artist_key 防环；成员表很小，深度不设限也不会失控。
+List<String> personsUnder(String root, Map<String, List<String>> children,
+    Map<String, String> types) {
+  final out = <String>[];
+  final seen = <String>{};
+  final queue = <String>[root];
+  while (queue.isNotEmpty) {
+    final cur = queue.removeAt(0);
+    if (!seen.add(cur)) continue;
+    if (types[cur] == 'person') out.add(cur);
+    queue.addAll(children[cur] ?? const <String>[]);
+  }
+  return out;
+}
+
+/// 各身份的展示口径统计（歌曲数 + 专辑数）：沿成员边向上递归到「自己 + 全部
+/// 祖先」，统计祖先名下 role='main' 的歌曲。专辑数按全局专辑分组键统计，与
+/// [Album.fromSongs] 一致。语义与 [LocalIndex.identitySongs] 同源。
+Map<String, ({int songs, int albums})> identityDisplayStatsOf(
+    Database db,
+    {int minDurationSec = 0,
+    int minSizeBytes = 0}) {
+  final ignore = ignoreFilterSql(minDurationSec, minSizeBytes);
+  final out = <String, ({int songs, int albums})>{};
+  for (final r in db.select('''
+      WITH RECURSIVE up(k, owner) AS (
+        SELECT artist_key, artist_key FROM artists
+        UNION
+        SELECT u.k, am.parent_key FROM up u JOIN artist_member am ON am.member_key=u.owner
+      )
+      SELECT u.k AS k,
+             COUNT(DISTINCT m.source_key || char(1) || m.ref) AS n,
+             COUNT(DISTINCT
+               COALESCE(NULLIF(i.album_artist,''), NULLIF(i.artist,''), 'Unknown')
+               || char(1) ||
+               COALESCE(NULLIF(i.album,''), 'Unknown Album')) AS albums
+      FROM up u
+      JOIN artist_song_map m ON m.artist_key=u.owner AND m.role='main'
+      JOIN idx_songs i ON i.source_key=m.source_key AND i.ref=m.ref AND i.missing=0
+        ${ignore.sql}
+      GROUP BY u.k
+    ''', ignore.args)) {
+    out[r['k'] as String] =
+        (songs: r['n'] as int, albums: r['albums'] as int);
+  }
+  return out;
+}
+
+/// 歌手页主数据源（identity 模式）：显示集合不是「有歌的身份」而是「**歌手**」：
+/// 组合/角色沿 [LocalIndex.artistSetMembers] 建的边递归展开，只显示
+/// type='person' 的末端；整条链一个 Person 都没有时才回落显示该身份本身。
+/// 歌曲归属反向继承——计数由 [identityDisplayStatsOf] 沿祖先合并。
+List<Artist> identityArtistGroupsOf(
+  Database db, {
+  String? query,
+  CollectionSort? sort,
+  int minDurationSec = 0,
+  int minSizeBytes = 0,
+}) {
+  final q = query?.trim() ?? '';
+  final like = q.isEmpty ? '%' : '%$q%';
+  final ignore = ignoreFilterSql(minDurationSec, minSizeBytes);
+
+  final types = <String, String>{};
+  for (final r in db.select('SELECT artist_key, type FROM artists')) {
+    types[r['artist_key'] as String] = (r['type'] as String?) ?? 'person';
+  }
+  final children = <String, List<String>>{};
+  for (final r in db.select('SELECT parent_key, member_key FROM artist_member')) {
+    (children[r['parent_key'] as String] ??= <String>[])
+        .add(r['member_key'] as String);
+  }
+  final owners = <String>[
+    for (final r in db.select(
+        "SELECT DISTINCT artist_key FROM artist_song_map WHERE role='main'"))
+      r['artist_key'] as String
+  ];
+
+  // owner → 应显示的身份；无 Person 可达时回落 owner 自己。
+  //
+  // 同一身份可能挂在**多个** owner 下（成员同时属于两个组合），每个 owner 都要留
+  // 一条 pair；计数由 [identityDisplayStatsOf] 按显示身份合并（自己 + 全部祖先），
+  // 不会少算。这里只让 personsUnder 内部按 artist_key 去重（防环），不再全局去重。
+  final pairs = <List<String>>[];
+  for (final o in owners) {
+    final display = personsUnder(o, children, types);
+    for (final d in (display.isEmpty ? <String>[o] : display)) {
+      pairs.add([d, o]);
+    }
+  }
+  if (pairs.isEmpty) return const [];
+
+  // 显示身份的计数：与详情页 identitySongs 完全同一口径（沿成员边向上递归到
+  // 「自己 + 全部祖先」）。以前列表按 pairs 逐 owner 累加，是与详情页各写一套的
+  // 近似口径，重解析/合流后两处可能漂移（列表旧数、详情新数）。
+  final stats = identityDisplayStatsOf(db,
+      minDurationSec: minDurationSec, minSizeBytes: minSizeBytes);
+
+  // 展示集合：pairs 里的 display 身份去重后按名字 LIKE 过滤；无歌（或全被忽略
+  // 规则过滤）的身份不展示。
+  final displayRows = <String, ArtistRow>{};
+  for (final r in db.select(
+      'SELECT * FROM artists WHERE display_name LIKE ?', [like])) {
+    final a = artistRowFrom(r);
+    displayRows[a.artistKey] = a;
+  }
+  final displays = <String, ArtistRow>{};
+  for (final p in pairs) {
+    if (!stats.containsKey(p[0])) continue;
+    final a = displayRows[p[0]];
+    if (a == null) continue;
+    displays.putIfAbsent(p[0], () => a);
+  }
+  if (displays.isEmpty) return const [];
+
+  // 封面：同一身份的多首歌取最早入库的那张（成员继承自祖先的歌）。
+  final covers = <String, String?>{};
+  for (final r in db.select('''
+      WITH pairs(dk, ok) AS (
+        SELECT json_extract(value,'\$[0]'), json_extract(value,'\$[1]')
+        FROM json_each(?)
+      )
+      SELECT p.dk AS dk, i.cover_path AS c
+      FROM pairs p
+      JOIN artists a ON a.artist_key=p.dk AND a.display_name LIKE ?
+      JOIN artist_song_map m ON m.artist_key=p.ok AND m.role='main'
+      JOIN idx_songs i ON i.source_key=m.source_key AND i.ref=m.ref AND i.missing=0
+        AND i.cover_path IS NOT NULL
+        ${ignore.sql}
+      ORDER BY i.id
+    ''', [jsonEncode(pairs), like, ...ignore.args])) {
+    covers.putIfAbsent(r['dk'] as String, () => r['c'] as String?);
+  }
+
+  final list = <Artist>[
+    for (final e in displays.entries)
+      Artist(
+        name: e.value.displayName,
+        songCount: stats[e.key]!.songs,
+        albumCount: stats[e.key]!.albums,
+        coverPath: covers[e.key],
+        identityKey: e.key,
+        canonicalKey: e.value.canonicalKey,
+        status: e.value.status,
+        mbid: e.value.mbid,
+      ),
+  ];
+  final pref = sort ?? CollectionSort.charAsc;
+  return sortByCollection(list, pref, (a) => a.name,
+      countOf: (a) => a.songCount);
+}
+
+/// identity 模式无映射（本地聚合键未命中的残留）按原字符串分组；正常应为空，
+/// 兜底保证聚合开启后歌手页仍完整。
+List<Artist> identityFallbackGroupsOf(
+    Database db,
+    {int minDurationSec = 0,
+    int minSizeBytes = 0}) {
+  final ignore = ignoreFilterSql(minDurationSec, minSizeBytes);
+  final fallback = ignore.sql.replaceAll('i.', 's.');
+  final cover = ignore.sql
+      .replaceAll('i.', '')
+      .replaceAll('s.duration', 'duration')
+      .replaceAll('s.size', 'size')
+      .replaceAll('s.cover', 'cover');
+  final rs = db.select('''
+      SELECT s.artist raw, COUNT(*) n,
+        COUNT(DISTINCT
+          COALESCE(NULLIF(s.album_artist,''), NULLIF(s.artist,''), 'Unknown')
+          || char(1) ||
+          COALESCE(NULLIF(s.album,''), 'Unknown Album')) al,
+        (SELECT cover_path FROM idx_songs WHERE artist=s.artist AND cover_path IS NOT NULL
+          $cover ORDER BY id LIMIT 1) c
+      FROM idx_songs s
+      WHERE s.missing=0 AND s.artist IS NOT NULL AND s.artist<>''
+        AND NOT EXISTS (SELECT 1 FROM artist_song_map m
+                         WHERE m.source_key=s.source_key AND m.ref=s.ref AND m.role='main')
+        $fallback
+      GROUP BY s.artist
+    ''', [...ignore.args, ...ignore.args]);
+  return [
+    for (final r in rs)
+      Artist(
+        name: r['raw'] as String,
+        songCount: r['n'] as int,
+        albumCount: r['al'] as int,
+        coverPath: r['c'] as String?,
+      ),
+  ];
+}
+
+/// 歌手列表完整口径：身份聚合 + 无映射残留兜底（顺序与
+/// [LocalIndex.identityArtistGroups] + [LocalIndex.identityFallbackGroups] 一致）。
+List<Artist> artistGroupsOf(
+  Database db, {
+  String? query,
+  CollectionSort? sort,
+  int minDurationSec = 0,
+  int minSizeBytes = 0,
+}) =>
+    [
+      ...identityArtistGroupsOf(db,
+          query: query,
+          sort: sort,
+          minDurationSec: minDurationSec,
+          minSizeBytes: minSizeBytes),
+      ...identityFallbackGroupsOf(db,
+          minDurationSec: minDurationSec, minSizeBytes: minSizeBytes),
+    ];
+
+/// 收集签名不符的封面文件并删除，返回其路径列表（DB 引用由调用方标记）。
+/// 同步 IO，供后台 isolate 调用；签名判断见 `looksLikeImageBytes`。
+List<String> collectInvalidCoverPaths(String coversDirPath) {
+  final dir = Directory(coversDirPath);
+  if (!dir.existsSync()) return const [];
+  final out = <String>[];
+  final now = DateTime.now();
+  for (final f in dir.listSync()) {
+    if (f is! File) continue;
+    try {
+      // 跳过刚落盘的文件，避免与正在进行的扫描/补读写盘竞争。
+      if (now.difference(f.statSync().modified).inMinutes < 5) continue;
+      final raf = f.openSync();
+      final sig = raf.readSync(16);
+      raf.closeSync();
+      if (!looksLikeImageBytes(sig)) {
+        f.deleteSync();
+        out.add(f.path);
+      }
+    } catch (_) {
+      // 单文件失败忽略，继续清理其余。
+    }
+  }
+  return out;
 }

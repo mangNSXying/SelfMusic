@@ -297,12 +297,12 @@ class _InlineDbWriter implements DbWriter {
 
 // ---------- 写隔离入口 ----------
 
-/// 写隔离内打开连接。
+/// 在后台 isolate 内打开数据库连接（写隔离与后台读快照共用）。
 ///
-/// 写隔离是独立 isolate，拿不到主 isolate 的 `open.overrideFor`（测试即如此
-/// 覆盖）；Linux 发行版又常只有 `libsqlite3.so.0` 而无 `-dev` 符号链接，sqlite3
-/// 包默认只试前者。故在此按候选名解析一次，保证写隔离在任何平台都能起库。
-Database _openWriterDb(String path) {
+/// 后台 isolate 拿不到主 isolate 的 `open.overrideFor`（测试即如此覆盖）；
+/// Linux 发行版又常只有 `libsqlite3.so.0` 而无 `-dev` 符号链接，sqlite3
+/// 包默认只试前者。故在此按候选名解析一次，保证后台 isolate 在任何平台都能起库。
+Database openIsolateDatabase(String path) {
   if (Platform.isLinux) {
     open.overrideFor(OperatingSystem.linux, () {
       Object? last;
@@ -422,7 +422,7 @@ void _writerEntry(SendPort boot) {
     try {
       switch (t) {
         case 'init':
-          db = _openWriterDb(m['path'] as String);
+          db = openIsolateDatabase(m['path'] as String);
           db!.execute('PRAGMA synchronous=NORMAL;');
           db!.execute('PRAGMA busy_timeout=30000;');
           db!.execute('PRAGMA wal_autocheckpoint=1000;');

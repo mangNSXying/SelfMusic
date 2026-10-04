@@ -11,6 +11,7 @@ import '../models/song.dart';
 import '../models/album.dart';
 import '../models/artist.dart';
 import '../services/artist_resolver.dart';
+import '../utils/off_thread.dart';
 import 'direct_source_manager.dart';
 
 /// 全局图库数据源：合并所有直连源的歌曲，并在客户端按 专辑/歌手 分组聚合，
@@ -60,6 +61,16 @@ class LibraryProvider extends ChangeNotifier {
   bool _loadedOnce = false;
   String? _lastQuery;
 
+  /// 全量快照的世代号：后台读完成时若已被更新的加载接管，丢弃旧结果。
+  int _snapshotToken = 0;
+  bool _refreshInflight = false;
+  bool _refreshDirty = false;
+
+  /// 歌手列表的世代号（全量加载/刷新也会自增，作废在途的只刷歌手结果）。
+  int _artistsToken = 0;
+  bool _artistsRefreshInflight = false;
+  bool _artistsRefreshDirty = false;
+
   void _onArtistResolverChanged() {
     // 首批加载前不重算：startup/loadSongs 会读到最新数据。
     if (!_loadedOnce) return;
@@ -87,12 +98,35 @@ class LibraryProvider extends ChangeNotifier {
   }
 
   /// 就地把列表换成索引最新数据（元数据补读/编辑/扫描后调用），并刷新分组。
+  /// 查询/建模/分组都在后台 isolate 完成；token 丢弃乱序完成的旧结果，
+  /// in-flight 期间的重复触发只登记 dirty，完成后补一轮（扫描期通知很密）。
   void refreshDirect() {
-    final m = _directManager;
-    if (m == null) return;
-    songs = m.allSongs(query: _lastQuery);
-    _recomputeGroups();
-    notifyListeners();
+    if (_refreshInflight) {
+      _refreshDirty = true;
+      return;
+    }
+    _refreshInflight = true;
+    final token = ++_snapshotToken;
+    // 整表刷新也会重算歌手，作废在途的「只刷歌手」结果。
+    _artistsToken++;
+    unawaited(() async {
+      try {
+        final m = _directManager;
+        if (m == null) return;
+        final snap = await m.librarySnapshotInBackground(query: _lastQuery);
+        if (token != _snapshotToken) return; // 更新的全量刷新已接管
+        songs = snap.songs;
+        albums = snap.albums;
+        artists = snap.artists;
+        notifyListeners();
+      } finally {
+        _refreshInflight = false;
+        if (_refreshDirty) {
+          _refreshDirty = false;
+          refreshDirect();
+        }
+      }
+    }());
   }
 
   /// 读取全部直连源的歌曲（同步，来自本地索引）。
@@ -112,18 +146,27 @@ class LibraryProvider extends ChangeNotifier {
 
   /// 从磁盘恢复上次曲库快照（曲库缓存，上次 launch 成功加载后落盘）。
   /// 旧版本快照可能含已废弃的服务端歌曲，恢复时直接过滤。
+  /// 读文件与 JSON 解析都在后台 isolate，UI isolate 不做同步 IO/解码。
   Future<void> restoreCache() async {
     try {
       final file = await _cacheFile();
-      if (file == null || !file.existsSync()) return;
-      final data = jsonDecode(file.readAsStringSync());
-      if (data is! List) return;
-      songs = data
-          .whereType<Map<String, dynamic>>()
-          .map(Song.fromJson)
-          .where((s) => s.sourceKey != 'server')
-          .toList();
-      _recomputeGroups();
+      if (file == null) return;
+      final path = file.path;
+      final loaded = await runOffThread<List<Song>?>(() {
+        final f = File(path);
+        if (!f.existsSync()) return null;
+        final data = jsonDecode(f.readAsStringSync());
+        if (data is! List) return null;
+        return [
+          for (final e in data.whereType<Map<String, dynamic>>())
+            if ((e['sourceKey'] as String?) != 'server') Song.fromJson(e),
+        ];
+      });
+      if (loaded == null) return;
+      songs = loaded;
+      // 先出歌曲列表，分组（后台）补上——启动首屏不为分组查询让路。
+      notifyListeners();
+      await _recomputeGroups();
       notifyListeners();
     } catch (e) {
       debugPrint('library cache restore failed: $e');
@@ -134,9 +177,23 @@ class LibraryProvider extends ChangeNotifier {
     loading = true;
     error = null;
     notifyListeners();
-    songs = _directManager?.allSongs(query: query) ?? const <Song>[];
-    _lastQuery = query;
-    _recomputeGroups();
+    final token = ++_snapshotToken;
+    // 整表加载也会重算歌手，作废在途的「只刷歌手」结果。
+    _artistsToken++;
+    final m = _directManager;
+    if (m == null) {
+      songs = const <Song>[];
+      _lastQuery = query;
+      await _recomputeGroups();
+    } else {
+      final snap = await m.librarySnapshotInBackground(query: query);
+      if (token == _snapshotToken) {
+        songs = snap.songs;
+        albums = snap.albums;
+        artists = snap.artists;
+      }
+      _lastQuery = query;
+    }
     _loadedOnce = true;
     unawaited(_saveCache());
     loading = false;
@@ -185,35 +242,52 @@ class LibraryProvider extends ChangeNotifier {
         minSizeBytes: m.settings.scanIgnoreMinSizeBytes);
   }
 
-  void _recomputeGroups() {
-    albums = Album.fromSongs(songs);
-    artists = _identityGroupsFromDb(_lastQuery);
-  }
-
-  List<Artist> _identityGroupsFromDb(String? query) {
+  /// 分组重算（无直连管理器时的纯内存分组；有管理器走后台 identity 分组）。
+  Future<void> _recomputeGroups() async {
     final m = _directManager;
-    // 索引还没挂上（纯网页源、或启动时序早于 attachDirectManager）：退回按歌曲原始
-    // 歌手名分组。身份聚合是默认路径，但这里空掉的话歌手页会直接没内容。
-    if (m == null) return Artist.fromSongs(songs);
-    final out = <Artist>[
-      ...m.index.identityArtistGroups(
-        query: query,
-        minDurationSec: m.settings.scanIgnoreMinDurationSec,
-        minSizeBytes: m.settings.scanIgnoreMinSizeBytes,
-      ),
-    ];
-    // 无映射残留兜底（通常为空）：保证身份聚合开启时歌手页仍完整。
-    out.addAll(m.index.identityFallbackGroups(
-      minDurationSec: m.settings.scanIgnoreMinDurationSec,
-      minSizeBytes: m.settings.scanIgnoreMinSizeBytes,
-    ));
-    return out;
+    final current = songs;
+    if (m == null) {
+      final snap = await runOffThread(() => (
+            albums: Album.fromSongs(current),
+            artists: Artist.fromSongs(current),
+          ));
+      albums = snap.albums;
+      artists = snap.artists;
+      return;
+    }
+    albums = await runOffThread(() => Album.fromSongs(current));
+    artists = await m.artistGroupsInBackground(query: _lastQuery);
   }
 
   /// 歌手身份解析结果变化后（无需重扫歌曲）刷新歌手分组。
+  /// 后台 isolate 重算；in-flight 期间再次触发只登记 dirty，完成后补一轮，
+  /// 避免解析器逐批通知时排队堆积一串查询。
   void refreshArtists() {
-    artists = _identityGroupsFromDb(_lastQuery);
-    notifyListeners();
+    if (_artistsRefreshInflight) {
+      _artistsRefreshDirty = true;
+      return;
+    }
+    _artistsRefreshInflight = true;
+    final token = ++_artistsToken;
+    unawaited(() async {
+      try {
+        final m = _directManager;
+        final current = songs;
+        final list = m == null
+            ? await runOffThread(() => Artist.fromSongs(current))
+            : await m.artistGroupsInBackground(query: _lastQuery);
+        if (token == _artistsToken) {
+          artists = list;
+          notifyListeners();
+        }
+      } finally {
+        _artistsRefreshInflight = false;
+        if (_artistsRefreshDirty) {
+          _artistsRefreshDirty = false;
+          refreshArtists();
+        }
+      }
+    }());
   }
 
   /// 依据匹配的 sourceKey 解析播放源。
@@ -232,11 +306,18 @@ class LibraryProvider extends ChangeNotifier {
   Future<void> _saveCache() async {
     final file = await _cacheFile();
     if (file == null) return;
+    final path = file.path;
+    final snapshot = songs;
     try {
-      file.parent.createSync(recursive: true);
-      file.writeAsStringSync(
-          jsonEncode(songs.map((s) => s.toJson()).toList()),
-          flush: true);
+      // 编码（全量 toJson）与写盘+fsync 都放后台 isolate：原来在 UI 线程
+      // jsonEncode 每一首再同步写，是启动卡顿的主要来源之一。
+      await runOffThread<void>(() {
+        final f = File(path);
+        f.parent.createSync(recursive: true);
+        f.writeAsStringSync(
+            jsonEncode([for (final s in snapshot) s.toJson()]),
+            flush: true);
+      });
     } catch (e) {
       debugPrint('library cache save failed: $e');
     }

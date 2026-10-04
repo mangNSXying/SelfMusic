@@ -16,6 +16,8 @@ import '../data/local/cache_manager.dart';
 import '../data/local/song_weight_store.dart';
 import '../data/local/playlist_store.dart';
 import '../models/song.dart';
+import '../models/album.dart';
+import '../models/artist.dart';
 import '../services/api_client.dart';
 import '../services/artist_resolver.dart';
 import '../services/secret_store.dart';
@@ -687,6 +689,31 @@ class DirectSourceManager extends ChangeNotifier {
           minSizeBytes: f.minSizeBytes));
     }
     return out;
+  }
+
+  /// 启动/刷新用的后台快照读：歌曲 + 专辑 + 歌手分组在后台 isolate 完成，
+  /// UI isolate 不做 SELECT/映射/分组（消除启动两秒卡顿的来源）。
+  Future<({List<Song> songs, List<Album> albums, List<Artist> artists})>
+      librarySnapshotInBackground({String? query}) {
+    final f = _ignoreFilters;
+    return index.librarySnapshotInBackground(
+      sourceKeys: [for (final s in _sources) s.key],
+      query: query,
+      artistSort: settings.sortArtists,
+      minDurationSec: f.minDurationSec,
+      minSizeBytes: f.minSizeBytes,
+    );
+  }
+
+  /// 身份解析完成后的轻量刷新：只重算歌手分组（同样在后台 isolate）。
+  Future<List<Artist>> artistGroupsInBackground({String? query}) {
+    final f = _ignoreFilters;
+    return index.artistGroupsInBackground(
+      query: query,
+      sort: settings.sortArtists,
+      minDurationSec: f.minDurationSec,
+      minSizeBytes: f.minSizeBytes,
+    );
   }
 
   /// 所有直连源歌曲总数。
