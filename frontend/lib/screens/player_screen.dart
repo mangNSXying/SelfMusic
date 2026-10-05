@@ -4,7 +4,6 @@ import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
@@ -783,10 +782,11 @@ class _ControlRow extends StatelessWidget {
           tooltip: '上一首',
           child: const Icon(Icons.skip_previous, size: 34),
         ),
-        StreamBuilder<PlayerState>(
-          stream: player.player.playerStateStream,
-          builder: (c, snap) {
-            final playing = snap.data?.playing ?? false;
+        ListenableBuilder(
+          listenable: player,
+          builder: (c, _) {
+            // 目标态（provider.playing）：点击后一帧内翻转，不等音频淡出完成。
+            final playing = player.playing;
             return Pressable(
               onPressed: player.toggle,
               tooltip: playing ? '暂停' : '播放',
@@ -1043,10 +1043,11 @@ class _VerticalControls extends StatelessWidget {
           child: const Icon(Icons.skip_previous, size: 28),
         ),
         const SizedBox(height: 6),
-        StreamBuilder<PlayerState>(
-          stream: player.player.playerStateStream,
-          builder: (c, snap) {
-            final playing = snap.data?.playing ?? false;
+        ListenableBuilder(
+          listenable: player,
+          builder: (c, _) {
+            // 目标态（provider.playing）：点击后一帧内翻转，不等音频淡出完成。
+            final playing = player.playing;
             return Pressable(
               onPressed: player.toggle,
               tooltip: playing ? '暂停' : '播放',

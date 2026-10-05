@@ -65,7 +65,7 @@
 | 播放页权重信息显示 | `player_show_weight` | `true`（显示） | 播放页是否展示当前歌曲 liked / factor 权重芯片（读取 `play_meta`） |
 | 播放页屏幕常亮 | `player_keep_screen_on` | `false`（关） | 仅在播放页打开期间生效，离开播放页恢复系统熄屏策略（ohos 无 `wakelock_plus` 实现，跳过） |
 | 常亮限定蓝牙设备 | `keep_screen_on_device` | `''`（不限定） | 仅在下列**任一**蓝牙设备处于连接状态时才保持常亮；值是设备名 JSON 数组（如 `[" buds","car"]`，旧版单对象 `{"a":" buds"}` 仍可读，由 `btDevicesFromSetting` 兼容）。设备名来自**已配对**列表（`getBondedDevices`），选择器为多选复选框；进入播放页后每 5s 轮询连接状态（`BluetoothProfile.LE_AUDIO`，Android 13+ 需该 profile；已授权 `BLUETOOTH_CONNECT` 才有意义，权限被收回时提示未授权） |
-| 淡入淡出 | `fade_enabled` + `fade_duration_ms` | 开，1000 ms（1~3 s） | 从暂停恢复到播放 / 播放挥手暂停前做 `setVolume` 软件渐变（16 ms 周期），全平台可用；不依赖音频后端 crossfade。关闭时无渐变直接切换 |
+| 淡入淡出 | `fade_enabled` + `fade_duration_ms` | 开，2000 ms（0.5~2 s） | 从暂停恢复到播放 / 播放挥手暂停前做 `setVolume` 软件渐变（16 ms 周期），全平台可用；不依赖音频后端 crossfade。关闭时无渐变直接切换。时长有效域 [500, 2000] ms（0.1 s 步进），越界历史值读取时钳制到最近边界 |
 | 均衡器 | `equalizer_enabled` + `eq_bands` | 关 | 5 频段增益（`eq_bands`=JSON 整数数组：低音 60 Hz / 中低 230 Hz / 中音 910 Hz / 中高 3.6 kHz / 高音 14 kHz，范围 -12~+12 dB）。**仅 Android**（just_audio `AndroidEqualizer` 注入 `AudioPipeline`）；Linux/macOS 无公开 mpv Dart API，开关与滑块界面仍可见但不生效 |
 | 音频焦点（自动暂停/恢复） | `audio_focus_enabled` | `true` | 来电 / 其他 App 抢占时的暂停-恢复。just_audio `handleInterruptions`，切换后重建播放器即时生效（Android）。原在「通知」分区，现归「播放」分区 |
 

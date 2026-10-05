@@ -350,9 +350,12 @@ class AppSettings {
   bool get fadeEnabled => (index.settingsGet(kFadeEnabled) ?? '1') == '1';
   set fadeEnabled(bool v) => index.settingsSet(kFadeEnabled, v ? '1' : '0');
 
-  /// 淡入淡出时长（ms，建议 1000~3000）。
+  /// 淡入淡出时长（ms）。有效域 [500, 2000]，默认 2000；越界的历史存储值
+  /// （如旧版 1~3 s 档位写的 3000）在读取时钳制到最近边界，不迁移存储，
+  /// 用户下次拖动滑条即写回合法值。
   int get fadeDurationMs =>
-      int.tryParse(index.settingsGet(kFadeDurationMs) ?? '') ?? 2000;
+      (int.tryParse(index.settingsGet(kFadeDurationMs) ?? '') ?? 2000)
+          .clamp(500, 2000);
   set fadeDurationMs(int v) =>
       index.settingsSet(kFadeDurationMs, v.toString());
 

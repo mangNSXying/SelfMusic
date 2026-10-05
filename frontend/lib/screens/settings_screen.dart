@@ -1459,11 +1459,14 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
               const Text('时长', style: TextStyle(fontSize: 13)),
               Expanded(
                 child: Slider(
-                  value: (_settings.fadeDurationMs / 1000).clamp(1.0, 3.0),
-                  min: 1,
-                  max: 3,
-                  divisions: 4,
-                  label: '${(_settings.fadeDurationMs / 1000).toStringAsFixed(1)} 秒',
+                  // 有效域 [500, 2000]ms（读取已钳制）：0.5~2.0s、0.1s 步进
+                  //（divisions 15，16 档），标签一位小数实时预览。
+                  value: (_settings.fadeDurationMs / 1000).clamp(0.5, 2.0),
+                  min: 0.5,
+                  max: 2.0,
+                  divisions: 15,
+                  label:
+                      '${(_settings.fadeDurationMs / 1000).toStringAsFixed(1)} 秒',
                   onChanged: (v) => setState(
                       () => _settings.fadeDurationMs = (v * 1000).round()),
                 ),
