@@ -45,6 +45,7 @@ dependencies:
   # ohos 适配层（lib/platform/harmonyos/）直接 import 的平台接口（本就是传递依赖）：
   just_audio_platform_interface: ^4.6.0
   flutter_secure_storage_platform_interface: ^1.1.2
+  image: ^4.10.1
 dev_dependencies:
   flutter_test:
     sdk: flutter

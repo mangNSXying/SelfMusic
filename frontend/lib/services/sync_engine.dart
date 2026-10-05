@@ -51,6 +51,11 @@ class SyncEngine {
   void Function()? onPlaylistsApplied;
   bool _playlistsDirty = false;
 
+  /// 歌曲权重快照落库后的回调：收藏/权重状态变了但列表数据没版本变化，
+  /// 不通知则喜欢页与列表行仍显示旧态（对标 onSourcesApplied）。
+  void Function()? onSongStatesApplied;
+  bool _songStatesDirty = false;
+
   SyncEngine({required this.api, required this.index, required this.settings});
 
   /// 应用是否在前台。false 时 [start] 的定时器不触发同步，避免应用退到后台
@@ -155,6 +160,7 @@ class SyncEngine {
       if (!pullOnly) await _push(clientId);
       await _pull(clientId);
       _flushPlaylists();
+      _flushSongStates();
       settings.lastSyncAt = DateTime.now().toIso8601String();
       _lastPullAt = DateTime.now();
       _failCount = 0;
@@ -218,6 +224,13 @@ class SyncEngine {
     onPlaylistsApplied?.call();
   }
 
+  /// 歌曲权重变更统一出口（pull 批量与 push corrections 共用）。
+  void _flushSongStates() {
+    if (!_songStatesDirty) return;
+    _songStatesDirty = false;
+    onSongStatesApplied?.call();
+  }
+
   Future<void> _pull(String clientId) async {
     var cursor = settings.syncCursor;
     var pages = 0;
@@ -237,7 +250,10 @@ class SyncEngine {
             lastPulledSongs++;
           }
         }
-        if (batch.isNotEmpty) await index.applySongSnapshots(batch);
+        if (batch.isNotEmpty) {
+          await index.applySongSnapshots(batch);
+          _songStatesDirty = true;
+        }
       }
       final sources = data['sources'];
       if (sources is List) {
@@ -291,6 +307,7 @@ class SyncEngine {
           favorite: snap['favorite'] as bool,
           playSec: snap['playSec'] as int?,
         );
+        _songStatesDirty = true;
       }
     }
   }

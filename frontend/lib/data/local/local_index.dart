@@ -12,6 +12,7 @@ import '../../models/song.dart';
 import '../../models/album.dart';
 import '../../models/artist.dart';
 import '../../utils/collection_sort.dart';
+import '../../utils/cover_thumb.dart';
 import '../../utils/off_thread.dart';
 import '../sources/webdav_url.dart';
 import 'audio_metadata.dart';
@@ -371,11 +372,22 @@ class LocalIndex {
       final filePath = p.join(dir, '$h.jpg');
       final f = File(filePath);
       if (f.existsSync() && f.lengthSync() == cover.length) return filePath;
+      // 覆盖写新封面：旧缩略图作废删除，随后由 ensureCoverThumb 重新生成。
+      deleteCoverThumb(filePath);
       f.writeAsBytesSync(cover, flush: true);
       return filePath;
     } catch (_) {
       return null;
     }
+  }
+
+  /// 全部有效封面路径（缩略图后台补齐用；去重且跳过 missing 行）。
+  List<String> allCoverPaths() {
+    final db = _db;
+    if (db == null) return const [];
+    final rs = db.select('SELECT DISTINCT cover_path FROM idx_songs '
+        "WHERE missing=0 AND cover_path IS NOT NULL AND cover_path<>''");
+    return [for (final r in rs) r['cover_path'] as String];
   }
 
   /// 清理历史无效封面（旧解析缺陷曾把描述残留/URL 写盘，Android 解码器会刷错误日志）：
@@ -393,6 +405,8 @@ class LocalIndex {
       await _writer!.exec(
           'UPDATE idx_songs SET cover_path=NULL, meta_read=0 WHERE cover_path=?',
           [path]);
+      // 原图已删，派生缩略图一并删掉，避免孤儿文件（下次补读会重新生成）。
+      deleteCoverThumb(path);
       cleaned++;
     }
     return cleaned;
@@ -862,6 +876,29 @@ class LocalIndex {
       'songRef': songRef,
       'seconds': seconds,
     });
+  }
+
+  /// 批量读 play_sec（纯读）：与 [playFactorsOf] 同款分片 IN 查询，
+  /// 供「播放时长/播放次数」排序一次拿全，替代逐首同步查库。
+  Map<String, int> playSecsOf(String sourceKey, Iterable<String> refs) {
+    final refsList = refs.toSet().toList();
+    if (refsList.isEmpty) return const {};
+    final result = <String, int>{};
+    const chunkSize = 500;
+    for (var start = 0; start < refsList.length; start += chunkSize) {
+      final end = min(start + chunkSize, refsList.length);
+      final chunk = refsList.sublist(start, end);
+      final placeholders = List.filled(chunk.length, '?').join(',');
+      final rs = _db!.select(
+          'SELECT song_ref, play_sec FROM play_meta '
+          'WHERE source_key=? AND song_ref IN ($placeholders)',
+          [sourceKey, ...chunk]);
+      for (final r in rs) {
+        final v = r['play_sec'];
+        if (v is int) result[r['song_ref'] as String] = v;
+      }
+    }
+    return result;
   }
 
   bool isFavoriteOf(String sourceKey, String songRef) =>

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../data/local/local_index.dart';
+import '../data/local/song_weight_store.dart';
 import '../data/sources/music_source.dart';
 import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
@@ -12,6 +13,7 @@ import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../providers/playlists_provider.dart';
 import '../utils/collection_sort.dart';
+import '../utils/cover_thumb.dart';
 import '../utils/duration_format.dart';
 import '../utils/song_search.dart';
 import '../utils/song_title_format.dart';
@@ -364,14 +366,16 @@ class CoverThumb extends StatelessWidget {
       child: Icon(fallbackIcon, color: color, size: circle ? 24 : 22),
     );
     if (coverPath == null) return placeholder;
+    // 列表行优先用落盘缩略图（原图可能上千像素），并按实际显示尺寸 ×DPR 降解码，
+    // 多分辨率变体由 ImageCache 分别保留。
+    final px = (_size * MediaQuery.devicePixelRatioOf(context)).round();
     final image = Image.file(
-      File(coverPath!),
+      File(coverDisplayPath(coverPath!)),
       width: _size,
       height: _size,
       fit: BoxFit.cover,
-      // 按显示尺寸 ×2 降采样解码，避免整首歌单列表每行全分辨率解码的内存/CPU 尖峰。
-      cacheWidth: 88,
-      cacheHeight: 88,
+      cacheWidth: px,
+      cacheHeight: px,
       errorBuilder: (_, __, ___) => placeholder,
     );
     return circle
@@ -461,8 +465,8 @@ class _SongListState extends State<SongList> {
   }
 
   /// 按数据版本拉取歌单条目；数据未变且排序未变时直接复用缓存（0 次 SQLite）。
-  void _syncSongs(PlaylistsProvider provider, CollectionSort sort,
-      double Function(Song) factorOf, int Function(Song) playSecOf) {
+  void _syncSongs(
+      PlaylistsProvider provider, CollectionSort sort, SongWeightStore weight) {
     final rev = provider.dataRevision;
     if (rev == _songsRevision && sort == _sort) return;
     _songsRevision = rev;
@@ -481,8 +485,11 @@ class _SongListState extends State<SongList> {
       _songs = List.unmodifiable(songs);
       return;
     }
-    final order =
-        songSortOrder(songs, sort, factorOf: factorOf, playSecOf: playSecOf);
+    // 权重/播放统计排序批量预取（一次分片查询），不再逐首同步查库。
+    final keys = weight.sortKeysOf(songs,
+        factors: sort.isWeight, playSecs: sort.isPlayStat);
+    final order = songSortOrder(songs, sort,
+        factorOf: keys.factorOf, playSecOf: keys.playSecOf);
     _items = [for (final i in order) items[i]];
     _songs = List.unmodifiable([for (final i in order) songs[i]]);
   }
@@ -506,8 +513,7 @@ class _SongListState extends State<SongList> {
     final direct = context.read<DirectSourceManager>();
     var firstIdx = -1;
     if (provider.loaded && !_located) {
-      _syncSongs(provider, direct.settings.sortPlaylistDetail,
-          direct.weight.factorOf, direct.weight.playSecOf);
+      _syncSongs(provider, direct.settings.sortPlaylistDetail, direct.weight);
       firstIdx = _songs.indexWhere(player.isCurrent);
     }
     if (firstIdx >= 0) {
@@ -607,8 +613,7 @@ class _SongListState extends State<SongList> {
       if (p.id == widget.playlistId) playlist = p;
     }
     // 数据版本不变时复用缓存的歌单条目（避免每帧/每次通知重查 SQLite）。
-    _syncSongs(provider, direct.settings.sortPlaylistDetail,
-        direct.weight.factorOf, direct.weight.playSecOf);
+    _syncSongs(provider, direct.settings.sortPlaylistDetail, direct.weight);
     // 搜索：全局搜索框（内容区）或页内自带搜索框（歌单页）过滤；visible 为原始下标映射。
     final query = (widget.globalSearch ? nav.search.trim() : _localQuery.trim())
         .toLowerCase();

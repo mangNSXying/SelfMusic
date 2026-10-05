@@ -140,6 +140,8 @@ Future<void> main() async {
   sync.onSourcesApplied = () {
     unawaited(direct.reloadSourcesFromIndex());
   };
+  // 远端拉回的收藏/权重落库后刷新行缓存与版本，否则喜欢页与列表行仍显示旧态。
+  sync.onSongStatesApplied = () => direct.notifyPlayMetaChanged();
   sync.start();
   WidgetsBinding.instance.addObserver(_SyncLifecycleObserver(sync));
 

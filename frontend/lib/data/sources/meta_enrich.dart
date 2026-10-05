@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import '../../models/song.dart';
+import '../../utils/cover_thumb.dart';
 import '../local/audio_metadata.dart';
 import '../local/local_index.dart';
 import 'music_source.dart';
@@ -36,6 +38,8 @@ Future<bool> enrichSongMeta(
   String? coverPath;
   if (cover != null && cover.isNotEmpty) {
     coverPath = index.persistCover(cover, song.sourceRef);
+    // 列表用缩略图落盘与补读解耦：补读不等缩略图，避免拖慢「标已读」。
+    if (coverPath != null) unawaited(ensureCoverThumb(coverPath));
   }
   await index.enrichSong(song.sourceKey, song.sourceRef,
       title: meta.title,

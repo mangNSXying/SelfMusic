@@ -26,7 +26,25 @@ class SongWeightStore {
 
   SongWeightStore(this.index, {this.serverAvailable});
 
-  PlayMetaRow metaOf(Song s) => index.playMetaOf(s.sourceKey, s.sourceRef);
+  /// play_meta 行缓存：列表每行 build 都读收藏/不喜欢态，逐行同步查库是滑动期
+  /// 的主要重复 I/O。写路径（本 store / 同步落库回调）显式失效，保证即时性。
+  final Map<String, PlayMetaRow> _metaCache = {};
+
+  /// 缓存上限：快速滑过长列表时防止无界堆积（超限整体清空重新暖）。
+  static const int _metaCacheCap = 20000;
+
+  PlayMetaRow metaOf(Song s) {
+    final key = '${s.sourceKey}\u0000${s.sourceRef}';
+    final cached = _metaCache[key];
+    if (cached != null) return cached;
+    final row = index.playMetaOf(s.sourceKey, s.sourceRef);
+    if (_metaCache.length >= _metaCacheCap) _metaCache.clear();
+    _metaCache[key] = row;
+    return row;
+  }
+
+  /// 外部路径（同步引擎 pull 落库等）写 play_meta 后调用：失效行缓存。
+  void notifyExternalWrite() => _metaCache.clear();
 
   double factorOf(Song s) => metaOf(s).factor;
 
@@ -44,6 +62,30 @@ class SongWeightStore {
       if (factors.isNotEmpty) result[key] = factors;
     });
     return result;
+  }
+
+  /// 批量读整队播放时长（秒）：与 [factorsOf] 同款分组，供播放时长/次数排序。
+  Map<String, Map<String, int>> playSecsOf(List<Song> songs) {
+    final bySource = <String, List<String>>{};
+    for (final s in songs) {
+      bySource.putIfAbsent(s.sourceKey, () => []).add(s.sourceRef);
+    }
+    final result = <String, Map<String, int>>{};
+    bySource.forEach((key, refs) {
+      final secs = index.playSecsOf(key, refs);
+      if (secs.isNotEmpty) result[key] = secs;
+    });
+    return result;
+  }
+
+  /// 排序键预取：权重/播放统计排序一次批量查询，替代逐首 `factorOf/playSecOf`
+  /// 同步查库（几千首 = 几千条 SELECT，正是切页/初始化那一帧的卡顿来源）。
+  SongSortKeys sortKeysOf(List<Song> songs,
+      {bool factors = false, bool playSecs = false}) {
+    return SongSortKeys(
+      factors: factors ? factorsOf(songs) : const {},
+      playSecs: playSecs ? playSecsOf(songs) : const {},
+    );
   }
 
   /// 累计播放时长（秒）（播放时长/播放次数排序用；播放次数由其派生）。
@@ -120,14 +162,15 @@ class SongWeightStore {
   /// source=='server' 占位（归属源未知）仍跳过，避免跨源误归属。
   /// 权重事件落库：读改写整段在写连接内完成（见 LocalIndex.applyWeightEvent）。
   Future<void> _apply(Song s, String event,
-      {bool? enabled, String? songJson}) {
-    return index.applyWeightEvent(s.sourceKey, s.sourceRef, event,
+      {bool? enabled, String? songJson}) async {
+    await index.applyWeightEvent(s.sourceKey, s.sourceRef, event,
         enabled: enabled,
         songJson: songJson,
         minFactor: minFactor,
         maxFactor: maxFactor,
         step: step,
         defaultFactor: defaultFactor);
+    _metaCache.clear();
   }
 
   Future<void> _emit(Song s, String type, [Map<String, dynamic>? extra]) async {
@@ -173,4 +216,18 @@ class SongWeightStore {
     }
     return n;
   }
+}
+
+/// [SongWeightStore.sortKeysOf] 的批量排序键：按 sourceKey 分组预取，
+/// 排序比较阶段零查询；未记录的歌曲取默认值（factor 1.0 / playSec 0）。
+class SongSortKeys {
+  final Map<String, Map<String, double>> factors;
+  final Map<String, Map<String, int>> playSecs;
+
+  const SongSortKeys({this.factors = const {}, this.playSecs = const {}});
+
+  double factorOf(Song s) =>
+      factors[s.sourceKey]?[s.sourceRef] ?? SongWeightStore.defaultFactor;
+
+  int playSecOf(Song s) => playSecs[s.sourceKey]?[s.sourceRef] ?? 0;
 }

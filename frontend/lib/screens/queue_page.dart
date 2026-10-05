@@ -3,7 +3,6 @@ import 'package:provider/provider.dart';
 
 import '../models/song.dart';
 import '../data/local/app_settings.dart';
-import '../data/local/song_weight_store.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
 import '../utils/collection_sort.dart';
@@ -71,15 +70,13 @@ class _QueuePageState extends State<QueuePage> {
       return;
     }
     final weight = direct.weight;
-    // 权重排序用整队批量读取（按 sourceKey 分组），避免逐首同步查库。
-    final factors =
-        _sort.isWeight ? weight.factorsOf(queue) : const <String, Map<String, double>>{};
-    double factorOf(Song s) => factors[s.sourceKey]?[s.sourceRef] ??
-        SongWeightStore.defaultFactor;
+    // 权重/播放统计排序一次批量读取（按 sourceKey 分组），避免逐首同步查库。
+    final keys = weight.sortKeysOf(queue,
+        factors: _sort.isWeight, playSecs: _sort.isPlayStat);
     final songs = [for (final i in searched) queue[i]];
     _visible = [
       for (final i in songSortOrder(songs, _sort,
-          factorOf: _sort.isWeight ? factorOf : null, playSecOf: weight.playSecOf))
+          factorOf: keys.factorOf, playSecOf: keys.playSecOf))
         searched[i],
     ];
   }

@@ -84,6 +84,10 @@ class AppSettings {
   /// wav/aiff 尾块 `id3 ` 标签补读是否已回填过（一次性，本机标记）。
   static const String kRiffTailMetaV1Done = 'riff_tail_meta_v1_done';
 
+  /// 存量封面缩略图是否已补齐（一次性，本机标记）：老版本只存全尺寸原图，
+  /// 列表解码大图是滑动卡顿来源；补齐后新增封面走补读即时生成，无需再扫。
+  static const String kCoverThumbsV1Done = 'cover_thumbs_v1_done';
+
   /// 存量补推已执行的配对 client_id（设备本地标记，不进 [knownKeys]）：
   static const String kPlayModeDefault = 'play_mode_default';
   static const String kResumeOnStartup = 'resume_on_startup';
@@ -232,6 +236,12 @@ class AppSettings {
       (index.settingsGet(kRiffTailMetaV1Done) ?? '0') == '1';
   set riffTailMetaV1Done(bool v) =>
       index.settingsSet(kRiffTailMetaV1Done, v ? '1' : '0');
+
+  /// 存量封面缩略图补齐标记（一次性，本机）；见 direct_source_manager.init。
+  bool get coverThumbsV1Done =>
+      (index.settingsGet(kCoverThumbsV1Done) ?? '0') == '1';
+  set coverThumbsV1Done(bool v) =>
+      index.settingsSet(kCoverThumbsV1Done, v ? '1' : '0');
 
   // ---------- 收藏自动缓存（settings.md §3.4 歌曲分区） ----------
 

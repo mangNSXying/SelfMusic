@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../utils/cover_thumb.dart';
 import 'selection_badge.dart';
 
 /// 内容页共用方形卡片（改进 B6-U6）：封面恒为正方形 + 标题 + 副标题，
@@ -51,85 +52,91 @@ class SquareCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final sub = subtitle;
-    // 降采样按「卡片最大宽 × 设备像素比」算：3x 机上 440 偏小（封面发虚），
-    // 2x 机保持 440 不变。
-    final decodeWidth =
-        (SquareCardGrid.maxItemWidth * MediaQuery.devicePixelRatioOf(context))
-            .round();
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: onTap,
-      onLongPress: onLongPress,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // 封面恒定 1:1（宽高比由 SquareCardGrid 的行高保证恰好放下文本）。
-          AspectRatio(
-            aspectRatio: 1,
-            // StackFit.expand：无封面时占位底色也必须撑满正方形
-            //（默认 loose 会让 Container 高度只由图标决定，显示成矮长条）。
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                Container(
-                  width: double.infinity,
-                  decoration: BoxDecoration(
-                    color: colorScheme.primary.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(12),
-                    // 未选中态不描边（与既有卡片外观一致），选中时才套 2px 主色环。
-                    border: Border.all(
-                      color: colorScheme.primary,
-                      width: selected ? 2 : 0,
+    return LayoutBuilder(builder: (context, constraints) {
+      // 解码分辨率点对点：按卡片实际宽 × DPR 降采样（此前固定按最大卡宽 220
+      // 算，窄列/低密度设备上多解了不必要的像素）。多分辨率变体进 ImageCache。
+      final actualWidth = constraints.maxWidth.isFinite
+          ? math.min(constraints.maxWidth, SquareCardGrid.maxItemWidth)
+          : SquareCardGrid.maxItemWidth;
+      final decodeWidth =
+          (actualWidth * MediaQuery.devicePixelRatioOf(context)).round();
+      return InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        onLongPress: onLongPress,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 封面恒定 1:1（宽高比由 SquareCardGrid 的行高保证恰好放下文本）。
+            AspectRatio(
+              aspectRatio: 1,
+              // StackFit.expand：无封面时占位底色也必须撑满正方形
+              //（默认 loose 会让 Container 高度只由图标决定，显示成矮长条）。
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Container(
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      color: colorScheme.primary.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(12),
+                      // 未选中态不描边（与既有卡片外观一致），选中时才套 2px 主色环。
+                      border: Border.all(
+                        color: colorScheme.primary,
+                        width: selected ? 2 : 0,
+                      ),
                     ),
+                    clipBehavior: Clip.antiAlias,
+                    child: coverPath != null
+                        ? Image.file(
+                            File(coverDisplayPath(coverPath!)),
+                            fit: BoxFit.cover,
+                            // 缩略图 + 降解码：网格滑动不再逐卡解大图。
+                            cacheWidth: decodeWidth,
+                            cacheHeight: decodeWidth,
+                            errorBuilder: (_, __, ___) => Icon(fallbackIcon,
+                                size: 48,
+                                color:
+                                    colorScheme.primary.withValues(alpha: 0.6)))
+                        : Icon(fallbackIcon,
+                            size: 48,
+                            color:
+                                colorScheme.primary.withValues(alpha: 0.6)),
                   ),
-                  clipBehavior: Clip.antiAlias,
-                  child: coverPath != null
-                      ? Image.file(File(coverPath!),
-                          fit: BoxFit.cover,
-                          // 按目标显示尺寸降采样解码，避免网格全分辨率尖峰。
-                          cacheWidth: decodeWidth,
-                          cacheHeight: decodeWidth,
-                          errorBuilder: (_, __, ___) => Icon(fallbackIcon,
-                              size: 48,
-                              color:
-                                  colorScheme.primary.withValues(alpha: 0.6)))
-                      : Icon(fallbackIcon,
-                          size: 48,
-                          color: colorScheme.primary.withValues(alpha: 0.6)),
-                ),
-                // 多选态隐藏角标菜单（避免误触），勾选框统一叠在左上角。
-                if (cornerAction != null && !selectionMode)
-                  Positioned(top: 2, right: 2, child: cornerAction!),
-                if (selectionMode)
-                  Positioned(
-                    left: 2,
-                    top: 2,
-                    child: SelectionBadge(
-                      selected: selected,
-                      onTap: onToggleSelect ?? onTap,
+                  // 多选态隐藏角标菜单（避免误触），勾选框统一叠在左上角。
+                  if (cornerAction != null && !selectionMode)
+                    Positioned(top: 2, right: 2, child: cornerAction!),
+                  if (selectionMode)
+                    Positioned(
+                      left: 2,
+                      top: 2,
+                      child: SelectionBadge(
+                        selected: selected,
+                        onTap: onToggleSelect ?? onTap,
+                      ),
                     ),
-                  ),
-              ],
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 8),
-          Text(title,
-              maxLines: titleMaxLines,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context)
-                  .textTheme
-                  .bodyMedium
-                  ?.copyWith(fontWeight: FontWeight.w600)),
-          if (sub != null)
-            Text(sub,
-                maxLines: 1,
+            const SizedBox(height: 8),
+            Text(title,
+                maxLines: titleMaxLines,
                 overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurface.withValues(alpha: 0.6))),
-        ],
-      ),
-    );
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(fontWeight: FontWeight.w600)),
+            if (sub != null)
+              Text(sub,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: colorScheme.onSurface.withValues(alpha: 0.6))),
+          ],
+        ),
+      );
+    });
   }
 }
 

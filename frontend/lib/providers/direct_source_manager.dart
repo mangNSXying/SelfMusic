@@ -21,6 +21,7 @@ import '../models/artist.dart';
 import '../services/api_client.dart';
 import '../services/artist_resolver.dart';
 import '../services/secret_store.dart';
+import '../utils/cover_thumb.dart';
 import 'direct_task_queue.dart';
 
 /// 直连源管理（阶段 3 / 阶段 4 接收器）。
@@ -372,9 +373,32 @@ class DirectSourceManager extends ChangeNotifier {
         _metaVersion++;
         notifyListeners();
       }
+      // 存量封面补齐缩略图（老版本只存了全尺寸原图）：一次性后台补齐，
+      // 新增封面在补读持久化时即时生成（meta_enrich），无需再扫。
+      if (!settings.coverThumbsV1Done) {
+        await _backfillCoverThumbs();
+        settings.coverThumbsV1Done = true;
+      }
     } catch (e) {
       debugPrint('[direct] 一次性回填失败（忽略）：$e');
     }
+  }
+
+  /// 为存量封面生成列表用缩略图（滑动性能）：逐张生成并让出事件循环，
+  /// 失败忽略（展示自动退回原图）。新补读的封面在 [ensureCoverThumb] 即时生成。
+  Future<void> _backfillCoverThumbs() async {
+    var made = 0;
+    try {
+      for (final cover in index.allCoverPaths()) {
+        final before = coverDisplayPath(cover);
+        await ensureCoverThumb(cover);
+        if (coverDisplayPath(cover) != before) made++;
+        await Future<void>.delayed(Duration.zero);
+      }
+    } catch (e) {
+      debugPrint('[direct] 封面缩略图回填失败（忽略）：$e');
+    }
+    if (made > 0) debugPrint('[direct] 封面缩略图回填 $made 张');
   }
 
   @override
@@ -930,6 +954,15 @@ class DirectSourceManager extends ChangeNotifier {
 
   /// 播放链路懒补读成功后调用：元数据版本号 +1，驱动全局库/列表就地刷新。
   void notifySongMetaChanged() {
+    _metaVersion++;
+    notifyListeners();
+  }
+
+  /// play_meta 由外部路径写入后调用（如同步引擎 pull 落库歌曲权重快照）：
+  /// 失效行缓存、刷新收藏/元数据版本，喜欢页与列表行即时反映远端结果。
+  void notifyPlayMetaChanged() {
+    weight.notifyExternalWrite();
+    _favoriteVersion++;
     _metaVersion++;
     notifyListeners();
   }

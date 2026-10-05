@@ -96,11 +96,22 @@ class SectionPager extends StatefulWidget {
   State<SectionPager> createState() => _SectionPagerState();
 }
 
-class _SectionPagerState extends State<SectionPager> {
+class _SectionPagerState extends State<SectionPager>
+    with SingleTickerProviderStateMixin {
   late final PageController _ctrl;
   late int _applied;
   bool _programmatic = false;
   bool _slideActive = false;
+
+  /// 非相邻分组的入场动画（不穿中间页）：整页从目标方向滑入。
+  late final AnimationController _enterCtrl;
+  late final CurvedAnimation _enterCurve;
+  int _enterDir = 1;
+
+  /// 首帧空闲后开启相邻页预构建（allowImplicitScrolling 给 PageView 一屏
+  /// cacheExtent）：不在启动首帧多背两页，又让首次横滑不必现场建目标页。
+  /// 页内是固定行高懒列表，预构建只建「可能显示的行」，不会整表构建。
+  bool _warmNeighbors = false;
 
   static int _indexOf(NavSection s) => NavSection.values.indexOf(s);
 
@@ -123,12 +134,22 @@ class _SectionPagerState extends State<SectionPager> {
     nav.pageOffset.value = initial.toDouble();
     _ctrl = PageController(initialPage: initial);
     _ctrl.addListener(_syncOffset);
+    _enterCtrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 240), value: 1);
+    _enterCurve =
+        CurvedAnimation(parent: _enterCtrl, curve: Curves.easeOutCubic);
+    // 首帧空闲后再预构建左右邻页（内存/启动成本的折中，见字段注释）。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => _warmNeighbors = true);
+    });
   }
 
   @override
   void dispose() {
     _ctrl.removeListener(_syncOffset);
     _ctrl.dispose();
+    _enterCurve.dispose();
+    _enterCtrl.dispose();
     super.dispose();
   }
 
@@ -199,19 +220,42 @@ class _SectionPagerState extends State<SectionPager> {
           _ctrl.hasClients && _ctrl.position.isScrollingNotifier.value;
       // 手指拖拽中跳过，避免拽手指；程序飞行中可重定向。
       if (!scrolling || _programmatic) {
+        // 上一段入场动画未跑完：先落定，再按新目标重排。
+        _enterCtrl.stop();
+        _enterCtrl.value = 1;
+        final current =
+            _ctrl.hasClients ? (_ctrl.page?.round() ?? _applied) : _applied;
         _programmatic = true;
         _applied = target;
-        _ctrl.animateToPage(target,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOutCubic);
+        if (_ctrl.hasClients && (target - current).abs() > 1) {
+          // 跨多页：跳页 + 方向滑入，不再高速扫过中间分组。
+          // jumpToPage 同步通知会踩 build 期 markNeedsBuild，放到帧后执行。
+          final dir = target > current ? 1 : -1;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted || _applied != target || !_ctrl.hasClients) return;
+            _enterDir = dir;
+            _enterCtrl.forward(from: 0);
+            _ctrl.jumpToPage(target);
+          });
+        } else {
+          _ctrl.animateToPage(target,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOutCubic);
+        }
       }
     }
 
-    return PageView(
-      controller: _ctrl,
-      onPageChanged: _onPageChanged,
-      // 每页独立图层：横滑期间页面平移只重合成、不重栅格化（降低滑动掉帧）。
-      children: [for (final p in _pages) RepaintBoundary(child: p)],
+    return SlideTransition(
+      position: _enterCurve.drive(
+          Tween<Offset>(begin: Offset(_enterDir.toDouble(), 0), end: Offset.zero)),
+      child: PageView(
+        controller: _ctrl,
+        onPageChanged: _onPageChanged,
+        // 首次横滑前预构建左右邻页（只建可见范围的行），降低滑动首帧构建开销。
+        allowImplicitScrolling: _warmNeighbors,
+        // 每页独立图层：横滑期间页面平移只重合成、不重栅格化（降低滑动掉帧）。
+        children: [for (final p in _pages) RepaintBoundary(child: p)],
+      ),
     );
   }
 }
@@ -267,9 +311,12 @@ class _LikedViewState extends State<_LikedView>
     final key = (_favVersion, _favSettingsVer, search, pref);
     if (_sortedKey == key) return _sorted;
     final all = _favoritesOf(direct);
-    final songs = sortSongs(filterSongs(all, search), pref,
-        factorOf: direct.weight.factorOf,
-        playSecOf: direct.weight.playSecOf);
+    final filtered = filterSongs(all, search);
+    // 权重/播放统计排序批量预取（一次分片查询），不再逐首同步查库。
+    final keys = direct.weight.sortKeysOf(filtered,
+        factors: pref.isWeight, playSecs: pref.isPlayStat);
+    final songs = sortSongs(filtered, pref,
+        factorOf: keys.factorOf, playSecOf: keys.playSecOf);
     _sortedKey = key;
     _sorted = _SortedResult(_favAll, songs);
     return _sorted;
@@ -421,9 +468,12 @@ class _SongsViewState extends State<_SongsView>
     final pref = direct.settings.sortSongs;
     final key = (base.length, search, pref);
     if (_sortedKey == key && identical(base, _lastBase)) return _sorted;
-    final songs = sortSongs(filterSongs(base, search), pref,
-        factorOf: direct.weight.factorOf,
-        playSecOf: direct.weight.playSecOf);
+    final filtered = filterSongs(base, search);
+    // 权重/播放统计排序批量预取（一次分片查询），不再逐首同步查库。
+    final keys = direct.weight.sortKeysOf(filtered,
+        factors: pref.isWeight, playSecs: pref.isPlayStat);
+    final songs = sortSongs(filtered, pref,
+        factorOf: keys.factorOf, playSecOf: keys.playSecOf);
     _sortedKey = key;
     _lastBase = base;
     return _sorted = _SortedResult(base, songs);

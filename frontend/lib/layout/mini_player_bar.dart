@@ -6,6 +6,7 @@ import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../theme/app_theme.dart';
+import '../utils/cover_thumb.dart';
 import '../utils/song_title_format.dart';
 import '../widgets/player_sheet_anim.dart';
 import '../widgets/pressable.dart';
@@ -138,6 +139,8 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
       );
     }
     final song = player.current ?? player.queue.first;
+    // 封面按实际显示尺寸 ×DPR 降解码（缩略图优先）。
+    final coverPx = (46 * MediaQuery.devicePixelRatioOf(context)).round();
 
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
@@ -166,10 +169,10 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
                   height: 46,
                   child: song.coverPath != null
                       ? Image.file(
-                          File(song.coverPath!),
+                          File(coverDisplayPath(song.coverPath!)),
                           fit: BoxFit.cover,
-                          cacheWidth: 92,
-                          cacheHeight: 92,
+                          cacheWidth: coverPx,
+                          cacheHeight: coverPx,
                           errorBuilder: (_, __, ___) => Container(
                             color: cs.primary.withValues(alpha: 0.12),
                             child: Icon(Icons.music_note, color: cs.primary),
