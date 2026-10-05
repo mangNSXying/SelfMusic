@@ -226,8 +226,18 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 首轮同步晚到的远端断点此时不再回切，避免打断用户操作。
   bool _userTookOver = false;
 
+  /// 音量梯度引擎：16ms 周期单定时器（淡入/淡出共用一条梯度，cancel 即打断）。
   Timer? _fadeTimer;
+
+  /// pending-pause 意图位：true = 已请求暂停、实际 pause() 尚未执行（淡出进行中）。
+  /// 对外经 [playing] getter 表达为目标态「已暂停」；provider 内部对**实际**播放
+  /// 状态的判断（睡眠定时/断点保存/切歌复位/toggle 分支等）一律直引
+  /// `player.playing`，不经此位。
   bool _fadingPause = false;
+
+  /// 挂起中的 [_fadeOutThenPause] 的收口器：实际暂停完成**或渐变被取消**
+  /// （切歌/停止/重建/反向打断）时 complete，保证 await 方不悬挂。
+  Completer<void>? _fadeOutCompleter;
   AndroidEqualizer? _eq;
 
   // ---------- 睡眠定时（播放页「睡眠」） ----------
@@ -500,7 +510,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final eq = !kIsWeb && Platform.isAndroid && s.equalizerEnabled;
     if (focus == _builtAudioFocus && eq == _builtEq) return;
     if (_current == null) {
-      _fadeTimer?.cancel();
+      // 清理路径：取消渐变的同时收口挂起的淡出 Future（不暂停）+ 复位意图位。
+      _cancelFadeAndComplete();
+      _fadingPause = false;
       final old = _player;
       _player = null;
       unawaited(old?.dispose());
@@ -723,7 +735,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 还没建播放器：不必重建，首次构造会直接读到新设置。
     if (_player == null) return;
     if (_current == null) {
-      _fadeTimer?.cancel();
+      // 清理路径：取消渐变 + 收口挂起的淡出 Future（不暂停）+ 复位意图位。
+      _cancelFadeAndComplete();
+      _fadingPause = false;
       await _disposePlayer();
       _buildAndWire();
       notifyListeners();
@@ -733,7 +747,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final wasPlaying = player.playing;
     final current = _current!;
     final source = _curSource;
-    _fadeTimer?.cancel();
+    // 清理路径：同上——重建期间旧渐变作废，挂起的淡出 Future 解挂。
+    _cancelFadeAndComplete();
+    _fadingPause = false;
     await _disposePlayer();
     _buildAndWire();
     await _play(current, source: source, play: wasPlaying);
@@ -759,46 +775,130 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   Duration get _fadeDuration => Duration(
       milliseconds: _appSettings?.fadeDurationMs ?? 2000);
 
-  /// 淡入：从 0 渐变到 1（关闭时直接置 1）。
-  void _fadeIn() {
+  /// 平台音量调用：异常一律静默（headless 测试环境的 MissingPluginException、
+  /// 播放器重建后的迟到写等），渐变状态机不因平台侧失败而中断。
+  void _setVolumeSafe(double v) {
+    try {
+      unawaited(player.setVolume(v).catchError((Object e) {
+        // 静默：见上。
+      }));
+    } catch (_) {
+      // setVolume 同步抛出同样静默。
+    }
+  }
+
+  /// 平台暂停调用：异常静默（理由同 [_setVolumeSafe]）。
+  Future<void> _pauseSafe() async {
+    try {
+      await player.pause();
+    } catch (_) {}
+  }
+
+  /// 取消进行中的音量梯度（渐变被切歌/停止/重建/反向打断接管时调用）。
+  /// 只停梯度本身，不执行任何暂停/复位副作用。
+  void _cancelFade() {
     _fadeTimer?.cancel();
-    if (!_fadeOn) {
-      player.setVolume(1.0);
+    _fadeTimer = null;
+  }
+
+  /// 取消渐变并收口挂起的淡出 Future（不执行暂停）：
+  /// [_fadeOutThenPause] 的 await 方在渐变被接管时靠这里解挂，不悬挂。
+  void _cancelFadeAndComplete() {
+    _cancelFade();
+    final c = _fadeOutCompleter;
+    if (c != null) {
+      _fadeOutCompleter = null;
+      if (!c.isCompleted) c.complete();
+    }
+  }
+
+  /// 统一音量梯度引擎：16ms 周期单定时器，把音量从 `player.volume` **当前值**
+  /// 线性推到 [to]（淡入=1.0 / 淡出=0.0），走完触发 [onDone]。
+  ///
+  /// - 一律从当前音量出发：反向打断时自然形成「从当前音量平滑过渡」，
+  ///   不出现音量跳变（淡出若预设 setVolume(1.0)，打断回播瞬间会爆音）；
+  /// - 进度按 tick 步进（每 16ms 走 16/duration），单定时器天然可 cancel；
+  /// - 新梯度启动前先取消旧梯度（同一时刻至多一条活跃渐变）。
+  void _startFade({
+    required double to,
+    required Duration duration,
+    VoidCallback? onDone,
+  }) {
+    _cancelFade();
+    if (duration <= Duration.zero) {
+      _setVolumeSafe(to);
+      onDone?.call();
       return;
     }
-    final dur = _fadeDuration.inMilliseconds;
-    final start = DateTime.now();
-    player.setVolume(0.0);
-    _fadeTimer = Timer.periodic(const Duration(milliseconds: 16), (t) async {
-      final el = DateTime.now().difference(start).inMilliseconds;
-      final p = dur <= 0 ? 1.0 : (el / dur).clamp(0.0, 1.0);
-      await player.setVolume(p);
-      if (p >= 1.0) t.cancel();
+    final from = player.volume;
+    final step = 16 / duration.inMilliseconds; // 每 tick（16ms）的进度增量
+    var p = 0.0;
+    _fadeTimer = Timer.periodic(const Duration(milliseconds: 16), (t) {
+      p += step;
+      if (p >= 1.0) p = 1.0;
+      _setVolumeSafe(from + (to - from) * p);
+      if (p >= 1.0) {
+        t.cancel();
+        if (identical(_fadeTimer, t)) _fadeTimer = null;
+        onDone?.call();
+      }
     });
   }
 
-  /// 淡出后真正暂停（关闭淡入淡出时直接暂停）。
-  Future<void> _fadeOutThenPause() async {
+  /// 淡入：音量渐变回升到 1.0（关闭时直接置 1）。
+  ///
+  /// [fromZero] 为 true（默认）：从真实暂停恢复——先归零再渐升，维持既有听感；
+  /// false：淡出中被反向打断回播——从当前音量平滑回升（引擎还在播，无需重调
+  /// play()）。
+  void _fadeIn({bool fromZero = true}) {
+    _cancelFade();
     if (!_fadeOn) {
-      await player.pause();
+      _setVolumeSafe(1.0);
       return;
     }
-    _fadeTimer?.cancel();
-    _fadingPause = true;
-    final dur = _fadeDuration.inMilliseconds;
-    final start = DateTime.now();
-    player.setVolume(1.0);
-    await Future.delayed(const Duration(milliseconds: 16));
-    while (true) {
-      final el = DateTime.now().difference(start).inMilliseconds;
-      final v = (1.0 - el / dur).clamp(0.0, 1.0);
-      await player.setVolume(v);
-      if (v <= 0.0) break;
-      await Future.delayed(const Duration(milliseconds: 16));
+    if (fromZero) _setVolumeSafe(0.0);
+    _startFade(to: 1.0, duration: _fadeDuration);
+  }
+
+  /// 淡出后真正暂停（关闭淡入淡出时直接暂停）。
+  ///
+  /// 返回的 Future 到**实际暂停完成**时才完成（睡眠定时/通知栏暂停依赖此
+  /// 语义）；渐变被清理路径（切歌/停止/退出/重建）或反向打断取消时，Future
+  /// 同样会完成——但**不**执行暂停，由接管方决定后续状态。
+  Future<void> _fadeOutThenPause() async {
+    if (!_fadeOn) {
+      // 直接暂停路径同样复位意图位：淡出进行中把开关关掉后再暂停，不能让
+      // pending-pause 标志卡死（否则 playing 目标态恒为已暂停）。
+      _fadingPause = false;
+      await _pauseSafe();
+      return;
     }
-    await player.pause();
-    await player.setVolume(1.0);
-    _fadingPause = false;
+    _cancelFadeAndComplete();
+    _fadingPause = true;
+    final completer = Completer<void>();
+    _fadeOutCompleter = completer;
+    _startFade(
+      to: 0.0,
+      duration: _fadeDuration,
+      onDone: () async {
+        await _pauseSafe();
+        // 仅当本回调仍是活跃的淡出收尾时才做复位：收尾窗口被新的渐变/
+        // 恢复/重入淡出接管时（[_fadeOutCompleter] 已被收口或替换），
+        // 迟到的音量/意图位复位会破坏接管的渐变（跳变、目标态错乱）。
+        if (identical(_fadeOutCompleter, completer)) {
+          if (_fadeTimer == null) _setVolumeSafe(1.0);
+          _fadingPause = false;
+        }
+        _completeFadeOut(completer);
+      },
+    );
+    return completer.future;
+  }
+
+  /// 收口挂起的淡出 Future（暂停完成或渐变被取消都走这里）。
+  void _completeFadeOut(Completer<void> completer) {
+    if (!completer.isCompleted) completer.complete();
+    if (identical(_fadeOutCompleter, completer)) _fadeOutCompleter = null;
   }
 
   // ---------- 均衡器（settings.md §3.2，仅 Android） ----------
@@ -960,7 +1060,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get hasCurrent => _current != null;
   Duration get position => player.position;
   Duration? get duration => player.duration;
-  bool get playing => player.playing;
+  /// 界面/目标播放态：淡出暂停进行中（pending-pause，[_fadingPause]）时提前
+  /// 翻转为 false——播放/暂停按钮点击后一帧内响应目标意图，不等音频淡出完成；
+  /// 渐变之外的任意时刻与实际播放状态一致。
+  ///
+  /// provider 内部对**实际**播放状态的判断（睡眠定时、断点保存、切歌复位、
+  /// [toggle] 分支等）不经此 getter，一律直引 `player.playing`。
+  bool get playing => _fadingPause ? false : player.playing;
   PlayMode get mode => _mode;
 
   /// 是否为当前播放曲（按 sourceKey + sourceRef，避免多源 id 碰撞）。
@@ -1171,7 +1277,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 队列被清空/当前曲被删光时收尾：停播、清当前曲与断点残留，通知 + 回推媒体会话。
   Future<void> _clearStoppedState() async {
-    _fadeTimer?.cancel();
+    // 清理路径：取消渐变 + 收口挂起的淡出 Future（不暂停）+ 复位意图位。
+    _cancelFadeAndComplete();
     _fadingPause = false;
     _peekedNext = null;
     _onNextChanged?.call(null);
@@ -1237,6 +1344,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 新曲开始前清掉上一首的预取结果与 completed 去重标记。
     _peekedNext = null;
     _completedKey = null;
+    // 切歌接管：上一首进行中的渐变与挂起的淡出作废——收口挂起 Future
+    //（不暂停），意图位随本曲装载/起播重新确立。
+    _cancelFadeAndComplete();
+    _fadingPause = false;
     // 上一首的预载/预读目标已作废（新曲装载成功后由 _onTrackStarted 重排）。
     _onNextChanged?.call(null);
     // 睡眠定时处于「等当前曲放完」的挂起态时，手动切歌视为用户接管：取消定时。
@@ -1925,14 +2036,48 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // ---------- 播放控制 ----------
 
+  /// 播放/暂停切换：目标态（[playing]）一帧内响应点击，音频渐变在后台完成；
+  /// 渐变进行中再次点击 = 反向打断，任意时刻点击都有响应：
+  /// - 淡出中点「播放」→ 取消暂停意图，音量从当前值平滑回升（引擎从未停，
+  ///   不重新调 play()）；
+  /// - 淡入中点「暂停」→ 自然落入暂停分支，从当前音量淡出（两个方向对称）；
+  /// - 淡出收尾窗口（实际已暂停、完成回调仍在途）点「播放」→ 正常恢复，
+  ///   归零淡入（此刻音量≈0，无跳变）。
   Future<void> toggle() async {
-    if (_fadingPause) return;
     _userTookOver = true;
     if (player.playing) {
-      await _fadeOutThenPause();
-    } else {
-      await _resumeOrReplay();
+      if (_fadingPause) {
+        // 淡出进行中反向打断：取消暂停意图，音量从当前值平滑回升。
+        // 引擎从未实际暂停（playing 仍 true），无需也不应重新调 play()。
+        _cancelFadeAndComplete();
+        _fadingPause = false;
+        _fadeIn(fromZero: false);
+        notifyListeners();
+        return;
+      }
+      // 暂停方向不再阻塞等待淡出：目标态（[playing]）经 pending-pause 位
+      // 一帧内翻转为「已暂停」，音频淡出在后台完成，实际 pause() 发生在
+      // 淡出完成回调里（[_fadeOutThenPause] 内部 onDone）。
+      _fadingPause = true;
+      notifyListeners();
+      unawaited(_fadeOutThenPause().then((_) {
+        // 实际暂停完成后（或渐变被清理路径/反向打断取消）再通知与回推
+        // 系统媒体：通知栏/媒体中心以**实际**状态为准（规格假设），
+        // 不随按钮提前翻转。
+        notifyListeners();
+        _syncSystemMedia();
+      }));
+      return;
     }
+    if (_fadingPause) {
+      // 淡出收尾窗口：实际已暂停（player.playing==false 才会走到这里）、
+      // 完成回调仍在途。收口挂起 Future 并复位意图位；随后的恢复走归零
+      // 淡入（此刻音量≈0，无跳变），迟到的 onDone 检测到新渐变已接管，
+      // 不会再动音量。
+      _cancelFadeAndComplete();
+      _fadingPause = false;
+    }
+    await _resumeOrReplay();
     notifyListeners();
     _syncSystemMedia();
   }
@@ -1957,6 +2102,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 通知栏「播放」回调（settings.md §3.6）。
   Future<void> resumeFromNotifier() async {
     _userTookOver = true;
+    // 淡出被通知栏「播放」打断（系统侧反向打断）：收口挂起的淡出 Future
+    //（不暂停）+ 复位意图位，随后正常恢复（归零淡入）。
+    _cancelFadeAndComplete();
+    _fadingPause = false;
     await _resumeOrReplay();
     notifyListeners();
     _syncSystemMedia();
@@ -1974,7 +2123,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 停掉，与丢弃队列一致），划掉任务路径传 `clearResume: false` 保留断点/队列。
   /// 处理器的 `super.stop()` 随后把状态置 idle，前台服务/通知随之结束。
   Future<void> stopFromNotifier({bool clearResume = true}) async {
-    _fadeTimer?.cancel();
+    // 清理路径：取消渐变 + 收口挂起的淡出 Future（不暂停）+ 复位意图位。
+    _cancelFadeAndComplete();
     _fadingPause = false;
     try {
       await player.stop();
@@ -2428,7 +2578,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 退出软件前清理：保存断点、停止并释放播放器（确保 mpv 等外部子进程退出）。
   Future<void> shutdown() async {
     _shuttingDown = true;
-    _fadeTimer?.cancel();
+    // 清理路径：取消渐变 + 收口挂起的淡出 Future（不暂停）+ 复位意图位。
+    _cancelFadeAndComplete();
+    _fadingPause = false;
     _sleepTick?.cancel();
     final p = _player;
     if (p == null) {
@@ -2457,7 +2609,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   void dispose() {
     if (!kIsWeb) WidgetsBinding.instance.removeObserver(this);
     _disposed = true;
-    _fadeTimer?.cancel();
+    // 清理路径：取消渐变 + 收口挂起的淡出 Future（不暂停）+ 复位意图位。
+    _cancelFadeAndComplete();
+    _fadingPause = false;
     _sleepTick?.cancel();
     // 退出前把最后一段播放时长结清（与 _saveState 同样不等待）。
     _playSecStop();
