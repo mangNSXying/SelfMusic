@@ -659,6 +659,7 @@ Future<void> _openAlbum(BuildContext context, Album album) async {
   showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
+    useSafeArea: true,
     builder: (c) => _AlbumSongsSheet(album: album, songs: songs),
   );
 }
@@ -883,6 +884,8 @@ void _openArtist(BuildContext context, Artist artist, ArtistResolver resolver) {
   showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
+    // 弹层可上拉到全高：必须让开顶部状态栏（否则盖住时间/电量）。
+    useSafeArea: true,
     builder: (c) => _ArtistSongsSheet(artist: artist, songs: songs),
   );
 }
@@ -897,6 +900,7 @@ Future<void> _showAmbiguousPicker(
   await showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
+    useSafeArea: true,
     builder: (c) => DraggableScrollableSheet(
       expand: false,
       initialChildSize: 0.7,
@@ -1147,39 +1151,47 @@ class _ArtistSongsSheet extends StatelessWidget {
         final albums = Album.fromSongs(songs);
         return Stack(
           children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                  child: Text(artist.name,
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
-                ),
-                CountHeader(count: songs.length),
-                if (albums.isNotEmpty)
-                  _ArtistAlbumsStrip(albums: albums, artistSongs: songs),
-                if (detail != null) _ArtistDetailBlock(detail: detail),
-                const Divider(height: 1),
-                Expanded(
-                  child: RowList(
-                    controller: scrollCtrl,
-                    count: songs.length,
-                    itemBuilder: (c, i) {
-                      final s = songs[i];
-                      return SongTile(
-                        song: s,
-                        source: lib.sourceFor(s.sourceKey),
-                        playing: player.isCurrent(s),
-                        onPlay: () {
-                          Navigator.of(c).pop();
-                          player.playQueue(songs,
-                              index: i,
-                              contextKey: PlayerProvider.anchorForArtist(artist.name));
-                          context.read<NavigationProvider>().openPlayer();
-                        },
-                      );
-                    },
+            // 头部（标题/专辑/详情）与歌曲列表共用同一个 Scrollable / sheet
+            // controller。此前详情区在 Column 里、只有歌曲列表接 scrollCtrl：
+            // 「详情」展开后把列表挤到 0 高度，整页再无拖拽入口（窗口卡死）。
+            // 现在详情只是滚动内容变长，任意位置按下都能拖动/滚动弹层。
+            CustomScrollView(
+              controller: scrollCtrl,
+              slivers: [
+                SliverToBoxAdapter(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                        child: Text(artist.name,
+                            style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+                      ),
+                      CountHeader(count: songs.length),
+                      if (albums.isNotEmpty)
+                        _ArtistAlbumsStrip(albums: albums, artistSongs: songs),
+                      if (detail != null) _ArtistDetailBlock(detail: detail),
+                      const Divider(height: 1),
+                    ],
                   ),
+                ),
+                SliverRowList(
+                  count: songs.length,
+                  itemBuilder: (c, i) {
+                    final s = songs[i];
+                    return SongTile(
+                      song: s,
+                      source: lib.sourceFor(s.sourceKey),
+                      playing: player.isCurrent(s),
+                      onPlay: () {
+                        Navigator.of(c).pop();
+                        player.playQueue(songs,
+                            index: i,
+                            contextKey: PlayerProvider.anchorForArtist(artist.name));
+                        context.read<NavigationProvider>().openPlayer();
+                      },
+                    );
+                  },
                 ),
               ],
             ),
@@ -1296,6 +1308,7 @@ class _ArtistAlbumsStrip extends StatelessWidget {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true,
       builder: (_) => _AlbumSongsSheet(album: album, songs: songs),
     );
   }

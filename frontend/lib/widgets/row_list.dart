@@ -70,3 +70,48 @@ class RowList extends StatelessWidget {
     return RefreshIndicator(onRefresh: onRefresh!, child: list);
   }
 }
+
+/// [RowList] 的 Sliver 版：作为 `CustomScrollView.slivers` 的成员使用，
+/// 行高/分隔线口径与 [RowList] 完全一致。
+///
+/// 用于「头部与列表必须共用同一条滚动轴」的场景（如歌手弹层：标题/专辑/详情
+/// 在上，歌曲列表在下）。这样整块内容只挂一个 Scrollable，并把它交给
+/// `DraggableScrollableSheet` 的 controller：在任意位置按下都能拖拽弹层，且
+/// 头部展开（如「详情」）只是内容变长，不会再挤压列表高度（此前列表被挤出
+/// 可视区后弹层就再无拖拽入口）。
+class SliverRowList extends StatelessWidget {
+  final int count;
+
+  /// 行本体（不含分隔线）。
+  final Widget Function(BuildContext context, int index) itemBuilder;
+
+  /// 行高，默认 [kRowHeight]；分隔线缩进默认 [kRowDividerIndent]。
+  final double rowHeight;
+  final double dividerIndent;
+
+  const SliverRowList({
+    super.key,
+    required this.count,
+    required this.itemBuilder,
+    this.rowHeight = kRowHeight,
+    this.dividerIndent = kRowDividerIndent,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final last = count - 1;
+    return SliverFixedExtentList(
+      itemExtent: rowHeight + kRowSeparatorHeight,
+      delegate: SliverChildBuilderDelegate(
+        (c, i) => Column(
+          children: [
+            SizedBox(height: rowHeight, child: itemBuilder(c, i)),
+            if (i != last)
+              Divider(height: kRowSeparatorHeight, indent: dividerIndent),
+          ],
+        ),
+        childCount: count,
+      ),
+    );
+  }
+}
