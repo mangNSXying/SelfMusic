@@ -14,6 +14,7 @@ scripts/*
 !scripts/*.sql
 testmusic/
 nginx/
+spec/
 
 # 泛匹配
 # 注：曾用 *.md / *.txt / *test* 全局忽略，会静默吞掉 vendored 副本与
