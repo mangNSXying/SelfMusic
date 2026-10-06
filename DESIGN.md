@@ -706,6 +706,12 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 权限声明：module.json5 新增 `FILE_ACCESS_PERSIST`（system_grant 免弹窗）+ `ACCESS_BLUETOOTH`（user_grant，reason 文案 base/zh_CN/en_US 三处同步）。
 
+**2026-10 封面缩略图原生解码✅**（ohos-thumb-native-decode feature，spec 见 `spec/ohos-thumb-native-decode/`；「打开应用即全局卡顿」根因修复）：
+
+- **取证**：卡顿源是封面缩略图生成——纯 Dart `image` 包解码/重编码经 `runOffThread` 派发，但 **ohos fork 引擎无子 isolate、runOffThread 在 ohos 内联主 isolate 执行**：打开应用触发存量封面回填（`_backfillCoverThumbs`）时逐张数百 ms UI 块连发，补读路径 `unawaited(ensureCoverThumb)` 同样命中（spec US1/US2）。
+- **方案**：平台桥第 10 个方法 `makeCoverThumb`（契约以该 spec 的 plan.md 为准）——ArkTS 侧 `@ohos.multimedia.image` 全链：fd→ImageSource 解码 → EXIF orientation 烘焙（rotate/flip 映射，90°/270° 按 desiredSize 旋转后语义换算宽高）→ 最长边 768 降采样 → JPEG q82 → `<thumbPath>.tmp` 写盘后 rename 原子替换；**缩略图字节不过通道**（Dart 只收 bool）。失败纪律（R-5）：参数缺失/解码失败/false/超时（Dart 侧 15s）一律静默回原图，**绝不回退内联 Dart 编码**（卡顿源不能复活）；`ensureCoverThumb` 的 ohos 分支复用 `_thumbInflight` 去重与 `_thumbReady`/`_displayPathCache` 缓存，非 ohos 代码路径字节不变（零回归）；启动回填加 50ms 逐张节流错峰首屏渲染（`_thumbBackfillGap`，R-8）。
+- **验证**：宿主侧 15 个新增用例全绿——桥封装 7（`ohos_platform_bridge_test`）+ 原生分支与删除生命周期 6（`cover_thumb_test`，含并发去重/静默回退）+ 补读解耦 2（`meta_enrich_test`，unawaited 不等缩略图）；`forceNativeThumbInTests` 模块级开关 + mock 通道使 Windows 宿主可覆盖 ohos 分支。全量 `flutter test`/`flutter analyze` 与基线一致（58 例 Windows 临时目录删除竞争噪声为既有环境问题，非本 feature 引入）。真机验收（hap 构建、打开应用列表滑动无全局卡顿、竖拍封面方向正确）归 verify 阶段。
+
 ### 暂缓项：已配对设备设置页明文显示配对密钥
 
 > **状态：已实现✅**（`GET /api/v1/admin/pairing-token` + `设置→服务端→配对服务器` 副标题遮显、配对页明文可复制，与淡入淡出/均衡器/通知控制等暂缓项一并落地；功能 7「设置整理」后密钥归入服务端分区，不再放常规）。

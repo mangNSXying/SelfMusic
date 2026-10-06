@@ -24,6 +24,14 @@ import '../services/secret_store.dart';
 import '../utils/cover_thumb.dart';
 import 'direct_task_queue.dart';
 
+/// 缩略图回填的逐张间隔：ohos 走原生解码（ImageKit 系统服务），启动期
+/// 批量补齐会与首屏渲染抢系统解码资源——留出节流缝隙避免打开即卡顿
+/// （spec R-8，调参记录见 plan.md）。其余平台纯 Dart 编码跑在子 isolate，
+/// 仅让出事件循环即可。
+final Duration _thumbBackfillGap = Platform.operatingSystem == 'ohos'
+    ? const Duration(milliseconds: 50)
+    : Duration.zero;
+
 /// 直连源管理（阶段 3 / 阶段 4 接收器）。
 ///
 /// - 持有 [LocalIndex]（本地事实源）。
@@ -393,7 +401,7 @@ class DirectSourceManager extends ChangeNotifier {
         final before = coverDisplayPath(cover);
         await ensureCoverThumb(cover);
         if (coverDisplayPath(cover) != before) made++;
-        await Future<void>.delayed(Duration.zero);
+        await Future<void>.delayed(_thumbBackfillGap);
       }
     } catch (e) {
       debugPrint('[direct] 封面缩略图回填失败（忽略）：$e');
