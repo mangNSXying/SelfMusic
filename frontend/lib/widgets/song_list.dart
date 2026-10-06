@@ -23,6 +23,7 @@ import 'list_selection.dart';
 import 'row_list.dart';
 import 'selection_badge.dart';
 import 'selection_bar.dart';
+import 'song_info_dialog.dart';
 import 'sort_menu_button.dart';
 import 'app_toast.dart';
 
@@ -113,7 +114,7 @@ class SongTile extends StatelessWidget {
     }
   }
 
-  /// 三点菜单：下一首播放 / 喜欢 / 不喜欢 / 缓存（仅直连）/ 加入歌单。
+  /// 三点菜单：下一首播放 / 喜欢 / 不喜欢 / 缓存（仅直连）/ 加入歌单 / 歌曲信息。
   ///
   /// 歌单详情等需要「追加」自定义项时传 [extraMenuItems]，其回调走 [onExtraMenu]。
   Widget _menu(BuildContext context, DirectSourceManager direct,
@@ -147,6 +148,11 @@ class SongTile extends StatelessWidget {
             unawaited(_cacheSong(context, direct));
           case 'playlist':
             showAddToPlaylistSheet(context, song);
+          case 'info':
+            showDialog<void>(
+              context: context,
+              builder: (_) => SongInfoDialog(song: song),
+            );
           default:
             onExtraMenu?.call(v);
         }
@@ -206,6 +212,16 @@ class SongTile extends StatelessWidget {
               Icon(Icons.playlist_add),
               SizedBox(width: 12),
               Text('加入歌单'),
+            ],
+          ),
+        ),
+        const PopupMenuItem(
+          value: 'info',
+          child: Row(
+            children: [
+              Icon(Icons.info_outline),
+              SizedBox(width: 12),
+              Text('歌曲信息'),
             ],
           ),
         ),

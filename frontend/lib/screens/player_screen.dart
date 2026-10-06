@@ -16,13 +16,13 @@ import 'queue_page.dart';
 import '../services/bluetooth_service.dart';
 import '../utils/duration_format.dart';
 import '../utils/song_title_format.dart';
-import '../utils/url_display.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/lyrics_view.dart';
 import '../widgets/marquee_text.dart';
 import '../widgets/pressable.dart';
 import '../widgets/player_sheet_anim.dart';
+import '../widgets/song_info_dialog.dart';
 import '../widgets/song_list.dart';
 
 /// 横屏播放页布局分流（UI10 平台差异化）：
@@ -1168,7 +1168,7 @@ class _Cover extends StatelessWidget {
     } else if (v == 'info') {
       showDialog<void>(
         context: context,
-        builder: (_) => _SongInfoDialog(song: song),
+        builder: (_) => SongInfoDialog(song: song),
       );
     } else if (v == 'edit') {
       showDialog<void>(
@@ -1199,86 +1199,6 @@ class _UnreadCoverPlaceholder extends StatelessWidget {
             fontSize: size * 0.08,
             color: cs.primary.withValues(alpha: 0.7),
           ),
-        ),
-      ],
-    );
-  }
-}
-
-/// 歌曲信息弹窗：标题/歌手/专辑/流派/年份/时长/格式/来源/权重/收藏态。
-class _SongInfoDialog extends StatelessWidget {
-  final Song song;
-  const _SongInfoDialog({required this.song});
-
-  @override
-  Widget build(BuildContext context) {
-    final direct = context.watch<DirectSourceManager>();
-    final states = <String>[];
-    if (song.isDirect) {
-      if (direct.weight.isFavorite(song)) states.add('喜欢');
-      if (direct.weight.isDisliked(song)) states.add('不喜欢');
-    }
-    // 元数据字段：未读取 → 标注「待读取」；已读取且无值 → 留白（—）。
-    String? optField(String? v) => song.metaDisplay(v);
-    // 路径：优先由对应直连源解析真实可读路径（本地绝对路径/WebDAV URL/UNC），
-    // 源不在本机时回落到持久化完整 URL 或源内引用；URL 百分号编码展示时解码。
-    final displayPath = direct.sourceByKey(song.sourceKey)?.displayPath(song) ??
-        decodeUrlForDisplay(song.sourceUrl ?? song.sourceRef);
-    final rows = <List<String>>[
-      ['标题', song.title],
-      ['歌手', optField(song.artist) ?? '—'],
-      ['专辑歌手', optField(song.albumArtist) ?? '—'],
-      ['专辑', optField(song.albumName) ?? '—'],
-      if (song.metaUnread || (song.genre != null && song.genre!.isNotEmpty))
-        ['流派', song.metaUnread ? Song.unreadLabel : song.genre!],
-      if (song.metaUnread || song.year != null)
-        ['年份', song.metaUnread ? Song.unreadLabel : '${song.year}'],
-      if (song.metaUnread ||
-          (song.duration != null && song.duration! > 0))
-        ['时长',
-            song.metaUnread ? Song.unreadLabel : formatDuration(song.duration)],
-      if (song.format != null) ['格式', song.format!.toUpperCase()],
-      ['来源', '${song.source}（${song.sourceKey}）'],
-      ['路径', displayPath],
-      if (song.isDirect)
-        ['权重', direct.weight.factorOf(song).toStringAsFixed(1)],
-      if (song.isDirect) ['状态', states.isEmpty ? '—' : states.join(' · ')],
-    ];
-    return AlertDialog(
-      title: const Text('歌曲信息'),
-      content: SizedBox(
-        width: 340,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final r in rows)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(
-                        width: 52,
-                        child: Text(r[0],
-                            style: TextStyle(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurface
-                                    .withValues(alpha: 0.6))),
-                      ),
-                      Expanded(child: Text(r[1])),
-                    ],
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('关闭'),
         ),
       ],
     );
