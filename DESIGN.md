@@ -698,6 +698,14 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 > 原风险 R2（三方分支通道兼容 + 插件生态缺口）已逐项验证可控：核心依赖全部落地——fvp 音频后端 / secure_storage 双层适配 / sqlite3 随包分发 / path_provider 重试包装 / audio_session 容错 / audio_service 由自建 AVSession 桥替代；仅 `cached_network_image`（sqflite 传递依赖缺失）曲库封面降级为已知问题。
 > 交付清单：启动白屏双地雷修复、直连 WebDAV 全链（扫描/点播/鉴权折叠）、AVSession 媒体播控（§6.8）、横竖屏、应用图标、自动切歌修复、装载看门狗、宽屏队列面板。细节全记录在 [DEVELOPER.md「鸿蒙适配」](DEVELOPER.md#鸿蒙适配)。
 
+**2026-10 系统能力补齐✅**（ohos-permissions feature，spec 见 `spec/ohos-permissions/`）：自建 `selfmusic/platform` 平台桥（`PlatformBridge.ets` + `ohos_platform_bridge.dart`，9 方法契约以该 spec 的 plan.md 为准）补齐三项插件生态缺口——
+
+1. **本地文件夹源全链（US1）**：源配置 path 字段在 ohos 存**系统目录授权 URI**（`file://docs/...`；选目录 = DocumentViewPicker FOLDER 模式 + `fileShare.persistPermission` 当场持久化，重启后扫描前 `activatePermission` 激活——持久化数据在系统数据库，每次启动需手动激活）；**扫描走主 isolate**（授权 URI 非 dart:io 路径，桥一次性返回全量 rel/size/mtime 快照；过滤/指纹 diff 复用 `local_direct_source.dart` 的 `_diffSnapshotEntry` 公共纯函数，Android 的 runScan isolate 路径行为逐字节不变）；点播 `cachedFilePath` 返回 null → DirectAudioSource 字节流（512 KiB 分块 `readRange`）；授权失效（用户撤销/目录删除）统一转译为「目录授权已失效，请编辑该源重新选择目录」。FR-004：URI 授权机制**无变更通知**，不引入实时监听，目录内变更依赖周期/手动扫描的增量 diff 兜底（与 Android 行为对齐）。
+2. **屏幕常亮（US2）**：`OhosWakelockPlusPlatform`（`wakelock_plus_ohos.dart`）在 `setupOhos` 注册进 wakelock_plus 平台接口 → ArkTS `window.setWindowKeepScreenOn`（无需权限，仅前台生效）；播放页的常亮门控（含「限定蓝牙设备」逻辑）全平台统一，ohos guard 移除。
+3. **蓝牙设备查询（US3）**：`ACCESS_BLUETOOTH` 场景化三段式申请（`requestPermissionsFromUser` → `requestPermissionOnSetting` 兜底；**仅**「常亮限定设备」设置页触发，启动期零权限，FR-009）；已配对/已连接查询异常一律降级空集合（门控按未连接判定，与 Android 静默降级语义一致）。
+
+权限声明：module.json5 新增 `FILE_ACCESS_PERSIST`（system_grant 免弹窗）+ `ACCESS_BLUETOOTH`（user_grant，reason 文案 base/zh_CN/en_US 三处同步）。
+
 ### 暂缓项：已配对设备设置页明文显示配对密钥
 
 > **状态：已实现✅**（`GET /api/v1/admin/pairing-token` + `设置→服务端→配对服务器` 副标题遮显、配对页明文可复制，与淡入淡出/均衡器/通知控制等暂缓项一并落地；功能 7「设置整理」后密钥归入服务端分区，不再放常规）。

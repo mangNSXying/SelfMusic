@@ -289,7 +289,7 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 | crypto | 缓存 key / 封面等哈希去重 |
 | sqlite3 / sqlite3_flutter_libs | 客户端本地库（`data/local/`）：源索引 idx_songs + cache + play_meta + playlists + app_settings + song_lyrics + play_state；读写分离与事务合批见「[客户端本地数据层](#客户端本地数据层sqlite-写隔离)」 |
 | xml | WebDAV PROPFIND XML 解析 |
-| file_selector | 备份导入导出、本地文件夹源「选择目录」 |
+| file_selector | 备份导入导出、本地文件夹源「选择目录」（ohos 端选目录走自建平台桥，见「鸿蒙适配」） |
 | permission_handler | Android 本地文件夹源运行时权限（READ_MEDIA_AUDIO / READ_EXTERNAL_STORAGE） |
 
 ### 平台收口层（`lib/platform/`）
@@ -298,11 +298,12 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 
 现状（`lib/platform/harmonyos/`）：
 
-- `ohos_bootstrap.dart`：`setupOhos()` 在 `main()` 里 `runApp` 前调用，装配三件事——sqlite3 `open.overrideForAll`（顶层函数，isolate 安全）、`FlutterSecureStoragePlatform` 桩、`JustAudioPlatform` fvp 适配
+- `ohos_bootstrap.dart`：`setupOhos()` 在 `main()` 里 `runApp` 前调用，装配六件事——sqlite3 `open.overrideForAll`（顶层函数，isolate 安全）、`FlutterSecureStoragePlatform` 桩、`JustAudioPlatform` fvp 适配、path_provider 重试包装、HTTPS 根证书注入、`WakelockPlusPlatformInterface` 常亮平台实现（2026-10）
 - `just_audio_fvp.dart` / `secure_storage_ohos.dart`：音频后端与安全存储的 ohos 实现
+- `ohos_platform_bridge.dart` / `wakelock_plus_ohos.dart`（2026-10）：系统能力平台桥 Dart 封装（常亮/本地文件/蓝牙，见「鸿蒙适配·系统能力平台桥」）
 - 平台判定统一用 `Platform.operatingSystem == 'ohos'`（stable 工具链没有 `Platform.isOhos` getter，见「[鸿蒙适配](#鸿蒙适配)」）
 - 其余平台差异目前靠条件导入式的一层封装（`just_audio` 默认 Android 走 ExoPlayer、桌面走 media_kit），尚**未**抽成统一 `capabilities` 接口——新增平台能力时优先考虑在 `lib/platform/` 补齐
-- 少数确实需要平台判断的调用点（音频焦点、wakelock、通知栏）以 `Platform.isAndroid` 门控，并在注释里说明「ohos 走降级路径」
+- 少数确实需要平台判断的调用点（音频焦点、通知栏）以 `Platform.isAndroid` 门控，并在注释里说明「ohos 走降级路径」；常亮 / 本地文件夹源 / 蓝牙设备查询已由平台桥支持 ohos（2026-10），对应调用点改为 `isOhos` 分支
 
 ### 客户端本地数据层（SQLite 写隔离）
 
@@ -401,11 +402,11 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 | 依赖 | ohos 方案 | 状态 |
 |------|-----------|------|
 | path_provider | `path_provider_ohos` 2.2.1 + 超时重试包装（保险层：1s 超时 × 5 次重发 + 沙盒回退；旧"引擎吞回复"根因已被实测翻案，见下节） | ✅ 直接用 + 保险 |
-| file_selector | `file_selector_ohos` 0.5.0+2 | ✅ 直接用 |
+| file_selector | 备份导入导出直接用；本地文件夹源「选择目录」的 `getDirectoryPath` 在 `file_selector_ohos` 未实现（调用必抛异常）→ ohos 改走平台桥 `pickDirectory`（DocumentViewPicker FOLDER + fileShare 持久化，见「系统能力平台桥」） | ✅ 分场景处理 |
 | **just_audio（音频后端）** | **fvp**（libmdk 后端，官方支持 HarmonyOS 5.0+）+ 自写纯 Dart 适配层 `just_audio_platform_interface` → fvp Player，无 ArkTS | ✅ 已实现（`lib/platform/harmonyos/just_audio_fvp.dart`） |
 | flutter_secure_storage | 两层适配：① `FlutterSecureStoragePlatform` 文件 shim；② **前端类绕过**——上游 9.2.4 的 `_selectOptions()` 对 ohos 无条件 throw 且 `_platform` 是逐调用 getter（包级注册平台实例救不了前端），子类 `OhosFlutterSecureStorage` 覆写六入口直调平台实例 + `createSecureStorage()` 工厂收口构造点 | ✅ 已实现（`secure_storage_ohos.dart`） |
 | permission_handler | 桩包同样不兼容；应用内调用点均已 `Platform.isAndroid` 门控，ohos 不触发 | ✅ 无需处理 |
-| wakelock_plus | 桩包不兼容 → `player_screen` 调用点按 `Platform.operatingSystem != 'ohos'` guard（ohos 放弃屏幕常亮） | ✅ 已处理 |
+| wakelock_plus | 桩包不兼容 → `setupOhos` 注册 `OhosWakelockPlusPlatform`（`wakelock_plus_ohos.dart`，转接平台桥 keepScreenOn → `window.setWindowKeepScreenOn`），player_screen 的 ohos guard 移除、常亮逻辑全平台统一 | ✅ 已实现（2026-10，见「系统能力平台桥」） |
 | audio_service | 无 ohos 实现 → 按预案降级「无通知栏」（代码已按 `Platform.isAndroid` 门控） | ✅ |
 | sqlite3 | `open.overrideForAll()` 按名 dlopen `libsqlite3.so`——**设备系统无此库**（7 路径实测全无），命中的是随包分发的自编译副本（构建配方见下节） | ✅ 已实现（`ohos_bootstrap.dart` + `entry/libs/arm64-v8a/libsqlite3.so`） |
 | audio_session | `AudioSession.instance` 在无插件平台 catch 掉 `MissingPluginException` 返回空实现，just_audio 的 `handleInterruptions` 安全（与 Windows/Linux 同路径） | ✅ 已验证，无需处理 |
@@ -420,7 +421,7 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 - fvp 用 vendored 副本 `frontend/third_party/fvp`（ohos-only 平台声明 + 删除 video_player 依赖链），升级 = 重新复制 0.38.1 源码 + 重打两个补丁（见该目录 pubspec.yaml / lib/fvp.dart 头部注释）
 
 适配层实现（`lib/platform/harmonyos/`，2026-09）：
-- `ohos_bootstrap.dart`：`setupOhos()` 在 `main()` 里 runApp 前调用，四件事全部仅 ohos 生效——sqlite3 overrideForAll（顶层函数，**仅本 isolate 有效**：不随 Isolate.spawn 传入子 isolate，ohos 写层因此退化内联，见 `db_writer.dart` 头注释）、`FlutterSecureStoragePlatform.instance = OhosSecureStorage()`（包级注册只覆盖平台侧，前端类另需绕过，见上表）、`JustAudioPlatform.instance = FvpJustAudio()`、`PathProviderPlatform.instance = OhosRetryingPathProvider(原实现)`（单点收口：启动链全部路径调用均经该 instance）
+- `ohos_bootstrap.dart`：`setupOhos()` 在 `main()` 里 runApp 前调用，六件事全部仅 ohos 生效——sqlite3 overrideForAll（顶层函数，**仅本 isolate 有效**：不随 Isolate.spawn 传入子 isolate，ohos 写层因此退化内联，见 `db_writer.dart` 头注释）、`FlutterSecureStoragePlatform.instance = OhosSecureStorage()`（包级注册只覆盖平台侧，前端类另需绕过，见上表）、`JustAudioPlatform.instance = FvpJustAudio()`、`PathProviderPlatform.instance = OhosRetryingPathProvider(原实现)`（单点收口：启动链全部路径调用均经该 instance）、`SecurityContext` 根证书注入（`_loadRootCerts`）、`WakelockPlusPlatformInterface.instance = OhosWakelockPlusPlatform()`（2026-10，常亮见下节）
 - `path_provider_ohos_retry.dart`：1s 超时 × 5 次重发的保险包装 + 全超时沙盒路径回退（命中时日志 `[ohos] path_provider.* 响应超时`）；旧"引擎竞态吞回复"根因已被 verify-5/6 逐消息对账翻案（见下节），保留理由：路径查询幂等、成本为零、覆盖未证实的极端时序
 - `just_audio_fvp.dart`：`FvpJustAudio.init/disposePlayer` 管理播放器表；`FvpAudioPlayer` 实现负载面 load/play/pause/seek/setVolume（+speed/loop 顺带），pitch/shuffle/skipSilence 静默 no-op；mdk 状态映射：`prepare()<0` 抛 PlatformException、`state=stopped` 且非加载复位/错误 → `completed`（自动切歌依赖）、`MediaStatus.invalid`/`onEvent error` → 错误上报、位置用 200ms Timer 轮询（mdk 无位置流）、同一媒体重复 load 前先回 stopped 复位（mdk prepare 对已加载返回 -1）；音量两侧语义一致（0.0-1.0）；mdk prepare 对不可达主机**无超时**——应用层看门狗兜底（见「[客户端播放要点](#客户端播放要点装载切歌返回)」）
 - `secure_storage_ohos.dart`：文档目录单 JSON 文件 + 整文件 base64 混淆，内存即权威源；读写失败不抛（密钥问题不崩登录/配对流程）；对应 platform_interface 1.1.2 Map-options 签名（flutter_secure_storage 9.2.4 锁定该版本，`*Params` API 是 1.2+ 才有，勿混淆）
@@ -469,6 +470,15 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 - **封面（两段式，2026-09-30 定稿）**：元数据先行（卡片秒出，缺封面显示应用图标），封面异步解码后经第二次 `setAVMetadata` 补推。此前踩坑：`mediaImage` 传裸路径/`file://` string 时 `isImageValid checkFail`（av_session 服务进程读不了应用沙箱路径）→ `980000502`，**单字段校验失败会阻断整个播控卡**；PixelMap 方案首轮又因过早 release 触发 `GetMediaImageTopic checkFail`。定稿要点：coverPath 传应用沙箱绝对路径，ArkTS 侧 fd→ImageSource→PixelMap 进 IPC 共享内存；PixelMap **保持引用至替换完成才 release**；同曲按路径去重、快速切歌用任务票据竞态淘汰过期解码（`AvSessionBridge.ets` 的 updateCover/decodeCover）
 - ArkTS 坑：`MethodCall.argument()` 返回 Any，hvigor 编译器拒 Any 推断（`arkts-no-any-unknown`，**hvigor 比 arkts_check 严**）——用 argString/argNumber/argBool 类型化取参
 - 验收（2026-09-29 真机）：卡片三处出现/播放暂停上一首下一首真控制/循环模式双向同步 ✓；收藏/后台持续/歌词因 WebDAV 服务器内容缺失暂无法验收（环境问题非回归：歌单同步正常证明主服务器 API 在线，WebDAV 扫描 0 首+流缓冲无声）；启动链零回归（桥就绪与看门狗同毫秒，Dart ready 1.65s）
+
+系统能力平台桥（`selfmusic/platform`，2026-10 ohos-permissions feature）：
+
+- 缘起：常亮（wakelock_plus 桩不兼容）、本地文件夹源选目录（`file_selector_ohos` 无 getDirectoryPath）、蓝牙设备查询（Android 专有通道）三项在 ohos 均无可用插件实现——统一自建平台桥，装配范式同 AVSession 桥：ArkTS 侧 `entry/src/main/ets/platform/PlatformBridge.ets`（EntryAbility configureFlutterEngine 装配 / onDestroy 回收），Dart 侧 `ohos_platform_bridge.dart` 封装，业务层只在 `isOhos` 分支调用
+- 9 方法契约（唯一事实源：`spec/ohos-permissions/plan.md`「Contracts & Interfaces」）：keepScreenOn / pickDirectory / activateDirectory / listDirectory / readRange / requestBluetoothPermission / hasBluetoothPermission / listBondedDevices / connectedDevices
+- 本地文件夹源（US1）：module.json5 申请 `FILE_ACCESS_PERSIST`（system_grant 免弹窗免 reason）；选目录 = `picker.DocumentViewPicker` FOLDER 模式 + 当场 `fileShare.persistPermission`（**持久化必须趁选择器临时授权存活的同一会话内完成**，临时授权随应用退出清除；重复选择同一目录幂等处理——persistPermission 失败用 checkPersistentPermission 复核）；重启后扫描前 `activatePermission` 激活（持久化数据在系统数据库，每次启动需手动激活）；扫描 = `fs.listFile(recursion)` + 逐文件 `fs.stat` 全量快照，**主 isolate 执行不走 runScan**（授权 URI 非 dart:io 路径，且桥 handler 在主 isolate）——过滤/指纹 diff 复用 `local_direct_source.dart` 的 `_diffSnapshotEntry` 公共纯函数，isolate 路径行为逐字节不变；点播 = `cachedFilePath` 返回 null → DirectAudioSource 字节流兜底，`fs.read` 512 KiB 分块拉流（ArkTS 侧单次上限 2 MiB 防御，读取不完整按 13900030 error 上抛）；授权失效（撤销/目录删除）统一转译「目录授权已失效，请编辑该源重新选择目录」。ref 形态注意：库内 song ref 存无头相对路径（对齐 Android），桥 readRange 封装负责补 `/` 头再拼 URI
+- 常亮（US2）：`window.setWindowKeepScreenOn`（无需权限声明，仅前台生效；退后台随窗口失焦自动失效是系统预期，回前台由播放器页按播放态重新拉起）；Dart 侧 `OhosWakelockPlusPlatform`（wakelock_plus_ohos.dart）注册进 `WakelockPlusPlatformInterface.instance`（setupOhos 第六件事），player_screen 的 ohos guard 移除、常亮门控逻辑全平台统一
+- 蓝牙（US3）：module.json5 申请 `ACCESS_BLUETOOTH`（user_grant，`$string:bluetooth_permission_reason` + usedScene，base/zh_CN/en_US 三处 string.json 同步）；FR-009 启动期零权限——仅「常亮限定设备」设置页触发三段式申请（`requestPermissionsFromUser` 已授权短路 → 未授权走 `requestPermissionOnSetting` 设置弹框兜底，两次拒绝后只能引导去系统设置）；查询 = `connection.getPairedDevices` / `getRemoteDeviceName` + `a2dp.getConnectedDevices`（均同步 API + try/catch，蓝牙未开启 2900001 等异常一律降级空集合——与 Android「按未连接判定」的静默降级语义一致，`bluetooth_service.dart` 四方法 `isOhos` 分支收口）
+- ArkTS 坑（沿用 AVSession 桥经验）：`MethodCall.argument()` 返回 Any，hvigor 拒 Any 推断——PlatformBridge.ets 用 argString/argNumber/argBool 类型化取参；async handler 的 Promise 必须 `.catch((): void => {})` 收口防 unhandled rejection
 
 构建验证状态（2026-09）：
 - 双 SDK `flutter analyze` 零问题（ohos 3.41.9 与 stable 各自通过；两 SDK 的 pub get 会对 meta/test_api/vector_math 等 4 个 flutter_test 传递依赖来回改写 lock，属已知无害现象）
