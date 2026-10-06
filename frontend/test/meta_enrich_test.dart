@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:selfmusic/data/local/local_index.dart';
@@ -10,6 +12,7 @@ import 'package:selfmusic/data/sources/meta_enrich.dart';
 import 'package:selfmusic/data/sources/music_source.dart';
 import 'package:selfmusic/data/sources/sibling_cover.dart';
 import 'package:selfmusic/models/song.dart';
+import 'package:selfmusic/utils/cover_thumb.dart';
 import 'package:sqlite3/open.dart';
 
 DynamicLibrary _openOnLinux() {
@@ -142,6 +145,8 @@ Uint8List noCoverMp3(String title) {
 }
 
 void main() {
+  // mock 通道（selfmusic/platform）需要测试绑定。
+  TestWidgetsFlutterBinding.ensureInitialized();
   setUp(clearSiblingImageCache);
   test('播放补读：采样截断时按结构补读（不整读）并落盘', () async {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
@@ -341,5 +346,125 @@ void main() {
 
     index.close();
     dir.deleteSync(recursive: true);
+  });
+
+  group('补读与缩略图解耦（ohos 原生管线，mock 通道，ohos-thumb-native-decode）', () {
+    const channel = MethodChannel('selfmusic/platform');
+
+    /// mock 侧收到的调用记录。
+    final calls = <MethodCall>[];
+
+    /// 注册 mock：统一记录调用后交 [responder] 应答（覆盖前一次注册）。
+    void mockThumb(Future<Object?>? Function(MethodCall call) responder) {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return await responder(call);
+      });
+    }
+
+    setUp(() {
+      // 宿主（Windows）非 'ohos'：置测试开关让 unawaited 的
+      // ensureCoverThumb 走原生桥分支（plan.md R-7）。
+      forceNativeThumbInTests = true;
+      calls.clear();
+    });
+
+    tearDown(() {
+      forceNativeThumbInTests = false;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+    });
+
+    test('桥返回 false → 补读仍成功标已读，封面落盘，缩略图静默放弃', () async {
+      mockThumb((_) async => false);
+      open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+      final dir = await Directory.systemTemp.createTemp('selfmusic_enrich_no_');
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      final index = LocalIndex();
+      await index.open();
+
+      final bytes = bigCoverMp3();
+      final src = _RangeFakeSource(bytes);
+      await index.upsertSongs([
+        DirectSongRow(
+          sourceKey: 'webdav:t',
+          ref: 'Music/a.mp3',
+          title: 'a',
+          format: 'mp3',
+          size: bytes.length,
+          mtime: 1,
+        ),
+      ]);
+      final song = index.songByRef('webdav:t', 'Music/a.mp3')!;
+
+      final ok = await enrichSongMeta(index, src, song);
+      // 缩略图桥失败不影响补读主链路：成功解析、标已读（R-5 静默兜底）。
+      expect(ok, isTrue);
+      final row = index.songByRef('webdav:t', 'Music/a.mp3')!;
+      expect(row.coverPath, isNotNull);
+      expect(File(row.coverPath!).existsSync(), isTrue);
+      expect(index.unreadSongs('webdav:t', 10), isEmpty);
+
+      await pumpEventQueue();
+      expect(calls, hasLength(1)); // 桥被请求过一次。
+      // 静默回原图：不落缩略图、展示路径不变、不抛错。
+      expect(File(coverThumbPathFor(row.coverPath!)).existsSync(), isFalse);
+      expect(coverDisplayPath(row.coverPath!), row.coverPath);
+
+      index.close();
+      try {
+        dir.deleteSync(recursive: true);
+      } catch (_) {
+        // Windows 上 db-writer isolate 退出与删除竞争（errno 32）：残留
+        // 系统临时目录无害，不计失败（区别于既有用例的直删断言）。
+      }
+    });
+
+    test('桥挂起 → 补读先返回不等缩略图；桥完成后缩略图才就绪', () async {
+      final gate = Completer<Object?>();
+      mockThumb((_) => gate.future);
+      open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+      final dir = await Directory.systemTemp.createTemp('selfmusic_enrich_go_');
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      final index = LocalIndex();
+      await index.open();
+
+      final bytes = bigCoverMp3();
+      final src = _RangeFakeSource(bytes);
+      await index.upsertSongs([
+        DirectSongRow(
+          sourceKey: 'webdav:t',
+          ref: 'Music/b.mp3',
+          title: 'b',
+          format: 'mp3',
+          size: bytes.length,
+          mtime: 1,
+        ),
+      ]);
+      final song = index.songByRef('webdav:t', 'Music/b.mp3')!;
+
+      final ok = await enrichSongMeta(index, src, song);
+      // 桥仍挂起时补读已返回：unawaited 解耦（meta_enrich.dart 不等缩略图）。
+      expect(ok, isTrue);
+      final row = index.songByRef('webdav:t', 'Music/b.mp3')!;
+      expect(row.coverPath, isNotNull);
+      expect(calls, hasLength(1));
+      // 缩略图未就绪：展示路径仍是原图。
+      expect(coverDisplayPath(row.coverPath!), row.coverPath);
+
+      gate.complete(true);
+      await pumpEventQueue();
+      // 桥成功后：缓存/展示路径切到缩略图（Dart 侧不落盘，mock 不写文件）。
+      expect(coverDisplayPath(row.coverPath!), coverThumbPathFor(row.coverPath!));
+      expect(File(coverThumbPathFor(row.coverPath!)).existsSync(), isFalse);
+
+      index.close();
+      try {
+        dir.deleteSync(recursive: true);
+      } catch (_) {
+        // 同上：best-effort 清理，竞争残留不计失败。
+      }
+    });
   });
 }

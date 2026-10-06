@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 
+import '../platform/harmonyos/ohos_platform_bridge.dart';
 import 'off_thread.dart';
 
 /// 列表/卡片用封面缩略图：落盘最长边 768 的 JPEG。
@@ -14,6 +15,14 @@ import 'off_thread.dart';
 /// （`<md5>.jpg` → `<md5>.thumb.jpg`），播放页等大尺寸场景继续用原图。
 const int kCoverThumbMaxEdge = 768;
 const int kCoverThumbQuality = 82;
+
+/// 测试中强制走原生桥分支（默认测试环境走纯 Dart 路径）：
+/// 宿主（Windows 等）的 `Platform.operatingSystem` 恒非 'ohos'，
+/// flutter_test 无法覆盖原生分支——置 true 时无视平台判定强制走桥，
+/// 配合 mock 通道用例断言缓存更新与静默回退行为（仿
+/// `off_thread.dart` 的 [forceOffThreadIsolateInTests] 既有模式）。
+/// 仅供 flutter_test 使用，生产代码不得置位。
+bool forceNativeThumbInTests = false;
 
 /// 缩略图路径约定：与封面同目录、同名 + `.thumb`。
 String coverThumbPathFor(String coverPath) {
@@ -45,9 +54,11 @@ String coverDisplayPath(String coverPath) {
   return path;
 }
 
-/// 确保 [coverPath] 有对应缩略图；不存在则后台 isolate 生成（幂等、去重）。
+/// 确保 [coverPath] 有对应缩略图；不存在则生成（幂等、去重）。
 ///
-/// 失败/非图片时静默保留原图：缩略图是纯优化，不向上抛错、不影响补读标已读。
+/// ohos 走平台桥原生解码（ImageKit，主 isolate 不读原图字节）；其余平台
+/// 后台 isolate 纯 Dart 生成。失败/非图片时静默保留原图：缩略图是纯优化，
+/// 不向上抛错、不影响补读标已读。
 Future<void> ensureCoverThumb(String coverPath) async {
   final thumb = coverThumbPathFor(coverPath);
   if (_thumbReady.contains(thumb) || File(thumb).existsSync()) {
@@ -59,6 +70,23 @@ Future<void> ensureCoverThumb(String coverPath) async {
   try {
     final src = File(coverPath);
     if (!src.existsSync()) return;
+    // ohos：解码/EXIF/缩放/编码全部下沉平台 ImageKit——fork 引擎上子
+    // isolate 也会卡 UI（spec R-1），主 isolate 亦不读原图字节。测试开关
+    // 仅供 flutter_test 在非 ohos 宿主覆盖该分支（plan.md R-7）。
+    if (Platform.operatingSystem == 'ohos' || forceNativeThumbInTests) {
+      final ok = await OhosPlatformBridge.makeCoverThumb(
+        coverPath,
+        thumb,
+        maxEdge: kCoverThumbMaxEdge,
+        quality: kCoverThumbQuality,
+      );
+      if (ok) {
+        _thumbReady.add(thumb);
+        _displayPathCache[coverPath] = thumb;
+      }
+      // 桥失败静默保留原图：绝不回退纯 Dart 编码（R-5，卡顿源不能复活）。
+      return;
+    }
     final bytes = await src.readAsBytes();
     final encoded =
         await runOffThread<Uint8List?>(() => encodeCoverThumb(bytes));

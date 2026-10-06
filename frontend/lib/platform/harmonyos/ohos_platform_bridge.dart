@@ -1,16 +1,22 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 /// 鸿蒙系统能力桥（Dart 侧，`selfmusic/platform` 通道封装）。
 ///
-/// 与 ArkTS 侧 [PlatformBridge]（PlatformBridge.ets）配对，承载三项
-/// 系统能力的通道调用（2026-10-06 ohos-permissions feature，契约以
+/// 与 ArkTS 侧 [PlatformBridge]（PlatformBridge.ets）配对，承载四项
+/// 系统能力的通道调用（2026-10-06 ohos-permissions feature；
+/// 2026-10-06 ohos-thumb-native-decode feature 扩封面缩略图管线，契约以
 /// plan.md「Contracts & Interfaces」为准）：
 /// - 常亮：[keepScreenOn] → window.setWindowKeepScreenOn；
 /// - 本地文件：[pickDirectory]（选择器 + 持久化授权）→ [activateDirectory]
 ///   （重启后激活）→ [listDirectory]（递归枚举）→ [readRange]（范围读）；
 /// - 蓝牙：[requestBluetoothPermission] / [hasBluetoothPermission] /
-///   [listBondedDevices] / [connectedDevices]。
+///   [listBondedDevices] / [connectedDevices]；
+/// - 封面缩略图：[makeCoverThumb]（@ohos.multimedia.image 原生管线——fork
+///   引擎无子 isolate、`runOffThread` 在 ohos 内联，纯 Dart 编码会阻塞 UI
+///   isolate，解码/缩放/编码/写盘全部下沉 ArkTS 侧）。
 ///
 /// 仅被 `isOhos` 分支调用（Android/桌面走各自实现，零回归）。
 ///
@@ -20,7 +26,9 @@ import 'package:flutter/services.dart';
 ///   用户可见错误（「目录授权已失效，请编辑该源重新选择目录」）；
 /// - [readRange]：异常向上抛，播放侧按打开失败处理；
 /// - 蓝牙查询：异常返回空集合/false 并 debugPrint 诊断日志（对齐 Android
-///   「按未连接判定」的静默降级语义）。
+///   「按未连接判定」的静默降级语义）；
+/// - [makeCoverThumb]：任何异常/超时/失败返回 false 并 debugPrint（缩略图
+///   是纯优化，调用方静默回原图显示；绝不回退内联 Dart 编码）。
 class OhosPlatformBridge {
   static const MethodChannel _channel = MethodChannel('selfmusic/platform');
 
@@ -165,6 +173,46 @@ class OhosPlatformBridge {
     } on MissingPluginException catch (e) {
       debugPrint('[ohos] connectedDevices 桥未装配: $e');
       return const {};
+    }
+  }
+
+  /// 封面缩略图原生生成（第 10 个通道方法，ohos-thumb-native-decode
+  /// feature）：解码 → EXIF 方向烘焙 → 最长边 [maxEdge] 降采样 → JPEG
+  /// [quality] 重编码 → `<thumbPath>.tmp` 写盘后 rename——全链在 ArkTS 侧
+  /// @ohos.multimedia.image 系统原生线程完成，缩略图字节不过通道。
+  ///
+  /// [srcPath] 为封面原图沙箱路径，[thumbPath] 为目标缩略图路径（沿用
+  /// `cover_thumb.dart` 的 `<md5>.thumb.jpg` 约定）；[maxEdge]/[quality]
+  /// 缺省 768/82（与 kCoverThumbMaxEdge / kCoverThumbQuality 对齐）。
+  ///
+  /// 失败兜底（plan.md R-5）：[PlatformException] / [MissingPluginException] /
+  /// [TimeoutException] 与 false 返回一律 debugPrint 诊断日志后返回 false，
+  /// **绝不抛出、绝不回退内联 Dart 编码**（fork 引擎上等于把数百 ms UI 块
+  /// 请回来）——调用方按「缩略图是纯优化」静默回原图显示。15s 超时上限覆盖
+  /// 原生解码大图的合法秒级耗时，超时后本轮放弃、下次触发重试；[timeout]
+  /// 仅供测试注入。
+  static Future<bool> makeCoverThumb(String srcPath, String thumbPath,
+      {int maxEdge = 768,
+      int quality = 82,
+      Duration timeout = const Duration(seconds: 15)}) async {
+    try {
+      final ok = await _channel.invokeMethod<bool>('makeCoverThumb',
+          <String, Object?>{
+            'srcPath': srcPath,
+            'thumbPath': thumbPath,
+            'maxEdge': maxEdge,
+            'quality': quality
+          }).timeout(timeout);
+      return ok ?? false;
+    } on TimeoutException catch (e) {
+      debugPrint('[ohos] makeCoverThumb 超时（放弃本轮，下次触发重试）: $e');
+      return false;
+    } on PlatformException catch (e) {
+      debugPrint('[ohos] makeCoverThumb 失败: $e');
+      return false;
+    } on MissingPluginException catch (e) {
+      debugPrint('[ohos] makeCoverThumb 桥未装配: $e');
+      return false;
     }
   }
 }
