@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/backup_service.dart';
+import '../platform/harmonyos/ohos_bootstrap.dart';
 import '../providers/auth_provider.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
@@ -360,6 +361,12 @@ class _CacheDirTileState extends State<_CacheDirTile> {
   var _moving = false;
 
   Future<void> _changeDir() async {
+    if (isOhos) {
+      // 缓存迁移为 dart:io 直写，URI 授权目录不可写（且 file_selector_ohos
+      // 的 getDirectoryPath 未实现必抛异常）——明确降级提示，不拉起选择器。
+      AppToast.show('鸿蒙端暂不支持自定义缓存目录', isError: false);
+      return;
+    }
     final dir = await getDirectoryPath(confirmButtonText: '选择');
     if (dir == null || !mounted) return;
     setState(() => _moving = true);
@@ -1585,7 +1592,11 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
     final granted = await svc.ensurePermission();
     if (!mounted) return;
     if (!granted) {
-      AppToast.show('未授予蓝牙权限，无法读取已配对设备', isError: true);
+      // ohos 两次拒绝后系统弹窗不再出现，只能去系统设置手动开启
+      // （ArkTS 三段式已含设置弹框兜底，仍被拒即引导）。
+      AppToast.show(
+          isOhos ? '未授予蓝牙权限，可在 设置 > 应用和元服务 > SelfMusic 中开启' : '未授予蓝牙权限，无法读取已配对设备',
+          isError: true);
       return;
     }
     final devices = await svc.bondedDevices();

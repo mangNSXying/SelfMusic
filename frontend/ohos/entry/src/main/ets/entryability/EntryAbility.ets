@@ -11,6 +11,7 @@ import {
 import { BusinessError } from '@kit.BasicServicesKit';
 import { GeneratedPluginRegistrant } from '../plugins/GeneratedPluginRegistrant';
 import AvSessionBridge from '../media/AvSessionBridge';
+import PlatformBridge from '../platform/PlatformBridge';
 
 const TAG = 'SelfMusicBoot';
 /** 与 Dart 侧（ohos_bootstrap.dart）约定的启动上报通道。 */
@@ -101,6 +102,7 @@ export default class EntryAbility extends FlutterAbility {
   private bootTimerId: number = -1;
   private pokeCount: number = 0;
   private avSessionBridge: AvSessionBridge | null = null;
+  private platformBridge: PlatformBridge | null = null;
 
   configureFlutterEngine(flutterEngine: FlutterEngine): void {
     super.configureFlutterEngine(flutterEngine)
@@ -108,6 +110,9 @@ export default class EntryAbility extends FlutterAbility {
     this.setupBootWatchdog(flutterEngine)
     this.avSessionBridge = new AvSessionBridge(this.context);
     this.avSessionBridge.setup(flutterEngine)
+    // 系统能力平台桥（常亮/本地文件/蓝牙，selfmusic/platform）。
+    this.platformBridge = new PlatformBridge(this.context);
+    this.platformBridge.setup(flutterEngine)
     // 返回手势转后台：moveAbilityToBackground 与 home 键等效，UIAbility 与
     // 进程存活、播放链路不中断（侧滑返回曾落进 Dart 桌面退出分支 exit(0)
     // 直接杀进程，无法后台播放，2026-09-29 用户反馈；安卓同修）。
@@ -132,6 +137,10 @@ export default class EntryAbility extends FlutterAbility {
     if (this.avSessionBridge) {
       this.avSessionBridge.shutdown();
       this.avSessionBridge = null;
+    }
+    if (this.platformBridge) {
+      this.platformBridge.shutdown();
+      this.platformBridge = null;
     }
     super.onDestroy();
   }

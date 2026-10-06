@@ -42,6 +42,19 @@
     "requestPermissions": [
       {"name" :  "ohos.permission.INTERNET"},
       {"name" :  "ohos.permission.KEEP_BACKGROUND_RUNNING"},
+      // 目录选择器持久化授权（API 12+ normal/system_grant，免弹窗）：
+      // pickDirectory 当场 persistPermission + 重启后 activatePermission。
+      {"name" :  "ohos.permission.FILE_ACCESS_PERSIST"},
+      // 蓝牙音频设备查询（user_grant）：仅在用户触达「常亮限定蓝牙设备」
+      // 选择器时场景化运行时申请，禁止启动时集中申请（FR-009）。
+      {
+        "name" :  "ohos.permission.ACCESS_BLUETOOTH",
+        "reason" :  "$string:bluetooth_permission_reason",
+        "usedScene" :  {
+          "abilities" :  ["EntryAbility"],
+          "when" :  "inuse"
+        }
+      },
     ]
   }
 }

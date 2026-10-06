@@ -45,12 +45,13 @@ dependencies:
   # ohos 适配层（lib/platform/harmonyos/）直接 import 的平台接口（本就是传递依赖）：
   just_audio_platform_interface: ^4.6.0
   flutter_secure_storage_platform_interface: ^1.1.2
+  wakelock_plus_platform_interface: ^1.6.0   # 常亮平台实现注册（wakelock_plus_ohos.dart）
+  path_provider_platform_interface: ^2.1.2   # 重试包装（path_provider_ohos_retry.dart，主代码 import 需在此声明）
   image: ^4.10.1
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
-  path_provider_platform_interface: ^2.1.2
   # 定时器类逻辑（预热退避重试）的确定性测试。
   fake_async: ^1.3.3
 

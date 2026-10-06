@@ -4,6 +4,8 @@ import 'package:provider/provider.dart';
 
 import '../data/local/app_settings.dart';
 import '../data/sources/music_source.dart';
+import '../platform/harmonyos/ohos_bootstrap.dart';
+import '../platform/harmonyos/ohos_platform_bridge.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../services/api_client.dart';
@@ -152,6 +154,16 @@ class _SourceDialogState extends State<_SourceDialog> {
   }
 
   Future<void> _pickDirectory() async {
+    if (isOhos) {
+      // 鸿蒙：系统目录选择器走平台桥（file_selector_ohos 的 getDirectoryPath
+      // 未实现、调用必抛异常）。选定目录 URI 直接写入 path 字段（源配置
+      // 结构不变）；用户取消/选择失败不动表单。
+      final picked = await OhosPlatformBridge.pickDirectory();
+      if (picked != null && mounted) {
+        setState(() => _path.text = picked.uri);
+      }
+      return;
+    }
     final dir = await getDirectoryPath(confirmButtonText: '选择');
     if (dir != null && mounted) {
       setState(() => _path.text = dir);

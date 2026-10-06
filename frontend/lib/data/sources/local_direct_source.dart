@@ -1,12 +1,15 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../models/song.dart';
+import '../../platform/harmonyos/ohos_bootstrap.dart';
+import '../../platform/harmonyos/ohos_platform_bridge.dart';
 import 'music_source.dart';
 import 'scan_worker.dart';
 import '../local/local_index.dart';
@@ -14,11 +17,17 @@ import '../local/audio_metadata.dart';
 
 /// 本地文件夹直连源：扫描/播放本机目录（Linux 桌面 + Android 共享存储）。
 ///
-/// - 扫描：[runScan] 驱动 worker isolate，先枚举（stat 快照），再按增量指纹跳过
-///   快速：只建索引（枚举 + stat 即落库，不打开音频文件）；[ScanOptions] 只控制过滤。
+/// - 扫描：worker isolate 驱动 [runScan]（[scan]），先枚举（stat 快照），再按
+///   增量指纹跳过 快速：只建索引（枚举 + stat 即落库，不打开音频文件）；
+///   [ScanOptions] 只控制过滤。
 /// - 播放：文件本身即本地，[cachedFilePath] 直接返回原路径走 setFilePath；
 ///   [open] 作为 Range 流式兜底。
 /// - Android 读取共享存储需运行时权限（READ_MEDIA_AUDIO / READ_EXTERNAL_STORAGE），扫描前申请。
+/// - ohos（鸿蒙）：[rootPath] 为系统目录选择器授权 URI（`file://docs/...`）。
+///   dart:io 无法访问授权 URI，扫描在主 isolate 经平台桥完成（[scan] 的
+///   isOhos 分支）；[cachedFilePath] 返回 null，播放走 [open] 的字节流分支
+///   （512 KiB 分块 readRange → DirectAudioSource → just_audio 本地代理 →
+///   fvp/mdk），元数据/封面/歌词补读同路径自动复用。
 class LocalDirectSource implements MusicSource {
   @override
   final String name;
@@ -53,17 +62,19 @@ class LocalDirectSource implements MusicSource {
       ScanToken? token,
       void Function(ScanProgress)? onProgress}) async {
     await _ensureAudioPermission();
-    final out = await runScan<List<_LocalWalkOut>>(
-      entry: _localWalkEntry,
-      params: <String, Object?>{
-        'key': key,
-        'root': rootPath,
-        'minSizeBytes': options.minSizeBytes,
-        'known': index.scanFingerprint(key),
-      },
-      token: token,
-      onProgress: onProgress,
-    );
+    final out = isOhos
+        ? await _ohosScan(options: options, token: token, onProgress: onProgress)
+        : await runScan<List<_LocalWalkOut>>(
+            entry: _localWalkEntry,
+            params: <String, Object?>{
+              'key': key,
+              'root': rootPath,
+              'minSizeBytes': options.minSizeBytes,
+              'known': index.scanFingerprint(key),
+            },
+            token: token,
+            onProgress: onProgress,
+          );
 
     final alive = <String>[];
     final toWrite = <DirectSongRow>[];
@@ -113,17 +124,63 @@ class LocalDirectSource implements MusicSource {
         total: alive.length);
   }
 
+  /// ohos 扫描（主 isolate，不走 runScan worker）：dart:io 无法访问授权
+  /// URI、平台通道 handler 也注册在主 isolate，故桥一次性返回全量枚举
+  /// （ArkTS 侧 fs.listFile + 逐文件 stat），Dart 侧复用 [_diffSnapshotEntry]
+  /// 公共 diff。取消/进度降级为调用前后检查（桥调用进行中不可取消）。
+  Future<List<_LocalWalkOut>> _ohosScan({
+    required ScanOptions options,
+    ScanToken? token,
+    void Function(ScanProgress)? onProgress,
+  }) async {
+    if (token?.cancelled ?? false) return const [];
+    onProgress?.call(const ScanProgress(listing: true, done: 0, total: 0));
+    // 重启后激活持久化授权（持久化数据存系统数据库，每次启动需手动激活）。
+    try {
+      await OhosPlatformBridge.activateDirectory(rootPath);
+      final entries = await OhosPlatformBridge.listDirectory(rootPath);
+      final known = index.scanFingerprint(key);
+      final out = <_LocalWalkOut>[];
+      for (final e in entries) {
+        // fs.listFile(recursion) 返回以 / 开头的相对路径；库内 ref 约定与
+        // Android 一致（无头形态），读取时由桥封装补回头部斜杠再拼 URI。
+        final rel = e.rel.startsWith('/') ? e.rel.substring(1) : e.rel;
+        final item = _diffSnapshotEntry(
+          key: key,
+          rel: rel,
+          path: e.rel,
+          size: e.size,
+          mtime: e.mtime,
+          minSizeBytes: options.minSizeBytes,
+          known: known,
+          emitted: out.length,
+        );
+        if (item == null) continue;
+        out.add(item);
+      }
+      return out;
+    } on PlatformException catch (e) {
+      // 授权被撤销/目录删除/URI 失效：引导用户重新选择目录（场景 1.7）。
+      debugPrint('[ohos] 扫描目录失败: $e');
+      throw StateError('目录授权已失效，请编辑该源重新选择目录');
+    }
+  }
+
   // ---------- 直连播放 ----------
 
   /// 本地文件即本体，直接返回绝对路径走 `setFilePath`（无需经过 open 流）。
+  /// ohos：授权目录 URI 不是 dart:io 可用路径，返回 null → 播放落入
+  /// DirectAudioSource 字节流兜底（[open] → just_audio 本地代理 → fvp）。
   @override
   Future<String?> cachedFilePath(Song song) async {
+    if (isOhos) return null;
     final path = _absPath(song.sourceRef);
     return File(path).existsSync() ? path : null;
   }
 
   @override
   Future<OpenedStream> open(Song song, {IntRange? range}) async {
+    if (isOhos) return _openOhos(song, range);
     final file = File(_absPath(song.sourceRef));
     final len = await file.length();
     final start = range?.start ?? 0;
@@ -138,6 +195,42 @@ class LocalDirectSource implements MusicSource {
       // 文件大小已知 → 调用方能精确判断范围读取有没有被截断。
       totalLength: len,
     );
+  }
+
+  /// ohos 播放读取：`song.fileSize` 为扫描时已知的文件大小（totalLength
+  /// 无需额外 stat），512 KiB 分块 [OhosPlatformBridge.readRange] 拼流；
+  /// MIME 复用 [_mimeOf]，范围/总长语义与其它分支一致（[IntRange.end] 为
+  /// 闭区间）。元数据/封面/lrc 补读（DirectTaskQueue 经 open(range) 字节流）
+  /// 同路径自动复用。
+  OpenedStream _openOhos(Song song, IntRange? range) {
+    final len = song.fileSize;
+    if (len <= 0) {
+      throw StateError('歌曲文件大小未知（扫描数据不完整），请重新扫描');
+    }
+    final start = range?.start ?? 0;
+    final end = range == null
+        ? len
+        : (range.end == null ? len : (range.end! + 1).clamp(0, len));
+    final contentLength = range == null ? len : (end - start);
+    return OpenedStream(
+      contentLength: contentLength,
+      contentType: _mimeOf(_extOf(song.sourceRef)),
+      stream: _ohosByteStream(song.sourceRef, start, end),
+      totalLength: len,
+    );
+  }
+
+  /// 按区间懒拉取授权目录字节（消费多少读多少，单块 512 KiB 满足起播与
+  /// 拖动进度条场景；读取失败由流错误上抛，播放侧按打开失败处理）。
+  Stream<Uint8List> _ohosByteStream(String ref, int start, int end) async* {
+    const chunkBytes = 512 * 1024;
+    var offset = start;
+    while (offset < end) {
+      final length = (end - offset) < chunkBytes ? end - offset : chunkBytes;
+      yield await OhosPlatformBridge.readRange(
+          rootPath, ref, offset, length);
+      offset += length;
+    }
   }
 
   @override
@@ -238,30 +331,64 @@ Future<List<_LocalWalkOut>> _localWalk({
     if (entity is! File) continue;
     final path = entity.path;
     final rel = p.relative(path, from: root).replaceAll('\\', '/');
+    // 后缀过滤前置（stat 前）：非音频文件跳过 stat，避免无谓 IO。
     if (!_audioExt(path)) continue;
     final stat = await entity.stat();
     // 「忽略音频」大小过滤：stat 已经带了 size，无需读文件。
-    if (minSizeBytes > 0 && stat.size < minSizeBytes) continue;
     final mtime = stat.modified.millisecondsSinceEpoch ~/ 1000;
-    final fp = known[rel];
-    if (fp != null && fp.same(stat.size, mtime, null)) {
-      out.add(_LocalWalkOut(
-        _rowFor(key, rel, _extOf(path), stat.size, mtime),
-        null,
-        _OutKind.unchanged,
-      ));
-      continue;
-    }
-    if (out.length >= 20000) {
-      throw StateError('单源超过 20000 首上限（DESIGN §6.4 大目录保护）');
-    }
-    out.add(_LocalWalkOut(
-      _rowFor(key, rel, _extOf(path), stat.size, mtime),
-      null,
-      fp == null ? _OutKind.added : _OutKind.updated,
-    ));
+    final item = _diffSnapshotEntry(
+      key: key,
+      rel: rel,
+      path: path,
+      size: stat.size,
+      mtime: mtime,
+      minSizeBytes: minSizeBytes,
+      known: known,
+      emitted: out.length,
+    );
+    if (item == null) continue;
+    out.add(item);
   }
   return out;
+}
+
+/// 快照 diff 公共纯函数（isolate 与 ohos 主 isolate 两条扫描路径共用）：
+/// 音频后缀过滤 → minSize 过滤 → known 指纹比对 → 20000 上限保护。
+///
+/// 参数为单文件快照（rel/size/mtime）；[path] 仅用于后缀判断（ohos 传
+/// 选择器返回的原始相对路径，isolate 传绝对路径，后缀语义等价）；
+/// [emitted] 为已产出条目总数（含 unchanged，上限语义与 isolate 路径
+/// 逐字节一致：总数 ≥20000 时新的 added/updated 抛异常）。
+/// 返回 null 表示该文件被过滤；unchanged/added/updated 决策由 known 指纹
+/// 驱动。
+_LocalWalkOut? _diffSnapshotEntry({
+  required String key,
+  required String rel,
+  required String path,
+  required int size,
+  required int mtime,
+  required int minSizeBytes,
+  required Map<String, ScanFingerprint> known,
+  required int emitted,
+}) {
+  if (!_audioExt(path)) return null;
+  if (minSizeBytes > 0 && size < minSizeBytes) return null;
+  final fp = known[rel];
+  if (fp != null && fp.same(size, mtime, null)) {
+    return _LocalWalkOut(
+      _rowFor(key, rel, _extOf(path), size, mtime),
+      null,
+      _OutKind.unchanged,
+    );
+  }
+  if (emitted >= 20000) {
+    throw StateError('单源超过 20000 首上限（DESIGN §6.4 大目录保护）');
+  }
+  return _LocalWalkOut(
+    _rowFor(key, rel, _extOf(path), size, mtime),
+    null,
+    fp == null ? _OutKind.added : _OutKind.updated,
+  );
 }
 
 DirectSongRow _rowFor(

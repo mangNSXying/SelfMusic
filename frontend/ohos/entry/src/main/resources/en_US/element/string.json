@@ -11,6 +11,10 @@
     {
       "name": "EntryAbility_label",
       "value": "selfmusic"
+    },
+    {
+      "name": "bluetooth_permission_reason",
+      "value": "Used to query paired or connected Bluetooth audio devices for the keep-screen-on option on the player screen"
     }
   ]
 }

@@ -7,10 +7,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:just_audio_platform_interface/just_audio_platform_interface.dart';
 import 'package:sqlite3/open.dart' as sqlite3_open;
+import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 
 import 'just_audio_fvp.dart';
 import 'path_provider_ohos_retry.dart';
 import 'secure_storage_ohos.dart';
+import 'wakelock_plus_ohos.dart';
 
 /// 与 ArkTS 侧 EntryAbility 启动看门狗约定的通道（见 EntryAbility.ets）。
 const MethodChannel _bootChannel = MethodChannel('selfmusic/boot');
@@ -65,7 +67,7 @@ Future<void> _loadRootCerts() async {
 
 /// HarmonyOS（ohos）启动引导：在 runApp 前、任何插件/存储使用前调用。
 ///
-/// 五件事（全部仅 ohos 生效，其它平台零影响）：
+/// 六件事（全部仅 ohos 生效，其它平台零影响）：
 /// 1. sqlite3：package:sqlite3 在 ohos 上默认 `throw UnsupportedError`
 ///    （OperatingSystem 枚举无 ohos），override 为加载系统 `libsqlite3.so`
 ///    （本地索引 local_index.dart 依赖）
@@ -79,18 +81,23 @@ Future<void> _loadRootCerts() async {
 ///    调用由看门狗 poke 驱动重发；超时重发与兜底路径仅作附加保险
 ///    （取证与定位史见 [OhosRetryingPathProvider] 文件头）
 /// 5. HTTPS 根证书：dart:io 公共 CA 信任根注入（见 [_loadRootCerts]）
+/// 6. wakelock_plus：无鸿蒙平台包，接 [OhosWakelockPlusPlatform]（转接
+///    selfmusic/platform 通道 keepScreenOn，播放器页常亮）
 ///
 /// 其余已在别处收口的 ohos 差异（无需在此处理）：
 /// - audio_session：`AudioSession.instance` 在无插件平台 catch 掉
 ///   MissingPluginException 返回空实现，just_audio 的 handleInterruptions 安全
 /// - audio_service / permission_handler：调用点均已 Platform.isAndroid 门控
-/// - wakelock_plus：player_screen 调用点有 isOhos guard
 Future<void> setupOhos() async {
   if (!isOhos) return;
-  debugPrint('[ohos] 启动引导：sqlite3 / secure storage / just_audio(fvp)');
+  debugPrint('[ohos] 启动引导：sqlite3 / secure storage / just_audio(fvp) / wakelock');
   sqlite3_open.open.overrideForAll(_openSqliteOnOhos);
   FlutterSecureStoragePlatform.instance = OhosSecureStorage();
   JustAudioPlatform.instance = FvpJustAudio();
+  // wakelock_plus：默认实例（MethodChannel）在 ohos 上抛
+  // MissingPluginException，替换为平台桥实现（WakelockPlus.enable/disable
+  // 均经 WakelockPlusPlatformInterface.instance 路由）。
+  WakelockPlusPlatformInterface.instance = OhosWakelockPlusPlatform();
   // 装上重试包装（启动链所有路径调用均经 PathProviderPlatform.instance）。
   // verify-4 实证引擎注册器在 main() 之前已跑完、不会覆盖包装；多点断言
   // （此处 / 每次 poke / 首次路径调用现场）仅防未来引擎行为变化。

@@ -11,6 +11,10 @@
     {
       "name": "EntryAbility_label",
       "value": "selfmusic"
+    },
+    {
+      "name": "bluetooth_permission_reason",
+      "value": "用于查询已配对/已连接的蓝牙音频设备，以实现播放页常亮限定功能"
     }
   ]
 }

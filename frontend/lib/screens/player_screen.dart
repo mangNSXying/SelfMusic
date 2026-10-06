@@ -99,11 +99,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void dispose() {
     _btPoll?.cancel();
     _autoHideTimer?.cancel();
-    // 离开播放页恢复熄屏策略。
-    // ohos 无 wakelock_plus 平台实现，调用会 MissingPluginException（PoC 放弃常亮）。
-    if (Platform.operatingSystem != 'ohos') {
-      unawaited(WakelockPlus.disable());
-    }
+    // 离开播放页恢复熄屏策略（ohos 经 ohos_bootstrap 注册的平台实现生效）。
+    unawaited(WakelockPlus.disable());
     _pageCtrl.dispose();
     super.dispose();
   }
@@ -177,10 +174,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final wake =
         _wantWake && (_wakeDevices.isEmpty || _btDeviceConnected);
     if (wake != _wakeApplied) {
-      // ohos 无 wakelock_plus 实现，跳过（见 dispose 处注释）。
-      if (Platform.operatingSystem != 'ohos') {
-        unawaited(wake ? WakelockPlus.enable() : WakelockPlus.disable());
-      }
+      // ohos 经 ohos_bootstrap 注册的平台实现走平台桥 keepScreenOn。
+      unawaited(wake ? WakelockPlus.enable() : WakelockPlus.disable());
       _wakeApplied = wake;
     }
   }
