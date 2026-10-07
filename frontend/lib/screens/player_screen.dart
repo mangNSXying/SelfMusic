@@ -270,7 +270,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
       body: Listener(
         behavior: HitTestBehavior.translucent,
         onPointerDown: _onBandPointerDown,
+        // 横屏铺满到屏幕底：不再让出底部系统手势条（横屏三列控件不与居中的
+        // 手势条重叠），与壳层内容区（removePadding 铺满）观感一致；竖屏保留
+        // 底部安全区——底部控制行居中，会与手势条打架。
         child: SafeArea(
+          bottom: !landscape,
           child: _PlayerControlsHidden(
             hidden: _controlsHidden,
             child: PageView(
@@ -293,7 +297,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                               player: player,
                               direct: context.watch<DirectSourceManager>(),
                               cs: Theme.of(context).colorScheme)
-                          : _LandscapePlayer(
+                          : LandscapePlayer(
                               player: player,
                               direct: context.watch<DirectSourceManager>(),
                               cs: Theme.of(context).colorScheme),
@@ -811,12 +815,16 @@ class _ControlRow extends StatelessWidget {
 /// 左列 34% 封面/信息/进度，中列歌词（上下渐隐），右列 22% 竖向控制
 /// （定时 / 上一首·播放·下一首 / 模式）。只在窄屏横屏（手机）使用；
 /// 桌面/超宽屏走 [_DesktopLandscapePlayer]，避免被大窗口拉散。
-class _LandscapePlayer extends StatelessWidget {
+///
+/// 公开（去掉下划线）供布局回归测试直接渲染：桌面测试宿主上
+/// `Platform.isLinux` 为真，经 [PlayerScreen] 永远走桌面双栏分支，
+/// 手机三列的溢出问题只能直接挂载本组件覆盖（test/player_landscape_test.dart）。
+class LandscapePlayer extends StatelessWidget {
   final PlayerProvider player;
   final DirectSourceManager direct;
   final ColorScheme cs;
-  const _LandscapePlayer(
-      {required this.player, required this.direct, required this.cs});
+  const LandscapePlayer(
+      {super.key, required this.player, required this.direct, required this.cs});
 
   @override
   Widget build(BuildContext context) {
@@ -834,45 +842,48 @@ class _LandscapePlayer extends StatelessWidget {
         constraints: const BoxConstraints(maxWidth: 900),
         child: Row(
           children: [
-            // 第一列：封面、信息、进度条。不滚动：封面吃掉省下的空间放大显示。
+            // 第一列：封面、信息、进度条。不滚动：封面吃掉固定行之外的剩余高度。
+            // 矮屏由 Flexible 自动收缩（旧实现把封面以外的高度写死为 150，低估
+            // 实际固定内容致底部 RenderFlex overflow）；heightFactor=1 让 Flexible
+            // 子项按封面实际大小上报，富余空间仍由 spaceBetween 分配，高屏观感不变。
             SizedBox(
               width: leftW,
               child: Padding(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                child: LayoutBuilder(
-                  builder: (context, c) {
-                    // 封面以外的固定高度（标题/工具行/进度条 + 间距）。
-                    final cover = math
-                        .min(c.maxWidth - 24, math.max(64.0, c.maxHeight - 150));
-                    return Column(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Center(
-                          child: _Cover(
-                              coverPath: s.coverPath,
-                              song: s,
-                              cs: cs,
-                              size: cover),
-                        ),
-                        const SizedBox(height: 8),
-                        _TitleBlock(
-                            player: player,
-                            direct: direct,
-                            compact: true,
-                            dense: true),
-                        const SizedBox(height: 4),
-                        _ToolRow(
-                            player: player,
-                            direct: direct,
-                            cs: cs,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Flexible(
+                      child: Center(
+                        heightFactor: 1,
+                        child: LayoutBuilder(
+                          builder: (context, c) => _Cover(
+                            coverPath: s.coverPath,
                             song: s,
-                            center: true),
-                        _PlayerSeek(player: player, cs: cs, showTime: false),
-                      ],
-                    );
-                  },
+                            cs: cs,
+                            size: math.max(
+                                0, math.min(c.maxWidth - 24, c.maxHeight)),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    _TitleBlock(
+                        player: player,
+                        direct: direct,
+                        compact: true,
+                        dense: true),
+                    const SizedBox(height: 4),
+                    _ToolRow(
+                        player: player,
+                        direct: direct,
+                        cs: cs,
+                        song: s,
+                        center: true),
+                    _PlayerSeek(player: player, cs: cs, showTime: false),
+                  ],
                 ),
               ),
             ),
@@ -980,7 +991,13 @@ class _DesktopLandscapePlayer extends StatelessWidget {
                             song: s,
                             center: true),
                         _PlayerSeek(player: player, cs: cs),
-                        _ControlRow(player: player, cs: cs),
+                        // 左栏宽会被 clamp 到最小 320（内容区 280），控制行固定
+                        // 内容 ~302，窄桌面窗口（约 800~1140 宽）会横向溢出；
+                        // scaleDown 只在放不下时整体等比收缩，宽窗口零影响。
+                        FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: _ControlRow(player: player, cs: cs),
+                        ),
                       ],
                     ),
                   ),

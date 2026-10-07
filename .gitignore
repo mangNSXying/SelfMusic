@@ -1,3 +1,9 @@
+# 排除具体文件
+!scripts/init.sql
+!DEVELOPER.md
+!README.md
+!DESIGN.md
+
 # 具体文件
 .env
 error.log
@@ -11,7 +17,6 @@ frontend/build/
 frontend/covers/
 frontend/.dart_tool/
 scripts/*
-!scripts/*.sql
 testmusic/
 nginx/
 spec/
@@ -34,6 +39,7 @@ spec/
 *.sh
 *.bat
 *.ps1
+*.md
 # pubspec.lock 不入库：stable 与 ohos 两套 SDK 的 pub get 会互相改写部分
 # 传递依赖版本（meta/test_api 等），提交 lock 只会制造往返噪音；
 # 版本一致性由 pubspec 约束保证。
