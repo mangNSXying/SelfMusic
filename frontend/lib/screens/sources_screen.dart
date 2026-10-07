@@ -10,6 +10,7 @@ import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../services/api_client.dart';
 import '../utils/collection_sort.dart';
+import '../widgets/app_toast.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
 import '../widgets/sort_menu_button.dart';
@@ -161,6 +162,12 @@ class _SourceDialogState extends State<_SourceDialog> {
       final picked = await OhosPlatformBridge.pickDirectory();
       if (picked != null && mounted) {
         setState(() => _path.text = picked.uri);
+        if (!picked.persisted) {
+          // 不阻断本次使用（会话内临时授权仍可用），但必须当场告知：
+          // 否则重启后用户只会看到「目录授权已失效」，无从得知原因
+          // （2026-10-06 bug 修复，此前 persisted=false 被静默忽略）。
+          AppToast.show('目录持久化授权失败：应用重启后需重新选择目录');
+        }
       }
       return;
     }
