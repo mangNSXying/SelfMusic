@@ -25,9 +25,12 @@ import '../local/audio_metadata.dart';
 /// - Android 读取共享存储需运行时权限（READ_MEDIA_AUDIO / READ_EXTERNAL_STORAGE），扫描前申请。
 /// - ohos（鸿蒙）：[rootPath] 为系统目录选择器授权 URI（`file://docs/...`）。
 ///   dart:io 无法访问授权 URI，扫描在主 isolate 经平台桥完成（[scan] 的
-///   isOhos 分支）；[cachedFilePath] 返回 null，播放走 [open] 的字节流分支
-///   （512 KiB 分块 readRange → DirectAudioSource → just_audio 本地代理 →
-///   fvp/mdk），元数据/封面/歌词补读同路径自动复用。
+///   isOhos 分支）；[cachedFilePath] 经桥解析沙箱真路径（openSync(uri).path）
+///   返回后播放走 setFilePath 直连（mdk 原生 file://，2026-10-07 修复：
+///   绕开 just_audio 本地代理——真机取证代理对死锁后事件通知空转烧
+///   ~1.5 核 CPU），解析失败回退 [open] 的字节流分支（512 KiB 分块
+///   readRange → DirectAudioSource → just_audio 本地代理 → fvp/mdk），
+///   元数据/封面/歌词补读同路径自动复用。
 class LocalDirectSource implements MusicSource {
   @override
   final String name;
@@ -124,6 +127,25 @@ class LocalDirectSource implements MusicSource {
         total: alive.length);
   }
 
+  /// ohos 目录枚举：直接列举（同会话临时授权与已激活的持久化授权均可
+  /// 读），失败时激活持久化授权后重试一次——重启后首次扫描落入重试分支
+  /// （持久化数据存系统数据库，每次启动需手动激活才生效）。激活也失败
+  /// （授权被撤销/目录删除/从未持久化成功）时 PlatformException 上抛，由
+  /// [_ohosScan] 统一转译为用户文案。
+  ///
+  /// 不采用「先激活再枚举」：先枚举后激活重试在「会话内 activate 异常」
+  /// 与「持久化未成功」两种场景下行为均正确，且常规路径少一次桥调用
+  /// （2026-10-06 引入；2026-10-07 hilog 证实该环节工作正常——根因是
+  /// ArkTS 侧把 URI 直接传给仅收沙箱路径的 fs.listFile，已修复）。
+  Future<List<OhosDirEntry>> _listOhosDirectory() async {
+    try {
+      return await OhosPlatformBridge.listDirectory(rootPath);
+    } on PlatformException {
+      await OhosPlatformBridge.activateDirectory(rootPath);
+      return await OhosPlatformBridge.listDirectory(rootPath);
+    }
+  }
+
   /// ohos 扫描（主 isolate，不走 runScan worker）：dart:io 无法访问授权
   /// URI、平台通道 handler 也注册在主 isolate，故桥一次性返回全量枚举
   /// （ArkTS 侧 fs.listFile + 逐文件 stat），Dart 侧复用 [_diffSnapshotEntry]
@@ -135,10 +157,8 @@ class LocalDirectSource implements MusicSource {
   }) async {
     if (token?.cancelled ?? false) return const [];
     onProgress?.call(const ScanProgress(listing: true, done: 0, total: 0));
-    // 重启后激活持久化授权（持久化数据存系统数据库，每次启动需手动激活）。
     try {
-      await OhosPlatformBridge.activateDirectory(rootPath);
-      final entries = await OhosPlatformBridge.listDirectory(rootPath);
+      final entries = await _listOhosDirectory();
       final known = index.scanFingerprint(key);
       final out = <_LocalWalkOut>[];
       for (final e in entries) {
@@ -160,20 +180,31 @@ class LocalDirectSource implements MusicSource {
       }
       return out;
     } on PlatformException catch (e) {
-      // 授权被撤销/目录删除/URI 失效：引导用户重新选择目录（场景 1.7）。
+      // 真实错误码带出（2026-10-07 修复：此前一律转译为「授权已失效」
+      // 误导诊断——真机 hilog 显示实际为 13900002 ENOENT，根因是 ArkTS
+      // 侧 URI 误用，已在平台桥修复；保留 code 便于后续定位）。授权被
+      // 撤销（EPERM/激活失败）与目录被删/移动（ENOENT）补救方式相同：
+      // 重新选择目录（场景 1.7）。
       debugPrint('[ohos] 扫描目录失败: $e');
-      throw StateError('目录授权已失效，请编辑该源重新选择目录');
+      throw StateError('目录不可读（${e.code}），请编辑该源重新选择目录');
     }
   }
 
   // ---------- 直连播放 ----------
 
   /// 本地文件即本体，直接返回绝对路径走 `setFilePath`（无需经过 open 流）。
-  /// ohos：授权目录 URI 不是 dart:io 可用路径，返回 null → 播放落入
+  /// ohos：授权目录 URI 先经桥解析沙箱真路径（openSync(uri).path），dart:io
+  /// 能看到即进程内原生（mdk）可开——播放直连绕开 just_audio 本地代理
+  /// （2026-10-07 修复：代理对死锁后 socket 事件通知 ~305µs 周期空转，
+  /// ~2.9k HandleMessage/s 烧 ~1.5 核 CPU）；解析失败/路径不可见回退
   /// DirectAudioSource 字节流兜底（[open] → just_audio 本地代理 → fvp）。
   @override
   Future<String?> cachedFilePath(Song song) async {
-    if (isOhos) return null;
+    if (isOhos) {
+      final path = await OhosPlatformBridge.resolvePath(rootPath, song.sourceRef);
+      if (path == null) return null;
+      return File(path).existsSync() ? path : null;
+    }
     final path = _absPath(song.sourceRef);
     return File(path).existsSync() ? path : null;
   }

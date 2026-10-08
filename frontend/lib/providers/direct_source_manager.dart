@@ -22,6 +22,7 @@ import '../services/api_client.dart';
 import '../services/artist_resolver.dart';
 import '../services/secret_store.dart';
 import '../utils/cover_thumb.dart';
+import '../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
 import 'direct_task_queue.dart';
 
 /// 缩略图回填的逐张间隔：ohos 走原生解码（ImageKit 系统服务），启动期
@@ -152,6 +153,13 @@ class DirectSourceManager extends ChangeNotifier {
 
   void _registerWatcher(LocalDirectSource src) {
     if (_watchers.any((w) => w.key == src.key)) return;
+    if (isOhos) {
+      // ohos 用户存储层（类 FUSE）会合成目录事件洪水：真机 VM service
+      // timeline 取证 ~7800 条 dart:io 事件/秒、应用全程 1.5-2 核自旋、
+      // 内存压力周期性触发系统 GpuReclaim（2026-10-07）。ohos 放弃目录
+      // 监听，自动扫描仍由周期定时器覆盖；其余平台行为不变。
+      return;
+    }
     try {
       final dir = Directory(src.rootPath);
       if (!dir.existsSync()) return;

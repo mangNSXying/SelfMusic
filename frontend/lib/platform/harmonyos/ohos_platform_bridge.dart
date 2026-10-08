@@ -10,8 +10,9 @@ import 'package:flutter/services.dart';
 /// 2026-10-06 ohos-thumb-native-decode feature 扩封面缩略图管线，契约以
 /// plan.md「Contracts & Interfaces」为准）：
 /// - 常亮：[keepScreenOn] → window.setWindowKeepScreenOn；
-/// - 本地文件：[pickDirectory]（选择器 + 持久化授权）→ [activateDirectory]
-///   （重启后激活）→ [listDirectory]（递归枚举）→ [readRange]（范围读）；
+/// - 本地文件：[pickDirectory]（选择器 + 持久化授权）→ [listDirectory]
+///   （递归枚举；失败时 [activateDirectory] 激活后重试，重启后首次扫描
+///   走重试分支）→ [readRange]（范围读）；
 /// - 蓝牙：[requestBluetoothPermission] / [hasBluetoothPermission] /
 ///   [listBondedDevices] / [connectedDevices]；
 /// - 封面缩略图：[makeCoverThumb]（@ohos.multimedia.image 原生管线——fork
@@ -93,6 +94,29 @@ class OhosPlatformBridge {
           'length': length
         });
     return data ?? Uint8List(0);
+  }
+
+  /// 解析授权目录内文件的沙箱真路径（openSync(uri).path），供本地源
+  /// [MusicSource.cachedFilePath] 的 ohos 分支使用：播放走 setFilePath
+  /// 直连（mdk 原生 file://），绕开 just_audio 本地代理。
+  ///
+  /// 2026-10-07 播放管线修复：此前 ohos 一律回 null 走字节流分支
+  /// （DirectAudioSource → just_audio 本地代理），真机取证发现代理对
+  /// 死锁后 socket 事件通知以 ~305µs 周期空转（~2.9k HandleMessage/s，
+  /// ~1.5 核 CPU），启动断点恢复即触发。失败/桥未装配返回 null，调用方
+  /// 回退字节流分支（行为同修复前）。
+  static Future<String?> resolvePath(String uri, String rel) async {
+    final fullRel = rel.startsWith('/') ? rel : '/$rel';
+    try {
+      return await _channel.invokeMethod<String>('resolvePath',
+          <String, Object?>{'uri': uri, 'rel': fullRel});
+    } on PlatformException catch (e) {
+      debugPrint('[ohos] resolvePath 失败（回退字节流分支）: $e');
+      return null;
+    } on MissingPluginException catch (e) {
+      debugPrint('[ohos] resolvePath 桥未装配: $e');
+      return null;
+    }
   }
 
   /// 窗口常亮开关（无需权限，仅前台生效）。失败仅记日志不中断——常亮

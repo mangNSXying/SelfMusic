@@ -68,7 +68,7 @@ interface ExifTransform {
  *   在 ohos 内联，纯 Dart 缩略图生成会阻塞 UI isolate——重活全部下沉
  *   系统原生线程。
  *
- * 通道协议（selfmusic/platform，Dart → ArkTS，10 个方法，契约以 plan.md
+ * 通道协议（selfmusic/platform，Dart → ArkTS，11 个方法，契约以 plan.md
  * 「Contracts & Interfaces」为准）：
  * - keepScreenOn {enable:bool} → null（窗口获取失败 error 上抛，Dart 记日志）
  * - pickDirectory {} → {uri,persisted} | null（用户取消 null；persistPermission
@@ -76,6 +76,9 @@ interface ExifTransform {
  * - activateDirectory {uri} → null（授权被撤销/目录删除 error 上抛）
  * - listDirectory {uri} → [{rel,size,mtime}]（rel 以 / 开头，mtime 秒）
  * - readRange {uri,rel,offset,length} → Uint8List（单次上限 2MiB 防御）
+ * - resolvePath {uri,rel} → string（2026-10-07 播放管线修复：URI→沙箱真
+ *   路径，播放 setFilePath 直连绕开 just_audio 本地代理；失败 error 上抛，
+ *   Dart 侧回退字节流分支）
  * - requestBluetoothPermission {} → {granted:bool}（三段式，异常 granted=false）
  * - hasBluetoothPermission {} → bool（异常按 false）
  * - listBondedDevices {} → [{name,address}]（异常降级空数组 + 日志）
@@ -132,6 +135,9 @@ export default class PlatformBridge implements MethodCallHandler {
         this.handleReadRange(call, result)
           .catch((): void => {
           });
+        break;
+      case 'resolvePath':
+        this.handleResolvePath(call, result);
         break;
       case 'requestBluetoothPermission':
         this.handleRequestBluetoothPermission(result)
@@ -237,7 +243,8 @@ export default class PlatformBridge implements MethodCallHandler {
       return true;
     } catch (err) {
       const e = err as BusinessError<Array<fileShare.PolicyErrorResult>>;
-      Log.w(TAG, `persistPermission 失败：${e.code} ${e.message}`);
+      Log.w(TAG, `persistPermission 失败：${e.code} ${e.message}` +
+        `${PlatformBridge.policyErrorDetail(e.data)}`);
     }
     try {
       const persisted: Array<boolean> =
@@ -274,7 +281,8 @@ export default class PlatformBridge implements MethodCallHandler {
       result.success(null);
     } catch (err) {
       const e = err as BusinessError<Array<fileShare.PolicyErrorResult>>;
-      Log.e(TAG, `activateDirectory 失败：${e.code} ${e.message}`);
+      Log.e(TAG, `activateDirectory 失败：${e.code} ${e.message}` +
+        `${PlatformBridge.policyErrorDetail(e.data)}`);
       result.error(`${e.code}`, e.message, null);
     }
   }
@@ -283,6 +291,14 @@ export default class PlatformBridge implements MethodCallHandler {
    * 递归枚举授权目录（快照，不打开音频文件）：fs.listFile(recursion) 返回
    * 以 / 开头的相对路径，逐项 fs.stat 组装 {rel, size, mtime}。全量返回，
    * 过滤/指纹 diff 由 Dart 侧公共函数处理（业务规则不进平台层）。
+   *
+   * 路径解析（2026-10-07 bug 修复）：fs.listFile / fs.stat 仅接受应用沙箱
+   * 路径，不接受 URI（js-apis-file-fs 参数表）——直接把 docs URI 传入会得
+   * 到 13900002 ENOENT（真机日志 [listfile.cpp RecursiveFunc] Failed to
+   * scan dir）。官方转换方式：fs.openSync(uri) 得到 File，其 .path 即对应
+   * 沙箱路径（FAQ faqs-local-file-manager-56 uri→sandboxPath 行）。故先
+   * open（DIR 模式断言目录语义）取 path，再以 path 枚举与 stat。枚举期间
+   * 保持 fd 打开，结束后关闭。
    */
   private async handleListDirectory(call: MethodCall, result: MethodResult): Promise<void> {
     const uri = PlatformBridge.argString(call, 'uri');
@@ -290,13 +306,21 @@ export default class PlatformBridge implements MethodCallHandler {
       result.error('401', '缺少 uri 参数', null);
       return;
     }
+    let dir: fileIo.File | null = null;
     try {
+      dir = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.DIR);
+      const dirPath = dir.path;
+      if (dirPath == null || dirPath === '') {
+        // 防御：文档未保证 URI open 必有 path；显式报错避免误判为授权问题。
+        result.error('402', '目录 URI 解析沙箱路径失败（file.path 为空）', null);
+        return;
+      }
       const options: ListFileOptions = { recursion: true };
-      const names: Array<string> = await fileIo.listFile(uri, options);
+      const names: Array<string> = await fileIo.listFile(dirPath, options);
       const out: Array<DirEntry> = [];
       for (const rel of names) {
-        // uri+rel 直接拼接（rel 以 / 开头），不做二次编码。
-        const stat = await fileIo.stat(uri + rel);
+        // dirPath+rel 直接拼接（rel 以 / 开头），不做二次编码。
+        const stat = await fileIo.stat(dirPath + rel);
         const entry: DirEntry = {
           rel: rel,
           size: stat.size,
@@ -309,6 +333,10 @@ export default class PlatformBridge implements MethodCallHandler {
       const e = err as BusinessError;
       Log.e(TAG, `listDirectory 失败：${e.code} ${e.message}`);
       result.error(`${e.code}`, e.message, null);
+    } finally {
+      if (dir != null) {
+        fileIo.closeSync(dir);
+      }
     }
   }
 
@@ -346,6 +374,45 @@ export default class PlatformBridge implements MethodCallHandler {
     } catch (err) {
       const e = err as BusinessError;
       Log.e(TAG, `readRange 失败：${e.code} ${e.message}`);
+      result.error(`${e.code}`, e.message, null);
+    } finally {
+      if (file != null) {
+        fileIo.closeSync(file);
+      }
+    }
+  }
+
+  /**
+   * 解析授权目录内文件的沙箱真路径（2026-10-07 播放管线修复）：
+   * `openSync(uri)` 仅 URI 授权会话内可开，而 `.path` 是对应沙箱真实路径，
+   * 进程内原生代码（mdk/FFmpeg file:// 播放）可直接打开。供 Dart 侧
+   * cachedFilePath 的 ohos 分支使用——播放走 setFilePath 直连，不再经过
+   * just_audio 本地代理（真机取证：代理对死锁后 socket 事件通知以 ~305µs
+   * 周期空转，~2.9k HandleMessage/s 烧 ~1.5 核 CPU，netstat 见收发双向
+   * MB 级积压的环回 ESTABLISHED 对）。
+   * 打开失败（授权被撤销/文件被删）error 上抛，Dart 侧回退字节流分支。
+   */
+  private handleResolvePath(call: MethodCall, result: MethodResult): void {
+    const uri = PlatformBridge.argString(call, 'uri');
+    const rel = PlatformBridge.argString(call, 'rel');
+    if (uri == null || uri === '' || rel == null || rel === '') {
+      result.error('401', 'resolvePath 参数非法', null);
+      return;
+    }
+    let file: fileIo.File | null = null;
+    try {
+      file = fileIo.openSync(uri + rel, fileIo.OpenMode.READ_ONLY);
+      const path = file.path;
+      if (path == null || path === '') {
+        // 防御：文档未保证 URI open 必有 path（同 listDirectory 的 402）。
+        result.error('402', '文件 URI 解析沙箱路径失败（file.path 为空）', null);
+        return;
+      }
+      Log.i(TAG, `resolvePath：${rel}`);
+      result.success(path);
+    } catch (err) {
+      const e = err as BusinessError;
+      Log.e(TAG, `resolvePath 失败：${e.code} ${e.message}`);
       result.error(`${e.code}`, e.message, null);
     } finally {
       if (file != null) {
@@ -581,6 +648,24 @@ export default class PlatformBridge implements MethodCallHandler {
         }
       }
     }
+  }
+
+  /**
+   * persist/activate 失败时官方在异常 data:Array<PolicyErrorResult> 中
+   * 给出逐 URI 失败原因（PERSISTENCE_FORBIDDEN/INVALID_MODE/INVALID_PATH/
+   * PERMISSION_NOT_PERSISTED）；拼进日志——用户可见错误只有一条文案，
+   * 真机定位全靠这段 detail（13900001 时必看）。
+   */
+  private static policyErrorDetail(
+    data: Array<fileShare.PolicyErrorResult> | undefined): string {
+    if (data === undefined || data.length === 0) {
+      return '';
+    }
+    const parts: Array<string> = [];
+    for (const r of data) {
+      parts.push(`${r.uri}#${r.code}(${r.message})`);
+    }
+    return ` detail=[${parts.join('; ')}]`;
   }
 
   /** requestBluetoothPermission 的返回体 {granted:bool}。 */

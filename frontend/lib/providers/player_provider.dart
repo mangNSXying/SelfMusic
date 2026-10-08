@@ -1491,8 +1491,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final cached = await src.cachedFilePath(s);
     if (cached != null) {
       debugPrint('[play] ${src.kind} 缓存文件: $cached');
-      await player.setFilePath(cached, tag: tag);
-      return;
+      try {
+        await player.setFilePath(cached, tag: tag);
+        return;
+      } catch (e) {
+        // 缓存文件装载失败（如 ohos 沙箱真路径 mdk 打不开、缓存文件损坏）：
+        // 回落自建字节流，不让可播歌曲卡死在直连失败上（2026-10-07 ohos
+        // 直连改造的配套兜底；直连失败时字节流分支仍可用）。
+        debugPrint('[play] 缓存文件装载失败（回退字节流）: $e');
+      }
     }
     final direct = src.directStream(s);
     if (direct != null) {
