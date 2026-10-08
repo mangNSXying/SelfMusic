@@ -13,6 +13,8 @@ services:
       DB_USERNAME: ${DB_USERNAME:-shamiko}
       DB_PASSWORD: ${DB_PASSWORD}
       PAIRING_TOKEN: ${PAIRING_TOKEN:-}
+      CACHE_MAX_MIB: ${CACHE_MAX_MIB:-5120}
+      CACHE_SONG_LIMIT: ${CACHE_SONG_LIMIT:-200}
       TZ: Asia/Shanghai
     volumes:
       - backend-maven-repo:/root/.m2
@@ -34,6 +36,8 @@ services:
       DB_USERNAME: ${DB_USERNAME:-shamiko}
       DB_PASSWORD: ${DB_PASSWORD}
       PAIRING_TOKEN: ${PAIRING_TOKEN:-}
+      CACHE_MAX_MIB: ${CACHE_MAX_MIB:-5120}
+      CACHE_SONG_LIMIT: ${CACHE_SONG_LIMIT:-200}
       TZ: Asia/Shanghai
     command:
       - "/bin/sh"

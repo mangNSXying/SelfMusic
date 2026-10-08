@@ -628,6 +628,8 @@ PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV �
 | `DB_USERNAME` | 数据库用户 | shamiko |
 | `DB_PASSWORD` | 数据库密码 | 无 |
 | `PAIRING_TOKEN` | 配对密钥（可选；每次启动覆盖写入，改后重启生效，仅影响新设备；留空则首次随机生成） | 首次随机 |
+| `CACHE_MAX_MIB` | 服务端缓存建议上限（单位 MiB；每次启动换算成字节覆盖写入 `settings.cache_max_bytes`，非法/缺省时沿用旧值、库中无则落 5 GiB） | 5120 |
+| `CACHE_SONG_LIMIT` | 服务端缓存建议上限（首数；每次启动覆盖写入 `settings.cache_song_limit`，非法/缺省时沿用旧值、库中无则落 200） | 200 |
 
 > 配对密钥查看：① 后端**首次启动**日志以 `WARN` 打印一次；② 已配对设备 `设置 → 服务端 → 配对服务器`（副标题遮显同一份密钥，配对页明文可复制）。
 
@@ -636,7 +638,7 @@ PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV �
 - 容器内应用监听 8080，对外经 Compose 映射为 18088
 - Hikari 连接池：最大 20、最小空闲 5
 - devtools 热重载已开启，监控 `src/main/java`
-- 业务配置（`LOCAL_MUSIC_ROOT` / `WEBDAV_*` 等出流代理、缓存建议值来源）见 [settings.md §5 服务端全局设置](settings.md)；服务端已无 `SCAN_*` 扫描 env（扫描只在 APP 侧）
+- 业务配置（`LOCAL_MUSIC_ROOT` / `WEBDAV_*` 等出流代理为**历史死配置**，后端已零引用；缓存建议值来源 = `CACHE_MAX_MIB`/`CACHE_SONG_LIMIT` env 镜像）见 [settings.md §5 服务端全局设置](settings.md)；服务端已无 `SCAN_*` 扫描 env（扫描只在 APP 侧）
 
 ### Nginx
 

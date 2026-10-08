@@ -69,14 +69,14 @@
 | 均衡器 | `equalizer_enabled` + `eq_bands` | 关 | 5 频段增益（`eq_bands`=JSON 整数数组：低音 60 Hz / 中低 230 Hz / 中音 910 Hz / 中高 3.6 kHz / 高音 14 kHz，范围 -12~+12 dB）。**仅 Android**（just_audio `AndroidEqualizer` 注入 `AudioPipeline`）；Linux/macOS 无公开 mpv Dart API，开关与滑块界面仍可见但不生效 |
 | 音频焦点（自动暂停/恢复） | `audio_focus_enabled` | `true` | 来电 / 其他 App 抢占时的暂停-恢复。just_audio `handleInterruptions`，切换后重建播放器即时生效（Android）。原在「通知」分区，现归「播放」分区 |
 
-### 3.3 服务端分区 · 缓存配置（客户端双来源已实现；服务端建议值接口 ⏳ 阶段 6）
+### 3.3 服务端分区 · 缓存配置（客户端双来源已实现；服务端建议值接口已实现，客户端接线 ⏳）
 
 > 背景：`cache_max_bytes / cache_song_limit` 与服务器 `settings` 表同名（见 §5）。
 > 这两项已从「歌曲」迁到「服务端」分区，并提供两种来源：跟随服务端 / 自定义。
 
 | 设置项 | 键 | 默认 | 说明 |
 |--------|----|------|------|
-| 来源模式 | `cache_config_mode` | `custom` | `custom`=用本地自定义值；`follow_server`=用服务端建议值（服务端 `GET /api/v1/admin/config` **未实现**——见 DESIGN §4.5，选项当前灰显、暂不可用，阶段 6 补齐端点后可切换） |
+| 来源模式 | `cache_config_mode` | `custom` | `custom`=用本地自定义值；`follow_server`=用服务端建议值（服务端 `GET /api/v1/admin/config` **已实现**，返回 init.sql 预置 + `CACHE_MAX_MIB`/`CACHE_SONG_LIMIT` env 镜像的建议值，见 §5；客户端**接线未做**，选项当前仍灰显——阶段 6 剩余） |
 | 自定义缓存上限 | `cache_max_bytes` | `536870912`（512 MB） | 字节；`custom` 模式生效 |
 | 自定义歌曲上限 | `cache_song_limit` | `200` | `custom` 模式生效 |
 
@@ -84,14 +84,14 @@
 
 ```
 mode == custom        → 取本地 cache_max_bytes / cache_song_limit
-mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）  ← 规则已实现，待端点落地后生效（当前恒灰显）
+mode == follow_server → 取服务端 settings 表同键值（5 GiB / 200）  ← 规则已实现，待客户端接线后生效（当前仍灰显，此值经 `GET /admin/config` 下发）
                         （服务端不可达时回退本地自定义值，并提示）
 ```
 
 **UI 与迁移（已完成）**：
 - `设置 → 服务端` 新增「缓存配置」区块：来源选择器（跟随服务端 / 自定义）+ 自定义时两个输入框行；下方展示当前生效值；右上角同步按钮手动刷新服务端建议值
 - 已从 `设置 → 歌曲` 移除 `cache_max_bytes / cache_song_limit`（原存储值保留为「自定义」模式的取值）
-- 服务端 `GET /api/v1/admin/config` **尚未实现**（后端不存在该端点，见 DESIGN §4.5），`follow_server` 目前**恒灰显不可选**（按钮在，属阶段 6 待补）；端点落地后的行为：拉取成功才可切换，失败灰显并提示检查后端连接；进入该分区与显式点同步按钮都会触发一次拉取
+- 服务端 `GET /api/v1/admin/config` **已实现**（返回 `cache_max_bytes` / `cache_song_limit`，值由 init.sql 预置 + `CACHE_MAX_MIB`/`CACHE_SONG_LIMIT` env 每次启动覆盖，见 §5）；客户端 `follow_server` **接线尚未做**，选项目前恒灰显（阶段 6 剩余）。接线后的行为：拉取成功才可切换，失败灰显并提示检查后端连接；进入该分区与显式点同步按钮都会触发一次拉取
 
 ### 3.3.1 服务端分区 · 网络与安全（已实现）
 
@@ -194,21 +194,21 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）  �
 ## 5. 服务端全局设置与同键解析
 
 > 源：`scripts/init.sql` + `application.yml`；DESIGN §3.1。
-> 写入口：`PAIRING_TOKEN` 每次启动由 env 镜像覆盖写入；读取端**已实现仅 `GET /api/v1/admin/pairing-token`**（配对密钥）；`GET /api/v1/admin/config`（缓存建议值）与 `PUT /api/v1/admin/settings` 均**未实现**（阶段 6，届时 §3.3 的 `follow_server` 才可用）。
+> 写入口：`PAIRING_TOKEN` 与缓存建议值（`CACHE_MAX_MIB` MiB / `CACHE_SONG_LIMIT` 首）每次启动由 env 镜像覆盖写入（改 `.env` 重启生效）；读取端**已实现 `GET /api/v1/admin/pairing-token`（配对密钥）与 `GET /api/v1/admin/config`（缓存建议值）**；`PUT /api/v1/admin/settings`（管理端改设置）**未实现**（阶段 6，届时客户端 `follow_server` 接线后可用）。
 
 | 键 | 默认 | 说明 | 与客户端同键？ |
 |----|------|------|--------------|
 | `pairing_token` | env 提供 / 首次随机 | 配对主令牌（明文可展示二维码） | — |
-| `cache_max_bytes` | `1073741824`（1 GB） | 全局建议值，供客户端 `follow_server` 模式采纳 | ✅ 是 → 客户端解析见 §3.3 |
-| `cache_song_limit` | `500` | 同上 | ✅ 是 → 客户端解析见 §3.3 |
+| `cache_max_bytes` | `5368709120`（5 GiB） | 全局建议值（字节；init.sql 预置 + `CACHE_MAX_MIB` env 覆盖），供客户端 `follow_server` 模式采纳 | ✅ 是 → 客户端解析见 §3.3 |
+| `cache_song_limit` | `200` | 同上（`CACHE_SONG_LIMIT` env 覆盖） | ✅ 是 → 客户端解析见 §3.3 |
 | `scan_interval_min` | `0`（关） | ❌ 已移除（服务端不再扫描；歌曲只由 APP 在播放源处扫描） | — |
-| `transcode_max_concurrency` | `2` | ffmpeg 并发上限（超限降级透传） | — |
-| `upload_dir` | `{LOCAL_ROOT}/Uploads` | 上传落点 | — |
+| `transcode_max_concurrency` | `2` | ❌ 已移除（后端既不出流也不 ffmpeg 转码） | — |
+| `upload_dir` | `{LOCAL_ROOT}/Uploads` | ❌ 已移除（无服务端上传） | — |
 
 > **同键项设计约定**：客户端与服务器同名的配置（当前为缓存两项），客户端一律用
 > 「`follow_server` / `custom`」双来源（§3.3）。客户端默认值与服务端建议值不同属正常：
 > 服务端值为团队/全设备建议，客户端 `custom` 为单机覆盖。`follow_server` 的**解析规则已落地**，
-> 但服务端 `GET /api/v1/admin/config` 尚未实现（DESIGN §4.5），该选项当前灰显，阶段 6 补齐后启用。
+> 服务端 `GET /api/v1/admin/config` **已实现**（建议值由 env 镜像）；但客户端**接线未做**——该选项仍灰显，阶段 6 接线后启用。
 
 ---
 
@@ -227,7 +227,7 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）  �
 | 标题显示格式（文件名/歌名/歌手-歌名/歌名-歌手） | 客户端本地 | ✅ 已实现（§3.4 默认歌手-歌名） |
 | `play_mode_default` / `resume_on_startup` / `player_show_weight` | 客户端本地，无后端依赖 | ✅ 已实现 |
 | 忽略音频过滤、仅 Wi-Fi 扫描 | 直连扫描体验 | ✅ 已实现 |
-| 缓存配置迁入「服务端」+ `follow_server` | 需服务端下发 API | ⏳ 客户端双来源 UI/解析已实现；服务端 `GET /api/v1/admin/config` 未实现 → `follow_server` 暂灰显（阶段 6） |
+| 缓存配置迁入「服务端」+ `follow_server` | 需服务端下发 API | ⏳ 客户端双来源 UI/解析已实现；服务端 `GET /api/v1/admin/config` **已实现**（env 可配建议值）；客户端接线未做 → `follow_server` 暂灰显（阶段 6 剩余） |
 | 导入导出设置 / 歌单 | 本地文件 + `file_selector`，无后端依赖 | ✅ 已实现（设置、歌单分开导出；导入支持选择文件） |
 | 淡入淡出 / 均衡器 | 音频后端能力验证 | ✅ 已实现（淡入淡出全平台；均衡器仅 Android，真机验证） |
 | 通知栏 / 后台播放 | Android 壳 + `audio_service` | ✅ 已实现（实现见 §3.6；真机验证） |
@@ -237,6 +237,6 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）  �
 | 默认 HTTPS + 「允许不安全 HTTP」+「信任自签名证书」开关 | 网络安全加固 | ✅ 已实现（§3.3.1；`ApiClient.validateEndpointUrl` 约束后端/WebDAV/配对地址，自签名开关覆盖 dio + dart:io 直连） |
 | 明文凭据收敛（WebDAV 密码 / 配对密钥 → `flutter_secure_storage`，清理 `sources.config` 与 `server_settings.json` 明文） | 网络安全加固 | ✅ 已实现（`SecretStore`；老数据启动自动迁移） |
 | 多设备同步（权重/收藏/歌单/断点收敛 + SyncEngine + 设备管理页） | 阶段 5 | ✅ 已实现（§3.3.2；DESIGN §7.2/§8；后端 11 步端到端验证通过，三端真机验收待做） |
-| 服务端 `GET /admin/config` + `PUT /admin/settings` | 阶段 6 | 均未实现：`GET`（缓存建议值，§3.3 `follow_server` 的前置）与 `PUT`（管理端改设置）；已实现的读取端仅 `GET /admin/pairing-token` |
+| 客户端 `follow_server` 接线 + 服务端 `PUT /admin/settings` | 阶段 6 | ⏳ 客户端接线未做（`GET /api/v1/admin/config` 已实现，§3.3 `follow_server` 的前置已就绪）；`PUT`（管理端改设置）仍仅规划 |
 
-> 截至最新迭代，客户端全部设置与功能项均已落地；仅剩服务端【管理设置】（阶段 6）未实现：`GET /api/v1/admin/config` 与 `PUT /api/v1/admin/settings`。
+> 截至最新迭代，客户端全部设置与功能项均已落地；服务端 `GET /api/v1/admin/pairing-token` 与 `GET /api/v1/admin/config` 已实现；仅剩阶段 6 的客户端 `follow_server` 接线与服务端 `PUT /api/v1/admin/settings`。
