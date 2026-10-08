@@ -1,154 +1,20 @@
 -- =====================================================================
--- SelfMusic Schema v2
+-- SelfMusic Schema v3（服务端无曲库 / 阶段5 全量合并）
 -- 设计文档：DESIGN.md §3.1
--- 变更摘要（相对 v1）：
---   删除 users、playlist_songs
---   重构 songs；新增 albums / covers / play_states / scan_tasks / settings / devices
---   playlists 去 user 化；playlist_items 取代 playlist_songs
--- 注意：应用到已有库需先 DROP 旧表（见文末注释的迁移段）
+-- 变更摘要（相对 v2）：
+--   彻底移除服务端曲库（songs / albums / covers / scan_tasks，见 migration_004）
+--   歌曲身份改由 (source_id, source_ref) 承载；权重/收藏迁入新表 song_states
+--   devices 增加 access 过期 + refresh token（migration_002）
+--   playlists 增加 client_uuid / deleted / last_event_at（migration_003）
+--   新增 sync_events 事件流水（migration_003）
+--   新增 sync_sources 播放源同步（migration_005）
+--   play_states 增加 deep_list_json（migration_006）
+--   song_states 增加 play_sec（migration_007）
+-- 注意：本文件已内含 migration_002…007 的全部结果，**全新部署只需执行本文件**；
+--   存量库升级请按文末「升级说明」顺序执行各 migration 文件，勿执行本文件。
 -- =====================================================================
 
 SET NAMES utf8mb4;
-
--- ---------------------------------------------------------------------
--- 封面（内容寻址落盘）
--- ---------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS covers (
-    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
-    storage_ref   VARCHAR(500) NOT NULL COMMENT '服务端落盘相对路径',
-    content_hash  VARCHAR(64) NOT NULL,
-    width         INT DEFAULT 0,
-    height        INT DEFAULT 0,
-    size_bytes    BIGINT DEFAULT 0,
-    content_type  VARCHAR(50) DEFAULT 'image/jpeg',
-    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_content_hash (content_hash)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- ---------------------------------------------------------------------
--- 专辑
--- ---------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS albums (
-    id             BIGINT AUTO_INCREMENT PRIMARY KEY,
-    artist         VARCHAR(200) NOT NULL,
-    album          VARCHAR(200) NOT NULL,
-    year           SMALLINT NULL,
-    genre          VARCHAR(100) NULL,
-    cover_id       BIGINT NULL,
-    track_count    INT DEFAULT 0,
-    total_duration INT DEFAULT 0 COMMENT '秒',
-    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_artist_album (artist, album),
-    INDEX idx_artist (artist),
-    CONSTRAINT fk_album_cover FOREIGN KEY (cover_id) REFERENCES covers(id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- ---------------------------------------------------------------------
--- 歌曲（核心表：元数据 + 源定位 + 权重状态）
--- ---------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS songs (
-    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
-    album_id        BIGINT NULL,
-    title           VARCHAR(200) NOT NULL,
-    artist          VARCHAR(200) NULL,
-    track_no        SMALLINT NULL,
-    year            SMALLINT NULL,
-    genre           VARCHAR(100) NULL,
-    duration        INT DEFAULT 0 COMMENT '秒',
-
-    -- 源定位
-    source          ENUM('local','smb','webdav') NOT NULL,
-    source_ref      VARCHAR(500) NOT NULL COMMENT '源内相对路径/URL路径',
-    file_size       BIGINT NOT NULL DEFAULT 0,
-    file_mtime      DATETIME NULL COMMENT '增量扫描依据',
-    checksum        VARCHAR(32) NULL COMMENT '预留 MD5',
-    format          VARCHAR(20) NULL,
-
-    cover_id        BIGINT NULL,
-
-    -- 加权播放状态（DESIGN.md §7.1）
-    like_streak     INT DEFAULT 0,
-    dislike_streak  INT DEFAULT 0,
-    weight          DECIMAL(6,4) DEFAULT 1.0000 COMMENT '相对权重因子 0.5~1.5',
-    frozen          BOOLEAN DEFAULT FALSE COMMENT '手动固定概率',
-    is_favorite     BOOLEAN DEFAULT FALSE,
-
-    -- 生命周期
-    is_hidden       BOOLEAN DEFAULT FALSE,
-    missing_since   DATETIME NULL,
-    play_count      INT DEFAULT 0,
-    last_played_at  DATETIME NULL,
-
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    UNIQUE KEY uk_source_ref (source, source_ref),
-    INDEX idx_title (title),
-    INDEX idx_artist (artist),
-    INDEX idx_album (album_id),
-    INDEX idx_favorite (is_favorite),
-    CONSTRAINT fk_song_album FOREIGN KEY (album_id) REFERENCES albums(id) ON DELETE SET NULL,
-    CONSTRAINT fk_song_cover FOREIGN KEY (cover_id) REFERENCES covers(id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- ---------------------------------------------------------------------
--- 播放列表（单用户，无 user 维度）
--- ---------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS playlists (
-    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-    name        VARCHAR(100) NOT NULL,
-    description TEXT NULL,
-    cover_id    BIGINT NULL,
-    mode        ENUM('normal','shuffle_weighted') DEFAULT 'shuffle_weighted',
-    sync_ver    BIGINT DEFAULT 0 COMMENT '乐观锁版本号（多设备同步）',
-    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_name (name)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- ---------------------------------------------------------------------
--- 列表条目
--- ---------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS playlist_items (
-    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-    playlist_id BIGINT NOT NULL,
-    song_id     BIGINT NOT NULL,
-    sort_order  INT DEFAULT 0,
-    added_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_playlist_song (playlist_id, song_id),
-    INDEX idx_playlist_sort (playlist_id, sort_order),
-    CONSTRAINT fk_item_playlist FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE,
-    CONSTRAINT fk_item_song FOREIGN KEY (song_id) REFERENCES songs(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- ---------------------------------------------------------------------
--- 断点续播状态（每列表一行）
--- ---------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS play_states (
-    playlist_id BIGINT PRIMARY KEY,
-    song_id     BIGINT NULL,
-    position_ms INT DEFAULT 0,
-    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    CONSTRAINT fk_state_playlist FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE,
-    CONSTRAINT fk_state_song FOREIGN KEY (song_id) REFERENCES songs(id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- ---------------------------------------------------------------------
--- 扫描任务
--- ---------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS scan_tasks (
-    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
-    trigger_type  ENUM('manual','scheduled') NOT NULL DEFAULT 'manual',
-    status        ENUM('running','done','failed') NOT NULL DEFAULT 'running',
-    total_count   INT DEFAULT 0,
-    added_count   INT DEFAULT 0,
-    updated_count INT DEFAULT 0,
-    missing_count INT DEFAULT 0,
-    started_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    finished_at   DATETIME NULL,
-    error_msg     TEXT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------
 -- 全局设置（键值）
@@ -161,18 +27,137 @@ CREATE TABLE IF NOT EXISTS settings (
 
 -- ---------------------------------------------------------------------
 -- 已配对设备（单用户多设备准入，DESIGN.md §2）
+-- access 24h / refresh 30d；两者均只存哈希
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS devices (
-    id           BIGINT AUTO_INCREMENT PRIMARY KEY,
-    client_id    VARCHAR(36) NOT NULL COMMENT 'UUID',
-    name         VARCHAR(100) NOT NULL,
-    platform     VARCHAR(50) NULL COMMENT 'android/windows/harmony...',
-    token_hash   VARCHAR(64) NOT NULL COMMENT 'SHA-256(device_token)',
-    revoked      BOOLEAN DEFAULT FALSE,
-    paired_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_seen_at DATETIME NULL,
+    id                 BIGINT AUTO_INCREMENT PRIMARY KEY,
+    client_id          VARCHAR(36) NOT NULL COMMENT 'UUID，配对时生成',
+    name               VARCHAR(100) NOT NULL COMMENT '设备昵称，可改',
+    platform           VARCHAR(50) NULL COMMENT 'linux/android/windows/harmony/...',
+    token_hash         VARCHAR(64) NOT NULL COMMENT 'SHA-256(access_token 初值)',
+    revoked            BOOLEAN DEFAULT FALSE,
+    paired_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at       DATETIME NULL,
+    token_expires_at   DATETIME NULL COMMENT 'access token 过期时间',
+    refresh_token_hash VARCHAR(64) NULL COMMENT 'SHA-256(refresh_token)',
+    refresh_expires_at DATETIME NULL COMMENT 'refresh token 过期时间（30d）',
+    renewed_at         DATETIME NULL COMMENT '最近一次续签时间',
     UNIQUE KEY uk_client_id (client_id),
     INDEX idx_token_hash (token_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------
+-- 播放列表（单用户，无 user 维度；多设备同步 LWW）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS playlists (
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name          VARCHAR(100) NOT NULL,
+    description   TEXT NULL,
+    mode          ENUM('normal','shuffle_weighted') DEFAULT 'shuffle_weighted',
+    client_uuid   VARCHAR(36) NULL COMMENT '多设备同步全局标识（创建端生成）',
+    deleted       BOOLEAN DEFAULT FALSE COMMENT '删除墓碑：true=已删，LWW 合并时与更新比时间戳',
+    last_event_at DATETIME(3) NULL COMMENT '最后一次应用的同步事件 occurred_at',
+    sync_ver      BIGINT DEFAULT 0 COMMENT '乐观锁版本号（多设备同步）',
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_name (name),
+    UNIQUE KEY uk_playlist_uuid (client_uuid)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------
+-- 列表条目（自持歌曲身份与展示快照，无曲库外键）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS playlist_items (
+    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+    playlist_id BIGINT NOT NULL,
+    source_id   VARCHAR(100) NOT NULL COMMENT '源实例 uuid；旧数据 legacy:<协议>',
+    source      VARCHAR(20)  NULL COMMENT '协议名 webdav/local/smb（展示/兜底）',
+    source_ref  VARCHAR(500) NOT NULL COMMENT '源内相对路径/URL路径',
+    title       VARCHAR(200) NULL,
+    artist      VARCHAR(200) NULL,
+    album       VARCHAR(200) NULL,
+    duration    INT          NULL COMMENT '秒',
+    sort_order  INT DEFAULT 0,
+    added_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_item_identity (playlist_id, source_id, source_ref),
+    INDEX idx_playlist_sort (playlist_id, sort_order),
+    CONSTRAINT fk_item_playlist FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------
+-- 断点续播状态（每歌单一列）：自持歌曲身份，无曲库外键
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS play_states (
+    playlist_id      BIGINT PRIMARY KEY,
+    source_id        VARCHAR(100) NULL COMMENT '源实例 uuid；旧数据 legacy:<协议>',
+    source           VARCHAR(20)  NULL COMMENT '协议名（展示/兜底）',
+    source_ref       VARCHAR(500) NULL COMMENT '源内路径',
+    device_client_id VARCHAR(36)  NULL COMMENT '上报设备 client_id（跨设备续播提示用）',
+    position_ms      INT DEFAULT 0,
+    deep_list_json   TEXT NULL COMMENT '深层列表（播放历史）JSON，跨设备续播重建队列用',
+    last_event_at    DATETIME(3) NULL COMMENT '最后一次应用的断点事件 occurred_at（LWW）',
+    updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_state_playlist FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------
+-- 直连歌曲权重/收藏状态（取代原 songs 的状态承载职责，DESIGN.md §7.1）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS song_states (
+    id             BIGINT AUTO_INCREMENT PRIMARY KEY,
+    source_id      VARCHAR(100) NOT NULL COMMENT '源实例 uuid；旧数据 legacy:<协议>',
+    source         VARCHAR(20)  NULL COMMENT '协议名 webdav/local/smb（展示/兜底）',
+    source_ref     VARCHAR(500) NOT NULL COMMENT '源内相对路径/URL路径',
+    title          VARCHAR(200) NULL COMMENT '兜底标题（载荷/文件名）',
+    like_streak    INT DEFAULT 0,
+    dislike_streak INT DEFAULT 0,
+    weight         DECIMAL(6,4) DEFAULT 1.0000 COMMENT '相对权重因子 0.5~1.5',
+    frozen         BOOLEAN DEFAULT FALSE COMMENT '手动固定概率',
+    is_favorite    BOOLEAN DEFAULT FALSE,
+    play_sec       INT DEFAULT 0 COMMENT '累计播放时长（秒）；播放次数由其÷歌曲时长派生',
+    last_event_at  DATETIME(3) NULL COMMENT '最后一次应用的同步事件 occurred_at',
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_source_state (source_id, source_ref),
+    INDEX idx_state_ref (source_ref),
+    INDEX idx_state_favorite (is_favorite)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------
+-- 同步事件流水：seq 全局单调 cursor + event_uuid 幂等键（DESIGN.md §7.2）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sync_events (
+    seq              BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '全局单调 cursor（pull 的 since_cursor 比较基准）',
+    event_uuid       VARCHAR(36) NOT NULL COMMENT '客户端生成，幂等键',
+    device_client_id VARCHAR(36) NOT NULL COMMENT '来源设备 client_id（须与认证身份一致）',
+    type             VARCHAR(30) NOT NULL COMMENT 'song.complete/skip/complete_manual/liked/unfavorite/disliked/reset/state，playlist.*，playlist.item_*，source.*，breakpoint.set',
+    payload          TEXT NULL COMMENT 'JSON 载荷',
+    occurred_at      DATETIME(3) NULL COMMENT '客户端发生时间（毫秒精度，LWW 比较用）',
+    arrived_at       TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP(3) COMMENT '服务端仲裁时钟（occurred_at 缺失或打平时用）',
+    UNIQUE KEY uk_event_uuid (event_uuid),
+    INDEX idx_seq (seq),
+    INDEX idx_device (device_client_id),
+    INDEX idx_type_seq (type, seq)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------
+-- 播放源同步（远端类型源 client_uuid 收敛；本地文件夹源不参与）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sync_sources (
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    client_uuid   VARCHAR(36) NOT NULL COMMENT '源实例全局标识（创建端生成）',
+    kind          VARCHAR(20) NOT NULL COMMENT 'webdav/smb/onedrive…（local 不同步）',
+    name          VARCHAR(100) NULL,
+    address       VARCHAR(500) NOT NULL COMMENT '去重地址：WebDAV=baseUrl；SMB=host/share',
+    config_json   TEXT NULL COMMENT '非敏感配置 JSON（不含密码）',
+    enabled       BOOLEAN DEFAULT TRUE,
+    deleted       BOOLEAN DEFAULT FALSE COMMENT '删除墓碑（LWW）',
+    last_event_at DATETIME(3) NULL COMMENT '最后一次应用的同步事件 occurred_at',
+    sync_ver      BIGINT DEFAULT 0,
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_sync_source_uuid (client_uuid),
+    UNIQUE KEY uk_sync_source_identity (kind, address)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------
@@ -180,18 +165,21 @@ CREATE TABLE IF NOT EXISTS devices (
 -- ---------------------------------------------------------------------
 INSERT INTO settings (skey, svalue) VALUES
     ('cache_max_bytes', '1073741824'),
-    ('cache_song_limit', '500'),
-    ('scan_interval_min', '0'),
-    ('transcode_max_concurrency', '2'),
-    ('upload_dir', 'Uploads')
+    ('cache_song_limit', '500')
 ON DUPLICATE KEY UPDATE skey = skey;
--- pairing_token 由应用首次启动生成写入，不在此预置
+-- pairing_token 由应用首次启动生成写入（权威源 env PAIRING_TOKEN），不在此预置
 
 -- =====================================================================
--- 迁移参考（从 v1 升级时手工执行；确认后再跑！）：
---   USE selfmusic;
---   SET FOREIGN_KEY_CHECKS = 0;
---   DROP TABLE IF EXISTS playlist_songs, playlists, songs, users;
---   SET FOREIGN_KEY_CHECKS = 1;
---   然后执行本脚本。
+-- 升级说明：
+--   全新部署：执行本文件即可（已内含 migration_002…007 的全部结果），
+--     随后启动后端（ddl-auto=validate 校验实体与表一致）。
+--   存量库升级（旧 v2 + 服务端曲库）：不要执行本文件，按以下顺序执行各迁移，
+--     每步之间保持顺序（006/007 断言的列依赖前序迁移）：
+--       migration_002_devices_refresh.sql
+--       migration_003_sync.sql
+--       migration_004_remove_library.sql
+--       migration_005_source_sync.sql
+--       migration_006_deep_list.sql
+--       migration_007_play_sec.sql
+--   风险：migration_004 不可逆（删除 songs/albums/covers/scan_tasks），执行前备份。
 -- =====================================================================

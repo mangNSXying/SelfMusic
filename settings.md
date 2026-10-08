@@ -69,14 +69,14 @@
 | 均衡器 | `equalizer_enabled` + `eq_bands` | 关 | 5 频段增益（`eq_bands`=JSON 整数数组：低音 60 Hz / 中低 230 Hz / 中音 910 Hz / 中高 3.6 kHz / 高音 14 kHz，范围 -12~+12 dB）。**仅 Android**（just_audio `AndroidEqualizer` 注入 `AudioPipeline`）；Linux/macOS 无公开 mpv Dart API，开关与滑块界面仍可见但不生效 |
 | 音频焦点（自动暂停/恢复） | `audio_focus_enabled` | `true` | 来电 / 其他 App 抢占时的暂停-恢复。just_audio `handleInterruptions`，切换后重建播放器即时生效（Android）。原在「通知」分区，现归「播放」分区 |
 
-### 3.3 服务端分区 · 缓存配置（已实现，双来源）
+### 3.3 服务端分区 · 缓存配置（客户端双来源已实现；服务端建议值接口 ⏳ 阶段 6）
 
 > 背景：`cache_max_bytes / cache_song_limit` 与服务器 `settings` 表同名（见 §5）。
 > 这两项已从「歌曲」迁到「服务端」分区，并提供两种来源：跟随服务端 / 自定义。
 
 | 设置项 | 键 | 默认 | 说明 |
 |--------|----|------|------|
-| 来源模式 | `cache_config_mode` | `custom` | `custom`=用本地自定义值；`follow_server`=用服务端建议值（服务端 `GET /api/v1/admin/config` 下发 —— 已实现） |
+| 来源模式 | `cache_config_mode` | `custom` | `custom`=用本地自定义值；`follow_server`=用服务端建议值（服务端 `GET /api/v1/admin/config` **未实现**——见 DESIGN §4.5，选项当前灰显、暂不可用，阶段 6 补齐端点后可切换） |
 | 自定义缓存上限 | `cache_max_bytes` | `536870912`（512 MB） | 字节；`custom` 模式生效 |
 | 自定义歌曲上限 | `cache_song_limit` | `200` | `custom` 模式生效 |
 
@@ -84,14 +84,14 @@
 
 ```
 mode == custom        → 取本地 cache_max_bytes / cache_song_limit
-mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
+mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）  ← 规则已实现，待端点落地后生效（当前恒灰显）
                         （服务端不可达时回退本地自定义值，并提示）
 ```
 
 **UI 与迁移（已完成）**：
 - `设置 → 服务端` 新增「缓存配置」区块：来源选择器（跟随服务端 / 自定义）+ 自定义时两个输入框行；下方展示当前生效值；右上角同步按钮手动刷新服务端建议值
 - 已从 `设置 → 歌曲` 移除 `cache_max_bytes / cache_song_limit`（原存储值保留为「自定义」模式的取值）
-- `follow_server` 选项在成功拉到服务端建议值后可用（`GET /api/v1/admin/config`），拉取失败时灰显并提示检查后端连接；进入该分区与显式点同步按钮都会触发一次拉取
+- 服务端 `GET /api/v1/admin/config` **尚未实现**（后端不存在该端点，见 DESIGN §4.5），`follow_server` 目前**恒灰显不可选**（按钮在，属阶段 6 待补）；端点落地后的行为：拉取成功才可切换，失败灰显并提示检查后端连接；进入该分区与显式点同步按钮都会触发一次拉取
 
 ### 3.3.1 服务端分区 · 网络与安全（已实现）
 
@@ -102,8 +102,8 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 | 允许不安全 HTTP | `allow_insecure_http` | `false`（关） | 关时显式 `http://` 地址一律拒绝并提示（后端地址 / WebDAV 地址 / 配对弹窗均受约束）；缺省协议恒补默认 `https://`，与开关无关。运行时 URL 归一化见 `ApiClient.normalizeBaseUrl` / `webdavNormalizeBase` |
 | 信任自签名证书 | `allow_self_signed` | `false`（关） | 开时 dio API 与直连 WebDAV（dart:io `badCertificateCallback`）接受自签名/自建 TLS 证书，配置即生效（重建 WebDAV 源 + 替换 dio adapter）；**播放器层**（Android ExoPlayer / 桌面 mpv 原生起流）不受此开关影响，仍需 CA 有效证书 |
 
-> 明文凭据收敛（对应 问题.md B1/B2）：WebDAV 密码（`SecretStore` 键 `webdav_pwd:<sourceKey>`）与配对密钥（键 `pairing_key`）均改存 `flutter_secure_storage`；`sources.config` 与 `server_settings.json` 不再落地明文，旧数据启动时自动迁移并回写清理。
-> Android 清单保留 `usesCleartextTraffic=true`：这是运行期「允许不安全 HTTP」可用的平台前提（network_security_config 无法运行期切换）——权衡见 问题.md。
+> 明文凭据收敛（历史安全整改项）：WebDAV 密码（`SecretStore` 键 `webdav_pwd:<sourceKey>`）与配对密钥（键 `pairing_key`）均改存 `flutter_secure_storage`；`sources.config` 与 `server_settings.json` 不再落地明文，旧数据启动时自动迁移并回写清理。
+> Android 清单保留 `usesCleartextTraffic=true`：这是运行期「允许不安全 HTTP」可用的平台前提（network_security_config 无法运行期切换）。
 
 ### 3.3.2 服务端分区 · 多设备同步（阶段5，已实现）
 
@@ -194,7 +194,7 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 ## 5. 服务端全局设置与同键解析
 
 > 源：`scripts/init.sql` + `application.yml`；DESIGN §3.1。
-> 写入口：`PAIRING_TOKEN` 每次启动由 env 镜像覆盖写入；读取端 `GET /api/v1/admin/config`（缓存建议值）与 `GET /api/v1/admin/pairing-token`（配对密钥）已实现；`PUT /admin/settings` 仍规划。
+> 写入口：`PAIRING_TOKEN` 每次启动由 env 镜像覆盖写入；读取端**已实现仅 `GET /api/v1/admin/pairing-token`**（配对密钥）；`GET /api/v1/admin/config`（缓存建议值）与 `PUT /api/v1/admin/settings` 均**未实现**（阶段 6，届时 §3.3 的 `follow_server` 才可用）。
 
 | 键 | 默认 | 说明 | 与客户端同键？ |
 |----|------|------|--------------|
@@ -207,8 +207,8 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 
 > **同键项设计约定**：客户端与服务器同名的配置（当前为缓存两项），客户端一律用
 > 「`follow_server` / `custom`」双来源（§3.3）。客户端默认值与服务端建议值不同属正常：
-> 服务端值为团队/全设备建议，客户端 `custom` 为单机覆盖。`follow_server` 已随
-> `GET /api/v1/admin/config` 落地。
+> 服务端值为团队/全设备建议，客户端 `custom` 为单机覆盖。`follow_server` 的**解析规则已落地**，
+> 但服务端 `GET /api/v1/admin/config` 尚未实现（DESIGN §4.5），该选项当前灰显，阶段 6 补齐后启用。
 
 ---
 
@@ -227,7 +227,7 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 | 标题显示格式（文件名/歌名/歌手-歌名/歌名-歌手） | 客户端本地 | ✅ 已实现（§3.4 默认歌手-歌名） |
 | `play_mode_default` / `resume_on_startup` / `player_show_weight` | 客户端本地，无后端依赖 | ✅ 已实现 |
 | 忽略音频过滤、仅 Wi-Fi 扫描 | 直连扫描体验 | ✅ 已实现 |
-| 缓存配置迁入「服务端」+ `follow_server` | 需服务端下发 API | ✅ 已实现（`GET /api/v1/admin/config` + 客户端跟随模式） |
+| 缓存配置迁入「服务端」+ `follow_server` | 需服务端下发 API | ⏳ 客户端双来源 UI/解析已实现；服务端 `GET /api/v1/admin/config` 未实现 → `follow_server` 暂灰显（阶段 6） |
 | 导入导出设置 / 歌单 | 本地文件 + `file_selector`，无后端依赖 | ✅ 已实现（设置、歌单分开导出；导入支持选择文件） |
 | 淡入淡出 / 均衡器 | 音频后端能力验证 | ✅ 已实现（淡入淡出全平台；均衡器仅 Android，真机验证） |
 | 通知栏 / 后台播放 | Android 壳 + `audio_service` | ✅ 已实现（实现见 §3.6；真机验证） |
@@ -235,8 +235,8 @@ mode == follow_server → 取服务端 settings 表同键值（1 GB / 500）
 | 配对密钥显示/复制（`设置 → 服务端 → 配对服务器`） | 后端端点 + 前端 | ✅ 已实现（`GET /api/v1/admin/pairing-token`，配对服务器副标题遮显、配对页明文可复制） |
 | 缓存目录展示（`设置 → 服务端`） | 客户端本地 | ✅ 已实现（真实路径 + 占用 + 点击复制） |
 | 默认 HTTPS + 「允许不安全 HTTP」+「信任自签名证书」开关 | 网络安全加固 | ✅ 已实现（§3.3.1；`ApiClient.validateEndpointUrl` 约束后端/WebDAV/配对地址，自签名开关覆盖 dio + dart:io 直连） |
-| 明文凭据收敛（WebDAV 密码 / 配对密钥 → `flutter_secure_storage`，清理 `sources.config` 与 `server_settings.json` 明文） | 网络安全加固 | ✅ 已实现（`SecretStore`；老数据启动自动迁移，见 问题.md B1/B2） |
+| 明文凭据收敛（WebDAV 密码 / 配对密钥 → `flutter_secure_storage`，清理 `sources.config` 与 `server_settings.json` 明文） | 网络安全加固 | ✅ 已实现（`SecretStore`；老数据启动自动迁移） |
 | 多设备同步（权重/收藏/歌单/断点收敛 + SyncEngine + 设备管理页） | 阶段 5 | ✅ 已实现（§3.3.2；DESIGN §7.2/§8；后端 11 步端到端验证通过，三端真机验收待做） |
-| 服务端 `PUT /admin/settings` | 阶段 6 | `GET` 已实现；`PUT`（管理端改设置）仍规划 |
+| 服务端 `GET /admin/config` + `PUT /admin/settings` | 阶段 6 | 均未实现：`GET`（缓存建议值，§3.3 `follow_server` 的前置）与 `PUT`（管理端改设置）；已实现的读取端仅 `GET /admin/pairing-token` |
 
-> 截至最新迭代，客户端全部设置与功能项均已落地；仅剩服务端【管理设置】 `PUT /api/v1/admin/settings`（阶段 6）未实现。
+> 截至最新迭代，客户端全部设置与功能项均已落地；仅剩服务端【管理设置】（阶段 6）未实现：`GET /api/v1/admin/config` 与 `PUT /api/v1/admin/settings`。
