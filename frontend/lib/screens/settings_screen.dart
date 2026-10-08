@@ -29,8 +29,10 @@ class SettingsScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final nav = context.watch<NavigationProvider>();
-    final item = nav.settings;
+    // 订阅收窄（T010）：设置页只关注当前设置分区；区段/搜索/播放页等变更
+    // 不再重建设置页。
+    final item =
+        context.select<NavigationProvider, SettingsItem?>((n) => n.settings);
     if (item == null) {
       return const Center(child: Text('请从左侧选择设置分区'));
     }

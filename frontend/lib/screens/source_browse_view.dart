@@ -137,7 +137,10 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
 
   @override
   Widget build(BuildContext context) {
-    final nav = context.watch<NavigationProvider>();
+    // 订阅收窄（T010）：源内浏览的目标 sourceKey 由 widget 参数承载（父级路由
+    // 变更会重建本组件），build 内不读取任何 NavigationProvider 字段；仅方法
+    // （exitSource）经 read 调用，故不订阅导航状态、区段变更零重建。
+    final nav = context.read<NavigationProvider>();
     final direct = context.watch<DirectSourceManager>();
     // watch：播放指示（标题后的 graphic_eq）要随当前播放曲变化重建。
     final player = context.watch<PlayerProvider>();

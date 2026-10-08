@@ -42,10 +42,16 @@ class AppContent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final nav = context.watch<NavigationProvider>();
+    // 订阅收窄（T008）：内容路由只订阅"路由键"（section + 设置分区 + 源内 key +
+    // 歌单详情 id），一次 record select 覆盖全部路由依赖；搜索/队列/播放页等
+    // 变更不再牵连内容路由重建。areaKey/areaLevel/slideOffset 由上述字段派生，
+    // 在本次重建内即时读取即可。
+    final nav = context.read<NavigationProvider>();
+    final routeKey =
+        context.select<NavigationProvider, NavRouteKey>((n) => n.routeKey);
     final transition =
         context.watch<DirectSourceManager>().settings.playerTransition;
-    final page = _areaPage(nav);
+    final page = _areaPage(routeKey);
     if (transition == PlayerTransition.none) return page;
     if (transition == PlayerTransition.slide) {
       // 分层切换：底层静止垫底，只有高层移动，不透黑底。
@@ -67,17 +73,17 @@ class AppContent extends StatelessWidget {
   }
 
   /// 当前区域页面（设置 / 源内浏览 / 歌单详情 / 六分组 pager）。
-  Widget _areaPage(NavigationProvider nav) {
-    if (nav.inSettings) {
+  Widget _areaPage(NavRouteKey routeKey) {
+    if (routeKey.settings != null) {
       return const SettingsScreen();
     }
     // 播放源「文件夹」子级：源内浏览（原地切换）。
-    if (nav.section == NavSection.sources && nav.browsingSourceKey != null) {
-      return SourceBrowseView(sourceKey: nav.browsingSourceKey!);
+    if (routeKey.section == NavSection.sources && routeKey.sourceKey != null) {
+      return SourceBrowseView(sourceKey: routeKey.sourceKey!);
     }
     // 歌单详情子视图。
-    if (nav.section == NavSection.playlists && nav.browsingPlaylistId != null) {
-      return PlaylistDetailView(playlistId: nav.browsingPlaylistId!);
+    if (routeKey.section == NavSection.playlists && routeKey.playlistId != null) {
+      return PlaylistDetailView(playlistId: routeKey.playlistId!);
     }
     // 六个顶级分组：滑动模式跟手 PageView，其余模式松手触发区切换。
     return const SectionPager();
@@ -202,10 +208,14 @@ class _SectionPagerState extends State<SectionPager>
 
   @override
   Widget build(BuildContext context) {
-    final nav = context.watch<NavigationProvider>();
+    // 订阅收窄（T009）：Pager 只关注目标 `section`；拖拽期跟手页码由 pageOffset
+    // （ValueNotifier）独立驱动。
+    final nav = context.read<NavigationProvider>();
+    final section =
+        context.select<NavigationProvider, NavSection>((n) => n.section);
     final transition =
         context.watch<DirectSourceManager>().settings.playerTransition;
-    final target = _indexOf(nav.section);
+    final target = _indexOf(section);
 
     // 非滑动档：单页按设置过渡（松手触发切换）；顶栏高亮随后同步。
     // 滑动档：跟手 PageView，顶栏由控制器监听逐帧同步。
@@ -389,10 +399,12 @@ class _LikedViewState extends State<_LikedView>
   Widget build(BuildContext context) {
     super.build(context);
     final direct = context.watch<DirectSourceManager>();
-    final nav = context.watch<NavigationProvider>();
+    // 订阅收窄（T011）：喜欢页只关注全局搜索词；区段索引变更不重建、不重排。
+    final search =
+        context.select<NavigationProvider, String>((n) => n.search);
     final player = context.read<PlayerProvider>();
     final lib = context.read<LibraryProvider>();
-    final res = _sortSongs(direct, nav.search);
+    final res = _sortSongs(direct, search);
     final all = res.raw;
     final songs = res.songs;
 
@@ -582,13 +594,16 @@ class _SongsViewState extends State<_SongsView>
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    final nav = context.watch<NavigationProvider>();
     final lib = context.watch<LibraryProvider>();
     final player = context.read<PlayerProvider>();
     final direct = context.watch<DirectSourceManager>();
 
+    // 订阅收窄（T011）：歌曲页只关注全局搜索词；区段索引变更不重建、不重排。
+    final search =
+        context.select<NavigationProvider, String>((n) => n.search);
+
     // 依据全局搜索词过滤（喜欢页共用同一匹配函数），再按本页排序偏好排序。
-    final songs = _sortSongs(lib, direct, nav.search).songs;
+    final songs = _sortSongs(lib, direct, search).songs;
 
     // 行级视图数据（R-1）：缓存整表派生文本/收藏态，行组件纯参数渲染。
     final wide = MediaQuery.sizeOf(context).width >= kSongTileWideInfoWidth;
@@ -738,11 +753,13 @@ class _AlbumsViewState extends State<_AlbumsView>
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    final nav = context.watch<NavigationProvider>();
     final lib = context.watch<LibraryProvider>();
     final direct = context.watch<DirectSourceManager>();
+    // 订阅收窄（T011）：专辑页只关注全局搜索词；区段索引变更不重建、不重排。
+    final search =
+        context.select<NavigationProvider, String>((n) => n.search);
     final albums = _filteredSorted(
-        lib.albums, nav.search, direct.settings.sortAlbums);
+        lib.albums, search, direct.settings.sortAlbums);
     final card = isCard;
 
     return Column(
@@ -949,11 +966,13 @@ class _ArtistsViewState extends State<_ArtistsView>
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    final nav = context.watch<NavigationProvider>();
     final lib = context.watch<LibraryProvider>();
     final direct = context.watch<DirectSourceManager>();
+    // 订阅收窄（T011）：歌手页只关注全局搜索词；区段索引变更不重建、不重排。
+    final search =
+        context.select<NavigationProvider, String>((n) => n.search);
     final artists = _filteredSorted(
-        lib.artists, nav.search, direct.settings.sortArtists);
+        lib.artists, search, direct.settings.sortArtists);
     final card = isCard;
 
     return Column(

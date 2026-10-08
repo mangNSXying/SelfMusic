@@ -1,7 +1,39 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 
+/// 内容区路由的「最小关注字段」稳定组合（订阅契约，R-4 / T003 / T008）。
+///
+/// 内容路由（[AppContent]）需要一次订阅多个相关字段才能决定渲染哪个区域。
+/// 用 Dart record 承载：record 具备**结构相等**语义，`context.select` 以 `==`
+/// 比较所选值——四个字段都不变时不会误触发重建，任一变化才重建。
+///
+/// 字段：
+/// - `section`：六个顶级分组之一；
+/// - `settings`：当前设置分区（null=非设置页）；
+/// - `sourceKey`：源内浏览 key（null=位于播放源列表）；
+/// - `playlistId`：歌单详情 id（null=位于歌单列表）。
+typedef NavRouteKey = ({
+  NavSection section,
+  SettingsItem? settings,
+  String? sourceKey,
+  int? playlistId,
+});
+
 // 导航状态：驱动首页（全屏播放页）与 AppShell 内容区切换。
+//
+// ── 订阅契约（R-1 / T003）──────────────────────────────────────────────
+// 保留单一 [NavigationProvider]，全局 `notifyListeners()` 继续广播；消费方
+// **MUST** 只订阅其渲染所必需的最小字段：
+//   `context.select<NavigationProvider, X>((n) => n.<field>)`（多字段用 record，
+//   如 [NavRouteKey]，靠结构相等比较）。
+// **MUST NOT** 以整对象 `context.watch<NavigationProvider>()` 订阅（除确需全部
+// 字段外）——否则每一次导航通知（含区段切换）都会牵连无关控件同帧重建。
+// 按值重建：区段变更（[section] 变化）时，[search] / [queueOpen] / [playerView]
+// / [settings] / [browsingSourceKey] / [browsingPlaylistId] 不变，订阅这些字段
+// 的组件不会重建。
+// 跟手高亮：拖拽期逐帧高亮由 [pageOffset]（ValueNotifier）独立驱动。
+// 公共方法与字段语义不变（R-6）。
+// ───────────────────────────────────────────────────────────────────────
 class NavigationProvider extends ChangeNotifier {
   NavSection _section = NavSection.songs;
   String _search = '';
@@ -67,6 +99,17 @@ class NavigationProvider extends ChangeNotifier {
 
   /// 播放队列面板是否展开。
   bool get queueOpen => _queueOpen;
+
+  /// 内容区路由的最小关注字段稳定组合（订阅契约读取入口，R-4 / T003 / T008）。
+  ///
+  /// 供内容路由单次 `context.select` 订阅 [section] + 设置分区 + 源内 key +
+  /// 歌单详情 id；不读整对象，避免区段/搜索等无关通知牵连重建。
+  NavRouteKey get routeKey => (
+        section: _section,
+        settings: _settings,
+        sourceKey: _browsingSourceKey,
+        playlistId: _browsingPlaylistId,
+      );
 
   void openQueue() {
     _queueOpen = true;

@@ -89,7 +89,10 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
   @override
   Widget build(BuildContext context) {
     final player = context.watch<PlayerProvider>();
-    final nav = context.watch<NavigationProvider>();
+    // 订阅收窄（T007）：迷你条只关注队列面板开合（按钮高亮）；播放页可见性、
+    // 区段、搜索等变更不再重建迷你条。
+    final nav = context.read<NavigationProvider>();
+    final queueOpen = context.select<NavigationProvider, bool>((n) => n.queueOpen);
     final settings = context.watch<DirectSourceManager>().settings;
     final gestureOn = settings.playerGestureSwipe;
     final cs = Theme.of(context).colorScheme;
@@ -231,11 +234,11 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
                 onVerticalDragUpdate: _onQueueDragUpdate,
                 onVerticalDragEnd: _onQueueDragEnd,
                 child: IconButton(
-                  icon: Icon(nav.queueOpen
+                  icon: Icon(queueOpen
                       ? Icons.queue_music
                       : Icons.queue_music_outlined),
                   iconSize: 28,
-                  color: nav.queueOpen ? cs.primary : null,
+                  color: queueOpen ? cs.primary : null,
                   tooltip: '播放队列',
                   onPressed: () => toggleQueuePanel(context),
                 ),

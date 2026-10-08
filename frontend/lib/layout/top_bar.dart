@@ -13,9 +13,14 @@ class TopBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final nav = context.watch<NavigationProvider>();
+    // 订阅收窄（T004）：TopBar 仅关注"是否设置页 + 具体设置分区"（改设置分区时
+    // 设置标题需刷新，故用 record 而非单独 inSettings）。
+    // 高亮由 [_NavBar] 自行订阅 `section`；搜索框由 [_UpperRow] 自持监听。
+    final nav = context.read<NavigationProvider>();
+    final (inSettings, _) = context.select<NavigationProvider, (bool, SettingsItem?)>(
+        (n) => (n.inSettings, n.settings));
 
-    final Widget bar = nav.inSettings
+    final Widget bar = inSettings
         ? _SettingsTopBar(nav: nav, onSidebarToggle: onSidebarToggle)
         : Column(
             children: [
@@ -142,6 +147,9 @@ class _NavBarState extends State<_NavBar> {
 
   @override
   Widget build(BuildContext context) {
+    // 订阅收窄（T004）：高亮只依赖 `section`；拖拽期跟手条带/高亮由
+    // pageOffset（ValueNotifier）独立逐帧驱动，避免每次区段变更牵连整树。
+    final section = context.select<NavigationProvider, NavSection>((n) => n.section);
     // 窄屏下导航项横排可横向滑动；宽屏下居中分布。
     final colorScheme = Theme.of(context).colorScheme;
     return SizedBox(
@@ -172,7 +180,7 @@ class _NavBarState extends State<_NavBar> {
               // 跟手高亮：按与实时页码的距离在相邻两项间插值。
               final w =
                   (1 - (page - i).abs()).clamp(0.0, 1.0);
-              final selected = widget.nav.section == s && w > 0.5;
+              final selected = section == s && w > 0.5;
               final color = Color.lerp(
                   colorScheme.onSurface.withValues(alpha: 0.75),
                   colorScheme.primary,

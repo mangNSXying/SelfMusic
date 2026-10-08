@@ -666,7 +666,11 @@ class _SongListState extends State<SongList> {
 
   @override
   Widget build(BuildContext context) {
-    final nav = context.watch<NavigationProvider>();
+    // 订阅收窄（T012）：仅在"全局搜索"场景（内容区歌单详情）订阅全局搜索词；
+    // 播放器带的歌单页（globalSearch=false）选择恒定的 '' 值、不订阅搜索词，
+    // 全局搜索变化不重建。区段索引变更两种场景都不重建。
+    final search = context.select<NavigationProvider, String>(
+        (n) => widget.globalSearch ? n.search : '');
     final provider = context.watch<PlaylistsProvider>();
     final player = context.watch<PlayerProvider>();
     final direct = context.watch<DirectSourceManager>();
@@ -678,7 +682,7 @@ class _SongListState extends State<SongList> {
     // 数据版本不变时复用缓存的歌单条目（避免每帧/每次通知重查 SQLite）。
     _syncSongs(provider, direct.settings.sortPlaylistDetail, direct.weight);
     // 搜索：全局搜索框（内容区）或页内自带搜索框（歌单页）过滤；visible 为原始下标映射。
-    final query = (widget.globalSearch ? nav.search.trim() : _localQuery.trim())
+    final query = (widget.globalSearch ? search.trim() : _localQuery.trim())
         .toLowerCase();
     final searching = query.isNotEmpty;
     final visible = <int>[

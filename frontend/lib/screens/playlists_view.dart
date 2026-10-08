@@ -101,9 +101,10 @@ class _PlaylistsViewState extends State<PlaylistsView>
   Widget build(BuildContext context) {
     super.build(context);
     final provider = context.watch<PlaylistsProvider>();
-    final nav = context.watch<NavigationProvider>();
+    // 订阅收窄（T012）：歌单列表只关注全局搜索词；区段索引变更不重建、不重排。
+    final search = context.select<NavigationProvider, String>((n) => n.search);
     final direct = context.watch<DirectSourceManager>();
-    final q = nav.search.trim().toLowerCase();
+    final q = search.trim().toLowerCase();
     final all = provider.playlists;
     // 搜索内容是歌单中的具体歌曲（标题/歌手），歌单名同样可命中。
     final matchIds = q.isEmpty
@@ -356,7 +357,10 @@ class PlaylistDetailView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final nav = context.watch<NavigationProvider>();
+    // 订阅收窄（T012）：歌单详情的目标 playlistId 由 widget 参数承载（父级路由
+    // 变更会重建本组件），build 内不读取 NavigationProvider 字段；全局搜索由内层
+    // [SongList] 自行订阅，故此处不订阅导航状态、区段变更零重建。
+    final nav = context.read<NavigationProvider>();
     return SectionSwipe(
       child: SongList(
         playlistId: playlistId,

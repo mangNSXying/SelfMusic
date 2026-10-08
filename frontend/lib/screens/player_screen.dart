@@ -105,46 +105,60 @@ class _PlayerScreenState extends State<PlayerScreen> {
     super.dispose();
   }
 
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final visibility = context.watch<NavigationProvider>().playerView;
+  /// 播放页可见性副作用（订阅收窄 T010）。
+  ///
+  /// 由 [build] 内的 `context.select` 订阅 `playerView`，变化时在此应用计时/控件
+  /// 显隐。provider 的 `select` 仅在 `build` 中合法（`didChangeDependencies` 中会被
+  /// 断言拒绝），故可见性逻辑从 didChangeDependencies 迁到 build。[inBuild] 透传以在
+  /// build 期避免 `setState`。
+  void _applyVisibility(bool visibility, {bool inBuild = false}) {
     final sec =
         context.read<DirectSourceManager>().settings.playerAutoHideIdleSec;
     if (sec != _autoHideSec) {
       _autoHideSec = sec;
-      if (visibility) _rearmAutoHide();
+      if (visibility) _rearmAutoHide(inBuild: inBuild);
     }
     if (!visibility) {
       // 播放页不可见（悬浮层收起/换列表页）：停表并复位显示。
       _autoHideTimer?.cancel();
       _autoHideTimer = null;
-      _controlsHidden = false;
+      _setControlsHidden(false, inBuild: inBuild);
     } else if (!_prevPlayerView) {
       // 从收起切回播放页：复位显示并重新计时。
-      _rearmAutoHide();
+      _rearmAutoHide(inBuild: inBuild);
     }
     _prevPlayerView = visibility;
   }
 
   /// 播放页控件静置隐藏计时（改进.txt UI3）：任何触摸视为交互并重新计时。
-  void _rearmAutoHide() {
+  void _rearmAutoHide({bool inBuild = false}) {
     _autoHideTimer?.cancel();
     _autoHideTimer = null;
     if (!mounted) return;
     final visible = context.read<NavigationProvider>().playerView;
     if (!visible || !_onPlayerPage || _autoHideSec <= 0) {
-      if (_controlsHidden) setState(() => _controlsHidden = false);
+      _setControlsHidden(false, inBuild: inBuild);
       return;
     }
-    if (_controlsHidden) setState(() => _controlsHidden = false);
+    _setControlsHidden(false, inBuild: inBuild);
     _autoHideTimer = Timer(Duration(seconds: _autoHideSec), () {
       if (!mounted) return;
       if (!_onPlayerPage || !context.read<NavigationProvider>().playerView) {
         return;
       }
-      if (!_controlsHidden) setState(() => _controlsHidden = true);
+      _setControlsHidden(true);
     });
+  }
+
+  /// 设置控件显隐。[inBuild] 为真（build 阶段）时直接改字段——本次 build 已反映；
+  /// 其余场景用 setState 触发重建。
+  void _setControlsHidden(bool hidden, {bool inBuild = false}) {
+    if (_controlsHidden == hidden) return;
+    if (inBuild) {
+      _controlsHidden = hidden;
+    } else {
+      setState(() => _controlsHidden = hidden);
+    }
   }
 
   /// 设置变化时合并到下一帧；应用屏幕常亮。
@@ -248,6 +262,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // 订阅收窄（T010）：播放页只订阅 playerView（控制自动隐藏计时）；区段/搜索/
+    // 队列等变更不再重建播放页。可见性副作用在 build 内安全应用（inBuild=true）。
+    final playerView =
+        context.select<NavigationProvider, bool>((n) => n.playerView);
+    _applyVisibility(playerView, inBuild: true);
     final direct = context.watch<DirectSourceManager>();
     final gestureOn = direct.settings.playerGestureSwipe;
     // 屏幕常亮设置：停留播放页期间应用（变化时下一帧生效）。

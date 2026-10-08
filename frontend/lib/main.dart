@@ -466,7 +466,10 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
     }
     // 首次启动不再强制配对：未配对也可正常使用直连模式；
     // 配对 / 会话过期后重新配对在「设置 → 服务端」进行。
-    final nav = context.watch<NavigationProvider>();
+    // 订阅收窄（T006）：Root 仅关注播放页可见性；悬浮层进度由 playerProgress
+    // （ValueNotifier）独立逐帧驱动，区段/搜索等变更不重建 Root。
+    final playerView =
+        context.select<NavigationProvider, bool>((n) => n.playerView);
     // 壳常驻（底层）；播放页为悬浮层（高层），按进度跟手位移。
     return Provider<PlayerSheetAnimator>.value(
       value: _sheetAnim,
@@ -477,9 +480,9 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
           children: [
             const AppShell(content: AppContent()),
             ValueListenableBuilder<double>(
-              valueListenable: nav.playerProgress,
+              valueListenable: _nav.playerProgress,
               builder: (c, p, _) {
-                if (!nav.playerView && p >= 1) {
+                if (!playerView && p >= 1) {
                   return const SizedBox.shrink();
                 }
                 final h = MediaQuery.of(c).size.height;

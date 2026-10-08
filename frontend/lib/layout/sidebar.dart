@@ -13,7 +13,11 @@ class Sidebar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final nav = context.watch<NavigationProvider>();
+    // 订阅收窄（T007）：侧栏只关注当前设置分区（高亮）；区段/搜索/播放页变更
+    // 不再重建侧栏。
+    final nav = context.read<NavigationProvider>();
+    final settings =
+        context.select<NavigationProvider, SettingsItem?>((n) => n.settings);
     final theme = context.watch<ThemeProvider>();
 
     // 用 Material 承载底色：ListTile 的选中底色/墨迹画在最近的 Material 上，
@@ -27,9 +31,9 @@ class Sidebar extends StatelessWidget {
             children: [
               const _Header(),
               const Divider(height: 1),
-              Expanded(child: _SettingsList(nav: nav)),
+              Expanded(child: _SettingsList(nav: nav, selected: settings)),
               const Divider(height: 1),
-              _BottomBar(theme: theme, nav: nav),
+              _BottomBar(theme: theme),
             ],
           ),
         ),
@@ -73,7 +77,8 @@ class _Header extends StatelessWidget {
 
 class _SettingsList extends StatelessWidget {
   final NavigationProvider nav;
-  const _SettingsList({required this.nav});
+  final SettingsItem? selected;
+  const _SettingsList({required this.nav, required this.selected});
 
   @override
   Widget build(BuildContext context) {
@@ -96,7 +101,7 @@ class _SettingsList extends StatelessWidget {
             dense: true,
             leading: Icon(item.icon),
             title: Text(item.label),
-            selected: nav.settings == item,
+            selected: selected == item,
             selectedTileColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
             onTap: () {
               nav.openSettings(item);
@@ -113,8 +118,7 @@ class _SettingsList extends StatelessWidget {
 
 class _BottomBar extends StatelessWidget {
   final ThemeProvider theme;
-  final NavigationProvider nav;
-  const _BottomBar({required this.theme, required this.nav});
+  const _BottomBar({required this.theme});
 
   @override
   Widget build(BuildContext context) {

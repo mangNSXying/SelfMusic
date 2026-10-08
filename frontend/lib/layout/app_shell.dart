@@ -67,10 +67,13 @@ class _AppShellState extends State<AppShell> {
   @override
   Widget build(BuildContext context) {
     final wide = isWide(context);
-    final nav = context.watch<NavigationProvider>();
+    // 订阅收窄（T005）：布局壳只关注队列面板开合；区段/搜索/播放页等变更
+    // 不再牵连整壳重建。
+    final nav = context.read<NavigationProvider>();
+    final queueOpen = context.select<NavigationProvider, bool>((n) => n.queueOpen);
     // 队列面板开合 → 门控：面板打开/关闭期间被视为「交互中」。
-    if (_gate != null && _gate!.queuePanelOpen != nav.queueOpen) {
-      final open = nav.queueOpen;
+    if (_gate != null && _gate!.queuePanelOpen != queueOpen) {
+      final open = queueOpen;
       WidgetsBinding.instance
           .addPostFrameCallback((_) => _gate?.setQueuePanelOpen(open));
     }
@@ -106,7 +109,7 @@ class _AppShellState extends State<AppShell> {
             children: [
               if (_sidebarVisible) const Sidebar(),
               Expanded(child: contentColumn),
-              if (nav.queueOpen)
+              if (queueOpen)
                 // 宽屏必须有界宽度：Row 非 flex 子项是无界宽度，width=null
                 // 会让面板内部 Spacer/Expanded 抛 unbounded 布局异常（整面板
                 // 空白）。窄屏底部弹层不受影响（Sheet 有界）。
