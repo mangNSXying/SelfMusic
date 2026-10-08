@@ -209,9 +209,17 @@ class OhosPlatformBridge {
   /// `cover_thumb.dart` 的 `<md5>.thumb.jpg` 约定）；[maxEdge]/[quality]
   /// 缺省 768/82（与 kCoverThumbMaxEdge / kCoverThumbQuality 对齐）。
   ///
+  /// **线程隔离（ohos-thumb-taskpool feature，2026-10-08）**：原生侧不再在 UI
+  /// 主线程内联执行管线，而是委托 `ThumbDispatcher` 到任务池/Worker 独立线程
+  /// （契约见 spec/ohos-thumb-taskpool plan.md R-1/R-3）。通道方法名/参数不变。
+  ///
+  /// **返回解析兼容（R-8 / T004）**：保持 bool 成功语义，同时兼容原生侧新增的
+  /// 结构化返回 `{ok, costMs, degraded}`；[makeCoverThumbDetailed] 暴露结构化
+  /// 细节（供埋点）而 [makeCoverThumb] 仅取 `ok`（既有调用方零改动）。
+  ///
   /// 失败兜底（plan.md R-5）：[PlatformException] / [MissingPluginException] /
-  /// [TimeoutException] 与 false 返回一律 debugPrint 诊断日志后返回 false，
-  /// **绝不抛出、绝不回退内联 Dart 编码**（fork 引擎上等于把数百 ms UI 块
+  /// [TimeoutException] 与 false/ok=false 返回一律 debugPrint 诊断日志后返回
+  /// 失败，**绝不抛出、绝不回退内联 Dart 编码**（fork 引擎上等于把数百 ms UI 块
   /// 请回来）——调用方按「缩略图是纯优化」静默回原图显示。15s 超时上限覆盖
   /// 原生解码大图的合法秒级耗时，超时后本轮放弃、下次触发重试；[timeout]
   /// 仅供测试注入。
@@ -219,25 +227,72 @@ class OhosPlatformBridge {
       {int maxEdge = 768,
       int quality = 82,
       Duration timeout = const Duration(seconds: 15)}) async {
+    final r = await makeCoverThumbDetailed(srcPath, thumbPath,
+        maxEdge: maxEdge, quality: quality, timeout: timeout);
+    return r.ok;
+  }
+
+  /// [makeCoverThumb] 的结构化版本：解析 `{ok,costMs,degraded}`（旧 bool 形态
+  /// 同样兼容），供生成链路埋点（`ThumbGenStats`）取单张耗时与降级标记。
+  static Future<OhosThumbResult> makeCoverThumbDetailed(
+      String srcPath, String thumbPath,
+      {int maxEdge = 768,
+      int quality = 82,
+      Duration timeout = const Duration(seconds: 15)}) async {
     try {
-      final ok = await _channel.invokeMethod<bool>('makeCoverThumb',
+      final raw = await _channel.invokeMethod<Object?>('makeCoverThumb',
           <String, Object?>{
             'srcPath': srcPath,
             'thumbPath': thumbPath,
             'maxEdge': maxEdge,
             'quality': quality
           }).timeout(timeout);
-      return ok ?? false;
+      return OhosThumbResult.fromChannel(raw);
     } on TimeoutException catch (e) {
       debugPrint('[ohos] makeCoverThumb 超时（放弃本轮，下次触发重试）: $e');
-      return false;
+      return const OhosThumbResult(ok: false, timeout: true);
     } on PlatformException catch (e) {
       debugPrint('[ohos] makeCoverThumb 失败: $e');
-      return false;
+      return const OhosThumbResult(ok: false);
     } on MissingPluginException catch (e) {
       debugPrint('[ohos] makeCoverThumb 桥未装配: $e');
-      return false;
+      return const OhosThumbResult(ok: false);
     }
+  }
+}
+
+/// `makeCoverThumb` 的结构化结果：成功语义 + 可选原生自报耗时/降级标记。
+class OhosThumbResult {
+  /// 是否成功落盘（唯一权威成功语义，与既有 bool 返回一致）。
+  final bool ok;
+
+  /// 原生侧自报单张耗时（ms，旧 bool 形态/异常时为 null）。
+  final int? costMs;
+
+  /// 降级标记（如 `worker`；空/旧形态时为 null）。
+  final String? degraded;
+
+  /// 是否因超时结束（埋点区分超时与失败用）。
+  final bool timeout;
+
+  const OhosThumbResult(
+      {required this.ok, this.costMs, this.degraded, this.timeout = false});
+
+  /// 兼容解析：旧 bool 形态（true/false）或新结构化 `{ok,costMs,degraded}`，
+  /// 其它形态（null/未知）一律按失败处理（R-8）。
+  factory OhosThumbResult.fromChannel(Object? raw) {
+    if (raw is bool) return OhosThumbResult(ok: raw);
+    if (raw is Map) {
+      final ok = raw['ok'];
+      final cost = raw['costMs'];
+      final deg = raw['degraded'];
+      return OhosThumbResult(
+        ok: ok == true,
+        costMs: cost is int ? cost : (cost is num ? cost.toInt() : null),
+        degraded: (deg is String && deg.isNotEmpty) ? deg : null,
+      );
+    }
+    return const OhosThumbResult(ok: false);
   }
 }
 

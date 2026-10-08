@@ -23,23 +23,82 @@ import '../services/artist_resolver.dart';
 import '../services/secret_store.dart';
 import '../utils/cover_thumb.dart';
 import '../utils/interaction_gate.dart';
+import '../utils/thumb_gen_stats.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
 import 'direct_task_queue.dart';
 
-/// 缩略图回填的逐张间隔：ohos 走原生解码（ImageKit 系统服务），启动期
-/// 批量补齐会与首屏渲染抢系统解码资源——留出节流缝隙避免打开即卡顿
-/// （spec R-8，调参记录见 plan.md）。其余平台纯 Dart 编码跑在子 isolate，
-/// 仅让出事件循环即可。
-final Duration _thumbBackfillGap = Platform.operatingSystem == 'ohos'
-    ? const Duration(milliseconds: 50)
-    : Duration.zero;
+/// 缩略图回填的批间让出间隔：线程下沉后原逐张固定间隔（ohos 50ms）已**放宽为 0**
+/// ——节奏改由有界并发（[DirectSourceManager.thumbBackfillMaxInflight]）控制，
+/// 不再逐张串行顿挫（R-5 / US2）。其余平台原即为 0，行为不变（R-9）。
+const Duration _thumbBackfillGap = Duration.zero;
 
-/// 交互期（滚动/过渡/浮层/队列）额外让出间隔：进一步错峰逐张封面回填，
-/// 避免与动画争抢系统解码资源（R-2 / T015）。交互结束后自然回到正常间隔。
-const Duration _thumbBackfillGapInteractive = Duration(milliseconds: 200);
-
-/// 交互期后台补读批间等待步长与上限：交互结束即继续（幂等、最终一致）。
+/// 交互期错峰等待步长（R-5 / T011）：交互进行中暂停推进「下一批」，交互结束
+/// 立即续跑（幂等、最终一致，只是错开动画窗口）。
 const Duration _interactionWaitStep = Duration(milliseconds: 120);
+
+/// 回填默认并发上限 / 批大小（可配；R-4）。仅 ohos 启用多并发，其余平台保持
+/// 串行（maxInflight=1），确保非 ohos 行为零回退（R-9）。
+const int _thumbBackfillDefaultMaxInflight = 2;
+const int _thumbBackfillDefaultBatchSize = 16;
+
+/// 默认让出实现（可注入以便确定性测试）。
+Future<void> _defaultThumbSleep(Duration d) => Future<void>.delayed(d);
+
+/// 有界并发 + 批驱动的封面缩略图回填调度（R-4 / R-5，T010 / T011）。
+///
+/// - **去重**：同一 [covers] 路径只处理一次（保留首次出现的顺序）；
+/// - **有界并发**：同一批内至多 [maxInflight] 个 [generate] 在飞（交互期收紧为 1）；
+/// - **批驱动**：每批 [batchSize] 个跑完再取下一批，避免一次性倾泻任务/结果回主线程；
+/// - **交互错峰**：每批开始前等待交互结束（[interactionWaitStep] 步长，幂等、最终
+///   一致），交互期并发收紧为 1，结束后自动恢复；
+/// - 返回「成功把展示路径切到缩略图」的数量。
+///
+/// [sleep] 可注入以便确定性测试（默认 `Future.delayed`）。
+Future<int> runThumbBackfill({
+  required List<String> covers,
+  required Future<bool> Function(String cover) generate,
+  required bool Function() isInteracting,
+  int maxInflight = _thumbBackfillDefaultMaxInflight,
+  int batchSize = _thumbBackfillDefaultBatchSize,
+  Duration gap = _thumbBackfillGap,
+  Duration interactionWaitStep = _interactionWaitStep,
+  Future<void> Function(Duration) sleep = _defaultThumbSleep,
+}) async {
+  // 同目标去重：保留首次出现的顺序。
+  final seen = <String>{};
+  final queue = <String>[];
+  for (final c in covers) {
+    if (seen.add(c)) queue.add(c);
+  }
+  if (queue.isEmpty) return 0;
+  final limit = maxInflight < 1 ? 1 : maxInflight;
+  final batch = batchSize < 1 ? 1 : batchSize;
+  var made = 0;
+  var cursor = 0;
+  while (cursor < queue.length) {
+    // 交互期错峰：等交互结束再推进下一批（期间不派发新任务）。
+    while (isInteracting()) {
+      await sleep(interactionWaitStep);
+    }
+    final end = (cursor + batch < queue.length) ? cursor + batch : queue.length;
+    final inflight = <Future<bool>>[];
+    for (var i = cursor; i < end; i++) {
+      final activeLimit = isInteracting() ? 1 : limit;
+      while (inflight.length >= activeLimit) {
+        if (await inflight.removeAt(0)) made++;
+      }
+      inflight.add(generate(queue[i]));
+    }
+    for (final f in inflight) {
+      if (await f) made++;
+    }
+    cursor = end;
+    if (gap > Duration.zero && cursor < queue.length) {
+      await sleep(gap);
+    }
+  }
+  return made;
+}
 
 /// 直连源管理（阶段 3 / 阶段 4 接收器）。
 ///
@@ -69,6 +128,12 @@ class DirectSourceManager extends ChangeNotifier {
   /// 交互门控（R-2）：由 main 注入。未注入时为 null，通知行为与改动前一致。
   InteractionGate? _interactionGate;
   void attachInteractionGate(InteractionGate gate) => _interactionGate = gate;
+
+  /// 回填并发上限（可配；R-4/US2）。仅 ohos 生效多并发，非 ohos 回填固定串行。
+  int thumbBackfillMaxInflight = _thumbBackfillDefaultMaxInflight;
+
+  /// 回填批大小（可配；R-4/US2）。
+  int thumbBackfillBatchSize = _thumbBackfillDefaultBatchSize;
 
   /// 通知出口：交互期（滚动/过渡/浮层/队列）把高频数据通知去重聚合，
   /// 交互结束补投一次（最终一致），避免数据通知在动画帧内造成整屏行级重建。
@@ -429,25 +494,29 @@ class DirectSourceManager extends ChangeNotifier {
     }
   }
 
-  /// 为存量封面生成列表用缩略图（滑动性能）：逐张生成并让出事件循环，
+  /// 为存量封面生成列表用缩略图（滑动性能）：线程下沉后放宽逐张固定间隔，
+  /// 改为**有界并发 + 批驱动**（[runThumbBackfill]），交互期错峰让位、结束时续跑；
   /// 失败忽略（展示自动退回原图）。新补读的封面在 [ensureCoverThumb] 即时生成。
   Future<void> _backfillCoverThumbs() async {
-    var made = 0;
     try {
-      for (final cover in index.allCoverPaths()) {
-        final before = coverDisplayPath(cover);
-        await ensureCoverThumb(cover);
-        if (coverDisplayPath(cover) != before) made++;
-        // 交互期把逐张间隔拉长（错峰），交互结束自动回落到正常间隔。
-        final gap = (_interactionGate?.isInteracting ?? false)
-            ? _thumbBackfillGapInteractive
-            : _thumbBackfillGap;
-        await Future<void>.delayed(gap);
-      }
+      ThumbGenStats.startBatch();
+      final made = await runThumbBackfill(
+        covers: index.allCoverPaths(),
+        generate: (cover) async {
+          final before = coverDisplayPath(cover);
+          await ensureCoverThumb(cover);
+          return coverDisplayPath(cover) != before;
+        },
+        isInteracting: () => _interactionGate?.isInteracting ?? false,
+        // 非 ohos 固定串行线程路径（R-9 零回退）；ohos 才有界并发提速（US2）。
+        maxInflight: isOhos ? thumbBackfillMaxInflight : 1,
+        batchSize: thumbBackfillBatchSize,
+        gap: _thumbBackfillGap,
+      );
+      if (made > 0) debugPrint('[direct] 封面缩略图回填 $made 张');
     } catch (e) {
       debugPrint('[direct] 封面缩略图回填失败（忽略）：$e');
     }
-    if (made > 0) debugPrint('[direct] 封面缩略图回填 $made 张');
   }
 
   /// 交互期错峰等待：滚动/过渡等交互进行时逐小步让出，结束后立即返回继续

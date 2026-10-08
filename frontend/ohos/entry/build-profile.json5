@@ -2,6 +2,13 @@
 {
   "apiType": 'stageMode',
   "buildOption": {
+    // TaskPool 在本工程不可用时的缩略图 Worker 兜底线程（plan.md R-1 / FR-008）；
+    // 入口须与 platform/ThumbDispatcher.ets 的 THUMB_WORKER_ENTRY 一致。
+    "sourceOption": {
+      "workers": [
+        './src/main/ets/workers/ThumbWorker.ets'
+      ]
+    }
   },
   "targets": [
     {

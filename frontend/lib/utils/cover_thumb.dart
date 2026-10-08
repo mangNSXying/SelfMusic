@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 
 import '../platform/harmonyos/ohos_platform_bridge.dart';
 import 'off_thread.dart';
+import 'thumb_gen_stats.dart';
 
 /// 列表/卡片用封面缩略图：落盘最长边 768 的 JPEG。
 ///
@@ -62,9 +63,13 @@ String coverDisplayPath(String coverPath) {
 
 /// 确保 [coverPath] 有对应缩略图；不存在则生成（幂等、去重）。
 ///
-/// ohos 走平台桥原生解码（ImageKit，主 isolate 不读原图字节）；其余平台
-/// 后台 isolate 纯 Dart 生成。失败/非图片时静默保留原图：缩略图是纯优化，
-/// 不向上抛错、不影响补读标已读。
+/// ohos 走平台桥：解码/EXIF/缩放/编码/落盘在**任务池或 Worker 独立线程**执行
+/// （ohos-thumb-taskpool feature，主 isolate 既不读原图字节、也不执行管线）；
+/// 其余平台后台 isolate 纯 Dart 生成。失败/非图片时静默保留原图：缩略图是
+/// 纯优化，不向上抛错、不影响补读标已读。
+///
+/// **失败零回退**：桥失败绝不回退内联 Dart 编码（那会把卡顿源请回来）；
+/// 生成回合计入 [ThumbGenStats] 埋点（可关闭）。
 Future<void> ensureCoverThumb(String coverPath) async {
   final thumb = coverThumbPathFor(coverPath);
   if (_thumbReady.contains(thumb) || File(thumb).existsSync()) {
@@ -76,19 +81,34 @@ Future<void> ensureCoverThumb(String coverPath) async {
   try {
     final src = File(coverPath);
     if (!src.existsSync()) return;
-    // ohos：解码/EXIF/缩放/编码全部下沉平台 ImageKit——fork 引擎上子
-    // isolate 也会卡 UI（spec R-1），主 isolate 亦不读原图字节。测试开关
-    // 仅供 flutter_test 在非 ohos 宿主覆盖该分支（plan.md R-7）。
+    // ohos：解码/EXIF/缩放/编码全部下沉任务池/Worker 独立线程——fork 引擎上
+    // 子 isolate 也会卡 UI（spec R-1），主 isolate 亦不读原图字节、不跑管线。
+    // 测试开关仅供 flutter_test 在非 ohos 宿主覆盖该分支（plan.md R-7）。
     if (Platform.operatingSystem == 'ohos' || forceNativeThumbInTests) {
-      final ok = await OhosPlatformBridge.makeCoverThumb(
-        coverPath,
-        thumb,
-        maxEdge: kCoverThumbMaxEdge,
-        quality: kCoverThumbQuality,
-      );
-      if (ok) {
-        _thumbReady.add(thumb);
-        _displayPathCache[coverPath] = thumb;
+      final sw = Stopwatch()..start();
+      ThumbGenStats.markStart();
+      try {
+        final r = await OhosPlatformBridge.makeCoverThumbDetailed(
+          coverPath,
+          thumb,
+          maxEdge: kCoverThumbMaxEdge,
+          quality: kCoverThumbQuality,
+        );
+        sw.stop();
+        ThumbGenStats.markEnd(
+          ok: r.ok,
+          cost: sw.elapsed,
+          timeout: r.timeout,
+          nativeCostMs: r.costMs,
+          degraded: r.degraded,
+        );
+        if (r.ok) {
+          _thumbReady.add(thumb);
+          _displayPathCache[coverPath] = thumb;
+        }
+      } catch (_) {
+        sw.stop();
+        ThumbGenStats.markEnd(ok: false, cost: sw.elapsed);
       }
       // 桥失败静默保留原图：绝不回退纯 Dart 编码（R-5，卡顿源不能复活）。
       return;

@@ -13,7 +13,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { window } from '@kit.ArkUI';
 import { abilityAccessCtrl, bundleManager, Permissions } from '@kit.AbilityKit';
 import { connection, a2dp } from '@kit.ConnectivityKit';
-import { image } from '@kit.ImageKit';
+import { ThumbDispatcher } from './ThumbDispatcher';
 
 const TAG = 'SelfMusicPlatform';
 /** 与 Dart 侧（ohos_platform_bridge.dart）约定的系统能力通道。 */
@@ -36,20 +36,6 @@ interface DirEntry {
 }
 
 /**
- * EXIF Orientation 文本值 → 解码变换（官方 FAQ 映射表）。
- * 旋转经 DecodingOptions.rotate 在解码期完成；镜像在解码后用 PixelMap.flip
- * 后补（此时才需要 editable:true，其余保持 false 保留渲染/传输性能收益）。
- */
-interface ExifTransform {
-  /** 解码期旋转角度（度：0/90/180/270）。 */
-  rotate: number;
-  /** 解码后需水平镜像。 */
-  flipH: boolean;
-  /** 解码后需垂直镜像。 */
-  flipV: boolean;
-}
-
-/**
  * 系统能力平台桥（2026-10-06 ohos-permissions feature；2026-10-06
  * ohos-thumb-native-decode feature 扩封面缩略图管线）：
  *
@@ -63,10 +49,9 @@ interface ExifTransform {
  *   音乐源选目录 → 扫描 → 点播 → 重启免重授全链路。
  * - 蓝牙：ACCESS_BLUETOOTH 场景化申请（三段式）+ 已配对/已连接音频
  *   设备查询，支撑「常亮限定蓝牙设备」门控轮询。
- * - 封面缩略图：makeCoverThumb 原生图像管线（image 解码 → EXIF 方向
- *   烘焙 → 降采样 → JPEG 重编码）。fork 引擎无子 isolate、runOffThread
- *   在 ohos 内联，纯 Dart 缩略图生成会阻塞 UI isolate——重活全部下沉
- *   系统原生线程。
+ * - 封面缩略图：makeCoverThumb 委托 `ThumbDispatcher`，缩略图管线（读图→EXIF
+ *   方向→降采样→JPEG 重编码→原子落盘）在**任务池/Worker 独立线程**执行，
+ *   UI 主线程只派发与收结果（ohos-thumb-taskpool feature，R-1/R-3/R-8）。
  *
  * 通道协议（selfmusic/platform，Dart → ArkTS，11 个方法，契约以 plan.md
  * 「Contracts & Interfaces」为准）：
@@ -83,9 +68,12 @@ interface ExifTransform {
  * - hasBluetoothPermission {} → bool（异常按 false）
  * - listBondedDevices {} → [{name,address}]（异常降级空数组 + 日志）
  * - connectedDevices {} → [address]（异常降级空数组 + 日志）
- * - makeCoverThumb {srcPath,thumbPath,maxEdge,quality} → bool（缩略图生成
- *   全链原生完成；EXIF 方向烘焙进像素、产物不带 EXIF；tmp + rename 原子
- *   落盘；任何失败 false，Dart 静默回原图显示，绝不向 Dart 抛错）
+ * - makeCoverThumb {srcPath,thumbPath,maxEdge,quality} → {ok,costMs,degraded}
+ *   （bool 语义兼容：ok 即原 bool）。**线程隔离（ohos-thumb-taskpool）**：本桥
+ *   仅做参数校验并委托 `ThumbDispatcher`，缩略图管线（读图→EXIF→缩放→JPEG
+ *   编码→tmp+rename 原子落盘）在任务池/Worker 独立线程执行，不再占用 UI 主
+ *   线程（契约见 spec/ohos-thumb-taskpool plan.md R-1/R-3/R-8）。任何失败 ok=false，
+ *   Dart 静默回原图显示，绝不向 Dart 抛错）
  */
 export default class PlatformBridge implements MethodCallHandler {
   private context: common.UIAbilityContext;
@@ -105,6 +93,8 @@ export default class PlatformBridge implements MethodCallHandler {
 
   /** EntryAbility.onDestroy 中的资源回收。 */
   shutdown(): void {
+    // 取消在飞缩略图任务 / 终止兜底 Worker（FR-009：不留半写产物）。
+    ThumbDispatcher.getInstance().shutdown();
     this.channel = null;
   }
 
@@ -521,29 +511,18 @@ export default class PlatformBridge implements MethodCallHandler {
     }
   }
 
-  // ---------- 封面缩略图（ohos-thumb-native-decode feature） ----------
+  // ---------- 封面缩略图（ohos-thumb-native-decode / ohos-thumb-taskpool） ----------
 
   /**
-   * 封面缩略图原生生成（契约见 spec/ohos-thumb-native-decode plan.md
-   * 「ArkTS 侧流程契约」九步）：
-   * 1. 参数校验（srcPath/thumbPath 非空；maxEdge/quality 缺省回退 768/82）；
-   * 2. fileIo 打开原图，缺失/不可读 → false；
-   * 3. image.createImageSource(fd) + getImageProperty(Orientation)（无 EXIF/
-   *    异常按 Top-left）；
-   * 4. getImageInfo 取原始宽高；
-   * 5. EXIF 官方映射表算（rotate, flipH, flipV）与旋转后口径的等比目标尺寸
-   *    （最长边 ≤ maxEdge 不放大、正整数）；
-   * 6. createPixelMap（rotate 进解码参数；仅镜像场景 editable:true）失败 →
-   *    释放资源 → false；
-   * 7. 镜像值后补 PixelMap.flip，随后立即 release imageSource；
-   * 8. 写 <thumbPath>.tmp 成功后 rename 为 thumbPath（原子落盘，不留半写
-   *    .thumb.jpg 被 coverDisplayPath 误判可用），再释放 pixelMap/packer；
-   * 9. 任一步异常：清理 tmp、释放已持有资源、result false——全程不向 Dart
-   *    抛未捕获错误（缩略图是纯优化，Dart 静默回原图显示）。
+   * 封面缩略图生成（**线程隔离版**，契约见 spec/ohos-thumb-taskpool plan.md
+   * R-1/R-3/R-8）：本方法仅做**参数校验 + 调度委托**，不再在 UI 主线程内联执行
+   * 解码/编码/写盘（原实现见历史，管线已迁至无 UI 依赖的 `ThumbTask.ets`）：
+   * 1. 参数校验（srcPath/thumbPath 非空；maxEdge/quality 缺省回退 768/82，越界回退缺省）；
+   * 2. 委托 `ThumbDispatcher.generate`——有界并发 + 同目标去重，首选 TaskPool，
+   *    目标设备不可用时降级 Worker 独立线程（降级经 hilog 可观测，FR-008）；
+   * 3. 汇总结果为结构化 `{ok,costMs,degraded}` 回桥（ok 即原 bool 语义，R-8）。
    *
-   * 读盘/解码/编码/写盘全在系统原生线程完成，缩略图字节不过通道；产物
-   * JPEG 不带 EXIF（needsPackProperties 默认 false），方向已烘焙进像素，
-   * 杜绝显示侧二次旋转。
+   * 任何失败 ok=false，Dart 静默回原图显示（FR-003），全程不向 Dart 抛未捕获错误。
    */
   private async handleMakeCoverThumb(call: MethodCall, result: MethodResult): Promise<void> {
     const srcPath = PlatformBridge.argString(call, 'srcPath');
@@ -559,95 +538,14 @@ export default class PlatformBridge implements MethodCallHandler {
     const qualityRaw = PlatformBridge.argNumber(call, 'quality');
     const quality = qualityRaw != null && Number.isInteger(qualityRaw) &&
       qualityRaw >= 1 && qualityRaw <= 100 ? qualityRaw : THUMB_QUALITY_DEFAULT;
-    const tmpPath = `${thumbPath}.tmp`;
-    let srcFile: fileIo.File | null = null;
-    let imageSource: image.ImageSource | null = null;
-    let pixelMap: image.PixelMap | null = null;
-    let packer: image.ImagePacker | null = null;
-    let tmpFile: fileIo.File | null = null;
-    let renamed = false;
-    try {
-      srcFile = fileIo.openSync(srcPath, fileIo.OpenMode.READ_ONLY);
-      imageSource = image.createImageSource(srcFile.fd);
-      let orientation = 'Top-left';
-      try {
-        orientation = await imageSource.getImageProperty(image.PropertyKey.ORIENTATION);
-      } catch (err) {
-        // 无 EXIF（PNG/HEIF 等）或属性读取异常：按 Top-left 不变换。
-      }
-      const info = await imageSource.getImageInfo();
-      const transform = PlatformBridge.exifTransformOf(orientation);
-      const target = PlatformBridge.thumbTargetSize(
-        info.size.width, info.size.height, transform.rotate, maxEdge);
-      const decodeOptions: image.DecodingOptions = {
-        rotate: transform.rotate,
-        editable: transform.flipH || transform.flipV
-      };
-      if (target != null) {
-        decodeOptions.desiredSize = target;
-      }
-      pixelMap = await imageSource.createPixelMap(decodeOptions);
-      if (transform.flipH || transform.flipV) {
-        await pixelMap.flip(transform.flipH, transform.flipV);
-      }
-      await imageSource.release();
-      imageSource = null;
-      fileIo.closeSync(srcFile);
-      srcFile = null;
-      tmpFile = fileIo.openSync(tmpPath,
-        fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
-      packer = image.createImagePacker();
-      const packOptions: image.PackingOption = { format: 'image/jpeg', quality: quality };
-      await packer.packToFile(pixelMap, tmpFile.fd, packOptions);
-      fileIo.closeSync(tmpFile);
-      tmpFile = null;
-      fileIo.renameSync(tmpPath, thumbPath);
-      renamed = true;
-      Log.i(TAG,
-        `makeCoverThumb：${srcPath} → ${thumbPath}（${orientation} ${transform.rotate}° q${quality}）`);
-      result.success(true);
-    } catch (err) {
-      const e = err as BusinessError;
-      Log.w(TAG, `makeCoverThumb 失败：${e.code} ${e.message}`);
-      result.success(false);
-    } finally {
-      if (tmpFile != null) {
-        try {
-          fileIo.closeSync(tmpFile);
-        } catch (err) {
-          // 关闭失败不影响主流程（fd 随进程回收）。
-        }
-      }
-      if (!renamed) {
-        try {
-          fileIo.unlinkSync(tmpPath);
-        } catch (err) {
-          // tmp 不存在/删除失败：忽略（下次生成覆盖重建）。
-        }
-      }
-      if (pixelMap != null) {
-        pixelMap.release().catch((err: BusinessError): void => {
-          Log.w(TAG, `缩略图 pixelMap 释放失败（忽略）：${err.code} ${err.message}`);
-        });
-      }
-      if (packer != null) {
-        packer.release().catch((err: BusinessError): void => {
-          Log.w(TAG, `imagePacker 释放失败（忽略）：${err.code} ${err.message}`);
-        });
-      }
-      if (imageSource != null) {
-        imageSource.release().catch((): void => {
-          // 释放失败仅记日志兜底；async 的 Promise 必须处理。
-        });
-      }
-      if (srcFile != null) {
-        try {
-          fileIo.closeSync(srcFile);
-        } catch (err) {
-          // 关闭失败不影响主流程。
-        }
-      }
-    }
+    const r = await ThumbDispatcher.getInstance()
+      .generate(srcPath, thumbPath, maxEdge, quality);
+    const out: Record<string, Object> = {
+      'ok': r.ok,
+      'costMs': r.costMs,
+      'degraded': r.degraded
+    };
+    result.success(out);
   }
 
   /**
@@ -672,69 +570,6 @@ export default class PlatformBridge implements MethodCallHandler {
   private static grantedResult(granted: boolean): Record<string, Object> {
     const out: Record<string, Object> = { 'granted': granted };
     return out;
-  }
-
-  /**
-   * EXIF Orientation 文本值 → 解码变换（官方 FAQ 映射表；Top-left 与未知值
-   * 不变换）。镜像值（2/4/5/7）在解码后经 PixelMap.flip 后补。
-   */
-  private static exifTransformOf(orientation: string): ExifTransform {
-    const t: ExifTransform = { rotate: 0, flipH: false, flipV: false };
-    switch (orientation) {
-      case 'Top-right':
-        t.flipH = true;
-        break;
-      case 'Bottom-right':
-        t.rotate = 180;
-        break;
-      case 'Bottom-left':
-        t.flipV = true;
-        break;
-      case 'Left-top':
-        t.rotate = 270;
-        t.flipH = true;
-        break;
-      case 'Right-top':
-        t.rotate = 90;
-        break;
-      case 'Right-bottom':
-        t.rotate = 90;
-        t.flipH = true;
-        break;
-      case 'Left-bottom':
-        t.rotate = 270;
-        break;
-      default:
-        // Top-left（EXIF 1）与未知值：不变换。
-        break;
-    }
-    return t;
-  }
-
-  /**
-   * 旋转后口径的等比目标尺寸（desiredSize 与 rotate 同时传入时解码器按
-   * 旋转后解释，90°/270° 宽高对调后等比缩放）：最长边 ≤ maxEdge、四舍五入
-   * 正整数、不放大。无需缩放（原图最长边 ≤ maxEdge 或尺寸非法）返回 null，
-   * 解码器用原尺寸，免 desiredSize 拉伸风险。
-   */
-  private static thumbTargetSize(width: number, height: number, rotate: number,
-    maxEdge: number): image.Size | null {
-    if (width <= 0 || height <= 0) {
-      return null;
-    }
-    const swapped = rotate === 90 || rotate === 270;
-    const postW = swapped ? height : width;
-    const postH = swapped ? width : height;
-    const longest = Math.max(postW, postH);
-    if (longest <= maxEdge) {
-      return null;
-    }
-    const scale = maxEdge / longest;
-    const target: image.Size = {
-      width: Math.max(1, Math.round(postW * scale)),
-      height: Math.max(1, Math.round(postH * scale))
-    };
-    return target;
   }
 
   /** 取参 helper：argument 返回 Any，显式转换避免 arkts-no-any-unknown。 */

@@ -122,4 +122,78 @@ void main() {
 
     expect(ok, isFalse);
   });
+
+  group('返回值解析兼容（ohos-thumb-taskpool T004）', () {
+    test('旧 bool 形态：makeCoverThumbDetailed 解析 ok 且无结构化字段', () async {
+      mockChannel((call) async => true);
+
+      final r = await OhosPlatformBridge.makeCoverThumbDetailed(
+          '/a.jpg', '/a.thumb.jpg');
+
+      expect(r.ok, isTrue);
+      expect(r.costMs, isNull);
+      expect(r.degraded, isNull);
+      expect(r.timeout, isFalse);
+    });
+
+    test('新结构化形态 {ok,costMs,degraded}：ok/costMs/degraded 全部解析', () async {
+      mockChannel((call) async => <String, Object?>{
+            'ok': true,
+            'costMs': 42,
+            'degraded': 'worker',
+          });
+
+      final ok =
+          await OhosPlatformBridge.makeCoverThumb('/a.jpg', '/a.thumb.jpg');
+      expect(ok, isTrue);
+
+      final r = await OhosPlatformBridge.makeCoverThumbDetailed(
+          '/a.jpg', '/a.thumb.jpg');
+      expect(r.ok, isTrue);
+      expect(r.costMs, 42);
+      expect(r.degraded, 'worker');
+    });
+
+    test('新结构化形态 ok=false：成功语义为 false（不再视为成功）', () async {
+      mockChannel((call) async => <String, Object?>{
+            'ok': false,
+            'costMs': 7,
+            'degraded': '',
+          });
+
+      final ok =
+          await OhosPlatformBridge.makeCoverThumb('/a.jpg', '/a.thumb.jpg');
+      expect(ok, isFalse);
+      final r = await OhosPlatformBridge.makeCoverThumbDetailed(
+          '/a.jpg', '/a.thumb.jpg');
+      expect(r.ok, isFalse);
+      expect(r.costMs, 7);
+      expect(r.degraded, isNull); // 空字符串降级标记归一为 null。
+    });
+
+    test('未知/null 形态：按失败处理，不向上抛', () async {
+      mockChannel((call) async => null);
+      final r = await OhosPlatformBridge.makeCoverThumbDetailed(
+          '/a.jpg', '/a.thumb.jpg');
+      expect(r.ok, isFalse);
+    });
+
+    test('异常与超时的结构化结果：timeout 标记可区分', () async {
+      mockChannel((call) async {
+        throw PlatformException(code: '500', message: 'boom');
+      });
+      final err = await OhosPlatformBridge.makeCoverThumbDetailed(
+          '/a.jpg', '/a.thumb.jpg');
+      expect(err.ok, isFalse);
+      expect(err.timeout, isFalse);
+
+      final never = Completer<Object?>();
+      mockChannel((call) => never.future);
+      final to = await OhosPlatformBridge.makeCoverThumbDetailed(
+          '/a.jpg', '/a.thumb.jpg',
+          timeout: const Duration(milliseconds: 20));
+      expect(to.ok, isFalse);
+      expect(to.timeout, isTrue);
+    });
+  });
 }
