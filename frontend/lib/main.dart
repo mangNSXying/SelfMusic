@@ -29,9 +29,28 @@ import 'screens/player_screen.dart';
 import 'layout/app_shell.dart';
 import 'widgets/app_toast.dart';
 import 'widgets/player_sheet_anim.dart';
+import 'utils/interaction_gate.dart';
+
+/// 图片解码缓存上限（R-6 / T016）。
+///
+/// 口径复核结论：**列表缩略图**（落盘 768 长边、行内按 DPR 降解码，工作集约
+/// 百 MB）与**播放页全尺寸封面**（单张可达十余 MB）共用同一 ImageCache。上限
+/// 过大 → 内存压力 → GC 暂停 UI 线程（官方指南）；过小 → 大图挤出列表缓存，
+/// 长会话反复重解码「越用越卡」（既有注释）。二者需真机实测平衡。
+///
+/// 现状保持既有经验值（不引入回退）；抽为常量便于 Phase 5 真机实测后统一调整。
+/// **待 Phase 5 真机验证**：在目标机型上对比峰值内存 / GC 停顿 / 重解码次数。
+const int kImageCacheMaxBytes = 512 << 20;
+const int kImageCacheMaxCount = 4096;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 图片解码缓存扩容：默认 100MB/1000 张。播放页用的是全尺寸封面（单张解码
+  // 内存可达十余 MB），连播几十首就会把列表缩略图全部挤出缓存，此后每次切页
+  // 都要重新解码 → 长会话「越用越卡」。512MB 是上限而非预分配，LRU 照常淘汰；
+  // 六个分区的缩略图工作集约百 MB，余量足够。上限取值与复核见 [kImageCacheMaxBytes]。
+  PaintingBinding.instance.imageCache.maximumSizeBytes = kImageCacheMaxBytes;
+  PaintingBinding.instance.imageCache.maximumSize = kImageCacheMaxCount;
   // 鸿蒙引导（sqlite3 系统库 / secure storage 文件实现 / just_audio→fvp 适配）：
   // 必须先于任何存储访问与播放器创建；其它平台内部直接返回。
   await setupOhos();
@@ -146,6 +165,10 @@ Future<void> main() async {
   WidgetsBinding.instance.addObserver(_SyncLifecycleObserver(sync));
 
   debugPrint('[boot] 进入 runApp');
+  // 交互门控（R-2）：聚合滚动/过渡/浮层/队列状态，交互期合帧投递数据通知；
+  // 在 runApp 前创建并注入 DirectSourceManager，保证后续所有通知都经门控。
+  final interactionGate = InteractionGate();
+  direct.attachInteractionGate(interactionGate);
   runApp(SelfMusicApp(
       direct: direct,
       settings: serverSettings,
@@ -153,7 +176,8 @@ Future<void> main() async {
       audioHandler: audioHandler,
       ohosMediaSession: ohosMediaSession,
       artistResolver: artistResolver,
-      sync: sync));
+      sync: sync,
+      interactionGate: interactionGate));
   // main() 全链（含所有 await）走完的最终信号：ArkTS 启动看门狗据此解除
   // （超时未收到则向 Dart 发消息唤醒可能停滞的事件循环，见 ohos_bootstrap）。
   markBootReady();
@@ -207,6 +231,7 @@ class SelfMusicApp extends StatelessWidget {
   final OhosMediaSessionBridge? ohosMediaSession;
   final SyncEngine sync;
   final ArtistResolver artistResolver;
+  final InteractionGate interactionGate;
   const SelfMusicApp({
     super.key,
     required this.direct,
@@ -216,6 +241,7 @@ class SelfMusicApp extends StatelessWidget {
     this.ohosMediaSession,
     required this.sync,
     required this.artistResolver,
+    required this.interactionGate,
   });
 
   @override
@@ -259,6 +285,7 @@ final auth = AuthProvider(api);
         ChangeNotifierProvider<LibraryProvider>.value(value: lib),
         ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
         ChangeNotifierProvider<ArtistResolver>.value(value: artistResolver),
+        ChangeNotifierProvider<InteractionGate>.value(value: interactionGate),
         ChangeNotifierProvider<PlaylistsProvider>(
           create: (_) => PlaylistsProvider(direct.playlists),
         ),
@@ -303,6 +330,15 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
   late final NavigationProvider _nav;
   late final SyncEngine _syncEngine;
 
+  /// 交互门控：播放页浮层跟手/吸附进行中标记为「交互中」。
+  InteractionGate? _gate;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _gate = InteractionGate.maybeOf(context);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -319,6 +355,8 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
       progress: _nav.playerProgress,
     );
     _nav.addListener(_syncPlayerSheet);
+    // 播放页悬浮层位移从 0/1 到中间（跟手或吸附）即视为「过渡中」。
+    _nav.playerProgress.addListener(_onPlayerProgress);
     // 启动恢复上次播放队列与位置（暂停态，stage2.md §7）。
     // 受「断点续播」开关控制（settings.md §3.2 `resume_on_startup`）。
     WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -350,9 +388,19 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
   @override
   void dispose() {
     _nav.removeListener(_syncPlayerSheet);
+    _nav.playerProgress.removeListener(_onPlayerProgress);
     _syncEngine.onPlaylistsApplied = null;
     _sheetAnim.dispose();
+    _gate?.setPlayerSheetDragging(false);
     super.dispose();
+  }
+
+  /// 播放页悬浮层进度 → 门控：位于 (0,1) 之间表示正在跟手/吸附（过渡中）。
+  void _onPlayerProgress() {
+    final gate = _gate;
+    if (gate == null) return;
+    final p = _nav.playerProgress.value;
+    gate.setPlayerSheetDragging(p > 0.001 && p < 0.999);
   }
 
   /// 意图位（playerView）变化 → 播放页悬浮层吸附动画：

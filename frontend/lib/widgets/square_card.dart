@@ -52,92 +52,105 @@ class SquareCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final sub = subtitle;
-    return LayoutBuilder(builder: (context, constraints) {
-      // 解码分辨率点对点：按卡片实际宽 × DPR 降采样（此前固定按最大卡宽 220
-      // 算，窄列/低密度设备上多解了不必要的像素）。多分辨率变体进 ImageCache。
-      final actualWidth = constraints.maxWidth.isFinite
-          ? math.min(constraints.maxWidth, SquareCardGrid.maxItemWidth)
-          : SquareCardGrid.maxItemWidth;
-      final decodeWidth =
-          (actualWidth * MediaQuery.devicePixelRatioOf(context)).round();
-      return InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: onTap,
-        onLongPress: onLongPress,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // 封面恒定 1:1（宽高比由 SquareCardGrid 的行高保证恰好放下文本）。
-            AspectRatio(
-              aspectRatio: 1,
-              // StackFit.expand：无封面时占位底色也必须撑满正方形
-              //（默认 loose 会让 Container 高度只由图标决定，显示成矮长条）。
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  Container(
-                    width: double.infinity,
-                    decoration: BoxDecoration(
-                      color: colorScheme.primary.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(12),
-                      // 未选中态不描边（与既有卡片外观一致），选中时才套 2px 主色环。
-                      border: Border.all(
-                        color: colorScheme.primary,
-                        width: selected ? 2 : 0,
-                      ),
+    // 尺寸由网格层一次性下发（R-3）：卡片自身不再做逐行 LayoutBuilder。
+    // 独立使用（无网格）时退回最大卡宽估算，不影响几何（封面恒 1:1）。
+    final metricsWidth = _SquareCardMetrics.maybeOf(context)?.itemWidth;
+    final actualWidth = (metricsWidth != null && metricsWidth.isFinite)
+        ? math.min(metricsWidth, SquareCardGrid.maxItemWidth)
+        : SquareCardGrid.maxItemWidth;
+    final decodeWidth =
+        (actualWidth * MediaQuery.devicePixelRatioOf(context)).round();
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // 封面恒定 1:1（宽高比由 SquareCardGrid 的行高保证恰好放下文本）。
+          AspectRatio(
+            aspectRatio: 1,
+            // StackFit.expand：无封面时占位底色也必须撑满正方形
+            //（默认 loose 会让 Container 高度只由图标决定，显示成矮长条）。
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Container(
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    color: colorScheme.primary.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(12),
+                    // 未选中态不描边（与既有卡片外观一致），选中时才套 2px 主色环。
+                    border: Border.all(
+                      color: colorScheme.primary,
+                      width: selected ? 2 : 0,
                     ),
-                    clipBehavior: Clip.antiAlias,
-                    child: coverPath != null
-                        ? Image.file(
-                            File(coverDisplayPath(coverPath!)),
-                            fit: BoxFit.cover,
-                            // 缩略图 + 降解码：网格滑动不再逐卡解大图。
-                            cacheWidth: decodeWidth,
-                            cacheHeight: decodeWidth,
-                            errorBuilder: (_, __, ___) => Icon(fallbackIcon,
-                                size: 48,
-                                color:
-                                    colorScheme.primary.withValues(alpha: 0.6)))
-                        : Icon(fallbackIcon,
-                            size: 48,
-                            color:
-                                colorScheme.primary.withValues(alpha: 0.6)),
                   ),
-                  // 多选态隐藏角标菜单（避免误触），勾选框统一叠在左上角。
-                  if (cornerAction != null && !selectionMode)
-                    Positioned(top: 2, right: 2, child: cornerAction!),
-                  if (selectionMode)
-                    Positioned(
-                      left: 2,
-                      top: 2,
-                      child: SelectionBadge(
-                        selected: selected,
-                        onTap: onToggleSelect ?? onTap,
-                      ),
+                  clipBehavior: Clip.antiAlias,
+                  child: coverPath != null
+                      ? Image.file(
+                          File(coverDisplayPath(coverPath!)),
+                          fit: BoxFit.cover,
+                          // 缩略图 + 降解码：网格滑动不再逐卡解大图。
+                          cacheWidth: decodeWidth,
+                          cacheHeight: decodeWidth,
+                          errorBuilder: (_, __, ___) => Icon(fallbackIcon,
+                              size: 48,
+                              color:
+                                  colorScheme.primary.withValues(alpha: 0.6)))
+                      : Icon(fallbackIcon,
+                          size: 48,
+                          color:
+                              colorScheme.primary.withValues(alpha: 0.6)),
+                ),
+                // 多选态隐藏角标菜单（避免误触），勾选框统一叠在左上角。
+                if (cornerAction != null && !selectionMode)
+                  Positioned(top: 2, right: 2, child: cornerAction!),
+                if (selectionMode)
+                  Positioned(
+                    left: 2,
+                    top: 2,
+                    child: SelectionBadge(
+                      selected: selected,
+                      onTap: onToggleSelect ?? onTap,
                     ),
-                ],
-              ),
+                  ),
+              ],
             ),
-            const SizedBox(height: 8),
-            Text(title,
-                maxLines: titleMaxLines,
+          ),
+          const SizedBox(height: 8),
+          Text(title,
+              maxLines: titleMaxLines,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyMedium
+                  ?.copyWith(fontWeight: FontWeight.w600)),
+          if (sub != null)
+            Text(sub,
+                maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(fontWeight: FontWeight.w600)),
-            if (sub != null)
-              Text(sub,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: colorScheme.onSurface.withValues(alpha: 0.6))),
-          ],
-        ),
-      );
-    });
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurface.withValues(alpha: 0.6))),
+        ],
+      ),
+    );
   }
+}
+
+/// 网格层下发的卡片尺寸（InheritedWidget）：让卡片免于逐行 LayoutBuilder，
+/// 又可独立使用（取不到时为 null → 退回最大卡宽估算）。
+class _SquareCardMetrics extends InheritedWidget {
+  final double itemWidth;
+  const _SquareCardMetrics({required this.itemWidth, required super.child});
+
+  static _SquareCardMetrics? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<_SquareCardMetrics>();
+
+  @override
+  bool updateShouldNotify(_SquareCardMetrics oldWidget) =>
+      oldWidget.itemWidth != itemWidth;
 }
 
 /// 方形卡片网格：按可用宽度计算列数与行高，保证每张卡片的封面恰为正方形
@@ -184,16 +197,19 @@ class SquareCardGrid extends StatelessWidget {
         final cols = math.max(
             1, ((avail + gap) / (maxItemWidth + gap)).ceil());
         final itemW = (avail - (cols - 1) * gap) / cols;
-        return GridView.builder(
-          padding: const EdgeInsets.fromLTRB(sidePadding, 0, sidePadding, 16),
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: cols,
-            mainAxisSpacing: gap,
-            crossAxisSpacing: gap,
-            mainAxisExtent: itemW + _textHeight(context),
+        return _SquareCardMetrics(
+          itemWidth: itemW,
+          child: GridView.builder(
+            padding: const EdgeInsets.fromLTRB(sidePadding, 0, sidePadding, 16),
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: cols,
+              mainAxisSpacing: gap,
+              crossAxisSpacing: gap,
+              mainAxisExtent: itemW + _textHeight(context),
+            ),
+            itemCount: itemCount,
+            itemBuilder: itemBuilder,
           ),
-          itemCount: itemCount,
-          itemBuilder: itemBuilder,
         );
       },
     );

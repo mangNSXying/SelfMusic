@@ -62,6 +62,12 @@ class _MarqueeTextState extends State<MarqueeText>
 
   @override
   Widget build(BuildContext context) {
+    // R-4 按需运行：宿主处于 TickerMode 关闭态（路由不可见/被覆盖/后台）时
+    // 停表，避免无限 repeat 使引擎无法进入空闲、与滚动/过渡叠加时每帧成本翻倍。
+    // 保留 TickerMode.of：stable 3.47 虽标记弃用（建议 valuesOf），但 ohos 分支
+    // 工具链 3.41.9 无 valuesOf，须双 SDK 兼容（同 lyrics_view 的 cacheExtent 口径）。
+    // ignore: deprecated_member_use
+    final tickerEnabled = TickerMode.of(context);
     return LayoutBuilder(builder: (context, constraints) {
       final tp = TextPainter(
         text: TextSpan(text: widget.text, style: widget.style),
@@ -84,7 +90,11 @@ class _MarqueeTextState extends State<MarqueeText>
         );
       }
 
-      _startIfNeeded(overflow);
+      if (tickerEnabled) {
+        _startIfNeeded(overflow);
+      } else {
+        _ctrl.stop();
+      }
 
       return ClipRect(
         child: GestureDetector(

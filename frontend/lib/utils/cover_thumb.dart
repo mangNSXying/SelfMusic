@@ -13,6 +13,12 @@ import 'off_thread.dart';
 /// 原图（`covers/<md5>.jpg`）可能是上千像素的大图，列表每行解码全尺寸是滑动期
 /// 的主要 CPU/内存开销来源。缩略图与封面同目录同名再带 `.thumb`
 /// （`<md5>.jpg` → `<md5>.thumb.jpg`），播放页等大尺寸场景继续用原图。
+///
+/// **工作集策略复核（R-6 / T016）**：列表缩略图 768 长边（工作集约百 MB）与
+/// 播放页全尺寸封面共用 ImageCache；本文件只负责把「列表/卡片显示路径」收敛到
+/// 缩略图（[coverDisplayPath]），播放页仍用原图。缩略图与全尺寸的分辨率差即
+/// 内存分离的抓手——真机实测若发现大图挤出列表缓存导致重解码，再考虑为播放页
+/// 大图另设降解码上限；当前不改变既有口径（**待 Phase 5 真机验证**）。
 const int kCoverThumbMaxEdge = 768;
 const int kCoverThumbQuality = 82;
 

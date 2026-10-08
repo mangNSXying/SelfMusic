@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
+import '../utils/interaction_gate.dart';
 import 'sidebar.dart';
 import 'top_bar.dart';
 import 'queue_panel.dart';
@@ -22,6 +23,15 @@ class _AppShellState extends State<AppShell> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   bool _sidebarVisible = true;
 
+  /// 交互门控（可能为 null：未接入门控的旧测试/调用方，走原路径）。
+  InteractionGate? _gate;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _gate = InteractionGate.maybeOf(context);
+  }
+
   /// 宽屏判定（UI10）：宽 ≥900，或横屏（宽>高）一律按桌面布局
   ///（常驻可收缩侧边栏 + 右队列槽 + 内容多列自适应）。
   /// 竖屏窄屏仍走抽屉。
@@ -38,10 +48,32 @@ class _AppShellState extends State<AppShell> {
     }
   }
 
+  /// 内容区滚动信号 → 交互门控：滚动期间聚合并去重后台数据通知（R-2）。
+  ///
+  /// 用 NotificationListener 统一接管所有后代 Scrollable 的滚动通知
+  /// （列表/网格/Pager 均会冒泡到此层），无需逐页接线。
+  bool _onScrollNotification(ScrollNotification n) {
+    final gate = _gate;
+    if (gate != null) {
+      if (n is ScrollStartNotification) {
+        gate.beginScroll();
+      } else if (n is ScrollEndNotification) {
+        gate.endScroll();
+      }
+    }
+    return false; // 不拦截，继续向上冒泡。
+  }
+
   @override
   Widget build(BuildContext context) {
     final wide = isWide(context);
     final nav = context.watch<NavigationProvider>();
+    // 队列面板开合 → 门控：面板打开/关闭期间被视为「交互中」。
+    if (_gate != null && _gate!.queuePanelOpen != nav.queueOpen) {
+      final open = nav.queueOpen;
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _gate?.setQueuePanelOpen(open));
+    }
 
     final contentColumn = Column(
       children: [
@@ -56,7 +88,13 @@ class _AppShellState extends State<AppShell> {
             context: context,
             removeTop: true,
             removeBottom: true,
-            child: RepaintBoundary(child: widget.content),
+            // 内容区滚动通知统一冒泡到门控（不影响原层级与栅格化隔离）。
+            child: RepaintBoundary(
+              child: NotificationListener<ScrollNotification>(
+                onNotification: _onScrollNotification,
+                child: widget.content,
+              ),
+            ),
           ),
         ),
         const RepaintBoundary(child: MiniPlayerBar()),

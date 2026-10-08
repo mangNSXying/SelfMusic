@@ -17,6 +17,7 @@ import '../widgets/list_selection.dart';
 import '../widgets/row_list.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_list.dart';
+import '../widgets/song_row_view.dart';
 
 /// 源内浏览组件（文件夹式导航）：在 AppContent 内容区原地渲染。
 ///
@@ -35,6 +36,9 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
   ScanProgress? _progress;
   StreamSubscription<ScanProgress>? _progressSub;
   final Selection<String> _sel = Selection<String>();
+
+  /// 行级视图数据缓存（R-1）。
+  final SongRowCache _rowCache = SongRowCache();
 
   @override
   void initState() {
@@ -143,6 +147,33 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
     }
     final songs = direct.songsOf(widget.sourceKey, query: _query);
     final count = direct.countOf(widget.sourceKey);
+
+    // 行级视图数据（R-1）：签名涵盖影响行内容的版本号，命中即复用整表。
+    final wide = MediaQuery.sizeOf(context).width >= kSongTileWideInfoWidth;
+    final rows = _rowCache.resolve(
+      signature: (
+        widget.sourceKey,
+        _query,
+        songs.length,
+        direct.metaVersion,
+        direct.favoriteVersion,
+        direct.settingsVersion,
+        direct.settings.songTitleFormat,
+        wide,
+      ),
+      length: songs.length,
+      build: (i) {
+        final s = songs[i];
+        final meta = direct.weight.metaOf(s);
+        return SongRowView.of(
+          song: s,
+          titleFormat: direct.settings.songTitleFormat,
+          favorite: meta.favorite,
+          disliked: meta.frozen,
+          wide: wide,
+        );
+      },
+    );
 
     return SectionSwipe(
     child: Column(
@@ -302,6 +333,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                       return SongTile(
                         song: s,
                         source: source,
+                        row: rows[i],
                         onPlay: () => _play(c, source, songs, i),
                         playing: player.isCurrent(s),
                         selectionMode: _sel.active,

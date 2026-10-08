@@ -14,6 +14,15 @@ bool forceOffThreadIsolateInTests = false;
 /// ohos：fork 引擎不能可靠 spawn 子 isolate（见 db_writer 的
 /// `_InlineDbWriter` 头注释），退化为同 isolate 执行——与写层口径一致。
 /// 测试环境默认同样内联（见 [forceOffThreadIsolateInTests]）。
+///
+/// **调用点复核（R-5，T014）**：全部调用点均为**启动/刷新/落库后处理**，不在
+/// 过渡/滚动动画的每帧路径上——
+/// - `local_index`：启动一次性回填重置、库快照 / 歌手分组（后台 isolate 建模）；
+/// - `library_provider`：库加载与快照刷新（首帧后 postFrame 触发，仅数据变更时）；
+/// - `cover_thumb`：非 ohos 纯 Dart 缩略图编码（ohos 走原生桥，不经此路径）。
+/// 因此无需把现有调用改为分帧；若后续新增**动画/滚动敏感路径**上的长同步块，
+/// 应改用 [runChunked]（`utils/chunked_scheduler.dart`）切片让出，而不是在
+/// ohos 上内联执行长循环。
 Future<T> runOffThread<T>(T Function() body) {
   if (!forceOffThreadIsolateInTests &&
       (Platform.operatingSystem == 'ohos' ||

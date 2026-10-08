@@ -22,6 +22,7 @@ import '../services/api_client.dart';
 import '../services/artist_resolver.dart';
 import '../services/secret_store.dart';
 import '../utils/cover_thumb.dart';
+import '../utils/interaction_gate.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
 import 'direct_task_queue.dart';
 
@@ -32,6 +33,13 @@ import 'direct_task_queue.dart';
 final Duration _thumbBackfillGap = Platform.operatingSystem == 'ohos'
     ? const Duration(milliseconds: 50)
     : Duration.zero;
+
+/// 交互期（滚动/过渡/浮层/队列）额外让出间隔：进一步错峰逐张封面回填，
+/// 避免与动画争抢系统解码资源（R-2 / T015）。交互结束后自然回到正常间隔。
+const Duration _thumbBackfillGapInteractive = Duration(milliseconds: 200);
+
+/// 交互期后台补读批间等待步长与上限：交互结束即继续（幂等、最终一致）。
+const Duration _interactionWaitStep = Duration(milliseconds: 120);
 
 /// 直连源管理（阶段 3 / 阶段 4 接收器）。
 ///
@@ -57,6 +65,27 @@ class DirectSourceManager extends ChangeNotifier {
   /// 歌手身份解析服务（歌手处理.txt）：扫描/补读后经 [_reconcileArtists] 唤醒。
   ArtistResolver? artistResolver;
   void attachArtistResolver(ArtistResolver r) => artistResolver = r;
+
+  /// 交互门控（R-2）：由 main 注入。未注入时为 null，通知行为与改动前一致。
+  InteractionGate? _interactionGate;
+  void attachInteractionGate(InteractionGate gate) => _interactionGate = gate;
+
+  /// 通知出口：交互期（滚动/过渡/浮层/队列）把高频数据通知去重聚合，
+  /// 交互结束补投一次（最终一致），避免数据通知在动画帧内造成整屏行级重建。
+  ///
+  /// 直接调用 [super.notifyListeners]（而非 [notifyListeners]）用于补投，
+  /// 避免递归进门控。
+  @override
+  void notifyListeners() {
+    final gate = _interactionGate;
+    if (gate != null && gate.isInteracting) {
+      gate.scheduleNotify(_emit);
+      return;
+    }
+    _emit();
+  }
+
+  void _emit() => super.notifyListeners();
 
   /// 扫描/元数据回填变更后：校准歌手身份映射并唤醒后台解析（幂等、静默）。
   /// 映射写完才自增 [artistsVersion]：歌手页计数改由身份映射驱动，提前通知会
@@ -409,12 +438,26 @@ class DirectSourceManager extends ChangeNotifier {
         final before = coverDisplayPath(cover);
         await ensureCoverThumb(cover);
         if (coverDisplayPath(cover) != before) made++;
-        await Future<void>.delayed(_thumbBackfillGap);
+        // 交互期把逐张间隔拉长（错峰），交互结束自动回落到正常间隔。
+        final gap = (_interactionGate?.isInteracting ?? false)
+            ? _thumbBackfillGapInteractive
+            : _thumbBackfillGap;
+        await Future<void>.delayed(gap);
       }
     } catch (e) {
       debugPrint('[direct] 封面缩略图回填失败（忽略）：$e');
     }
     if (made > 0) debugPrint('[direct] 封面缩略图回填 $made 张');
+  }
+
+  /// 交互期错峰等待：滚动/过渡等交互进行时逐小步让出，结束后立即返回继续
+  /// 后台补读（幂等、最终一致，不改变补读结果，只是措开动画窗口）。
+  Future<void> _awaitInteractionIdle() async {
+    final gate = _interactionGate;
+    if (gate == null) return;
+    while (gate.isInteracting) {
+      await Future<void>.delayed(_interactionWaitStep);
+    }
   }
 
   @override
@@ -1001,6 +1044,8 @@ class DirectSourceManager extends ChangeNotifier {
           }
           // 等这批真正跑完再取下一批：保持游标语义，也避免一次性排几百个任务。
           await tasks.idle();
+          // 交互期（滚动/过渡）暂停推进下一批，交互结束后补跑（T015，幂等）。
+          await _awaitInteractionIdle();
           // 每批通知一次（不是每首一次）：一批 100 首逐首通知会让整库页重建 100 次。
           if (enriched > 0) {
             _metaVersion++;

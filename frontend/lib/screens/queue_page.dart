@@ -11,6 +11,7 @@ import '../widgets/list_selection.dart';
 import '../widgets/row_list.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_list.dart';
+import '../widgets/song_row_view.dart';
 import '../widgets/sort_menu_button.dart';
 
 /// 当前播放队列页（改进.txt UI6）：无绑定歌单（全部歌曲/喜欢/专辑/歌手/播放源
@@ -38,6 +39,9 @@ class _QueuePageState extends State<QueuePage> {
   /// （播放事件频繁 notify，避免每次 build 重查权重库）。
   (CollectionSort, String, int)? _sig;
   List<int> _visible = const [];
+
+  /// 行级视图数据缓存（R-1）。
+  final SongRowCache _rowCache = SongRowCache();
 
   @override
   void initState() {
@@ -136,6 +140,33 @@ class _QueuePageState extends State<QueuePage> {
       _rebuildVisible(queue, q, direct);
     }
 
+    // 行级视图数据（R-1）：按展示序列计算派生文本/收藏态并缓存。
+    final wide = MediaQuery.sizeOf(context).width >= kSongTileWideInfoWidth;
+    final rows = _rowCache.resolve(
+      signature: (
+        queue.length,
+        _sort,
+        q,
+        direct.metaVersion,
+        direct.favoriteVersion,
+        direct.settingsVersion,
+        direct.settings.songTitleFormat,
+        wide,
+      ),
+      length: _visible.length,
+      build: (i) {
+        final s = queue[_visible[i]];
+        final meta = direct.weight.metaOf(s);
+        return SongRowView.of(
+          song: s,
+          titleFormat: direct.settings.songTitleFormat,
+          favorite: meta.favorite,
+          disliked: meta.frozen,
+          wide: wide,
+        );
+      },
+    );
+
     return Scaffold(
       appBar: AppBar(
         title: Text('播放队列（${queue.length}）'),
@@ -215,6 +246,7 @@ class _QueuePageState extends State<QueuePage> {
                 return SongTile(
                   song: s,
                   source: null,
+                  row: rows[i],
                   playing: isCurrent,
                   selectionMode: _sel.active,
                   selected: _sel.contains(realIndex),

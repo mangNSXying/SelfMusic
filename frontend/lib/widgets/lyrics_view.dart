@@ -53,6 +53,29 @@ class _LyricsViewState extends State<LyricsView> {
   /// 当前行二次校正（等放大/折行样式动画结束后回中）。
   Timer? _recenter;
 
+  /// 歌词位置订阅：改为「订阅流 + 仅在行号变化时 setState」，避免每个位置事件
+  /// （每秒数十次）都触发整表 ListView 重建（R-1/T017）。
+  StreamSubscription<Duration>? _posSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _posSub = widget.player.lyricPositionStream.listen(_onPosition);
+  }
+
+  /// 位置事件：仅在「当前高亮行号」变化时重建；无论是否变化都安排一次跟焦
+  /// （自愈式复核，行号没变也可能因懒构建/页面刚可见而滚丢）。
+  void _onPosition(Duration pos) {
+    if (!mounted) return;
+    final lines = widget.player.lyricLines;
+    if (lines.isEmpty) return;
+    final idx = lyricIndexAt(lines, pos);
+    if (idx != _current) {
+      setState(() => _current = idx);
+    }
+    _scheduleFollow();
+  }
+
   /// 当前行在视口中的对齐位（与列表上下留白一致）。
   static const double _align = 0.42;
 
@@ -64,6 +87,7 @@ class _LyricsViewState extends State<LyricsView> {
 
   @override
   void dispose() {
+    _posSub?.cancel();
     _idleTimer?.cancel();
     _recenter?.cancel();
     _scroll.dispose();
@@ -147,80 +171,73 @@ class _LyricsViewState extends State<LyricsView> {
             (n is ScrollUpdateNotification || n is ScrollEndNotification)) {
           // 拖动/惯性期间不断续期：即使手势被中断（没有 ScrollEnd）也能恢复。
           _armIdleTimer();
+        } else if (n is ScrollEndNotification) {
+          // 普通滚动结束：复核当前行是否在位（自愈）。不再依赖每次 build 触发。
+          _scheduleFollow();
         } else if (n is ScrollMetricsNotification) {
           // 视口尺寸变化（转屏、歌词页刚可见）：重新核对当前行位置。
           _scheduleFollow();
         }
         return false;
       },
-      child: StreamBuilder<Duration>(
-        stream: p.lyricPositionStream,
-        builder: (context, snap) {
-          final pos = snap.data ?? Duration.zero;
-          _current = lyricIndexAt(lines, pos);
-          // 每次位置事件都核对「当前行是否真的在位」：行号没变也可能滚丢了
-          // （懒构建导致上次跟焦取不到 context、页面刚可见等）。
-          _scheduleFollow();
-          return LayoutBuilder(
-            builder: (context, c) {
-              // 上下留出近半屏空白，使当前行始终居中。
-              final pad = c.maxHeight * _align;
-              return ListView.builder(
-                controller: _scroll,
-                padding: EdgeInsets.symmetric(vertical: pad),
-                cacheExtent: _wideCache ? _wideCacheExtent : null,
-                itemCount: lines.length,
-                itemBuilder: (context, i) {
-                  final active = i == _current;
-                  final near = (i - _current).abs() <= 1;
-                  return InkWell(
-                    key: _keys[i],
-                    borderRadius: BorderRadius.circular(10),
-                    onTap: () => p.seek(lines[i].time),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 24, vertical: 9),
-                      child: AnimatedDefaultTextStyle(
-                        duration: const Duration(milliseconds: 200),
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: active ? 19 : 16,
-                          height: 1.5,
-                          fontWeight:
-                              active ? FontWeight.w700 : FontWeight.w400,
-                          color: active
-                              ? cs.primary
-                              : cs.onSurface
-                                  .withValues(alpha: near ? 0.72 : 0.38),
-                        ),
-                        child: lines[i].translation == null
-                            ? Text(lines[i].text, textAlign: TextAlign.center)
-                            : Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(lines[i].text,
-                                      textAlign: TextAlign.center),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    lines[i].translation!,
-                                    textAlign: TextAlign.center,
-                                    style: TextStyle(
-                                      fontSize: active ? 16 : 14,
-                                      height: 1.4,
-                                      fontWeight: FontWeight.w400,
-                                      color: active
-                                          ? cs.primary
-                                              .withValues(alpha: 0.85)
-                                          : cs.onSurface.withValues(
-                                              alpha: near ? 0.62 : 0.32),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                      ),
+      // 不再用 StreamBuilder：位置流在 [_onPosition] 里订阅，仅在行号变化时
+      // setState 重建（避免每个位置事件整表重建），此处直接渲染当前行状态。
+      child: LayoutBuilder(
+        builder: (context, c) {
+          // 上下留出近半屏空白，使当前行始终居中。
+          final pad = c.maxHeight * _align;
+          return ListView.builder(
+            controller: _scroll,
+            padding: EdgeInsets.symmetric(vertical: pad),
+            cacheExtent: _wideCache ? _wideCacheExtent : null,
+            itemCount: lines.length,
+            itemBuilder: (context, i) {
+              final active = i == _current;
+              final near = (i - _current).abs() <= 1;
+              return InkWell(
+                key: _keys[i],
+                borderRadius: BorderRadius.circular(10),
+                onTap: () => p.seek(lines[i].time),
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 24, vertical: 9),
+                  child: AnimatedDefaultTextStyle(
+                    duration: const Duration(milliseconds: 200),
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: active ? 19 : 16,
+                      height: 1.5,
+                      fontWeight: active ? FontWeight.w700 : FontWeight.w400,
+                      color: active
+                          ? cs.primary
+                          : cs.onSurface
+                              .withValues(alpha: near ? 0.72 : 0.38),
                     ),
-                  );
-                },
+                    child: lines[i].translation == null
+                        ? Text(lines[i].text, textAlign: TextAlign.center)
+                        : Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(lines[i].text,
+                                  textAlign: TextAlign.center),
+                              const SizedBox(height: 2),
+                              Text(
+                                lines[i].translation!,
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: active ? 16 : 14,
+                                  height: 1.4,
+                                  fontWeight: FontWeight.w400,
+                                  color: active
+                                      ? cs.primary.withValues(alpha: 0.85)
+                                      : cs.onSurface.withValues(
+                                          alpha: near ? 0.62 : 0.32),
+                                ),
+                              ),
+                            ],
+                          ),
+                  ),
+                ),
               );
             },
           );

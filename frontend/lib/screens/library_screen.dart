@@ -14,6 +14,7 @@ import '../models/artist.dart';
 import '../services/artist_resolver.dart';
 import '../theme/app_theme.dart';
 import '../utils/collection_sort.dart';
+import '../utils/interaction_gate.dart';
 import '../utils/song_search.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
@@ -26,6 +27,7 @@ import '../widgets/page_transition.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_list.dart';
+import '../widgets/song_row_view.dart';
 import '../widgets/sort_menu_button.dart';
 import '../widgets/square_card.dart';
 import '../widgets/view_mode_toggle.dart';
@@ -113,6 +115,9 @@ class _SectionPagerState extends State<SectionPager>
   /// 页内是固定行高懒列表，预构建只建「可能显示的行」，不会整表构建。
   bool _warmNeighbors = false;
 
+  /// 交互门控（横滑/入场动画期间聚合后台数据通知）。
+  InteractionGate? _gate;
+
   static int _indexOf(NavSection s) => NavSection.values.indexOf(s);
 
   /// 六个分组页（顺序与 NavSection.values 一致）。
@@ -124,6 +129,12 @@ class _SectionPagerState extends State<SectionPager>
     _AlbumsView(),
     _ArtistsView(),
   ];
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _gate = InteractionGate.maybeOf(context);
+  }
 
   @override
   void initState() {
@@ -138,6 +149,17 @@ class _SectionPagerState extends State<SectionPager>
         vsync: this, duration: const Duration(milliseconds: 240), value: 1);
     _enterCurve =
         CurvedAnimation(parent: _enterCtrl, curve: Curves.easeOutCubic);
+    // 跨页入场动画进行中 → 门控视为「过渡中」。
+    _enterCtrl.addStatusListener((s) {
+      final gate = _gate;
+      if (gate == null) return;
+      if (s == AnimationStatus.forward) {
+        gate.setTransitioning(true);
+      } else if (s == AnimationStatus.completed ||
+          s == AnimationStatus.dismissed) {
+        _refreshTransitionSignal();
+      }
+    });
     // 首帧空闲后再预构建左右邻页（内存/启动成本的折中，见字段注释）。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) setState(() => _warmNeighbors = true);
@@ -146,6 +168,8 @@ class _SectionPagerState extends State<SectionPager>
 
   @override
   void dispose() {
+    // 组件销毁时若仍在动画中，避免门控停留在「过渡中」。
+    _gate?.setTransitioning(false);
     _ctrl.removeListener(_syncOffset);
     _ctrl.dispose();
     _enterCurve.dispose();
@@ -153,11 +177,21 @@ class _SectionPagerState extends State<SectionPager>
     super.dispose();
   }
 
+  /// 依据 PageView 拖拽/吸附与入场动画状态刷新门控的「过渡中」信号。
+  void _refreshTransitionSignal() {
+    final gate = _gate;
+    if (gate == null) return;
+    final scrolling =
+        _ctrl.hasClients && _ctrl.position.isScrollingNotifier.value;
+    gate.setTransitioning(scrolling || _enterCtrl.isAnimating);
+  }
+
   /// 控制器页码（含拖拽小数）同步给顶栏，顶栏据此跟手高亮/滚动。
   void _syncOffset() {
     if (!_ctrl.hasClients) return;
     final nav = context.read<NavigationProvider>();
     nav.pageOffset.value = _ctrl.page ?? _applied.toDouble();
+    _refreshTransitionSignal();
   }
 
   void _onPageChanged(int i) {
@@ -284,6 +318,9 @@ class _LikedViewState extends State<_LikedView>
 
   final Selection<String> _sel = Selection<String>();
 
+  /// 行级视图数据缓存（R-1）：签名不变时复用整表。
+  final SongRowCache _rowCache = SongRowCache();
+
   /// 收藏列表缓存：仅在（收藏版本, 设置版本）变化时查库（滑动/重绘不重复全量查询）。
   /// 设置版本同步忽略排除规则的生效：忽略音频改动后喜欢页即时过滤（改进.txt 功能6）。
   int _favVersion = -1;
@@ -359,6 +396,32 @@ class _LikedViewState extends State<_LikedView>
     final all = res.raw;
     final songs = res.songs;
 
+    // 行级视图数据（R-1）：一次性算好派生文本/收藏态并缓存，行组件纯参数渲染。
+    final wide = MediaQuery.sizeOf(context).width >= kSongTileWideInfoWidth;
+    final rows = _rowCache.resolve(
+      signature: (
+        identityHashCode(songs),
+        _favVersion,
+        _favSettingsVer,
+        direct.metaVersion,
+        direct.settingsVersion,
+        direct.settings.songTitleFormat,
+        wide,
+      ),
+      length: songs.length,
+      build: (i) {
+        final s = songs[i];
+        final meta = direct.weight.metaOf(s);
+        return SongRowView.of(
+          song: s,
+          titleFormat: direct.settings.songTitleFormat,
+          favorite: meta.favorite,
+          disliked: meta.frozen,
+          wide: wide,
+        );
+      },
+    );
+
     return Stack(
       children: [
         Column(
@@ -408,6 +471,7 @@ class _LikedViewState extends State<_LikedView>
                           return SongTile(
                             song: s,
                             source: lib.sourceFor(s.sourceKey),
+                            row: rows[i],
                             onPlay: () {
                               player.playQueue(songs,
                                   index: i,
@@ -455,6 +519,9 @@ class _SongsViewState extends State<_SongsView>
   bool get wantKeepAlive => true;
 
   final Selection<String> _sel = Selection<String>();
+
+  /// 行级视图数据缓存（R-1）。
+  final SongRowCache _rowCache = SongRowCache();
 
   /// 排序/过滤结果缓存（同喜欢页）：
   /// 键 = (歌曲全集身份, 搜索词, 排序偏好)。build 重跑不重排不重查。
@@ -523,6 +590,32 @@ class _SongsViewState extends State<_SongsView>
     // 依据全局搜索词过滤（喜欢页共用同一匹配函数），再按本页排序偏好排序。
     final songs = _sortSongs(lib, direct, nav.search).songs;
 
+    // 行级视图数据（R-1）：缓存整表派生文本/收藏态，行组件纯参数渲染。
+    final wide = MediaQuery.sizeOf(context).width >= kSongTileWideInfoWidth;
+    final rows = _rowCache.resolve(
+      signature: (
+        identityHashCode(songs),
+        lib.songs.length,
+        direct.metaVersion,
+        direct.favoriteVersion,
+        direct.settingsVersion,
+        direct.settings.songTitleFormat,
+        wide,
+      ),
+      length: songs.length,
+      build: (i) {
+        final s = songs[i];
+        final meta = direct.weight.metaOf(s);
+        return SongRowView.of(
+          song: s,
+          titleFormat: direct.settings.songTitleFormat,
+          favorite: meta.favorite,
+          disliked: meta.frozen,
+          wide: wide,
+        );
+      },
+    );
+
     return Column(
       children: [
         if (lib.loading) const LinearProgressIndicator(minHeight: 2),
@@ -570,6 +663,7 @@ class _SongsViewState extends State<_SongsView>
                     return SongTile(
                       song: s,
                       source: lib.sourceFor(s.sourceKey),
+                      row: rows[i],
                       onPlay: () {
                         player.playQueue(songs,
                             index: i,

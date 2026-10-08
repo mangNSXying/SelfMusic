@@ -24,6 +24,7 @@ import 'row_list.dart';
 import 'selection_badge.dart';
 import 'selection_bar.dart';
 import 'song_info_dialog.dart';
+import 'song_row_view.dart';
 import 'sort_menu_button.dart';
 import 'app_toast.dart';
 
@@ -43,6 +44,11 @@ const double kSongTileWideInfoWidth = 800;
 /// 点击列表切换勾选，[onSelect] 负责切换 [selected]。
 class SongTile extends StatelessWidget {
   final Song song;
+
+  /// 行级不可变视图数据（R-1）：非空时走**纯参数渲染**——不订阅
+  /// [DirectSourceManager]、不做逐行 LayoutBuilder、派生文本已算好；
+  /// 为空时为兼容路径（旧调用方/单测），行为与改动前一致。
+  final SongRowView? row;
 
   /// 该歌对应的本机播放源；null=本机未配置对应源（如同步快照行，仅可查看/收藏）。
   final MusicSource? source;
@@ -79,6 +85,7 @@ class SongTile extends StatelessWidget {
     required this.song,
     required this.source,
     required this.onPlay,
+    this.row,
     this.selectionMode = false,
     this.selected = false,
     this.onSelect,
@@ -89,17 +96,7 @@ class SongTile extends StatelessWidget {
   });
 
   /// 副标题：歌手 · 专辑（· 专辑歌手，仅当与歌手不同时展示，避免冗余）。
-  String get _subtitle {
-    final artist = song.artist ?? 'Unknown';
-    final parts = <String>[artist];
-    final album = song.albumName;
-    if (album != null && album.isNotEmpty) parts.add(album);
-    final albumArtist = song.albumArtist;
-    if (albumArtist != null && albumArtist.isNotEmpty && albumArtist != artist) {
-      parts.add('专辑歌手：$albumArtist');
-    }
-    return parts.join(' · ');
-  }
+  String get _subtitle => SongRowView.subtitleOf(song);
 
   Future<void> _cacheSong(BuildContext context, DirectSourceManager direct) async {
     final src = source;
@@ -237,8 +234,8 @@ class SongTile extends StatelessWidget {
   ///
   /// 不再像以前那样用勾选框顶替封面——封面位置恒为封面（改进.txt），多选时
   /// 仍能靠封面认出是哪首（与歌单卡片的封面勾选一致）。
-  Widget _leading() {
-    final cover = CoverThumb(coverPath: song.coverPath);
+  Widget _leading(String? coverPath) {
+    final cover = CoverThumb(coverPath: coverPath);
     if (!selectionMode) return cover;
     return Stack(
       clipBehavior: Clip.none,
@@ -255,26 +252,12 @@ class SongTile extends StatelessWidget {
 
   /// 宽行技术信息：`格式 · 码率 · 大小`，置于时长左侧。
   ///
-  /// 全部可由 Song 现有字段计算：格式为扫描存下的文件扩展名（大写展示）；
-  /// 码率 = fileSize×8 / 时长（无时长则省略）；大小按 MB（不足 1 MB 降为 KB）。
-  /// 缺失的部分跳过，全缺返回 null（只显示时长）。
+  /// 计算口径收敛到 [SongRowView.wideInfoOf]，避免与行级数据两处漂移。
   Widget? _wideInfo(BuildContext context) {
-    final parts = <String>[];
-    final fmt = song.format;
-    if (fmt != null && fmt.isNotEmpty) parts.add(fmt.toUpperCase());
-    final size = song.fileSize;
-    final duration = song.duration;
-    if (size > 0 && duration != null && duration > 0) {
-      parts.add('${(size * 8 / 1024 / duration).round()} kbps');
-    }
-    if (size > 0) {
-      parts.add(size >= 1024 * 1024
-          ? '${(size / 1024 / 1024).toStringAsFixed(1)} MB'
-          : '${size ~/ 1024} KB');
-    }
-    if (parts.isEmpty) return null;
+    final text = SongRowView.wideInfoOf(song);
+    if (text == null) return null;
     return Text(
-      parts.join(' · '),
+      text,
       style: Theme.of(context).textTheme.bodySmall?.copyWith(
           color: Theme.of(context).colorScheme.onSurfaceVariant),
     );
@@ -282,6 +265,67 @@ class SongTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final view = row;
+    if (view != null) return _buildFromRow(context, view);
+    return _buildLegacy(context);
+  }
+
+  /// 纯参数渲染（R-1）：只读 [row]，订阅收敛为零（除动作时一次性 `read`），
+  /// 无逐行 LayoutBuilder，派生文本/收藏态均为值。
+  Widget _buildFromRow(BuildContext context, SongRowView view) {
+    final direct = context.read<DirectSourceManager>();
+    final cs = Theme.of(context).colorScheme;
+    return ListTile(
+      selected: selectionMode && selected,
+      leading: _leading(view.coverPath),
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              view.titleText,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontWeight: FontWeight.w600,
+                color: (selectionMode && selected) || playing
+                    ? cs.primary
+                    : null,
+              ),
+            ),
+          ),
+          if (playing) ...[
+            const SizedBox(width: 4),
+            Icon(Icons.graphic_eq, size: 15, color: cs.primary),
+          ],
+        ],
+      ),
+      subtitle: Text(
+        view.subtitleText,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (view.wideInfoText != null) ...[
+            Text(
+              view.wideInfoText!,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: cs.onSurfaceVariant),
+            ),
+            const SizedBox(width: 12),
+          ],
+          Text(formatDuration(song.duration)),
+          if (!selectionMode) _menu(context, direct, view.favorite, view.disliked),
+        ],
+      ),
+      onTap: selectionMode ? onSelect : onPlay,
+      onLongPress: selectionMode ? onSelect : onStartSelect,
+    );
+  }
+
+  /// 兼容路径：未提供行级数据时保留旧行为（订阅管理器 + 逐行 LayoutBuilder）。
+  Widget _buildLegacy(BuildContext context) {
     final direct = context.watch<DirectSourceManager>();
     // 收藏/不喜欢合并为一次 play_meta 查询（列表滑动期每行尽量减少查询）。
     final meta = direct.weight.metaOf(song);
@@ -294,7 +338,7 @@ class SongTile extends StatelessWidget {
       return ListTile(
         selected: selectionMode && selected,
         // 封面恒为封面（改进.txt）：多选态勾选框叠在封面左上角。
-        leading: _leading(),
+        leading: _leading(song.coverPath),
         // 标题 + 播放指示：指示在标题后（封面位留给封面）。
         title: Row(
           children: [
@@ -438,6 +482,9 @@ class SongList extends StatefulWidget {
 
 class _SongListState extends State<SongList> {
   final Selection<String> _sel = Selection<String>();
+
+  /// 行级视图数据缓存（R-1）：签名不变时复用，避免每次 build 重算整表派生文本/查询。
+  final SongRowCache _rowCache = SongRowCache();
 
   /// 页内自带搜索（[widget.globalSearch] 为 false 时使用）。
   final TextEditingController _searchCtrl = TextEditingController();
@@ -643,6 +690,41 @@ class _SongListState extends State<SongList> {
     // 多选键：与行渲染同源的 _songs 实时行（visible 为下标映射）。
     final visibleKeys = [for (final i in visible) songKey(_songs[i])];
 
+    // 行级视图数据（R-1）：一次性算好派生文本/收藏/播放/选中等低频数据，
+    // 签名不变时复用整表；行组件由此以值参数渲染，不再逐行订阅管理器。
+    final wide = MediaQuery.sizeOf(context).width >= kSongTileWideInfoWidth;
+    final rows = _rowCache.resolve(
+      signature: (
+        identityHashCode(_songs),
+        provider.dataRevision,
+        _sort,
+        direct.favoriteVersion,
+        direct.metaVersion,
+        direct.settingsVersion,
+        direct.settings.songTitleFormat,
+        wide,
+        currentIdx,
+        _sel.active,
+        Object.hashAll(_sel.selected),
+      ),
+      length: _songs.length,
+      build: (i) {
+        final s = _songs[i];
+        final meta = direct.weight.metaOf(s);
+        return SongRowView.of(
+          song: s,
+          titleFormat: direct.settings.songTitleFormat,
+          playing: i == currentIdx,
+          selected: _sel.contains(songKey(s)),
+          favorite: meta.favorite,
+          disliked: meta.frozen,
+          isFirst: i == 0,
+          isLast: i == _songs.length - 1,
+          wide: wide,
+        );
+      },
+    );
+
     // 打开歌单后自动定位到当前播放歌曲（仅一次；按可见下标）。
     if (!_located && visibleCurrent >= 0) {
       _located = true;
@@ -762,7 +844,7 @@ class _SongListState extends State<SongList> {
                       count: visible.length,
                       itemBuilder: (c, i) {
                         final full = visible[i];
-                        final row = _items[full];
+                        final itemRow = _items[full];
                         final s = _songs[full];
                         final isFirst = i == 0;
                         final isLast = i == visible.length - 1;
@@ -771,6 +853,8 @@ class _SongListState extends State<SongList> {
                           song: s,
                           // 歌单详情取自本地索引，不提供直连源（不显示「缓存」项）。
                           source: null,
+                          // 行级视图数据（R-1）：行组件纯参数渲染、不订阅管理器。
+                          row: rows[full],
                           playing: full == currentIdx,
                           selectionMode: _sel.active,
                           selected: _sel.contains(key),
@@ -810,17 +894,18 @@ class _SongListState extends State<SongList> {
                               case 'row:up':
                                 if (!isFirst) {
                                   provider.moveItemRow(
-                                      widget.playlistId, row, -1);
+                                      widget.playlistId, itemRow, -1);
                                 }
                               case 'row:down':
                                 if (!isLast) {
                                   provider.moveItemRow(
-                                      widget.playlistId, row, 1);
+                                      widget.playlistId, itemRow, 1);
                                 }
                               case 'row:remove':
-                                provider.removeItemRow(widget.playlistId, row);
+                                provider.removeItemRow(
+                                    widget.playlistId, itemRow);
                                 _notifyPlayerRemoved(
-                                    provider, [provider.songOf(row)]);
+                                    provider, [provider.songOf(itemRow)]);
                             }
                           },
                         );
