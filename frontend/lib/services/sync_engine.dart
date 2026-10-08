@@ -56,6 +56,12 @@ class SyncEngine {
   void Function()? onSongStatesApplied;
   bool _songStatesDirty = false;
 
+  /// 断点镜像落库后的回调：新拉到的远端断点（当前曲/进度/深层列表）需由
+  /// 播放器在空闲时套用（启动补切 / 回前台 / 手动「立即同步」）。仅本轮真有
+  /// 断点变更时触发一次（对标 onSongStatesApplied）。
+  void Function()? onBreakpointsApplied;
+  bool _breakpointsDirty = false;
+
   SyncEngine({required this.api, required this.index, required this.settings});
 
   /// 应用是否在前台。false 时 [start] 的定时器不触发同步，避免应用退到后台
@@ -161,6 +167,7 @@ class SyncEngine {
       await _pull(clientId);
       _flushPlaylists();
       _flushSongStates();
+      _flushBreakpoints();
       settings.lastSyncAt = DateTime.now().toIso8601String();
       _lastPullAt = DateTime.now();
       _failCount = 0;
@@ -208,12 +215,20 @@ class SyncEngine {
       }
     }
     _flushSources();
+    _flushBreakpoints();
   }
 
   void _flushSources() {
     if (!_sourcesDirty) return;
     _sourcesDirty = false;
     onSourcesApplied?.call();
+  }
+
+  /// 断点变更统一出口（pull 批量与 push corrections 共用）。
+  void _flushBreakpoints() {
+    if (!_breakpointsDirty) return;
+    _breakpointsDirty = false;
+    onBreakpointsApplied?.call();
   }
 
   /// 歌单变更统一出口：pull 与 push 回包 corrections 共用，
@@ -401,6 +416,7 @@ class SyncEngine {
       updatedAt: (st['updated_at'] as String?) ?? DateTime.now().toIso8601String(),
       deviceId: null,
     );
+    _breakpointsDirty = true;
   }
 
   static List<String> _strList(Object? v) => [

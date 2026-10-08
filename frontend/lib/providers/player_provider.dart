@@ -226,6 +226,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 首轮同步晚到的远端断点此时不再回切，避免打断用户操作。
   bool _userTookOver = false;
 
+  /// 当前会话所依据的断点时间（本机恢复或远端镜像 adopted 时的 `updated_at`）。
+  ///
+  /// 与 `play_state.updated_at` **分离**：后者每次 `_saveState`（含 `_play` 起播、
+  /// 2s 节流写入）都会被刷新为客户端 `now`，不能用作「远端断点是否更新」的基准
+  /// （否则启动恢复 `_play` 覆盖本地时间后，远端镜像恒判更旧，跨设备续播永不生效）。
+  DateTime? _breakpointBaselineAt;
+
   /// 音量梯度引擎：16ms 周期单定时器（淡入/淡出共用一条梯度，cancel 即打断）。
   Timer? _fadeTimer;
 
@@ -1142,14 +1149,29 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _bindDeepList(key, listSize: resolved.length, reset: true);
       _fusedBase = resolved;
       _queue = _fusedQueue(resolved);
+      // 远端断点更新（歌曲+进度+深层列表）优先：起播前消费，整体委托
+      // [_restoreFromMirror]（重建融合队列/套用镜像深层列表/暂停态装载+seek）。
+      // 必须在 `_play` **之前**比较：`_play` 的 `_saveState` 会把本地
+      // play_state.updated_at 刷成 now，令远端镜像恒判更旧（打开歌单续播失效）。
+      if (resumeFromBreakpoint && playlistUuid != null) {
+        final idx = _index;
+        final m = idx?.breakpointMirrorOf(playlistUuid);
+        if (idx != null && m != null) {
+          final local = idx.getPlayState();
+          final localAt = (local != null && local.playlistUuid == playlistUuid)
+              ? DateTime.tryParse(local.updatedAt)
+              : null;
+          final mAt = DateTime.tryParse(m.updatedAt);
+          if (mAt != null && (localAt == null || mAt.isAfter(localAt))) {
+            if (await _restoreFromMirror(idx, m)) return;
+          }
+        }
+      }
       final target = resolved[index.clamp(0, resolved.length - 1)];
       _idx = _fusedIndexOf(index.clamp(0, resolved.length - 1), resolved);
       _leaveFor(target);
       notifyListeners();
       await _play(target, source: source, fromPlaylist: true, manual: true);
-      if (resumeFromBreakpoint && playlistUuid != null) {
-        await _resumeFromMirrorIfAny(playlistUuid);
-      }
       return;
     }
 
@@ -1371,7 +1393,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 记录本次起始是否用户手动点播（改进.txt 功能7 完播判定用；任何新起始都会覆盖）。
       _startedManual = manual;
       // 用户主动起播 → 首轮同步晚到的远端断点不再回切。
-      if (manual) _userTookOver = true;
+      if (manual) {
+        _userTookOver = true;
+        // 本机成为最新状态：远端旧断点不得再覆盖（基准=now）。
+        // 注意仅用户起播时刷新；恢复装载（manual=false）不刷新，否则恢复时
+        // `_saveState` 会把基准抬到现在，令远端更新的镜像永远套用不上。
+        _breakpointBaselineAt = DateTime.now();
+      }
       notifyListeners();
       if (src == null || !src.supportsDirect) {
         // 无本地源（如同步快照行且本机未配置对应源）：不崩，提示后由调用方决定。
@@ -2245,17 +2273,21 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _restoreLocal(idx, local);
   }
 
-  /// 首轮同步（`SyncEngine.firstPull`）完成后调用：有比本机断点更新的远端镜像、
-  /// 且用户还没接管播放时切过去。
+  /// 有比「当前会话所依据的断点」更新的远端镜像时切过去（歌曲+进度+深层列表）。
   ///
-  /// 启动恢复不再等网络（此前先 await firstPull，服务器不可达要 2s 超时才恢复）：
-  /// 先 [restorePreferRemote] 出内容，同步拉到更新的镜像再补切。用户已主动播放/
-  /// 暂停/切歌/seek（[_userTookOver]）时不打断。
-  Future<void> applyNewerMirrorIfAny() async {
+  /// 基准用 [_breakpointBaselineAt]（恢复时 adopted 的时间，或用户起播时的 now），
+  /// **不是** `play_state.updated_at`——后者在 `_play` 起播时即被 `_saveState`
+  /// 覆盖为客户端 now，用它比较会使远端镜像恒判更旧（跨设备续播永不生效的回归根因）。
+  ///
+  /// [viaSync]：由同步回调（手动「立即同步」/回前台）触发——此时不再受
+  /// [_userTookOver] 限制（用户明确要套用）；无论何时，**正在播放时不打断**。
+  Future<void> applyNewerMirrorIfAny({bool viaSync = false}) async {
     final idx = _index;
-    if (idx == null || !_restored || _shuttingDown || _userTookOver) return;
-    final local = idx.getPlayState();
-    final localAt = local == null ? null : DateTime.tryParse(local.updatedAt);
+    if (idx == null || !_restored || _shuttingDown) return;
+    // 播放中绝不打断领播端（缓冲中的瞬态 false 由基准比较再兜一层）。
+    if (_hasPlayScene && playing) return;
+    // 启动补切：用户已主动交互过则不再回切（viaSync 的显式同步不受此限）。
+    if (!viaSync && _userTookOver) return;
     BreakpointMirrorRow? best;
     DateTime? bestAt;
     for (final m in idx.allBreakpointMirrors()) {
@@ -2267,11 +2299,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
     if (best == null || bestAt == null) return;
-    if (localAt != null && !bestAt.isAfter(localAt)) return;
+    final base = _breakpointBaselineAt;
+    if (base != null && !bestAt.isAfter(base)) return;
     await _restoreFromMirror(idx, best);
   }
 
   Future<void> _restoreLocal(LocalIndex idx, PlayStateRow? st) async {
+    // 基准取「本机断点自身时间」：后续 `_play` 的 `_saveState` 会刷新
+    // play_state.updated_at，但不会改这里，故远端更新的镜像仍可被套用。
+    _breakpointBaselineAt = st == null ? null : DateTime.tryParse(st.updatedAt);
     if (st == null || st.queueJson.isEmpty) return;
     try {
       final list = (jsonDecode(st.queueJson) as List)
@@ -2324,6 +2360,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
         _current = _queue[0];
       }
+      // 恢复本机断点同样不立即回推（复用 25s 节流）：避免本机旧位置以更新的
+      // occurred_at 覆盖正在播放的领播端；随后真实播放位置流会重新入队。
+      _lastBpKey = '$_syncPlaylistUuid|${_current!.source}|${_current!.sourceRef}';
+      _lastBpAtMs = DateTime.now().millisecondsSinceEpoch;
       // 从断点位置起装载（暂停态）：目标歌曲本机无源（如同步来的歌单行但未配置
       // 对应源）时，静默退到其后第一首可播曲目（与 _restoreFromMirror 一致），
       // 全部不可播则保持队列暂停、不装载——启动恢复不弹「播放失败」。
@@ -2377,6 +2417,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _queue = _fusedQueue(_fusedBase!);
     _idx = _fusedIndexOf(start, songs).clamp(0, _queue.length - 1);
     _current = _queue[_idx];
+    // 采用远端断点为当前状态：基准=镜像时间（供后续「是否更新」判断），
+    // 并对刚 adopted 的状态做一次回推节流——跟随端不应以更新的 occurred_at
+    // 把暂停位置写回服务端、反过来覆盖正在播放的领播端（复用 25s 节流）。
+    _breakpointBaselineAt = DateTime.tryParse(m.updatedAt);
+    final adopted = _current!;
+    _lastBpKey = '$_syncPlaylistUuid|${adopted.source}|${adopted.sourceRef}';
+    _lastBpAtMs = DateTime.now().millisecondsSinceEpoch;
     try {
       await _play(_current!, play: false);
       final pos = (found >= 0 && start == found) ? m.positionMs : 0;
@@ -2407,31 +2454,6 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       return out;
     } catch (_) {
       return const [];
-    }
-  }
-
-  /// 「播放」：其他设备的断点更新时自动定位到该进度并提示。
-  Future<void> _resumeFromMirrorIfAny(String playlistUuid) async {
-    final idx = _index;
-    if (idx == null) return;
-    final m = idx.breakpointMirrorOf(playlistUuid);
-    if (m == null || m.positionMs <= 0) return;
-    final mAt = DateTime.tryParse(m.updatedAt);
-    if (mAt == null) return;
-    final local = idx.getPlayState();
-    final localAt =
-        (local?.playlistUuid == playlistUuid && local != null)
-            ? DateTime.tryParse(local.updatedAt)
-            : null;
-    if (localAt != null && !mAt.isAfter(localAt)) return;
-    final i = _queue.indexWhere((s) => _refMatches(s.sourceRef, m.sourceRef));
-    if (i < 0) return;
-    try {
-      await playAt(i, source: _curSource);
-      await player.seek(Duration(milliseconds: m.positionMs));
-      AppToast.show('已从其他设备进度继续（${_fmtMs(m.positionMs)}）', isError: false);
-    } catch (_) {
-      // 定位失败不阻断播放。
     }
   }
 

@@ -350,6 +350,15 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
       if (!mounted) return;
       context.read<PlaylistsProvider>().refresh();
     };
+    // 同步拉到更新的远端断点（当前曲/进度/深层列表）后，空闲时套用到播放器：
+    // 启动补切 / 回前台 / 手动「立即同步」统一走此回调（刻意播放中不打断由
+    // PlayerProvider.applyNewerMirrorIfAny 内部守卫）。
+    _syncEngine.onBreakpointsApplied = () {
+      if (!mounted) return;
+      unawaited(context
+          .read<PlayerProvider>()
+          .applyNewerMirrorIfAny(viaSync: true));
+    };
     _sheetAnim = PlayerSheetAnimator(
       vsync: this,
       progress: _nav.playerProgress,
@@ -390,6 +399,7 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
     _nav.removeListener(_syncPlayerSheet);
     _nav.playerProgress.removeListener(_onPlayerProgress);
     _syncEngine.onPlaylistsApplied = null;
+    _syncEngine.onBreakpointsApplied = null;
     _sheetAnim.dispose();
     _gate?.setPlayerSheetDragging(false);
     super.dispose();
