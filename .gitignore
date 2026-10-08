@@ -20,6 +20,7 @@ scripts/*
 testmusic/
 nginx/
 spec/
+articals/
 
 # 泛匹配
 # 注：曾用 *.md / *.txt / *test* 全局忽略，会静默吞掉 vendored 副本与
