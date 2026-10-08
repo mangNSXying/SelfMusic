@@ -5,8 +5,9 @@
 		}
 	],
 	"settings": {
-		"java.configuration.updateBuildConfiguration": "interactive",
+		"java.configuration.updateBuildConfiguration": "automatic",
 		"java.compile.nullAnalysis.mode": "disabled",
-		"java.jdt.ls.java.home": ""
+		"java.jdt.ls.java.home": "",
+		"java.import.maven.enabled": true,
 	}
 }

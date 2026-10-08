@@ -200,10 +200,11 @@ INDEX idx_refresh(refresh_token_hash)
 | 键 | 默认 | 说明 |
 |----|------|------|
 | `pairing_token` | 未提供 `PAIRING_TOKEN` 时首次随机 | 主配对令牌（env 镜像，供 /auth/pair 校验） |
-| `cache_max_bytes` | `1073741824`（1 GB） | 服务端建议的缓存上限（客户端 `follow_server` 来源的取值，见 §6.7） |
-| `cache_song_limit` | `500` | 服务端建议的歌曲上限 |
+| `cache_max_bytes` | `5368709120`（5 GiB） | 服务端建议的缓存上限（字节；客户端 `follow_server` 来源的取值，见 §6.7） |
+| `cache_song_limit` | `200` | 服务端建议的歌曲上限 |
 
-> `migration_004` 已删除 `scan_interval_min / upload_dir / transcode_max_concurrency` 等曲库时代旧键；当前实际存量仅为上表三键 + `pairing_token`。
+> 缓存两键的权威来源：init.sql 预置 + 每次启动被 `CACHE_MAX_MIB`（MiB）/ `CACHE_SONG_LIMIT`（首）env 覆盖写入（见 §5.4）；`GET /api/v1/admin/config` 下发。
+> `migration_004` 已删除 `scan_interval_min / upload_dir / transcode_max_concurrency` 等曲库时代旧键；当前实际存量即上表三键。
 
 `song_states` 权重相关字段与触发规则见 §7.1。
 
@@ -283,9 +284,10 @@ INDEX idx_refresh(refresh_token_hash)
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | ✅ GET | `/admin/pairing-token` | 主配对令牌明文（`设置→服务端→配对服务器` 展示用；密钥源自 env 镜像） |
+| ✅ GET | `/admin/config` | 服务端缓存建议值 `{cache_max_bytes, cache_song_limit}`（取值自 settings 表：init.sql 预置 + 每次启动被 `CACHE_MAX_MIB`/`CACHE_SONG_LIMIT` env 覆盖，§5.4；客户端 `follow_server` 来源） |
 | ✅ GET | `/admin/devices` · PUT/DELETE `/admin/devices/{id}` | 设备列表 / 改名 / 吊销 |
 | ⏳ POST | `/admin/upload/init` → `/part/{n}` → `/commit` | 分片上传（16MB/片），阶段 6 |
-| ⏳ PUT | `/admin/settings` | 设置读写（**均未实现**：`GET /admin/config` 目前也不存在——客户端 `follow_server` 获取服务端建议值的按钮因此暂灰显，见 settings.md §3.3 / §6.7） |
+| ⏳ PUT | `/admin/settings` | 管理端改设置（**未实现**，阶段 6；客户端 `follow_server` 的**接线**亦未做——按钮仍灰显，见 §6.7 / settings.md §3.3） |
 
 ---
 
@@ -313,7 +315,8 @@ sync/         SyncController(pull/push) + SyncService(幂等去重/LWW/correctio
 | Web 框架 | `spring-boot-starter-web` + `data-jpa` + `security` + `validation` | Java 21 / Spring Boot 3.4 |
 | 数据库驱动 | `mysql-connector-j`（MySQL 8） | runtime；`ddl-auto: validate` |
 | Token 哈希 | JDK `MessageDigest` SHA-256 | 不引额外依赖 |
-| 其余 | lombok（编译期）、devtools（runtime）、test | — |
+| 其余 | devtools（runtime）、test | — |
+| 已移除 | lombok（编译期；2026-10 全量去注解，改显式构造器/getter-setter/Logger，规避新版 Java 语言服务器注释处理器不兼容） | — |
 
 > 纠偏：`java-smb` / `jaudiotagger` / `ffmpeg`/转码曾列于后端选型，但**后端从未引入、也无任何音频/标签/SMB 代码**——SMB 与音频元数据标签全部在 Flutter 客户端用 Dart 实现（§6.2/§6.4）；服务端既没有曲库也没有流媒体，自然不做媒体工作。
 
@@ -335,7 +338,7 @@ TokenFilter (OncePerRequestFilter)
 | prod | `eclipse-temurin:21-jre` | 复用基镜像自带 `ubuntu` 用户运行（UID 1000，与 dev 对齐；自建同 UID 用户会构建失败）；暴露 8080。**不装 ffmpeg** |
 | dev | `maven:3.9-eclipse-temurin-21` | `apt` 装了 ffmpeg（历史的转码预案，后端当前从不调用） |
 
-环境变量（**实际读取**）：`DB_HOST/DB_PORT/DB_NAME/DB_USERNAME/DB_PASSWORD`（连 MySQL，默认值见 `application.yml`）+ `PAIRING_TOKEN`（可选，配对密钥权威来源；每次启动覆盖写入 settings，改后重启即生效；仅在首次初始化时以 WARN 打印一次密钥）。
+环境变量（**实际读取**）：`DB_HOST/DB_PORT/DB_NAME/DB_USERNAME/DB_PASSWORD`（连 MySQL，默认值见 `application.yml`）+ `PAIRING_TOKEN`（可选，配对密钥权威来源；每次启动覆盖写入 settings，改后重启即生效；仅在首次初始化时以 WARN 打印一次密钥）+ **缓存建议值 `CACHE_MAX_MIB`（单位 MiB）与 `CACHE_SONG_LIMIT`（首数），默认 5120 / 200**（每次启动覆盖写入 `settings.cache_max_bytes`（字节）/`cache_song_limit`，改 `.env` 重启即生效；未提供或非法时沿用库中旧值、库中无则落代码默认 5 GiB / 200；经 `GET /admin/config` 下发客户端）。
 
 > ⚠️ 文档曾列的 `LOCAL_MUSIC_ROOT` / `WEBDAV_BASE_URL` / `WEBDAV_USER` / `WEBDAV_PASS`（出流代理）与 `SCAN_*`（服务端扫描）在后端代码**零引用**，属历史遗留死配置；后端既不出流也不扫描，`.env` 中的残留项可删。
 
@@ -498,7 +501,7 @@ abstract class MusicSource {
 | 服务端 | 后端地址、配对服务器（含配对密钥遮显）、预载下一首、缓存配置「跟随服务端 / 自定义」双来源 + **缓存目录展示**、允许不安全 HTTP、信任自签名证书、**多设备同步区块**（总开关 / 立即同步 / 已配对设备管理） |
 
 > 关于「职责单一」约定与现状：`player_gesture_swipe` / `player_show_weight` / `song_title_format` 三个键的**展示入口在「界面」分区、键归属却在「播放」/「歌曲」**（settings.md §2 分区总表里滑动手势与权重仍写成播放区，属文档自身的重复标注，尚未收口）。
-> **`follow_server` 缓存建议**：客户端已实现「跟随服务端 / 自定义」双来源与解析规则，但服务端建议值接口 `GET /api/v1/admin/config` **不存在**（见 §4.5），`follow_server` 模式目前按钮灰显、实际不可用（设置仅展示）——属阶段 6 待补。
+> **`follow_server` 缓存建议**：客户端已实现「跟随服务端 / 自定义」双来源与解析规则；服务端建议值接口 `GET /api/v1/admin/config` **已实现**（值由 `CACHE_MAX_MIB`/`CACHE_SONG_LIMIT` env 镜像，§4.5 / §5.4），但客户端**拉取接线尚未做**——`follow_server` 按钮仍灰显（设置仅展示），属阶段 6 剩余。
 
 网络与凭据相关的两个开关（`allow_insecure_http` / `allow_self_signed`）是**安全边界**而非普通偏好：关时显式 `http://` 地址被拒、缺 scheme 恒默认补 `https://`，约束后端 / WebDAV / 配对地址；自签名信任只作用于 dio 与直连 WebDAV 的 TLS 回调，播放器层不受影响。
 
@@ -729,7 +732,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 ### 阶段 6：转码 + 管理闭环（~1 周）
 
 - ffmpeg 按需转码管线与并发上限；分片上传；删除/隐藏
-- 管理端设置：**实际已提前落地的只有 `GET /api/v1/admin/pairing-token`（密钥展示）与 `GET /api/v1/admin/devices`（设备管理）**；`GET /admin/config`（缓存建议值）与 `PUT /admin/settings` 在本阶段一并补齐
+- 管理端设置：**已提前落地的有 `GET /api/v1/admin/pairing-token`（密钥展示）、`GET /api/v1/admin/devices`（设备管理）与 `GET /api/v1/admin/config`（缓存建议值，enabled 由 `CACHE_MAX_MIB`/`CACHE_SONG_LIMIT` env 镜像）**；本阶段补齐 `PUT /admin/settings` 与客户端 `follow_server` 接线
 - 验收：FLAC 源按 128k 出流实测流量达标；上传 50MB 文件入库可播
 
 ### 平台支线：鸿蒙 NEXT 端（2026-09 完成 PoC 验收）
@@ -784,7 +787,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 | R6 | 大曲库查询性能 | 列表慢 | 索引齐备；`q` 前缀匹配；预留 FTS 开关 |
 | R7 | 公网暴露 | 曲库/上传被滥用 | Bearer 认证已是第一道门；文档仍建议叠加 IP 白名单 |
 | R8 | 转码流 position 精度（阶段 6 才涉及的转码链路） | 转码后 VBR 断点 ±2s | 文档注明；CBR 精确（现阶段无转码，暂不触发） |
-| R9 | 文档/脚本与实际脱节（治理债，非功能风险） | 新部署踩坑、误判现状 | 已收口（2026-10）：§3.1 init.sql 已合并迁移至 v3（新建库与增量升级两条路径对齐）；settings.md 已同步「`GET /admin/config` 未实现、`follow_server` 灰显」与 §4.5 一致 |
+| R9 | 文档/脚本与实际脱节（治理债，非功能风险） | 新部署踩坑、误判现状 | 基本收口（2026-10）：§3.1 init.sql 已合并迁移至 v3（新建库与增量升级两条路径对齐）；`GET /admin/config` 已实现（缓存建议值由 `CACHE_MAX_MIB`/`CACHE_SONG_LIMIT` env 镜像，默认 5 GiB / 200）；settings.md 已与 §4.5 一致。剩余：客户端 `follow_server` 接线与 `PUT /admin/settings`（阶段 6） |
 
 ### 待拍板（沿用 v1，默认按文中执行）
 

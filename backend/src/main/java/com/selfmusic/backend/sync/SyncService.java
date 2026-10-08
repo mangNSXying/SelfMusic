@@ -32,8 +32,6 @@ import com.selfmusic.backend.domain.repository.SongStateRepository;
 import com.selfmusic.backend.domain.repository.SyncEventRepository;
 import com.selfmusic.backend.domain.repository.SyncSourceRepository;
 
-import lombok.RequiredArgsConstructor;
-
 /**
  * 阶段5 同步引擎服务端（DESIGN.md §4.4 / §7.2，字段级合并）。
  *
@@ -51,7 +49,6 @@ import lombok.RequiredArgsConstructor;
  *   为空（首写）恒胜。客户端本地时钟不可信，不做跨时钟比较之外的推断。
  */
 @Service
-@RequiredArgsConstructor
 public class SyncService {
 
     public static final BigDecimal FACTOR_MIN = new BigDecimal("0.5");
@@ -72,6 +69,24 @@ public class SyncService {
     private final PlayStateRepository playStateRepository;
     private final DeviceRepository deviceRepository;
     private final ObjectMapper objectMapper;
+
+    public SyncService(SyncEventRepository syncEventRepository,
+                       SongStateRepository songStateRepository,
+                       SyncSourceRepository syncSourceRepository,
+                       PlaylistRepository playlistRepository,
+                       PlaylistItemRepository playlistItemRepository,
+                       PlayStateRepository playStateRepository,
+                       DeviceRepository deviceRepository,
+                       ObjectMapper objectMapper) {
+        this.syncEventRepository = syncEventRepository;
+        this.songStateRepository = songStateRepository;
+        this.syncSourceRepository = syncSourceRepository;
+        this.playlistRepository = playlistRepository;
+        this.playlistItemRepository = playlistItemRepository;
+        this.playStateRepository = playStateRepository;
+        this.deviceRepository = deviceRepository;
+        this.objectMapper = objectMapper;
+    }
 
     /** 静态纯函数（断点快照等）专用的映射器，避免依赖注入实例上下文。 */
     private static final ObjectMapper STATIC_MAPPER = new ObjectMapper();

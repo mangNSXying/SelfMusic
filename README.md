@@ -57,6 +57,8 @@ mysql -u root -p < scripts/init.sql
 # 必填：DB_HOST / DB_PASSWORD
 # 可选：PAIRING_TOKEN —— 留空则首次启动随机生成并在启动日志(WARN)打印一次；
 # 改动后重启生效，仅影响新设备（已配对设备不受影响）
+# 可选：CACHE_MAX_MIB / CACHE_SONG_LIMIT —— 服务端缓存建议值（默认 5120 MiB / 200 首）；
+# 每次启动覆盖写入 settings，客户端 follow_server 模式依据（客户端接线阶段 6 待做）
 ```
 
 ### 3. 启动后端

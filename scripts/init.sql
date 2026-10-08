@@ -164,8 +164,8 @@ CREATE TABLE IF NOT EXISTS sync_sources (
 -- 默认设置项
 -- ---------------------------------------------------------------------
 INSERT INTO settings (skey, svalue) VALUES
-    ('cache_max_bytes', '1073741824'),
-    ('cache_song_limit', '500')
+    ('cache_max_bytes', '5368709120'),
+    ('cache_song_limit', '200')
 ON DUPLICATE KEY UPDATE skey = skey;
 -- pairing_token 由应用首次启动生成写入（权威源 env PAIRING_TOKEN），不在此预置
 

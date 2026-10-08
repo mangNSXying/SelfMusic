@@ -11,14 +11,12 @@ import com.selfmusic.backend.domain.entity.Device;
 import com.selfmusic.backend.domain.repository.DeviceRepository;
 import com.selfmusic.backend.domain.repository.SettingRepository;
 import jakarta.servlet.http.HttpServletRequest;
-import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/api/v1/auth")
-@RequiredArgsConstructor
 public class AuthController {
 
     private static final Duration ACCESS_TTL = Duration.ofHours(24);
@@ -26,6 +24,11 @@ public class AuthController {
 
     private final DeviceRepository deviceRepository;
     private final SettingRepository settingRepository;
+
+    public AuthController(DeviceRepository deviceRepository, SettingRepository settingRepository) {
+        this.deviceRepository = deviceRepository;
+        this.settingRepository = settingRepository;
+    }
 
     @PostMapping("/pair")
     public ApiResponse<Map<String, String>> pair(@RequestBody PairRequest req,
