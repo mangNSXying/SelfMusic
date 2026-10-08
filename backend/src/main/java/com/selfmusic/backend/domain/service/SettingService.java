@@ -2,17 +2,19 @@ package com.selfmusic.backend.domain.service;
 
 import com.selfmusic.backend.domain.entity.Setting;
 import com.selfmusic.backend.domain.repository.SettingRepository;
-import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.Optional;
 
 /** settings 表读写（客户端管理端点 / 配置下发共用）。 */
 @Service
-@RequiredArgsConstructor
 public class SettingService {
 
     private final SettingRepository settingRepository;
+
+    public SettingService(SettingRepository settingRepository) {
+        this.settingRepository = settingRepository;
+    }
 
     public Optional<String> get(String key) {
         return settingRepository.findById(key).map(Setting::getValue);

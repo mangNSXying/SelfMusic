@@ -10,7 +10,6 @@ import com.selfmusic.backend.sync.PushEvent;
 import com.selfmusic.backend.sync.SyncController;
 import com.selfmusic.backend.sync.SyncEventTypes;
 import com.selfmusic.backend.sync.SyncService;
-import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
@@ -27,13 +26,20 @@ import java.util.UUID;
  */
 @RestController
 @RequestMapping("/api/v1/playlists")
-@RequiredArgsConstructor
 @Transactional
 public class PlaylistController {
 
     private final PlaylistRepository playlistRepository;
     private final SyncService syncService;
     private final ObjectMapper objectMapper;
+
+    public PlaylistController(PlaylistRepository playlistRepository,
+                              SyncService syncService,
+                              ObjectMapper objectMapper) {
+        this.playlistRepository = playlistRepository;
+        this.syncService = syncService;
+        this.objectMapper = objectMapper;
+    }
 
     @GetMapping
     public ApiResponse<List<Map<String, Object>>> list() {

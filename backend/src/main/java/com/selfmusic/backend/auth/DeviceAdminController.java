@@ -4,7 +4,6 @@ import com.selfmusic.backend.common.ApiResponse;
 import com.selfmusic.backend.common.BizException;
 import com.selfmusic.backend.domain.entity.Device;
 import com.selfmusic.backend.domain.repository.DeviceRepository;
-import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -12,10 +11,13 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/v1/admin/devices")
-@RequiredArgsConstructor
 public class DeviceAdminController {
 
     private final DeviceRepository deviceRepository;
+
+    public DeviceAdminController(DeviceRepository deviceRepository) {
+        this.deviceRepository = deviceRepository;
+    }
 
     @GetMapping
     public ApiResponse<List<Device>> list() {

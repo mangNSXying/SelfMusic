@@ -11,5 +11,7 @@
       "path": "/usr/lib/jvm/java-8-openjdk-amd64"
     }
   ],
-  "java.compile.nullAnalysis.mode": "automatic"
+  "java.compile.nullAnalysis.mode": "disabled",
+  "java.import.maven.enabled": true,
+  "java.configuration.updateBuildConfiguration": "automatic"
 }

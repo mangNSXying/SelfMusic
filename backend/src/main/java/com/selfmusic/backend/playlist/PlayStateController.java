@@ -12,7 +12,6 @@ import com.selfmusic.backend.sync.PushEvent;
 import com.selfmusic.backend.sync.SyncController;
 import com.selfmusic.backend.sync.SyncEventTypes;
 import com.selfmusic.backend.sync.SyncService;
-import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
@@ -28,7 +27,6 @@ import java.util.UUID;
  */
 @RestController
 @RequestMapping("/api/v1/playstates")
-@RequiredArgsConstructor
 @Transactional
 public class PlayStateController {
 
@@ -36,6 +34,16 @@ public class PlayStateController {
     private final PlayStateRepository playStateRepository;
     private final SyncService syncService;
     private final ObjectMapper objectMapper;
+
+    public PlayStateController(PlaylistRepository playlistRepository,
+                               PlayStateRepository playStateRepository,
+                               SyncService syncService,
+                               ObjectMapper objectMapper) {
+        this.playlistRepository = playlistRepository;
+        this.playStateRepository = playStateRepository;
+        this.syncService = syncService;
+        this.objectMapper = objectMapper;
+    }
 
     @PutMapping("/{playlistId}")
     public ApiResponse<Map<String, Object>> put(@PathVariable Long playlistId,

@@ -315,7 +315,8 @@ sync/         SyncController(pull/push) + SyncService(幂等去重/LWW/correctio
 | Web 框架 | `spring-boot-starter-web` + `data-jpa` + `security` + `validation` | Java 21 / Spring Boot 3.4 |
 | 数据库驱动 | `mysql-connector-j`（MySQL 8） | runtime；`ddl-auto: validate` |
 | Token 哈希 | JDK `MessageDigest` SHA-256 | 不引额外依赖 |
-| 其余 | lombok（编译期）、devtools（runtime）、test | — |
+| 其余 | devtools（runtime）、test | — |
+| 已移除 | lombok（编译期；2026-10 全量去注解，改显式构造器/getter-setter/Logger，规避新版 Java 语言服务器注释处理器不兼容） | — |
 
 > 纠偏：`java-smb` / `jaudiotagger` / `ffmpeg`/转码曾列于后端选型，但**后端从未引入、也无任何音频/标签/SMB 代码**——SMB 与音频元数据标签全部在 Flutter 客户端用 Dart 实现（§6.2/§6.4）；服务端既没有曲库也没有流媒体，自然不做媒体工作。
 

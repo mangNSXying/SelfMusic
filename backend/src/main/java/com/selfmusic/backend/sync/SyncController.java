@@ -1,7 +1,6 @@
 package com.selfmusic.backend.sync;
 
 import com.selfmusic.backend.common.ApiResponse;
-import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
@@ -12,10 +11,13 @@ import java.util.Map;
 /** 阶段5 同步端点（DESIGN.md §4.4；认证走全局 TokenFilter，调用设备=principal clientId）。 */
 @RestController
 @RequestMapping("/api/v1/sync")
-@RequiredArgsConstructor
 public class SyncController {
 
     private final SyncService syncService;
+
+    public SyncController(SyncService syncService) {
+        this.syncService = syncService;
+    }
 
     @GetMapping("/pull")
     public ApiResponse<Map<String, Object>> pull(
