@@ -67,6 +67,17 @@ class NavigationProvider extends ChangeNotifier {
     playerProgress.value = p.clamp(0.0, 1.0);
   }
 
+  /// 窄屏「播放队列」底部弹层进度（0=完全展示，1=完全隐藏），迷你栏队列按钮
+  /// 上滑（打开）/ 弹层把手拖拽（关闭）跟手共用；宽屏为右侧侧板，不参与。
+  ///
+  /// 与 [playerProgress] 同构：ValueNotifier 逐帧驱动位移，只重建队列悬浮层；
+  /// 定稿态由 [queueOpen] 持有。
+  final ValueNotifier<double> queueProgress = ValueNotifier(1);
+
+  void setQueueProgress(double p) {
+    queueProgress.value = p.clamp(0.0, 1.0);
+  }
+
   /// 当前区域 key（播放页悬浮层不计入区域）。
   String get areaKey {
     if (_settings != null) return 'settings:${_settings!.name}';

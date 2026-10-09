@@ -4,9 +4,9 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 import 'package:provider/provider.dart';
 
-/// 交互门控协调器（R-2）：聚合「滚动 / 过渡动画 / 浮层拖拽 / 队列面板」四类
-/// 交互状态，对外派生单一 [isInteracting]；并承载「交互期高频数据通知去重
-/// 聚合、交互结束补投一次」的能力（最终一致）。
+/// 交互门控协调器（R-2）：聚合「滚动 / 过渡动画 / 播放页拖拽 / 队列弹层
+/// 拖拽与开合」五类交互状态，对外派生单一 [isInteracting]；并承载「交互期
+/// 高频数据通知去重聚合、交互结束补投一次」的能力（最终一致）。
 ///
 /// 为什么需要它：`DirectSourceManager` 的 `notifyListeners` 在后台补读 /
 /// 封面回填 / 元数据变更时高频触发，若恰好落在过渡/滚动动画帧内，会让动画
@@ -20,6 +20,7 @@ class InteractionGate extends ChangeNotifier {
   int _scrollDepth = 0;
   bool _transitioning = false;
   bool _playerSheetDragging = false;
+  bool _queueSheetDragging = false;
   bool _queuePanelOpen = false;
 
   /// 交互期被聚合的最新一次数据通知回调（去重：只保留最后一次即等价）。
@@ -28,11 +29,16 @@ class InteractionGate extends ChangeNotifier {
   bool get scrolling => _scrollDepth > 0;
   bool get transitioning => _transitioning;
   bool get playerSheetDragging => _playerSheetDragging;
+  bool get queueSheetDragging => _queueSheetDragging;
   bool get queuePanelOpen => _queuePanelOpen;
 
   /// 是否处于任一「不要干扰」的交互窗口。
   bool get isInteracting =>
-      scrolling || _transitioning || _playerSheetDragging || _queuePanelOpen;
+      scrolling ||
+      _transitioning ||
+      _playerSheetDragging ||
+      _queueSheetDragging ||
+      _queuePanelOpen;
 
   /// 是否存在被聚合、尚未补投的通知（测试/观测用）。
   @visibleForTesting
@@ -69,6 +75,12 @@ class InteractionGate extends ChangeNotifier {
   void setPlayerSheetDragging(bool value) {
     if (_playerSheetDragging == value) return;
     _playerSheetDragging = value;
+    _recompute();
+  }
+
+  void setQueueSheetDragging(bool value) {
+    if (_queueSheetDragging == value) return;
+    _queueSheetDragging = value;
     _recompute();
   }
 

@@ -32,16 +32,31 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
   double _dragStartP = 1;
 
   /// 队列按钮区域的上滑手势（子手势在竞技场胜过外层整条上滑 → 打开队列而非播放页）。
+  ///
+  /// 窄屏跟手语义与整条上滑一致：`GlobalPosition.dy` 上移即 [QueueSheetAnimator]
+  /// 进度减小（弹层升起），松手按速度/位移吸附；宽屏无底部弹层，退回旧路径
+  /// （阈值判定后切换右侧面板）。
   double? _queueDragStartY;
   double? _queueDragLastY;
+  double _queueDragStartP = 1;
 
   void _onQueueDragStart(DragStartDetails d) {
     _queueDragStartY = d.globalPosition.dy;
     _queueDragLastY = d.globalPosition.dy;
+    final anim = context.read<QueueSheetAnimator>();
+    _queueDragStartP = anim.value;
+    anim.dragStart();
   }
 
   void _onQueueDragUpdate(DragUpdateDetails d) {
+    final start = _queueDragStartY;
     _queueDragLastY = d.globalPosition.dy;
+    if (start == null) return;
+    final sh = MediaQuery.sizeOf(context).height * kQueueSheetHeightFactor;
+    if (sh <= 0) return;
+    context
+        .read<QueueSheetAnimator>()
+        .dragTo(_queueDragStartP + (d.globalPosition.dy - start) / sh);
   }
 
   void _onQueueDragEnd(DragEndDetails d) {
@@ -50,9 +65,24 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
     _queueDragStartY = null;
     _queueDragLastY = null;
     if (start == null || last == null || !mounted) return;
-    // 上滑（速度或累计位移）→ 打开播放队列；点按仍由 IconButton 原样处理开关。
-    if (isQueueUpSwipe(d.primaryVelocity, start, last)) {
-      toggleQueuePanel(context);
+    final nav = context.read<NavigationProvider>();
+    final size = MediaQuery.sizeOf(context);
+    final wide = size.width >= 900 || size.width > size.height;
+    final anim = context.read<QueueSheetAnimator>();
+    if (wide) {
+      // 宽屏无底部弹层：上滑（速度或累计位移）切右侧常驻面板，与旧行为一致。
+      if (isQueueUpSwipe(d.primaryVelocity, start, last)) {
+        nav.toggleQueue();
+      }
+      return;
+    }
+    // 窄屏：跟手吸附。上滑足够（速度或已拉开过半）→ 定稿开，否则回落关闭。
+    final v = d.primaryVelocity ?? 0;
+    final p = anim.value;
+    if (v < -700 || p < 0.6) {
+      nav.openQueue(); // 打开吸附动画由 Root._syncQueueSheet 承担
+    } else {
+      anim.settle(1);
     }
   }
 
