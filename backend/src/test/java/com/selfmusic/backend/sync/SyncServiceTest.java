@@ -1,5 +1,6 @@
 package com.selfmusic.backend.sync;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.selfmusic.backend.common.BizException;
@@ -9,7 +10,9 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -238,5 +241,105 @@ class SyncServiceTest {
         SyncService.applySongEvent(s, SyncEventTypes.SONG_RESET, empty);
         SyncService.applySongEvent(s, SyncEventTypes.SONG_LIKED, empty);
         assertEquals(3600, s.getPlaySec());
+    }
+
+    // ------------------------------------------------------------------
+    // 事件日志压缩锚点（migration_008）与 pull 分类（数据增量化）
+    // ------------------------------------------------------------------
+
+    @Test
+    void entityKeyDerivesIdentityForCompaction() {
+        ObjectNode song = mapper.createObjectNode();
+        song.put("source_id", "uuid-1");
+        song.put("source_ref", "/music/a.mp3");
+        assertEquals("song|uuid-1|/music/a.mp3",
+                SyncService.entityKeyOf("song.complete", song));
+
+        // 无 source_id → legacy 协议回退（与权重行身份解析同规则）
+        ObjectNode legacySong = mapper.createObjectNode();
+        legacySong.put("source", "webdav");
+        legacySong.put("source_ref", "/m/b.flac");
+        assertEquals("song|legacy:webdav|/m/b.flac",
+                SyncService.entityKeyOf(SyncEventTypes.SONG_STATE, legacySong));
+
+        // 缺 ref / 空载荷 / 未知类型 → null（该行不参与压缩，保守保留）
+        assertNull(SyncService.entityKeyOf("song.skip", mapper.createObjectNode()));
+        assertNull(SyncService.entityKeyOf("song.skip", null));
+        assertNull(SyncService.entityKeyOf("unknown.type", song));
+
+        ObjectNode src = mapper.createObjectNode();
+        src.put("client_uuid", "s-1");
+        assertEquals("source|s-1", SyncService.entityKeyOf("source.update", src));
+
+        ObjectNode pl = mapper.createObjectNode();
+        pl.put("client_uuid", "p-1");
+        assertEquals("playlist|p-1",
+                SyncService.entityKeyOf("playlist.item_add", pl));
+
+        ObjectNode plLegacy = mapper.createObjectNode();
+        plLegacy.put("playlist_uuid", "p-2");
+        assertEquals("playlist|p-2",
+                SyncService.entityKeyOf("playlist.update", plLegacy));
+
+        ObjectNode bp = mapper.createObjectNode();
+        bp.put("playlist_uuid", "p-3");
+        assertEquals("breakpoint|p-3",
+                SyncService.entityKeyOf(SyncEventTypes.BREAKPOINT_SET, bp));
+    }
+
+    @Test
+    void breakpointEventsDoNotCollectPlaylistSnapshots() {
+        // 他机断点：只回 playstate，不整包重下歌单条目（稳态流量放大器修复）
+        SyncEvent bp = event(SyncEventTypes.BREAKPOINT_SET, "dev-b",
+                "{\"playlist_uuid\":\"pl-1\",\"source_ref\":\"/a.mp3\"}");
+        // 歌单事件：歌单 + 其断点都回（原行为保留）
+        SyncEvent plAdd = event("playlist.item_add", "dev-b",
+                "{\"playlist_uuid\":\"pl-2\",\"source_ref\":\"/b.mp3\"}");
+        // 本机事件：整体跳过
+        SyncEvent self = event(SyncEventTypes.BREAKPOINT_SET, "dev-a",
+                "{\"playlist_uuid\":\"pl-3\",\"source_ref\":\"/c.mp3\"}");
+
+        SyncService.PullCollections c = SyncService.collectPulls(
+                List.of(bp, plAdd, self), "dev-a", this::parse);
+
+        assertEquals(Set.of("pl-2"), c.playlistUuids());
+        assertEquals(Set.of("pl-1", "pl-2"), c.playstateUuids());
+        assertTrue(c.songPayloads().isEmpty());
+        assertTrue(c.sourceUuids().isEmpty());
+    }
+
+    @Test
+    void collectPullsGathersSongSourceAndPlaylistIdentity() {
+        SyncEvent song = event("song.liked", "dev-b",
+                "{\"source_id\":\"u1\",\"source_ref\":\"/a.mp3\"}");
+        SyncEvent src = event("source.update", "dev-b",
+                "{\"client_uuid\":\"s1\",\"kind\":\"webdav\",\"address\":\"https://x\"}");
+        SyncEvent pl = event("playlist.update", "dev-b",
+                "{\"client_uuid\":\"p1\"}");
+
+        SyncService.PullCollections c = SyncService.collectPulls(
+                List.of(song, src, pl), "dev-a", this::parse);
+
+        assertEquals(1, c.songPayloads().size());
+        assertEquals("/a.mp3", c.songPayloads().get(0).path("source_ref").asText());
+        assertEquals(Set.of("s1"), c.sourceUuids());
+        assertEquals(Set.of("p1"), c.playlistUuids());
+        assertEquals(Set.of("p1"), c.playstateUuids());
+    }
+
+    private SyncEvent event(String type, String device, String payload) {
+        SyncEvent e = new SyncEvent();
+        e.setType(type);
+        e.setDeviceClientId(device);
+        e.setPayload(payload);
+        return e;
+    }
+
+    private JsonNode parse(String payload) {
+        try {
+            return payload == null ? mapper.createObjectNode() : mapper.readTree(payload);
+        } catch (Exception e) {
+            return mapper.createObjectNode();
+        }
     }
 }

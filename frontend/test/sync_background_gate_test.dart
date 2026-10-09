@@ -118,7 +118,7 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 150));
     expect(api.pushes, pushesBefore,
         reason: '后台期间不应上推（outbox 应当积压）');
-    expect(index.pendingOutboxCount(), 1, reason: '事件应仍积压着');
+    expect(await index.pendingOutboxCount(), 1, reason: '事件应仍积压着');
 
     engine.resume();
     await Future<void>.delayed(const Duration(milliseconds: 150));

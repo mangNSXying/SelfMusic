@@ -272,15 +272,26 @@ class _SyncSection extends StatefulWidget {
 class _SyncSectionState extends State<_SyncSection> {
   bool _syncing = false;
 
+  /// 待上推事件数缓存（同步后台化：COUNT 走写隔离异步取，不在 build 里同步查库）。
+  int _pending = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshPending();
+  }
+
+  Future<void> _refreshPending() async {
+    final n = await context.read<DirectSourceManager>().index.pendingOutboxCount();
+    if (!mounted) return;
+    setState(() => _pending = n);
+  }
+
   String _subtitle() {
     final settings = context.read<DirectSourceManager>().settings;
     final engine = context.read<SyncEngine>();
     final parts = <String>[];
-    final pending = context
-        .read<DirectSourceManager>()
-        .index
-        .pendingOutboxCount();
-    if (pending > 0) parts.add('待上推 $pending');
+    if (_pending > 0) parts.add('待上推 $_pending');
     final last = settings.lastSyncAt;
     parts.add(last.isEmpty ? '尚未同步成功' : '上次 ${_shortTime(last)}');
     if (engine.lastError.isNotEmpty) parts.add('错误：${engine.lastError}');
@@ -297,6 +308,8 @@ class _SyncSectionState extends State<_SyncSection> {
     await context.read<SyncEngine>().syncNow(force: true);
     if (!mounted) return;
     setState(() => _syncing = false);
+    await _refreshPending();
+    if (!mounted) return;
     final err = context.read<SyncEngine>().lastError;
     AppToast.show(err.isEmpty ? '同步完成' : '同步失败：$err',
         isError: err.isNotEmpty);

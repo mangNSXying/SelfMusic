@@ -180,6 +180,10 @@ void applySchema(Database db) {
       created_at  TEXT NOT NULL
     );
   ''');
+  // 未确认事件扫描（2s tick 的 COUNT 与上推 SELECT 的 acked=0 过滤）：
+  // 无索引会全表扫；已确认行删除后表通常很小，但死信行会长期留存。
+  db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_outbox_acked ON weight_outbox(acked);');
   db.execute('''
     CREATE TABLE IF NOT EXISTS breakpoint_mirror (
       playlist_uuid TEXT PRIMARY KEY,

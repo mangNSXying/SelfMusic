@@ -24,11 +24,28 @@ class PlaylistsProvider extends ChangeNotifier {
 
   int countOf(int playlistId) => _counts[playlistId] ?? _countsOf(playlistId);
 
-  void refresh() {
+  /// 刷新歌单列表。[changedUuids] 为本次真正变更的歌单（同步回调携带）：
+  /// 只对这些歌单重查条目计数，其余沿用缓存——避免同步一次就 N+1 全量重查
+  /// （同步后台化：落库回调不再在 UI 线程放大成整表查询）。
+  void refresh({Set<String>? changedUuids}) {
     _playlists = store.list();
-    _counts = {
-      for (final p in _playlists) p.id: _countsOf(p.id),
-    };
+    final changedIds = changedUuids == null
+        ? null
+        : {
+            for (final p in _playlists)
+              if (p.clientUuid != null && changedUuids.contains(p.clientUuid))
+                p.id
+          };
+    final next = <int, int>{};
+    for (final p in _playlists) {
+      final cached = _counts[p.id];
+      if (changedIds == null || cached == null || changedIds.contains(p.id)) {
+        next[p.id] = _countsOf(p.id);
+      } else {
+        next[p.id] = cached;
+      }
+    }
+    _counts = next;
     loaded = true;
     _dataRevision++;
     notifyListeners();

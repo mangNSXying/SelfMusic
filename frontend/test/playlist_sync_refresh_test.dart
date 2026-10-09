@@ -97,10 +97,15 @@ void main() {
     final engine = SyncEngine(
         api: api, index: index, settings: AppSettings(index));
     var fired = 0;
-    engine.onPlaylistsApplied = () => fired++;
+    Set<String> changed = {};
+    engine.onPlaylistsApplied = (uuids) {
+      fired++;
+      changed = uuids;
+    };
     await engine.syncNow(force: true);
     expect(engine.lastError, isEmpty);
     expect(fired, 1);
+    expect(changed, {'pl-uuid-1'});
     expect(engine.lastPulledPlaylists, 1);
     // 快照已落库：列表查询可见（含条目）。
     final rows = index.listPlaylists();
@@ -116,7 +121,7 @@ void main() {
     final engine = SyncEngine(
         api: api, index: index, settings: AppSettings(index));
     var fired = 0;
-    engine.onPlaylistsApplied = () => fired++;
+    engine.onPlaylistsApplied = (uuids) => fired++;
     await engine.syncNow(force: true);
     expect(engine.lastError, isEmpty);
     expect(fired, 0);
@@ -139,7 +144,7 @@ void main() {
     final engine = SyncEngine(
         api: api, index: index, settings: AppSettings(index));
     var fired = 0;
-    engine.onPlaylistsApplied = () => fired++;
+    engine.onPlaylistsApplied = (uuids) => fired += uuids.length;
     await engine.syncNow(force: true);
     expect(engine.lastError, isEmpty);
     expect(fired, 1);

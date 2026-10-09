@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
@@ -47,9 +46,11 @@ class SyncEngine {
 
   /// 歌单快照落库后的回调：PlaylistsProvider 缓存了歌单列表，
   /// 需显式 refresh 新同步到的歌单才会显示（对标 onSourcesApplied）。
-  /// 仅当本轮真有歌单变更时触发一次。
-  void Function()? onPlaylistsApplied;
+  /// 仅当本轮真有歌单变更时触发一次，**并携带本轮变更的歌单 uuid 集合**——
+  /// 消费方据此做增量刷新（只重查变更歌单的条目计数），避免 N+1 全量重查。
+  void Function(Set<String> uuids)? onPlaylistsApplied;
   bool _playlistsDirty = false;
+  final Set<String> _dirtyPlaylistUuids = {};
 
   /// 歌曲权重快照落库后的回调：收藏/权重状态变了但列表数据没版本变化，
   /// 不通知则喜欢页与列表行仍显示旧态（对标 onSourcesApplied）。
@@ -79,18 +80,18 @@ class SyncEngine {
     _tick = null;
   }
 
-  /// 回到前台：重新起表；若积压了 outbox 或已过拉取间隔，立刻补一轮。
+  /// 回前台：重新起表；若积压了 outbox 或已过拉取间隔，立刻补一轮。
   void resume() {
     if (_appForeground) return;
     _appForeground = true;
-    _tick ??= Timer.periodic(tickFast, (_) => _onTick());
-    _onTick();
+    _tick ??= Timer.periodic(tickFast, (_) => unawaited(_onTick()));
+    unawaited(_onTick());
   }
 
   void start() {
     stop();
     if (!_appForeground) return; // 后台启动：等 resume()
-    _tick = Timer.periodic(tickFast, (_) => _onTick());
+    _tick = Timer.periodic(tickFast, (_) => unawaited(_onTick()));
     unawaited(syncNow());
   }
 
@@ -130,7 +131,7 @@ class SyncEngine {
     }
   }
 
-  void _onTick() {
+  Future<void> _onTick() async {
     if (!_appForeground) return;
     if (_inflight != null) return;
     final now = DateTime.now();
@@ -143,7 +144,10 @@ class SyncEngine {
     final pulledAt = _lastPullAt;
     final needPull =
         pulledAt == null || now.difference(pulledAt) >= _pullInterval;
-    if (index.pendingOutboxCount() > 0 || needPull) {
+    // COUNT 走写隔离（含 acked 索引），主 isolate 不再每 2s 同步扫 outbox 表。
+    final pending = await index.pendingOutboxCount();
+    if (!_appForeground) return; // 等待期间可能已退后台
+    if (pending > 0 || needPull) {
       unawaited(syncNow());
     }
   }
@@ -182,7 +186,8 @@ class SyncEngine {
   }
 
   Future<void> _push(String clientId) async {
-    final pending = index.pendingOutbox();
+    // 读写与 payload 解码都在写隔离（OutboxRow.payload 已是 Map）。
+    final pending = await index.pendingOutbox();
     if (pending.isEmpty) return;
     final data = await api.syncPush(clientId, [
       for (final e in pending)
@@ -191,7 +196,7 @@ class SyncEngine {
           'device_client_id': clientId,
           'type': e.type,
           'occurred_at': e.occurredAt,
-          'payload': jsonDecode(e.payload),
+          'payload': e.payload,
         }
     ]);
     if (data == null) throw Exception('push 无响应');
@@ -232,11 +237,13 @@ class SyncEngine {
   }
 
   /// 歌单变更统一出口：pull 与 push 回包 corrections 共用，
-  /// 本轮结束时最多触发一次回调。
+  /// 本轮结束时最多触发一次回调（携带本轮变更的 uuid 集合）。
   void _flushPlaylists() {
     if (!_playlistsDirty) return;
     _playlistsDirty = false;
-    onPlaylistsApplied?.call();
+    final uuids = Set<String>.of(_dirtyPlaylistUuids);
+    _dirtyPlaylistUuids.clear();
+    onPlaylistsApplied?.call(uuids);
   }
 
   /// 歌曲权重变更统一出口（pull 批量与 push corrections 共用）。
@@ -251,44 +258,71 @@ class SyncEngine {
     var pages = 0;
     lastPulledSongs = 0;
     lastPulledPlaylists = 0;
+    // 跨页实体去重：服务端只在**单页内**按实体去重（页内 LinkedHashSet），
+    // 同一实体的事件横跨多页时会重复回包同一快照。这里按实体身份去重，
+    // 重复的只计数不重复落库（省写事务与 UI 线程的映射/等待）。
+    final seenSongs = <String>{};
+    final seenPlaylists = <String>{};
+    final seenSources = <String>{};
+    final seenStates = <String>{};
     while (true) {
       final data = await api.syncPull(cursor);
       if (data == null) throw Exception('pull 无响应');
-      // 歌曲权重：整页收集为一批，单事务落库（一次 fsync 取代逐行 autocommit）。
+      // 歌曲权重：整页收集为一批，单事务落库（一次 fsync 取代逐行 autocommit）；
+      // 字段映射与落库在写隔离内（applySongSnapshotsRaw）。
       final songs = data['songs'];
       if (songs is List) {
         final batch = <Map<String, dynamic>>[];
         for (final s in songs) {
-          if (s is Map<String, dynamic>) {
-            final snap = _songSnapshot(s);
-            if (snap != null) batch.add(snap);
-            lastPulledSongs++;
-          }
+          if (s is! Map) continue;
+          final m = s.cast<String, dynamic>();
+          final ref = m['source_ref'];
+          if (ref is! String || ref.isEmpty) continue;
+          if (!seenSongs.add('${m['source_id'] ?? ''}|$ref')) continue;
+          batch.add(m);
         }
         if (batch.isNotEmpty) {
-          await index.applySongSnapshots(batch);
+          await index.applySongSnapshotsRaw(batch);
+          lastPulledSongs += batch.length;
           _songStatesDirty = true;
         }
       }
       final sources = data['sources'];
       if (sources is List) {
         for (final s in sources) {
-          if (s is Map<String, dynamic>) await _applySource(s);
+          if (s is! Map) continue;
+          final m = s.cast<String, dynamic>();
+          final uuid = m['client_uuid'] as String?;
+          if (uuid == null || uuid.isEmpty || !seenSources.add(uuid)) continue;
+          await _applySource(m);
         }
       }
       final playlists = data['playlists'];
       if (playlists is List) {
+        final batch = <Map<String, dynamic>>[];
         for (final p in playlists) {
-          if (p is Map<String, dynamic>) {
-            await _applySnapshot(p);
-            lastPulledPlaylists++;
-          }
+          if (p is! Map) continue;
+          final m = p.cast<String, dynamic>();
+          final uuid = m['client_uuid'] as String?;
+          if (uuid == null || uuid.isEmpty || !seenPlaylists.add(uuid)) continue;
+          batch.add(m);
+          _dirtyPlaylistUuids.add(uuid);
+        }
+        if (batch.isNotEmpty) {
+          await index.applyPlaylistSnapshots(batch);
+          lastPulledPlaylists += batch.length;
+          _playlistsDirty = true;
         }
       }
       final states = data['playstates'];
       if (states is List) {
         for (final st in states) {
-          if (st is Map<String, dynamic>) await _applySnapshot(st);
+          if (st is! Map) continue;
+          final m = st.cast<String, dynamic>();
+          final uuid = m['client_uuid'] as String?;
+          if (uuid == null || uuid.isEmpty || !seenStates.add(uuid)) continue;
+          await index.applyPlaystateMirror(m);
+          _breakpointsDirty = true;
         }
       }
       cursor = (data['cursor'] as num?)?.toInt() ?? cursor;
@@ -299,50 +333,27 @@ class SyncEngine {
     _flushSources();
   }
 
-  /// 快照形状判分（pull 与 correction 共用）：
+  /// push correction 回执的快照落库（形状判分）：
   /// 含 kind+address=播放源，含 items=歌单，含 position_ms=断点，含 like_streak=歌曲权重。
+  /// 落库一律走服务端原始形态直通写隔离（与 pull 同一路径）。
   Future<void> _applySnapshot(Map<String, dynamic> s) async {
     if (s.containsKey('kind') && s.containsKey('address')) {
       await _applySource(s);
     } else if (s.containsKey('items')) {
-      await _applyPlaylist(s);
+      final uuid = s['client_uuid'] as String?;
+      if (uuid == null || uuid.isEmpty) return;
+      await index.applyPlaylistSnapshots([s]);
+      _playlistsDirty = true;
+      _dirtyPlaylistUuids.add(uuid);
     } else if (s.containsKey('position_ms')) {
-      await _applyPlaystate(s);
+      await index.applyPlaystateMirror(s);
+      _breakpointsDirty = true;
     } else if (s.containsKey('like_streak')) {
-      final snap = _songSnapshot(s);
-      if (snap != null) {
-        await index.applySongSnapshot(
-          songRef: snap['songRef'] as String,
-          source: snap['source'] as String?,
-          sourceId: snap['sourceId'] as String?,
-          likeStreak: snap['likeStreak'] as int,
-          dislikeStreak: snap['dislikeStreak'] as int,
-          factor: snap['factor'] as double,
-          frozen: snap['frozen'] as bool,
-          favorite: snap['favorite'] as bool,
-          playSec: snap['playSec'] as int?,
-        );
-        _songStatesDirty = true;
-      }
+      final ref = s['source_ref'];
+      if (ref is! String || ref.isEmpty) return;
+      await index.applySongSnapshotRaw(s);
+      _songStatesDirty = true;
     }
-  }
-
-  /// 歌曲权重快照参数（pull 批量与 corrections 单条共用）。
-  Map<String, dynamic>? _songSnapshot(Map<String, dynamic> s) {
-    final ref = s['source_ref'] as String?;
-    if (ref == null || ref.isEmpty) return null;
-    return {
-      'songRef': ref,
-      'source': s['source'] as String?,
-      'sourceId': s['source_id'] as String?,
-      'likeStreak': (s['like_streak'] as num?)?.toInt() ?? 0,
-      'dislikeStreak': (s['dislike_streak'] as num?)?.toInt() ?? 0,
-      'factor': (s['weight'] as num?)?.toDouble() ?? 1.0,
-      'frozen': s['frozen'] == true,
-      'favorite': s['is_favorite'] == true,
-      // 老服务端快照没有 play_sec（null = 不参与覆盖，本地累计值保留）
-      'playSec': (s['play_sec'] as num?)?.toInt(),
-    };
   }
 
   Future<void> _applySource(Map<String, dynamic> s) async {
@@ -361,62 +372,6 @@ class SyncEngine {
       deleted: s['deleted'] == true,
     );
     if (changed) _sourcesDirty = true;
-  }
-
-  Future<void> _applyPlaylist(Map<String, dynamic> p) async {
-    final uuid = p['client_uuid'] as String?;
-    if (uuid == null || uuid.isEmpty) return;
-    _playlistsDirty = true;
-    final items = p['items'];
-    final synced = <SyncedItem>[];
-    if (items is List) {
-      for (final it in items) {
-        if (it is! Map) continue;
-        final m = it.cast<String, dynamic>();
-        final ref = m['source_ref'] as String?;
-        if (ref == null || ref.isEmpty) continue;
-        synced.add(SyncedItem(
-          sourceId: m['source_id'] as String?,
-          source: m['source'] as String?,
-          songRef: ref,
-          title: (m['title'] as String?) ?? 'Unknown',
-          artist: m['artist'] as String?,
-          album: m['album'] as String?,
-          sortOrder: (m['sort_order'] as num?)?.toInt() ?? 0,
-        ));
-      }
-    }
-    await index.applyPlaylistSnapshot(
-      uuid: uuid,
-      name: (p['name'] as String?) ?? '未命名',
-      description: p['description'] as String?,
-      deleted: p['deleted'] == true,
-      items: synced,
-    );
-  }
-
-  Future<void> _applyPlaystate(Map<String, dynamic> st) async {
-    final uuid = st['client_uuid'] as String?;
-    if (uuid == null || uuid.isEmpty) return;
-    // 歌单已在本地删除 → 镜像无意义，清掉。
-    if (index.playlistIdOfUuid(uuid) == null) {
-      await index.deleteBreakpointMirror(uuid);
-      return;
-    }
-    await index.upsertBreakpointMirror(
-      playlistUuid: uuid,
-      songId: (st['song_id'] as num?)?.toInt(),
-      sourceId: st['source_id'] as String?,
-      source: st['source'] as String?,
-      sourceRef: st['source_ref'] as String?,
-      positionMs: (st['position_ms'] as num?)?.toInt() ?? 0,
-      deepListJson: st['deep_list'] is List
-          ? jsonEncode(st['deep_list'] as List)
-          : null,
-      updatedAt: (st['updated_at'] as String?) ?? DateTime.now().toIso8601String(),
-      deviceId: null,
-    );
-    _breakpointsDirty = true;
   }
 
   static List<String> _strList(Object? v) => [

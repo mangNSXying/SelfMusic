@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 
@@ -86,24 +85,23 @@ void main() {
         source: 'webdav');
     await index.addPlaylistItem(pid,
         sourceKey: 'server', songRef: 'srv:1', title: 'S', source: 'webdav');
-    expect(index.pendingOutboxCount(), 0);
+    expect(await index.pendingOutboxCount(), 0);
 
     final store = PlaylistStore(index, serverAvailable: () => true);
     final r = await store.backfill();
     expect(r, {'playlists': 1, 'items': 1});
 
-    final outbox = index.pendingOutbox();
+    final outbox = await index.pendingOutbox();
     expect(outbox.map((e) => e.type).toList(), [
       SyncEventTypes.playlistCreate,
       SyncEventTypes.playlistItemAdd,
     ]);
-    final create =
-        jsonDecode(outbox[0].payload) as Map<String, dynamic>;
+    final create = outbox[0].payload;
     expect(create['name'], '老歌单');
     expect(create['description'], 'd');
     final uuid = index.playlistIdOfUuid(create['client_uuid'] as String);
     expect(uuid, pid);
-    final add = jsonDecode(outbox[1].payload) as Map<String, dynamic>;
+    final add = outbox[1].payload;
     expect(add['playlist_uuid'], create['client_uuid']);
     expect(add['source_ref'], 'dav:/a.mp3');
     expect(add['source_id'], 'src-1');
@@ -123,7 +121,7 @@ void main() {
     final store = PlaylistStore(index, serverAvailable: () => false);
     final r = await store.backfill();
     expect(r, {'playlists': 1, 'items': 0});
-    expect(index.pendingOutbox().map((e) => e.type).toList(),
+    expect((await index.pendingOutbox()).map((e) => e.type).toList(),
         [SyncEventTypes.playlistCreate]);
   });
 
@@ -137,16 +135,15 @@ void main() {
     await index.upsertPlayMeta('webdav:NAS', 'dav:/c.mp3',
         dislikeStreak: 2, factor: 0.9, frozen: true);
     await index.upsertPlayMeta('server', 'srv:9', favorite: true);
-    expect(index.pendingOutboxCount(), 0);
+    expect(await index.pendingOutboxCount(), 0);
 
     final store = SongWeightStore(index, serverAvailable: () => true);
     expect(await store.backfill(), 3);
-    final outbox = index.pendingOutbox();
+    final outbox = await index.pendingOutbox();
     expect(
         outbox.map((e) => e.type).toSet(), {SyncEventTypes.songState});
     final byRef = {
-      for (final e in outbox)
-        (jsonDecode(e.payload) as Map)['source_ref']: jsonDecode(e.payload),
+      for (final e in outbox) e.payload['source_ref']: e.payload,
     };
     final a = byRef['dav:/a.mp3'] as Map;
     expect(a['like_streak'], 4);
@@ -166,7 +163,7 @@ void main() {
     await index.upsertPlayMeta('webdav:NAS', 'dav:/a.mp3', likeStreak: 4);
     final store = SongWeightStore(index, serverAvailable: () => false);
     expect(await store.backfill(), 0);
-    expect(index.pendingOutboxCount(), 0);
+    expect(await index.pendingOutboxCount(), 0);
   });
 
   test('song.state 拉回端到端：权重快照落地 streak/factor/收藏', () async {

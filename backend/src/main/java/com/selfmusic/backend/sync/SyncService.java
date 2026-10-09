@@ -11,7 +11,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -50,6 +53,8 @@ import com.selfmusic.backend.domain.repository.SyncSourceRepository;
  */
 @Service
 public class SyncService {
+
+    private static final Logger log = LoggerFactory.getLogger(SyncService.class);
 
     public static final BigDecimal FACTOR_MIN = new BigDecimal("0.5");
     public static final BigDecimal FACTOR_MAX = new BigDecimal("1.5");
@@ -240,6 +245,8 @@ public class SyncService {
                 row.setType(ev.type());
                 row.setPayload(ev.payload() == null ? null : ev.payload().toString());
                 row.setOccurredAt(ev.occurred_at());
+                // 压缩去重锚点：同实体旧事件可在设备水位以下被回收。
+                row.setEntityKey(entityKeyOf(ev.type(), ev.payload()));
                 syncEventRepository.save(row);
                 applied.add(ev.event_uuid());
                 if (correction != null) corrections.put(ev.event_uuid(), correction);
@@ -247,7 +254,7 @@ public class SyncService {
                 rejected.add(reject(ev.event_uuid(), be.getMessage()));
             }
         }
-        touchDevice(authClientId);
+        touchDevice(authClientId, null);
         return pushResult(syncEventRepository.maxSeq(), applied, duplicates, rejected, corrections);
     }
 
@@ -318,6 +325,37 @@ public class SyncService {
 
     private static String refOf(JsonNode p) {
         return p == null ? null : p.path("source_ref").asText(null);
+    }
+
+    /**
+     * 事件实体键（事件日志压缩的去重锚点，纯函数）：
+     * `song|source_id|ref` / `source|uuid` / `playlist|uuid` / `breakpoint|uuid`。
+     * 无法识别的载荷返回 null——这类行不参与压缩（保守保留，永不误删）。
+     */
+    public static String entityKeyOf(String type, JsonNode p) {
+        if (type == null || p == null) return null;
+        if (type.startsWith("song.")) {
+            String ref = refOf(p);
+            if (ref == null || ref.isBlank()) return null;
+            String sid = sourceIdOf(p);
+            return "song|" + (sid == null ? "" : sid) + "|" + ref;
+        }
+        if (type.startsWith("source.")) {
+            String uuid = p.path("client_uuid").asText(null);
+            return (uuid == null || uuid.isBlank()) ? null : "source|" + uuid;
+        }
+        if (type.startsWith("playlist.")) {
+            String uuid = p.path("client_uuid").asText(null);
+            if (uuid == null || uuid.isBlank()) {
+                uuid = p.path("playlist_uuid").asText(null);
+            }
+            return (uuid == null || uuid.isBlank()) ? null : "playlist|" + uuid;
+        }
+        if (SyncEventTypes.BREAKPOINT_SET.equals(type)) {
+            String uuid = p.path("playlist_uuid").asText(null);
+            return (uuid == null || uuid.isBlank()) ? null : "breakpoint|" + uuid;
+        }
+        return null;
     }
 
     /**
@@ -632,47 +670,80 @@ public class SyncService {
     // pull：增量拉取（事件页内去重 id → 当前行快照）
     // ------------------------------------------------------------------
 
-    @Transactional
-    public Map<String, Object> pull(String authClientId, long sinceCursor) {
-        List<SyncEvent> page = syncEventRepository.findTop2000BySeqGreaterThanOrderBySeqAsc(sinceCursor);
-        Set<Long> songStateIds = new LinkedHashSet<>();
-        Set<String> playlistUuids = new LinkedHashSet<>();
+    /**
+     * 一页事件的分类结果（纯函数产物，便于单测「断点不牵连歌单快照」）。
+     * [songPayloads] 需再进行 (source_id, source_ref) 行解析；其余为实体 uuid 集合。
+     */
+    public record PullCollections(List<JsonNode> songPayloads,
+                                  Set<String> sourceUuids,
+                                  Set<String> playlistUuids,
+                                  Set<String> playstateUuids) {}
+
+    /**
+     * 把一页事件分类为待回快照的目标（本设备事件跳过，cursor 照常推进）。
+     *
+     * 关键规则：`breakpoint.set` 只贡献 playstate（断点）快照，**不贡献歌单
+     * 快照**——否则他机每播一首（25s 节流事件），本机每次 pull 都要整包重下
+     * 该歌单全部条目，是稳态流量最大的放大器。歌单自身的变化由 `playlist.*`
+     * 事件负责携带；歌单元数据/条目事件仍顺带回其当前断点（原行为保留）。
+     */
+    public static PullCollections collectPulls(List<SyncEvent> page,
+                                               String authClientId,
+                                               Function<String, JsonNode> payloadParser) {
+        List<JsonNode> songPayloads = new ArrayList<>();
         Set<String> sourceUuids = new LinkedHashSet<>();
+        Set<String> playlistUuids = new LinkedHashSet<>();
+        Set<String> playstateUuids = new LinkedHashSet<>();
         for (SyncEvent e : page) {
             // 本设备事件不再回灌（push 已即时应用并同步返回 corrections）：
             // 避免拉取自己的歌单/权重快照重建本地条目（丢失本机快照字段）。
             // cursor 照常推进；他人事件正常收敛。
             if (isSelfEvent(authClientId, e)) continue;
-            JsonNode p = parsePayload(e.getPayload());
+            JsonNode p = payloadParser.apply(e.getPayload());
             if (e.getType().startsWith("song.")) {
-                Long sid = tryResolveStateId(p);
-                if (sid != null) songStateIds.add(sid);
+                songPayloads.add(p);
             } else if (e.getType().startsWith("source.")) {
                 String uuid = p.path("client_uuid").asText(null);
                 if (uuid != null) sourceUuids.add(uuid);
             } else if (e.getType().startsWith("playlist.")) {
                 String uuid = p.path("client_uuid").asText(null);
                 if (uuid == null) uuid = p.path("playlist_uuid").asText(null);
-                if (uuid != null) playlistUuids.add(uuid);
+                if (uuid != null) {
+                    playlistUuids.add(uuid);
+                    playstateUuids.add(uuid);
+                }
             } else if (SyncEventTypes.BREAKPOINT_SET.equals(e.getType())) {
                 String uuid = p.path("playlist_uuid").asText(null);
-                if (uuid != null) playlistUuids.add(uuid);
+                if (uuid != null) playstateUuids.add(uuid);
             }
+        }
+        return new PullCollections(songPayloads, sourceUuids, playlistUuids, playstateUuids);
+    }
+
+    @Transactional
+    public Map<String, Object> pull(String authClientId, long sinceCursor) {
+        List<SyncEvent> page = syncEventRepository.findTop2000BySeqGreaterThanOrderBySeqAsc(sinceCursor);
+        PullCollections collected = collectPulls(page, authClientId, this::parsePayload);
+        Set<Long> songStateIds = new LinkedHashSet<>();
+        for (JsonNode p : collected.songPayloads()) {
+            Long sid = tryResolveStateId(p);
+            if (sid != null) songStateIds.add(sid);
         }
         List<Map<String, Object>> songs = new ArrayList<>();
         for (SongState s : songStateRepository.findAllById(songStateIds)) songs.add(songSnapshot(s));
         List<Map<String, Object>> sources = new ArrayList<>();
-        for (String uuid : sourceUuids) {
+        for (String uuid : collected.sourceUuids()) {
             syncSourceRepository.findByClientUuid(uuid).ifPresent(ss -> sources.add(sourceSnapshot(ss)));
         }
         List<Map<String, Object>> playlists = new ArrayList<>();
+        for (String uuid : collected.playlistUuids()) {
+            playlistRepository.findByClientUuid(uuid).ifPresent(pl -> playlists.add(playlistSnapshot(pl)));
+        }
         List<Map<String, Object>> playstates = new ArrayList<>();
-        for (String uuid : playlistUuids) {
-            playlistRepository.findByClientUuid(uuid).ifPresent(pl -> {
-                playlists.add(playlistSnapshot(pl));
-                playStateRepository.findById(pl.getId()).ifPresent(st ->
-                        playstates.add(playstateSnapshot(st, pl.getClientUuid())));
-            });
+        for (String uuid : collected.playstateUuids()) {
+            playlistRepository.findByClientUuid(uuid).ifPresent(pl ->
+                    playStateRepository.findById(pl.getId()).ifPresent(st ->
+                            playstates.add(playstateSnapshot(st, pl.getClientUuid()))));
         }
         long cursor;
         if (page.size() < PULL_EVENT_LIMIT) {
@@ -681,7 +752,10 @@ public class SyncService {
             Long tailSeq = page.get(page.size() - 1).getSeq();
             cursor = tailSeq == null ? 0L : tailSeq;
         }
-        touchDevice(authClientId);
+        // 设备水位：pull 返回的 cursor 即该设备已消费到的位置（事件日志压缩依据）。
+        touchDevice(authClientId, cursor);
+        // 事件日志压缩（每小时至多一次；每实体保留最新一条，见 repo 查询）。
+        maybeCompact();
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("cursor", cursor);
         out.put("has_more", page.size() >= PULL_EVENT_LIMIT);
@@ -788,11 +862,47 @@ public class SyncService {
     // 小工具
     // ------------------------------------------------------------------
 
-    private void touchDevice(String clientId) {
+    /**
+     * 设备活跃标记。[pullCursor] 非空时同时推进该设备的事件消费水位
+     * （压缩依据；push 只更新 lastSeenAt）。
+     */
+    private void touchDevice(String clientId, Long pullCursor) {
         deviceRepository.findByClientId(clientId).ifPresent(d -> {
             d.setLastSeenAt(LocalDateTime.now());
+            if (pullCursor != null) d.setLastPullCursor(pullCursor);
             deviceRepository.save(d);
         });
+    }
+
+    /** 事件日志压缩的最小间隔（每小时至多一次，避免每次 pull 都跑删除）。 */
+    private static final long COMPACT_INTERVAL_MS = 3_600_000L;
+
+    private final java.util.concurrent.atomic.AtomicLong lastCompactAtMs =
+            new java.util.concurrent.atomic.AtomicLong(0);
+
+    /**
+     * 事件日志压缩：删除「所有未吊销设备都已消费完（min 水位以下）」的事件，
+     * 但每实体保留最新一条——cursor=0 的新设备回放剩余事件仍能收敛到现状。
+     * 压缩让 `sync_events` 不随使用时长无限增长（新设备首拉的页数从
+     * O(历史事件数) 收敛到 O(实体数)）。
+     */
+    void maybeCompact() {
+        long now = System.currentTimeMillis();
+        long last = lastCompactAtMs.get();
+        if (now - last < COMPACT_INTERVAL_MS) return;
+        if (!lastCompactAtMs.compareAndSet(last, now)) return;
+        Long watermark = deviceRepository.minActivePullCursor();
+        if (watermark == null || watermark <= 0) return;
+        try {
+            int removed = syncEventRepository.compactBelow(watermark);
+            if (removed > 0) {
+                log.info("sync_events 压缩：删除 {} 条（水位 {}）", removed, watermark);
+            }
+        } catch (RuntimeException e) {
+            // 压缩失败不影响 pull 主流程；清空计时让下轮重试。
+            lastCompactAtMs.set(0);
+            log.warn("sync_events 压缩失败（下轮重试）：{}", e.toString());
+        }
     }
 
     /**

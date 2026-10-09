@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 
@@ -42,32 +41,30 @@ void main() {
   test('outbox：入队 / 待推 / 确认删除 / 死信隔离', () async {
     final index = await _openIndex();
 
-    expect(index.pendingOutboxCount(), 0);
+    expect(await index.pendingOutboxCount(), 0);
     final u1 = await index.enqueueOutbox(SyncEventTypes.songLiked,
         {'source': 'webdav', 'source_ref': 'a/b.flac'});
     final u2 = await index.enqueueOutbox(SyncEventTypes.playlistItemAdd,
         {'playlist_uuid': 'p1', 'source': 'local', 'source_ref': 'c.mp3'});
     expect(u1, isNotEmpty);
     expect(u1, isNot(equals(u2)));
-    expect(index.pendingOutboxCount(), 2);
+    expect(await index.pendingOutboxCount(), 2);
 
-    final pending = index.pendingOutbox();
+    final pending = await index.pendingOutbox();
     expect(pending.map((e) => e.eventUuid), containsAll([u1, u2]));
     expect(pending.firstWhere((e) => e.eventUuid == u1).type,
         SyncEventTypes.songLiked);
-    final payload =
-        jsonDecode(pending.firstWhere((e) => e.eventUuid == u1).payload)
-            as Map<String, dynamic>;
+    final payload = pending.firstWhere((e) => e.eventUuid == u1).payload;
     expect(payload['source_ref'], 'a/b.flac');
 
     // 服务端接受 → 删队
     await index.deleteOutbox([u1]);
-    expect(index.pendingOutboxCount(), 1);
+    expect(await index.pendingOutboxCount(), 1);
 
     // 服务端拒绝 → 死信，不再出现在待推里
     await index.deadLetterOutbox([u2]);
-    expect(index.pendingOutboxCount(), 0);
-    expect(index.pendingOutbox(), isEmpty);
+    expect(await index.pendingOutboxCount(), 0);
+    expect(await index.pendingOutbox(), isEmpty);
 
     index.close();
   });
@@ -296,19 +293,19 @@ void main() {
     var index = await _openIndex();
     var weight = SongWeightStore(index);
     await weight.setLiked(serverSong());
-    expect(index.pendingOutboxCount(), 1);
+    expect(await index.pendingOutboxCount(), 1);
     await weight.setLiked(directSong());
-    expect(index.pendingOutboxCount(), 1);
+    expect(await index.pendingOutboxCount(), 1);
     index.close();
 
     // 门控开：直连歌进队，载荷带身份
     index = await _openIndex();
     weight = SongWeightStore(index, serverAvailable: () => true);
     await weight.onSkipped(directSong());
-    expect(index.pendingOutboxCount(), 1);
-    final payload = jsonDecode(index.pendingOutbox().single.payload)
-        as Map<String, dynamic>;
-    expect(index.pendingOutbox().single.type, SyncEventTypes.songSkipped);
+    expect(await index.pendingOutboxCount(), 1);
+    final single = (await index.pendingOutbox()).single;
+    final payload = single.payload;
+    expect(single.type, SyncEventTypes.songSkipped);
     expect(payload['source'], 'webdav');
     expect(payload['source_ref'], '/music/z.mp3');
     index.close();
@@ -317,7 +314,7 @@ void main() {
     index = await _openIndex();
     weight = SongWeightStore(index, serverAvailable: () => false);
     await weight.setLiked(directSong());
-    expect(index.pendingOutboxCount(), 0);
+    expect(await index.pendingOutboxCount(), 0);
     index.close();
   });
 
@@ -325,11 +322,10 @@ void main() {
     var index = await _openIndex();
     var store = PlaylistStore(index, serverAvailable: () => true);
     final pid = await store.create('单');
-    expect(index.pendingOutboxCount(), 1); // create 恒进
+    expect(await index.pendingOutboxCount(), 1); // create 恒进
     await store.addSong(pid, directSong());
-    expect(index.pendingOutboxCount(), 2);
-    final payload = jsonDecode(index.pendingOutbox().last.payload)
-        as Map<String, dynamic>;
+    expect(await index.pendingOutboxCount(), 2);
+    final payload = (await index.pendingOutbox()).last.payload;
     expect(payload['source'], 'webdav');
     expect(payload['source_ref'], '/music/z.mp3');
     expect(payload['title'], '直连歌');
@@ -340,7 +336,7 @@ void main() {
     final pid2 = await store.create('单');
     await store.addSong(pid2, directSong());
     // 只有 create，条目未进
-    expect(index.pendingOutboxCount(), 1);
+    expect(await index.pendingOutboxCount(), 1);
     index.close();
   });
 

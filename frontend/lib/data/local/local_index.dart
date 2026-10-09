@@ -36,9 +36,10 @@ class LocalIndex {
     Directory(_dir!).createSync(recursive: true);
     final dbPath = p.join(_dir!, 'selfmusic.db');
     _dbPath = dbPath;
-    // 写隔离与主读连接并行启动（spawn 期间主连接即可打开）：schema 迁移统一
-    // 在写隔离连接上跑一次（写隔离 init 内置 applySchema），主连接不再重复
-    // 一遍 CREATE/ALTER/PRAGMA。
+    // 写隔离与主读连接并行启动（spawn 期间主连接即可打开）：schema 迁移与
+    // 历史 play_meta ENCODE 行的一次性探测/迁移统一在写隔离 init 内完成
+    //（db_writer），主连接不再重复 CREATE/ALTER/PRAGMA，也不在启动链上做
+    // 任何读扫描（曾把 instr 全表探测压在 UI 线程启动 await 链上）。
     final writerFuture = DbWriter.start(dbPath);
     // 读连接（主线程，只读使用；写经 _writer：常规平台后台隔离、ohos 内联，
     // 见 db_writer.dart）。
@@ -46,17 +47,7 @@ class LocalIndex {
     print('[index] 主连接已打开');
     _db!.execute('PRAGMA busy_timeout=30000;');
     _writer = await writerFuture;
-    print('[index] 写隔离就绪');
-    // 历史 ENCODE 形态的 play_meta 行一次性迁移到当前 ref（写隔离内执行）。
-    // 先主连接探测有无含 `%` 的 ref（解码只可能改变这类串）：没有就跳过，
-    // 不等一次全表解码扫描——这是启动链上最后一段同步等待。
-    // 之后读路径不再写库，避免 UI 线程出现「读前迁移」的 I/O。
-    final legacy = _db!
-        .select("SELECT 1 FROM play_meta WHERE instr(song_ref, '%') > 0 LIMIT 1");
-    if (legacy.isNotEmpty) {
-      await _writer!.op<void>('migrateMetaRefs', const {});
-    }
-    print('[index] 迁移完成');
+    print('[index] 写隔离就绪（schema 与 legacy 迁移完成）');
   }
 
   /// 等待写隔离中排队写全部落库（退出前、导出等需要持久一致性的时点）。
@@ -1113,26 +1104,26 @@ class LocalIndex {
   }
 
   /// 未确认事件（SyncEngine 上推用，按入队序）。
-  List<OutboxRow> pendingOutbox({int limit = 500}) {
-    final rs = _db!.select(
-        'SELECT event_uuid, type, payload, occurred_at FROM weight_outbox '
-        'WHERE acked=0 ORDER BY rowid LIMIT ?',
-        [limit]);
+  /// 读取与 payload 解码都在写隔离完成（同步后台化：UI isolate 不做 SQL/JSON）。
+  Future<List<OutboxRow>> pendingOutbox({int limit = 500}) async {
+    final rows = await _writer!.op<List<dynamic>>('pendingOutbox', {
+      'limit': limit,
+    });
     return [
-      for (final r in rs)
-        OutboxRow(
-          eventUuid: r['event_uuid'] as String,
-          type: r['type'] as String,
-          payload: r['payload'] as String,
-          occurredAt: r['occurred_at'] as String,
-        )
+      for (final r in rows)
+        if (r is Map)
+          OutboxRow(
+            eventUuid: r['eventUuid'] as String,
+            type: r['type'] as String,
+            payload: (r['payload'] as Map).cast<String, dynamic>(),
+            occurredAt: r['occurredAt'] as String,
+          )
     ];
   }
 
-  int pendingOutboxCount() {
-    return _db!
-        .select('SELECT COUNT(*) c FROM weight_outbox WHERE acked=0')
-        .first['c'] as int;
+  /// 未确认事件计数（SyncEngine 2s tick；写隔离内 COUNT，走 acked 索引）。
+  Future<int> pendingOutboxCount() async {
+    return _writer!.op<int>('pendingOutboxCount', const {});
   }
 
   /// 已被服务端接受（含去重命中）：删队，避免表无限增长。
@@ -1202,6 +1193,13 @@ class LocalIndex {
           }
       ],
     });
+  }
+
+  /// pull 歌单快照批·服务端原始 JSON 直通写隔离（条目解析/落库同处完成，
+  /// UI isolate 只 await；跨页去重由 SyncEngine 完成）。
+  Future<void> applyPlaylistSnapshots(List<Map<String, dynamic>> snapshots) {
+    if (snapshots.isEmpty) return Future.value();
+    return _writer!.opBatch('applyPlaylistSnapshots', snapshots);
   }
 
   /// 元数据读取情况汇总（侧边栏「信息」页，改进 B6-4）。
@@ -1295,6 +1293,18 @@ class LocalIndex {
     return _writer!.opBatch('applySongSnapshots', snapshots);
   }
 
+  /// 批量 pull 歌曲权重快照·服务端原始形态：字段映射与落库都在写隔离内
+  /// （pull 主路径；UI isolate 不做逐条映射与 JSON 处理）。
+  Future<void> applySongSnapshotsRaw(List<Map<String, dynamic>> snapshots) {
+    if (snapshots.isEmpty) return Future.value();
+    return _writer!.opBatch('applySongSnapshotsRaw', snapshots);
+  }
+
+  /// 单条 pull 歌曲权重快照·服务端原始形态（push correction 用）。
+  Future<void> applySongSnapshotRaw(Map<String, dynamic> snapshot) {
+    return _writer!.op<void>('applySongSnapshotRaw', snapshot);
+  }
+
   /// pull 断点写入镜像表（不碰运行时 play_state，见 SyncEngine）。
   Future<void> upsertBreakpointMirror({
     required String playlistUuid,
@@ -1326,6 +1336,12 @@ class LocalIndex {
           updatedAt,
           deviceId
         ]);
+  }
+
+  /// pull 断点镜像·服务端原始形态直通：playlist 存在性判定（本地已删则清镜像）
+  /// 与 upsert 都在写隔离内完成（原先 playlistIdOfUuid 是 UI 线程同步查询）。
+  Future<void> applyPlaystateMirror(Map<String, dynamic> snapshot) {
+    return _writer!.op<void>('applyPlaystateMirror', snapshot);
   }
 
   BreakpointMirrorRow? breakpointMirrorOf(String playlistUuid) {
@@ -2240,7 +2256,9 @@ class PlayStateRow {
 class OutboxRow {
   final String eventUuid;
   final String type;
-  final String payload;
+
+  /// 已解码的 JSON 载荷（解码在写隔离完成，见 [LocalIndex.pendingOutbox]）。
+  final Map<String, dynamic> payload;
   final String occurredAt;
   const OutboxRow({
     required this.eventUuid,

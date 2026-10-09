@@ -223,10 +223,15 @@ class _IsolateDbWriter implements DbWriter {
 ///
 /// PoC 取舍：写在本 isolate 同步执行。WAL 下与主读连接并发安全
 /// （busy_timeout=30s），复合操作复用隔离版的 `_runOp`/`_runOpBatch`；
-/// 缺点是写盘短暂占用 UI 线程——PoC 量级（千级行数）可接受，正式版随
-/// 引擎 isolate 修复切回 [_IsolateDbWriter]。
+/// 写盘占用 UI 线程的窗口已按「批量分片 + 片间让出事件循环」压缩
+/// （见 [opBatch]，同步 pull 的千级快照行不再是一个巨型同步块）。
+/// 正式版随引擎 isolate 修复切回 [_IsolateDbWriter]。
 class _InlineDbWriter implements DbWriter {
   _InlineDbWriter._(this._db);
+
+  /// 内联批量写分片大小：每片一个事务，片间让出事件循环。
+  /// 200 行量级在 ohos 上可控制在单帧预算附近（快照行以主键 upsert 为主）。
+  static const int _inlineBatchChunk = 200;
 
   final Database _db;
   bool _closed = false;
@@ -238,6 +243,9 @@ class _InlineDbWriter implements DbWriter {
     db.execute('PRAGMA busy_timeout=30000;');
     db.execute('PRAGMA wal_autocheckpoint=1000;');
     applySchema(db);
+    // 启动一次性迁移（探测 + 迁移）在写连接内完成：主线程 open() 不再做
+    // 任何读扫描（曾把 play_meta 的 instr 全表探测挂在启动 await 链上）。
+    _migrateLegacyRefsIfNeeded(db);
     print('[db-writer] ohos 内联模式就绪');
     return _InlineDbWriter._(db);
   }
@@ -272,7 +280,23 @@ class _InlineDbWriter implements DbWriter {
   @override
   Future<void> opBatch(String name, List<Map<String, dynamic>> argList) async {
     if (argList.isEmpty) return;
-    _runOpBatch(_db, name, argList);
+    if (name == 'applyPlaylistSnapshots') {
+      // 逐歌单一个事务、片间让出：单歌单条目循环仍是长块，但多歌单批量
+      // （pull 常见）不再拼成一个巨型同步块。
+      for (final p in argList) {
+        _runOpBatch(_db, name, [p]);
+        await Future<void>.delayed(Duration.zero);
+      }
+      return;
+    }
+    // 歌曲权重快照 pull 主路径：整页可达成千上万行，整批事务会长时间独占
+    // UI 线程（ohos 内联写）。切成小事务，片间让出事件循环，让动画/输入
+    // 有机会插进来。cursor 在整页应用完成后才推进，中途失败/退出由重拉
+    // 幂等收敛（快照应用本身幂等）。
+    for (final chunk in chunkedSublists(argList, _inlineBatchChunk)) {
+      _runOpBatch(_db, name, chunk);
+      await Future<void>.delayed(Duration.zero);
+    }
   }
 
   @override
@@ -427,6 +451,10 @@ void _writerEntry(SendPort boot) {
           db!.execute('PRAGMA busy_timeout=30000;');
           db!.execute('PRAGMA wal_autocheckpoint=1000;');
           applySchema(db!);
+          // 历史 play_meta ENCODE 行的一次性探测 + 迁移：此前在主连接/UI
+          // 线程做 instr 全表探测（启动链上的同步扫描），现随 init 在写
+          // 隔离内完成，open() 只需等 init 回执。
+          _migrateLegacyRefsIfNeeded(db!);
           reply(m, null);
         case 'execFire':
         case 'exec':
@@ -510,6 +538,12 @@ void _logWriteFailure(_PendOp op, Object e, StackTrace st) {
 
 Object? _runOp(Database db, String name, Map<String, dynamic> a) {
   switch (name) {
+    case 'pendingOutbox':
+      return _opPendingOutbox(db, a);
+    case 'pendingOutboxCount':
+      return db
+          .select('SELECT COUNT(*) c FROM weight_outbox WHERE acked=0')
+          .first['c'] as int;
     case 'upsertSongs':
       _opUpsertSongs(db, (a['rows'] as List).cast<Map<String, dynamic>>());
       return null;
@@ -527,6 +561,12 @@ Object? _runOp(Database db, String name, Map<String, dynamic> a) {
       return null;
     case 'applySongSnapshot':
       _opApplySongSnapshot(db, a);
+      return null;
+    case 'applySongSnapshotRaw':
+      _opApplySongSnapshotRaw(db, a);
+      return null;
+    case 'applyPlaystateMirror':
+      _opApplyPlaystateMirror(db, a);
       return null;
     case 'applyPlaylistSnapshot':
       _opApplyPlaylistSnapshot(db, a);
@@ -590,21 +630,54 @@ Object? _runOp(Database db, String name, Map<String, dynamic> a) {
 void _runOpBatch(Database db, String name, List<Map<String, dynamic>> argList) {
   switch (name) {
     case 'applySongSnapshots':
-      db.execute('BEGIN');
-      try {
+      _inTx(db, () {
         for (final a in argList) {
           _opApplySongSnapshot(db, a);
         }
-        db.execute('COMMIT');
-      } catch (_) {
-        try {
-          db.execute('ROLLBACK');
-        } catch (_) {}
-        rethrow;
-      }
+      });
+      return;
+    case 'applySongSnapshotsRaw':
+      _inTx(db, () {
+        for (final a in argList) {
+          _opApplySongSnapshotRaw(db, a);
+        }
+      });
+      return;
+    case 'applyPlaylistSnapshots':
+      _inTx(db, () {
+        for (final a in argList) {
+          _opApplyPlaylistSnapshotRaw(db, a);
+        }
+      });
       return;
   }
   throw StateError('unknown writer batch op: $name');
+}
+
+/// 单事务执行 [body]（各批 op 共用）。
+void _inTx(Database db, void Function() body) {
+  db.execute('BEGIN');
+  try {
+    body();
+    db.execute('COMMIT');
+  } catch (_) {
+    try {
+      db.execute('ROLLBACK');
+    } catch (_) {}
+    rethrow;
+  }
+}
+
+/// 把 [list] 按 [size] 切成连续子列表（[size] < 1 时按 1）。
+/// ohos 内联写按此分片落库并在片间让出事件循环（见 `_InlineDbWriter.opBatch`）。
+List<List<T>> chunkedSublists<T>(List<T> list, int size) {
+  final step = size < 1 ? 1 : size;
+  final out = <List<T>>[];
+  for (var start = 0; start < list.length; start += step) {
+    final end = start + step < list.length ? start + step : list.length;
+    out.add(list.sublist(start, end));
+  }
+  return out;
 }
 
 // ---------- 共享小工具（写连接内的读依赖） ----------
@@ -926,6 +999,25 @@ void _opApplySongSnapshot(Database db, Map<String, dynamic> a) {
   }
 }
 
+/// pull 歌曲权重快照·服务端原始形态直通（pull 主路径）：字段映射在写连接内
+/// 完成，UI isolate 不做逐条映射。载荷形态见 `/sync/pull` 的 songs 快照。
+void _opApplySongSnapshotRaw(Database db, Map<String, dynamic> a) {
+  final ref = a['source_ref'] as String?;
+  if (ref == null || ref.isEmpty) return;
+  _opApplySongSnapshot(db, {
+    'songRef': ref,
+    'source': a['source'],
+    'sourceId': a['source_id'],
+    'likeStreak': (a['like_streak'] as num?)?.toInt() ?? 0,
+    'dislikeStreak': (a['dislike_streak'] as num?)?.toInt() ?? 0,
+    'factor': (a['weight'] as num?)?.toDouble() ?? 1.0,
+    'frozen': a['frozen'] == true,
+    'favorite': a['is_favorite'] == true,
+    // 老服务端快照没有 play_sec（null = 不参与覆盖，本地累计值保留）
+    'playSec': (a['play_sec'] as num?)?.toInt(),
+  });
+}
+
 void _opUpsertSongs(Database db, List<Map<String, dynamic>> rows) {
   if (rows.isEmpty) return;
   db.execute('BEGIN');
@@ -1073,6 +1165,72 @@ void _opApplyPlaylistSnapshot(Database db, Map<String, dynamic> a) {
       it['source'],
     ]);
   }
+}
+
+/// pull 歌单快照·服务端原始形态直通：uuid/条目解析在写连接内完成。
+void _opApplyPlaylistSnapshotRaw(Database db, Map<String, dynamic> p) {
+  final uuid = p['client_uuid'] as String?;
+  if (uuid == null || uuid.isEmpty) return;
+  final items = <Map<String, dynamic>>[];
+  final rawItems = p['items'];
+  if (rawItems is List) {
+    for (final it in rawItems) {
+      if (it is! Map) continue;
+      final m = it.cast<String, dynamic>();
+      final ref = m['source_ref'] as String?;
+      if (ref == null || ref.isEmpty) continue;
+      items.add({
+        'sourceId': m['source_id'],
+        'source': m['source'],
+        'songRef': ref,
+        'title': (m['title'] as String?) ?? 'Unknown',
+        'artist': m['artist'],
+        'album': m['album'],
+        'sortOrder': (m['sort_order'] as num?)?.toInt() ?? 0,
+      });
+    }
+  }
+  _opApplyPlaylistSnapshot(db, {
+    'uuid': uuid,
+    'name': (p['name'] as String?) ?? '未命名',
+    'description': p['description'],
+    'deleted': p['deleted'] == true,
+    'items': items,
+  });
+}
+
+/// pull 断点镜像·服务端原始形态直通：歌单存在性判定 + 墓碑清理 + upsert
+/// 全在写连接内完成（原先 playlistIdOfUuid 是 UI 线程同步查询）。
+void _opApplyPlaystateMirror(Database db, Map<String, dynamic> a) {
+  final uuid = a['client_uuid'] as String?;
+  if (uuid == null || uuid.isEmpty) return;
+  // 歌单已在本地（硬）删除 → 镜像无意义，清掉（不复活已删歌单）。
+  final exists =
+      db.select('SELECT 1 FROM playlists WHERE client_uuid=?', [uuid]);
+  if (exists.isEmpty) {
+    db.execute('DELETE FROM breakpoint_mirror WHERE playlist_uuid=?', [uuid]);
+    return;
+  }
+  final deep = a['deep_list'];
+  db.execute(
+      'INSERT INTO breakpoint_mirror(playlist_uuid, song_id, source_id, source, source_ref, '
+      'position_ms, deep_list_json, updated_at, device_id) VALUES(?,?,?,?,?,?,?,?,?) '
+      'ON CONFLICT(playlist_uuid) DO UPDATE SET '
+      'song_id=excluded.song_id, source_id=excluded.source_id, source=excluded.source, '
+      'source_ref=excluded.source_ref, position_ms=excluded.position_ms, '
+      'deep_list_json=excluded.deep_list_json, '
+      'updated_at=excluded.updated_at, device_id=excluded.device_id',
+      [
+        uuid,
+        (a['song_id'] as num?)?.toInt(),
+        a['source_id'],
+        a['source'],
+        a['source_ref'],
+        (a['position_ms'] as num?)?.toInt() ?? 0,
+        deep is List ? jsonEncode(deep) : null,
+        (a['updated_at'] as String?) ?? DateTime.now().toIso8601String(),
+        null,
+      ]);
 }
 
 bool _opApplySourceSnapshot(Database db, Map<String, dynamic> a) {
@@ -1234,7 +1392,37 @@ void _opUpdateSongUserMeta(Database db, Map<String, dynamic> a) {
   _opArtistReconcile(db);
 }
 
-/// 全表一次性迁移历史 ENCODE 形态的 play_meta 行（启动时由 LocalIndex.open 触发）。
+/// 启动一次性探测 + 迁移：write 连接 init 时调用（主线程 open() 不再扫描）。
+/// 先探测有无含 `%` 的 ref（解码只可能改变这类串）：没有就跳过，不等一次
+/// 全表解码扫描。
+void _migrateLegacyRefsIfNeeded(Database db) {
+  final legacy = db.select(
+      "SELECT 1 FROM play_meta WHERE instr(song_ref, '%') > 0 LIMIT 1");
+  if (legacy.isEmpty) return;
+  _opMigrateMetaRefs(db);
+}
+
+/// 待上推事件（SyncEngine 用）：读取与 payload 解码都在写连接内完成，
+/// UI isolate 只收已解码结果（同步后台化）。
+List<Map<String, dynamic>> _opPendingOutbox(
+    Database db, Map<String, dynamic> a) {
+  final limit = (a['limit'] as num?)?.toInt() ?? 500;
+  final rs = db.select(
+      'SELECT event_uuid, type, payload, occurred_at FROM weight_outbox '
+      'WHERE acked=0 ORDER BY rowid LIMIT ?',
+      [limit]);
+  return [
+    for (final r in rs)
+      {
+        'eventUuid': r['event_uuid'] as String,
+        'type': r['type'] as String,
+        'occurredAt': r['occurred_at'] as String,
+        'payload': jsonDecode(r['payload'] as String),
+      }
+  ];
+}
+
+/// 全表一次性迁移历史 ENCODE 形态的 play_meta 行（启动时由写入层 init 触发）。
 ///
 /// 旧实现在 `playMetaOf` 读前按行迁移，会在主连接上写库（UI 线程 I/O）；
 /// 现改为写隔离内一次扫完，之后所有读都是纯读。变体计算与逐行合并复用

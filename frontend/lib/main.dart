@@ -30,6 +30,7 @@ import 'layout/app_shell.dart';
 import 'widgets/app_toast.dart';
 import 'widgets/draggable_sheet.dart';
 import 'widgets/player_sheet_anim.dart';
+import 'utils/frame_scheduler.dart';
 import 'utils/interaction_gate.dart';
 
 /// 图片解码缓存上限（R-6 / T016）。
@@ -75,16 +76,16 @@ Future<void> main() async {
   final direct = DirectSourceManager();
   await direct.init();
   debugPrint('[boot] 直连源管理器就绪');
-  direct.attachApi(api);
+  // 源补推（attachApi 内部 _bootstrapSourceSync）不参与首帧：见文末首帧后启动块。
   // 信任自签名证书开关（settings.md §3.3）：按 AppSettings 配置 dio 一次。
   api.setSelfSignedPolicy(direct.settings.allowSelfSigned);
 
   // 歌手身份解析（歌手处理.txt）：后台循环向 MusicBrainz 解析歌手身份；
   // 与 direct 互绑（扫描/补读后校准映射并唤醒），随应用生命周期运行。
+  // 启动时机同同步引擎：首帧后（启动即解析会挤占启动帧且与首帧无关）。
   final artistResolver = ArtistResolver(direct.index)
     ..attachSettings(direct.settings);
   direct.attachArtistResolver(artistResolver);
-  artistResolver.start();
 
   // 通知栏播放控制 / 后台播放（settings.md §3.6）：Android 恒注册。
   //
@@ -155,14 +156,19 @@ Future<void> main() async {
         showControls: direct.settings.notificationControls);
   }
 
-  // 阶段5 多设备同步引擎：启动即开始（未配对/关开关时内部跳过），回前台追一次。
+  // 阶段5 多设备同步引擎：首帧后启动（见下方首帧后启动块），回前台追一次。
+  // 落库回调一律经 [scheduleAfterFrame] 推迟到帧末：拉取完成当帧不做整库
+  // 重建/源重载，避免同步与渲染抢同一轮事件循环（同步后台化）。
   final sync = SyncEngine(api: api, index: direct.index, settings: direct.settings);
   sync.onSourcesApplied = () {
-    unawaited(direct.reloadSourcesFromIndex());
+    scheduleAfterFrame(() {
+      unawaited(direct.reloadSourcesFromIndex());
+    });
   };
   // 远端拉回的收藏/权重落库后刷新行缓存与版本，否则喜欢页与列表行仍显示旧态。
-  sync.onSongStatesApplied = () => direct.notifyPlayMetaChanged();
-  sync.start();
+  sync.onSongStatesApplied = () {
+    scheduleAfterFrame(direct.notifyPlayMetaChanged);
+  };
   WidgetsBinding.instance.addObserver(_SyncLifecycleObserver(sync));
 
   debugPrint('[boot] 进入 runApp');
@@ -179,6 +185,15 @@ Future<void> main() async {
       artistResolver: artistResolver,
       sync: sync,
       interactionGate: interactionGate));
+  // 首帧轻量化：源补推 / 歌手解析 / 同步引擎都不参与首帧渲染，统一推迟到
+  // 首帧渲染完成后启动——此前它们在 runApp 前就发起网络请求与同步 DB 读，
+  // 与首帧渲染抢事件循环（启动期掉帧的根因之一）。Root 的首拉在自身
+  // post-frame 内、经 _inflight 与这里的第一轮合并，不会重复发请求。
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    direct.attachApi(api); // 内部补发存量 source.create（有服务器才发）
+    artistResolver.start();
+    sync.start();
+  });
   // main() 全链（含所有 await）走完的最终信号：ArkTS 启动看门狗据此解除
   // （超时未收到则向 Dart 发消息唤醒可能停滞的事件循环，见 ohos_bootstrap）。
   markBootReady();
@@ -348,10 +363,15 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
     _nav = context.read<NavigationProvider>();
     _syncEngine = context.read<SyncEngine>();
     // 同步拉到歌单后刷新 Provider 缓存：落库直写 SQLite，
-    // 不刷则新歌单只进库不进列表（重启前不可见）。
-    _syncEngine.onPlaylistsApplied = () {
+    // 不刷则新歌单只进库不进列表（重启前不可见）。回调携带本轮变更的
+    // 歌单 uuid，Provider 只对这些歌单重查计数（增量刷新）；并推迟到帧末，
+    // 避免同步落库当帧整列表重建抢渲染。
+    _syncEngine.onPlaylistsApplied = (uuids) {
       if (!mounted) return;
-      context.read<PlaylistsProvider>().refresh();
+      scheduleAfterFrame(() {
+        if (!mounted) return;
+        context.read<PlaylistsProvider>().refresh(changedUuids: uuids);
+      });
     };
     // 同步拉到更新的远端断点（当前曲/进度/深层列表）后，空闲时套用到播放器：
     // 启动补切 / 回前台 / 手动「立即同步」统一走此回调（刻意播放中不打断由

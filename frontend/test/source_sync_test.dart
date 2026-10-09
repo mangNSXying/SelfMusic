@@ -150,22 +150,21 @@ void main() {
     );
     final weight = SongWeightStore(index, serverAvailable: () => true);
     await weight.setLiked(song);
-    var payload = jsonDecode(index.pendingOutbox().last.payload)
-        as Map<String, dynamic>;
+    var payload = (await index.pendingOutbox()).last.payload;
     expect(payload['source_id'], uuid);
     expect(payload['source'], 'webdav');
 
     await index.deleteOutbox(
-        index.pendingOutbox().map((e) => e.eventUuid).toList());
+        (await index.pendingOutbox()).map((e) => e.eventUuid).toList());
     final playlists = PlaylistStore(index, serverAvailable: () => true);
     await playlists.create('p');
     await index.deleteOutbox(
-        index.pendingOutbox().map((e) => e.eventUuid).toList());
+        (await index.pendingOutbox()).map((e) => e.eventUuid).toList());
     final pid = index.listPlaylists().single.id;
     await playlists.addSong(pid, song);
-    payload = jsonDecode(index.pendingOutbox().last.payload)
-        as Map<String, dynamic>;
-    expect(index.pendingOutbox().last.type, SyncEventTypes.playlistItemAdd);
+    final last = (await index.pendingOutbox()).last;
+    payload = last.payload;
+    expect(last.type, SyncEventTypes.playlistItemAdd);
     expect(payload['source_id'], uuid);
     expect(payload['title'], 't');
 

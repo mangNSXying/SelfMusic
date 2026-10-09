@@ -31,6 +31,14 @@ public class Device {
     @Column(name = "last_seen_at")
     private LocalDateTime lastSeenAt;
 
+    /**
+     * 设备最近一次 pull 返回的 sync_events.seq（事件日志压缩水位）。
+     * 事件日志按时序追加、pull 只按 cursor 消费现状快照，压缩时只允许删除
+     * 「所有未吊销设备都已可能消费完」的事件（min 水位以下）。
+     */
+    @Column(name = "last_pull_cursor")
+    private Long lastPullCursor;
+
     @JsonIgnore
     @Column(name = "token_expires_at")
     private LocalDateTime tokenExpiresAt;
@@ -70,6 +78,9 @@ public class Device {
 
     public LocalDateTime getLastSeenAt() { return lastSeenAt; }
     public void setLastSeenAt(LocalDateTime lastSeenAt) { this.lastSeenAt = lastSeenAt; }
+
+    public Long getLastPullCursor() { return lastPullCursor; }
+    public void setLastPullCursor(Long lastPullCursor) { this.lastPullCursor = lastPullCursor; }
 
     public LocalDateTime getTokenExpiresAt() { return tokenExpiresAt; }
     public void setTokenExpiresAt(LocalDateTime tokenExpiresAt) { this.tokenExpiresAt = tokenExpiresAt; }

@@ -345,6 +345,7 @@ class DirectSourceManager extends ChangeNotifier {
     // 先完整重建新列表再整体替换：_sources 全程非空，避免「先 clear 再逐个 await
     // 重建」留下的空窗被并发读取（如启动断点恢复的 sourceByKey）命中，误报
     // 「找不到该歌曲的播放源」。webdav 源重建含 SecretStore 异步读，空隙真实存在。
+    final oldSig = _watcherSignature(_sources);
     final rebuilt = <MusicSource>[];
     for (final r in index.listSources()) {
       if (!r.enabled) continue;
@@ -354,9 +355,17 @@ class DirectSourceManager extends ChangeNotifier {
     _sources
       ..clear()
       ..addAll(rebuilt);
-    restartAutoScan();
+    // watcher 重建只在「本地源的 key/路径」真变化时做：同步每次落库重载都
+    // 取消+重挂目录监听是纯浪费，还会丢掉去抖状态与新事件窗口。
+    if (_watcherSignature(_sources) != oldSig) restartAutoScan();
     notifyListeners();
   }
+
+  /// 目录监听的关注面：本地源的 key + rootPath（其余源不挂 watcher）。
+  String _watcherSignature(List<MusicSource> sources) => [
+        for (final s in sources)
+          if (s is LocalDirectSource) '${s.key}|${s.rootPath}' else s.key
+      ].join('\n');
 
   Future<MusicSource?> _buildRowFromRow(DirectSourceRow r) async {
     try {
