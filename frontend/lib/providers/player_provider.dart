@@ -233,6 +233,22 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// （否则启动恢复 `_play` 覆盖本地时间后，远端镜像恒判更旧，跨设备续播永不生效）。
   DateTime? _breakpointBaselineAt;
 
+  /// 断点恢复的乐观位置（毫秒）：`_restoreLocal/_restoreFromMirror` 在装载音频前
+  /// 的同步前缀即设置，供首帧进度显示；真实 `seek` 完成后（或用户接管/失败）
+  /// 清空。[position] 在非空**且归属仍是当前曲**时优先返回它，音频尚未装载
+  /// 即有正确进度；中途切到别的歌自动失效（见 [_restorePositionKey]）。
+  int? _restorePositionMs;
+
+  /// 乐观位置归属的歌曲（`sourceKey\0sourceRef`，与 [_completedKey] 同口径）：
+  /// 用户在恢复装载完成前切歌时，[position] 不再返回旧曲的乐观值。
+  String? _restorePositionKey;
+
+  /// 恢复装载完成/接管/失败时收口乐观位置。
+  void _clearRestorePosition() {
+    _restorePositionMs = null;
+    _restorePositionKey = null;
+  }
+
   /// 音量梯度引擎：16ms 周期单定时器（淡入/淡出共用一条梯度，cancel 即打断）。
   Timer? _fadeTimer;
 
@@ -541,7 +557,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       final finished = _current;
       if (finished == null) return;
       // 同一首歌的 completed 事件兜底去重。
-      final key = '${finished.sourceKey}\u0000${finished.sourceRef}';
+      final key = _positionKeyOf(finished);
       if (_completedKey == key) return;
       _completedKey = key;
       _emitWeight(finished, completed: true,
@@ -587,6 +603,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 已处理过 completed 的曲目 key（含暂停导致的二次 completed，见监听器注释）。
   String? _completedKey;
+
+  /// 歌曲身份 key（`sourceKey\0sourceRef`）：completed 去重与乐观位置归属共用。
+  static String _positionKeyOf(Song s) => '${s.sourceKey}\u0000${s.sourceRef}';
 
   /// 当前曲是否用户手动点播（playAt/playQueue；next/prev/自动/失败重试=非手动）。
   /// 自然完播（>95%）时在此基础上额外累计 `complete_manual` 权重 +0.1 一档。
@@ -1065,8 +1084,29 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   List<Song> get queue => List.unmodifiable(_queue);
   Song? get current => _current;
   bool get hasCurrent => _current != null;
-  Duration get position => player.position;
-  Duration? get duration => player.duration;
+  /// 展示用当前位置：断点恢复的乐观值（[_restorePositionMs]）在装载/seek 完成前
+  /// 优先——首帧进度条即停在上次位置；之后与真实播放器位置一致。
+  /// 归属校验：中途切到别的歌（恢复装载期用户点播/切歌）时自动失效，不用
+  /// 逐个接管点位手动清理。
+  Duration get position {
+    final r = _restorePositionMs;
+    final c = _current;
+    if (r != null &&
+        c != null &&
+        _restorePositionKey == _positionKeyOf(c)) {
+      return Duration(milliseconds: r);
+    }
+    return player.position;
+  }
+
+  /// 展示用总时长：播放器未装载出真实时长时，回退到当前歌曲元数据时长
+  /// （[Song.duration] 为秒）——首帧即有正确的总时长，不再显示 0:00/0:00。
+  Duration? get duration {
+    final loaded = _player?.duration;
+    if (loaded != null) return loaded;
+    final sec = _current?.duration;
+    return sec == null ? null : Duration(seconds: sec);
+  }
   /// 界面/目标播放态：淡出暂停进行中（pending-pause，[_fadingPause]）时提前
   /// 翻转为 false——播放/暂停按钮点击后一帧内响应目标意图，不等音频淡出完成；
   /// 渐变之外的任意时刻与实际播放状态一致。
@@ -1306,6 +1346,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _onNextChanged?.call(null);
     _current = null;
     _curSource = null;
+    _clearRestorePosition();
     clearResumeState();
     try {
       await player.stop();
@@ -1395,6 +1436,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 用户主动起播 → 首轮同步晚到的远端断点不再回切。
       if (manual) {
         _userTookOver = true;
+        // 恢复期的乐观位置随用户接管失效（当前曲将换成用户点的）。
+        _clearRestorePosition();
         // 本机成为最新状态：远端旧断点不得再覆盖（基准=now）。
         // 注意仅用户起播时刷新；恢复装载（manual=false）不刷新，否则恢复时
         // `_saveState` 会把基准抬到现在，令远端更新的镜像永远套用不上。
@@ -2161,6 +2204,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 清理路径：取消渐变 + 收口挂起的淡出 Future（不暂停）+ 复位意图位。
     _cancelFadeAndComplete();
     _fadingPause = false;
+    // 显式停止：恢复期的乐观位置一并失效（停后位置恒为 0）。
+    _clearRestorePosition();
     try {
       await player.stop();
     } catch (_) {
@@ -2172,6 +2217,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> seek(Duration d) async {
     _userTookOver = true;
+    // 用户手动 seek 接管：恢复期的乐观位置失效，之后走真实位置。
+    _clearRestorePosition();
     await player.seek(d);
     _syncSystemMedia();
   }
@@ -2376,14 +2423,28 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         final atBreakpoint = resume == _idx;
         _idx = resume;
         _current = _queue[resume];
+        // 乐观位置（同步前缀即设）：首帧进度条即停在断点，未在断点曲上则为 0。
+        _restorePositionMs =
+            (atBreakpoint && st.positionMs > 0) ? st.positionMs : 0;
+        _restorePositionKey = _positionKeyOf(_current!);
+        final restoredSong = _current!;
         await _play(_current!, play: false);
-        if (atBreakpoint && st.positionMs > 0) {
+        // 装载期间用户可能已切歌：只对仍是恢复目标的当前曲 seek，不把新歌
+        // 拽回旧断点（用户接管优先）。
+        final cur = _current;
+        if (cur != null &&
+            _same(cur, restoredSong) &&
+            atBreakpoint &&
+            st.positionMs > 0) {
           await player.seek(Duration(milliseconds: st.positionMs));
         }
+        // 真实 seek 完成（装载失败/no-op 同样经过这里）：乐观值退场。
+        _clearRestorePosition();
       }
       notifyListeners();
       _syncSystemMedia();
     } catch (e) {
+      _clearRestorePosition();
       AppToast.error(e, '断点恢复失败');
       notifyListeners();
     }
@@ -2424,15 +2485,25 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final adopted = _current!;
     _lastBpKey = '$_syncPlaylistUuid|${adopted.source}|${adopted.sourceRef}';
     _lastBpAtMs = DateTime.now().millisecondsSinceEpoch;
+    // 乐观位置（同步前缀即设）：退到断点曲之后的首曲时为 0。
+    final pos = (found >= 0 && start == found) ? m.positionMs : 0;
+    _restorePositionMs = pos;
+    _restorePositionKey = _positionKeyOf(_current!);
     try {
       await _play(_current!, play: false);
-      final pos = (found >= 0 && start == found) ? m.positionMs : 0;
-      if (pos > 0) await player.seek(Duration(milliseconds: pos));
+      // 装载期间用户可能已切歌：只对仍是恢复目标的当前曲 seek（见 _restoreLocal）。
+      final cur = _current;
+      if (cur != null && _same(cur, adopted) && pos > 0) {
+        await player.seek(Duration(milliseconds: pos));
+      }
+      // 真实 seek 完成：乐观值退场。
+      _clearRestorePosition();
       notifyListeners();
       _syncSystemMedia();
       AppToast.show('已从其他设备继续播放（${_fmtMs(pos)}）', isError: false);
       return true;
     } catch (_) {
+      _clearRestorePosition();
       return false;
     }
   }

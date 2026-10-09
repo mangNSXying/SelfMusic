@@ -1808,9 +1808,11 @@ class _PlayerSeekState extends State<_PlayerSeek> {
   Widget build(BuildContext context) {
     return StreamBuilder<Duration>(
       stream: widget.player.player.positionStream,
-      builder: (c, snap) {
-        final pos = snap.data ?? Duration.zero;
-        final dur = widget.player.player.duration ?? Duration.zero;
+      builder: (c, _) {
+        // 位置/时长走 provider：断点恢复装载期返回乐观断点值（首帧进度即对），
+        // 真实 seek 完成后自动切真实值；StreamBuilder 照常逐 tick 刷新播放进度。
+        final pos = widget.player.position;
+        final dur = widget.player.duration ?? Duration.zero;
         final max = dur.inMilliseconds.toDouble();
         final cur = pos.inMilliseconds.toDouble().clamp(0, max == 0 ? 1 : max).toDouble();
         return Column(

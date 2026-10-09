@@ -378,14 +378,24 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
     _nav.queueProgress.addListener(_onQueueProgress);
     // 启动恢复上次播放队列与位置（暂停态，stage2.md §7）。
     // 受「断点续播」开关控制（settings.md §3.2 `resume_on_startup`）。
+    //
+    // 恢复在 initState 内同步发起：其同步前缀（取本机/镜像断点、重建队列、
+    // 置当前曲与乐观位置）在首帧 build 前即完成，播放页首帧直接渲染上次
+    // 断点而非「未在播放」占位；音频装载/seek 在后台异步继续。
+    final direct = context.read<DirectSourceManager>();
+    final player = context.read<PlayerProvider>();
+    final Future<void> restoreFuture;
+    if (direct.settings.resumeOnStartup) {
+      restoreFuture = player.restorePreferRemote();
+    } else {
+      restoreFuture = Future<void>.value();
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
-      final direct = context.read<DirectSourceManager>();
       if (!direct.settings.resumeOnStartup) return;
-      final player = context.read<PlayerProvider>();
-      // 先按本机/上轮镜像断点立即恢复：不占首屏、不等网络（此前先 await
-      // firstPull，服务器不可达时要 2s 超时才恢复）。
-      await player.restorePreferRemote();
+      // 先等恢复完成再首拉：保持既有「先恢复、后拉取、再补切」顺序，避免首拉
+      // 回调与恢复进行中的装载竞争。
+      await restoreFuture;
       if (!mounted) return;
       // 首轮同步带 2s 超时在后台拉；拉到更新的远端断点且用户尚未接管播放时，
       // applyNewerMirrorIfAny 再切过去（不打断用户主动操作）。
