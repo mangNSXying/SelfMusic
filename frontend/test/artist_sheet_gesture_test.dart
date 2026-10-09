@@ -189,4 +189,60 @@ void main() {
 
     await tester.runAsync(() => _dispose(direct, dir));
   });
+
+  testWidgets('歌手弹层：滚动列表后标题栏仍置顶（sticky header）', (tester) async {
+    final (dir, direct, sheetTitle) = await _pumpArtistSheet(tester);
+
+    final before = tester.getTopLeft(sheetTitle).dy;
+    // 第一次上滑先把窗口撑到最大，第二次才真正滚动列表。
+    await tester.drag(find.byType(SongTile).first, const Offset(0, -600));
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(SongTile).first, const Offset(0, -400));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    // 标题仍在窗口顶部（未随列表滚走）。
+    expect(sheetTitle, findsOneWidget, reason: '滚动后标题栏仍在顶部');
+    final after = tester.getTopLeft(sheetTitle).dy;
+    expect(after, greaterThanOrEqualTo(60.0), reason: '仍让开状态栏');
+    expect(after - before, lessThan(60.0), reason: '标题栏置顶，不随列表滚动');
+    expect(find.text('歌曲 0'), findsNothing, reason: '列表确实滚动了');
+
+    await tester.runAsync(() => _dispose(direct, dir));
+  });
+
+  testWidgets('专辑弹层：滚动列表后标题栏仍置顶（sticky header）', (tester) async {
+    final (dir, direct, _) = await _pumpArtistSheet(tester);
+
+    // 从歌手弹层的专辑横滑条打开某张专辑（专辑名精确匹配条目标签）。
+    await tester.tap(find.text('专辑 0'));
+    await tester.pumpAndSettle();
+
+    final albumSheet = find.byType(DraggableScrollableSheet).last;
+    final albumTitle =
+        find.descendant(of: albumSheet, matching: find.text('专辑 0'));
+    expect(albumTitle, findsOneWidget);
+
+    final before = tester.getTopLeft(albumTitle).dy;
+    // 第一次上滑先撑到最大，第二次才真正滚动列表。
+    await tester.drag(
+        find.descendant(of: albumSheet, matching: find.byType(SongTile)).first,
+        const Offset(0, -600));
+    await tester.pumpAndSettle();
+    await tester.drag(
+        find.descendant(of: albumSheet, matching: find.byType(SongTile)).first,
+        const Offset(0, -400));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    expect(albumTitle, findsOneWidget, reason: '滚动后专辑标题栏仍在顶部');
+    final after = tester.getTopLeft(albumTitle).dy;
+    expect(after, greaterThanOrEqualTo(60.0));
+    expect(after - before, lessThan(60.0), reason: '专辑标题栏置顶，不随列表滚动');
+    expect(find.descendant(of: albumSheet, matching: find.text('歌曲 0')),
+        findsNothing,
+        reason: '列表确实滚动了');
+
+    await tester.runAsync(() => _dispose(direct, dir));
+  });
 }

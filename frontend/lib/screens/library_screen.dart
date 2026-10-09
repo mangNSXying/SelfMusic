@@ -21,6 +21,7 @@ import '../widgets/app_toast.dart';
 import '../widgets/area_switcher.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
+import '../widgets/draggable_sheet.dart';
 import '../widgets/row_list.dart';
 import '../widgets/list_selection.dart';
 import '../widgets/page_transition.dart';
@@ -66,7 +67,8 @@ class AppContent extends StatelessWidget {
       duration: const Duration(milliseconds: 320),
       switchInCurve: Curves.easeOutCubic,
       switchOutCurve: Curves.easeInCubic,
-      transitionBuilder: (child, anim) => pageTransition(transition, child, anim,
+      transitionBuilder: (child, anim) => pageTransition(
+          transition, child, anim,
           backdrop: Theme.of(context).scaffoldBackgroundColor),
       child: KeyedSubtree(key: ValueKey(nav.areaKey), child: page),
     );
@@ -82,7 +84,8 @@ class AppContent extends StatelessWidget {
       return SourceBrowseView(sourceKey: routeKey.sourceKey!);
     }
     // 歌单详情子视图。
-    if (routeKey.section == NavSection.playlists && routeKey.playlistId != null) {
+    if (routeKey.section == NavSection.playlists &&
+        routeKey.playlistId != null) {
       return PlaylistDetailView(playlistId: routeKey.playlistId!);
     }
     // 六个顶级分组：滑动模式跟手 PageView，其余模式松手触发区切换。
@@ -238,10 +241,9 @@ class _SectionPagerState extends State<SectionPager>
           duration: const Duration(milliseconds: 320),
           switchInCurve: Curves.easeOutCubic,
           switchOutCurve: Curves.easeInCubic,
-          transitionBuilder: (child, anim) =>
-              pageTransition(transition, child, anim,
-                  backdrop:
-                      Theme.of(context).scaffoldBackgroundColor),
+          transitionBuilder: (child, anim) => pageTransition(
+              transition, child, anim,
+              backdrop: Theme.of(context).scaffoldBackgroundColor),
           child: page,
         ),
       );
@@ -290,8 +292,8 @@ class _SectionPagerState extends State<SectionPager>
     }
 
     return SlideTransition(
-      position: _enterCurve.drive(
-          Tween<Offset>(begin: Offset(_enterDir.toDouble(), 0), end: Offset.zero)),
+      position: _enterCurve.drive(Tween<Offset>(
+          begin: Offset(_enterDir.toDouble(), 0), end: Offset.zero)),
       child: PageView(
         controller: _ctrl,
         onPageChanged: _onPageChanged,
@@ -400,8 +402,7 @@ class _LikedViewState extends State<_LikedView>
     super.build(context);
     final direct = context.watch<DirectSourceManager>();
     // 订阅收窄（T011）：喜欢页只关注全局搜索词；区段索引变更不重建、不重排。
-    final search =
-        context.select<NavigationProvider, String>((n) => n.search);
+    final search = context.select<NavigationProvider, String>((n) => n.search);
     final player = context.read<PlayerProvider>();
     final lib = context.read<LibraryProvider>();
     final res = _sortSongs(direct, search);
@@ -429,88 +430,87 @@ class _LikedViewState extends State<_LikedView>
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-              // 多选栏与计数栏共用同一位置（多选时覆盖「共 xx」，退出恢复）。
-              if (_sel.active)
-                SelectionBar(
-                  total: songs.length,
-                  selectedCount: _sel.of(songs.map(songKey)).length,
-                  onToggleAll: () =>
-                      setState(() => _sel.setAll(songs.map(songKey))),
-                  onCancel: () => setState(_sel.cancel),
-                  actions: [
-                    SelectionAction(
-                      icon: Icons.play_arrow,
-                      label: '播放选中',
-                      onPressed: _sel.isEmpty ? null : () => _playSelected(songs),
-                    ),
-                    SelectionAction(
-                      icon: Icons.favorite_border,
-                      label: '取消喜欢',
-                      onPressed: _sel.isEmpty ? null : () => _unlikeSelected(songs),
-                    ),
-                  ],
-                )
-              else
-                CountHeader(
-                  count: songs.length,
-                  trailing: SortMenuButton(
-                    value: direct.settings.sortFavorites,
-                    onChanged: (v) =>
-                        setState(() => direct.settings.sortFavorites = v),
+            // 多选栏与计数栏共用同一位置（多选时覆盖「共 xx」，退出恢复）。
+            if (_sel.active)
+              SelectionBar(
+                total: songs.length,
+                selectedCount: _sel.of(songs.map(songKey)).length,
+                onToggleAll: () =>
+                    setState(() => _sel.setAll(songs.map(songKey))),
+                onCancel: () => setState(_sel.cancel),
+                actions: [
+                  SelectionAction(
+                    icon: Icons.play_arrow,
+                    label: '播放选中',
+                    onPressed: _sel.isEmpty ? null : () => _playSelected(songs),
                   ),
+                  SelectionAction(
+                    icon: Icons.favorite_border,
+                    label: '取消喜欢',
+                    onPressed:
+                        _sel.isEmpty ? null : () => _unlikeSelected(songs),
+                  ),
+                ],
+              )
+            else
+              CountHeader(
+                count: songs.length,
+                trailing: SortMenuButton(
+                  value: direct.settings.sortFavorites,
+                  onChanged: (v) =>
+                      setState(() => direct.settings.sortFavorites = v),
                 ),
-              if (_sel.active) const Divider(height: 1),
-              Expanded(
-                child: songs.isEmpty
-                    ? Center(
-                        child: Text(all.isEmpty
-                            ? '暂无喜欢的歌曲，去歌曲页点 ♡ 收藏'
-                            : '无匹配歌曲'))
-                    : RowList(
-                        count: songs.length,
-                        itemBuilder: (c, i) {
-                          final s = songs[i];
-                          return SongTile(
-                            song: s,
-                            source: lib.sourceFor(s.sourceKey),
-row: _rowCache.rowAt(i, () {
-                              final meta = direct.weight.metaOf(s);
-                              return SongRowView.of(
-                                song: s,
-                                titleFormat: direct.settings.songTitleFormat,
-                                favorite: meta.favorite,
-                                disliked: meta.frozen,
-                                wide: wide,
-                              );
-                            }),
-                            onPlay: () {
-                              player.playQueue(songs,
-                                  index: i,
-                                  contextKey: PlayerProvider.anchorForLiked());
-                              context.read<NavigationProvider>().openPlayer();
-                            },
-                            playing: player.isCurrent(s),
-                            selectionMode: _sel.active,
-                            selected: _sel.contains(songKey(s)),
-                            onSelect: () => _toggle(songKey(s)),
-                            onStartSelect: () =>
-                                setState(() => _sel.startWith(songKey(s))),
-                          );
-                        },
-                      ),
               ),
-            ],
-          ),
-          Positioned(
-            right: 16,
-            bottom: 16,
-            child: CornerAddButton(
-              tooltip: '去歌曲页收藏',
-              onPressed: () =>
-                  context.read<NavigationProvider>().select(NavSection.songs),
+            if (_sel.active) const Divider(height: 1),
+            Expanded(
+              child: songs.isEmpty
+                  ? Center(
+                      child: Text(all.isEmpty ? '暂无喜欢的歌曲，去歌曲页点 ♡ 收藏' : '无匹配歌曲'))
+                  : RowList(
+                      count: songs.length,
+                      itemBuilder: (c, i) {
+                        final s = songs[i];
+                        return SongTile(
+                          song: s,
+                          source: lib.sourceFor(s.sourceKey),
+                          row: _rowCache.rowAt(i, () {
+                            final meta = direct.weight.metaOf(s);
+                            return SongRowView.of(
+                              song: s,
+                              titleFormat: direct.settings.songTitleFormat,
+                              favorite: meta.favorite,
+                              disliked: meta.frozen,
+                              wide: wide,
+                            );
+                          }),
+                          onPlay: () {
+                            player.playQueue(songs,
+                                index: i,
+                                contextKey: PlayerProvider.anchorForLiked());
+                            context.read<NavigationProvider>().openPlayer();
+                          },
+                          playing: player.isCurrent(s),
+                          selectionMode: _sel.active,
+                          selected: _sel.contains(songKey(s)),
+                          onSelect: () => _toggle(songKey(s)),
+                          onStartSelect: () =>
+                              setState(() => _sel.startWith(songKey(s))),
+                        );
+                      },
+                    ),
             ),
+          ],
+        ),
+        Positioned(
+          right: 16,
+          bottom: 16,
+          child: CornerAddButton(
+            tooltip: '去歌曲页收藏',
+            onPressed: () =>
+                context.read<NavigationProvider>().select(NavSection.songs),
           ),
-        ],
+        ),
+      ],
     );
   }
 }
@@ -540,8 +540,8 @@ class _SongsViewState extends State<_SongsView>
   (int, String, CollectionSort)? _sortedKey;
   _SortedResult _sorted = const _SortedResult([], []);
 
-  _SortedResult _sortSongs(LibraryProvider lib, DirectSourceManager direct,
-      String search) {
+  _SortedResult _sortSongs(
+      LibraryProvider lib, DirectSourceManager direct, String search) {
     final base = lib.songs;
     final pref = direct.settings.sortSongs;
     final key = (base.length, search, pref);
@@ -598,8 +598,7 @@ class _SongsViewState extends State<_SongsView>
     final direct = context.watch<DirectSourceManager>();
 
     // 订阅收窄（T011）：歌曲页只关注全局搜索词；区段索引变更不重建、不重排。
-    final search =
-        context.select<NavigationProvider, String>((n) => n.search);
+    final search = context.select<NavigationProvider, String>((n) => n.search);
 
     // 依据全局搜索词过滤（喜欢页共用同一匹配函数），再按本页排序偏好排序。
     final songs = _sortSongs(lib, direct, search).songs;
@@ -624,14 +623,16 @@ class _SongsViewState extends State<_SongsView>
       children: [
         if (lib.loading) const LinearProgressIndicator(minHeight: 2),
         if (lib.error != null)
-          Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
+          Padding(
+              padding: const EdgeInsets.all(8),
+              child:
+                  Text(lib.error!, style: const TextStyle(color: Colors.red))),
         // 多选栏与计数栏共用同一位置（多选时覆盖「共 xx」，退出恢复）。
         if (_sel.active)
           SelectionBar(
             total: songs.length,
             selectedCount: _sel.of(songs.map(songKey)).length,
-            onToggleAll: () =>
-                setState(() => _sel.setAll(songs.map(songKey))),
+            onToggleAll: () => setState(() => _sel.setAll(songs.map(songKey))),
             onCancel: () => setState(_sel.cancel),
             actions: [
               SelectionAction(
@@ -642,9 +643,8 @@ class _SongsViewState extends State<_SongsView>
               SelectionAction(
                 icon: Icons.playlist_add,
                 label: '加入歌单',
-                onPressed: _sel.isEmpty
-                    ? null
-                    : () => _addToPlaylistSelected(songs),
+                onPressed:
+                    _sel.isEmpty ? null : () => _addToPlaylistSelected(songs),
               ),
             ],
           )
@@ -668,18 +668,18 @@ class _SongsViewState extends State<_SongsView>
                       song: s,
                       source: lib.sourceFor(s.sourceKey),
                       row: _rowCache.rowAt(
-                            i,
-                            () {
-                              final meta = direct.weight.metaOf(s);
-                              return SongRowView.of(
-                                song: s,
-                                titleFormat: direct.settings.songTitleFormat,
-                                favorite: meta.favorite,
-                                disliked: meta.frozen,
-                                wide: wide,
-                              );
-                            },
-                          ),
+                        i,
+                        () {
+                          final meta = direct.weight.metaOf(s);
+                          return SongRowView.of(
+                            song: s,
+                            titleFormat: direct.settings.songTitleFormat,
+                            favorite: meta.favorite,
+                            disliked: meta.frozen,
+                            wide: wide,
+                          );
+                        },
+                      ),
                       onPlay: () {
                         player.playQueue(songs,
                             index: i,
@@ -734,8 +734,9 @@ class _AlbumsViewState extends State<_AlbumsView>
     if (_sortedKey == key && identical(albums, _lastBase)) return _sorted;
     _lastBase = albums;
     _sortedKey = key;
-    return _sorted = sortByCollection(_filter(albums, search), pref,
-        (a) => a.album, countOf: (a) => a.trackCount);
+    return _sorted = sortByCollection(
+        _filter(albums, search), pref, (a) => a.album,
+        countOf: (a) => a.trackCount);
   }
 
   @override
@@ -757,17 +758,19 @@ class _AlbumsViewState extends State<_AlbumsView>
     final lib = context.watch<LibraryProvider>();
     final direct = context.watch<DirectSourceManager>();
     // 订阅收窄（T011）：专辑页只关注全局搜索词；区段索引变更不重建、不重排。
-    final search =
-        context.select<NavigationProvider, String>((n) => n.search);
-    final albums = _filteredSorted(
-        lib.albums, search, direct.settings.sortAlbums);
+    final search = context.select<NavigationProvider, String>((n) => n.search);
+    final albums =
+        _filteredSorted(lib.albums, search, direct.settings.sortAlbums);
     final card = isCard;
 
     return Column(
       children: [
         if (lib.loading) const LinearProgressIndicator(minHeight: 2),
         if (lib.error != null)
-          Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
+          Padding(
+              padding: const EdgeInsets.all(8),
+              child:
+                  Text(lib.error!, style: const TextStyle(color: Colors.red))),
         CountHeader(
           count: albums.length,
           unit: '张',
@@ -777,7 +780,8 @@ class _AlbumsViewState extends State<_AlbumsView>
               SortMenuButton(
                 value: direct.settings.sortAlbums,
                 scope: SortScope.collections,
-                onChanged: (v) => setState(() => direct.settings.sortAlbums = v),
+                onChanged: (v) =>
+                    setState(() => direct.settings.sortAlbums = v),
               ),
               viewModeToggle(),
             ],
@@ -807,9 +811,11 @@ class _AlbumsViewState extends State<_AlbumsView>
   List<Album> _filter(List<Album> albums, String q) {
     if (q.trim().isEmpty) return albums;
     final qq = q.trim().toLowerCase();
-    return albums.where((a) =>
-        a.album.toLowerCase().contains(qq) ||
-        (a.artist.toLowerCase().contains(qq))).toList();
+    return albums
+        .where((a) =>
+            a.album.toLowerCase().contains(qq) ||
+            (a.artist.toLowerCase().contains(qq)))
+        .toList();
   }
 }
 
@@ -818,11 +824,10 @@ Future<void> _openAlbum(BuildContext context, Album album) async {
   final lib = context.read<LibraryProvider>();
   final songs = lib.albumSongs(album);
   if (!context.mounted) return;
-  showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    useSafeArea: true,
-    builder: (c) => _AlbumSongsSheet(album: album, songs: songs),
+  showAppDraggableSheet<void>(
+    context,
+    builder: (c, scrollCtrl) =>
+        _AlbumSongsSheet(album: album, songs: songs, scrollCtrl: scrollCtrl),
   );
 }
 
@@ -833,8 +838,8 @@ class _AlbumListTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListTile(
-      leading: CoverThumb(
-          coverPath: album.coverPath, fallbackIcon: Icons.album),
+      leading:
+          CoverThumb(coverPath: album.coverPath, fallbackIcon: Icons.album),
       title: Text(album.album,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
@@ -866,50 +871,43 @@ class _AlbumCard extends StatelessWidget {
 class _AlbumSongsSheet extends StatelessWidget {
   final Album album;
   final List<Song> songs;
-  const _AlbumSongsSheet({required this.album, required this.songs});
+
+  /// 统一拖拽式窗口下发的共享滚动轴（头部与列表共轴，见 [showAppDraggableSheet]）。
+  final ScrollController scrollCtrl;
+  const _AlbumSongsSheet(
+      {required this.album, required this.songs, required this.scrollCtrl});
 
   @override
   Widget build(BuildContext context) {
-    return DraggableScrollableSheet(
-      expand: false,
-      initialChildSize: 0.6,
-      builder: (c, scrollCtrl) {
-        final player = context.read<PlayerProvider>();
-        final lib = context.read<LibraryProvider>();
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text(album.album,
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
-            ),
-            CountHeader(count: songs.length),
-            const Divider(height: 1),
-            Expanded(
-              child: RowList(
-                controller: scrollCtrl,
-                count: songs.length,
-                itemBuilder: (c, i) {
-                  final s = songs[i];
-                  return SongTile(
-                    song: s,
-                    source: lib.sourceFor(s.sourceKey),
-                    playing: player.isCurrent(s),
-                    onPlay: () {
-                      Navigator.of(c).pop();
-                      player.playQueue(songs,
-                          index: i,
-                          contextKey: PlayerProvider.anchorForAlbum(album.id));
-                      context.read<NavigationProvider>().openPlayer();
-                    },
-                  );
-                },
-              ),
-            ),
-          ],
-        );
-      },
+    final player = context.read<PlayerProvider>();
+    final lib = context.read<LibraryProvider>();
+    return CustomScrollView(
+      controller: scrollCtrl,
+      slivers: [
+        // 置顶标题行：滚动歌曲时专辑名/歌曲数常驻顶部（与队列/歌手弹层同构）。
+        AppSheetHeader(
+          height: AppSheetTitleBar.heightOf(context),
+          child: AppSheetTitleBar(title: album.album, count: songs.length),
+        ),
+        SliverRowList(
+          count: songs.length,
+          itemBuilder: (c, i) {
+            final s = songs[i];
+            return SongTile(
+              song: s,
+              source: lib.sourceFor(s.sourceKey),
+              playing: player.isCurrent(s),
+              onPlay: () {
+                Navigator.of(c).pop();
+                player.playQueue(songs,
+                    index: i,
+                    contextKey: PlayerProvider.anchorForAlbum(album.id));
+                context.read<NavigationProvider>().openPlayer();
+              },
+            );
+          },
+        ),
+      ],
     );
   }
 }
@@ -945,8 +943,9 @@ class _ArtistsViewState extends State<_ArtistsView>
     if (_sortedKey == key && identical(artists, _lastBase)) return _sorted;
     _lastBase = artists;
     _sortedKey = key;
-    return _sorted = sortByCollection(_filter(artists, search), pref,
-        (a) => a.name, countOf: (a) => a.songCount);
+    return _sorted = sortByCollection(
+        _filter(artists, search), pref, (a) => a.name,
+        countOf: (a) => a.songCount);
   }
 
   @override
@@ -970,17 +969,19 @@ class _ArtistsViewState extends State<_ArtistsView>
     final lib = context.watch<LibraryProvider>();
     final direct = context.watch<DirectSourceManager>();
     // 订阅收窄（T011）：歌手页只关注全局搜索词；区段索引变更不重建、不重排。
-    final search =
-        context.select<NavigationProvider, String>((n) => n.search);
-    final artists = _filteredSorted(
-        lib.artists, search, direct.settings.sortArtists);
+    final search = context.select<NavigationProvider, String>((n) => n.search);
+    final artists =
+        _filteredSorted(lib.artists, search, direct.settings.sortArtists);
     final card = isCard;
 
     return Column(
       children: [
         if (lib.loading) const LinearProgressIndicator(minHeight: 2),
         if (lib.error != null)
-          Padding(padding: const EdgeInsets.all(8), child: Text(lib.error!, style: const TextStyle(color: Colors.red))),
+          Padding(
+              padding: const EdgeInsets.all(8),
+              child:
+                  Text(lib.error!, style: const TextStyle(color: Colors.red))),
         CountHeader(
           count: artists.length,
           unit: '位',
@@ -1011,7 +1012,8 @@ class _ArtistsViewState extends State<_ArtistsView>
                   : RowList(
                       count: artists.length,
                       onRefresh: lib.loadArtists,
-                      itemBuilder: (c, i) => _ArtistListTile(artist: artists[i]),
+                      itemBuilder: (c, i) =>
+                          _ArtistListTile(artist: artists[i]),
                     ),
         ),
       ],
@@ -1045,12 +1047,12 @@ void _openArtist(BuildContext context, Artist artist, ArtistResolver resolver) {
   final lib = context.read<LibraryProvider>();
   final songs = lib.artistSongs(artist);
   if (!context.mounted) return;
-  showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    // 弹层可上拉到全高：必须让开顶部状态栏（否则盖住时间/电量）。
-    useSafeArea: true,
-    builder: (c) => _ArtistSongsSheet(artist: artist, songs: songs),
+  showAppDraggableSheet<void>(
+    context,
+    // 弹层可上拉到全高：顶部安全区由统一窗口的路由外层 SafeArea 消费
+    // （否则盖住时间/电量，见 artist_sheet_gesture_test 回归）。
+    builder: (c, scrollCtrl) =>
+        _ArtistSongsSheet(artist: artist, songs: songs, scrollCtrl: scrollCtrl),
   );
 }
 
@@ -1074,7 +1076,9 @@ Future<void> _showAmbiguousPicker(
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
             child: Text('选择「${artist.name}」对应的真人',
-                style: Theme.of(c).textTheme.titleLarge
+                style: Theme.of(c)
+                    .textTheme
+                    .titleLarge
                     ?.copyWith(fontWeight: FontWeight.bold)),
           ),
           const Padding(
@@ -1174,9 +1178,11 @@ Future<void> _showRetryConfirm(
           : '该歌手尚未解析，确认后立即尝试。'),
       actions: [
         TextButton(
-            onPressed: () => Navigator.of(c).pop(true), child: const Text('重试')),
+            onPressed: () => Navigator.of(c).pop(true),
+            child: const Text('重试')),
         TextButton(
-            onPressed: () => Navigator.of(c).pop(false), child: const Text('取消')),
+            onPressed: () => Navigator.of(c).pop(false),
+            child: const Text('取消')),
       ],
     ),
   );
@@ -1226,8 +1232,7 @@ class _ArtistListTile extends StatelessWidget {
           const Icon(Icons.help_outline, size: 20, color: Colors.orange),
         ArtistResolveState.normal => null,
       },
-      onTap: () =>
-          _openArtist(context, artist, context.read<ArtistResolver>()),
+      onTap: () => _openArtist(context, artist, context.read<ArtistResolver>()),
     );
   }
 }
@@ -1262,8 +1267,8 @@ class _ArtistCard extends StatelessWidget {
         // 点击角标与整卡一致走 _openArtist（只弹解析交互，不进歌曲）。
         cornerAction: switch (artist.resolveState) {
           ArtistResolveState.normal => null,
-          ArtistResolveState.confirm => const _StatusBadge(
-              icon: Icons.help_outline, color: Colors.orange),
+          ArtistResolveState.confirm =>
+            const _StatusBadge(icon: Icons.help_outline, color: Colors.orange),
           ArtistResolveState.retry =>
             const _StatusBadge(icon: Icons.refresh, color: Colors.white),
         },
@@ -1297,83 +1302,80 @@ class _StatusBadge extends StatelessWidget {
 class _ArtistSongsSheet extends StatelessWidget {
   final Artist artist;
   final List<Song> songs;
-  const _ArtistSongsSheet({required this.artist, required this.songs});
+
+  /// 统一拖拽式窗口下发的共享滚动轴（头部与列表共轴，见 [showAppDraggableSheet]）。
+  final ScrollController scrollCtrl;
+  const _ArtistSongsSheet(
+      {required this.artist, required this.songs, required this.scrollCtrl});
 
   @override
   Widget build(BuildContext context) {
-    return DraggableScrollableSheet(
-      expand: false,
-      initialChildSize: 0.6,
-      builder: (c, scrollCtrl) {
-        final player = context.read<PlayerProvider>();
-        final lib = context.read<LibraryProvider>();
-        // 详情只在人物身份下有内容（组合/角色的关系挂在成员树上，不在这里展开）。
-        // 只查一次：artistDetail 会跑展示曲目数统计，别在 build 里查两遍。
-        final detail = lib.artistDetail(artist);
-        // 本歌手的专辑：与列表行「N 张专辑」同一分组口径（Album.fromSongs），
-        // 所以这里的专辑个数应与 artist.albumCount 一致。
-        final albums = Album.fromSongs(songs);
-        return Stack(
-          children: [
-            // 头部（标题/专辑/详情）与歌曲列表共用同一个 Scrollable / sheet
-            // controller。此前详情区在 Column 里、只有歌曲列表接 scrollCtrl：
-            // 「详情」展开后把列表挤到 0 高度，整页再无拖拽入口（窗口卡死）。
-            // 现在详情只是滚动内容变长，任意位置按下都能拖动/滚动弹层。
-            CustomScrollView(
-              controller: scrollCtrl,
-              slivers: [
-                SliverToBoxAdapter(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                        child: Text(artist.name,
-                            style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
-                      ),
-                      CountHeader(count: songs.length),
-                      if (albums.isNotEmpty)
-                        _ArtistAlbumsStrip(albums: albums, artistSongs: songs),
-                      if (detail != null) _ArtistDetailBlock(detail: detail),
-                      const Divider(height: 1),
-                    ],
-                  ),
-                ),
-                SliverRowList(
-                  count: songs.length,
-                  itemBuilder: (c, i) {
-                    final s = songs[i];
-                    return SongTile(
-                      song: s,
-                      source: lib.sourceFor(s.sourceKey),
-                      playing: player.isCurrent(s),
-                      onPlay: () {
-                        Navigator.of(c).pop();
-                        player.playQueue(songs,
-                            index: i,
-                            contextKey: PlayerProvider.anchorForArtist(artist.name));
-                        context.read<NavigationProvider>().openPlayer();
-                      },
-                    );
-                  },
-                ),
-              ],
+    final player = context.read<PlayerProvider>();
+    final lib = context.read<LibraryProvider>();
+    // 详情只在人物身份下有内容（组合/角色的关系挂在成员树上，不在这里展开）。
+    // 只查一次：artistDetail 会跑展示曲目数统计，别在 build 里查两遍。
+    final detail = lib.artistDetail(artist);
+    // 本歌手的专辑：与列表行「N 张专辑」同一分组口径（Album.fromSongs），
+    // 所以这里的专辑个数应与 artist.albumCount 一致。
+    final albums = Album.fromSongs(songs);
+    return Stack(
+      children: [
+        // 头部与歌曲列表共用同一个 Scrollable / sheet controller：任意位置按下
+        // 都能拖动/滚动弹层，「详情」展开只是滚动内容变长、不挤压列表。
+        // 标题行经 [AppSheetHeader] 置顶：滚动时歌手名/歌曲数常驻顶部；专辑横滑条
+        // 与详情属滚动内容（不钉，避免占满窗口）。
+        CustomScrollView(
+          controller: scrollCtrl,
+          slivers: [
+            AppSheetHeader(
+              height: AppSheetTitleBar.heightOf(context),
+              child: AppSheetTitleBar(title: artist.name, count: songs.length),
             ),
-            // 「重新解析」放歌手详情页右下角：只重拉这一位（含成员展开），
-            // 已有 mbid 的按该实体重取，不会漂到别的真人。
-            Positioned(
-              right: 16,
-              bottom: 16,
-              child: CornerAddButton(
-                icon: Icons.sync_alt,
-                label: '重新解析',
-                tooltip: '重新解析 ${artist.name}',
-                onPressed: () => _forceReParse(context, artist),
+            if (albums.isNotEmpty || detail != null)
+              SliverToBoxAdapter(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (albums.isNotEmpty)
+                      _ArtistAlbumsStrip(albums: albums, artistSongs: songs),
+                    if (detail != null) _ArtistDetailBlock(detail: detail),
+                  ],
+                ),
               ),
+            SliverRowList(
+              count: songs.length,
+              itemBuilder: (c, i) {
+                final s = songs[i];
+                return SongTile(
+                  song: s,
+                  source: lib.sourceFor(s.sourceKey),
+                  playing: player.isCurrent(s),
+                  onPlay: () {
+                    Navigator.of(c).pop();
+                    player.playQueue(songs,
+                        index: i,
+                        contextKey:
+                            PlayerProvider.anchorForArtist(artist.name));
+                    context.read<NavigationProvider>().openPlayer();
+                  },
+                );
+              },
             ),
           ],
-        );
-      },
+        ),
+        // 「重新解析」放歌手详情页右下角：只重拉这一位（含成员展开），
+        // 已有 mbid 的按该实体重取，不会漂到别的真人。
+        Positioned(
+          right: 16,
+          bottom: 16,
+          child: CornerAddButton(
+            icon: Icons.sync_alt,
+            label: '重新解析',
+            tooltip: '重新解析 ${artist.name}',
+            onPressed: () => _forceReParse(context, artist),
+          ),
+        ),
+      ],
     );
   }
 
@@ -1469,11 +1471,10 @@ class _ArtistAlbumsStrip extends StatelessWidget {
 
   void _openAlbumOfArtist(BuildContext context, Album album) {
     final songs = artistSongs.where((s) => album.containsSong(s)).toList();
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      builder: (_) => _AlbumSongsSheet(album: album, songs: songs),
+    showAppDraggableSheet<void>(
+      context,
+      builder: (c, scrollCtrl) =>
+          _AlbumSongsSheet(album: album, songs: songs, scrollCtrl: scrollCtrl),
     );
   }
 }
@@ -1508,8 +1509,7 @@ class _ArtistDetailBlockState extends State<_ArtistDetailBlock> {
                 Icon(_open ? Icons.expand_less : Icons.expand_more,
                     size: 20, color: Theme.of(context).colorScheme.primary),
                 const SizedBox(width: 4),
-                const Text('详情',
-                    style: TextStyle(fontWeight: FontWeight.w600)),
+                const Text('详情', style: TextStyle(fontWeight: FontWeight.w600)),
                 const SizedBox(width: 8),
                 Text('($n)',
                     style: TextStyle(
@@ -1548,7 +1548,9 @@ class _ArtistDetailBlockState extends State<_ArtistDetailBlock> {
         children: [
           Text(title,
               style: TextStyle(
-                  fontSize: 12, color: cs.primary, fontWeight: FontWeight.w600)),
+                  fontSize: 12,
+                  color: cs.primary,
+                  fontWeight: FontWeight.w600)),
           const SizedBox(height: 2),
           for (final r in refs) _refRow(context, r, icon),
         ],
@@ -1582,8 +1584,7 @@ class _ArtistDetailBlockState extends State<_ArtistDetailBlock> {
                 ],
               ),
             ),
-            if (r.artistKey != null)
-              const Icon(Icons.chevron_right, size: 18),
+            if (r.artistKey != null) const Icon(Icons.chevron_right, size: 18),
           ],
         ),
       ),
@@ -1630,11 +1631,17 @@ class _EmptyHint extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.music_off, size: 72, color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.4)),
+          Icon(Icons.music_off,
+              size: 72,
+              color:
+                  Theme.of(context).colorScheme.primary.withValues(alpha: 0.4)),
           const SizedBox(height: 16),
           const Text('暂无内容'),
           const SizedBox(height: 8),
-          TextButton.icon(icon: const Icon(Icons.refresh), label: const Text('刷新/扫描'), onPressed: onRefresh),
+          TextButton.icon(
+              icon: const Icon(Icons.refresh),
+              label: const Text('刷新/扫描'),
+              onPressed: onRefresh),
         ],
       ),
     );

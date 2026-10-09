@@ -1,195 +1,218 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
-import '../widgets/player_sheet_anim.dart';
+import '../widgets/draggable_sheet.dart';
 import '../widgets/row_list.dart';
 import '../widgets/song_list.dart';
 
-/// 宽屏右侧常驻面板宽度（[AppShell] 横排传入；窄屏底部弹层不传 width，
-/// 撑满可用宽度）。
+/// 宽屏右侧常驻面板宽度（[AppShell] 横排传入；窄屏走统一拖拽式窗口，不用宽）。
 ///
 /// 历史坑（2026-09-30 平板真机）：宽屏分支曾以 width=null 塞进 Row——
 /// Row 的非 flex 子项拿到**无界宽度**，面板头部 Row 里的 Spacer(flex)
-/// 直接抛 unbounded 布局异常，整棵子树布局失败 → 面板空白。窄屏走
-/// ModalBottomSheet（有界约束）不受影响——恒宽屏的平板才会踩中。
+/// 直接抛 unbounded 布局异常，整棵子树布局失败 → 面板空白。
 /// 宽屏必须传有界宽度（回归测试 test/queue_panel_wide_test.dart）。
 const double kQueuePanelWidth = 360;
 
-/// 窄屏队列底部弹层高度比例（迷你栏上滑跟手 / 弹层把手拖拽共用行程因子）。
-const double kQueueSheetHeightFactor = 0.7;
-
-/// 弹层顶部拖拽把手高度。
-const double kQueueSheetHandleHeight = 28;
-
-/// 切换播放队列面板：窄屏竖屏底部弹层开关，宽屏/横屏右侧常驻面板开关。
+/// 切换播放队列面板：窄屏打开统一拖拽式窗口，宽屏/横屏切换右侧常驻面板。
 ///
 /// 顶栏队列按钮已移除，统一由迷你播放栏进入；AppShell 与迷你栏共用此入口。
 /// 宽屏判定与 AppShell.isWide 一致（queue_panel 不导入 app_shell 避免循环依赖）。
-///
-/// 窄屏从此不再走 `showModalBottomSheet`（固定时长滑入、与触发手指无关的
-/// 「不跟手」弹层）；开关只改 [NavigationProvider.queueOpen] 意图位，物理跟手
-/// 动画由 [QueueSheetAnimator] + Root 的 `_syncQueueSheet` 统一承担。
 void toggleQueuePanel(BuildContext context) {
   final nav = context.read<NavigationProvider>();
   final size = MediaQuery.sizeOf(context);
   final wide = size.width >= 900 || size.width > size.height;
   if (!wide) {
-    if (nav.queueOpen) {
-      nav.closeQueue();
-    } else {
-      nav.openQueue();
-    }
+    // 窄屏：统一拖拽式窗口（点击启动）。窗口在栈上时入口不可点，不会重复
+    // 推入（AppSheetLauncher 另有 isShowing 兜底）。
+    unawaited(openQueueSheet(context));
     return;
   }
   nav.toggleQueue();
 }
 
-/// 窄屏「播放队列」底部弹层悬浮层（Root Stack 注入，宽屏自动让位于右侧侧板）。
+/// 窄屏播放队列：统一拖拽式窗口（点击启动，标准展开动画）。
 ///
-/// 跟手语义与播放页一致：
-/// - 迷你栏队列按钮上滑经 [QueueSheetAnimator] 逐帧驱动本层位移——未松手面板
-///   已随指升起，不再是「松手后才开始固定动画」；
-/// - 把手向下拖拽同样跟手，松手按速度/位移吸附；
-/// - 点按遮罩或松手越过阈值 → [NavigationProvider.closeQueue]，收起的吸附动画
-///   由 Root `_syncQueueSheet` 承担。
-class QueueSheetLayer extends StatelessWidget {
-  const QueueSheetLayer({super.key});
+/// 走 [AppSheetLauncher] 的根悬浮层而非 modal 路由：路由 push 会取消迷你条
+/// 上滑跟手的那根手指（见 [AppSheetLauncher]）。开合镜像到
+/// [NavigationProvider.queueOpen]（迷你条高亮、返回层级用），遮罩/关闭/返回
+/// 统一经 scope 收起并同步回关闭。
+Future<void> openQueueSheet(BuildContext context) {
+  final nav = context.read<NavigationProvider>();
+  final launcher = context.read<AppSheetLauncher>();
+  if (launcher.isShowing) return Future.value();
+  void onNav() {
+    if (!nav.queueOpen && launcher.isShowing) launcher.close();
+  }
 
-  bool _isWide(BuildContext context) {
-    final size = MediaQuery.sizeOf(context);
-    return size.width >= 900 || size.width > size.height;
+  nav.addListener(onNav);
+  return launcher.openTap<void>(
+    context,
+    builder: (c, scrollCtrl) => _QueueSheetContent(scrollCtrl: scrollCtrl),
+    onOpen: nav.openQueue,
+    onClose: () {
+      nav.removeListener(onNav);
+      nav.closeQueue();
+    },
+  );
+}
+
+/// 窄屏播放队列：统一拖拽式窗口（滑动启动）①拖拽开始——插入进度 0 的悬浮层，
+/// 后续由宿主逐帧拉起、松手定稿（见 [AppSheetLauncher]）。
+/// 返回 false 表示窗口已在展示，宿主应忽略本次手势。
+bool beginQueueSheetSwipe(BuildContext context) {
+  final nav = context.read<NavigationProvider>();
+  final launcher = context.read<AppSheetLauncher>();
+  void onNav() {
+    if (!nav.queueOpen && launcher.isShowing) launcher.close();
+  }
+
+  nav.addListener(onNav);
+  final started = launcher.beginSwipe<void>(
+    context,
+    builder: (c, scrollCtrl) => _QueueSheetContent(scrollCtrl: scrollCtrl),
+    onOpen: nav.openQueue,
+    onClose: () {
+      nav.removeListener(onNav);
+      nav.closeQueue();
+    },
+  );
+  if (!started) nav.removeListener(onNav);
+  return started;
+}
+
+/// 窄屏队列窗口内容：头部（把手 + 标题 + 关闭）与队列列表共用窗口的
+/// scroll controller——任意位置按下都可拖拽/滚动窗口（与歌手详情页同构）。
+///
+/// 注意：顶部不再套 `SafeArea(top: true)`——统一窗口（悬浮层/路由）的外层已
+/// 消费顶部安全区（悬浮层顶部区域让开状态栏，内容从窗口顶边开始）；自建悬浮层
+/// 时代这里多出一整块状态栏空白（历史 bug）。底部手势条仍需自行让开。
+class _QueueSheetContent extends StatefulWidget {
+  const _QueueSheetContent({required this.scrollCtrl});
+
+  final ScrollController scrollCtrl;
+
+  @override
+  State<_QueueSheetContent> createState() => _QueueSheetContentState();
+}
+
+class _QueueSheetContentState extends State<_QueueSheetContent> {
+  bool _jumped = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // 打开即定位到当前播放歌曲（首帧布局完成后再滚动）。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToCurrent());
+  }
+
+  void _jumpToCurrent() {
+    if (_jumped || !mounted) return;
+    _jumped = true;
+    final ctrl = widget.scrollCtrl;
+    if (!ctrl.hasClients) return;
+    final player = context.read<PlayerProvider>();
+    var idx = -1;
+    for (var i = 0; i < player.queue.length; i++) {
+      if (player.isCurrent(player.queue[i])) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx <= 0) return;
+    final target =
+        (idx * kRowExtent - 96).clamp(0.0, ctrl.position.maxScrollExtent);
+    ctrl.jumpTo(target);
   }
 
   @override
   Widget build(BuildContext context) {
-    final nav = context.read<NavigationProvider>();
-    final anim = context.read<QueueSheetAnimator>();
-    // 宽屏走右侧侧板（AppShell 分支），本层不渲染；MediaQuery 依赖随旋转重建，
-    // 宽窄切换即时生效。
-    if (_isWide(context)) return const SizedBox.shrink();
-    return ValueListenableBuilder<double>(
-      valueListenable: nav.queueProgress,
-      builder: (c, p, _) {
-        // 进度回满即视为关闭：宽窄屏旋转等「queueOpen 为真但从未运行动画」的
-        // 情形下，p 恒为 1——若仍挂遮罩会整屏拦截触摸（不可见屏障）。
-        if (p >= 1) return const SizedBox.shrink();
-        final h = MediaQuery.sizeOf(c).height;
-        final sheetH = h * kQueueSheetHeightFactor;
-        return Stack(
-          children: [
-            // 遮罩：点外部关闭（跟手期间同样存在，避免露出底下内容闪烁）。
-            Positioned.fill(
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: nav.closeQueue,
-                child: ColoredBox(color: Colors.black.withValues(alpha: 0.32)),
-              ),
-            ),
-            Align(
-              alignment: Alignment.bottomCenter,
-              child: Transform.translate(
-                offset: Offset(0, p * sheetH),
-                child: SizedBox(
-                  height: sheetH,
-                  // 底部安全区：弹层不再由 ModalBottomSheet 路由兜底，需自行
-                  // 让开系统手势条（列表底部最后一行不能被遮挡）。
-                  child: SafeArea(
-                    top: false,
-                    child: Column(
-                      children: [
-                        _QueueSheetHandle(
-                            animator: anim, nav: nav, sheetH: sheetH),
-                        Expanded(
-                          child: QueuePanel(onClose: nav.closeQueue),
-                        ),
-                      ],
-                    ),
+    final player = context.watch<PlayerProvider>();
+    final queue = player.queue;
+    final cs = Theme.of(context).colorScheme;
+    // 统一窗口外层已提供 Material 祖先（悬浮层 Material），SongTile 可直接使用。
+    return CustomScrollView(
+      controller: widget.scrollCtrl,
+      slivers: [
+        // 置顶标题栏：滚动队列时标题与关闭按钮始终可见（仍在同一 scrollable，
+        // 头部同样可拖拽窗口）。高度 = 8+4(把手) + 8+48+4(标题行) + 1(分隔线)。
+        AppSheetHeader(
+          height: 73,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // 拖拽把手（视觉提示；整头都是拖拽/滚动入口）。
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Container(
+                  key: const ValueKey('queue_sheet_handle'),
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: cs.outlineVariant,
+                    borderRadius: BorderRadius.circular(2),
                   ),
                 ),
               ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-}
-
-/// 弹层顶部拖拽把手：向下跟手拉低弹层，松手按速度/位移吸附。
-class _QueueSheetHandle extends StatefulWidget {
-  const _QueueSheetHandle({
-    required this.animator,
-    required this.nav,
-    required this.sheetH,
-  });
-
-  final QueueSheetAnimator animator;
-  final NavigationProvider nav;
-  final double sheetH;
-
-  @override
-  State<_QueueSheetHandle> createState() => _QueueSheetHandleState();
-}
-
-class _QueueSheetHandleState extends State<_QueueSheetHandle> {
-  double _startY = 0;
-  double _startP = 0;
-
-  void _onStart(DragStartDetails d) {
-    _startY = d.globalPosition.dy;
-    _startP = widget.animator.value;
-    widget.animator.dragStart();
-  }
-
-  void _onUpdate(DragUpdateDetails d) {
-    final sh = widget.sheetH;
-    if (sh <= 0) return;
-    widget.animator.dragTo(_startP + (d.globalPosition.dy - _startY) / sh);
-  }
-
-  void _onEnd(DragEndDetails d) {
-    final v = d.primaryVelocity ?? 0;
-    final p = widget.animator.value;
-    if (v > 700 || p > 0.4) {
-      widget.nav.closeQueue(); // 收起吸附动画由 Root._syncQueueSheet 承担
-    } else {
-      widget.animator.settle(0);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return GestureDetector(
-      key: const ValueKey('queue_sheet_handle'),
-      behavior: HitTestBehavior.translucent,
-      onVerticalDragStart: _onStart,
-      onVerticalDragUpdate: _onUpdate,
-      onVerticalDragEnd: _onEnd,
-      child: Container(
-        height: kQueueSheetHandleHeight,
-        alignment: Alignment.center,
-        color: cs.surface, // 与面板同底色，拖拽空缝不露遮罩。
-        child: Container(
-          width: 36,
-          height: 4,
-          decoration: BoxDecoration(
-            color: cs.outlineVariant,
-            borderRadius: BorderRadius.circular(2),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 4, 4),
+                child: Row(
+                  children: [
+                    Text('播放队列',
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleMedium
+                            ?.copyWith(fontWeight: FontWeight.bold)),
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => AppSheetScope.closeOf(context),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+            ],
           ),
         ),
-      ),
+        if (queue.isEmpty)
+          const SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(child: Text('队列为空')),
+          )
+        else
+          SliverRowList(
+            count: queue.length,
+            itemBuilder: (c, i) {
+              final s = queue[i];
+              final isCurrent = player.isCurrent(s);
+              return SongTile(
+                song: s,
+                source: null,
+                playing: isCurrent,
+                onPlay: () => player.playAt(i),
+              );
+            },
+          ),
+        // 底部系统手势条：悬浮层顶部已让开状态栏，底部需自行让开。
+        SliverToBoxAdapter(
+          child: SizedBox(height: MediaQuery.paddingOf(context).bottom),
+        ),
+      ],
     );
   }
 }
 
 /// 播放队列面板：纯队列展示（当前歌曲与控制在播放页/迷你条操作）。
 /// 打开时自动定位到当前播放歌曲并以强调色显示。
+///
+/// 仅宽屏右侧常驻面板使用（窄屏走统一拖拽式窗口 [_QueueSheetContent]）。
 class QueuePanel extends StatefulWidget {
   final VoidCallback onClose;
 
-  /// 面板宽度（null 时撑满可用宽度，供窄屏底部弹层使用）。
+  /// 面板宽度（宽屏侧板传入 [kQueuePanelWidth]，见文件头历史坑）。
   final double? width;
   const QueuePanel({super.key, required this.onClose, this.width});
 
@@ -209,8 +232,8 @@ class _QueuePanelState extends State<QueuePanel> {
       final player = context.read<PlayerProvider>();
       final idx = _currentIndex(player);
       if (idx <= 0) return;
-      final target = (idx * kRowExtent - 96)
-          .clamp(0.0, _scroll.position.maxScrollExtent);
+      final target =
+          (idx * kRowExtent - 96).clamp(0.0, _scroll.position.maxScrollExtent);
       _scroll.jumpTo(target);
     });
   }
@@ -236,52 +259,53 @@ class _QueuePanelState extends State<QueuePanel> {
     return Container(
       width: widget.width,
       color: Theme.of(context).colorScheme.surface,
-      // 面板自带 Material：宽屏侧板（Scaffold）与窄屏弹层（自建悬浮层）都能让
-      // SongTile/ListTile 找到 Material 祖先。Material 放在带色 Container 之内，
-      // 避免 ListTile 断言「Material 与 ListTile 之间夹带背景色 ColoredBox」。
+      // 面板自带 Material：宽屏侧板（Scaffold）能让 SongTile/ListTile
+      // 找到 Material 祖先。Material 放在带色 Container 之内，避免
+      // ListTile 断言「Material 与 ListTile 之间夹带背景色 ColoredBox」。
       child: Material(
         color: Theme.of(context).colorScheme.surface,
         // 宽屏侧板形态整高直达屏幕顶（与内容列并排，TopBar 的 SafeArea
         // 管不到这里），顶部内容需自行让开状态栏；底色仍满高。
-        // 窄屏底部弹层形态下无副作用（顶部不在状态栏区）。
         child: SafeArea(
           top: true,
           child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 4, 4),
-              child: Row(
-                children: [
-                  Text('播放队列',
-                      style: Theme.of(context)
-                          .textTheme
-                          .titleMedium
-                          ?.copyWith(fontWeight: FontWeight.bold)),
-                  const Spacer(),
-                  IconButton(icon: const Icon(Icons.close), onPressed: widget.onClose),
-                ],
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 4, 4),
+                child: Row(
+                  children: [
+                    Text('播放队列',
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleMedium
+                            ?.copyWith(fontWeight: FontWeight.bold)),
+                    const Spacer(),
+                    IconButton(
+                        icon: const Icon(Icons.close),
+                        onPressed: widget.onClose),
+                  ],
+                ),
               ),
-            ),
-            const Divider(height: 1),
-            Expanded(
-              child: queue.isEmpty
-                  ? const Center(child: Text('队列为空'))
-                  : RowList(
-                      controller: _scroll,
-                      count: queue.length,
-                      itemBuilder: (c, i) {
-                        final s = queue[i];
-                        final isCurrent = player.isCurrent(s);
-                        return SongTile(
-                          song: s,
-                          source: null,
-                          playing: isCurrent,
-                          onPlay: () => player.playAt(i),
-                        );
-                      },
-                    ),
-            ),
-          ],
+              const Divider(height: 1),
+              Expanded(
+                child: queue.isEmpty
+                    ? const Center(child: Text('队列为空'))
+                    : RowList(
+                        controller: _scroll,
+                        count: queue.length,
+                        itemBuilder: (c, i) {
+                          final s = queue[i];
+                          final isCurrent = player.isCurrent(s);
+                          return SongTile(
+                            song: s,
+                            source: null,
+                            playing: isCurrent,
+                            onPlay: () => player.playAt(i),
+                          );
+                        },
+                      ),
+              ),
+            ],
           ),
         ),
       ),

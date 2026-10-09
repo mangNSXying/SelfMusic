@@ -2,14 +2,13 @@ import 'package:flutter/material.dart';
 
 /// 悬浮层「跟手 / 吸附」动画通用控制器。
 ///
-/// 由 [progress] 这个 [ValueNotifier]（如 `NavigationProvider.playerProgress` /
-/// `queueProgress`）驱动位移：0 = 完全展示，1 = 完全隐藏。
+/// 由 [progress] 这个 [ValueNotifier]（如 `NavigationProvider.playerProgress`）
+/// 驱动位移：0 = 完全展示，1 = 完全隐藏。
 /// 手势跟手经 [dragStart]（停掉吸附动画）、[dragTo]（逐帧写进度）完成；
 /// 松手用 [settle] 吸附定稿。
 ///
-/// Root 按悬浮层各持一个实例（播放页 / 队列弹层），共用同一套机制；
-/// [PlayerSheetAnimator] / [QueueSheetAnimator] 仅用于 Provider 类型区分
-/// ——同类名多次注入会令 `context.read` 读取歧义，故拆两个具名子类。
+/// Root 按悬浮层持有实例（播放页）；窄屏队列已改走统一拖拽式窗口
+/// （根悬浮层，见 `widgets/draggable_sheet.dart`），不再用本机制。
 class SheetAnimator {
   final ValueNotifier<double> progress;
   late final AnimationController _ctrl;
@@ -26,8 +25,7 @@ class SheetAnimator {
     _ctrl.addListener(() => progress.value = _ctrl.value);
     // 外部直接改 progress 时（如打开/关闭定稿）同步内部值，保持唯一事实源。
     progress.addListener(() {
-      if (!_ctrl.isAnimating &&
-          (_ctrl.value - progress.value).abs() > 0.001) {
+      if (!_ctrl.isAnimating && (_ctrl.value - progress.value).abs() > 0.001) {
         _ctrl.value = progress.value;
       }
     });
@@ -58,13 +56,4 @@ class SheetAnimator {
 /// 播放页下拉 / 迷你栏上滑共用同一实例，避免多控制器互相打架。
 class PlayerSheetAnimator extends SheetAnimator {
   PlayerSheetAnimator({required super.vsync, required super.progress});
-}
-
-/// 窄屏「播放队列」底部弹层控制器（Root 持有，全 App 单例）。
-///
-/// [progress] 即 `NavigationProvider.queueProgress`：
-/// 0 = 队列弹层完全展示，1 = 完全隐藏。迷你栏队列按钮上滑（打开）与
-/// 弹层把手拖拽（关闭）共用同一实例。
-class QueueSheetAnimator extends SheetAnimator {
-  QueueSheetAnimator({required super.vsync, required super.progress});
 }

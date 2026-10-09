@@ -27,8 +27,8 @@ import 'theme/app_theme.dart';
 import 'screens/library_screen.dart';
 import 'screens/player_screen.dart';
 import 'layout/app_shell.dart';
-import 'layout/queue_panel.dart';
 import 'widgets/app_toast.dart';
+import 'widgets/draggable_sheet.dart';
 import 'widgets/player_sheet_anim.dart';
 import 'utils/interaction_gate.dart';
 
@@ -328,8 +328,8 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
 
   /// 播放页悬浮层动画唯一控制器（壳常驻 + 播放页悬浮层跟手共用）。
   late final PlayerSheetAnimator _sheetAnim;
-  /// 窄屏队列底部弹层动画唯一控制器（迷你栏上滑 + 弹层把手拖拽共用）。
-  late final QueueSheetAnimator _queueSheetAnim;
+  /// 统一拖拽式窗口宿主启动器（队列滑动启动的跟手过渡 + 各窗口点击启动共用）。
+  late final AppSheetLauncher _sheetLauncher;
   late final NavigationProvider _nav;
   late final SyncEngine _syncEngine;
 
@@ -366,16 +366,10 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
       vsync: this,
       progress: _nav.playerProgress,
     );
-    _queueSheetAnim = QueueSheetAnimator(
-      vsync: this,
-      progress: _nav.queueProgress,
-    );
+    _sheetLauncher = AppSheetLauncher(vsync: this);
     _nav.addListener(_syncPlayerSheet);
-    _nav.addListener(_syncQueueSheet);
     // 播放页悬浮层位移从 0/1 到中间（跟手或吸附）即视为「过渡中」。
     _nav.playerProgress.addListener(_onPlayerProgress);
-    // 队列弹层跟手/吸附同理 → 门控（对称播放页）。
-    _nav.queueProgress.addListener(_onQueueProgress);
     // 启动恢复上次播放队列与位置（暂停态，stage2.md §7）。
     // 受「断点续播」开关控制（settings.md §3.2 `resume_on_startup`）。
     //
@@ -417,15 +411,12 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
   @override
   void dispose() {
     _nav.removeListener(_syncPlayerSheet);
-    _nav.removeListener(_syncQueueSheet);
     _nav.playerProgress.removeListener(_onPlayerProgress);
-    _nav.queueProgress.removeListener(_onQueueProgress);
     _syncEngine.onPlaylistsApplied = null;
     _syncEngine.onBreakpointsApplied = null;
     _sheetAnim.dispose();
-    _queueSheetAnim.dispose();
+    _sheetLauncher.dispose();
     _gate?.setPlayerSheetDragging(false);
-    _gate?.setQueueSheetDragging(false);
     super.dispose();
   }
 
@@ -437,14 +428,6 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
     gate.setPlayerSheetDragging(p > 0.001 && p < 0.999);
   }
 
-  /// 队列弹层进度 → 门控：位于 (0,1) 之间表示正在跟手/吸附（过渡中）。
-  void _onQueueProgress() {
-    final gate = _gate;
-    if (gate == null) return;
-    final p = _nav.queueProgress.value;
-    gate.setQueueSheetDragging(p > 0.001 && p < 0.999);
-  }
-
   /// 意图位（playerView）变化 → 播放页悬浮层吸附动画：
   /// 打开从底部升起（进度 1→0），离开降下（0→1）。手势跟手期间不触发。
   void _syncPlayerSheet() {
@@ -452,16 +435,6 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
       _sheetAnim.settle(0);
     } else if (!_nav.playerView && _sheetAnim.value < 0.999) {
       _sheetAnim.settle(1);
-    }
-  }
-
-  /// 意图位（queueOpen）变化 → 队列弹层吸附动画：
-  /// 打开从底部升起（进度 1→0），关闭降下（0→1）。手势跟手期间不触发。
-  void _syncQueueSheet() {
-    if (_nav.queueOpen && _queueSheetAnim.value > 0.001) {
-      _queueSheetAnim.settle(0);
-    } else if (!_nav.queueOpen && _queueSheetAnim.value < 0.999) {
-      _queueSheetAnim.settle(1);
     }
   }
 
@@ -516,7 +489,7 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
     return MultiProvider(
       providers: [
         Provider<PlayerSheetAnimator>.value(value: _sheetAnim),
-        Provider<QueueSheetAnimator>.value(value: _queueSheetAnim),
+        Provider<AppSheetLauncher>.value(value: _sheetLauncher),
       ],
       child: PopScope<void>(
         canPop: false,
@@ -524,8 +497,8 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
         child: Stack(
           children: [
             const AppShell(content: AppContent()),
-            // 窄屏队列底部弹层（宽屏自动让位，见 QueueSheetLayer）。
-            const QueueSheetLayer(),
+            // 窄屏队列窗口由 [AppSheetLauncher] 插入根 Overlay（不 push 路由，
+            // 见 openQueueSheet / beginQueueSheetSwipe），不在本 Stack 内。
             ValueListenableBuilder<double>(
               valueListenable: _nav.playerProgress,
               builder: (c, p, _) {

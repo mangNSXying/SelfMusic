@@ -8,6 +8,7 @@ import '../providers/player_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/cover_thumb.dart';
 import '../utils/song_title_format.dart';
+import '../widgets/draggable_sheet.dart';
 import '../widgets/player_sheet_anim.dart';
 import '../widgets/pressable.dart';
 import 'queue_panel.dart';
@@ -33,42 +34,45 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
 
   /// 队列按钮区域的上滑手势（子手势在竞技场胜过外层整条上滑 → 打开队列而非播放页）。
   ///
-  /// 窄屏跟手语义与整条上滑一致：`GlobalPosition.dy` 上移即 [QueueSheetAnimator]
-  /// 进度减小（弹层升起），松手按速度/位移吸附；宽屏无底部弹层，退回旧路径
-  /// （阈值判定后切换右侧面板）。
+  /// 窄屏滑动启动：统一拖拽式窗口经 [AppSheetLauncher] 逐帧跟手指升起
+  /// （与窗口本体同一函数，见 [beginQueueSheetSwipe]），松手按速度/位移
+  /// 吸附；宽屏无底部弹层，退回旧路径（阈值判定后切换右侧面板）。
   double? _queueDragStartY;
   double? _queueDragLastY;
-  double _queueDragStartP = 1;
+
+  /// 本次上滑是否已推入跟手窗口（悬浮层已插入时为真）。
+  bool _queueSwiping = false;
 
   void _onQueueDragStart(DragStartDetails d) {
     _queueDragStartY = d.globalPosition.dy;
     _queueDragLastY = d.globalPosition.dy;
-    final anim = context.read<QueueSheetAnimator>();
-    _queueDragStartP = anim.value;
-    anim.dragStart();
+    // 滑动启动①：推入进度 0 的统一窗口；窗口已在展示则忽略本次手势。
+    _queueSwiping = beginQueueSheetSwipe(context);
   }
 
   void _onQueueDragUpdate(DragUpdateDetails d) {
     final start = _queueDragStartY;
     _queueDragLastY = d.globalPosition.dy;
-    if (start == null) return;
-    final sh = MediaQuery.sizeOf(context).height * kQueueSheetHeightFactor;
-    if (sh <= 0) return;
-    context
-        .read<QueueSheetAnimator>()
-        .dragTo(_queueDragStartP + (d.globalPosition.dy - start) / sh);
+    if (start == null || !_queueSwiping) return;
+    final h = MediaQuery.sizeOf(context).height;
+    if (h <= 0) return;
+    // 滑动启动②：上移 0.6 屏即拉满（与窗口静息高度对齐）。
+    context.read<AppSheetLauncher>().swipeTo(
+        (start - d.globalPosition.dy) / (h * kAppSheetSwipeTravelFactor));
   }
 
   void _onQueueDragEnd(DragEndDetails d) {
     final start = _queueDragStartY;
     final last = _queueDragLastY;
+    final swiping = _queueSwiping;
     _queueDragStartY = null;
     _queueDragLastY = null;
+    _queueSwiping = false;
     if (start == null || last == null || !mounted) return;
     final nav = context.read<NavigationProvider>();
     final size = MediaQuery.sizeOf(context);
     final wide = size.width >= 900 || size.width > size.height;
-    final anim = context.read<QueueSheetAnimator>();
+    final launcher = context.read<AppSheetLauncher>();
     if (wide) {
       // 宽屏无底部弹层：上滑（速度或累计位移）切右侧常驻面板，与旧行为一致。
       if (isQueueUpSwipe(d.primaryVelocity, start, last)) {
@@ -76,14 +80,11 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
       }
       return;
     }
-    // 窄屏：跟手吸附。上滑足够（速度或已拉开过半）→ 定稿开，否则回落关闭。
+    if (!swiping) return;
+    // 滑动启动③：上滑足够（速度或已拉开四成）→ 播完剩余行程打开，
+    // 否则倒播收起（行程连续不跳变）。
     final v = d.primaryVelocity ?? 0;
-    final p = anim.value;
-    if (v < -700 || p < 0.6) {
-      nav.openQueue(); // 打开吸附动画由 Root._syncQueueSheet 承担
-    } else {
-      anim.settle(1);
-    }
+    launcher.endSwipe(open: v < -700 || launcher.swipeValue > 0.4);
   }
 
   /// 上滑跟手：播放页从底部随手指升起；松手按位移/速度吸附或落回。
@@ -122,7 +123,8 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
     // 订阅收窄（T007）：迷你条只关注队列面板开合（按钮高亮）；播放页可见性、
     // 区段、搜索等变更不再重建迷你条。
     final nav = context.read<NavigationProvider>();
-    final queueOpen = context.select<NavigationProvider, bool>((n) => n.queueOpen);
+    final queueOpen =
+        context.select<NavigationProvider, bool>((n) => n.queueOpen);
     final settings = context.watch<DirectSourceManager>().settings;
     final gestureOn = settings.playerGestureSwipe;
     final cs = Theme.of(context).colorScheme;
@@ -159,8 +161,10 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
                     '还没有播放队列，去播放源页添加歌曲',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: cs.onSurface.withValues(alpha: 0.6)),
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodyMedium
+                        ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6)),
                   ),
                 ),
                 Icon(Icons.chevron_right,
@@ -188,93 +192,93 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
             if (!nav.playerView) nav.openPlayer();
           },
           child: Container(
-          constraints: const BoxConstraints(minHeight: 72),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-          decoration: BoxDecoration(
-            border: Border(top: BorderSide(color: cs.outlineVariant)),
-          ),
-          child: Row(
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: SizedBox(
-                  width: 46,
-                  height: 46,
-                  child: song.coverPath != null
-                      ? Image.file(
-                          File(coverDisplayPath(song.coverPath!)),
-                          fit: BoxFit.cover,
-                          cacheWidth: coverPx,
-                          cacheHeight: coverPx,
-                          errorBuilder: (_, __, ___) => Container(
+            constraints: const BoxConstraints(minHeight: 72),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+            decoration: BoxDecoration(
+              border: Border(top: BorderSide(color: cs.outlineVariant)),
+            ),
+            child: Row(
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: SizedBox(
+                    width: 46,
+                    height: 46,
+                    child: song.coverPath != null
+                        ? Image.file(
+                            File(coverDisplayPath(song.coverPath!)),
+                            fit: BoxFit.cover,
+                            cacheWidth: coverPx,
+                            cacheHeight: coverPx,
+                            errorBuilder: (_, __, ___) => Container(
+                              color: cs.primary.withValues(alpha: 0.12),
+                              child: Icon(Icons.music_note, color: cs.primary),
+                            ),
+                          )
+                        : Container(
                             color: cs.primary.withValues(alpha: 0.12),
                             child: Icon(Icons.music_note, color: cs.primary),
                           ),
-                        )
-                      : Container(
-                          color: cs.primary.withValues(alpha: 0.12),
-                          child: Icon(Icons.music_note, color: cs.primary),
-                        ),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      formatSongTitle(song, settings.songTitleFormat),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodyLarge
-                          ?.copyWith(fontWeight: FontWeight.w600),
-                    ),
-                    Text(
-                      song.artist ?? 'Unknown',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodyMedium,
-                    ),
-                  ],
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        formatSongTitle(song, settings.songTitleFormat),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyLarge
+                            ?.copyWith(fontWeight: FontWeight.w600),
+                      ),
+                      Text(
+                        song.artist ?? 'Unknown',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              Pressable(
-                onPressed: player.toggle,
-                tooltip: player.playing ? '暂停' : '播放',
-                pressedScale: 0.85,
-                child: Icon(
-                    player.playing
-                        ? Icons.pause_circle_filled
-                        : Icons.play_circle_filled,
-                    size: 42,
-                    color: cs.primary),
-              ),
-              Pressable(
-                onPressed: player.next,
-                tooltip: '下一首',
-                child: const Icon(Icons.skip_next, size: 30),
-              ),
-              GestureDetector(
-                // 队列按钮区上滑打开队列（子手势先命中即胜出，不触发外层播放页上滑）。
-                behavior: HitTestBehavior.translucent,
-                onVerticalDragStart: _onQueueDragStart,
-                onVerticalDragUpdate: _onQueueDragUpdate,
-                onVerticalDragEnd: _onQueueDragEnd,
-                child: IconButton(
-                  icon: Icon(queueOpen
-                      ? Icons.queue_music
-                      : Icons.queue_music_outlined),
-                  iconSize: 28,
-                  color: queueOpen ? cs.primary : null,
-                  tooltip: '播放队列',
-                  onPressed: () => toggleQueuePanel(context),
+                Pressable(
+                  onPressed: player.toggle,
+                  tooltip: player.playing ? '暂停' : '播放',
+                  pressedScale: 0.85,
+                  child: Icon(
+                      player.playing
+                          ? Icons.pause_circle_filled
+                          : Icons.play_circle_filled,
+                      size: 42,
+                      color: cs.primary),
                 ),
-              ),
-            ],
-          ),
+                Pressable(
+                  onPressed: player.next,
+                  tooltip: '下一首',
+                  child: const Icon(Icons.skip_next, size: 30),
+                ),
+                GestureDetector(
+                  // 队列按钮区上滑打开队列（子手势先命中即胜出，不触发外层播放页上滑）。
+                  behavior: HitTestBehavior.translucent,
+                  onVerticalDragStart: _onQueueDragStart,
+                  onVerticalDragUpdate: _onQueueDragUpdate,
+                  onVerticalDragEnd: _onQueueDragEnd,
+                  child: IconButton(
+                    icon: Icon(queueOpen
+                        ? Icons.queue_music
+                        : Icons.queue_music_outlined),
+                    iconSize: 28,
+                    color: queueOpen ? cs.primary : null,
+                    tooltip: '播放队列',
+                    onPressed: () => toggleQueuePanel(context),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

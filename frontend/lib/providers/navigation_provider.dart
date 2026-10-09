@@ -44,7 +44,8 @@ class NavigationProvider extends ChangeNotifier {
   String? _browsingSourceKey;
   int? _browsingPlaylistId;
 
-  /// 播放队列面板是否展开（宽屏右侧常驻 / 窄屏底部弹层标记）。
+  /// 播放队列面板是否展开（宽屏右侧常驻 / 窄屏统一拖拽式窗口的开合镜像，
+  /// 窄屏由窗口收起时同步回关闭）。
   bool _queueOpen = false;
 
   /// 滑动过渡新页面的进入方向（(1,0) 右进 / (-1,0) 左进 / (0,±1) 竖向），
@@ -65,17 +66,6 @@ class NavigationProvider extends ChangeNotifier {
 
   void setPlayerProgress(double p) {
     playerProgress.value = p.clamp(0.0, 1.0);
-  }
-
-  /// 窄屏「播放队列」底部弹层进度（0=完全展示，1=完全隐藏），迷你栏队列按钮
-  /// 上滑（打开）/ 弹层把手拖拽（关闭）跟手共用；宽屏为右侧侧板，不参与。
-  ///
-  /// 与 [playerProgress] 同构：ValueNotifier 逐帧驱动位移，只重建队列悬浮层；
-  /// 定稿态由 [queueOpen] 持有。
-  final ValueNotifier<double> queueProgress = ValueNotifier(1);
-
-  void setQueueProgress(double p) {
-    queueProgress.value = p.clamp(0.0, 1.0);
   }
 
   /// 当前区域 key（播放页悬浮层不计入区域）。
@@ -140,7 +130,8 @@ class NavigationProvider extends ChangeNotifier {
 
   /// 层级返回（底 → 顶）：播放页 < 内容页（含源内/歌单详情） < 队列面板 < 设置页。
   ///
-  /// 窄屏侧边抽屉 / 队列弹层是系统路由，返回键由框架先关闭，到不了这里。
+  /// 窄屏侧边抽屉是系统路由，返回键由框架先关闭，到不了这里；窄屏队列窗口
+  /// 是根悬浮层（非路由），返回键经此逐级回退关闭。
   /// 返回 true 表示已消费（停留在上一级），false 表示已在最底层（调用方可退出）。
   /// 回退统一从左侧滑入（抽屉关闭感）。
   bool backToPrevious() {
