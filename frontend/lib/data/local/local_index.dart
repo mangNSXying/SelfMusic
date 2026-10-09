@@ -849,6 +849,39 @@ class LocalIndex {
   /// 批量读 factor（纯读）：一次查询拿回 [refs] 内已记录歌曲的权重，未命中不放入。
   /// 返回 map<songRef, factor>；`refs` 过大会超 SQLITE_MAX_VARIABLE_NUMBER，
   /// 因此按 500 分片多次查询（播放队列可达数千首，逐首查是主连接 n 次同步 I/O）。
+  /// 批量读整行 play_meta（纯读）：与 [playFactorsOf] 同款分片 IN 查询，
+  /// 供列表首帧后整表预热 SongWeightStore 行元数据缓存——替代首进歌单页时
+  /// 「整表逐行 metaOf = 数千条同步 SELECT 挤在同一帧」这一卡顿源。
+  Map<String, PlayMetaRow> playMetasOf(String sourceKey, Iterable<String> refs) {
+    final refsList = refs.toSet().toList();
+    if (refsList.isEmpty) return const {};
+    final result = <String, PlayMetaRow>{};
+    const chunkSize = 500;
+    for (var start = 0; start < refsList.length; start += chunkSize) {
+      final end = min(start + chunkSize, refsList.length);
+      final chunk = refsList.sublist(start, end);
+      final placeholders = List.filled(chunk.length, '?').join(',');
+      final rs = _db!.select(
+          'SELECT source_key, song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json, play_sec '
+          'FROM play_meta WHERE source_key=? AND song_ref IN ($placeholders)',
+          [sourceKey, ...chunk]);
+      for (final r in rs) {
+        result[r['song_ref'] as String] = PlayMetaRow(
+          sourceKey: r['source_key'] as String,
+          songRef: r['song_ref'] as String,
+          likeStreak: r['like_streak'] as int,
+          dislikeStreak: r['dislike_streak'] as int,
+          factor: (r['factor'] as num).toDouble(),
+          frozen: (r['frozen'] as int) == 1,
+          favorite: (r['is_favorite'] as int) == 1,
+          songJson: r['song_json'] as String?,
+          playSec: (r['play_sec'] as int?) ?? 0,
+        );
+      }
+    }
+    return result;
+  }
+
   Map<String, double> playFactorsOf(String sourceKey, Iterable<String> refs) {
     final refsList = refs.toSet().toList();
     if (refsList.isEmpty) return const {};

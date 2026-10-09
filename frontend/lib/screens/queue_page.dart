@@ -140,10 +140,10 @@ class _QueuePageState extends State<QueuePage> {
       _rebuildVisible(queue, q, direct);
     }
 
-    // 行级视图数据（R-1）：按展示序列计算派生文本/收藏态并缓存。
+    // 行级视图数据（R-1）：按展示序列计算派生文本/收藏态并缓存（懒求值）。
     final wide = MediaQuery.sizeOf(context).width >= kSongTileWideInfoWidth;
-    final rows = _rowCache.resolve(
-      signature: (
+    _rowCache.begin(
+      (
         queue.length,
         _sort,
         q,
@@ -153,18 +153,8 @@ class _QueuePageState extends State<QueuePage> {
         direct.settings.songTitleFormat,
         wide,
       ),
-      length: _visible.length,
-      build: (i) {
-        final s = queue[_visible[i]];
-        final meta = direct.weight.metaOf(s);
-        return SongRowView.of(
-          song: s,
-          titleFormat: direct.settings.songTitleFormat,
-          favorite: meta.favorite,
-          disliked: meta.frozen,
-          wide: wide,
-        );
-      },
+      _visible.length,
+      onWarm: () => direct.weight.warmMetaOf(queue),
     );
 
     return Scaffold(
@@ -246,7 +236,16 @@ class _QueuePageState extends State<QueuePage> {
                 return SongTile(
                   song: s,
                   source: null,
-                  row: rows[i],
+                  row: _rowCache.rowAt(i, () {
+                    final meta = direct.weight.metaOf(s);
+                    return SongRowView.of(
+                      song: s,
+                      titleFormat: direct.settings.songTitleFormat,
+                      favorite: meta.favorite,
+                      disliked: meta.frozen,
+                      wide: wide,
+                    );
+                  }),
                   playing: isCurrent,
                   selectionMode: _sel.active,
                   selected: _sel.contains(realIndex),

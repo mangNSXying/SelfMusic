@@ -1,3 +1,4 @@
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:selfmusic/data/local/app_settings.dart';
 import 'package:selfmusic/models/song.dart';
@@ -115,28 +116,7 @@ void main() {
   });
 
   group('SongRowCache', () {
-    test('同签名同长度复用整表', () {
-      final cache = SongRowCache();
-      var builds = 0;
-      List<SongRowView> resolve() => cache.resolve(
-            signature: 'sig',
-            length: 2,
-            build: (i) {
-              builds++;
-              return SongRowView(
-                songKey: 'k$i',
-                titleText: 't$i',
-                subtitleText: 's',
-              );
-            },
-          );
-      final a = resolve();
-      final b = resolve();
-      expect(identical(a, b), isTrue);
-      expect(builds, 2); // 仅首次构建两行
-    });
-
-    test('签名或长度变化即重算', () {
+    testWidgets('按需懒求值：只算被访问的行，复用缓存不再重复计算', (tester) async {
       final cache = SongRowCache();
       var builds = 0;
       SongRowView row(int i) {
@@ -144,13 +124,35 @@ void main() {
         return SongRowView(songKey: 'k$i', titleText: 't', subtitleText: 's');
       }
 
-      cache.resolve(signature: 'a', length: 1, build: row);
-      cache.resolve(signature: 'b', length: 1, build: row);
-      cache.resolve(signature: 'b', length: 2, build: row);
+      cache.begin('sig', 3);
+      expect(cache.rowAt(1, () => row(1)).songKey, 'k1');
+      expect(builds, 1); // 仅访问行 1
+      cache.rowAt(1, () => row(1));
+      cache.rowAt(2, () => row(2));
+      expect(builds, 2); // 行 1 复用，行 2 新算
+      await tester.pump();
+    });
+
+    testWidgets('签名或长度变化即重算', (tester) async {
+      final cache = SongRowCache();
+      var builds = 0;
+      SongRowView row(int i) {
+        builds++;
+        return SongRowView(songKey: 'k$i', titleText: 't', subtitleText: 's');
+      }
+
+      cache.begin('a', 1);
+      cache.rowAt(0, () => row(0));
+      cache.begin('b', 1);
+      cache.rowAt(0, () => row(0));
+      cache.begin('b', 2);
+      cache.rowAt(0, () => row(0));
+      cache.rowAt(1, () => row(1));
       expect(builds, 1 + 1 + 2);
+      await tester.pump();
     });
 
-    test('invalidate 后强制重算', () {
+    testWidgets('invalidate 后强制重算', (tester) async {
       final cache = SongRowCache();
       var builds = 0;
       SongRowView row(int i) {
@@ -158,10 +160,37 @@ void main() {
         return SongRowView(songKey: 'k$i', titleText: 't', subtitleText: 's');
       }
 
-      cache.resolve(signature: 'a', length: 1, build: row);
+      cache.begin('a', 1);
+      cache.rowAt(0, () => row(0));
       cache.invalidate();
-      cache.resolve(signature: 'a', length: 1, build: row);
+      cache.begin('a', 1);
+      cache.rowAt(0, () => row(0));
       expect(builds, 2);
+      await tester.pump();
+    });
+
+    testWidgets('begin 失效时编排一次 post-frame 预热（onWarm）', (tester) async {
+      final cache = SongRowCache();
+      var warms = 0;
+      var sig = 'sig';
+
+      // 模拟真实用法：build 里 begin（帧内登记 → 帧末执行一次）。
+      Widget probe() {
+        cache.begin(sig, 1, onWarm: () => warms++);
+        cache.rowAt(0, () => const SongRowView(
+            songKey: 'k0', titleText: 't', subtitleText: 's'));
+        return const SizedBox(width: 10, height: 10);
+      }
+
+      await tester.pumpWidget(probe());
+      expect(warms, 1); // 首帧 build 编排、帧末已执行一次
+
+      await tester.pumpWidget(probe()); // 同签名同长度 → 不失效不再预热
+      expect(warms, 1);
+
+      sig = 'sig2'; // 签名变化 → 再编排一次
+      await tester.pumpWidget(probe());
+      expect(warms, 2);
     });
   });
 }

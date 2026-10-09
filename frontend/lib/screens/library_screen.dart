@@ -408,10 +408,10 @@ class _LikedViewState extends State<_LikedView>
     final all = res.raw;
     final songs = res.songs;
 
-    // 行级视图数据（R-1）：一次性算好派生文本/收藏态并缓存，行组件纯参数渲染。
+    // 行级视图数据（R-1）：懒算派生文本/收藏态并缓存，行组件纯参数渲染。
     final wide = MediaQuery.sizeOf(context).width >= kSongTileWideInfoWidth;
-    final rows = _rowCache.resolve(
-      signature: (
+    _rowCache.begin(
+      (
         identityHashCode(songs),
         _favVersion,
         _favSettingsVer,
@@ -420,18 +420,8 @@ class _LikedViewState extends State<_LikedView>
         direct.settings.songTitleFormat,
         wide,
       ),
-      length: songs.length,
-      build: (i) {
-        final s = songs[i];
-        final meta = direct.weight.metaOf(s);
-        return SongRowView.of(
-          song: s,
-          titleFormat: direct.settings.songTitleFormat,
-          favorite: meta.favorite,
-          disliked: meta.frozen,
-          wide: wide,
-        );
-      },
+      songs.length,
+      onWarm: () => direct.weight.warmMetaOf(songs),
     );
 
     return Stack(
@@ -483,7 +473,16 @@ class _LikedViewState extends State<_LikedView>
                           return SongTile(
                             song: s,
                             source: lib.sourceFor(s.sourceKey),
-                            row: rows[i],
+row: _rowCache.rowAt(i, () {
+                              final meta = direct.weight.metaOf(s);
+                              return SongRowView.of(
+                                song: s,
+                                titleFormat: direct.settings.songTitleFormat,
+                                favorite: meta.favorite,
+                                disliked: meta.frozen,
+                                wide: wide,
+                              );
+                            }),
                             onPlay: () {
                               player.playQueue(songs,
                                   index: i,
@@ -605,10 +604,10 @@ class _SongsViewState extends State<_SongsView>
     // 依据全局搜索词过滤（喜欢页共用同一匹配函数），再按本页排序偏好排序。
     final songs = _sortSongs(lib, direct, search).songs;
 
-    // 行级视图数据（R-1）：缓存整表派生文本/收藏态，行组件纯参数渲染。
+    // 行级视图数据（R-1）：懒算派生文本/收藏态并缓存，行组件纯参数渲染。
     final wide = MediaQuery.sizeOf(context).width >= kSongTileWideInfoWidth;
-    final rows = _rowCache.resolve(
-      signature: (
+    _rowCache.begin(
+      (
         identityHashCode(songs),
         lib.songs.length,
         direct.metaVersion,
@@ -617,18 +616,8 @@ class _SongsViewState extends State<_SongsView>
         direct.settings.songTitleFormat,
         wide,
       ),
-      length: songs.length,
-      build: (i) {
-        final s = songs[i];
-        final meta = direct.weight.metaOf(s);
-        return SongRowView.of(
-          song: s,
-          titleFormat: direct.settings.songTitleFormat,
-          favorite: meta.favorite,
-          disliked: meta.frozen,
-          wide: wide,
-        );
-      },
+      songs.length,
+      onWarm: () => direct.weight.warmMetaOf(songs),
     );
 
     return Column(
@@ -678,7 +667,19 @@ class _SongsViewState extends State<_SongsView>
                     return SongTile(
                       song: s,
                       source: lib.sourceFor(s.sourceKey),
-                      row: rows[i],
+                      row: _rowCache.rowAt(
+                            i,
+                            () {
+                              final meta = direct.weight.metaOf(s);
+                              return SongRowView.of(
+                                song: s,
+                                titleFormat: direct.settings.songTitleFormat,
+                                favorite: meta.favorite,
+                                disliked: meta.frozen,
+                                wide: wide,
+                              );
+                            },
+                          ),
                       onPlay: () {
                         player.playQueue(songs,
                             index: i,

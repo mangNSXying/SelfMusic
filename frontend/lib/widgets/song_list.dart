@@ -697,8 +697,8 @@ class _SongListState extends State<SongList> {
     // 行级视图数据（R-1）：一次性算好派生文本/收藏/播放/选中等低频数据，
     // 签名不变时复用整表；行组件由此以值参数渲染，不再逐行订阅管理器。
     final wide = MediaQuery.sizeOf(context).width >= kSongTileWideInfoWidth;
-    final rows = _rowCache.resolve(
-      signature: (
+    _rowCache.begin(
+      (
         identityHashCode(_songs),
         provider.dataRevision,
         _sort,
@@ -711,22 +711,8 @@ class _SongListState extends State<SongList> {
         _sel.active,
         Object.hashAll(_sel.selected),
       ),
-      length: _songs.length,
-      build: (i) {
-        final s = _songs[i];
-        final meta = direct.weight.metaOf(s);
-        return SongRowView.of(
-          song: s,
-          titleFormat: direct.settings.songTitleFormat,
-          playing: i == currentIdx,
-          selected: _sel.contains(songKey(s)),
-          favorite: meta.favorite,
-          disliked: meta.frozen,
-          isFirst: i == 0,
-          isLast: i == _songs.length - 1,
-          wide: wide,
-        );
-      },
+      _songs.length,
+      onWarm: () => direct.weight.warmMetaOf(_songs),
     );
 
     // 打开歌单后自动定位到当前播放歌曲（仅一次；按可见下标）。
@@ -858,7 +844,21 @@ class _SongListState extends State<SongList> {
                           // 歌单详情取自本地索引，不提供直连源（不显示「缓存」项）。
                           source: null,
                           // 行级视图数据（R-1）：行组件纯参数渲染、不订阅管理器。
-                          row: rows[full],
+                          // 按需懒派生：访问到的行才算（首帧只算可见行）。
+                          row: _rowCache.rowAt(full, () {
+                            final meta = direct.weight.metaOf(s);
+                            return SongRowView.of(
+                              song: s,
+                              titleFormat: direct.settings.songTitleFormat,
+                              playing: full == currentIdx,
+                              selected: _sel.contains(key),
+                              favorite: meta.favorite,
+                              disliked: meta.frozen,
+                              isFirst: full == 0,
+                              isLast: full == _songs.length - 1,
+                              wide: wide,
+                            );
+                          }),
                           playing: full == currentIdx,
                           selectionMode: _sel.active,
                           selected: _sel.contains(key),

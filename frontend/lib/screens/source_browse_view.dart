@@ -151,10 +151,10 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
     final songs = direct.songsOf(widget.sourceKey, query: _query);
     final count = direct.countOf(widget.sourceKey);
 
-    // 行级视图数据（R-1）：签名涵盖影响行内容的版本号，命中即复用整表。
+    // 行级视图数据（R-1）：签名涵盖影响行内容的版本号，命中即复用（懒求值）。
     final wide = MediaQuery.sizeOf(context).width >= kSongTileWideInfoWidth;
-    final rows = _rowCache.resolve(
-      signature: (
+    _rowCache.begin(
+      (
         widget.sourceKey,
         _query,
         songs.length,
@@ -164,18 +164,8 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
         direct.settings.songTitleFormat,
         wide,
       ),
-      length: songs.length,
-      build: (i) {
-        final s = songs[i];
-        final meta = direct.weight.metaOf(s);
-        return SongRowView.of(
-          song: s,
-          titleFormat: direct.settings.songTitleFormat,
-          favorite: meta.favorite,
-          disliked: meta.frozen,
-          wide: wide,
-        );
-      },
+      songs.length,
+      onWarm: () => direct.weight.warmMetaOf(songs),
     );
 
     return SectionSwipe(
@@ -336,7 +326,16 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                       return SongTile(
                         song: s,
                         source: source,
-                        row: rows[i],
+                        row: _rowCache.rowAt(i, () {
+                          final meta = direct.weight.metaOf(s);
+                          return SongRowView.of(
+                            song: s,
+                            titleFormat: direct.settings.songTitleFormat,
+                            favorite: meta.favorite,
+                            disliked: meta.frozen,
+                            wide: wide,
+                          );
+                        }),
                         onPlay: () => _play(c, source, songs, i),
                         playing: player.isCurrent(s),
                         selectionMode: _sel.active,

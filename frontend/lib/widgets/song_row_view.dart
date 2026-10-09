@@ -1,3 +1,4 @@
+import 'package:flutter/widgets.dart';
 import '../data/local/app_settings.dart';
 import '../models/song.dart';
 import '../utils/song_title_format.dart';
@@ -116,33 +117,58 @@ class SongRowView {
 ///（`sourceKey|sourceRef|id`）；此处独立实现以避免 widgets 内部循环依赖。
 String songRowKey(Song s) => '${s.sourceKey}|${s.sourceRef}|${s.id}';
 
-/// 行级视图数据缓存：签名不变时复用整表，避免每次 build 重算 N 行派生文本
-/// 与元数据查询（滑动/重绘不重复全量计算）。
+/// 行级视图数据缓存：**按被访问的行（可见行）按需派生并缓存**，不再整表
+/// `List<SongRowView>` 一次性生成。
 ///
-/// 用法：容器在 `build` 中调用 [resolve]，签名应涵盖所有会影响行内容的低频
-/// 状态（列表身份 / 版本号 / 显示格式 / 宽行与否）。
+/// 历史教训：整表 eager 生成让「首进歌单页」那一帧同步跑完 N 行派生——每行
+/// `SongRowView.of` 里的 `weight.metaOf` 冷缓存时是 N 条同步 SELECT，正是
+/// 播放页切歌单页「首进愣一下」的卡顿源。改为 [ListView.builder] 访问到哪行
+/// 才算哪行；算子缓存后按下标复用，不随 build 重复计算，平滑/滚动语义与
+/// 改动前一致（签名涵盖影响行内容的低频状态，变化即作废重算）。
+///
+/// 用法：容器在 `build` 中先调 [begin] 再在行构建器里用 [rowAt]；签名应涵盖
+/// 所有会影响行内容的低频状态（列表身份 / 版本号 / 显示格式 / 宽行与否）。
+/// [begin] 可顺带编排一次 post-frame 批量元数据预热（[onWarm]，通常指向
+/// `SongWeightStore.warmMetaOf`），让滚动首趟也不逐行冷查库——预热编排统一
+/// 在此收口，调用方无需各自维护哨兵与帧调度。
 class SongRowCache {
   Object? _signature;
-  List<SongRowView>? _rows;
+  int _length = 0;
+  final Map<int, SongRowView> _rows = {};
+  bool _dirty = true;
+  VoidCallback? _onWarm;
+  bool _warmScheduled = false;
 
-  List<SongRowView> resolve({
-    required Object signature,
-    required int length,
-    required SongRowView Function(int index) build,
-  }) {
-    final cached = _rows;
-    if (cached != null && _signature == signature && cached.length == length) {
-      return cached;
+  /// 进入一次构建：签名或长度变化即视为数据失效并清空行缓存；[onWarm] 非空时
+  /// 对每次失效编排一次 post-frame 批量预热（首帧之后再执行，不进 build 帧）。
+  void begin(Object signature, int length, {VoidCallback? onWarm}) {
+    if (!_dirty && _signature == signature && _length == length) {
+      return;
     }
-    final rows = List<SongRowView>.generate(length, build, growable: false);
     _signature = signature;
-    _rows = rows;
-    return rows;
+    _length = length;
+    _dirty = false;
+    _rows.clear();
+    if (onWarm != null) {
+      _onWarm = onWarm;
+      if (!_warmScheduled) {
+        _warmScheduled = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _warmScheduled = false;
+          _onWarm?.call();
+        });
+      }
+    }
   }
 
-  /// 使缓存失效（列表内容被替换时调用）。
+  /// 取第 [index] 行视图数据；未派生时用 [builder] 计算并缓存。
+  SongRowView rowAt(int index, SongRowView Function() builder) =>
+      _rows.putIfAbsent(index, builder);
+
+  /// 使缓存失效（调用方数据整体替换时使用）。
   void invalidate() {
     _signature = null;
-    _rows = null;
+    _rows.clear();
+    _dirty = true;
   }
 }

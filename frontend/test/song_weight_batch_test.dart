@@ -79,4 +79,96 @@ void main() {
 
     index.close();
   });
+
+  test('playMetasOf 分组批量读整行：与逐首口径一致，未命中不返回', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir = await Directory.systemTemp.createTemp('selfmusic_wbatch2_');
+    addTearDown(() {
+      try {
+        dir.deleteSync(recursive: true);
+      } catch (_) {}
+    });
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+    final weight = SongWeightStore(index);
+
+    final songs = [
+      for (var i = 0; i < 6; i++)
+        _song('webdav:${i % 2 == 0 ? 'a' : 'b'}', 'r$i'),
+    ];
+    await weight.setLiked(songs[0]);
+    await weight.setDisliked(songs[2], true);
+    await index.addPlaySec('webdav:a', 'r4', 42);
+
+    final a = index.playMetasOf('webdav:a', ['r0', 'r4', 'nope']);
+    expect(a['r0']!.favorite, isTrue);
+    expect(a['r0']!.factor, 1.5);
+    expect(a['r4']!.playSec, 42);
+    expect(a.containsKey('nope'), isFalse);
+    final frozenRow = index.playMetasOf('webdav:a', ['r2']);
+    expect(frozenRow['r2']!.frozen, isTrue);
+
+    // 批量值与逐首读口径一致（未匹配行在批量里是缺失，逐首为默认行）。
+    for (final s in songs) {
+      final row = index.playMetasOf(s.sourceKey, [s.sourceRef])[s.sourceRef];
+      final single = index.playMetaOf(s.sourceKey, s.sourceRef);
+      expect(row?.favorite ?? false, single.favorite, reason: s.sourceRef);
+      expect(row?.frozen ?? false, single.frozen, reason: s.sourceRef);
+      expect(row?.factor ?? 1.0, single.factor, reason: s.sourceRef);
+    }
+
+    index.close();
+  });
+
+  test('warmMetaOf 批量预热行缓存：metaOf 命中且与真实状态一致；失效仍生效', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir = await Directory.systemTemp.createTemp('selfmusic_warm_');
+    addTearDown(() {
+      try {
+        dir.deleteSync(recursive: true);
+      } catch (_) {}
+    });
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+    final weight = SongWeightStore(index);
+
+    final songs = [
+      for (var i = 0; i < 6; i++)
+        _song('webdav:${i % 2 == 0 ? 'a' : 'b'}', 'r$i'),
+    ];
+    await weight.setLiked(songs[0]);
+    await weight.setDisliked(songs[2], true);
+    await index.addPlaySec('webdav:a', 'r4', 42);
+
+    weight.warmMetaOf(songs);
+    for (final s in songs) {
+      final meta = weight.metaOf(s);
+      final single = index.playMetaOf(s.sourceKey, s.sourceRef);
+      expect(meta.favorite, single.favorite, reason: s.sourceRef);
+      expect(meta.frozen, single.frozen, reason: s.sourceRef);
+      expect(meta.playSec, single.playSec, reason: s.sourceRef);
+    }
+    expect(weight.metaOf(songs[0]).favorite, isTrue);
+    expect(weight.metaOf(songs[2]).frozen, isTrue);
+
+    // 预热写入了缓存：直接改库不经 _apply，metaOf 仍读缓存（stale）……
+    await index.setFavorite('webdav:a', 'r0', false);
+    expect(weight.metaOf(songs[0]).favorite, isTrue);
+    // ……显式失效后可见外部写入。
+    weight.notifyExternalWrite();
+    expect(weight.metaOf(songs[0]).favorite, isFalse);
+
+    // 库里没有匹配行不写入缓存，metaOf 走默认行兜底。
+    final ghost = _song('webdav:x', 'ghost');
+    weight.warmMetaOf([ghost]);
+    expect(weight.metaOf(ghost).favorite, isFalse);
+    expect(weight.metaOf(ghost).factor, 1.0);
+
+    // 空列表安全。
+    weight.warmMetaOf(const []);
+
+    index.close();
+  });
 }

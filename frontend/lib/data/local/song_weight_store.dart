@@ -46,6 +46,30 @@ class SongWeightStore {
   /// 外部路径（同步引擎 pull 落库等）写 play_meta 后调用：失效行缓存。
   void notifyExternalWrite() => _metaCache.clear();
 
+  /// 批量预热列表元数据：按 sourceKey 分组一次 IN 查询填满 [_metaCache]。
+  ///
+  /// 供冷列表首帧后由 [SongRowCache] 编排（post-frame）调用，替代首进页面时
+  /// 「整表逐行 metaOf = 数千条同步 SELECT 挤在同一帧」。无匹配行不写入，仍由
+  /// [metaOf] 走默认行兜底；写路径（[_apply] / [notifyExternalWrite]）本就会清空
+  /// 全缓存，此处填充不存在脏读。
+  void warmMetaOf(Iterable<Song> songs) {
+    final bySource = <String, List<String>>{};
+    for (final s in songs) {
+      if (s.sourceRef.isEmpty) continue;
+      bySource.putIfAbsent(s.sourceKey, () => []).add(s.sourceRef);
+    }
+    bySource.forEach((key, refs) {
+      final rows = index.playMetasOf(key, refs);
+      if (rows.isEmpty) return;
+      if (_metaCache.length + rows.length > _metaCacheCap) {
+        _metaCache.clear();
+      }
+      _metaCache.addAll({
+        for (final e in rows.entries) '$key\u0000${e.key}': e.value,
+      });
+    });
+  }
+
   double factorOf(Song s) => metaOf(s).factor;
 
   /// 批量读整队权重（加权抽样用）：按 sourceKey 分组各一次批量查询，
