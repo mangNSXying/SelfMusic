@@ -190,7 +190,7 @@ void main() {
     index.close();
   });
 
-  test('页内即时通知：第一页断点落库即回调，不等整轮分页跑完', () async {
+  test('断点回调整轮结束后统一触发：多页不中途套用（避免连续换曲）', () async {
     final index = await _openIndex();
     final api = _PageGateApi();
     final engine =
@@ -200,20 +200,21 @@ void main() {
 
     final round = engine.syncNow(force: true);
 
-    // 没有页内 flush 时回调要等第二页（被 gate 挂起）→ 这里轮询会超时失败。
+    // 等第一页落库（镜像可见），但第二页仍被 gate 挂起。
     var waited = 0;
-    while (fired == 0 && waited < 100) {
+    while (index.breakpointMirrorOf('pl-1') == null && waited < 200) {
       await Future<void>.delayed(const Duration(milliseconds: 10));
       waited++;
     }
-    expect(fired, 1, reason: '第一页断点落库后应立即回调');
-    expect(api.page2Served, isFalse,
-        reason: '第二页响应还没回来，回调已触发（页内即时通知）');
+    expect(index.breakpointMirrorOf('pl-1'), isNotNull, reason: '第一页应已落库');
+    expect(api.page2Served, isFalse);
+    expect(fired, 0, reason: '整轮 pull 未结束不应通知套用（多页中途套用会连续换曲）');
 
     api.gate.complete();
     await round;
     expect(api.pulls, 2, reason: '整轮 pull 应继续翻到第二页收尾');
     expect(api.page2Served, isTrue);
+    expect(fired, 1, reason: '整轮结束后统一回调一次');
 
     engine.stop();
     index.close();

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ffi';
 import 'dart:io';
 
@@ -11,7 +12,7 @@ import 'package:sqlite3/open.dart';
 
 /// 启动先拉后推（P3）：`start()` 的首轮是 pullOnly——push 不参与断点恢复，
 /// 却会多占一个 RTT 挡在启动拉取前面；积压 outbox 由后续全量轮补推。
-/// `firstPull()` 同样 pullOnly，启动序里 push 永远排在 pull 之后。
+/// Root 只 `awaitFirstPull()` 等在飞行首轮收尾，不叠加新一轮。
 DynamicLibrary _openOnLinux() {
   try {
     return DynamicLibrary.open('libsqlite3.so');
@@ -32,6 +33,10 @@ class _FakePathProvider extends PathProviderPlatform {
 class _CountingApi extends ApiClient {
   int pulls = 0;
   int pushes = 0;
+
+  /// 非空时 pull 挂起直到测试放行：用来观察「在飞行」时的等待语义。
+  Completer<void>? pullGate;
+
   @override
   String get baseUrl => 'https://sync.example';
   @override
@@ -52,6 +57,8 @@ class _CountingApi extends ApiClient {
   @override
   Future<Map<String, dynamic>?> syncPull(int cursor) async {
     pulls++;
+    final gate = pullGate;
+    if (gate != null) await gate.future;
     return {'cursor': cursor + 1, 'has_more': false, 'songs': []};
   }
 }
@@ -110,13 +117,34 @@ void main() {
     expect(await index.pendingOutboxCount(), 0);
   });
 
-  test('firstPull 同样 pullOnly：启动序不被 push 挡住', () async {
+  test('awaitFirstPull 同样 pullOnly：启动序不被 push 挡住', () async {
     await index.enqueueOutbox('song.state', {'a': 1});
 
-    await engine.firstPull();
+    await engine.awaitFirstPull();
 
     expect(api.pulls, greaterThan(0));
-    expect(api.pushes, 0, reason: 'firstPull 只负责把断点拉回来');
+    expect(api.pushes, 0, reason: 'awaitFirstPull 只负责把断点拉回来');
     expect(await index.pendingOutboxCount(), 1);
+  });
+
+  test('awaitFirstPull 在飞行时只等待，不叠加新一轮（旧 firstPull 会整轮重跑）', () async {
+    final gate = Completer<void>();
+    api.pullGate = gate;
+
+    engine.start();
+    var waited = 0;
+    while (api.pulls == 0 && waited < 100) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      waited++;
+    }
+    expect(api.pulls, 1, reason: 'start 首轮已发起');
+
+    final waiting = engine.awaitFirstPull();
+    gate.complete();
+    await waiting;
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(api.pulls, 1, reason: '等待在飞行首轮不应再发起新一轮');
+    expect(api.pushes, 0, reason: '启动序仍先拉后推');
   });
 }

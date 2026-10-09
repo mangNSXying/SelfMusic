@@ -233,6 +233,17 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// （否则启动恢复 `_play` 覆盖本地时间后，远端镜像恒判更旧，跨设备续播永不生效）。
   DateTime? _breakpointBaselineAt;
 
+  /// 启动恢复的飞行中 Future：远端断点套用前先等它收尾。恢复的同步前缀已经在
+  /// 首帧前完成，但音频装载/seek 的异步尾在跑；两者并发会双重装载、状态抖动
+  /// （main.dart 的「先恢复、后拉取、再补切」约束）。
+  Future<void>? _restoreFuture;
+
+  /// 断点套用 single-flight：恢复/套用进行中再触发只记一次待办，结束后用最新
+  /// 镜像补跑一次，避免并发 `_play` 与多页 pull 期间的连续换曲（冷启动卡顿根因）。
+  bool _applyingMirror = false;
+  bool _mirrorApplyQueued = false;
+  bool _mirrorApplyViaSync = false;
+
   /// 断点恢复的乐观位置（毫秒）：`_restoreLocal/_restoreFromMirror` 在装载音频前
   /// 的同步前缀即设置，供首帧进度显示；真实 `seek` 完成后（或用户接管/失败）
   /// 清空。[position] 在非空**且归属仍是当前曲**时优先返回它，音频尚未装载
@@ -2287,20 +2298,41 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 启动恢复（仅本机断点）：装载上次队列与位置，暂停态不自动播放。
-  Future<void> restoreIfAny() async {
+  Future<void> restoreIfAny() {
     final idx = _index;
-    if (idx == null || _restored) return;
+    if (idx == null || _restored) return Future<void>.value();
     _restored = true;
-    await _restoreLocal(idx, idx.getPlayState());
+    final f = _restoreLocal(idx, idx.getPlayState());
+    _restoreFuture = f;
+    return f;
   }
 
   /// 启动恢复（跨设备优先）：本机与所有镜像断点中取最新者；
   /// 远端更新且其歌单在本机存在时，重建该歌单队列并从该进度恢复（暂停态）。
-  Future<void> restorePreferRemote() async {
+  Future<void> restorePreferRemote() {
     final idx = _index;
-    if (idx == null || _restored) return;
+    if (idx == null || _restored) return Future<void>.value();
     _restored = true;
+    final f = _restorePreferRemoteInner(idx);
+    _restoreFuture = f;
+    return f;
+  }
+
+  Future<void> _restorePreferRemoteInner(LocalIndex idx) async {
     final local = idx.getPlayState();
+    final best = _newestMirror(idx);
+    final bestAt = best == null ? null : DateTime.tryParse(best.updatedAt);
+    final localAt = local == null ? null : DateTime.tryParse(local.updatedAt);
+    if (best != null &&
+        bestAt != null &&
+        (localAt == null || bestAt.isAfter(localAt))) {
+      if (await _restoreFromMirror(idx, best)) return;
+    }
+    await _restoreLocal(idx, local);
+  }
+
+  /// 当前全部断点镜像里 `updated_at` 最新的一行（无则 null）。
+  BreakpointMirrorRow? _newestMirror(LocalIndex idx) {
     BreakpointMirrorRow? best;
     DateTime? bestAt;
     for (final m in idx.allBreakpointMirrors()) {
@@ -2311,13 +2343,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         bestAt = t;
       }
     }
-    final localAt = local == null ? null : DateTime.tryParse(local.updatedAt);
-    if (best != null &&
-        bestAt != null &&
-        (localAt == null || bestAt.isAfter(localAt))) {
-      if (await _restoreFromMirror(idx, best)) return;
-    }
-    await _restoreLocal(idx, local);
+    return best;
   }
 
   /// 有比「当前会话所依据的断点」更新的远端镜像时切过去（歌曲+进度+深层列表）。
@@ -2328,27 +2354,45 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   ///
   /// [viaSync]：由同步回调（手动「立即同步」/回前台）触发——此时不再受
   /// [_userTookOver] 限制（用户明确要套用）；无论何时，**正在播放时不打断**。
+  ///
+  /// single-flight：进行中再触发只记待办，收尾后用最新镜像补跑一次；且先等
+  /// 首次恢复的异步尾（音频装载/seek）结束——两者并发会双重装载、连续换曲
+  /// （冷启动断点快路径 + 多页 pull 回调解锁后的卡顿根因）。
   Future<void> applyNewerMirrorIfAny({bool viaSync = false}) async {
     final idx = _index;
     if (idx == null || !_restored || _shuttingDown) return;
-    // 播放中绝不打断领播端（缓冲中的瞬态 false 由基准比较再兜一层）。
-    if (_hasPlayScene && playing) return;
-    // 启动补切：用户已主动交互过则不再回切（viaSync 的显式同步不受此限）。
-    if (!viaSync && _userTookOver) return;
-    BreakpointMirrorRow? best;
-    DateTime? bestAt;
-    for (final m in idx.allBreakpointMirrors()) {
-      final t = DateTime.tryParse(m.updatedAt);
-      if (t == null) continue;
-      if (bestAt == null || t.isAfter(bestAt)) {
-        best = m;
-        bestAt = t;
-      }
+    if (_applyingMirror) {
+      _mirrorApplyQueued = true;
+      if (viaSync) _mirrorApplyViaSync = true;
+      return;
     }
-    if (best == null || bestAt == null) return;
-    final base = _breakpointBaselineAt;
-    if (base != null && !bestAt.isAfter(base)) return;
-    await _restoreFromMirror(idx, best);
+    _applyingMirror = true;
+    _mirrorApplyViaSync = viaSync;
+    try {
+      do {
+        final sync = _mirrorApplyViaSync;
+        _mirrorApplyQueued = false;
+        _mirrorApplyViaSync = false;
+        // 播放中绝不打断领播端（缓冲中的瞬态 false 由基准比较再兜一层）。
+        if (_hasPlayScene && playing) return;
+        // 启动补切：用户已主动交互过则不再回切（viaSync 的显式同步不受此限）。
+        if (!sync && _userTookOver) return;
+        final restoring = _restoreFuture;
+        if (restoring != null) await restoring;
+        if (_shuttingDown) return;
+        if (_hasPlayScene && playing) return;
+        if (!sync && _userTookOver) return;
+        final best = _newestMirror(idx);
+        if (best == null) return;
+        final bestAt = DateTime.tryParse(best.updatedAt);
+        if (bestAt == null) return;
+        final base = _breakpointBaselineAt;
+        if (base != null && !bestAt.isAfter(base)) return;
+        await _restoreFromMirror(idx, best);
+      } while (_mirrorApplyQueued);
+    } finally {
+      _applyingMirror = false;
+    }
   }
 
   Future<void> _restoreLocal(LocalIndex idx, PlayStateRow? st) async {

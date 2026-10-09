@@ -187,8 +187,8 @@ Future<void> main() async {
       interactionGate: interactionGate));
   // 首帧轻量化：源补推 / 歌手解析 / 同步引擎都不参与首帧渲染，统一推迟到
   // 首帧渲染完成后启动——此前它们在 runApp 前就发起网络请求与同步 DB 读，
-  // 与首帧渲染抢事件循环（启动期掉帧的根因之一）。Root 的首拉在自身
-  // post-frame 内、经 _inflight 与这里的第一轮合并，不会重复发请求。
+  // 与首帧渲染抢事件循环（启动期掉帧的根因之一）。Root 只 `awaitFirstPull`
+  // 等在飞行的首轮收尾，不会重复发起新一轮。
   WidgetsBinding.instance.addPostFrameCallback((_) {
     direct.attachApi(api); // 内部补发存量 source.create（有服务器才发）
     artistResolver.start();
@@ -411,10 +411,11 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
       // 回调与恢复进行中的装载竞争。
       await restoreFuture;
       if (!mounted) return;
-      // 首轮同步带 2s 超时在后台拉；拉到更新的远端断点且用户尚未接管播放时，
-      // applyNewerMirrorIfAny 再切过去（不打断用户主动操作）。
+      // 等启动首轮 pull 收尾（在飞行则只等待，不额外发起新一轮）：拉到更新的
+      // 远端断点且用户尚未接管播放时，applyNewerMirrorIfAny 再切过去（不打断
+      // 用户主动操作；播放中由 PlayerProvider 内部守卫）。
       final syncedAtBefore = direct.settings.lastSyncAt;
-      await context.read<SyncEngine>().firstPull();
+      await context.read<SyncEngine>().awaitFirstPull();
       if (!mounted) return;
       // 启动首次同步成功 toast（周期同步与自动补推保持静默，
       // 手动同步的 toast 在设置页 _syncNow 内）。

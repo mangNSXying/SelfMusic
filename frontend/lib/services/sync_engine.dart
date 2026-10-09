@@ -151,10 +151,20 @@ class SyncEngine {
     });
   }
 
-  /// 启动序：等待首轮拉取完成（带超时），以便跨设备断点恢复拿到最新镜像。
-  /// 同样先拉后推（见 [start] 的 P3 说明）：push 不该挡在启动拉取前面。
-  Future<void> firstPull({Duration timeout = const Duration(seconds: 2)}) async {
+  /// 启动序（Root boot 用）：等「已发起/在飞行」的首轮 pull 收尾，**不**再强制
+  /// 发新一轮——旧 firstPull 在首轮飞行中会置 `_dirty`，完成后又整轮（push+pull）
+  /// 重复跑一遍（冷启动徒增 DB/网络负载与回调）。带超时；未配对/网络失败/超时
+  /// 按本机断点恢复。
+  Future<void> awaitFirstPull(
+      {Duration timeout = const Duration(seconds: 2)}) async {
     try {
+      final inflight = _inflight;
+      if (inflight != null) {
+        await inflight.timeout(timeout);
+        return;
+      }
+      // start() 被跳过（后台启动）或首轮已失败且从未成功拉过：补一轮 pullOnly。
+      if (_lastPullAt != null) return;
       await syncNow(pullOnly: true, force: true).timeout(timeout);
     } catch (_) {
       // 未配对/网络失败/超时：按本机断点恢复。
@@ -354,9 +364,6 @@ class SyncEngine {
           await index.applyPlaystateMirror(m);
           _breakpointsDirty = true;
         }
-        // 页内即时通知（P1）：断点可能在第一页就到，落库后立刻 flush，不必等
-        // 整轮多页跑完（积压场景要翻很多页）。回调按基准比较幂等、播放中不打断。
-        if (_breakpointsDirty) _flushBreakpoints();
       }
       cursor = (data['cursor'] as num?)?.toInt() ?? cursor;
       settings.syncCursor = cursor;
