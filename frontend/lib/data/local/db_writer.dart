@@ -10,6 +10,7 @@ import 'package:sqlite3/sqlite3.dart';
 
 import '../sources/music_source.dart';
 import '../sources/webdav_url.dart';
+import '../../utils/perf_log.dart';
 import 'artist_names.dart';
 import 'schema.dart';
 
@@ -145,7 +146,12 @@ class _IsolateDbWriter implements DbWriter {
   @override
   Future<void> opBatch(String name, List<Map<String, dynamic>> argList) async {
     if (argList.isEmpty) return;
+    final sw = Stopwatch()..start();
     await _send('opBatch', {'name': name, 'argList': argList});
+    if (sw.elapsedMilliseconds >= 16) {
+      perfLog('db.opBatch isolate',
+          '$name ${sw.elapsedMilliseconds}ms rows=${argList.length}');
+    }
   }
 
   @override
@@ -274,29 +280,60 @@ class _InlineDbWriter implements DbWriter {
 
   @override
   Future<T> op<T>(String name, Map<String, dynamic> args) async {
-    return _runOp(_db, name, args) as T;
+    final sw = Stopwatch()..start();
+    final r = _runOp(_db, name, args) as T;
+    if (sw.elapsedMilliseconds >= 16) {
+      perfLog('db.op inline', '$name ${sw.elapsedMilliseconds}ms');
+    }
+    return r;
   }
 
   @override
   Future<void> opBatch(String name, List<Map<String, dynamic>> argList) async {
     if (argList.isEmpty) return;
+    final swAll = Stopwatch()..start();
     if (name == 'applyPlaylistSnapshots') {
       // 逐歌单一个事务、片间让出：单歌单条目循环仍是长块，但多歌单批量
       // （pull 常见）不再拼成一个巨型同步块。
+      var i = 0;
+      var slow = 0;
       for (final p in argList) {
+        i++;
+        final sw = Stopwatch()..start();
         _runOpBatch(_db, name, [p]);
+        final ms = sw.elapsedMilliseconds;
+        if (ms >= 16) {
+          slow++;
+          final items = p['items'] is List ? (p['items'] as List).length : 0;
+          perfLog('db.opBatch inline',
+              '$name #$i uuid=${p['client_uuid']} items=$items ${ms}ms');
+        }
         await Future<void>.delayed(Duration.zero);
       }
+      perfLog('db.opBatch inline total',
+          '$name lists=${argList.length} slow=$slow ${swAll.elapsedMilliseconds}ms');
       return;
     }
     // 歌曲权重快照 pull 主路径：整页可达成千上万行，整批事务会长时间独占
     // UI 线程（ohos 内联写）。切成小事务，片间让出事件循环，让动画/输入
     // 有机会插进来。cursor 在整页应用完成后才推进，中途失败/退出由重拉
     // 幂等收敛（快照应用本身幂等）。
+    var chunks = 0;
+    var slowChunks = 0;
     for (final chunk in chunkedSublists(argList, _inlineBatchChunk)) {
+      chunks++;
+      final sw = Stopwatch()..start();
       _runOpBatch(_db, name, chunk);
+      final ms = sw.elapsedMilliseconds;
+      if (ms >= 16) {
+        slowChunks++;
+        perfLog('db.opBatch inline',
+            '$name chunk#$chunks rows=${chunk.length} ${ms}ms');
+      }
       await Future<void>.delayed(Duration.zero);
     }
+    perfLog('db.opBatch inline total',
+        '$name rows=${argList.length} chunks=$chunks slow=$slowChunks ${swAll.elapsedMilliseconds}ms');
   }
 
   @override

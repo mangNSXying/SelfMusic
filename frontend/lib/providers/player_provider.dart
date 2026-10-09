@@ -19,6 +19,7 @@ import '../data/deep_list.dart';
 import '../data/local/sync_event_types.dart';
 import '../services/selfmusic_audio_handler.dart';
 import '../utils/lrc_parser.dart';
+import '../utils/perf_log.dart';
 import '../utils/play_stats.dart';
 import '../utils/song_title_format.dart';
 import '../utils/weight_curve.dart';
@@ -243,6 +244,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _applyingMirror = false;
   bool _mirrorApplyQueued = false;
   bool _mirrorApplyViaSync = false;
+
+  /// 启动恢复的同步前缀（Root.initState 的 build 期内）抑制通知：此时
+  /// markNeedsBuild 会被 framework 断言 "setState during build"。同步前缀由
+  /// 首个 await 结束，微任务里解除；首帧直接读同步前缀已置好的状态，不依赖通知。
+  bool _suppressSyncNotify = false;
 
   /// 断点恢复的乐观位置（毫秒）：`_restoreLocal/_restoreFromMirror` 在装载音频前
   /// 的同步前缀即设置，供首帧进度显示；真实 `seek` 完成后（或用户接管/失败）
@@ -1379,8 +1385,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 整队解析：队列装载时统一纠正为本机索引实时行，
   /// 播放队列面板/后续切歌展示与歌曲页同源（封面/标题格式/歌手·专辑）。
-  List<Song> _resolveLiveAll(List<Song> songs) =>
-      [for (final s in songs) resolveLiveSong(s)];
+  /// 批量 IN 查询（非逐首 SELECT），启动恢复大队列不再 N+1 阻塞 UI。
+  List<Song> _resolveLiveAll(List<Song> songs) {
+    final idx = _index;
+    if (idx == null || songs.isEmpty) return List<Song>.of(songs);
+    return idx.resolveLiveSongs(songs);
+  }
 
   /// 用户修改元数据后：刷新队列与当前歌曲中的同源对象并通知（含断点快照）。
   void refreshSongMeta(Song updated) {
@@ -1454,7 +1464,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         // `_saveState` 会把基准抬到现在，令远端更新的镜像永远套用不上。
         _breakpointBaselineAt = DateTime.now();
       }
-      notifyListeners();
+      if (!_suppressSyncNotify) notifyListeners();
       if (src == null || !src.supportsDirect) {
         // 无本地源（如同步快照行且本机未配置对应源）：不崩，提示后由调用方决定。
         throw StateError('找不到该歌曲的播放源，请先配置对应播放源');
@@ -2302,6 +2312,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final idx = _index;
     if (idx == null || _restored) return Future<void>.value();
     _restored = true;
+    _suppressSyncNotify = true;
+    scheduleMicrotask(() => _suppressSyncNotify = false);
     final f = _restoreLocal(idx, idx.getPlayState());
     _restoreFuture = f;
     return f;
@@ -2313,6 +2325,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final idx = _index;
     if (idx == null || _restored) return Future<void>.value();
     _restored = true;
+    // 同步恢复前缀在 Root.initState 的 build 期内执行，期间的 notify 会被
+    // framework 断言（setState during build）；同步前缀结束时（首个 await 后
+    // 的微任务）解除，后续异步阶段的通知照常。
+    _suppressSyncNotify = true;
+    scheduleMicrotask(() => _suppressSyncNotify = false);
     final f = _restorePreferRemoteInner(idx);
     _restoreFuture = f;
     return f;
@@ -2377,18 +2394,26 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (_hasPlayScene && playing) return;
         // 启动补切：用户已主动交互过则不再回切（viaSync 的显式同步不受此限）。
         if (!sync && _userTookOver) return;
+        final swWait = Stopwatch()..start();
         final restoring = _restoreFuture;
         if (restoring != null) await restoring;
+        perfLog('mirror.apply waitRestore',
+            '${swWait.elapsedMilliseconds}ms viaSync=$sync');
         if (_shuttingDown) return;
         if (_hasPlayScene && playing) return;
         if (!sync && _userTookOver) return;
+        final swLookup = Stopwatch()..start();
         final best = _newestMirror(idx);
         if (best == null) return;
         final bestAt = DateTime.tryParse(best.updatedAt);
         if (bestAt == null) return;
         final base = _breakpointBaselineAt;
+        perfLog('mirror.apply lookup', '${swLookup.elapsedMilliseconds}ms');
         if (base != null && !bestAt.isAfter(base)) return;
+        final swApply = Stopwatch()..start();
         await _restoreFromMirror(idx, best);
+        perfLog('mirror.apply restoreFromMirror',
+            '${swApply.elapsedMilliseconds}ms uuid=${best.playlistUuid} viaSync=$sync');
       } while (_mirrorApplyQueued);
     } finally {
       _applyingMirror = false;
@@ -2396,6 +2421,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _restoreLocal(LocalIndex idx, PlayStateRow? st) async {
+    final swAll = Stopwatch()..start();
     // 基准取「本机断点自身时间」：后续 `_play` 的 `_saveState` 会刷新
     // play_state.updated_at，但不会改这里，故远端更新的镜像仍可被套用。
     _breakpointBaselineAt = st == null ? null : DateTime.tryParse(st.updatedAt);
@@ -2404,11 +2430,16 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       final list = (jsonDecode(st.queueJson) as List)
           .map((e) => Song.fromJson(e as Map<String, dynamic>))
           .toList();
+      perfLog('restoreLocal decode',
+          '${swAll.elapsedMilliseconds}ms n=${list.length}');
       if (list.isEmpty) {
         idx.clearPlayState();
         return;
       }
+      final swResolve = Stopwatch()..start();
       _queue = _resolveLiveAll(list);
+      perfLog('restoreLocal resolveLiveAll',
+          '${swResolve.elapsedMilliseconds}ms n=${list.length}');
       _idx = st.idx.clamp(0, _queue.length - 1);
       final storedCurrent = _queue[_idx];
       // 归属歌单仍在则保留（断点继续上报），否则清除。
@@ -2497,11 +2528,23 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 用远端断点重建歌单队列并恢复进度；目标歌本机无源时退到其后第一首可播条目。
   /// 镜像携带深层列表时，按身份重建该歌单的深层历史，并重建融合队列。
   Future<bool> _restoreFromMirror(LocalIndex idx, BreakpointMirrorRow m) async {
+    final swAll = Stopwatch()..start();
     final pid = idx.playlistIdOfUuid(m.playlistUuid);
-    if (pid == null) return false;
+    if (pid == null) {
+      perfLog('restoreMirror', 'no local playlist uuid=${m.playlistUuid}');
+      return false;
+    }
+    final swSongs = Stopwatch()..start();
     final songs = idx.playlistSongs(pid);
+    perfLog('restoreMirror playlistSongs',
+        '${swSongs.elapsedMilliseconds}ms n=${songs.length}');
     if (songs.isEmpty) return false;
-    final found = songs.indexWhere((s) => _refMatches(s.sourceRef, m.sourceRef));
+    final swFind = Stopwatch()..start();
+    final refIndex = _refIndexMap(songs);
+    final mirrorRef = m.sourceRef;
+    final found = mirrorRef == null ? -1 : _refIndexOf(refIndex, mirrorRef);
+    perfLog('restoreMirror findRef',
+        '${swFind.elapsedMilliseconds}ms found=$found');
     var start = found < 0 ? 0 : found;
     while (start < songs.length &&
         !_playable(_resolver?.call(songs[start].sourceKey))) {
@@ -2512,13 +2555,19 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _bindDeepList(PlayerProvider.anchorForPlaylist(m.playlistUuid),
         listSize: songs.length);
     // 镜像深层列表（按身份匹配到本机歌单）→ 重建深层历史；缺失时保持本机。
-    final dlEntries = _deepListFromMirror(m.deepListJson, songs);
+    final swDeep = Stopwatch()..start();
+    final dlEntries = _deepListFromMirror(m.deepListJson, songs, refIndex);
+    perfLog('restoreMirror deepList',
+        '${swDeep.elapsedMilliseconds}ms entries=${dlEntries.length}');
     if (dlEntries.isNotEmpty) {
       _deepList = DeepListController(
           capacity: songs.length, entries: dlEntries);
       _persistDeepList();
     }
+    final swResolve = Stopwatch()..start();
     _fusedBase = _resolveLiveAll(songs);
+    perfLog('restoreMirror resolveLiveAll',
+        '${swResolve.elapsedMilliseconds}ms n=${songs.length}');
     _queue = _fusedQueue(_fusedBase!);
     _idx = _fusedIndexOf(start, songs).clamp(0, _queue.length - 1);
     _current = _queue[_idx];
@@ -2533,8 +2582,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final pos = (found >= 0 && start == found) ? m.positionMs : 0;
     _restorePositionMs = pos;
     _restorePositionKey = _positionKeyOf(_current!);
+    final swPlay = Stopwatch()..start();
     try {
       await _play(_current!, play: false);
+      perfLog('restoreMirror playLoad', '${swPlay.elapsedMilliseconds}ms');
       // 装载期间用户可能已切歌：只对仍是恢复目标的当前曲 seek（见 _restoreLocal）。
       final cur = _current;
       if (cur != null && _same(cur, adopted) && pos > 0) {
@@ -2545,26 +2596,37 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
       _syncSystemMedia();
       AppToast.show('已从其他设备继续播放（${_fmtMs(pos)}）', isError: false);
+      perfLog('restoreMirror total',
+          '${swAll.elapsedMilliseconds}ms uuid=${m.playlistUuid} pos=$pos');
       return true;
     } catch (_) {
+      perfLog('restoreMirror FAILED', '${swAll.elapsedMilliseconds}ms');
       _clearRestorePosition();
       return false;
     }
   }
 
   /// 镜像身份列表 → 本机歌单匹配后的深层条目（坏行/无匹配跳过，保持顺序）。
-  List<Song> _deepListFromMirror(String? deepListJson, List<Song> songs) {
+  ///
+  /// [refIndex] 为 [_refIndexMap] 预建的 ref→下标映射：此前对每条深层条目都
+  /// `indexWhere` 全量扫描且每次比较重建 WebDAV 变体集合，O(条目×歌曲) 的
+  /// 同步热点（启动恢复 366 条 × 1262 首实测 14.8s 卡死 UI 的根因）。
+  List<Song> _deepListFromMirror(
+      String? deepListJson, List<Song> songs, Map<String, int> refIndex) {
     if (deepListJson == null || deepListJson.isEmpty) return const [];
     try {
       final raw = jsonDecode(deepListJson);
       if (raw is! List) return const [];
       final out = <Song>[];
+      final seen = <String>{};
       for (final e in raw) {
         if (e is! Map) continue;
         final ref = e['source_ref'];
         if (ref is! String || ref.isEmpty) continue;
-        final i = songs.indexWhere((s) => _refMatches(s.sourceRef, ref));
-        if (i >= 0 && !out.any((x) => _same(x, songs[i]))) out.add(songs[i]);
+        final i = _refIndexOf(refIndex, ref);
+        if (i < 0) continue;
+        final s = songs[i];
+        if (seen.add('${s.sourceKey}\u0000${s.sourceRef}')) out.add(s);
       }
       return out;
     } catch (_) {
@@ -2572,11 +2634,26 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// ref 匹配（兼容 WebDAV 编码变体）。
-  static bool _refMatches(String a, String? b) {
-    if (b == null || b.isEmpty) return false;
-    if (a == b) return true;
-    return webdavRefVariants(b).contains(a);
+  /// ref→歌单位（含 WebDAV 编码变体）预建索引；配合 [_refIndexOf] 使用。
+  static Map<String, int> _refIndexMap(List<Song> songs) {
+    final map = <String, int>{};
+    for (var i = 0; i < songs.length; i++) {
+      for (final v in webdavRefVariants(songs[i].sourceRef)) {
+        map.putIfAbsent(v, () => i);
+      }
+    }
+    return map;
+  }
+
+  /// 在 [_refIndexMap] 索引中按 ref（含编码变体）取下标；未命中返回 -1。
+  static int _refIndexOf(Map<String, int> refIndex, String ref) {
+    final direct = refIndex[ref];
+    if (direct != null) return direct;
+    for (final v in webdavRefVariants(ref)) {
+      final i = refIndex[v];
+      if (i != null) return i;
+    }
+    return -1;
   }
 
   static String _fmtMs(int ms) {

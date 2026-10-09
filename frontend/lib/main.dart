@@ -29,6 +29,7 @@ import 'screens/player_screen.dart';
 import 'layout/app_shell.dart';
 import 'widgets/app_toast.dart';
 import 'widgets/draggable_sheet.dart';
+import 'utils/perf_log.dart';
 import 'widgets/player_sheet_anim.dart';
 import 'utils/frame_scheduler.dart';
 import 'utils/interaction_gate.dart';
@@ -190,9 +191,11 @@ Future<void> main() async {
   // 与首帧渲染抢事件循环（启动期掉帧的根因之一）。Root 只 `awaitFirstPull`
   // 等在飞行的首轮收尾，不会重复发起新一轮。
   WidgetsBinding.instance.addPostFrameCallback((_) {
+    perfLog('boot.postFrame start');
     direct.attachApi(api); // 内部补发存量 source.create（有服务器才发）
     artistResolver.start();
     sync.start();
+    perfLog('boot.postFrame done');
   });
   // main() 全链（含所有 await）走完的最终信号：ArkTS 启动看门狗据此解除
   // （超时未收到则向 Dart 发消息唤醒可能停滞的事件循环，见 ohos_bootstrap）。
@@ -409,23 +412,31 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
       if (!direct.settings.resumeOnStartup) return;
       // 先等恢复完成再首拉：保持既有「先恢复、后拉取、再补切」顺序，避免首拉
       // 回调与恢复进行中的装载竞争。
+      final swRestore = Stopwatch()..start();
       await restoreFuture;
+      perfLog('root.boot localRestoreDone', '${swRestore.elapsedMilliseconds}ms');
       if (!mounted) return;
       // 等启动首轮 pull 收尾（在飞行则只等待，不额外发起新一轮）：拉到更新的
       // 远端断点且用户尚未接管播放时，applyNewerMirrorIfAny 再切过去（不打断
       // 用户主动操作；播放中由 PlayerProvider 内部守卫）。
       final syncedAtBefore = direct.settings.lastSyncAt;
-      await context.read<SyncEngine>().awaitFirstPull();
+      final engine = context.read<SyncEngine>();
+      final swFirstPull = Stopwatch()..start();
+      await engine.awaitFirstPull();
+      perfLog('root.boot awaitFirstPullDone',
+          '${swFirstPull.elapsedMilliseconds}ms lastError=${engine.lastError}');
       if (!mounted) return;
       // 启动首次同步成功 toast（周期同步与自动补推保持静默，
       // 手动同步的 toast 在设置页 _syncNow 内）。
-      final engine = context.read<SyncEngine>();
       if (engine.lastError.isEmpty &&
           context.read<DirectSourceManager>().settings.lastSyncAt !=
               syncedAtBefore) {
+        perfLog('root.boot toast');
         AppToast.show('同步完成', isError: false);
       }
+      final swApply = Stopwatch()..start();
       await player.applyNewerMirrorIfAny();
+      perfLog('root.boot applyDone', '${swApply.elapsedMilliseconds}ms');
     });
   }
 

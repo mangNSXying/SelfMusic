@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
+import '../utils/perf_log.dart';
 import 'api_client.dart';
 
 /// 阶段5 多设备状态同步引擎·客户端（DESIGN.md §7.2，字段级合并）。
@@ -107,6 +108,7 @@ class SyncEngine {
   Future<void> pullLatestBreakpoint() async {
     if (!settings.syncEnabled) return;
     if (api.baseUrl.isEmpty) return;
+    final sw = Stopwatch()..start();
     try {
       final clientId = await api.getClientId();
       if (clientId == null || clientId.isEmpty) return; // 未配对
@@ -118,6 +120,7 @@ class SyncEngine {
       // 歌单未同步/已删时镜像未落（applyPlaystateMirror 会丢弃），无从套用就不通知。
       if (index.breakpointMirrorOf(uuid) == null) return;
       _breakpointsDirty = true;
+      perfLog('fastPath mirrorApplied', '${sw.elapsedMilliseconds}ms uuid=$uuid');
       _flushBreakpoints();
     } catch (e) {
       debugPrint('SyncEngine 断点快路径失败（回退全量 pull）：$e');
@@ -203,24 +206,35 @@ class SyncEngine {
         if (DateTime.now().difference(failAt) < backoff) return;
       }
     }
+    final sw = Stopwatch()..start();
     final clientId = await api.getClientId();
+    perfLog('sync.run clientId', '${sw.elapsedMilliseconds}ms');
     if (clientId == null || clientId.isEmpty) return; // 未配对
     try {
       lastPushed = 0;
+      final swPush = Stopwatch()..start();
       if (!pullOnly) await _push(clientId);
+      perfLog('sync.run push', '${swPush.elapsedMilliseconds}ms pushed=$lastPushed');
+      final swPull = Stopwatch()..start();
       await _pull(clientId);
+      perfLog('sync.run pull',
+          '${swPull.elapsedMilliseconds}ms songs=$lastPulledSongs playlists=$lastPulledPlaylists');
+      final swFlush = Stopwatch()..start();
       _flushPlaylists();
       _flushSongStates();
       _flushBreakpoints();
+      perfLog('sync.run flushTotal', '${swFlush.elapsedMilliseconds}ms');
       settings.lastSyncAt = DateTime.now().toIso8601String();
       _lastPullAt = DateTime.now();
       _failCount = 0;
       _lastFailAt = null;
       lastError = '';
+      perfLog('sync.run total', '${sw.elapsedMilliseconds}ms pullOnly=$pullOnly');
     } catch (e) {
       _lastFailAt = DateTime.now();
       _failCount++;
       lastError = e.toString();
+      perfLog('sync.run FAILED', '${sw.elapsedMilliseconds}ms $e');
       debugPrint('SyncEngine 同步失败（退避重试）：$e');
     }
   }
@@ -266,14 +280,18 @@ class SyncEngine {
   void _flushSources() {
     if (!_sourcesDirty) return;
     _sourcesDirty = false;
+    final sw = Stopwatch()..start();
     onSourcesApplied?.call();
+    perfLog('flush.sources', '${sw.elapsedMilliseconds}ms');
   }
 
   /// 断点变更统一出口（pull 批量与 push corrections 共用）。
   void _flushBreakpoints() {
     if (!_breakpointsDirty) return;
     _breakpointsDirty = false;
+    final sw = Stopwatch()..start();
     onBreakpointsApplied?.call();
+    perfLog('flush.breakpoints', '${sw.elapsedMilliseconds}ms');
   }
 
   /// 歌单变更统一出口：pull 与 push 回包 corrections 共用，
@@ -283,17 +301,22 @@ class SyncEngine {
     _playlistsDirty = false;
     final uuids = Set<String>.of(_dirtyPlaylistUuids);
     _dirtyPlaylistUuids.clear();
+    final sw = Stopwatch()..start();
     onPlaylistsApplied?.call(uuids);
+    perfLog('flush.playlists', '${sw.elapsedMilliseconds}ms n=${uuids.length}');
   }
 
   /// 歌曲权重变更统一出口（pull 批量与 push corrections 共用）。
   void _flushSongStates() {
     if (!_songStatesDirty) return;
     _songStatesDirty = false;
+    final sw = Stopwatch()..start();
     onSongStatesApplied?.call();
+    perfLog('flush.songStates', '${sw.elapsedMilliseconds}ms');
   }
 
   Future<void> _pull(String clientId) async {
+    final swAll = Stopwatch()..start();
     var cursor = settings.syncCursor;
     var pages = 0;
     lastPulledSongs = 0;
@@ -306,10 +329,22 @@ class SyncEngine {
     final seenSources = <String>{};
     final seenStates = <String>{};
     while (true) {
+      final swFetch = Stopwatch()..start();
       final data = await api.syncPull(cursor);
+      final fetchMs = swFetch.elapsedMilliseconds;
       if (data == null) throw Exception('pull 无响应');
+      final rawSongs = data['songs'] is List ? (data['songs'] as List).length : 0;
+      final rawSources =
+          data['sources'] is List ? (data['sources'] as List).length : 0;
+      final rawPlaylists =
+          data['playlists'] is List ? (data['playlists'] as List).length : 0;
+      final rawStates =
+          data['playstates'] is List ? (data['playstates'] as List).length : 0;
+      perfLog('pull.page fetch',
+          'page=$pages cursor=$cursor ${fetchMs}ms songs=$rawSongs sources=$rawSources playlists=$rawPlaylists states=$rawStates');
       // 歌曲权重：整页收集为一批，单事务落库（一次 fsync 取代逐行 autocommit）；
       // 字段映射与落库在写隔离内（applySongSnapshotsRaw）。
+      final swSongs = Stopwatch()..start();
       final songs = data['songs'];
       if (songs is List) {
         final batch = <Map<String, dynamic>>[];
@@ -326,17 +361,25 @@ class SyncEngine {
           lastPulledSongs += batch.length;
           _songStatesDirty = true;
         }
+        perfLog('pull.page songs',
+            '${swSongs.elapsedMilliseconds}ms applied=${batch.length}');
       }
+      final swSources = Stopwatch()..start();
       final sources = data['sources'];
       if (sources is List) {
+        var applied = 0;
         for (final s in sources) {
           if (s is! Map) continue;
           final m = s.cast<String, dynamic>();
           final uuid = m['client_uuid'] as String?;
           if (uuid == null || uuid.isEmpty || !seenSources.add(uuid)) continue;
           await _applySource(m);
+          applied++;
         }
+        perfLog('pull.page sources',
+            '${swSources.elapsedMilliseconds}ms applied=$applied');
       }
+      final swPlaylists = Stopwatch()..start();
       final playlists = data['playlists'];
       if (playlists is List) {
         final batch = <Map<String, dynamic>>[];
@@ -353,9 +396,13 @@ class SyncEngine {
           lastPulledPlaylists += batch.length;
           _playlistsDirty = true;
         }
+        perfLog('pull.page playlists',
+            '${swPlaylists.elapsedMilliseconds}ms applied=${batch.length}');
       }
+      final swStates = Stopwatch()..start();
       final states = data['playstates'];
       if (states is List) {
+        var applied = 0;
         for (final st in states) {
           if (st is! Map) continue;
           final m = st.cast<String, dynamic>();
@@ -363,7 +410,10 @@ class SyncEngine {
           if (uuid == null || uuid.isEmpty || !seenStates.add(uuid)) continue;
           await index.applyPlaystateMirror(m);
           _breakpointsDirty = true;
+          applied++;
         }
+        perfLog('pull.page states',
+            '${swStates.elapsedMilliseconds}ms applied=$applied');
       }
       cursor = (data['cursor'] as num?)?.toInt() ?? cursor;
       settings.syncCursor = cursor;
@@ -371,6 +421,7 @@ class SyncEngine {
       if (data['has_more'] != true || pages >= _maxPullPages) break;
     }
     _flushSources();
+    perfLog('pull.total', '${swAll.elapsedMilliseconds}ms pages=$pages cursor=$cursor');
   }
 
   /// push correction 回执的快照落库（形状判分）：

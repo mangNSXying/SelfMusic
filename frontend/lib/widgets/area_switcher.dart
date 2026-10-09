@@ -115,7 +115,13 @@ class _AreaSwitcherState extends State<AreaSwitcher>
                 child: SlideTransition(
                   position: Tween<Offset>(begin: _offset, end: Offset.zero)
                       .animate(_curved),
-                  child: ColoredBox(color: bg, child: widget.child),
+                  child: ColoredBox(
+                    color: bg,
+                    // 透明 Material 给内容列表的 ink 落点：否则 ColoredBox 会
+                    // 夹在 ListTile 与 Scaffold Material 之间触发断言。
+                    child:
+                        Material(type: MaterialType.transparency, child: widget.child),
+                  ),
                 ),
               ),
             ),
@@ -132,7 +138,11 @@ class _AreaSwitcherState extends State<AreaSwitcher>
               child: SlideTransition(
                 position: Tween<Offset>(begin: Offset.zero, end: -_offset)
                     .animate(_curved),
-                child: ColoredBox(color: bg, child: _prevChild!),
+                child: ColoredBox(
+                  color: bg,
+                  child: Material(
+                      type: MaterialType.transparency, child: _prevChild!),
+                ),
               ),
             ),
           ),

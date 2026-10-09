@@ -242,6 +242,63 @@ void main() {
     dir.deleteSync(recursive: true);
   });
 
+  test('整队批量解析：一次 IN 查询纠正实时行，编码变体/服务器歌/空表各就各位', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir = await Directory.systemTemp.createTemp('selfmusic_idxresolve_');
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+
+    await index.upsertSongs([
+      DirectSongRow(
+        sourceKey: 'webdav:nas',
+        ref: '/dav/a.flac',
+        title: '实时标题A',
+        artist: '实时歌手A',
+        duration: 200,
+        format: 'flac',
+        size: 1024,
+        mtime: 1,
+      ),
+      DirectSongRow(
+        sourceKey: 'webdav:nas',
+        ref: '/dav/b.flac',
+        title: '实时标题B',
+        duration: 200,
+        format: 'flac',
+        size: 1024,
+        mtime: 1,
+      ),
+    ]);
+
+    Song stub(String key, String ref, String title) => Song(
+          id: 0,
+          sourceKey: key,
+          title: title,
+          source: 'webdav',
+          sourceRef: ref,
+          fileSize: 0,
+        );
+
+    const encodedA = '/dav/%61.flac'; // a.flac 的编码变体
+    final out = index.resolveLiveSongs([
+      stub('webdav:nas', encodedA, '旧快照A'),
+      stub('server', '/dav/remote.flac', '服务器歌'),
+      stub('webdav:nas', '/dav/b.flac', '旧快照B'),
+    ]);
+
+    expect(out, hasLength(3), reason: '与输入等长、顺序不变');
+    expect(out[0].title, '实时标题A', reason: '编码变体也要命中实时行');
+    expect(out[0].artist, '实时歌手A');
+    expect(out[1].title, '服务器歌', reason: '本机无对应行时原样保留');
+    expect(out[2].title, '实时标题B');
+
+    expect(index.resolveLiveSongs(const []), isEmpty);
+
+    index.close();
+    dir.deleteSync(recursive: true);
+  });
+
   test('补读回写标题/歌手/专辑/专辑歌手；用户手改行不回写文本字段', () async {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
     final dir = await Directory.systemTemp.createTemp('selfmusic_idxenrich_');

@@ -11,8 +11,15 @@ import '../data/local/app_settings.dart';
 /// 改进 B6-U8；调用方传 `Theme.of(context).scaffoldBackgroundColor`）。
 Widget pageTransition(PlayerTransition t, Widget child, Animation<double> anim,
     {Offset slideOffset = const Offset(1, 0), Color? backdrop}) {
-  Widget opaque(Widget w) =>
-      backdrop == null ? w : ColoredBox(color: backdrop, child: w);
+  // 衬底 ColoredBox 会永久留在页面树上（AnimatedSwitcher 缓存入场 widget），
+  // 夹在内容列表与 Scaffold Material 之间会触发 ListTile「背景/墨迹不可见」
+  // 断言（每次重建刷一条）。衬一层透明 Material 给 ink 落点，视觉不变。
+  Widget opaque(Widget w) => backdrop == null
+      ? w
+      : ColoredBox(
+          color: backdrop,
+          child: Material(type: MaterialType.transparency, child: w),
+        );
   switch (t) {
     case PlayerTransition.none:
       return child;

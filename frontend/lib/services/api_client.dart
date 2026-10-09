@@ -122,22 +122,55 @@ class ApiClient {
     dio.options.baseUrl = normalizeBaseUrl(url);
   }
 
-  Future<String?> getAccessToken() => storage.read(key: kAccess);
-  Future<String?> getRefreshToken() => storage.read(key: kRefresh);
-  Future<String?> getClientId() => storage.read(key: kClientId);
-  Future<String?> getToken() => storage.read(key: kAccess);
+  // ---------- 凭据读取（内存缓存） ----------
+  //
+  // flutter_secure_storage 每次 read 都是一次平台通道 + KeyStore 解密，冷启动
+  // 首读实测 ~2s；且每个 HTTP 请求的拦截器都要读 access token。凭据只会在本类
+  // 写入（saveTokens/clearTokens），按 key 懒加载缓存并在写入时同步更新，读路径
+  // 零通道开销。用 containsKey 区分「已加载为 null」与「未加载」。
+  final Map<String, String?> _tokenCache = {};
+  final Map<String, Future<String?>> _tokenLoading = {};
+
+  Future<String?> _readToken(String key) {
+    if (_tokenCache.containsKey(key)) {
+      return Future<String?>.value(_tokenCache[key]);
+    }
+    final inflight = _tokenLoading[key];
+    if (inflight != null) return inflight;
+    final f = storage.read(key: key).then((v) {
+      _tokenCache[key] = v;
+      return v;
+    }).whenComplete(() {
+      // 块体！箭头体会把 remove 的返回值（就是 f 本身）当 Future 返回，
+      // whenComplete 会等它 → 自引用死锁，首读永不完成（启动转圈根因）。
+      _tokenLoading.remove(key);
+    });
+    _tokenLoading[key] = f;
+    return f;
+  }
+
+  Future<String?> getAccessToken() => _readToken(kAccess);
+  Future<String?> getRefreshToken() => _readToken(kRefresh);
+  Future<String?> getClientId() => _readToken(kClientId);
+  Future<String?> getToken() => _readToken(kAccess);
 
   Future<void> saveTokens({
     required String accessToken,
     required String refreshToken,
     required String clientId,
   }) async {
+    _tokenCache[kAccess] = accessToken;
+    _tokenCache[kRefresh] = refreshToken;
+    _tokenCache[kClientId] = clientId;
     await storage.write(key: kAccess, value: accessToken);
     await storage.write(key: kRefresh, value: refreshToken);
     await storage.write(key: kClientId, value: clientId);
   }
 
   Future<void> clearTokens() async {
+    _tokenCache[kAccess] = null;
+    _tokenCache[kRefresh] = null;
+    _tokenCache[kClientId] = null;
     await storage.delete(key: kAccess);
     await storage.delete(key: kRefresh);
     await storage.delete(key: kClientId);

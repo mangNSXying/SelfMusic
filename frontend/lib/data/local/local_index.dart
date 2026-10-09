@@ -588,6 +588,50 @@ class LocalIndex {
   /// 按 ref 回查歌曲：兼容新旧两种入库形态（解码态 / 历史 ENCODE 文本）。
   Song? songByRef(String sourceKey, String ref) => _songByRef(sourceKey, ref);
 
+  /// 批量按 (source_key, ref) 取实时行（启动恢复整队解析用）：把 N 次单行
+  /// SELECT 收敛为每个源少量 IN 查询，消除 UI 线程 N+1（1262 首实测 885ms）。
+  /// 返回与输入等长的列表；无对应行（服务器歌快照等）原样保留。
+  List<Song> resolveLiveSongs(List<Song> songs) {
+    if (songs.isEmpty) return songs;
+    final bySource = <String, List<int>>{};
+    for (var i = 0; i < songs.length; i++) {
+      bySource.putIfAbsent(songs[i].sourceKey, () => <int>[]).add(i);
+    }
+    final out = List<Song>.of(songs);
+    for (final entry in bySource.entries) {
+      final sourceKey = entry.key;
+      final variantToPos = <String, int>{};
+      final refs = <String>[];
+      for (final pos in entry.value) {
+        for (final v in webdavRefVariants(songs[pos].sourceRef)) {
+          if (variantToPos.containsKey(v)) continue;
+          variantToPos[v] = pos;
+          refs.add(v);
+        }
+      }
+      final resolved = <int>{};
+      for (var start = 0; start < refs.length; start += 400) {
+        final end = start + 400 < refs.length ? start + 400 : refs.length;
+        final chunk = refs.sublist(start, end);
+        final placeholders = List.filled(chunk.length, '?').join(',');
+        final rows = _db!.select('''
+          SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
+                 i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
+                 i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
+          FROM idx_songs i
+          LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
+          WHERE i.source_key=? AND i.ref IN ($placeholders)
+        ''', [sourceKey, ...chunk]);
+        for (final r in rows) {
+          final pos = variantToPos[r['ref'] as String];
+          if (pos == null || !resolved.add(pos)) continue;
+          out[pos] = _rowToSong(r);
+        }
+      }
+    }
+    return out;
+  }
+
   Song? _songByRef(String sourceKey, String ref) {
     const sql = '''
       SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
