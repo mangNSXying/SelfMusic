@@ -216,6 +216,20 @@ class ApiClient {
     return resp.data['data'] as Map<String, dynamic>?;
   }
 
+  /// 断点快路径：直接取服务端全局最新断点快照（1 RTT，不受 pull 的
+  /// cursor backlog 分页影响）。data 为空/歌单不可同步 → null；
+  /// 旧服务端无此端点（404）→ null，调用方回退到 pull 路径。
+  Future<Map<String, dynamic>?> fetchLatestBreakpoint() async {
+    if (dio.options.baseUrl.isEmpty) return null;
+    try {
+      final resp = await dio.get('/api/v1/playstates/latest');
+      return resp.data['data'] as Map<String, dynamic>?;
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 404) return null;
+      rethrow;
+    }
+  }
+
   // ---------- 已配对设备管理（阶段5，设备管理页） ----------
 
   /// 设备列表（id/clientId/name/platform/revoked/pairedAt/lastSeenAt）。

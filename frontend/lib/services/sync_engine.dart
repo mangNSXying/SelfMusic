@@ -80,11 +80,12 @@ class SyncEngine {
     _tick = null;
   }
 
-  /// 回前台：重新起表；若积压了 outbox 或已过拉取间隔，立刻补一轮。
+  /// 回前台：重新起表；快路径先取最新断点；若积压了 outbox 或已过拉取间隔，立刻补一轮。
   void resume() {
     if (_appForeground) return;
     _appForeground = true;
     _tick ??= Timer.periodic(tickFast, (_) => unawaited(_onTick()));
+    unawaited(pullLatestBreakpoint());
     unawaited(_onTick());
   }
 
@@ -92,7 +93,35 @@ class SyncEngine {
     stop();
     if (!_appForeground) return; // 后台启动：等 resume()
     _tick = Timer.periodic(tickFast, (_) => unawaited(_onTick()));
-    unawaited(syncNow());
+    // 快路径先行：最新断点 1 RTT 到手，不受全量 pull 分页 backlog 拖累
+    // （旧服务端 404 → 静默回退，全量 pull 仍是兜底）。
+    unawaited(pullLatestBreakpoint());
+    // 启动首轮先拉后推（P3）：push 不参与断点恢复，却会多占一个 RTT 挡在
+    // pull 前面；积压 outbox 由下一个 2s tick 补推（pendingOutboxCount>0 即触发）。
+    unawaited(syncNow(pullOnly: true));
+  }
+
+  /// 断点快路径（启动/回前台触发）：`GET /playstates/latest` 直取服务端最新
+  /// 断点并落镜像+通知，1 个 RTT，不随 pull cursor backlog 分页。
+  /// 失败只记日志、不进退避——它是全量 pull 的加速器而非替代。
+  Future<void> pullLatestBreakpoint() async {
+    if (!settings.syncEnabled) return;
+    if (api.baseUrl.isEmpty) return;
+    try {
+      final clientId = await api.getClientId();
+      if (clientId == null || clientId.isEmpty) return; // 未配对
+      final snap = await api.fetchLatestBreakpoint();
+      if (snap == null) return;
+      final uuid = snap['client_uuid'];
+      if (uuid is! String || uuid.isEmpty) return;
+      await index.applyPlaystateMirror(snap);
+      // 歌单未同步/已删时镜像未落（applyPlaystateMirror 会丢弃），无从套用就不通知。
+      if (index.breakpointMirrorOf(uuid) == null) return;
+      _breakpointsDirty = true;
+      _flushBreakpoints();
+    } catch (e) {
+      debugPrint('SyncEngine 断点快路径失败（回退全量 pull）：$e');
+    }
   }
 
   /// 定时器当前是否在跑（供测试断言后台确实停了轮询）。
@@ -123,9 +152,10 @@ class SyncEngine {
   }
 
   /// 启动序：等待首轮拉取完成（带超时），以便跨设备断点恢复拿到最新镜像。
+  /// 同样先拉后推（见 [start] 的 P3 说明）：push 不该挡在启动拉取前面。
   Future<void> firstPull({Duration timeout = const Duration(seconds: 2)}) async {
     try {
-      await syncNow(pullOnly: false, force: true).timeout(timeout);
+      await syncNow(pullOnly: true, force: true).timeout(timeout);
     } catch (_) {
       // 未配对/网络失败/超时：按本机断点恢复。
     }
@@ -324,6 +354,9 @@ class SyncEngine {
           await index.applyPlaystateMirror(m);
           _breakpointsDirty = true;
         }
+        // 页内即时通知（P1）：断点可能在第一页就到，落库后立刻 flush，不必等
+        // 整轮多页跑完（积压场景要翻很多页）。回调按基准比较幂等、播放中不打断。
+        if (_breakpointsDirty) _flushBreakpoints();
       }
       cursor = (data['cursor'] as num?)?.toInt() ?? cursor;
       settings.syncCursor = cursor;

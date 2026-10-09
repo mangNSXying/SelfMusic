@@ -1,0 +1,176 @@
+import 'dart:ffi';
+import 'dart:io';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
+import 'package:selfmusic/data/local/app_settings.dart';
+import 'package:selfmusic/data/local/local_index.dart';
+import 'package:selfmusic/services/api_client.dart';
+import 'package:selfmusic/services/sync_engine.dart';
+import 'package:sqlite3/open.dart';
+
+/// 断点快路径（`GET /playstates/latest`，DESIGN.md §7.2）：
+/// 1 RTT 直取服务端最新断点 → 落镜像 → 通知播放器套用；
+/// 旧服务端无此端点（fetch 返回 null）与网络异常都静默回退到全量 pull，
+/// 且不进退避（它是加速器，不是替代）。
+DynamicLibrary _openOnLinux() {
+  try {
+    return DynamicLibrary.open('libsqlite3.so');
+  } on ArgumentError {
+    return DynamicLibrary.open('libsqlite3.so.0');
+  }
+}
+
+class _FakePathProvider extends PathProviderPlatform {
+  final String dir;
+  _FakePathProvider(this.dir);
+  @override
+  Future<String> getApplicationSupportPath() async => dir;
+  @override
+  Future<String> getApplicationCachePath() async => dir;
+}
+
+Future<LocalIndex> _openIndex() async {
+  open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+  final dir = await Directory.systemTemp.createTemp('selfmusic_fastbp_');
+  PathProviderPlatform.instance = _FakePathProvider(dir.path);
+  final index = LocalIndex();
+  await index.open();
+  return index;
+}
+
+Map<String, dynamic> _playlist() => {
+      'client_uuid': 'pl-1',
+      'name': '远端歌单',
+      'description': null,
+      'deleted': false,
+      'items': [
+        {
+          'source_id': 'src-1',
+          'source': 'webdav',
+          'source_ref': 'dav:/a.mp3',
+          'title': 'A',
+          'artist': null,
+          'album': null,
+          'sort_order': 0,
+        },
+      ],
+    };
+
+Map<String, dynamic> _playstate() => {
+      'client_uuid': 'pl-1',
+      'song_id': null,
+      'source_id': 'src-1',
+      'source': 'webdav',
+      'source_ref': 'dav:/a.mp3',
+      'position_ms': 42000,
+      'deep_list': [],
+      'updated_at': '2026-10-09T12:00:00',
+    };
+
+class _FastPathApi extends ApiClient {
+  _FastPathApi({this.snapshot, this.throwOnFetch = false});
+
+  Map<String, dynamic>? snapshot;
+  bool throwOnFetch;
+  int fetches = 0;
+
+  @override
+  String get baseUrl => 'https://sync.example';
+  @override
+  Future<String?> getClientId() async => 'test-client';
+  @override
+  Future<Map<String, dynamic>?> fetchLatestBreakpoint() async {
+    fetches++;
+    if (throwOnFetch) throw Exception('network down');
+    return snapshot;
+  }
+
+  @override
+  Future<Map<String, dynamic>?> syncPush(
+      String clientId, List<Map<String, dynamic>> events) async {
+    return {'applied': [], 'duplicates': []};
+  }
+
+  @override
+  Future<Map<String, dynamic>?> syncPull(int cursor) async =>
+      {'cursor': cursor + 1, 'has_more': false, 'songs': []};
+}
+
+SyncEngine _engine(LocalIndex index, ApiClient api) =>
+    SyncEngine(api: api, index: index, settings: AppSettings(index));
+
+void main() {
+  test('快路径：本地已有歌单 → 镜像落库并触发回调', () async {
+    final index = await _openIndex();
+    await index.applyPlaylistSnapshots([_playlist()]);
+    final api = _FastPathApi(snapshot: _playstate());
+    final engine = _engine(index, api);
+    var fired = 0;
+    engine.onBreakpointsApplied = () => fired++;
+
+    await engine.pullLatestBreakpoint();
+
+    expect(api.fetches, 1);
+    expect(fired, 1);
+    final mirror = index.breakpointMirrorOf('pl-1');
+    expect(mirror, isNotNull);
+    expect(mirror!.positionMs, 42000);
+    expect(engine.lastError, isEmpty);
+
+    engine.stop();
+    index.close();
+  });
+
+  test('快路径：旧服务端无此端点（null）→ 静默回退，不通知', () async {
+    final index = await _openIndex();
+    await index.applyPlaylistSnapshots([_playlist()]);
+    final api = _FastPathApi(snapshot: null);
+    final engine = _engine(index, api);
+    var fired = 0;
+    engine.onBreakpointsApplied = () => fired++;
+
+    await engine.pullLatestBreakpoint();
+
+    expect(fired, 0);
+    expect(index.breakpointMirrorOf('pl-1'), isNull);
+    expect(engine.lastError, isEmpty, reason: '失败不进退避，全量 pull 兜底');
+
+    engine.stop();
+    index.close();
+  });
+
+  test('快路径：网络异常 → 吞掉不抛，不进退避', () async {
+    final index = await _openIndex();
+    await index.applyPlaylistSnapshots([_playlist()]);
+    final api = _FastPathApi(snapshot: _playstate(), throwOnFetch: true);
+    final engine = _engine(index, api);
+    var fired = 0;
+    engine.onBreakpointsApplied = () => fired++;
+
+    await engine.pullLatestBreakpoint(); // 不应抛出
+
+    expect(fired, 0);
+    expect(engine.lastError, isEmpty);
+
+    engine.stop();
+    index.close();
+  });
+
+  test('快路径：歌单未同步 → 镜像被丢弃，不通知', () async {
+    final index = await _openIndex();
+    // 刻意不建歌单（全新设备 / 歌单尚未 pull 到）。
+    final api = _FastPathApi(snapshot: _playstate());
+    final engine = _engine(index, api);
+    var fired = 0;
+    engine.onBreakpointsApplied = () => fired++;
+
+    await engine.pullLatestBreakpoint();
+
+    expect(index.breakpointMirrorOf('pl-1'), isNull);
+    expect(fired, 0, reason: '镜像没落库就没有可套用的断点，不该惊动播放器');
+
+    engine.stop();
+    index.close();
+  });
+}

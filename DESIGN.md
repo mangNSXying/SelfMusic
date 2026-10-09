@@ -278,6 +278,7 @@ INDEX idx_refresh(refresh_token_hash)
 | ✅ POST | `/sync/push` | 批量上推事件流水；幂等按 `event_uuid` 去重；LWW 判输回 correction 快照；`device_client_id` 须与认证身份一致 |
 | ✅ CRUD | `/playlists` 系列（含 `{id}/items` 增删改） | 直接 REST 变更同样走事件管线（服务端代写事件），其它设备经 pull 可见 |
 | ✅ PUT | `/playstates/{playlistId}` | `{source_id, source_ref, position_ms}`（可选携带 `deep_list`）；行级 LWW，判输回服务端快照 |
+| ✅ GET | `/playstates/latest` | 全局最新断点快照（启动/回前台快路径，1 RTT；无行/歌单缺失或已删/不可同步时 `data=null`） |
 
 ### 4.5 管理
 
@@ -631,7 +632,8 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 ### 7.2 同步协议
 
 - **方向**：客户端本地 SQLite 是运行时事实源；后端是多设备汇聚点
-- **Pull**：每 30s `GET /api/v1/sync/pull?since_cursor=`；cursor 为服务端 `sync_events.seq` 单调递增变更号。快照按实体去重（服务端单页内 + 客户端跨页）：每页只回该页事件涉及实体的**当前快照**；**`breakpoint.set` 只回断点（playstate），不携带歌单条目快照**——他机播放的断点事件不会让本机每次 pull 重下整歌单（稳态流量放大器修复）
+- **Pull**：每 30s `GET /api/v1/sync/pull?since_cursor=`；cursor 为服务端 `sync_events.seq` 单调递增变更号。快照按实体去重（服务端单页内 + 客户端跨页）：每页只回该页事件涉及实体的**当前快照**；**`breakpoint.set` 只回断点（playstate），不携带歌单条目快照**——他机播放的断点事件不会让本机每次 pull 重下整歌单（稳态流量放大器修复）。客户端拉到含断点的页即落库并通知（页内即时 flush），不等整轮多页跑完
+- **断点快路径**：启动/回前台先打 `GET /api/v1/playstates/latest`（1 RTT 直取全局最新断点快照，不随 pull cursor backlog 分页；旧服务端 404 客户端静默回退，全量 pull 仍是兜底）。启动首轮 pull 均为 `pullOnly`（先拉后推）：push 不参与断点恢复却会多占一个 RTT 挡在拉取前面，积压 outbox 由后续 2s tick 补推。套用仍遵守「播放中不打断、空闲才切」的既有策略
 - **事件日志压缩**：`sync_events` 只追加，服务端按「所有未吊销设备的最小 pull 水位」（`devices.last_pull_cursor`）定期回收旧事件，且**每实体保留最新一条**（`sync_events.entity_key` 锚点：`song|source_id|ref` / `source|uuid` / `playlist|uuid` / `breakpoint|uuid`）。事件表不随使用时长无限增长，新设备首拉成本从 O(历史事件数) 收敛到 O(实体数)；`entity_key` 为空的旧行不参与压缩（保守保留）
 - **Push**：本地产生权重事件/断点/歌单改动 → 写 `weight_outbox`（带 event_uuid）→ 2s 防抖批量上推；服务端按 uuid 幂等去重。事件类型现行集合（`SyncEventTypes`，前后端同名）：`song.complete / song.skip / song.complete_manual / song.liked / song.unfavorite / song.disliked / song.reset / song.state`（权重，事件重算 / 行级 LWW）`playlist.create|update|delete` 与 `playlist.item_add|item_remove|item_move`（歌单）、`source.create|update|delete`（播放源）、`breakpoint.set`（断点，**载荷含 `deep_list_json`**，落服务端 `play_states`）。歌手身份**不参与同步**（§3.2）
 - **累计播放时长**：`play_sec` 随 `song.state` 上下推（服务端 `song_states.play_sec` 行级 LWW），客户端应用快照时取 `max(本地, 服务端)` 单调合并，累计值不会因乱序/旧快照倒退

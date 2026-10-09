@@ -45,6 +45,24 @@ public class PlayStateController {
         this.objectMapper = objectMapper;
     }
 
+    /**
+     * 快路径：直接返回全局最新断点快照（DESIGN.md §7.2）。
+     * 客户端启动/回前台先打这个 1 RTT 小请求拿远端断点，不受 sync pull 的
+     * cursor backlog 分页影响；旧客户端不感知，无本端点时客户端 404 静默回退。
+     * 歌单缺失/已删/无 client_uuid（不可同步）时返回 data=null。
+     */
+    @GetMapping("/latest")
+    public ApiResponse<Map<String, Object>> latest() {
+        PlayState st = playStateRepository.findTopByOrderByUpdatedAtDescPlaylistIdDesc()
+                .orElse(null);
+        if (st == null) return ApiResponse.ok(null);
+        Playlist p = playlistRepository.findById(st.getPlaylistId()).orElse(null);
+        if (p == null || p.isDeleted()) return ApiResponse.ok(null);
+        String uuid = p.getClientUuid();
+        if (uuid == null || uuid.isBlank()) return ApiResponse.ok(null);
+        return ApiResponse.ok(SyncService.playstateSnapshot(st, uuid));
+    }
+
     @PutMapping("/{playlistId}")
     public ApiResponse<Map<String, Object>> put(@PathVariable Long playlistId,
                                                 @RequestBody Map<String, Object> body) {

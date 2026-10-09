@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ffi';
 import 'dart:io';
 
@@ -113,6 +114,47 @@ class _PagedApi extends ApiClient {
   }
 }
 
+/// 第二页被 gate 挂起：用来断言第一页的断点在整轮分页跑完之前就已通知。
+class _PageGateApi extends ApiClient {
+  final Completer<void> gate = Completer<void>();
+  int pulls = 0;
+  bool page2Served = false;
+  @override
+  String get baseUrl => 'https://sync.example';
+  @override
+  Future<String?> getClientId() async => 'test-client';
+  @override
+  Future<Map<String, dynamic>?> syncPush(
+      String clientId, List<Map<String, dynamic>> events) async {
+    return {'applied': [], 'duplicates': []};
+  }
+
+  @override
+  Future<Map<String, dynamic>?> syncPull(int cursor) async {
+    pulls++;
+    if (cursor == 0) {
+      return {
+        'cursor': 1,
+        'has_more': true,
+        'songs': [],
+        'sources': [],
+        'playlists': [_playlist()],
+        'playstates': [_playstate()],
+      };
+    }
+    await gate.future;
+    page2Served = true;
+    return {
+      'cursor': 2,
+      'has_more': false,
+      'songs': [],
+      'sources': [],
+      'playlists': [],
+      'playstates': [],
+    };
+  }
+}
+
 void main() {
   test('跨页实体去重：重复快照只应用/计数一次', () async {
     final index = await _openIndex();
@@ -143,6 +185,35 @@ void main() {
     final mirror = index.breakpointMirrorOf('pl-1');
     expect(mirror, isNotNull);
     expect(mirror!.positionMs, 42000);
+
+    engine.stop();
+    index.close();
+  });
+
+  test('页内即时通知：第一页断点落库即回调，不等整轮分页跑完', () async {
+    final index = await _openIndex();
+    final api = _PageGateApi();
+    final engine =
+        SyncEngine(api: api, index: index, settings: AppSettings(index));
+    var fired = 0;
+    engine.onBreakpointsApplied = () => fired++;
+
+    final round = engine.syncNow(force: true);
+
+    // 没有页内 flush 时回调要等第二页（被 gate 挂起）→ 这里轮询会超时失败。
+    var waited = 0;
+    while (fired == 0 && waited < 100) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      waited++;
+    }
+    expect(fired, 1, reason: '第一页断点落库后应立即回调');
+    expect(api.page2Served, isFalse,
+        reason: '第二页响应还没回来，回调已触发（页内即时通知）');
+
+    api.gate.complete();
+    await round;
+    expect(api.pulls, 2, reason: '整轮 pull 应继续翻到第二页收尾');
+    expect(api.page2Served, isTrue);
 
     engine.stop();
     index.close();
