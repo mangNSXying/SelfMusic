@@ -31,6 +31,14 @@ class TranscodeControllerTest {
         return s;
     }
 
+    private static SyncSource sftpSrc(String address) {
+        SyncSource s = new SyncSource();
+        s.setKind("sftp");
+        s.setAddress(address);
+        s.setDeleted(false);
+        return s;
+    }
+
     @Test
     void matchesBase() {
         assertTrue(TranscodeController.matchesBase(
@@ -45,6 +53,35 @@ class TranscodeControllerTest {
                 "https://nas:5006/music", "https://evil:5006/music/a.flac"));
     }
 
+    @Test
+    void sftpOriginMatchesSftpSourceOnly() {
+        var c = controllerWith(sftpSrc("nas:22/music"));
+        // sftp:// 归一化匹配同类源行。
+        assertDoesNotThrow(() -> c.checkAgainstSyncedSources(
+                URI.create("sftp://nas:22/music/a.flac")));
+        assertDoesNotThrow(() -> c.checkAgainstSyncedSources(
+                URI.create("sftp://nas/music/a.flac")));
+        // 跨类不匹配：http 源行挡不住 sftp origin。
+        assertThrows(BizException.class, () -> c.checkAgainstSyncedSources(
+                URI.create("https://nas/music/a.flac")));
+        var mixed = controllerWith(src("https://nas/music"), sftpSrc("nas:22/music"));
+        assertDoesNotThrow(() -> mixed.checkAgainstSyncedSources(
+                URI.create("https://nas/music/a.flac")));
+        assertDoesNotThrow(() -> mixed.checkAgainstSyncedSources(
+                URI.create("sftp://nas/music/a.flac")));
+        // webdav 行挡不住 sftp origin（反向亦然）。
+        var webOnly = controllerWith(src("https://nas/music"));
+        assertThrows(BizException.class, () -> webOnly.checkAgainstSyncedSources(
+                URI.create("sftp://nas/music/a.flac")));
+    }
+
+    @Test
+    void parseOriginAcceptsSftp() {
+        assertDoesNotThrow(
+                () -> TranscodeController.parseOrigin("sftp://nas:22/music/a.flac"));
+        assertThrows(BizException.class,
+                () -> TranscodeController.parseOrigin("ftp://x/a.flac"));
+    }
     @Test
     void rejectsBadSchemeAndBlockedHosts() {
         assertThrows(BizException.class,
@@ -78,10 +115,10 @@ class TranscodeControllerTest {
         var c = controllerWith(src("https://nas:5006/music"));
         // 已下架的低档与非法值同样拒绝（档位现为 192/256/320）。
         assertThrows(BizException.class, () -> c.stream(
-                "https://nas:5006/music/a.flac", "128", "off", null,
+                "https://nas:5006/music/a.flac", "128", "off", null, null,
                 new MockHttpServletResponse()));
         assertThrows(BizException.class, () -> c.stream(
-                "https://nas:5006/music/a.flac", "512", "off", null,
+                "https://nas:5006/music/a.flac", "512", "off", null, null,
                 new MockHttpServletResponse()));
     }
 
@@ -89,10 +126,10 @@ class TranscodeControllerTest {
     void rejectsInvalidLoudnorm() {
         var c = controllerWith(src("https://nas:5006/music"));
         assertThrows(BizException.class, () -> c.stream(
-                "https://nas:5006/music/a.flac", "192", "99", null,
+                "https://nas:5006/music/a.flac", "192", "99", null, null,
                 new MockHttpServletResponse()));
         assertThrows(BizException.class, () -> c.stream(
-                "https://nas:5006/music/a.flac", "192", "loud", null,
+                "https://nas:5006/music/a.flac", "192", "loud", null, null,
                 new MockHttpServletResponse()));
     }
 

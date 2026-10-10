@@ -4,6 +4,8 @@ import com.selfmusic.backend.common.BizException;
 import com.selfmusic.backend.common.SourceAddresses;
 import com.selfmusic.backend.domain.entity.SyncSource;
 import com.selfmusic.backend.domain.repository.SyncSourceRepository;
+import com.selfmusic.backend.transcode.ssh.SshEnvelope;
+import com.selfmusic.backend.transcode.ssh.SshOriginFetcher;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -79,6 +81,7 @@ public class TranscodeController {
             @RequestParam(value = "bitrate", defaultValue = "192") String bitrate,
             @RequestParam(value = "loudnorm", defaultValue = "off") String loudnorm,
             @RequestHeader(value = "X-Origin-Auth", required = false) String originAuth,
+            @RequestHeader(value = "X-Origin-Ssh", required = false) String originSsh,
             HttpServletResponse response) {
         String rate = bitrate == null ? "192" : bitrate.trim();
         if (!ALLOWED_BITRATES.contains(rate)) {
@@ -100,44 +103,19 @@ public class TranscodeController {
         }
         Process ffmpeg = null;
         try {
-            // 注意：绝不记录 X-Origin-Auth 的值。
-            log.info("transcode start host={} bitrate={}k loudnorm={}",
-                    uri.getHost(), rate, loud);
-            String authHeader = originAuth == null ? "" : originAuth.trim();
-
-            HttpClient http = HttpClient.newBuilder()
-                    .connectTimeout(Duration.ofSeconds(15))
-                    .followRedirects(HttpClient.Redirect.NEVER)
-                    .build();
-            HttpRequest.Builder rb = HttpRequest.newBuilder(uri)
-                    .timeout(Duration.ofMinutes(10))
-                    .GET();
-            if (!authHeader.isEmpty()) {
-                rb.header("Authorization", authHeader);
-            }
-            rb.header("User-Agent", "SelfMusic-Transcode");
-            HttpResponse<InputStream> originResp;
-            try {
-                originResp = http.send(rb.build(), HttpResponse.BodyHandlers.ofInputStream());
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "转码回源被中断");
-            } catch (IOException e) {
-                // 源不可达/连接被拒（如容器无 IPv6 路由而源仅 AAAA）：502，客户端回落直连。
-                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
-                        "源不可达: " + e.getMessage());
-            }
-            int st = originResp.statusCode();
-            if (st != 200 && st != 206) {
-                try (InputStream ignored = originResp.body()) {
-                    // 耗尽以复用连接，内容丢弃。
-                    ignored.readAllBytes();
-                } catch (Exception ignored) {
-                }
-                if (st == 401 || st == 403) {
-                    throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "源鉴权失败");
-                }
-                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "源取流失败: " + st);
+            // 注意：绝不记录任何回源凭据的值（X-Origin-Auth / X-Origin-Ssh 信封内容）。
+            boolean isSftp = "sftp".equalsIgnoreCase(uri.getScheme());
+            log.info("transcode start scheme={} host={} bitrate={}k loudnorm={}",
+                    uri.getScheme(), uri.getHost(), rate, loud);
+            InputStream originStream;
+            if (isSftp) {
+                SshEnvelope.Credentials creds = SshEnvelope.parse(originSsh);
+                int port = uri.getPort() != -1 ? uri.getPort() : 22;
+                log.debug("transcode sftp auth={}", creds.useKey() ? "key" : "password");
+                originStream = SshOriginFetcher.openStream(
+                        uri.getHost(), port, uri.getPath(), creds);
+            } else {
+                originStream = openHttpStream(uri, originAuth);
             }
             try {
                 ffmpeg = new ProcessBuilder(ffmpegArgs(rate, loud))
@@ -150,7 +128,7 @@ public class TranscodeController {
             Process proc = ffmpeg;
             // 回源字节 → ffmpeg stdin（虚拟线程，避免阻塞当前线程）。
             Thread feeder = Thread.ofVirtual().start(() -> {
-                try (InputStream in = originResp.body();
+                try (InputStream in = originStream;
                      OutputStream stdin = proc.getOutputStream()) {
                     in.transferTo(stdin);
                 } catch (Exception ignored) {
@@ -208,6 +186,46 @@ public class TranscodeController {
         }
     }
 
+    /** HTTP(S) 回源取流（SFTP 走 {@link SshOriginFetcher}）。失败抛 502，客户端回落直连。 */
+    static InputStream openHttpStream(URI uri, String originAuth) {
+        String authHeader = originAuth == null ? "" : originAuth.trim();
+        HttpClient http = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(15))
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build();
+        HttpRequest.Builder rb = HttpRequest.newBuilder(uri)
+                .timeout(Duration.ofMinutes(10))
+                .GET();
+        if (!authHeader.isEmpty()) {
+            rb.header("Authorization", authHeader);
+        }
+        rb.header("User-Agent", "SelfMusic-Transcode");
+        HttpResponse<InputStream> originResp;
+        try {
+            originResp = http.send(rb.build(), HttpResponse.BodyHandlers.ofInputStream());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "转码回源被中断");
+        } catch (IOException e) {
+            // 源不可达/连接被拒（如容器无 IPv6 路由而源仅 AAAA）：502，客户端回落直连。
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    "源不可达: " + e.getMessage());
+        }
+        int st = originResp.statusCode();
+        if (st != 200 && st != 206) {
+            try (InputStream ignored = originResp.body()) {
+                // 耗尽以复用连接，内容丢弃。
+                ignored.readAllBytes();
+            } catch (Exception ignored) {
+            }
+            if (st == 401 || st == 403) {
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "源鉴权失败");
+            }
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "源取流失败: " + st);
+        }
+        return originResp.body();
+    }
+
     static URI parseOrigin(String origin) {
         if (origin == null || origin.isBlank()) {
             throw new BizException(40001, "origin 不能为空");
@@ -219,8 +237,8 @@ public class TranscodeController {
             throw new BizException(40001, "origin 非法 URL");
         }
         String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase();
-        if (!scheme.equals("http") && !scheme.equals("https")) {
-            throw new BizException(40001, "origin 仅支持 http/https");
+        if (!scheme.equals("http") && !scheme.equals("https") && !scheme.equals("sftp")) {
+            throw new BizException(40001, "origin 仅支持 http/https/sftp");
         }
         if (uri.getHost() == null || uri.getHost().isEmpty()) {
             throw new BizException(40001, "origin 缺少主机");
@@ -235,12 +253,14 @@ public class TranscodeController {
         }
     }
 
-    /** 强校验：origin 必须落在某个未删除 WebDAV 同步源地址之下（含端口与路径前缀）。 */
+    /** 强校验：origin 必须落在某个未删除**同类**源地址之下（含端口与路径前缀）。 */
     void checkAgainstSyncedSources(URI uri) {
+        boolean wantSftp = "sftp".equalsIgnoreCase(uri.getScheme());
         List<SyncSource> sources = syncSourceRepository.findAll();
         for (SyncSource s : sources) {
             if (s.isDeleted()) continue;
-            if (!"webdav".equalsIgnoreCase(s.getKind())) continue;
+            if (wantSftp ? !"sftp".equalsIgnoreCase(s.getKind())
+                    : !"webdav".equalsIgnoreCase(s.getKind())) continue;
             // 容忍历史/原始形态的无 scheme 地址（客户端会补 https 再请求）。
             String normalized = SourceAddresses.normalize(s.getKind(), s.getAddress());
             URI base;
@@ -256,7 +276,7 @@ public class TranscodeController {
         }
         log.warn("transcode origin rejected: {}://{}{}（候选源数 {}）",
                 uri.getScheme(), uri.getAuthority(), uri.getPath(), sources.size());
-        throw new BizException(40301, "origin 不在已同步 WebDAV 源之下");
+        throw new BizException(40301, "origin 不在已同步源之下");
     }
 
     private static boolean sameSchemeHostPort(URI a, URI b) {
@@ -273,6 +293,7 @@ public class TranscodeController {
     private static int effectivePort(URI u) {
         if (u.getPort() != -1) return u.getPort();
         if ("https".equalsIgnoreCase(u.getScheme())) return 443;
+        if ("sftp".equalsIgnoreCase(u.getScheme())) return 22;
         return 80;
     }
 
