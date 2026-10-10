@@ -275,6 +275,7 @@ final auth = AuthProvider(api);
     final player = PlayerProvider()
       ..attachSourceResolver((key) => direct.sourceByKey(key))
       ..attachAppSettings(direct.settings)
+      ..attachApi(api)
       ..attachServerAvailable(() => direct.isServerAvailable);
     player
       ..attachPersistence(

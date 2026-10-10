@@ -185,6 +185,16 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 阶段5：服务器可达性门控（main 经 [attachServerAvailable] 注入）。
   bool Function()? _serverAvailable;
 
+  /// 阶段6：无状态转码 API（main 经 [attachApi] 注入；为空则转码关闭）。
+  /// import 经上方案例避免循环：ApiClient 仅作动态调用（baseUrl/getAccessToken/
+  /// transcodeStreamUrl），此处用 dynamic 持有以避开 provider→service 的导入环。
+  dynamic _transcodeApi;
+
+  /// 关联转码 API（阶段6）。
+  void attachApi(dynamic api) {
+    _transcodeApi = api;
+  }
+
   /// 断点事件节流：同歌 25s 内不重复入队（切歌立即入队）。
   String? _lastBpKey;
   int _lastBpAtMs = 0;
@@ -1575,6 +1585,53 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 本次 [_loadOnce] 探针是否以超时收场（供 [_playDirect] 决定后续尝试还做不做）。
   bool probeTimedOut = false;
 
+  /// 阶段6 无状态转码装载：成功返回 true（已 setUrl），失败/未启用返回 false
+  /// 由调用方回落直连。缓存永远存原文件，不走转码；整曲转码不支持 Range，
+  /// seek 由播放器重建请求（R8 允许 ±2s）。
+  Future<bool> _tryTranscodeLoad(
+      Song s, MusicSource src, String originUrl, dynamic tag) async {
+    try {
+      final settings = _appSettings;
+      final api = _transcodeApi;
+      if (settings == null || api == null) return false;
+      if (!settings.transcodeEnabled) return false;
+      if (src.kind.name != 'webdav') return false;
+      final String baseUrl = (api.baseUrl as String?) ?? '';
+      if (baseUrl.isEmpty) return false;
+      final int bitrate = settings.transcodeBitrate;
+      final String? turl =
+          api.transcodeStreamUrl(originUrl, bitrate) as String?;
+      if (turl == null) return false;
+      final headers = <String, String>{};
+      try {
+        final token = await api.getAccessToken() as String?;
+        if (token != null && token.isNotEmpty) {
+          headers['Authorization'] = 'Bearer $token';
+        }
+      } catch (_) {}
+      // 回源鉴权随请求转发（不落地）：WebDAV Basic 原样透传。
+      final dh = src.directStream(s)?.headers;
+      final basic = dh?['Authorization'];
+      if (basic != null && basic.isNotEmpty) {
+        headers['X-Origin-Auth'] = basic;
+      }
+      debugPrint('[play] 转码代理 ${bitrate}k: $turl');
+      final load = player.setUrl(turl, headers: headers, tag: tag);
+      try {
+        await load.timeout(_loadUrlTimeout);
+      } on TimeoutException {
+        load.ignore();
+        debugPrint('[play] 转码装载超时，回落直连');
+        return false;
+      }
+      return true;
+    } catch (e) {
+      // 429 并发满 / 503 无 ffmpeg / 502 源失败：一律静默回落直连原文件。
+      debugPrint('[play] 转码失败回落直连: $e');
+      return false;
+    }
+  }
+
   /// 单次装载：优先离线缓存文件，其次原生 URL（Range/seek 更稳），
   /// 最后回落到自建字节流 [DirectAudioSource]。
   /// [probe] 为 false 时跳过装载前探针（该源已探明无响应，别再白等）。
@@ -1594,6 +1651,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
     final direct = src.directStream(s);
+    // 阶段6 转码：开关开 + WebDAV + 后端可达时优先走服务端 128k 代理；
+    // 缓存命中已在上方返回（缓存永远存原文件），转码失败静默回落直连。
+    if (direct != null && await _tryTranscodeLoad(s, src, direct.url, tag)) {
+      return;
+    }
     if (direct != null) {
       debugPrint('[play] ${src.kind} URL: ${direct.url}'
           '${direct.headers != null && direct.headers!.isNotEmpty ? ' (headers: ${direct.headers!.keys.join(",")})' : ' (无 headers)'}');
