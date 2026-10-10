@@ -1,9 +1,11 @@
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../data/local/app_settings.dart';
 import '../data/sources/music_source.dart';
+import '../data/sources/sftp_direct_source.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart';
 import '../platform/harmonyos/ohos_platform_bridge.dart';
 import '../providers/direct_source_manager.dart';
@@ -122,9 +124,15 @@ class _SourceDialogState extends State<_SourceDialog> {
   late final TextEditingController _baseUrl;
   late final TextEditingController _username;
   late final TextEditingController _password;
+  late final TextEditingController _host;
+  late final TextEditingController _port;
+  late final TextEditingController _keyPem;
+  late final TextEditingController _keyPassphrase;
   SourceKind _kind = SourceKind.webdav;
   SourceRoute _route = SourceRoute.direct;
+  SftpAuthMethod _authMethod = SftpAuthMethod.password;
   String? _error;
+  bool _testing = false;
 
   bool get _isEdit => widget.editKey != null;
 
@@ -134,15 +142,24 @@ class _SourceDialogState extends State<_SourceDialog> {
     Map<String, dynamic> cfg = const {};
     if (widget.editKey != null) {
       cfg = context.read<DirectSourceManager>().editableConfig(widget.editKey!);
-      _kind = (cfg['kind'] as String?) == 'local'
-          ? SourceKind.local
-          : SourceKind.webdav;
+      _kind = switch (cfg['kind'] as String?) {
+        'local' => SourceKind.local,
+        'sftp' => SourceKind.sftp,
+        _ => SourceKind.webdav,
+      };
     }
     _name = TextEditingController(text: cfg['name'] as String? ?? '');
     _path = TextEditingController(text: cfg['path'] as String? ?? '');
     _baseUrl = TextEditingController(text: cfg['baseUrl'] as String? ?? '');
     _username = TextEditingController(text: cfg['username'] as String? ?? '');
     _password = TextEditingController(text: cfg['password'] as String? ?? '');
+    _host = TextEditingController(text: cfg['host'] as String? ?? '');
+    _port = TextEditingController(
+        text: (cfg['port'] as num?)?.toString() ?? '');
+    _authMethod = parseSftpAuthMethod(cfg['authMethod']);
+    _keyPem = TextEditingController(text: cfg['sftpKeyPem'] as String? ?? '');
+    _keyPassphrase =
+        TextEditingController(text: cfg['sftpPassphrase'] as String? ?? '');
     _route = parseSourceRoute(cfg['route']);
   }
 
@@ -153,6 +170,10 @@ class _SourceDialogState extends State<_SourceDialog> {
     _baseUrl.dispose();
     _username.dispose();
     _password.dispose();
+    _host.dispose();
+    _port.dispose();
+    _keyPem.dispose();
+    _keyPassphrase.dispose();
     super.dispose();
   }
 
@@ -179,6 +200,123 @@ class _SourceDialogState extends State<_SourceDialog> {
     }
   }
 
+  /// SFTP 表单校验（弹窗保存与测试连接共用）：通过返回连接参数，
+  /// 失败置 [_error] 并返回 null。
+  ({String host, int port, String username})? _readSftpForm() {
+    final host = _host.text.trim();
+    if (host.isEmpty) {
+      setState(() => _error = '请填写 SSH 主机');
+      return null;
+    }
+    final portRaw = _port.text.trim();
+    final port = portRaw.isEmpty ? 22 : int.tryParse(portRaw);
+    if (port == null || port < 1 || port > 65535) {
+      setState(() => _error = '端口须为 1–65535 的数字（默认 22）');
+      return null;
+    }
+    final username = _username.text.trim();
+    if (username.isEmpty) {
+      setState(() => _error = '请填写用户名');
+      return null;
+    }
+    if (_authMethod == SftpAuthMethod.password) {
+      if (_password.text.isEmpty) {
+        setState(() => _error = '请填写密码');
+        return null;
+      }
+    } else {
+      if (!_keyPem.text.contains('PRIVATE KEY')) {
+        setState(() => _error = '请粘贴 PEM 私钥文本（含 BEGIN/END 行）');
+        return null;
+      }
+    }
+    return (host: host, port: port, username: username);
+  }
+
+  /// SFTP 测试连接 + TOFU：取指纹 → 未知则弹窗确认后钉住；失配则展示新旧
+  /// 指纹并可更新；匹配直接提示成功。不保存源（保存走 [_submit]）。
+  Future<void> _testSftpConnection() async {
+    final form = _readSftpForm();
+    if (form == null || !mounted) return;
+    final direct = context.read<DirectSourceManager>();
+    setState(() {
+      _testing = true;
+      _error = null;
+    });
+    String fp;
+    try {
+      fp = await SftpDirectSource.fetchSftpFingerprint(
+        host: form.host,
+        port: form.port,
+        username: form.username,
+        authMethod: _authMethod,
+        password: _password.text,
+        keyPem: _keyPem.text,
+        keyPassphrase: _keyPassphrase.text,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _testing = false;
+        _error = e.toString().replaceFirst(
+            RegExp(r'^(Bad state: |StateError: )'), '');
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _testing = false);
+    final hostPort = sftpHostPort(form.host, form.port);
+    final pinned = direct.sshFingerprintOf(hostPort);
+    if (pinned == null || pinned.isEmpty) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: const Text('确认主机指纹'),
+          content: Text('首次连接该 SSH 主机，请确认指纹是你的服务器：\n\n$fp\n\n'
+              '确认后才会钉住并允许连接。'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.of(c).pop(false),
+                child: const Text('取消')),
+            FilledButton(
+                onPressed: () => Navigator.of(c).pop(true),
+                child: const Text('确认并记住')),
+          ],
+        ),
+      );
+      if (ok == true && mounted) {
+        await direct.pinSshHost(hostPort, fp);
+        if (mounted) AppToast.show('已确认并记住主机指纹', isError: false);
+      }
+      return;
+    }
+    if (pinned != fp) {
+      final update = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: const Text('主机指纹变更'),
+          content: Text('已记住的指纹：\n$pinned\n\n实际指纹：\n$fp\n\n'
+              '可能是中间人或服务器重装，核对无误后再更新。'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.of(c).pop(false),
+                child: const Text('取消')),
+            FilledButton(
+                onPressed: () => Navigator.of(c).pop(true),
+                child: const Text('确认更新',
+                    style: TextStyle(color: Colors.red))),
+          ],
+        ),
+      );
+      if (update == true && mounted) {
+        await direct.pinSshHost(hostPort, fp);
+        if (mounted) AppToast.show('主机指纹已更新', isError: false);
+      }
+      return;
+    }
+    AppToast.show('连接成功，指纹匹配', isError: false);
+  }
+
   Future<void> _submit() async {
     final direct = context.read<DirectSourceManager>();
     final name = _name.text.trim();
@@ -198,6 +336,51 @@ class _SourceDialogState extends State<_SourceDialog> {
               name: name, path: path);
         } else {
           await direct.addLocal(name: name, path: path);
+        }
+      } else if (_kind == SourceKind.sftp) {
+        final form = _readSftpForm();
+        if (form == null) return;
+        final root = _path.text.trim();
+        if (_isEdit) {
+          await direct.updateSource(widget.editKey!,
+              name: name,
+              host: form.host,
+              port: form.port,
+              username: form.username,
+              authMethod: _authMethod,
+              password: _authMethod == SftpAuthMethod.password
+                  ? _password.text
+                  : '',
+              keyPem: _authMethod == SftpAuthMethod.key ? _keyPem.text : '',
+              passphrase: _authMethod == SftpAuthMethod.key
+                  ? _keyPassphrase.text
+                  : '',
+              path: root,
+              route: _route);
+        } else {
+          await direct.addSftp(
+              name: name,
+              host: form.host,
+              port: form.port,
+              username: form.username,
+              authMethod: _authMethod,
+              password: _authMethod == SftpAuthMethod.password
+                  ? _password.text
+                  : '',
+              keyPem: _authMethod == SftpAuthMethod.key ? _keyPem.text : '',
+              passphrase: _authMethod == SftpAuthMethod.key
+                  ? _keyPassphrase.text
+                  : '',
+              rootPath: root,
+              route: _route);
+        }
+        if (!mounted) return;
+        // 未钉指纹仍允许保存（离线等场景），首次扫描/播放会明确引导先确认。
+        final pinned =
+            direct.sshFingerprintOf(sftpHostPort(form.host, form.port));
+        if (pinned == null || pinned.isEmpty) {
+          AppToast.show('已保存；首次使用前请点「测试连接」确认主机指纹',
+              isError: false);
         }
       } else {
         final url = _baseUrl.text.trim();
@@ -257,6 +440,11 @@ class _SourceDialogState extends State<_SourceDialog> {
                     icon: Icon(Icons.folder_outlined),
                     label: Text('本地文件夹'),
                   ),
+                  ButtonSegment(
+                    value: SourceKind.sftp,
+                    icon: Icon(Icons.storage_outlined),
+                    label: Text('SFTP'),
+                  ),
                 ],
                 selected: {_kind},
                 onSelectionChanged: (s) =>
@@ -281,7 +469,7 @@ class _SourceDialogState extends State<_SourceDialog> {
                   ),
                 ),
               ),
-            ] else ...[
+            ] else if (_kind == SourceKind.webdav) ...[
               TextField(
                 controller: _baseUrl,
                 decoration: const InputDecoration(
@@ -298,6 +486,87 @@ class _SourceDialogState extends State<_SourceDialog> {
                 obscureText: true,
                 decoration: const InputDecoration(labelText: '密码（可空）'),
               ),
+            ] else ...[
+              TextField(
+                controller: _host,
+                decoration: const InputDecoration(
+                  labelText: 'SSH 主机',
+                  hintText: '192.168.1.10 或 nas.local',
+                ),
+              ),
+              TextField(
+                controller: _port,
+                decoration: const InputDecoration(
+                  labelText: '端口（默认 22）',
+                  hintText: '22',
+                ),
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              ),
+              TextField(
+                controller: _username,
+                decoration: const InputDecoration(labelText: '用户名'),
+              ),
+              const SizedBox(height: 8),
+              SegmentedButton<SftpAuthMethod>(
+                segments: const [
+                  ButtonSegment(
+                    value: SftpAuthMethod.password,
+                    label: Text('密码'),
+                  ),
+                  ButtonSegment(
+                    value: SftpAuthMethod.key,
+                    label: Text('密钥'),
+                  ),
+                ],
+                selected: {_authMethod},
+                onSelectionChanged: (s) =>
+                    setState(() => _authMethod = s.first),
+              ),
+              if (_authMethod == SftpAuthMethod.password)
+                TextField(
+                  controller: _password,
+                  obscureText: true,
+                  decoration: const InputDecoration(labelText: '密码'),
+                )
+              else ...[
+                TextField(
+                  controller: _keyPem,
+                  minLines: 3,
+                  maxLines: 6,
+                  decoration: const InputDecoration(
+                    labelText: '私钥文本（PEM，含 BEGIN/END 行）',
+                    hintText: '-----BEGIN OPENSSH PRIVATE KEY-----',
+                  ),
+                ),
+                TextField(
+                  controller: _keyPassphrase,
+                  obscureText: true,
+                  decoration:
+                      const InputDecoration(labelText: '私钥口令（无则空）'),
+                ),
+              ],
+              TextField(
+                controller: _path,
+                decoration: const InputDecoration(
+                  labelText: '根目录（可空，空=登录目录）',
+                  hintText: '/music',
+                ),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: _testing ? null : _testSftpConnection,
+                icon: _testing
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.verified_outlined, size: 18),
+                label: const Text('测试连接'),
+              ),
+            ],
+            if (!isLocal) ...[
               const SizedBox(height: 16),
               const Align(
                 alignment: Alignment.centerLeft,
@@ -374,10 +643,14 @@ class _DirectSourceCard extends StatelessWidget {
     if (s == null) return const SizedBox.shrink();
     final count = direct.countOf(sourceKey);
     final isLocal = s.kind == SourceKind.local;
-    final needsPwd = direct.sourceNeedsPassword(sourceKey);
+    final isSftp = s.kind == SourceKind.sftp;
+    final needsSecrets = direct.sourceNeedsSecrets(sourceKey);
     // 非本地源的播放链路（弹窗可配）：代理才走服务端转码，直连恒原生地址。
     final routeLabel =
         !isLocal && s.route == SourceRoute.proxy ? ' · 代理' : '';
+    final kindLabel = isLocal
+        ? ' · 本地文件夹'
+        : (isSftp ? ' · SFTP' : '');
 
     final tile = ListTile(
       leading: Icon(isLocal ? Icons.folder : Icons.cloud,
@@ -389,9 +662,9 @@ class _DirectSourceCard extends StatelessWidget {
               .textTheme
               .titleMedium
               ?.copyWith(fontWeight: FontWeight.w600)),
-      subtitle: Text(needsPwd
-          ? '待配置密码 · 点击「编辑」补输后可用'
-          : '直连${isLocal ? ' · 本地文件夹' : routeLabel} · 已索引 $count 首'),
+      subtitle: Text(needsSecrets
+          ? '待配置凭据 · 点击「编辑」补输后可用'
+          : '直连$kindLabel$routeLabel · 已索引 $count 首'),
       trailing: _SourceMenu(sourceKey: sourceKey, direct: direct),
       onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
     );
@@ -399,9 +672,9 @@ class _DirectSourceCard extends StatelessWidget {
     // 卡片形态：与专辑/歌手共用方形卡片（SquareCard），菜单叠右上角。
     return SquareCard(
       title: s.name,
-      subtitle: needsPwd
-          ? '待配置密码 · 点击「编辑」补输后可用'
-          : '直连${isLocal ? ' · 本地文件夹' : routeLabel} · 已索引 $count 首',
+      subtitle: needsSecrets
+          ? '待配置凭据 · 点击「编辑」补输后可用'
+          : '直连$kindLabel$routeLabel · 已索引 $count 首',
       fallbackIcon: isLocal ? Icons.folder : Icons.cloud,
       onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
       cornerAction: _SourceMenu(sourceKey: sourceKey, direct: direct),
