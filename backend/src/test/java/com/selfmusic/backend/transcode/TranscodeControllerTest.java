@@ -78,10 +78,41 @@ class TranscodeControllerTest {
         var c = controllerWith(src("https://nas:5006/music"));
         // 已下架的低档与非法值同样拒绝（档位现为 192/256/320）。
         assertThrows(BizException.class, () -> c.stream(
-                "https://nas:5006/music/a.flac", "128", null,
+                "https://nas:5006/music/a.flac", "128", "off", null,
                 new MockHttpServletResponse()));
         assertThrows(BizException.class, () -> c.stream(
-                "https://nas:5006/music/a.flac", "512", null,
+                "https://nas:5006/music/a.flac", "512", "off", null,
                 new MockHttpServletResponse()));
+    }
+
+    @Test
+    void rejectsInvalidLoudnorm() {
+        var c = controllerWith(src("https://nas:5006/music"));
+        assertThrows(BizException.class, () -> c.stream(
+                "https://nas:5006/music/a.flac", "192", "99", null,
+                new MockHttpServletResponse()));
+        assertThrows(BizException.class, () -> c.stream(
+                "https://nas:5006/music/a.flac", "192", "loud", null,
+                new MockHttpServletResponse()));
+    }
+
+    @Test
+    void ffmpegArgsOmitsFilterWhenOff() {
+        var cmd = TranscodeController.ffmpegArgs("192", "off");
+        assertFalse(cmd.contains("-af"));
+        assertTrue(cmd.contains("libmp3lame"));
+        assertTrue(cmd.contains("192k"));
+    }
+
+    @Test
+    void ffmpegArgsMapsLoudnessTiers() {
+        assertTrue(TranscodeController.ffmpegArgs("192", "14")
+                .contains("loudnorm=I=-14:TP=-1.5:LRA=11"));
+        assertTrue(TranscodeController.ffmpegArgs("256", "16")
+                .contains("loudnorm=I=-16:TP=-1.5:LRA=11"));
+        assertTrue(TranscodeController.ffmpegArgs("320", "23")
+                .contains("loudnorm=I=-23:TP=-1.5:LRA=11"));
+        assertNull(TranscodeController.loudFilter("off"));
+        assertNull(TranscodeController.loudFilter("bogus"));
     }
 }
