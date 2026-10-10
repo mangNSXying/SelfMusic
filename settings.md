@@ -223,7 +223,7 @@ mode == follow_server → 有服务端镜像用镜像，无镜像回退本地自
 | `play_mode_default` / `resume_on_startup` / `player_show_weight` | 客户端本地，无后端依赖 | ✅ 已实现 |
 | 忽略音频过滤、仅 Wi-Fi 扫描 | 直连扫描体验 | ✅ 已实现 |
 | 缓存配置迁入「服务端」+ `follow_server` 接线 + `PUT /admin/settings` | 阶段 6 | ✅ 已实现（双来源 UI/解析/生效值 + `GET /admin/config` + 进入分区自动拉取；不可达回退自定义；`PUT` 仅缓存两键 + env 覆盖语义文档化） |
-| 省流转码开关 + 码率三档（`transcode_enabled`/`transcode_bitrate`）+ `GET /meta/server` | 阶段 6 | ✅ 已实现（无状态代理，失败回落直连；无 ffmpeg/未配对时灰显） |
+| 代理设置（开关 + 码率三档 + 响度均衡 `transcode_enabled`/`transcode_bitrate`/`transcode_loudnorm`，响度默认关、仅代理转码生效）+ `GET /meta/server` | 阶段 6 | ✅ 已实现（无状态代理，失败回落直连；无 ffmpeg/未配对时灰显） |
 | 直写上传/删除/新建文件夹（WebDAV PUT/DELETE/MKCOL + 本地直写，二次确认全删） | 阶段 6 | ✅ 已实现（SMB 仍骨架；鸿蒙写暂不支持） |
 | 导入导出设置 / 歌单 | 本地文件 + `file_selector`，无后端依赖 | ✅ 已实现（设置、歌单分开导出；导入支持选择文件） |
 | 淡入淡出 / 均衡器 | 音频后端能力验证 | ✅ 已实现（淡入淡出全平台；均衡器仅 Android，真机验证） |

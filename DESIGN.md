@@ -94,7 +94,7 @@
 | 多设备状态同步 | ✅ | 权重/收藏/歌单/断点/播放源；需要后端 |
 | 播放源同步 | ✅ | WebDAV 等远端源（本地文件夹源各机独立） |
 | 后台增量扫描 | ✅ | 本地变化监听 + 周期快扫，指纹跳过零下载 |
-| 转码（按需 ffmpeg） | ✅ | 阶段 6：服务端无状态代理 `GET /transcode/stream`（不建库，强校验 sync_sources，并发只 env 默认 2，超限 429 回落直连）；客户端省流开关 + 192/256/320 三档（MP3 无 512 档，不开放） |
+| 转码（按需 ffmpeg） | ✅ | 阶段 6：服务端无状态代理 `GET /transcode/stream`（不建库，强校验 sync_sources，并发只 env 默认 2，超限 429 回落直连）；客户端代理开关 + 192/256/320 三档 + 响度均衡（MP3 无 512 档，不开放） |
 | 上传 / 删除源文件 | ✅ | 阶段 6：WebDAV PUT/DELETE/MKCOL + 本地 dart:io 直写；删除为二次确认全删（索引/权重/歌词/歌单/缓存）；SMB 仍仅骨架 |
 
 ## 2. 身份与设备配对
@@ -274,7 +274,7 @@ INDEX idx_refresh(refresh_token_hash)
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| ✅ GET | `/transcode/stream?origin=&bitrate=` | 回源拉流 → ffmpeg 管道转 MP3 CBR（192/256/320，默认 192）→ 流式回客户端；`X-Origin-Auth` 透传回源鉴权（不落地不记日志）；强校验 origin 落在未删除 WebDAV `sync_sources` 地址之下 + 黑名单主机拒绝（地址按「WebDAV 缺 scheme 补 https」归一化后匹配，兼容历史无 scheme 行，写入端 `SyncService` 亦收敛）；整曲转码不支持 Range；并发只 env（`TRANSCODE_MAX_CONCURRENCY`，默认 2），超限 429 + `Retry-After`，客户端回落直连；无 ffmpeg 时 503 |
+| ✅ GET | `/transcode/stream?origin=&bitrate=&loudnorm=` | 回源拉流 → ffmpeg 管道转 MP3 CBR（192/256/320，默认 192）→ 流式回客户端；可选 `loudnorm=off\|14\|16\|23`（默认 off；开时编码前插单遍动态 `loudnorm`，I=目标/TP=-1.5/LRA=11，统一响度）；`X-Origin-Auth` 透传回源鉴权（不落地不记日志）；强校验 origin 落在未删除 WebDAV `sync_sources` 地址之下 + 黑名单主机拒绝（地址按「WebDAV 缺 scheme 补 https」归一化后匹配，兼容历史无 scheme 行，写入端 `SyncService` 亦收敛）；整曲转码不支持 Range；并发只 env（`TRANSCODE_MAX_CONCURRENCY`，默认 2），超限 429 + `Retry-After`，客户端回落直连；无 ffmpeg 时 503 |
 
 ### 4.4 状态同步 —— ✅ 已实现（阶段 5）
 
@@ -743,7 +743,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 > **状态：已实现✅** —— 无状态转码代理（§4.6，不建库）+ WebDAV/本地直写上传删除 + 管理闭环（`PUT /admin/settings` + `follow_server` + `GET /meta/server`）。
 
-- 转码：`GET /transcode/stream` 回源拉流 → ffmpeg MP3 CBR 管道；强校验 origin 落在已同步 WebDAV 源之下；并发只 env（默认 2），超限 429 回落直连；客户端省流开关（源弹窗选代理链路才走转码，直连恒原生地址）+ 192/256/320 三档，缓存仍存原文件
+- 转码：`GET /transcode/stream` 回源拉流 → ffmpeg MP3 CBR 管道（可选响度均衡 `loudnorm`，单遍动态）；强校验 origin 落在已同步 WebDAV 源之下；并发只 env（默认 2），超限 429 回落直连；客户端代理开关（源弹窗选代理链路才走转码，直连恒原生地址）+ 192/256/320 三档 + 响度均衡（默认关），缓存仍存原文件
 - 上传/删除：客户端直写（WebDAV PUT/DELETE/MKCOL + 本地 dart:io；鸿蒙写暂不支持而灰显）；删除为二次确认全删（索引/权重/歌词/歌单/缓存）；服务端分片上传方案已作废
 - 管理端设置：`PUT /admin/settings`（仅缓存两键）+ 客户端 `follow_server` 接线（`cache_config_mode` + 生效值 + 同步按钮）+ `GET /meta/server`
 - 验收：FLAC 源按 192k 出流实测流量达标；上传 50MB 文件入库可播
