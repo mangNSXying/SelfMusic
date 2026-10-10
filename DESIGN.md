@@ -2,7 +2,7 @@
 
 > 定位：**去中心化的个人音乐服务器 + 双模式客户端**
 > 上游约束：`开发思路.txt`（无中心账号 / 本地+SMB+WebDAV 曲库 / 加权播放 / 喜欢歌自动缓存）
-> 状态：**阶段 0–3、阶段 5–6 已完成**（Android 壳对齐 / 认证·配对 / 客户端本地闭环·歌单·喜欢列表 / 直连 WebDAV·本地索引·增量扫描优化 / 多设备状态同步 / 转码+管理闭环）；**阶段 4（全平台 SMB 直连）未动工**——仅存在 `SmbDirectSource` 配置骨架（见 §6.3），任何平台无直连通路、源列表 UI 亦未提供 SMB 选项。
+> 状态：**阶段 0–3、阶段 5–6 已完成**（Android 壳对齐 / 认证·配对 / 客户端本地闭环·歌单·喜欢列表 / 直连 WebDAV·本地索引·增量扫描优化 / 多设备状态同步 / 转码+管理闭环）；**阶段 4（全平台 SMB 直连）未动工**——仅存在 `SmbDirectSource` 配置骨架（见 §6.3），任何平台无直连通路、源列表 UI 亦未提供 SMB 选项；**阶段 7（SFTP 直连：密码+密钥认证，服务端 SSH 回源代理）规划中**（见 §6.10 / §8）。
 > 在此之上，后续迭代全部落地：元数据后台补读与全源编辑、歌词、后台播放、睡眠定时四模式、播放页与集合页交互
 > （层级返回 / 分组左右滑切 / 列表·卡片切换 / 队列·歌单自动定位高亮 / 标题显示格式 / 搜索追焦 / 编辑歌单）、
 > 网络安全加固（默认 HTTPS + 允许不安全 HTTP / 信任自签名开关 + 明文凭据收敛到 secure storage，见 §6.7 与本文件 §3.2 凭据加密说明）、
@@ -22,7 +22,7 @@
 |------|------|
 | 无用户 → 单用户 | 引入"一服务器一主人"语义，配对 Token 认证，设备可管理可吊销 |
 | 单模式 → 双模式 | App 在**无后端**时靠 WebDAV/本地直连完整可用（SMB 仍为骨架，未落地）；后端是增强层 |
-| 新增 Source 抽象层 | Local / WebdavDirect 两实现可用 + SmbDirect **仅配置骨架**，统一接口 |
+| 新增 Source 抽象层 | Local / WebdavDirect 两实现可用 + SmbDirect **仅配置骨架** + SftpDirect **规划中（阶段 7）**，统一接口 |
 | 新增客户端本地索引 | 直连模式下 SQLite 轻量建库，跨源搜索体验接近一体化曲库 |
 | 路线图重排 | 按"骨架→核心体验→直连→SMB→同步→转码/管理"六阶段 |
 
@@ -60,6 +60,7 @@
                         │  │  LocalDirectSource          │ │
                         │  │  WebdavDirectSource         │ │
                         │  │  SmbDirectSource（仅骨架）    │ │
+                        │  │  SftpDirectSource（规划）     │ │
                         │  └────────────┬───────────────┘ │
                         └───────────────┼─────────────────┘
                                         │ 协议直连（App 内扫描/播放）
@@ -68,9 +69,11 @@
                            │  音乐源（协议直连）    │
                            │  · NAS(SMB)          │
                            │  · WebDAV 服务        │
+                           │  · SFTP 服务器        │
                            └──────────────────────┘
                                         ▲ 状态同步（权重/收藏/歌单/断点/播放源）
                                         │ 配对与设备管理（无曲库/无流媒体）
+                                        │ SSH 回源取流（仅代理转码，§4.6）
                            ┌──────────────────────┐
                            │ Spring Boot 后端      │
                            │ （个人单用户同步服务）  │
@@ -84,6 +87,7 @@
 | 本地文件播放 | ✅ | 内嵌协议客户端 |
 | WebDAV 浏览与播放 | ✅ | 不依赖后端 |
 | SMB 浏览与播放 | ⏳ | **仅有配置骨架**（§6.3/阶段 4 未动工）：`SmbDirectSource` 只存配置、`scan/open/cache` 全部抛「不支持直连」；源新增弹窗仅提供 WebDAV/本地文件夹，无 SMB 入口 |
+| SFTP 浏览与播放 | ⏳ | 规划中（阶段 7，见 §6.10）：密码+密钥认证（SecretStore，主机密钥 TOFU）+ 服务端 SSH 回源代理转码；源新增弹窗 SFTP 入口；直连/代理链路可选 |
 | 歌单 / 加权算法 / 喜欢·不喜欢 | ✅ | 本地 SQLite |
 | 喜欢歌自动缓存 / 断网播放 | ✅ | 蓝图 §三.3 |
 | 曲库浏览 / 跨源搜索 | ✅ | 本地轻量索引，首次需现场扫描 |
@@ -214,7 +218,8 @@ INDEX idx_refresh(refresh_token_hash)
 
 | 表 | 说明 |
 |----|------|
-| `sources` | 源配置：`key`（唯一）、`kind(local/webdav/smb)`、名称、凭据引用键、enabled、last_scan_at；阶段 5 补 `client_uuid`（跨设备同步身份） |
+| `sources` | 源配置：`key`（唯一）、`kind(local/webdav/smb/sftp)`、名称、凭据引用键、enabled、last_scan_at；阶段 5 补 `client_uuid`（跨设备同步身份）；SFTP 配置另含 host/port/user/认证方式/根路径（密码与私钥文本只存 SecretStore，见 §6.10） |
+| `ssh_known_hosts` | SFTP 主机密钥 TOFU 钉（阶段 7 新增）：`(host_port PK, fingerprint, updated_at)`，存 `SHA256:` 形态指纹；**不参与跨设备同步**（各设备各自 TOFU） |
 | `idx_songs` | 直连模式本地索引：`source_key, ref, title, artist, album, track_no, year, genre, duration, format, size, mtime, etag, cover_path, missing`（增量指纹含 `mtime,size,etag`）。后续 ALTER：`album_artist`、`url`、`user_edited`（用户编辑元数据标记，扫描不覆盖）、`meta_read`（已补读标记）。`is_favorite` 旧列仅用于一次性回填迁移，阶段 2 起不再读写 |
 | `cache` | 已缓存歌曲：`cache_key` PK、`path, size` + `cached_at, last_accessed_at`（阶段 2 补列，LRU 用） |
 | `play_meta` | 歌曲播放元数据（阶段 2 新增）：`(source_key, song_ref)` 主键 + `like_streak, dislike_streak, factor, frozen, is_favorite`（**收藏统一收口**）+ `play_sec`（累计播放秒数，播放次数由此派生）+ `song_json`（同步快照；本机未配置对应源时用于展示） |
@@ -274,7 +279,7 @@ INDEX idx_refresh(refresh_token_hash)
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| ✅ GET | `/transcode/stream?origin=&bitrate=&loudnorm=` | 回源拉流 → ffmpeg 管道转 MP3 CBR（192/256/320，默认 192）→ 流式回客户端；可选 `loudnorm=off\|14\|16\|23`（默认 off；开时编码前插单遍动态 `loudnorm`，I=目标/TP=-1.5/LRA=11，统一响度）；`X-Origin-Auth` 透传回源鉴权（不落地不记日志）；强校验 origin 落在未删除 WebDAV `sync_sources` 地址之下 + 黑名单主机拒绝（地址按「WebDAV 缺 scheme 补 https」归一化后匹配，兼容历史无 scheme 行，写入端 `SyncService` 亦收敛）；整曲转码不支持 Range；并发只 env（`TRANSCODE_MAX_CONCURRENCY`，默认 2），超限 429 + `Retry-After`，客户端回落直连；无 ffmpeg 时 503 |
+| ✅ GET | `/transcode/stream?origin=&bitrate=&loudnorm=` | 回源拉流 → ffmpeg 管道转 MP3 CBR（192/256/320，默认 192）→ 流式回客户端；可选 `loudnorm=off\|14\|16\|23`（默认 off；开时编码前插单遍动态 `loudnorm`，I=目标/TP=-1.5/LRA=11，统一响度）；鉴权透传（不落地不记日志）：http(s) 源用 `X-Origin-Auth: Basic`，SFTP 源用 `X-Origin-Ssh: base64url(JSON{u, p?, k?, pp?, hk})`（u=用户名；p=密码 / k=PEM 私钥base64 + pp=passphrase；hk=客户端已 TOFU 的 `SHA256:` 主机指纹；缺凭据 40001，指纹失配 502）；强校验 origin 落在未删除**同类**源地址之下（http(s)→WebDAV，`sftp://host[:port]/path`→SFTP，见 §6.10）+ 黑名单主机拒绝（地址归一化后匹配，写入端 `SyncService` 亦收敛）；SFTP 回源经 sshj 取流（`SFTPClient.open` 偏移读，分块喂 ffmpeg stdin，不整曲预下载）；整曲转码不支持 Range；并发只 env（`TRANSCODE_MAX_CONCURRENCY`，默认 2），超限 429 + `Retry-After`，客户端回落直连；无 ffmpeg 时 503 |
 
 ### 4.4 状态同步 —— ✅ 已实现（阶段 5）
 
@@ -313,6 +318,7 @@ config/       FirstBootInitializer(PAIRING_TOKEN 镜像), WebConfig(CORS)
 domain/       JPA 实体（Playlist/PlaylistItem/PlayState/SongState/Device/SyncEvent/SyncSource/Setting）+ Repository + service
 playlist/     PlaylistController（歌单 CRUD + 条目增删改）
 sync/         SyncController(pull/push) + SyncService(幂等去重/LWW/correction) + PushEvent + SyncEventTypes
+transcode/    TranscodeService（并发门控 + ffmpeg 探测）+ TranscodeController（同步直写流式）+ ssh/（SshOriginFetcher：经 sshj 的 SFTP 回源取流，阶段 7 规划）
 ```
 
 ### 5.2 第三方库
@@ -322,10 +328,11 @@ sync/         SyncController(pull/push) + SyncService(幂等去重/LWW/correctio
 | Web 框架 | `spring-boot-starter-web` + `data-jpa` + `security` + `validation` | Java 21 / Spring Boot 3.4 |
 | 数据库驱动 | `mysql-connector-j`（MySQL 8） | runtime；`ddl-auto: validate` |
 | Token 哈希 | JDK `MessageDigest` SHA-256 | 不引额外依赖 |
+| SSH 回源 | `com.hierynomus:sshj`（0.41.x，Apache 2.0，pin 大版本） | 阶段 7：转码代理的 SFTP 回源取流；密码 + PEM/OpenSSH 私钥（含 passphrase）+ 自定义主机密钥校验；`SFTPClient.open` 偏移读喂 ffmpeg 管道 |
 | 其余 | devtools（runtime）、test | — |
 | 已移除 | lombok（编译期；2026-10 全量去注解，改显式构造器/getter-setter/Logger，规避新版 Java 语言服务器注释处理器不兼容） | — |
 
-> 纠偏：`java-smb` / `jaudiotagger` / `ffmpeg`/转码曾列于后端选型，但**后端从未引入、也无任何音频/标签/SMB 代码**——SMB 与音频元数据标签全部在 Flutter 客户端用 Dart 实现（§6.2/§6.4）；服务端既没有曲库也没有流媒体，自然不做媒体工作。
+> 纠偏：`jaudiotagger` 曾列于后端选型，但**后端从未引入、也无任何音频标签代码**——音频元数据标签全部在 Flutter 客户端用 Dart 实现（§6.2/§6.4）；服务端既没有曲库也没有流媒体。阶段 6 起后端含转码能力：ffmpeg 为**二进制**（经 apt 装入镜像，非 Java 库）+ `sshj`（阶段 7 的 SFTP 回源取流）；仍无 SMB 代码（SMB 与音频标签的 Dart 实现见 §6.2/§6.4）。
 
 ### 5.3 认证过滤器
 
@@ -383,9 +390,9 @@ TokenFilter (OncePerRequestFilter)
 
 ```dart
 abstract class MusicSource {
-  String get key;                          // 'smb:nas1'/'webdav:xx'/'local:xx'
+  String get key;                          // 'smb:nas1'/'webdav:xx'/'sftp:xx'/'local:xx'
   String get name;                         // 友好显示名
-  SourceKind get kind;                     // local / webdav / smb
+  SourceKind get kind;                     // local / webdav / smb / sftp
   bool get supportsDirect => false;        // 默认不支持直连（scan/open 抛错）
 
   Future<ScanSummary> scan({ScanOptions options,
@@ -402,6 +409,8 @@ abstract class MusicSource {
 ```
 
 - 播放器只认 `MusicSource`（全部为直连实现）
+- 直连播放优先级：离线缓存文件 → `directStream()`（原生 URL，ExoPlayer/native Range seek 更稳，WebDAV 用）→ 自建 `StreamAudioSource`（`open()`）回落；SFTP 无 `directStream`（just_audio 播不了 `sftp://`），恒走 `open()` 字节流（SFTP 协议原生支持偏移读，seek 精度天然优于 HTTP Range）
+- SFTP 代理 origin 为 `sftp://host[:port]/ref` 形态（由 host/port/ref 构造，不含 userinfo；用户名与凭据走 `X-Origin-Ssh` 信封，见 §4.6），播放本身仍走 `open()` 字节流
 - 直连播放优先级：离线缓存文件 → `directStream()`（原生 URL，ExoPlayer/native Range seek 更稳，WebDAV 用）→ 自建 `StreamAudioSource`（`open()`）回落
 - WebDAV `ref` 存**解码后**路径（标题/去重友好），请求时按路径段重新编码；扫描头部元数据解析对大内嵌封面做了边界保护（超采样长度即停止解析，不抛 `RangeError`，随后按提示补读）
 - 源列表 = `sources` 表里启用的源；配置后端地址后解锁多设备同步（与曲库无关）
@@ -425,14 +434,14 @@ abstract class MusicSource {
 
 **扫描流程（首次）**
 
-- 列目录：WebDAV `PROPFIND Depth:1` 递归 + `_mapConcurrent` 并发（并发 6）；本地文件夹 `Directory.list(recursive:true)`
+- 列目录：WebDAV `PROPFIND Depth:1` 递归 + `_mapConcurrent` 并发（并发 6）；本地文件夹 `Directory.list(recursive:true)`；SFTP `readdir` 递归（`dartssh2`，并发模式复用 `_mapConcurrent`，见 §6.10）
 - **不读音频内容**：快速扫描只用枚举结果（ref/size/mtime/etag）落库，歌名取文件名，零 Range 请求。音频解析（`audio_metadata`，纯 Dart 支持 mp3(ID3v2) / flac / m4a(mp4) / ogg·opus / wav(RIFF) / aiff·aifc(FORM) / aac(ADTS)；wav/aiff 的 ID3v2 标签常在音频块之后的 `id3 ` 块里，按块头声明长度定位后尾读）全部推迟到播放时补读与后台补读，按结构定位后精确 Range（见下方「补读」）
 - 单事务批量 `upsertSongs` 落库 → `persistCover`（封面落 `covers/<hash>.jpg`，SQLite 存路径）→ `markMissingExcept`/`clearMissing` 标记消失项（保留缓存歌可播性）
 - 大目录保护：单源上限 20k 首，超出提示分目录添加
 
 **增量与扫描方式**
 
-- 增量指纹 `(ref, size, mtime, etag)`：WebDAV 从 PROPFIND 解析 `getlastmodified`/`getetag`/`getcontentlength`；本地扫描 `stat` 取 size/mtime；**四元组未变直接跳过读头 → 二次扫描零音频下载**
+- 增量指纹 `(ref, size, mtime, etag)`：WebDAV 从 PROPFIND 解析 `getlastmodified`/`getetag`/`getcontentlength`；本地扫描 `stat` 取 size/mtime；SFTP 取 attrs 的 size/mtime（协议无 etag，与本地源同口径，etag 位空）；**四元组未变直接跳过读头 → 二次扫描零音频下载**
 - 扫描方式**写死「快速：只建索引」**（原 `scan_mode`/`scan_head_bytes`/`scan_embed_cover` 三个设置项已删除）：只用枚举拿到的 ref/size/mtime/etag 落库，零读头请求。七类格式均支持
 - **取舍**：首扫只求「先让曲库能被搜到」，不求元数据齐全。缺的信息由播放时补读与后台补读按结构定位后精确读取补齐（那两条链路知道歌马上要放），而不是让首扫对整库盲目读头。代价：首扫无时长，故时长过滤要等补读到时长后才生效
 - 播放时懒补全：快速扫描（只建索引）入库的歌缺 时长/流派/年份/封面 → `PlayerProvider` 播放后后台 `open` 读头解析并 `enrichSong` 回填，失败不影响播放
@@ -471,7 +480,7 @@ abstract class MusicSource {
 - `SourceBrowseView`：顶部返回按钮调用 `exitSource()`、显示源名、扫描/刷新按钮、搜索框、歌曲计数；扫描完成后自动调用 `LibraryProvider.loadSongs()` 刷新全局合并库
 - 源列表页（`SourcesScreen`）支持**列表 / 卡片**两种展示（右上角切换，持久化 `view_mode_sources`，见 [settings.md](settings.md)）；列表行复用卡片组件（`plain` 参数）
 - 源卡片右侧 `PopupMenuButton` 三点菜单：编辑、删除源（二次确认弹窗）
-- 新增/编辑源弹窗统一为 `_SourceDialog`：添加态用 `SegmentedButton` 选 WebDAV/本地文件夹（本地态提供「选择目录」走 `file_selector.getDirectoryPath`）；编辑态按 key 从 `LocalIndex` 原始配置预填（密码从 SecretStore 回填），改名会派生新 key 并同步迁移 `sources/idx_songs/play_meta/playlist_items`（`LocalIndex.renameSource`）
+- 新增/编辑源弹窗统一为 `_SourceDialog`：添加态用 `SegmentedButton` 选 WebDAV/本地文件夹/SFTP（本地态提供「选择目录」走 `file_selector.getDirectoryPath`；SFTP 态字段为 host/port/user/认证方式（密码/密钥）/密码或密钥文本/passphrase/根路径，见 §6.10）；编辑态按 key 从 `LocalIndex` 原始配置预填（密码与私钥文本从 SecretStore 回填），改名会派生新 key 并同步迁移 `sources/idx_songs/play_meta/playlist_items`（`LocalIndex.renameSource`）
 - 全局歌曲/专辑/歌手合并：`LibraryProvider.loadSongs()` 聚合 `DirectSourceManager.allSongs()`；专辑和歌手按合并后的歌曲列表客户端聚合（`Album.fromSongs` / `Artist.fromSongs`），切换到对应栏目时自动拉取
 - **列表排序**（`utils/collection_sort.dart` + `widgets/sort_menu_button.dart`）：按 `SortScope` 开放字段——
   歌曲类内容页（喜欢 / 歌曲 / 歌单详情）为 默认排序 / 字符 / 权重 / 播放时长 / 播放次数 / 时长，
@@ -569,6 +578,20 @@ abstract class MusicSource {
 
 **视图模式**：`ViewModeState` mixin + `ViewModeSlot`（`view_mode_toggle.dart`）收口歌单 / 播放源 / 专辑 / 歌手四页的切换逻辑；切换写 SQLite 设置不触发 provider 通知，故 mixin 内保留 `setState` 本地覆盖。
 
+### 6.10 SFTP 直连（⏳ 阶段 7 规划）
+
+> 与 SMB（§6.3，需平台通道 + 鸿蒙桥验证）的关键区别：SFTP 客户端有成熟纯 Dart 实现（`dartssh2`），**零原生代码、三端同代码**，风险低一个量级，可先于阶段 4 落地；鸿蒙端同样走纯 Dart（R2 约束天然满足）。
+
+- **选型**：客户端 `dartssh2`（^4.1.0，pin 大版本；纯 Dart，SFTPv3 全操作：list/read/write/remove/mkdir/rename）；服务端 `com.hierynomus:sshj`（0.41.x，Apache 2.0，仅代理回源取流用，见 §4.6/§5.2）
+- **连接**：每源复用一个 SSH 会话（`SSHClient` + keepalive；Doze/后台策略复用 WebDAV 探活思路）；SFTP 子系统按操作获取，失败重连（指数退避，上限 30s，与同步退避同口径）
+- **认证（v1 含密钥）**：密码 **或** 私钥二选一。私钥为粘贴的 PEM 文本（OpenSSH / PKCS8，含 ed25519/RSA/ECDSA；加密私钥另填 passphrase），经 `dartssh2` 解析；密码存 `SecretStore` 键 `sftp_pwd:<sourceKey>`，私钥文本存 `sftp_key:<sourceKey>`，passphrase 存 `sftp_keypp:<sourceKey>`——三者均只存引用键于 SQLite，**永不同步到服务端**（与 WebDAV 密码同纪律，见 §7.2）
+- **主机密钥（TOFU）**：首次连接弹窗展示 `SHA256:` 指纹，用户确认后落 `ssh_known_hosts`（§3.2）；指纹变更一律拒绝并告警（需用户删钉后重认）；该表**不参与跨设备同步**（各设备各自 TOFU）
+- **扫描**：`readdir` 递归枚举（ref/size/mtime，无 etag）；落库、增量、20k 上限、missing 语义全复用 §6.4
+- **播放**：`directStream()` 恒 null（just_audio 播不了 `sftp://`）→ `open()` 按 `IntRange` 偏移读喂 `DirectAudioSource`（seek/断点天然精确）；`probe()` 为小偏移试读；缓存走整曲下载（与 WebDAV 同）
+- **链路选择**：SFTP 源同样有直连/代理选项（`SourceRoute`，弹窗可配，默认直连）；代理时 origin 为 `sftp://host[:port]/ref`（无 userinfo），凭据与指纹走 `X-Origin-Ssh` 信封，服务端经 sshj 回源（§4.6）；密钥源走代理需随请求转发私钥（内存态、不记日志不落盘，见 §4.6 与 R10）
+- **展示**：`displayPath()` 为 `sftp://[user@]host[:port]/ref`（不含密码）；源卡片副标题复用直连口径（代理态标「· 代理」）
+- **写操作二期**：SFTPv3 支持 put/rm/mkdir，`supportsWrite` 接口已就绪；v1 范围仅浏览与播放（`supportsWrite=false`），上传/删除另立项
+
 ---
 
 ## 7. 播放算法与同步协议
@@ -646,7 +669,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 - **累计播放时长**：`play_sec` 随 `song.state` 上下推（服务端 `song_states.play_sec` 行级 LWW），客户端应用快照时取 `max(本地, 服务端)` 单调合并，累计值不会因乱序/旧快照倒退
 - **冲突（字段级合并，阶段 5 落地）**：权重走**事件重算**而非绝对值覆盖（两设备并发点赞按到达序重放，不互抹）；收藏/歌单元数据/删除墓碑走**行级 LWW**（事件 `occurred_at` vs 行 `last_event_at`，输方收 correction 回执自纠；仲裁时钟为服务端 `arrived_at`）；**断点按「同歌单取最长」**——深层列表更长者胜，等长或任一侧无列表回退行级 LWW（`SyncService.breakpointWins`）；「不同歌单取最新」由 `GET /playstates/latest` 全局按 `updated_at` 选行实现（行内已存该歌单最长历史）；歌单条目按 seq 到达序重放（后到达胜出）；直接 REST 变更（歌单 CRUD/断点 PUT/调权 POST）同样先记事件再生效，保证 pull 可见
 - **歌曲身份**：服务端无曲库，统一为 `source_id + source_ref`（source_id=客户端源实例 uuid，旧数据/旧客户端为 `legacy:<协议>`）；权重/收藏落 `song_states`，歌单条目与断点自持身份及展示快照（标题/歌手/专辑/时长，pull 不覆盖客户端本地标题）；pull 身份收集恒不建行（已删歌曲不复活）。未配对（无后端地址）时直连事件不进队，避免 outbox 无限积压；`sync_enabled` 关闭同样全跳
-- **播放源同步**：`source.create/update/delete` + 行级 LWW；身份 `client_uuid`，去重键 `(kind, address)`（名称不参与；地址两端归一化——WebDAV 缺 scheme 补 https、去尾斜杠，客户端 `sourceAddressOf` 与服务端 `SourceAddresses` 同口径，转码强校验按同一归一化匹配），本地文件夹源不参与，密码不入服务端（设备本地 SecretStore，新设备显示「待配置密码」）；应用后重建内存源列表；存量远端源接入时补 uuid 并补发一次 create；旧协议级身份（`legacy:<协议>`）在设备重新上报时由服务端懒迁移到源实例 uuid
+- **播放源同步**：`source.create/update/delete` + 行级 LWW；身份 `client_uuid`，去重键 `(kind, address)`（名称不参与；地址两端归一化——WebDAV 缺 scheme 补 https、去尾斜杠，SFTP 形态 `host:port/path`（port 缺省 22 显式化），客户端 `sourceAddressOf` 与服务端 `SourceAddresses` 同口径，转码强校验按同一归一化匹配），本地文件夹源不参与，密码与私钥（含 passphrase）不入服务端（设备本地 SecretStore，新设备显示「待配置密码」；SFTP 主机密钥钉 `ssh_known_hosts` 亦不参与同步，各设备各自 TOFU）；应用后重建内存源列表；存量远端源接入时补 uuid 并补发一次 create；旧协议级身份（`legacy:<协议>`）在设备重新上报时由服务端懒迁移到源实例 uuid
 - **跨设备断点消费**：`breakpoint.set` 快照带来源设备；客户端 pull 落 `breakpoint_mirror`；启动恢复与歌单「播放全部」会比较本机 `play_state`（含歌单归属 `playlist_uuid`）与镜像的 `updated_at`，远端更新时自动从该进度续播并 toast 提示（歌单详情保留「从头播放」入口）；目标歌本机无源时退到其后第一首可播条目，全不可播则回落本机恢复
 - 直连模式（无服务器）：上述全部跳过，数据只在本机
 
@@ -716,7 +739,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 - ~~✅ 后端扫描增量：`MusicScanner` 指纹跳过 + `getlastmodified` 解析 + 并发探测 + album 缓存 + `@Scheduled` 定时（§4.5 / settings.md §5.1）~~ 已移除（服务端不再扫描；歌曲只由 APP 在播放源处扫描）
 - ✅ 直连浏览：`SourcesScreen` 卡片三点菜单 + `SourceBrowseView` 文件夹式内页（扫描/进度/取消 → 搜索 → 播放 → 收藏 → 缓存全链路）；离线缓存（§6.6）
 - ✅ 全局库合并（§6.5）：`LibraryProvider` 聚合直连源（去重），专辑/歌手客户端聚合；按 `sourceKey` 逐首解析源实现
-- ✅ 源骨架：Webdav / Local 完整，SMB（阶段 4）
+- ✅ 源骨架：Webdav / Local 完整，SMB（阶段 4），SFTP（阶段 7，含密钥认证与服务端代理）
 - 验收（卸载后端场景）：只配 WebDAV / 本地源，完成扫描→搜索→播放→收藏→断网播缓存 全链路
 
 ### 阶段 4：全平台 SMB 直连（~1–2 周，风险最高）
@@ -747,6 +770,14 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 - 上传/删除：客户端直写（WebDAV PUT/DELETE/MKCOL + 本地 dart:io；鸿蒙写暂不支持而灰显）；删除为二次确认全删（索引/权重/歌词/歌单/缓存）；服务端分片上传方案已作废
 - 管理端设置：`PUT /admin/settings`（仅缓存两键）+ 客户端 `follow_server` 接线（`cache_config_mode` + 生效值 + 同步按钮）+ `GET /meta/server`
 - 验收：FLAC 源按 192k 出流实测流量达标；上传 50MB 文件入库可播
+
+### 阶段 7：SFTP 直连（含密钥认证与服务端代理）（~1 周）
+
+> **状态：规划中** —— 客户端 `dartssh2` + 服务端 `sshj`，纯 Dart/纯 Java，无平台通道（风险显著低于阶段 4，可先行）。
+
+- 客户端：`SftpDirectSource`（`scan/open/cacheSong/probe` 全链；`directStream` 恒 null，走字节流）+ 弹窗 SFTP 入口（host/port/user/认证方式/密码或密钥/passphrase/根路径）+ TOFU 指纹确认弹窗 + `ssh_known_hosts` 本地钉；直连/代理链路可选（默认直连）
+- 服务端：`transcode/ssh` 经 sshj 回源取流（密码 + PEM/OpenSSH 私钥 + passphrase；主机密钥按客户端信封指纹校验，服务端不存 known_hosts）；`GET /transcode/stream` 接 `sftp://` origin + `X-Origin-Ssh` 信封；其余语义（并发 2、429 回落、502 映射）与 WebDAV 同
+- 验收：Linux/Android/鸿蒙三端真机直连 SFTP 播放（含密钥源）+ seek/断点正常；TOFU 首认 + 指纹变更拒绝；代理源经服务端转码出流（密钥源含私钥转发路径）
 
 ### 平台支线：鸿蒙 NEXT 端（2026-09 完成 PoC 验收）
 
@@ -801,6 +832,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 | R7 | 公网暴露 | 曲库/上传被滥用 | Bearer 认证已是第一道门；文档仍建议叠加 IP 白名单 |
 | R8 | 转码流 position 精度（阶段 6 才涉及的转码链路） | 转码后 VBR 断点 ±2s | 文档注明；CBR 精确（现阶段无转码，暂不触发） |
 | R9 | 文档/脚本与实际脱节（治理债，非功能风险） | 新部署踩坑、误判现状 | 基本收口（2026-10）：§3.1 init.sql 已合并迁移至 v3（新建库与增量升级两条路径对齐）；`GET /admin/config` 已实现（缓存建议值由 `CACHE_MAX_MIB`/`CACHE_SONG_LIMIT` env 镜像，默认 5 GiB / 200）；settings.md 已与 §4.5 一致。剩余：客户端 `follow_server` 接线与 `PUT /admin/settings`（阶段 6） |
+| R10 | SFTP 密钥与主机信任（阶段 7 新增） | 私钥外泄误伤、中间人 | 私钥文本只存本机 SecretStore，代理转发时内存态单次使用、不记日志不落盘；主机密钥 TOFU（首认弹窗 + 变更加锁拒绝）；服务端不存 known_hosts，凭客户端信封指纹校验；`dartssh2`/`sshj` 均 pin 大版本并以单测锁行为 |
 
 ### 待拍板（沿用 v1，默认按文中执行）
 
