@@ -48,8 +48,8 @@ class CacheManager {
   /// 超出上限时按最近最少使用淘汰（跳过正在播放条目）。
   /// 上限取「生效值」（custom=本地；follow_server=服务端建议，settings.md §3.3）。
   void evictIfNeeded() {
-    final maxBytes = settings.cacheMaxBytes;
-    final maxSongs = settings.cacheSongLimit;
+    final maxBytes = settings.effectiveCacheMaxBytes;
+    final maxSongs = settings.effectiveCacheSongLimit;
     if (maxBytes <= 0 && maxSongs <= 0) return;
     final rows = index.listCache();
     rows.sort((a, b) => _accessAt(a).compareTo(_accessAt(b)));

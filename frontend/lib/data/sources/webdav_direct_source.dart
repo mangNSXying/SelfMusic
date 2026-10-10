@@ -354,6 +354,116 @@ class WebdavDirectSource implements MusicSource {
     }
   }
 
+  // ---------- 直写管理（阶段6，WebDAV 直写） ----------
+
+  @override
+  bool get supportsWrite => true;
+
+  /// parentRef 为 '' 即源根；filename 不得含 `/` 与 `..`。
+  void _guardName(String name) {
+    if (name.isEmpty || name.contains('/') || name.contains('\\')) {
+      throw StateError('文件名非法：$name');
+    }
+    if (name == '.' || name == '..' || name.contains('..')) {
+      throw StateError('文件名非法（路径穿越）：$name');
+    }
+  }
+
+  void _guardParent(String parentRef) {
+    final parts = parentRef.split('/').where((s) => s.isNotEmpty);
+    if (parts.any((s) => s == '.' || s == '..')) {
+      throw StateError('目录非法（路径穿越）：$parentRef');
+    }
+  }
+
+  String _writeUrl(String parentRef, String leaf) {
+    _guardParent(parentRef);
+    _guardName(leaf);
+    String decodedParent;
+    try {
+      decodedParent = Uri.decodeComponent(parentRef);
+    } catch (_) {
+      decodedParent = parentRef;
+    }
+    final segs = <String>[
+      ...decodedParent.split('/').where((s) => s.isNotEmpty),
+      leaf,
+    ];
+    final enc = '/${segs.map(Uri.encodeComponent).join('/')}';
+    final base = _base.endsWith('/') ? _base.substring(0, _base.length - 1) : _base;
+    return '$base$enc';
+  }
+
+  @override
+  Future<void> uploadFile(String parentRef, String filename,
+      Stream<List<int>> bytes, int length) async {
+    if (!_audioExt(filename)) {
+      throw StateError('仅支持上传音频文件（mp3/flac/m4a/aac/ogg/wav/aif[f][c]）');
+    }
+    final url = _writeUrl(parentRef, filename);
+    final client = _newClient(allowSelfSigned);
+    try {
+      final req = await client.openUrl('PUT', Uri.parse(url));
+      _auth(req, username, password);
+      req.contentLength = length;
+      req.headers.set(HttpHeaders.contentTypeHeader, 'application/octet-stream');
+      await req.addStream(bytes);
+      final resp = await _withDeadline(req.close(), _kCacheDownloadDeadline, 'WebDAV 上传（$url）');
+      await resp.drain<void>();
+      if (resp.statusCode != 200 && resp.statusCode != 201 && resp.statusCode != 204) {
+        if (resp.statusCode == 401 || resp.statusCode == 403) {
+          throw SourceAuthException(WebdavStatusException(resp.statusCode, url).toString());
+        }
+        throw WebdavStatusException(resp.statusCode, url);
+      }
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  @override
+  Future<void> deleteSong(Song song) async {
+    final url = _playUrl(song);
+    if (url == null) throw StateError('WebDAV 缺少删除地址');
+    final client = _newClient(allowSelfSigned);
+    try {
+      final req = await client.openUrl('DELETE', Uri.parse(url));
+      _auth(req, username, password);
+      final resp = await _withDeadline(req.close(), _kRequestDeadline, 'WebDAV 删除（$url）');
+      await resp.drain<void>();
+      if (resp.statusCode != 200 && resp.statusCode != 202 && resp.statusCode != 204) {
+        if (resp.statusCode == 401 || resp.statusCode == 403) {
+          throw SourceAuthException(WebdavStatusException(resp.statusCode, url).toString());
+        }
+        throw WebdavStatusException(resp.statusCode, url);
+      }
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  @override
+  Future<void> createFolder(String parentRef, String name) async {
+    final url = _writeUrl(parentRef, name);
+    final client = _newClient(allowSelfSigned);
+    try {
+      final req = await client.openUrl('MKCOL', Uri.parse(url));
+      _auth(req, username, password);
+      final resp = await _withDeadline(req.close(), _kRequestDeadline, 'WebDAV 新建文件夹（$url）');
+      await resp.drain<void>();
+      // 405/409 常表示已存在：视为成功（幂等），避免重复建目录报错。
+      if (resp.statusCode == 405 || resp.statusCode == 409) return;
+      if (resp.statusCode != 200 && resp.statusCode != 201) {
+        if (resp.statusCode == 401 || resp.statusCode == 403) {
+          throw SourceAuthException(WebdavStatusException(resp.statusCode, url).toString());
+        }
+        throw WebdavStatusException(resp.statusCode, url);
+      }
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   // ---------- config ----------
 
   Map<String, String> get configJ => {

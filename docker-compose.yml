@@ -15,10 +15,15 @@ services:
       PAIRING_TOKEN: ${PAIRING_TOKEN:-}
       CACHE_MAX_MIB: ${CACHE_MAX_MIB:-5120}
       CACHE_SONG_LIMIT: ${CACHE_SONG_LIMIT:-200}
+      TRANSCODE_MAX_CONCURRENCY: ${TRANSCODE_MAX_CONCURRENCY:-2}
       TZ: Asia/Shanghai
     volumes:
       - backend-maven-repo:/root/.m2
     restart: unless-stopped
+    # 转码代理需回源拉流：源域名常只有 IPv6（AAAA），默认桥接无 IPv6 会
+    # Network is unreachable；独立网络启用 IPv6（Docker 27+ 按网络生效）。
+    networks:
+      - ipv6net
 
   backend-dev:
     build:
@@ -38,6 +43,7 @@ services:
       PAIRING_TOKEN: ${PAIRING_TOKEN:-}
       CACHE_MAX_MIB: ${CACHE_MAX_MIB:-5120}
       CACHE_SONG_LIMIT: ${CACHE_SONG_LIMIT:-200}
+      TRANSCODE_MAX_CONCURRENCY: ${TRANSCODE_MAX_CONCURRENCY:-2}
       TZ: Asia/Shanghai
     command:
       - "/bin/sh"
@@ -48,6 +54,12 @@ services:
       - ./backend/src:/home/ubuntu/app/src
       - ${HOME}/.m2:/home/ubuntu/.m2
     restart: unless-stopped
+    networks:
+      - ipv6net
 
 volumes:
   backend-maven-repo:
+
+networks:
+  ipv6net:
+    enable_ipv6: true

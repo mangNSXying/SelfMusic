@@ -226,6 +226,45 @@ class ApiClient {
     }
   }
 
+  // ---------- 管理闭环（阶段6）：缓存建议值 + 服务端元信息 ----------
+
+  /// 拉取服务端缓存建议值（GET /admin/config）。失败抛错，由调用方 toast。
+  Future<Map<String, dynamic>> fetchAdminConfig() async {
+    final resp = await dio.get('/api/v1/admin/config');
+    return (resp.data['data'] as Map<String, dynamic>?) ?? {};
+  }
+
+  /// 管理端改缓存建议值（PUT /admin/settings，仅 cache_* 两键）。
+  Future<Map<String, dynamic>> updateAdminSettings(
+      Map<String, dynamic> body) async {
+    final resp = await dio.put('/api/v1/admin/settings', data: body);
+    return (resp.data['data'] as Map<String, dynamic>?) ?? {};
+  }
+
+  /// 服务端元信息（GET /meta/server）：版本/ffmpeg/并发水位/设备数/cursor。
+  /// 旧服务端 404 → null，调用方回退隐藏转码开关。
+  Future<Map<String, dynamic>?> fetchServerMeta() async {
+    if (dio.options.baseUrl.isEmpty) return null;
+    try {
+      final resp = await dio.get('/api/v1/meta/server');
+      return resp.data['data'] as Map<String, dynamic>?;
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 404) return null;
+      rethrow;
+    }
+  }
+
+  // ---------- 无状态转码（阶段6）：播放期 URL 构造 ----------
+
+  /// 构造转码流 URL（不发请求，供 just_audio setUrl）。
+  /// 调用方须把 WebDAV 鉴权经 headers 透传 X-Origin-Auth（见 player）。
+  String? transcodeStreamUrl(String originUrl, int bitrate) {
+    if (dio.options.baseUrl.isEmpty) return null;
+    final base = dio.options.baseUrl;
+    final enc = Uri.encodeComponent(originUrl);
+    return '$base/api/v1/transcode/stream?origin=$enc&bitrate=$bitrate';
+  }
+
   // ---------- 多设备状态同步（阶段5，DESIGN §7.2 / SyncEngine） ----------
   //
   // 与上面可空吞错的读取类方法不同：同步走引擎退避，Dio 异常直接上抛，

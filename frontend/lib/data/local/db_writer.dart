@@ -626,6 +626,9 @@ Object? _runOp(Database db, String name, Map<String, dynamic> a) {
     case 'clearMissing':
       _opClearMissing(db, a['sourceKey'] as String);
       return null;
+    case 'deleteSong':
+      _opDeleteSong(db, a['sourceKey'] as String, a['ref'] as String);
+      return null;
     case 'movePlaylistItem':
       _opMovePlaylistItem(db, a);
       return null;
@@ -1292,7 +1295,7 @@ bool _opApplySourceSnapshot(Database db, Map<String, dynamic> a) {
       try {
         cfg = jsonDecode(r['config'] as String) as Map<String, dynamic>;
       } catch (_) {}
-      if (sourceAddressOf(kind, cfg) == addr) {
+      if (sourceAddressOf(kind, cfg) == normalizeSourceAddress(kind, addr)) {
         db.execute(
             'UPDATE sources SET client_uuid=? WHERE key=?', [uuid, r['key']]);
         hitKey = r['key'] as String;
@@ -1525,6 +1528,16 @@ void _opDeleteSource(Database db, String key) {
   db.execute('DELETE FROM idx_songs WHERE source_key=?', [key]);
   // 歌手身份映射随源删除清理（歌手处理.txt）。
   db.execute('DELETE FROM artist_song_map WHERE source_key=?', [key]);
+}
+
+/// 硬删一首歌的全部本地痕迹（阶段6：删除全删）。
+/// 含索引/权重/歌词/歌单条目/歌手映射；缓存行由调用方另行清理。
+void _opDeleteSong(Database db, String sourceKey, String ref) {
+  db.execute('DELETE FROM idx_songs WHERE source_key=? AND ref=?', [sourceKey, ref]);
+  db.execute('DELETE FROM play_meta WHERE source_key=? AND song_ref=?', [sourceKey, ref]);
+  db.execute('DELETE FROM song_lyrics WHERE source_key=? AND ref=?', [sourceKey, ref]);
+  db.execute('DELETE FROM playlist_items WHERE source_key=? AND song_ref=?', [sourceKey, ref]);
+  db.execute('DELETE FROM artist_song_map WHERE source_key=? AND ref=?', [sourceKey, ref]);
 }
 
 void _opRenameSource(Database db, String oldKey, String newKey) {

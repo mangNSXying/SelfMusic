@@ -2,7 +2,7 @@
 
 > 定位：**去中心化的个人音乐服务器 + 双模式客户端**
 > 上游约束：`开发思路.txt`（无中心账号 / 本地+SMB+WebDAV 曲库 / 加权播放 / 喜欢歌自动缓存）
-> 状态：**阶段 0–3、阶段 5 已完成**（Android 壳对齐 / 认证·配对 / 客户端本地闭环·歌单·喜欢列表 / 直连 WebDAV·本地索引·增量扫描优化 / 多设备状态同步）；**阶段 4（全平台 SMB 直连）未动工**——仅存在 `SmbDirectSource` 配置骨架（见 §6.3），任何平台无直连通路、源列表 UI 亦未提供 SMB 选项；阶段 6（转码+管理闭环）待实施。
+> 状态：**阶段 0–3、阶段 5–6 已完成**（Android 壳对齐 / 认证·配对 / 客户端本地闭环·歌单·喜欢列表 / 直连 WebDAV·本地索引·增量扫描优化 / 多设备状态同步 / 转码+管理闭环）；**阶段 4（全平台 SMB 直连）未动工**——仅存在 `SmbDirectSource` 配置骨架（见 §6.3），任何平台无直连通路、源列表 UI 亦未提供 SMB 选项。
 > 在此之上，后续迭代全部落地：元数据后台补读与全源编辑、歌词、后台播放、睡眠定时四模式、播放页与集合页交互
 > （层级返回 / 分组左右滑切 / 列表·卡片切换 / 队列·歌单自动定位高亮 / 标题显示格式 / 搜索追焦 / 编辑歌单）、
 > 网络安全加固（默认 HTTPS + 允许不安全 HTTP / 信任自签名开关 + 明文凭据收敛到 secure storage，见 §6.7 与本文件 §3.2 凭据加密说明）、
@@ -94,8 +94,8 @@
 | 多设备状态同步 | ✅ | 权重/收藏/歌单/断点/播放源；需要后端 |
 | 播放源同步 | ✅ | WebDAV 等远端源（本地文件夹源各机独立） |
 | 后台增量扫描 | ✅ | 本地变化监听 + 周期快扫，指纹跳过零下载 |
-| 转码（按需 ffmpeg） | ⏳ | 阶段 6，客户端/服务端均无实现 |
-| 上传 / 删除源文件 | ⏳ | **客户端没有任何上传/删除接口**（仅 WebDAV PROPFIND 读）。「WebDAV 可直传」不成立；待阶段 6 |
+| 转码（按需 ffmpeg） | ✅ | 阶段 6：服务端无状态代理 `GET /transcode/stream`（不建库，强校验 sync_sources，并发只 env 默认 2，超限 429 回落直连）；客户端省流开关 + 192/256/320 三档（MP3 无 512 档，不开放） |
+| 上传 / 删除源文件 | ✅ | 阶段 6：WebDAV PUT/DELETE/MKCOL + 本地 dart:io 直写；删除为二次确认全删（索引/权重/歌词/歌单/缓存）；SMB 仍仅骨架 |
 
 ## 2. 身份与设备配对
 
@@ -262,13 +262,19 @@ INDEX idx_refresh(refresh_token_hash)
 | ✅ POST | `/auth/pair` | `{pairing_token, device_name, platform}` → `{client_id, access_token, refresh_token, expires_in=86400, refresh_expires_in=2592000}`；主令牌错误返回 `code=40100` |
 | ✅ POST | `/auth/refresh` | 匿名白名单；`{refresh_token}` → 轮换式换发新 `{access_token, refresh_token, ...}`；无效/过期返回 `code=40102` |
 | ✅ POST | `/auth/unpair` | 自我注销（吊销当前设备） |
-| ⏳ GET | `/meta/server` | 版本、ffmpeg 可用性、源概况（需认证） |
+| ✅ GET | `/meta/server` | 版本、ffmpeg 可用性、转码并发水位、设备数、事件 cursor（需认证；旧服务端无此端点时客户端回退） |
 
-### 4.2 曲库与流媒体（已移除）
+### 4.2 曲库与流媒体（已移除；转码为例外代理）
 
-> 服务端不提供曲库索引与流式代理：歌曲由 App 在各播放源处扫描、直接从源播放；
-> 后端仅提供认证/配对与状态同步（§4.4）。原 `/library/**`、`/stream/**`、
+> 服务端不提供曲库索引：歌曲由 App 在各播放源处扫描、直接从源播放；
+> 后端仅提供认证/配对、状态同步（§4.4）与无状态转码代理（§4.6）。原 `/library/**`、
 > `POST /songs/{id}/weight` 已删除。
+
+### 4.6 无状态转码代理 —— ✅ 已实现（阶段 6）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| ✅ GET | `/transcode/stream?origin=&bitrate=` | 回源拉流 → ffmpeg 管道转 MP3 CBR（192/256/320，默认 192）→ 流式回客户端；`X-Origin-Auth` 透传回源鉴权（不落地不记日志）；强校验 origin 落在未删除 WebDAV `sync_sources` 地址之下 + 黑名单主机拒绝（地址按「WebDAV 缺 scheme 补 https」归一化后匹配，兼容历史无 scheme 行，写入端 `SyncService` 亦收敛）；整曲转码不支持 Range；并发只 env（`TRANSCODE_MAX_CONCURRENCY`，默认 2），超限 429 + `Retry-After`，客户端回落直连；无 ffmpeg 时 503 |
 
 ### 4.4 状态同步 —— ✅ 已实现（阶段 5）
 
@@ -287,8 +293,8 @@ INDEX idx_refresh(refresh_token_hash)
 | ✅ GET | `/admin/pairing-token` | 主配对令牌明文（`设置→服务端→配对服务器` 展示用；密钥源自 env 镜像） |
 | ✅ GET | `/admin/config` | 服务端缓存建议值 `{cache_max_bytes, cache_song_limit}`（取值自 settings 表：init.sql 预置 + 每次启动被 `CACHE_MAX_MIB`/`CACHE_SONG_LIMIT` env 覆盖，§5.4；客户端 `follow_server` 来源） |
 | ✅ GET | `/admin/devices` · PUT/DELETE `/admin/devices/{id}` | 设备列表 / 改名 / 吊销 |
-| ⏳ POST | `/admin/upload/init` → `/part/{n}` → `/commit` | 分片上传（16MB/片），阶段 6 |
-| ⏳ PUT | `/admin/settings` | 管理端改设置（**未实现**，阶段 6；客户端 `follow_server` 的**接线**亦未做——按钮仍灰显，见 §6.7 / settings.md §3.3） |
+| ✅ PUT | `/admin/settings` | 管理端改缓存建议值（仅 `cache_max_bytes/cache_song_limit`；`pairing_token` 为 env 只读拒绝写入；env 重启覆盖 DB，PUT 值会被带 env 重启覆盖） |
+| — | 上传经服务端分片 | **已作废**：上传/删除走客户端 WebDAV/本地直写（§6.2 源直写接口），不经服务端 |
 
 ---
 
@@ -336,12 +342,13 @@ TokenFilter (OncePerRequestFilter)
 
 | 镜像 | 基座 | 变化 |
 |------|------|------|
-| prod | `eclipse-temurin:21-jre` | 复用基镜像自带 `ubuntu` 用户运行（UID 1000，与 dev 对齐；自建同 UID 用户会构建失败）；暴露 8080。**不装 ffmpeg** |
-| dev | `maven:3.9-eclipse-temurin-21` | `apt` 装了 ffmpeg（历史的转码预案，后端当前从不调用） |
+| prod | `eclipse-temurin:21-jre` | 复用基镜像自带 `ubuntu` 用户运行（UID 1000，与 dev 对齐；自建同 UID 用户会构建失败）；暴露 8080。**阶段 6 起装 ffmpeg**（无状态转码代理用） |
+| dev | `maven:3.9-eclipse-temurin-21` | `apt` 装了 ffmpeg（阶段 6 转码代理在用） |
 
-环境变量（**实际读取**）：`DB_HOST/DB_PORT/DB_NAME/DB_USERNAME/DB_PASSWORD`（连 MySQL，默认值见 `application.yml`）+ `PAIRING_TOKEN`（可选，配对密钥权威来源；每次启动覆盖写入 settings，改后重启即生效；仅在首次初始化时以 WARN 打印一次密钥）+ **缓存建议值 `CACHE_MAX_MIB`（单位 MiB）与 `CACHE_SONG_LIMIT`（首数），默认 5120 / 200**（每次启动覆盖写入 `settings.cache_max_bytes`（字节）/`cache_song_limit`，改 `.env` 重启即生效；未提供或非法时沿用库中旧值、库中无则落代码默认 5 GiB / 200；经 `GET /admin/config` 下发客户端）。
+环境变量（**实际读取**）：`DB_HOST/DB_PORT/DB_NAME/DB_USERNAME/DB_PASSWORD`（连 MySQL，默认值见 `application.yml`）+ `PAIRING_TOKEN`（可选，配对密钥权威来源；每次启动覆盖写入 settings，改后重启即生效；仅在首次初始化时以 WARN 打印一次密钥）+ **缓存建议值 `CACHE_MAX_MIB`（单位 MiB）与 `CACHE_SONG_LIMIT`（首数），默认 5120 / 200**（每次启动覆盖写入 `settings.cache_max_bytes`（字节）/`cache_song_limit`，改 `.env` 重启即生效；未提供或非法时沿用库中旧值、库中无则落代码默认 5 GiB / 200；经 `GET /admin/config` 下发客户端）+ **`TRANSCODE_MAX_CONCURRENCY`（1–32，默认 2，只 env，不进 settings 表、不经 PUT 修改）**。
 
 > ⚠️ 文档曾列的 `LOCAL_MUSIC_ROOT` / `WEBDAV_BASE_URL` / `WEBDAV_USER` / `WEBDAV_PASS`（出流代理）与 `SCAN_*`（服务端扫描）在后端代码**零引用**，属历史遗留死配置；后端既不出流也不扫描，`.env` 中的残留项可删。
+> 部署注意：转码代理需容器能直达源地址——源域名常只有 IPv6（AAAA），默认桥接无 IPv6 会 `Network is unreachable`；compose 为两个后端服务启用独立 `ipv6net`（`enable_ipv6: true`，Docker 27+ 按网络生效）。
 
 ---
 
@@ -639,7 +646,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 - **累计播放时长**：`play_sec` 随 `song.state` 上下推（服务端 `song_states.play_sec` 行级 LWW），客户端应用快照时取 `max(本地, 服务端)` 单调合并，累计值不会因乱序/旧快照倒退
 - **冲突（字段级合并，阶段 5 落地）**：权重走**事件重算**而非绝对值覆盖（两设备并发点赞按到达序重放，不互抹）；收藏/歌单元数据/删除墓碑/断点走**行级 LWW**（事件 `occurred_at` vs 行 `last_event_at`，输方收 correction 回执自纠；仲裁时钟为服务端 `arrived_at`）；歌单条目按 seq 到达序重放（后到达胜出）；直接 REST 变更（歌单 CRUD/断点 PUT/调权 POST）同样先记事件再生效，保证 pull 可见
 - **歌曲身份**：服务端无曲库，统一为 `source_id + source_ref`（source_id=客户端源实例 uuid，旧数据/旧客户端为 `legacy:<协议>`）；权重/收藏落 `song_states`，歌单条目与断点自持身份及展示快照（标题/歌手/专辑/时长，pull 不覆盖客户端本地标题）；pull 身份收集恒不建行（已删歌曲不复活）。未配对（无后端地址）时直连事件不进队，避免 outbox 无限积压；`sync_enabled` 关闭同样全跳
-- **播放源同步**：`source.create/update/delete` + 行级 LWW；身份 `client_uuid`，去重键 `(kind, address)`（名称不参与），本地文件夹源不参与，密码不入服务端（设备本地 SecretStore，新设备显示「待配置密码」）；应用后重建内存源列表；存量远端源接入时补 uuid 并补发一次 create；旧协议级身份（`legacy:<协议>`）在设备重新上报时由服务端懒迁移到源实例 uuid
+- **播放源同步**：`source.create/update/delete` + 行级 LWW；身份 `client_uuid`，去重键 `(kind, address)`（名称不参与；地址两端归一化——WebDAV 缺 scheme 补 https、去尾斜杠，客户端 `sourceAddressOf` 与服务端 `SourceAddresses` 同口径，转码强校验按同一归一化匹配），本地文件夹源不参与，密码不入服务端（设备本地 SecretStore，新设备显示「待配置密码」）；应用后重建内存源列表；存量远端源接入时补 uuid 并补发一次 create；旧协议级身份（`legacy:<协议>`）在设备重新上报时由服务端懒迁移到源实例 uuid
 - **跨设备断点消费**：`breakpoint.set` 快照带来源设备；客户端 pull 落 `breakpoint_mirror`；启动恢复与歌单「播放全部」会比较本机 `play_state`（含歌单归属 `playlist_uuid`）与镜像的 `updated_at`，远端更新时自动从该进度续播并 toast 提示（歌单详情保留「从头播放」入口）；目标歌本机无源时退到其后第一首可播条目，全不可播则回落本机恢复
 - 直连模式（无服务器）：上述全部跳过，数据只在本机
 
@@ -734,9 +741,12 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 ### 阶段 6：转码 + 管理闭环（~1 周）
 
-- ffmpeg 按需转码管线与并发上限；分片上传；删除/隐藏
-- 管理端设置：**已提前落地的有 `GET /api/v1/admin/pairing-token`（密钥展示）、`GET /api/v1/admin/devices`（设备管理）与 `GET /api/v1/admin/config`（缓存建议值，enabled 由 `CACHE_MAX_MIB`/`CACHE_SONG_LIMIT` env 镜像）**；本阶段补齐 `PUT /admin/settings` 与客户端 `follow_server` 接线
-- 验收：FLAC 源按 128k 出流实测流量达标；上传 50MB 文件入库可播
+> **状态：已实现✅** —— 无状态转码代理（§4.6，不建库）+ WebDAV/本地直写上传删除 + 管理闭环（`PUT /admin/settings` + `follow_server` + `GET /meta/server`）。
+
+- 转码：`GET /transcode/stream` 回源拉流 → ffmpeg MP3 CBR 管道；强校验 origin 落在已同步 WebDAV 源之下；并发只 env（默认 2），超限 429 回落直连；客户端省流开关 + 192/256/320 三档，缓存仍存原文件
+- 上传/删除：客户端直写（WebDAV PUT/DELETE/MKCOL + 本地 dart:io；鸿蒙写暂不支持而灰显）；删除为二次确认全删（索引/权重/歌词/歌单/缓存）；服务端分片上传方案已作废
+- 管理端设置：`PUT /admin/settings`（仅缓存两键）+ 客户端 `follow_server` 接线（`cache_config_mode` + 生效值 + 同步按钮）+ `GET /meta/server`
+- 验收：FLAC 源按 192k 出流实测流量达标；上传 50MB 文件入库可播
 
 ### 平台支线：鸿蒙 NEXT 端（2026-09 完成 PoC 验收）
 

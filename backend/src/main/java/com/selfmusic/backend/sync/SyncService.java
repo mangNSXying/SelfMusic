@@ -21,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.selfmusic.backend.common.BizException;
+import com.selfmusic.backend.common.SourceAddresses;
 import com.selfmusic.backend.domain.entity.PlayState;
 import com.selfmusic.backend.domain.entity.Playlist;
 import com.selfmusic.backend.domain.entity.PlaylistItem;
@@ -434,6 +435,9 @@ public class SyncService {
         if (kind == null || kind.isBlank()) throw new BizException(40001, "kind required");
         String address = textOr(p, "address", null);
         if (address == null || address.isBlank()) throw new BizException(40001, "address required");
+        // 写入边界归一化（WebDAV 缺 scheme 补 https）：旧客户端/历史行曾落原始
+        // 无 scheme 地址，否则去重键与转码强校验都会失配。
+        address = SourceAddresses.normalize(kind, address);
 
         if (SyncEventTypes.SOURCE_DELETE.equals(ev.type())) {
             SyncSource row = syncSourceRepository.findByClientUuid(uuid).orElse(null);
