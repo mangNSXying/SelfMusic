@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 
@@ -8,6 +9,7 @@ import 'package:path_provider_platform_interface/path_provider_platform_interfac
 import 'package:selfmusic/data/local/app_settings.dart';
 import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/data/sources/music_source.dart';
+import 'package:selfmusic/data/sources/sftp_direct_source.dart';
 import 'package:selfmusic/data/sources/smb_direct_source.dart';
 import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/services/api_client.dart';
@@ -208,6 +210,27 @@ void main() {
       expect(u2, contains('loudnorm=16'));
     });
 
+    test('SFTP 地址与信封纯函数', () {
+      expect(normalizeSftpAddress('NAS:2222/Music/'), 'nas:2222/Music');
+      expect(normalizeSftpAddress('nas'), 'nas:22');
+      expect(normalizeSftpAddress(''), '');
+      expect(
+          sourceAddressOf('sftp',
+              {'host': 'NAS', 'port': 2222, 'path': '/Music/'}),
+          'nas:2222/Music');
+      expect(
+          sftpOriginUrl(host: 'nas', port: 22, ref: 'a b/歌.flac'),
+          'sftp://nas:22/a%20b/%E6%AD%8C.flac');
+      expect(parseSftpAuthMethod('key'), SftpAuthMethod.key);
+      expect(parseSftpAuthMethod('bogus'), SftpAuthMethod.password);
+      // 信封往返：服务端按同口径解析（u/p/hk 与 k/pp）。
+      final env = buildSshEnvelope(
+          username: 'u', password: 'p', fingerprint: 'SHA256:x');
+      final body = jsonDecode(utf8.decode(
+          base64Url.decode(env.padRight((env.length + 3) ~/ 4 * 4, '='))));
+      expect(body, {'u': 'u', 'hk': 'SHA256:x', 'p': 'p'});
+    });
+
     test('源地址归一化：WebDAV 缺 scheme 补 https、去尾斜杠；上报与比对同口径', () {
       // 回归：无 scheme 地址曾原样上报，服务端强校验失配 → 转码 400。
       expect(normalizeSourceAddress('webdav', 'webdav.shamiko.site/data/'),
@@ -235,7 +258,7 @@ void main() {
       expect(parseSourceRoute('weird'), SourceRoute.direct);
     });
 
-    test('shouldUseTranscode：仅 开关开+后端可达+webdav代理 才走转码', () {
+    test('shouldUseTranscode：仅 开关开+后端可达+webdav/sftp代理 才走转码', () {
       final proxy = _FakeRouteSource(
           key: 'webdav:n', name: 'n', kind: SourceKind.webdav,
           route: SourceRoute.proxy);
@@ -258,13 +281,27 @@ void main() {
       expect(
           shouldUseTranscode(enabled: true, apiBaseUrl: '', src: proxy),
           isFalse);
-      // 非 webdav 即使标代理也不走（服务端强校验只认 WebDAV）。
+      // 非 webdav/sftp 即使标代理也不走（服务端强校验只认同类源）。
       final localProxy = _FakeRouteSource(
           key: 'local:n', name: 'n', kind: SourceKind.local,
           route: SourceRoute.proxy);
       expect(
           shouldUseTranscode(
               enabled: true, apiBaseUrl: 'https://h', src: localProxy),
+          isFalse);
+      // sftp 代理与 webdav 代理同权。
+      final sftpProxy = _FakeRouteSource(
+          key: 'sftp:n', name: 'n', kind: SourceKind.sftp,
+          route: SourceRoute.proxy);
+      expect(
+          shouldUseTranscode(
+              enabled: true, apiBaseUrl: 'https://h', src: sftpProxy),
+          isTrue);
+      final sftpDirect = _FakeRouteSource(
+          key: 'sftp:n', name: 'n', kind: SourceKind.sftp);
+      expect(
+          shouldUseTranscode(
+              enabled: true, apiBaseUrl: 'https://h', src: sftpDirect),
           isFalse);
     });
   });

@@ -48,6 +48,7 @@ dependencies:
   wakelock_plus_platform_interface: ^1.6.0   # 常亮平台实现注册（wakelock_plus_ohos.dart）
   path_provider_platform_interface: ^2.1.2   # 重试包装（path_provider_ohos_retry.dart，主代码 import 需在此声明）
   image: ^4.10.1
+  dartssh2: ^4.1.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

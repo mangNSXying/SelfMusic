@@ -32,7 +32,7 @@ enum WeightJudgement { complete, skip, none }
 
 /// 转码门控（纯函数，可单测）：代理总开关开 + 后端可达 +
 /// 该源在新增/编辑弹窗中选了代理链路。直连源恒走原生 URL，开关不生效。
-/// kind 限定 webdav（服务端强校验只认已同步 WebDAV 源）。
+/// kind 限定 webdav/sftp（服务端强校验按同类源匹配）。
 @visibleForTesting
 bool shouldUseTranscode({
   required bool enabled,
@@ -41,7 +41,7 @@ bool shouldUseTranscode({
 }) =>
     enabled &&
     apiBaseUrl.isNotEmpty &&
-    src.kind == SourceKind.webdav &&
+    (src.kind == SourceKind.webdav || src.kind == SourceKind.sftp) &&
     src.route == SourceRoute.proxy;
 
 /// 按播放时长判定完播/跳过（毫秒比值，临界严格按「大于 95% / 小于 30%」）。
@@ -1634,12 +1634,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           headers['Authorization'] = 'Bearer $token';
         }
       } catch (_) {}
-      // 回源鉴权随请求转发（不落地）：WebDAV Basic 原样透传。
-      final dh = src.directStream(s)?.headers;
-      final basic = dh?['Authorization'];
-      if (basic != null && basic.isNotEmpty) {
-        headers['X-Origin-Auth'] = basic;
-      }
+      // 回源鉴权随请求转发（不落地）：各源经 proxyAuthHeaders 自备
+      // （WebDAV Basic / SFTP 信封），默认空。
+      headers.addAll(await src.proxyAuthHeaders(s));
       debugPrint('[play] 转码代理 ${bitrate}k loudnorm=$loudnorm: $turl');
       final load = player.setUrl(turl, headers: headers, tag: tag);
       try {
@@ -1676,9 +1673,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
     final direct = src.directStream(s);
-    // 阶段6 转码：开关开 + WebDAV + 后端可达时优先走服务端 MP3 代理；
+    // 代理转码：开关开 + 后端可达 + 该源选了代理链路时优先走服务端；
+    // origin 与鉴权头由源自备（WebDAV https URL + Basic / SFTP sftp:// + 信封）。
     // 缓存命中已在上方返回（缓存永远存原文件），转码失败静默回落直连。
-    if (direct != null && await _tryTranscodeLoad(s, src, direct.url, tag)) {
+    final proxyUrl = src.proxyOrigin(s);
+    if (proxyUrl != null &&
+        await _tryTranscodeLoad(s, src, proxyUrl, tag)) {
       return;
     }
     if (direct != null) {

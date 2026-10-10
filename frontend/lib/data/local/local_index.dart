@@ -458,6 +458,33 @@ class LocalIndex {
     ''', [sourceKey, ref, DateTime.now().millisecondsSinceEpoch]);
   }
 
+  /// SFTP 主机密钥 TOFU 钉：读（无记录返回 null）。
+  /// `hostPort` 形态 `host:port`（host 小写，见 `sftpHostPort`）。
+  String? sshFingerprint(String hostPort) {
+    final rs = _db!.select(
+        'SELECT fingerprint FROM ssh_known_hosts WHERE host_port=?',
+        [hostPort]);
+    if (rs.isEmpty) return null;
+    final v = rs.first['fingerprint'];
+    return v is String && v.isNotEmpty ? v : null;
+  }
+
+  /// 钉住/更新主机指纹（用户弹窗确认后调用）。
+  Future<void> sshPin(String hostPort, String fingerprint) {
+    return _writer!.exec('''
+      INSERT INTO ssh_known_hosts(host_port, fingerprint, updated_at)
+      VALUES(?,?,?)
+      ON CONFLICT(host_port) DO UPDATE SET
+        fingerprint=excluded.fingerprint, updated_at=excluded.updated_at
+    ''', [hostPort, fingerprint, DateTime.now().millisecondsSinceEpoch]);
+  }
+
+  /// 忘记主机指纹（指纹变更后用户选择重认前清理，或删源时按需调用）。
+  Future<void> sshForget(String hostPort) {
+    return _writer!.exec(
+        'DELETE FROM ssh_known_hosts WHERE host_port=?', [hostPort]);
+  }
+
   /// 「忽略音频（时长/大小）」过滤子句（改进.txt 功能6）：设置变更后，
   /// 已扫描入库的歌曲也按规则过滤——时长未知（NULL/0，快扫未读头）一律放过。
   /// 返回 `(sqlFragment, extraArgs)`；两个阈值均为 0 时条件恒真（零开销兜底）。

@@ -332,6 +332,13 @@ class LocalDirectSource implements MusicSource {
   @override
   DirectStream? directStream(Song song) => null;
 
+  /// 本地源恒直连：不走代理。
+  @override
+  String? proxyOrigin(Song song) => null;
+
+  @override
+  Future<Map<String, String>> proxyAuthHeaders(Song song) async => const {};
+
   /// 本地文件无需预热：装载时读的是本地路径，不存在网络握手。
   @override
   Future<void> probe(Song song) async {}

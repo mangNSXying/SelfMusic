@@ -9,6 +9,7 @@ import '../data/sources/meta_enrich.dart';
 import '../data/sources/scan_worker.dart';
 import '../data/sources/webdav_direct_source.dart';
 import '../data/sources/local_direct_source.dart';
+import '../data/sources/sftp_direct_source.dart';
 import '../data/local/local_index.dart';
 import '../data/local/sync_event_types.dart';
 import '../data/local/app_settings.dart';
@@ -171,6 +172,9 @@ class DirectSourceManager extends ChangeNotifier {
   /// 各源 WebDAV 密码的内存镜像（编辑预填 / 源重建用；持久化在 [SecretStore]）。
   final Map<String, String> _webdavPwds = {};
 
+  /// 各源 SFTP 三件套的内存镜像（密码/私钥文本/passphrase；持久化在 [SecretStore]）。
+  final Map<String, _SftpSecrets> _sftpSecrets = {};
+
   int _favoriteVersion = 0;
 
   /// 收藏列表版本号：全局收藏面板监听该值刷新（避免全量 rebuild）。
@@ -312,7 +316,10 @@ class DirectSourceManager extends ChangeNotifier {
     try {
       cfg = jsonDecode(row.config) as Map<String, dynamic>;
     } catch (_) {}
-    final sanitized = Map<String, dynamic>.of(cfg)..remove('password');
+    final sanitized = Map<String, dynamic>.of(cfg)
+      ..remove('password')
+      ..remove('keyPem')
+      ..remove('passphrase');
     await index.enqueueOutbox(type, {
       'client_uuid': uuid,
       'kind': row.kind,
@@ -329,6 +336,31 @@ class DirectSourceManager extends ChangeNotifier {
     if (s == null || s.kind != SourceKind.webdav) return false;
     return (_webdavPwds[key] ?? '').isEmpty;
   }
+
+  /// 该源是否等待本机补输凭据（含 SFTP：按认证方式看密码或私钥）。
+  bool sourceNeedsSecrets(String key) {
+    final s = sourceByKey(key);
+    if (s == null) return false;
+    if (s.kind == SourceKind.webdav) return sourceNeedsPassword(key);
+    if (s is SftpDirectSource) {
+      final m = _sftpSecrets[key];
+      if (s.authMethod == SftpAuthMethod.key) {
+        return (m?.keyPem ?? '').isEmpty;
+      }
+      return (m?.password ?? '').isEmpty;
+    }
+    return false;
+  }
+
+  /// SSH 主机指纹存取（TOFU 钉，`ssh_known_hosts`，不参与同步）。
+  String? sshFingerprintOf(String hostPort) =>
+      index.sshFingerprint(hostPort);
+
+  Future<void> pinSshHost(String hostPort, String fingerprint) =>
+      index.sshPin(hostPort, fingerprint);
+
+  Future<void> forgetSshHost(String hostPort) =>
+      index.sshForget(hostPort);
 
   /// 同步落库后重建内存源列表（源集合可能新增/改名/删除/改配置）。
   /// 存量补推（歌单 + 权重绝对态）：把配对前建的数据补进 outbox，
@@ -390,6 +422,17 @@ class DirectSourceManager extends ChangeNotifier {
       if (r.kind == 'local') {
         final cfg = jsonDecode(r.config) as Map<String, dynamic>;
         final name = cfg['name'] as String? ?? r.name;
+        return _buildDirect(
+            kind: r.kind, key: r.key, name: name, cfg: cfg);
+      }
+      if (r.kind == 'sftp') {
+        final cfg = jsonDecode(r.config) as Map<String, dynamic>;
+        final name = (cfg['name'] as String? ?? r.name).toString();
+        _sftpSecrets[r.key] = _SftpSecrets(
+          password: await secrets.sftpPassword(r.key) ?? '',
+          keyPem: await secrets.sftpKeyPem(r.key) ?? '',
+          passphrase: await secrets.sftpKeyPassphrase(r.key) ?? '',
+        );
         return _buildDirect(
             kind: r.kind, key: r.key, name: name, cfg: cfg);
       }
@@ -557,6 +600,8 @@ class DirectSourceManager extends ChangeNotifier {
 
   String _localKey(String name) => 'local:$name';
 
+  String _sftpKey(String name) => 'sftp:$name';
+
   /// 按源类型构建直连源实例（webdav / local）。WebDAV 密码取内存镜像
   /// （持久化在 SecretStore，config 不落地明文）；[allowSelfSigned] 随直连构建生效。
   MusicSource _buildDirect({
@@ -570,6 +615,22 @@ class DirectSourceManager extends ChangeNotifier {
         name: name,
         rootPath: cfg['path'] as String? ?? '',
         index: index,
+      );
+    }
+    if (kind == 'sftp') {
+      final m = _sftpSecrets[key];
+      return SftpDirectSource(
+        name: name,
+        host: cfg['host'] as String? ?? '',
+        port: (cfg['port'] as num?)?.toInt() ?? 22,
+        username: cfg['username'] as String? ?? '',
+        authMethod: parseSftpAuthMethod(cfg['authMethod']),
+        password: m?.password ?? '',
+        keyPem: m?.keyPem ?? '',
+        keyPassphrase: m?.passphrase ?? '',
+        index: index,
+        rootPath: cfg['path'] as String? ?? '',
+        route: parseSourceRoute(cfg['route']),
       );
     }
     return WebdavDirectSource(
@@ -593,6 +654,11 @@ class DirectSourceManager extends ChangeNotifier {
     } catch (_) {}
     // WebDAV 密码从内存镜像（SecretStore）回填，供编辑弹窗预填。
     cfg['password'] = _webdavPwds[key] ?? '';
+    // SFTP 三件套同样回填（弹窗按认证方式取用）。
+    final sm = _sftpSecrets[key];
+    cfg['sftpPassword'] = sm?.password ?? '';
+    cfg['sftpKeyPem'] = sm?.keyPem ?? '';
+    cfg['sftpPassphrase'] = sm?.passphrase ?? '';
     return cfg;
   }
 
@@ -646,7 +712,44 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 编辑源：可改 名称（含 key 迁移）/ 地址或目录 / 账号 / 密码 / 播放链路。
+  /// 新增 SFTP 源（阶段 7）：密码与私钥文本只存 SecretStore，配置持久化
+  /// 非敏感部分（host/port/username/authMethod/path/route）并参与同步。
+  Future<void> addSftp({
+    required String name,
+    required String host,
+    int port = 22,
+    String username = '',
+    SftpAuthMethod authMethod = SftpAuthMethod.password,
+    String password = '',
+    String keyPem = '',
+    String passphrase = '',
+    String rootPath = '',
+    SourceRoute route = SourceRoute.direct,
+  }) async {
+    final key = _sftpKey(name);
+    _sftpSecrets[key] = _SftpSecrets(
+        password: password, keyPem: keyPem, passphrase: passphrase);
+    await secrets.setSftpSecrets(key,
+        password: password, keyPem: keyPem, passphrase: passphrase);
+    final cfg = <String, dynamic>{
+      'name': name,
+      'host': host.trim(),
+      'port': port,
+      'username': username.trim(),
+      'authMethod': authMethod.name,
+      'path': rootPath.trim(),
+      'route': route.name,
+    };
+    _sources.add(
+        _buildDirect(kind: 'sftp', key: key, name: name, cfg: cfg));
+    await index.upsertSource(key, 'sftp', name, jsonEncode(cfg));
+    await index.ensureSourceUuid(key);
+    await _emitSource(SyncEventTypes.sourceCreate, key);
+    restartAutoScan();
+    notifyListeners();
+  }
+
+  /// 编辑源：可改 名称（含 key 迁移）/ 地址或目录 / 账号 / 密码·密钥 / 播放链路。
   ///
   /// 改名会派生新的 key，[LocalIndex.renameSource] 同步迁移已索引歌曲、
   /// 收藏与歌单条目；与已有源重名时抛 [StateError]。
@@ -658,6 +761,11 @@ class DirectSourceManager extends ChangeNotifier {
     String? username,
     String? password,
     SourceRoute? route,
+    String? host,
+    int? port,
+    SftpAuthMethod? authMethod,
+    String? keyPem,
+    String? passphrase,
   }) async {
     final row = index.getSource(key);
     if (row == null) return;
@@ -672,6 +780,9 @@ class DirectSourceManager extends ChangeNotifier {
     if (baseUrl != null) cfg['baseUrl'] = baseUrl;
     if (username != null) cfg['username'] = username;
     if (route != null) cfg['route'] = route.name;
+    if (host != null) cfg['host'] = host;
+    if (port != null) cfg['port'] = port;
+    if (authMethod != null) cfg['authMethod'] = authMethod.name;
 
     final newKey = '${row.kind}:$newName';
     if (newKey != key && _sources.any((s) => s.key == newKey)) {
@@ -679,7 +790,8 @@ class DirectSourceManager extends ChangeNotifier {
     }
 
     // WebDAV 密码：持久化收敛到 SecretStore，config 不落地明文。
-    if (password != null) {
+    // （仅 webdav 行；sftp 走下方三件套，避免杂散键。）
+    if (row.kind == 'webdav' && password != null) {
       cfg.remove('password');
       if (newKey != key) {
         await secrets.migrateWebdav(key, newKey);
@@ -687,11 +799,37 @@ class DirectSourceManager extends ChangeNotifier {
       }
       await secrets.setWebdavPassword(newKey, password);
       _webdavPwds[newKey] = password;
-    } else if (newKey != key && _webdavPwds.containsKey(key)) {
+    } else if (row.kind == 'webdav' &&
+        newKey != key &&
+        _webdavPwds.containsKey(key)) {
       // 仅改名未传密码：迁移内存镜像 + SecretStore 键。
       await secrets.migrateWebdav(key, newKey);
       _webdavPwds[newKey] = _webdavPwds[key]!;
       _webdavPwds.remove(key);
+    }
+
+    // SFTP 三件套：同上收敛；改名迁移三键。
+    if (row.kind == 'sftp' &&
+        (password != null || keyPem != null || passphrase != null)) {
+      if (newKey != key) {
+        await secrets.migrateSftp(key, newKey);
+        _sftpSecrets.remove(key);
+      }
+      final cur = _sftpSecrets[newKey];
+      final merged = _SftpSecrets(
+        password: password ?? cur?.password ?? '',
+        keyPem: keyPem ?? cur?.keyPem ?? '',
+        passphrase: passphrase ?? cur?.passphrase ?? '',
+      );
+      _sftpSecrets[newKey] = merged;
+      await secrets.setSftpSecrets(newKey,
+          password: merged.password,
+          keyPem: merged.keyPem,
+          passphrase: merged.passphrase);
+    } else if (newKey != key && _sftpSecrets.containsKey(key)) {
+      await secrets.migrateSftp(key, newKey);
+      _sftpSecrets[newKey] = _sftpSecrets[key]!;
+      _sftpSecrets.remove(key);
     }
 
     final rebuilt = <MusicSource>[];
@@ -726,6 +864,8 @@ class DirectSourceManager extends ChangeNotifier {
     _sources.removeWhere((s) => s.key == key);
     _webdavPwds.remove(key);
     await secrets.deleteWebdav(key);
+    _sftpSecrets.remove(key);
+    await secrets.deleteSftp(key);
     await index.deleteSource(key);
     notifyListeners();
   }
@@ -1200,6 +1340,14 @@ class DirectSourceManager extends ChangeNotifier {
       onEnriched();
     });
   }
+}
+
+/// SFTP 三件套内存镜像（密码/私钥文本/passphrase；持久化在 [SecretStore]）。
+class _SftpSecrets {
+  String password;
+  String keyPem;
+  String passphrase;
+  _SftpSecrets({this.password = '', this.keyPem = '', this.passphrase = ''});
 }
 
 /// 本地目录监视句柄（变化去抖后触发增量扫描）。

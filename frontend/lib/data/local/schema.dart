@@ -351,4 +351,13 @@ void applySchema(Database db) {
   if (!artistCols.contains('match_score')) {
     db.execute('ALTER TABLE artists ADD COLUMN match_score REAL');
   }
+  // SFTP 主机密钥 TOFU 钉（阶段 7）：host_port（`host:port`，host 小写）主键，
+  // fingerprint 为 `SHA256:` 形态；本机信任锚，不参与跨设备同步。
+  db.execute('''
+    CREATE TABLE IF NOT EXISTS ssh_known_hosts (
+      host_port   TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      updated_at  INTEGER NOT NULL DEFAULT 0
+    );
+  ''');
 }

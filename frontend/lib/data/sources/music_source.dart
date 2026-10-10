@@ -3,7 +3,7 @@ import 'scan_worker.dart';
 import 'webdav_url.dart';
 
 /// 源的分类。决定直连协议与可用的增强能力。
-enum SourceKind { local, webdav, smb }
+enum SourceKind { local, webdav, smb, sftp }
 
 /// 非本地源的播放链路偏好（新增/编辑源弹窗可配，默认直连）：
 /// - direct：原生 URL 直播，代理设置（转码/响度）不生效；
@@ -22,24 +22,80 @@ bool isSyncableKind(String kind) => kind.isNotEmpty && kind != 'local';
 
 /// 把源地址（可能来自历史配置/服务端快照的原始形态）归一化为同步标准形态：
 /// WebDAV 缺 scheme 补 `https://`（与 [webdavNormalizeBase] 一致）、去尾斜杠；
-/// 其余类型仅 trim。转码强校验按归一化后的地址匹配，上报也必须归一化。
+/// SFTP 形态见 [normalizeSftpAddress]；其余类型仅 trim。
+/// 转码强校验按归一化后的地址匹配，上报也必须归一化。
 String normalizeSourceAddress(String kind, String address) {
   switch (kind) {
     case 'webdav':
       return webdavNormalizeBase(address).replaceAll(RegExp(r'/+$'), '');
+    case 'sftp':
+      return normalizeSftpAddress(address);
     default:
       return address.trim();
   }
 }
 
+/// SFTP 去重地址形态 `host:port/path`：port 缺省 22 并显式化、host 小写、
+/// 去尾斜杠；host 为空返回空串（不参与去重）。可接受 `sftp://` 前缀与
+/// `[IPv6]` 形态；非法端口回落默认 22。
+String normalizeSftpAddress(String address) {
+  var s = address.trim();
+  if (s.isEmpty) return '';
+  if (s.toLowerCase().startsWith('sftp://')) s = s.substring('sftp://'.length);
+  var hostPort = s;
+  var path = '';
+  final slash = s.indexOf('/');
+  if (slash >= 0) {
+    hostPort = s.substring(0, slash);
+    path = s.substring(slash);
+  }
+  var host = hostPort;
+  var port = 22;
+  if (hostPort.startsWith('[')) {
+    final end = hostPort.indexOf(']');
+    if (end > 0) {
+      host = hostPort.substring(1, end);
+      final rest = hostPort.substring(end + 1);
+      if (rest.startsWith(':') && rest.length > 1) {
+        port = int.tryParse(rest.substring(1)) ?? 22;
+        if (port < 1 || port > 65535) port = 22;
+      }
+    }
+  } else {
+    final colon = hostPort.lastIndexOf(':');
+    if (colon >= 0) {
+      final tail = hostPort.substring(colon + 1);
+      if (tail.isEmpty) {
+        host = hostPort.substring(0, colon);
+      } else {
+        final p = int.tryParse(tail);
+        if (p != null && p >= 1 && p <= 65535) {
+          host = hostPort.substring(0, colon);
+          port = p;
+        } else {
+          host = hostPort.substring(0, colon);
+        }
+      }
+    }
+  }
+  host = host.toLowerCase();
+  path = path.replaceAll(RegExp(r'/+$'), '');
+  if (host.isEmpty) return '';
+  return '$host:$port$path';
+}
+
 /// 源去重地址（跨设备同步按 kind+地址 识别同一源；名称不参与）：
 /// WebDAV=baseUrl（归一化：缺 scheme 补 https、去尾斜杠）；SMB=host/share；
+/// SFTP=`host:port/path`（见 [normalizeSftpAddress]）；
 /// 未识别的协议返回空串（不参与去重）。
 String sourceAddressOf(String kind, Map<String, dynamic> cfg) {
   switch (kind) {
     case 'webdav':
       return normalizeSourceAddress(
           kind, (cfg['baseUrl'] as String? ?? ''));
+    case 'sftp':
+      return normalizeSftpAddress(
+          '${cfg['host'] ?? ''}:${cfg['port'] ?? ''}${cfg['path'] ?? ''}');
     case 'smb':
       final host = (cfg['host'] as String? ?? '').trim();
       final share = (cfg['share'] as String? ?? '').trim();
@@ -168,6 +224,15 @@ abstract class MusicSource {
 
   /// 若该歌可直接以 URL 播放（原生 Range/seek），返回 URL 与请求头；否则 null。
   DirectStream? directStream(Song song) => null;
+
+  /// 代理转码 origin（无 userinfo；凭据走 [proxyAuthHeaders]）。
+  /// WebDAV 返回可请求的 https URL；SFTP 返回 `sftp://host:port/…`；
+  /// 其余返回 null（不走代理）。
+  String? proxyOrigin(Song song) => null;
+
+  /// 代理鉴权头：WebDAV 为 `X-Origin-Auth: Basic …`，SFTP 为 `X-Origin-Ssh`
+  /// 信封；默认空（不走代理的源）。
+  Future<Map<String, String>> proxyAuthHeaders(Song song) async => const {};
 
   /// 预热：确认该曲可取（连通 / 鉴权 / 可达），不产生任何播放副作用。
   ///

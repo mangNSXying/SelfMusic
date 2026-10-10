@@ -270,14 +270,26 @@ class WebdavDirectSource implements MusicSource {
 
   /// 直接把 WebDAV URL 交给 just_audio 原生播放（ExoPlayer Range/seek 更可靠）。
   @override
-  DirectStream? directStream(Song song) {
-    final headers = username.isEmpty
-        ? null
-        : {
-            'Authorization':
-                'Basic ${base64Encode(utf8.encode('$username:$password'))}',
-          };
-    return DirectStream(_playUrl(song)!, headers: headers);
+  DirectStream? directStream(Song song) =>
+      DirectStream(_playUrl(song)!, headers: _basicAuthHeaders());
+
+  Map<String, String>? _basicAuthHeaders() => username.isEmpty
+      ? null
+      : {
+          'Authorization':
+              'Basic ${base64Encode(utf8.encode('$username:$password'))}',
+        };
+
+  /// 代理 origin 即播放 URL（单层编码，见 [_playUrl]）。
+  @override
+  String? proxyOrigin(Song song) => _playUrl(song);
+
+  /// 代理鉴权头（`X-Origin-Auth: Basic …`，无用户时空）。
+  @override
+  Future<Map<String, String>> proxyAuthHeaders(Song song) async {
+    final basic = _basicAuthHeaders()?['Authorization'];
+    if (basic == null || basic.isEmpty) return const {};
+    return {'X-Origin-Auth': basic};
   }
 
   // ---------- 离线缓存（DESIGN §6.5） ----------
