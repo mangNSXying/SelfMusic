@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import '../models/song.dart';
 
 /// 深层列表：当前锚定列表一条「仅可修改末尾值」的有界历史栈（隐藏列表）。
@@ -53,6 +55,24 @@ class DeepListController {
   void clear() => _entries.clear();
 
   List<Map<String, dynamic>> toJson() => [for (final s in _entries) s.toJson()];
+
+  /// 容错统计条目数（不解析 Song）：接受 JSON 字符串/已解码 List/`{}` 等。
+  /// 断点同步「同歌单取最长」比较用——镜像 `deepListJson`（身份数组）与本机
+  /// `entries_json`（Song 数组）同口径计数，坏数据计 0。
+  static int countEntries(dynamic raw) {
+    if (raw == null) return 0;
+    if (raw is List) return raw.length;
+    if (raw is String) {
+      if (raw.isEmpty) return 0;
+      try {
+        final d = jsonDecode(raw);
+        return d is List ? d.length : 0;
+      } catch (_) {
+        return 0;
+      }
+    }
+    return 0;
+  }
 
   /// 解析持久化条目（容错：非列表/坏行跳过）。
   static List<Song> parseEntries(dynamic raw) {

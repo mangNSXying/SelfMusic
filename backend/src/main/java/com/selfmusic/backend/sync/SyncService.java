@@ -46,8 +46,11 @@ import com.selfmusic.backend.domain.repository.SyncSourceRepository;
  * 合并矩阵：
  * - 权重事件（song.*）：事件重算（本类 {@link #applySongEvent}，§7.1 翻版），
  *   非绝对值覆盖，两设备并发点赞按到达序依次重放，不互相抹掉；
- * - 歌单元数据 / 删除墓碑 / 断点：行级 LWW，以事件 occurred_at vs 行 last_event_at
+ * - 歌单元数据 / 删除墓碑：行级 LWW，以事件 occurred_at vs 行 last_event_at
  *   为准（{@link #eventWins} 纯函数），输方收 correction 回执自行纠正；
+ * - 断点（每歌单一行）：**同歌单取最长**——深层列表更长者胜，等长/任一侧无列表
+ *   回退行级 LWW（见 {@link #breakpointWins}）；「不同歌单取最新」由全局按
+ *   updated_at 选行（GET /playstates/latest）实现，行内已存该歌单最长历史；
  * - 歌单条目：按 seq 到达序重放，后到达胜出，天然收敛；
  * - 仲裁时钟：occurred_at 缺失或打平时，后处理（到达序）胜出；行 last_event_at
  *   为空（首写）恒胜。客户端本地时钟不可信，不做跨时钟比较之外的推断。
@@ -190,6 +193,26 @@ public class SyncService {
         if (lastEventAt == null) return true;
         if (occurred == null) return false;
         return !occurred.isBefore(lastEventAt);
+    }
+
+    /**
+     * 断点仲裁（同歌单）：优先按深层列表长度取最长，等长回退 {@link #eventWins} 时间 LWW。
+     *
+     * 「歌单不同取最新」由调用方（pull 快照 / GET /playstates/latest）按歌单行选取实现——
+     * 每歌单一行、行内已保存该歌单最长历史，故全局按 updated_at 取最新即「不同歌单取最新」。
+     * 旧客户端/未携带 deep_list（载荷无数组）视为未知 → 回退纯时间 LWW，向后兼容。
+     */
+    public static boolean breakpointWins(JsonNode payload, LocalDateTime occurred, PlayState st) {
+        JsonNode in = payload == null ? null : payload.get("deep_list");
+        boolean inHas = in != null && in.isArray();
+        String stored = st.getDeepListJson();
+        boolean stHas = stored != null && !stored.isBlank();
+        if (inHas && stHas) {
+            int inLen = in.size();
+            int stLen = parseDeepList(stored).size();
+            if (inLen != stLen) return inLen > stLen;
+        }
+        return eventWins(occurred, st.getLastEventAt());
     }
 
     /**
@@ -650,7 +673,7 @@ public class SyncService {
             ns.setPlaylistId(pl.getId());
             return ns;
         });
-        if (!eventWins(ev.occurred_at(), st.getLastEventAt())) {
+        if (!breakpointWins(p, ev.occurred_at(), st)) {
             return playstateSnapshot(st, pl.getClientUuid());
         }
         String ref = refOf(p);

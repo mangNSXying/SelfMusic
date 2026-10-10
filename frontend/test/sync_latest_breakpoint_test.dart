@@ -173,4 +173,42 @@ void main() {
     engine.stop();
     index.close();
   });
+
+  test('镜像写入守卫：同歌单更长者胜、等长取最新、更短不覆盖', () async {
+    final index = await _openIndex();
+    await index.applyPlaylistSnapshots([_playlist()]);
+
+    Map<String, dynamic> snap(List<String> refs, String at) => {
+          'client_uuid': 'pl-1',
+          'source': 'webdav',
+          'source_ref': refs.isEmpty ? 'dav:/a.mp3' : refs.last,
+          'position_ms': 111,
+          'deep_list': [
+            for (final r in refs) {'source': 'webdav', 'source_ref': r}
+          ],
+          'updated_at': at,
+        };
+    String ref() => index.breakpointMirrorOf('pl-1')!.sourceRef!;
+
+    await index.applyPlaystateMirror(snap(['a'], '2026-01-01T00:00:01'));
+    expect(ref(), 'a');
+
+    // 更短（空）但更新 → 不覆盖。
+    await index.applyPlaystateMirror(snap([], '2026-01-01T00:00:09'));
+    expect(ref(), 'a', reason: '同歌单更短不得覆盖更长历史');
+
+    // 更长（2 条）但更早 → 覆盖。
+    await index.applyPlaystateMirror(snap(['a', 'b'], '2026-01-01T00:00:00'));
+    expect(ref(), 'b', reason: '同歌单更长胜出，即便更早');
+
+    // 等长且更早 → 不覆盖。
+    await index.applyPlaystateMirror(snap(['x', 'y'], '2026-01-01T00:00:00'));
+    expect(ref(), 'b', reason: '等长回退取最新，更早不覆盖');
+
+    // 等长且更新 → 覆盖。
+    await index.applyPlaystateMirror(snap(['x', 'y'], '2026-01-01T00:00:05'));
+    expect(ref(), 'y', reason: '等长且更新应覆盖');
+
+    index.close();
+  });
 }

@@ -244,6 +244,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// （否则启动恢复 `_play` 覆盖本地时间后，远端镜像恒判更旧，跨设备续播永不生效）。
   DateTime? _breakpointBaselineAt;
 
+  /// 当前会话所依据的断点深层列表长度（同歌单取最长的长度基线）：与
+  /// [_breakpointBaselineAt] 配对。同歌单候选更长才套用，等长再比时间；
+  /// 用户接管/起播时抬到当前本机历史长度，避免被自己更短的会话覆盖。
+  int _breakpointBaselineLen = 0;
+
   /// 启动恢复的飞行中 Future：远端断点套用前先等它收尾。恢复的同步前缀已经在
   /// 首帧前完成，但音频装载/seek 的异步尾在跑；两者并发会双重装载、状态抖动
   /// （main.dart 的「先恢复、后拉取、再补切」约束）。
@@ -1473,6 +1478,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         // 注意仅用户起播时刷新；恢复装载（manual=false）不刷新，否则恢复时
         // `_saveState` 会把基准抬到现在，令远端更新的镜像永远套用不上。
         _breakpointBaselineAt = DateTime.now();
+        _breakpointBaselineLen = _deepList?.length ?? 0;
       }
       if (!_suppressSyncNotify) notifyListeners();
       if (src == null || !src.supportsDirect) {
@@ -2402,15 +2408,39 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final best = _newestMirror(idx);
     final bestAt = best == null ? null : DateTime.tryParse(best.updatedAt);
     final localAt = local == null ? null : DateTime.tryParse(local.updatedAt);
-    if (best != null &&
-        bestAt != null &&
-        (localAt == null || bestAt.isAfter(localAt))) {
-      if (await _restoreFromMirror(idx, best)) return;
+    if (best != null && bestAt != null) {
+      final samePlaylist = local?.playlistUuid != null &&
+          local!.playlistUuid == best.playlistUuid;
+      bool adopt;
+      if (samePlaylist) {
+        // 同歌单：深层列表更长者胜，等长回退取最新。
+        final localLen = _localDeepListLen(idx, local);
+        final bestLen = DeepListController.countEntries(best.deepListJson);
+        adopt = bestLen > localLen ||
+            (bestLen == localLen && (localAt == null || bestAt.isAfter(localAt)));
+      } else {
+        // 不同歌单：取最新。
+        adopt = localAt == null || bestAt.isAfter(localAt);
+      }
+      if (adopt && await _restoreFromMirror(idx, best)) return;
     }
     await _restoreLocal(idx, local);
   }
 
+  /// 本机断点当前锚定历史的条目数（同歌单长度比较用）；无断点/无锚定为 0。
+  int _localDeepListLen(LocalIndex idx, PlayStateRow? local) {
+    if (local == null) return 0;
+    final anchorKey = local.anchorKey ??
+        (local.playlistUuid != null
+            ? PlayerProvider.anchorForPlaylist(local.playlistUuid!)
+            : null);
+    if (anchorKey == null) return 0;
+    return DeepListController.countEntries(idx.loadDeepList(anchorKey));
+  }
+
   /// 当前全部断点镜像里 `updated_at` 最新的一行（无则 null）。
+  /// 镜像按歌单一行去重，故「不同歌单取最新」即全局取最新；同歌单更长的历史
+  /// 已由写入守卫（db_writer `_opApplyPlaystateMirror`）保存在行内。
   BreakpointMirrorRow? _newestMirror(LocalIndex idx) {
     BreakpointMirrorRow? best;
     DateTime? bestAt;
@@ -2471,7 +2501,19 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (bestAt == null) return;
         final base = _breakpointBaselineAt;
         perfLog('mirror.apply lookup', '${swLookup.elapsedMilliseconds}ms');
-        if (base != null && !bestAt.isAfter(base)) return;
+        // 歌单相同取最长（等长回退取最新），歌单不同取最新。
+        final samePlaylist =
+            _syncPlaylistUuid != null && _syncPlaylistUuid == best.playlistUuid;
+        final bool win;
+        if (samePlaylist) {
+          final bestLen = DeepListController.countEntries(best.deepListJson);
+          win = bestLen != _breakpointBaselineLen
+              ? bestLen > _breakpointBaselineLen
+              : (base == null || bestAt.isAfter(base));
+        } else {
+          win = base == null || bestAt.isAfter(base);
+        }
+        if (!win) return;
         final swApply = Stopwatch()..start();
         await _restoreFromMirror(idx, best);
         perfLog('mirror.apply restoreFromMirror',
@@ -2487,6 +2529,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 基准取「本机断点自身时间」：后续 `_play` 的 `_saveState` 会刷新
     // play_state.updated_at，但不会改这里，故远端更新的镜像仍可被套用。
     _breakpointBaselineAt = st == null ? null : DateTime.tryParse(st.updatedAt);
+    _breakpointBaselineLen = 0;
     if (st == null || st.queueJson.isEmpty) return;
     try {
       final list = (jsonDecode(st.queueJson) as List)
@@ -2515,6 +2558,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
               ? PlayerProvider.anchorForPlaylist(st.playlistUuid!)
               : null);
       _bindDeepList(anchorKey, listSize: _queue.length);
+      // 本机历史长度→长度基线：远端同歌单镜像需更长（或等长更新）才套用。
+      _breakpointBaselineLen = _deepList?.length ?? 0;
       // 歌单上下文：用本机深层列表 + 当前歌单重建融合队列（不信任旧快照顺序）；
       // 找不到歌单时退回旧快照原样（融合基座为空，后续只走快照）。
       final pid =
@@ -2637,6 +2682,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 并对刚 adopted 的状态做一次回推节流——跟随端不应以更新的 occurred_at
     // 把暂停位置写回服务端、反过来覆盖正在播放的领播端（复用 25s 节流）。
     _breakpointBaselineAt = DateTime.tryParse(m.updatedAt);
+    _breakpointBaselineLen = _deepList?.length ?? 0;
     final adopted = _current!;
     _lastBpKey = '$_syncPlaylistUuid|${adopted.source}|${adopted.sourceRef}';
     _lastBpAtMs = DateTime.now().millisecondsSinceEpoch;

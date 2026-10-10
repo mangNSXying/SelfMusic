@@ -92,6 +92,11 @@ public class PlayStateController {
         payload.put("source_ref", sourceRef.toString());
         Object pos = body.get("position_ms");
         payload.put("position_ms", pos == null ? 0 : toInt(pos));
+        // 可选携带深层列表（播放历史）：缺失则置空（与 push 断点事件同口径）。
+        Object deep = body.get("deep_list");
+        if (deep instanceof List<?> dl) {
+            payload.set("deep_list", objectMapper.valueToTree(dl));
+        }
 
         String me = SyncController.clientId();
         PushEvent ev = new PushEvent(UUID.randomUUID().toString(), me,

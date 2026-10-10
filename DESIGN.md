@@ -283,8 +283,8 @@ INDEX idx_refresh(refresh_token_hash)
 | ✅ GET | `/sync/pull?since_cursor=` | 增量拉取（歌单+权重+断点快照），返回新 cursor；`since=0` 为启动全量校准；超 2000 事件分页（`has_more`） |
 | ✅ POST | `/sync/push` | 批量上推事件流水；幂等按 `event_uuid` 去重；LWW 判输回 correction 快照；`device_client_id` 须与认证身份一致 |
 | ✅ CRUD | `/playlists` 系列（含 `{id}/items` 增删改） | 直接 REST 变更同样走事件管线（服务端代写事件），其它设备经 pull 可见 |
-| ✅ PUT | `/playstates/{playlistId}` | `{source_id, source_ref, position_ms}`（可选携带 `deep_list`）；行级 LWW，判输回服务端快照 |
-| ✅ GET | `/playstates/latest` | 全局最新断点快照（启动/回前台快路径，1 RTT；无行/歌单缺失或已删/不可同步时 `data=null`） |
+| ✅ PUT | `/playstates/{playlistId}` | `{source_id, source_ref, position_ms}`（可选携带 `deep_list`）；同歌单取最长（深层列表更长者胜，等长/任一侧无列表回退行级 LWW），判输回服务端快照 |
+| ✅ GET | `/playstates/latest` | 全局最新断点快照（按 `updated_at` 取最新歌单行，行内已存该歌单最长深层列表，故「不同歌单取最新」；启动/回前台快路径，1 RTT；无行/歌单缺失或已删/不可同步时 `data=null`） |
 
 ### 4.5 管理
 
@@ -640,11 +640,11 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 - **方向**：客户端本地 SQLite 是运行时事实源；后端是多设备汇聚点
 - **Pull**：每 30s `GET /api/v1/sync/pull?since_cursor=`；cursor 为服务端 `sync_events.seq` 单调递增变更号。快照按实体去重（服务端单页内 + 客户端跨页）：每页只回该页事件涉及实体的**当前快照**；**`breakpoint.set` 只回断点（playstate），不携带歌单条目快照**——他机播放的断点事件不会让本机每次 pull 重下整歌单（稳态流量放大器修复）。断点回调整轮 pull 结束后统一触发一次（多页不中途套用，避免连续换曲）
-- **断点快路径**：启动/回前台先打 `GET /api/v1/playstates/latest`（1 RTT 直取全局最新断点快照，不随 pull cursor backlog 分页；旧服务端 404 客户端静默回退，全量 pull 仍是兜底）。启动首轮 pull 均为 `pullOnly`（先拉后推）：push 不参与断点恢复却会多占一个 RTT 挡在拉取前面，积压 outbox 由后续 2s tick 补推。套用 single-flight、且与首次恢复的异步尾串行（避免双重装载），仍遵守「播放中不打断、空闲才切」的既有策略
+- **断点快路径**：启动/回前台先打 `GET /api/v1/playstates/latest`（1 RTT 直取全局最新断点快照：服务端按 `updated_at` 取最新歌单行，行内已存该歌单最长深层列表；客户端套用时的双端口径是「**同歌单取最长**（以同锚定历史条数为基准，等长/无列表取最新）、**不同歌单取最新**」，据此决定采纳远端镜像或保留本机恢复结果；不随 pull cursor backlog 分页；旧服务端 404 客户端静默回退，全量 pull 仍是兜底）。启动首轮 pull 均为 `pullOnly`（先拉后推）：push 不参与断点恢复却会多占一个 RTT 挡在拉取前面，积压 outbox 由后续 2s tick 补推。套用 single-flight、且与首次恢复的异步尾串行（避免双重装载），仍遵守「播放中不打断、空闲才切」的既有策略
 - **事件日志压缩**：`sync_events` 只追加，服务端按「所有未吊销设备的最小 pull 水位」（`devices.last_pull_cursor`）定期回收旧事件，且**每实体保留最新一条**（`sync_events.entity_key` 锚点：`song|source_id|ref` / `source|uuid` / `playlist|uuid` / `breakpoint|uuid`）。事件表不随使用时长无限增长，新设备首拉成本从 O(历史事件数) 收敛到 O(实体数)；`entity_key` 为空的旧行不参与压缩（保守保留）
 - **Push**：本地产生权重事件/断点/歌单改动 → 写 `weight_outbox`（带 event_uuid）→ 2s 防抖批量上推；服务端按 uuid 幂等去重。事件类型现行集合（`SyncEventTypes`，前后端同名）：`song.complete / song.skip / song.complete_manual / song.liked / song.unfavorite / song.disliked / song.reset / song.state`（权重，事件重算 / 行级 LWW）`playlist.create|update|delete` 与 `playlist.item_add|item_remove|item_move`（歌单）、`source.create|update|delete`（播放源）、`breakpoint.set`（断点，**载荷含 `deep_list_json`**，落服务端 `play_states`）。歌手身份**不参与同步**（§3.2）
 - **累计播放时长**：`play_sec` 随 `song.state` 上下推（服务端 `song_states.play_sec` 行级 LWW），客户端应用快照时取 `max(本地, 服务端)` 单调合并，累计值不会因乱序/旧快照倒退
-- **冲突（字段级合并，阶段 5 落地）**：权重走**事件重算**而非绝对值覆盖（两设备并发点赞按到达序重放，不互抹）；收藏/歌单元数据/删除墓碑/断点走**行级 LWW**（事件 `occurred_at` vs 行 `last_event_at`，输方收 correction 回执自纠；仲裁时钟为服务端 `arrived_at`）；歌单条目按 seq 到达序重放（后到达胜出）；直接 REST 变更（歌单 CRUD/断点 PUT/调权 POST）同样先记事件再生效，保证 pull 可见
+- **冲突（字段级合并，阶段 5 落地）**：权重走**事件重算**而非绝对值覆盖（两设备并发点赞按到达序重放，不互抹）；收藏/歌单元数据/删除墓碑走**行级 LWW**（事件 `occurred_at` vs 行 `last_event_at`，输方收 correction 回执自纠；仲裁时钟为服务端 `arrived_at`）；**断点按「同歌单取最长」**——深层列表更长者胜，等长或任一侧无列表回退行级 LWW（`SyncService.breakpointWins`）；「不同歌单取最新」由 `GET /playstates/latest` 全局按 `updated_at` 选行实现（行内已存该歌单最长历史）；歌单条目按 seq 到达序重放（后到达胜出）；直接 REST 变更（歌单 CRUD/断点 PUT/调权 POST）同样先记事件再生效，保证 pull 可见
 - **歌曲身份**：服务端无曲库，统一为 `source_id + source_ref`（source_id=客户端源实例 uuid，旧数据/旧客户端为 `legacy:<协议>`）；权重/收藏落 `song_states`，歌单条目与断点自持身份及展示快照（标题/歌手/专辑/时长，pull 不覆盖客户端本地标题）；pull 身份收集恒不建行（已删歌曲不复活）。未配对（无后端地址）时直连事件不进队，避免 outbox 无限积压；`sync_enabled` 关闭同样全跳
 - **播放源同步**：`source.create/update/delete` + 行级 LWW；身份 `client_uuid`，去重键 `(kind, address)`（名称不参与；地址两端归一化——WebDAV 缺 scheme 补 https、去尾斜杠，客户端 `sourceAddressOf` 与服务端 `SourceAddresses` 同口径，转码强校验按同一归一化匹配），本地文件夹源不参与，密码不入服务端（设备本地 SecretStore，新设备显示「待配置密码」）；应用后重建内存源列表；存量远端源接入时补 uuid 并补发一次 create；旧协议级身份（`legacy:<协议>`）在设备重新上报时由服务端懒迁移到源实例 uuid
 - **跨设备断点消费**：`breakpoint.set` 快照带来源设备；客户端 pull 落 `breakpoint_mirror`；启动恢复与歌单「播放全部」会比较本机 `play_state`（含歌单归属 `playlist_uuid`）与镜像的 `updated_at`，远端更新时自动从该进度续播并 toast 提示（歌单详情保留「从头播放」入口）；目标歌本机无源时退到其后第一首可播条目，全不可播则回落本机恢复

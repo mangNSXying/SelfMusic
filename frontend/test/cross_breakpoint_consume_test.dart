@@ -312,4 +312,118 @@ void main() {
     expect(player.current?.sourceRef, '/x/a.flac',
         reason: '早于基准的远端镜像不应覆盖本机恢复结果');
   });
+
+  test('同歌单：更新但更短的镜像不覆盖本机更长历史', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+    // 本机深层历史 2 条。
+    await index.saveDeepList('playlist:$uuid',
+        jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]));
+    await player.restorePreferRemote();
+    expect(player.current?.sourceRef, '/x/a.flac');
+
+    // 远端同歌单，更新（更晚）但历史更短（1 < 2）。
+    await index.upsertBreakpointMirror(
+      playlistUuid: uuid,
+      sourceRef: '/x/b.flac',
+      source: 'webdav',
+      positionMs: 30000,
+      deepListJson: _deepListJson(['/x/b.flac']),
+      updatedAt:
+          DateTime.now().add(const Duration(seconds: 5)).toIso8601String(),
+    );
+    await player.applyNewerMirrorIfAny();
+
+    expect(player.current?.sourceRef, '/x/a.flac',
+        reason: '同歌单取最长：更长的本机历史胜出，不被更新的短会话 yank 回起点');
+    expect(player.position.inMilliseconds, 10000);
+  });
+
+  test('同歌单：更早但更长的镜像覆盖本机较短历史', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+    // 本机深层历史仅 1 条。
+    await index.saveDeepList(
+        'playlist:$uuid', jsonEncode([_song('/x/a.flac').toJson()]));
+
+    // 远端同歌单，更早（时间戳早于本机断点）但历史更长（2 > 1）。
+    await index.upsertBreakpointMirror(
+      playlistUuid: uuid,
+      sourceRef: '/x/b.flac',
+      source: 'webdav',
+      positionMs: 30000,
+      deepListJson: _deepListJson(['/x/a.flac', '/x/b.flac']),
+      updatedAt:
+          DateTime.now().subtract(const Duration(days: 1)).toIso8601String(),
+    );
+
+    await player.restorePreferRemote();
+
+    expect(player.current?.sourceRef, '/x/b.flac',
+        reason: '同歌单取最长：更早但更长的远端历史仍应胜出');
+    expect(player.position.inMilliseconds, 30000);
+  });
+
+  test('不同歌单：更新的镜像按最新胜出（即便其历史更短）', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    // 第二个歌单 P2（历史更短）。
+    final id2 = await index.createPlaylist('p2');
+    final uuid2 = index.playlistUuidOf(id2);
+    expect(uuid2, isNotNull);
+    for (final r in ['/x/c.flac', '/x/d.flac']) {
+      await index.addPlaylistItem(id2,
+          sourceKey: 'webdav:test', songRef: r, title: r, source: 'webdav');
+      index.setLyrics('webdav:test', r, '[00:00.00]x');
+    }
+
+    // 本机断点：P1 + 长历史（2 条）。
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+    await index.saveDeepList('playlist:$uuid',
+        jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]));
+    await player.restorePreferRemote();
+    expect(player.current?.sourceRef, '/x/a.flac');
+
+    // 远端：P2 更新（更晚），历史仅 1 条。
+    await index.upsertBreakpointMirror(
+      playlistUuid: uuid2!,
+      sourceRef: '/x/c.flac',
+      source: 'webdav',
+      positionMs: 40000,
+      deepListJson: _deepListJson(['/x/c.flac']),
+      updatedAt:
+          DateTime.now().add(const Duration(seconds: 5)).toIso8601String(),
+    );
+    await player.applyNewerMirrorIfAny();
+
+    expect(player.current?.sourceRef, '/x/c.flac',
+        reason: '不同歌单取最新：更新的 P2 胜出，即便其历史更短');
+    expect(player.position.inMilliseconds, 40000);
+  });
 }
