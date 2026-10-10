@@ -196,6 +196,26 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     return i >= 0 ? i : (deepLen - 1).clamp(0, fused.length - 1);
   }
 
+  /// 顺序推进的接缝复本跳过（纯函数，供测试）：
+  /// 融合队列 `深层(n) ‖ 续播段` 中，若落点 [landed] 恰为续播段首位（== n，
+  /// 且 [anchored] 为真、无预载），而该歌与 [prev]（推进前当前曲）同一首——
+  /// 它是深层尾的复本而非真正的下一首（手动点播换尾后常见，如深层 [s1,s3]
+  /// 时续播段首位仍是 s3），推进/预取应越过它，否则下一首原地打转。
+  /// 非锚定普通队列不用（没有融合接缝；歌单内本就重复的歌也不在此处理）。
+  /// 返回实际落点；越过队尾（>= 队列长）时原样返回，由调用方收尾/回绕。
+  @visibleForTesting
+  static int skipSeamDupIndex(int landed, int deepLen, List<Song> queue,
+      Song prev, bool Function(Song a, Song b) same,
+      {required bool anchored}) {
+    if (!anchored) return landed;
+    if (landed == deepLen &&
+        landed < queue.length &&
+        same(queue[landed], prev)) {
+      return landed + 1;
+    }
+    return landed;
+  }
+
   /// 阶段5：服务器可达性门控（main 经 [attachServerAvailable] 注入）。
   bool Function()? _serverAvailable;
 
@@ -1211,8 +1231,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// [resetAnchor]：歌单页「播放/从头播放」专用——清空深层历史并切换到该歌单。
   ///
   /// 锚定语义（深层列表功能）：
-  /// - 首个列表即锚定；同锚定键点歌推入深层末尾（固定首位接续融合）；
-  /// - 其它列表点歌不切 base、不重建队列，仅替换深层末尾（外部点歌）；
+  /// - 手动点播一律替换深层末尾（不增长）：首个列表即锚定并建融合队列；
+  ///   同锚定键点歌 / 其它列表点歌都不切 base、不重建队列，仅换尾；
+  /// - 自动推进（自然播完 / 失败跳歌 / 加权抽样 / 删当前曲续播 / 断点恢复）
+  ///   才推入深层末尾；
   /// - resetAnchor 清空深层 + 重锚到目标歌单。
   Future<void> playQueue(List<Song> songs,
       {int index = 0,
@@ -1257,7 +1279,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _idx = _fusedIndexOf(index.clamp(0, resolved.length - 1), resolved);
       _leaveFor(target);
       notifyListeners();
-      await _play(target, source: source, fromPlaylist: true, manual: true);
+      await _play(target, source: source, fromPlaylist: false, manual: true);
       return;
     }
 
@@ -1271,7 +1293,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _idx = _fusedIndexOf(index.clamp(0, resolved.length - 1), resolved);
       _leaveFor(target);
       notifyListeners();
-      await _play(target, source: source, fromPlaylist: true, manual: true);
+      await _play(target, source: source, fromPlaylist: false, manual: true);
       return;
     }
 
@@ -1285,7 +1307,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _idx = _fusedIndexOf(index.clamp(0, resolved.length - 1), resolved);
       _leaveFor(target);
       notifyListeners();
-      await _play(target, source: source, fromPlaylist: true, manual: true);
+      await _play(target, source: source, fromPlaylist: false, manual: true);
       return;
     }
 
@@ -1300,7 +1322,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (index < 0 || index >= _queue.length) return;
     _leaveFor(_queue[index]);
     _idx = index;
-    await _play(_queue[_idx], source: source, fromPlaylist: true, manual: true);
+    await _play(_queue[_idx], source: source, fromPlaylist: false, manual: true);
   }
 
   /// 「下一首播放」：把 [s] 排到当前曲之后（尚未播放任何内容时直接起播）。
@@ -1438,7 +1460,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (changed) notifyListeners();
   }
 
-  /// [fromPlaylist]：锚定列表内播放（推入深层末尾）；false = 外部点歌（替换末尾）。
+  /// [fromPlaylist]：true = 自动推进（推入深层末尾）；false = 手动点播
+  /// （替换深层末尾，不增长）。调用方约定：playAt / playQueue 手动路径一律
+  /// false；_advance / _playWeighted / 删当前曲续播 / 断点恢复一律 true。
   /// [autoAdvanceOnFailure]：自动续播链路（自然播完/失败跳歌）专用——装载彻底失败
   /// 时不逐首弹 toast，直接跳下一首（见 [_autoSkipAfterFailure]）。
   /// [manual]：本曲是否用户手动点播（playAt/playQueue）——自然完播时额外走
@@ -1941,15 +1965,39 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       return _peekedNext;
     }
     if (_mode == PlayMode.loopList) {
-      _peekedNext = _queue[(_idx + 1) % _queue.length];
+      // 预取口径与 [_advance] 一致：越过接缝复本，越过队尾则回绕。
+      var landed = (_idx + 1) % _queue.length;
+      final cur = _current;
+      if (cur != null) {
+        landed = skipSeamDupIndex(landed, _deepList?.length ?? 0, _queue,
+                cur, _same,
+                anchored: _fusedBase != null && _deepList != null) %
+            _queue.length;
+      }
+      _peekedNext = _queue[landed];
       return _peekedNext;
     }
     if (_mode == PlayMode.weighted) {
       _peekedNext = _pickWeighted();
       return _peekedNext;
     }
-    if (_idx + 1 < _queue.length) {
-      _peekedNext = _queue[_idx + 1];
+    // 预取口径与 [_advance] 一致：落到接缝复本上则越过一位，越过队尾即无下一首。
+    var landed = _idx + 1;
+    final curSeq = _current;
+    if (curSeq != null) {
+      landed = skipSeamDupIndex(landed, _deepList?.length ?? 0, _queue,
+          curSeq, _same,
+          anchored: _fusedBase != null && _deepList != null);
+    }
+    if (landed < _queue.length) {
+      _peekedNext = _queue[landed];
+      return _peekedNext;
+    }
+    // 队尾：顺序模式会清零深层从头播放（与 [_advance] 同口径）→ 预取基座首曲；
+    // 非锚定则无下一首（收尾停止口径）。
+    final base = _fusedBase;
+    if (base != null && _deepList != null && base.isNotEmpty) {
+      _peekedNext = base[0];
       return _peekedNext;
     }
     return null;
@@ -1995,13 +2043,44 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     if (_mode == PlayMode.loopList) {
-      _idx = (_idx + 1) % _queue.length;
+      // 接缝复本（深层尾在续播段首位的复本）不是真正的下一首，越过它；
+      // 越过队尾则回绕到深层头部（既有列表循环口径）。
+      final prev = _current;
+      var landed = (_idx + 1) % _queue.length;
+      if (prev != null) {
+        landed = skipSeamDupIndex(landed, _deepList?.length ?? 0, _queue,
+                prev, _same,
+                anchored: _fusedBase != null && _deepList != null) %
+            _queue.length;
+      }
+      _idx = landed;
       await _play(_queue[_idx],
           source: _curSource, autoAdvanceOnFailure: autoAdvanceOnFailure);
       return;
     }
-    if (_idx + 1 < _queue.length) {
-      _idx++;
+    // 顺序推进：落到接缝复本上则越过一位；越过队尾（>= 队长）即播完收尾。
+    var landed = _idx + 1;
+    final prevSeq = _current;
+    if (prevSeq != null) {
+      landed = skipSeamDupIndex(landed, _deepList?.length ?? 0, _queue,
+          prevSeq, _same,
+          anchored: _fusedBase != null && _deepList != null);
+    }
+    if (landed < _queue.length) {
+      _idx = landed;
+      await _play(_queue[_idx],
+          source: _curSource, autoAdvanceOnFailure: autoAdvanceOnFailure);
+      return;
+    }
+    // 顺序模式播到队尾：深层清零后从头播放（仅锚定融合队列；非锚定仍收尾停止）。
+    // 即深层「播完一轮清空重来」在顺序模式的形态：自动历史不断推入，
+    // 到队尾时不清零就会停住（此前即 `_finishQueue`）。
+    final dlEnd = _deepList;
+    if (_fusedBase != null && dlEnd != null) {
+      dlEnd.clear();
+      _persistDeepList();
+      _rebuildFusedQueue();
+      _idx = 0;
       await _play(_queue[_idx],
           source: _curSource, autoAdvanceOnFailure: autoAdvanceOnFailure);
       return;
@@ -2837,7 +2916,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     idx.saveDeepList(key, jsonEncode(dl.toJson()));
   }
 
-  /// 播放成功后的深层列表维护：锚定列表内播放推入末尾，外部点歌替换末尾。
+  /// 播放成功后的深层列表维护：自动推进推入末尾，手动点播替换末尾。
   void _trackDeepList(Song s, {required bool push}) {
     final dl = _deepList;
     if (dl == null || _anchorKey == null) return;
@@ -2880,13 +2959,18 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 歌单/锚定列表删歌联动：深层列表移除该歌引用（始终同步删）；
-  /// 若删的是当前曲，则播放新末尾（从头开始）。[anchorKey] 只作用于当前锚定上下文。
+  /// 若删的是当前曲，则播放下一首（被删曲在基座中的后一首，从头开始）——
+  /// [deletedBaseIndex] 为被删曲在旧基座中的下标（歌单路径由调用方传入，
+  /// 定位不到/删的是基座末尾时退回播新深层尾）。[anchorKey] 只作用于当前锚定上下文。
   Future<void> onAnchorSongRemoved(String anchorKey, Song s,
-      {int? newCount}) async {
+      {int? newCount, int? deletedBaseIndex}) async {
     final dl = _deepList;
     if (_anchorKey != anchorKey || dl == null) return;
     // 歌单里删掉的这首若正排在「下一首播放」，一并撤掉。
     if (_nextUp != null && _same(_nextUp!, s)) _nextUp = null;
+    // 基座快照同步去掉死引用：删歌后旧基座里的残留不再参与续播拼接
+    //（歌单路径基座已整体刷新，这里兜住喜欢/专辑等快照锚定）。
+    _fusedBase?.removeWhere((e) => _same(e, s));
     if (newCount != null && newCount > 0) {
       dl.capacity = newCount;
     }
@@ -2895,19 +2979,50 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _persistDeepList();
     _rebuildFusedQueue(target: _current);
     if (!removedCurrent) return;
-    final target = dl.tail;
-    if (target == null) return;
-    final i = _queue.indexWhere((x) => _same(x, target));
+    Song? target;
+    final fresh = _fusedBase;
+    if (deletedBaseIndex != null &&
+        fresh != null &&
+        deletedBaseIndex >= 0 &&
+        deletedBaseIndex < fresh.length) {
+      target = fresh[deletedBaseIndex];
+    }
+    target ??= dl.tail;
+    final resolved = target;
+    if (resolved == null) return;
+    final i = _queue.indexWhere((x) => _same(x, resolved));
     if (i >= 0) _idx = i;
-    await _play(target, source: _curSource);
+    await _play(resolved, source: _curSource);
   }
 
   /// 歌单删歌联动（转锚定键统一处理）。
   Future<void> onPlaylistSongRemoved(String playlistUuid, Song s,
       {int? newPlaylistCount}) {
-    return onAnchorSongRemoved(PlayerProvider.anchorForPlaylist(playlistUuid),
-        s,
-        newCount: newPlaylistCount);
+    // 歌单变了 → 融合基座同步刷新为最新歌单，否则续播段仍按删歌前的旧快照
+    // 接续：删当前曲会从旧基座里复活、删已播曲会把前面的歌顶到当前曲后面。
+    // 仅当前锚定且能读到非空新歌单时刷新；读不到沿用旧基座（既有行为）。
+    // 另记下被删曲在旧基座中的下标，供删当前曲时定位「下一首」。
+    final key = PlayerProvider.anchorForPlaylist(playlistUuid);
+    int? deletedBaseIndex;
+    if (_anchorKey == key && _fusedBase != null) {
+      final stale = _fusedBase!;
+      for (var i = 0; i < stale.length; i++) {
+        if (_same(stale[i], s)) {
+          deletedBaseIndex = i;
+          break;
+        }
+      }
+      final idx = _index;
+      if (idx != null) {
+        final pid = idx.playlistIdOfUuid(playlistUuid);
+        if (pid != null) {
+          final fresh = _resolveLiveAll(idx.playlistSongs(pid));
+          if (fresh.isNotEmpty) _fusedBase = fresh;
+        }
+      }
+    }
+    return onAnchorSongRemoved(key, s,
+        newCount: newPlaylistCount, deletedBaseIndex: deletedBaseIndex);
   }
 
   /// 歌单被整体删除：解绑其深层列表与断点归属。

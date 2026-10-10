@@ -199,4 +199,73 @@ void main() {
           .map((s) => s.sourceRef), ['a', 'b', 'p3', 'p4', 'p5']);
     });
   });
+
+  group('手动点播换尾后的融合形状（点播一律替换末尾，不增长）', () {
+    List<Song> base6() => [for (var i = 1; i <= 6; i++) _song('s$i')];
+
+    test('自动 s1→s5（推入）后点播 s3（换尾）：深层 [s1,s3]，队列带接缝复本',
+        () {
+      final base = base6();
+      final dl = DeepListController(capacity: base.length);
+      dl.pushPlayed(_song('s1'), same: _same); // 首播
+      dl.pushPlayed(_song('s5'), same: _same); // 自动推进到 s5
+      dl.replaceTail(_song('s3'), same: _same); // 手动点播 s3：换尾不增长
+      expect(dl.entries.map((s) => s.sourceRef), ['s1', 's3']);
+      // 切分仍按深层长度 n=2：续播段 base[2:] 首位恰为 s3（接缝复本，不断言去重）。
+      expect(PlayerProvider.fusedQueueOf(dl.entries, base)
+          .map((s) => s.sourceRef), ['s1', 's3', 's3', 's4', 's5', 's6']);
+    });
+
+    test('连续点播不增长深层：换尾两次长度仍为 2', () {
+      final dl = DeepListController(capacity: 6,
+          entries: [_song('s1'), _song('s5')]);
+      dl.replaceTail(_song('s3'), same: _same);
+      dl.replaceTail(_song('s2'), same: _same);
+      expect(dl.entries.map((s) => s.sourceRef), ['s1', 's2']);
+    });
+  });
+
+  group('skipSeamDupIndex（顺序推进越过接缝复本）', () {
+    List<Song> q(List<String> refs) => [for (final r in refs) _song(r)];
+
+    test('落到接缝复本上（== 深层长且同首）→ 越过一位', () {
+      final queue = q(['s1', 's3', 's3', 's4', 's5', 's6']);
+      expect(
+          PlayerProvider.skipSeamDupIndex(
+              2, 2, queue, _song('s3'), _same, anchored: true),
+          3);
+    });
+
+    test('落点是真正的下一首（不同歌）→ 不动', () {
+      final queue = q(['s1', 's5', 's3', 's4', 's5', 's6']);
+      expect(
+          PlayerProvider.skipSeamDupIndex(
+              2, 2, queue, _song('s5'), _same, anchored: true),
+          2);
+    });
+
+    test('同首但不在接缝位（深层内复本）→ 不动', () {
+      final queue = q(['s1', 's3', 's3', 's4']);
+      expect(
+          PlayerProvider.skipSeamDupIndex(
+              1, 2, queue, _song('s3'), _same, anchored: true),
+          1);
+    });
+
+    test('非锚定普通队列 → 不动（无融合接缝）', () {
+      final queue = q(['a', 'a', 'b']);
+      expect(
+          PlayerProvider.skipSeamDupIndex(
+              0, 0, queue, _song('a'), _same, anchored: false),
+          0);
+    });
+
+    test('越过队尾（== 队长）→ 原样返回，由调用方收尾', () {
+      final queue = q(['s1', 's3']);
+      expect(
+          PlayerProvider.skipSeamDupIndex(
+              2, 2, queue, _song('s3'), _same, anchored: true),
+          2);
+    });
+  });
 }
