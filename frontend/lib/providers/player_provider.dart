@@ -30,7 +30,7 @@ import '../widgets/app_toast.dart';
 /// - 时长无效（null 或 0）无法判定（自然结束时由调用方补偿记完播）。
 enum WeightJudgement { complete, skip, none }
 
-/// 转码门控（纯函数，可单测）：全局省流开关开 + 后端可达 +
+/// 转码门控（纯函数，可单测）：代理总开关开 + 后端可达 +
 /// 该源在新增/编辑弹窗中选了代理链路。直连源恒走原生 URL，开关不生效。
 /// kind 限定 webdav（服务端强校验只认已同步 WebDAV 源）。
 @visibleForTesting
@@ -1622,8 +1622,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         return false;
       }
       final int bitrate = settings.transcodeBitrate;
+      final String loudnorm = settings.transcodeLoudnorm;
       final String? turl =
-          api.transcodeStreamUrl(originUrl, bitrate) as String?;
+          api.transcodeStreamUrl(originUrl, bitrate, loudnorm: loudnorm)
+              as String?;
       if (turl == null) return false;
       final headers = <String, String>{};
       try {
@@ -1638,7 +1640,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (basic != null && basic.isNotEmpty) {
         headers['X-Origin-Auth'] = basic;
       }
-      debugPrint('[play] 转码代理 ${bitrate}k: $turl');
+      debugPrint('[play] 转码代理 ${bitrate}k loudnorm=$loudnorm: $turl');
       final load = player.setUrl(turl, headers: headers, tag: tag);
       try {
         await load.timeout(_loadUrlTimeout);

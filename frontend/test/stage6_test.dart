@@ -127,10 +127,31 @@ void main() {
       index.close();
     });
 
+    test('转码响度均衡默认关、非法回落关', () async {
+      open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+      final dir = await Directory.systemTemp.createTemp('selfmusic_stage6_ln_');
+      addTearDown(() {
+        try {
+          dir.deleteSync(recursive: true);
+        } catch (_) {}
+      });
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      final index = LocalIndex();
+      await index.open();
+      final s = AppSettings(index);
+      expect(s.transcodeLoudnorm, 'off');
+      s.transcodeLoudnorm = '16';
+      expect(AppSettings(index).transcodeLoudnorm, '16');
+      index.settingsSet(AppSettings.kTranscodeLoudnorm, '99');
+      expect(AppSettings(index).transcodeLoudnorm, 'off');
+      index.close();
+    });
+
     test('knownKeys 含新键、不含服务端镜像键（不随备份导出）', () {
       expect(AppSettings.knownKeys, contains(AppSettings.kCacheConfigMode));
       expect(AppSettings.knownKeys, contains(AppSettings.kTranscodeEnabled));
       expect(AppSettings.knownKeys, contains(AppSettings.kTranscodeBitrate));
+      expect(AppSettings.knownKeys, contains(AppSettings.kTranscodeLoudnorm));
       expect(AppSettings.knownKeys,
           isNot(contains(AppSettings.kCacheServerMaxBytes)));
     });
@@ -171,7 +192,7 @@ void main() {
   });
 
   group('阶段6 抽象与 URL', () {
-    test('SMB 骨架不支持写；转码 URL 构造含 origin 与 bitrate', () {
+    test('SMB 骨架不支持写；转码 URL 构造含 origin、bitrate 与 loudnorm', () {
       final smb = SmbDirectSource(name: 'n', host: 'h', share: 's');
       expect(smb.supportsWrite, isFalse);
       final api = ApiClient(
@@ -180,7 +201,11 @@ void main() {
       final u = api.transcodeStreamUrl('https://nas:5006/music/a.flac', 128)!;
       expect(u, contains('/api/v1/transcode/stream?origin='));
       expect(u, contains('bitrate=128'));
+      expect(u, contains('loudnorm=off'));
       expect(u, startsWith('https://h:18443'));
+      final u2 = api.transcodeStreamUrl('https://nas:5006/music/a.flac', 192,
+          loudnorm: '16')!;
+      expect(u2, contains('loudnorm=16'));
     });
 
     test('源地址归一化：WebDAV 缺 scheme 补 https、去尾斜杠；上报与比对同口径', () {

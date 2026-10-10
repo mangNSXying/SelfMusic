@@ -441,8 +441,8 @@ class _CacheDirTileState extends State<_CacheDirTile> {
   }
 }
 
-/// 服务端 → 省流转码（阶段6，无状态代理，不建库）：
-/// 开关 + 码率三档 + 服务端 ffmpeg 可用性（GET /meta/server）。
+/// 服务端 → 代理（阶段6，无状态代理，不建库）：
+/// 总开关 + 码率三档 + 响度均衡 + 服务端 ffmpeg 可用性（GET /meta/server）。
 /// 未配对/旧服务端/无 ffmpeg 时开关灰显；播放失败自动回落直连原文件。
 class _TranscodeSection extends StatefulWidget {
   const _TranscodeSection();
@@ -491,7 +491,7 @@ class _TranscodeSectionState extends State<_TranscodeSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('省流转码',
+        Text('代理',
             style: Theme.of(context)
                 .textTheme
                 .titleMedium
@@ -499,9 +499,9 @@ class _TranscodeSectionState extends State<_TranscodeSection> {
         const SizedBox(height: 4),
         Text(
             unknown
-                ? '经服务端按需转码为 MP3（FLAC 源省流量）；正在探测服务端能力…'
+                ? '经服务端代理播放：按需转码为 MP3（FLAC 源省流量）+ 可选响度均衡；正在探测服务端能力…'
                 : canUse
-                    ? '经服务端按需转码为 MP3（FLAC 源省流量${_version == null ? '' : ' · 服务端 $_version'}）；缓存仍存原文件'
+                    ? '经服务端代理播放：按需转码为 MP3（FLAC 源省流量${_version == null ? '' : ' · 服务端 $_version'}）+ 可选响度均衡；缓存仍存原文件'
                     : '服务端不可用或无 ffmpeg（或未配对/旧服务端），开关不可用；播放自动走直连原文件',
             style: Theme.of(context)
                 .textTheme
@@ -509,7 +509,7 @@ class _TranscodeSectionState extends State<_TranscodeSection> {
                 ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
-          title: const Text('播放时省流转码'),
+          title: const Text('播放时代理转码'),
           subtitle: const Text('仅代理生效；失败回落直连（转码 seek 精度 ±2s）'),
           value: settings.transcodeEnabled && canUse,
           onChanged: !canUse
@@ -526,6 +526,23 @@ class _TranscodeSectionState extends State<_TranscodeSection> {
           onSelectionChanged: !canUse
               ? null
               : (s) => setState(() => settings.transcodeBitrate = s.first),
+        ),
+        const SizedBox(height: 8),
+        Text('响度均衡（LUFS，仅代理转码时生效）',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: cs.onSurface.withValues(alpha: 0.6))),
+        const SizedBox(height: 4),
+        SegmentedButton<String>(
+          segments: const [
+            ButtonSegment(value: 'off', label: Text('关')),
+            ButtonSegment(value: '14', label: Text('-14')),
+            ButtonSegment(value: '16', label: Text('-16')),
+            ButtonSegment(value: '23', label: Text('-23')),
+          ],
+          selected: {settings.transcodeLoudnorm},
+          onSelectionChanged: !(canUse && settings.transcodeEnabled)
+              ? null
+              : (s) => setState(() => settings.transcodeLoudnorm = s.first),
         ),
       ],
     );

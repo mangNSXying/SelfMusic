@@ -258,11 +258,13 @@ class ApiClient {
 
   /// 构造转码流 URL（不发请求，供 just_audio setUrl）。
   /// 调用方须把 WebDAV 鉴权经 headers 透传 X-Origin-Auth（见 player）。
-  String? transcodeStreamUrl(String originUrl, int bitrate) {
+  String? transcodeStreamUrl(String originUrl, int bitrate,
+      {String loudnorm = 'off'}) {
     if (dio.options.baseUrl.isEmpty) return null;
     final base = dio.options.baseUrl;
     final enc = Uri.encodeComponent(originUrl);
-    return '$base/api/v1/transcode/stream?origin=$enc&bitrate=$bitrate';
+    return '$base/api/v1/transcode/stream'
+        '?origin=$enc&bitrate=$bitrate&loudnorm=$loudnorm';
   }
 
   // ---------- 多设备状态同步（阶段5，DESIGN §7.2 / SyncEngine） ----------

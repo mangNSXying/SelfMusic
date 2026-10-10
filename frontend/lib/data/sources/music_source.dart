@@ -6,8 +6,8 @@ import 'webdav_url.dart';
 enum SourceKind { local, webdav, smb }
 
 /// 非本地源的播放链路偏好（新增/编辑源弹窗可配，默认直连）：
-/// - direct：原生 URL 直播，省流转码开关不生效；
-/// - proxy：经服务端代理，省流转码开关开时走转码、关时回落直连。
+/// - direct：原生 URL 直播，代理设置（转码/响度）不生效；
+/// - proxy：经服务端代理，代理总开关开时走转码（响度均衡同时生效）、关时回落直连。
 enum SourceRoute { direct, proxy }
 
 /// 解析持久化/同步来的 route 取值；缺失或非法一律回落直连（旧配置兼容）。

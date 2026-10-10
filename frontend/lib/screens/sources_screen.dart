@@ -323,7 +323,7 @@ class _SourceDialogState extends State<_SourceDialog> {
               ),
               const SizedBox(height: 4),
               Text(
-                '直连走原生地址（省流开关不生效）；代理经服务端（开关开时转码）',
+                '直连走原生地址（代理设置不生效）；代理经服务端（开关开时转码）',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
