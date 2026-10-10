@@ -49,19 +49,6 @@ bool _same(Song a, Song b) =>
 
 void main() {
   group('DeepListController', () {
-    test('countEntries：JSON 字符串/已解码 List/坏数据同口径', () {
-      expect(DeepListController.countEntries(null), 0);
-      expect(DeepListController.countEntries(''), 0);
-      expect(DeepListController.countEntries('{bad json'), 0);
-      expect(DeepListController.countEntries('{"a":1}'), 0);
-      expect(DeepListController.countEntries('[]'), 0);
-      expect(
-          DeepListController.countEntries(
-              '[{"source":"webdav","source_ref":"a"}]'),
-          1);
-      expect(DeepListController.countEntries([1, 2, 3]), 3);
-    });
-
     test('pushPlayed：推入末尾、末尾去重、超容量清空重来', () {
       final dl = DeepListController(capacity: 3);
       dl.pushPlayed(_song('a'), same: _same);

@@ -8,7 +8,6 @@ import 'dart:math';
 import 'package:sqlite3/open.dart';
 import 'package:sqlite3/sqlite3.dart';
 
-import '../deep_list.dart';
 import '../sources/music_source.dart';
 import '../sources/webdav_url.dart';
 import '../../utils/perf_log.dart';
@@ -1254,24 +1253,13 @@ void _opApplyPlaystateMirror(Database db, Map<String, dynamic> a) {
   }
   final deep = a['deep_list'];
   final inUpdatedAt = (a['updated_at'] as String?) ?? DateTime.now().toIso8601String();
-  // 同歌单仲裁（与整队恢复同一口径）：深层列表更长者胜，等长回退 updated_at 新者胜；
-  // 任一侧无列表（null/空）视为未知回退时间。防 pull/快路径乱序把更长的旧镜像抹掉。
+  // 最新时间胜出：已存镜像更新则保留，防止 pull/快路径乱序把旧快照写回来。
   final cur = db.select(
-      'SELECT deep_list_json, updated_at FROM breakpoint_mirror WHERE playlist_uuid=?',
+      'SELECT updated_at FROM breakpoint_mirror WHERE playlist_uuid=?',
       [uuid]);
   if (cur.isNotEmpty) {
-    final curJson = cur.first['deep_list_json'];
     final curAt = cur.first['updated_at'] as String?;
-    if (deep is List && curJson is String) {
-      final inLen = deep.length;
-      final curLen = DeepListController.countEntries(curJson);
-      if (inLen < curLen) return; // 更短：保留现行更长镜像
-      if (inLen == curLen && curAt != null && inUpdatedAt.compareTo(curAt) <= 0) {
-        return; // 等长且不更新：保留现行
-      }
-    } else if (curAt != null && inUpdatedAt.compareTo(curAt) <= 0) {
-      return; // 无列表可比：回退时间，更新才写
-    }
+    if (curAt != null && inUpdatedAt.compareTo(curAt) <= 0) return;
   }
   db.execute(
       'INSERT INTO breakpoint_mirror(playlist_uuid, song_id, source_id, source, source_ref, '

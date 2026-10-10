@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.selfmusic.backend.common.BizException;
-import com.selfmusic.backend.domain.entity.PlayState;
 import com.selfmusic.backend.domain.entity.SongState;
 import com.selfmusic.backend.domain.entity.SyncEvent;
 import org.junit.jupiter.api.Test;
@@ -326,70 +325,6 @@ class SyncServiceTest {
         assertEquals(Set.of("s1"), c.sourceUuids());
         assertEquals(Set.of("p1"), c.playlistUuids());
         assertEquals(Set.of("p1"), c.playstateUuids());
-    }
-
-    // ---- 断点仲裁：同歌单取最长（等长回退时间 LWW） ----
-
-    private PlayState breakpointState(String deepListJson, LocalDateTime lastEventAt) {
-        PlayState st = new PlayState();
-        st.setPlaylistId(1L);
-        st.setDeepListJson(deepListJson);
-        st.setLastEventAt(lastEventAt);
-        return st;
-    }
-
-    private JsonNode deepPayload(int size) {
-        ObjectNode p = mapper.createObjectNode();
-        var arr = p.putArray("deep_list");
-        for (int i = 0; i < size; i++) {
-            ObjectNode e = arr.addObject();
-            e.put("source", "webdav");
-            e.put("source_ref", "/" + i + ".mp3");
-        }
-        return p;
-    }
-
-    @Test
-    void breakpointLongerDeepListWinsEvenIfOlder() {
-        PlayState st = breakpointState("[{\"source\":\"webdav\",\"source_ref\":\"/a.mp3\"}]",
-                LocalDateTime.of(2026, 10, 9, 12, 0, 0));
-        // 更早（11:00）但更长（2 > 1）→ 胜出。
-        assertTrue(SyncService.breakpointWins(deepPayload(2),
-                LocalDateTime.of(2026, 10, 9, 11, 0, 0), st));
-    }
-
-    @Test
-    void breakpointShorterDeepListLosesEvenIfNewer() {
-        PlayState st = breakpointState(
-                "[{\"source\":\"webdav\",\"source_ref\":\"/a.mp3\"},{\"source\":\"webdav\",\"source_ref\":\"/b.mp3\"}]",
-                LocalDateTime.of(2026, 10, 9, 12, 0, 0));
-        // 更新（13:00）但更短（1 < 2）→ 判输。
-        assertFalse(SyncService.breakpointWins(deepPayload(1),
-                LocalDateTime.of(2026, 10, 9, 13, 0, 0), st));
-    }
-
-    @Test
-    void breakpointEqualLengthFallsBackToTimeLww() {
-        PlayState st = breakpointState(
-                "[{\"source\":\"webdav\",\"source_ref\":\"/a.mp3\"}]",
-                LocalDateTime.of(2026, 10, 9, 12, 0, 0));
-        assertFalse(SyncService.breakpointWins(deepPayload(1),
-                LocalDateTime.of(2026, 10, 9, 11, 0, 0), st), "等长更早 → 输");
-        assertTrue(SyncService.breakpointWins(deepPayload(1),
-                LocalDateTime.of(2026, 10, 9, 13, 0, 0), st), "等长更新 → 胜");
-    }
-
-    @Test
-    void breakpointMissingDeepListFallsBackToTimeLww() {
-        // 旧客户端无 deep_list：纯时间 LWW。
-        PlayState st = breakpointState(
-                "[{\"source\":\"webdav\",\"source_ref\":\"/a.mp3\"}]",
-                LocalDateTime.of(2026, 10, 9, 12, 0, 0));
-        ObjectNode noDeep = mapper.createObjectNode();
-        assertTrue(SyncService.breakpointWins(noDeep,
-                LocalDateTime.of(2026, 10, 9, 13, 0, 0), st));
-        assertFalse(SyncService.breakpointWins(noDeep,
-                LocalDateTime.of(2026, 10, 9, 11, 0, 0), st));
     }
 
     private SyncEvent event(String type, String device, String payload) {

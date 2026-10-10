@@ -313,7 +313,7 @@ void main() {
         reason: '早于基准的远端镜像不应覆盖本机恢复结果');
   });
 
-  test('同歌单：更新但更短的镜像不覆盖本机更长历史', () async {
+  test('同歌单：更新的镜像按最新胜出（覆盖本机历史）', () async {
     final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
     addTearDown(index.close);
     addTearDown(player.dispose);
@@ -325,13 +325,12 @@ void main() {
       playlistUuid: uuid,
       anchorKey: 'playlist:$uuid',
     );
-    // 本机深层历史 2 条。
     await index.saveDeepList('playlist:$uuid',
         jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]));
     await player.restorePreferRemote();
     expect(player.current?.sourceRef, '/x/a.flac');
 
-    // 远端同歌单，更新（更晚）但历史更短（1 < 2）。
+    // 远端同歌单更新（更晚），历史更短也应胜出：最新时间口径。
     await index.upsertBreakpointMirror(
       playlistUuid: uuid,
       sourceRef: '/x/b.flac',
@@ -343,12 +342,12 @@ void main() {
     );
     await player.applyNewerMirrorIfAny();
 
-    expect(player.current?.sourceRef, '/x/a.flac',
-        reason: '同歌单取最长：更长的本机历史胜出，不被更新的短会话 yank 回起点');
-    expect(player.position.inMilliseconds, 10000);
+    expect(player.current?.sourceRef, '/x/b.flac',
+        reason: '同歌单取最新：更新的远端镜像胜出');
+    expect(player.position.inMilliseconds, 30000);
   });
 
-  test('同歌单：更早但更长的镜像覆盖本机较短历史', () async {
+  test('同歌单：更早的镜像不覆盖本机较新历史', () async {
     final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
     addTearDown(index.close);
     addTearDown(player.dispose);
@@ -364,7 +363,7 @@ void main() {
     await index.saveDeepList(
         'playlist:$uuid', jsonEncode([_song('/x/a.flac').toJson()]));
 
-    // 远端同歌单，更早（时间戳早于本机断点）但历史更长（2 > 1）。
+    // 远端同歌单更早（时间戳早于本机断点）：最新时间口径下不应胜出。
     await index.upsertBreakpointMirror(
       playlistUuid: uuid,
       sourceRef: '/x/b.flac',
@@ -377,12 +376,12 @@ void main() {
 
     await player.restorePreferRemote();
 
-    expect(player.current?.sourceRef, '/x/b.flac',
-        reason: '同歌单取最长：更早但更长的远端历史仍应胜出');
-    expect(player.position.inMilliseconds, 30000);
+    expect(player.current?.sourceRef, '/x/a.flac',
+        reason: '同歌单取最新：更早的远端镜像不应覆盖本机较新历史');
+    expect(player.position.inMilliseconds, 10000);
   });
 
-  test('不同歌单：更新的镜像按最新胜出（即便其历史更短）', () async {
+  test('不同歌单：更新的镜像按最新胜出', () async {
     final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
     addTearDown(index.close);
     addTearDown(player.dispose);
@@ -423,7 +422,7 @@ void main() {
     await player.applyNewerMirrorIfAny();
 
     expect(player.current?.sourceRef, '/x/c.flac',
-        reason: '不同歌单取最新：更新的 P2 胜出，即便其历史更短');
+        reason: '不同歌单取最新：更新的 P2 胜出');
     expect(player.position.inMilliseconds, 40000);
   });
 }
