@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.server.ResponseStatusException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -16,6 +17,19 @@ public class GlobalExceptionHandler {
         log.warn("BizException [{}]: {}", e.code, e.getMessage());
         return ResponseEntity.badRequest()
                 .body(ApiResponse.error(e.code, e.getMessage()));
+    }
+
+    /**
+     * 保留显式状态码（转码代理的 429 并发满 / 502 源不可达·鉴权失败 / 503 无 ffmpeg），
+     * 不落入下方 Exception 兜底被改写成 500。
+     */
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<ApiResponse<Void>> handleStatus(ResponseStatusException e) {
+        int status = e.getStatusCode().value();
+        String msg = e.getReason() != null ? e.getReason() : e.getMessage();
+        log.warn("ResponseStatusException [{}]: {}", status, msg);
+        return ResponseEntity.status(e.getStatusCode())
+                .body(ApiResponse.error(status, msg));
     }
 
     @ExceptionHandler(Exception.class)
