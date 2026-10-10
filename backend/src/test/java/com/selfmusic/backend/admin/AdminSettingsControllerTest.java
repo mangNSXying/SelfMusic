@@ -62,4 +62,34 @@ class AdminSettingsControllerTest {
         assertEquals(1073741824L, data.get("cache_max_bytes"));
         assertEquals(0, data.get("cache_song_limit"));
     }
+
+    @Test
+    void putUpdatesAllowedKeys() {
+        when(settings.get("cache_max_bytes", null)).thenReturn("1073741824");
+        when(settings.get("cache_song_limit", null)).thenReturn("50");
+        var resp = controller().updateSettings(Map.of(
+                "cache_max_bytes", 1073741824L,
+                "cache_song_limit", 50));
+        verify(settings).set("cache_max_bytes", "1073741824");
+        verify(settings).set("cache_song_limit", "50");
+        assertEquals(0, resp.getCode());
+    }
+
+    @Test
+    void putRejectsPairingTokenAndUnknownKeys() {
+        assertThrows(com.selfmusic.backend.common.BizException.class,
+                () -> controller().updateSettings(Map.of("pairing_token", "x")));
+        assertThrows(com.selfmusic.backend.common.BizException.class,
+                () -> controller().updateSettings(Map.of("unknown_key", "1")));
+    }
+
+    @Test
+    void putRejectsInvalidValues() {
+        assertThrows(com.selfmusic.backend.common.BizException.class,
+                () -> controller().updateSettings(Map.of("cache_max_bytes", 0)));
+        assertThrows(com.selfmusic.backend.common.BizException.class,
+                () -> controller().updateSettings(Map.of("cache_song_limit", -1)));
+        assertThrows(com.selfmusic.backend.common.BizException.class,
+                () -> controller().updateSettings(Map.of()));
+    }
 }
