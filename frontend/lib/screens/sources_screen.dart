@@ -123,6 +123,7 @@ class _SourceDialogState extends State<_SourceDialog> {
   late final TextEditingController _username;
   late final TextEditingController _password;
   SourceKind _kind = SourceKind.webdav;
+  SourceRoute _route = SourceRoute.direct;
   String? _error;
 
   bool get _isEdit => widget.editKey != null;
@@ -142,6 +143,7 @@ class _SourceDialogState extends State<_SourceDialog> {
     _baseUrl = TextEditingController(text: cfg['baseUrl'] as String? ?? '');
     _username = TextEditingController(text: cfg['username'] as String? ?? '');
     _password = TextEditingController(text: cfg['password'] as String? ?? '');
+    _route = parseSourceRoute(cfg['route']);
   }
 
   @override
@@ -215,13 +217,15 @@ class _SourceDialogState extends State<_SourceDialog> {
               name: name,
               baseUrl: url,
               username: _username.text.trim(),
-              password: _password.text);
+              password: _password.text,
+              route: _route);
         } else {
           await direct.addWebdav(
               name: name,
               baseUrl: url,
               username: _username.text.trim(),
-              password: _password.text);
+              password: _password.text,
+              route: _route);
         }
       }
       if (mounted) Navigator.of(context).pop();
@@ -294,6 +298,34 @@ class _SourceDialogState extends State<_SourceDialog> {
                 obscureText: true,
                 decoration: const InputDecoration(labelText: '密码（可空）'),
               ),
+              const SizedBox(height: 16),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text('播放链路'),
+              ),
+              const SizedBox(height: 8),
+              SegmentedButton<SourceRoute>(
+                segments: const [
+                  ButtonSegment(
+                    value: SourceRoute.direct,
+                    icon: Icon(Icons.bolt_outlined),
+                    label: Text('直连'),
+                  ),
+                  ButtonSegment(
+                    value: SourceRoute.proxy,
+                    icon: Icon(Icons.cloud_outlined),
+                    label: Text('代理'),
+                  ),
+                ],
+                selected: {_route},
+                onSelectionChanged: (s) =>
+                    setState(() => _route = s.first),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '直连走原生地址（省流开关不生效）；代理经服务端（开关开时转码）',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
             ],
             if (_error != null) ...[
               const SizedBox(height: 12),
@@ -343,6 +375,9 @@ class _DirectSourceCard extends StatelessWidget {
     final count = direct.countOf(sourceKey);
     final isLocal = s.kind == SourceKind.local;
     final needsPwd = direct.sourceNeedsPassword(sourceKey);
+    // 非本地源的播放链路（弹窗可配）：代理才走服务端转码，直连恒原生地址。
+    final routeLabel =
+        !isLocal && s.route == SourceRoute.proxy ? ' · 代理' : '';
 
     final tile = ListTile(
       leading: Icon(isLocal ? Icons.folder : Icons.cloud,
@@ -356,7 +391,7 @@ class _DirectSourceCard extends StatelessWidget {
               ?.copyWith(fontWeight: FontWeight.w600)),
       subtitle: Text(needsPwd
           ? '待配置密码 · 点击「编辑」补输后可用'
-          : '直连${isLocal ? ' · 本地文件夹' : ''} · 已索引 $count 首'),
+          : '直连${isLocal ? ' · 本地文件夹' : routeLabel} · 已索引 $count 首'),
       trailing: _SourceMenu(sourceKey: sourceKey, direct: direct),
       onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
     );
@@ -366,7 +401,7 @@ class _DirectSourceCard extends StatelessWidget {
       title: s.name,
       subtitle: needsPwd
           ? '待配置密码 · 点击「编辑」补输后可用'
-          : '直连${isLocal ? ' · 本地文件夹' : ''} · 已索引 $count 首',
+          : '直连${isLocal ? ' · 本地文件夹' : routeLabel} · 已索引 $count 首',
       fallbackIcon: isLocal ? Icons.folder : Icons.cloud,
       onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
       cornerAction: _SourceMenu(sourceKey: sourceKey, direct: direct),

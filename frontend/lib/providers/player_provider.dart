@@ -30,6 +30,20 @@ import '../widgets/app_toast.dart';
 /// - 时长无效（null 或 0）无法判定（自然结束时由调用方补偿记完播）。
 enum WeightJudgement { complete, skip, none }
 
+/// 转码门控（纯函数，可单测）：全局省流开关开 + 后端可达 +
+/// 该源在新增/编辑弹窗中选了代理链路。直连源恒走原生 URL，开关不生效。
+/// kind 限定 webdav（服务端强校验只认已同步 WebDAV 源）。
+@visibleForTesting
+bool shouldUseTranscode({
+  required bool enabled,
+  required String apiBaseUrl,
+  required MusicSource src,
+}) =>
+    enabled &&
+    apiBaseUrl.isNotEmpty &&
+    src.kind == SourceKind.webdav &&
+    src.route == SourceRoute.proxy;
+
 /// 按播放时长判定完播/跳过（毫秒比值，临界严格按「大于 95% / 小于 30%」）。
 @visibleForTesting
 WeightJudgement judgeWeightRatio(Duration? duration, Duration position) {
@@ -1600,10 +1614,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       final settings = _appSettings;
       final api = _transcodeApi;
       if (settings == null || api == null) return false;
-      if (!settings.transcodeEnabled) return false;
-      if (src.kind.name != 'webdav') return false;
-      final String baseUrl = (api.baseUrl as String?) ?? '';
-      if (baseUrl.isEmpty) return false;
+      if (!shouldUseTranscode(
+        enabled: settings.transcodeEnabled,
+        apiBaseUrl: (api.baseUrl as String?) ?? '',
+        src: src,
+      )) {
+        return false;
+      }
       final int bitrate = settings.transcodeBitrate;
       final String? turl =
           api.transcodeStreamUrl(originUrl, bitrate) as String?;

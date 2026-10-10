@@ -52,6 +52,10 @@ class LocalDirectSource implements MusicSource {
   @override
   bool get supportsDirect => true;
 
+  /// 本地源恒直连：文件本体即缓存，不经服务端。
+  @override
+  SourceRoute get route => SourceRoute.direct;
+
   @override
   Future<List<Song>> search(
           {String? query, int page = 1, int size = 100}) async =>

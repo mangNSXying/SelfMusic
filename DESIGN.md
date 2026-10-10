@@ -743,7 +743,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 > **状态：已实现✅** —— 无状态转码代理（§4.6，不建库）+ WebDAV/本地直写上传删除 + 管理闭环（`PUT /admin/settings` + `follow_server` + `GET /meta/server`）。
 
-- 转码：`GET /transcode/stream` 回源拉流 → ffmpeg MP3 CBR 管道；强校验 origin 落在已同步 WebDAV 源之下；并发只 env（默认 2），超限 429 回落直连；客户端省流开关 + 192/256/320 三档，缓存仍存原文件
+- 转码：`GET /transcode/stream` 回源拉流 → ffmpeg MP3 CBR 管道；强校验 origin 落在已同步 WebDAV 源之下；并发只 env（默认 2），超限 429 回落直连；客户端省流开关（源弹窗选代理链路才走转码，直连恒原生地址）+ 192/256/320 三档，缓存仍存原文件
 - 上传/删除：客户端直写（WebDAV PUT/DELETE/MKCOL + 本地 dart:io；鸿蒙写暂不支持而灰显）；删除为二次确认全删（索引/权重/歌词/歌单/缓存）；服务端分片上传方案已作废
 - 管理端设置：`PUT /admin/settings`（仅缓存两键）+ 客户端 `follow_server` 接线（`cache_config_mode` + 生效值 + 同步按钮）+ `GET /meta/server`
 - 验收：FLAC 源按 192k 出流实测流量达标；上传 50MB 文件入库可播

@@ -579,6 +579,7 @@ class DirectSourceManager extends ChangeNotifier {
       password: _webdavPwds[key] ?? (cfg['password'] as String? ?? ''),
       index: index,
       allowSelfSigned: settings.allowSelfSigned,
+      route: parseSourceRoute(cfg['route']),
     );
   }
 
@@ -607,15 +608,17 @@ class DirectSourceManager extends ChangeNotifier {
     required String baseUrl,
     String username = '',
     String password = '',
+    SourceRoute route = SourceRoute.direct,
   }) async {
     final key = _webdavKey(name);
     _webdavPwds[key] = password;
     await secrets.setWebdavPassword(key, password);
-    // config 不含密码（明文收敛到 SecretStore）。
+    // config 不含密码（明文收敛到 SecretStore）；route 随配置持久化并同步。
     final cfg = <String, dynamic>{
       'name': name,
       'baseUrl': baseUrl,
       'username': username,
+      'route': route.name,
     };
     _sources.add(_buildDirect(
         kind: 'webdav', key: key, name: name, cfg: cfg));
@@ -643,7 +646,7 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 编辑源：可改 名称（含 key 迁移）/ 地址或目录 / 账号 / 密码。
+  /// 编辑源：可改 名称（含 key 迁移）/ 地址或目录 / 账号 / 密码 / 播放链路。
   ///
   /// 改名会派生新的 key，[LocalIndex.renameSource] 同步迁移已索引歌曲、
   /// 收藏与歌单条目；与已有源重名时抛 [StateError]。
@@ -654,6 +657,7 @@ class DirectSourceManager extends ChangeNotifier {
     String? baseUrl,
     String? username,
     String? password,
+    SourceRoute? route,
   }) async {
     final row = index.getSource(key);
     if (row == null) return;
@@ -667,6 +671,7 @@ class DirectSourceManager extends ChangeNotifier {
     if (path != null) cfg['path'] = path;
     if (baseUrl != null) cfg['baseUrl'] = baseUrl;
     if (username != null) cfg['username'] = username;
+    if (route != null) cfg['route'] = route.name;
 
     final newKey = '${row.kind}:$newName';
     if (newKey != key && _sources.any((s) => s.key == newKey)) {

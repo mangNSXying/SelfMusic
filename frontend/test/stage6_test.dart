@@ -9,6 +9,7 @@ import 'package:selfmusic/data/local/app_settings.dart';
 import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/data/sources/music_source.dart';
 import 'package:selfmusic/data/sources/smb_direct_source.dart';
+import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/services/api_client.dart';
 import 'package:sqlite3/open.dart';
 
@@ -41,6 +42,23 @@ class _FakeStorage extends FlutterSecureStorage {
     WindowsOptions? wOptions,
   }) async =>
       null;
+}
+
+class _FakeRouteSource extends MusicSource {
+  @override
+  final String key;
+  @override
+  final String name;
+  @override
+  final SourceKind kind;
+  @override
+  final SourceRoute route;
+  _FakeRouteSource({
+    required this.key,
+    required this.name,
+    required this.kind,
+    this.route = SourceRoute.direct,
+  });
 }
 
 void main() {
@@ -181,6 +199,48 @@ void main() {
       expect(sourceAddressOf('smb', {'host': 'nas', 'share': 'music'}),
           'nas/music');
       expect(normalizeSourceAddress('smb', 'nas/music'), 'nas/music');
+    });
+  });
+
+  group('播放链路偏好（直连/代理）', () {
+    test('parseSourceRoute：缺失与非法回落直连', () {
+      expect(parseSourceRoute(null), SourceRoute.direct);
+      expect(parseSourceRoute('direct'), SourceRoute.direct);
+      expect(parseSourceRoute('proxy'), SourceRoute.proxy);
+      expect(parseSourceRoute('weird'), SourceRoute.direct);
+    });
+
+    test('shouldUseTranscode：仅 开关开+后端可达+webdav代理 才走转码', () {
+      final proxy = _FakeRouteSource(
+          key: 'webdav:n', name: 'n', kind: SourceKind.webdav,
+          route: SourceRoute.proxy);
+      final direct = _FakeRouteSource(
+          key: 'webdav:n', name: 'n', kind: SourceKind.webdav);
+      expect(
+          shouldUseTranscode(
+              enabled: true, apiBaseUrl: 'https://h', src: proxy),
+          isTrue);
+      // 直连源：开关开也不走转码。
+      expect(
+          shouldUseTranscode(
+              enabled: true, apiBaseUrl: 'https://h', src: direct),
+          isFalse);
+      // 开关关 / 未配对：代理源也不走。
+      expect(
+          shouldUseTranscode(
+              enabled: false, apiBaseUrl: 'https://h', src: proxy),
+          isFalse);
+      expect(
+          shouldUseTranscode(enabled: true, apiBaseUrl: '', src: proxy),
+          isFalse);
+      // 非 webdav 即使标代理也不走（服务端强校验只认 WebDAV）。
+      final localProxy = _FakeRouteSource(
+          key: 'local:n', name: 'n', kind: SourceKind.local,
+          route: SourceRoute.proxy);
+      expect(
+          shouldUseTranscode(
+              enabled: true, apiBaseUrl: 'https://h', src: localProxy),
+          isFalse);
     });
   });
 }

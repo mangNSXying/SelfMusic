@@ -5,6 +5,17 @@ import 'webdav_url.dart';
 /// 源的分类。决定直连协议与可用的增强能力。
 enum SourceKind { local, webdav, smb }
 
+/// 非本地源的播放链路偏好（新增/编辑源弹窗可配，默认直连）：
+/// - direct：原生 URL 直播，省流转码开关不生效；
+/// - proxy：经服务端代理，省流转码开关开时走转码、关时回落直连。
+enum SourceRoute { direct, proxy }
+
+/// 解析持久化/同步来的 route 取值；缺失或非法一律回落直连（旧配置兼容）。
+SourceRoute parseSourceRoute(Object? v) => SourceRoute.values.firstWhere(
+      (e) => e.name == v,
+      orElse: () => SourceRoute.direct,
+    );
+
 /// 是否参与跨设备源同步：本地文件夹源与设备绑定（各机独立），
 /// 远端类型（webdav/smb/onedrive…）默认同步。
 bool isSyncableKind(String kind) => kind.isNotEmpty && kind != 'local';
@@ -136,6 +147,9 @@ abstract class MusicSource {
   String get name;
 
   SourceKind get kind;
+
+  /// 播放链路偏好（仅非本地源可配；本地源恒直连）。默认直连。
+  SourceRoute get route => SourceRoute.direct;
 
   // ---------- 直连接口（默认不支持） ----------
   bool get supportsDirect => false;

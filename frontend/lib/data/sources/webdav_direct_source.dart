@@ -38,6 +38,10 @@ class WebdavDirectSource implements MusicSource {
   /// 跳过证书校验；播放器层（ExoPlayer/mpv 原生起流）不受此开关影响。
   final bool allowSelfSigned;
 
+  /// 播放链路偏好（新增/编辑源弹窗可配，持久化在源配置 `route` 键）。
+  @override
+  final SourceRoute route;
+
   WebdavDirectSource({
     required this.name,
     required this.baseUrl,
@@ -45,6 +49,7 @@ class WebdavDirectSource implements MusicSource {
     this.password = '',
     required this.index,
     this.allowSelfSigned = false,
+    this.route = SourceRoute.direct,
   }) : _base = webdavNormalizeBase(baseUrl);
 
   final String _base;
