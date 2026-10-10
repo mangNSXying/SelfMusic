@@ -83,6 +83,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _btPermissionWarned = false;
   Timer? _btPoll;
 
+  /// 首帧空闲后开启相邻页预构建（allowImplicitScrolling 给 PageView 一屏
+  /// cacheExtent）：邻页 State 不再「滑走即销毁、滑回重装」——歌单页每次
+  /// 重进都要同步装配整单数据（曾实测 1310 首卡在拖拽帧里 141~195ms），
+  /// 保活后只在首挂载装配一次且发生在空闲帧。与 library_screen 六分组
+  /// PageView 同一先例（内存/启动成本的折中）。
+  bool _warmNeighbors = false;
+
   @override
   void initState() {
     super.initState();
@@ -92,6 +99,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
       if (!mounted) return;
       final s = context.read<DirectSourceManager>().settings;
       _scheduleWakeSync(s.playerKeepScreenOn, s.keepScreenOnDevice);
+    });
+    // 首帧空闲后再预构建左右邻页（见 _warmNeighbors 字段注释）。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => _warmNeighbors = true);
     });
   }
 
@@ -301,6 +312,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
               // 竖向仅播放页（第 1 页）跟手下拉，歌词页纵向留给滚动。
               // 关闭手势后 PageView 禁滑、下拉停用。
               controller: _pageCtrl,
+              // 首帧后置 true：预构建/保活左右邻页（见 _warmNeighbors 注释）。
+              allowImplicitScrolling: _warmNeighbors,
               physics: gestureOn
                   ? const PageScrollPhysics()
                   : const NeverScrollableScrollPhysics(),

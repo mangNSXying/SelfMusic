@@ -537,12 +537,10 @@ class _SongListState extends State<SongList> {
     final items = provider.itemsOf(widget.playlistId);
     // 与歌曲页/喜欢页同源：条目快照优先解析为本机索引实时行
     // （封面、标题显示格式、歌手·专辑元数据即时可用）；源不在本机时保留快照。
-    final songs = [
-      for (final r in items)
-        provider.store.index.songByRef(
-                provider.songOf(r).sourceKey, r.songRef) ??
-            provider.songOf(r),
-    ];
+    // 批量按源分组 IN 查询解析（resolveLiveSongs），代替逐行 songByRef 的
+    // N+1 逐条 SELECT——整单首装曾把横滑进歌单页的帧拖到 300ms+。
+    final songs = provider.store.index
+        .resolveLiveSongs([for (final r in items) provider.songOf(r)]);
     if (sort == CollectionSort.defaultOrder) {
       _items = items;
       _songs = List.unmodifiable(songs);

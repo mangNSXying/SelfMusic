@@ -588,9 +588,11 @@ class LocalIndex {
   /// 按 ref 回查歌曲：兼容新旧两种入库形态（解码态 / 历史 ENCODE 文本）。
   Song? songByRef(String sourceKey, String ref) => _songByRef(sourceKey, ref);
 
-  /// 批量按 (source_key, ref) 取实时行（启动恢复整队解析用）：把 N 次单行
-  /// SELECT 收敛为每个源少量 IN 查询，消除 UI 线程 N+1（1262 首实测 885ms）。
-  /// 返回与输入等长的列表；无对应行（服务器歌快照等）原样保留。
+  /// 批量按 (source_key, ref) 取实时行（启动恢复整队解析/歌单详情装配用）：
+  /// 把 N 次单行 SELECT 收敛为每个源少量 IN 查询，消除 UI 线程 N+1
+  /// （1262 首实测 885ms）。返回与输入等长的列表；无对应行（服务器歌快照
+  /// 等）原样保留。同一 ref 被多条目重复引用（歌单内重复歌）时，所有位置
+  /// 都解析为同一实时行。
   List<Song> resolveLiveSongs(List<Song> songs) {
     if (songs.isEmpty) return songs;
     final bySource = <String, List<int>>{};
@@ -600,13 +602,18 @@ class LocalIndex {
     final out = List<Song>.of(songs);
     for (final entry in bySource.entries) {
       final sourceKey = entry.key;
-      final variantToPos = <String, int>{};
+      // variant → 引用它的全部位置（重复条目共享同一实时行）。
+      final variantToPos = <String, List<int>>{};
       final refs = <String>[];
       for (final pos in entry.value) {
         for (final v in webdavRefVariants(songs[pos].sourceRef)) {
-          if (variantToPos.containsKey(v)) continue;
-          variantToPos[v] = pos;
-          refs.add(v);
+          final positions = variantToPos[v];
+          if (positions == null) {
+            variantToPos[v] = [pos];
+            refs.add(v);
+          } else {
+            positions.add(pos);
+          }
         }
       }
       final resolved = <int>{};
@@ -623,9 +630,12 @@ class LocalIndex {
           WHERE i.source_key=? AND i.ref IN ($placeholders)
         ''', [sourceKey, ...chunk]);
         for (final r in rows) {
-          final pos = variantToPos[r['ref'] as String];
-          if (pos == null || !resolved.add(pos)) continue;
-          out[pos] = _rowToSong(r);
+          final positions = variantToPos[r['ref'] as String];
+          if (positions == null) continue;
+          final live = _rowToSong(r);
+          for (final pos in positions) {
+            if (resolved.add(pos)) out[pos] = live;
+          }
         }
       }
     }
