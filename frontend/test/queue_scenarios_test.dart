@@ -341,4 +341,24 @@ void main() {
           reason: 's6 出队进入深层，原被顶的 s2 不复活');
     });
   });
+
+  group('复本定位（只亮新播行）', () {
+    test('复播旧歌：currentIndex 指深层尾，下一首从尾后续播', () async {
+      final (index, player, uuid, _) = await setup();
+      addTearDown(index.close);
+      addTearDown(player.dispose);
+
+      await tap(player, uuid, 0); // s1：深层 [s1]
+      await player.next(); // s2：深层 [s1,s2]
+      await tap(player, uuid, 0); // 点播 s1：换尾，深层 [s1,s1]
+      expect(player.current?.sourceRef, 's1');
+      expect(player.currentIndex, 1,
+          reason: '旧口径 indexWhere 会指回旧复本 0，面板两行同亮且接续错位');
+      expect(_refs(player), ['s1', 's1', 's3', 's4', 's5', 's6']);
+
+      await player.next(); // 应播 s3，而非重播 s1 原地打转
+      expect(player.current?.sourceRef, 's3');
+      expect(player.currentIndex, 2);
+    });
+  });
 }

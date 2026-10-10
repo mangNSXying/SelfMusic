@@ -114,13 +114,10 @@ class _QueueSheetContentState extends State<_QueueSheetContent> {
     final ctrl = widget.scrollCtrl;
     if (!ctrl.hasClients) return;
     final player = context.read<PlayerProvider>();
-    var idx = -1;
-    for (var i = 0; i < player.queue.length; i++) {
-      if (player.isCurrent(player.queue[i])) {
-        idx = i;
-        break;
-      }
-    }
+    // 下标定位：复本只亮新播的尾一行（身份首匹配会指回旧行）。
+    final queue = player.queue;
+    if (queue.isEmpty) return;
+    final idx = player.currentIndex.clamp(0, queue.length - 1);
     if (idx <= 0) return;
     final target =
         (idx * kRowExtent - 96).clamp(0.0, ctrl.position.maxScrollExtent);
@@ -187,7 +184,8 @@ class _QueueSheetContentState extends State<_QueueSheetContent> {
             count: queue.length,
             itemBuilder: (c, i) {
               final s = queue[i];
-              final isCurrent = player.isCurrent(s);
+              // 下标判高亮：同首复本仅新播行亮。
+              final isCurrent = i == player.currentIndex;
               return SongTile(
                 song: s,
                 source: null,
@@ -245,10 +243,9 @@ class _QueuePanelState extends State<QueuePanel> {
   }
 
   int _currentIndex(PlayerProvider player) {
-    for (var i = 0; i < player.queue.length; i++) {
-      if (player.isCurrent(player.queue[i])) return i;
-    }
-    return -1;
+    // 下标定位（同上）：空队 -1，否则钳在队内。
+    if (player.queue.isEmpty) return -1;
+    return player.currentIndex.clamp(0, player.queue.length - 1);
   }
 
   @override
@@ -295,7 +292,8 @@ class _QueuePanelState extends State<QueuePanel> {
                         count: queue.length,
                         itemBuilder: (c, i) {
                           final s = queue[i];
-                          final isCurrent = player.isCurrent(s);
+                          // 下标判高亮：同首复本仅新播行亮。
+                          final isCurrent = i == player.currentIndex;
                           return SongTile(
                             song: s,
                             source: null,

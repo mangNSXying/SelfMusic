@@ -216,6 +216,20 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     return landed;
   }
 
+  /// 在融合队列中定位当前曲（纯函数，供测试）：深层尾与目标同首时取尾下标
+  /// （刚播完的歌恒为深层尾；旧复本排在前面），否则取首个匹配；找不到返回 -1。
+  /// [deepLen] 为深层长度（尾下标 = deepLen-1）。
+  @visibleForTesting
+  static int locateCurrentIndex(List<Song> queue, int deepLen, Song target,
+      bool Function(Song a, Song b) same) {
+    if (deepLen > 0 &&
+        deepLen - 1 < queue.length &&
+        same(queue[deepLen - 1], target)) {
+      return deepLen - 1;
+    }
+    return queue.indexWhere((s) => same(s, target));
+  }
+
   /// 阶段5：服务器可达性门控（main 经 [attachServerAvailable] 注入）。
   bool Function()? _serverAvailable;
 
@@ -1149,6 +1163,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   List<Song> get queue => List.unmodifiable(_queue);
   Song? get current => _current;
+
+  /// 当前曲在运行时队列中的下标（面板/队列页高亮与定位用）：
+  /// 按下标比较，融合队列里的同首复本不会两行同亮（[isCurrent] 按身份，
+  /// 复本行都会亮）。[_idx] 恒被钳在队内；空队时为 0（调用方自行判空）。
+  int get currentIndex => _idx;
   bool get hasCurrent => _current != null;
   /// 展示用当前位置：断点恢复的乐观值（[_restorePositionMs]）在装载/seek 完成前
   /// 优先——首帧进度条即停在上次位置；之后与真实播放器位置一致。
@@ -2163,8 +2182,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _playWeighted({bool autoAdvanceOnFailure = false}) async {
     final picked = _takePeeked() ?? _pickWeighted();
     if (picked == null) return;
-    _idx = _queue.indexWhere((s) => _same(s, picked));
-    if (_idx < 0) _idx = 0;
+    // 定位优先深层尾（同 [_rebuildFusedQueue]；播后重建还会再纠一次）。
+    final i = locateCurrentIndex(
+        _queue, _deepList?.length ?? 0, picked, _same);
+    _idx = i < 0 ? 0 : i;
     await _play(picked,
         source: _curSource, autoAdvanceOnFailure: autoAdvanceOnFailure);
   }
@@ -2947,7 +2968,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final rest = base.length > cut ? base.sublist(cut) : const <Song>[];
     _queue = [...dl.entries, if (_nextUp != null) _nextUp!, ...rest];
     final t = target ?? _current;
-    final i = t == null ? -1 : _queue.indexWhere((s) => _same(s, t));
+    // 定位优先深层尾：刚播完的歌恒为深层尾，旧复本在前时不再指回旧行。
+    final i = t == null
+        ? -1
+        : locateCurrentIndex(_queue, dl.length, t, _same);
     if (i >= 0) {
       _idx = i;
       _current = _queue[i];

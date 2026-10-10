@@ -268,4 +268,28 @@ void main() {
           2);
     });
   });
+
+  group('locateCurrentIndex（定位优先深层尾）', () {
+    List<Song> q(List<String> refs) => [for (final r in refs) _song(r)];
+
+    test('深层尾与目标同首 → 取尾下标，不取旧复本', () {
+      final queue = q(['s3', 's1', 's3', 's4']);
+      expect(PlayerProvider.locateCurrentIndex(queue, 3, _song('s3'), _same),
+          2); // 旧口径 indexWhere 会给 0
+    });
+
+    test('深层尾不是目标 → 首个匹配', () {
+      final queue = q(['s3', 's1', 's3', 's4']);
+      expect(PlayerProvider.locateCurrentIndex(queue, 3, _song('s1'), _same),
+          1);
+    });
+
+    test('找不到 → -1；深层空 → 首个匹配', () {
+      final queue = q(['s1', 's3']);
+      expect(PlayerProvider.locateCurrentIndex(queue, 2, _song('s9'), _same),
+          -1);
+      expect(PlayerProvider.locateCurrentIndex(queue, 0, _song('s3'), _same),
+          1);
+    });
+  });
 }

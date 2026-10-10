@@ -232,7 +232,8 @@ class _QueuePageState extends State<QueuePage> {
               itemBuilder: (c, i) {
                 final realIndex = _visible[i];
                 final s = queue[realIndex];
-                final isCurrent = player.isCurrent(s);
+                // 下标判高亮（展示可重排，用真实队列下标；复本仅新播行亮）。
+                final isCurrent = realIndex == player.currentIndex;
                 return SongTile(
                   song: s,
                   source: null,
