@@ -76,8 +76,12 @@ class TranscodeControllerTest {
     @Test
     void rejectsInvalidBitrateBeforeAnything() {
         var c = controllerWith(src("https://nas:5006/music"));
+        // 已下架的低档与非法值同样拒绝（档位现为 192/256/320）。
         assertThrows(BizException.class, () -> c.stream(
-                "https://nas:5006/music/a.flac", "320", null,
+                "https://nas:5006/music/a.flac", "128", null,
+                new MockHttpServletResponse()));
+        assertThrows(BizException.class, () -> c.stream(
+                "https://nas:5006/music/a.flac", "512", null,
                 new MockHttpServletResponse()));
     }
 }

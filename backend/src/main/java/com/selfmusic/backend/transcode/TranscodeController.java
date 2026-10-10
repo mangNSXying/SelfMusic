@@ -33,7 +33,8 @@ import java.util.Set;
  *   <li>后端不建曲库、不存文件：{@code origin} 必须是已同步 WebDAV 源地址之下的
  *       文件 URL（强校验 {@code sync_sources}），凭据经 {@code X-Origin-Auth}
  *       随请求转发、不落地不记日志。</li>
- *   <li>输出恒为 MP3 CBR（bitrate 仅 64/128/192，默认 128），整曲转码，
+ *   <li>输出恒为 MP3 CBR（bitrate 仅 192/256/320，默认 192；MP3 无 512 档——
+ *       libmp3lame 会静默钳到 320，故不开放），整曲转码，
  *       不支持 Range（转码后字节≠源字节，R8：seek 由客户端重建请求）。</li>
  *   <li>并发由 {@link TranscodeService} 信号量门控（只 env，默认 2）；
  *       超限 429，客户端回落直连原文件。</li>
@@ -48,7 +49,7 @@ public class TranscodeController {
 
     private static final Logger log = LoggerFactory.getLogger(TranscodeController.class);
 
-    private static final Set<String> ALLOWED_BITRATES = Set.of("64", "128", "192");
+    private static final Set<String> ALLOWED_BITRATES = Set.of("192", "256", "320");
 
     /** 云元数据/链路本地：一律拒绝（SSRF 纵深，强校验之外再加一道）。 */
     private static final Set<String> BLOCKED_HOSTS = Set.of(
@@ -67,12 +68,12 @@ public class TranscodeController {
     @GetMapping("/stream")
     public void stream(
             @RequestParam("origin") String origin,
-            @RequestParam(value = "bitrate", defaultValue = "128") String bitrate,
+            @RequestParam(value = "bitrate", defaultValue = "192") String bitrate,
             @RequestHeader(value = "X-Origin-Auth", required = false) String originAuth,
             HttpServletResponse response) {
-        String rate = bitrate == null ? "128" : bitrate.trim();
+        String rate = bitrate == null ? "192" : bitrate.trim();
         if (!ALLOWED_BITRATES.contains(rate)) {
-            throw new BizException(40001, "bitrate 仅支持 64/128/192");
+            throw new BizException(40001, "bitrate 仅支持 192/256/320");
         }
         URI uri = parseOrigin(origin);
         checkBlockedHost(uri);

@@ -83,7 +83,7 @@ void main() {
       index.close();
     });
 
-    test('转码开关默认关、码率默认 128；非法存值回退 128', () async {
+    test('转码开关默认关、码率默认 192；非法存值回退 192', () async {
       open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
       final dir = await Directory.systemTemp.createTemp('selfmusic_stage6_tc_');
       addTearDown(() {
@@ -96,14 +96,16 @@ void main() {
       await index.open();
       final s = AppSettings(index);
       expect(s.transcodeEnabled, isFalse);
-      expect(s.transcodeBitrate, 128);
-      s.transcodeEnabled = true;
-      s.transcodeBitrate = 192;
-      expect(s.transcodeEnabled, isTrue);
       expect(s.transcodeBitrate, 192);
-      // 非法档位回退。
-      index.settingsSet(AppSettings.kTranscodeBitrate, '320');
-      expect(AppSettings(index).transcodeBitrate, 128);
+      s.transcodeEnabled = true;
+      s.transcodeBitrate = 320;
+      expect(s.transcodeEnabled, isTrue);
+      expect(s.transcodeBitrate, 320);
+      // 非法档位（含已下架的 128 与不存在的 512）回退。
+      index.settingsSet(AppSettings.kTranscodeBitrate, '128');
+      expect(AppSettings(index).transcodeBitrate, 192);
+      index.settingsSet(AppSettings.kTranscodeBitrate, '512');
+      expect(AppSettings(index).transcodeBitrate, 192);
       index.close();
     });
 

@@ -1651,7 +1651,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
     final direct = src.directStream(s);
-    // 阶段6 转码：开关开 + WebDAV + 后端可达时优先走服务端 128k 代理；
+    // 阶段6 转码：开关开 + WebDAV + 后端可达时优先走服务端 MP3 代理；
     // 缓存命中已在上方返回（缓存永远存原文件），转码失败静默回落直连。
     if (direct != null && await _tryTranscodeLoad(s, src, direct.url, tag)) {
       return;

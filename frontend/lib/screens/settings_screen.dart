@@ -518,9 +518,9 @@ class _TranscodeSectionState extends State<_TranscodeSection> {
         ),
         SegmentedButton<int>(
           segments: const [
-            ButtonSegment(value: 64, label: Text('64k')),
-            ButtonSegment(value: 128, label: Text('128k')),
             ButtonSegment(value: 192, label: Text('192k')),
+            ButtonSegment(value: 256, label: Text('256k')),
+            ButtonSegment(value: 320, label: Text('320k')),
           ],
           selected: {settings.transcodeBitrate},
           onSelectionChanged: !canUse

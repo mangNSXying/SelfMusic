@@ -372,7 +372,7 @@ class AppSettings {
   /// GET /transcode/stream?origin=..&bitrate=..，失败回落直连原文件。
   static const String kTranscodeEnabled = 'transcode_enabled';
 
-  /// 转码码率（kbps，仅 64/128/192，默认 128）。
+  /// 转码码率（kbps，仅 192/256/320，默认 192；MP3 无 512 档，不开放）。
   static const String kTranscodeBitrate = 'transcode_bitrate';
 
   bool get transcodeEnabled =>
@@ -381,9 +381,9 @@ class AppSettings {
       index.settingsSet(kTranscodeEnabled, v ? '1' : '0');
 
   int get transcodeBitrate {
-    final v = int.tryParse(index.settingsGet(kTranscodeBitrate) ?? '') ?? 128;
-    if (v == 64 || v == 128 || v == 192) return v;
-    return 128;
+    final v = int.tryParse(index.settingsGet(kTranscodeBitrate) ?? '') ?? 192;
+    if (v == 192 || v == 256 || v == 320) return v;
+    return 192;
   }
 
   set transcodeBitrate(int v) =>
