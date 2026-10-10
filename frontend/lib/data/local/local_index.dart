@@ -417,6 +417,13 @@ class LocalIndex {
     return _writer!.op<void>('clearMissing', {'sourceKey': sourceKey});
   }
 
+  /// 硬删一首歌曲的全部本地痕迹（阶段6 删除全删）：
+  /// idx_songs + play_meta + song_lyrics + playlist_items + artist_song_map。
+  /// 缓存文件/行由调用方另行经 [deleteCache] 清理（cache_key 需源侧计算）。
+  Future<void> deleteSong(String sourceKey, String ref) {
+    return _writer!.op<void>('deleteSong', {'sourceKey': sourceKey, 'ref': ref});
+  }
+
   /// 读取歌曲歌词原文。三态语义：
   /// - null：从未查过（播放时尝试内嵌标签 / 同目录 .lrc）；
   /// - ''：查过但无歌词（避免每次播放重复请求）；

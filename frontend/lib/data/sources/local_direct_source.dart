@@ -269,6 +269,58 @@ class LocalDirectSource implements MusicSource {
     // 本地文件本身即可离线播放，无需缓存。
   }
 
+  // ---------- 直写管理（阶段6，本地直写；ohos 授权 URI 暂不支持写） ----------
+
+  @override
+  bool get supportsWrite => !isOhos;
+
+  List<String> _guardParts(String ref) {
+    final parts = ref.split('/').where((s) => s.isNotEmpty).toList();
+    if (parts.any((s) => s == '.' || s == '..')) {
+      throw StateError('路径非法（路径穿越）：$ref');
+    }
+    return parts;
+  }
+
+  void _guardLeaf(String name) {
+    if (name.isEmpty || name.contains('/') || name.contains('\\') || name.contains('..')) {
+      throw StateError('文件名非法：$name');
+    }
+  }
+
+  @override
+  Future<void> uploadFile(String parentRef, String filename,
+      Stream<List<int>> bytes, int length) async {
+    if (isOhos) throw UnimplementedError('鸿蒙端暂不支持上传');
+    _guardLeaf(filename);
+    final dirParts = parentRef.isEmpty ? <String>[] : _guardParts(parentRef);
+    final dir = Directory(p.joinAll([rootPath, ...dirParts]));
+    if (!await dir.exists()) await dir.create(recursive: true);
+    final dst = File(p.join(dir.path, filename));
+    final sink = dst.openWrite();
+    try {
+      await sink.addStream(bytes);
+    } finally {
+      await sink.close();
+    }
+  }
+
+  @override
+  Future<void> deleteSong(Song song) async {
+    if (isOhos) throw UnimplementedError('鸿蒙端暂不支持删除');
+    final f = File(_absPath(song.sourceRef));
+    if (await f.exists()) await f.delete();
+  }
+
+  @override
+  Future<void> createFolder(String parentRef, String name) async {
+    if (isOhos) throw UnimplementedError('鸿蒙端暂不支持新建文件夹');
+    _guardLeaf(name);
+    final dirParts = parentRef.isEmpty ? <String>[] : _guardParts(parentRef);
+    final dir = Directory(p.joinAll([rootPath, ...dirParts, name]));
+    if (!await dir.exists()) await dir.create(recursive: true);
+  }
+
   @override
   Future<void> close() async {}
 

@@ -111,6 +111,54 @@ class SongTile extends StatelessWidget {
     }
   }
 
+  /// 删除歌曲（阶段6：二次确认 + 全删索引/权重/歌词/歌单/缓存）。
+  Future<void> _deleteSong(BuildContext context, DirectSourceManager direct) async {
+    final src = source;
+    if (src == null || !src.supportsWrite) return;
+    final ok1 = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('删除歌曲文件？'),
+        content: Text('将从「${src.name}」永久删除「${song.title}」，\n'
+            '并清除本地索引、收藏权重、歌词、歌单条目与离线缓存。\n此操作不可恢复。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(c).pop(false), child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.of(c).pop(true),
+              child: const Text('继续删除', style: TextStyle(color: Colors.red))),
+        ],
+      ),
+    );
+    if (ok1 != true || !context.mounted) return;
+    // 二次确认：输入防误删（点按确认即执行，避免再输文字的繁琐）。
+    final ok2 = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('再次确认删除'),
+        content: Text('确认永久删除「${song.title}」？'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(c).pop(false), child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.of(c).pop(true),
+              child: const Text('确认删除', style: TextStyle(color: Colors.red))),
+        ],
+      ),
+    );
+    if (ok2 != true || !context.mounted) return;
+    try {
+      await direct.deleteSong(song);
+      if (!context.mounted) return;
+      // 若当前播放的正是被删歌曲，切下一首避免播放器持有死引用。
+      try {
+        await context.read<PlayerProvider>().onAnchorSongRemoved(
+            PlayerProvider.anchorForSource(song.sourceKey), song);
+      } catch (_) {}
+      if (context.mounted) AppToast.show('已删除', isError: false);
+    } catch (e) {
+      AppToast.error(e, '删除失败');
+    }
+  }
+
   /// 三点菜单：下一首播放 / 喜欢 / 不喜欢 / 缓存（仅直连）/ 加入歌单 / 歌曲信息。
   ///
   /// 歌单详情等需要「追加」自定义项时传 [extraMenuItems]，其回调走 [onExtraMenu]。
@@ -143,6 +191,8 @@ class SongTile extends StatelessWidget {
                 isError: false);
           case 'cache':
             unawaited(_cacheSong(context, direct));
+          case 'delete':
+            unawaited(_deleteSong(context, direct));
           case 'playlist':
             showAddToPlaylistSheet(context, song);
           case 'info':
@@ -199,6 +249,17 @@ class SongTile extends StatelessWidget {
                 Icon(Icons.download),
                 SizedBox(width: 12),
                 Text('缓存'),
+              ],
+            ),
+          ),
+        if (song.isDirect && source != null && source!.supportsWrite)
+          const PopupMenuItem(
+            value: 'delete',
+            child: Row(
+              children: [
+                Icon(Icons.delete_outline, color: Colors.red),
+                SizedBox(width: 12),
+                Text('删除', style: TextStyle(color: Colors.red)),
               ],
             ),
           ),

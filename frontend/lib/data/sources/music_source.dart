@@ -1,5 +1,6 @@
 import '../../models/song.dart';
 import 'scan_worker.dart';
+import 'webdav_url.dart';
 
 /// 源的分类。决定直连协议与可用的增强能力。
 enum SourceKind { local, webdav, smb }
@@ -8,14 +9,26 @@ enum SourceKind { local, webdav, smb }
 /// 远端类型（webdav/smb/onedrive…）默认同步。
 bool isSyncableKind(String kind) => kind.isNotEmpty && kind != 'local';
 
+/// 把源地址（可能来自历史配置/服务端快照的原始形态）归一化为同步标准形态：
+/// WebDAV 缺 scheme 补 `https://`（与 [webdavNormalizeBase] 一致）、去尾斜杠；
+/// 其余类型仅 trim。转码强校验按归一化后的地址匹配，上报也必须归一化。
+String normalizeSourceAddress(String kind, String address) {
+  switch (kind) {
+    case 'webdav':
+      return webdavNormalizeBase(address).replaceAll(RegExp(r'/+$'), '');
+    default:
+      return address.trim();
+  }
+}
+
 /// 源去重地址（跨设备同步按 kind+地址 识别同一源；名称不参与）：
-/// WebDAV=baseUrl；SMB=host/share；未识别的协议返回空串（不参与去重）。
+/// WebDAV=baseUrl（归一化：缺 scheme 补 https、去尾斜杠）；SMB=host/share；
+/// 未识别的协议返回空串（不参与去重）。
 String sourceAddressOf(String kind, Map<String, dynamic> cfg) {
   switch (kind) {
     case 'webdav':
-      return (cfg['baseUrl'] as String? ?? '')
-          .trim()
-          .replaceAll(RegExp(r'/+$'), '');
+      return normalizeSourceAddress(
+          kind, (cfg['baseUrl'] as String? ?? ''));
     case 'smb':
       final host = (cfg['host'] as String? ?? '').trim();
       final share = (cfg['share'] as String? ?? '').trim();
@@ -171,6 +184,25 @@ abstract class MusicSource {
   /// （并清理半截临时文件），抛 [PreloadAbortedException]。
   Future<void> cacheSong(Song song, {bool Function()? shouldAbort}) async =>
       throw UnimplementedError('$key 不支持直连缓存');
+
+  // ---------- 直写管理（阶段6，WebDAV/本地直写；SMB 仍骨架） ----------
+
+  /// 是否支持直写管理（上传/删除/新建文件夹）。默认不支持。
+  bool get supportsWrite => false;
+
+  /// 上传单个音频文件到 [parentRef] 目录下（parentRef 为 '' 即源根目录）。
+  /// [filename] 不得含 `/` 与 `..`；实现应做穿越校验。
+  Future<void> uploadFile(String parentRef, String filename,
+          Stream<List<int>> bytes, int length) async =>
+      throw UnimplementedError('$key 不支持上传');
+
+  /// 删除一首歌曲对应的远端/本地文件。
+  Future<void> deleteSong(Song song) async =>
+      throw UnimplementedError('$key 不支持删除');
+
+  /// 在 [parentRef] 下新建文件夹。
+  Future<void> createFolder(String parentRef, String name) async =>
+      throw UnimplementedError('$key 不支持新建文件夹');
 
   Future<void> close() async {}
 }

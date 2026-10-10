@@ -725,6 +725,47 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 硬删一首歌曲（阶段6：删除全删 + 二次确认由 UI 完成）：
+  /// 先删远端/本地文件，再清本地全部痕迹（索引/权重/歌词/歌单条目/歌手映射）
+  /// 与离线缓存（文件+行）。任一步失败即抛错，调用方 toast。
+  Future<void> deleteSong(Song song) async {
+    final src = sourceByKey(song.sourceKey);
+    if (src == null) throw StateError('源不存在：${song.sourceKey}');
+    if (!src.supportsWrite) throw StateError('该源不支持删除');
+    await src.deleteSong(song);
+    // WebDAV 离线缓存：cache_key 由源侧计算，先删文件+行再清 DB 痕迹。
+    if (src is WebdavDirectSource) {
+      try {
+        await index.deleteCache(src.cacheKeyFor(song));
+      } catch (_) {
+        // 无缓存或删文件失败不挡主流程（DB 痕迹仍要清）。
+      }
+    }
+    await index.deleteSong(song.sourceKey, song.sourceRef);
+    weight.notifyExternalWrite();
+    _metaVersion++;
+    notifyListeners();
+  }
+
+  /// 上传音频文件到源根（parentRef=''）并增量刷新索引。
+  /// 返回后调用方 toast + 局部刷新；大文件流式上传不驻留内存。
+  Future<void> uploadAudio(String sourceKey, String filename,
+      Stream<List<int>> bytes, int length) async {
+    final src = sourceByKey(sourceKey);
+    if (src == null) throw StateError('源不存在：$sourceKey');
+    if (!src.supportsWrite) throw StateError('该源不支持上传');
+    await src.uploadFile('', filename, bytes, length);
+    // 上传后增量扫描该源（新文件指纹为 added，自动落库）。
+    await scanSource(sourceKey);
+  }
+
+  Future<void> createFolder(String sourceKey, String name) async {
+    final src = sourceByKey(sourceKey);
+    if (src == null) throw StateError('源不存在：$sourceKey');
+    if (!src.supportsWrite) throw StateError('该源不支持新建文件夹');
+    await src.createFolder('', name);
+  }
+
   Future<ScanSummary>? _inFlightScan;
 
   /// 扫描指定源（增量：mtime/size/etag 未变快速跳过，零音频下载）。

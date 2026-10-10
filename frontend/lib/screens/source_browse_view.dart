@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -93,6 +95,74 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
   void _cancel() {
     final manager = context.read<DirectSourceManager>();
     manager.cancelScan(widget.sourceKey);
+  }
+
+  /// 上传音频到源根（阶段6 直写）：选文件 → 流式 PUT → 增量扫描刷新。
+  Future<void> _upload(MusicSource source) async {
+    if (!source.supportsWrite) {
+      AppToast.show('该源不支持上传', isError: true);
+      return;
+    }
+    try {
+      final picked = await openFile();
+      if (!mounted) return;
+      if (picked == null) return;
+      final name = picked.name;
+      if (!RegExp(r'\.(mp3|flac|m4a|aac|ogg|wav|aif|aiff|aifc)$',
+              caseSensitive: false)
+          .hasMatch(name)) {
+        if (mounted) AppToast.show('仅支持上传音频文件', isError: true);
+        return;
+      }
+      final f = File(picked.path);
+      final len = await f.length();
+      if (len <= 0) {
+        if (mounted) AppToast.show('文件为空，无法上传', isError: true);
+        return;
+      }
+      if (mounted) AppToast.show('正在上传 $name…', isError: false);
+      await context
+          .read<DirectSourceManager>()
+          .uploadAudio(widget.sourceKey, name, f.openRead(), len);
+      if (!mounted) return;
+      await context.read<LibraryProvider>().loadSongs();
+      if (mounted) {
+        setState(() {});
+        AppToast.show('上传完成：$name', isError: false);
+      }
+    } catch (e) {
+      AppToast.error(e, '上传失败');
+    }
+  }
+
+  /// 新建文件夹（源根）。
+  Future<void> _mkdir(MusicSource source) async {
+    if (!source.supportsWrite) {
+      AppToast.show('该源不支持新建文件夹', isError: true);
+      return;
+    }
+    final controller = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('新建文件夹'),
+        content: TextField(controller: controller, autofocus: true,
+            decoration: const InputDecoration(hintText: '文件夹名')),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.of(c).pop(controller.text.trim()),
+              child: const Text('确定')),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty || !mounted) return;
+    try {
+      await context.read<DirectSourceManager>().createFolder(widget.sourceKey, name);
+      if (mounted) AppToast.show('已创建文件夹：$name', isError: false);
+    } catch (e) {
+      AppToast.error(e, '创建失败');
+    }
   }
 
   void _toggle(String key) => setState(() {
@@ -195,6 +265,18 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (source.supportsWrite)
+                  IconButton(
+                    icon: const Icon(Icons.upload_file_outlined),
+                    tooltip: '上传音频',
+                    onPressed: _scanning ? null : () => _upload(source),
+                  ),
+                if (source.supportsWrite)
+                  IconButton(
+                    icon: const Icon(Icons.create_new_folder_outlined),
+                    tooltip: '新建文件夹',
+                    onPressed: _scanning ? null : () => _mkdir(source),
+                  ),
                 FilledButton.icon(
                   onPressed: _scanning ? null : () => _scan(source),
                   icon: _scanning
