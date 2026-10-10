@@ -47,7 +47,7 @@ enum CollectionViewMode {
 /// 客户端用户设置（直连模式 app_settings 表；settings.md §3）。
 ///
 /// 已实现（settings.md §3.2/§3.3/§3.4）：
-/// - 缓存来源模式 `cache_config_mode`（custom / follow_server，后者暂灰显）与自定义上限；
+/// - 缓存来源模式 `cache_config_mode`（custom / follow_server）与自定义上限；
 /// - 收藏自动缓存；播放页权重信息显示；忽略音频过滤；仅 Wi-Fi 扫描；
 /// - 默认播放模式、断点续播开关（对应 DESIGN §6.7）；
 /// - 服务端分区网络（settings.md §3.3）：`allow_insecure_http`（默认关，显式 http 才允许）、
@@ -55,6 +55,14 @@ enum CollectionViewMode {
 class AppSettings {
   static const String kCacheMaxBytes = 'cache_max_bytes';
   static const String kCacheSongLimit = 'cache_song_limit';
+
+  /// 缓存来源模式（阶段6，settings.md §3.3）：custom=本地自定义；
+  /// follow_server=采纳服务端建议值（GET /admin/config 下发）。
+  static const String kCacheConfigMode = 'cache_config_mode';
+
+  /// 服务端建议值本地镜像（不进 knownKeys，不随设置导出；进入分区/点同步时刷新）。
+  static const String kCacheServerMaxBytes = 'cache_server_max_bytes';
+  static const String kCacheServerSongLimit = 'cache_server_song_limit';
   static const String kAutoCacheFavorites = 'auto_cache_favorites';
 
   /// 允许不安全 HTTP（settings.md §3.3 服务端）：关（默认）时显式 `http://` 地址一律拒绝。
@@ -188,6 +196,47 @@ class AppSettings {
       defaultCacheSongLimit;
   set cacheSongLimit(int v) => index.settingsSet(kCacheSongLimit, v.toString());
 
+  // ---------- 缓存来源模式（阶段6 follow_server，settings.md §3.3） ----------
+
+  /// custom=用本地自定义值；follow_server=用服务端建议值。
+  String get cacheConfigMode =>
+      index.settingsGet(kCacheConfigMode) ?? 'custom';
+  set cacheConfigMode(String v) =>
+      index.settingsSet(kCacheConfigMode, v);
+
+  bool get followServer => cacheConfigMode == 'follow_server';
+
+  int? get serverCacheMaxBytes =>
+      int.tryParse(index.settingsGet(kCacheServerMaxBytes) ?? '');
+  set serverCacheMaxBytes(int? v) {
+    if (v == null) return;
+    index.settingsSet(kCacheServerMaxBytes, v.toString());
+  }
+
+  int? get serverCacheSongLimit =>
+      int.tryParse(index.settingsGet(kCacheServerSongLimit) ?? '');
+  set serverCacheSongLimit(int? v) {
+    if (v == null) return;
+    index.settingsSet(kCacheServerSongLimit, v.toString());
+  }
+
+  /// 生效值：follow_server 且有服务端镜像时用服务端值，否则回退本地自定义。
+  int get effectiveCacheMaxBytes {
+    if (followServer) {
+      final s = serverCacheMaxBytes;
+      if (s != null && s > 0) return s;
+    }
+    return cacheMaxBytes;
+  }
+
+  int get effectiveCacheSongLimit {
+    if (followServer) {
+      final s = serverCacheSongLimit;
+      if (s != null && s >= 0) return s;
+    }
+    return cacheSongLimit;
+  }
+
   // ---------- 服务端分区·网络（settings.md §3.3） ----------
 
   /// 允许不安全 HTTP：关（默认）时显式 `http://` 地址被拒绝；缺 scheme 恒默认 https，
@@ -316,6 +365,29 @@ class AppSettings {
       index.settingsGet(kKeepScreenOnDevice) ?? '';
   set keepScreenOnDevice(String v) =>
       index.settingsSet(kKeepScreenOnDevice, v);
+
+  // ---------- 无状态转码（阶段6，服务端代理，不建库） ----------
+
+  /// 转码总开关（默认关）：开 + 服务端 ffmpeg 可用时，WebDAV 播放走
+  /// GET /transcode/stream?origin=..&bitrate=..，失败回落直连原文件。
+  static const String kTranscodeEnabled = 'transcode_enabled';
+
+  /// 转码码率（kbps，仅 64/128/192，默认 128）。
+  static const String kTranscodeBitrate = 'transcode_bitrate';
+
+  bool get transcodeEnabled =>
+      (index.settingsGet(kTranscodeEnabled) ?? '0') == '1';
+  set transcodeEnabled(bool v) =>
+      index.settingsSet(kTranscodeEnabled, v ? '1' : '0');
+
+  int get transcodeBitrate {
+    final v = int.tryParse(index.settingsGet(kTranscodeBitrate) ?? '') ?? 128;
+    if (v == 64 || v == 128 || v == 192) return v;
+    return 128;
+  }
+
+  set transcodeBitrate(int v) =>
+      index.settingsSet(kTranscodeBitrate, v.toString());
 
   // ---------- 歌手身份解析（歌手处理.txt） ----------
 
@@ -518,6 +590,9 @@ class AppSettings {
   static const List<String> knownKeys = [
     kCacheMaxBytes,
     kCacheSongLimit,
+    kCacheConfigMode,
+    kTranscodeEnabled,
+    kTranscodeBitrate,
     kAutoCacheFavorites,
     kAllowInsecureHttp,
     kAllowSelfSigned,

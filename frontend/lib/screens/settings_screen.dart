@@ -219,6 +219,9 @@ class _ServerSettingsState extends State<_ServerSettings> {
           const _CacheDirTile(),
           const SizedBox(height: 16),
           const Divider(),
+          const _TranscodeSection(),
+          const SizedBox(height: 16),
+          const Divider(),
           const Align(
             alignment: Alignment.centerLeft,
             child: Text('网络与安全',
@@ -438,7 +441,98 @@ class _CacheDirTileState extends State<_CacheDirTile> {
   }
 }
 
-/// 服务端 → 缓存上限（settings.md §3.3）：本机自定义缓存总上限与歌曲数量上限。
+/// 服务端 → 省流转码（阶段6，无状态代理，不建库）：
+/// 开关 + 码率三档 + 服务端 ffmpeg 可用性（GET /meta/server）。
+/// 未配对/旧服务端/无 ffmpeg 时开关灰显；播放失败自动回落直连原文件。
+class _TranscodeSection extends StatefulWidget {
+  const _TranscodeSection();
+
+  @override
+  State<_TranscodeSection> createState() => _TranscodeSectionState();
+}
+
+class _TranscodeSectionState extends State<_TranscodeSection> {
+  bool? _ffmpegAvailable;
+  String? _version;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _refreshMeta();
+    });
+  }
+
+  Future<void> _refreshMeta() async {
+    final api = context.read<ApiClient>();
+    final server = context.read<ServerSettings>();
+    if (server.baseUrl.isEmpty) {
+      if (mounted) setState(() => _ffmpegAvailable = null);
+      return;
+    }
+    try {
+      final meta = await api.fetchServerMeta();
+      if (!mounted) return;
+      setState(() {
+        _ffmpegAvailable = (meta?['ffmpegAvailable'] as bool?) ?? false;
+        _version = meta?['version']?.toString();
+      });
+    } catch (_) {
+      if (mounted) setState(() => _ffmpegAvailable = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = context.read<DirectSourceManager>().settings;
+    final cs = Theme.of(context).colorScheme;
+    final canUse = _ffmpegAvailable == true;
+    final unknown = _ffmpegAvailable == null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('省流转码',
+            style: Theme.of(context)
+                .textTheme
+                .titleMedium
+                ?.copyWith(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 4),
+        Text(
+            unknown
+                ? '经服务端按需转码为 MP3（FLAC 源省流量）；正在探测服务端能力…'
+                : canUse
+                    ? '经服务端按需转码为 MP3（FLAC 源省流量${_version == null ? '' : ' · 服务端 $_version'}）；缓存仍存原文件'
+                    : '服务端不可用或无 ffmpeg（或未配对/旧服务端），开关不可用；播放自动走直连原文件',
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('播放时省流转码'),
+          subtitle: const Text('仅 WebDAV 生效；失败回落直连（转码 seek 精度 ±2s）'),
+          value: settings.transcodeEnabled && canUse,
+          onChanged: !canUse
+              ? null
+              : (v) => setState(() => settings.transcodeEnabled = v),
+        ),
+        SegmentedButton<int>(
+          segments: const [
+            ButtonSegment(value: 64, label: Text('64k')),
+            ButtonSegment(value: 128, label: Text('128k')),
+            ButtonSegment(value: 192, label: Text('192k')),
+          ],
+          selected: {settings.transcodeBitrate},
+          onSelectionChanged: !canUse
+              ? null
+              : (s) => setState(() => settings.transcodeBitrate = s.first),
+        ),
+      ],
+    );
+  }
+}
+
+/// 服务端 → 缓存上限（settings.md §3.3）：跟随服务端 / 自定义双来源（阶段6）。
 class _CacheConfigSection extends StatefulWidget {
   const _CacheConfigSection();
   @override
@@ -447,6 +541,8 @@ class _CacheConfigSection extends StatefulWidget {
 
 class _CacheConfigSectionState extends State<_CacheConfigSection> {
   late AppSettings _settings;
+  bool _syncing = false;
+  bool _serverReachable = false;
 
   @override
   void didChangeDependencies() {
@@ -455,16 +551,68 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _refreshServerConfig(silent: true);
+    });
+  }
+
+  /// 拉取服务端建议值并落本地镜像；成功才解锁 follow_server。
+  Future<void> _refreshServerConfig({bool silent = false}) async {
+    final api = context.read<ApiClient>();
+    final server = context.read<ServerSettings>();
+    if (server.baseUrl.isEmpty) {
+      if (mounted) setState(() => _serverReachable = false);
+      return;
+    }
+    if (!silent && mounted) setState(() => _syncing = true);
+    try {
+      final data = await api.fetchAdminConfig();
+      final bytes = (data['cache_max_bytes'] as num?)?.toInt();
+      final limit = (data['cache_song_limit'] as num?)?.toInt();
+      if (bytes != null) _settings.serverCacheMaxBytes = bytes;
+      if (limit != null) _settings.serverCacheSongLimit = limit;
+      if (mounted) setState(() => _serverReachable = true);
+      if (!silent && mounted) AppToast.show('已同步服务端缓存建议', isError: false);
+    } catch (e) {
+      if (mounted) setState(() => _serverReachable = _settings.serverCacheMaxBytes != null);
+      if (!silent) AppToast.error(e, '同步服务端缓存建议失败');
+    } finally {
+      if (!silent && mounted) setState(() => _syncing = false);
+      if (mounted) setState(() {});
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final follow = _settings.followServer;
+    // 未拉取成功过且无镜像时，follow_server 不可选（灰显）。
+    final canFollow = _serverReachable || _settings.serverCacheMaxBytes != null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('缓存上限',
-            style: Theme.of(context)
-                .textTheme
-                .titleMedium
-                ?.copyWith(fontWeight: FontWeight.w600)),
+        Row(
+          children: [
+            Expanded(
+              child: Text('缓存上限',
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w600)),
+            ),
+            if (_syncing)
+              const SizedBox(
+                  width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+            else
+              IconButton(
+                tooltip: '同步服务端建议值',
+                icon: const Icon(Icons.sync, size: 20),
+                onPressed: () => _refreshServerConfig(),
+              ),
+          ],
+        ),
         const SizedBox(height: 4),
         Text('离线缓存与预载共用；超出后按 LRU 淘汰（当前播放/预载受保护）',
             style: Theme.of(context)
@@ -472,13 +620,53 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
                 .bodySmall
                 ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
         const SizedBox(height: 8),
+        SegmentedButton<String>(
+          segments: const [
+            ButtonSegment(value: 'custom', label: Text('自定义')),
+            ButtonSegment(value: 'follow_server', label: Text('跟随服务端')),
+          ],
+          selected: {follow ? 'follow_server' : 'custom'},
+          onSelectionChanged: (s) async {
+            final want = s.first;
+            if (want == 'follow_server' && !canFollow) {
+              // 先拉一次，成功才允许切换。
+              await _refreshServerConfig();
+              if (!mounted) return;
+              if (!(_serverReachable || _settings.serverCacheMaxBytes != null)) {
+                AppToast.show('服务端不可达，请检查后端连接', isError: true);
+                return;
+              }
+            }
+            setState(() => _settings.cacheConfigMode = want);
+          },
+        ),
+        if (follow)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              _settings.serverCacheMaxBytes == null
+                  ? '尚未同步到服务端建议值（点右上同步）'
+                  : '服务端建议：${_labelBytes(_settings.serverCacheMaxBytes!)} · ${_settings.serverCacheSongLimit ?? _settings.cacheSongLimit} 首'
+                      '${_serverReachable ? '' : '（离线，回退显示上次镜像）'}',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: cs.onSurface.withValues(alpha: 0.6)),
+            ),
+          ),
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text('当前生效：${_labelBytes(_settings.effectiveCacheMaxBytes)} · ${_settings.effectiveCacheSongLimit} 首',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        const SizedBox(height: 8),
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: const Icon(Icons.storage_outlined),
           title: const Text('缓存总上限'),
           subtitle: Text(_labelBytes(_settings.cacheMaxBytes)),
           trailing: const Icon(Icons.chevron_right),
-          onTap: () => _editMaxBytes(context),
+          enabled: !follow,
+          onTap: follow ? null : () => _editMaxBytes(context),
         ),
         ListTile(
           contentPadding: EdgeInsets.zero,
@@ -486,7 +674,8 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
           title: const Text('歌曲数量上限'),
           subtitle: Text('${_settings.cacheSongLimit} 首'),
           trailing: const Icon(Icons.chevron_right),
-          onTap: () => _editSongLimit(context),
+          enabled: !follow,
+          onTap: follow ? null : () => _editSongLimit(context),
         ),
       ],
     );
