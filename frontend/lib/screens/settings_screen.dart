@@ -510,7 +510,7 @@ class _TranscodeSectionState extends State<_TranscodeSection> {
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: const Text('播放时省流转码'),
-          subtitle: const Text('仅 WebDAV 生效；失败回落直连（转码 seek 精度 ±2s）'),
+          subtitle: const Text('仅代理生效；失败回落直连（转码 seek 精度 ±2s）'),
           value: settings.transcodeEnabled && canUse,
           onChanged: !canUse
               ? null
