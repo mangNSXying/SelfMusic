@@ -1459,6 +1459,16 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     return idx.resolveLiveSongs(songs);
   }
 
+  /// 两列引用一致性（sourceKey+sourceRef 逐位）：供 mirror 复用基座判定（D），
+  /// O(n) 纯内存比较，无 DB。长度先比对，基座被删歌等变更即失配走全量路径。
+  bool _sameSongRefs(List<Song> a, List<Song> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (!_same(a[i], b[i])) return false;
+    }
+    return true;
+  }
+
   /// 用户修改元数据后：刷新队列与当前歌曲中的同源对象并通知（含断点快照）。
   void refreshSongMeta(Song updated) {
     var changed = false;
@@ -2735,6 +2745,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       start++;
     }
     if (start >= songs.length) return false;
+    // 复用基座判定（D）：本机已绑定同一歌单时暂存旧基座；引用一致则跳过
+    // 整队 resolve（单设备自回显的常见情形，1262 首 ~670ms UI 线程）。
+    // 深层历史/融合队列/seek 照常按镜像重建，仅省掉 DB 查询与行映射。
+    final prevBase =
+        (_syncPlaylistUuid == m.playlistUuid) ? _fusedBase : null;
     _syncPlaylistUuid = m.playlistUuid;
     _bindDeepList(PlayerProvider.anchorForPlaylist(m.playlistUuid),
         listSize: songs.length);
@@ -2749,9 +2764,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _persistDeepList();
     }
     final swResolve = Stopwatch()..start();
-    _fusedBase = _resolveLiveAll(songs);
-    perfLog('restoreMirror resolveLiveAll',
-        '${swResolve.elapsedMilliseconds}ms n=${songs.length}');
+    if (prevBase != null && _sameSongRefs(songs, prevBase)) {
+      _fusedBase = prevBase;
+      perfLog('restoreMirror resolveLiveAll',
+          'reused ${swResolve.elapsedMilliseconds}ms n=${songs.length}');
+    } else {
+      _fusedBase = _resolveLiveAll(songs);
+      perfLog('restoreMirror resolveLiveAll',
+          '${swResolve.elapsedMilliseconds}ms n=${songs.length}');
+    }
     _queue = _fusedQueue(_fusedBase!);
     _idx = _fusedIndexOf(start, songs).clamp(0, _queue.length - 1);
     _current = _queue[_idx];
