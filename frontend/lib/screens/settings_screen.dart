@@ -1754,6 +1754,24 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
             context.read<PlayerProvider>().applyAudioConfig();
           },
         ),
+        SwitchListTile(
+          title: const Text('静音暂停'),
+          subtitle: const Text('媒体音量归零时自动暂停（Android 生效）'),
+          value: _settings.pauseOnZeroVolume,
+          onChanged: (v) {
+            setState(() => _settings.pauseOnZeroVolume = v);
+            context.read<PlayerProvider>().refreshPlaybackGuard();
+          },
+        ),
+        SwitchListTile(
+          title: const Text('断连暂停'),
+          subtitle: const Text('当前播放设备（如蓝牙音箱）断开时自动暂停；从蓝牙切到扬声器不暂停（Android 生效）'),
+          value: _settings.pauseOnDeviceDisconnect,
+          onChanged: (v) {
+            setState(() => _settings.pauseOnDeviceDisconnect = v);
+            context.read<PlayerProvider>().refreshPlaybackGuard();
+          },
+        ),
       ],
     );
   }

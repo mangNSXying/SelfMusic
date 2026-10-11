@@ -14,6 +14,7 @@ import 'platform/harmonyos/ohos_media_session.dart';
 import 'services/api_client.dart';
 import 'services/server_settings.dart';
 import 'services/selfmusic_audio_handler.dart';
+import 'services/playback_guard.dart';
 import 'services/sync_engine.dart';
 import 'services/artist_resolver.dart';
 import 'providers/auth_provider.dart';
@@ -300,7 +301,8 @@ class SelfMusicApp extends StatelessWidget {
       ..attachSourceResolver((key) => direct.sourceByKey(key))
       ..attachAppSettings(direct.settings)
       ..attachApi(api)
-      ..attachServerAvailable(() => direct.isServerAvailable);
+      ..attachServerAvailable(() => direct.isServerAvailable)
+      ..attachAudioGuard(AudioGuardPlatform.forCurrentPlatform());
     player
       ..attachPersistence(
         index: direct.index,

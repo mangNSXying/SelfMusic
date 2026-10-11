@@ -20,8 +20,12 @@ class MainActivity : AudioServiceActivity() {
     private val channelName = "com.shamiko.selfmusic/bluetooth"
     private val appChannelName = "com.shamiko.selfmusic/app"
 
+    // 静音/断连暂停的原生信号源（settings.md §3.2，selfmusic/audio_guard 通道）。
+    private val audioGuard: AudioGuard by lazy { AudioGuard(this) }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        audioGuard.register(flutterEngine.dartExecutor.binaryMessenger)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {

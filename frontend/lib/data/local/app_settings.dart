@@ -125,6 +125,12 @@ class AppSettings {
   /// 音频焦点（settings.md §3.6）：Android 来电/他应用抢占时自动暂停-恢复。
   static const String kAudioFocusEnabled = 'audio_focus_enabled';
 
+  /// 静音暂停（仅 Android）：媒体音量归零时自动暂停。
+  static const String kPauseOnZeroVolume = 'pause_on_zero_volume';
+
+  /// 断连暂停（仅 Android）：当前播放输出设备断开时自动暂停。
+  static const String kPauseOnDeviceDisconnect = 'pause_on_device_disconnect';
+
   /// 通知栏播放控制（settings.md §3.6）：Android 通知栏/后台播放。
   static const String kNotificationControls = 'notification_controls';
 
@@ -599,6 +605,19 @@ class AppSettings {
   set notificationControls(bool v) =>
       index.settingsSet(kNotificationControls, v ? '1' : '0');
 
+  /// 静音暂停（默认关）：媒体音量归零时自动暂停当前播放（仅 Android）。
+  bool get pauseOnZeroVolume =>
+      (index.settingsGet(kPauseOnZeroVolume) ?? '0') == '1';
+  set pauseOnZeroVolume(bool v) =>
+      index.settingsSet(kPauseOnZeroVolume, v ? '1' : '0');
+
+  /// 断连暂停（默认关）：当前播放输出设备（蓝牙/有线耳机等）断开时自动暂停；
+  /// 用户主动从蓝牙切到扬声器（设备仍在连）不触发（仅 Android）。
+  bool get pauseOnDeviceDisconnect =>
+      (index.settingsGet(kPauseOnDeviceDisconnect) ?? '0') == '1';
+  set pauseOnDeviceDisconnect(bool v) =>
+      index.settingsSet(kPauseOnDeviceDisconnect, v ? '1' : '0');
+
   /// 全部已知键（供设置导入导出筛选，settings.md §3.5）。
   static const List<String> knownKeys = [
     kCacheMaxBytes,
@@ -638,6 +657,8 @@ class AppSettings {
     kCurveWeightSegments,
     kAudioFocusEnabled,
     kNotificationControls,
+    kPauseOnZeroVolume,
+    kPauseOnDeviceDisconnect,
     kPlayerTransition,
     kSongTitleFormat,
     kViewModePlaylists,

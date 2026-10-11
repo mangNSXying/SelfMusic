@@ -17,6 +17,7 @@ import '../data/local/app_settings.dart';
 import '../data/local/song_weight_store.dart';
 import '../data/deep_list.dart';
 import '../data/local/sync_event_types.dart';
+import '../services/playback_guard.dart';
 import '../services/selfmusic_audio_handler.dart';
 import '../utils/lrc_parser.dart';
 import '../utils/perf_log.dart';
@@ -100,6 +101,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   void Function(MusicSource src, Song s)? _onTrackStarted;
   void Function(Song s)? _onSongMetaRefreshed;
   SelfMusicAudioHandler? _audioHandler;
+
+  /// 静音/断连暂停守卫（settings.md §3.2，仅 Android）：由 [attachAudioGuard]
+  /// 装配，设置开关变动后经 [refreshPlaybackGuard] 同步订阅。
+  PlaybackGuard? _playbackGuard;
 
   /// 加权抽样的随机源：种子取构造时刻的时间戳（同其他语言 `Random(seed)` 的
   /// 因子），整实例复用同一条 PRNG 流；构造参数 [rng] 可注入固定种子的实例，
@@ -1175,6 +1180,36 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final m = PlayModeParse.fromStored(settings.playModeDefault);
     if (_mode != m) _mode = m;
     _applyAudioConfigIfNeeded();
+    refreshPlaybackGuard();
+  }
+
+  /// 装配静音/断连暂停守卫（main 注入 `AudioGuardPlatform.forCurrentPlatform()`；
+  /// 非 Android 平台为 no-op 实现，行为不变）。装配后立即按当前开关同步订阅。
+  void attachAudioGuard(AudioGuardPlatform platform) {
+    _playbackGuard?.dispose();
+    _playbackGuard = PlaybackGuard(
+      platform: platform,
+      volumePauseEnabled: () => _appSettings?.pauseOnZeroVolume ?? false,
+      disconnectPauseEnabled: () => _appSettings?.pauseOnDeviceDisconnect ?? false,
+      isPlaying: () => _player?.playing ?? false,
+      onPause: pauseByGuard,
+    );
+    _playbackGuard!.refresh();
+  }
+
+  /// 设置开关变动后同步守卫订阅（开启则订阅原生信号，全关则注销）。
+  void refreshPlaybackGuard() => _playbackGuard?.refresh();
+
+  /// 静音/断连守卫请求暂停：仅在**实际正在播放**且未在淡出暂停中时执行，
+  /// 走与通知栏暂停同一路径（含淡出），并标记用户接管以阻止迟到的远端镜像回切。
+  Future<void> pauseByGuard() async {
+    final p = _player;
+    if (p == null || _shuttingDown || _disposed) return;
+    if (_fadingPause || !p.playing) return;
+    _userTookOver = true;
+    await _fadeOutThenPause();
+    notifyListeners();
+    _syncSystemMedia();
   }
 
   /// 关联服务器可达性门控（main 注入 `direct.isServerAvailable`）：
@@ -3133,6 +3168,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _cancelFadeAndComplete();
     _fadingPause = false;
     _sleepTick?.cancel();
+    _playbackGuard?.dispose();
+    _playbackGuard = null;
     // 退出前把最后一段播放时长结清（与 _saveState 同样不等待）。
     _playSecStop();
     final p = _player;
