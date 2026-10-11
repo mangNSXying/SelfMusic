@@ -344,6 +344,12 @@ class Root extends StatefulWidget {
 
 class _RootState extends State<Root> with TickerProviderStateMixin {
   bool _expiryDialogShown = false;
+  bool _bootBuildLogged = false;
+
+  /// 首帧避让（P0-3）：播放页为首页（`playerView=true/p=0` 全覆盖不透明），
+  /// 底层壳首帧不挂载，首帧后补挂。播放页收起（`playerView=false` 或跟手
+  /// 移位）时按门条件即时放行，不等首帧。
+  bool _contentReady = false;
 
   /// 播放页悬浮层动画唯一控制器（壳常驻 + 播放页悬浮层跟手共用）。
   late final PlayerSheetAnimator _sheetAnim;
@@ -391,6 +397,12 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
       progress: _nav.playerProgress,
     );
     _sheetLauncher = AppSheetLauncher(vsync: this);
+    // 首帧避让（P0-3）：首帧只画播放页（首页），底层壳推迟一帧补挂，
+    // 把 SectionPager 六分组的首帧构建移出 Davey 窗口。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _contentReady) return;
+      setState(() => _contentReady = true);
+    });
     _nav.addListener(_syncPlayerSheet);
     // 播放页悬浮层位移从 0/1 到中间（跟手或吸附）即视为「过渡中」。
     _nav.playerProgress.addListener(_onPlayerProgress);
@@ -552,12 +564,16 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
+    if (!_bootBuildLogged) {
+      _bootBuildLogged = true;
+      perfLog('boot.firstBuild Root.build');
+    }
     final auth = context.watch<AuthProvider>();
 
-    if (!auth.bootstrapped) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
-    if (auth.sessionExpired && !_expiryDialogShown) {
+    // bootstrapped 只门控过期弹窗，不门控首帧内容：直连模式无需配对即可用
+    // （P0-4）。原先转圈会吞掉首帧，把 AppContent/PlayerScreen 全推迟到
+    // token 读完（实测 +1264ms），还强制第二次大布局。
+    if (auth.bootstrapped && auth.sessionExpired && !_expiryDialogShown) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _showExpiryDialog(context, auth);
       });
@@ -568,7 +584,7 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
     // （ValueNotifier）独立逐帧驱动，区段/搜索等变更不重建 Root。
     final playerView =
         context.select<NavigationProvider, bool>((n) => n.playerView);
-    // 壳常驻（底层）；播放页为悬浮层（高层），按进度跟手位移。
+    // 底层壳首帧避让（P0-3）+ 播放页悬浮层（高层）按进度跟手位移。
     return MultiProvider(
       providers: [
         Provider<PlayerSheetAnimator>.value(value: _sheetAnim),
@@ -579,7 +595,17 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
         onPopInvokedWithResult: _onPopInvoked,
         child: Stack(
           children: [
-            const AppShell(content: AppContent()),
+            ValueListenableBuilder<double>(
+              valueListenable: _nav.playerProgress,
+              builder: (c, p, _) {
+                // 播放页全覆盖（首页初态）且首帧未过：底层不可见，跳过挂载。
+                // 首帧后（_contentReady）或播放页收起/跟手中一律正常挂载。
+                if (!_contentReady && playerView && p <= 0.001) {
+                  return const SizedBox.shrink();
+                }
+                return const AppShell(content: AppContent());
+              },
+            ),
             // 窄屏队列窗口由 [AppSheetLauncher] 插入根 Overlay（不 push 路由，
             // 见 openQueueSheet / beginQueueSheetSwipe），不在本 Stack 内。
             ValueListenableBuilder<double>(
