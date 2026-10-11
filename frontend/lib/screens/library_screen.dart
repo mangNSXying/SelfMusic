@@ -15,6 +15,7 @@ import '../services/artist_resolver.dart';
 import '../theme/app_theme.dart';
 import '../utils/collection_sort.dart';
 import '../utils/interaction_gate.dart';
+import '../utils/motion.dart';
 import '../utils/song_search.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
@@ -64,8 +65,8 @@ class AppContent extends StatelessWidget {
       );
     }
     return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 320),
-      switchInCurve: Curves.easeOutCubic,
+      duration: kPageMotion,
+      switchInCurve: kPageMotionCurve,
       switchOutCurve: Curves.easeInCubic,
       transitionBuilder: (child, anim) => pageTransition(
           transition, child, anim,
@@ -155,9 +156,9 @@ class _SectionPagerState extends State<SectionPager>
     _ctrl = PageController(initialPage: initial);
     _ctrl.addListener(_syncOffset);
     _enterCtrl = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 240), value: 1);
+        vsync: this, duration: kPageMotion, value: 1);
     _enterCurve =
-        CurvedAnimation(parent: _enterCtrl, curve: Curves.easeOutCubic);
+        CurvedAnimation(parent: _enterCtrl, curve: kPageMotionCurve);
     // 跨页入场动画进行中 → 门控视为「过渡中」。
     _enterCtrl.addStatusListener((s) {
       final gate = _gate;
@@ -238,8 +239,8 @@ class _SectionPagerState extends State<SectionPager>
       }
       return SectionSwipe(
         child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 320),
-          switchInCurve: Curves.easeOutCubic,
+          duration: kPageMotion,
+          switchInCurve: kPageMotionCurve,
           switchOutCurve: Curves.easeInCubic,
           transitionBuilder: (child, anim) => pageTransition(
               transition, child, anim,
@@ -285,8 +286,7 @@ class _SectionPagerState extends State<SectionPager>
           });
         } else {
           _ctrl.animateToPage(target,
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeOutCubic);
+              duration: kPageMotion, curve: kPageMotionCurve);
         }
       }
     }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../utils/motion.dart';
 import 'count_header.dart';
 import 'row_list.dart';
 
@@ -203,7 +204,7 @@ class AppSheetLauncher {
   AppSheetLauncher({required TickerProvider vsync})
       : _progress = AnimationController(
           vsync: vsync,
-          duration: const Duration(milliseconds: 220),
+          duration: kPageMotion,
         );
 
   final AnimationController _progress;
@@ -247,7 +248,7 @@ class AppSheetLauncher {
     _progress.value = 0;
     _insert(context, builder: builder, config: config);
     onOpen?.call();
-    _progress.forward();
+    _progress.animateTo(1.0, curve: kPageMotionCurve);
     return Future.value(null);
   }
 
@@ -279,7 +280,7 @@ class AppSheetLauncher {
   void endSwipe({required bool open}) {
     if (!isShowing) return;
     if (open) {
-      _progress.forward();
+      _progress.animateTo(1.0, curve: kPageMotionCurve);
     } else {
       close();
     }
@@ -293,7 +294,7 @@ class AppSheetLauncher {
       return;
     }
     _progress
-        .animateTo(0.0, duration: const Duration(milliseconds: 180))
+        .animateTo(0.0, curve: kPageMotionCurve)
         .whenComplete(_remove);
   }
 

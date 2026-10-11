@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../utils/interaction_gate.dart';
+import '../utils/motion.dart';
 
 /// 分层区域切换器（滑动模式专用）：底层永远静止，只有高层移动，主荧幕不黑。
 ///
@@ -29,10 +30,10 @@ class _AreaSwitcherState extends State<AreaSwitcher>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ctrl = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 320),
+    duration: kPageMotion,
   );
   late final CurvedAnimation _curved =
-      CurvedAnimation(parent: _ctrl, curve: Curves.easeOutCubic);
+      CurvedAnimation(parent: _ctrl, curve: kPageMotionCurve);
 
   Widget? _prevChild;
   int _prevLevel = 1;

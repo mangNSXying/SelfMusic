@@ -465,10 +465,60 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
   /// 打开从底部升起（进度 1→0），离开降下（0→1）。手势跟手期间不触发。
   void _syncPlayerSheet() {
     if (_nav.playerView && _sheetAnim.value > 0.001) {
-      _sheetAnim.settle(0);
+      // 临时埋点（播放页打开卡顿定位）：吸附耗时（期望 ~300ms，明显更长
+      // 说明 UI 线程在动画窗口内被挂载构建等工作阻塞）+ 帧间隔汇总。
+      final sw = Stopwatch()..start();
+      perfLog('player.open settleStart',
+          'from=${_sheetAnim.value.toStringAsFixed(3)}');
+      _startPlayerOpenProbe();
+      _sheetAnim.settle(0, onDone: () {
+        final ms = sw.elapsedMilliseconds;
+        perfLog('player.open settleDone', '${ms}ms (expected ~300ms)');
+        _finishPlayerOpenProbe(ms);
+      });
     } else if (!_nav.playerView && _sheetAnim.value < 0.999) {
       _sheetAnim.settle(1);
     }
+  }
+
+  /// 临时埋点（播放页打开卡顿定位，用完即删）：收集打开动画窗口内的帧时间戳。
+  ///
+  /// 每帧的 post-frame 回调里记一个点；链式注册直到 30 帧（≈500ms@60Hz，
+  /// 覆盖 300ms 打开动画 + 定稿）。中途被新手势打断时靠代次号丢弃旧链。
+  List<int>? _openProbe;
+  int _openProbeGen = 0;
+
+  void _startPlayerOpenProbe() {
+    final gen = ++_openProbeGen;
+    final frames = <int>[DateTime.now().millisecondsSinceEpoch];
+    _openProbe = frames;
+    void tick() {
+      if (!mounted || gen != _openProbeGen) return;
+      frames.add(DateTime.now().millisecondsSinceEpoch);
+      if (frames.length < 30) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => tick());
+      }
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => tick());
+  }
+
+  void _finishPlayerOpenProbe(int settleMs) {
+    final frames = _openProbe;
+    _openProbe = null;
+    if (frames == null || frames.length < 2) return;
+    var maxGap = 0;
+    var over25 = 0;
+    var over50 = 0;
+    for (var i = 1; i < frames.length; i++) {
+      final gap = frames[i] - frames[i - 1];
+      if (gap > maxGap) maxGap = gap;
+      if (gap > 25) over25++;
+      if (gap > 50) over50++;
+    }
+    // 60Hz 下正常帧间隔约 17ms；出现远大于此的 gap 即掉帧点。
+    perfLog('player.open summary',
+        'settle=${settleMs}ms frames=${frames.length} maxGap=${maxGap}ms over25=$over25 over50=$over50');
   }
 
   /// 统一返回：先按层级逐级回退（设置 → 队列 → 源内/歌单详情 → 内容页 → 播放页），

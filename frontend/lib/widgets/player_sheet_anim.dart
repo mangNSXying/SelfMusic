@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../utils/motion.dart';
+
 /// 悬浮层「跟手 / 吸附」动画通用控制器。
 ///
 /// 由 [progress] 这个 [ValueNotifier]（如 `NavigationProvider.playerProgress`）
@@ -19,7 +21,7 @@ class SheetAnimator {
   }) {
     _ctrl = AnimationController(
       vsync: vsync,
-      duration: const Duration(milliseconds: 220),
+      duration: kPageMotion,
       value: progress.value,
     );
     _ctrl.addListener(() => progress.value = _ctrl.value);
@@ -42,7 +44,7 @@ class SheetAnimator {
   /// 松手吸附到 [to]；仅在动画自然完成时回调 [onDone]（被打断不回调）。
   void settle(double to, {VoidCallback? onDone}) {
     _ctrl
-        .animateTo(to.clamp(0.0, 1.0), curve: Curves.easeOutCubic)
+        .animateTo(to.clamp(0.0, 1.0), curve: kPageMotionCurve)
         .then((_) => onDone?.call(), onError: (Object _, StackTrace __) {});
   }
 

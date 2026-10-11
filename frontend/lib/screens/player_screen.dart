@@ -15,6 +15,7 @@ import '../providers/playlists_provider.dart';
 import 'queue_page.dart';
 import '../services/bluetooth_service.dart';
 import '../utils/duration_format.dart';
+import '../utils/perf_log.dart';
 import '../utils/song_title_format.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
@@ -88,11 +89,31 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// 重进都要同步装配整单数据（曾实测 1310 首卡在拖拽帧里 141~195ms），
   /// 保活后只在首挂载装配一次且发生在空闲帧。与 library_screen 六分组
   /// PageView 同一先例（内存/启动成本的折中）。
+  ///
+  /// 预热必须等悬浮层完全打开后再空闲一拍才触发：打开动画窗口
+  /// （300ms）内同步装配邻页会饿死动画 ticker（真机实测 settle 751ms、
+  /// 动画期仅 3 帧，见 player.open 埋点），这正是点击打开卡顿的根因。
+  /// 而卡在 progress 归零当刻触发也不行——那正是动画最后一帧，
+  /// 装配耗时（真机 maxGap 474ms）会冻住最后 <10px 的两帧位移
+  /// （到顶顿一下、半秒后才落定）。故归零后倒计时 350ms（动画已定稿
+  /// 且人大概率在看封面），中途被拖离顶部则取消计时。
   bool _warmNeighbors = false;
+  bool _warmScheduled = false;
+  bool _warmZeroSeen = false;
+  Timer? _warmTimer;
+  ValueNotifier<double>? _warmProgress;
+  VoidCallback? _warmProgressListener;
 
   @override
   void initState() {
     super.initState();
+    // 临时埋点（播放页打开卡顿定位）：悬浮层每次打开都会重新挂载本页，
+    // init→首帧的间隔即挂载构建成本（封面解码/歌词装配等）。
+    perfLog('player.open screenInit');
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      perfLog('player.open screenFirstFrame');
+    });
     _pageCtrl = PageController(initialPage: 1);
     // 首帧后读取常亮设置目标值。
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -100,14 +121,72 @@ class _PlayerScreenState extends State<PlayerScreen> {
       final s = context.read<DirectSourceManager>().settings;
       _scheduleWakeSync(s.playerKeepScreenOn, s.keepScreenOnDevice);
     });
-    // 首帧空闲后再预构建左右邻页（见 _warmNeighbors 字段注释）。
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) setState(() => _warmNeighbors = true);
+    // 邻页预热推迟到完全打开且空闲 350ms 后（见 _warmNeighbors 注释）：
+    // 已到顶（拖拽带满才松手 / 中断重进）直接开始倒计时，否则等进度归零；
+    // 800ms 是最后兜底（吸附被打断停在半程等边缘情况）。300ms 内滑向邻页
+    // 仍按需构建，无回归。
+    final nav = context.read<NavigationProvider>();
+    _warmProgress = nav.playerProgress;
+    if (nav.playerProgress.value <= 0.001) {
+      _warmZeroSeen = true;
+      _kickWarmTimer();
+    } else {
+      void onProgress() {
+        if (_warmScheduled || !mounted) return;
+        final v = _warmProgress?.value ?? 1;
+        if (v <= 0.001) {
+          // 刚到顶：开始 350ms 空闲倒计时（动画最后一帧，不直接装配）。
+          if (!_warmZeroSeen) {
+            _warmZeroSeen = true;
+            _kickWarmTimer();
+          }
+        } else {
+          // 被拖离顶部（下滑关闭等）：取消倒计时，避免在交互中途引爆重活。
+          _warmZeroSeen = false;
+          _warmTimer?.cancel();
+          _warmTimer = null;
+        }
+      }
+
+      _warmProgressListener = onProgress;
+      nav.playerProgress.addListener(onProgress);
+    }
+    _warmTimer ??= Timer(const Duration(milliseconds: 800), () {
+      if (mounted) _scheduleWarmNeighbors();
     });
+  }
+
+  /// 开始/重启 350ms 空闲倒计时（到顶时刻起算）。
+  void _kickWarmTimer() {
+    if (_warmScheduled || !mounted) return;
+    _warmTimer?.cancel();
+    _warmTimer = Timer(const Duration(milliseconds: 350), () {
+      if (mounted) _scheduleWarmNeighbors();
+    });
+  }
+
+  /// 触发邻页预热（幂等）：预约后顺手拆掉进度监听与兜底计时。
+  void _scheduleWarmNeighbors() {
+    if (_warmScheduled || !mounted) return;
+    _warmScheduled = true;
+    final listener = _warmProgressListener;
+    if (listener != null) {
+      _warmProgress?.removeListener(listener);
+      _warmProgressListener = null;
+    }
+    _warmProgress = null;
+    _warmTimer?.cancel();
+    _warmTimer = null;
+    setState(() => _warmNeighbors = true);
   }
 
   @override
   void dispose() {
+    final listener = _warmProgressListener;
+    if (listener != null) _warmProgress?.removeListener(listener);
+    _warmProgressListener = null;
+    _warmProgress = null;
+    _warmTimer?.cancel();
     _btPoll?.cancel();
     _autoHideTimer?.cancel();
     // 离开播放页恢复熄屏策略（ohos 经 ohos_bootstrap 注册的平台实现生效）。
@@ -312,7 +391,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
               // 竖向仅播放页（第 1 页）跟手下拉，歌词页纵向留给滚动。
               // 关闭手势后 PageView 禁滑、下拉停用。
               controller: _pageCtrl,
-              // 首帧后置 true：预构建/保活左右邻页（见 _warmNeighbors 注释）。
+              // 完全打开后置 true：预构建/保活左右邻页（见 _warmNeighbors 注释）。
               allowImplicitScrolling: _warmNeighbors,
               physics: gestureOn
                   ? const PageScrollPhysics()

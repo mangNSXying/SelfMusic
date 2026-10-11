@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
 import '../utils/interaction_gate.dart';
+import '../utils/motion.dart';
 import 'sidebar.dart';
 import 'top_bar.dart';
 import 'queue_panel.dart';
@@ -9,7 +10,8 @@ import 'mini_player_bar.dart';
 
 /// 布局壳：桌面 = [侧边栏 | 顶栏+内容 | 队列面板]，窄屏 = 抽屉 + 顶栏。
 ///
-/// 侧边栏折叠后完全隐藏；右队列面板可折叠。
+/// 宽屏侧边栏/右队列面板伸缩与全场页面动效统一 300ms（[kPageMotion]）；
+/// 窄屏抽屉走框架默认 246ms（无对外配置口，暂保持）。
 class AppShell extends StatefulWidget {
   /// 主内容区。
   final Widget content;
@@ -107,13 +109,48 @@ class _AppShellState extends State<AppShell> {
     final shell = wide
         ? Row(
             children: [
-              if (_sidebarVisible) const Sidebar(),
+              // 宽屏侧边栏伸缩：宽 260↔0，300ms 与播放页/内容页统一。
+              // 常驻挂载 + Clip 裁剪（收起后 IgnorePointer），避免 if 直挂的瞬时显隐。
+              AnimatedContainer(
+                duration: kPageMotion,
+                curve: kPageMotionCurve,
+                width: _sidebarVisible ? 260 : 0,
+                child: ClipRect(
+                  child: OverflowBox(
+                    maxWidth: 260,
+                    alignment: Alignment.centerLeft,
+                    child: IgnorePointer(
+                      ignoring: !_sidebarVisible,
+                      child: const SizedBox(width: 260, child: Sidebar()),
+                    ),
+                  ),
+                ),
+              ),
               Expanded(child: contentColumn),
-              if (queueOpen)
-                // 宽屏必须有界宽度：Row 非 flex 子项是无界宽度，width=null
-                // 会让面板内部 Spacer/Expanded 抛 unbounded 布局异常（整面板
-                // 空白）。窄屏底部弹层不受影响（Sheet 有界）。
-                QueuePanel(onClose: nav.closeQueue, width: kQueuePanelWidth),
+              // 宽屏右队列伸缩：宽 360↔0，同 300ms。
+              // 宽屏必须有界宽度：Row 非 flex 子项是无界宽度，width=null
+              // 会让面板内部 Spacer/Expanded 抛 unbounded 布局异常（整面板
+              // 空白）。窄屏底部弹层不受影响（Sheet 有界）。内层固定
+              // kQueuePanelWidth 满足有界要求，外层负责伸缩。
+              AnimatedContainer(
+                duration: kPageMotion,
+                curve: kPageMotionCurve,
+                width: queueOpen ? kQueuePanelWidth : 0,
+                child: ClipRect(
+                  child: OverflowBox(
+                    maxWidth: kQueuePanelWidth,
+                    alignment: Alignment.centerRight,
+                    child: IgnorePointer(
+                      ignoring: !queueOpen,
+                      child: SizedBox(
+                        width: kQueuePanelWidth,
+                        child: QueuePanel(
+                            onClose: nav.closeQueue, width: kQueuePanelWidth),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             ],
           )
         : Stack(

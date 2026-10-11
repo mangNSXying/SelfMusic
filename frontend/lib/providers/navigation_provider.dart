@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
+import '../utils/perf_log.dart';
 
 /// 内容区路由的「最小关注字段」稳定组合（订阅契约，R-4 / T003 / T008）。
 ///
@@ -222,8 +223,10 @@ class NavigationProvider extends ChangeNotifier {
   /// 打开展示播放页（上滑/点按进入：新页从底部升起）。
   ///
   /// 只置意图位；进度动画由 Root 的 [PlayerSheetAnimator] 统一驱动
-  /// （手势跟手或 220ms 吸附），避免多处抢改进度。
+  /// （手势跟手或 300ms 吸附），避免多处抢改进度。
   void openPlayer() {
+    // 临时埋点（播放页打开卡顿定位）：用户意图时刻（点按/上滑松手/选歌播放均走这里）。
+    perfLog('player.open intent');
     _slideOffset = const Offset(0, 1);
     _playerView = true;
     _settings = null;
