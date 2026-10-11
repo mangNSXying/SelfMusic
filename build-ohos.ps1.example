@@ -4,7 +4,7 @@
 #   notepad build-ohos.ps1
 # 用法：
 #   .\build-ohos.ps1          AGC 发布签名 .app（arm64；出包前临时切发布签名，结束无条件还原 debug 签名）
-#   .\build-ohos.ps1 hap      release 三架构 HAP（arm64/armv7/x86，日常分发/直装转正用）
+#   .\build-ohos.ps1 hap      release 双架构 HAP（arm64/x64，日常分发/直装转正用）
 # 执行策略拦下的话：powershell -ExecutionPolicy Bypass -File .\build-ohos.ps1 [hap]
 param(
     [string]$Target
@@ -32,9 +32,11 @@ if ($Target -ne 'app' -and $Target -ne 'hap') {
     exit 1
 }
 
-# ---- hap：release 三架构，签名材料原样不动 ----
+# ---- hap：release 双架构，签名材料原样不动 ----
+# 不含 ohos-arm（32 位）：本 fork 的引擎只发布 ohos-arm64 / ohos-x64 的 HAR，
+# ohos-arm-release\armeabi_v7a_release.har 缺失会让 ohpm install 直接失败。
 if ($Target -eq 'hap') {
-    & $Flutter build hap --release --target-platform ohos-arm64 --target-platform ohos-arm --target-platform ohos-x64
+    & $Flutter build hap --release --target-platform ohos-arm64 --target-platform ohos-x64
     exit $LASTEXITCODE
 }
 
