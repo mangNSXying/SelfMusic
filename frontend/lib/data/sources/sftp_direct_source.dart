@@ -9,6 +9,7 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:path/path.dart' as p;
 
 import '../../models/song.dart';
+import '../../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
 import 'music_source.dart';
 import 'scan_worker.dart';
 import '../local/local_index.dart';
@@ -295,9 +296,22 @@ class SftpDirectSource implements MusicSource {
   }
 
   /// 疑似掉线时重建一次再试（鉴权/指纹类错误直接抛，不重试）。
+  ///
+  /// **业务性状态错误不重连**（2026-10-11 真机取证）：同目录图片回退会逐个
+  /// open 不存在的候选路径，服务端回 `SftpStatusCode.noSuchFile`——这是正常
+  /// 探测结果而非掉线；旧实现对任何异常都 `close()` + 重连，每个候选白付一次
+  /// SSH 握手（纯 Dart KEX/验签跑在主线程，实测单次 ~600ms stall，一首无内嵌
+  /// 封面的歌最多 11 个候选 → 5~7s 连续卡顿的主要来源）。只有连接类状态错误
+  /// （noConnection / connectionLost）与未知异常才走重建。
   Future<T> _withSftp<T>(Future<T> Function(SftpClient sftp) fn) async {
     try {
       return await fn(await _sftpClient());
+    } on SftpStatusError catch (e) {
+      if (e.code == SftpStatusCode.noConnection ||
+          e.code == SftpStatusCode.connectionLost) {
+        return _reconnectAndRetry(fn);
+      }
+      throw SftpStatusException(_shortErr(e, 'SFTP 请求失败'));
     } on SourceAuthException {
       rethrow;
     } on StateError {
@@ -305,17 +319,23 @@ class SftpDirectSource implements MusicSource {
     } on SshHostKeyMismatch {
       rethrow;
     } catch (_) {
-      await close();
-      try {
-        return await fn(await _sftpClient());
-      } catch (e) {
-        if (e is SourceAuthException ||
-            e is StateError ||
-            e is SshHostKeyMismatch) {
-          rethrow;
-        }
-        throw SftpStatusException(_shortErr(e, 'SFTP 请求失败'));
+      return _reconnectAndRetry(fn);
+    }
+  }
+
+  /// 重建连接后重试一次；鉴权/指纹类错误直接抛（重连也无意义）。
+  Future<T> _reconnectAndRetry<T>(
+      Future<T> Function(SftpClient sftp) fn) async {
+    await close();
+    try {
+      return await fn(await _sftpClient());
+    } catch (e) {
+      if (e is SourceAuthException ||
+          e is StateError ||
+          e is SshHostKeyMismatch) {
+        rethrow;
       }
+      throw SftpStatusException(_shortErr(e, 'SFTP 请求失败'));
     }
   }
 
@@ -502,8 +522,18 @@ class SftpDirectSource implements MusicSource {
           ? total
           : (range.end == null ? total : (range.end! + 1).clamp(0, total));
       final contentLength = range == null ? total : (end - start);
-      final src = file.read(length: contentLength <= 0 ? null : contentLength,
-          offset: start);
+      // 主线程让出纪律（2026-10-11 真机取证）：dartssh2 的纯 Dart AES-GCM 解密
+      // 跑在 UI isolate；`read()` 默认 64 并发 × 16KB 扇出会把整段 Range（补读
+      // 可达 16MB）灌成一条微任务链，实测单次同步块 9~11s（THREAD_BLOCK_6S 强杀
+      // 与全局卡顿的直接来源，冻结堆栈：SSHTransport._consumeAeadPacket →
+      // pointycastle GCMBlockCipher）。限「单请求在飞 + 64KB 块」后，解密与网络
+      // 事件交替推进，单次同步块收敛到几十 ms；LAN 吞吐仍受解密速率上限约束，
+      // 不额外损失。**勿放开 maxPendingRequests**，除非把解密移出 UI isolate。
+      final src = file.read(
+          length: contentLength <= 0 ? null : contentLength,
+          offset: start,
+          chunkSize: 16 * 1024,
+          maxPendingRequests: 1);
       // 句柄随流走：结束/出错/取消都关（seek 取消不留服务器句柄）。
       var closed = false;
       Future<void> closeFile() async {
@@ -550,12 +580,20 @@ class SftpDirectSource implements MusicSource {
 
   static const int _cacheWriteBufBytes = 1 << 20;
 
+  /// 缓存下载的让出节拍（ohos）：每个 16KB 解密块后歇 6ms，避免整曲缓存
+  /// 长时间占满 UI isolate（语义同 [open] 的限流注释；非 ohos 不启用）。
+  static const Duration _cachePaceSleep = Duration(milliseconds: 6);
+
   String cacheKeyFor(Song song) =>
       md5.convert(utf8.encode('$key|${song.sourceRef}')).toString();
 
   @override
   Future<String?> cachedFilePath(Song song) async =>
       index.cachedPath(cacheKeyFor(song));
+
+  /// 远端源原生解析仅对已缓存文件可用（R-2）；未缓存走 Dart 切片兜底。
+  @override
+  Future<String?> localSandboxPath(Song song) => cachedFilePath(song);
 
   @override
   Future<void> cacheSong(Song song, {bool Function()? shouldAbort}) async {
@@ -577,6 +615,12 @@ class SftpDirectSource implements MusicSource {
           total += chunk.length;
           if (buf.length >= _cacheWriteBufBytes) {
             sink.writeFromSync(buf.takeBytes());
+          }
+          // ohos：与元数据补读同一让出纪律（见 open 的 maxPendingRequests 注释）——
+          // 整曲缓存持续跑纯 Dart 解密，若不歇息会长时间占满 UI isolate 导致掉帧；
+          // 缓存是后台行为，慢一点换取界面可响应。
+          if (isOhos) {
+            await Future<void>.delayed(_cachePaceSleep);
           }
         }
         if (buf.isNotEmpty) sink.writeFromSync(buf.takeBytes());
