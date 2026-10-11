@@ -68,8 +68,8 @@
 | 淡入淡出 | `fade_enabled` + `fade_duration_ms` | 开，2000 ms（0.5~2 s） | 从暂停恢复到播放 / 播放挥手暂停前做 `setVolume` 软件渐变（16 ms 周期），全平台可用；不依赖音频后端 crossfade。关闭时无渐变直接切换。时长有效域 [500, 2000] ms（0.1 s 步进），越界历史值读取时钳制到最近边界 |
 | 均衡器 | `equalizer_enabled` + `eq_bands` | 关 | 5 频段增益（`eq_bands`=JSON 整数数组：低音 60 Hz / 中低 230 Hz / 中音 910 Hz / 中高 3.6 kHz / 高音 14 kHz，范围 -12~+12 dB）。**仅 Android**（just_audio `AndroidEqualizer` 注入 `AudioPipeline`）；Linux/macOS 无公开 mpv Dart API，开关与滑块界面仍可见但不生效 |
 | 音频焦点（自动暂停/恢复） | `audio_focus_enabled` | `true` | 来电 / 其他 App 抢占时的暂停-恢复。just_audio `handleInterruptions`，切换后重建播放器即时生效（Android）。原在「通知」分区，现归「播放」分区 |
-| 静音暂停 | `pause_on_zero_volume` | `false`（关） | 媒体音量归零时自动暂停当前播放。**仅 Android**：自持原生监听（`Settings.System` 音量变化，`AudioGuard.kt`），不经 `audio_session` 的 becoming-noisy（后者只在音频焦点开启时注册）。其它平台开关可见但不生效 |
-| 断连暂停 | `pause_on_device_disconnect` | `false`（关） | 当前播放输出设备（蓝牙音箱/耳机/有线/USB）断开时自动暂停。**仅 Android**：监听 `ACTION_AUDIO_BECOMING_NOISY`（系统在**活跃输出**被移除时广播），因此「蓝牙连着但声音走扬声器」时断开蓝牙不暂停、用户主动从蓝牙切扬声器也不暂停，符合预期语义。其它平台开关可见但不生效 |
+| 静音暂停 | `pause_on_zero_volume` | `false`（关） | 媒体音量归零时自动暂停当前播放。**仅 Android/鸿蒙**：自持原生监听（Android：`Settings.System` 音量变化，`AudioGuard.kt`；鸿蒙：系统音量事件，`AudioGuardBridge.ets`），不经 `audio_session` 的 becoming-noisy（后者只在音频焦点开启时注册）。其它平台开关可见但不生效 |
+| 断连暂停 | `pause_on_device_disconnect` | `false`（关） | 当前播放输出设备（蓝牙音箱/耳机/有线/USB）断开时自动暂停。**仅 Android/鸿蒙**：Android 监听 `ACTION_AUDIO_BECOMING_NOISY`（系统在**活跃输出**被移除时广播）；鸿蒙监听设备连接状态变化并比对活跃输出（`AudioGuardBridge.ets`）。因此「蓝牙连着但声音走扬声器」时断开蓝牙不暂停、用户主动从蓝牙切扬声器也不暂停，符合预期语义。其它平台开关可见但不生效 |
 
 ### 3.3 服务端分区 · 缓存配置（✅ 已实现，阶段6闭环）
 

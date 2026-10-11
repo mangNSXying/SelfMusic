@@ -125,10 +125,10 @@ class AppSettings {
   /// 音频焦点（settings.md §3.6）：Android 来电/他应用抢占时自动暂停-恢复。
   static const String kAudioFocusEnabled = 'audio_focus_enabled';
 
-  /// 静音暂停（仅 Android）：媒体音量归零时自动暂停。
+  /// 静音暂停（Android/鸿蒙）：媒体音量归零时自动暂停。
   static const String kPauseOnZeroVolume = 'pause_on_zero_volume';
 
-  /// 断连暂停（仅 Android）：当前播放输出设备断开时自动暂停。
+  /// 断连暂停（Android/鸿蒙）：当前播放输出设备断开时自动暂停。
   static const String kPauseOnDeviceDisconnect = 'pause_on_device_disconnect';
 
   /// 通知栏播放控制（settings.md §3.6）：Android 通知栏/后台播放。

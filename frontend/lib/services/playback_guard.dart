@@ -4,17 +4,19 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-/// 静音暂停 / 断连暂停的平台信号（settings.md §3.2，仅 Android）。
+import '../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
+
+/// 静音暂停 / 断连暂停的平台信号（settings.md §3.2，Android/鸿蒙）。
 ///
 /// 之所以自持原生监听而不用 `audio_session`：后者的 becoming-noisy 接收器只在
 /// just_audio 因音频焦点接管而请求焦点时才注册——音频焦点关闭时「断连暂停」会
-/// 彻底失效，恰是用户最需要该功能的情形。故 Android 侧新增独立通道
-/// （[AudioGuard.kt]）：
+/// 彻底失效，恰是用户最需要该功能的情形。故两端各自新增独立原生通道
+/// （Android：[AudioGuard.kt]；鸿蒙：[AudioGuardBridge.ets]，通道同名）：
 /// - MethodChannel `com.shamiko.selfmusic/audio_guard`：`getMediaVolume()`；
 /// - EventChannel `com.shamiko.selfmusic/audio_guard/events`：媒体音量变化
 ///   （`{type:"volume", value:int}`）与当前输出设备断开（`{type:"outputLost"}`）。
 ///
-/// 其它平台无实现，返回空信号源（与均衡器/音频焦点同样「Android 生效」）。
+/// 其它平台无实现，返回空信号源（与均衡器/音频焦点同样「Android/鸿蒙生效」）。
 
 /// 单条音频守卫事件。
 enum AudioGuardEventType {
@@ -45,14 +47,14 @@ abstract class AudioGuardPlatform {
   /// 当前媒体音量档位；不支持/读取失败返回 null（调用方按「未知」忽略）。
   Future<int?> get mediaVolume;
 
-  /// 当前平台实现：Android 走原生通道，其余平台 no-op。
+  /// 当前平台实现：Android/鸿蒙走原生通道，其余平台 no-op。
   static AudioGuardPlatform forCurrentPlatform() {
-    if (!kIsWeb && Platform.isAndroid) return _AndroidAudioGuard();
+    if (!kIsWeb && (Platform.isAndroid || isOhos)) return _NativeAudioGuard();
     return const _NoopAudioGuard();
   }
 }
 
-class _AndroidAudioGuard implements AudioGuardPlatform {
+class _NativeAudioGuard implements AudioGuardPlatform {
   static const MethodChannel _method =
       MethodChannel('com.shamiko.selfmusic/audio_guard');
   static const EventChannel _events =

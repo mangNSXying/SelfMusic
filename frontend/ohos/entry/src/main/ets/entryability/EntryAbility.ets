@@ -10,6 +10,7 @@ import {
 } from '@ohos/flutter_ohos';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { GeneratedPluginRegistrant } from '../plugins/GeneratedPluginRegistrant';
+import AudioGuardBridge from '../media/AudioGuardBridge';
 import AvSessionBridge from '../media/AvSessionBridge';
 import PlatformBridge from '../platform/PlatformBridge';
 
@@ -103,6 +104,7 @@ export default class EntryAbility extends FlutterAbility {
   private pokeCount: number = 0;
   private avSessionBridge: AvSessionBridge | null = null;
   private platformBridge: PlatformBridge | null = null;
+  private audioGuardBridge: AudioGuardBridge | null = null;
 
   configureFlutterEngine(flutterEngine: FlutterEngine): void {
     super.configureFlutterEngine(flutterEngine)
@@ -113,6 +115,9 @@ export default class EntryAbility extends FlutterAbility {
     // 系统能力平台桥（常亮/本地文件/蓝牙，selfmusic/platform）。
     this.platformBridge = new PlatformBridge(this.context);
     this.platformBridge.setup(flutterEngine)
+    // 静音暂停/断连暂停信号源（com.shamiko.selfmusic/audio_guard，与 Android 同名通道）。
+    this.audioGuardBridge = new AudioGuardBridge();
+    this.audioGuardBridge.setup(flutterEngine)
     // 返回手势转后台：moveAbilityToBackground 与 home 键等效，UIAbility 与
     // 进程存活、播放链路不中断（侧滑返回曾落进 Dart 桌面退出分支 exit(0)
     // 直接杀进程，无法后台播放，2026-09-29 用户反馈；安卓同修）。
@@ -141,6 +146,10 @@ export default class EntryAbility extends FlutterAbility {
     if (this.platformBridge) {
       this.platformBridge.shutdown();
       this.platformBridge = null;
+    }
+    if (this.audioGuardBridge) {
+      this.audioGuardBridge.shutdown();
+      this.audioGuardBridge = null;
     }
     super.onDestroy();
   }

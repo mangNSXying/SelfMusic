@@ -102,7 +102,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   void Function(Song s)? _onSongMetaRefreshed;
   SelfMusicAudioHandler? _audioHandler;
 
-  /// 静音/断连暂停守卫（settings.md §3.2，仅 Android）：由 [attachAudioGuard]
+  /// 静音/断连暂停守卫（settings.md §3.2，Android/鸿蒙）：由 [attachAudioGuard]
   /// 装配，设置开关变动后经 [refreshPlaybackGuard] 同步订阅。
   PlaybackGuard? _playbackGuard;
 
@@ -1184,7 +1184,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 装配静音/断连暂停守卫（main 注入 `AudioGuardPlatform.forCurrentPlatform()`；
-  /// 非 Android 平台为 no-op 实现，行为不变）。装配后立即按当前开关同步订阅。
+  /// Android/鸿蒙为原生通道实现，其余平台为 no-op，行为不变）。装配后立即按当前开关同步订阅。
   void attachAudioGuard(AudioGuardPlatform platform) {
     _playbackGuard?.dispose();
     _playbackGuard = PlaybackGuard(
