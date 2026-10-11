@@ -48,6 +48,9 @@ class PlayerScreen extends StatefulWidget {
 }
 
 class _PlayerScreenState extends State<PlayerScreen> {
+  /// 冷启动首帧定位：只记第一次挂载。
+  static bool _bootLogged = false;
+
   late final PageController _pageCtrl;
 
   /// 播放页下拉跟手的起点（全局 Y + 起始进度）。
@@ -107,6 +110,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void initState() {
     super.initState();
+    // 冷启动首帧定位：常驻悬浮层首挂载是否参与首帧阻塞（只记第一次）。
+    if (!_bootLogged) {
+      _bootLogged = true;
+      perfLog('boot.firstBuild PlayerScreen.init');
+    }
     // 临时埋点（播放页打开卡顿定位）：悬浮层每次打开都会重新挂载本页，
     // init→首帧的间隔即挂载构建成本（封面解码/歌词装配等）。
     perfLog('player.open screenInit');
@@ -168,6 +176,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// 触发邻页预热（幂等）：预约后顺手拆掉进度监听与兜底计时。
   void _scheduleWarmNeighbors() {
     if (_warmScheduled || !mounted) return;
+    perfLog('player.neighbors warm');
     _warmScheduled = true;
     final listener = _warmProgressListener;
     if (listener != null) {
@@ -396,8 +405,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
               physics: gestureOn
                   ? const PageScrollPhysics()
                   : const NeverScrollableScrollPhysics(),
+              // 预热前滑向邻页：即时补建，避免白板（空闲仍是主触发，见 C）。
+              onPageChanged: (i) {
+                if (i != 1 && mounted) _scheduleWarmNeighbors();
+              },
               children: [
-                const _BandSongPage(),
+                // 首帧避让（C）：邻页首帧占位，空闲预热后再装配——歌单页整单
+                // 装配（1310 首曾测 ~150ms）移出首帧；页数恒为 3，
+                // PageController initialPage=1 不受影响。
+                if (_warmNeighbors)
+                  const _BandSongPage()
+                else
+                  const SizedBox.shrink(),
                 if (landscape)
                   // 横屏无歌词分页（歌词内嵌）：歌单页与整幅播放布局两页滑动；
                   // 左上角返回箭头悬浮于两套横屏布局之上。
@@ -436,7 +455,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           top: 6, left: 6, child: _BackToContentButton()),
                     ],
                   ),
-                if (!landscape) const _LyricsPage(),
+                if (!landscape)
+                  if (_warmNeighbors)
+                    const _LyricsPage()
+                  else
+                    const SizedBox.shrink(),
               ],
             ),
           ),
