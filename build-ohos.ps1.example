@@ -34,7 +34,7 @@ if ($Target -ne 'app' -and $Target -ne 'hap') {
 
 # ---- hap：release 三架构，签名材料原样不动 ----
 if ($Target -eq 'hap') {
-    & $Flutter build hap --release --target-arch=arm64 --target-arch=armv7 --target-arch=x86
+    & $Flutter build hap --release --target-platform ohos-arm64 --target-platform ohos-arm --target-platform ohos-x64
     exit $LASTEXITCODE
 }
 
