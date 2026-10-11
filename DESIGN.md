@@ -2,7 +2,7 @@
 
 > 定位：**去中心化的个人音乐服务器 + 双模式客户端**
 > 上游约束：`开发思路.txt`（无中心账号 / 本地+SMB+WebDAV 曲库 / 加权播放 / 喜欢歌自动缓存）
-> 状态：**阶段 0–3、阶段 5–6 已完成**（Android 壳对齐 / 认证·配对 / 客户端本地闭环·歌单·喜欢列表 / 直连 WebDAV·本地索引·增量扫描优化 / 多设备状态同步 / 转码+管理闭环）；**阶段 4（全平台 SMB 直连）未动工**——仅存在 `SmbDirectSource` 配置骨架（见 §6.3），任何平台无直连通路、源列表 UI 亦未提供 SMB 选项；**阶段 7（SFTP 直连：密码+密钥认证，服务端 SSH 回源代理）已实现✅**（见 §6.10 / §8）。
+> 状态：**阶段 0–7 已完成**（Android 壳对齐 / 认证·配对 / 客户端本地闭环·歌单·喜欢列表 / 直连 WebDAV·本地索引·增量扫描优化 / 全平台 SMB 直连 / 多设备状态同步 / 转码+管理闭环 / SFTP 直连）；**阶段 4（全平台 SMB 直连）已实现✅**——`SmbDirectSource` 完整实现（非 ohos 走 `dart_smb2` FFI，ohos 走 vendored `smb_connect` 纯 Dart，见 §6.3），服务端 SMB 回源代理同步落地（见 §6.3 / §8）。
 > 在此之上，后续迭代全部落地：元数据后台补读与全源编辑、歌词、后台播放、睡眠定时四模式、播放页与集合页交互
 > （层级返回 / 分组左右滑切 / 列表·卡片切换 / 队列·歌单自动定位高亮 / 标题显示格式 / 搜索追焦 / 编辑歌单）、
 > 网络安全加固（默认 HTTPS + 允许不安全 HTTP / 信任自签名开关 + 明文凭据收敛到 secure storage，见 §6.7 与本文件 §3.2 凭据加密说明）、
@@ -21,8 +21,8 @@
 | 变更 | 内容 |
 |------|------|
 | 无用户 → 单用户 | 引入"一服务器一主人"语义，配对 Token 认证，设备可管理可吊销 |
-| 单模式 → 双模式 | App 在**无后端**时靠 WebDAV/本地直连完整可用（SMB 仍为骨架，未落地）；后端是增强层 |
-| 新增 Source 抽象层 | Local / WebdavDirect 两实现可用 + SmbDirect **仅配置骨架** + SftpDirect **规划中（阶段 7）**，统一接口 |
+| 单模式 → 双模式 | App 在**无后端**时靠 WebDAV/本地/SMB 直连完整可用；后端是增强层 |
+| 新增 Source 抽象层 | Local / WebdavDirect / SmbDirect / SftpDirect 四实现完整，统一接口 |
 | 新增客户端本地索引 | 直连模式下 SQLite 轻量建库，跨源搜索体验接近一体化曲库 |
 | 路线图重排 | 按"骨架→核心体验→直连→SMB→同步→转码/管理"六阶段 |
 
@@ -57,10 +57,10 @@
                         │  │ 歌手身份聚合（MusicBrainz）   │ │
                         │  ├────────────────────────────┤ │
                         │  │      Source 抽象层           │ │
-                        │  │  LocalDirectSource          │ │
-                        │  │  WebdavDirectSource         │ │
-                        │  │  SmbDirectSource（仅骨架）    │ │
-                        │  │  SftpDirectSource（规划）     │ │
+│  │  LocalDirectSource          │ │
+│  │  WebdavDirectSource         │ │
+│  │  SmbDirectSource（双后端）   │ │
+│  │  SftpDirectSource           │ │
                         │  └────────────┬───────────────┘ │
                         └───────────────┼─────────────────┘
                                         │ 协议直连（App 内扫描/播放）
@@ -86,7 +86,7 @@
 |------|:---:|------|
 | 本地文件播放 | ✅ | 内嵌协议客户端 |
 | WebDAV 浏览与播放 | ✅ | 不依赖后端 |
-| SMB 浏览与播放 | ⏳ | **仅有配置骨架**（§6.3/阶段 4 未动工）：`SmbDirectSource` 只存配置、`scan/open/cache` 全部抛「不支持直连」；源新增弹窗提供 WebDAV/本地文件夹/SFTP，无 SMB 入口 |
+| SMB 浏览与播放 | ✅ | **完整实现**（§6.3/阶段 4）：双后端（非 ohos `dart_smb2` FFI SMB2/3，ohos vendored `smb_connect` 纯 Dart SMB2.1）+ 扫描/播放/缓存/代理全链路；`supportsWrite=false`（v1 只读） |
 | SFTP 浏览与播放 | ✅ | 密码+密钥认证（SecretStore，主机密钥 TOFU）+ 服务端 SSH 回源代理转码；源新增弹窗 SFTP 入口；直连/代理链路可选 |
 | 歌单 / 加权算法 / 喜欢·不喜欢 | ✅ | 本地 SQLite |
 | 喜欢歌自动缓存 / 断网播放 | ✅ | 蓝图 §三.3 |
@@ -99,7 +99,7 @@
 | 播放源同步 | ✅ | WebDAV 等远端源（本地文件夹源各机独立） |
 | 后台增量扫描 | ✅ | 本地变化监听 + 周期快扫，指纹跳过零下载 |
 | 转码（按需 ffmpeg） | ✅ | 阶段 6：服务端无状态代理 `GET /transcode/stream`（不建库，强校验 sync_sources，并发只 env 默认 2，超限 429 回落直连）；客户端代理开关 + 192/256/320 三档 + 响度均衡（MP3 无 512 档，不开放） |
-| 上传 / 删除源文件 | ✅ | 阶段 6：WebDAV PUT/DELETE/MKCOL + 本地 dart:io 直写；删除为二次确认全删（索引/权重/歌词/歌单/缓存）；SMB 仍仅骨架 |
+| 上传 / 删除源文件 | ✅ | 阶段 6：WebDAV PUT/DELETE/MKCOL + 本地 dart:io 直写；删除为二次确认全删（索引/权重/歌词/歌单/缓存）；SFTP/SMB v1 只读 |
 
 ## 2. 身份与设备配对
 
@@ -279,7 +279,7 @@ INDEX idx_refresh(refresh_token_hash)
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| ✅ GET | `/transcode/stream?origin=&bitrate=&loudnorm=` | 回源拉流 → ffmpeg 管道转 MP3 CBR（192/256/320，默认 192）→ 流式回客户端；可选 `loudnorm=off\|14\|16\|23`（默认 off；开时编码前插单遍动态 `loudnorm`，I=目标/TP=-1.5/LRA=11，统一响度）；鉴权透传（不落地不记日志）：http(s) 源用 `X-Origin-Auth: Basic`，SFTP 源用 `X-Origin-Ssh: base64url(JSON{u, p?, k?, pp?, hk})`（u=用户名；p=密码 / k=PEM 私钥base64 + pp=passphrase；hk=客户端已 TOFU 的 `SHA256:` 主机指纹；缺凭据 40001，指纹失配 502）；强校验 origin 落在未删除**同类**源地址之下（http(s)→WebDAV，`sftp://host[:port]/path`→SFTP，见 §6.10）+ 黑名单主机拒绝（地址归一化后匹配，写入端 `SyncService` 亦收敛）；SFTP 回源经 sshj 取流（`SFTPClient.open` 偏移读，分块喂 ffmpeg stdin，不整曲预下载）；整曲转码不支持 Range；并发只 env（`TRANSCODE_MAX_CONCURRENCY`，默认 2），超限 429 + `Retry-After`，客户端回落直连；无 ffmpeg 时 503 |
+| ✅ GET | `/transcode/stream?origin=&bitrate=&loudnorm=` | 回源拉流 → ffmpeg 管道转 MP3 CBR（192/256/320，默认 192）→ 流式回客户端；可选 `loudnorm=off\|14\|16\|23`（默认 off；开时编码前插单遍动态 `loudnorm`，I=目标/TP=-1.5/LRA=11，统一响度）；鉴权透传（不落地不记日志）：http(s) 源用 `X-Origin-Auth: Basic`，SFTP 源用 `X-Origin-Ssh: base64url(JSON{u, p?, k?, pp?, hk})`（u=用户名；p=密码 / k=PEM 私钥base64 + pp=passphrase；hk=客户端已 TOFU 的 `SHA256:` 主机指纹；缺凭据 40001，指纹失配 502），SMB 源用 `X-Origin-Smb: base64url(JSON{u?, p?})`（双空即匿名；非法信封 40001）；强校验 origin 落在未删除**同类**源地址之下（http(s)→WebDAV，`sftp://host[:port]/path`→SFTP，`smb://host[:port]/share/path`→SMB，端口缺省 22/445，见 §6.10/§6.3）+ 黑名单主机拒绝（地址归一化后匹配，写入端 `SyncService` 亦收敛）；SFTP 回源经 sshj 取流、SMB 回源经 smbj 取流（`openFile` 顺序读，分块喂 ffmpeg stdin，不整曲预下载）；整曲转码不支持 Range；并发只 env（`TRANSCODE_MAX_CONCURRENCY`，默认 2），超限 429 + `Retry-After`，客户端回落直连；无 ffmpeg 时 503 |
 
 ### 4.4 状态同步 —— ✅ 已实现（阶段 5）
 
@@ -318,7 +318,7 @@ config/       FirstBootInitializer(PAIRING_TOKEN 镜像), WebConfig(CORS)
 domain/       JPA 实体（Playlist/PlaylistItem/PlayState/SongState/Device/SyncEvent/SyncSource/Setting）+ Repository + service
 playlist/     PlaylistController（歌单 CRUD + 条目增删改）
 sync/         SyncController(pull/push) + SyncService(幂等去重/LWW/correction) + PushEvent + SyncEventTypes
-transcode/    TranscodeService（并发门控 + ffmpeg 探测）+ TranscodeController（同步直写流式）+ ssh/（SshOriginFetcher：经 sshj 的 SFTP 回源取流，阶段 7 规划）
+transcode/    TranscodeService（并发门控 + ffmpeg 探测）+ TranscodeController（同步直写流式）+ ssh/（SshOriginFetcher：经 sshj 的 SFTP 回源取流，阶段 7）+ smb/（SmbEnvelope + SmbOriginFetcher：经 smbj 的 SMB 回源取流，阶段 4）
 ```
 
 ### 5.2 第三方库
@@ -329,10 +329,11 @@ transcode/    TranscodeService（并发门控 + ffmpeg 探测）+ TranscodeContr
 | 数据库驱动 | `mysql-connector-j`（MySQL 8） | runtime；`ddl-auto: validate` |
 | Token 哈希 | JDK `MessageDigest` SHA-256 | 不引额外依赖 |
 | SSH 回源 | `com.hierynomus:sshj`（0.41.x，Apache 2.0，pin 大版本） | 阶段 7：转码代理的 SFTP 回源取流；密码 + PEM/OpenSSH 私钥（含 passphrase）+ 自定义主机密钥校验；`SFTPClient.open` 偏移读喂 ffmpeg 管道 |
+| SMB 回源 | `com.hierynomus:smbj`（0.13.0，Apache 2.0，pin 大版本） | 阶段 4：转码代理的 SMB 回源取流；匿名/账密二选一；`DiskShare.openFile` 顺序读喂 ffmpeg stdin |
 | 其余 | devtools（runtime）、test | — |
 | 已移除 | lombok（编译期；2026-10 全量去注解，改显式构造器/getter-setter/Logger，规避新版 Java 语言服务器注释处理器不兼容） | — |
 
-> 纠偏：`jaudiotagger` 曾列于后端选型，但**后端从未引入、也无任何音频标签代码**——音频元数据标签全部在 Flutter 客户端用 Dart 实现（§6.2/§6.4）；服务端既没有曲库也没有流媒体。阶段 6 起后端含转码能力：ffmpeg 为**二进制**（经 apt 装入镜像，非 Java 库）+ `sshj`（阶段 7 的 SFTP 回源取流）；仍无 SMB 代码（SMB 与音频标签的 Dart 实现见 §6.2/§6.4）。
+> 纠偏：`jaudiotagger` 曾列于后端选型，但**后端从未引入、也无任何音频标签代码**——音频元数据标签全部在 Flutter 客户端用 Dart 实现（§6.2/§6.4）；服务端既没有曲库也没有流媒体。阶段 6 起后端含转码能力：ffmpeg 为**二进制**（经 apt 装入镜像，非 Java 库）+ `sshj`（阶段 7 的 SFTP 回源取流）+ `smbj`（阶段 4 的 SMB 回源取流）；SMB 客户端直连的 Dart 实现见 §6.3。
 
 ### 5.3 认证过滤器
 
@@ -372,7 +373,7 @@ TokenFilter (OncePerRequestFilter)
 | `layout/` | ★ 自适应模块化布局：桌面「侧边栏 / 内容 / 队列面板」与窄屏抽屉；顶栏（搜索 + 六分组滑动导航）；队列面板与迷你播放条（自动定位当前曲、强调色） |
 | `providers/` | ★ 状态：导航（层级返回）、播放器（队列 / 四模式 / 睡眠定时（含到时退出软件）/ 歌词 / 预载 / 断点）、曲库（多源合并 + 专辑歌手分组）、直连源管理（含**后台补读优先队列** `direct_task_queue.dart`）、歌单、配对与会话过期态；封面缩略图限速回填 |
 | `services/` | ApiClient（含懒刷新拦截器）、AuthService、ServerSettings、SyncEngine、SecretStore（凭据安全存储）、**SelfMusicAudioHandler（通知栏 5 键）**、**ArtistResolver（MusicBrainz 歌手身份）**、**BluetoothService（常亮限定设备）** |
-| `data/sources/` | ★ Source 抽象层（LocalDirect / WebdavDirect / SmbDirect **仅骨架**）+ DirectAudioSource + scan_worker（Isolate 扫描）+ meta_enrich / sibling_cover（补读） |
+| `data/sources/` | ★ Source 抽象层（LocalDirect / WebdavDirect / SmbDirect（双后端）/ SftpDirect）+ DirectAudioSource + scan_worker（Isolate 扫描）+ meta_enrich / sibling_cover（补读） |
 | `data/local/` | 本地库（`schema` 建表迁移 + `db_writer` 写隔离 + `local_index` 门面）+ 纯 Dart 头部解析（audio_metadata，七类格式）+ deep_list + 各 Store 封装（playlist_store / song_weight_store / cache_manager / backup_service） |
 | `models/` `utils/` | 数据模型（Song / Album / Artist）；纯工具（时长格式、标题显示格式、LRC 解析） |
 | `widgets/` | 共享组件（SongTile、CoverThumb、歌词页、加入·编辑歌单、列表·卡片切换、SortMenuButton、**AppToast 浮层弹窗**、**SongInfoDialog（歌曲信息，含路径）**等）。`SongTile` 的 leading 恒为 `CoverThumb`（多选态为复选框），**播放指示 `Icons.graphic_eq` 跟在标题之后**而非顶替封面，由调用方传 `playing`（`PlayerProvider.isCurrent(s)`）；`SortMenuButton` 为两行合一弹窗：字段行 + 行内上下箭头，点箭头选方向、点字段名翻转方向。**AppToast**（改进.txt §1-1/1-2）：错误与成功统一 toast、不侵占 UI 文字；等宽浮层弹窗——强调色半透明背景（错误保留红 + 加透明度）、文字居中、`IgnorePointer` **点击穿透不阻碍被遮挡控件**；经根 `appNavigatorKey` 弹入 Overlay，同一时刻仅最新一条 |
@@ -415,18 +416,30 @@ abstract class MusicSource {
 - WebDAV `ref` 存**解码后**路径（标题/去重友好），请求时按路径段重新编码；扫描头部元数据解析对大内嵌封面做了边界保护（超采样长度即停止解析，不抛 `RangeError`，随后按提示补读）
 - 源列表 = `sources` 表里启用的源；配置后端地址后解锁多设备同步（与曲库无关）
 
-### 6.3 SMB 直连平台策略（全平台目标，⏳ 阶段 4 **未动工**）
+### 6.3 SMB 直连平台策略（✅ 已实现）
 
-> 现状（2026-10）：`SmbDirectSource` 只是**存配置的骨架**——不覆写 `scan/open/cacheSong`（继承抽象类默认实现，统一抛「不支持直连」），`supportsDirect=false`；全库无 SMB 客户端依赖（无 smbj / dart_smb）；provider 与源新增弹窗**不暴露 SMB 选项**（仅 WebDAV / 本地文件夹）；各平台均不可用。下表是阶段 4 的既定方案，非现状。
+> 状态（2026-10）：`SmbDirectSource` 完整实现——双后端按平台选择（`useSmbConnect`，
+> `DirectSourceManager` 按 `isOhos` 传入，数据层不直接做平台判断）：
+> 非 ohos 走 **`dart_smb2`**（FFI libsmb2，SMB 2.0.2→3.1.1；主 isolate 用异步
+> `Smb2Pool`，扫描 isolate 用同步 `Smb2Client`），ohos 走 **vendored `smb_connect`**
+> （纯 Dart，最高 SMB 2.1，`frontend/third_party/smb_connect`，见 PATCHES.md）。
+> 扫描/播放/缓存/测试连接/代理全链路可用，源新增弹窗提供 SMB 入口
+> （host/share/可空账密·双空即匿名/根目录），`supportsWrite=false`（v1 只读）。
+> 原「Windows UNC + Android smbj 平台通道」双路径方案已废弃（统一 Dart API
+> 维护成本更低）；鸿蒙不降级（ohos 用纯 Dart 后端，R2 约束满足）。
 
-| 平台 | 方案 | 工作量 |
-|------|------|--------|
-| Windows | 系统挂载（UNC `\\host\share\path`），`dart:io` 直接读 | 小 |
-| Android | 平台通道嵌入 JVM **smbj**：Dart 侧请求 `open(ref)` 得 `sessionId`，循环 `read(sessionId, offset, len)` 取字节流喂 `StreamAudioSource` | **大（R1）** |
-| 鸿蒙 | 复用 Android 通道方案；若三方 Flutter 分支通道兼容有问题 → 该端降级"直连仅 WebDAV" | 中（待验证） |
+| 平台 | 后端 | 说明 |
+|------|------|------|
+| Linux / Windows / Android | `dart_smb2`（`Smb2Pool`，workers=2） | 连接复用 + 池内自动重连；范围读按 256KB 分块（stateless，取消即停） |
+| 鸿蒙 | vendored `smb_connect`（`RandomAccessFile`） | setPosition + 分块 readInto + 随流关闭；方言上限 SMB 2.1，NAS 需允许 SMB2 协商 |
+| 扫描（全平台） | 各后端 isolate 内直连 | 只取 ref/size/mtime（无 etag），20k 上限、空结果防误清库闸、指纹增量，全复用 §6.4 |
 
-- 传输细节：smbj `InputStream` + 共享池；单次读 256KB；连接复用（每源一个 Session）
-- 断点续播：`StreamAudioSource` 支持 Range 起播，seek 时重建流
+- 凭据：密码存 `SecretStore`（`smb_pwd:<sourceKey>`），SQLite 只存引用键，永不同步；
+  有用户名无密码的源标「待配置凭据」，双空匿名源不标。
+- 代理：origin 为 `smb://host/share/逐段编码路径`（无 userinfo），凭据走
+  `X-Origin-Ssh` 对标物 `X-Origin-Smb` 信封（base64url(JSON{u, p?})，内存态单次使用）；
+  服务端经 smbj 回源（§4.6），强校验落在已同步同类源之下。
+- 断点续播：`StreamAudioSource` 范围请求驱动（seek 重建流），与 WebDAV/SFTP 同机制。
 
 ### 6.4 直连模式本地轻量索引
 
@@ -582,7 +595,7 @@ abstract class MusicSource {
 
 > **状态：已实现✅** —— 服务端代理六路径（密码/干净密钥/加密密钥出流，指纹失配/缺信封/越权拒绝）与客户端直连全链（指纹获取、密码/密钥枚举读取、错密/失配映射）均经端到端验证；手机端弹窗视觉走查待补。
 
-> 与 SMB（§6.3，需平台通道 + 鸿蒙桥验证）的关键区别：SFTP 客户端有成熟纯 Dart 实现（`dartssh2`），**零原生代码、三端同代码**，风险低一个量级，可先于阶段 4 落地；鸿蒙端同样走纯 Dart（R2 约束天然满足）。
+> 与 SMB（§6.3，双后端：三端 `dart_smb2` FFI + 鸿蒙 vendored `smb_connect` 纯 Dart）的关键区别：SFTP 客户端有成熟纯 Dart 实现（`dartssh2`），**零原生代码、三端同代码**，风险低一个量级，先于阶段 4 落地；鸿蒙端同样走纯 Dart（R2 约束天然满足）。SMB 随后以双后端方案落地（阶段 4 ✅）。
 
 - **选型**：客户端 `dartssh2`（^4.1.0，pin 大版本；纯 Dart，SFTPv3 全操作：list/read/write/remove/mkdir/rename）；服务端 `com.hierynomus:sshj`（0.41.x，Apache 2.0，仅代理回源取流用，见 §4.6/§5.2）
 - **连接**：每源复用一个 SSH 会话（`SSHClient` + keepalive；Doze/后台策略复用 WebDAV 探活思路）；SFTP 子系统按操作获取，失败重连（指数退避，上限 30s，与同步退避同口径）
@@ -741,16 +754,25 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 - ~~✅ 后端扫描增量：`MusicScanner` 指纹跳过 + `getlastmodified` 解析 + 并发探测 + album 缓存 + `@Scheduled` 定时（§4.5 / settings.md §5.1）~~ 已移除（服务端不再扫描；歌曲只由 APP 在播放源处扫描）
 - ✅ 直连浏览：`SourcesScreen` 卡片三点菜单 + `SourceBrowseView` 文件夹式内页（扫描/进度/取消 → 搜索 → 播放 → 收藏 → 缓存全链路）；离线缓存（§6.6）
 - ✅ 全局库合并（§6.5）：`LibraryProvider` 聚合直连源（去重），专辑/歌手客户端聚合；按 `sourceKey` 逐首解析源实现
-- ✅ 源骨架：Webdav / Local 完整，SMB（阶段 4），SFTP ✅（阶段 7）
+- ✅ 源实现：Webdav / Local / SMB（阶段 4 双后端）完整，SFTP ✅（阶段 7）
 - 验收（卸载后端场景）：只配 WebDAV / 本地源，完成扫描→搜索→播放→收藏→断网播缓存 全链路
 
 ### 阶段 4：全平台 SMB 直连（~1–2 周，风险最高）
 
-> **状态：未动工（2026-10）** —— 无任何平台实现、无 UI 入口、无 SMB 客户端依赖（见 §6.3 现状）。计划路径不变：
-
-- Windows UNC 通路（先行，半天）；Android smbj 平台通道 PoC（1 天硬门槛）→ 正式实现；鸿蒙通道继续沿用平台桥思路（阶段 4 起可复刻自研平台桥）
-- （注：原「鸿蒙验证核心依赖」一条已被平台支线提前完成——三方分支 + just_audio/path_provider/sqlite3 等已在 2026-09 PoC 逐项核查通过，见本平台支线）
-- 验收：Android 真机直连 NAS 播放 SMB 歌曲，seek/断点正常；鸿蒙给出可行/降级结论
+> **状态：已实现✅** —— 客户端 `dart_smb2` 直连（Linux/Windows/Android，SMB2/3，
+> 密码/匿名）+ ohos `smb_connect` 直连（纯 Dart，SMB2.1）+ 服务端 `smbj` 回源代理；
+> 单元层面全绿（客户端 `smb_source_test` 10 条 + 服务端 transcode/smb 16 条），
+> Linux debug 构建验证 libsmb2.so 随包。真机验收（NAS 实测：直连播放/seek/断点、
+> ohos SMB2.1 协商、代理转码出流）待补。
+>
+> - 三端：`Smb2PoolBackend`（`scan/open/cacheSong/probe` 全链；`directStream`
+>   恒 null，走字节流）+ 弹窗 SMB 入口（host/share/可空账密/根目录）+ 测试连接；
+>   直连/代理链路可选（默认直连）
+> - ohos：`SmbConnectBackend`（同接口，`RandomAccessFile` 读流；R2 纯 Dart 约束满足，不降级）
+> - 服务端：`transcode/smb` 经 smbj 回源取流（匿名 + 账密；无 TOFU，NTLM 协商自带完整性）；
+>   `GET /transcode/stream` 接 `smb://` origin + `X-Origin-Smb` 信封；其余语义
+>   （并发 2、429 回落、502 映射）与 WebDAV/SFTP 同
+> - 验收：Android 真机直连 NAS 播放 SMB 歌曲，seek/断点正常；鸿蒙同代码可用（方言上限 SMB 2.1）
 
 ### 阶段 5：多设备状态同步（~1 周）
 
@@ -783,7 +805,7 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 ### 平台支线：鸿蒙 NEXT 端（2026-09 完成 PoC 验收）
 
-> **状态：PoC 验收通过、真机日常使用中✅** —— 不占用原六阶段排期，在阶段 5 之后独立推进；SMB 直连的鸿蒙通道方案仍归阶段 4。
+> **状态：PoC 验收通过、真机日常使用中✅** —— 不占用原六阶段排期，在阶段 5 之后独立推进；SMB 直连的鸿蒙方案（vendored `smb_connect` 纯 Dart 后端）已随阶段 4 落地（见 §6.3）。
 > 原风险 R2（三方分支通道兼容 + 插件生态缺口）已逐项验证可控：核心依赖全部落地——fvp 音频后端 / secure_storage 双层适配 / sqlite3 随包分发 / path_provider 重试包装 / audio_session 容错 / audio_service 由自建 AVSession 桥替代；仅 `cached_network_image`（sqflite 传递依赖缺失）曲库封面降级为已知问题。
 > 交付清单：启动白屏双地雷修复、直连 WebDAV 全链（扫描/点播/鉴权折叠）、AVSession 媒体播控（§6.8）、横竖屏、应用图标、自动切歌修复、装载看门狗、宽屏队列面板。细节全记录在 [DEVELOPER.md「鸿蒙适配」](DEVELOPER.md#鸿蒙适配)。
 
@@ -825,8 +847,8 @@ n≥2 时对剩余归一化）按 factor 采样，喜欢的歌因此可在一轮
 
 | # | 风险 | 影响 | 缓解 |
 |---|------|------|------|
-| R1 | smbj×Android 平台通道（性能/稳定性未知） | 阶段 4 可能返工 | **阶段 4 未动工（2026-10），R1 悬而未决**：PoC 硬门槛前置；备选 jSMB/系统 smbclient 子进程；最坏降级"移动端直连仅 WebDAV" |
-| R2 | 鸿蒙三方 Flutter 分支的平台通道兼容性 + **pub 插件生态缺口** —— **已验证可控（2026-09 PoC 验收，见 §8 平台支线）**：核心依赖全部落地（fvp / secure_storage 双层适配 / sqlite3 随包 / path_provider / audio_session / AVSession 替代 audio_service），仅 `cached_network_image` 封面降级 | 鸿蒙端已可日常使用；选型仍受「优先纯 Dart 包」约束 | 逐项核对结论与实现见 DEVELOPER「鸿蒙适配」；stable 新 API 须双 SDK analyze 验证；SMB 直连的鸿蒙通道方案仍待阶段 4 验证 |
+| R1 | smbj×Android 平台通道（性能/稳定性未知） | 阶段 4 可能返工 | **已化解（2026-10）**：改走统一 Dart API（`dart_smb2` FFI + ohos `smb_connect`），不再需要 smbj 平台通道；残余风险为 FFI 在移动端的稳定性与 ohos 端 SMB2.1 方言兼容，真机验收覆盖 |
+| R2 | 鸿蒙三方 Flutter 分支的平台通道兼容性 + **pub 插件生态缺口** —— **已验证可控（2026-09 PoC 验收，见 §8 平台支线）**：核心依赖全部落地（fvp / secure_storage 双层适配 / sqlite3 随包 / path_provider / audio_session / AVSession 替代 audio_service），仅 `cached_network_image` 封面降级 | 鸿蒙端已可日常使用；选型仍受「优先纯 Dart 包」约束 | 逐项核对结论与实现见 DEVELOPER「鸿蒙适配」；stable 新 API 须双 SDK analyze 验证；SMB 鸿蒙方案（vendored 纯 Dart 后端）已随阶段 4 落地，真机验收待补 |
 | R3 | WebDAV 服务端差异（PROPFIND 深度/鉴权/限流） | 个别云盘不可用 | 连接测试按钮 + 超时重试封装；适配名单维护在文档 |
 | R4 | 直连扫描耗流量/电量 | 用户感知差 | 仅 Wi-Fi 扫描开关；增量指纹（size/mtime/etag）跳过未变文件；快速只建索引扫描零读头；补读走严格 Range（按结构定位，不整读）；单源上限 |
 | R5 | ffmpeg 容器 CPU 占用 | 多设备并发卡顿 | 全局并发上限默认 2；超限降级透传 |

@@ -49,6 +49,12 @@ dependencies:
   path_provider_platform_interface: ^2.1.2   # 重试包装（path_provider_ohos_retry.dart，主代码 import 需在此声明）
   image: ^4.10.1
   dartssh2: ^4.1.0
+  dart_smb2: ^0.1.3
+  # smb_connect vendored fork：仅鸿蒙端 SMB 用（纯 Dart；其余平台走 dart_smb2 FFI）。
+  # 上游 pointycastle ^3.9.1 与 dartssh2 冲突，fork 内已放宽到 ^4.0.0，
+  # 补丁清单见 third_party/smb_connect/PATCHES.md。
+  smb_connect:
+    path: third_party/smb_connect
 dev_dependencies:
   flutter_test:
     sdk: flutter

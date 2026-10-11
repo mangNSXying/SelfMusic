@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../data/local/app_settings.dart';
 import '../data/sources/music_source.dart';
 import '../data/sources/sftp_direct_source.dart';
+import '../data/sources/smb_direct_source.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart';
 import '../platform/harmonyos/ohos_platform_bridge.dart';
 import '../providers/direct_source_manager.dart';
@@ -109,7 +110,7 @@ class _SourcesScreenState extends State<SourcesScreen>
   }
 }
 
-/// 新增/编辑播放源弹窗：按源类型切换字段（WebDAV / 本地文件夹）。
+/// 新增/编辑播放源弹窗：按源类型切换字段（WebDAV / 本地文件夹 / SFTP / SMB）。
 class _SourceDialog extends StatefulWidget {
   final String? editKey;
   const _SourceDialog({this.editKey});
@@ -126,6 +127,7 @@ class _SourceDialogState extends State<_SourceDialog> {
   late final TextEditingController _password;
   late final TextEditingController _host;
   late final TextEditingController _port;
+  late final TextEditingController _share;
   late final TextEditingController _keyPem;
   late final TextEditingController _keyPassphrase;
   SourceKind _kind = SourceKind.webdav;
@@ -145,6 +147,7 @@ class _SourceDialogState extends State<_SourceDialog> {
       _kind = switch (cfg['kind'] as String?) {
         'local' => SourceKind.local,
         'sftp' => SourceKind.sftp,
+        'smb' => SourceKind.smb,
         _ => SourceKind.webdav,
       };
     }
@@ -156,6 +159,11 @@ class _SourceDialogState extends State<_SourceDialog> {
     _host = TextEditingController(text: cfg['host'] as String? ?? '');
     _port = TextEditingController(
         text: (cfg['port'] as num?)?.toString() ?? '');
+    _share = TextEditingController(text: cfg['share'] as String? ?? '');
+    // SMB 密码走独立键回填（匿名源为空；WebDAV/SFTP 沿用上面的 password/三件套）。
+    if (_kind == SourceKind.smb) {
+      _password.text = cfg['smbPassword'] as String? ?? '';
+    }
     _authMethod = parseSftpAuthMethod(cfg['authMethod']);
     _keyPem = TextEditingController(text: cfg['sftpKeyPem'] as String? ?? '');
     _keyPassphrase =
@@ -172,6 +180,7 @@ class _SourceDialogState extends State<_SourceDialog> {
     _password.dispose();
     _host.dispose();
     _port.dispose();
+    _share.dispose();
     _keyPem.dispose();
     _keyPassphrase.dispose();
     super.dispose();
@@ -317,6 +326,52 @@ class _SourceDialogState extends State<_SourceDialog> {
     AppToast.show('连接成功，指纹匹配', isError: false);
   }
 
+  /// SMB 表单校验（弹窗保存与测试连接共用）：用户名与密码双空即匿名。
+  ({String host, String share, String username})? _readSmbForm() {
+    final host = _host.text.trim();
+    if (host.isEmpty) {
+      setState(() => _error = '请填写 SMB 主机（IP 或主机名）');
+      return null;
+    }
+    final share = _share.text.trim();
+    if (share.isEmpty) {
+      setState(() => _error = '请填写共享名（如 music）');
+      return null;
+    }
+    return (host: host, share: share, username: _username.text.trim());
+  }
+
+  /// SMB 测试连接：连上并列出根目录即成功。ohos 走 smb_connect，
+  /// 其余平台走 dart_smb2（与播放/扫描同后端）。不保存源（保存走 [_submit]）。
+  Future<void> _testSmbConnection() async {
+    final form = _readSmbForm();
+    if (form == null || !mounted) return;
+    setState(() {
+      _testing = true;
+      _error = null;
+    });
+    try {
+      await SmbDirectSource.testConnection(
+        host: form.host,
+        share: form.share,
+        username: form.username,
+        password: _password.text,
+        useSmbConnect: isOhos,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _testing = false;
+        _error = e.toString().replaceFirst(
+            RegExp(r'^(Bad state: |StateError: )'), '');
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _testing = false);
+    AppToast.show('连接成功', isError: false);
+  }
+
   Future<void> _submit() async {
     final direct = context.read<DirectSourceManager>();
     final name = _name.text.trim();
@@ -382,6 +437,29 @@ class _SourceDialogState extends State<_SourceDialog> {
           AppToast.show('已保存；首次使用前请点「测试连接」确认主机指纹',
               isError: false);
         }
+      } else if (_kind == SourceKind.smb) {
+        final form = _readSmbForm();
+        if (form == null) return;
+        final root = _path.text.trim();
+        if (_isEdit) {
+          await direct.updateSource(widget.editKey!,
+              name: name,
+              host: form.host,
+              share: form.share,
+              username: form.username,
+              password: _password.text,
+              path: root,
+              route: _route);
+        } else {
+          await direct.addSmb(
+              name: name,
+              host: form.host,
+              share: form.share,
+              username: form.username,
+              password: _password.text,
+              rootPath: root,
+              route: _route);
+        }
       } else {
         final url = _baseUrl.text.trim();
         if (url.isEmpty) {
@@ -445,6 +523,11 @@ class _SourceDialogState extends State<_SourceDialog> {
                     icon: Icon(Icons.storage_outlined),
                     label: Text('SFTP'),
                   ),
+                  ButtonSegment(
+                    value: SourceKind.smb,
+                    icon: Icon(Icons.dns_outlined),
+                    label: Text('SMB'),
+                  ),
                 ],
                 selected: {_kind},
                 onSelectionChanged: (s) =>
@@ -486,7 +569,7 @@ class _SourceDialogState extends State<_SourceDialog> {
                 obscureText: true,
                 decoration: const InputDecoration(labelText: '密码（可空）'),
               ),
-            ] else ...[
+            ] else if (_kind == SourceKind.sftp) ...[
               TextField(
                 controller: _host,
                 decoration: const InputDecoration(
@@ -556,6 +639,51 @@ class _SourceDialogState extends State<_SourceDialog> {
               const SizedBox(height: 8),
               OutlinedButton.icon(
                 onPressed: _testing ? null : _testSftpConnection,
+                icon: _testing
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.verified_outlined, size: 18),
+                label: const Text('测试连接'),
+              ),
+            ] else if (_kind == SourceKind.smb) ...[
+              TextField(
+                controller: _host,
+                decoration: const InputDecoration(
+                  labelText: 'SMB 主机',
+                  hintText: '192.168.1.10 或 nas.local',
+                ),
+              ),
+              TextField(
+                controller: _share,
+                decoration: const InputDecoration(
+                  labelText: '共享名',
+                  hintText: 'music',
+                ),
+              ),
+              TextField(
+                controller: _username,
+                decoration: const InputDecoration(
+                    labelText: '用户名（可空，空即匿名）'),
+              ),
+              TextField(
+                controller: _password,
+                obscureText: true,
+                decoration: const InputDecoration(
+                    labelText: '密码（可空，空即匿名）'),
+              ),
+              TextField(
+                controller: _path,
+                decoration: const InputDecoration(
+                  labelText: '根目录（可空，空=共享根）',
+                  hintText: 'music/flac',
+                ),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: _testing ? null : _testSmbConnection,
                 icon: _testing
                     ? const SizedBox(
                         width: 16,
@@ -644,13 +772,16 @@ class _DirectSourceCard extends StatelessWidget {
     final count = direct.countOf(sourceKey);
     final isLocal = s.kind == SourceKind.local;
     final isSftp = s.kind == SourceKind.sftp;
+    final isSmb = s.kind == SourceKind.smb;
     final needsSecrets = direct.sourceNeedsSecrets(sourceKey);
     // 非本地源的播放链路（弹窗可配）：代理才走服务端转码，直连恒原生地址。
     final routeLabel =
         !isLocal && s.route == SourceRoute.proxy ? ' · 代理' : '';
     final kindLabel = isLocal
         ? ' · 本地文件夹'
-        : (isSftp ? ' · SFTP' : '');
+        : (isSftp
+            ? ' · SFTP'
+            : (isSmb ? ' · SMB' : ''));
 
     final tile = ListTile(
       leading: Icon(isLocal ? Icons.folder : Icons.cloud,

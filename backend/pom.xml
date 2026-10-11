@@ -55,6 +55,13 @@
             <artifactId>sshj</artifactId>
             <version>0.41.1</version>
         </dependency>
+        <!-- SMB 回源取流（转码代理的 smb:// origin 用；Apache 2.0）。版本 pin，
+             与 sshj 同组（hierynomus），0.13.0 经本地仓库验证可离线构建。 -->
+        <dependency>
+            <groupId>com.hierynomus</groupId>
+            <artifactId>smbj</artifactId>
+            <version>0.13.0</version>
+        </dependency>
 
         <dependency>
             <groupId>org.springframework.boot</groupId>

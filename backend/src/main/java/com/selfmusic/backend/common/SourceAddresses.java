@@ -7,7 +7,7 @@ package com.selfmusic.backend.common;
  * {@code webdav.example.com/data}），客户端请求时会默认补 {@code https://}；
  * 该原始形态历史上经源同步落到了 {@code sync_sources.address}。
  * 服务端解析/去重前统一归一化：WebDAV 缺 scheme 补 https、SFTP 缺 scheme
- * 补 sftp、去首尾空白。
+ * 补 sftp、SMB（{@code host/share} 形态）缺 scheme 补 smb、去首尾空白。
  */
 public final class SourceAddresses {
 
@@ -24,6 +24,8 @@ public final class SourceAddresses {
                 s = "sftp://" + s;
             } else if ("webdav".equalsIgnoreCase(kind)) {
                 s = "https://" + s;
+            } else if ("smb".equalsIgnoreCase(kind)) {
+                s = "smb://" + s;
             }
         }
         return s;

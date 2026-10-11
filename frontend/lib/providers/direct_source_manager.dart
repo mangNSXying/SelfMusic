@@ -10,6 +10,7 @@ import '../data/sources/scan_worker.dart';
 import '../data/sources/webdav_direct_source.dart';
 import '../data/sources/local_direct_source.dart';
 import '../data/sources/sftp_direct_source.dart';
+import '../data/sources/smb_direct_source.dart';
 import '../data/local/local_index.dart';
 import '../data/local/sync_event_types.dart';
 import '../data/local/app_settings.dart';
@@ -104,7 +105,7 @@ Future<int> runThumbBackfill({
 /// 直连源管理（阶段 3 / 阶段 4 接收器）。
 ///
 /// - 持有 [LocalIndex]（本地事实源）。
-/// - 管理已配置的直连源（WebDAV 完整，SMB 为阶段 4 骨架）。
+/// - 管理已配置的直连源（WebDAV / 本地 / SFTP / SMB 完整实现）。
 /// - 所有源默认激活，歌曲经 [allSongs] 合并进全局图库。
 /// - 提供 添加/删除/扫描/检索/收藏/缓存 等操作，并驱动 UI 刷新。
 class DirectSourceManager extends ChangeNotifier {
@@ -174,6 +175,9 @@ class DirectSourceManager extends ChangeNotifier {
 
   /// 各源 SFTP 三件套的内存镜像（密码/私钥文本/passphrase；持久化在 [SecretStore]）。
   final Map<String, _SftpSecrets> _sftpSecrets = {};
+
+  /// 各源 SMB 密码的内存镜像（持久化在 [SecretStore]；用户名与密码双空即匿名）。
+  final Map<String, String> _smbPwds = {};
 
   int _favoriteVersion = 0;
 
@@ -333,15 +337,21 @@ class DirectSourceManager extends ChangeNotifier {
   /// 该源是否等待本机补输密码（同步到的 WebDAV 源密码不落地服务端）。
   bool sourceNeedsPassword(String key) {
     final s = sourceByKey(key);
-    if (s == null || s.kind != SourceKind.webdav) return false;
-    return (_webdavPwds[key] ?? '').isEmpty;
+    if (s == null) return false;
+    if (s.kind == SourceKind.webdav) return (_webdavPwds[key] ?? '').isEmpty;
+    // SMB：有用户名无密码才算待补（双空=匿名，不等待）。
+    if (s is SmbDirectSource) {
+      return s.username.isNotEmpty && (_smbPwds[key] ?? '').isEmpty;
+    }
+    return false;
   }
 
-  /// 该源是否等待本机补输凭据（含 SFTP：按认证方式看密码或私钥）。
+  /// 该源是否等待本机补输凭据（含 SFTP：按认证方式看密码或私钥；SMB 同上）。
   bool sourceNeedsSecrets(String key) {
     final s = sourceByKey(key);
     if (s == null) return false;
     if (s.kind == SourceKind.webdav) return sourceNeedsPassword(key);
+    if (s is SmbDirectSource) return sourceNeedsPassword(key);
     if (s is SftpDirectSource) {
       final m = _sftpSecrets[key];
       if (s.authMethod == SftpAuthMethod.key) {
@@ -436,6 +446,23 @@ class DirectSourceManager extends ChangeNotifier {
         return _buildDirect(
             kind: r.kind, key: r.key, name: name, cfg: cfg);
       }
+      if (r.kind == 'smb') {
+        var cfg = jsonDecode(r.config) as Map<String, dynamic>;
+        final name = (cfg['name'] as String? ?? r.name).toString();
+        var pwd = await secrets.smbPassword(r.key);
+        final legacy = (cfg['password'] as String? ?? '');
+        if ((pwd == null || pwd.isEmpty) && legacy.isNotEmpty) {
+          await secrets.setSmbPassword(r.key, legacy);
+          pwd = legacy;
+        }
+        if (cfg.containsKey('password')) {
+          cfg = Map<String, dynamic>.of(cfg)..remove('password');
+          await index.upsertSource(r.key, r.kind, r.name, jsonEncode(cfg));
+        }
+        _smbPwds[r.key] = pwd ?? '';
+        return _buildDirect(
+            kind: r.kind, key: r.key, name: name, cfg: cfg);
+      }
     } catch (_) {
       // 忽略损坏的源配置。
     }
@@ -492,7 +519,6 @@ class DirectSourceManager extends ChangeNotifier {
       if (!r.enabled) continue;
       final src = await _buildRowFromRow(r);
       if (src != null) _sources.add(src);
-      // SMB 自动恢复在阶段 4 补充。
     }
     _ready = true;
     restartAutoScan();
@@ -602,6 +628,8 @@ class DirectSourceManager extends ChangeNotifier {
 
   String _sftpKey(String name) => 'sftp:$name';
 
+  String _smbKey(String name) => 'smb:$name';
+
   /// 按源类型构建直连源实例（webdav / local）。WebDAV 密码取内存镜像
   /// （持久化在 SecretStore，config 不落地明文）；[allowSelfSigned] 随直连构建生效。
   MusicSource _buildDirect({
@@ -633,6 +661,19 @@ class DirectSourceManager extends ChangeNotifier {
         route: parseSourceRoute(cfg['route']),
       );
     }
+    if (kind == 'smb') {
+      return SmbDirectSource(
+        name: name,
+        host: cfg['host'] as String? ?? '',
+        share: cfg['share'] as String? ?? '',
+        username: cfg['username'] as String? ?? '',
+        password: _smbPwds[key] ?? '',
+        index: index,
+        rootPath: cfg['path'] as String? ?? '',
+        useSmbConnect: isOhos,
+        route: parseSourceRoute(cfg['route']),
+      );
+    }
     return WebdavDirectSource(
       name: name,
       baseUrl: cfg['baseUrl'] as String? ?? '',
@@ -659,6 +700,8 @@ class DirectSourceManager extends ChangeNotifier {
     cfg['sftpPassword'] = sm?.password ?? '';
     cfg['sftpKeyPem'] = sm?.keyPem ?? '';
     cfg['sftpPassphrase'] = sm?.passphrase ?? '';
+    // SMB 密码从内存镜像（SecretStore）回填，供编辑弹窗预填。
+    cfg['smbPassword'] = _smbPwds[key] ?? '';
     return cfg;
   }
 
@@ -749,6 +792,37 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 新增 SMB 源（阶段 4）：密码只存 SecretStore，配置持久化非敏感部分
+  /// （host/share/username/path/route）并参与同步；用户名与密码双空即匿名。
+  Future<void> addSmb({
+    required String name,
+    required String host,
+    required String share,
+    String username = '',
+    String password = '',
+    String rootPath = '',
+    SourceRoute route = SourceRoute.direct,
+  }) async {
+    final key = _smbKey(name);
+    _smbPwds[key] = password;
+    await secrets.setSmbPassword(key, password);
+    final cfg = <String, dynamic>{
+      'name': name,
+      'host': host.trim(),
+      'share': share.trim(),
+      'username': username.trim(),
+      'path': rootPath.trim(),
+      'route': route.name,
+    };
+    _sources.add(
+        _buildDirect(kind: 'smb', key: key, name: name, cfg: cfg));
+    await index.upsertSource(key, 'smb', name, jsonEncode(cfg));
+    await index.ensureSourceUuid(key);
+    await _emitSource(SyncEventTypes.sourceCreate, key);
+    restartAutoScan();
+    notifyListeners();
+  }
+
   /// 编辑源：可改 名称（含 key 迁移）/ 地址或目录 / 账号 / 密码·密钥 / 播放链路。
   ///
   /// 改名会派生新的 key，[LocalIndex.renameSource] 同步迁移已索引歌曲、
@@ -762,6 +836,7 @@ class DirectSourceManager extends ChangeNotifier {
     String? password,
     SourceRoute? route,
     String? host,
+    String? share,
     int? port,
     SftpAuthMethod? authMethod,
     String? keyPem,
@@ -781,6 +856,7 @@ class DirectSourceManager extends ChangeNotifier {
     if (username != null) cfg['username'] = username;
     if (route != null) cfg['route'] = route.name;
     if (host != null) cfg['host'] = host;
+    if (share != null) cfg['share'] = share;
     if (port != null) cfg['port'] = port;
     if (authMethod != null) cfg['authMethod'] = authMethod.name;
 
@@ -832,6 +908,21 @@ class DirectSourceManager extends ChangeNotifier {
       _sftpSecrets.remove(key);
     }
 
+    // SMB 密码：同上收敛；改名迁移密码键（匿名源密码恒空，迁移即清理旧键）。
+    if (row.kind == 'smb' && password != null) {
+      cfg.remove('password');
+      if (newKey != key) {
+        await secrets.migrateSmb(key, newKey);
+        _smbPwds.remove(key);
+      }
+      await secrets.setSmbPassword(newKey, password);
+      _smbPwds[newKey] = password;
+    } else if (newKey != key && _smbPwds.containsKey(key)) {
+      await secrets.migrateSmb(key, newKey);
+      _smbPwds[newKey] = _smbPwds[key]!;
+      _smbPwds.remove(key);
+    }
+
     final rebuilt = <MusicSource>[];
     for (final s in _sources) {
       if (s.key == key) {
@@ -866,6 +957,8 @@ class DirectSourceManager extends ChangeNotifier {
     await secrets.deleteWebdav(key);
     _sftpSecrets.remove(key);
     await secrets.deleteSftp(key);
+    _smbPwds.remove(key);
+    await secrets.deleteSmb(key);
     await index.deleteSource(key);
     notifyListeners();
   }

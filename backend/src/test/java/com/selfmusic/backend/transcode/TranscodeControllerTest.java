@@ -39,6 +39,14 @@ class TranscodeControllerTest {
         return s;
     }
 
+    private static SyncSource smbSrc(String address) {
+        SyncSource s = new SyncSource();
+        s.setKind("smb");
+        s.setAddress(address);
+        s.setDeleted(false);
+        return s;
+    }
+
     @Test
     void matchesBase() {
         assertTrue(TranscodeController.matchesBase(
@@ -82,6 +90,48 @@ class TranscodeControllerTest {
         assertThrows(BizException.class,
                 () -> TranscodeController.parseOrigin("ftp://x/a.flac"));
     }
+
+    @Test
+    void parseOriginAcceptsSmb() {
+        assertDoesNotThrow(
+                () -> TranscodeController.parseOrigin("smb://nas/music/a.flac"));
+        assertDoesNotThrow(
+                () -> TranscodeController.parseOrigin("smb://nas:445/music/a.flac"));
+    }
+
+    @Test
+    void smbOriginMatchesSmbSourceOnly() {
+        var c = controllerWith(smbSrc("nas/music"));
+        // smb:// 归一化匹配同类源行（地址无 scheme，补 smb:// 后比）。
+        assertDoesNotThrow(() -> c.checkAgainstSyncedSources(
+                URI.create("smb://nas/music/a.flac")));
+        assertDoesNotThrow(() -> c.checkAgainstSyncedSources(
+                URI.create("smb://nas:445/music/sub/a.flac")));
+        // 跨类不匹配：webdav/sftp 行挡不住 smb origin。
+        assertThrows(BizException.class, () -> c.checkAgainstSyncedSources(
+                URI.create("https://nas/music/a.flac")));
+        assertThrows(BizException.class, () -> c.checkAgainstSyncedSources(
+                URI.create("sftp://nas:22/music/a.flac")));
+        // 别的共享挡不住。
+        assertThrows(BizException.class, () -> c.checkAgainstSyncedSources(
+                URI.create("smb://nas/other/a.flac")));
+        // 反向：smb 行挡不住 webdav origin。
+        var webOnly = controllerWith(src("https://nas/music"));
+        assertThrows(BizException.class, () -> webOnly.checkAgainstSyncedSources(
+                URI.create("smb://nas/music/a.flac")));
+    }
+
+    @Test
+    void smbPathSplit() {
+        assertEquals("music",
+                TranscodeController.smbShareOf("/music/flac/a.mp3"));
+        assertEquals("flac\\a.mp3",
+                TranscodeController.smbFilePathOf("/music/flac/a.mp3"));
+        assertThrows(BizException.class,
+                () -> TranscodeController.smbShareOf("/"));
+        assertThrows(BizException.class,
+                () -> TranscodeController.smbFilePathOf("/music"));
+    }
     @Test
     void rejectsBadSchemeAndBlockedHosts() {
         assertThrows(BizException.class,
@@ -115,10 +165,10 @@ class TranscodeControllerTest {
         var c = controllerWith(src("https://nas:5006/music"));
         // 已下架的低档与非法值同样拒绝（档位现为 192/256/320）。
         assertThrows(BizException.class, () -> c.stream(
-                "https://nas:5006/music/a.flac", "128", "off", null, null,
+                "https://nas:5006/music/a.flac", "128", "off", null, null, null,
                 new MockHttpServletResponse()));
         assertThrows(BizException.class, () -> c.stream(
-                "https://nas:5006/music/a.flac", "512", "off", null, null,
+                "https://nas:5006/music/a.flac", "512", "off", null, null, null,
                 new MockHttpServletResponse()));
     }
 
@@ -126,10 +176,10 @@ class TranscodeControllerTest {
     void rejectsInvalidLoudnorm() {
         var c = controllerWith(src("https://nas:5006/music"));
         assertThrows(BizException.class, () -> c.stream(
-                "https://nas:5006/music/a.flac", "192", "99", null, null,
+                "https://nas:5006/music/a.flac", "192", "99", null, null, null,
                 new MockHttpServletResponse()));
         assertThrows(BizException.class, () -> c.stream(
-                "https://nas:5006/music/a.flac", "192", "loud", null, null,
+                "https://nas:5006/music/a.flac", "192", "loud", null, null, null,
                 new MockHttpServletResponse()));
     }
 

@@ -6,6 +6,8 @@ import com.selfmusic.backend.domain.entity.SyncSource;
 import com.selfmusic.backend.domain.repository.SyncSourceRepository;
 import com.selfmusic.backend.transcode.ssh.SshEnvelope;
 import com.selfmusic.backend.transcode.ssh.SshOriginFetcher;
+import com.selfmusic.backend.transcode.smb.SmbEnvelope;
+import com.selfmusic.backend.transcode.smb.SmbOriginFetcher;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -82,6 +84,7 @@ public class TranscodeController {
             @RequestParam(value = "loudnorm", defaultValue = "off") String loudnorm,
             @RequestHeader(value = "X-Origin-Auth", required = false) String originAuth,
             @RequestHeader(value = "X-Origin-Ssh", required = false) String originSsh,
+            @RequestHeader(value = "X-Origin-Smb", required = false) String originSmb,
             HttpServletResponse response) {
         String rate = bitrate == null ? "192" : bitrate.trim();
         if (!ALLOWED_BITRATES.contains(rate)) {
@@ -103,8 +106,10 @@ public class TranscodeController {
         }
         Process ffmpeg = null;
         try {
-            // 注意：绝不记录任何回源凭据的值（X-Origin-Auth / X-Origin-Ssh 信封内容）。
+            // 注意：绝不记录任何回源凭据的值（X-Origin-Auth / X-Origin-Ssh /
+            // X-Origin-Smb 信封内容）。
             boolean isSftp = "sftp".equalsIgnoreCase(uri.getScheme());
+            boolean isSmb = "smb".equalsIgnoreCase(uri.getScheme());
             log.info("transcode start scheme={} host={} bitrate={}k loudnorm={}",
                     uri.getScheme(), uri.getHost(), rate, loud);
             InputStream originStream;
@@ -114,6 +119,15 @@ public class TranscodeController {
                 log.debug("transcode sftp auth={}", creds.useKey() ? "key" : "password");
                 originStream = SshOriginFetcher.openStream(
                         uri.getHost(), port, uri.getPath(), creds);
+            } else if (isSmb) {
+                SmbEnvelope.Credentials creds = SmbEnvelope.parse(originSmb);
+                int port = uri.getPort() != -1 ? uri.getPort() : 445;
+                log.debug("transcode smb auth={}",
+                        creds.anonymous() ? "anonymous" : "password");
+                originStream = SmbOriginFetcher.openStream(
+                        uri.getHost(), port,
+                        smbShareOf(uri.getPath()), smbFilePathOf(uri.getPath()),
+                        creds);
             } else {
                 originStream = openHttpStream(uri, originAuth);
             }
@@ -237,8 +251,9 @@ public class TranscodeController {
             throw new BizException(40001, "origin 非法 URL");
         }
         String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase();
-        if (!scheme.equals("http") && !scheme.equals("https") && !scheme.equals("sftp")) {
-            throw new BizException(40001, "origin 仅支持 http/https/sftp");
+        if (!scheme.equals("http") && !scheme.equals("https")
+                && !scheme.equals("sftp") && !scheme.equals("smb")) {
+            throw new BizException(40001, "origin 仅支持 http/https/sftp/smb");
         }
         if (uri.getHost() == null || uri.getHost().isEmpty()) {
             throw new BizException(40001, "origin 缺少主机");
@@ -256,10 +271,12 @@ public class TranscodeController {
     /** 强校验：origin 必须落在某个未删除**同类**源地址之下（含端口与路径前缀）。 */
     void checkAgainstSyncedSources(URI uri) {
         boolean wantSftp = "sftp".equalsIgnoreCase(uri.getScheme());
+        boolean wantSmb = "smb".equalsIgnoreCase(uri.getScheme());
         List<SyncSource> sources = syncSourceRepository.findAll();
         for (SyncSource s : sources) {
             if (s.isDeleted()) continue;
             if (wantSftp ? !"sftp".equalsIgnoreCase(s.getKind())
+                    : wantSmb ? !"smb".equalsIgnoreCase(s.getKind())
                     : !"webdav".equalsIgnoreCase(s.getKind())) continue;
             // 容忍历史/原始形态的无 scheme 地址（客户端会补 https 再请求）。
             String normalized = SourceAddresses.normalize(s.getKind(), s.getAddress());
@@ -294,12 +311,53 @@ public class TranscodeController {
         if (u.getPort() != -1) return u.getPort();
         if ("https".equalsIgnoreCase(u.getScheme())) return 443;
         if ("sftp".equalsIgnoreCase(u.getScheme())) return 22;
+        if ("smb".equalsIgnoreCase(u.getScheme())) return 445;
         return 80;
     }
 
     private static String normPath(String p) {
         if (p == null || p.isEmpty()) return "/";
         return p.endsWith("/") ? p : p + "/";
+    }
+
+    /**
+     * smb origin 路径（`/share/余下路径`，百分号编码已由 {@link URI#getPath}
+     * 解码）拆出共享名；缺共享段抛请求非法。
+     */
+    static String smbShareOf(String path) {
+        String[] segs = splitSmbPath(path);
+        if (segs.length == 0) {
+            throw new BizException(40001, "smb origin 缺少共享名");
+        }
+        return segs[0];
+    }
+
+    /**
+     * smb origin 路径拆出共享内文件路径（smbj 用反斜杠；文件名不可能含 `/`，
+     * 逐段转义安全）。仅共享根时抛请求非法（转码必须指向文件）。
+     */
+    static String smbFilePathOf(String path) {
+        String[] segs = splitSmbPath(path);
+        if (segs.length < 2) {
+            throw new BizException(40001, "smb origin 必须指向共享内文件");
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 1; i < segs.length; i++) {
+            if (i > 1) sb.append('\\');
+            sb.append(segs[i]);
+        }
+        return sb.toString();
+    }
+
+    private static String[] splitSmbPath(String path) {
+        if (path == null) return new String[0];
+        String[] raw = path.split("/");
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (String s : raw) {
+            if (s == null || s.isEmpty() || s.equals(".") || s.equals("..")) continue;
+            out.add(s);
+        }
+        return out.toArray(new String[0]);
     }
 
     /** 供测试：纯函数校验（不查库）。 */

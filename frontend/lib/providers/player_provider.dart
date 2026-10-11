@@ -41,7 +41,9 @@ bool shouldUseTranscode({
 }) =>
     enabled &&
     apiBaseUrl.isNotEmpty &&
-    (src.kind == SourceKind.webdav || src.kind == SourceKind.sftp) &&
+    (src.kind == SourceKind.webdav ||
+        src.kind == SourceKind.sftp ||
+        src.kind == SourceKind.smb) &&
     src.route == SourceRoute.proxy;
 
 /// 按播放时长判定完播/跳过（毫秒比值，临界严格按「大于 95% / 小于 30%」）。
@@ -1711,7 +1713,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     final direct = src.directStream(s);
     // 代理转码：开关开 + 后端可达 + 该源选了代理链路时优先走服务端；
-    // origin 与鉴权头由源自备（WebDAV https URL + Basic / SFTP sftp:// + 信封）。
+    // origin 与鉴权头由源自备（WebDAV https URL + Basic / SFTP sftp:// + 信封 /
+    // SMB smb:// + 信封）。
     // 缓存命中已在上方返回（缓存永远存原文件），转码失败静默回落直连。
     final proxyUrl = src.proxyOrigin(s);
     if (proxyUrl != null &&

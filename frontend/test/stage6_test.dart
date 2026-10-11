@@ -194,9 +194,11 @@ void main() {
   });
 
   group('阶段6 抽象与 URL', () {
-    test('SMB 骨架不支持写；转码 URL 构造含 origin、bitrate 与 loudnorm', () {
-      final smb = SmbDirectSource(name: 'n', host: 'h', share: 's');
+    test('SMB 只读（不支持写）；转码 URL 构造含 origin、bitrate 与 loudnorm', () {
+      final smb =
+          SmbDirectSource(name: 'n', host: 'h', share: 's', index: LocalIndex());
       expect(smb.supportsWrite, isFalse);
+      expect(smb.supportsDirect, isTrue);
       final api = ApiClient(
           dio: Dio(BaseOptions(baseUrl: 'https://h:18443')),
           storage: _FakeStorage());
@@ -258,7 +260,7 @@ void main() {
       expect(parseSourceRoute('weird'), SourceRoute.direct);
     });
 
-    test('shouldUseTranscode：仅 开关开+后端可达+webdav/sftp代理 才走转码', () {
+    test('shouldUseTranscode：仅 开关开+后端可达+webdav/sftp/smb代理 才走转码', () {
       final proxy = _FakeRouteSource(
           key: 'webdav:n', name: 'n', kind: SourceKind.webdav,
           route: SourceRoute.proxy);
@@ -281,7 +283,7 @@ void main() {
       expect(
           shouldUseTranscode(enabled: true, apiBaseUrl: '', src: proxy),
           isFalse);
-      // 非 webdav/sftp 即使标代理也不走（服务端强校验只认同类源）。
+      // 非 webdav/sftp/smb 即使标代理也不走（服务端强校验只认同类源）。
       final localProxy = _FakeRouteSource(
           key: 'local:n', name: 'n', kind: SourceKind.local,
           route: SourceRoute.proxy);
@@ -289,6 +291,14 @@ void main() {
           shouldUseTranscode(
               enabled: true, apiBaseUrl: 'https://h', src: localProxy),
           isFalse);
+      // smb 代理与 webdav/sftp 代理同权。
+      final smbProxy = _FakeRouteSource(
+          key: 'smb:n', name: 'n', kind: SourceKind.smb,
+          route: SourceRoute.proxy);
+      expect(
+          shouldUseTranscode(
+              enabled: true, apiBaseUrl: 'https://h', src: smbProxy),
+          isTrue);
       // sftp 代理与 webdav 代理同权。
       final sftpProxy = _FakeRouteSource(
           key: 'sftp:n', name: 'n', kind: SourceKind.sftp,

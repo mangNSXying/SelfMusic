@@ -7,6 +7,7 @@ import '../platform/harmonyos/secure_storage_ohos.dart'
 /// - WebDAV 密码：`webdav_pwd:<sourceKey>`（`sources.config` 不再含明文密码）
 /// - SFTP 密码 / 私钥文本 / 私钥 passphrase：`sftp_pwd:<sourceKey>` /
 ///   `sftp_key:<sourceKey>` / `sftp_keypp:<sourceKey>`（同上，永不同步）
+/// - SMB 密码：`smb_pwd:<sourceKey>`（同上，永不同步；用户名与密码双空即匿名）
 /// - 配对密钥：`pairing_key`（`server_settings.json` 不再含明文密钥，仅存非敏感 baseUrl）
 ///
 /// 构造可注入 [FlutterSecureStorage]，便于测试用 fake 替换；默认实例走
@@ -17,6 +18,7 @@ class SecretStore {
   static const String _sftpPwdPrefix = 'sftp_pwd:';
   static const String _sftpKeyPrefix = 'sftp_key:';
   static const String _sftpKeyPpPrefix = 'sftp_keypp:';
+  static const String _smbPwdPrefix = 'smb_pwd:';
 
   final FlutterSecureStorage storage;
 
@@ -103,6 +105,35 @@ class SecretStore {
     await storage.delete(key: _sftpKey(_sftpKeyPrefix, sourceKey));
     await storage.delete(key: _sftpKey(_sftpKeyPpPrefix, sourceKey));
   }
+
+  String _smbKey(String sourceKey) => '$_smbPwdPrefix$sourceKey';
+
+  /// SMB 密码；空串/不含内容即删除该键（匿名源不存）。
+  Future<String?> smbPassword(String sourceKey) =>
+      storage.read(key: _smbKey(sourceKey));
+
+  Future<void> setSmbPassword(String sourceKey, String? password) async {
+    final key = _smbKey(sourceKey);
+    final v = (password ?? '').trim();
+    if (v.isEmpty) {
+      await storage.delete(key: key);
+    } else {
+      await storage.write(key: key, value: v);
+    }
+  }
+
+  /// 源改名（key 变化）时迁移 SMB 密码键，并清理旧键。
+  Future<void> migrateSmb(String oldKey, String newKey) async {
+    if (oldKey == newKey) return;
+    final v = await smbPassword(oldKey);
+    if (v != null && v.isNotEmpty) {
+      await storage.write(key: _smbKey(newKey), value: v);
+    }
+    await storage.delete(key: _smbKey(oldKey));
+  }
+
+  Future<void> deleteSmb(String sourceKey) =>
+      storage.delete(key: _smbKey(sourceKey));
 
   Future<String?> pairingKey() => storage.read(key: pairingKeyId);
 

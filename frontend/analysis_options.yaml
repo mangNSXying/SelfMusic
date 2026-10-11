@@ -7,6 +7,9 @@ analyzer:
     - windows/**
     - macos/**
     - linux/**
+    # smb_connect vendored 上游冻结代码（690+ 条 info 风格债，不归我们改）：
+    # 错误仍由构建/测试期编译兜底，见 third_party/smb_connect/PATCHES.md。
+    - third_party/smb_connect/**
 include: package:flutter_lints/flutter.yaml
 
 linter:

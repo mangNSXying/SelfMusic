@@ -227,11 +227,11 @@ abstract class MusicSource {
 
   /// 代理转码 origin（无 userinfo；凭据走 [proxyAuthHeaders]）。
   /// WebDAV 返回可请求的 https URL；SFTP 返回 `sftp://host:port/…`；
-  /// 其余返回 null（不走代理）。
+  /// SMB 返回 `smb://host/share/…`；其余返回 null（不走代理）。
   String? proxyOrigin(Song song) => null;
 
   /// 代理鉴权头：WebDAV 为 `X-Origin-Auth: Basic …`，SFTP 为 `X-Origin-Ssh`
-  /// 信封；默认空（不走代理的源）。
+  /// 信封，SMB 为 `X-Origin-Smb` 信封；默认空（不走代理的源）。
   Future<Map<String, String>> proxyAuthHeaders(Song song) async => const {};
 
   /// 预热：确认该曲可取（连通 / 鉴权 / 可达），不产生任何播放副作用。
@@ -264,7 +264,7 @@ abstract class MusicSource {
   Future<void> cacheSong(Song song, {bool Function()? shouldAbort}) async =>
       throw UnimplementedError('$key 不支持直连缓存');
 
-  // ---------- 直写管理（阶段6，WebDAV/本地直写；SMB 仍骨架） ----------
+  // ---------- 直写管理（阶段6，WebDAV/本地直写；SFTP/SMB v1 只读） ----------
 
   /// 是否支持直写管理（上传/删除/新建文件夹）。默认不支持。
   bool get supportsWrite => false;
