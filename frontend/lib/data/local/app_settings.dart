@@ -137,6 +137,10 @@ class AppSettings {
   /// 播放页切换过渡动画（settings.md §3.7 界面）：none / fade / slide / scale。
   static const String kPlayerTransition = 'player_transition';
 
+  /// 压缩图像画质（设置 → 界面）：开=列表/卡片用 768 长边 JPEG82 缩略图；
+  /// 关（默认）=直接显示封面原图，画质无损。播放页恒用原图，不受此开关影响。
+  static const String kCoverThumbCompress = 'cover_thumb_compress';
+
   /// 歌曲标题显示格式（settings.md §3.4 歌曲）：默认 song.artist - song.title。
   static const String kSongTitleFormat = 'song_title_format';
 
@@ -522,6 +526,13 @@ class AppSettings {
 
   // ---------- 界面分区（settings.md §3.7） ----------
 
+  /// 压缩图像画质（默认关）：开时列表/卡片/迷你条用缩略图（省解码），
+  /// 关时一律显示封面原图。
+  bool get compressCoverImage =>
+      (index.settingsGet(kCoverThumbCompress) ?? '0') == '1';
+  set compressCoverImage(bool v) =>
+      index.settingsSet(kCoverThumbCompress, v ? '1' : '0');
+
   /// 播放页（播放/歌词）切换过渡动画（默认淡入）。
   PlayerTransition get playerTransition =>
       PlayerTransition.parse(index.settingsGet(kPlayerTransition));
@@ -660,6 +671,7 @@ class AppSettings {
     kPauseOnZeroVolume,
     kPauseOnDeviceDisconnect,
     kPlayerTransition,
+    kCoverThumbCompress,
     kSongTitleFormat,
     kViewModePlaylists,
     kViewModeSources,

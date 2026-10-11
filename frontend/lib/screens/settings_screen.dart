@@ -19,6 +19,7 @@ import '../services/server_settings.dart';
 import '../services/sync_engine.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_provider.dart';
+import '../utils/cover_thumb.dart';
 import '../widgets/app_toast.dart';
 import 'devices_screen.dart';
 import 'pairing_screen.dart';
@@ -770,6 +771,7 @@ class _AppearanceSettings extends StatefulWidget {
 class _AppearanceSettingsState extends State<_AppearanceSettings> {
   late PlayerTransition _transition;
   late AppSettings _settings;
+  bool _clearingThumbs = false;
 
   @override
   void didChangeDependencies() {
@@ -923,6 +925,36 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
             onTap: () => _pickPlayerAutoHide(context),
           ),
           const Divider(),
+          const SizedBox(height: 8),
+
+          // 封面画质：压缩开关 + 手动清理（默认关=原图优先）。
+          Text('封面画质', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('压缩图像画质'),
+            subtitle: const Text('开：列表/卡片用 768 长边 JPEG 缩略图，滑动更省；关：直接显示封面原图，画质无损（播放页恒用原图）'),
+            value: _settings.compressCoverImage,
+            onChanged: (v) async {
+              setState(() => _settings.compressCoverImage = v);
+              await context.read<DirectSourceManager>().applyCoverThumbSetting();
+              if (context.mounted) setState(() {});
+            },
+          ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.cleaning_services_outlined),
+            title: const Text('清理缩略图缓存'),
+            subtitle: const Text('删除已生成的缩略图文件（*.thumb.jpg），显示即回原图；开关关闭时也可清理省磁盘'),
+            trailing: _clearingThumbs
+                ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.chevron_right),
+            onTap: _clearingThumbs ? null : () => _clearCoverThumbs(context),
+          ),
+          const Divider(),
           const SizedBox(height: 12),
 
           Align(
@@ -1047,6 +1079,38 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
     if (chosen == null || !context.mounted) return;
     setState(() => _settings.playerAutoHideIdleSec = chosen);
     context.read<DirectSourceManager>().refresh();
+  }
+
+  /// 清理缩略图缓存：二次确认后删 `*.thumb.jpg`（开关状态不变）。
+  Future<void> _clearCoverThumbs(BuildContext context) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('清理缩略图缓存？'),
+        content: const Text('将删除已生成的封面缩略图文件，列表即回原图显示。\n'
+            '压缩开关保持不变：开时后续滚动会重新生成，关时不再生成。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(c).pop(false), child: const Text('取消')),
+          TextButton(onPressed: () => Navigator.of(c).pop(true), child: const Text('清理')),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    setState(() => _clearingThumbs = true);
+    try {
+      final mgr = context.read<DirectSourceManager>();
+      final removed = await clearCoverThumbFiles(mgr.index.allCoverPaths());
+      if (!context.mounted) return;
+      setState(() => _clearingThumbs = false);
+      mgr.refresh();
+      AppToast.show(
+          removed == 0 ? '没有可清理的缩略图' : '已清理 $removed 张缩略图',
+          isError: false);
+    } catch (e) {
+      if (!context.mounted) return;
+      setState(() => _clearingThumbs = false);
+      AppToast.error(e, '清理缩略图失败');
+    }
   }
 
   String _rgb(Color c) =>

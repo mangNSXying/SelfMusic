@@ -9,6 +9,14 @@ import 'package:selfmusic/utils/cover_thumb.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  // 历史用例默认开压缩（新开关默认关，原图优先）：逐用例开启、结束复位，
+  // 同时清显示缓存防串扰；关闭行为由文末新增分组单独覆盖。
+  setUp(() => setCoverThumbCompressionEnabled(true));
+  tearDown(() {
+    setCoverThumbCompressionEnabled(false);
+    forceNativeThumbInTests = false;
+  });
+
   test('缩略图落盘：大图缩到 768 长边并进入展示路径', () async {
     final dir = await Directory.systemTemp.createTemp('selfmusic_thumb_');
     addTearDown(() => dir.deleteSync(recursive: true));
@@ -214,6 +222,56 @@ void main() {
       await ensureCoverThumb(cover.path);
       expect(calls, hasLength(2));
       expect(coverDisplayPath(cover.path), coverThumbPathFor(cover.path));
+    });
+  });
+
+  group('压缩开关关闭（默认，原图优先）', () {
+    setUp(() => setCoverThumbCompressionEnabled(false));
+
+    test('ensure 不生成缩略图、展示恒返原图', () async {
+      final dir = await Directory.systemTemp.createTemp('selfmusic_thumb_off_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final cover = File('${dir.path}/abc.jpg');
+      final big = img.Image(width: 1600, height: 800);
+      img.fill(big, color: img.ColorRgb8(30, 120, 200));
+      cover.writeAsBytesSync(img.encodeJpg(big, quality: 90));
+
+      await ensureCoverThumb(cover.path);
+
+      expect(File(coverThumbPathFor(cover.path)).existsSync(), isFalse);
+      expect(coverDisplayPath(cover.path), cover.path);
+    });
+
+    test('已有缩略图文件时仍显示原图（仅忽略，不删除）', () async {
+      final dir =
+          await Directory.systemTemp.createTemp('selfmusic_thumb_off_exist_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final cover = File('${dir.path}/abc.jpg')
+        ..writeAsBytesSync([1, 2, 3, 4]);
+      final thumb = File(coverThumbPathFor(cover.path))
+        ..writeAsBytesSync([9, 9, 9]);
+
+      // 关：即使磁盘有 thumb 也回原图，且不删文件。
+      expect(coverDisplayPath(cover.path), cover.path);
+      expect(thumb.existsSync(), isTrue);
+
+      // 开：同路径切到缩略图（切开关时缓存已失效重判）。
+      setCoverThumbCompressionEnabled(true);
+      expect(coverDisplayPath(cover.path), thumb.path);
+    });
+
+    test('clearCoverThumbFiles：删盘上 thumb 并返回张数（去重+缺失容忍）', () async {
+      final dir =
+          await Directory.systemTemp.createTemp('selfmusic_thumb_clear_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final a = File('${dir.path}/a.jpg')..writeAsBytesSync([1]);
+      final b = File('${dir.path}/b.jpg')..writeAsBytesSync([2]);
+      File(coverThumbPathFor(a.path)).writeAsBytesSync([9]);
+      // b 故意不建 thumb；covers 含重复与缺失路径。
+      final removed = await clearCoverThumbFiles(
+          [a.path, b.path, a.path, '${dir.path}/missing.jpg']);
+      expect(removed, 1);
+      expect(File(coverThumbPathFor(a.path)).existsSync(), isFalse);
     });
   });
 }

@@ -23,6 +23,22 @@ import 'thumb_gen_stats.dart';
 const int kCoverThumbMaxEdge = 768;
 const int kCoverThumbQuality = 82;
 
+/// 压缩图像画质总开关（设置 → 界面，对应 `AppSettings.kCoverThumbCompress`）。
+///
+/// 开=true：列表/卡片走 768 长边 JPEG82 缩略图（省解码，默认行为的历史形态）；
+/// 关=false（默认，原图优先）：显示与生成一律走封面原图，画质无损。
+/// cover_thumb.dart 不直接依赖 AppSettings（避免循环依赖 LocalIndex），
+/// 由 DirectSourceManager 启动时与设置页切换时经 [setCoverThumbCompressionEnabled]
+/// 同步；单元测试按需置位。
+bool coverThumbCompressionEnabled = false;
+
+/// 同步压缩开关并失效显示缓存（开/关都要清，下次按新开关重判）。
+/// 只清内存映射，不删磁盘 `*.thumb.jpg`（删文件走 [clearCoverThumbFiles]）。
+void setCoverThumbCompressionEnabled(bool v) {
+  coverThumbCompressionEnabled = v;
+  _displayPathCache.clear();
+}
+
 /// 测试中强制走原生桥分支（默认测试环境走纯 Dart 路径）：
 /// 宿主（Windows 等）的 `Platform.operatingSystem` 恒非 'ohos'，
 /// flutter_test 无法覆盖原生分支——置 true 时无视平台判定强制走桥，
@@ -47,10 +63,12 @@ final Set<String> _thumbReady = {};
 /// 正在生成的缩略图（去重并发生成同一首）。
 final Set<String> _thumbInflight = {};
 
-/// 列表/卡片应显示的封面路径：缩略图已生成/已存在时用它，否则退回原图。
-///
-/// 每条原图路径只做一次文件存在性检查（结果进内存缓存）。
+/// 列表/卡片应显示的封面路径：压缩开且缩略图已生成/已存在时用它，否则退回原图。
+ ///
+ /// 每条原图路径只做一次文件存在性检查（结果进内存缓存）。
+ /// 开关关闭时恒返原图（不读缓存、不查盘）。
 String coverDisplayPath(String coverPath) {
+  if (!coverThumbCompressionEnabled) return coverPath;
   final cached = _displayPathCache[coverPath];
   if (cached != null) return cached;
   final thumb = coverThumbPathFor(coverPath);
@@ -70,7 +88,11 @@ String coverDisplayPath(String coverPath) {
 ///
 /// **失败零回退**：桥失败绝不回退内联 Dart 编码（那会把卡顿源请回来）；
 /// 生成回合计入 [ThumbGenStats] 埋点（可关闭）。
+///
+/// 开关关闭时直接返回（不生成、不写盘、不改缓存）：补读与回填共用此闸，
+/// 调用方无需各自判开关。
 Future<void> ensureCoverThumb(String coverPath) async {
+  if (!coverThumbCompressionEnabled) return;
   final thumb = coverThumbPathFor(coverPath);
   if (_thumbReady.contains(thumb) || File(thumb).existsSync()) {
     _thumbReady.add(thumb);
@@ -138,6 +160,31 @@ void deleteCoverThumb(String coverPath) {
   } catch (_) {
     // 删不掉就留着，下次覆盖写。
   }
+}
+
+/// 手动清理已生成的缩略图（设置 → 界面「清理缩略图缓存」按钮用）。
+///
+/// 逐张删 `<md5>.thumb.jpg` 并失效对应内存缓存（显示即回原图）；
+/// 开关状态不变（仅清磁盘产物）。返回实际删除的张数，失败单张忽略。
+Future<int> clearCoverThumbFiles(List<String> covers) async {
+  var removed = 0;
+  final seen = <String>{};
+  for (final cover in covers) {
+    if (!seen.add(cover)) continue;
+    final thumb = coverThumbPathFor(cover);
+    _thumbReady.remove(thumb);
+    _displayPathCache.remove(cover);
+    try {
+      final f = File(thumb);
+      if (f.existsSync()) {
+        f.deleteSync();
+        removed++;
+      }
+    } catch (_) {
+      // 单张删不掉不影响其余。
+    }
+  }
+  return removed;
 }
 
 /// 解码 + 缩放 + 重编码为缩略图 JPEG（纯 Dart，供 [runOffThread] 调用）。

@@ -514,6 +514,8 @@ class DirectSourceManager extends ChangeNotifier {
     await index.open();
     perfLog('boot.directInit indexOpen done');
     settings = AppSettings(index);
+    // 压缩图像画质开关（默认关）：同步给 cover_thumb 全局闸（显示+生成共用）。
+    setCoverThumbCompressionEnabled(settings.compressCoverImage);
     cache = CacheManager(index, settings);
     weight = SongWeightStore(index,
         serverAvailable: () => isServerAvailable);
@@ -571,9 +573,12 @@ class DirectSourceManager extends ChangeNotifier {
       }
       // 存量封面补齐缩略图（老版本只存了全尺寸原图）：一次性后台补齐，
       // 新增封面在补读持久化时即时生成（meta_enrich），无需再扫。
+      // 开关关闭时跳过且不标记：日后打开仍会补齐（打开时见 applyCoverThumbSetting）。
       if (!settings.coverThumbsV1Done) {
-        await _backfillCoverThumbs();
-        settings.coverThumbsV1Done = true;
+        if (settings.compressCoverImage) {
+          await _backfillCoverThumbs();
+          settings.coverThumbsV1Done = true;
+        }
       }
     } catch (e) {
       debugPrint('[direct] 一次性回填失败（忽略）：$e');
@@ -583,7 +588,9 @@ class DirectSourceManager extends ChangeNotifier {
   /// 为存量封面生成列表用缩略图（滑动性能）：线程下沉后放宽逐张固定间隔，
   /// 改为**有界并发 + 批驱动**（[runThumbBackfill]），交互期错峰让位、结束时续跑；
   /// 失败忽略（展示自动退回原图）。新补读的封面在 [ensureCoverThumb] 即时生成。
+  /// 开关关闭时直接返回（[ensureCoverThumb] 本身也有闸，此处避免空跑一批）。
   Future<void> _backfillCoverThumbs() async {
+    if (!settings.compressCoverImage) return;
     try {
       ThumbGenStats.startBatch();
       final made = await runThumbBackfill(
@@ -602,6 +609,19 @@ class DirectSourceManager extends ChangeNotifier {
       if (made > 0) debugPrint('[direct] 封面缩略图回填 $made 张');
     } catch (e) {
       debugPrint('[direct] 封面缩略图回填失败（忽略）：$e');
+    }
+  }
+
+  /// 设置页切换「压缩图像画质」后调用：同步全局开关并刷新列表；
+  /// 由关→开且存量未补齐时，后台补触发一次回填（关→开不删文件，开→关不删文件）。
+  Future<void> applyCoverThumbSetting() async {
+    setCoverThumbCompressionEnabled(settings.compressCoverImage);
+    notifyListeners();
+    if (settings.compressCoverImage && !settings.coverThumbsV1Done) {
+      await _backfillCoverThumbs();
+      // 回填成功与否都标记，避免每次切换重复全扫；
+      // 新封面后续由补读即时生成。
+      settings.coverThumbsV1Done = true;
     }
   }
 
