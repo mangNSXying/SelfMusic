@@ -135,6 +135,8 @@ class _SourceDialogState extends State<_SourceDialog> {
   SftpAuthMethod _authMethod = SftpAuthMethod.password;
   String? _error;
   bool _testing = false;
+  // 已导入的密钥文件名（仅展示用；密钥文本本身存在 _keyPem）。
+  String? _keyFileName;
 
   bool get _isEdit => widget.editKey != null;
 
@@ -242,10 +244,39 @@ class _SourceDialogState extends State<_SourceDialog> {
     return (host: host, port: port, username: username);
   }
 
+  /// SFTP 导入密钥文件：读文本 → 校验 PEM 标记 → 填入表单（存入 SecretStore
+  /// 在保存时）。文件过大或读取失败置 [_error]。
+  Future<void> _importKeyFile() async {
+    try {
+      final picked = await openFile();
+      if (picked == null) return;
+      final text = await picked.readAsString();
+      if (!text.contains('PRIVATE KEY')) {
+        if (!mounted) return;
+        setState(() => _error = '不是有效的私钥文件（需含 PRIVATE KEY 的 PEM 文本）');
+        return;
+      }
+      if (text.length > 65536) {
+        if (!mounted) return;
+        setState(() => _error = '密钥文件过大（>64KB），请确认选对了文件');
+        return;
+      }
+      if (!mounted) return;
+      setState(() {
+        _keyPem.text = text.trim();
+        _keyFileName = picked.name;
+        _error = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = '读取密钥文件失败：${e.toString().replaceFirst(
+            RegExp(r'^(Bad state: |StateError: )'), '')}');
+    }
+  }
+
   /// SFTP 测试连接 + TOFU：取指纹 → 未知则弹窗确认后钉住；失配则展示新旧
   /// 指纹并可更新；匹配直接提示成功。不保存源（保存走 [_submit]）。
-  Future<void> _testSftpConnection() async {
-    final form = _readSftpForm();
+  Future<void> _testSftpConnection() async {    final form = _readSftpForm();
     if (form == null || !mounted) return;
     final direct = context.read<DirectSourceManager>();
     setState(() {
@@ -619,13 +650,35 @@ class _SourceDialogState extends State<_SourceDialog> {
                   decoration: const InputDecoration(labelText: '密码'),
                 )
               else ...[
-                TextField(
-                  controller: _keyPem,
-                  minLines: 3,
-                  maxLines: 6,
-                  decoration: const InputDecoration(
-                    labelText: '私钥文本（PEM，含 BEGIN/END 行）',
-                    hintText: '-----BEGIN OPENSSH PRIVATE KEY-----',
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _importKeyFile,
+                        icon: const Icon(Icons.key_outlined, size: 18),
+                        label: const Text('导入密钥文件'),
+                      ),
+                    ),
+                    if (_keyPem.text.isNotEmpty)
+                      IconButton(
+                        icon: const Icon(Icons.clear),
+                        tooltip: '清除已导入密钥',
+                        onPressed: () => setState(() {
+                          _keyPem.clear();
+                          _keyFileName = null;
+                        }),
+                      ),
+                  ],
+                ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    _keyPem.text.isEmpty
+                        ? '未导入（支持 OpenSSH / PKCS8 私钥）'
+                        : _keyFileName != null
+                            ? '已导入 $_keyFileName（${_keyPem.text.length} 字符）'
+                            : '已保存密钥（${_keyPem.text.length} 字符）',
+                    style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
                 TextField(

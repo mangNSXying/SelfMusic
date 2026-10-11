@@ -493,7 +493,7 @@ abstract class MusicSource {
 - `SourceBrowseView`：顶部返回按钮调用 `exitSource()`、显示源名、扫描/刷新按钮、搜索框、歌曲计数；扫描完成后自动调用 `LibraryProvider.loadSongs()` 刷新全局合并库
 - 源列表页（`SourcesScreen`）支持**列表 / 卡片**两种展示（右上角切换，持久化 `view_mode_sources`，见 [settings.md](settings.md)）；列表行复用卡片组件（`plain` 参数）
 - 源卡片右侧 `PopupMenuButton` 三点菜单：编辑、删除源（二次确认弹窗）
-- 新增/编辑源弹窗统一为 `_SourceDialog`：添加态用 `SegmentedButton` 选 WebDAV/本地文件夹/SFTP（本地态提供「选择目录」走 `file_selector.getDirectoryPath`；SFTP 态字段为 host/port/user/认证方式（密码/密钥）/密码或密钥文本/passphrase/根路径，见 §6.10）；编辑态按 key 从 `LocalIndex` 原始配置预填（密码与私钥文本从 SecretStore 回填），改名会派生新 key 并同步迁移 `sources/idx_songs/play_meta/playlist_items`（`LocalIndex.renameSource`）
+- 新增/编辑源弹窗统一为 `_SourceDialog`：添加态用 `SegmentedButton` 选 WebDAV/本地文件夹/SFTP（本地态提供「选择目录」走 `file_selector.getDirectoryPath`；SFTP 态字段为 host/port/user/认证方式（密码/密钥）/密码或导入密钥/passphrase/根路径，见 §6.10）；编辑态按 key 从 `LocalIndex` 原始配置预填（密码与已导入密钥从 SecretStore 回填），改名会派生新 key 并同步迁移 `sources/idx_songs/play_meta/playlist_items`（`LocalIndex.renameSource`）
 - 全局歌曲/专辑/歌手合并：`LibraryProvider.loadSongs()` 聚合 `DirectSourceManager.allSongs()`；专辑和歌手按合并后的歌曲列表客户端聚合（`Album.fromSongs` / `Artist.fromSongs`），切换到对应栏目时自动拉取
 - **列表排序**（`utils/collection_sort.dart` + `widgets/sort_menu_button.dart`）：按 `SortScope` 开放字段——
   歌曲类内容页（喜欢 / 歌曲 / 歌单详情）为 默认排序 / 字符 / 权重 / 播放时长 / 播放次数 / 时长，
@@ -599,7 +599,7 @@ abstract class MusicSource {
 
 - **选型**：客户端 `dartssh2`（^4.1.0，pin 大版本；纯 Dart，SFTPv3 全操作：list/read/write/remove/mkdir/rename）；服务端 `com.hierynomus:sshj`（0.41.x，Apache 2.0，仅代理回源取流用，见 §4.6/§5.2）
 - **连接**：每源复用一个 SSH 会话（`SSHClient` + keepalive；Doze/后台策略复用 WebDAV 探活思路）；SFTP 子系统按操作获取，失败重连（指数退避，上限 30s，与同步退避同口径）
-- **认证（v1 含密钥）**：密码 **或** 私钥二选一。私钥为粘贴的 PEM 文本（OpenSSH / PKCS8，含 ed25519/RSA/ECDSA；加密私钥另填 passphrase），经 `dartssh2` 解析；密码存 `SecretStore` 键 `sftp_pwd:<sourceKey>`，私钥文本存 `sftp_key:<sourceKey>`，passphrase 存 `sftp_keypp:<sourceKey>`——三者均只存引用键于 SQLite，**永不同步到服务端**（与 WebDAV 密码同纪律，见 §7.2）
+- **认证（v1 含密钥）**：密码 **或** 私钥二选一。私钥为导入的密钥文件内容（OpenSSH / PKCS8，含 ed25519/RSA/ECDSA；加密私钥另填 passphrase；文件过大/非 PEM 拒绝落表单），经 `dartssh2` 解析；密码存 `SecretStore` 键 `sftp_pwd:<sourceKey>`，私钥文本存 `sftp_key:<sourceKey>`，passphrase 存 `sftp_keypp:<sourceKey>`——三者均只存引用键于 SQLite，**永不同步到服务端**（与 WebDAV 密码同纪律，见 §7.2）
 - **主机密钥（TOFU）**：首次连接弹窗展示 `SHA256:` 指纹，用户确认后落 `ssh_known_hosts`（§3.2）；指纹变更一律拒绝并告警（需用户删钉后重认）；该表**不参与跨设备同步**（各设备各自 TOFU）
 - **扫描**：`readdir` 递归枚举（ref/size/mtime，无 etag）；落库、增量、20k 上限、missing 语义全复用 §6.4
 - **播放**：`directStream()` 恒 null（just_audio 播不了 `sftp://`）→ `open()` 按 `IntRange` 偏移读喂 `DirectAudioSource`（seek/断点天然精确）；`probe()` 为小偏移试读；缓存走整曲下载（与 WebDAV 同）
