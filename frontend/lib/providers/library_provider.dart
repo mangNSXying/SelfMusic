@@ -12,6 +12,7 @@ import '../models/album.dart';
 import '../models/artist.dart';
 import '../services/artist_resolver.dart';
 import '../utils/off_thread.dart';
+import '../utils/perf_log.dart';
 import 'direct_source_manager.dart';
 
 /// 全局图库数据源：合并所有直连源的歌曲，并在客户端按 专辑/歌手 分组聚合，
@@ -113,12 +114,17 @@ class LibraryProvider extends ChangeNotifier {
       try {
         final m = _directManager;
         if (m == null) return;
+        // 诊断埋点（E）：后台快照 vs 主线程通知拆分，定位同步后整表重建掉帧。
+        final swBg = Stopwatch()..start();
         final snap = await m.librarySnapshotInBackground(query: _lastQuery);
+        final bgMs = swBg.elapsedMilliseconds;
         if (token != _snapshotToken) return; // 更新的全量刷新已接管
         songs = snap.songs;
         albums = snap.albums;
         artists = snap.artists;
         notifyListeners();
+        perfLog('library.refreshDirect',
+            'bg=${bgMs}ms n=${snap.songs.length}');
       } finally {
         _refreshInflight = false;
         if (_refreshDirty) {

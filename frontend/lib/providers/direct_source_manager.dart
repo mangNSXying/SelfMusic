@@ -24,6 +24,7 @@ import '../services/api_client.dart';
 import '../services/artist_resolver.dart';
 import '../services/secret_store.dart';
 import '../utils/cover_thumb.dart';
+import '../utils/perf_log.dart';
 import '../utils/interaction_gate.dart';
 import '../utils/thumb_gen_stats.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
@@ -509,7 +510,9 @@ class DirectSourceManager extends ChangeNotifier {
   }
 
   Future<void> init() async {
+    perfLog('boot.directInit indexOpen before');
     await index.open();
+    perfLog('boot.directInit indexOpen done');
     settings = AppSettings(index);
     cache = CacheManager(index, settings);
     weight = SongWeightStore(index,
@@ -517,13 +520,16 @@ class DirectSourceManager extends ChangeNotifier {
     playlists = PlaylistStore(index,
         serverAvailable: () => isServerAvailable);
     final rows = index.listSources();
+    perfLog('boot.directInit listSources done', 'rows=${rows.length}');
     for (final r in rows) {
       if (!r.enabled) continue;
       final src = await _buildRowFromRow(r);
       if (src != null) _sources.add(src);
     }
+    perfLog('boot.directInit buildRows done', 'sources=${_sources.length}');
     _ready = true;
     restartAutoScan();
+    perfLog('boot.directInit restartAutoScan done');
     notifyListeners();
     // 一次性回填与封面清理不阻塞启动链：首启可能重置大量行（旧解析缺陷兜底），
     // 原先是 await 在 main() 的 init 链上。重置只改 meta_read 标记，随后播放/

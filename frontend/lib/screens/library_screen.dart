@@ -14,6 +14,7 @@ import '../models/artist.dart';
 import '../services/artist_resolver.dart';
 import '../theme/app_theme.dart';
 import '../utils/collection_sort.dart';
+import '../utils/perf_log.dart';
 import '../utils/interaction_gate.dart';
 import '../utils/motion.dart';
 import '../utils/song_search.dart';
@@ -42,8 +43,15 @@ import 'playlists_view.dart';
 class AppContent extends StatelessWidget {
   const AppContent({super.key});
 
+  /// 冷启动首帧定位：只记第一次 build（后续路由切换不再刷屏）。
+  static bool _bootLogged = false;
+
   @override
   Widget build(BuildContext context) {
+    if (!_bootLogged) {
+      _bootLogged = true;
+      perfLog('boot.firstBuild AppContent');
+    }
     // 订阅收窄（T008）：内容路由只订阅"路由键"（section + 设置分区 + 源内 key +
     // 歌单详情 id），一次 record select 覆盖全部路由依赖；搜索/队列/播放页等
     // 变更不再牵连内容路由重建。areaKey/areaLevel/slideOffset 由上述字段派生，
