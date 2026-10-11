@@ -47,7 +47,10 @@ const int kImageCacheMaxBytes = 512 << 20;
 const int kImageCacheMaxCount = 4096;
 
 Future<void> main() async {
+  // 冷启动定位：首个 perf 点同时是相对时间零点（见 perf_log），必须在最前。
+  perfLog('boot.entry');
   WidgetsFlutterBinding.ensureInitialized();
+  perfLog('boot.ensureInitialized');
   // 图片解码缓存扩容：默认 100MB/1000 张。播放页用的是全尺寸封面（单张解码
   // 内存可达十余 MB），连播几十首就会把列表缩略图全部挤出缓存，此后每次切页
   // 都要重新解码 → 长会话「越用越卡」。512MB 是上限而非预分配，LRU 照常淘汰；
@@ -57,25 +60,35 @@ Future<void> main() async {
   // 鸿蒙引导（sqlite3 系统库 / secure storage 文件实现 / just_audio→fvp 适配）：
   // 必须先于任何存储访问与播放器创建；其它平台内部直接返回。
   await setupOhos();
+  perfLog('boot.setupOhos done');
   // 桌面端（Windows/Linux）音频后端统一 media_kit（底层 libmpv）：默认参数即
   // Windows/Linux 启用、Android 关闭（Android 继续走 ExoPlayer），无需平台判断。
   // ohos 上其内部 UniversalPlatform 判断为 no-op，由上面的 FvpJustAudio 接管。
   JustAudioMediaKit.ensureInitialized();
+  perfLog('boot.mediaKit done');
   // 系统音量混合器 / 进程列表里显示的名字（默认 'JustAudioMediaKit'）。
   JustAudioMediaKit.title = 'SelfMusic';
   // 先加载「服务端」设置（后端地址）与本地索引（含直连源配置恢复），
   // 避免 UI 首次访问时的初始化竞态。
-  final serverSettings = ServerSettings();
-  await serverSettings.load();
-  debugPrint('[boot] 服务端设置加载完成');
-
+  //
+  // 安全存储顶格预热（B）：首个 EncryptedSharedPreferences 读含通道预热
+  // （实测首读 1~1.7s）。`loadFast` 已不碰安全存储，此处预热与后续
+  // `direct.init()`（源密码读）/ 首帧后 `loadSlowSecrets` 重叠；
+  // `_readToken` 自带单飞去重，AuthProvider / SyncEngine 后续读命中缓存。
   final api = ApiClient();
+  unawaited(api.getClientId());
+  unawaited(api.getAccessToken());
+  final serverSettings = ServerSettings();
+  await serverSettings.loadFast();
+  perfLog('boot.serverSettings fast done');
   if (serverSettings.baseUrl.isNotEmpty) {
     api.setBaseUrl(serverSettings.baseUrl);
   }
+  debugPrint('[boot] 服务端设置加载完成');
 
   final direct = DirectSourceManager();
   await direct.init();
+  perfLog('boot.directInit done');
   debugPrint('[boot] 直连源管理器就绪');
   // 源补推（attachApi 内部 _bootstrapSourceSync）不参与首帧：见文末首帧后启动块。
   // 信任自签名证书开关（settings.md §3.3）：按 AppSettings 配置 dio 一次。
@@ -111,6 +124,7 @@ Future<void> main() async {
     try {
       audioHandler =
           SelfMusicAudioHandler(showControls: direct.settings.notificationControls);
+      perfLog('boot.audioService before');
       await AudioService.init(
         builder: () => audioHandler!,
         config: const AudioServiceConfig(
@@ -131,8 +145,10 @@ Future<void> main() async {
       );
       // 开关按设置页既定语义「重启生效」（见 settings_screen 的提示文案），
       // 不做运行时热切——按钮的增删还要走 MediaSession 通知重建，重启更稳。
+      perfLog('boot.audioService done');
     } catch (e) {
       audioHandler = null;
+      perfLog('boot.audioService failed');
       debugPrint('audio_service 初始化失败，通知栏控制降级关闭：$e');
     }
     // Android 13+（API 33）不授予 POST_NOTIFICATIONS 就不显示任何通知，
@@ -173,6 +189,7 @@ Future<void> main() async {
   WidgetsBinding.instance.addObserver(_SyncLifecycleObserver(sync));
 
   debugPrint('[boot] 进入 runApp');
+  perfLog('boot.preRunApp');
   // 交互门控（R-2）：聚合滚动/过渡/浮层/队列状态，交互期合帧投递数据通知；
   // 在 runApp 前创建并注入 DirectSourceManager，保证后续所有通知都经门控。
   final interactionGate = InteractionGate();
@@ -186,6 +203,7 @@ Future<void> main() async {
       artistResolver: artistResolver,
       sync: sync,
       interactionGate: interactionGate));
+  perfLog('boot.runApp dispatched');
   // 首帧轻量化：源补推 / 歌手解析 / 同步引擎都不参与首帧渲染，统一推迟到
   // 首帧渲染完成后启动——此前它们在 runApp 前就发起网络请求与同步 DB 读，
   // 与首帧渲染抢事件循环（启动期掉帧的根因之一）。Root 只 `awaitFirstPull`
@@ -195,6 +213,11 @@ Future<void> main() async {
     direct.attachApi(api); // 内部补发存量 source.create（有服务器才发）
     artistResolver.start();
     sync.start();
+    // 服务端设置慢阶段（A）：配对密钥安全存储读 + 明文迁移。此时插件已预热，
+    // 且首帧已出，不再阻塞启动链；配对页/设置页是深层页，读不到密钥不受影响。
+    unawaited(serverSettings
+        .loadSlowSecrets()
+        .then((_) => perfLog('boot.serverSettings slow done')));
     perfLog('boot.postFrame done');
   });
   // main() 全链（含所有 await）走完的最终信号：ArkTS 启动看门狗据此解除
@@ -265,7 +288,8 @@ class SelfMusicApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-final auth = AuthProvider(api);
+    perfLog('boot.firstBuild SelfMusicApp');
+    final auth = AuthProvider(api);
   // 播放流式取 token 依赖 Auth（懒读）。
   final lib = LibraryProvider()
     ..attachDirectManager(direct)
@@ -370,6 +394,7 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
+    perfLog('boot.firstBuild Root.initState');
     _nav = context.read<NavigationProvider>();
     _syncEngine = context.read<SyncEngine>();
     // 同步拉到歌单后刷新 Provider 缓存：落库直写 SQLite，
