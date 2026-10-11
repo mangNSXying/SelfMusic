@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
+import '../utils/main_thread_probe.dart';
 
 /// 按 MBID 取到的实体 + 关系（**一次请求**，Lookup 与 artist-rels 合并的结果）。
 ///
@@ -324,11 +325,13 @@ class ArtistResolver extends ChangeNotifier {
   }
 
   Future<void> _runBatch() async {
+    perfPhase('artist._runBatch'); // TEMP-PROBE
     final now = DateTime.now().millisecondsSinceEpoch;
     final items = _index.artistWorkSet(limit: 4, nowEpochMs: now);
     if (items.isEmpty) return;
     for (final item in items) {
       try {
+        perfPhase('artist._resolveOne:${item.displayName}'); // TEMP-PROBE
         await _resolveOne(item);
         networkDown = false;
       } on DioException catch (e) {

@@ -13,7 +13,9 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { window } from '@kit.ArkUI';
 import { abilityAccessCtrl, bundleManager, Permissions } from '@kit.AbilityKit';
 import { connection, a2dp } from '@kit.ConnectivityKit';
+import { taskpool } from '@kit.ArkTS';
 import { ThumbDispatcher } from './ThumbDispatcher';
+import { extractAudioMetaTask, AudioMetaResult } from './AudioMetaTask';
 
 const TAG = 'SelfMusicPlatform';
 /** 与 Dart 侧（ohos_platform_bridge.dart）约定的系统能力通道。 */
@@ -24,6 +26,49 @@ const READ_RANGE_MAX_BYTES = 2 * 1024 * 1024;
 /** makeCoverThumb 参数缺省值（与 Dart 侧 kCoverThumbMaxEdge / kCoverThumbQuality 对齐）。 */
 const THUMB_MAX_EDGE_DEFAULT = 768;
 const THUMB_QUALITY_DEFAULT = 82;
+
+/**
+ * extractAudioMeta 并发上限（FR-007）：与缩略图生成（`ThumbDispatcher.maxInflight=2`）
+ * 并存时的有界并发，避免两者相互挤占工作线程/主线程；Dart 侧补读队列本身串行，此闸门
+ * 只兜住直接并发调用（播放链路 + 后台补读）。
+ */
+const META_MAX_INFLIGHT = 2;
+
+/**
+ * 有界并发闸门（信号量，宿主主线程侧使用）：`acquire` 在未达上限时立即放行，
+ * 否则挂起直到 `release` 释放名额。仅用于 `extractAudioMeta` 的任务池派发。
+ */
+class MetaInflightGate {
+  private readonly max: number;
+  private active: number = 0;
+  private readonly waiters: Array<() => void> = [];
+
+  constructor(max: number) {
+    this.max = max < 1 ? 1 : max;
+  }
+
+  acquire(): Promise<void> {
+    if (this.active < this.max) {
+      this.active++;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve: () => void): void => {
+      this.waiters.push(resolve);
+    });
+  }
+
+  release(): void {
+    const next = this.waiters.shift();
+    if (next !== undefined) {
+      // 名额直接移交给下一个等待者（active 计数不变）。
+      next();
+      return;
+    }
+    if (this.active > 0) {
+      this.active--;
+    }
+  }
+}
 
 /** listDirectory 单项结果（Dart 侧对应 OhosDirEntry）。 */
 interface DirEntry {
@@ -37,7 +82,8 @@ interface DirEntry {
 
 /**
  * 系统能力平台桥（2026-10-06 ohos-permissions feature；2026-10-06
- * ohos-thumb-native-decode feature 扩封面缩略图管线）：
+ * ohos-thumb-native-decode feature 扩封面缩略图管线；2026-10-11
+ * ohos-meta-enrich-native feature 扩音频元数据原生解析）：
  *
  * 承载鸿蒙端四项系统能力（对齐 Android 端已有行为，装配范式同
  * AvSessionBridge）：
@@ -74,10 +120,18 @@ interface DirEntry {
  *   编码→tmp+rename 原子落盘）在任务池/Worker 独立线程执行，不再占用 UI 主
  *   线程（契约见 spec/ohos-thumb-taskpool plan.md R-1/R-3/R-8）。任何失败 ok=false，
  *   Dart 静默回原图显示，绝不向 Dart 抛错）
+ * - extractAudioMeta {path,coverPath?} → {ok,title,artist,album,albumArtist,
+ *   durationMs,genre,trackNo,year,coverPath,lyric,costMs,error}（2026-10-11
+ *   ohos-meta-enrich-native feature）：标签解析/封面提取下沉 `AudioMetaTask.ets`
+ *   的 `@Concurrent`（`AVMetadataExtractor`）在任务池执行，主线程只派发与收结果；
+ *   有界并发 [META_MAX_INFLIGHT]。任何失败 ok=false（附 error），Dart 侧据此
+ *   **不标已读**（既有重试语义）并回退既有 Dart 解析路径，绝不向 Dart 抛错。
  */
 export default class PlatformBridge implements MethodCallHandler {
   private context: common.UIAbilityContext;
   private channel: MethodChannel | null = null;
+  /** extractAudioMeta 有界并发闸门（FR-007）。 */
+  private readonly metaGate: MetaInflightGate = new MetaInflightGate(META_MAX_INFLIGHT);
 
   constructor(context: common.UIAbilityContext) {
     this.context = context;
@@ -147,6 +201,11 @@ export default class PlatformBridge implements MethodCallHandler {
         break;
       case 'makeCoverThumb':
         this.handleMakeCoverThumb(call, result)
+          .catch((): void => {
+          });
+        break;
+      case 'extractAudioMeta':
+        this.handleExtractAudioMeta(call, result)
           .catch((): void => {
           });
         break;
@@ -546,6 +605,89 @@ export default class PlatformBridge implements MethodCallHandler {
       'degraded': r.degraded
     };
     result.success(out);
+  }
+
+  // ---------- 音频元数据原生解析（ohos-meta-enrich-native） ----------
+
+  /**
+   * 音频元数据原生解析（契约见 spec/ohos-meta-enrich-native plan.md R-1）。
+   *
+   * 参数校验（`path` 非空；`coverPath` 可选，''=不需要封面）→ 有界并发闸门 →
+   * 任务池派发 `extractAudioMetaTask` → 结构化结果回桥。任何失败 `ok=false`
+   * （附简短 error），**绝不向 Dart 抛错**。
+   */
+  private async handleExtractAudioMeta(call: MethodCall, result: MethodResult): Promise<void> {
+    const path = PlatformBridge.argString(call, 'path');
+    if (path == null || path === '') {
+      result.success(PlatformBridge.metaFailMap('缺少 path 参数'));
+      return;
+    }
+    const coverPath = PlatformBridge.argString(call, 'coverPath') ?? '';
+    await this.metaGate.acquire();
+    try {
+      const out = await this.runExtractAudioMeta(path, coverPath);
+      result.success(out);
+    } catch (err) {
+      const e = err as Error;
+      Log.w(TAG, `extractAudioMeta 失败：${e.message}`);
+      result.success(PlatformBridge.metaFailMap(e.message));
+    } finally {
+      this.metaGate.release();
+    }
+  }
+
+  /**
+   * 调度委托：`taskpool` 执行 `extractAudioMetaTask`（有界并发由 [metaGate]
+   * 保证）。`taskpool.execute` 抛错表示**并发机制**不可用（目标设备 TaskPool
+   * 受限 / 并发函数内媒体能力受限等）→ 返回 `ok=false`，Dart 侧据此**不标已读**
+   * 并回退既有 Dart 解析路径（保收敛，绝不向 Dart 抛错）。
+   */
+  private async runExtractAudioMeta(path: string,
+    coverPath: string): Promise<Record<string, Object>> {
+    try {
+      const task = new taskpool.Task(extractAudioMetaTask, path, coverPath);
+      const raw: Object = await taskpool.execute(task);
+      const r = raw as AudioMetaResult;
+      return PlatformBridge.metaResultToMap(r);
+    } catch (err) {
+      const e = err as Error;
+      Log.w(TAG, `extractAudioMeta 并发执行失败：${e.message}`);
+      return PlatformBridge.metaFailMap(`并发执行失败：${e.message}`);
+    }
+  }
+
+  /** extractAudioMeta 失败结果（全字段缺省 + error 摘要，契约形态稳定）。 */
+  private static metaFailMap(error: string): Record<string, Object> {
+    return PlatformBridge.metaMap(false, '', '', '', '', 0, '', 0, 0, '', '', 0, error);
+  }
+
+  /** 原生结果 → 通道可序列化 Map（字段名与 Dart 侧 OhosAudioMetaResult 对齐）。 */
+  private static metaResultToMap(r: AudioMetaResult): Record<string, Object> {
+    return PlatformBridge.metaMap(r.ok, r.title, r.artist, r.album, r.albumArtist,
+      r.durationMs, r.genre, r.trackNo, r.year, r.coverPath, r.lyric, r.costMs, r.error);
+  }
+
+  /** 统一的通道结果组装（集中字段口径，避免逐处拼装漂移）。 */
+  private static metaMap(ok: boolean, title: string, artist: string, album: string,
+    albumArtist: string, durationMs: number, genre: string, trackNo: number,
+    year: number, coverPath: string, lyric: string, costMs: number,
+    error: string): Record<string, Object> {
+    const out: Record<string, Object> = {
+      'ok': ok,
+      'title': title,
+      'artist': artist,
+      'album': album,
+      'albumArtist': albumArtist,
+      'durationMs': durationMs,
+      'genre': genre,
+      'trackNo': trackNo,
+      'year': year,
+      'coverPath': coverPath,
+      'lyric': lyric,
+      'costMs': costMs,
+      'error': error
+    };
+    return out;
   }
 
   /**

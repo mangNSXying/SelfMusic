@@ -14,6 +14,7 @@ import '../../models/artist.dart';
 import '../../utils/collection_sort.dart';
 import '../../utils/cover_thumb.dart';
 import '../../utils/off_thread.dart';
+import '../../utils/main_thread_probe.dart';
 import '../sources/webdav_url.dart';
 import 'audio_metadata.dart';
 import 'db_writer.dart';
@@ -367,6 +368,23 @@ class LocalIndex {
       deleteCoverThumb(filePath);
       f.writeAsBytesSync(cover, flush: true);
       return filePath;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 封面落盘**目标路径**（沿用 [persistCover] 口径：`covers/<md5(ref)>.jpg`）。
+  ///
+  /// 仅供 ohos 原生解析把封面直接写到该路径（Dart 侧不再持有/重解析封面字节），
+  /// 由 `extractAudioMeta` 的 `coverPath` 入参使用。目录不可用时返回 null。
+  String? coverPathFor(String ref) {
+    final root = _dir;
+    if (root == null) return null;
+    try {
+      final dir = p.join(root, 'covers');
+      Directory(dir).createSync(recursive: true);
+      final h = md5.convert(utf8.encode(ref)).toString();
+      return p.join(dir, '$h.jpg');
     } catch (_) {
       return null;
     }
@@ -1616,6 +1634,7 @@ class LocalIndex {
   /// 对 idx_songs 校准歌手身份映射（扫描结束 / 元数据回填批 / 用户编辑后触发；
   /// 幂等，写连接单事务）。
   Future<void> reconcileArtists() {
+    perfPhase('index.reconcileArtists'); // TEMP-PROBE
     return _writer!.op<void>('artistReconcile', const {});
   }
 
@@ -1965,17 +1984,22 @@ class LocalIndex {
         artists: const <Artist>[],
       ));
     }
+    perfPhase('index.snapshot'); // TEMP-PROBE
     return runOffThread(() {
       final db = openIsolateDatabase(path);
       try {
+        perfPhase('index.snapshot.querySongs'); // TEMP-PROBE
         final songs = queryAllSongs(db,
             sourceKeys: sourceKeys,
             query: query,
             minDurationSec: minDurationSec,
             minSizeBytes: minSizeBytes);
+        perfPhase('index.snapshot.albumGroups'); // TEMP-PROBE
+        final albums = Album.fromSongs(songs);
+        perfPhase('index.snapshot.artistGroups'); // TEMP-PROBE
         return (
           songs: songs,
-          albums: Album.fromSongs(songs),
+          albums: albums,
           artists: artistGroupsOf(db,
               query: query,
               sort: artistSort,
@@ -1997,9 +2021,11 @@ class LocalIndex {
   }) {
     final path = _dbPath;
     if (path == null) return Future.value(const <Artist>[]);
+    perfPhase('index.artistGroupsInBackground'); // TEMP-PROBE
     return runOffThread(() {
       final db = openIsolateDatabase(path);
       try {
+        perfPhase('index.artistGroupsInBackground.build'); // TEMP-PROBE
         return artistGroupsOf(db,
             query: query,
             sort: sort,

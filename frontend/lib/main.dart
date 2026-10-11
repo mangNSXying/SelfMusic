@@ -31,6 +31,7 @@ import 'layout/app_shell.dart';
 import 'widgets/app_toast.dart';
 import 'widgets/draggable_sheet.dart';
 import 'utils/perf_log.dart';
+import 'utils/main_thread_probe.dart';
 import 'widgets/player_sheet_anim.dart';
 import 'utils/frame_scheduler.dart';
 import 'utils/interaction_gate.dart';
@@ -48,6 +49,8 @@ const int kImageCacheMaxBytes = 512 << 20;
 const int kImageCacheMaxCount = 4096;
 
 Future<void> main() async {
+  // 临时诊断：主线程停滞探针（必须最先起，见 main_thread_probe）。
+  startMainThreadStallProbe();
   // 冷启动定位：首个 perf 点同时是相对时间零点（见 perf_log），必须在最前。
   perfLog('boot.entry');
   WidgetsFlutterBinding.ensureInitialized();

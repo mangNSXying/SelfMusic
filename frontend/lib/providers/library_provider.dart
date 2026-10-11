@@ -13,6 +13,7 @@ import '../models/artist.dart';
 import '../services/artist_resolver.dart';
 import '../utils/off_thread.dart';
 import '../utils/perf_log.dart';
+import '../utils/main_thread_probe.dart';
 import 'direct_source_manager.dart';
 
 /// 全局图库数据源：合并所有直连源的歌曲，并在客户端按 专辑/歌手 分组聚合，
@@ -116,9 +117,11 @@ class LibraryProvider extends ChangeNotifier {
         if (m == null) return;
         // 诊断埋点（E）：后台快照 vs 主线程通知拆分，定位同步后整表重建掉帧。
         final swBg = Stopwatch()..start();
+        perfPhase('library.refreshDirect.snapshot'); // TEMP-PROBE
         final snap = await m.librarySnapshotInBackground(query: _lastQuery);
         final bgMs = swBg.elapsedMilliseconds;
         if (token != _snapshotToken) return; // 更新的全量刷新已接管
+        perfPhase('library.refreshDirect.assign'); // TEMP-PROBE
         songs = snap.songs;
         albums = snap.albums;
         artists = snap.artists;
@@ -154,10 +157,13 @@ class LibraryProvider extends ChangeNotifier {
   /// 旧版本快照可能含已废弃的服务端歌曲，恢复时直接过滤。
   /// 读文件与 JSON 解析都在后台 isolate，UI isolate 不做同步 IO/解码。
   Future<void> restoreCache() async {
+    perfPhase('library.restoreCache'); // TEMP-PROBE
+    final sw = Stopwatch()..start(); // TEMP-PROBE
     try {
       final file = await _cacheFile();
       if (file == null) return;
       final path = file.path;
+      perfPhase('library.restoreCache.decode'); // TEMP-PROBE
       final loaded = await runOffThread<List<Song>?>(() {
         final f = File(path);
         if (!f.existsSync()) return null;
@@ -172,14 +178,19 @@ class LibraryProvider extends ChangeNotifier {
       songs = loaded;
       // 先出歌曲列表，分组（后台）补上——启动首屏不为分组查询让路。
       notifyListeners();
+      perfPhase('library.restoreCache.groups'); // TEMP-PROBE
       await _recomputeGroups();
       notifyListeners();
     } catch (e) {
       debugPrint('library cache restore failed: $e');
+    } finally {
+      perfLog('library.restoreCache', '${sw.elapsedMilliseconds}ms'); // TEMP-PROBE
     }
   }
 
   Future<void> loadSongs({String? query}) async {
+    perfPhase('library.loadSongs'); // TEMP-PROBE
+    final sw = Stopwatch()..start(); // TEMP-PROBE
     loading = true;
     error = null;
     notifyListeners();
@@ -194,6 +205,7 @@ class LibraryProvider extends ChangeNotifier {
     } else {
       final snap = await m.librarySnapshotInBackground(query: query);
       if (token == _snapshotToken) {
+        perfPhase('library.loadSongs.assign'); // TEMP-PROBE
         songs = snap.songs;
         albums = snap.albums;
         artists = snap.artists;
@@ -204,6 +216,7 @@ class LibraryProvider extends ChangeNotifier {
     unawaited(_saveCache());
     loading = false;
     notifyListeners();
+    perfLog('library.loadSongs', '${sw.elapsedMilliseconds}ms'); // TEMP-PROBE
   }
 
   /// 专辑/歌手从合并后的歌曲列表客户端聚合（统一先刷新歌曲，再分组）。
@@ -250,6 +263,7 @@ class LibraryProvider extends ChangeNotifier {
 
   /// 分组重算（无直连管理器时的纯内存分组；有管理器走后台 identity 分组）。
   Future<void> _recomputeGroups() async {
+    perfPhase('library.recomputeGroups'); // TEMP-PROBE
     final m = _directManager;
     final current = songs;
     if (m == null) {
@@ -261,7 +275,9 @@ class LibraryProvider extends ChangeNotifier {
       artists = snap.artists;
       return;
     }
+    perfPhase('library.recomputeGroups.albums'); // TEMP-PROBE
     albums = await runOffThread(() => Album.fromSongs(current));
+    perfPhase('library.recomputeGroups.artists'); // TEMP-PROBE
     artists = await m.artistGroupsInBackground(query: _lastQuery);
   }
 
@@ -310,6 +326,8 @@ class LibraryProvider extends ChangeNotifier {
   }
 
   Future<void> _saveCache() async {
+    perfPhase('library.saveCache'); // TEMP-PROBE
+    final sw = Stopwatch()..start(); // TEMP-PROBE
     final file = await _cacheFile();
     if (file == null) return;
     final path = file.path;
@@ -326,6 +344,8 @@ class LibraryProvider extends ChangeNotifier {
       });
     } catch (e) {
       debugPrint('library cache save failed: $e');
+    } finally {
+      perfLog('library.saveCache', '${sw.elapsedMilliseconds}ms'); // TEMP-PROBE
     }
   }
 

@@ -24,7 +24,9 @@ import '../services/api_client.dart';
 import '../services/artist_resolver.dart';
 import '../services/secret_store.dart';
 import '../utils/cover_thumb.dart';
+import '../utils/chunked_scheduler.dart';
 import '../utils/perf_log.dart';
+import '../utils/main_thread_probe.dart';
 import '../utils/interaction_gate.dart';
 import '../utils/thumb_gen_stats.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
@@ -43,6 +45,11 @@ const Duration _interactionWaitStep = Duration(milliseconds: 120);
 /// 串行（maxInflight=1），确保非 ohos 行为零回退（R-9）。
 const int _thumbBackfillDefaultMaxInflight = 2;
 const int _thumbBackfillDefaultBatchSize = 16;
+
+/// 后台补读「整批提交」的分片大小（spec/ohos-meta-enrich-native R-2 / FR-001）：
+/// 逐首提交任务（游标推进 + 入队）虽轻，但整批 100 首的同步遍历仍可能形成长块；
+/// 用 [runChunked] 每 [kEnrichSubmitChunk] 首让出一次事件循环，保证单次同步块 ≪ 50ms。
+const int kEnrichSubmitChunk = 16;
 
 /// 默认让出实现（可注入以便确定性测试）。
 Future<void> _defaultThumbSleep(Duration d) => Future<void>.delayed(d);
@@ -540,9 +547,11 @@ class DirectSourceManager extends ChangeNotifier {
   /// 一次性回填（封面/元数据/RIFF 尾块）+ 历史无效封面清理（版本标记保证只跑一次）。
   Future<void> _runOneTimeBackfills() async {
     try {
+      perfPhase('direct.backfills'); // TEMP-PROBE
       // 一次性回填：旧版封面读取受头部采样截断（大内嵌封面丢失）且已标已读的行，
       // 重置为未读，交给后台补读用加深的封面读取重取。仅本机一次（不进 knownKeys）。
       if (!settings.coverReenrichV1Done) {
+        perfPhase('direct.backfills.resetMissingCovers'); // TEMP-PROBE
         final reset = await index.resetMetaReadForMissingCovers();
         settings.coverReenrichV1Done = true;
         if (reset > 0) debugPrint('封面回填补读：已重置 $reset 首待重读');
@@ -551,6 +560,7 @@ class DirectSourceManager extends ChangeNotifier {
       // 之前）的文件上提前中断，已标已读却读不出歌手。重置这些行，交给后台
       // 补读用「从头完整读取」重取。仅本机一次（不进 knownKeys）。
       if (!settings.metaReenrichV2Done) {
+        perfPhase('direct.backfills.resetMissingArtist'); // TEMP-PROBE
         final keys = _sources.map((s) => s.key).toList();
         final reset = await index.resetMetaReadForMissingArtist(keys);
         settings.metaReenrichV2Done = true;
@@ -559,11 +569,13 @@ class DirectSourceManager extends ChangeNotifier {
       // 一次性回填：wav/aiff 的标签/封面常写在音频块之后的 `id3 ` 块里，旧版解析
       // 遇到 `data`/`SSND` 就 break，读不到却又标了已读。重置这些行交给后台补读。
       if (!settings.riffTailMetaV1Done) {
+        perfPhase('direct.backfills.resetRiffTail'); // TEMP-PROBE
         final reset = await index.resetMetaReadForRiffTailTags();
         settings.riffTailMetaV1Done = true;
         if (reset > 0) debugPrint('wav/aiFF 尾块标签回填：已重置 $reset 首待重读');
       }
       // 后台清理历史无效封面（旧解析缺陷可能写脏数据），清理到的歌标未读待补读。
+      perfPhase('direct.backfills.cleanupInvalidCovers'); // TEMP-PROBE
       final cleaned = await index.cleanupInvalidCovers();
       if (cleaned > 0) {
         _metaVersion++;
@@ -572,6 +584,7 @@ class DirectSourceManager extends ChangeNotifier {
       // 存量封面补齐缩略图（老版本只存了全尺寸原图）：一次性后台补齐，
       // 新增封面在补读持久化时即时生成（meta_enrich），无需再扫。
       if (!settings.coverThumbsV1Done) {
+        perfPhase('direct.backfills.coverThumbs'); // TEMP-PROBE
         await _backfillCoverThumbs();
         settings.coverThumbsV1Done = true;
       }
@@ -584,11 +597,14 @@ class DirectSourceManager extends ChangeNotifier {
   /// 改为**有界并发 + 批驱动**（[runThumbBackfill]），交互期错峰让位、结束时续跑；
   /// 失败忽略（展示自动退回原图）。新补读的封面在 [ensureCoverThumb] 即时生成。
   Future<void> _backfillCoverThumbs() async {
+    final sw = Stopwatch()..start(); // TEMP-PROBE
     try {
+      perfPhase('direct.backfillCoverThumbs'); // TEMP-PROBE
       ThumbGenStats.startBatch();
       final made = await runThumbBackfill(
         covers: index.allCoverPaths(),
         generate: (cover) async {
+          perfPhase('direct.backfillCoverThumbs.one'); // TEMP-PROBE
           final before = coverDisplayPath(cover);
           await ensureCoverThumb(cover);
           return coverDisplayPath(cover) != before;
@@ -602,6 +618,9 @@ class DirectSourceManager extends ChangeNotifier {
       if (made > 0) debugPrint('[direct] 封面缩略图回填 $made 张');
     } catch (e) {
       debugPrint('[direct] 封面缩略图回填失败（忽略）：$e');
+    } finally {
+      perfLog('direct.backfillCoverThumbs',
+          '${sw.elapsedMilliseconds}ms'); // TEMP-PROBE
     }
   }
 
@@ -1401,16 +1420,27 @@ class DirectSourceManager extends ChangeNotifier {
         var afterId = 0;
         while (true) {
           final skipRef = _playingSourceKey == s.key ? _playingRef : null;
+          perfPhase('direct.pumpUnread.query:${s.key}'); // TEMP-PROBE
           final unread = index.unreadSongs(s.key, 100,
               excludeRef: skipRef, afterId: afterId > 0 ? afterId : null);
           if (unread.isEmpty) break;
+          perfLog('direct.pumpUnread.batch',
+              'src=${s.key} n=${unread.length} afterId=$afterId'); // TEMP-PROBE
           var enriched = 0;
-          for (final song in unread) {
-            // 游标始终前进：不可解析/失败的歌本轮跳过，下次播放再重试。
-            if (song.id > afterId) afterId = song.id;
-            _submitBackgroundSong(s, song, onEnriched: () => enriched++);
-          }
+          // 分片提交：每 [kEnrichSubmitChunk] 首让出事件循环一次（FR-001/T007），
+          // 保证「游标推进 + 入队」的同步块 ≪ 50ms。游标仍逐首前进。
+          await runChunked(
+            length: unread.length,
+            chunkSize: kEnrichSubmitChunk,
+            process: (i) {
+              final song = unread[i];
+              // 游标始终前进：不可解析/失败的歌本轮跳过，下次播放再重试。
+              if (song.id > afterId) afterId = song.id;
+              _submitBackgroundSong(s, song, onEnriched: () => enriched++);
+            },
+          );
           // 等这批真正跑完再取下一批：保持游标语义，也避免一次性排几百个任务。
+          perfPhase('direct.pumpUnread.idle:${s.key}'); // TEMP-PROBE
           await tasks.idle();
           // 交互期（滚动/过渡）暂停推进下一批，交互结束后补跑（T015，幂等）。
           await _awaitInteractionIdle();
@@ -1420,6 +1450,7 @@ class DirectSourceManager extends ChangeNotifier {
             notifyListeners();
           }
         }
+        perfPhase('direct.pumpUnread.reconcile:${s.key}'); // TEMP-PROBE
         _reconcileArtists();
       }
     } finally {

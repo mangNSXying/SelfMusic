@@ -17,7 +17,11 @@ import 'package:flutter/services.dart';
 ///   [listBondedDevices] / [connectedDevices]；
 /// - 封面缩略图：[makeCoverThumb]（@ohos.multimedia.image 原生管线——fork
 ///   引擎无子 isolate、`runOffThread` 在 ohos 内联，纯 Dart 编码会阻塞 UI
-///   isolate，解码/缩放/编码/写盘全部下沉 ArkTS 侧）。
+///   isolate，解码/缩放/编码/写盘全部下沉 ArkTS 侧）；
+/// - 音频元数据：[extractAudioMeta]（2026-10-11 ohos-meta-enrich-native feature
+///   ——同样因 fork 引擎无子 isolate、`runOffThread` 在 ohos 内联，纯 Dart
+///   标签解析/封面提取会以秒级同步块独占主线程，下沉 ArkTS `@Concurrent` 任务池
+///   的 `AVMetadataExtractor` 管线，Dart 只收结构化结果并落库）。
 ///
 /// 仅被 `isOhos` 分支调用（Android/桌面走各自实现，零回归）。
 ///
@@ -29,7 +33,9 @@ import 'package:flutter/services.dart';
 /// - 蓝牙查询：异常返回空集合/false 并 debugPrint 诊断日志（对齐 Android
 ///   「按未连接判定」的静默降级语义）；
 /// - [makeCoverThumb]：任何异常/超时/失败返回 false 并 debugPrint（缩略图
-///   是纯优化，调用方静默回原图显示；绝不回退内联 Dart 编码）。
+///   是纯优化，调用方静默回原图显示；绝不回退内联 Dart 编码）；
+/// - [extractAudioMeta]：任何异常/超时/失败返回 `ok=false` 结构化结果并
+///   debugPrint（调用方据此**不标已读**、回退既有 Dart 解析路径，绝不抛出）。
 class OhosPlatformBridge {
   static const MethodChannel _channel = MethodChannel('selfmusic/platform');
 
@@ -259,6 +265,44 @@ class OhosPlatformBridge {
       return const OhosThumbResult(ok: false);
     }
   }
+
+  /// 音频元数据原生解析（第 11 个通道方法，ohos-meta-enrich-native feature；
+  /// 契约见 `spec/ohos-meta-enrich-native/plan.md` R-1）。
+  ///
+  /// 标签解析与封面提取在 ArkTS 侧 `@Concurrent` 任务池执行
+  /// （`AudioMetaTask.ets` → `AudioMetaPipeline.ets` 的 `AVMetadataExtractor`），
+  /// Dart 只接收结构化结果并落库——主线程不再承担纯 Dart 解析重活（FR-002/003）。
+  ///
+  /// [path] 为音频沙箱真路径（`resolvePath` 结果）；[coverPath] 为封面落盘目标
+  /// （沿用 `persistCover` 的 `covers/<md5(ref)>.jpg` 口径，由 Dart 计算后传入——
+  /// 原生写 `<coverPath>.tmp` 后 rename 原子落盘并从结果回传）。
+  ///
+  /// 失败兜底：任何失败（超时/桥未装配/原生 ok=false）返回 `ok=false` 结构化
+  /// 结果，**绝不抛出**；调用方据 `ok` 决定是否标已读（失败不标）。[timeout]
+  /// 覆盖原生解析 + 大封面落盘的合法秒级耗时，仅供测试注入。
+  static Future<OhosAudioMetaResult> extractAudioMeta(
+    String path, {
+    String? coverPath,
+    Duration timeout = const Duration(seconds: 30),
+  }) async {
+    try {
+      final raw = await _channel.invokeMethod<Map<dynamic, dynamic>>(
+          'extractAudioMeta', <String, Object?>{
+        'path': path,
+        if (coverPath != null && coverPath.isNotEmpty) 'coverPath': coverPath,
+      }).timeout(timeout);
+      return OhosAudioMetaResult.fromChannel(raw);
+    } on TimeoutException catch (e) {
+      debugPrint('[ohos] extractAudioMeta 超时（本轮放弃，下次重试）: $e');
+      return OhosAudioMetaResult.failure('timeout');
+    } on PlatformException catch (e) {
+      debugPrint('[ohos] extractAudioMeta 失败: $e');
+      return OhosAudioMetaResult.failure(e.message ?? 'platform');
+    } on MissingPluginException catch (e) {
+      debugPrint('[ohos] extractAudioMeta 桥未装配: $e');
+      return OhosAudioMetaResult.failure('missing-plugin');
+    }
+  }
 }
 
 /// `makeCoverThumb` 的结构化结果：成功语义 + 可选原生自报耗时/降级标记。
@@ -309,4 +353,119 @@ class OhosDirEntry {
   final int size;
   final int mtime;
   const OhosDirEntry({required this.rel, required this.size, required this.mtime});
+}
+
+/// `extractAudioMeta` 的结构化结果（原生标签 + 封面落盘路径）。
+///
+/// 容错解析：任何非 Map / 缺字段一律按缺省（空串 / 0）处理；[ok] 仅当原生明确回
+/// `true` 时成立（与「失败不标已读」语义对齐）。
+class OhosAudioMetaResult {
+  /// 是否解析成功（唯一权威成功语义：true 才允许标已读）。
+  final bool ok;
+
+  /// 标题（''=缺失）。
+  final String title;
+
+  /// 歌手（''=缺失）。
+  final String artist;
+
+  /// 专辑（''=缺失）。
+  final String album;
+
+  /// 专辑歌手（''=缺失）。
+  final String albumArtist;
+
+  /// 流派（''=缺失）。
+  final String genre;
+
+  /// 时长（毫秒，原生自报；0=未知）。
+  final int durationMs;
+
+  /// 音轨号（0=未知；原生 `AVMetadata` 当前不提供，恒 0）。
+  final int trackNo;
+
+  /// 年份（0=未知）。
+  final int year;
+
+  /// 封面落盘路径（原生已写盘；''=无内嵌封面）。
+  final String coverPath;
+
+  /// 内嵌歌词（原生当前不提供，字段预留；''=缺失）。
+  final String lyric;
+
+  /// 本首原生耗时（ms）。
+  final int costMs;
+
+  /// 失败原因摘要（''=无）。
+  final String error;
+
+  const OhosAudioMetaResult({
+    required this.ok,
+    this.title = '',
+    this.artist = '',
+    this.album = '',
+    this.albumArtist = '',
+    this.genre = '',
+    this.durationMs = 0,
+    this.trackNo = 0,
+    this.year = 0,
+    this.coverPath = '',
+    this.lyric = '',
+    this.costMs = 0,
+    this.error = '',
+  });
+
+  /// 构造失败结果（附简短原因）。
+  factory OhosAudioMetaResult.failure(String error) =>
+      OhosAudioMetaResult(ok: false, error: error);
+
+  /// 容错解析：非 Map 一律按失败处理；字段缺失/类型不符按缺省。
+  factory OhosAudioMetaResult.fromChannel(Object? raw) {
+    if (raw is! Map) return OhosAudioMetaResult.failure('bad-result');
+    return OhosAudioMetaResult(
+      ok: raw['ok'] == true,
+      title: _str(raw['title']),
+      artist: _str(raw['artist']),
+      album: _str(raw['album']),
+      albumArtist: _str(raw['albumArtist']),
+      genre: _str(raw['genre']),
+      durationMs: _int(raw['durationMs']),
+      trackNo: _int(raw['trackNo']),
+      year: _int(raw['year']),
+      coverPath: _str(raw['coverPath']),
+      lyric: _str(raw['lyric']),
+      costMs: _int(raw['costMs']),
+      error: _str(raw['error']),
+    );
+  }
+
+  /// 时长（秒，四舍五入；未知/异常返回 null）——与 `enrichSong(duration:)` 口径一致。
+  ///
+  /// **单位假设**：原生 `AVMetadata.duration` 官方文档未标注单位，此处按**毫秒**
+  /// 处理并换算为秒（见 spec 残留风险；若真机核对为秒需改此口径）。
+  int? get durationSec {
+    if (durationMs <= 0) return null;
+    final s = (durationMs / 1000).round();
+    return s > 0 ? s : null;
+  }
+
+  /// 归一化文本字段：空串 → null。供 `enrichSong` 的 `COALESCE(NULLIF(...))` 语义
+  /// 保持库中既有值（缺失字段留空而非劣化）。
+  String? get titleOrNull => title.isEmpty ? null : title;
+  String? get artistOrNull => artist.isEmpty ? null : artist;
+  String? get albumOrNull => album.isEmpty ? null : album;
+  String? get albumArtistOrNull => albumArtist.isEmpty ? null : albumArtist;
+  String? get genreOrNull => genre.isEmpty ? null : genre;
+  int? get trackNoOrNull => trackNo > 0 ? trackNo : null;
+  int? get yearOrNull => year > 0 ? year : null;
+  String? get coverPathOrNull => coverPath.isEmpty ? null : coverPath;
+  String? get lyricOrNull => lyric.trim().isEmpty ? null : lyric;
+
+  static String _str(Object? v) => v is String ? v : '';
+
+  static int _int(Object? v) {
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    return 0;
+  }
 }

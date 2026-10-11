@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import '../local/local_index.dart';
 import '../../models/song.dart';
+import '../../utils/main_thread_probe.dart';
 import 'sync_event_types.dart';
 
 /// 歌曲权重与收藏的统一点（stage2.md §1.5 / §2.1）。
@@ -37,6 +38,7 @@ class SongWeightStore {
     final key = '${s.sourceKey}\u0000${s.sourceRef}';
     final cached = _metaCache[key];
     if (cached != null) return cached;
+    perfPhase('weight.metaOf.select'); // TEMP-PROBE
     final row = index.playMetaOf(s.sourceKey, s.sourceRef);
     if (_metaCache.length >= _metaCacheCap) _metaCache.clear();
     _metaCache[key] = row;
@@ -53,6 +55,7 @@ class SongWeightStore {
   /// [metaOf] 走默认行兜底；写路径（[_apply] / [notifyExternalWrite]）本就会清空
   /// 全缓存，此处填充不存在脏读。
   void warmMetaOf(Iterable<Song> songs) {
+    perfPhase('weight.warmMetaOf'); // TEMP-PROBE
     final bySource = <String, List<String>>{};
     for (final s in songs) {
       if (s.sourceRef.isEmpty) continue;
@@ -106,6 +109,7 @@ class SongWeightStore {
   /// 同步查库（几千首 = 几千条 SELECT，正是切页/初始化那一帧的卡顿来源）。
   SongSortKeys sortKeysOf(List<Song> songs,
       {bool factors = false, bool playSecs = false}) {
+    perfPhase('weight.sortKeysOf'); // TEMP-PROBE
     return SongSortKeys(
       factors: factors ? factorsOf(songs) : const {},
       playSecs: playSecs ? playSecsOf(songs) : const {},

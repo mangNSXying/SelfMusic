@@ -2,8 +2,14 @@
 {
   "apiType": 'stageMode',
   "buildOption": {
-    // TaskPool 在本工程不可用时的缩略图 Worker 兜底线程（plan.md R-1 / FR-008）；
-    // 入口须与 platform/ThumbDispatcher.ets 的 THUMB_WORKER_ENTRY 一致。
+    // TaskPool 在本工程不可用时的缩略图 Worker 兜底线程（ohos-thumb-taskpool R-1 /
+    // ohos-thumb-dispatch-fix R-3/R-4 / FR-008）；兜底为「单实例长驻复用」。
+    //
+    // 入口声明与调度器常量一致（同一文件、不同根，均符合官方路径规则）：
+    //   - 此处 workers 路径相对模块根 `src/main`：'./src/main/ets/workers/ThumbWorker.ets'
+    //   - ThumbDispatcher.ets 的 THUMB_WORKER_ENTRY 为 Stage scriptURL 形式
+    //     `{moduleName}/ets/{relativePath}`：'entry/ets/workers/ThumbWorker.ets'
+    // 二者指向同一 Worker 线程文件，须同步变更，避免入口未打包 / 加载失败。
     "sourceOption": {
       "workers": [
         './src/main/ets/workers/ThumbWorker.ets'
