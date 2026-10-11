@@ -1,6 +1,9 @@
 import 'dart:convert' show base64Decode, utf8;
 import 'dart:typed_data';
 
+import '../../utils/chunked_scheduler.dart' show ChunkYield;
+import '../../utils/main_thread_probe.dart'; // TEMP-PROBE
+
 /// 音频头部元数据（来自扫描时的 Range 头部直读，DESIGN §6.4）。
 class AudioMeta {
   String? title;
@@ -24,6 +27,15 @@ class AudioMeta {
   /// 是否为「已识别的容器但头部采样不完整」（如 m4a moov 在文件尾）：
   /// 提示调用方做尾部补读，而不是判定为无标签。
   bool truncatedContainer = false;
+
+  /// 待解码的内嵌封面 base64（ogg/flac VorbisComment 的 METADATA_BLOCK_PICTURE /
+  /// COVERART）：解析阶段只登记字符串，解码（CPU 重活，可达数 MB）从解析热路径
+  /// 挪到末尾——由 [readAudioMeta]（可让出）或 [parseAudioHead]（同步一步到位）
+  /// 统一收口，保证单次同步块 < 50ms（主线程长同步块治理 R-1）。
+  String? pendingCoverB64;
+
+  /// [pendingCoverB64] 是否为 FLAC PICTURE 块结构（true）还是裸图片字节（false）。
+  bool pendingCoverIsFlacPicture = false;
 }
 
 /// 纯 Dart 头部解析：
@@ -31,7 +43,17 @@ class AudioMeta {
 /// 未识别容器返回 null（调用方做文件名回退）。
 ///
 /// [head] 为文件头部字节（扫描时取 ~256KB），[format] 为扩展名，[fileSize] 为完整大小。
-AudioMeta? parseAudioHead(Uint8List head, String format, int fileSize) {
+AudioMeta? parseAudioHead(Uint8List head, String format, int fileSize,
+    {bool deferCoverDecode = false}) {
+  final meta = _parseAudioHeadInner(head, format, fileSize);
+  // 默认（同步调用方：扫描 / 单测 / readAudioMeta 未传 yieldTo）一步到位解码待定
+  // 封面，逐字节与旧实现一致；[deferCoverDecode] 由可让出的 [readAudioMeta] 置位，
+  // 交由它分片解码（避免大内嵌封面 base64 解码整块占用主线程）。
+  if (meta != null && !deferCoverDecode) _finalizePendingCoverSync(meta);
+  return meta;
+}
+
+AudioMeta? _parseAudioHeadInner(Uint8List head, String format, int fileSize) {
   switch (format) {
     case 'mp3':
       return _parseMp3(head, fileSize);
@@ -62,6 +84,13 @@ AudioMeta? parseAudioHead(Uint8List head, String format, int fileSize) {
 /// 不解析时长、曲目、年份、流派、封面，因此头部采样可更小、下载量最小；
 /// 其余元数据在播放时由 [parseAudioHead] 懒补全（enrich）。
 AudioMeta? parseMinimalHead(Uint8List head, String format) {
+  final meta = _parseMinimalHeadInner(head, format);
+  // 最小解析同步收口待定封面（逐字节与旧实现一致）。
+  if (meta != null) _finalizePendingCoverSync(meta);
+  return meta;
+}
+
+AudioMeta? _parseMinimalHeadInner(Uint8List head, String format) {
   switch (format) {
     case 'mp3':
       return _parseMp3Minimal(head);
@@ -458,10 +487,24 @@ Future<AudioMeta?> readAudioMeta({
   required String format,
   required int fileSize,
   int headBytes = 256 * 1024,
+  ChunkYield? yieldTo,
 }) async {
+  // 片间让出（可选）：传 [yieldTo] 时每个解析阶段/阶梯轮次之间让出事件循环，
+  // 配合「零拷贝封面视图 + base64 分片解码」，保证单次同步块 < 50ms（R-1/FR-001）。
+  // 未传时行为与旧实现逐字节一致（扫描 / 单测路径）。
+  Future<void> pump() async {
+    if (yieldTo != null) await yieldTo();
+  }
+
   var head = await readRange(0, headBytes);
   if (head.isEmpty) return null;
-  var meta = parseAudioHead(head, format, fileSize);
+  perfPhase('meta.rm.headParse'); // TEMP-PROBE
+  var meta = parseAudioHead(head, format, fileSize,
+      deferCoverDecode: yieldTo != null);
+  if (meta != null && yieldTo != null) {
+    perfPhase('meta.rm.headCoverDecode'); // TEMP-PROBE
+    await _finalizePendingCoverChunked(meta, yieldTo);
+  }
 
   // ---- 头部阶梯 ----
   // 循环条件同时盯封面与标题：封面块读完了不等于元数据区读完了（PICTURE 可能
@@ -478,10 +521,26 @@ Future<AudioMeta?> readAudioMeta({
     var target = hint;
     if (target > kMetaRegionCapBytes) target = kMetaRegionCapBytes;
     if (target <= len) break;
-    final deeper = await readRange(0, target);
-    if (deeper.length <= len) break; // 没读到更多（文件已到底）：停，避免死循环
-    final parsed = parseAudioHead(deeper, format, fileSize);
-    if (parsed != null) meta = parsed;
+    await pump(); // 让出：补读更大头部窗口之前
+    // 增量拼接：只读 [len, target) 新增段再拼上已读头部。旧实现每级都
+    // `readRange(0, target)` 从头重下——多级阶梯（如 2.1MB→11MB→16MB）会
+    // 把大封面区重复下载近一倍；SFTP 上每字节都要主线程纯 Dart 解密，代价
+    // 直接放大成卡顿（真机 2026-10-11 取证）。
+    final more = await readRange(len, target - len);
+    if (more.isEmpty) break; // 文件已到底：停，避免死循环
+    final deeper = Uint8List(len + more.length)
+      ..setRange(0, len, head)
+      ..setRange(len, len + more.length, more);
+    perfPhase('meta.rm.ladderParse'); // TEMP-PROBE
+    final parsed = parseAudioHead(deeper, format, fileSize,
+        deferCoverDecode: yieldTo != null);
+    if (parsed != null) {
+      meta = parsed;
+      if (yieldTo != null) {
+        perfPhase('meta.rm.ladderCoverDecode'); // TEMP-PROBE
+        await _finalizePendingCoverChunked(meta, yieldTo);
+      }
+    }
     head = deeper;
   }
 
@@ -496,7 +555,9 @@ Future<AudioMeta?> readAudioMeta({
         final len = tailLen > fileSize ? fileSize : tailLen;
         final start = fileSize - len;
         if (start < 0 || len <= 0) break;
+        await pump(); // 让出：尾部补读之前
         final tail = await readRange(start, len);
+        perfPhase('meta.rm.tailParse'); // TEMP-PROBE
         final t = parseAudioTail(tail, format, fileSize, headMeta: meta);
         if (t != null) {
           meta = _mergeMeta(meta, t);
@@ -513,6 +574,56 @@ Future<AudioMeta?> readAudioMeta({
     }
   }
   return meta;
+}
+
+/// 同步一步到位解码待定封面（默认路径，逐字节与旧实现一致）。
+void _finalizePendingCoverSync(AudioMeta meta) {
+  final b64 = meta.pendingCoverB64;
+  meta.pendingCoverB64 = null;
+  if (b64 == null || b64.isEmpty || meta.cover != null) return;
+  try {
+    _applyDecodedCover(meta, base64Decode(b64));
+  } catch (_) {
+    // 解码失败 = 该内嵌封面不可用（与旧实现一致：静默放弃，不影响其它标签）。
+  }
+}
+
+/// 分片解码待定封面（让出版）：base64 按 4 字符对齐切段逐段解码，段间让出
+/// 事件循环——大内嵌封面（可达数 MB）不再整块同步解码占用主线程。
+Future<void> _finalizePendingCoverChunked(AudioMeta meta, ChunkYield yieldTo) async {
+  final b64 = meta.pendingCoverB64;
+  meta.pendingCoverB64 = null;
+  if (b64 == null || b64.isEmpty || meta.cover != null) return;
+  try {
+    _applyDecodedCover(meta, await _decodeBase64Chunked(b64, yieldTo));
+  } catch (_) {
+    // 同 [_finalizePendingCoverSync]：静默放弃。
+  }
+}
+
+/// 把解码出的字节按原键口径落到 [AudioMeta.cover]（PICTURE 结构 / 裸图片）。
+void _applyDecodedCover(AudioMeta meta, Uint8List img) {
+  if (meta.pendingCoverIsFlacPicture) {
+    meta.cover = _parseFlacPicture(img);
+  } else if (looksLikeImageBytes(img)) {
+    meta.cover = img;
+  }
+}
+
+/// base64 分片解码：按 4 字符（= 3 字节）对齐切片，每片可独立解码（非末段不含
+/// 填充，末段含可能的 `=` 填充），段间 [yieldTo] 让出。长度不足一片时一步解码。
+Future<Uint8List> _decodeBase64Chunked(String s, ChunkYield yieldTo) async {
+  const segChars = 4096 * 4; // 4 的倍数：base64 以 4 字符为一个可独立解码单元
+  if (s.length <= segChars) return base64Decode(s);
+  final out = BytesBuilder(copy: false);
+  var i = 0;
+  while (i < s.length) {
+    final end = (i + segChars) < s.length ? i + segChars : s.length;
+    out.add(base64Decode(s.substring(i, end)));
+    i = end;
+    if (i < s.length) await yieldTo();
+  }
+  return out.takeBytes();
 }
 
 /// 是否已从头部拿到可用标题（几何放大的停止条件）。
@@ -577,7 +688,7 @@ AudioMeta _parseFlacMinimal(Uint8List head) {
     final blockType = hdr & 0x7F;
     final len = _be24(head, i + 1);
     if (i + 4 + len > head.length) break;
-    final body = head.sublist(i + 4, i + 4 + len);
+    final body = Uint8List.sublistView(head, i + 4, i + 4 + len); // 零拷贝
     // 只取 VORBIS_COMMENT（标题/歌手/专辑所在地）；STREAMINFO/PICTURE 跳过。
     if (blockType == 4) _parseVorbisComment(body, meta);
     i += 4 + len;
@@ -647,7 +758,9 @@ Uint8List? _apicOf(Uint8List head) {
     final size = _syncsafe(head, i + 4);
     if (size < 0 || i + 10 + size > head.length) break;
     if (id == 'APIC' && size > 8) {
-      final img = _apicImage(head.sublist(i + 10, i + 10 + size));
+      // 零拷贝视图：封面可达数 MB，避免 fromList/sublist 的整块复制占用主线程
+      //（主线程长同步块治理 R-1，解析阶段的字节区间切片）。
+      final img = _apicImage(Uint8List.sublistView(head, i + 10, i + 10 + size));
       if (img != null) return img;
     }
     i += 10 + size;
@@ -660,7 +773,7 @@ Uint8List? _apicOf(Uint8List head) {
 /// - 描述终止符按编码处理（UTF-16 为对齐的 00 00，单字节编码为 00）；
 /// - 只有通过图片签名校验才返回，避免把描述残留/URL 写进封面缓存
 ///   （否则 Android ImageDecoder 会报「Failed to decode image」）。
-Uint8List? _apicImage(List<int> data) {
+Uint8List? _apicImage(Uint8List data) {
   if (data.length < 6) return null;
   final enc = data[0];
   var p = 1;
@@ -691,7 +804,7 @@ Uint8List? _apicImage(List<int> data) {
     p = descEnd + 1;
   }
   if (p >= data.length) return null;
-  final img = Uint8List.fromList(data.sublist(p));
+  final img = Uint8List.sublistView(data, p); // 零拷贝：图片字节直接切视图
   return looksLikeImageBytes(img) ? img : null;
 }
 
@@ -844,7 +957,8 @@ AudioMeta _parseFlac(Uint8List head, int fileSize) {
     final len = _be24(head, i + 1);
     // 元数据块可能超出头部采样长度（如大内嵌封面），此时无法继续解析后续块。
     if (i + 4 + len > head.length) break;
-    final body = head.sublist(i + 4, i + 4 + len);
+    // 零拷贝视图：块体（可含大 PICTURE）不复制，解析只读前段结构。
+    final body = Uint8List.sublistView(head, i + 4, i + 4 + len);
     if (blockType == 0 && body.length >= 18) {
       // STREAMINFO：sample_rate(20)|channels(3)|bps(5)|total_samples(36)，位于 body[10..17]
       final sr = ((body[10] << 12) | (body[11] << 4) | (body[12] >> 4)) & 0xFFFFF;
@@ -880,7 +994,7 @@ void _parseVorbisComment(List<int> body, AudioMeta meta) {
   _parseVorbisComments(body, meta, includePicture: true);
 }
 
-Uint8List? _parseFlacPicture(List<int> body) {
+Uint8List? _parseFlacPicture(Uint8List body) {
   // picture block: type(u32), mime len(u32), mime, desc len(u32), desc, w/h/depth/colors (4*u32),
   // data len(u32), data
   int readU32b(List<int> b, int o) =>
@@ -901,7 +1015,7 @@ Uint8List? _parseFlacPicture(List<int> body) {
   final dataLen = readU32b(body, p);
   p += 4;
   if (dataLen < 0 || p + dataLen > body.length) return null;
-  final img = Uint8List.fromList(body.sublist(p, p + dataLen));
+  final img = Uint8List.sublistView(body, p, p + dataLen); // 零拷贝
   return looksLikeImageBytes(img) ? img : null;
 }
 
@@ -1061,8 +1175,7 @@ void _parseMp4Ilst(Uint8List b, int start, int end, AudioMeta meta) {
           }
         case 'covr':
           if (meta.cover == null && (dataType == 13 || dataType == 14)) {
-            final img = Uint8List.fromList(
-                b.sublist(payloadStart, payloadEnd));
+            final img = Uint8List.sublistView(b, payloadStart, payloadEnd); // 零拷贝
             if (looksLikeImageBytes(img)) meta.cover = img;
           }
       }
@@ -1113,6 +1226,7 @@ AudioMeta _parseOggMinimal(Uint8List head) {
   final meta = _parseOgg(head);
   meta.cover = null;
   meta.lyrics = null;
+  meta.pendingCoverB64 = null; // 最小解析不用封面：丢弃待定 base64（保持旧行为）
   return meta;
 }
 
@@ -1132,11 +1246,11 @@ AudioMeta _oggParse(Uint8List head, {required bool includePicture}) {
   }
   if (packets.length < 2) return meta;
   final tags = packets[1];
-  List<int> body;
+  Uint8List body;
   if (isVorbis && _startsWith(tags, [0x03, ...'vorbis'.codeUnits])) {
-    body = tags.sublist(7);
+    body = Uint8List.sublistView(tags, 7); // 零拷贝
   } else if (isOpus && _startsWith(tags, 'OpusTags'.codeUnits)) {
-    body = tags.sublist(8);
+    body = Uint8List.sublistView(tags, 8); // 零拷贝
   } else {
     return meta;
   }
@@ -1201,18 +1315,16 @@ void _parseVorbisComments(List<int> b, AudioMeta meta,
         if (val.trim().isNotEmpty) meta.lyrics ??= val;
         break;
       case 'METADATA_BLOCK_PICTURE':
-        if (includePicture && meta.cover == null) {
-          try {
-            meta.cover = _parseFlacPicture(base64Decode(val.trim()));
-          } catch (_) {}
+        if (includePicture && meta.cover == null && meta.pendingCoverB64 == null) {
+          // 只登记 base64，解码挪到解析末尾（同步或分片），不占用解析热路径。
+          meta.pendingCoverB64 = val.trim();
+          meta.pendingCoverIsFlacPicture = true;
         }
         break;
       case 'COVERART':
-        if (includePicture && meta.cover == null) {
-          try {
-            final img = base64Decode(val.trim());
-            if (looksLikeImageBytes(img)) meta.cover = img;
-          } catch (_) {}
+        if (includePicture && meta.cover == null && meta.pendingCoverB64 == null) {
+          meta.pendingCoverB64 = val.trim();
+          meta.pendingCoverIsFlacPicture = false;
         }
         break;
     }

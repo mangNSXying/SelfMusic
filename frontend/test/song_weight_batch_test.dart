@@ -142,7 +142,7 @@ void main() {
     await weight.setDisliked(songs[2], true);
     await index.addPlaySec('webdav:a', 'r4', 42);
 
-    weight.warmMetaOf(songs);
+    await weight.warmMetaOf(songs);
     for (final s in songs) {
       final meta = weight.metaOf(s);
       final single = index.playMetaOf(s.sourceKey, s.sourceRef);
@@ -162,12 +162,12 @@ void main() {
 
     // 库里没有匹配行不写入缓存，metaOf 走默认行兜底。
     final ghost = _song('webdav:x', 'ghost');
-    weight.warmMetaOf([ghost]);
+    await weight.warmMetaOf([ghost]);
     expect(weight.metaOf(ghost).favorite, isFalse);
     expect(weight.metaOf(ghost).factor, 1.0);
 
     // 空列表安全。
-    weight.warmMetaOf(const []);
+    await weight.warmMetaOf(const []);
 
     index.close();
   });

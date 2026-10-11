@@ -255,6 +255,14 @@ abstract class MusicSource {
   /// 若该歌已离线缓存，返回本地文件路径（供断网播缓存，DESIGN §6.5）；否则 null。
   Future<String?> cachedFilePath(Song song) async => null;
 
+  /// 可交给原生解析（ohos `extractAudioMeta`）的**本地沙箱真路径**；无则 null。
+  ///
+  /// 与 [cachedFilePath] 的**离线缓存**语义区分（FR-004 / R-2）：本地源本体即
+  /// 本地文件，只要存在可打开的沙箱真路径就应走原生解析，**不得**因为没有「离线
+  /// 缓存」登记而被误判为不可用；远端源则返回已缓存文件路径（未缓存 = null，走
+  /// Dart 切片兜底）。默认委托 [cachedFilePath]，各源可按需覆盖。
+  Future<String?> localSandboxPath(Song song) => cachedFilePath(song);
+
   /// 把直连音频下载缓存到本地（断网可播）。
   ///
   /// [shouldAbort] 给「预载下一首」用：换歌后那份预载已经没意义了（预载到的

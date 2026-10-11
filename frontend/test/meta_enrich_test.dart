@@ -61,10 +61,10 @@ Uint8List bigCoverMp3() {
   ]);
 }
 
-/// 按 Range 长度返回前缀字节的假直连源（记录每次请求的长度）。
+/// 按 Range 返回对应区间字节的假直连源（记录每次请求的区间）。
 class _RangeFakeSource extends MusicSource {
   final Uint8List bytes;
-  final List<int?> requestedLengths = [];
+  final List<IntRange?> requestedRanges = [];
   _RangeFakeSource(this.bytes);
 
   @override
@@ -78,13 +78,21 @@ class _RangeFakeSource extends MusicSource {
 
   @override
   Future<OpenedStream> open(Song song, {IntRange? range}) async {
-    final limit = range?.length ?? bytes.length;
-    requestedLengths.add(limit);
-    final end = limit < bytes.length ? limit : bytes.length;
+    requestedRanges.add(range);
+    final start = range?.start ?? 0;
+    final length = range?.length ?? bytes.length;
+    if (start >= bytes.length) {
+      return OpenedStream(
+        contentLength: bytes.length,
+        contentType: 'audio/mpeg',
+        stream: const Stream.empty(),
+      );
+    }
+    final end = (start + length) > bytes.length ? bytes.length : start + length;
     return OpenedStream(
       contentLength: bytes.length,
       contentType: 'audio/mpeg',
-      stream: Stream.value(Uint8List.sublistView(bytes, 0, end)),
+      stream: Stream.value(Uint8List.sublistView(bytes, start, end)),
     );
   }
 }
@@ -171,13 +179,16 @@ void main() {
 
     final ok = await enrichSongMeta(index, src, song);
     expect(ok, isTrue);
-    // 第一段 256KB 采样 → 封面被截断 → 跳到 ID3v2 头里声明的标签末尾补读。
-    // 原实现是「采样不足就从头完整读取整个文件」，为拿封面把整首下下来。
-    expect(src.requestedLengths.first, 256 * 1024);
-    expect(src.requestedLengths.length, 2);
-    expect(src.requestedLengths.last, lessThan(bytes.length),
-        reason: '按声明长度补读，不该整读文件');
-    expect(src.requestedLengths.last, greaterThan(400 * 1024));
+    // 第一段 256KB 采样 → 封面被截断 → 从采样末尾**增量续读**到 ID3v2 头里
+    // 声明的标签末尾（不重下已读段、更不整读文件）。
+    final ranges = src.requestedRanges.whereType<IntRange>().toList();
+    expect(ranges.length, 2);
+    expect(ranges.first.start, 0);
+    expect(ranges.first.length, 256 * 1024);
+    expect(ranges.last.start, 256 * 1024, reason: '增量续读：从已读末尾继续');
+    final secondEnd = ranges.last.start + (ranges.last.length ?? 0);
+    expect(secondEnd, greaterThan(400 * 1024), reason: '按声明长度补读到标签末尾');
+    expect(secondEnd, lessThan(bytes.length), reason: '不整读文件');
 
     final updated = index.songByRef('webdav:t', 'Music/a.mp3')!;
     expect(updated.coverPath, isNotNull);

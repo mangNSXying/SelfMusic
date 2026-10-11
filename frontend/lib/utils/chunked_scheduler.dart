@@ -36,6 +36,14 @@ Future<void> runChunked({
 
 Future<void> _defaultYield() => Future<void>.delayed(Duration.zero);
 
+/// 统一的「让出事件循环」默认钩子（公开给需按阶段让出、但不适合用
+/// [runChunked] 索引切片的调用方，如解析阶段之间 / DB 批间让出）。
+///
+/// 语义与 [runChunked]/[runChunkedCancellable] 的默认 [ChunkYield] 一致：调度到
+/// 下一个事件循环 tick（不引入对 UI 帧的强依赖），供补读/权重预热/歌手解析等
+/// 主线程长同步块治理复用（单次同步块 < 50ms）。
+Future<void> yieldToEventLoop() => Future<void>.delayed(Duration.zero);
+
 /// 分块任务的取消令牌（代次比较）：持令牌者重建任务时旧令牌作废，
 /// 旧任务在片间检查 [isCancelled] 安全退出——配合 [runChunked] 实现「可中断续跑」。
 class ChunkToken {

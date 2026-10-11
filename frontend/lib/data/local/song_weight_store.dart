@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import '../local/local_index.dart';
 import '../../models/song.dart';
+import '../../utils/chunked_scheduler.dart' show yieldToEventLoop;
 import '../../utils/main_thread_probe.dart';
 import 'sync_event_types.dart';
 
@@ -48,29 +50,49 @@ class SongWeightStore {
   /// 外部路径（同步引擎 pull 落库等）写 play_meta 后调用：失效行缓存。
   void notifyExternalWrite() => _metaCache.clear();
 
-  /// 批量预热列表元数据：按 sourceKey 分组一次 IN 查询填满 [_metaCache]。
+  /// 预热批大小（每批一次 IN 查询）：一次预热覆盖的歌曲子集**有界**，批间让出
+  /// 事件循环，保证单次同步块 < 50ms（主线程长同步块治理 R-3 / FR-002）。旧实现
+  /// 以整表一次性批量查 `play_meta`（真机探针 ~1470ms 单次阻塞）。
+  static const int _warmBatch = 300;
+
+  /// 批量预热列表元数据：按 sourceKey 分组、**分批** IN 查询填满 [_metaCache]。
   ///
   /// 供冷列表首帧后由 [SongRowCache] 编排（post-frame）调用，替代首进页面时
   /// 「整表逐行 metaOf = 数千条同步 SELECT 挤在同一帧」。无匹配行不写入，仍由
   /// [metaOf] 走默认行兜底；写路径（[_apply] / [notifyExternalWrite]）本就会清空
   /// 全缓存，此处填充不存在脏读。
-  void warmMetaOf(Iterable<Song> songs) {
+  ///
+  /// **主线程切片让出（R-3 / FR-002）**：不再整表一次同步查库；按 [_warmBatch]
+  /// 分批、批间 `await` 让出，单次同步块有界。返回的 Future 调用方（`onWarm`）
+  /// 通常不 await——预热在后台 tick 推进，语义（最终填满缓存）不变。
+  Future<void> warmMetaOf(Iterable<Song> songs) async {
     perfPhase('weight.warmMetaOf'); // TEMP-PROBE
     final bySource = <String, List<String>>{};
     for (final s in songs) {
       if (s.sourceRef.isEmpty) continue;
       bySource.putIfAbsent(s.sourceKey, () => []).add(s.sourceRef);
     }
-    bySource.forEach((key, refs) {
-      final rows = index.playMetasOf(key, refs);
-      if (rows.isEmpty) return;
-      if (_metaCache.length + rows.length > _metaCacheCap) {
-        _metaCache.clear();
+    for (final entry in bySource.entries) {
+      final key = entry.key;
+      final refs = entry.value;
+      for (var start = 0; start < refs.length; start += _warmBatch) {
+        final end = math.min(start + _warmBatch, refs.length);
+        try {
+          final rows = index.playMetasOf(key, refs.sublist(start, end));
+          if (rows.isNotEmpty) {
+            if (_metaCache.length + rows.length > _metaCacheCap) {
+              _metaCache.clear();
+            }
+            _metaCache.addAll({
+              for (final e in rows.entries) '$key\u0000${e.key}': e.value,
+            });
+          }
+        } catch (_) {
+          // 预热失败静默：逐行 [metaOf] 仍走同步兜底查询，不影响功能与结果。
+        }
+        if (end < refs.length) await yieldToEventLoop();
       }
-      _metaCache.addAll({
-        for (final e in rows.entries) '$key\u0000${e.key}': e.value,
-      });
-    });
+    }
   }
 
   double factorOf(Song s) => metaOf(s).factor;

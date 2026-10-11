@@ -13,6 +13,7 @@ import '../../models/album.dart';
 import '../../models/artist.dart';
 import '../../utils/collection_sort.dart';
 import '../../utils/cover_thumb.dart';
+import '../../utils/chunked_scheduler.dart' show ChunkYield, yieldToEventLoop;
 import '../../utils/off_thread.dart';
 import '../../utils/main_thread_probe.dart';
 import '../sources/webdav_url.dart';
@@ -367,6 +368,30 @@ class LocalIndex {
       // 覆盖写新封面：旧缩略图作废删除，随后由 ensureCoverThumb 重新生成。
       deleteCoverThumb(filePath);
       f.writeAsBytesSync(cover, flush: true);
+      return filePath;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// [persistCover] 的**切片让出版**（主线程长同步块治理 R-1 / FR-001）：封面字节的
+  /// md5 哈希与落盘分片进行、片间 [yieldTo] 让出事件循环，避免大内嵌封面（可达
+  /// [kMetaRegionCapBytes]）在主线程形成长同步块。语义与 [persistCover] 完全一致：
+  /// 签名校验 / 幂等跳过（同尺寸已存在）/ 旧缩略图作废 / 返回路径或 null。
+  Future<String?> persistCoverChunked(Uint8List cover, String ref,
+      {ChunkYield? yieldTo}) async {
+    if (cover.isEmpty || !looksLikeImageBytes(cover)) return null;
+    final nextTick = yieldTo ?? yieldToEventLoop;
+    try {
+      final dir = p.join(_dir!, 'covers');
+      Directory(dir).createSync(recursive: true);
+      final h = await _md5HexChunked(cover, nextTick);
+      final filePath = p.join(dir, '$h.jpg');
+      final f = File(filePath);
+      if (f.existsSync() && f.lengthSync() == cover.length) return filePath;
+      // 覆盖写新封面：旧缩略图作废删除，随后由 ensureCoverThumb 重新生成。
+      deleteCoverThumb(filePath);
+      await _writeBytesChunked(f, cover, nextTick);
       return filePath;
     } catch (_) {
       return null;
@@ -2903,4 +2928,47 @@ List<String> collectInvalidCoverPaths(String coversDirPath) {
     }
   }
   return out;
+}
+
+// ---------- 封面切片落盘辅助（主线程长同步块治理 R-1） ----------
+
+/// 分片计算文件引用（ref）的 md5 十六进制——这里入参是**封面字节**（本函数只对
+/// 封面内容做分片处理，ref 的哈希在主路径上一次性完成）。
+Future<String> _md5HexChunked(Uint8List bytes, ChunkYield yieldTo) async {
+  const chunk = 256 * 1024;
+  final sink = _DigestCollector();
+  final input = md5.startChunkedConversion(sink);
+  for (var off = 0; off < bytes.length; off += chunk) {
+    final end = off + chunk < bytes.length ? off + chunk : bytes.length;
+    input.add(Uint8List.sublistView(bytes, off, end));
+    if (end < bytes.length) await yieldTo();
+  }
+  input.close();
+  return sink.digest.toString();
+}
+
+/// 分片写盘：覆盖写 [f]（截断），每片之间让出事件循环；末片 flush。
+Future<void> _writeBytesChunked(
+    File f, Uint8List bytes, ChunkYield yieldTo) async {
+  const chunk = 512 * 1024;
+  final raf = f.openSync(mode: FileMode.write);
+  try {
+    for (var off = 0; off < bytes.length; off += chunk) {
+      final end = off + chunk < bytes.length ? off + chunk : bytes.length;
+      raf.writeFromSync(bytes, off, end);
+      if (end < bytes.length) await yieldTo();
+    }
+    raf.flushSync();
+  } finally {
+    raf.closeSync();
+  }
+}
+
+/// 收集 [md5.startChunkedConversion] 的最终摘要。
+class _DigestCollector implements Sink<Digest> {
+  late Digest digest;
+  @override
+  void add(Digest data) => digest = data;
+  @override
+  void close() {}
 }

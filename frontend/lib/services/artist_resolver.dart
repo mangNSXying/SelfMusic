@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
+import '../utils/chunked_scheduler.dart' show yieldToEventLoop;
 import '../utils/main_thread_probe.dart';
 
 /// 按 MBID 取到的实体 + 关系（**一次请求**，Lookup 与 artist-rels 合并的结果）。
@@ -329,7 +330,11 @@ class ArtistResolver extends ChangeNotifier {
     final now = DateTime.now().millisecondsSinceEpoch;
     final items = _index.artistWorkSet(limit: 4, nowEpochMs: now);
     if (items.isEmpty) return;
+    // 主线程切片让出（R-4 / FR-003）：批次「取工作集 + 逐项内联 DB 工作」不再连续
+    // 占满主线程——项与项之间让出事件循环，单次同步块有界（真机探针曾观测
+    // `artist._runBatch` 单次最长 2482ms）。重试/退避语义完全不变。
     for (final item in items) {
+      await yieldToEventLoop(); // 让出：每项开始前
       try {
         perfPhase('artist._resolveOne:${item.displayName}'); // TEMP-PROBE
         await _resolveOne(item);
@@ -355,6 +360,7 @@ class ArtistResolver extends ChangeNotifier {
     // 歌手处理.txt 第 3 步：本地别名表直查（别名已在 artists.names JSON 里）。
     // 命中已解析身份就直接合流，省掉一次 artist 搜索（仍会 lookup 一次关系来展开成员）。
     final local = _index.artistRowByAnyName(searchName);
+    await yieldToEventLoop(); // 让出：本地别名直查（同步 DB）之后、网络/合流之前
     if (local != null && local.isResolved && local.mbid != null) {
       final entity = await _requireEntity(local.mbid!,
           score: (local.matchScore ?? 0).toDouble());
@@ -379,6 +385,7 @@ class ArtistResolver extends ChangeNotifier {
       }
     }
 
+    await yieldToEventLoop(); // 让出：搜索之前（重试/直取分支的本地 DB 工作聚合不占满主线程）
     final hits = await _search(searchName, limit: 10);
     final hit = pickFirstUsable(hits);
     if (hit != null) {
@@ -502,6 +509,7 @@ class ArtistResolver extends ChangeNotifier {
       if (childKey == null) continue;
       await _expandMembers(childKey, childMbid,
           selfType: type, depth: depth + 1);
+      await yieldToEventLoop(); // 让出：成员展开逐项之间（R-4，单次同步块有界）
     }
   }
 

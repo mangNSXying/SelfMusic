@@ -196,11 +196,14 @@ void main() {
     expect(coverReadHint(Uint8List.sublistView(data, 0, 16 * 1024), 'ogg'),
         4 * 16 * 1024);
     // 只看头部阶梯的读取（尾部阶梯会另有一次尾部读取，不能混进来数）。
+    // 增量续读：首采样 16KB，随后从已读末尾续读增量（不再从 0 重下整段）。
     final headReads =
-        r.calls.where((c) => c[0] == 0).map((c) => c[1]).toList();
-    expect(headReads[0], 16 * 1024);
-    expect(headReads[1], 4 * 16 * 1024);
-    expect(headReads.every((l) => l <= 4 * 16 * 1024), isTrue,
+        r.calls.where((c) => c[0] + c[1] <= 4 * 16 * 1024).toList();
+    expect(headReads.length, 2);
+    expect(headReads[0], [0, 16 * 1024]);
+    expect(headReads[1], [16 * 1024, 3 * 16 * 1024],
+        reason: '从已读末尾续读到 4 倍档，而非一次性跳到上限');
+    expect(headReads.every((c) => c[1] <= 4 * 16 * 1024), isTrue,
         reason: '够用即止，不该跳到 kMetaRegionCapBytes');
   });
 

@@ -7,6 +7,7 @@ import '../../platform/harmonyos/ohos_platform_bridge.dart';
 import '../../utils/cover_thumb.dart';
 import '../../utils/main_thread_probe.dart';
 import '../../utils/perf_log.dart';
+import '../../utils/chunked_scheduler.dart' show ChunkYield, yieldToEventLoop;
 import '../local/audio_metadata.dart';
 import '../local/local_index.dart';
 import 'music_source.dart';
@@ -58,7 +59,10 @@ Future<bool> enrichSongMeta(
 /// 返回 false 表示「原生不适用或解析失败」——由 [enrichSongMeta] 回退既有 Dart
 /// 路径（保字段覆盖与补读收敛，绝不劣化）。任何失败都不在此标已读（重试语义）。
 Future<bool> _enrichViaNative(LocalIndex index, MusicSource src, Song song) async {
-  final path = await src.cachedFilePath(song);
+  // R-2：以「是否存在可打开的本地沙箱真路径」判定原生可用性——本地源本体即本地
+  // 文件（无需离线缓存登记），远端源需已缓存。不得因 `cachedFilePath == null`
+  // 对本地源误判为不可用而错失原生解析（主线程长同步块治理 FR-004）。
+  final path = await src.localSandboxPath(song);
   if (path == null || path.isEmpty) return false; // 无本地真路径：远端未缓存等
   final coverTarget = index.coverPathFor(song.sourceRef);
   final res = await OhosPlatformBridge.extractAudioMeta(path, coverPath: coverTarget);
@@ -99,25 +103,43 @@ Future<bool> _enrichViaNative(LocalIndex index, MusicSource src, Song song) asyn
 
 /// 既有纯 Dart 解析路径（非 ohos 走此路径；ohos 在原生不适用/失败时回退到它）：
 /// 头部直读 → 按结构定位补读 → 解析 → 回填索引 → 标已读。行为与非 ohos 逐字节一致。
+///
+/// **主线程切片让出（R-1 / FR-001）**：ohos 上主线程即 Dart 根 isolate，远程源无
+/// 本地缓存时无法走原生解析，此路径的纯 Dart 重活（标签区解析、内嵌封面处理、
+/// 封面落盘/哈希、落库）以 `await` 让出事件循环、片间互不叠加——单次同步块
+/// 目标 < 50ms（真机探针曾观测 `meta.enrich` 单次最长 6.1s）。让出点：
+/// - [readAudioMeta] 传 [ChunkYield]，阶段/阶梯轮次之间让出；解析内部把大内嵌
+///   封面从解析热路径挪出去（零拷贝视图 + base64 分片解码）；
+/// - 封面落盘改走 [LocalIndex.persistCoverChunked]（哈希/写盘分片让出）。
 Future<bool> _enrichViaDart(LocalIndex index, MusicSource src, Song song) async {
+  perfPhase('meta.dart.read'); // TEMP-PROBE
   final meta = await readAudioMeta(
     readRange: (start, length) => _readRange(src, song, start, length),
     format: song.format ?? '',
     fileSize: song.fileSize,
+    yieldTo: yieldToEventLoop,
   );
   if (meta == null) {
     return false; // 未识别容器：不标已读，留待后续重试
   }
+  await yieldToEventLoop();
   var cover = meta.cover;
   if (cover == null || cover.isEmpty) {
+    perfPhase('meta.dart.sibling'); // TEMP-PROBE
     cover = await fetchSiblingImage(src, song);
   }
   String? coverPath;
   if (cover != null && cover.isNotEmpty) {
-    coverPath = index.persistCover(cover, song.sourceRef);
+    await yieldToEventLoop();
+    perfPhase('meta.dart.persistCover'); // TEMP-PROBE
+    // 哈希与写盘分片让出：大内嵌封面（可达 16MB 元数据区上限）不整块同步落盘。
+    coverPath = await index.persistCoverChunked(cover, song.sourceRef,
+        yieldTo: yieldToEventLoop);
     // 列表用缩略图落盘与补读解耦：补读不等缩略图，避免拖慢「标已读」。
     if (coverPath != null) unawaited(ensureCoverThumb(coverPath));
   }
+  await yieldToEventLoop();
+  perfPhase('meta.dart.dbWrite'); // TEMP-PROBE
   await index.enrichSong(song.sourceKey, song.sourceRef,
       title: meta.title,
       artist: meta.artist,
@@ -131,6 +153,8 @@ Future<bool> _enrichViaDart(LocalIndex index, MusicSource src, Song song) async 
   // 内嵌歌词：仅在尚无歌词记录（或仅有「无歌词」标记）时写入，避免覆盖同名 .lrc/用户内容。
   final lyrics = meta.lyrics?.trim();
   if (lyrics != null && lyrics.isNotEmpty) {
+    await yieldToEventLoop();
+    perfPhase('meta.dart.lyrics'); // TEMP-PROBE
     final existing = index.lyricsOf(song.sourceKey, song.sourceRef);
     if (existing == null || existing.isEmpty) {
       await index.setLyrics(song.sourceKey, song.sourceRef, lyrics);
@@ -151,13 +175,28 @@ void _logEnrich(Song song, Stopwatch sw) {
 /// 打开 [start, start+length) 范围并读满（流长度不足时返回实际全部）。
 /// 用 [BytesBuilder] 累积：单次读取可能达到整个元数据区大小（上限
 /// [kMetaRegionCapBytes]），避免 `List<int>` 在大区间上的高额内存开销。
+///
+/// **ohos + SFTP 让出节拍**：dartssh2 的纯 Dart AEAD 解密运行在 UI isolate，
+/// 整段下载会把主线程连续占满（`sftp_direct_source.open` 已限「单请求在飞 +
+/// 16KB 块」，这里再补「读一块歇一块」的节拍），给渲染/输入留事件循环窗口——
+/// 否则后台补读期间界面持续掉帧（真机 2026-10-11 取证）。仅 SFTP 需要：
+/// WebDAV/本地走原生网络与文件栈，不占主线程同步时间。
 Future<Uint8List> _readRange(
     MusicSource src, Song song, int start, int length) async {
+  perfPhase('meta.readRange.$start+$length'); // TEMP-PROBE
   final buf = BytesBuilder(copy: false);
   final opened = await src.open(song, range: IntRange(start, length));
+  final pace = isOhos && src.kind == SourceKind.sftp;
   await for (final chunk in opened.stream) {
     buf.add(chunk);
     if (buf.length >= length) break;
+    if (pace && buf.length >= _paceFirstBytes) {
+      await Future<void>.delayed(_paceSleep);
+    }
   }
   return buf.takeBytes();
 }
+
+/// 补读节拍：首块不必让（保证标签/封面快出），之后每 16KB 解密块间隔 8ms。
+const int _paceFirstBytes = 32 * 1024;
+const Duration _paceSleep = Duration(milliseconds: 8);

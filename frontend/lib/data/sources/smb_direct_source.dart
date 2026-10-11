@@ -302,6 +302,10 @@ class SmbDirectSource implements MusicSource {
   Future<String?> cachedFilePath(Song song) async =>
       index.cachedPath(cacheKeyFor(song));
 
+  /// 远端源原生解析仅对已缓存文件可用（R-2）；未缓存走 Dart 切片兜底。
+  @override
+  Future<String?> localSandboxPath(Song song) => cachedFilePath(song);
+
   @override
   Future<void> cacheSong(Song song, {bool Function()? shouldAbort}) async {
     final cacheKey = cacheKeyFor(song);

@@ -380,6 +380,30 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 - **失败语义与收敛（FR-004/006）**：原生 `ok=false` ⇒ **不标已读**，并由 `enrichSongMeta` 回退既有 Dart 路径（`_enrichViaDart`）——保字段覆盖与补读收敛；成功才 `enrichSong`（内含 `meta_read=1`）。缺失字段留空（`enrichSong` 的 `COALESCE(NULLIF(...))` 保持库中既有值）。**非 ohos 逐字节零回归**（`isOhos` 门控，Dart 读序原样抽出为 `_enrichViaDart`）。
 - **残留风险（真机核对项）**：`AVMetadata` 当前不提供**音轨号/内嵌歌词**（留空不劣化，歌词为预留字段）；`AVMetadata.duration` 官方文档未标注单位，Dart 侧按**毫秒**换算为秒（`OhosAudioMetaResult.durationSec`，若真机核对为秒需改口径）；超大内嵌封面未在原生侧限制尺寸（`fetchAlbumCover` 全尺寸 PixelMap 在任务池线程处理，不占主线程）。
 
+**主线程长同步块治理：补读 / 权重预热 / 歌手解析（`spec/ohos-mainthread-long-blocks`，2026-10-11）**
+
+> 承接上节：真机探针（`utils/main_thread_probe.dart`，临时保留至验收）在**远程源**（sftp/webdav，无本地缓存 → 原生解析被绕过）曲库上又测出三处主线程长同步块：`meta.enrich` 单次最大 6.1s、`weight.warmMetaOf` ~1.5s、`artist._runBatch` 最大 2.5s。本节记**写代码时必守的切片让出规则**。
+
+- **统一原则**：鸿蒙上 Dart 根 isolate 即应用主线程，**任何**可切分的纯 Dart 重活都必须**片间 `await` 让出事件循环**（统一用 `utils/chunked_scheduler.dart` 的 `runChunked`/`runChunkedCancellable`，或公开的 `yieldToEventLoop()` 钩子），保证单次同步块 < 50ms。**不得**依赖 `Isolate.run`（ohos 无法可靠 spawn 子 isolate，`runOffThread` 内联主线程）。
+- **补读兜底路径切片（`meta_enrich.dart` 的 `_enrichViaDart`，P1）**：远程源无本地缓存时无法走原生，纯 Dart 读序（解析 → 封面处理 → 落盘/哈希 → 落库）各阶段之间 `await yieldToEventLoop()`；`readAudioMeta` 传 `yieldTo`，头部/尾部阶梯每轮之间让出；封面落盘改走 `LocalIndex.persistCoverChunked`（md5 哈希 + 写盘分片让出）。
+- **解析器字节区间切片（`audio_metadata.dart`）**：大内嵌封面**不再整块复制**——mp3 APIC / flac PICTURE / m4a covr 一律用 `Uint8List.sublistView` 零拷贝视图（解析只校验前 12 字节签名）；ogg/flac 的 base64 内嵌封面（`METADATA_BLOCK_PICTURE`/`COVERART`）解析阶段只**登记**字符串（`AudioMeta.pendingCoverB64`），解码挪到 `readAudioMeta` 末尾分片进行（`_decodeBase64Chunked`，按 4 字符对齐切段、段间让出）；`parseAudioHead` 同步调用方（扫描/单测）仍在末尾一步到位解码，逐字节零回归。
+- **原生路径判定修正（`meta_enrich.dart` + `MusicSource.localSandboxPath`，R-2）**：原生 `extractAudioMeta` 的可用性以「**是否存在可打开的本地沙箱真路径**」判定，**不得**再把原生绑死在「离线缓存登记」上——本地源本体即本地文件（旧判定用 `cachedFilePath==null` 对本地源误判为不可用）。`LocalDirectSource.localSandboxPath` 显式表达「原生可用性」；远端源默认委托 `cachedFilePath`（未缓存 = null → 走切片后的 Dart 兜底）。
+- **权重预热限量分批（`song_weight_store.dart` 的 `warmMetaOf`，R-3）**：不再整表一次同步查 `play_meta`；按 `_warmBatch=300` 分批、批间 `yieldToEventLoop()`。方法改为 `Future<void>`（5 处 `onWarm: () => weight.warmMetaOf(...)` 仍以 `VoidCallback` 丢弃 Future，语义「最终填满缓存」不变）；单批异常静默（逐行 `metaOf` 兜底）。
+- **歌手解析批次切片（`artist_resolver.dart`，R-4）**：`_runBatch` 项与项之间、`_resolveOne` 本地直查与网络/合流之间、`_expandMembers` 成员展开逐项之间 `await yieldToEventLoop()`；**重试/退避语义与请求数完全不变**（真实瓶颈仍是 MB 1 req/s 限流，切片只解决主线程占用）。
+- **失败可观测**：三处失败语义不变——补读未识别容器不标已读、下一轮重试（`_enrichViaDart` 返回 false）；原生失败 `ok=false` 回退 Dart 并附 `error`；歌手解析失败 `debugPrint('[artist-resolve] …')` 后指数退避。切片过程**不得**吞掉失败原因（预热批异常静默是唯一的「静默」例外，因其有逐行兜底）。
+- **零回归**：非 ohos 逐字节不变（`isOhos` 门控；`readAudioMeta` 的 `yieldTo` 默认 null → 同步路径一致）；Dart 既有单测保持通过（Windows 环境个别用例在**删临时目录**处因写隔离句柄未释放而报 `errno=32`，属既有环境问题，非本特性引入）。
+
+**SFTP 直连解密的主线程治理（2026-10-11 真机取证，承接上节）**
+
+> 上节切片后仍持续掉帧：冻结堆栈用同构建 `--split-debug-info` 符号化，定位到 **dartssh2 的纯 Dart AEAD 解密**（pointycastle `GCMBlockCipher._gHASHBlock`）在 UI isolate 上以微任务链连跑（`SSHTransport._consumeAeadPacket`）；微任务优先于渲染事件，主线程被连续占满。本节记 **SFTP 读取必守的限流纪律**。
+
+- **根因**：`SftpFile.read` 默认 64 并发 × 16KB 扇出，会把整段 Range（补读可达 16MB）灌成一条解密链——实测单次同步块 9~11s（THREAD_BLOCK_6S 强杀），30~80MB 大封面 FLAC 单曲补读 28s。
+- **请求限流（`sftp_direct_source.open`）**：`chunkSize: 16KB, maxPendingRequests: 1`——同一时刻只有一个 16KB 请求在飞，解密与网络事件交替，单块同步块 ~10ms。**勿放开 maxPendingRequests**（除非把解密移出 UI isolate；ohos fork 无子 isolate）。
+- **补读让出节拍（`meta_enrich._readRange`）**：ohos + SFTP 时每个解密块后 `await Future.delayed(8ms)`（前 32KB 不让，保证头部/标签快出）；整曲缓存（`SftpDirectSource.cacheSong`）同口径 6ms/块。非 ohos 不启用（无 6s 看门狗，保持既有速度）。
+- **业务状态错误不重连（`sftp_direct_source._withSftp`）**：同目录图片回退会逐个 `open` 不存在的候选路径，服务端回 `SftpStatusCode.noSuchFile`——旧实现对所有异常 `close()`+重连，每个候选白付一次纯 Dart SSH 握手（~600ms 主线程 stall；无内嵌封面歌曲 11 个候选 → 5~7s 卡顿）。只有 `noConnection`/`connectionLost` 与未知异常才重建重试。
+- **头部阶梯增量拼接（`audio_metadata.readAudioMeta`）**：阶梯每级只 `readRange(len, target-len)` 续读再拼到已读缓冲，不再 `readRange(0, target)` 从头重下——多级阶梯（2.1MB→11MB→16MB）少下近一倍字节，SFTP 上每字节都要主线程解密，收益直接。
+- **验收口径（真机 120s 冷启动，SFTP 曲库）**：`[perf] stall` ≥250ms 计数 **51 → 1**；`THREAD_BLOCK_6S` **0**；100 首补读批次约 2 分钟内完成（大封面歌曲受让出节拍限速属预期）。
+
 ### 客户端同步与缓存批处理
 
 - **先落库再上报**：调权 / 收藏 / 歌单 / 断点先写本地（`applyWeightEvent` 在写连接内原子读改写并同时入 `weight_outbox`），再由 `SyncEngine` 推送——**不要**在 UI 回调里直接调 API

@@ -213,6 +213,22 @@ class LocalDirectSource implements MusicSource {
     return File(path).existsSync() ? path : null;
   }
 
+  /// 本地源的**原生解析可用路径**（R-2）：本体即本地文件，只要沙箱内可打开就
+  /// 返回其真路径——**与离线缓存无关**（本地源本就无需「缓存登记」，旧判定把
+  /// 「无缓存」误当「不可用」而错失原生解析）。语义与 [cachedFilePath] 在当前
+  /// 实现下同源，但此处显式表达「原生可用性」而非「断网可播缓存」，避免未来
+  /// 二者语义分化时再次误判。
+  @override
+  Future<String?> localSandboxPath(Song song) async {
+    if (isOhos) {
+      final path = await OhosPlatformBridge.resolvePath(rootPath, song.sourceRef);
+      if (path == null) return null;
+      return File(path).existsSync() ? path : null;
+    }
+    final path = _absPath(song.sourceRef);
+    return File(path).existsSync() ? path : null;
+  }
+
   @override
   Future<OpenedStream> open(Song song, {IntRange? range}) async {
     if (isOhos) return _openOhos(song, range);
