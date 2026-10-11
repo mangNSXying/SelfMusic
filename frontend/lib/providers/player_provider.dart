@@ -520,12 +520,20 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _sleepStop();
   }
 
-  /// 睡眠定时最终收口：先读退出开关再清定时（清空会复位该位），
-  /// 「播放结束退出软件」为开则退出进程，否则暂停。
-  void _sleepStop() {
+  /// 睡眠定时最终收口：先读退出开关再清定时（清空会复位该位）。
+  /// [advance] 为 true 表示停止恰好落在曲末：按当前播放模式预切到下一首并暂停
+  /// （无下一首则原地暂停）；否则在当前进度原地暂停。
+  /// 「播放结束退出软件」为开则先落库断点再退进程。
+  void _sleepStop({bool advance = false}) {
     final exitApp = _sleepExitApp;
     _clearSleep();
-    unawaited(exitApp ? _quitAfterSleep() : _pauseNowForSleep());
+    if (exitApp) {
+      unawaited(advance ? _advancePausedThenQuit() : _quitAfterSleep());
+    } else if (advance) {
+      unawaited(_advancePausedForSleep());
+    } else {
+      unawaited(_pauseNowForSleep());
+    }
   }
 
   /// 「播放结束退出软件」：先走正常停机（落库断点/停播放器），再退进程。
@@ -540,17 +548,33 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _syncSystemMedia();
   }
 
+  /// 曲末预切：装载下一首后立即暂停（位置 0，不发声）。
+  /// 无下一首时 [_advance] 自行走 [_finishQueue] 原地暂停；坏歌仍按自动链路
+  /// 跳过（透传 play=false，跳歌同样不发声）。
+  Future<void> _advancePausedForSleep() async {
+    await _advance(play: false, autoAdvanceOnFailure: true);
+    notifyListeners();
+    _syncSystemMedia();
+  }
+
+  /// 曲末预切后退软件：断点落在下一首 0 处，再走正常停机并退进程。
+  Future<void> _advancePausedThenQuit() async {
+    await _advance(play: false, autoAdvanceOnFailure: true);
+    await shutdown();
+    exit(0);
+  }
+
   /// 曲目自然播放结束时被调用：返回 true 表示由睡眠定时接管（不再自动切歌）。
   bool _handleTrackCompletedSleep() {
     if (_sleepPendingStop) {
-      _sleepStop();
+      _sleepStop(advance: true);
       return true;
     }
     final kind = _sleepKind;
     if (kind == SleepTimerKind.count) {
       if (_sleepCountLeft > 0) _sleepCountLeft--;
       if (_sleepCountLeft <= 0) {
-        _sleepStop();
+        _sleepStop(advance: true);
         return true;
       }
       notifyListeners();
@@ -559,6 +583,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (kind == SleepTimerKind.endOfList &&
         _idx == _queue.length - 1 &&
         _current != null) {
+      // 列表结尾：语义即「播到列表末尾停」，没有下一首，原地暂停。
       _sleepStop();
       return true;
     }
@@ -1548,6 +1573,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         // 无本地源（如同步快照行且本机未配置对应源）：不崩，提示后由调用方决定。
         throw StateError('找不到该歌曲的播放源，请先配置对应播放源');
       }
+      // 睡眠定时曲末预切（play=false）：装载前先暂停，避免 just_audio 因
+      // playing 仍为 true（自然播完不复位）而在 setUrl 后自动续播下一首，
+      // 从装载开始一路发声到暂停写回，漏出可闻的下一首片段。
+      if (!play && player.playing) {
+        try {
+          await player.pause();
+        } catch (_) {}
+      }
       await _playDirect(cur, src, alive: alive);
       if (!alive()) return; // 已被更新的切歌接管
       _loadFailStreak = 0;
@@ -1572,10 +1605,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           if (!autoAdvanceOnFailure) {
             AppToast.error(e, '播放失败');
           } else {
-            unawaited(_autoSkipAfterFailure(e));
+            unawaited(_autoSkipAfterFailure(e, play));
           }
         }));
         _fadeIn();
+      } else if (player.playing) {
+        // play=false 兜底：装载完成后若仍在发声（平台差异）立即暂停。
+        await player.pause();
       }
       if (!alive()) return;
       unawaited(_applyEqualizerBands());
@@ -1603,7 +1639,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 连败到上限才提示。手动点播仍逐次提示。
       if (!autoAdvanceOnFailure) AppToast.error(e, '播放失败');
       notifyListeners();
-      if (autoAdvanceOnFailure) unawaited(_autoSkipAfterFailure(e));
+      if (autoAdvanceOnFailure) unawaited(_autoSkipAfterFailure(e, play));
     }
   }
 
@@ -2046,11 +2082,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 推进到下一首。[autoAdvanceOnFailure] 为 true 表示这是自动续播链路
   /// （自然播完、失败跳歌、播放错误恢复），装载失败时继续跳下一首而非停住。
-  Future<void> _advance({bool autoAdvanceOnFailure = false}) async {
+  /// [play] 为 false 时只装载下一首并暂停（睡眠定时曲末预切），不发声。
+  Future<void> _advance(
+      {bool autoAdvanceOnFailure = false, bool play = true}) async {
     if (_queue.isEmpty || _current == null) return;
     // 单曲循环是显式的「不要推进」：连 [_nextUp] 也压住，等用户切模式或手动下一首。
     if (_mode == PlayMode.loopOne) {
-      await _replay();
+      await _replay(play: play);
       return;
     }
     // 「下一首播放」优先于随机抽样与列表循环：无论何种模式，用户排的那首都先播。
@@ -2061,11 +2099,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 槽位若还在就会一直重播同一首。播成后由 [_rebuildFusedQueue] 让基座补位。
       _nextUp = null;
       await _play(target,
-          source: _curSource, autoAdvanceOnFailure: autoAdvanceOnFailure);
+          source: _curSource,
+          autoAdvanceOnFailure: autoAdvanceOnFailure,
+          play: play);
       return;
     }
     if (_mode == PlayMode.weighted) {
-      await _playWeighted(autoAdvanceOnFailure: autoAdvanceOnFailure);
+      await _playWeighted(
+          autoAdvanceOnFailure: autoAdvanceOnFailure, play: play);
       return;
     }
     if (_mode == PlayMode.loopList) {
@@ -2081,7 +2122,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
       _idx = landed;
       await _play(_queue[_idx],
-          source: _curSource, autoAdvanceOnFailure: autoAdvanceOnFailure);
+          source: _curSource,
+          autoAdvanceOnFailure: autoAdvanceOnFailure,
+          play: play);
       return;
     }
     // 顺序推进：落到接缝复本上则越过一位；越过队尾（>= 队长）即播完收尾。
@@ -2095,7 +2138,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (landed < _queue.length) {
       _idx = landed;
       await _play(_queue[_idx],
-          source: _curSource, autoAdvanceOnFailure: autoAdvanceOnFailure);
+          source: _curSource,
+          autoAdvanceOnFailure: autoAdvanceOnFailure,
+          play: play);
       return;
     }
     // 顺序模式播到队尾：深层清零后从头播放（仅锚定融合队列；非锚定仍收尾停止）。
@@ -2108,7 +2153,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _rebuildFusedQueue();
       _idx = 0;
       await _play(_queue[_idx],
-          source: _curSource, autoAdvanceOnFailure: autoAdvanceOnFailure);
+          source: _curSource,
+          autoAdvanceOnFailure: autoAdvanceOnFailure,
+          play: play);
       return;
     }
     // 顺序模式播到队尾：显式收尾。此前这里什么都不做，播放器停在 completed 且
@@ -2127,7 +2174,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 装载失败后自动跳下一首：连败到 [_loadFailSkipLimit] 首才停，
   /// 既不让个别坏歌卡住整条队列，也避免整队不可播时无限跳歌。
-  Future<void> _autoSkipAfterFailure([Object? reason]) async {
+  /// [play] 透传给 [_advance]：睡眠定时曲末预切的跳歌仍保持暂停不发声。
+  Future<void> _autoSkipAfterFailure([Object? reason, bool play = true]) async {
     _loadFailStreak++;
     debugPrint('[play] 装载连续失败 $_loadFailStreak 次: $reason');
     if (_loadFailStreak >= _loadFailSkipLimit) {
@@ -2144,7 +2192,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           reason is TimeoutException ? '（网络超时）' : '';
       AppToast.show('无法加载，正在尝试下一首$hint');
     }
-    await _advance(autoAdvanceOnFailure: true);
+    await _advance(autoAdvanceOnFailure: true, play: play);
   }
 
   Future<void> prev() {
@@ -2177,16 +2225,21 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     return Future.value();
   }
 
-  /// 单曲循环：同一首重播。
-  Future<void> _replay() async {
+  /// 单曲循环：同一首重播。[play] 为 false 时只回到开头并暂停（睡眠定时曲末预切）。
+  Future<void> _replay({bool play = true}) async {
     _completedKey = null;
     await player.seek(Duration.zero);
-    await player.play();
+    if (play) {
+      await player.play();
+    } else if (player.playing) {
+      await player.pause();
+    }
   }
 
   /// 加权随机下一首（stage2.md §2.2）：优先采用 peekNext 已抽样的结果
   /// （保证预载的就是实际要播的），失效则重新从队列全量排除上一首按 factor 采样。
-  Future<void> _playWeighted({bool autoAdvanceOnFailure = false}) async {
+  Future<void> _playWeighted(
+      {bool autoAdvanceOnFailure = false, bool play = true}) async {
     final picked = _takePeeked() ?? _pickWeighted();
     if (picked == null) return;
     // 定位优先深层尾（同 [_rebuildFusedQueue]；播后重建还会再纠一次）。
@@ -2194,7 +2247,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         _queue, _deepList?.length ?? 0, picked, _same);
     _idx = i < 0 ? 0 : i;
     await _play(picked,
-        source: _curSource, autoAdvanceOnFailure: autoAdvanceOnFailure);
+        source: _curSource,
+        autoAdvanceOnFailure: autoAdvanceOnFailure,
+        play: play);
   }
 
   /// 按权重随机抽一首（排除当前曲；只剩当前曲时允许重播）。
