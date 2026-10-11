@@ -84,9 +84,26 @@ class InteractionGate extends ChangeNotifier {
   void scheduleNotify(VoidCallback notify) {
     if (isInteracting) {
       _pendingNotify = notify; // 去重：多次变更合并为「结束时补投一次」
+      _armDeadline();
       return;
     }
     notify();
+  }
+
+  /// 兜底投递时限：交互期聚合的通知若超过此时限仍未补投（信号位卡住——
+  /// 如列表在 fling 中途随页面释放导致 ScrollEnd 缺席，scrolling 永久为真），
+  /// 到期强制投递。正确性优先于避让动画：超过此时限的"交互中"不可能是正常
+  /// 手势（本仓动画均 <500ms），宁可在极罕见场景多一次重建，也不丢最终状态。
+  static const _pendingDeadline = Duration(seconds: 2);
+
+  /// 兜底计时器（仅在有未补投通知时存在；正常补投时取消）。
+  Timer? _deadlineTimer;
+
+  void _armDeadline() {
+    _deadlineTimer ??= Timer(_pendingDeadline, () {
+      _deadlineTimer = null;
+      _flushPending();
+    });
   }
 
   bool _active = false;
@@ -102,6 +119,8 @@ class InteractionGate extends ChangeNotifier {
   void _flushPending() {
     final pending = _pendingNotify;
     _pendingNotify = null;
+    _deadlineTimer?.cancel();
+    _deadlineTimer = null;
     if (pending == null) return;
     // 交互刚结束：帧末补投，避免与动画最后一帧同帧叠加。
     if (SchedulerBinding.instance.schedulerPhase == SchedulerPhase.idle) {
@@ -113,4 +132,11 @@ class InteractionGate extends ChangeNotifier {
 
   @visibleForTesting
   void flushPendingNow() => _flushPending();
+
+  @override
+  void dispose() {
+    _deadlineTimer?.cancel();
+    _deadlineTimer = null;
+    super.dispose();
+  }
 }

@@ -1,3 +1,4 @@
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:selfmusic/utils/interaction_gate.dart';
 
@@ -70,5 +71,48 @@ void main() {
     expect(gate.hasPendingNotify, isFalse);
     await Future<void>.delayed(Duration.zero);
     expect(n, 1);
+  });
+
+  test('信号卡住时兜底投递（超期强制补投，不丢失）', () {
+    // 回归：列表在 fling 中途随页面释放 → ScrollEnd 缺席 → scrolling
+    // 永久为真 → 后续所有通知被聚合且永不补投（新增源重启前不可见）。
+    fakeAsync((async) {
+      final gate = InteractionGate();
+      var n = 0;
+      gate.beginScroll(); // 交互开始，且永远不 endScroll（模拟信号卡住）
+      gate.scheduleNotify(() => n++);
+      gate.scheduleNotify(() => n++); // 去重：仍只保留最后一次
+      expect(n, 0);
+      expect(gate.hasPendingNotify, isTrue);
+      // 时限内不投递（避让仍生效）。
+      async.elapse(const Duration(seconds: 1));
+      expect(n, 0);
+      expect(gate.hasPendingNotify, isTrue);
+      // 超期强制投递（仍"交互中"也投）。
+      async.elapse(const Duration(seconds: 2));
+      expect(gate.hasPendingNotify, isFalse);
+      async.flushMicrotasks();
+      expect(n, 1, reason: '超期应补投一次且仅一次');
+      // 之后信号恢复也不重复投递。
+      gate.endScroll();
+      async.flushMicrotasks();
+      expect(n, 1);
+    });
+  });
+
+  test('正常补投后兜底计时器取消（不二次投递）', () {
+    fakeAsync((async) {
+      final gate = InteractionGate();
+      var n = 0;
+      gate.beginScroll();
+      gate.scheduleNotify(() => n++);
+      gate.endScroll(); // 正常边沿补投
+      async.flushMicrotasks();
+      expect(n, 1);
+      // 即使时间流逝也不再投递。
+      async.elapse(const Duration(seconds: 5));
+      async.flushMicrotasks();
+      expect(n, 1);
+    });
   });
 }

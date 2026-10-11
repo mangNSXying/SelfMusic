@@ -463,8 +463,10 @@ class DirectSourceManager extends ChangeNotifier {
         return _buildDirect(
             kind: r.kind, key: r.key, name: name, cfg: cfg);
       }
-    } catch (_) {
-      // 忽略损坏的源配置。
+    } catch (e) {
+      // 损坏的源配置：记日志再丢行。曾出现"源在安卓可见、鸿蒙不可见"的
+      // 线上 case，静默丢行零线索难定位，故此处必须带 kind+key 落日志。
+      debugPrint('[direct] 忽略损坏的源配置 ${r.kind}:${r.key}: $e');
     }
     return null;
   }
@@ -821,6 +823,9 @@ class DirectSourceManager extends ChangeNotifier {
     await _emitSource(SyncEventTypes.sourceCreate, key);
     restartAutoScan();
     notifyListeners();
+    // 排查"鸿蒙建后即失踪"：此行出现=内存+落库+通知全成功，之后若列表仍无
+    // 该行，必是后续 reload 丢行（看 [direct] 忽略损坏的源配置 日志）。
+    debugPrint('[direct] 新增SMB源 $key（host=$host share=$share）');
   }
 
   /// 编辑源：可改 名称（含 key 迁移）/ 地址或目录 / 账号 / 密码·密钥 / 播放链路。

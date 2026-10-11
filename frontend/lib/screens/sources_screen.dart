@@ -506,32 +506,38 @@ class _SourceDialogState extends State<_SourceDialog> {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (!_isEdit) ...[
-              SegmentedButton<SourceKind>(
-                segments: const [
-                  ButtonSegment(
-                    value: SourceKind.webdav,
-                    icon: Icon(Icons.cloud_outlined),
-                    label: Text('WebDAV'),
-                  ),
-                  ButtonSegment(
-                    value: SourceKind.local,
-                    icon: Icon(Icons.folder_outlined),
-                    label: Text('本地文件夹'),
-                  ),
-                  ButtonSegment(
-                    value: SourceKind.sftp,
-                    icon: Icon(Icons.storage_outlined),
-                    label: Text('SFTP'),
-                  ),
-                  ButtonSegment(
-                    value: SourceKind.smb,
-                    icon: Icon(Icons.dns_outlined),
-                    label: Text('SMB'),
-                  ),
-                ],
-                selected: {_kind},
-                onSelectionChanged: (s) =>
-                    setState(() => _kind = s.first),
+              // 四段（WebDAV/本地/SFTP/SMB）总宽在手机窄屏上可能超出弹窗：
+              // SegmentedButton 自身不可滚动，末尾的 SMB 段会被裁掉，故包一层
+              // 横滑保证可达；宽屏下内容一次放下，无滚动、无视觉变化。
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: SegmentedButton<SourceKind>(
+                  segments: const [
+                    ButtonSegment(
+                      value: SourceKind.webdav,
+                      icon: Icon(Icons.cloud_outlined),
+                      label: Text('WebDAV'),
+                    ),
+                    ButtonSegment(
+                      value: SourceKind.local,
+                      icon: Icon(Icons.folder_outlined),
+                      label: Text('本地文件夹'),
+                    ),
+                    ButtonSegment(
+                      value: SourceKind.sftp,
+                      icon: Icon(Icons.storage_outlined),
+                      label: Text('SFTP'),
+                    ),
+                    ButtonSegment(
+                      value: SourceKind.smb,
+                      icon: Icon(Icons.dns_outlined),
+                      label: Text('SMB'),
+                    ),
+                  ],
+                  selected: {_kind},
+                  onSelectionChanged: (s) =>
+                      setState(() => _kind = s.first),
+                ),
               ),
               const SizedBox(height: 16),
             ],
