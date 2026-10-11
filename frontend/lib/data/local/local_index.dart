@@ -1134,6 +1134,15 @@ class LocalIndex {
     return out;
   }
 
+  /// 歌单条目计数（E）：`PlaylistsProvider.refresh` 原先 `itemsOf(...).length`
+  /// 全行物化只为计数，大歌单在 UI 线程放大；计数走 `COUNT(*)`。
+  int playlistItemCount(int playlistId) {
+    final rs = _db!.select(
+        'SELECT COUNT(*) AS n FROM playlist_items WHERE playlist_id=?',
+        [playlistId]);
+    return (rs.first['n'] as int?) ?? 0;
+  }
+
   List<PlaylistItemRow> playlistItems(int playlistId) {
     final rs = _db!.select('''
       SELECT id, playlist_id, source_key, song_ref, title, artist, album,

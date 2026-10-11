@@ -51,6 +51,9 @@ class PlaylistStore {
   List<PlaylistItemRow> itemsOf(int playlistId) =>
       index.playlistItems(playlistId);
 
+  /// 条目计数（E）：只计数不取行，供列表计数刷新。
+  int countItemsOf(int playlistId) => index.playlistItemCount(playlistId);
+
   /// 把歌曲快照加入歌单（供离线/源失效时展示）。
   Future<void> addSong(int playlistId, Song s) async {
     await index.addPlaylistItem(

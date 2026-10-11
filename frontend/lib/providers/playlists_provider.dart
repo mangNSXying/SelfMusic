@@ -51,7 +51,7 @@ class PlaylistsProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  int _countsOf(int playlistId) => store.itemsOf(playlistId).length;
+  int _countsOf(int playlistId) => store.countItemsOf(playlistId);
 
   Future<int> create(String name, {String? description}) async {
     final id = await store.create(name, description: description);
