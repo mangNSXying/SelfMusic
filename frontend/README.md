@@ -1,7 +1,7 @@
 # SelfMusic 前端（Flutter）
 
 跨平台客户端：Linux 桌面 + Android + Windows + HarmonyOS NEXT（`lib/` 全为可换主题自适应 Dart 代码；鸿蒙经三方分支 + 平台收口层接入，PoC 验收已通过）。
-目录结构与职责注释见 [../DEVELOPER.md「项目结构」](../DEVELOPER.md#项目结构)，设计与数据模型见 [../DESIGN.md](../DESIGN.md)。
+目录结构与职责注释见 [../DEVELOPER.md「项目结构」](../DEVELOPER.md#项目结构)，整体架构、数据模型与 API 契约见 [../DEVELOPER.md「总体架构」](../DEVELOPER.md#总体架构) 及「[数据模型](../DEVELOPER.md#数据模型)」。
 
 ## 运行
 

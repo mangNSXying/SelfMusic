@@ -1,7 +1,7 @@
 # SelfMusic 设置指南
 
 > 状态：**设置体系的权威清单 + 后续实现指南**。✅ = 已实现；⏳ = 规划待实现；🔧 = 占位分区。
-> 规划来源：DESIGN §6.7（客户端用户设置）、§9 R4（仅 Wi-Fi 扫描）、阶段 0 遗留（通知/音频焦点）、本指南侧边栏批注。
+> 规划来源：DEVELOPER.md「数据模型」（客户端 app_settings 表）、DEVELOPER.md「风险与开放问题」R4（仅 Wi-Fi 扫描）、阶段 0 遗留（通知/音频焦点）、本指南侧边栏批注。
 > 部署类配置（`.env`、`--dart-define`、Nginx、Docker）**不属于软件内设置**，已在 DEVELOPER.md 中说明，本文件不重复。
 
 ---
@@ -104,7 +104,7 @@ mode == follow_server → 有服务端镜像用镜像，无镜像回退本地自
 
 ### 3.3.2 服务端分区 · 多设备同步（阶段5，已实现）
 
-> 同在 `设置 → 服务端`（「网络与安全」下方的「多设备同步」区块；DESIGN §7.2）。
+> 同在 `设置 → 服务端`（「网络与安全」下方的「多设备同步」区块）；同步协议语义见 DEVELOPER.md「播放算法与同步协议」。
 > 有歌曲身份即参与：权重 / 收藏 / 歌单 / 断点经服务端在设备间收敛；直连歌曲在连着服务器时同样同步（服务端按 `(source, source_ref)` 建影子行承载状态），未配对时直连事件不进队。
 
 | 设置项 | 键 | 默认 | 说明 |
@@ -128,7 +128,7 @@ mode == follow_server → 有服务端镜像用镜像，无镜像回退本地自
 | 忽略音频（时长过滤） | `scan_ignore_min_duration_sec` | `0`（关；启用建议 `60`） | 直连扫描 / 全局合并时过滤过短的明显非音乐文件；**已入库歌曲同样即时过滤**（设置变更后歌曲/喜欢/专辑/歌手/源浏览按新规则生效；时长未知 `NULL/<=0`（快扫未读头）一律放过） |
 | 忽略音频（大小过滤） | `scan_ignore_min_size_bytes` | `0`（关） | 同上，按文件大小过滤；已入库歌曲即时过滤（未知大小放过） |
 | 时长削弱 | `curve_weight_enabled` + `curve_weight_segments` | 关 + 空 | **权重-时长分段函数**（改进.txt 功能8）：加权随机抽样时按歌曲时长乘削弱系数（长歌权重降低，避免长歌垄断）。`curve_weight_segments`=JSON 数组：`[{"min_sec":300,"max_sec":600,"factor":0.8}, {"min_sec":600,"max_sec":null,"factor":0.6}]`，`max_sec=null` 表示 ≥min_sec 恒生效（即「超过设定值」）；作用域左闭右开 `[min,max)`，命中第一段即止，未命中/时长未知=1.0；系数钳回 0.5–1.5。**只是抽样侧即时计算，不落库、不改 `play_meta`、服务端零改动**；列表「权重」排序不受影响 |
-| 仅 Wi-Fi 扫描 | `scan_wifi_only` | `true`（移动端） | 移动端直连扫描仅 Wi-Fi 下进行（DESIGN R4）；桌面端忽略此开关 |
+| 仅 Wi-Fi 扫描 | `scan_wifi_only` | `true`（移动端） | 移动端直连扫描仅 Wi-Fi 下进行（见 DEVELOPER.md「风险与开放问题」R4）；桌面端忽略此开关 |
 | 扫描方式 | —（已写死） | 快速：只建索引 | **无设置项**：固定「快速：只建索引」，只用枚举拿到的 ref/size/mtime/etag 落库，不读任何音频内容（零读头请求）。原 `scan_mode`/`scan_head_bytes`/`scan_embed_cover` 三项已删除——它们让首扫在整库上盲目读头，代价与收益倒挂。元数据与封面由播放时补读、后台补读按结构定位后精确读取 |
 | 自动扫描间隔 | `scan_auto_interval_min` | `0`（关） | 按固定周期对全部直连源增量扫描（指纹未变零下载）；本地目录变化即使未开启也会自动触发 |
 
@@ -191,7 +191,7 @@ mode == follow_server → 有服务端镜像用镜像，无镜像回退本地自
 
 ## 5. 服务端全局设置与同键解析
 
-> 源：`scripts/init.sql` + `application.yml`；DESIGN §3.1。
+> 源：`scripts/init.sql` + `application.yml`；服务端表定义见 DEVELOPER.md「数据模型」。
 > 写入口：`PAIRING_TOKEN` 与缓存建议值（`CACHE_MAX_MIB` MiB / `CACHE_SONG_LIMIT` 首）每次启动由 env 镜像覆盖写入（改 `.env` 重启生效）；读取端 `GET /api/v1/admin/pairing-token`（配对密钥）、`GET /api/v1/admin/config`（缓存建议值）与 `GET /api/v1/meta/server`（版本/ffmpeg/水位）均已实现；`PUT /api/v1/admin/settings`（管理端改缓存两键）已实现——注意 env 重启覆盖语义，PUT 值会被带 env 重启覆盖。转码并发 `TRANSCODE_MAX_CONCURRENCY` 只 env（默认 2），不进表。
 
 | 键 | 默认 | 说明 | 与客户端同键？ |
@@ -206,7 +206,7 @@ mode == follow_server → 有服务端镜像用镜像，无镜像回退本地自
 > **同键项设计约定**：客户端与服务器同名的配置（当前为缓存两项），客户端一律用
 > 「`follow_server` / `custom`」双来源（§3.3）。客户端默认值与服务端建议值不同属正常：
 > 服务端值为团队/全设备建议，客户端 `custom` 为单机覆盖。`follow_server` 的**解析规则已落地**，
-> 服务端 `GET /api/v1/admin/config` **已实现**（建议值由 env 镜像）；但客户端**接线未做**——该选项仍灰显，阶段 6 接线后启用。
+> 服务端 `GET /api/v1/admin/config` **已实现**（建议值由 env 镜像）；客户端 `follow_server` 接线**已实现**（进入分区自动拉取，不可达回退自定义）。
 
 ---
 
@@ -214,7 +214,7 @@ mode == follow_server → 有服务端镜像用镜像，无镜像回退本地自
 
 | 待实现项 | 前置 / 归属 | 建议时机 |
 |---------|-----------|---------|
-| 歌词功能（内嵌 USLT / FLAC LYRICS + 同名 `.lrc` + 歌词页） | 客户端本地，无后端依赖 | ✅ 已实现（DESIGN §6.8） |
+| 歌词功能（内嵌 USLT / FLAC LYRICS + 同名 `.lrc` + 歌词页） | 客户端本地，无后端依赖 | ✅ 已实现（实现见 DEVELOPER.md「歌词与后台播放」） |
 | 后台播放完善（返回桌面续播，停止才真正停） | Android `audio_service` | ✅ 已实现（§3.6） |
 | 睡眠定时四模式（指定时间/时长/曲数/列表结尾 + 播放完最后曲目） | 播放页弹窗 | ✅ 已实现（可配置，不再写死） |
 | 播放页封面「更多」→ 歌曲信息 / 修改歌曲元数据（全源） | 客户端本地 | ✅ 已实现（直连 `user_edited=1` 扫描不覆盖；服务器本地覆盖） |
@@ -236,6 +236,6 @@ mode == follow_server → 有服务端镜像用镜像，无镜像回退本地自
 | 缓存目录展示（`设置 → 服务端`） | 客户端本地 | ✅ 已实现（真实路径 + 占用 + 点击复制） |
 | 默认 HTTPS + 「允许不安全 HTTP」+「信任自签名证书」开关 | 网络安全加固 | ✅ 已实现（§3.3.1；`ApiClient.validateEndpointUrl` 约束后端/WebDAV/配对地址，自签名开关覆盖 dio + dart:io 直连） |
 | 明文凭据收敛（WebDAV 密码 / 配对密钥 → `flutter_secure_storage`，清理 `sources.config` 与 `server_settings.json` 明文） | 网络安全加固 | ✅ 已实现（`SecretStore`；老数据启动自动迁移） |
-| 多设备同步（权重/收藏/歌单/断点收敛 + SyncEngine + 设备管理页） | 阶段 5 | ✅ 已实现（§3.3.2；DESIGN §7.2/§8；后端 11 步端到端验证通过，三端真机验收待做） |
+| 多设备同步（权重/收藏/歌单/断点收敛 + SyncEngine + 设备管理页） | 阶段 5 | ✅ 已实现（§3.3.2；协议见 DEVELOPER.md「播放算法与同步协议」；后端 11 步端到端验证通过，三端真机验收待做） |
 
 > 截至最新迭代，阶段 6 已落地：`PUT /admin/settings`、`follow_server`、`GET /meta/server`、无状态转码代理、直写上传/删除。

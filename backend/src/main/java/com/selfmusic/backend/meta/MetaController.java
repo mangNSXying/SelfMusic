@@ -12,7 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 服务端元信息（阶段6，DESIGN §4.1）：
+ * 服务端元信息（阶段6，DEVELOPER.md「API 设计」）：
  * {@code GET /api/v1/meta/server} —— 版本、ffmpeg 可用性、转码并发水位、
  * 设备数与事件 cursor。需认证。
  */

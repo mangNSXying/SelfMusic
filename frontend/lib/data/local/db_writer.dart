@@ -16,7 +16,7 @@ import 'schema.dart';
 
 /// SQLite 写层：主线程只读，写按平台走两种实现之一（[DbWriter.start] 分派）。
 ///
-/// 目标（DESIGN：启动磁盘 I/O 风暴修复）：
+/// 目标（DEVELOPER.md「客户端本地数据层」：启动磁盘 I/O 风暴修复）：
 /// 1. 写/fsync 不与 UI 帧竞争——桌面/移动常规平台经后台 isolate（见
 ///    [_IsolateDbWriter]）离开 UI 线程；ohos 因引擎/包限制退化为同 isolate
 ///    内联写（见 [_InlineDbWriter] 头注释）；

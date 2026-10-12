@@ -20,7 +20,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 阶段5 歌单 CRUD（DESIGN.md §4.4）。
+ * 阶段5 歌单 CRUD（DEVELOPER.md「API 设计」）。
  * 所有写操作都经 SyncService 事件管线（服务端生成 uuid、occurred=now），
  * 保证其它设备经 pull 可见；读返回与 pull 同形的快照。
  */

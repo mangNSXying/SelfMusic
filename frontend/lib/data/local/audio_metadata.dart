@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import '../../utils/chunked_scheduler.dart' show ChunkYield;
 import '../../utils/main_thread_probe.dart'; // TEMP-PROBE
 
-/// 音频头部元数据（来自扫描时的 Range 头部直读，DESIGN §6.4）。
+/// 音频头部元数据（来自扫描时的 Range 头部直读，DEVELOPER.md「客户端扫描与元数据」）。
 class AudioMeta {
   String? title;
   String? artist;
@@ -79,7 +79,7 @@ AudioMeta? _parseAudioHeadInner(Uint8List head, String format, int fileSize) {
   }
 }
 
-/// 最小元数据解析：仅 标题/歌手/专辑（DESIGN §6.4 快速扫描）。
+/// 最小元数据解析：仅 标题/歌手/专辑（DEVELOPER.md「客户端扫描与元数据」 快速扫描）。
 ///
 /// 不解析时长、曲目、年份、流派、封面，因此头部采样可更小、下载量最小；
 /// 其余元数据在播放时由 [parseAudioHead] 懒补全（enrich）。

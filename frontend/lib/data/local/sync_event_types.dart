@@ -1,4 +1,4 @@
-/// 阶段5 同步事件类型（DESIGN.md §7.2；与服务端 `SyncEventTypes` 同名对应）。
+/// 阶段5 同步事件类型（DEVELOPER.md「播放算法与同步协议」；与服务端 `SyncEventTypes` 同名对应）。
 ///
 /// 出队载荷统一含歌曲身份（`source` + `source_ref`，服务端按 songs.uk_source_ref
 /// 解析；`source` 为 legacy 空/`server` 占位时服务端按 source_ref 兜底）。

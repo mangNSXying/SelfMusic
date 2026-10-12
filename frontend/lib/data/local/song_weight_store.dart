@@ -206,7 +206,7 @@ class SongWeightStore {
   }
 
   /// 阶段5：有歌曲身份（source/sourceRef 非空、可解析）即进 outbox；服务端按
-  /// (source, source_ref) 解析，直连歌曲无行则建影子行（DESIGN §7.2）。
+  /// (source, source_ref) 解析，直连歌曲无行则建影子行（DEVELOPER.md「播放算法与同步协议」）。
   /// 服务器模式行恒进（行存在即配过服务器）；直连歌曲需连着服务器
   ///（[serverAvailable] 为假时跳过，避免未配对用户 outbox 积压）。
   /// source=='server' 占位（归属源未知）仍跳过，避免跨源误归属。

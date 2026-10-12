@@ -16,7 +16,7 @@ import 'smb_common.dart';
 import 'smb_connect_backend.dart';
 import 'smb_dart_smb2.dart';
 
-/// SMB 直连源完整实现（阶段 4，DESIGN §6.3）。
+/// SMB 直连源完整实现（阶段 4，DEVELOPER.md「客户端播放源」）。
 ///
 /// - 双后端：非 ohos 走 `dart_smb2`（FFI libsmb2，SMB2/3），ohos 走 vendored
 ///   `smb_connect`（纯 Dart，最高 SMB 2.1）；由 [useSmbConnect] 选择
@@ -291,7 +291,7 @@ class SmbDirectSource implements MusicSource {
           ? _conn.readStream(remote, start, endExclusive)
           : _pool.readStream(remote, start, endExclusive);
 
-  // ---------- 离线缓存（DESIGN §6.5，同 WebDAV/SFTP 口径） ----------
+  // ---------- 离线缓存（DEVELOPER.md「客户端同步与缓存批处理」，同 WebDAV/SFTP 口径） ----------
 
   static const int _cacheWriteBufBytes = 1 << 20;
 
@@ -446,7 +446,7 @@ void _smbWalkEntry(Map<String, Object?> msg) async {
             : kind,
       ));
       if (out.length >= kSmbMaxEntries) {
-        throw StateError('单源超过 $kSmbMaxEntries 首上限（DESIGN §6.4 大目录保护）');
+        throw StateError('单源超过 $kSmbMaxEntries 首上限（DEVELOPER.md「客户端扫描与元数据」 大目录保护）');
       }
     }
     send.send(out);

@@ -21,7 +21,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 阶段5 断点续播 PUT（DESIGN.md §4.4）。
+ * 阶段5 断点续播 PUT（DEVELOPER.md「API 设计」）。
  * 经 SyncService 事件管线写 breakpoint.set，保证其它设备经 pull 可见；
  * LWW 判输时返回服务端快照（correction）而非本地值。
  */
@@ -46,7 +46,7 @@ public class PlayStateController {
     }
 
     /**
-     * 快路径：直接返回全局最新断点快照（DESIGN.md §7.2）。
+     * 快路径：直接返回全局最新断点快照（DEVELOPER.md「播放算法与同步协议」）。
      * 客户端启动/回前台先打这个 1 RTT 小请求拿远端断点，不受 sync pull 的
      * cursor backlog 分页影响；旧客户端不感知，无本端点时客户端 404 静默回退。
      * 歌单缺失/已删/无 client_uuid（不可同步）时返回 data=null。

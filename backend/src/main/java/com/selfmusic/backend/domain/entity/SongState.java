@@ -32,7 +32,7 @@ public class SongState {
     @Column(length = 200)
     private String title;
 
-    // 加权播放状态（DESIGN.md §7.1）
+    // 加权播放状态（DEVELOPER.md「播放算法与同步协议」）
     @Column(name = "like_streak")
     private Integer likeStreak = 0;
 

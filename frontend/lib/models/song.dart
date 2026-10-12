@@ -3,7 +3,7 @@ class Song {
   /// 稳定标识：服务器模式为数据库主键；直连模式为主键或合成负 id。
   final int id;
 
-  /// 源标识（DESIGN §6.2 key）：`server` / `webdav:<name>` / `smb:<name>` / `local:<name>`。
+  /// 源标识（DEVELOPER.md「客户端播放源」 key）：`server` / `webdav:<name>` / `smb:<name>` / `local:<name>`。
   final String sourceKey;
   final String title;
   final String? artist;

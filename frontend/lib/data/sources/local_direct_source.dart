@@ -492,7 +492,7 @@ _LocalWalkOut? _diffSnapshotEntry({
     );
   }
   if (emitted >= 20000) {
-    throw StateError('单源超过 20000 首上限（DESIGN §6.4 大目录保护）');
+    throw StateError('单源超过 20000 首上限（DEVELOPER.md「客户端扫描与元数据」 大目录保护）');
   }
   return _LocalWalkOut(
     _rowFor(key, rel, _extOf(path), size, mtime),

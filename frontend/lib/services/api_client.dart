@@ -215,7 +215,7 @@ class ApiClient {
 
   // ---------- 配对密钥（settings.md §3.5） ----------
 
-  /// 拉取当前配对密钥（DESIGN §8「暂缓项」）。
+  /// 拉取当前配对密钥（DEVELOPER.md「身份与设备配对」）。
   Future<String?> fetchPairingToken() async {
     if (dio.options.baseUrl.isEmpty) return null;
     try {
@@ -267,7 +267,7 @@ class ApiClient {
         '?origin=$enc&bitrate=$bitrate&loudnorm=$loudnorm';
   }
 
-  // ---------- 多设备状态同步（阶段5，DESIGN §7.2 / SyncEngine） ----------
+  // ---------- 多设备状态同步（阶段5，DEVELOPER.md「播放算法与同步协议」 / SyncEngine） ----------
   //
   // 与上面可空吞错的读取类方法不同：同步走引擎退避，Dio 异常直接上抛，
   // 由 SyncEngine 捕获记退避（未配对时返回 null 表示跳过）。

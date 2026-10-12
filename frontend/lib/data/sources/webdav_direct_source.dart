@@ -292,7 +292,7 @@ class WebdavDirectSource implements MusicSource {
     return {'X-Origin-Auth': basic};
   }
 
-  // ---------- 离线缓存（DESIGN §6.5） ----------
+  // ---------- 离线缓存（DEVELOPER.md「客户端同步与缓存批处理」） ----------
 
   /// 缓存落盘缓冲阈值（攒够才顺序写一次）。
   static const int _cacheWriteBufBytes = 1 << 20;
@@ -712,7 +712,7 @@ Future<void> _listRecursive(HttpClient client, String url,
       dirs.add(e.fullUrl);
     }
     if (out.length >= 20000) {
-      throw StateError('单源超过 20000 首上限（DESIGN §6.4 大目录保护）');
+      throw StateError('单源超过 20000 首上限（DEVELOPER.md「客户端扫描与元数据」 大目录保护）');
     }
   }
   // 目录递归并发（有界 6），显著缩短大目录树的枚举时间。

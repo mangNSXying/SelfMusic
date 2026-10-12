@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 /**
- * GET /api/v1/playstates/latest（DESIGN.md §7.2 断点快路径）：
+ * GET /api/v1/playstates/latest（DEVELOPER.md「播放算法与同步协议」 断点快路径）：
  * 返回全局最新一行 play_state 的快照；空表 / 歌单缺失 / 已删 / 无 client_uuid
  * 一律 data=null（客户端静默回退到 pull）。
  */

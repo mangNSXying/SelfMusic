@@ -1,6 +1,6 @@
 package com.selfmusic.backend.sync;
 
-/** 阶段5 同步事件类型（DESIGN.md §7.2；事件名即 sync_events.type）。 */
+/** 阶段5 同步事件类型（DEVELOPER.md「播放算法与同步协议」；事件名即 sync_events.type）。 */
 public final class SyncEventTypes {
     private SyncEventTypes() {}
 

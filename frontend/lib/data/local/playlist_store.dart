@@ -6,7 +6,7 @@ import 'sync_event_types.dart';
 ///
 /// 阶段5：create/rename/delete 恒进 outbox；条目增删改有歌曲身份即进 outbox，
 /// 直连歌曲需连着服务器（[serverAvailable] 门控），服务端无行则建影子行
-///（DESIGN §7.2）。
+///（DEVELOPER.md「播放算法与同步协议」）。
 class PlaylistStore {
   final LocalIndex index;
 

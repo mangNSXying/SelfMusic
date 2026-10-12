@@ -1,7 +1,7 @@
 # smb_connect vendored fork（SelfMusic 补丁）
 
 `smb_connect` 0.0.9 的本地副本，**仅鸿蒙（ohos）端 SMB 用**（纯 Dart，无原生
-二进制；其余平台走 `dart_smb2` FFI，见 DESIGN §6.3）。上游已停更（2025-01），
+二进制；其余平台走 `dart_smb2` FFI，见 DEVELOPER.md「客户端播放源」）。上游已停更（2025-01），
 方言最高到 SMB 2.1（无 SMB3）；NAS 需允许 SMB2 方言协商。
 
 ## 为什么 fork

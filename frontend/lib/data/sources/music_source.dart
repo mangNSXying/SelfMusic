@@ -126,7 +126,7 @@ class IntRange {
   int? get end => length == null ? null : start + length! - 1;
 }
 
-/// 一次扫描的汇总（DESIGN §6.4）。
+/// 一次扫描的汇总（DEVELOPER.md「客户端扫描与元数据」）。
 class ScanSummary {
   final int added;
   final int updated;
@@ -191,12 +191,12 @@ class DirectStream {
   const DirectStream(this.url, {this.headers});
 }
 
-/// Source 抽象（DESIGN §6.2）。播放器只认 [MusicSource]。
+/// Source 抽象（DEVELOPER.md「客户端播放源」）。播放器只认 [MusicSource]。
 ///
 /// 实现 `supportsDirect` 并实现 `scan`/`open`，由 PlayerProvider 包装成
 /// `StreamAudioSource` 喂给 just_audio（支持 Range seek / 断点）。
 abstract class MusicSource {
-  /// 稳定标识（DESIGN §6.2 key）：`webdav:<name>` / `smb:<name>` / `local:<name>`。
+  /// 稳定标识（DEVELOPER.md「客户端播放源」 key）：`webdav:<name>` / `smb:<name>` / `local:<name>`。
   String get key;
 
   /// 友好显示名（如源名称「NAS」）。
@@ -252,7 +252,7 @@ abstract class MusicSource {
   Future<List<Song>> search({String? query, int page = 1, int size = 100}) async =>
       const [];
 
-  /// 若该歌已离线缓存，返回本地文件路径（供断网播缓存，DESIGN §6.5）；否则 null。
+  /// 若该歌已离线缓存，返回本地文件路径（供断网播缓存，DEVELOPER.md「客户端同步与缓存批处理」）；否则 null。
   Future<String?> cachedFilePath(Song song) async => null;
 
   /// 可交给原生解析（ohos `extractAudioMeta`）的**本地沙箱真路径**；无则 null。

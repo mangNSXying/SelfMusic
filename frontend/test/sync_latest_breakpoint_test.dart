@@ -9,7 +9,7 @@ import 'package:selfmusic/services/api_client.dart';
 import 'package:selfmusic/services/sync_engine.dart';
 import 'package:sqlite3/open.dart';
 
-/// 断点快路径（`GET /playstates/latest`，DESIGN.md §7.2）：
+/// 断点快路径（`GET /playstates/latest`，DEVELOPER.md「播放算法与同步协议」）：
 /// 1 RTT 直取服务端最新断点 → 落镜像 → 通知播放器套用；
 /// 旧服务端无此端点（fetch 返回 null）与网络异常都静默回退到全量 pull，
 /// 且不进退避（它是加速器，不是替代）。

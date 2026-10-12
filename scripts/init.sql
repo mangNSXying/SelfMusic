@@ -1,6 +1,6 @@
 -- =====================================================================
 -- SelfMusic Schema v3（服务端无曲库 / 阶段5 全量合并）
--- 设计文档：DESIGN.md §3.1
+-- 设计文档：DEVELOPER.md「数据模型」
 -- 变更摘要（相对 v2）：
 --   彻底移除服务端曲库（songs / albums / covers / scan_tasks，见 migration_004）
 --   歌曲身份改由 (source_id, source_ref) 承载；权重/收藏迁入新表 song_states
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS settings (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------
--- 已配对设备（单用户多设备准入，DESIGN.md §2）
+-- 已配对设备（单用户多设备准入，DEVELOPER.md「身份与设备配对」）
 -- access 24h / refresh 30d；两者均只存哈希
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS devices (
@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS play_states (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------
--- 直连歌曲权重/收藏状态（取代原 songs 的状态承载职责，DESIGN.md §7.1）
+-- 直连歌曲权重/收藏状态（取代原 songs 的状态承载职责，DEVELOPER.md「播放算法与同步协议」）
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS song_states (
     id             BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS song_states (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------
--- 同步事件流水：seq 全局单调 cursor + event_uuid 幂等键（DESIGN.md §7.2）
+-- 同步事件流水：seq 全局单调 cursor + event_uuid 幂等键（DEVELOPER.md「播放算法与同步协议」）
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS sync_events (
     seq              BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '全局单调 cursor（pull 的 since_cursor 比较基准）',

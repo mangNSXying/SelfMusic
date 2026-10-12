@@ -265,7 +265,7 @@ class _ServerSettingsState extends State<_ServerSettings> {
   }
 }
 
-/// 服务端 → 多设备同步（阶段5，DESIGN §7.2）：总开关 + 立即同步 + 设备管理入口。
+/// 服务端 → 多设备同步（阶段5，DEVELOPER.md「播放算法与同步协议」）：总开关 + 立即同步 + 设备管理入口。
 class _SyncSection extends StatefulWidget {
   const _SyncSection();
 

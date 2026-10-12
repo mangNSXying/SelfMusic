@@ -4,15 +4,15 @@
 ///   路径为 `rootPath/ref`（BACKSLASH 不出现在任何一层，对外统一 `/`，
 ///   两后端各自转义）；
 /// - 后端选择：非 ohos 走 `dart_smb2`（FFI libsmb2，SMB2/3），ohos 走 vendored
-///   `smb_connect`（纯 Dart，最高 SMB 2.1），见 DESIGN §6.3。
+///   `smb_connect`（纯 Dart，最高 SMB 2.1），见 DEVELOPER.md「客户端播放源」。
 library;
 
 import 'dart:convert';
 
-/// 单次范围读块（喂播放器/缓存的粒度，与 DESIGN §6.3「单次读 256KB」一致）。
+/// 单次范围读块（喂播放器/缓存的粒度，与 DEVELOPER.md「客户端播放源」「单次读 256KB」一致）。
 const int kSmbReadChunkBytes = 256 * 1024;
 
-/// 单源歌曲上限（DESIGN §6.4 大目录保护，与 WebDAV/SFTP 同口径）。
+/// 单源歌曲上限（DEVELOPER.md「客户端扫描与元数据」 大目录保护，与 WebDAV/SFTP 同口径）。
 const int kSmbMaxEntries = 20000;
 
 /// SMB 非 2xx 语义外的连接/协议错误：toString 面向用户直接展示。

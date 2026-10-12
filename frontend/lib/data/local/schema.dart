@@ -58,7 +58,7 @@ void applySchema(Database db) {
       size INTEGER NOT NULL DEFAULT 0
     );
   ''');
-  // 阶段 2：歌曲播放元数据 / 歌单 / 应用设置 / 断点（DESIGN §7，stage2.md §1）。
+  // 阶段 2：歌曲播放元数据 / 歌单 / 应用设置 / 断点（DEVELOPER.md「播放算法与同步协议」、stage2.md §1）。
   db.execute('''
     CREATE TABLE IF NOT EXISTS play_meta (
       source_key   TEXT NOT NULL,

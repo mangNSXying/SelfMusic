@@ -7,7 +7,7 @@ import '../data/local/local_index.dart';
 import '../utils/perf_log.dart';
 import 'api_client.dart';
 
-/// 阶段5 多设备状态同步引擎·客户端（DESIGN.md §7.2，字段级合并）。
+/// 阶段5 多设备状态同步引擎·客户端（DEVELOPER.md「播放算法与同步协议」，字段级合并）。
 ///
 /// 循环：push（outbox→`/sync/push`，2s 防抖批量）→ pull（`/sync/pull` 增量）→
 /// 落库（权重/歌单/断点镜像）→ 推进 cursor。运行时播放只读本地 SQLite（事实源），

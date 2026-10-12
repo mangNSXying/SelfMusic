@@ -20,7 +20,7 @@ import '../sources/webdav_url.dart';
 import 'audio_metadata.dart';
 import 'db_writer.dart';
 
-/// 直连模式本地轻量索引（DESIGN §6.4）。///
+/// 直连模式本地轻量索引（DEVELOPER.md「客户端扫描与元数据」）。///
 /// SQLite 存放：已配置的直连源（[DirectSourceRow]）、索引歌曲（[Song]）、
 /// 离线缓存（[CachedFile]）。扫描时按 `(sourceKey, ref)` 的 mtime/size 三元组做增量。
 class LocalIndex {
@@ -446,7 +446,7 @@ class LocalIndex {
     return cleaned;
   }
 
-  /// 扫描结束后把不再存在的条目标记 missing（DESIGN §6.4 增量）。
+  /// 扫描结束后把不再存在的条目标记 missing（DEVELOPER.md「客户端扫描与元数据」 增量）。
   Future<void> markMissingExcept(String sourceKey, List<String> aliveRefs) {
     // 用 jsonEncode 生成合法 JSON 数组，避免 ref 含引号/反斜杠时破坏 json_each。
     return _writer!.exec(
@@ -1219,7 +1219,7 @@ class LocalIndex {
     });
   }
 
-  // ---------- 多设备同步 outbox（阶段5，DESIGN §7.2） ----------
+  // ---------- 多设备同步 outbox（阶段5，DEVELOPER.md「播放算法与同步协议」） ----------
 
   /// 事件 uuid（服务端 event_uuid 幂等键；36 列内唯一即可，不需标准 UUID 形态）。
   static String newEventUuid() {
@@ -1306,7 +1306,7 @@ class LocalIndex {
 
   /// pull 歌单快照落库（deleted=true 则本地硬删）。
   /// 条目只替换服务端歌曲行（source_key='server'）：本地直连歌曲行保留，
-  /// 由本机 push 事件与服务端收敛（直连歌曲同样参与同步，见 DESIGN §7.2）。
+  /// 由本机 push 事件与服务端收敛（直连歌曲同样参与同步，见 DEVELOPER.md「播放算法与同步协议」）。
   /// 整段逻辑（源 key 解析 + 封面保留）运行在写连接上，避免读到陈旧歌单条目。
   Future<void> applyPlaylistSnapshot({
     required String uuid,
@@ -1398,7 +1398,7 @@ class LocalIndex {
   /// pull 歌曲权重快照落 play_meta：先写 ('server', ref) 行（服务端歌曲），
   /// 再按快照 [source] 协议匹配本地直连行（同 ref 含 WebDAV 编码变体 + 同协议），
   /// 各写各的源 key（运行时按源 key 读权重，见 playMetaOf）。
-  /// 直连歌曲在连着服务器时同样参与同步（DESIGN §7.2 影子行）。
+  /// 直连歌曲在连着服务器时同样参与同步（DEVELOPER.md「播放算法与同步协议」 影子行）。
   ///
   /// [playSec] 累计播放时长（秒）取 `max(本地, 服务端)`：它是单调累计量，
   /// 被别的设备的旧值覆盖会丢真实数据（服务端按行级 LWW 收敛，值可能更小）。

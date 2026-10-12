@@ -8,7 +8,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 
-/** 阶段5 同步端点（DESIGN.md §4.4；认证走全局 TokenFilter，调用设备=principal clientId）。 */
+/** 阶段5 同步端点（DEVELOPER.md「API 设计」；认证走全局 TokenFilter，调用设备=principal clientId）。 */
 @RestController
 @RequestMapping("/api/v1/sync")
 public class SyncController {

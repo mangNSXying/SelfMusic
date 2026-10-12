@@ -37,7 +37,7 @@ import com.selfmusic.backend.domain.repository.SyncEventRepository;
 import com.selfmusic.backend.domain.repository.SyncSourceRepository;
 
 /**
- * 阶段5 同步引擎服务端（DESIGN.md §4.4 / §7.2，字段级合并）。
+ * 阶段5 同步引擎服务端（DEVELOPER.md「API 设计」／「播放算法与同步协议」，字段级合并）。
  *
  * 服务端不持有曲库：歌曲身份统一为 {@code source_id + source_ref}
  * （source_id 为客户端源实例 uuid，旧数据/旧客户端记作 {@code legacy:<协议>}），

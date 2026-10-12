@@ -7,11 +7,10 @@
 | 想知道 | 看哪 |
 |--------|------|
 | 快速跑起来、服务与端口 | [README.md](README.md) |
-| **怎么开发、代码怎么写、改完怎么验证** | **本文** |
-| 为什么这么设计、数据模型 / API 契约 / 播放算法 / 路线图 | [DESIGN.md](DESIGN.md) |
+| **怎么开发、代码怎么写、改完怎么验证**；整体架构 / 数据模型 / API 契约 / 播放算法 / 同步协议 / 风险 | **本文** |
 | 设置项键名、默认值、入口、生效范围 | [settings.md](settings.md) |
 
-原则：**机制与取舍留在 DESIGN，写代码时必守的规则与命令留在本文**，同一段实现细节只写一处。
+原则：**机制与取舍、写代码时必守的规则与命令都在本文**，同一段实现细节只写一处。
 
 ---
 
@@ -19,17 +18,26 @@
 
 - [环境要求](#环境要求)
 - [项目结构](#项目结构)
+- [总体架构](#总体架构)
+- [身份与设备配对](#身份与设备配对)
+- [数据模型](#数据模型)
+- [API 设计](#api-设计)
 - [后端开发](#后端开发)
+  - [后端模块与选型](#后端模块与选型)
 - [前端开发](#前端开发)
   - [平台收口层](#平台收口层libplatform)
+  - [客户端播放源（Source 抽象层）](#客户端播放源source-抽象层)
   - [客户端播放要点（装载/切歌/返回）](#客户端播放要点装载切歌返回)
   - [客户端本地数据层（SQLite 写隔离）](#客户端本地数据层sqlite-写隔离)
   - [客户端扫描与元数据](#客户端扫描与元数据实现要点)
   - [客户端同步与缓存批处理](#客户端同步与缓存批处理)
+  - [歌词与后台播放](#歌词与后台播放)
+  - [列表 / 卡片 / 多选](#列表-卡片-多选)
   - [鸿蒙适配](#鸿蒙适配)
-- [数据库规范](#数据库规范)
+- [播放算法与同步协议](#播放算法与同步协议)
 - [配置说明](#配置说明)
 - [常见问题排查](#常见问题排查)
+- [风险与开放问题](#风险与开放问题)
 - [Git 约定](#git-约定)
 
 ---
@@ -55,19 +63,19 @@
 
 不同平台的最终产物必须在对应操作系统上构建，一台 Ubuntu 无法完成全部：
 
-> **平台开发原则**：Linux 与 Android 同步开发、进度对齐（详见 DESIGN.md §8 顶部约定）——本矩阵只给结论，原因与验收口径在 DESIGN 里。
+> **平台开发原则**：Linux / Android / Windows / HarmonyOS 四平台同步开发、进度对齐（详见「[总体架构](#总体架构)」平台开发原则）——本矩阵只给结论，原因与验收口径在「总体架构」里。
 
 | 目标平台 | 构建环境 | 状态 |
 |---------|---------|------|
-| Android | 本机 Ubuntu（Android Studio + SDK） | ✅ 环境就绪；壳工程已重建（`android/app` + Gradle 配置齐全），`flutter build apk` 可出包，双端（Linux/Android）对齐开发 |
-| Linux Desktop | 本机 Ubuntu（clang + GTK + cmake + ninja） | ✅ 当前主力平台（UI/主题/播放器/鉴权已落地） |
+| Android | Ubuntu（Android Studio + SDK） | ✅ 可用；壳工程已重建（`android/app` + Gradle 配置齐全），`flutter build apk` 可出包 |
+| Linux Desktop | Ubuntu（clang + GTK + cmake + ninja） | ✅ 可用：开发平台 |
 | Web | 不做 | ❌ 明确排除 |
-| Windows Desktop | Win10 开发机：Flutter stable + VS2022 Build Tools（C++ 桌面负载 + ATL） | ✅ 已就绪：`flutter build windows` 可出包；音频后端 media_kit；日常联调用根目录 `run-windows.bat` |
-| HarmonyOS | Win10 开发机：DevEco Studio + HarmonyOS SDK + 真机 + 三方 Flutter 分支（`oh-3.41.9-release`） | ✅ PoC 验收通过（2026-09-30）：真机点播 / 启动白屏修复 / AVSession 媒体播控 / 横竖屏 / 应用图标 / 自动切歌 / 装载看门狗 / 宽屏队列面板全链走通，真机日常使用中；详见「鸿蒙适配」 |
+| Windows Desktop | Win10 开发机：Flutter stable + VS2022 Build Tools（C++ 桌面负载 + ATL） | ✅ 可用：`flutter build windows` 可出包；音频后端 media_kit；日常联调用根目录 `run-windows.bat` |
+| HarmonyOS | Win10 开发机：DevEco Studio + HarmonyOS SDK + 真机 + 三方 Flutter 分支（`oh-3.41.9-release`） | ✅ PoC 验收通过（2026-09-30）；详见「鸿蒙适配」 |
 
 ### 环境搭建顺序
 
-**现在（本机 Ubuntu）：**
+**现在：**
 1. Flutter（系统安装即可；FVM 可选）+ Linux toolchain
 2. Android Studio + Android SDK + 接受 license
 3. VS Code + Flutter/Dart 扩展
@@ -81,7 +89,7 @@
 - Windows 出包 → ✅ 已就绪（Win10 机器，VS2022 Build Tools + ATL 补装）
 - 鸿蒙 → ✅ PoC 验收通过、真机日常使用中（DevEco Studio + SDK + 真机，Win10 机器）；Ubuntu 上**不要**装鸿蒙 SDK
 
-**Windows 构建网络三坑（新机器必读）：**
+**Windows 构建网络常见问题（新机器必读）：**
 - `media_kit_libs_windows_audio` 在 CMake configure 阶段从 GitHub release 下载 `mpv-dev-*.7z`（约 5MB）并做 MD5 校验，弱网下会留下 0 字节残片并反复报 `Integrity check failed`——删除 `build/windows/x64/mpv-dev-*.7z` 后手动下载放回原位即可（期望 MD5 见该插件 `windows/CMakeLists.txt`）
 - `permission_handler_windows` 用 `find_program` 在 PATH 里找 `nuget.exe`（拉 CppWinRT 头用），找不到就退回 CMake 内置下载器（无超时，弱网下挂死）——把 `nuget.exe` 放在 flutter wrapper 同目录即可，`run-windows.bat` 已做 PATH 注入与 `NUGET_HTTP_CACHE_PATH` 重定向（缓存落 D 盘）
 - configure 中途失败（如上两条）会留下脏 `CMakeCache.txt`：`CMAKE_INSTALL_PREFIX` 停在 `C:/Program Files/selfmusic`，重试构建报 `file cannot create directory ... Maybe need administrative privileges`——把 cache 中该值改回 `build/windows/x64/runner/Debug`，或删整个 `build/windows` 重建
@@ -118,7 +126,7 @@ selfmusic/
 │   │   ├── services/                 # dio+懒刷新拦截器(ApiClient)、AuthService、ServerSettings、SyncEngine（阶段5 推拉/cursor/退避）
 │   │   ├── data/sources/             # MusicSource 抽象 + WebdavDirect + LocalDirect + SmbDirect + sibling_cover（同目录图片回退）
 │   │   ├── providers/direct_task_queue.dart  # 直连补读的串行优先级队列（当前曲 → 下一首 → 全库）
-│   │   ├── data/deep_list.dart       # 深层列表：锚定列表的「仅可改末尾」有界历史栈（见 DESIGN §7.1）
+│   │   ├── data/deep_list.dart       # 深层列表：锚定列表的「仅可改末尾」有界历史栈（见「播放算法与同步协议」）
 │   │   ├── data/local/               # ★ 本地数据层：schema（建表迁移唯一事实源）+ db_writer（后台写隔离）
 │   │   │                            #   + local_index（主连接只读/写 API 转发/flushWrites）
 │   │   │                            #   + audio_metadata（mp3/flac/m4a/ogg·opus/wav/aac 头部解析 + 两段/尾读）
@@ -141,6 +149,189 @@ selfmusic/
 ```
 
 **分层约定**：`Controller → Service → Repository`，Controller 只做参数校验和响应封装，业务逻辑放 Service。
+
+---
+
+## 总体架构
+
+**定位**：去中心化的个人音乐服务器 + 双模式客户端。App 在**无后端**时靠本地 / WebDAV / SMB / SFTP 直连完整可用（扫描、播放、歌单、收藏、歌词、断点），后端是**增强层**（认证配对、多设备状态同步、无状态转码代理）。
+
+```
+                        ┌─────────────────────────────────┐
+                        │           Flutter App            │
+                        │  播放引擎（加权算法）             │
+                        │  本地 SQLite（状态事实源）        │
+                        │  缓存管理（LRU、喜欢歌）          │
+                        │  歌手身份聚合（MusicBrainz）      │
+                        │  ───────────────────────────     │
+                        │  Source 抽象层                   │
+                        │   LocalDirect / WebdavDirect     │
+                        │   SmbDirect（双后端）            │
+                        │   SftpDirect                     │
+                        └───────────────┬─────────────────┘
+                                        │ 协议直连（App 内扫描 / 播放）
+                                        ▼
+                           ┌──────────────────────┐
+                           │  音乐源（协议直连）    │
+                           │  · NAS(SMB)          │
+                           │  · WebDAV 服务        │
+                           │  · SFTP 服务器        │
+                           └──────────────────────┘
+                                        ▲ 状态同步（权重/收藏/歌单/断点/播放源）
+                                        │ 配对与设备管理（无曲库 / 无流媒体）
+                                        │ SSH/SMB 回源取流（仅代理转码）
+                           ┌──────────────────────┐
+                           │ Spring Boot 后端      │
+                           │ （个人单用户同步服务）  │
+                           └──────────────────────┘
+```
+
+**功能矩阵**（现状）
+
+| 功能 | 现状 | 说明 |
+|------|:---:|------|
+| 本地文件 / WebDAV / SMB / SFTP 浏览与播放 | ✅ | 全部直连实现，不依赖后端 |
+| 歌单 / 加权算法 / 喜欢·不喜欢 / 喜欢歌自动缓存 | ✅ | 本地 SQLite |
+| 曲库浏览 / 跨源搜索 / 歌词 / 后台播放 / 通知栏 5 键 | ✅ | 本地能力（通知键 Android；鸿蒙走 AVSession） |
+| 歌手身份聚合（MusicBrainz 后台解析） | ✅ | 纯客户端本地，不参与同步 |
+| 多设备状态同步（权重 / 收藏 / 歌单 / 断点 / 播放源） | ✅ | 需要后端 |
+| 转码（按需 ffmpeg）/ 上传·删除源文件 | ✅ | 服务端无状态代理；上传删除走客户端源直写 |
+
+**平台开发原则（约定）**：**Linux / Android / Windows / HarmonyOS NEXT 四平台同步开发、进度对齐**。`lib/` 下的 UI / 主题 / 播放器 / 鉴权 / 状态层均为跨平台 Dart 代码，演进时不另起分支；任何特性落地须在四平台配套走通（音频后端 / 权限 / 生命周期差异用条件导入或「[平台收口层](#平台收口层libplatform)」收口），以「四个平台都能跑通验收项」作为阶段完成判定。鸿蒙的平台差异统一收敛在「[鸿蒙适配](#鸿蒙适配)」一节。各平台构建环境见「[多平台构建矩阵](#多平台构建矩阵)」。
+
+---
+
+## 身份与设备配对
+
+- 语义：**一台服务器 = 一个主人**（自建自用），无注册 / 登录体系；去中心化，App 可保存多个服务器配置。
+- 令牌模型（OAuth2 风格 access + refresh）：
+
+```
+主配对令牌 (pairing_token)
+  · 权威来源 = 环境变量 PAIRING_TOKEN；每次启动覆盖写入 settings 表（DB 仅为镜像）
+  · 未提供 PAIRING_TOKEN 时沿用库中旧值；首次初始化（库中无）才随机生成
+  · 仅用于 /auth/pair 配对一次，不用于日常请求；明文存储（需展示成二维码）
+  · 改 .env 重启即生效，仅影响新设备，已配对设备不受影响
+
+访问令牌 (access_token / device_token)
+  · pair 成功后签发，TTL 24h（expires_in=86400），仅存哈希 token_hash
+  · 日常请求携带 Authorization: Bearer <access_token>
+  · 过期 → 拒绝（HTTP 401 + 响应头 X-Token-Expired: true）
+
+刷新令牌 (refresh_token)
+  · TTL 30d（refresh_expires_in=2592000），仅存哈希 refresh_token_hash
+  · 仅用于 POST /auth/refresh 换发新的一套 access+refresh
+  · 轮换式：用过的 refresh_token 立即作废，同一套只能换一次
+```
+
+- 二维码内容：`selfmusic://pair?host=xxx&port=18089&token=xxxx`
+  > 端口说明：后端应用本身监听 **8080**（`application.yml`），`18089` / `18088` 是 docker-compose 的主机侧映射（dev / prod）。App 填的端口须与实际可达入口一致。
+- **懒刷新（lazy refresh）**：不做定时器；仅当某请求命中 `401 + X-Token-Expired` 时，客户端才用 refresh_token 换发新 token 并对原请求重放一次（并发请求以「单飞 single-flight」共享一次刷新，避免重复轮换）。
+- 刷新失败（refresh 失效 / 过期）→ 客户端清空令牌，进入「会话过期」弹窗引导重新配对。
+- 单台吊销不影响其他设备；重置主令牌只影响新设备（已配对设备不受影响）。
+
+---
+
+## 数据模型
+
+### 服务端（MySQL 8）
+
+> `scripts/init.sql` 为**权威库表定义（全量合并到 v3）**，已内含 `scripts/migration_002…007` 的全部结果；应用启动 `ddl-auto: validate` 校验实体与表一致性。**全新部署只执行 init.sql**；存量旧库（仍带曲库的 v2）按 migration_002…007 顺序升级，勿重跑 init.sql。
+
+| 表 | 说明 |
+|----|------|
+| `song_states` | 直连歌权重 / 收藏状态（`source_id`+`source_ref` 唯一，无曲库字段；含 `play_sec`） |
+| `sync_sources` | 播放源同步（`client_uuid` 唯一；`kind+address` 去重；config 不含密码） |
+| `playlists` / `playlist_items` | 歌单与条目（条目自持 `source_id/source_ref` + 标题/歌手/专辑/时长快照） |
+| `play_states` | 每列表断点（自持歌曲身份 + `device_client_id`；含 `deep_list_json`） |
+| `sync_events` | 同步事件流水（`seq` 单调 cursor；`entity_key` 锚点供压缩） |
+| `settings` | 全局设置（含 `pairing_token`） |
+| `devices` | 已配对设备（`client_id` / `token_hash` / `refresh_token_hash` / 过期时间 / `revoked` / `last_pull_cursor`） |
+
+> 原 `albums/songs/covers/scan_tasks` 已随服务端曲库移除（`migration_004`）。
+
+`settings` 实际存量为三键：`pairing_token`（env 镜像）、`cache_max_bytes`（默认 5 GiB）、`cache_song_limit`（默认 200）。缓存两键权威来源 = init.sql 预置 + 每次启动被 `CACHE_MAX_MIB` / `CACHE_SONG_LIMIT` env 覆盖写入。
+
+服务器端开发规范：
+
+- 表结构变更：**修改 `scripts/init.sql` 并同步提交**，同时更新对应 JPA 实体；`ddl-auto: validate` 不一致启动即报错
+- 字符集统一 `utf8mb4`；所有表带 `id BIGINT AUTO_INCREMENT PRIMARY KEY`、`created_at`、`updated_at`
+- init.sql 中的用户创建语句已注释（管理员手工管理账号），执行前确认账号对 `selfmusic.*` 有权限
+
+### 客户端（SQLite）
+
+> 表结构权威定义在 `frontend/lib/data/local/schema.dart`（`applySchema()`，主读连接与写隔离共用、幂等）；写代码规则见「[客户端本地数据层](#客户端本地数据层sqlite-写隔离)」。
+
+| 表 | 说明 |
+|----|------|
+| `sources` | 源配置：`key`（唯一）、`kind(local/webdav/smb/sftp)`、名称、凭据引用键、enabled、`last_scan_at`、`client_uuid`；SFTP 另含 host/port/user/认证方式/根路径（密码与私钥只存 SecretStore） |
+| `ssh_known_hosts` | SFTP 主机密钥 TOFU 钉：`(host_port PK, fingerprint, updated_at)`；**不参与跨设备同步** |
+| `idx_songs` | 直连模式本地索引（增量指纹含 `mtime,size,etag`）；ALTER 列 `album_artist / url / user_edited / meta_read` |
+| `cache` | 已缓存歌曲：`cache_key` PK、`path,size` + `cached_at,last_accessed_at`（LRU 用） |
+| `play_meta` | 播放元数据：`(source_key,song_ref)` PK + `like_streak/dislike_streak/factor/frozen/is_favorite`（收藏统一收口）+ `play_sec` + `song_json` |
+| `playlists` / `playlist_items` | 歌单与条目（含快照字段 + `sort_order`、`source`、`client_uuid`、`deleted` 墓碑） |
+| `app_settings` | 客户端设置键值表（缓存配置 + 7 个排序持久化键等） |
+| `song_lyrics` | 歌词：`(source_key,ref)` PK + `content`（LRC）+ 三态收录 |
+| `play_state` | 断点：单行 `id=1`（`queue_json + idx + position_ms + updated_at` + `playlist_uuid` + `anchor_key`） |
+| `weight_outbox` / `breakpoint_mirror` | 同步流水与跨设备断点镜像（镜像含 `deep_list_json`） |
+| `deep_lists` | 深层列表：`playlist_uuid` PK + 有界历史栈 `entries_json` |
+| `artists` / `artist_canon` / `artist_song_map` / `artist_member` | 歌手身份聚合（纯本地，不参与同步；见「[歌手身份聚合](#歌手身份聚合musicbrainz-后台解析)」） |
+
+客户端建表规范：
+
+- 表清单与字段以 `schema.dart` 的 `applySchema()` 为准：**改表只改这里**，主读连接与写隔离各跑一遍，幂等（`ALTER TABLE` 先 `PRAGMA table_info` 探测）
+- `song_key` 统一为 `(来源标识, source_ref)` 复合键；收藏状态只认 `play_meta.is_favorite`（旧 `idx_songs.is_favorite` 仅一次性回填）
+- 凭据加密：WebDAV/SMB 密码、SFTP 密钥经 `flutter_secure_storage` 存放，SQLite 只存引用键
+- 无 `created_at/updated_at` 统一约定；时间列按需命名（`last_scan_at` / `cached_at` / `updated_at`）
+- 写必须走写隔离，不要在主 isolate 直接 `db.execute` 写语句（**例外：ohos**——`DbWriter` 退化内联写，见「[鸿蒙适配](#鸿蒙适配)」与 `db_writer.dart`）
+
+---
+
+## API 设计
+
+统一约定：
+
+- 前缀 `/api/v1`（下文各表省略前缀）；响应包 `{ "code": 0, "message": "ok", "data": ... }`。
+- **认证**：除 `/health`、`/auth/pair`、`/auth/refresh`（匿名）外全部要求 `Authorization: Bearer <access_token>`；无效 / 吊销返回 `code=40101`；**access 过期返回 `HTTP 401` + 响应头 `X-Token-Expired: true`**（客户端懒刷新）。
+- 设备识别头 `X-Client-Id` 必带（与 `devices.client_id` 对应）。
+- 分页 `page`（1 起）、`size`（默认 50，≤500）；响应含 `total`。
+
+### 认证与设备
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/health` | 免认证存活检查 |
+| POST | `/auth/pair` | `{pairing_token, device_name, platform}` → `{client_id, access_token, refresh_token, expires_in=86400, refresh_expires_in=2592000}`；主令牌错误 `code=40100` |
+| POST | `/auth/refresh` | 匿名白名单；`{refresh_token}` → 轮换式换发；无效 / 过期 `code=40102` |
+| POST | `/auth/unpair` | 自我注销（吊销当前设备） |
+| GET | `/meta/server` | 版本、ffmpeg 可用性、转码并发水位、设备数、事件 cursor |
+
+### 无状态转码代理
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/transcode/stream?origin=&bitrate=&loudnorm=` | 回源拉流 → ffmpeg 管道转 MP3 CBR（192/256/320，默认 192）流式回客户端；`loudnorm=off\|14\|16\|23`。鉴权透传：http(s) 源 `X-Origin-Auth: Basic`、SFTP 源 `X-Origin-Ssh: base64url(JSON{u,p?,k?,pp?,hk})`、SMB 源 `X-Origin-Smb: base64url(JSON{u?,p?})`。强校验 origin 落在未删除**同类**源地址之下 + 黑名单主机拒绝。并发只 `TRANSCODE_MAX_CONCURRENCY`（默认 2），超限 429 + `Retry-After`（客户端回落直连）；无 ffmpeg 503；整曲转码不支持 Range |
+
+### 状态同步
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/sync/pull?since_cursor=` | 增量拉取（歌单 + 权重 + 断点快照），返回新 cursor；`since=0` 为启动全量校准；超 2000 事件分页（`has_more`） |
+| POST | `/sync/push` | 批量上推事件流水；幂等按 `event_uuid` 去重；LWW 判输回 correction 快照 |
+| CRUD | `/playlists` 系列（含 `{id}/items` 增删改） | 直接 REST 变更同样走事件管线（服务端代写事件） |
+| PUT | `/playstates/{playlistId}` | `{source_id, source_ref, position_ms}`（可选 `deep_list`）；行级 LWW，判输回服务端快照 |
+| GET | `/playstates/latest` | 全局最新断点快照（启动 / 回前台快路径，1 RTT；无行 / 歌单缺失或已删 / 不可同步时 `data=null`） |
+
+### 管理
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/admin/pairing-token` | 主配对令牌明文（`设置→服务端→配对服务器` 展示用；密钥源自 env 镜像） |
+| GET | `/admin/config` | 服务端缓存建议值 `{cache_max_bytes, cache_song_limit}`（取值自 settings 表） |
+| GET | `/admin/devices` · PUT/DELETE `/admin/devices/{id}` | 设备列表 / 改名 / 吊销 |
+| PUT | `/admin/settings` | 管理端改缓存建议值（仅两键；`pairing_token` 为 env 只读拒绝写入） |
+
+> 服务端**不提供曲库索引**：歌曲由 App 在各播放源处扫描、直接从源播放；后端仅提供认证 / 配对、状态同步与无状态转码代理。上传 / 删除走客户端 WebDAV/本地直写，不经服务端。
 
 ---
 
@@ -170,7 +361,7 @@ docker compose exec backend-dev \
     mvn -q -Dmaven.repo.local=/home/ubuntu/.m2/repository -o compile
 ```
 
-原理：容器里跑 `mvn spring-boot:run`，你的 `backend/src` 和 `~/.m2` 直接挂载进容器
+原理：容器里跑 `mvn spring-boot:run`，`backend/src` 与 `~/.m2` 直接挂载进容器
 （UID 1000 一致，读写权限无障碍）。**改完代码不需要重新 build 镜像**；只有换 JDK/Maven 版本或新增依赖才需要
 `docker compose --env-file .env build backend-dev` 重建。
 
@@ -179,7 +370,7 @@ docker compose exec backend-dev \
 ```bash
 # 1. 导出数据库连接环境变量（值与 .env 一致）
 export DB_HOST=192.168.x.x DB_PORT=3306 DB_NAME=selfmusic \
-       DB_USERNAME=<你的用户名> DB_PASSWORD='<密码>'
+       DB_USERNAME=<数据库用户名> DB_PASSWORD='<密码>'
 
 # 2. 启动（devtools 已启用热重载，改 Java 代码后自动重启）
 mvn spring-boot:run -f backend/pom.xml
@@ -215,6 +406,38 @@ mvn dependency:go-offline -f backend/pom.xml     # 预拉全部依赖
 3. 在 `service/` 写业务逻辑
 4. 在对应功能包（`auth/`、`sync/`、`playlist/`…）暴露 REST 接口，路径以 `/api/v1/` 开头
 5. 写测试到 `src/test/java`
+
+### 后端模块与选型
+
+包结构（`com.selfmusic.backend`，现状以代码为准）：
+
+```
+auth/        AuthController(pair/refresh/unpair) + DeviceAdminController + SecurityConfig + TokenFilter
+admin/       AdminSettingsController（pairing-token / config / settings / devices）
+controller/  HealthController
+common/      ApiResponse, BizException, GlobalExceptionHandler
+config/      FirstBootInitializer(PAIRING_TOKEN 镜像), WebConfig(CORS)
+domain/      JPA 实体（Playlist/PlaylistItem/PlayState/SongState/Device/SyncEvent/SyncSource/Setting）+ Repository + service
+playlist/    PlaylistController（歌单 CRUD + 条目增删改）
+sync/        SyncController(pull/push) + SyncService(幂等去重/LWW/correction) + PushEvent + SyncEventTypes
+transcode/   TranscodeService（并发门控 + ffmpeg 探测）+ TranscodeController + ssh/（sshj SFTP 回源）+ smb/（smbj SMB 回源）
+meta/        MetaController（GET /meta/server）
+```
+
+技术选型：
+
+| 用途 | 选型 |
+|------|------|
+| Web 框架 | `spring-boot-starter-web` + `data-jpa` + `security` + `validation`（Java 21 / Spring Boot 3.4） |
+| 数据库驱动 | `mysql-connector-j`（MySQL 8；`ddl-auto: validate`） |
+| Token 哈希 | JDK `MessageDigest` SHA-256（不引额外依赖） |
+| SSH 回源 | `com.hierynomus:sshj`（0.41.x，Apache 2.0；转码代理的 SFTP 回源取流） |
+| SMB 回源 | `com.hierynomus:smbj`（0.13.0，Apache 2.0；转码代理的 SMB 回源取流） |
+| ffmpeg | 容器内**二进制**（apt 装入镜像，非 Java 库） |
+
+> 说明：`jaudiotagger` 曾出现于早期选型记录，但**后端并未引入、也无任何音频标签代码**——音频元数据标签全部在 Flutter 客户端用 Dart 实现（见「[客户端扫描与元数据](#客户端扫描与元数据实现要点)」），服务端既没有曲库也没有流媒体（阶段 6 起仅有无状态转码代理）；**不用 Lombok**（全量手写 getter/setter/Logger，规避新版 Java 语言服务器注释处理器不兼容）。
+
+Docker 镜像：prod 基座 `eclipse-temurin:21-jre`（复用基镜像自带 `ubuntu` 用户，暴露 8080，含 ffmpeg）；dev 基座 `maven:3.9-eclipse-temurin-21`（含 ffmpeg）。环境变量实际读取：`DB_HOST/DB_PORT/DB_NAME/DB_USERNAME/DB_PASSWORD`、`PAIRING_TOKEN`、`CACHE_MAX_MIB`、`CACHE_SONG_LIMIT`、`TRANSCODE_MAX_CONCURRENCY`（见「[配置说明](#配置说明)」）。
 
 ---
 
@@ -305,9 +528,39 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 - 其余平台差异目前靠条件导入式的一层封装（`just_audio` 默认 Android 走 ExoPlayer、桌面走 media_kit），尚**未**抽成统一 `capabilities` 接口——新增平台能力时优先考虑在 `lib/platform/` 补齐
 - 少数确实需要平台判断的调用点（音频焦点、通知栏）以 `Platform.isAndroid` 门控，并在注释里说明「ohos 走降级路径」；常亮 / 本地文件夹源 / 蓝牙设备查询已由平台桥支持 ohos（2026-10），对应调用点改为 `isOhos` 分支
 
+### 客户端播放源（Source 抽象层）
+
+`MusicSource` 抽象（`data/sources/music_source.dart`）是双模式的基石，四个实现：`LocalDirectSource` / `WebdavDirectSource` / `SmbDirectSource`（双后端）/ `SftpDirectSource`。
+
+```dart
+abstract class MusicSource {
+  String get key;                          // 'smb:nas1'/'webdav:xx'/'sftp:xx'/'local:xx'
+  String get name;
+  SourceKind get kind;                     // local / webdav / smb / sftp
+  bool get supportsDirect => false;        // 默认不支持直连（scan/open 抛错）
+  Future<ScanSummary> scan({ScanOptions options, ScanToken? token, void Function(ScanProgress)? onProgress});
+  Future<OpenedStream> open(Song song, {IntRange? range});
+  DirectStream? directStream(Song song);   // 可直交播放器的原生 URL（Range/seek 更稳）
+  Future<void> probe(Song song);
+  Future<void> cacheSong(Song song, {bool Function()? shouldAbort});
+  Future<String?> cachedFilePath(Song song);
+  Future<List<Song>> search({String? query, int page, int size});
+  String displayPath(Song song);
+  Future<void> close();
+}
+```
+
+- 播放器只认 `MusicSource`；**直连播放优先级**：离线缓存文件 → `directStream()`（原生 URL，WebDAV 用）→ 自建 `StreamAudioSource`（`open()`）回落。
+- **SFTP**：无 `directStream`（just_audio 播不了 `sftp://`），恒走 `open()` 字节流（协议原生支持偏移读，seek 精度优于 HTTP Range）；选型 `dartssh2`（纯 Dart，三端同代码）。密码 / 私钥 / 主机密钥 TOFU 见 `ssh_known_hosts`。
+- **SMB**：有**双后端**（`useSmbConnect`，`DirectSourceManager` 按 `isOhos` 传入，数据层不直接做平台判断）——非 ohos 走 `dart_smb2`（FFI libsmb2，SMB 2.0.2→3.1.1；主 isolate 用异步 `Smb2Pool`、扫描 isolate 用同步 `Smb2Client`），ohos 走 vendored `smb_connect`（纯 Dart，最高 SMB 2.1）。范围读按 256KB 分块（stateless，取消即停）；凭据存 `SecretStore`（`smb_pwd:<sourceKey>`）；`supportsWrite=false`（v1 只读）。代理 origin 为 `smb://host/share/逐段编码路径`（无 userinfo），凭据走 `X-Origin-Smb` 信封。
+- WebDAV `ref` 存**解码后**路径，请求时按路径段重新编码；扫描头部元数据解析对大内嵌封面做边界保护（超采样即停止解析，不抛 `RangeError`）。
+- 源列表 = `sources` 表里启用的源；配置后端地址后解锁多设备同步（与曲库无关）。
+
+**离线缓存**：远端源（WebDAV/SMB/SFTP）缓存走整曲下载，`cacheSong` 按 1MiB 攒批落临时文件后原子换入（见「[客户端同步与缓存批处理](#客户端同步与缓存批处理)」）；本地源文件本体即缓存，`cachedFilePath` 直接返回绝对路径走 `setFilePath`。
+
 ### 客户端本地数据层（SQLite 写隔离）
 
-> 机制背景（为什么有这层）见 [DESIGN.md §3.2](DESIGN.md#32-客户端sqlite)；本节是**写代码时必守的规则**。
+> 机制背景（为什么有这层）见「[总体架构](#总体架构)」与「[客户端播放源](#客户端播放源source-抽象层)」；本节是**写代码时必守的规则**。
 
 结构（`lib/data/local/`）：
 
@@ -335,7 +588,7 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 
 ### 客户端扫描与元数据（实现要点）
 
-> 扫描方式与指纹语义见 [DESIGN.md §6.4](DESIGN.md#64-直连模式本地轻量索引)；本节只记**写代码时必守的隔离与数据规则**。
+> 扫描方式与指纹语义见「[数据模型](#数据模型)」客户端表与「[客户端扫描与元数据](#客户端扫描与元数据实现要点)」；本节只记**写代码时必守的隔离与数据规则**。
 
 - 扫描在独立 Isolate 运行（`data/sources/scan_worker.dart` 的 `runScan`）：入口函数只收可序列化的原始参数
   （HTTP 客户端 / DB 句柄 / `LocalIndex` 等**不得跨 isolate 发送**）；指纹表由主 isolate 在 `scan()` 前查好以 `Map<String,Object?>` 传入
@@ -350,7 +603,7 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 - 播放时懒补全：`PlayerProvider._enrichLazily` 播放后按结构定位精确 Range 读取（`readAudioMeta`），`enrichSong` 回填，失败静默
 - 测试：`test/webdav_scan_test.dart` 用真 `HttpServer`（PROPFIND/GET/Range + 可变 etag）验证跨 isolate 扫描、增量跳过与 etag 变化仅重探目标文件；`test/audio_metadata_test.dart` 覆盖头部越界与大封面边界；
   另有 `duration_format_test`（时长 mm:ss/h:mm:ss）、`lrc_parser_test`（歌词解析）、`song_title_format_test`（标题格式）、`play_reconcile_test`（播放前最新行纠正）、`top_bar_search_test`（搜索追焦）、`view_mode_settings_test`（集合页视图持久化）、`playlist_membership_test`（歌单归属/切换）与 `playlists_view_test` 等
-- 历史坑：mp3 enc==3 / flac VORBIS_COMMENT 曾用 `String.fromCharCodes` 逐字节解码导致 CJK 乱码——已改 UTF-8 解码；修复后需对已有源重扫一次覆写旧行（`upsert` 无条件覆盖 title/artist/album，无需删库）
+- 历史问题：mp3 enc==3 / flac VORBIS_COMMENT 曾用 `String.fromCharCodes` 逐字节解码导致 CJK 乱码——已改 UTF-8 解码；修复后需对已有源重扫一次覆写旧行（`upsert` 无条件覆盖 title/artist/album，无需删库）
 
 **读头部的多段策略（`data/local/audio_metadata.dart`）**
 
@@ -413,21 +666,49 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 - **同步后台化（写隔离收口）**：outbox 读取 + `jsonDecode`（`pendingOutbox`/`pendingOutboxCount` op）、pull 快照的字段映射与落库（`applySongSnapshotsRaw` / `applyPlaylistSnapshots` / `applyPlaystateMirror`）、断点歌单存在性判定，全部在写隔离（`db_writer`）内完成；UI isolate 只 `await`。**ohos 例外**：无子 isolate，内联写按 200 行/事务分片、片间 `await` 让出事件循环（`_InlineDbWriter.opBatch`）；cursor 在整页应用后才推进，中途失败靠重拉幂等收敛
 - **跨页去重**：服务端只在单页内按实体去重，`_pull` 按 `source_id|ref` / uuid 跨页去重，重复快照只计数不重复落库
 - **落库回调帧末投递**：`onSourcesApplied/onSongStatesApplied/onPlaylistsApplied` 经 `scheduleAfterFrame`（`utils/frame_scheduler.dart`）推迟到帧末；歌单回调携带本轮变更 uuid，`PlaylistsProvider.refresh(changedUuids:)` 只重查变更歌单计数（避免同步一次 N+1 全量重查）；源 watcher 仅在本地源 key/rootPath 真变化时重建
-- **拉到的快照走 `apply*Snapshot` op**：身份收集恒不建行（已删歌曲不复活）；远端断点落 `breakpoint_mirror`，不直接改运行时 `play_state`
+- **拉到的快照走 `apply*Snapshot` op**：身份收集恒不建行（已删歌曲不重新建行）；远端断点落 `breakpoint_mirror`，不直接改运行时 `play_state`
 - **缓存写入攒批**：WebDAV 缓存下载按 1MiB（`_cacheWriteBufBytes`）攒够再落临时文件，成功后 `cacheCommit` 换入正式路径并更新 `cache` 表——避免逐 chunk 小写入；`persistCover` 同样先写临时文件再改名，保证重复扫描幂等
-- 同步协议语义（LWW / 事件重算 / 歌曲身份 / 断点不牵连歌单快照 / 事件日志压缩）见 [DESIGN.md §7.2](DESIGN.md#72-同步协议)
+- 同步协议语义（LWW / 事件重算 / 歌曲身份 / 断点不牵连歌单快照 / 事件日志压缩）见「[播放算法与同步协议](#播放算法与同步协议)」
+
+### 歌词与后台播放
+
+- **歌词三通道**：内嵌标签（mp3 `USLT` / FLAC `LYRICS`·`UNSYNCEDLYRICS`）→ 同目录同名 `.lrc`（local/WebDAV 通用，UTF-8/UTF-16 BOM 兼容，后端不提供歌词）；解析为 LRC 文本入库 `song_lyrics`（`(source_key,ref)` 主键，三态：内容 / 显式标记缺失 / 未读取），缺失标记避免每次播放重复读文件。
+- **歌词页**：与播放进度同步滚动 + 居中高亮当前行 + 点击任意行 seek；手动拖动暂停跟随，空闲「追焦等待」超时后回中，切歌归位；`lrc_parser.dart` 支持多标签 / `offset` / 毫秒位数 / 纯文本退化 / 二分定位 / 译文行 ` / ` 换行。
+- **歌词跟焦为自愈式**（`lyrics_view.dart`）：每次位置事件都按真实布局复核当前行是否在位，不以「行号是否变化」为触发条件——`ListView.builder` 懒构建导致目标行尚未构建时，先临时加宽 `cacheExtent` 让目标行被构建（经典 `double` 写法以兼容 ohos 分支，最多补滚 3 次），再用 `RenderAbstractViewport.getOffsetToReveal` 只滚歌词列表（不用 `Scrollable.ensureVisible`，避免把外层 `PageView` 一起拖动）；首次归位 `jumpTo`、换行 `animateTo`；拖动抑制为续期式空闲计时。
+- **后台播放**：Android 走 `audio_service` 自研处理器（`SelfMusicAudioHandler`），返回桌面 / 切后台**继续播放**；通知栏「退出软件」/ 划掉任务 / 侧边栏「退出」才真正停止。**前台服务恒注册**，`notification_controls=false` 只隐藏通知里的 5 个按钮（后台保活不受该开关影响）；鸿蒙 AVSession 桥同理恒注册（见「[鸿蒙适配](#鸿蒙适配)」）。
+- **睡眠定时四模式**：指定时间 / 时长 / 曲数 / 列表结尾（+ 播放完最后曲目）；「指定时长/曲数」滚轮选择并**记忆上次值**（`sleep_default_duration_minutes` / `sleep_default_count`）；「播放结束退出软件」仅当次生效（开时 `shutdown()` 后 `exit(0)`，否则暂停驻留）。
+- **播放页控件自动隐藏**（`player_auto_hide_idle_sec`，默认 5，0=不隐藏）：仅播放页计静置；超时淡出左上「返回内容」与封面右上「更多」两个纯入口；根布局 `Listener(translucent)` 任何触摸都重新计时，进入歌单页 / 歌词页 / 切到内容区不参与隐藏。
+
+### 列表 / 卡片 / 多选
+
+四层收口（此前同一形态在 10 处各写一遍）：
+
+| 层 | 载体 | 约定 |
+|----|------|------|
+| 外壳 | `widgets/row_list.dart` 的 `RowList` | 唯一固定行高列表外壳：统一 `itemExtent`、分隔线缩进、末行不带线、可选下拉刷新 |
+| 行 | `widgets/song_list.dart` 的 `SongTile` | 唯一歌曲行：封面 + 标题 + 副标题 + 时长/菜单；集合类行（歌单 / 专辑 / 歌手 / 播放源）用 `ListTile` + `CoverThumb` |
+| 卡片 | `widgets/square_card.dart` 的 `SquareCard`/`SquareCardGrid` | 唯一方形卡片：封面恒 1:1（列宽按可用宽度算，不写死 `childAspectRatio`）、标题 2 行上限、按「最大宽 × 设备像素比」降采样解码 |
+| 多选 | `widgets/list_selection.dart` 的 `Selection<T>` + `widgets/selection_bar.dart` | 选择状态内核与批量栏；勾选标记统一 `widgets/selection_badge.dart` |
+
+几何常量（`row_list.dart`，改动须同步 `playlists_view_test` 的 `itemExtent` 断言）：`kRowHeight=72`、`kRowSeparatorHeight=1`、`kRowExtent=73`、`kRowDividerIndent=72`、`kListHeaderHeight=44`。
+
+**为什么 `itemExtent` 不能省**：没有它时 Sliver 为定位深处目标需从第 0 行逐行排到目标行——千首歌单一帧构建 700+ 行与封面，进入必卡（实测 712 项 vs 16 项，`playlists_view_test` 有回归用例）。
+
+- 标题常驻加粗（`w600`），播放中 / 选中只叠主色区分；封面位恒为封面，播放指示 `graphic_eq` 排在标题之后。
+- 多选勾选框叠在封面左上角；多选态隐藏单曲三点菜单；「已选 N」与批量动作口径 = 当前可见项（搜索过滤后不统计也不作用）；队列面板不参与多选。
+- 视图模式：`ViewModeState` mixin + `ViewModeSlot`（`view_mode_toggle.dart`）收口歌单 / 播放源 / 专辑 / 歌手四页切换。
 
 ### 桌面音频后端（media_kit）
 
 Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 由 `media_kit_libs_linux` / `media_kit_libs_windows_audio` **随包分发，无需系统安装 mpv**。`main()` 顶部 `JustAudioMediaKit.ensureInitialized()` 完成注册（默认参数 Windows/Linux 启用、Android 关闭走 ExoPlayer）。
 
-> 历史注：pubspec 里的 `just_audio_mpv`（0.1.7）从未接线（无 import、无初始化），已删除；Linux 桌面播放随 media_kit 真正接通。
+> 注：`just_audio_mpv`（0.1.7）从未接线（无 import、无初始化），已从 pubspec 移除；Linux 桌面播放由 media_kit 接通。
 
 ### 客户端播放要点（装载/切歌/返回）
 
 - **装载前置鉴权探针**：原生装载器（fvp/ExoPlayer）对 401/403 错误响应只会无限缓冲，进度停 0:00 且无任何提示（2026-09-29 密码过期真机实测）。`_loadOnce` 在 setUrl 前先发 1 字节 Range 探针（`MusicSource.probe`，与取流路径同口径）：401/403 立即失败提示，其余探针异常忽略后继续装载（网络抖动交给播放器重试）
 - **装载看门狗（2026-09-30）**：mdk/mpv 对「主机不可达/无响应」的 open 没有应用层超时——真机实测 IPv6 路由丢失时 mdk prepare 永久挂起，UI 卡 00:00/00:00、点播放无响应。setUrl 统一裹 15s 超时（`PlayerProvider._loadUrlTimeout`），超时按装载失败进入 `loadBackoff` 退避重试、耗尽后走失败提示/自动跳曲；被放弃的迟到结果用 `Future.ignore()` 吞掉防 unhandled。ExoPlayer 自带连接超时通常先报错，对 Android 无感
-- **自动切歌 play 空转坑（2026-09-30）**：just_audio 的 `play()` 首行 `if (playing) return`——上一首自然播完 playing 不会自动复位，装载下一首后 `play()` 静默空转、平台层收不到播放指令。ohos 表现为切歌无声 + 进度条靠 Dart 时钟插值假走（暂停时回跳 0）；Android 靠 ExoPlayer `playWhenReady` 跨装载持久而侥幸正常。修复在 `PlayerProvider._play`：装载完成需要播放时先 `pause()` 复位 playing 再 `play()`——**勿删勿"优化"**，详见该处注释
+- **自动切歌 play 空转问题（2026-09-30）**：just_audio 的 `play()` 首行 `if (playing) return`——上一首自然播完 playing 不会自动复位，装载下一首后 `play()` 静默空转、平台层收不到播放指令。ohos 表现为切歌无声 + 进度条靠 Dart 时钟插值假走（暂停时回跳 0）；Android 因 ExoPlayer `playWhenReady` 状态跨装载保持而恰好正常。修复在 `PlayerProvider._play`：装载完成需要播放时先 `pause()` 复位 playing 再 `play()`——**该复位逻辑为必要修复，请勿删除或"优化"**，详见该处注释
 - **返回手势 = 转后台**：移动端侧滑/返回键不退出应用（后台续播），收口在 `platform/app_background.dart`（Android 通道 `com.shamiko.selfmusic/app`、ohos 通道 `selfmusic/app`，均为 `moveToBackground`），`main.dart` 的 `_onPopInvoked` 是唯一调用点、通道失败兜底原行为；桌面端恒 false。调整退出行为只动这两处
 
 ### 鸿蒙适配
@@ -438,7 +719,7 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 
 | 依赖 | ohos 方案 | 状态 |
 |------|-----------|------|
-| path_provider | `path_provider_ohos` 2.2.1 + 超时重试包装（保险层：1s 超时 × 5 次重发 + 沙盒回退；旧"引擎吞回复"根因已被实测翻案，见下节） | ✅ 直接用 + 保险 |
+| path_provider | `path_provider_ohos` 2.2.1 + 超时重试包装（保险层：1s 超时 × 5 次重发 + 沙盒回退；旧"引擎吞回复"假设已被实测否定，见下节） | ✅ 直接用 + 保险 |
 | file_selector | 备份导入导出直接用；本地文件夹源「选择目录」的 `getDirectoryPath` 在 `file_selector_ohos` 未实现（调用必抛异常）→ ohos 改走平台桥 `pickDirectory`（DocumentViewPicker FOLDER + fileShare 持久化，见「系统能力平台桥」） | ✅ 分场景处理 |
 | **just_audio（音频后端）** | **fvp**（libmdk 后端，官方支持 HarmonyOS 5.0+）+ 自写纯 Dart 适配层 `just_audio_platform_interface` → fvp Player，无 ArkTS | ✅ 已实现（`lib/platform/harmonyos/just_audio_fvp.dart`） |
 | flutter_secure_storage | 两层适配：① `FlutterSecureStoragePlatform` 文件 shim；② **前端类绕过**——上游 9.2.4 的 `_selectOptions()` 对 ohos 无条件 throw 且 `_platform` 是逐调用 getter（包级注册平台实例救不了前端），子类 `OhosFlutterSecureStorage` 覆写六入口直调平台实例 + `createSecureStorage()` 工厂收口构造点 | ✅ 已实现（`secure_storage_ohos.dart`） |
@@ -459,25 +740,25 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 
 适配层实现（`lib/platform/harmonyos/`，2026-09）：
 - `ohos_bootstrap.dart`：`setupOhos()` 在 `main()` 里 runApp 前调用，六件事全部仅 ohos 生效——sqlite3 overrideForAll（顶层函数，**仅本 isolate 有效**：不随 Isolate.spawn 传入子 isolate，ohos 写层因此退化内联，见 `db_writer.dart` 头注释）、`FlutterSecureStoragePlatform.instance = OhosSecureStorage()`（包级注册只覆盖平台侧，前端类另需绕过，见上表）、`JustAudioPlatform.instance = FvpJustAudio()`、`PathProviderPlatform.instance = OhosRetryingPathProvider(原实现)`（单点收口：启动链全部路径调用均经该 instance）、`SecurityContext` 根证书注入（`_loadRootCerts`）、`WakelockPlusPlatformInterface.instance = OhosWakelockPlusPlatform()`（2026-10，常亮见下节）
-- `path_provider_ohos_retry.dart`：1s 超时 × 5 次重发的保险包装 + 全超时沙盒路径回退（命中时日志 `[ohos] path_provider.* 响应超时`）；旧"引擎竞态吞回复"根因已被 verify-5/6 逐消息对账翻案（见下节），保留理由：路径查询幂等、成本为零、覆盖未证实的极端时序
+- `path_provider_ohos_retry.dart`：1s 超时 × 5 次重发的保险包装 + 全超时沙盒路径回退（命中时日志 `[ohos] path_provider.* 响应超时`）；旧"引擎竞态吞回复"假设已被 verify-5/6 逐消息对账否定（见下节），保留理由：路径查询幂等、成本为零、覆盖未证实的极端时序
 - `just_audio_fvp.dart`：`FvpJustAudio.init/disposePlayer` 管理播放器表；`FvpAudioPlayer` 实现负载面 load/play/pause/seek/setVolume（+speed/loop 顺带），pitch/shuffle/skipSilence 静默 no-op；mdk 状态映射：`prepare()<0` 抛 PlatformException、`state=stopped` 且非加载复位/错误 → `completed`（自动切歌依赖）、`MediaStatus.invalid`/`onEvent error` → 错误上报、位置用 200ms Timer 轮询（mdk 无位置流）、同一媒体重复 load 前先回 stopped 复位（mdk prepare 对已加载返回 -1）；音量两侧语义一致（0.0-1.0）；mdk prepare 对不可达主机**无超时**——应用层看门狗兜底（见「[客户端播放要点](#客户端播放要点装载切歌返回)」）
 - `secure_storage_ohos.dart`：文档目录单 JSON 文件 + 整文件 base64 混淆，内存即权威源；读写失败不抛（密钥问题不崩登录/配对流程）；对应 platform_interface 1.1.2 Map-options 签名（flutter_secure_storage 9.2.4 锁定该版本，`*Params` API 是 1.2+ 才有，勿混淆）
 
-启动白屏根因（2026-09 真机取证定稿）：两颗应用/生态层地雷，引擎无辜。
+启动白屏根因（2026-09 真机取证）：两个应用/生态层问题，与引擎无关。
 
-> 翻案史：最初据"启动早期平台消息无回复"假设引擎竞态吞回复（~130ms 窗口），据此写了超时重试包装。verify-5 逐消息对账推翻该假设——**67 条 FlutterNapi 回执无一丢失**，引擎消息通道全程正常；旧取证里"挂起的 documentsPath 调用"其实来自 `OhosSecureStorage._ensureLoaded`，回复本身送达了，死的是其后的前端读取。重试包装保留为无害保险层。
+> 排查过程：最初根据"启动早期平台消息无回复"假设引擎存在消息竞态（约 130ms 窗口），并据此实现了超时重试包装。verify-5 逐消息对账否定了该假设——**67 条 FlutterNapi 回执无一丢失**，引擎消息通道全程正常；原取证中"挂起的 documentsPath 调用"实来自 `OhosSecureStorage._ensureLoaded`，回复本身已送达，阻塞发生在后续的前端读取。重试包装保留为无害保险层。
 
-**白屏故障模型**（两颗雷都"只是抛异常"，为何表现为永久白屏 + 零日志）：
+**白屏故障模型**（两个根因都"仅抛异常"，为何表现为永久白屏 + 零日志）：
 
 - **白屏 = 渲染从未开始**：ArkTS 侧窗口/Surface 早已建好，内容全靠 `runApp()` 挂载组件树后才有人画；而 `main()` 的全部初始化都在 runApp 之前逐个 await——**链上任何一环抛异常，其后代码（runApp、markBootReady）全部不执行**
-- **僵尸态**：Dart 的 async 异常只终止 `main()` 这个 Future 的续体，**不退出 isolate**——事件循环、平台通道、已注册回调全部存活。verify-5 铁证：看门狗 60 次 poke 全被 Dart 收到并处理，而 markBootReady（位于 runApp 之后）永不触发；进程健在 → 系统无理由弹崩溃框 → 活进程 + 永远空白的窗口
-- **零日志**：fork 启动早期未捕获异常的 stderr→hilog 转发缺失——verify-1~5 全文检索 Unhandled/UnsupportedError 为 0 命中，但异常确定抛出（修复后同一行代码立即复活）；只能靠间接痕迹定位（雷① 看消息对账断在哪条回执后；雷② 看 MUSL-LDSO 行）
-- **同类前科**：Android 时代通知服务异常拖垮启动（`main.dart` "曾致白屏" 注释，修法 try/catch）——同一故障类别，鸿蒙两雷只是死得更隐蔽
-- **死亡链**（函数级定位，修复后回溯验证）：雷① `main()` 的 `await ServerSettings.load()` → `server_settings.dart` load() 内 `secret.pairingKey()` → `secret_store.dart` 直通 `storage.read` → 前端 `_selectOptions` throw；雷② `main()` 的 `await direct.init()` → `local_index.dart` 索引库 `sqlite3.open` → override 的 `DynamicLibrary.open('libsqlite3.so')` → dlopen errno=2
+- **僵尸态**：Dart 的 async 异常只终止 `main()` 这个 Future 的续体，**不退出 isolate**——事件循环、平台通道、已注册回调全部存活。verify-5 实证：看门狗 60 次 poke 全被 Dart 收到并处理，而 markBootReady（位于 runApp 之后）永不触发；进程健在 → 系统无理由弹崩溃框 → 活进程 + 永远空白的窗口
+- **零日志**：fork 启动早期未捕获异常的 stderr→hilog 转发缺失——verify-1~5 全文检索 Unhandled/UnsupportedError 为 0 命中，但异常确定抛出（修复后同一行代码立即恢复）；只能靠间接痕迹定位（根因① 看消息对账断在哪条回执后；根因② 看 MUSL-LDSO 行）
+- **同类先例**：Android 上通知服务异常曾拖垮启动（`main.dart` 中"曾致白屏"的注释，修法为 try/catch）——故障类别相同，鸿蒙两处根因只是隐蔽性更强
+- **故障链路**（函数级定位，修复后回溯验证）：根因① `main()` 的 `await ServerSettings.load()` → `server_settings.dart` load() 内 `secret.pairingKey()` → `secret_store.dart` 直通 `storage.read` → 前端 `_selectOptions` throw；根因② `main()` 的 `await direct.init()` → `local_index.dart` 索引库 `sqlite3.open` → override 的 `DynamicLibrary.open('libsqlite3.so')` → dlopen errno=2
 
-- **雷① flutter_secure_storage 前端类在 ohos 直接 throw**：上游 9.2.4 的 `_selectOptions()` 对 ohos 不在预置平台表内时无条件抛错，且 `_platform` 是逐调用 getter——包级注册平台实例救不了前端。启动链 `ServerSettings.load()` 读配对密钥时 Future 链**静默断裂**（无 Unhandled/UnsupportedError 日志）。修复：`OhosFlutterSecureStorage` 子类覆写 write/read/containsKey/delete/readAll/deleteAll 六入口直调平台实例 + `createSecureStorage()` 工厂收口（`secret_store` / `api_client` / `theme_provider` 三处构造点）；`server_settings.load()` 另加读失败按未配对继续的兜底
-- **雷② libsqlite3.so 缺失**：sqlite3 包在 ohos 走 `DynamicLibrary.open('libsqlite3.so')`，而设备系统 7 个候选路径全无此库、DevEco SDK 无、`sqlite3_flutter_libs`（0.5.42）只有 android/darwin/linux/windows 目录。`direct.init()` 内 dlopen 失败同样**静默死亡**，唯一线索是 hilog 里应用 pid 的 `MUSL-LDSO: load libsqlite3.so failed ... errno=2` 三行。修复：自编译 musl 版 .so 随包分发（配方见下）
-- **静默死亡取证方法学**（下一颗雷照此排）：① `main()` 全链 `[boot]` 里程碑 debugPrint；② ArkTS 启动看门狗（`EntryAbility.ets` 每 1000ms poke，Dart 侧 `markBootReady()` 解除——未解除即 main 未走完）；③ hilog 逐消息对账：发送 = `DartMessenger --> Received message from Dart over channel '...'`，回复 = `FlutterNapi --> called handlePlatformMessage ... Response ID`；④ 原生库加载失败只看应用 pid 的 `MUSL-LDSO` 行（系统进程噪音极多）；⑤ 疑似卡死时 `hdc fport` + VM service 取栈
+- **根因① flutter_secure_storage 前端类在 ohos 直接 throw**：上游 9.2.4 的 `_selectOptions()` 对 ohos 不在预置平台表内时无条件抛错，且 `_platform` 是逐调用 getter——包级注册平台实例救不了前端。启动链 `ServerSettings.load()` 读配对密钥时 Future 链**静默断裂**（无 Unhandled/UnsupportedError 日志）。修复：`OhosFlutterSecureStorage` 子类覆写 write/read/containsKey/delete/readAll/deleteAll 六入口直调平台实例 + `createSecureStorage()` 工厂收口（`secret_store` / `api_client` / `theme_provider` 三处构造点）；`server_settings.load()` 另加读失败按未配对继续的兜底
+- **根因② libsqlite3.so 缺失**：sqlite3 包在 ohos 走 `DynamicLibrary.open('libsqlite3.so')`，而设备系统 7 个候选路径全无此库、DevEco SDK 无、`sqlite3_flutter_libs`（0.5.42）只有 android/darwin/linux/windows 目录。`direct.init()` 内 dlopen 失败同样**静默中断**，唯一线索是 hilog 里应用 pid 的 `MUSL-LDSO: load libsqlite3.so failed ... errno=2` 三行。修复：自编译 musl 版 .so 随包分发（配方见下）
+- **静默故障取证方法**（同类问题排查流程）：① `main()` 全链 `[boot]` 里程碑 debugPrint；② ArkTS 启动看门狗（`EntryAbility.ets` 每 1000ms poke，Dart 侧 `markBootReady()` 解除——未解除即 main 未走完）；③ hilog 逐消息对账：发送 = `DartMessenger --> Received message from Dart over channel '...'`，回复 = `FlutterNapi --> called handlePlatformMessage ... Response ID`；④ 原生库加载失败只看应用 pid 的 `MUSL-LDSO` 行（系统进程噪音极多）；⑤ 疑似卡死时 `hdc fport` + VM service 取栈
 - **libsqlite3.so 构建配方**（sqlite.org 官网 Download 页 amalgamation 包，当前 3.53.4；产物 NEEDED 仅 libc.so——musl 全并入 libc，无需 -lm/-ldl）：
 
   ```powershell
@@ -504,8 +785,8 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 - int 映射（ArkTS 侧 switch 显式映射防非法值）：播放态 playing?2:3（`PlaybackState.PLAY=2/PAUSE=3`）；LoopMode sequence→0（LOOP_MODE_SEQUENCE）/loopOne→1（**SINGLE**）/loopList→2（**LIST 非 ALL**）/weighted→3（SHUFFLE）
 - 歌词：AVMetadata.lyric 只收内嵌 LRC 文本，服务端 40960 字节上限，Dart 侧按 UTF-8 40000 截断后下发
 - module.json5：backgroundModes 必须写在 **abilities[] 条目内**（`"backgroundModes": ["audioPlayback"]`；三重证据：官方属性表/modulecheck 白名单/FAQ），配 `ohos.permission.KEEP_BACKGROUND_RUNNING`（system_grant 免 reason）
-- **封面（两段式，2026-09-30 定稿）**：元数据先行（卡片秒出，缺封面显示应用图标），封面异步解码后经第二次 `setAVMetadata` 补推。此前踩坑：`mediaImage` 传裸路径/`file://` string 时 `isImageValid checkFail`（av_session 服务进程读不了应用沙箱路径）→ `980000502`，**单字段校验失败会阻断整个播控卡**；PixelMap 方案首轮又因过早 release 触发 `GetMediaImageTopic checkFail`。定稿要点：coverPath 传应用沙箱绝对路径，ArkTS 侧 fd→ImageSource→PixelMap 进 IPC 共享内存；PixelMap **保持引用至替换完成才 release**；同曲按路径去重、快速切歌用任务票据竞态淘汰过期解码（`AvSessionBridge.ets` 的 updateCover/decodeCover）
-- ArkTS 坑：`MethodCall.argument()` 返回 Any，hvigor 编译器拒 Any 推断（`arkts-no-any-unknown`，**hvigor 比 arkts_check 严**）——用 argString/argNumber/argBool 类型化取参
+- **封面（两段式，2026-09-30）**：元数据先行（卡片秒出，缺封面显示应用图标），封面异步解码后经第二次 `setAVMetadata` 补推。实测记录：`mediaImage` 传裸路径/`file://` string 时 `isImageValid checkFail`（av_session 服务进程读不了应用沙箱路径）→ `980000502`，**单字段校验失败会阻断整个播控卡**；PixelMap 方案首轮又因过早 release 触发 `GetMediaImageTopic checkFail`。最终方案要点：coverPath 传应用沙箱绝对路径，ArkTS 侧 fd→ImageSource→PixelMap 进 IPC 共享内存；PixelMap **保持引用至替换完成才 release**；同曲按路径去重、快速切歌用任务票据竞态淘汰过期解码（`AvSessionBridge.ets` 的 updateCover/decodeCover）
+- ArkTS 注意：`MethodCall.argument()` 返回 Any，hvigor 编译器拒 Any 推断（`arkts-no-any-unknown`，**hvigor 比 arkts_check 严**）——用 argString/argNumber/argBool 类型化取参
 - 验收（2026-09-29 真机）：卡片三处出现/播放暂停上一首下一首真控制/循环模式双向同步 ✓；收藏/后台持续/歌词因 WebDAV 服务器内容缺失暂无法验收（环境问题非回归：歌单同步正常证明主服务器 API 在线，WebDAV 扫描 0 首+流缓冲无声）；启动链零回归（桥就绪与看门狗同毫秒，Dart ready 1.65s）
 
 系统能力平台桥（`selfmusic/platform`，2026-10 ohos-permissions feature；2026-10-06 ohos-thumb-native-decode feature 扩封面缩略图原生管线）：
@@ -515,21 +796,21 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 - 本地文件夹源（US1）：module.json5 申请 `FILE_ACCESS_PERSIST`（system_grant 免弹窗免 reason）；选目录 = `picker.DocumentViewPicker` FOLDER 模式 + 当场 `fileShare.persistPermission`（**持久化必须趁选择器临时授权存活的同一会话内完成**，临时授权随应用退出清除；重复选择同一目录幂等处理——persistPermission 失败用 checkPersistentPermission 复核）；重启后扫描前 `activatePermission` 激活（持久化数据在系统数据库，每次启动需手动激活）；扫描 = `fs.listFile(recursion)` + 逐文件 `fs.stat` 全量快照，**主 isolate 执行不走 runScan**（授权 URI 非 dart:io 路径，且桥 handler 在主 isolate）——过滤/指纹 diff 复用 `local_direct_source.dart` 的 `_diffSnapshotEntry` 公共纯函数，isolate 路径行为逐字节不变；点播 = `cachedFilePath` 返回 null → DirectAudioSource 字节流兜底，`fs.read` 512 KiB 分块拉流（ArkTS 侧单次上限 2 MiB 防御，读取不完整按 13900030 error 上抛）；授权失效（撤销/目录删除）统一转译「目录授权已失效，请编辑该源重新选择目录」。ref 形态注意：库内 song ref 存无头相对路径（对齐 Android），桥 readRange 封装负责补 `/` 头再拼 URI
 - 常亮（US2）：`window.setWindowKeepScreenOn`（无需权限声明，仅前台生效；退后台随窗口失焦自动失效是系统预期，回前台由播放器页按播放态重新拉起）；Dart 侧 `OhosWakelockPlusPlatform`（wakelock_plus_ohos.dart）注册进 `WakelockPlusPlatformInterface.instance`（setupOhos 第六件事），player_screen 的 ohos guard 移除、常亮门控逻辑全平台统一
 - 蓝牙（US3）：module.json5 申请 `ACCESS_BLUETOOTH`（user_grant，`$string:bluetooth_permission_reason` + usedScene，base/zh_CN/en_US 三处 string.json 同步）；FR-009 启动期零权限——仅「常亮限定设备」设置页触发三段式申请（`requestPermissionsFromUser` 已授权短路 → 未授权走 `requestPermissionOnSetting` 设置弹框兜底，两次拒绝后只能引导去系统设置）；查询 = `connection.getPairedDevices` / `getRemoteDeviceName` + `a2dp.getConnectedDevices`（均同步 API + try/catch，蓝牙未开启 2900001 等异常一律降级空集合——与 Android「按未连接判定」的静默降级语义一致，`bluetooth_service.dart` 四方法 `isOhos` 分支收口）
-- 封面缩略图原生管线（2026-10-06 ohos-thumb-native-decode feature）：列表缩略图原为纯 Dart `image` 包 `runOffThread` 编码——**fork 引擎无子 isolate、ohos 上 runOffThread 内联主 isolate**，打开应用触发存量封面回填时逐张数百 ms UI 块（全局卡顿根因，spec R-1）。下沉为 `makeCoverThumb`（第 10 个通道方法）：ArkTS 侧 `@ohos.multimedia.image` 全链完成——fd→ImageSource 解码 → EXIF orientation 映射 rotate/flip 烘焙 → 最长边 768 降采样（90°/270° 注意 desiredSize 按旋转后语义换算宽高、绝不放大）→ JPEG q82 重编码 → `<thumbPath>.tmp` 写盘后 rename 原子替换；**缩略图字节不过通道**（Dart 只收 bool），读盘/解码/编码/写盘全在系统原生线程。失败纪律（R-5）：参数缺失/解码失败/超时（Dart 侧 15s）/任何异常一律 `result.success(false)` 静默回原图，**绝不回退内联 Dart 编码**（卡顿源不能复活）；`ensureCoverThumb` 的 ohos 分支复用既有 `_thumbInflight` 去重与 `_displayPathCache`/`_thumbReady` 缓存，非 ohos 代码路径字节不变（零回归）。启动回填配 50ms 逐张节流（`direct_source_manager.dart` 的 `_thumbBackfillGap`）错峰首屏渲染（R-8）。测试范式（R-7）：宿主非 ohos 用 `cover_thumb.dart` 模块级 `forceNativeThumbInTests` 开关 + `TestDefaultBinaryMessenger` mock 通道，覆盖缓存切换/静默回退/并发去重/删除生命周期/与补读解耦（`meta_enrich.dart` 的 `unawaited(ensureCoverThumb)` 不等缩略图）
+- 封面缩略图原生管线（2026-10-06 ohos-thumb-native-decode feature）：列表缩略图原为纯 Dart `image` 包 `runOffThread` 编码——**fork 引擎无子 isolate、ohos 上 runOffThread 内联主 isolate**，打开应用触发存量封面回填时逐张数百 ms UI 块（全局卡顿根因，spec R-1）。下沉为 `makeCoverThumb`（第 10 个通道方法）：ArkTS 侧 `@ohos.multimedia.image` 全链完成——fd→ImageSource 解码 → EXIF orientation 映射 rotate/flip 烘焙 → 最长边 768 降采样（90°/270° 注意 desiredSize 按旋转后语义换算宽高、绝不放大）→ JPEG q82 重编码 → `<thumbPath>.tmp` 写盘后 rename 原子替换；**缩略图字节不过通道**（Dart 只收 bool），读盘/解码/编码/写盘全在系统原生线程。失败纪律（R-5）：参数缺失/解码失败/超时（Dart 侧 15s）/任何异常一律 `result.success(false)` 静默回原图，**绝不回退内联 Dart 编码**（避免卡顿源重新生效）；`ensureCoverThumb` 的 ohos 分支复用既有 `_thumbInflight` 去重与 `_displayPathCache`/`_thumbReady` 缓存，非 ohos 代码路径字节不变（零回归）。启动回填配 50ms 逐张节流（`direct_source_manager.dart` 的 `_thumbBackfillGap`）错峰首屏渲染（R-8）。测试范式（R-7）：宿主非 ohos 用 `cover_thumb.dart` 模块级 `forceNativeThumbInTests` 开关 + `TestDefaultBinaryMessenger` mock 通道，覆盖缓存切换/静默回退/并发去重/删除生命周期/与补读解耦（`meta_enrich.dart` 的 `unawaited(ensureCoverThumb)` 不等缩略图）
 - 缩略图调度链（2026-10-11 ohos-thumb-dispatch-fix feature，前序 `spec/ohos-thumb-taskpool` 契约延续；调度器 `entry/src/main/ets/platform/ThumbDispatcher.ets`，入口声明 `entry/build-profile.json5`，兜底线程 `entry/src/main/ets/workers/ThumbWorker.ets` 协议不变）：
   - **有界并发 + 去重**：`maxInflight=2` 泵动队列，同 `thumbPath` 复用同一在飞 Promise（语义不变）。
   - **首选可恢复**：TaskPool 为「统一单实例 Worker 版」的首选；其健康状态**可恢复**——单次 `taskpool.execute` 失败**不**永久关闭首选，连续失败累计 ≥2（`PRIMARY_FAIL_THRESHOLD`）才临时降级 30s（`PRIMARY_RETRY_DELAY_MS`）并在窗口到期后自动重试，任一次成功即清零失败计数；替代原「单次失败即永久置位 `taskpoolBroken`」（真机取证兜底加载失败 51 次的放大器）。
   - **兜底单实例长驻复用**：降级走**单实例长驻 Worker**——惰性创建至多一次，按请求-应答 **FIFO 串行复用**同一独立线程（`workerQueue` + `workerInFlight` 关联），彻底消除逐任务 `new worker.ThreadWorker`（每 Worker 独立执行环境、创建成本高，即主线程 80% CPU 空转与被强杀的直接来源）。
   - **兜底损坏闩锁（无初始化风暴）**：兜底创建失败 / `onerror` / `onexit` / 反序列化失败即闩锁 `workerBroken`，永久禁用兜底并以 `ok=false` 结算在飞与排队全部等待者，不再「每任务重复初始化 → 必失败」。
   - **零回归**：产物路径/质量、同目标去重、失败静默回原图、`degraded` 标记（`''`/`'worker'`/`'shutdown'`）、`shutdown()` 安全收敛（取消在飞 TaskPool、结算并终止长驻 Worker、不残留 `.tmp`）均与既有一致；Dart（`frontend/lib/**`）与非鸿蒙平台零改动。
-- ArkTS 坑（沿用 AVSession 桥经验）：`MethodCall.argument()` 返回 Any，hvigor 拒 Any 推断——PlatformBridge.ets 用 argString/argNumber/argBool 类型化取参；async handler 的 Promise 必须 `.catch((): void => {})` 收口防 unhandled rejection
+- ArkTS 注意（沿用 AVSession 桥经验）：`MethodCall.argument()` 返回 Any，hvigor 拒 Any 推断——PlatformBridge.ets 用 argString/argNumber/argBool 类型化取参；async handler 的 Promise 必须 `.catch((): void => {})` 收口防 unhandled rejection
 
 构建验证状态（2026-09）：
 - 双 SDK `flutter analyze` 零问题（ohos 3.41.9 与 stable 各自通过；两 SDK 的 pub get 会对 meta/test_api/vector_math 等 4 个 flutter_test 传递依赖来回改写 lock，属已知无害现象）
 - `flutter build hap --debug` 编译链全通：ArkTS（三插件 GeneratedPluginRegistrant）+ native（libfvp.so/libmdk.so arm64-v8a）+ Dart（kernel_blob JIT），assembleHap 出 signed hap；release 出包用根目录 `build-ohos.ps1`（`hap` 参数出三架构 arm64/armv7/x86，缺省出 AGC 发布签名 .app）
 - 真机部署已走通：`devecocli signature generate`（签名材料落 `~/.ohos/config/`）→ 出包 → `hdc install -r` / `devecocli run`
 - **签名材料不入库**：`devecocli signature generate` 会把本机材料路径写进 `ohos/build-profile.json5`，该文件已 gitignore；仓库只留 `build-profile.json5.example` 模板（新机器复制一份改名即可）
-- 启动白屏已修复（两颗应用/生态层地雷，见上）：verify-6 全链路点亮，看门狗 1 次 poke 即解除
+- 启动白屏已修复（两个应用/生态层根因，见上文）：verify-6 全链路点亮，看门狗 1 次 poke 即解除
 
 真机部署步骤：
 ```powershell
@@ -550,7 +831,7 @@ devecocli run   # 或 hdc install <hap 路径> 后手动启动
 #    均无效，10106102 仍复现——只能人工解锁设备（2026-09-29 实测）
 ```
 
-PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV 浏览 + 本地索引 + 真机点播一首歌；跑不通则按 DESIGN §9 R2 降级「仅 WebDAV 直连」。
+PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV 浏览 + 本地索引 + 真机点播一首歌；跑不通则按「[风险与开放问题](#风险与开放问题)」R2 降级「仅 WebDAV 直连」。
 
 **验收结论（2026-09-30 全部通过，PoC 转日常使用）**：直连 WebDAV 浏览/扫描/点播 ✓；fvp 重复 load 复位（重播同一首）✓；completed→自动切歌 ✓（初版 play 空转无声已修，见「客户端播放要点」）；WebDAV Basic 鉴权折叠被 FFmpeg 接受 ✓。此外装载看门狗（不可达主机 15s 有界失败）、AVSession 播控、横竖屏、应用图标、宽屏队列面板（无界宽度布局崩溃 + 状态栏让位）均已真机验收。后续问题按普通 bug 修，不再按 PoC 口径管理。
 
@@ -568,7 +849,7 @@ PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV �
 
    固定 commit：上游分支在动，engine 二进制必须与团队一致（framework 3.41.9 / Dart 3.11.5）。
 
-2. **自建 wrapper**（`*.bat` 不入库，每机一份；路径换成自己的）：
+2. **自建 wrapper**（`*.bat` 不入库，每机一份；路径按本机实际情况修改）：
 
    ```bat
    @echo off
@@ -631,31 +912,72 @@ PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV �
 
 ---
 
-## 数据库规范
+## 播放算法与同步协议
 
-### 服务端 MySQL
+### 加权播放
 
-- 表结构变更：**修改 `scripts/init.sql` 并同步提交**，同时更新对应 JPA 实体；`application.yml` 中 `ddl-auto: validate` 会校验实体与表结构一致性，不一致启动即报错
-- 字符集统一 `utf8mb4`
-- 所有表带 `id BIGINT AUTO_INCREMENT PRIMARY KEY`、`created_at`、`updated_at`
-- 初始化脚本中的用户创建语句已注释（由管理员手工管理账号），执行前确认账号存在且对 `selfmusic.*` 有权限
+设列表 n 首（n≥2）：`基础权重 w₀ = 1/n`，`weight = w₀ × factor`，`factor ∈ [0.5, 1.5]`、连续取值、步长 0.1、初始 1.0。
 
-### 客户端 SQLite
+```
+连续完整播放（like_streak≥3）→ factor 提高 0.1（上限 1.5）
+连续中断（dislike_streak≥3）→ factor 降低 0.1（下限 0.5）
+liked / 手动喜欢            → factor 直接 1.5（并解除「不喜欢」锁定）
+手动不喜欢（开关）          → factor 直接 0.5 并锁定（frozen=true）
+frozen=true                 → 权重锁定最低值，跳过自动调权
+选中概率 p_i = factor_i / Σfactor_j（对候选集合归一化）
+```
 
-- 表清单与设计意图见 [DESIGN.md §3.2](DESIGN.md#32-客户端sqlite)，权威定义在 `lib/data/local/schema.dart` 的 `applySchema()`：**改表只改这里**，主读连接与写隔离各跑一遍，幂等（`ALTER TABLE` 先 `PRAGMA table_info` 探测）
-- 无 `created_at/updated_at` 统一约定；时间列按需命名（`last_scan_at` / `cached_at` / `updated_at`）
-- 写必须走写隔离（见「[客户端本地数据层](#客户端本地数据层sqlite-写隔离)」），不要在主 isolate 直接 `db.execute` 写语句（**例外：ohos**——`DbWriter` 在 ohos 退化内联写：sqlite override 不进子 isolate + fork 引擎子 isolate 可靠性存疑，见「鸿蒙适配」与 `db_writer.dart`）
-- 歌曲身份统一 `(source_key, song_ref)` 复合键；收藏状态只认 `play_meta.is_favorite`（旧 `idx_songs.is_favorite` 仅一次性回填）
+选歌（加权随机模式）：**并非无放回抽取**——每步从队列**全量**（排除上一首，n≥2 时对剩余归一化）按 factor 采样，喜欢的歌可在一轮中多次、不喜欢的歌可能要若干轮才播一次，无固定「单轮」长度，每步独立随机采样。
 
----
+**时长削弱**（设置 `>歌曲`：`curve_weight_enabled` + `curve_weight_segments`）：抽样时按歌曲时长乘分段系数 `effective = factor × curve(duration)` 再钳回 [0.5,1.5]；分段作用域 `[min,max)` 命中第一段即止，`max=null` 表示「超过 min 恒生效」，未命中 / 时长未知 = 1.0（不削弱）。**仅抽样侧即时计算**：不落库、不改 `play_meta`、服务端零改动。
 
-## API 规范
+事件规则（后端 `SyncService` 与本地 `db_writer` 严格镜像同一语义，事件经 `song.complete_manual` 等同步）：
 
-> 完整端点清单、认证细节与**已实现/规划**标注见 DESIGN.md §4。这里只留写代码常用的三条：
->
-> - 路径前缀 `/api/v1/`，资源名用复数（`/api/v1/playlists`）
-> - 除 `/api/v1/health`、`/api/v1/auth/pair`、`/api/v1/auth/refresh` 外均需 `Authorization: Bearer <access_token>`；access 过期返回 `401 + X-Token-Expired: true`，客户端懒刷新
-> - 响应统一包一层 `{ "code": 0, "message": "ok", "data": ... }`；`4xx` 客户端错误，`5xx` 服务端错误
+| 事件 | 触发 | 效果 |
+|------|------|------|
+| complete | 自然结束且播放比例 >95% | like_streak++，dislike_streak=0；非锁定态 like_streak≥3 → factor=min(1.5, +0.1)、streak 清零；锁定态只记 streak 不调权 |
+| complete_manual | **用户手动点播**（`_play(manual:true)` 起始）且自然完播 | like_streak=0、dislike_streak=0、factor=min(1.5, +0.1)（不依赖 3 次门槛——主动点选并听完即强正面信号）；锁定态不动权重 |
+| skip | 被 next/prev/换歌打断且比例 <30% | dislike_streak++，like_streak=0；非锁定态 dislike_streak≥3 → factor=max(0.5, −0.1)、streak 清零；锁定态只记 streak |
+| liked | 手动喜欢 / 收藏 | favorite=true，factor=1.5，解除「不喜欢」锁定（frozen=false） |
+| unfavorite | 取消喜欢 / 收藏 | favorite=false；非锁定态 factor 回 1.0；锁定态保持最低权重 |
+| disliked | 手动不喜欢（开关式） | favorite 不变；开 → factor=0.5 且 frozen=true；关 → 解锁回 1.0 |
+| reset | 手动重置 | 双 streak 清零，factor 回 1.0，解除「不喜欢」锁定 |
+
+> `complete_manual` 仅**用户主动选择**（playAt / playQueue / 播放页点行 / 歌单「播放全部」）起始的歌自然完播才计数；`next()`/`prev()`/自动下一首/失败重试均为非手动起点。
+
+播放模式：`sequence`（顺序播放，播完即停）/ `loopList` / `loopOne` / `weighted`；切换入口播放页 + 队列面板；`next()` 与自动下一首按当前模式路由。
+
+**歌单起播**（`startIndexForOrder`）：歌单详情「播放」的起始曲按当前模式决定——加权随机按权重抽样（与队列下一首共用 `_weightedPickIndex`）、列表循环接续当前曲（末尾回绕）、顺序/单曲循环取首曲；队列本身按歌单当前排序装载（不按模式重排），「从头播放」是显式例外。
+
+**播放统计**：播放次数不单独落库，由**累计播放秒数**派生（`次数 = play_meta.play_sec / duration`）。采集用**挂钟口径**（`DateTime.now` 差值，不采样播放位置，后台/息屏节流不影响），结算点为「暂停 / 切歌 / 退出 / 位置事件」四类，走 `DbWriter.addPlaySec`（写连接内累加）；以 `>=1s` 为有效增量。
+
+**深层列表**（`data/deep_list.dart`，隐藏能力）：锚定列表的「仅可修改末尾值」有界历史栈，容量 = 该列表歌曲总数。手动点播一律替换末尾（不增长）；自动推进（自然播完 / 失败跳歌 / 加权抽样）才推入末尾（超容量视为播完一轮，清空后从当前曲重来）；「上一首」弹出末尾。队列面板形态恒为「深层 ‖ 基座续播段」。不影响「下一首」语义——未来播放顺序仍由队列与加权算法决定。顺序模式播到队尾则深层清零、从头播放；非锚定普通队列仍收尾停止。
+
+> **写路径**：调权 / 收藏不是「先算再存」，而是由 `applyWeightEvent` 等 op 在**写连接的单个事务内**完成读改写并同时入 `weight_outbox`（见「[客户端同步与缓存批处理](#客户端同步与缓存批处理)」）。
+
+### 同步协议
+
+- **方向**：客户端本地 SQLite 是运行时事实源；后端是多设备汇聚点。
+- **Pull**：每 30s `GET /sync/pull?since_cursor=`；cursor 为服务端 `sync_events.seq` 单调递增变更号。快照按实体去重（服务端单页内 + 客户端跨页）：每页只回该页事件涉及实体的**当前快照**；**`breakpoint.set` 只回断点（playstate），不携带歌单条目快照**（稳态流量放大器修复）。断点回调整轮 pull 结束后统一触发一次。
+- **断点快路径**：启动 / 回前台先打 `GET /playstates/latest`（1 RTT 直取全局最新断点快照；旧服务端 404 客户端静默回退，全量 pull 仍是兜底）。启动首轮 pull 均为 `pullOnly`（先拉后推），积压 outbox 由后续 2s tick 补推；套用 single-flight、与首次恢复的异步尾串行。
+- **事件日志压缩**：`sync_events` 只追加，服务端按「所有未吊销设备的最小 pull 水位」（`devices.last_pull_cursor`）定期回收旧事件，且**每实体保留最新一条**（`sync_events.entity_key` 锚点）；事件表不随使用时长无限增长，新设备首拉成本从 O(历史事件数) 收敛到 O(实体数)；`entity_key` 为空的旧行不参与压缩。
+- **Push**：本地权重事件 / 断点 / 歌单改动 → 写 `weight_outbox`（带 `event_uuid`）→ 2s 防抖批量上推；服务端按 uuid 幂等去重。事件类型（`SyncEventTypes`，前后端同名）：`song.complete / song.skip / song.complete_manual / song.liked / song.unfavorite / song.disliked / song.reset / song.state`（权重）、`playlist.create|update|delete` 与 `playlist.item_add|item_remove|item_move`、`source.create|update|delete`、`breakpoint.set`（载荷含 `deep_list_json`）。歌手身份**不参与同步**。
+- **累计播放时长**：`play_sec` 随 `song.state` 上下推（服务端行级 LWW），客户端应用快照取 `max(本地, 服务端)` 单调合并，不因乱序 / 旧快照倒退。
+- **冲突（字段级合并）**：权重走**事件重算**（两设备并发点赞按到达序重放，不互抹）；收藏 / 歌单元数据 / 删除墓碑 / 断点走**行级 LWW**（事件 `occurred_at` vs 行 `last_event_at`，输方收 correction 回执自纠；仲裁时钟为服务端 `arrived_at`）；歌单条目按 seq 到达序重放（后到达胜出）。直接 REST 变更（歌单 CRUD / 断点 PUT / 调权 POST）同样先记事件再生效。
+- **歌曲身份**：服务端无曲库，统一为 `source_id + source_ref`（source_id=客户端源实例 uuid，旧数据为 `legacy:<协议>`）；权重 / 收藏落 `song_states`，歌单条目与断点自持身份及展示快照（pull 不覆盖客户端本地标题）；pull 身份收集恒不建行（已删歌曲不重新建行）。未配对（无后端地址）或 `sync_enabled=0` 时直连事件不进队，避免 outbox 无限积压。
+- **播放源同步**：`source.create/update/delete` + 行级 LWW；身份 `client_uuid`，去重键 `(kind, address)`（地址两端归一化——WebDAV 缺 scheme 补 https、去尾斜杠，SFTP 形态 `host:port/path`；转码强校验按同一归一化匹配）。本地文件夹源不参与；密码与私钥（含 passphrase）不入服务端（新设备显示「待配置密码」）；SFTP 主机密钥钉 `ssh_known_hosts` 亦不参与同步（各设备各自 TOFU）。存量远端源接入时补 uuid 并补发一次 create；旧协议级身份在设备重新上报时由服务端懒迁移。
+- **跨设备断点消费**：`breakpoint.set` 快照带来源设备；客户端 pull 落 `breakpoint_mirror`；启动恢复与歌单「播放全部」会比较本机 `play_state`（含歌单归属 `playlist_uuid`）与镜像的 `updated_at`，远端更新时自动从该进度续播并 toast；目标歌本机无源时退到其后第一首可播条目，全不可播则回落本机恢复。
+- 直连模式（无服务器）：上述全部跳过，数据只在本机。
+
+### 歌手身份聚合（MusicBrainz 后台解析）
+
+纯客户端本地能力，不参与跨设备同步。歌曲标签里的歌手名（括号 / 分隔符 / 大小写差异 / NFKC 变体）经身份管线归一到唯一 `artist_key`，再对 MusicBrainz 后台解析出正式名、别名、角色与乐队成员，用于歌手页聚合。
+
+- `ArtistResolver`（`services/artist_resolver.dart`）：MB 搜索选型 + 按 MBID lookup，单次 `inc=artist-rels+aliases`；匹配分（`match_score`）、disambiguation、按年过滤；`1 req/s` 令牌桶节流、`error_count/next_at` 指数回退、`networkDown` 标记。
+- 状态机：pending → local（未解析）→ resolved（命中 mbid）→ ambiguous（多名候选）；成员经 `artist_member` 关系图**递归展开**（Group→Character→Person，成员即 resolved）。
+- 落库：`artists / artist_canon / artist_song_map / artist_member`（见「[数据模型](#数据模型)」客户端表）。
+- 入口：歌曲播放补读时顺带析出歌手 → 后台循环批量解析；侧边栏「信息」页展示解析进度；「强制解析」可重拉已解析歌手。
+- 与同步、扫描互不影响：身份结果纯本地，不随 `weight_outbox` / `idx_songs` 上报。
 
 ---
 
@@ -733,6 +1055,24 @@ Docker Hub 网络不通。解决方案任选：
 ### 6. JPA 启动报 validate 校验失败
 
 实体字段与表结构不一致。核对 `scripts/init.sql` 与 entity 类的字段名/类型/可空性，或临时用 `ddl-auto: none` 启动排查。
+
+---
+
+## 风险与开放问题
+
+| # | 风险 | 影响 | 缓解 |
+|---|------|------|------|
+| R1 | SMB 移动端 FFI 稳定性 / ohos 端 SMB2.1 方言兼容 | 真机不可用 | 已改统一 Dart API（`dart_smb2` FFI + ohos `smb_connect`），无 smbj 平台通道；残余风险靠真机验收覆盖 |
+| R2 | 鸿蒙三方 Flutter 分支平台通道兼容 + pub 插件生态缺口 | 鸿蒙端可用性 | **已验证可控**：核心依赖全部落地（fvp / secure_storage 双层适配 / sqlite3 随包 / path_provider 重试 / audio_session / AVSession 替代 audio_service）；仅 `cached_network_image`（sqflite 传递依赖缺失）曲库封面降级为已知问题（依赖仍声明锁定、代码零 import，封面走本地 `CoverThumb`/`image` 包 + ohos `makeCoverThumb` 桥） |
+| R3 | WebDAV 服务端差异（PROPFIND 深度 / 鉴权 / 限流） | 个别云盘不可用 | 连接测试按钮 + 超时重试封装 |
+| R4 | 直连扫描耗流量 / 电量 | 用户感知差 | 仅 Wi-Fi 扫描开关；增量指纹（size/mtime/etag）跳过未变文件；快速只建索引扫描零读头；补读走严格 Range（按结构定位，不整读）；单源上限 20k |
+| R5 | ffmpeg 容器 CPU 占用 | 多设备并发卡顿 | 全局并发上限默认 2；超限降级透传 / 回落直连 |
+| R6 | 大曲库查询性能 | 列表慢 | 索引齐备；`q` 前缀匹配；预留 FTS 开关 |
+| R7 | 公网暴露 | 曲库 / 上传被滥用 | Bearer 认证已是第一道门；文档仍建议叠加 IP 白名单 |
+| R8 | 转码流 position 精度（VBR） | 转码后 VBR 断点 ±2s | 文档注明；CBR 精确 |
+| R10 | SFTP 密钥与主机信任 | 私钥外泄误伤、中间人 | 私钥文本只存本机 SecretStore，代理转发时内存态单次使用、不记日志不落盘；主机密钥 TOFU（首认弹窗 + 变更加锁拒绝）；服务端不存 known_hosts，凭客户端信封指纹校验 |
+
+> 待拍板项已全部收敛：上传落点可配 / 服务端定时扫描 / 封面两档（均随服务端曲库移除作废）；`hard=true` 仅限 local 源为默认；`frozen` 以「不喜欢」开关形式暴露。
 
 ---
 

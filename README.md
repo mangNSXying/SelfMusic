@@ -10,8 +10,7 @@
 | 文档 | 内容 |
 |------|------|
 | **README.md**（本文） | 项目概览、技术栈、快速启动、服务与端口 |
-| [DEVELOPER.md](DEVELOPER.md) | 环境搭建、构建矩阵、开发流程、客户端实现要点（SQLite 写隔离 / 扫描 / 同步 / 鸿蒙 PoC）、排障 |
-| [DESIGN.md](DESIGN.md) | 整体设计、数据模型、API 契约、播放算法、同步协议、路线图与风险 |
+| [DEVELOPER.md](DEVELOPER.md) | 整体架构 / 数据模型 / API 契约 / 播放算法与同步协议 / 环境搭建 / 构建矩阵 / 开发流程 / 客户端实现要点（SQLite 写隔离 / 扫描 / 同步 / 鸿蒙 PoC）/ 排障 / 风险 |
 | [settings.md](settings.md) | 设置项权威清单（键名、默认值、入口、生效范围） |
 | [frontend/README.md](frontend/README.md) | 前端目录速查与常用 flutter 命令 |
 
@@ -36,7 +35,7 @@
 | 反向代理 | Nginx | 宿主机已有实例 |
 | 容器 | Docker + Docker Compose | 仅后端容器化 |
 
-> **平台开发原则**：Linux 桌面与 Android 同步开发、双端进度对齐，理由与验收口径见 [DESIGN.md §8](DESIGN.md#8-分阶段路线图)。
+> **平台开发原则**：Linux / Android / Windows / HarmonyOS NEXT 四平台同步开发、进度对齐，原因与验收口径见 [DEVELOPER.md「总体架构」](DEVELOPER.md#总体架构)。
 > 各平台构建矩阵、音频后端接线（Android ExoPlayer / 桌面 libmpv / 鸿蒙 fvp）与所需构建机见 [DEVELOPER.md](DEVELOPER.md)。
 
 ## 快速开始
@@ -117,7 +116,7 @@ selfmusic/
 ├── .env                         # 环境变量模板（不入库）
 ├── run-linux.sh / run-android.sh / run-windows.bat   # 三端快速运行
 ├── build-ohos.ps1                                     # 鸿蒙 release 出包（三架构 / AGC 发布签名 .app）
-├── DESIGN.md / DEVELOPER.md / settings.md
+├── DEVELOPER.md / settings.md
 └── README.md
 ```
 

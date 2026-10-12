@@ -4,7 +4,7 @@ import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
 /**
- * 阶段5 同步事件流水（DESIGN.md §7.2）。
+ * 阶段5 同步事件流水（DEVELOPER.md「播放算法与同步协议」）。
  * seq 全局单调递增 = pull 的 since_cursor 比较基准；
  * event_uuid 幂等键（重复 push 直接跳过）；
  * arrived_at 为服务端仲裁时钟（客户端 occurred_at 缺失或打平时用）。

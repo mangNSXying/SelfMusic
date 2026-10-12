@@ -49,7 +49,7 @@ enum CollectionViewMode {
 /// 已实现（settings.md §3.2/§3.3/§3.4）：
 /// - 缓存来源模式 `cache_config_mode`（custom / follow_server）与自定义上限；
 /// - 收藏自动缓存；播放页权重信息显示；忽略音频过滤；仅 Wi-Fi 扫描；
-/// - 默认播放模式、断点续播开关（对应 DESIGN §6.7）；
+/// - 默认播放模式、断点续播开关（对应 DEVELOPER.md「数据模型」）；
 /// - 服务端分区网络（settings.md §3.3）：`allow_insecure_http`（默认关，显式 http 才允许）、
 ///   `allow_self_signed`（默认关，dio/WebDAV 信任自签名 TLS）。
 class AppSettings {
@@ -72,7 +72,7 @@ class AppSettings {
   /// 播放器层（ExoPlayer/mpv）不受此开关影响，仍要求 CA 有效证书。
   static const String kAllowSelfSigned = 'allow_self_signed';
 
-  /// 多设备状态同步（阶段5，DESIGN §7.2）：服务端 cursor（pull 的 since_cursor 基准）。
+  /// 多设备状态同步（阶段5，DEVELOPER.md「播放算法与同步协议」）：服务端 cursor（pull 的 since_cursor 基准）。
   static const String kSyncCursor = 'sync_cursor';
 
   /// 多设备状态同步总开关（关=仅本地，直连模式同样跳过）。
@@ -262,7 +262,7 @@ class AppSettings {
   set allowSelfSigned(bool v) =>
       index.settingsSet(kAllowSelfSigned, v ? '1' : '0');
 
-  // ---------- 多设备状态同步（阶段5，DESIGN §7.2） ----------
+  // ---------- 多设备状态同步（阶段5，DEVELOPER.md「播放算法与同步协议」） ----------
 
   /// 服务端 cursor：pull 增量基准，SyncEngine 每次成功后推进。
   int get syncCursor => int.tryParse(index.settingsGet(kSyncCursor) ?? '0') ?? 0;
