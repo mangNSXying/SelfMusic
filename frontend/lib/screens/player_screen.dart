@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
@@ -37,9 +38,14 @@ bool useDesktopLandscape(Size size, {required bool isDesktopPlatform}) =>
 ///
 /// 手势交互（可在设置中关闭）：
 /// - 播放页/歌词页横向跟手互切（PageView 原生：跟手 + 速度/位置裁决）；
-/// - 播放页【下滑跟手】整页随手指下移返回列表（松手吸附/离场）；
+/// - 播放页【下滑跟手】整页随手指下移返回列表（松手吸附/离场，横屏仅手机
+///   三列的非歌词区支持，桌面双栏左列可滚动故不接，避免与滚动打架）；
 /// - 歌词页纵向滚动，右滑或按钮返回播放页；
 /// - 底部迷你栏【上滑跟手】播放页从底部升起。
+///
+/// 桌面 ESC：在播放页（第 1 页，横竖屏不分）按 ESC 返回内容页；输入框聚焦时
+/// 第一次只失焦，歌单/歌词页不拦截。悬浮层常驻挂载（非路由），系统返回管不到
+/// 桌面 ESC，故经 CallbackShortcuts 自行处理。
 class PlayerScreen extends StatefulWidget {
   const PlayerScreen({super.key});
 
@@ -56,6 +62,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// 播放页下拉跟手的起点（全局 Y + 起始进度）。
   double _dragStartY = 0;
   double _dragStartP = 0;
+
+  /// 桌面 ESC 键的焦点：悬浮层常驻挂载在 Stack 内（非路由），系统返回管不到
+  /// 桌面 ESC；播放页可见时把焦点接过来，ESC 经 CallbackShortcuts 到达。
+  /// 不用 autofocus——首挂载即抢焦点会干扰启动，只在可见切换时接一次。
+  final FocusNode _escFocus = FocusNode(debugLabel: 'playerEsc');
 
   /// 播放页控件静置自动隐藏（改进.txt UI3）：无操作 N 秒后隐藏
   /// 左上返回箭头与封面右上「更多」。触摸即恢复并重新计时。
@@ -198,6 +209,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _warmTimer?.cancel();
     _btPoll?.cancel();
     _autoHideTimer?.cancel();
+    _escFocus.dispose();
     // 离开播放页恢复熄屏策略（ohos 经 ohos_bootstrap 注册的平台实现生效）。
     unawaited(WakelockPlus.disable());
     _pageCtrl.dispose();
@@ -222,11 +234,58 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _autoHideTimer?.cancel();
       _autoHideTimer = null;
       _setControlsHidden(false, inBuild: inBuild);
-    } else if (!_prevPlayerView) {
-      // 从收起切回播放页：复位显示并重新计时。
-      _rearmAutoHide(inBuild: inBuild);
+      _escFocus.unfocus();
+    } else {
+      if (!_prevPlayerView) {
+        // 从收起切回播放页：复位显示并重新计时。
+        _rearmAutoHide(inBuild: inBuild);
+      }
+      // ESC 焦点：可见且焦点不在本页时接过来（冷启动首帧可见也走这里，
+      // _prevPlayerView 初值 true 无切换分支可走）。
+      if (!_escFocus.hasFocus) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          if (!context.read<NavigationProvider>().playerView) return;
+          if (_escFocus.hasFocus) return;
+          // 弹窗/菜单打开时不抢焦点：ESC 先关它们（路由原生行为）。
+          if (Navigator.of(context).canPop()) return;
+          _escFocus.requestFocus();
+        });
+      }
     }
     _prevPlayerView = visibility;
+  }
+
+  /// 桌面 ESC 返回内容页（横竖屏播放页都生效，仅播放页）。
+  ///
+  /// 弹窗/菜单打开时焦点在 dialog 路由内，事件到不了本页 shortcut，由路由
+  /// 原生 ESC 关闭；输入框聚焦时第一次只失焦（防输入中误关，焦点交回本页后
+  /// 第二次再关闭）；歌单/歌词页不拦截（避免与横滑带手势语义混乱）。
+  /// 当前焦点是否落在输入框内：TextField 把焦点挂在内部外层 Focus 上
+  /// （`primaryFocus.context.widget` 是 Focus 而非 EditableText），故沿祖先链
+  /// 找输入框。
+  bool _primaryFocusIsTextInput() {
+    final ctx = FocusManager.instance.primaryFocus?.context;
+    if (ctx == null) return false;
+    if (ctx.widget is EditableText) return true;
+    if (ctx.findAncestorWidgetOfExactType<EditableText>() != null) return true;
+    return ctx.findAncestorWidgetOfExactType<TextField>() != null;
+  }
+
+  void _onEscape() {
+    if (!mounted) return;
+    final primary = FocusManager.instance.primaryFocus;
+    if (primary != null &&
+        primary != _escFocus &&
+        _primaryFocusIsTextInput()) {
+      primary.unfocus();
+      // 焦点交回本页 ESC 节点：下一次 ESC 直接关闭（两次 ESC 关页）。
+      _escFocus.requestFocus();
+      return;
+    }
+    if (!context.read<NavigationProvider>().playerView) return;
+    if (!_onPlayerPage) return;
+    context.read<NavigationProvider>().closePlayer();
   }
 
   /// 播放页控件静置隐藏计时（改进.txt UI3）：任何触摸视为交互并重新计时。
@@ -384,107 +443,129 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     // 播放页控件静置隐藏（改进.txt UI3）：任何触摸都视为交互并重新计时。
     // 歌单页/播放页/歌词页同一页横滑带，进入歌单页由 PageView 原生右滑接管。
-    return Scaffold(
-      body: Listener(
-        behavior: HitTestBehavior.translucent,
-        onPointerDown: _onBandPointerDown,
-        // 横屏铺满到屏幕底：不再让出底部系统手势条（横屏三列控件不与居中的
-        // 手势条重叠），与壳层内容区（removePadding 铺满）观感一致；竖屏保留
-        // 底部安全区——底部控制行居中，会与手势条打架。
-        child: SafeArea(
-          bottom: !landscape,
-          child: _PlayerControlsHidden(
-            hidden: _controlsHidden,
-            child: PageView(
-              // 横向由内层 PageView 原生跟手（右滑回播放页/进歌单页）；
-              // 竖向仅播放页（第 1 页）跟手下拉，歌词页纵向留给滚动。
-              // 关闭手势后 PageView 禁滑、下拉停用。
-              controller: _pageCtrl,
-              // 完全打开后置 true：预构建/保活左右邻页（见 _warmNeighbors 注释）。
-              allowImplicitScrolling: _warmNeighbors,
-              physics: gestureOn
-                  ? const PageScrollPhysics()
-                  : const NeverScrollableScrollPhysics(),
-              // 预热前滑向邻页：即时补建，避免白板（空闲仍是主触发，见 C）。
-              onPageChanged: (i) {
-                if (i != 1 && mounted) _scheduleWarmNeighbors();
-              },
-              children: [
-                // 首帧避让（C）：邻页首帧占位，空闲预热后再装配——歌单页整单
-                // 装配（1310 首曾测 ~150ms）移出首帧；页数恒定（横屏 2 / 竖屏 3），
-                // PageController initialPage=1 不受影响。
-                if (_warmNeighbors)
-                  if (landscape)
-                    // 横屏歌单页为「左歌单右播放」分栏：滑动 settle 后左右同显，
-                    // 与横屏整页「左播放右歌词」同理；竖屏仍为整页歌单。
-                    // 左上角返回箭头悬浮于分栏之上（与横屏播放页一致）。
-                    Stack(
-                      children: [
-                        Positioned.fill(
-                          child: desktopLandscape
-                              ? DesktopPlaylistSplit(
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): _onEscape,
+      },
+      // 祖先焦点：子孙（按钮/滑杆/列表）聚焦时快捷键仍冒泡到此；弹窗路由内
+      // 的焦点不在本子树，不会误触发（ESC 先关弹窗）。
+      child: Focus(
+        focusNode: _escFocus,
+        child: Scaffold(
+          body: Listener(
+            behavior: HitTestBehavior.translucent,
+            onPointerDown: _onBandPointerDown,
+            // 横屏铺满到屏幕底：不再让出底部系统手势条（横屏三列控件不与居中的
+            // 手势条重叠），与壳层内容区（removePadding 铺满）观感一致；竖屏保留
+            // 底部安全区——底部控制行居中，会与手势条打架。
+            child: SafeArea(
+              bottom: !landscape,
+              child: _PlayerControlsHidden(
+                hidden: _controlsHidden,
+                child: PageView(
+                  // 横向由内层 PageView 原生跟手（右滑回播放页/进歌单页）；
+                  // 竖向仅播放页（第 1 页）跟手下拉，歌词页纵向留给滚动。
+                  // 关闭手势后 PageView 禁滑、下拉停用。
+                  controller: _pageCtrl,
+                  // 完全打开后置 true：预构建/保活左右邻页（见 _warmNeighbors 注释）。
+                  allowImplicitScrolling: _warmNeighbors,
+                  physics: gestureOn
+                      ? const PageScrollPhysics()
+                      : const NeverScrollableScrollPhysics(),
+                  // 预热前滑向邻页：即时补建，避免白板（空闲仍是主触发，见 C）。
+                  onPageChanged: (i) {
+                    if (i != 1 && mounted) _scheduleWarmNeighbors();
+                  },
+                  children: [
+                    // 首帧避让（C）：邻页首帧占位，空闲预热后再装配——歌单页整单
+                    // 装配（1310 首曾测 ~150ms）移出首帧；页数恒定（横屏 2 / 竖屏 3），
+                    // PageController initialPage=1 不受影响。
+                    if (_warmNeighbors)
+                      if (landscape)
+                        // 横屏歌单页为「左歌单右播放」分栏：滑动 settle 后左右同显，
+                        // 与横屏整页「左播放右歌词」同理；竖屏仍为整页歌单。
+                        // 左上角返回箭头悬浮于分栏之上（与横屏播放页一致）。
+                        Stack(
+                          children: [
+                            Positioned.fill(
+                              child: desktopLandscape
+                                  ? DesktopPlaylistSplit(
+                                      player: player,
+                                      direct: context
+                                          .watch<DirectSourceManager>(),
+                                      cs: Theme.of(context).colorScheme)
+                                  : LandscapePlaylistSplit(
+                                      player: player,
+                                      direct: context
+                                          .watch<DirectSourceManager>(),
+                                      cs: Theme.of(context).colorScheme),
+                            ),
+                            const Positioned(
+                                top: 6,
+                                left: 6,
+                                child: _BackToContentButton()),
+                          ],
+                        )
+                      else
+                        const _BandSongPage()
+                    else
+                      const SizedBox.shrink(),
+                    if (landscape)
+                      // 横屏无歌词分页（歌词内嵌）：「左歌单右播放」分栏与整幅播放
+                      // 布局两页滑动；左上角返回箭头悬浮于两套横屏布局之上。
+                      // 下滑返回内容页仅手机三列的播放列接（桌面左列自身可滚动，
+                      // 包 detector 会吃掉矮窗口滚动，故不接，桌面用 ESC/按钮返回）。
+                      Stack(
+                        children: [
+                          desktopLandscape
+                              ? _DesktopLandscapePlayer(
                                   player: player,
                                   direct:
                                       context.watch<DirectSourceManager>(),
                                   cs: Theme.of(context).colorScheme)
-                              : LandscapePlaylistSplit(
+                              : LandscapePlayer(
                                   player: player,
                                   direct:
                                       context.watch<DirectSourceManager>(),
-                                  cs: Theme.of(context).colorScheme),
-                        ),
-                        const Positioned(
-                            top: 6, left: 6, child: _BackToContentButton()),
-                      ],
-                    )
-                  else
-                    const _BandSongPage()
-                else
-                  const SizedBox.shrink(),
-                if (landscape)
-                  // 横屏无歌词分页（歌词内嵌）：「左歌单右播放」分栏与整幅播放
-                  // 布局两页滑动；左上角返回箭头悬浮于两套横屏布局之上。
-                  Stack(
-                    children: [
-                      desktopLandscape
-                          ? _DesktopLandscapePlayer(
-                              player: player,
-                              direct: context.watch<DirectSourceManager>(),
-                              cs: Theme.of(context).colorScheme)
-                          : LandscapePlayer(
-                              player: player,
-                              direct: context.watch<DirectSourceManager>(),
-                              cs: Theme.of(context).colorScheme),
-                      const Positioned(
-                          top: 6, left: 6, child: _BackToContentButton()),
-                    ],
-                  )
-                else
-                  Stack(
-                    // 箭头悬浮在播放页内容之上（不占布局空间，不压缩封面）；
-                    // 歌词页（第 2 页）按先前要求不再放箭头。
-                    children: [
-                      GestureDetector(
-                        behavior: HitTestBehavior.translucent,
-                        onVerticalDragStart:
-                            gestureOn ? _onPlayerDragStart : null,
-                        onVerticalDragUpdate:
-                            gestureOn ? _onPlayerDragUpdate : null,
-                        onVerticalDragEnd: gestureOn
-                            ? _onPlayerDragEnd
-                            : null,
-                        child: _buildPlayerBody(context),
+                                  cs: Theme.of(context).colorScheme,
+                                  onVerticalDragStart:
+                                      gestureOn ? _onPlayerDragStart : null,
+                                  onVerticalDragUpdate:
+                                      gestureOn ? _onPlayerDragUpdate : null,
+                                  onVerticalDragEnd:
+                                      gestureOn ? _onPlayerDragEnd : null),
+                          const Positioned(
+                              top: 6, left: 6, child: _BackToContentButton()),
+                        ],
+                      )
+                    else
+                      Stack(
+                        // 箭头悬浮在播放页内容之上（不占布局空间，不压缩封面）；
+                        // 歌词页（第 2 页）按先前要求不再放箭头。
+                        children: [
+                          GestureDetector(
+                            behavior: HitTestBehavior.translucent,
+                            onVerticalDragStart:
+                                gestureOn ? _onPlayerDragStart : null,
+                            onVerticalDragUpdate:
+                                gestureOn ? _onPlayerDragUpdate : null,
+                            onVerticalDragEnd: gestureOn
+                                ? _onPlayerDragEnd
+                                : null,
+                            child: _buildPlayerBody(context),
+                          ),
+                          const Positioned(
+                              top: 6, left: 6, child: _BackToContentButton()),
+                        ],
                       ),
-                      const Positioned(
-                          top: 6, left: 6, child: _BackToContentButton()),
-                    ],
-                  ),
-                if (!landscape)
-                  if (_warmNeighbors)
-                    const _LyricsPage()
-                  else
-                    const SizedBox.shrink(),
-              ],
+                    if (!landscape)
+                      if (_warmNeighbors)
+                        const _LyricsPage()
+                      else
+                        const SizedBox.shrink(),
+                  ],
+                ),
+              ),
             ),
           ),
         ),
@@ -980,12 +1061,47 @@ class _ControlRow extends StatelessWidget {
 /// 公开（去掉下划线）供布局回归测试直接渲染：桌面测试宿主上
 /// `Platform.isLinux` 为真，经 [PlayerScreen] 永远走桌面双栏分支，
 /// 手机三列的溢出问题只能直接挂载本组件覆盖（test/player_landscape_test.dart）。
+/// 播放列竖向下拖跟手（横屏手机三列 page1 用）：中列歌词窗不包，避免与歌词
+/// 纵滚同一竞技场打架；回调全空时原样返回，零行为变化。
+Widget _withPlayerDrag({
+  required Widget child,
+  required GestureDragStartCallback? onVerticalDragStart,
+  required GestureDragUpdateCallback? onVerticalDragUpdate,
+  required GestureDragEndCallback? onVerticalDragEnd,
+}) {
+  if (onVerticalDragStart == null &&
+      onVerticalDragUpdate == null &&
+      onVerticalDragEnd == null) {
+    return child;
+  }
+  return GestureDetector(
+    behavior: HitTestBehavior.translucent,
+    onVerticalDragStart: onVerticalDragStart,
+    onVerticalDragUpdate: onVerticalDragUpdate,
+    onVerticalDragEnd: onVerticalDragEnd,
+    child: child,
+  );
+}
+
 class LandscapePlayer extends StatelessWidget {
   final PlayerProvider player;
   final DirectSourceManager direct;
   final ColorScheme cs;
+
+  /// 播放列（左播放列 + 右竖向控制列，不含中列歌词）的竖向下拖跟手：
+  /// page1 传入竖屏同套 `_onPlayerDrag*` 以下滑返回内容页；分栏歌单页等
+  /// 非播放页保持 null（仅播放页，避免手势混乱）。
+  final GestureDragStartCallback? onVerticalDragStart;
+  final GestureDragUpdateCallback? onVerticalDragUpdate;
+  final GestureDragEndCallback? onVerticalDragEnd;
   const LandscapePlayer(
-      {super.key, required this.player, required this.direct, required this.cs});
+      {super.key,
+      required this.player,
+      required this.direct,
+      required this.cs,
+      this.onVerticalDragStart,
+      this.onVerticalDragUpdate,
+      this.onVerticalDragEnd});
 
   @override
   Widget build(BuildContext context) {
@@ -1008,7 +1124,13 @@ class LandscapePlayer extends StatelessWidget {
             SizedBox(
               width: leftW,
               child: _LandscapePlayerMain(
-                  player: player, direct: direct, cs: cs, song: s),
+                  player: player,
+                  direct: direct,
+                  cs: cs,
+                  song: s,
+                  onVerticalDragStart: onVerticalDragStart,
+                  onVerticalDragUpdate: onVerticalDragUpdate,
+                  onVerticalDragEnd: onVerticalDragEnd),
             ),
             // 第二列：歌词区，上下边缘渐隐（参照稿 mask-image）。
             Expanded(
@@ -1036,8 +1158,12 @@ class LandscapePlayer extends StatelessWidget {
             // 与分栏右窗共用 _LandscapePlayerSide）。
             SizedBox(
               width: rightW,
-              child:
-                  _LandscapePlayerSide(player: player, cs: cs),
+              child: _LandscapePlayerSide(
+                  player: player,
+                  cs: cs,
+                  onVerticalDragStart: onVerticalDragStart,
+                  onVerticalDragUpdate: onVerticalDragUpdate,
+                  onVerticalDragEnd: onVerticalDragEnd),
             ),
           ],
         ),
@@ -1055,47 +1181,58 @@ class _LandscapePlayerMain extends StatelessWidget {
   final DirectSourceManager direct;
   final ColorScheme cs;
   final Song song;
+  final GestureDragStartCallback? onVerticalDragStart;
+  final GestureDragUpdateCallback? onVerticalDragUpdate;
+  final GestureDragEndCallback? onVerticalDragEnd;
   const _LandscapePlayerMain(
       {required this.player,
       required this.direct,
       required this.cs,
-      required this.song});
+      required this.song,
+      this.onVerticalDragStart,
+      this.onVerticalDragUpdate,
+      this.onVerticalDragEnd});
 
   @override
   Widget build(BuildContext context) {
     final s = song;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Flexible(
-            child: Center(
-              heightFactor: 1,
-              child: LayoutBuilder(
-                builder: (context, c) => _Cover(
-                  coverPath: s.coverPath,
-                  song: s,
-                  cs: cs,
-                  size: math.max(
-                      0, math.min(c.maxWidth - 24, c.maxHeight)),
+    return _withPlayerDrag(
+      onVerticalDragStart: onVerticalDragStart,
+      onVerticalDragUpdate: onVerticalDragUpdate,
+      onVerticalDragEnd: onVerticalDragEnd,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Flexible(
+              child: Center(
+                heightFactor: 1,
+                child: LayoutBuilder(
+                  builder: (context, c) => _Cover(
+                    coverPath: s.coverPath,
+                    song: s,
+                    cs: cs,
+                    size: math.max(
+                        0, math.min(c.maxWidth - 24, c.maxHeight)),
+                  ),
                 ),
               ),
             ),
-          ),
-          const SizedBox(height: 8),
-          _TitleBlock(
-              player: player, direct: direct, compact: true, dense: true),
-          const SizedBox(height: 4),
-          _ToolRow(
-              player: player,
-              direct: direct,
-              cs: cs,
-              song: s,
-              center: true),
-          _PlayerSeek(player: player, cs: cs, showTime: false),
-        ],
+            const SizedBox(height: 8),
+            _TitleBlock(
+                player: player, direct: direct, compact: true, dense: true),
+            const SizedBox(height: 4),
+            _ToolRow(
+                player: player,
+                direct: direct,
+                cs: cs,
+                song: s,
+                center: true),
+            _PlayerSeek(player: player, cs: cs, showTime: false),
+          ],
+        ),
       ),
     );
   }
@@ -1106,19 +1243,32 @@ class _LandscapePlayerMain extends StatelessWidget {
 class _LandscapePlayerSide extends StatelessWidget {
   final PlayerProvider player;
   final ColorScheme cs;
-  const _LandscapePlayerSide({required this.player, required this.cs});
+  final GestureDragStartCallback? onVerticalDragStart;
+  final GestureDragUpdateCallback? onVerticalDragUpdate;
+  final GestureDragEndCallback? onVerticalDragEnd;
+  const _LandscapePlayerSide(
+      {required this.player,
+      required this.cs,
+      this.onVerticalDragStart,
+      this.onVerticalDragUpdate,
+      this.onVerticalDragEnd});
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          _SleepButton(player: player, cs: cs),
-          _VerticalControls(player: player, cs: cs),
-          _ModeButton(player: player, cs: cs),
-        ],
+    return _withPlayerDrag(
+      onVerticalDragStart: onVerticalDragStart,
+      onVerticalDragUpdate: onVerticalDragUpdate,
+      onVerticalDragEnd: onVerticalDragEnd,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            _SleepButton(player: player, cs: cs),
+            _VerticalControls(player: player, cs: cs),
+            _ModeButton(player: player, cs: cs),
+          ],
+        ),
       ),
     );
   }

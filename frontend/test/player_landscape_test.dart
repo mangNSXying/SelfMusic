@@ -2,6 +2,7 @@ import 'dart:ffi' show DynamicLibrary;
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:provider/provider.dart';
@@ -86,6 +87,16 @@ Future<PlayerProvider> _playerWithCurrent() async {
   p.loadOverride = (s, src) async {};
   await p.playQueue([_song()], source: _FakeSource());
   return p;
+}
+
+/// 当前焦点是否落在输入框内（与 player_screen 判定口径一致：TextField 的焦点
+/// 挂在内部外层 Focus 上，沿祖先链找输入框）。
+bool _focusIsTextInput() {
+  final ctx = FocusManager.instance.primaryFocus?.context;
+  if (ctx == null) return false;
+  if (ctx.widget is EditableText) return true;
+  if (ctx.findAncestorWidgetOfExactType<EditableText>() != null) return true;
+  return ctx.findAncestorWidgetOfExactType<TextField>() != null;
 }
 
 void main() {
@@ -331,5 +342,204 @@ void main() {
 
     // 卸载以取消播放页控件自动隐藏 Timer。
     await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('ESC 关闭播放页（停在播放页时）', (tester) async {
+    late final DirectSourceManager direct;
+    late final PlayerProvider player;
+    await tester.runAsync(() async {
+      direct = await _openDirect();
+      player = await _playerWithCurrent();
+    });
+    final nav = NavigationProvider();
+    addTearDown(() {
+      player.dispose();
+      direct.dispose();
+      nav.dispose();
+    });
+    tester.view.physicalSize = const Size(800, 360);
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.padding = const FakeViewPadding(top: 24, bottom: 24);
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MultiProvider(
+          providers: [
+            ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+            ChangeNotifierProvider<NavigationProvider>.value(value: nav),
+            ChangeNotifierProvider<PlayerProvider>.value(value: player),
+            ChangeNotifierProvider<PlaylistsProvider>(
+                create: (_) => PlaylistsProvider(direct.playlists)),
+          ],
+          child: const PlayerScreen(),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 900));
+
+    expect(nav.playerView, isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(nav.playerView, isFalse);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('ESC 在歌单页不拦截（仅播放页）', (tester) async {
+    late final DirectSourceManager direct;
+    late final PlayerProvider player;
+    await tester.runAsync(() async {
+      direct = await _openDirect();
+      player = await _playerWithCurrent();
+    });
+    final nav = NavigationProvider();
+    addTearDown(() {
+      player.dispose();
+      direct.dispose();
+      nav.dispose();
+    });
+    tester.view.physicalSize = const Size(800, 360);
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.padding = const FakeViewPadding(top: 24, bottom: 24);
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MultiProvider(
+          providers: [
+            ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+            ChangeNotifierProvider<NavigationProvider>.value(value: nav),
+            ChangeNotifierProvider<PlayerProvider>.value(value: player),
+            ChangeNotifierProvider<PlaylistsProvider>(
+                create: (_) => PlaylistsProvider(direct.playlists)),
+          ],
+          child: const PlayerScreen(),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 900));
+
+    // 右滑进入分栏歌单页（page0）。
+    await tester.fling(find.byType(PageView), const Offset(400, 0), 2000);
+    await tester.pumpAndSettle();
+    expect(find.byType(DesktopPlaylistSplit), findsOneWidget);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(nav.playerView, isTrue);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('搜索框聚焦时 ESC 先失焦、再按关闭', (tester) async {
+    late final DirectSourceManager direct;
+    late final PlayerProvider player;
+    await tester.runAsync(() async {
+      direct = await _openDirect();
+      player = await _playerWithCurrent();
+    });
+    final nav = NavigationProvider();
+    addTearDown(() {
+      player.dispose();
+      direct.dispose();
+      nav.dispose();
+    });
+    tester.view.physicalSize = const Size(800, 360);
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.padding = const FakeViewPadding(top: 24, bottom: 24);
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MultiProvider(
+          providers: [
+            ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+            ChangeNotifierProvider<NavigationProvider>.value(value: nav),
+            ChangeNotifierProvider<PlayerProvider>.value(value: player),
+            ChangeNotifierProvider<PlaylistsProvider>(
+                create: (_) => PlaylistsProvider(direct.playlists)),
+          ],
+          child: const PlayerScreen(),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 900));
+
+    // 右滑进入分栏歌单页，点搜索框聚焦（无绑定歌单时兜底嵌入式队列）。
+    await tester.fling(find.byType(PageView), const Offset(400, 0), 2000);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(TextField));
+    await tester.pump();
+    expect(_focusIsTextInput(), isTrue);
+
+    // 左滑回到播放页（搜索框焦点仍在后台 page0），第一次 ESC 只失焦。
+    await tester.fling(find.byType(PageView), const Offset(-400, 0), 2000);
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(nav.playerView, isTrue);
+    expect(_focusIsTextInput(), isFalse);
+
+    // 第二次 ESC 关闭播放页。
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(nav.playerView, isFalse);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('手机三列下滑：播放列触发、歌词区不触发', (tester) async {
+    late final DirectSourceManager direct;
+    late final PlayerProvider player;
+    await tester.runAsync(() async {
+      direct = await _openDirect();
+      player = await _playerWithCurrent();
+    });
+    addTearDown(() {
+      player.dispose();
+      direct.dispose();
+    });
+    tester.view.physicalSize = const Size(800, 360);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    var dragged = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MultiProvider(
+          providers: [
+            ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+            ChangeNotifierProvider<PlayerProvider>.value(value: player),
+          ],
+          child: Scaffold(
+            body: LandscapePlayer(
+              player: player,
+              direct: direct,
+              cs: ColorScheme.fromSeed(seedColor: Colors.teal),
+              onVerticalDragStart: (_) => dragged = true,
+              onVerticalDragUpdate: (_) {},
+              onVerticalDragEnd: (_) {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    // 封面区（左播放列，宽 336）下滑：触发跟手。
+    await tester.dragFrom(const Offset(168, 120), const Offset(0, 150));
+    await tester.pump();
+    expect(dragged, isTrue);
+
+    // 歌词区（中列）下滑：detector 未覆盖，不触发（歌词纵滚接管）。
+    dragged = false;
+    await tester.dragFrom(const Offset(532, 180), const Offset(0, 150));
+    await tester.pump();
+    expect(dragged, isFalse);
+    expect(tester.takeException(), isNull);
   });
 }
