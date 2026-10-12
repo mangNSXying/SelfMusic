@@ -1,10 +1,12 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:fvp/mdk.dart' as mdk;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:just_audio_platform_interface/just_audio_platform_interface.dart';
+
+import 'avio_headers.dart';
+import 'harmonyos_player_flags.dart';
 
 /// just_audio 平台层 → fvp（libmdk 后端）的纯 Dart 适配（HarmonyOS）。
 ///
@@ -25,8 +27,12 @@ import 'package:just_audio_platform_interface/just_audio_platform_interface.dart
 /// - mdk 无位置流：播放中用 200ms Timer 轮询 `position`/`buffered()`
 /// - mdk `state=stopped` 且非加载复位/错误 → just_audio `completed`（app 的
 ///   自动切歌依赖此事件）
-/// - mdk/FFmpeg 不支持自定义 HTTP 头：`Authorization: Basic xxx` 解码回
-///   user:pass 折进 URL userinfo（WebDAV 直连鉴权的唯一通道）
+/// - 请求头：mdk/FFmpeg 经 `avio.headers` 原生承载（`Authorization: Basic/
+///   Bearer`、`X-Origin-Auth/Ssh/Smb` 全部原样透传）。应用侧对鸿蒙关闭了
+///   just_audio 的 Dart 回环代理（`useProxyForRequestHeaders:false`），
+///   避免其主 isolate 代理在 fork 引擎上死锁/空转（2026-10-12 修复）。
+/// - 自签名：`avio.tls_verify=0` 随 [ohosPlayerAllowSelfSigned] 设置，
+///   覆盖自签后端/WebDAV 的原生播放（与 dart:io 侧 badCertificateCallback 同口径）
 /// - 音量语义一致：两边都是 0.0-1.0（mdk 1.0 = 源音量）
 class FvpJustAudio extends JustAudioPlatform {
   final _players = <String, FvpAudioPlayer>{};
@@ -117,6 +123,8 @@ class FvpAudioPlayer extends AudioPlayerPlatform {
         // -1（already loaded），先回 stopped 复位。
         _player.state = mdk.PlaybackState.stopped;
       }
+      // 请求头与 TLS 策略须在 setMedia 前设定（mdk 在 prepare 时读取 avio 选项）。
+      _applyHttpSettings(src);
       _player.media = uri;
       final ret = await _player.prepare(
           position: request.initialPosition?.inMilliseconds ?? 0);
@@ -274,29 +282,25 @@ class FvpAudioPlayer extends AudioPlayerPlatform {
   // ---------- 内部 ----------
 
   /// 把平台层收到的 URI 调成 mdk 可直接播放的形态：
-  /// - `Authorization: Basic <b64>` → 解码回 user:pass，percent-encode 后折进
-  ///   URL userinfo（FFmpeg 会重新生成 Basic 头；mdk 不支持自定义请求头）
   /// - `file://` → 裸本地路径（缓存文件播放，mdk 原生支持）
+  ///
+  /// HTTP(S) 请求头不再折进 URL：应用侧对鸿蒙关闭了 just_audio 回环代理，
+  /// 头经 [_applyHttpSettings] 以 `avio.headers` 原生下发（含 Basic/Bearer）。
   String _resolveUri(UriAudioSourceMessage src) {
-    var uri = src.uri;
-    final auth = src.headers?['Authorization'];
-    if (auth != null && auth.startsWith('Basic ')) {
-      try {
-        final decoded = utf8.decode(base64Decode(auth.substring(6)));
-        final idx = decoded.indexOf(':');
-        final user = Uri.encodeComponent(
-            idx >= 0 ? decoded.substring(0, idx) : decoded);
-        final pass =
-            Uri.encodeComponent(idx >= 0 ? decoded.substring(idx + 1) : '');
-        uri = Uri.parse(uri).replace(userInfo: '$user:$pass').toString();
-      } catch (e) {
-        debugPrint('[FvpAudioPlayer] Basic 凭据折叠失败（按原 URL 播放）: $e');
-      }
-    }
+    final uri = src.uri;
     if (uri.startsWith('file://')) {
       return Uri.parse(uri).toFilePath();
     }
     return uri;
+  }
+
+  /// 装载前把 HTTP 请求头与 TLS 校验策略下发给 mdk：
+  /// - `avio.headers`：`Header: Value\r\n` 逐条拼接（空 map 设空串清除上一曲残留）；
+  /// - `avio.tls_verify`：自签名开关开时 `0`（不校验），否则 `1`（默认校验）。
+  void _applyHttpSettings(UriAudioSourceMessage src) {
+    _player.setProperty('avio.headers', buildAvioHeaders(src.headers));
+    _player.setProperty(
+        'avio.tls_verify', ohosPlayerAllowSelfSigned ? '0' : '1');
   }
 
   /// 日志脱敏：隐藏 userinfo，避免凭据进日志。
@@ -354,3 +358,4 @@ class FvpAudioPlayer extends AudioPlayerPlatform {
     unawaited(_eventController.close());
   }
 }
+
