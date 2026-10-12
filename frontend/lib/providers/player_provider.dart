@@ -2049,6 +2049,51 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 预取的下一首（加权随机用它保证「确定的结果 = 实际播放」；其余模式可随时重算）。
   Song? _peekedNext;
 
+  // ---------- 加权随机削峰（冷却） ----------
+
+  /// 冷却表：键 `sourceKey\u0000sourceRef` → 该歌的冷却记录。
+  /// 记录上次实际播放的「播放步」与自那以后被抽中却抛弃的次数。
+  final Map<String, _WeightedCooldown> _weightedCooldowns = {};
+
+  /// 加权随机已实际播放的步数（每次落账 +1）：规则2 的冷却窗口以此为时间轴。
+  int _weightedStep = 0;
+
+  /// 最近一次 [_weightedPickIndex] 抽样链中被抛弃的抽中次数（键→次数），
+  /// 待 [_commitWeightedPlay] 落账；预取结果被作废时直接丢弃、不落账。
+  Map<String, int> _pendingWeightedRejections = const <String, int>{};
+
+  String _weightedKeyOf(Song s) => '${s.sourceKey}\u0000${s.sourceRef}';
+
+  /// 【削峰补丁】加权抽样的冷却判定（纯函数，便于单测）：
+  /// - 规则1：自上次播放起被抽中的前 [drawLimit] 次抛弃（[draws] 为含本次的抽中
+  ///   次数，第 drawLimit+1 次才作数）；上限按权重档由设置决定，`0`=关闭规则1；
+  /// - 规则2：距上次播放的步数不超过 [window] 时抛弃（`window` 为设置比例 × 列表
+  ///   长度，`0`=关闭规则2）。
+  /// 任一命中即抛弃。注意被规则2 拦下的抽中同样计入规则1 的次数——调用方
+  /// 每轮抛中都在 [draws] 上累加（见 [_weightedPickIndex]）。
+  static bool weightedCooldownReject({
+    required int draws,
+    required int stepsSincePlay,
+    required int drawLimit,
+    required int window,
+  }) {
+    return draws <= drawLimit || stepsSincePlay <= window;
+  }
+
+  /// 【削峰补丁】加权随机实际播放落账：结算上一次抽样链的抛弃次数（规则3：
+  /// 被规则2 拦下的抽中同样累加规则1 计数），并重置本首歌的冷却。
+  /// 必须在歌曲真正起播时调用一次（见 [_playWeighted] 与 [startIndexForPlaylist]）。
+  void _commitWeightedPlay(Song s) {
+    _pendingWeightedRejections.forEach((key, times) {
+      final cd = _weightedCooldowns[key];
+      if (cd != null) cd.drawCount += times;
+    });
+    _pendingWeightedRejections = const <String, int>{};
+    _weightedStep++;
+    _weightedCooldowns[_weightedKeyOf(s)] =
+        _WeightedCooldown(lastStep: _weightedStep);
+  }
+
   /// 按当前播放顺序算法确定下一首（不播放，只确定；开关与预载无关）：
   /// 顺序/列表循环/单曲循环可确定；加权随机先按权重抽样并记住，
   /// 切歌时复用同一结果，保证预载命中。
@@ -2277,6 +2322,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       {bool autoAdvanceOnFailure = false, bool play = true}) async {
     final picked = _takePeeked() ?? _pickWeighted();
     if (picked == null) return;
+    // 【削峰补丁】抽样已确定、即将起播 → 落账冷却（结算抛弃次数 + 重置本歌）。
+    _commitWeightedPlay(picked);
     // 定位优先深层尾（同 [_rebuildFusedQueue]；播后重建还会再纠一次）。
     final i = locateCurrentIndex(
         _queue, _deepList?.length ?? 0, picked, _same);
@@ -2294,8 +2341,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 加权抽样的下标版（队列下一首与歌单起播共用）：
-  /// 在 [pool] 中排除 [exclude] 后按 factor 抽样，返回命中下标；池空返回 null。
+  /// 在 [pool] 中排除 [exclude] 后按 factor 抽样，返回**池内下标**；池空返回 null。
   /// 已应用时长削弱（改进.txt 功能8）：effective = factor × 时长系数，钳回 [0.5,1.5]。
+  ///
+  /// 【削峰补丁】抽样改为拒绝采样：刚播过的歌按 [weightedCooldownReject] 判定，
+  /// 命中则记一次抛弃、重抽，直到抽到可播对象。每次抛弃计入
+  /// [_pendingWeightedRejections]，实际起播时由 [_commitWeightedPlay] 落账。
   int? _weightedPickIndex(List<Song> pool, Song? exclude) {
     if (pool.isEmpty) return null;
     final curve = _durationCurve;
@@ -2310,13 +2361,57 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final factors =
         store == null ? const <String, Map<String, double>>{} : store.factorsOf(pool);
     final weights = <double>[];
+    final baseFactors = <double>[];
     for (final i in candidates) {
       final f = factors[pool[i].sourceKey]?[pool[i].sourceRef] ??
           SongWeightStore.defaultFactor;
+      baseFactors.add(f);
       weights.add((f * curve.multiplierFor(pool[i].duration?.toDouble()))
           .clamp(SongWeightStore.minFactor, SongWeightStore.maxFactor));
     }
-    return weightedPickByWheel(weights, _rng.nextDouble());
+    // 规则2 的窗口 = 列表长度 × 设置比例（默认 20%；比例 0=关闭规则2）。
+    final cooldown = _appSettings?.weightedDrawCooldown ??
+        WeightedDrawCooldown.normal;
+    final ratio = _appSettings?.weightedCountCooldownRatio ??
+        AppSettings.defaultWeightedCountCooldownRatio;
+    final window = (pool.length * ratio).round();
+    final step = _weightedStep + 1;
+    // 兜底：若所有候选都被规则2 锁死（队列里同一首歌大量重复），
+    // 继续重抽会死循环 → 退回纯轮盘、不做冷却。
+    final anyOutsideWindow = candidates.any((i) {
+      final cd = _weightedCooldowns[_weightedKeyOf(pool[i])];
+      return cd == null || step - cd.lastStep > window;
+    });
+    if (!anyOutsideWindow) {
+      _pendingWeightedRejections = const <String, int>{};
+      return candidates[weightedPickByWheel(weights, _rng.nextDouble())];
+    }
+    final overlay = <String, int>{};
+    var rejects = 0;
+    while (true) {
+      final k = weightedPickByWheel(weights, _rng.nextDouble());
+      final i = candidates[k];
+      final song = pool[i];
+      final key = _weightedKeyOf(song);
+      final cd = _weightedCooldowns[key];
+      if (cd != null) {
+        final draws = cd.drawCount + (overlay[key] ?? 0) + 1;
+        final reject = PlayerProvider.weightedCooldownReject(
+          draws: draws,
+          stepsSincePlay: step - cd.lastStep,
+          drawLimit: cooldown.limitFor(baseFactors[k]),
+          window: window,
+        );
+        // 硬上限兜底：极端情况下（权重极低但全被规则2 压制）避免死循环。
+        if (reject && rejects < 100000) {
+          overlay[key] = (overlay[key] ?? 0) + 1;
+          rejects++;
+          continue;
+        }
+      }
+      _pendingWeightedRejections = overlay;
+      return i;
+    }
   }
 
   /// 加权轮盘：把 [weights] 按比例铺成 `[0,total)` 上的连续区段，取随机点 [r]
@@ -2382,9 +2477,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final weightedIndex = _mode == PlayMode.weighted
         ? _weightedPickIndex(songs, cur)
         : null;
-    return startIndexForOrder(_mode, songs.length,
+    final start = startIndexForOrder(_mode, songs.length,
         currentIndex: currentIndex < 0 ? null : currentIndex,
         weightedIndex: weightedIndex);
+    // 【削峰补丁】加权起播：抽样已确定起始曲，落账冷却。
+    if (weightedIndex != null && start >= 0 && start < songs.length) {
+      _commitWeightedPlay(songs[start]);
+    }
+    return start;
   }
 
   // ---------- 事件采集（stage2.md §2.3） ----------
@@ -3180,4 +3280,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     super.dispose();
   }
+}
+
+/// 加权随机削峰的冷却记录（见 [PlayerProvider] 的加权抽样实现）。
+class _WeightedCooldown {
+  _WeightedCooldown({required this.lastStep});
+
+  /// 上次实际播放所在的播放步（对应的 `_weightedStep`）。
+  int lastStep;
+
+  /// 自上次播放以来被抽中却抛弃的次数（规则1 计数）。
+  int drawCount = 0;
 }

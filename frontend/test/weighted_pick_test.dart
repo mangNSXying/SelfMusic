@@ -4,6 +4,7 @@ import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
+import 'package:selfmusic/data/local/app_settings.dart';
 import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/data/local/song_weight_store.dart';
 import 'package:selfmusic/models/song.dart';
@@ -73,6 +74,79 @@ void main() {
 
     test('r=1 恰在末段末尾，兜底命中末尾', () {
       expect(PlayerProvider.weightedPickByWheel([1, 2, 3], 1.0), 2);
+    });
+  });
+
+  group('weightedCooldownReject：削峰冷却判定', () {
+    test('WeightedDrawCooldown 档位映射（off/weak/normal → 0/0、1/2、2/3）', () {
+      expect(WeightedDrawCooldown.off.limitFor(2.0), 0);
+      expect(WeightedDrawCooldown.off.limitFor(0.5), 0);
+      expect(WeightedDrawCooldown.weak.limitFor(2.0), 1);
+      expect(WeightedDrawCooldown.weak.limitFor(0.5), 2);
+      expect(WeightedDrawCooldown.normal.limitFor(2.0), 2);
+      expect(WeightedDrawCooldown.normal.limitFor(0.5), 3);
+      expect(WeightedDrawCooldown.parse('weak'), WeightedDrawCooldown.weak);
+      expect(WeightedDrawCooldown.parse('nope'), WeightedDrawCooldown.normal);
+      expect(WeightedDrawCooldown.parse(null), WeightedDrawCooldown.normal);
+    });
+
+    test('规则1：低权重档前3次抽中抛弃，第4次作数', () {
+      const w = 200;
+      final limit = WeightedDrawCooldown.normal.lowLimit;
+      for (var d = 1; d <= limit; d++) {
+        expect(
+            PlayerProvider.weightedCooldownReject(
+                draws: d, stepsSincePlay: 1000, drawLimit: limit, window: w),
+            isTrue,
+            reason: '第 $d 次抽中应抛弃');
+      }
+      expect(
+          PlayerProvider.weightedCooldownReject(
+              draws: limit + 1,
+              stepsSincePlay: 1000,
+              drawLimit: limit,
+              window: w),
+          isFalse);
+    });
+
+    test('规则1：高权重档前2次抽中抛弃，第3次作数', () {
+      const w = 200;
+      final limit = WeightedDrawCooldown.normal.highLimit;
+      expect(limit, 2);
+      expect(
+          PlayerProvider.weightedCooldownReject(
+              draws: 1, stepsSincePlay: 1000, drawLimit: limit, window: w),
+          isTrue);
+      expect(
+          PlayerProvider.weightedCooldownReject(
+              draws: 2, stepsSincePlay: 1000, drawLimit: limit, window: w),
+          isTrue);
+      expect(
+          PlayerProvider.weightedCooldownReject(
+              draws: 3, stepsSincePlay: 1000, drawLimit: limit, window: w),
+          isFalse);
+    });
+
+    test('规则1 关闭（上限 0）时任何抽中都不因次数被抛弃', () {
+      expect(
+          PlayerProvider.weightedCooldownReject(
+              draws: 1, stepsSincePlay: 1000, drawLimit: 0, window: 0),
+          isFalse);
+    });
+
+    test('规则2：距上次播放 <= 窗口即抛弃（含边界；窗口 0=关闭）', () {
+      expect(
+          PlayerProvider.weightedCooldownReject(
+              draws: 99, stepsSincePlay: 200, drawLimit: 0, window: 200),
+          isTrue);
+      expect(
+          PlayerProvider.weightedCooldownReject(
+              draws: 99, stepsSincePlay: 201, drawLimit: 0, window: 200),
+          isFalse);
+      expect(
+          PlayerProvider.weightedCooldownReject(
+              draws: 99, stepsSincePlay: 1, drawLimit: 0, window: 0),
+          isFalse);
     });
   });
 

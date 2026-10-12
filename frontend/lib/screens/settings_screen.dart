@@ -1653,7 +1653,8 @@ class _SongsSettingsState extends State<_SongsSettings> {
   }
 }
 
-/// 播放设置（settings.md §3.2）：默认播放模式 / 断点续播 / 淡入淡出 / 均衡器。
+/// 播放设置（settings.md §3.2）：默认播放模式 / 加权随机削峰（次数·曲数冷却）/
+/// 断点续播 / 淡入淡出 / 均衡器。
 class _PlaybackSettings extends StatefulWidget {
   const _PlaybackSettings();
   @override
@@ -1692,6 +1693,20 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
           subtitle: Text(_modeLabel(current)),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _pickMode(context, current),
+        ),
+        ListTile(
+          leading: const Icon(Icons.waves),
+          title: const Text('加权随机·次数冷却'),
+          subtitle: Text(_drawCooldownSummary(_settings.weightedDrawCooldown)),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _pickDrawCooldown,
+        ),
+        ListTile(
+          leading: const Icon(Icons.timeline),
+          title: const Text('加权随机·曲数冷却'),
+          subtitle: Text(_countCooldownSummary(_settings.weightedCountCooldownRatio)),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _editCountCooldown,
         ),
         SwitchListTile(
           title: const Text('断点续播自动恢复'),
@@ -1881,6 +1896,78 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
         PlayMode.loopOne => '单曲循环',
         PlayMode.weighted => '加权随机',
       };
+
+  static String _drawCooldownSummary(WeightedDrawCooldown cd) =>
+      cd == WeightedDrawCooldown.off
+          ? '关（不启用次数冷却）'
+          : '${cd.label}（factor>1.0 抛弃 ${cd.highLimit} 次 / 其余抛弃 ${cd.lowLimit} 次）';
+
+  static String _countCooldownSummary(double ratio) => ratio <= 0
+      ? '关（不启用曲数冷却）'
+      : '列表长度 × ${(ratio * 100).toStringAsFixed(0)}%';
+
+  Future<void> _pickDrawCooldown() async {
+    final current = _settings.weightedDrawCooldown;
+    final picked = await showDialog<WeightedDrawCooldown>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: const Text('加权随机·次数冷却'),
+        children: [
+          RadioGroup<WeightedDrawCooldown>(
+            groupValue: current,
+            onChanged: (v) {
+              if (v != null) Navigator.of(c).pop(v);
+            },
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final cd in WeightedDrawCooldown.values)
+                  RadioListTile<WeightedDrawCooldown>(
+                    title: Text(cd.label),
+                    subtitle: Text(_drawCooldownSummary(cd)),
+                    value: cd,
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+    if (picked == null || picked == current || !mounted) return;
+    setState(() => _settings.weightedDrawCooldown = picked);
+  }
+
+  Future<void> _editCountCooldown() async {
+    final current = _settings.weightedCountCooldownRatio;
+    final controller = TextEditingController(text: current.toStringAsFixed(2));
+    final result = await showDialog<double>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('加权随机·曲数冷却比例'),
+        content: TextField(
+          controller: controller,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          inputFormatters: [
+            FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+          ],
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '0 ~ 1.00',
+            helperText: '距上次播放不超过「列表长度 × 比例」时重抽；0=关闭',
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.of(c)
+                  .pop(double.tryParse(controller.text) ?? current),
+              child: const Text('确定')),
+        ],
+      ),
+    );
+    if (result == null || !mounted) return;
+    setState(() => _settings.weightedCountCooldownRatio = result);
+  }
 
   /// 常亮限定设备展示名（未限定=全局常亮）。
   String _keepAwakeDeviceLabel() {

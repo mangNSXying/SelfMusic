@@ -44,6 +44,31 @@ enum CollectionViewMode {
       v == card.storeValue ? card : list;
 }
 
+/// 加权随机「次数冷却」档位（设置→播放）：削峰补丁规则1。一首歌播放后，
+/// 再次被抽中的前 N 次直接抛弃、第 N+1 次才作数；N 按权重分档——factor>1.0
+/// 的歌用 [highLimit]，factor≤1.0 用 [lowLimit]。三档对应 0/0、1/2、2/3。
+enum WeightedDrawCooldown {
+  off('关', 0, 0),
+  weak('弱', 1, 2),
+  normal('正常', 2, 3);
+
+  const WeightedDrawCooldown(this.label, this.highLimit, this.lowLimit);
+  final String label;
+
+  /// factor > 1.0 的歌曲应抛弃的连续抽中次数。
+  final int highLimit;
+
+  /// factor ≤ 1.0 的歌曲应抛弃的连续抽中次数。
+  final int lowLimit;
+
+  static WeightedDrawCooldown parse(String? v) =>
+      WeightedDrawCooldown.values.firstWhere((e) => e.name == v,
+          orElse: () => WeightedDrawCooldown.normal);
+
+  /// 取 [factor] 对应的抛弃次数上限。
+  int limitFor(double factor) => factor > 1.0 ? highLimit : lowLimit;
+}
+
 /// 客户端用户设置（直连模式 app_settings 表；settings.md §3）。
 ///
 /// 已实现（settings.md §3.2/§3.3/§3.4）：
@@ -148,6 +173,13 @@ class AppSettings {
   static const String kCurveWeightEnabled = 'curve_weight_enabled';
   static const String kCurveWeightSegments = 'curve_weight_segments';
 
+  /// 加权随机削峰（设置→播放）·次数冷却档位：`off`/`weak`/`normal`。
+  static const String kWeightedDrawCooldown = 'weighted_draw_cooldown';
+
+  /// 加权随机削峰（设置→播放）·曲数冷却比例（0~1，0=关）。
+  static const String kWeightedCountCooldownRatio =
+      'weighted_count_cooldown_ratio';
+
   /// 集合页展示形式（列表/卡片）：歌单 / 播放源 / 专辑 / 歌手。
   static const String kViewModePlaylists = 'view_mode_playlists';
   static const String kViewModeSources = 'view_mode_sources';
@@ -190,6 +222,9 @@ class AppSettings {
 
   /// 均衡器默认频段增益（5 段，dB）。
   static const List<double> defaultEqBands = [0, 0, 0, 0, 0];
+
+  /// 曲数冷却默认比例（列表长度的 20%）。
+  static const double defaultWeightedCountCooldownRatio = 0.2;
 
   final LocalIndex index;
   AppSettings(this.index);
@@ -524,6 +559,27 @@ class AppSettings {
     index.settingsSet(kCurveWeightSegments, jsonEncode(v));
   }
 
+  // ---------- 播放分区·加权随机削峰（设置→播放） ----------
+
+  /// 次数冷却档位（默认 `normal`=2/3）。削峰规则1：歌曲播放后，被抽中的前 N 次
+  /// 直接抛弃、第 N+1 次才作数（N 分权重档，见 [WeightedDrawCooldown]）。
+  WeightedDrawCooldown get weightedDrawCooldown =>
+      WeightedDrawCooldown.parse(index.settingsGet(kWeightedDrawCooldown));
+  set weightedDrawCooldown(WeightedDrawCooldown v) =>
+      index.settingsSet(kWeightedDrawCooldown, v.name);
+
+  /// 曲数冷却比例（默认 0.2，范围 0~1，`0`=关闭）。削峰规则2：距上次播放步数
+  /// 不超过 `round(列表长度 × 本比例)` 的抽中直接抛弃。非法值回退默认、越界钳制。
+  double get weightedCountCooldownRatio {
+    final raw = index.settingsGet(kWeightedCountCooldownRatio);
+    final v = raw == null ? null : double.tryParse(raw);
+    if (v == null || v.isNaN) return defaultWeightedCountCooldownRatio;
+    return v.clamp(0.0, 1.0);
+  }
+
+  set weightedCountCooldownRatio(double v) => index
+      .settingsSet(kWeightedCountCooldownRatio, v.clamp(0.0, 1.0).toString());
+
   // ---------- 界面分区（settings.md §3.7） ----------
 
   /// 压缩图像画质（默认关）：开时列表/卡片/迷你条用缩略图（省解码），
@@ -666,6 +722,8 @@ class AppSettings {
     kEqBands,
     kCurveWeightEnabled,
     kCurveWeightSegments,
+    kWeightedDrawCooldown,
+    kWeightedCountCooldownRatio,
     kAudioFocusEnabled,
     kNotificationControls,
     kPauseOnZeroVolume,
