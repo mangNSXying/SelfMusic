@@ -30,6 +30,7 @@ import '../utils/main_thread_probe.dart';
 import '../utils/interaction_gate.dart';
 import '../utils/thumb_gen_stats.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
+import '../platform/harmonyos/harmonyos_player_flags.dart';
 import 'direct_task_queue.dart';
 
 /// 缩略图回填的批间让出间隔：线程下沉后原逐张固定间隔（ohos 50ms）已**放宽为 0**
@@ -491,8 +492,10 @@ class DirectSourceManager extends ChangeNotifier {
   void refresh() => notifyListeners();
 
   /// 「信任自签名」开关已写入 [settings] 后调用：按新策略重建 WebDAV 直连源
-  /// （dart:io `badCertificateCallback`），本地源无需重建。
+  /// （dart:io `badCertificateCallback`），本地源无需重建。同步刷新鸿蒙原生
+  /// 播放器（fvp/mdk）的 `avio.tls_verify` 镜像。
   void applySecuritySettings() {
+    ohosPlayerAllowSelfSigned = settings.allowSelfSigned;
     final rebuilt = <MusicSource>[];
     for (final s in _sources) {
       final row = index.getSource(s.key);
@@ -521,6 +524,8 @@ class DirectSourceManager extends ChangeNotifier {
     await index.open();
     perfLog('boot.directInit indexOpen done');
     settings = AppSettings(index);
+    // 自签策略镜像给鸿蒙原生播放器（mdk `avio.tls_verify`）。
+    ohosPlayerAllowSelfSigned = settings.allowSelfSigned;
     // 压缩图像画质开关（默认关）：同步给 cover_thumb 全局闸（显示+生成共用）。
     setCoverThumbCompressionEnabled(settings.compressCoverImage);
     cache = CacheManager(index, settings);

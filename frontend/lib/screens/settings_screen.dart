@@ -285,7 +285,7 @@ class _ServerSettingsState extends State<_ServerSettings> {
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('信任自签名证书'),
-            subtitle: const Text('默认关闭；开启后 API 与直连 WebDAV 跳过证书校验（播放器层 ExoPlayer/mpv 仍要求有效证书）'),
+            subtitle: const Text('默认关闭；开启后 API、直连 WebDAV 与鸿蒙播放器(fvp/mdk)跳过证书校验'),
             value: context
                 .read<DirectSourceManager>()
                 .settings
