@@ -83,4 +83,22 @@ void main() {
       expect(isSyncableKind('smb'), isTrue);
     });
   });
+
+  group('SMB 写守卫（与 WebDAV/SFTP 同口径）', () {
+    test('smbGuardWriteName：禁分隔符与穿越', () {
+      smbGuardWriteName('a flac 01.mp3');
+      expect(() => smbGuardWriteName(''), throwsStateError);
+      expect(() => smbGuardWriteName('a/b.mp3'), throwsStateError);
+      expect(() => smbGuardWriteName(r'a\b.mp3'), throwsStateError);
+      expect(() => smbGuardWriteName('..'), throwsStateError);
+      expect(() => smbGuardWriteName('a..b'), throwsStateError);
+    });
+
+    test('smbGuardWriteParent：各段禁 ./..', () {
+      smbGuardWriteParent('');
+      smbGuardWriteParent('music/flac');
+      expect(() => smbGuardWriteParent('../etc'), throwsStateError);
+      expect(() => smbGuardWriteParent('a/./b'), throwsStateError);
+    });
+  });
 }

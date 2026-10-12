@@ -1021,10 +1021,18 @@ class DirectSourceManager extends ChangeNotifier {
     if (src == null) throw StateError('源不存在：${song.sourceKey}');
     if (!src.supportsWrite) throw StateError('该源不支持删除');
     await src.deleteSong(song);
-    // WebDAV 离线缓存：cache_key 由源侧计算，先删文件+行再清 DB 痕迹。
-    if (src is WebdavDirectSource) {
+    // 离线缓存：cache_key 由源侧计算，先删文件+行再清 DB 痕迹。
+    // （WebDAV/SFTP/SMB 三源都有 cacheKeyFor，对称处理。）
+    final cacheKey = src is WebdavDirectSource
+        ? src.cacheKeyFor(song)
+        : src is SftpDirectSource
+            ? src.cacheKeyFor(song)
+            : src is SmbDirectSource
+                ? src.cacheKeyFor(song)
+                : null;
+    if (cacheKey != null) {
       try {
-        await index.deleteCache(src.cacheKeyFor(song));
+        await index.deleteCache(cacheKey);
       } catch (_) {
         // 无缓存或删文件失败不挡主流程（DB 痕迹仍要清）。
       }

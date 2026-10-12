@@ -12,6 +12,9 @@ import 'dart:convert';
 /// 单次范围读块（喂播放器/缓存的粒度，与 DEVELOPER.md「客户端播放源」「单次读 256KB」一致）。
 const int kSmbReadChunkBytes = 256 * 1024;
 
+/// 单次顺序写块（上传分块粒度，与读同量级，避免单次 isolate 消息过大）。
+const int kSmbWriteChunkBytes = 256 * 1024;
+
 /// 单源歌曲上限（DEVELOPER.md「客户端扫描与元数据」 大目录保护，与 WebDAV/SFTP 同口径）。
 const int kSmbMaxEntries = 20000;
 
@@ -88,6 +91,24 @@ String smbMimeOf(String ext) {
       return 'audio/aiff';
     default:
       return 'audio/mpeg';
+  }
+}
+
+/// 写文件名守卫（与 WebDAV/SFTP 同口径）：禁分隔符与 `..`。纯函数，可单测。
+void smbGuardWriteName(String name) {
+  if (name.isEmpty || name.contains('/') || name.contains('\\')) {
+    throw StateError('文件名非法：$name');
+  }
+  if (name == '.' || name == '..' || name.contains('..')) {
+    throw StateError('文件名非法（路径穿越）：$name');
+  }
+}
+
+/// 写父目录守卫（与 WebDAV/SFTP 同口径）：各段禁 `.`/`..`。纯函数，可单测。
+void smbGuardWriteParent(String parentRef) {
+  final parts = parentRef.split('/').where((s) => s.isNotEmpty);
+  if (parts.any((s) => s == '.' || s == '..')) {
+    throw StateError('目录非法（路径穿越）：$parentRef');
   }
 }
 

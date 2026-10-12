@@ -16,15 +16,17 @@ import 'package:dart_smb2/dart_smb2.dart';
 import 'music_source.dart';
 import 'smb_common.dart';
 
-/// 是否为鉴权类错误（重试无意义，装载链路应直接展示）。
-bool _isAuthError(Smb2Exception e) =>
-    e.type == Smb2ErrorType.auth || e.type == Smb2ErrorType.accessDenied;
-
 /// dart_smb2 错误 → 本工程异常（toString 面向用户，无 `Smb2Exception` 前缀）。
-Object _mapSmb2Error(Object e, String what) {
+/// [forWrite] 为真时 `accessDenied` 是文件系统权限（鉴权已过），转中文
+/// StateError 而非"账密错误"，避免误导用户去改密码。
+Object _mapSmb2Error(Object e, String what, {bool forWrite = false}) {
   if (e is Smb2Exception) {
-    if (_isAuthError(e)) {
+    if (e.type == Smb2ErrorType.auth ||
+        (e.type == Smb2ErrorType.accessDenied && !forWrite)) {
       return SourceAuthException('$what：用户名或密码可能不正确，或该共享无访问权限');
+    }
+    if (forWrite && e.type == Smb2ErrorType.accessDenied) {
+      return StateError('$what：无写入权限（请检查共享与目录权限）');
     }
     if (e.type == Smb2ErrorType.fileNotFound) {
       return StateError('$what：文件或目录不存在');
@@ -72,7 +74,9 @@ class Smb2PoolBackend {
   }
 
   /// 疑似掉线时重建一次再试（鉴权/不存在类错误直接抛，不重试）。
-  Future<T> _withPool<T>(Future<T> Function(Smb2Pool p) fn, String what) async {
+  /// [forWrite] 透传给异常映射（写操作的 accessDenied 是文件系统权限）。
+  Future<T> _withPool<T>(Future<T> Function(Smb2Pool p) fn, String what,
+      {bool forWrite = false}) async {
     try {
       return await fn(await _poolClient());
     } on SourceAuthException {
@@ -84,7 +88,7 @@ class Smb2PoolBackend {
       try {
         return await fn(await _poolClient());
       } catch (e) {
-        throw _mapSmb2Error(e, what);
+        throw _mapSmb2Error(e, what, forWrite: forWrite);
       }
     }
   }
@@ -122,6 +126,64 @@ class Smb2PoolBackend {
     try {
       await p.disconnect();
     } catch (_) {}
+  }
+
+  /// 分块顺序写（覆盖同名；流式不驻留内存）。
+  /// 先截断（不存在则忽略，首块写自动创建），避免短文件覆盖长文件留尾巴。
+  Future<void> uploadChunked(String remote, Stream<List<int>> bytes) async {
+    try {
+      await _withPool((p) => p.truncate(remote, 0), 'SMB 截断（$_where）',
+          forWrite: true);
+    } on StateError {
+      // 文件不存在：首个 writeRange 会自动创建（_mapSmb2Error 只把
+      // fileNotFound 转 StateError，其余原样上抛）。
+    }
+    var off = 0;
+    Future<void> flush(Uint8List piece) async {
+      await _withPool(
+        (p) => p.writeFileRange(remote, piece, offset: off),
+        'SMB 上传（$_where）',
+        forWrite: true,
+      );
+      off += piece.length;
+    }
+
+    final buf = <int>[];
+    await for (final chunk in bytes) {
+      buf.addAll(chunk);
+      while (buf.length >= kSmbWriteChunkBytes) {
+        final piece = Uint8List.fromList(buf.sublist(0, kSmbWriteChunkBytes));
+        buf.removeRange(0, kSmbWriteChunkBytes);
+        await flush(piece);
+      }
+    }
+    if (buf.isNotEmpty) {
+      await flush(Uint8List.fromList(buf));
+    }
+  }
+
+  /// 删文件（不存在按 WebDAV 404 口径抛错，不静默成功）。
+  Future<void> deleteFile(String remote) => _withPool(
+        (p) => p.deleteFile(remote),
+        'SMB 删除（$_where）',
+        forWrite: true,
+      );
+
+  /// 建目录（已存在即成功：与 WebDAV 405/409 口径一致；能列出即目录才认，
+  /// 同名文件/无权限等原错上抛，保留原始堆栈）。
+  Future<void> mkdir(String remote) async {
+    try {
+      await _withPool((p) => p.mkdir(remote), 'SMB 新建文件夹（$_where）',
+          forWrite: true);
+    } catch (e, st) {
+      var isDir = false;
+      try {
+        await _withPool(
+            (p) => p.listDirectory(remote), 'SMB 确认目录（$_where）');
+        isDir = true;
+      } catch (_) {}
+      if (!isDir) Error.throwWithStackTrace(e, st);
+    }
   }
 }
 

@@ -331,7 +331,7 @@ selfmusic/
 | GET | `/admin/devices` · PUT/DELETE `/admin/devices/{id}` | 设备列表 / 改名 / 吊销 |
 | PUT | `/admin/settings` | 管理端改缓存建议值（仅两键；`pairing_token` 为 env 只读拒绝写入） |
 
-> 服务端**不提供曲库索引**：歌曲由 App 在各播放源处扫描、直接从源播放；后端仅提供认证 / 配对、状态同步与无状态转码代理。上传 / 删除走客户端 WebDAV/本地直写，不经服务端。
+> 服务端**不提供曲库索引**：歌曲由 App 在各播放源处扫描、直接从源播放；后端仅提供认证 / 配对、状态同步与无状态转码代理。上传 / 删除走客户端 WebDAV/本地/SFTP/SMB 直写，不经服务端。
 
 ---
 
@@ -551,8 +551,8 @@ abstract class MusicSource {
 ```
 
 - 播放器只认 `MusicSource`；**直连播放优先级**：离线缓存文件 → `directStream()`（原生 URL，WebDAV 用）→ 自建 `StreamAudioSource`（`open()`）回落。
-- **SFTP**：无 `directStream`（just_audio 播不了 `sftp://`），恒走 `open()` 字节流（协议原生支持偏移读，seek 精度优于 HTTP Range）；选型 `dartssh2`（纯 Dart，三端同代码）。密码 / 私钥 / 主机密钥 TOFU 见 `ssh_known_hosts`。
-- **SMB**：有**双后端**（`useSmbConnect`，`DirectSourceManager` 按 `isOhos` 传入，数据层不直接做平台判断）——非 ohos 走 `dart_smb2`（FFI libsmb2，SMB 2.0.2→3.1.1；主 isolate 用异步 `Smb2Pool`、扫描 isolate 用同步 `Smb2Client`），ohos 走 vendored `smb_connect`（纯 Dart，最高 SMB 2.1）。范围读按 256KB 分块（stateless，取消即停）；凭据存 `SecretStore`（`smb_pwd:<sourceKey>`）；`supportsWrite=false`（v1 只读）。代理 origin 为 `smb://host/share/逐段编码路径`（无 userinfo），凭据走 `X-Origin-Smb` 信封。
+- **SFTP**：无 `directStream`（just_audio 播不了 `sftp://`），恒走 `open()` 字节流（协议原生支持偏移读，seek 精度优于 HTTP Range）；选型 `dartssh2`（纯 Dart，三端同代码）。密码 / 私钥 / 主机密钥 TOFU 见 `ssh_known_hosts`。**直写**（与 WebDAV 同口径：根目录、静默覆盖）：上传经 `open(write|create|truncate)` + `SftpFile.write` 流式分块（16KB/64 并发），删文件经 `remove`，建目录经 `mkdir`（已存在先 stat 确认是目录才视为成功）；写走同一 `_withSftp`（共享连接、掉线重建、TOFU 门槛不变），`permissionDenied` 转中文权限文案（鉴权已过，不报账密错误）。
+- **SMB**：有**双后端**（`useSmbConnect`，`DirectSourceManager` 按 `isOhos` 传入，数据层不直接做平台判断）——非 ohos 走 `dart_smb2`（FFI libsmb2，SMB 2.0.2→3.1.1；主 isolate 用异步 `Smb2Pool`、扫描 isolate 用同步 `Smb2Client`），ohos 走 vendored `smb_connect`（纯 Dart，最高 SMB 2.1）。范围读按 256KB 分块（stateless，取消即停）；凭据存 `SecretStore`（`smb_pwd:<sourceKey>`）；**直写**（与 WebDAV 同口径）：非 ohos 经 `truncate(0)` + `writeFileRange` 256KB 分块顺序写（覆盖）、`deleteFile`、`mkdir`（已存在先列目录确认才视为成功）；ohos 经先删后建 + `openWrite` 流式写（库内 `openWrite` 不截断）、`delete`、`createFolder`（库内 FILE_OPEN_IF，天然幂等）。`accessDenied` 在写链路转"无写入权限"中文 StateError（鉴权已过）。代理 origin 为 `smb://host/share/逐段编码路径`（无 userinfo），凭据走 `X-Origin-Smb` 信封。
 - WebDAV `ref` 存**解码后**路径，请求时按路径段重新编码；扫描头部元数据解析对大内嵌封面做边界保护（超采样即停止解析，不抛 `RangeError`）。
 - 源列表 = `sources` 表里启用的源；配置后端地址后解锁多设备同步（与曲库无关）。
 

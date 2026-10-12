@@ -66,6 +66,24 @@ String sftpOriginUrl({
   return 'sftp://$h:$port/$enc';
 }
 
+/// SFTP 写路径守卫（与 WebDAV 同口径）：禁分隔符与 `..`。纯函数，可单测。
+void sftpGuardWriteName(String name) {
+  if (name.isEmpty || name.contains('/') || name.contains('\\')) {
+    throw StateError('文件名非法：$name');
+  }
+  if (name == '.' || name == '..' || name.contains('..')) {
+    throw StateError('文件名非法（路径穿越）：$name');
+  }
+}
+
+/// 写父目录守卫（与 WebDAV 同口径）：各段禁 `.`/`..`。纯函数，可单测。
+void sftpGuardWriteParent(String parentRef) {
+  final parts = parentRef.split('/').where((s) => s.isNotEmpty);
+  if (parts.any((s) => s == '.' || s == '..')) {
+    throw StateError('目录非法（路径穿越）：$parentRef');
+  }
+}
+
 /// SFTP 直连源完整实现（阶段 7，`dartssh2` 纯 Dart）。
 ///
 /// - 扫描：在 worker isolate 内直连（`runScan` 驱动，可汇报进度/可取消），
@@ -118,7 +136,7 @@ class SftpDirectSource implements MusicSource {
   bool get supportsDirect => true;
 
   @override
-  bool get supportsWrite => false;
+  bool get supportsWrite => true;
 
   /// 钉键（`host:port`）。
   String get hostPort => sftpHostPort(host, port);
@@ -345,19 +363,86 @@ class SftpDirectSource implements MusicSource {
     return s.length > 160 ? what : '$what：$s';
   }
 
-  /// SFTP 写操作（v1 未实现，见 §6.10）：统一抛不支持，保持接口完整。
+  /// SFTP 写操作：上传（流式分块，覆盖同名）/ 删文件 / 建目录。
+  /// 走 [_withSftp]（共享连接、掉线重建一次、TOFU 指纹门槛与读侧一致）；
+  /// 无权限类错误转中文 StateError（鉴权已过，这是文件系统权限问题），
+  /// 其余沿用读侧映射。
   @override
   Future<void> uploadFile(String parentRef, String filename,
-          Stream<List<int>> bytes, int length) async =>
-      throw UnimplementedError('$key 不支持上传');
+      Stream<List<int>> bytes, int length) async {
+    sftpGuardWriteParent(parentRef);
+    sftpGuardWriteName(filename);
+    if (!_audioExt(filename)) {
+      throw StateError('仅支持上传音频文件（mp3/flac/m4a/aac/ogg/wav/aif[f][c]）');
+    }
+    final abs = _absPath(
+        parentRef.isEmpty ? filename : '$parentRef/$filename');
+    await _withSftp((sftp) async {
+      SftpFile? file;
+      try {
+        file = await sftp.open(abs,
+            mode: SftpFileOpenMode.write |
+                SftpFileOpenMode.create |
+                SftpFileOpenMode.truncate);
+        final writer = file.write(
+          bytes.map((c) => c is Uint8List ? c : Uint8List.fromList(c)),
+        );
+        await writer.done;
+      } on SftpStatusError catch (e) {
+        if (e.code == SftpStatusCode.permissionDenied) {
+          throw StateError('上传失败：无写入权限（$abs）');
+        }
+        rethrow;
+      } finally {
+        try {
+          await file?.close();
+        } catch (_) {}
+      }
+    });
+  }
 
   @override
-  Future<void> deleteSong(Song song) async =>
-      throw UnimplementedError('$key 不支持删除');
+  Future<void> deleteSong(Song song) async {
+    final abs = _absPath(song.sourceRef);
+    await _withSftp((sftp) async {
+      try {
+        await sftp.remove(abs);
+      } on SftpStatusError catch (e) {
+        if (e.code == SftpStatusCode.noSuchFile) {
+          throw StateError('删除失败：文件不存在（可能已被删除）');
+        }
+        if (e.code == SftpStatusCode.permissionDenied) {
+          throw StateError('删除失败：无删除权限');
+        }
+        rethrow;
+      }
+    });
+  }
 
   @override
-  Future<void> createFolder(String parentRef, String name) async =>
-      throw UnimplementedError('$key 不支持新建文件夹');
+  Future<void> createFolder(String parentRef, String name) async {
+    sftpGuardWriteParent(parentRef);
+    sftpGuardWriteName(name);
+    final abs = _absPath(parentRef.isEmpty ? name : '$parentRef/$name');
+    await _withSftp((sftp) async {
+      try {
+        await sftp.mkdir(abs);
+      } on SftpStatusError catch (e) {
+        // 已存在即成功（与 WebDAV 405/409 口径一致）：stat 确认是目录才认，
+        // 同名文件不认（避免把"建目录撞上文件"误判为成功）。
+        if (e.code == SftpStatusCode.failure) {
+          try {
+            if ((await sftp.stat(abs)).isDirectory) return;
+          } catch (_) {}
+          throw StateError('新建文件夹失败：同名文件已存在');
+        }
+        if (e.code == SftpStatusCode.permissionDenied) {
+          throw StateError('新建文件夹失败：无写入权限');
+        }
+        rethrow;
+      }
+    });
+  }
 
   @override
   Future<void> close() async {

@@ -194,10 +194,10 @@ void main() {
   });
 
   group('阶段6 抽象与 URL', () {
-    test('SMB 只读（不支持写）；转码 URL 构造含 origin、bitrate 与 loudnorm', () {
+    test('SMB 读写（支持写，看齐 WebDAV）；转码 URL 构造含 origin、bitrate 与 loudnorm', () {
       final smb =
           SmbDirectSource(name: 'n', host: 'h', share: 's', index: LocalIndex());
-      expect(smb.supportsWrite, isFalse);
+      expect(smb.supportsWrite, isTrue);
       expect(smb.supportsDirect, isTrue);
       final api = ApiClient(
           dio: Dio(BaseOptions(baseUrl: 'https://h:18443')),

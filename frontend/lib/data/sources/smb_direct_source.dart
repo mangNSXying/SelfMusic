@@ -26,7 +26,9 @@ import 'smb_dart_smb2.dart';
 /// - 播放：`directStream()` 恒 null（无原生 URL），`open()` 按 [IntRange]
 ///   分块读喂自建字节流；连接按源复用、掉线重建一次；
 /// - 凭据（密码）只活在内存字段里，持久化收敛到 SecretStore（`smb_pwd:`）；
-/// - 用户名与密码双空即匿名；v1 只读（`supportsWrite=false`，写操作抛不支持）。
+/// - 用户名与密码双空即匿名；读写全支持（`supportsWrite=true`，上传/删除/
+///   建目录走双后端写通路，口径与 WebDAV 对齐：根目录、静默覆盖、同名目录
+///   视为成功）。
 class SmbDirectSource implements MusicSource {
   @override
   final String name;
@@ -69,7 +71,7 @@ class SmbDirectSource implements MusicSource {
   bool get supportsDirect => true;
 
   @override
-  bool get supportsWrite => false;
+  bool get supportsWrite => true;
 
   Smb2PoolBackend? _poolBackend;
   SmbConnectBackend? _connBackend;
@@ -126,19 +128,47 @@ class SmbDirectSource implements MusicSource {
     }
   }
 
-  /// SMB 写操作（v1 未实现）：统一抛不支持，保持接口完整。
+  /// SMB 写操作：上传（流式分块，覆盖同名）/ 删文件 / 建目录。
+  /// 按 [useSmbConnect] 转发双后端（错误映射各后端自备，与读侧同口径）。
   @override
   Future<void> uploadFile(String parentRef, String filename,
-          Stream<List<int>> bytes, int length) async =>
-      throw UnimplementedError('$key 不支持上传');
+      Stream<List<int>> bytes, int length) async {
+    smbGuardWriteParent(parentRef);
+    smbGuardWriteName(filename);
+    if (!isSmbAudioFile(filename)) {
+      throw StateError('仅支持上传音频文件（mp3/flac/m4a/aac/ogg/wav/aif[f][c]）');
+    }
+    final remote = smbRemotePath(rootPath,
+        parentRef.isEmpty ? filename : '$parentRef/$filename');
+    if (useSmbConnect) {
+      await _conn.uploadFile(remote, bytes);
+    } else {
+      await _pool.uploadChunked(remote, bytes);
+    }
+  }
 
   @override
-  Future<void> deleteSong(Song song) async =>
-      throw UnimplementedError('$key 不支持删除');
+  Future<void> deleteSong(Song song) async {
+    final remote = smbRemotePath(rootPath, song.sourceRef);
+    if (useSmbConnect) {
+      await _conn.deleteFile(remote);
+    } else {
+      await _pool.deleteFile(remote);
+    }
+  }
 
   @override
-  Future<void> createFolder(String parentRef, String name) async =>
-      throw UnimplementedError('$key 不支持新建文件夹');
+  Future<void> createFolder(String parentRef, String name) async {
+    smbGuardWriteParent(parentRef);
+    smbGuardWriteName(name);
+    final remote = smbRemotePath(rootPath,
+        parentRef.isEmpty ? name : '$parentRef/$name');
+    if (useSmbConnect) {
+      await _conn.mkdir(remote);
+    } else {
+      await _pool.mkdir(remote);
+    }
+  }
 
   @override
   Future<void> close() async {

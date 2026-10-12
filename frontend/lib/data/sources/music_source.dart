@@ -272,7 +272,7 @@ abstract class MusicSource {
   Future<void> cacheSong(Song song, {bool Function()? shouldAbort}) async =>
       throw UnimplementedError('$key 不支持直连缓存');
 
-  // ---------- 直写管理（阶段6，WebDAV/本地直写；SFTP/SMB v1 只读） ----------
+  // ---------- 直写管理（阶段6 起 WebDAV/本地直写；SFTP/SMB 已看齐） ----------
 
   /// 是否支持直写管理（上传/删除/新建文件夹）。默认不支持。
   bool get supportsWrite => false;

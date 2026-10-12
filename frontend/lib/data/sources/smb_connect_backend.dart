@@ -257,6 +257,53 @@ class SmbConnectBackend {
     }
   }
 
+  // ---------- 写（ohos 纯 Dart；覆盖/幂等口径与 dart_smb2 / WebDAV 对齐） ----------
+
+  /// 分块顺序写（覆盖同名：先删后建；`openWrite` 不截断，短盖长会留尾巴）。
+  /// 流式不驻留内存；句柄随 sink.close 释放（Smb2StreamConsumer.close）。
+  Future<void> uploadFile(String remote, Stream<List<int>> bytes) async {
+    final lib = libPath(remote);
+    await _withConn((c) async {
+      try {
+        final old = await c.file(lib);
+        if (old.isExists) await c.delete(old);
+      } catch (e) {
+        final mapped = mapSmbConnectError(e, 'SMB 删除旧文件（$_where）');
+        if (mapped is! StateError) rethrow;
+        // 不存在：继续建新文件。
+      }
+      final created = await c.createFile(lib);
+      final sink = await c.openWrite(created);
+      try {
+        await sink.addStream(bytes.map((chunk) =>
+            chunk is Uint8List ? chunk : Uint8List.fromList(chunk)));
+      } finally {
+        await sink.close();
+      }
+    }, 'SMB 上传（$_where）');
+  }
+
+  /// 删文件（不存在按 WebDAV 404 口径抛错，不静默成功；只读文件中文提示）。
+  Future<void> deleteFile(String remote) async {
+    final lib = libPath(remote);
+    await _withConn((c) async {
+      final f = await c.file(lib);
+      if (!f.isExists) {
+        throw StateError('SMB 删除失败（$_where/$remote）：文件不存在');
+      }
+      if (!f.canWrite()) {
+        throw StateError('SMB 删除失败（$_where/$remote）：文件只读');
+      }
+      await c.delete(f);
+    }, 'SMB 删除（$_where）');
+  }
+
+  /// 建目录（库内 createFolder 用 FILE_OPEN_IF，已存在直接成功，天然幂等）。
+  Future<void> mkdir(String remote) async {
+    final lib = libPath(remote);
+    await _withConn((c) => c.createFolder(lib), 'SMB 新建文件夹（$_where）');
+  }
+
   Future<void> close() async {
     final c = _conn;
     _conn = null;
