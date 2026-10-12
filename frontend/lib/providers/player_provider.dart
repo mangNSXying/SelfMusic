@@ -892,6 +892,78 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// 播放链路/转码设置变化后重载当前曲（直连↔代理、码率、响度均衡即时生效，无需重启）。
+  ///
+  /// 语义：
+  /// - 保位置/保播放态：暂停态重载后仍暂停，播放态重载后从原位置继续；
+  /// - 不碰队列/深层历史/睡眠定时/权重手动标记（与 [_play] 全量起播不同，
+  ///   这里只换音频源，不视为一次新的播放）；
+  /// - 已缓存歌曲恒播本地原文件（缓存优先，见 [_loadOnce]），链路/转码变化
+  ///   对它无影响，直接返回 false 跳过重载，避免无谓打断；
+  /// - 无当前曲或播放器未建时返回 false。
+  ///
+  /// 返回 true=已重载，false=跳过（无当前曲/未建播放器/已缓存/无源）。
+  Future<bool> reloadCurrentForPlaybackRoute() async {
+    final cur = _current;
+    if (cur == null || _player == null || _shuttingDown || _disposed) {
+      return false;
+    }
+    // 经 resolver 取最新源（含编辑后的新 route），并同步 _curSource，
+    // 使后续切歌也走新链路（即使本次因缓存跳过重载）。
+    final fresh = _resolver?.call(cur.sourceKey) ?? _curSource;
+    if (fresh == null) return false;
+    _curSource = fresh;
+    // 缓存优先：已缓存恒播本地原文件，链路/转码变化不影响本次播放，无需重载。
+    try {
+      final cached = await fresh.cachedFilePath(cur);
+      if (cached != null) return false;
+    } catch (_) {
+      // 查缓存失败按未缓存处理，继续重载。
+    }
+    final pos = player.position;
+    final wasPlaying = player.playing && !_fadingPause;
+    // 重载期间旧渐变作废，与 _play/applyAudioConfig 同口径。
+    _cancelFadeAndComplete();
+    _fadingPause = false;
+    final token = ++_playToken;
+    bool alive() => token == _playToken;
+    try {
+      await _playDirect(cur, fresh, alive: alive);
+      if (!alive()) return false;
+      _loadFailStreak = 0;
+      if (wasPlaying) {
+        // 与 _play 同口径：自然播完时 playing 不复位，直接 play() 会空转，
+        // 先复位再播，避免自动切歌无声。
+        if (player.playing) {
+          try {
+            await player.pause();
+          } catch (_) {}
+        }
+        unawaited(player.play().catchError((Object e) {
+          if (!alive() || _shuttingDown) return;
+          debugPrint('[play] 重载后 play 异常《${cur.title}》: $e');
+        }));
+        _fadeIn();
+      } else if (player.playing) {
+        try {
+          await player.pause();
+        } catch (_) {}
+      }
+      if (!alive()) return false;
+      try {
+        await player.seek(pos);
+      } catch (_) {}
+      _saveState(player.position);
+      notifyListeners();
+      _syncSystemMedia();
+      return true;
+    } catch (e) {
+      if (!alive()) return false;
+      debugPrint('[play] 重载当前曲失败《${cur.title}》: $e');
+      return false;
+    }
+  }
+
   /// 丢弃当前播放器实例（不自动重建；下次访问 [player] 时按最新设置重建）。
   Future<void> _disposePlayer() async {
     final old = _player;

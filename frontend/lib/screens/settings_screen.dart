@@ -555,7 +555,12 @@ class _TranscodeSectionState extends State<_TranscodeSection> {
           value: settings.transcodeEnabled && canUse,
           onChanged: !canUse
               ? null
-              : (v) => setState(() => settings.transcodeEnabled = v),
+              : (v) {
+                  setState(() => settings.transcodeEnabled = v);
+                  // 转码总开关即时生效：重载当前曲（保位置/保播放态），无需重启；
+                  // 已缓存歌曲仍播本地原文件，内部自动跳过。
+                  _applyTranscodeNow();
+                },
         ),
         SegmentedButton<int>(
           segments: const [
@@ -566,7 +571,10 @@ class _TranscodeSectionState extends State<_TranscodeSection> {
           selected: {settings.transcodeBitrate},
           onSelectionChanged: !canUse
               ? null
-              : (s) => setState(() => settings.transcodeBitrate = s.first),
+              : (s) {
+                  setState(() => settings.transcodeBitrate = s.first);
+                  _applyTranscodeNow();
+                },
         ),
         const SizedBox(height: 8),
         Text('响度均衡（LUFS，仅代理转码时生效）',
@@ -583,10 +591,24 @@ class _TranscodeSectionState extends State<_TranscodeSection> {
           selected: {settings.transcodeLoudnorm},
           onSelectionChanged: !(canUse && settings.transcodeEnabled)
               ? null
-              : (s) => setState(() => settings.transcodeLoudnorm = s.first),
+              : (s) {
+                  setState(() => settings.transcodeLoudnorm = s.first);
+                  _applyTranscodeNow();
+                },
         ),
       ],
     );
+  }
+
+  /// 转码/响度变更后即时重载当前曲（fire-and-forget，失败静默）。
+  void _applyTranscodeNow() {
+    if (!mounted) return;
+    final player = context.read<PlayerProvider>();
+    // 不 await：重载走网络装载（15s 看门狗），不能卡住开关动画。
+    player.reloadCurrentForPlaybackRoute().then((reloaded) {
+      if (!mounted || !reloaded) return;
+      AppToast.show('已切换到新转码设置', isError: false);
+    }).catchError((Object _) {});
   }
 }
 

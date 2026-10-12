@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -11,6 +13,7 @@ import '../platform/harmonyos/ohos_bootstrap.dart';
 import '../platform/harmonyos/ohos_platform_bridge.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
+import '../providers/player_provider.dart';
 import '../services/api_client.dart';
 import '../utils/collection_sort.dart';
 import '../utils/url_input.dart';
@@ -421,6 +424,11 @@ class _SourceDialogState extends State<_SourceDialog> {
       setState(() => _error = '请填写名称');
       return;
     }
+    // 编辑前记下旧链路：仅 route 真变化时才重载当前曲，避免改密码/改名等
+    // 无关编辑打断正在播放。
+    final oldRoute = _isEdit
+        ? direct.sourceByKey(widget.editKey!)?.route
+        : null;
     try {
       if (_kind == SourceKind.local) {
         final path = _path.text.trim();
@@ -549,6 +557,24 @@ class _SourceDialogState extends State<_SourceDialog> {
               username: _username.text.trim(),
               password: _password.text,
               route: _route);
+        }
+      }
+      // 播放链路（直连↔代理）即时生效：若编辑的是正在播放的源且 route 变了，
+      // 重载当前曲（保位置/保播放态），无需重启；已缓存歌曲内部自动跳过。
+      if (_isEdit && oldRoute != null && oldRoute != _route) {
+        if (!mounted) return;
+        final player = context.read<PlayerProvider>();
+        final curKey = player.current?.sourceKey;
+        // 同名编辑 key 不变；改名时新 key 为 kind:name，两种都判。
+        final newKey =
+            '${_kind.name}:$name';
+        if (curKey == widget.editKey || curKey == newKey) {
+          // 先关弹窗再重载，避免 context 释放竞态。
+          if (mounted) Navigator.of(context).pop();
+          unawaited(player.reloadCurrentForPlaybackRoute().then((ok) {
+            if (ok) AppToast.show('已切换到${_route == SourceRoute.proxy ? '代理' : '直连'}链路', isError: false);
+          }));
+          return;
         }
       }
       if (mounted) Navigator.of(context).pop();
