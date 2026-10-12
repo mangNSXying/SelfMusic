@@ -202,4 +202,134 @@ void main() {
     // 卸载以取消播放页控件自动隐藏 Timer。
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets('手机横屏分栏：左歌单右播放同显，不溢出', (tester) async {
+    late final DirectSourceManager direct;
+    late final PlayerProvider player;
+    await tester.runAsync(() async {
+      direct = await _openDirect();
+      player = await _playerWithCurrent();
+    });
+    addTearDown(() {
+      player.dispose();
+      direct.dispose();
+    });
+    tester.view.physicalSize = const Size(800, 360);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MultiProvider(
+          providers: [
+            ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+            ChangeNotifierProvider<PlayerProvider>.value(value: player),
+          ],
+          child: Scaffold(
+            body: LandscapePlaylistSplit(
+              player: player,
+              direct: direct,
+              cs: ColorScheme.fromSeed(seedColor: Colors.teal),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull, reason: '手机横屏分栏不得溢出');
+    // 左栏歌单（无绑定歌单时兜底队列，完整搜索框保留）与右窗播放同显。
+    expect(find.textContaining('播放队列'), findsOneWidget);
+    expect(find.byType(Slider), findsOneWidget);
+    // 右窗进度条贴着底边，说明分栏恰好放满一屏。
+    expect(tester.getBottomLeft(find.byType(Slider)).dy,
+        lessThanOrEqualTo(360));
+  });
+
+  testWidgets('桌面横屏分栏：左歌单右播放同显，不溢出', (tester) async {
+    late final DirectSourceManager direct;
+    late final PlayerProvider player;
+    await tester.runAsync(() async {
+      direct = await _openDirect();
+      player = await _playerWithCurrent();
+    });
+    addTearDown(() {
+      player.dispose();
+      direct.dispose();
+    });
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MultiProvider(
+          providers: [
+            ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+            ChangeNotifierProvider<PlayerProvider>.value(value: player),
+          ],
+          child: Scaffold(
+            body: DesktopPlaylistSplit(
+              player: player,
+              direct: direct,
+              cs: ColorScheme.fromSeed(seedColor: Colors.teal),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull, reason: '桌面横屏分栏不得溢出');
+    expect(find.textContaining('播放队列'), findsOneWidget);
+    expect(find.byType(Slider), findsOneWidget);
+  });
+
+  testWidgets('横屏滑到歌单页后：左歌单右播放分栏 settle', (tester) async {
+    late final DirectSourceManager direct;
+    late final PlayerProvider player;
+    await tester.runAsync(() async {
+      direct = await _openDirect();
+      player = await _playerWithCurrent();
+    });
+    addTearDown(() {
+      player.dispose();
+      direct.dispose();
+    });
+    tester.view.physicalSize = const Size(800, 360);
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.padding = const FakeViewPadding(top: 24, bottom: 24);
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MultiProvider(
+          providers: [
+            ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+            ChangeNotifierProvider<NavigationProvider>(
+                create: (_) => NavigationProvider()),
+            ChangeNotifierProvider<PlayerProvider>.value(value: player),
+            ChangeNotifierProvider<PlaylistsProvider>(
+                create: (_) => PlaylistsProvider(direct.playlists)),
+          ],
+          child: const PlayerScreen(),
+        ),
+      ),
+    );
+    await tester.pump();
+    // 等邻页预热（350ms/800ms 计时）使 page0 装配。
+    await tester.pump(const Duration(milliseconds: 900));
+
+    // 桌面测试宿主走桌面分支：初始在播放页，右滑进入分栏歌单页。
+    await tester.fling(find.byType(PageView), const Offset(400, 0), 2000);
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.byType(DesktopPlaylistSplit), findsOneWidget);
+    expect(find.textContaining('播放队列'), findsOneWidget);
+    expect(find.byType(Slider), findsWidgets);
+
+    // 卸载以取消播放页控件自动隐藏 Timer。
+    await tester.pumpWidget(const SizedBox());
+  });
 }

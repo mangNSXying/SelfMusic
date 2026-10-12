@@ -411,15 +411,39 @@ class _PlayerScreenState extends State<PlayerScreen> {
               },
               children: [
                 // 首帧避让（C）：邻页首帧占位，空闲预热后再装配——歌单页整单
-                // 装配（1310 首曾测 ~150ms）移出首帧；页数恒为 3，
+                // 装配（1310 首曾测 ~150ms）移出首帧；页数恒定（横屏 2 / 竖屏 3），
                 // PageController initialPage=1 不受影响。
                 if (_warmNeighbors)
-                  const _BandSongPage()
+                  if (landscape)
+                    // 横屏歌单页为「左歌单右播放」分栏：滑动 settle 后左右同显，
+                    // 与横屏整页「左播放右歌词」同理；竖屏仍为整页歌单。
+                    // 左上角返回箭头悬浮于分栏之上（与横屏播放页一致）。
+                    Stack(
+                      children: [
+                        Positioned.fill(
+                          child: desktopLandscape
+                              ? DesktopPlaylistSplit(
+                                  player: player,
+                                  direct:
+                                      context.watch<DirectSourceManager>(),
+                                  cs: Theme.of(context).colorScheme)
+                              : LandscapePlaylistSplit(
+                                  player: player,
+                                  direct:
+                                      context.watch<DirectSourceManager>(),
+                                  cs: Theme.of(context).colorScheme),
+                        ),
+                        const Positioned(
+                            top: 6, left: 6, child: _BackToContentButton()),
+                      ],
+                    )
+                  else
+                    const _BandSongPage()
                 else
                   const SizedBox.shrink(),
                 if (landscape)
-                  // 横屏无歌词分页（歌词内嵌）：歌单页与整幅播放布局两页滑动；
-                  // 左上角返回箭头悬浮于两套横屏布局之上。
+                  // 横屏无歌词分页（歌词内嵌）：「左歌单右播放」分栏与整幅播放
+                  // 布局两页滑动；左上角返回箭头悬浮于两套横屏布局之上。
                   Stack(
                     children: [
                       desktopLandscape
@@ -544,17 +568,20 @@ class _PlayerControlsHidden extends InheritedWidget {
 ///   播放页↔歌词页一致）。
 /// - 无绑定歌单（全部歌曲/喜欢/专辑/歌手/播放源点播）：兜底展示运行时播放
 ///   队列（[QueuePage]），其行同样为完整形态。
+/// - [embedded] 为真时队列走无 Scaffold/AppBar 的嵌入式（[SongList] 本就是
+///   Column，可直接嵌），供横屏「左歌单右播放」分栏的左栏复用。
 class _BandSongPage extends StatelessWidget {
-  const _BandSongPage();
+  final bool embedded;
+  const _BandSongPage({this.embedded = false});
 
   @override
   Widget build(BuildContext context) {
     final player = context.watch<PlayerProvider>();
     final uuid = player.syncPlaylistUuid;
-    if (uuid == null) return const QueuePage();
+    if (uuid == null) return QueuePage(embedded: embedded);
     final pid =
         context.watch<PlaylistsProvider>().store.index.playlistIdOfUuid(uuid);
-    if (pid == null) return const QueuePage();
+    if (pid == null) return QueuePage(embedded: embedded);
     return SongList(playlistId: pid);
   }
 }
@@ -976,50 +1003,12 @@ class LandscapePlayer extends StatelessWidget {
         constraints: const BoxConstraints(maxWidth: 900),
         child: Row(
           children: [
-            // 第一列：封面、信息、进度条。不滚动：封面吃掉固定行之外的剩余高度。
-            // 矮屏由 Flexible 自动收缩（旧实现把封面以外的高度写死为 150，低估
-            // 实际固定内容致底部 RenderFlex overflow）；heightFactor=1 让 Flexible
-            // 子项按封面实际大小上报，富余空间仍由 spaceBetween 分配，高屏观感不变。
+            // 第一列：封面、信息、进度条（与分栏右窗共用 _LandscapePlayerMain，
+            // 不定自身宽度，由外层 SizedBox 给宽）。
             SizedBox(
               width: leftW,
-              child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Flexible(
-                      child: Center(
-                        heightFactor: 1,
-                        child: LayoutBuilder(
-                          builder: (context, c) => _Cover(
-                            coverPath: s.coverPath,
-                            song: s,
-                            cs: cs,
-                            size: math.max(
-                                0, math.min(c.maxWidth - 24, c.maxHeight)),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    _TitleBlock(
-                        player: player,
-                        direct: direct,
-                        compact: true,
-                        dense: true),
-                    const SizedBox(height: 4),
-                    _ToolRow(
-                        player: player,
-                        direct: direct,
-                        cs: cs,
-                        song: s,
-                        center: true),
-                    _PlayerSeek(player: player, cs: cs, showTime: false),
-                  ],
-                ),
-              ),
+              child: _LandscapePlayerMain(
+                  player: player, direct: direct, cs: cs, song: s),
             ),
             // 第二列：歌词区，上下边缘渐隐（参照稿 mask-image）。
             Expanded(
@@ -1043,24 +1032,156 @@ class LandscapePlayer extends StatelessWidget {
                 ),
               ),
             ),
-            // 第三列：竖向主控制区（顶部定时 / 中部切歌播放 / 底部模式）。
+            // 第三列：竖向主控制区（顶部定时 / 中部切歌播放 / 底部模式，
+            // 与分栏右窗共用 _LandscapePlayerSide）。
             SizedBox(
               width: rightW,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    _SleepButton(player: player, cs: cs),
-                    _VerticalControls(player: player, cs: cs),
-                    _ModeButton(player: player, cs: cs),
-                  ],
-                ),
-              ),
+              child:
+                  _LandscapePlayerSide(player: player, cs: cs),
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// 手机横屏左播放列（封面/信息/工具/进度）：三列整页与「左歌单右播放」分栏
+/// 右窗共用。不定自身宽度，由父级 SizedBox 给宽（整页按全屏宽算，分栏按栏宽
+/// 算——直接复用整页会导致 MediaQuery 全屏宽撑爆半栏）。
+/// 不滚动：封面吃掉固定行之外的剩余高度，矮屏由 Flexible 自动收缩。
+class _LandscapePlayerMain extends StatelessWidget {
+  final PlayerProvider player;
+  final DirectSourceManager direct;
+  final ColorScheme cs;
+  final Song song;
+  const _LandscapePlayerMain(
+      {required this.player,
+      required this.direct,
+      required this.cs,
+      required this.song});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = song;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Flexible(
+            child: Center(
+              heightFactor: 1,
+              child: LayoutBuilder(
+                builder: (context, c) => _Cover(
+                  coverPath: s.coverPath,
+                  song: s,
+                  cs: cs,
+                  size: math.max(
+                      0, math.min(c.maxWidth - 24, c.maxHeight)),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          _TitleBlock(
+              player: player, direct: direct, compact: true, dense: true),
+          const SizedBox(height: 4),
+          _ToolRow(
+              player: player,
+              direct: direct,
+              cs: cs,
+              song: s,
+              center: true),
+          _PlayerSeek(player: player, cs: cs, showTime: false),
+        ],
+      ),
+    );
+  }
+}
+
+/// 手机横屏右竖向控制列（顶部定时 / 中部切歌播放 / 底部模式）：三列整页与
+/// 分栏右窗共用，不定自身宽度。
+class _LandscapePlayerSide extends StatelessWidget {
+  final PlayerProvider player;
+  final ColorScheme cs;
+  const _LandscapePlayerSide({required this.player, required this.cs});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          _SleepButton(player: player, cs: cs),
+          _VerticalControls(player: player, cs: cs),
+          _ModeButton(player: player, cs: cs),
+        ],
+      ),
+    );
+  }
+}
+
+/// 手机横屏「左歌单右播放」分栏（PageView 首页的横屏形态）：
+/// 左栏为歌单（绑定歌单 [SongList] / 兜底嵌入式 [QueuePage]，搜索/排序/多选等
+/// 完整功能），右窗复用当前三列播放布局的左右列（播放列 + 竖向控制列，
+/// 不含中列歌词——歌词仍在滑动后的整页播放页中列，避免双 LyricsView 跟焦与
+/// 半栏拥挤）。
+///
+/// 公开（去掉下划线）供布局回归测试直接渲染，理由同 [LandscapePlayer]。
+class LandscapePlaylistSplit extends StatelessWidget {
+  final PlayerProvider player;
+  final DirectSourceManager direct;
+  final ColorScheme cs;
+  const LandscapePlaylistSplit(
+      {super.key, required this.player, required this.direct, required this.cs});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!player.hasCurrent) {
+      return Row(
+        children: [
+          const Expanded(child: _BandSongPage(embedded: true)),
+          SizedBox(
+            width: 300,
+            child: Center(
+                child: _EmptyState(
+                    coverSize:
+                        (MediaQuery.sizeOf(context).height * 0.3).clamp(96.0, 150.0))),
+          ),
+        ],
+      );
+    }
+    final s = player.current!;
+    // 右窗按栏内约束定宽（不用 MediaQuery 全屏宽，否则撑爆半栏）；
+    // 55:45 左右开，右窗钳在手机横屏可用区间。
+    return LayoutBuilder(
+      builder: (context, c) {
+        final rightW = (c.maxWidth * 0.45).clamp(280.0, 400.0);
+        final sideW = (c.maxWidth * 0.09).clamp(56.0, 72.0);
+        return Row(
+          children: [
+            const Expanded(child: _BandSongPage(embedded: true)),
+            SizedBox(
+              width: rightW,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _LandscapePlayerMain(
+                        player: player, direct: direct, cs: cs, song: s),
+                  ),
+                  SizedBox(
+                    width: sideW,
+                    child: _LandscapePlayerSide(player: player, cs: cs),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -1092,52 +1213,14 @@ class _DesktopLandscapePlayer extends StatelessWidget {
         constraints: const BoxConstraints(maxWidth: 1240),
         child: Row(
           children: [
-            // 左栏：矮窗口可滚动；内容不足一屏高时垂直居中，不留大片死白。
-            SizedBox(
-              width: leftW,
-              child: LayoutBuilder(
-                builder: (context, c) => SingleChildScrollView(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(minHeight: c.maxHeight - 32),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Center(
-                          child: _Cover(
-                              coverPath: s.coverPath,
-                              song: s,
-                              cs: cs,
-                              size: cover),
-                        ),
-                        const SizedBox(height: 16),
-                        _TitleBlock(
-                            player: player, direct: direct, compact: true),
-                        const SizedBox(height: 6),
-                        _MetaLine(
-                            player: player, direct: direct, cs: cs, song: s),
-                        _ToolRow(
-                            player: player,
-                            direct: direct,
-                            cs: cs,
-                            song: s,
-                            center: true),
-                        _PlayerSeek(player: player, cs: cs),
-                        // 左栏宽会被 clamp 到最小 320（内容区 280），控制行固定
-                        // 内容 ~302，窄桌面窗口（约 800~1140 宽）会横向溢出；
-                        // scaleDown 只在放不下时整体等比收缩，宽窗口零影响。
-                        FittedBox(
-                          fit: BoxFit.scaleDown,
-                          child: _ControlRow(player: player, cs: cs),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
+            // 左栏：与分栏右窗共用 _DesktopPlayerColumn（不定自身宽度，由调用方给宽）。
+            _DesktopPlayerColumn(
+                player: player,
+                direct: direct,
+                cs: cs,
+                song: s,
+                width: leftW,
+                cover: cover),
             // 右栏：歌词限宽居中 + 上下边缘渐隐（改进.txt：去掉两栏中间分割线）。
             Expanded(
               child: Center(
@@ -1168,6 +1251,122 @@ class _DesktopLandscapePlayer extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// 桌面横屏左播放列（封面/信息/工具/进度/横排控制）：双栏整页左栏与「左歌单
+/// 右播放」分栏右窗共用。宽度与封面尺寸由调用方按上下文给定（整页按全屏算，
+/// 分栏按栏内约束算）；矮窗口可滚动，内容不足一屏高时垂直居中。
+class _DesktopPlayerColumn extends StatelessWidget {
+  final PlayerProvider player;
+  final DirectSourceManager direct;
+  final ColorScheme cs;
+  final Song song;
+  final double width;
+  final double cover;
+  const _DesktopPlayerColumn(
+      {required this.player,
+      required this.direct,
+      required this.cs,
+      required this.song,
+      required this.width,
+      required this.cover});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = song;
+    return SizedBox(
+      width: width,
+      child: LayoutBuilder(
+        builder: (context, c) => SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: c.maxHeight - 32),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Center(
+                  child: _Cover(
+                      coverPath: s.coverPath,
+                      song: s,
+                      cs: cs,
+                      size: cover),
+                ),
+                const SizedBox(height: 16),
+                _TitleBlock(player: player, direct: direct, compact: true),
+                const SizedBox(height: 6),
+                _MetaLine(player: player, direct: direct, cs: cs, song: s),
+                _ToolRow(
+                    player: player,
+                    direct: direct,
+                    cs: cs,
+                    song: s,
+                    center: true),
+                _PlayerSeek(player: player, cs: cs),
+                // 左栏宽会被 clamp 到最小 320（内容区 280），控制行固定
+                // 内容 ~302，窄桌面窗口（约 800~1140 宽）会横向溢出；
+                // scaleDown 只在放不下时整体等比收缩，宽窗口零影响。
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: _ControlRow(player: player, cs: cs),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 桌面横屏「左歌单右播放」分栏（PageView 首页的横屏形态）：
+/// 左栏为歌单（完整功能），右窗复用当前双栏播放布局的左播放列（不含歌词栏——
+/// 歌词仍在滑动后的整页播放页右栏）。公开供布局回归测试直接渲染。
+class DesktopPlaylistSplit extends StatelessWidget {
+  final PlayerProvider player;
+  final DirectSourceManager direct;
+  final ColorScheme cs;
+  const DesktopPlaylistSplit(
+      {super.key, required this.player, required this.direct, required this.cs});
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    if (!player.hasCurrent) {
+      return Row(
+        children: [
+          const Expanded(child: _BandSongPage(embedded: true)),
+          SizedBox(
+            width: 320,
+            child: Center(
+                child: _EmptyState(
+                    coverSize:
+                        (size.height * 0.32).clamp(120.0, 200.0))),
+          ),
+        ],
+      );
+    }
+    final s = player.current!;
+    // 右窗按栏内约束定宽（不用全屏宽直算）；封面仍按全屏高算（栏与页同高）。
+    return LayoutBuilder(
+      builder: (context, c) {
+        final rightW = (c.maxWidth * 0.42).clamp(280.0, 440.0);
+        final cover = (size.height * 0.40).clamp(120.0, 280.0);
+        return Row(
+          children: [
+            const Expanded(child: _BandSongPage(embedded: true)),
+            _DesktopPlayerColumn(
+                player: player,
+                direct: direct,
+                cs: cs,
+                song: s,
+                width: rightW,
+                cover: cover),
+          ],
+        );
+      },
     );
   }
 }

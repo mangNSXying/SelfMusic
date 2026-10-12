@@ -21,7 +21,12 @@ import '../widgets/sort_menu_button.dart';
 /// 点行按真实队列序号切歌、当前曲高亮；支持单曲移除 / 清空 / 多选批量移除
 /// （只改运行时队列）。行统一为完整形态（[SongTile] 完整行）。
 class QueuePage extends StatefulWidget {
-  const QueuePage({super.key});
+  /// 为 true 时返回无 Scaffold/AppBar 的嵌入式 Column（标题行 + 搜索/多选栏 +
+  /// 列表），供横屏「左歌单右播放」分栏的左栏直接复用；完整功能（搜索/排序/
+  /// 多选移除/清空）与整页形态一致。
+  final bool embedded;
+
+  const QueuePage({super.key, this.embedded = false});
 
   @override
   State<QueuePage> createState() => _QueuePageState();
@@ -157,6 +162,7 @@ class _QueuePageState extends State<QueuePage> {
       onWarm: () => direct.weight.warmMetaOf(queue),
     );
 
+    if (widget.embedded) return _embeddedBody(context, player, direct, queue);
     return Scaffold(
       appBar: AppBar(
         title: Text('播放队列（${queue.length}）'),
@@ -179,55 +185,118 @@ class _QueuePageState extends State<QueuePage> {
         ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(56),
-          child: _sel.active
-              ? SelectionBar(
-                  total: _visible.length,
-                  selectedCount: _sel.of(_visible).length,
-                  onToggleAll: () => setState(() {
-                    _sel.active = true;
-                    _sel.setAll(_visible);
-                  }),
-                  onCancel: () => setState(_sel.cancel),
-                  actions: [
-                    SelectionAction(
-                      icon: Icons.playlist_remove,
-                      label: '移除选中',
-                      onPressed:
-                          _sel.selected.isEmpty ? null : () => _removeSelected(player),
-                    ),
-                  ],
-                )
-              : Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                  child: TextField(
-                    controller: _search,
-                    onChanged: (v) => setState(() => _query = v),
-                    decoration: InputDecoration(
-                      hintText: '搜索当前队列',
-                      prefixIcon: const Icon(Icons.search),
-                      suffixIcon: _query.isEmpty
-                          ? null
-                          : IconButton(
-                              icon: const Icon(Icons.clear),
-                              tooltip: '清除',
-                              onPressed: () {
-                                _search.clear();
-                                setState(() => _query = '');
-                              },
-                            ),
-                      isDense: true,
-                      contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
-                      ),
-                    ),
-                  ),
-                ),
+          child: _searchOrSelection(player, direct),
         ),
       ),
-      body: _visible.isEmpty
-          ? Center(child: Text(queue.isEmpty ? '队列为空' : '无匹配歌曲'))
-          : RowList(
+      body: _listBody(player, direct, queue),
+    );
+  }
+
+  /// 搜索框与多选栏共用同一位置（整页 AppBar.bottom 与嵌入式共用）。
+  Widget _searchOrSelection(PlayerProvider player, DirectSourceManager direct) {
+    if (_sel.active) {
+      return SelectionBar(
+        total: _visible.length,
+        selectedCount: _sel.of(_visible).length,
+        onToggleAll: () => setState(() {
+          _sel.active = true;
+          _sel.setAll(_visible);
+        }),
+        onCancel: () => setState(_sel.cancel),
+        actions: [
+          SelectionAction(
+            icon: Icons.playlist_remove,
+            label: '移除选中',
+            onPressed:
+                _sel.selected.isEmpty ? null : () => _removeSelected(player),
+          ),
+        ],
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      child: TextField(
+        controller: _search,
+        onChanged: (v) => setState(() => _query = v),
+        decoration: InputDecoration(
+          hintText: '搜索当前队列',
+          prefixIcon: const Icon(Icons.search),
+          suffixIcon: _query.isEmpty
+              ? null
+              : IconButton(
+                  icon: const Icon(Icons.clear),
+                  tooltip: '清除',
+                  onPressed: () {
+                    _search.clear();
+                    setState(() => _query = '');
+                  },
+                ),
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(vertical: 8),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 嵌入式：与 SongList 同形的 Column（标题行 + 搜索/多选栏 + Expanded 列表），
+  /// 无 Scaffold/AppBar，可直接放进分栏 Row 的左栏（父级给足高度即可）。
+  Widget _embeddedBody(BuildContext context, PlayerProvider player,
+      DirectSourceManager direct, List<Song> queue) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '播放队列（${queue.length}）',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleLarge
+                      ?.copyWith(fontWeight: FontWeight.bold),
+                ),
+              ),
+              if (queue.isNotEmpty) ...[
+                SortMenuButton(
+                  value: direct.settings.sortQueue,
+                  scope: SortScope.songs,
+                  onChanged: (v) {
+                    setState(() => _sort = v);
+                    direct.settings.sortQueue = v;
+                  },
+                ),
+                IconButton(
+                  icon: const Icon(Icons.delete_outline),
+                  tooltip: '清空队列',
+                  onPressed: () => _clearQueue(player),
+                ),
+              ],
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(0, 4, 0, 0),
+          child: _searchOrSelection(player, direct),
+        ),
+        const Divider(height: 1),
+        Expanded(child: _listBody(player, direct, queue)),
+      ],
+    );
+  }
+
+  Widget _listBody(PlayerProvider player, DirectSourceManager direct,
+      List<Song> queue) {
+    final wide = MediaQuery.sizeOf(context).width >= kSongTileWideInfoWidth;
+    return _visible.isEmpty
+        ? Center(child: Text(queue.isEmpty ? '队列为空' : '无匹配歌曲'))
+        : RowList(
               count: _visible.length,
               itemBuilder: (c, i) {
                 final realIndex = _visible[i];
@@ -268,7 +337,6 @@ class _QueuePageState extends State<QueuePage> {
                   },
                 );
               },
-            ),
-    );
+            );
   }
 }
