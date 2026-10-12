@@ -5,11 +5,20 @@ import 'dart:convert' show utf8;
 
 /// 归一化 base：补 scheme、去尾斜杠。缺 scheme 时默认补 `https://`（需明文 HTTP
 /// 必须显式写 `http://`）。如 `192.168.1.10:5005/media` → `https://.../media`。
+/// 二重保险的最后一道：大小写 scheme（`HTTP://`）视为已有 scheme，不重复补前缀。
 String webdavNormalizeBase(String url) {
   var u = url.trim();
-  if (!u.contains('://')) u = 'https://$u';
-  if (u.endsWith('/')) u = u.substring(0, u.length - 1);
-  return u;
+  if (u.isEmpty) return u;
+  if (!_hasScheme(u)) u = 'https://$u';
+  return u.replaceAll(RegExp(r'/+$'), '');
+}
+
+/// 是否带有 scheme（含 `://` 且 scheme 段无空白；大小写不敏感）。
+bool _hasScheme(String s) {
+  final i = s.indexOf('://');
+  if (i <= 0) return false;
+  if (s.substring(0, i).contains(RegExp(r'\s'))) return false;
+  return true;
 }
 
 /// 从（可能带 query / fragment 的）URL 中取出路径段（以 / 开头）。

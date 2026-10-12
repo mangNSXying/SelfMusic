@@ -13,6 +13,7 @@ import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../services/api_client.dart';
 import '../utils/collection_sort.dart';
+import '../utils/url_input.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
@@ -130,6 +131,7 @@ class _SourceDialogState extends State<_SourceDialog> {
   late final TextEditingController _share;
   late final TextEditingController _keyPem;
   late final TextEditingController _keyPassphrase;
+  late final FocusNode _baseUrlFocus;
   SourceKind _kind = SourceKind.webdav;
   SourceRoute _route = SourceRoute.direct;
   SftpAuthMethod _authMethod = SftpAuthMethod.password;
@@ -171,10 +173,19 @@ class _SourceDialogState extends State<_SourceDialog> {
     _keyPassphrase =
         TextEditingController(text: cfg['sftpPassphrase'] as String? ?? '');
     _route = parseSourceRoute(cfg['route']);
+    // 仅走 HTTP 的 WebDAV 地址失焦时可视化补 `https://`；
+    // SFTP/SMB/本地路径不走 HTTP，禁止挂此逻辑。
+    _baseUrlFocus = FocusNode();
+    _baseUrlFocus.addListener(() {
+      if (!_baseUrlFocus.hasFocus && mounted && _kind == SourceKind.webdav) {
+        if (autoCompleteUrlController(_baseUrl)) setState(() {});
+      }
+    });
   }
 
   @override
   void dispose() {
+    _baseUrlFocus.dispose();
     _name.dispose();
     _path.dispose();
     _baseUrl.dispose();
@@ -492,17 +503,37 @@ class _SourceDialogState extends State<_SourceDialog> {
               route: _route);
         }
       } else {
+        // WebDAV 走 HTTP：保存前先把补全写回输入框（可视化），再校验。
+        // SFTP/SMB/本地不走 HTTP，不在此补 scheme。
+        if (applyHttpsPrefixToController(_baseUrl)) {
+          AppToast.show('已自动补全 https:// 前缀', isError: false);
+          setState(() {});
+        }
         final url = _baseUrl.text.trim();
         if (url.isEmpty) {
           setState(() => _error = '请填写 WebDAV 地址');
           return;
         }
         // 默认 HTTPS：显式 http:// 仅在「允许不安全 HTTP」开启后放行（settings.md §3.3）。
-        final err = ApiClient.validateEndpointUrl(url,
+        // 一层校验 + 弹窗一键开启（url_input.ensureHttpAllowed），模型层归一化兜底。
+        var err = ApiClient.validateEndpointUrl(url,
             allowHttp: direct.settings.allowInsecureHttp);
         if (err != null) {
-          setState(() => _error = err);
-          return;
+          if (urlIsExplicitHttp(url)) {
+            final ok = await ensureHttpAllowed(context, url);
+            if (!mounted) return;
+            if (!ok) {
+              setState(() => _error = err);
+              return;
+            }
+            setState(() => _error = null);
+            err = ApiClient.validateEndpointUrl(url,
+                allowHttp: direct.settings.allowInsecureHttp);
+          }
+          if (err != null) {
+            setState(() => _error = err);
+            return;
+          }
         }
         if (_isEdit) {
           await direct.updateSource(widget.editKey!,
@@ -592,9 +623,16 @@ class _SourceDialogState extends State<_SourceDialog> {
             ] else if (_kind == SourceKind.webdav) ...[
               TextField(
                 controller: _baseUrl,
+                focusNode: _baseUrlFocus,
+                keyboardType: TextInputType.url,
+                autocorrect: false,
+                onSubmitted: (_) {
+                  if (autoCompleteUrlController(_baseUrl)) setState(() {});
+                },
                 decoration: const InputDecoration(
                   labelText: 'WebDAV 地址',
                   hintText: 'https://192.168.1.10/dav/music',
+                  helperText: '未填协议时自动补 https://；需明文请显式写 http://',
                 ),
               ),
               TextField(

@@ -41,7 +41,7 @@ class ApiClient {
     if (s.isEmpty) return null;
     final i = s.indexOf('://');
     if (i > 0) {
-      final scheme = s.substring(0, i).toLowerCase();
+      final scheme = s.substring(0, i).trim().toLowerCase();
       if (scheme == 'http' && !allowHttp) {
         return '明文 HTTP 已被默认关闭；如确需使用，请在「允许不安全 HTTP」中启用，或改用 https://';
       }
@@ -52,13 +52,22 @@ class ApiClient {
   /// 把 [url] 规整为合法的绝对 URL：缺少 scheme 时补 `https://`（默认安全链路），
   /// 并去掉末尾 `/`，避免用户传入 `192.168.3.25:18443` 这类无协议地址导致 dio 报错。
   /// 需要明文 HTTP 时用户须显式写 `http://`（受「允许不安全 HTTP」开关约束，见 settings.md §3.3）。
+  /// 二重保险的最后一道：大小写 scheme（`HTTP://`）视为已有 scheme，不重复补前缀。
   static String normalizeBaseUrl(String url) {
     var s = url.trim();
     if (s.isEmpty) return s;
-    if (!s.contains('://')) {
+    if (!_hasScheme(s)) {
       s = 'https://$s';
     }
-    return s.endsWith('/') ? s.substring(0, s.length - 1) : s;
+    return s.replaceAll(RegExp(r'/+$'), '');
+  }
+
+  /// 是否带有 scheme（含 `://` 且 scheme 段无空白；大小写不敏感）。
+  static bool _hasScheme(String s) {
+    final i = s.indexOf('://');
+    if (i <= 0) return false;
+    if (s.substring(0, i).contains(RegExp(r'\s'))) return false;
+    return true;
   }
 
   ApiClient({Dio? dio, FlutterSecureStorage? storage})

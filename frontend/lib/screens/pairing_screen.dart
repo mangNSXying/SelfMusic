@@ -6,6 +6,7 @@ import '../providers/direct_source_manager.dart';
 import '../services/api_client.dart';
 import '../services/server_settings.dart';
 import '../utils/platform_info.dart';
+import '../utils/url_input.dart';
 import '../widgets/app_toast.dart';
 
 class PairingScreen extends StatefulWidget {
@@ -308,17 +309,24 @@ class _ServerAddressCard extends StatelessWidget {
     final settings = context.read<ServerSettings>();
     final api = context.read<ApiClient>();
     final ctrl = TextEditingController(text: settings.baseUrl);
+    final focus = FocusNode();
+    focus.addListener(() {
+      if (!focus.hasFocus) autoCompleteUrlController(ctrl);
+    });
     await showDialog<void>(
       context: context,
       builder: (c) => AlertDialog(
         title: const Text('服务端地址'),
         content: TextField(
           controller: ctrl,
+          focusNode: focus,
           keyboardType: TextInputType.url,
+          autocorrect: false,
+          onSubmitted: (_) => autoCompleteUrlController(ctrl),
           decoration: const InputDecoration(
             labelText: '后端地址',
             hintText: 'https://192.168.1.10:18443',
-            helperText: '含协议与端口，留空表示未配置',
+            helperText: '含协议与端口，留空表示未配置；未填协议自动补 https://',
             border: OutlineInputBorder(),
           ),
         ),
@@ -326,15 +334,35 @@ class _ServerAddressCard extends StatelessWidget {
           TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
           FilledButton(
             onPressed: () async {
+              // 后端地址走 HTTP：保存前先把补全写回输入框（可视化）。
+              if (applyHttpsPrefixToController(ctrl)) {
+                AppToast.show('已自动补全 https:// 前缀', isError: false);
+              }
               final entered = ctrl.text.trim();
-              final err = ApiClient.validateEndpointUrl(entered,
+              var err = ApiClient.validateEndpointUrl(entered,
                   allowHttp: context
                       .read<DirectSourceManager>()
                       .settings
                       .allowInsecureHttp);
               if (err != null) {
-                AppToast.show(err);
-                return;
+                if (urlIsExplicitHttp(entered)) {
+                  final ok = await ensureHttpAllowed(context, entered);
+                  if (!context.mounted) return;
+                  if (ok) {
+                    err = ApiClient.validateEndpointUrl(entered,
+                        allowHttp: context
+                            .read<DirectSourceManager>()
+                            .settings
+                            .allowInsecureHttp);
+                  } else {
+                    AppToast.show(err);
+                    return;
+                  }
+                }
+                if (err != null) {
+                  AppToast.show(err);
+                  return;
+                }
               }
               await settings.setBaseUrl(entered);
               api.setBaseUrl(settings.baseUrl);
@@ -345,5 +373,7 @@ class _ServerAddressCard extends StatelessWidget {
         ],
       ),
     );
+    ctrl.dispose();
+    focus.dispose();
   }
 }
