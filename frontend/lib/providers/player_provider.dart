@@ -2044,6 +2044,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 回填索引。从头完整读取（采样不足时读满整个文件，不截断），失败静默不影响播放。
   /// 成功后刷新队列与当前歌曲对象并通知，播放页即时展示新读到的信息；
   /// 另有变化时通过 [_onSongMetaRefreshed] 通知全局库就地刷新，并失效旧封面图像缓存。
+  /// 当前曲封面变化时补一次 [_syncSystemMedia]（问题2：晚到封面也要进通知栏；
+  /// 无图→有图换图，有图→无图（极少）同样刷新，避免残留）。
   Future<void> _enrichLazily(Song s, MusicSource src) async {
     final idx = _index;
     if (idx == null) return;
@@ -2063,6 +2065,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
             updated.trackNo != s.trackNo ||
             updated.year != s.year ||
             updated.coverPath != s.coverPath;
+        final coverChanged = updated.coverPath != s.coverPath;
         refreshSongMeta(updated);
         if (changed) {
           final cover = updated.coverPath;
@@ -2071,6 +2074,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
             unawaited(FileImage(File(cover)).evict());
           }
           _onSongMetaRefreshed?.call(updated);
+        }
+        // 晚到封面是当前曲才推系统媒体（通知栏/OHOS 播控卡），非当前曲只刷列表。
+        if (coverChanged) {
+          final cur = _current;
+          if (cur != null && _same(cur, updated)) {
+            _syncSystemMedia();
+          }
         }
       }
       _applyLyricsIfCurrent(s);
@@ -2116,13 +2126,25 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   static MediaItem mediaItemOf(Song s, {String? title, Duration? duration}) {
     // 未给格式化标题时退回歌曲自身标题：通知栏宁可显示原名，也不要空行。
     final t = (title == null || title.isEmpty) ? s.title : title;
+    // 问题2修复：悬空路径（文件被删/半图被清理/尚未落盘）不得发 file://，
+    // 否则原生解码失败后部分系统 Controller 不清旧图，残留上一首封面。
+    // 校验失败一律发 null，原生侧走清图分支。
+    Uri? art;
+    final cover = s.coverPath;
+    if (cover != null && cover.isNotEmpty) {
+      try {
+        if (File(cover).existsSync()) art = Uri.file(cover);
+      } catch (_) {
+        art = null;
+      }
+    }
     return MediaItem(
       id: '${s.sourceKey}:${s.sourceRef}',
       album: s.albumName,
       artist: s.artist,
       title: t.isEmpty ? '未知曲目' : t,
       duration: duration,
-      artUri: s.coverPath != null ? Uri.file(s.coverPath!) : null,
+      artUri: art,
     );
   }
 

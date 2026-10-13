@@ -173,8 +173,6 @@ public class AudioService extends MediaBrowserServiceCompat {
     }
 
     Bitmap loadArtBitmap(String artUriString, String loadThumbnailUri) {
-        Bitmap bitmap = artBitmapCache.get(artUriString);
-        if (bitmap != null) return bitmap;
         try {
             // There are 3 cases handled by this function:
             //   1. content URI with openFileDescriptor
@@ -182,6 +180,26 @@ public class AudioService extends MediaBrowserServiceCompat {
             //   3. not content URI - loading from the file, or cache file created by the Dart side
             Uri artUri = Uri.parse(artUriString);
             boolean usesContentScheme = "content".equals(artUri.getScheme());
+            // 问题2补丁：file:// 用“路径|长度|mtime”做缓存键。同路径文件被
+            // 半图→好图覆盖重写时长度/mtime 变化，旧半图解码缓存不得命中，
+            // 否则通知栏在封面修复后仍显示旧半图；文件不存在直接回 null
+            //（Dart 侧已把悬空路径归一为 null，此处为竞态兜底），不进缓存。
+            String cacheKey = artUriString;
+            if (!usesContentScheme) {
+                try {
+                    String path = artUri.getPath();
+                    if (path != null) {
+                        java.io.File f = new java.io.File(path);
+                        if (f.exists()) {
+                            cacheKey = artUriString + "|" + f.length() + "|" + f.lastModified();
+                        } else {
+                            return null;
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+            Bitmap bitmap = artBitmapCache.get(cacheKey);
+            if (bitmap != null) return bitmap;
             FileDescriptor fileDescriptor = null;
             if (usesContentScheme) {
                 try {
@@ -239,7 +257,9 @@ public class AudioService extends MediaBrowserServiceCompat {
                     }
                 }
             }
-            artBitmapCache.put(artUriString, bitmap);
+            // 空 bitmap（解码失败/文件缺失）不进缓存：LruCache.sizeOf 会对 null
+            // 调 getByteCount() 崩溃，且失败结果不得污染后续好文件的解码。
+            if (bitmap != null) artBitmapCache.put(cacheKey, bitmap);
             return bitmap;
         } catch (Exception e) {
             e.printStackTrace();
@@ -595,7 +615,7 @@ public class AudioService extends MediaBrowserServiceCompat {
         }
 
         if (oldProcessingState != AudioProcessingState.idle && processingState == AudioProcessingState.idle) {
-            // TODO: Handle completed state as well?
+            // 待办: Handle completed state as well?
             stop();
         } else if (processingState != AudioProcessingState.idle && notificationChanged) {
             updateNotification();
@@ -664,7 +684,7 @@ public class AudioService extends MediaBrowserServiceCompat {
         }
         if (config.androidNotificationClickStartsActivity)
             builder.setContentIntent(mediaSession.getController().getSessionActivity());
-        // TODO: Look at setColorized
+        // 待办: Look at setColorized
         if (config.notificationColor != -1)
             builder.setColor(config.notificationColor);
         for (NotificationCompat.Action action : nativeActions) {
@@ -984,7 +1004,7 @@ public class AudioService extends MediaBrowserServiceCompat {
         @Override
         public boolean onMediaButtonEvent(Intent mediaButtonEvent) {
             if (listener == null) return false;
-            // TODO: use typesafe version once SDK 33 is released.
+            // 待办: use typesafe version once SDK 33 is released.
             @SuppressWarnings("deprecation")
             final KeyEvent event = (KeyEvent)mediaButtonEvent.getExtras().getParcelable(Intent.EXTRA_KEY_EVENT);
             if (event.getAction() == KeyEvent.ACTION_DOWN) {

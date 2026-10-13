@@ -31,17 +31,20 @@ List<String> siblingImageCandidates(String ref) {
 /// 只接受**完整**的图片字节。
 ///
 /// [totalLength] 是资源的真实总长度（[OpenedStream.totalLength]，未知传 null）。
-/// 返回 false 的两种情况：
+/// 返回 false 的三种情况：
 /// - 读到的字节连图片签名都不像（不是图片，或被截断在签名之前）；
-/// - 读到的字节**少于真实总长度**（服务端/上限把图截断了）。
+/// - 读到的字节**少于真实总长度**（服务端/上限把图截断了）；
+/// - 图片尾缺失（轻量完整性 [isCompleteImageBytes] 不通过）：流提前断开时
+///   `totalLength` 可能为 null（WebDAV 无 Content-Range），此时靠尾判拦截半图。
 ///
-/// 第二条是关键：只看前 12 字节签名的话，一张 20MB 的图被 8MB 上限截断后照样
+/// 第三条是关键：只看前 12 字节签名的话，一张 20MB 的图被 8MB 上限截断后照样
 /// 通过校验并落盘，Android `ImageDecoder` 解码失败 → 界面上一张封面都没有，而且
 /// 这行已被标成「已读」，再也不会重试。宁可判定「这张图太大/读不全」也不要写坏
 /// 缓存。
 bool isImageBytes(List<int> bytes, {int? totalLength}) {
   if (bytes.length < 12 || !looksLikeImageBytes(bytes)) return false;
   if (totalLength != null && totalLength > bytes.length) return false;
+  if (!isCompleteImageBytes(bytes)) return false;
   return true;
 }
 

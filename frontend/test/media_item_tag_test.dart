@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:selfmusic/models/song.dart';
@@ -30,18 +32,28 @@ Song _song({
 
 void main() {
   test('mediaItemOf：字段齐备且 id 唯一', () {
-    final a = PlayerProvider.mediaItemOf(_song());
-    final b = PlayerProvider.mediaItemOf(_song(title: '退后'));
+    // 问题2：悬空封面路径归一为 null，存在文件才发 file://。用真实临时文件。
+    final tmp = File(
+        '${Directory.systemTemp.createTempSync('media_item_tag').path}/1.jpg')
+      ..writeAsBytesSync([1, 2, 3]);
+    final a = PlayerProvider.mediaItemOf(_song(coverPath: tmp.path));
+    final b =
+        PlayerProvider.mediaItemOf(_song(title: '退后', coverPath: tmp.path));
 
     expect(a.id, 'webdav:nas:music/01.mp3');
     expect(a.title, '夜曲');
     expect(a.album, '十一月的萧邦');
     expect(a.artist, '周杰伦');
-    expect(a.artUri, Uri.file('/data/cover/1.jpg'));
+    expect(a.artUri, Uri.file(tmp.path));
 
     // 同一首歌不同标题：id 必须一致（通知栏按 id 认同一首歌，不能换歌就变 id）。
     expect(b.id, a.id);
     expect(b.title, '退后');
+  });
+
+  test('mediaItemOf：悬空封面路径归一为 null（问题2：不清旧图根因）', () {
+    final item = PlayerProvider.mediaItemOf(_song(coverPath: '/data/cover/不存在.jpg'));
+    expect(item.artUri, isNull);
   });
 
   test('mediaItemOf：缺元数据时不至于空标题（通知栏空行）', () {

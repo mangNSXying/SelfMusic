@@ -354,20 +354,35 @@ class LocalIndex {
   }
 
   /// 把嵌入封面包装成可跨源复用的落盘（`covers/<md5(ref)>.jpg`），返回路径或 null。
-  /// 仅接受图片签名通过的字节（防止描述残留/URL 等脏数据落盘致解码报错）。
-  /// 幂等：已有同尺寸封面则跳过重写（启动期因此免去大量无谓写盘）。
+  /// 仅接受轻量完整性通过的字节（问题1：只验头会把半图落盘且标已读）。
+  /// 幂等：已有同尺寸**且完整**封面则跳过重写（启动期因此免去大量无谓写盘）；
+  /// 同尺寸但现文件截断时覆盖重写，让好图能替换旧半图。
+  /// 原子落盘：先写 tmp 再 rename，避免崩溃/断电留下半文件。
   String? persistCover(Uint8List cover, String ref) {
-    if (cover.isEmpty || !looksLikeImageBytes(cover)) return null;
+    if (cover.isEmpty || !isCompleteImageBytes(cover)) return null;
     try {
       final dir = p.join(_dir!, 'covers');
       Directory(dir).createSync(recursive: true);
       final h = md5.convert(utf8.encode(ref)).toString();
       final filePath = p.join(dir, '$h.jpg');
       final f = File(filePath);
-      if (f.existsSync() && f.lengthSync() == cover.length) return filePath;
+      if (f.existsSync() &&
+          f.lengthSync() == cover.length &&
+          _existingCoverComplete(f)) {
+        return filePath;
+      }
       // 覆盖写新封面：旧缩略图作废删除，随后由 ensureCoverThumb 重新生成。
       deleteCoverThumb(filePath);
-      f.writeAsBytesSync(cover, flush: true);
+      final tmp = File('$filePath.tmp');
+      try {
+        tmp.writeAsBytesSync(cover, flush: true);
+        tmp.renameSync(filePath);
+      } catch (_) {
+        try {
+          if (tmp.existsSync()) tmp.deleteSync();
+        } catch (_) {}
+        rethrow;
+      }
       return filePath;
     } catch (_) {
       return null;
@@ -377,10 +392,10 @@ class LocalIndex {
   /// [persistCover] 的**切片让出版**（主线程长同步块治理 R-1 / FR-001）：封面字节的
   /// md5 哈希与落盘分片进行、片间 [yieldTo] 让出事件循环，避免大内嵌封面（可达
   /// [kMetaRegionCapBytes]）在主线程形成长同步块。语义与 [persistCover] 完全一致：
-  /// 签名校验 / 幂等跳过（同尺寸已存在）/ 旧缩略图作废 / 返回路径或 null。
+  /// 完整性校验 / 幂等跳过（同尺寸且完整才跳）/ 旧缩略图作废 / 原子落盘 / 返回路径或 null。
   Future<String?> persistCoverChunked(Uint8List cover, String ref,
       {ChunkYield? yieldTo}) async {
-    if (cover.isEmpty || !looksLikeImageBytes(cover)) return null;
+    if (cover.isEmpty || !isCompleteImageBytes(cover)) return null;
     final nextTick = yieldTo ?? yieldToEventLoop;
     try {
       final dir = p.join(_dir!, 'covers');
@@ -388,13 +403,81 @@ class LocalIndex {
       final h = await _md5HexChunked(cover, nextTick);
       final filePath = p.join(dir, '$h.jpg');
       final f = File(filePath);
-      if (f.existsSync() && f.lengthSync() == cover.length) return filePath;
+      if (f.existsSync() &&
+          f.lengthSync() == cover.length &&
+          _existingCoverComplete(f)) {
+        return filePath;
+      }
       // 覆盖写新封面：旧缩略图作废删除，随后由 ensureCoverThumb 重新生成。
       deleteCoverThumb(filePath);
-      await _writeBytesChunked(f, cover, nextTick);
+      final tmp = File('$filePath.tmp');
+      try {
+        await _writeBytesChunked(tmp, cover, nextTick);
+        tmp.renameSync(filePath);
+      } catch (_) {
+        try {
+          if (tmp.existsSync()) tmp.deleteSync();
+        } catch (_) {}
+        rethrow;
+      }
       return filePath;
     } catch (_) {
       return null;
+    }
+  }
+
+  /// 现存封面文件是否完整（同尺寸幂等跳过前用）：只读头 12B + 尾 4B，
+  /// 不整文件读入内存。判不完整时返回 false，调用方覆盖重写。
+  bool _existingCoverComplete(File f) {
+    try {
+      final len = f.lengthSync();
+      if (len < 12) return false;
+      final raf = f.openSync(mode: FileMode.read);
+      try {
+        final head = raf.readSync(12);
+        if (!looksLikeImageBytes(head)) return false;
+        // JPEG：尾2B须为 FFD9。
+        if (head[0] == 0xFF && head[1] == 0xD8) {
+          raf.setPositionSync(len - 2);
+          final tail = raf.readSync(2);
+          return tail.length == 2 && tail[0] == 0xFF && tail[1] == 0xD9;
+        }
+        // PNG：尾4B须为 AE426082。
+        if (head[0] == 0x89 && head[1] == 0x50) {
+          raf.setPositionSync(len - 4);
+          final tail = raf.readSync(4);
+          return tail.length == 4 &&
+              tail[0] == 0xAE &&
+              tail[1] == 0x42 &&
+              tail[2] == 0x60 &&
+              tail[3] == 0x82;
+        }
+        // GIF：尾字节 3B。
+        if (head[0] == 0x47 && head[1] == 0x49) {
+          raf.setPositionSync(len - 1);
+          final tail = raf.readSync(1);
+          return tail.length == 1 && tail[0] == 0x3B;
+        }
+        // BMP：声明大小须等于实际（0 无法校验按通过）。
+        if (head[0] == 0x42 && head[1] == 0x4D) {
+          final declared =
+              head[2] | (head[3] << 8) | (head[4] << 16) | (head[5] << 24);
+          if (declared == 0) return true;
+          return declared == len;
+        }
+        // WEBP：RIFF+8 须等于实际（0 按通过）。
+        if (head[0] == 0x52 && head[1] == 0x49) {
+          final riff =
+              head[4] | (head[5] << 8) | (head[6] << 16) | (head[7] << 24);
+          if (riff == 0) return true;
+          return riff + 8 == len;
+        }
+        return true; // ftyp：无廉价尾判
+      } finally {
+        raf.closeSync();
+      }
+    } catch (_) {
+      return false;
     }
   }
 
@@ -424,10 +507,12 @@ class LocalIndex {
     return [for (final r in rs) r['cover_path'] as String];
   }
 
-  /// 清理历史无效封面（旧解析缺陷曾把描述残留/URL 写盘，Android 解码器会刷错误日志）：
-  /// 删除签名不符的封面文件，并把引用它们的歌标为未读，让补读用修复后的解析重取。
+  /// 清理历史无效封面（旧解析缺陷曾把描述残留/URL 写盘，Android 解码器会刷错误日志；
+  /// 问题1的半图：只验头落盘的截断 JPEG/PNG，尾判不通过）：
+  /// 删除无效封面文件，并把引用它们的歌标为未读（`cover_path=NULL, meta_read=0`），
+  /// 让补读用修复后的解析重取。每次启动都跑，自动清理存量半图。
   ///
-  /// 目录遍历与逐文件读签名（同步 IO，封面目录可能上万文件）放后台 isolate；
+  /// 目录遍历与逐文件校验（同步 IO，封面目录可能上万文件）放后台 isolate；
   /// 原来在主 isolate 分块让出事件循环仍会穿插卡 UI。ohos 无子 isolate 退化为内联。
   Future<int> cleanupInvalidCovers() async {
     final root = _dir;
@@ -2928,8 +3013,10 @@ List<Artist> artistGroupsOf(
           minDurationSec: minDurationSec, minSizeBytes: minSizeBytes),
     ];
 
-/// 收集签名不符的封面文件并删除，返回其路径列表（DB 引用由调用方标记）。
-/// 同步 IO，供后台 isolate 调用；签名判断见 `looksLikeImageBytes`。
+/// 收集无效封面文件并删除，返回其路径列表（DB 引用由调用方标记）。
+/// 无效含两种：签名不符（旧脏数据）与**截断半图**（问题1：只验头落盘的
+/// JPEG 头+部分 MCU，轻量尾判 [isCompleteImageBytes] 不通过）。
+/// 同步 IO，供后台 isolate 调用；每次启动都跑（自动清理存量半图并重标未读）。
 List<String> collectInvalidCoverPaths(String coversDirPath) {
   final dir = Directory(coversDirPath);
   if (!dir.existsSync()) return const [];
@@ -2939,11 +3026,16 @@ List<String> collectInvalidCoverPaths(String coversDirPath) {
     if (f is! File) continue;
     try {
       // 跳过刚落盘的文件，避免与正在进行的扫描/补读写盘竞争。
+      // 原子落盘的 tmp 残留（崩溃中断）超 5 分钟一并清理（无 DB 引用，只删文件）。
       if (now.difference(f.statSync().modified).inMinutes < 5) continue;
-      final raf = f.openSync();
-      final sig = raf.readSync(16);
-      raf.closeSync();
-      if (!looksLikeImageBytes(sig)) {
+      if (f.path.endsWith('.tmp')) {
+        try {
+          f.deleteSync();
+        } catch (_) {}
+        continue;
+      }
+      final bytes = f.readAsBytesSync();
+      if (!isCompleteImageBytes(bytes)) {
         f.deleteSync();
         out.add(f.path);
       }

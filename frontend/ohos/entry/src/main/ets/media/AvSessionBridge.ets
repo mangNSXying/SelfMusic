@@ -281,6 +281,10 @@ export default class AvSessionBridge implements MethodCallHandler {
   /**
    * 封面异步补推（两段式第二段）。同曲去重；快速切歌用票据竞态淘汰过期
    * 解码；任何失败仅记日志——封面不应当有能力影响卡片与播放。
+   *
+   * 问题2修复：无图/解码失败必须显式清系统侧封面（二次 setAVMetadata），
+   * 仅靠“省略 mediaImage”系统会保留上一首；且空分支必须递增 coverJob，
+   * 否则上一首在飞的解码完成后会把旧图盖到新曲上。
    */
   private async updateCover(call: MethodCall): Promise<void> {
     const path = AvSessionBridge.argString(call, 'coverPath');
@@ -289,10 +293,19 @@ export default class AvSessionBridge implements MethodCallHandler {
       return;
     }
     if (path == null || path === '') {
-      // 无封面曲目：释放持有的 PixelMap；后续元数据不含 mediaImage，封面
-      // 由系统回落（是否立即回落由系统决定，不影响功能）。
+      // 无封面曲目：作废在飞解码、释放本地引用，并显式下发无图元数据清系统侧。
+      this.coverJob++;
       this.lastCoverPath = null;
       this.releaseCover();
+      try {
+        const metadata = this.buildMetadata(call);
+        (metadata as unknown as Record<string, unknown>).mediaImage = null;
+        await session.setAVMetadata(metadata);
+        Log.i(TAG, '无封面已清图');
+      } catch (err) {
+        const e = err as BusinessError;
+        Log.w(TAG, `清图失败（忽略）：${e.code} ${e.message}`);
+      }
       return;
     }
     if (path === this.lastCoverPath && this.currentCover != null) {
@@ -317,6 +330,20 @@ export default class AvSessionBridge implements MethodCallHandler {
     } catch (err) {
       const e = err as BusinessError;
       Log.w(TAG, `封面补推失败（忽略）：${e.code} ${e.message}`);
+      // 解码失败同样清图，避免残留上一首（如下一首封面文件损坏/半图残留）。
+      this.lastCoverPath = null;
+      this.releaseCover();
+      try {
+        const fallback = this.buildMetadata(call);
+        (fallback as unknown as Record<string, unknown>).mediaImage = null;
+        const cur = this.session;
+        if (job === this.coverJob && cur === session) {
+          await cur.setAVMetadata(fallback);
+        }
+      } catch (clearErr) {
+        const ce = clearErr as BusinessError;
+        Log.w(TAG, `失败清图失败（忽略）：${ce.code} ${ce.message}`);
+      }
     }
   }
 

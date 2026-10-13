@@ -88,16 +88,27 @@ class SelfMusicAudioHandler extends BaseAudioHandler {
   );
 
   /// 从 provider 当前状态同步通知栏 / 媒体会话。
+  ///
+  /// 问题2修复：同曲晚到封面（补读在切歌后才落盘）也要重推 mediaItem，
+  /// 否则无图→有图不换图；`mediaItemOf` 已把悬空路径归一为 null，
+  /// 此处按 artUri/标题等变化检出，变化即重推，原生侧无图时走清图分支。
   void sync() {
     final p = _player;
     if (p == null) return;
     final s = p.current;
     if (s != null) {
       final id = _songId(s);
+      final next = PlayerProvider.mediaItemOf(s,
+          title: p.displayTitle(s), duration: p.duration);
       final cur = mediaItem.valueOrNull;
-      if (cur == null || cur.id != id) {
-        mediaItem.add(PlayerProvider.mediaItemOf(s,
-            title: p.displayTitle(s), duration: p.duration));
+      if (cur == null ||
+          cur.id != id ||
+          cur.artUri?.toString() != next.artUri?.toString() ||
+          cur.title != next.title ||
+          cur.album != next.album ||
+          cur.artist != next.artist ||
+          cur.duration != next.duration) {
+        mediaItem.add(next);
       }
     }
     final duration = p.duration;

@@ -378,11 +378,15 @@ void main() {
       // 宿主（Windows）非 'ohos'：置测试开关让 unawaited 的
       // ensureCoverThumb 走原生桥分支（plan.md R-7）。
       forceNativeThumbInTests = true;
+      // 缩略图是纯优化且有压缩总闸：默认关闭时补读不等它也不调桥，
+      // 本组断言桥行为，需显式打开（用后复位，避免污染其他用例）。
+      setCoverThumbCompressionEnabled(true);
       calls.clear();
     });
 
     tearDown(() {
       forceNativeThumbInTests = false;
+      setCoverThumbCompressionEnabled(false);
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null);
     });

@@ -38,8 +38,23 @@ class _FakePathProvider extends PathProviderPlatform {
   Future<String> getApplicationCachePath() async => dir;
 }
 
-/// 带 PNG 签名的字节（签名够用即可，无需真图）。
+/// 带 PNG 签名 + IEND 尾的完整字节（轻量完整性校验可通过）。
 Uint8List pngBytes(int totalBytes) {
+  final b = Uint8List(totalBytes);
+  b.setAll(0, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+  for (var i = 8; i < totalBytes; i++) {
+    b[i] = 0x41;
+  }
+  // IEND 块尾（12B）：00 00 00 00 49 45 4E 44 AE 42 60 82。
+  if (totalBytes >= 12) {
+    b.setAll(totalBytes - 12,
+        [0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82]);
+  }
+  return b;
+}
+
+/// 只有头签名、无尾的半图（断流产物：totalLength 即使一致也要拒收）。
+Uint8List truncatedPngBytes(int totalBytes) {
   final b = Uint8List(totalBytes);
   b.setAll(0, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
   for (var i = 8; i < totalBytes; i++) {
@@ -116,6 +131,12 @@ void main() {
 
     test('短于 12 字节 → 拒绝', () {
       expect(isImageBytes([0x89, 0x50, 0x4E, 0x47], totalLength: 4), isFalse);
+    });
+
+    test('总长一致但缺尾（断流半图，totalLength 为 null 也拒）→ 拒绝', () {
+      // 问题1：流提前断开时 totalLength 可能为 null，只能靠尾判拦截。
+      expect(isImageBytes(truncatedPngBytes(4096), totalLength: 4096), isFalse);
+      expect(isImageBytes(truncatedPngBytes(4096)), isFalse);
     });
   });
 

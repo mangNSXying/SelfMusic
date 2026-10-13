@@ -605,7 +605,7 @@ Future<void> _finalizePendingCoverChunked(AudioMeta meta, ChunkYield yieldTo) as
 void _applyDecodedCover(AudioMeta meta, Uint8List img) {
   if (meta.pendingCoverIsFlacPicture) {
     meta.cover = _parseFlacPicture(img);
-  } else if (looksLikeImageBytes(img)) {
+  } else if (isCompleteImageBytes(img)) {
     meta.cover = img;
   }
 }
@@ -805,7 +805,8 @@ Uint8List? _apicImage(Uint8List data) {
   }
   if (p >= data.length) return null;
   final img = Uint8List.sublistView(data, p); // 零拷贝：图片字节直接切视图
-  return looksLikeImageBytes(img) ? img : null;
+  // 轻量完整性：断流导致的半图只有头签名、尾缺失，必须拒收（否则落盘半图）。
+  return isCompleteImageBytes(img) ? img : null;
 }
 
 /// 图片字节签名校验（JPEG/PNG/GIF/BMP/WEBP/HEIF-AVIF）。
@@ -828,6 +829,57 @@ bool looksLikeImageBytes(List<int> b) {
     return true; // ftyp (HEIF/AVIF)
   }
   return false;
+}
+
+/// 轻量完整性校验（问题1修复：只验头会导致半图落盘）。
+///
+/// 在 [looksLikeImageBytes] 通过的基础上再验“尾”：
+/// - JPEG：尾 2 字节须为 EOI `FF D9`；
+/// - PNG：尾 4 字节须为 IEND CRC `AE 42 60 82`；
+/// - GIF：尾字节须为 `3B`；
+/// - BMP：头声明大小须等于实际长度（声明为 0 时无法校验，按通过）；
+/// - WEBP：RIFF 声明大小 +8 须等于实际长度（声明为 0 时按通过）；
+/// - ftyp（HEIF/AVIF）：无廉价尾判，按头通过。
+///
+/// 故意不做全图解码（CPU 开销大）：断流/截断的半图尾必然缺失，轻量尾判即可
+/// 拦截；误杀（尾部带填充的罕见合法图）宁可当“读不全”重试，也不写坏缓存。
+bool isCompleteImageBytes(List<int> b) {
+  if (!looksLikeImageBytes(b)) return false;
+  if (b[0] == 0xFF && b[1] == 0xD8) {
+    // JPEG：EOI 收尾。
+    return b.length >= 2 &&
+        b[b.length - 2] == 0xFF &&
+        b[b.length - 1] == 0xD9;
+  }
+  if (b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) {
+    // PNG：IEND 块尾。
+    final n = b.length;
+    return n >= 12 &&
+        b[n - 4] == 0xAE &&
+        b[n - 3] == 0x42 &&
+        b[n - 2] == 0x60 &&
+        b[n - 1] == 0x82;
+  }
+  if (b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46) {
+    // GIF：trailer 0x3B 收尾。
+    return b[b.length - 1] == 0x3B;
+  }
+  if (b[0] == 0x42 && b[1] == 0x4D) {
+    // BMP：头 2..5 为小端文件大小。
+    if (b.length < 6) return false;
+    final declared =
+        b[2] | (b[3] << 8) | (b[4] << 16) | (b[5] << 24);
+    if (declared == 0) return true;
+    return declared == b.length;
+  }
+  if (b[0] == 0x52 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x46) {
+    // WEBP：RIFF 大小 +8 == 文件长。
+    if (b.length < 12) return false;
+    final riff = b[4] | (b[5] << 8) | (b[6] << 16) | (b[7] << 24);
+    if (riff == 0) return true;
+    return riff + 8 == b.length;
+  }
+  return true; // ftyp：无廉价尾判
 }
 
 String _decodeText(List<int> bytes) {
@@ -1016,7 +1068,7 @@ Uint8List? _parseFlacPicture(Uint8List body) {
   p += 4;
   if (dataLen < 0 || p + dataLen > body.length) return null;
   final img = Uint8List.sublistView(body, p, p + dataLen); // 零拷贝
-  return looksLikeImageBytes(img) ? img : null;
+  return isCompleteImageBytes(img) ? img : null;
 }
 
 // ---------- MP4 / M4A ----------
@@ -1176,7 +1228,7 @@ void _parseMp4Ilst(Uint8List b, int start, int end, AudioMeta meta) {
         case 'covr':
           if (meta.cover == null && (dataType == 13 || dataType == 14)) {
             final img = Uint8List.sublistView(b, payloadStart, payloadEnd); // 零拷贝
-            if (looksLikeImageBytes(img)) meta.cover = img;
+            if (isCompleteImageBytes(img)) meta.cover = img;
           }
       }
     }

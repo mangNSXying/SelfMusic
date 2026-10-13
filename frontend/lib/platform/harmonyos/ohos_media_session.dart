@@ -58,6 +58,11 @@ class OhosMediaSessionBridge {
   /// 已实际推送到系统播控卡的曲目 id（连切防抖期间滞后于当前曲目）。
   String? _lastPushedAssetId;
 
+  /// 已推送的封面路径（`_metadataMap` 的 coverPath 口径，'' 表示无图）：
+  /// 同曲晚到封面（后台补读/播放补读在切歌后才落盘）靠它检出变化并补推
+  /// `updateMetadata`，否则通知栏永不刷新封面（问题2）。
+  String? _lastPushedCoverPath;
+
   /// 上次元数据推送时刻（前沿立即推的判定基准）。
   DateTime _lastMetaPush = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -104,13 +109,24 @@ class OhosMediaSessionBridge {
     if (!_started) {
       _started = true;
       _lastPushedAssetId = item.id;
+      _lastPushedCoverPath = _coverKey(s);
       _lastMetaPush = DateTime.now();
       _invoke('start', {..._metadataMap(p, s, item), ..._stateMap(p, s), 'showControls': showControls});
       return;
     }
     if (item.id == _lastPushedAssetId) {
-      // 同曲状态变化：防抖挂起时由尾沿终态推送携带最新播放态，否则立即推。
-      if (_metaTimer == null) {
+      // 同曲状态变化：封面晚到（补读在切歌后才落盘）需补推元数据清/换图
+      //（问题2：否则无图歌曲永不刷新，残留上一首图）。
+      // 防抖挂起时由尾沿终态推送携带（它重读当前曲，含最新封面），不单独推送，
+      // 避免向已拥塞的 av_session 服务追加请求。
+      final coverKey = _coverKey(s);
+      if (coverKey != _lastPushedCoverPath) {
+        if (_metaTimer == null) {
+          _pushMetadata(p, s, item);
+        }
+        // _metaTimer 非空时不更新 _lastPushedCoverPath：留给尾沿终态推送时
+        // 经 _pushMetadata 统一记录，避免终态判定误以为已推送而只推 state。
+      } else if (_metaTimer == null) {
         _invoke('updateState', _stateMap(p, s));
       }
       return;
@@ -130,7 +146,7 @@ class OhosMediaSessionBridge {
       if (pp == null || ss == null) return;
       final it = PlayerProvider.mediaItemOf(ss,
           title: pp.displayTitle(ss), duration: pp.duration);
-      if (it.id != _lastPushedAssetId) {
+      if (it.id != _lastPushedAssetId || _coverKey(ss) != _lastPushedCoverPath) {
         _pushMetadata(pp, ss, it);
       } else {
         _invoke('updateState', _stateMap(pp, ss));
@@ -138,12 +154,22 @@ class OhosMediaSessionBridge {
     });
   }
 
-  /// 推送切歌元数据+播放态（前沿/尾沿共用），并记录推送时刻。
+  /// 推送切歌元数据+播放态（前沿/尾沿/同曲封面晚到共用），并记录推送时刻。
   void _pushMetadata(PlayerProvider p, Song s, MediaItem item) {
     _lastPushedAssetId = item.id;
+    _lastPushedCoverPath = _coverKey(s);
     _lastMetaPush = DateTime.now();
     _invoke('updateMetadata', _metadataMap(p, s, item));
     _invoke('updateState', _stateMap(p, s));
+  }
+
+  /// 封面去重/变化检出口径（与 [_metadataMap] 的 coverPath 一致）：
+  /// 用展示路径（缩略图优先）比较，空表示无图。注意 [mediaItemOf] 的 artUri
+  /// 可能因悬空路径校验为 null，而此处按源 coverPath 判定，两者都为空即一致。
+  static String _coverKey(Song s) {
+    final c = s.coverPath;
+    if (c == null || c.isEmpty) return '';
+    return coverDisplayPath(c);
   }
 
   /// 元数据字典（封面走 768px 缩略图：播控卡渲染仅数百 px，原图解码+IPC
@@ -244,6 +270,7 @@ class OhosMediaSessionBridge {
     if (!_started) return;
     _started = false;
     _lastPushedAssetId = null;
+    _lastPushedCoverPath = null;
     _invoke('destroy', null);
   }
 

@@ -172,9 +172,17 @@ void _logEnrich(Song song, Stopwatch sw) {
   }
 }
 
-/// 打开 [start, start+length) 范围并读满（流长度不足时返回实际全部）。
-/// 用 [BytesBuilder] 累积：单次读取可能达到整个元数据区大小（上限
-/// [kMetaRegionCapBytes]），避免 `List<int>` 在大区间上的高额内存开销。
+/// 打开 [start, start+length) 范围并读满；**读不满即抛异常**（问题1修复）。
+///
+/// 旧实现“流长度不足时返回实际全部”：流提前断开（断流/半关闭）无异常时，
+/// 短 buf 会被当完整用 → 半图通过头校验落盘 + `enrichSong` 标已读，永不重试。
+/// 现按期望长度校验：
+/// - `song.fileSize > 0` 已知时，期望 `min(length, fileSize-start)`；
+/// - 未知时若 `opened.totalLength` 已知，按它算期望；
+/// - 都未知时无法校验（如部分源的探测请求），直接返回（下游靠
+///   [isCompleteImageBytes] 尾判拦截半图）。
+/// 抛异常后调用方（`_enrichViaDart` → `_enrichLazily`/后台补读）按“读失败”处理：
+/// 不标已读，下次播放/补读重试。
 ///
 /// **ohos + SFTP 让出节拍**：dartssh2 的纯 Dart AEAD 解密运行在 UI isolate，
 /// 整段下载会把主线程连续占满（`sftp_direct_source.open` 已限「单请求在飞 +
@@ -193,6 +201,24 @@ Future<Uint8List> _readRange(
     if (pace && buf.length >= _paceFirstBytes) {
       await Future<void>.delayed(_paceSleep);
     }
+  }
+  final got = buf.length;
+  // 期望长度：文件尾截断请求时按剩余算（如 start+length 越过 EOF）。
+  int? expected;
+  final fs = song.fileSize;
+  if (fs > 0 && start < fs) {
+    final remaining = fs - start;
+    expected = remaining < length ? remaining : length;
+  } else if (fs <= 0) {
+    final total = opened.totalLength;
+    if (total != null && total > start) {
+      final remaining = total - start;
+      expected = remaining < length ? remaining : length;
+    }
+  }
+  if (expected != null && got < expected) {
+    throw StateError(
+        'range 读取截断 ${song.sourceKey}/${song.sourceRef} [$start,${start + length}) 期望 $expected 实际 $got（断流，不标已读待重试）');
   }
   return buf.takeBytes();
 }
