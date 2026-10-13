@@ -240,9 +240,12 @@ class SongWeightStore {
   }
 
   /// 补推存量权重（配对前数据无事件用）：为非默认 play_meta 行补 song.state
-  /// 绝对态事件（streak/factor/frozen/favorite 全量，服务端 LWW）。
+  /// 绝对态事件（streak/factor/frozen/favorite 全量）。
   /// source_key=='server' 的行走常规 outbox（恒进事件），跳过；
   /// 门控与 [_emit] 一致。返回补推歌曲数。
+  ///
+  /// 事件带 `backfill:true`：服务端对补录事件“只建行、不赢现行行”
+  /// （首配空库照常建；重配旧设备不再冲掉现行数据，判输回 correction 自纠）。
   Future<int> backfill() async {
     var n = 0;
     for (final m in index.listDirtyPlayMeta()) {
@@ -252,6 +255,7 @@ class SongWeightStore {
       if (!(serverAvailable?.call() ?? false)) continue;
       final sourceId = index.sourceUuidOf(m.sourceKey);
       await index.enqueueOutbox(SyncEventTypes.songState, {
+        'backfill': true,
         'source': protocol,
         'source_ref': m.songRef,
         if (sourceId != null) 'source_id': sourceId,

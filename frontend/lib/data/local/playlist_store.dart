@@ -72,9 +72,10 @@ class PlaylistStore {
         uuid, s, _sortOrderOf(playlistId, s), index.sourceUuidOf(s.sourceKey));
   }
 
-  Future<void> _enqueueItemAdd(
-      String playlistUuid, Song s, int sortOrder, String? sourceId) async {
+  Future<void> _enqueueItemAdd(String playlistUuid, Song s, int sortOrder,
+      String? sourceId, {bool backfill = false}) async {
     await index.enqueueOutbox(SyncEventTypes.playlistItemAdd, {
+      if (backfill) 'backfill': true,
       'playlist_uuid': playlistUuid,
       'source': s.source,
       'source_ref': s.sourceRef,
@@ -89,14 +90,18 @@ class PlaylistStore {
 
   /// 补推存量歌单（配对前建单无事件用）：为本地已有歌单补 playlist.create，
   /// 为其中非 'server' 条目（直连歌，配对前门控跳过未进事件）补 item_add。
-  /// 'server' 行走常规 outbox（恒进事件），跳过。语义以本机为准
-  ///（occurred_at=now，服务端 LWW 胜出）。返回 {playlists, items}。
+  /// 'server' 行走常规 outbox（恒进事件），跳过。返回 {playlists, items}。
+  ///
+  /// 事件带 `backfill:true`：服务端对补录事件“只建行、不赢现行行”
+  /// （create 已存在判输；item_add 已存在条目不覆快照。首配空库照常建；
+  /// 重配旧设备不再冲掉现行数据，判输回 correction 自纠）。
   Future<Map<String, int>> backfill() async {
     var playlists = 0;
     var items = 0;
     for (final p in index.listPlaylists()) {
       final uuid = await index.ensurePlaylistUuid(p.id);
       await index.enqueueOutbox(SyncEventTypes.playlistCreate, {
+        'backfill': true,
         'client_uuid': uuid,
         'name': p.name,
         if (p.description != null) 'description': p.description,
@@ -107,7 +112,8 @@ class PlaylistStore {
         final s = songOf(it);
         if (!_syncable(s)) continue;
         await _enqueueItemAdd(
-            uuid, s, it.sortOrder, index.sourceUuidOf(s.sourceKey));
+            uuid, s, it.sortOrder, index.sourceUuidOf(s.sourceKey),
+            backfill: true);
         items++;
       }
     }

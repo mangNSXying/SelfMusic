@@ -1230,12 +1230,36 @@ class LocalIndex {
     return '${DateTime.now().microsecondsSinceEpoch.toRadixString(16)}-${tail.substring(0, 12)}';
   }
 
+  /// 时钟偏移（服务端回包 `server_time` 校准，见 [setClockSkew]）：
+  /// 出队时间戳按此修正，治设备墙钟偏移导致的服务端 LWW 误判。
+  /// 内存态（重启归零，下次同步成功后重建；旧服务端无该字段时恒为零）。
+  Duration _clockSkew = Duration.zero;
+
+  /// 上次入队时间戳（单调 guard：修正值回跳时沿用上次 +1ms，
+  /// 防 skew 抖动导致自家事件乱序）。
+  DateTime? _lastOccurredAt;
+
+  /// 更新时钟偏移（SyncEngine 每次 push/pull 成功后调用）。
+  void setClockSkew(Duration skew) {
+    _clockSkew = skew;
+  }
+
+  /// 当前时钟偏移（测试用）。
+  Duration get clockSkewForTest => _clockSkew;
+
   /// 本地变更入队（uuid 同步生成，落库进写隔离后返回）。
+  /// `occurred_at` 按时钟偏移修正后保证本机单调递增。
   /// 返回 event_uuid。
   Future<String> enqueueOutbox(
       String type, Map<String, dynamic> payload) async {
     final uuid = newEventUuid();
-    final now = DateTime.now().toIso8601String();
+    var ts = DateTime.now().add(_clockSkew);
+    final last = _lastOccurredAt;
+    if (last != null && !ts.isAfter(last)) {
+      ts = last.add(const Duration(milliseconds: 1));
+    }
+    _lastOccurredAt = ts;
+    final now = ts.toIso8601String();
     await _writer!.exec(
         'INSERT INTO weight_outbox(event_uuid, type, payload, occurred_at, acked, created_at) '
         'VALUES(?,?,?,?,0,?)',

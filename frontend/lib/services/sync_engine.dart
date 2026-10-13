@@ -285,6 +285,7 @@ class SyncEngine {
         }
     ]);
     if (data == null) throw Exception('push 无响应');
+    _noteServerTime(data['server_time']);
     final applied = _strList(data['applied']);
     final duplicates = _strList(data['duplicates']);
     await index.deleteOutbox([...applied, ...duplicates]);
@@ -371,6 +372,7 @@ class SyncEngine {
       final data = await api.syncPull(cursor);
       final fetchMs = swFetch.elapsedMilliseconds;
       if (data == null) throw Exception('pull 无响应');
+      _noteServerTime(data['server_time']);
       final rawSongs = data['songs'] is List ? (data['songs'] as List).length : 0;
       final rawSources =
           data['sources'] is List ? (data['sources'] as List).length : 0;
@@ -479,6 +481,16 @@ class SyncEngine {
     _flushSources();
     perfLog('pull.total',
         '${swAll.elapsedMilliseconds}ms pages=$pages cursor=$cursor guardedSongs=$guardedSongs playlists=$guardedPlaylists sources=$guardedSources states=$guardedStates');
+  }
+
+  /// 服务端时钟校准：push/pull 回包的 `server_time` 与本地钟的差值即偏移，
+  /// 交给 outbox 入队口修正后续事件时间戳（旧服务端无该字段则忽略，
+  /// 退化为本地钟）。解析失败同样忽略，不阻塞同步。
+  void _noteServerTime(Object? v) {
+    if (v is! String || v.isEmpty) return;
+    final serverNow = DateTime.tryParse(v);
+    if (serverNow == null) return;
+    index.setClockSkew(serverNow.difference(DateTime.now()));
   }
 
   /// 待推实体 guard（本机优先）：从 outbox 按服务端同规则算实体键。

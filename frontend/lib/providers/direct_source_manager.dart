@@ -316,19 +316,21 @@ class DirectSourceManager extends ChangeNotifier {
     unawaited(_bootstrapSourceSync());
   }
 
-  /// 存量远端类型源首次接入同步时补 uuid + source.create。
+  /// 存量远端类型源首次接入同步时补 uuid + source.create（补录标记：
+  /// 服务端只建行、不赢现行同址行）。
   Future<void> _bootstrapSourceSync() async {
     if (!isServerAvailable) return;
     for (final r in index.listSources()) {
       if (!isSyncableKind(r.kind)) continue;
       if (index.sourceUuidOf(r.key) != null) continue;
       await index.ensureSourceUuid(r.key);
-      await _emitSource(SyncEventTypes.sourceCreate, r.key);
+      await _emitSource(SyncEventTypes.sourceCreate, r.key, backfill: true);
     }
   }
 
   /// 远端类型源的同步事件（本地文件夹源各机独立；未连服务器不发）。
-  Future<void> _emitSource(String type, String key) async {
+  Future<void> _emitSource(String type, String key,
+      {bool backfill = false}) async {
     if (!isServerAvailable) return;
     final row = index.getSource(key);
     if (row == null || !isSyncableKind(row.kind)) return;
@@ -351,6 +353,7 @@ class DirectSourceManager extends ChangeNotifier {
       ];
     }
     await index.enqueueOutbox(type, {
+      if (backfill) 'backfill': true,
       'client_uuid': uuid,
       'kind': row.kind,
       if (row.name.isNotEmpty) 'name': row.name,

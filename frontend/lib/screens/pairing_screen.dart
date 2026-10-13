@@ -228,11 +228,13 @@ class _PairingScreenState extends State<PairingScreen> {
                 onPressed: auth.loading
                     ? null
                     :                     () async {
+                        // 配对前是否已有令牌：有=重新配对（本机可能是旧数据），无=首次配对。
+                        final wasPaired = auth.isPaired;
                         final ok = await auth.pair(_tokenCtrl.text.trim(), _nameCtrl.text.trim());
                         if (!mounted) return;
                         if (ok && context.mounted) {
                           AppToast.show('配对成功', isError: false);
-                          await _askPushExisting(context);
+                          await _askPushExisting(context, wasPaired: wasPaired);
                         }
                       },
                 child: auth.loading ? const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2)) : Text(auth.isPaired ? '重新配对' : '配对'),
@@ -248,22 +250,39 @@ class _PairingScreenState extends State<PairingScreen> {
   }
 
   /// 配对成功后询问是否推送配对前数据（首配/重配都问）：
-  /// 选“是”→ 补推本机存量歌单与权重（以本机为准），事件进 outbox 后自动上推；
+  /// 选“是”→ 补推本机存量歌单与权重（补录事件只补服务端没有的数据，
+  /// 现行数据不受影响），事件进 outbox 后自动上推；
   /// 选“否”→ 不推（本次配对不再问；重配会再问）。
-  Future<void> _askPushExisting(BuildContext context) async {
+  /// 重配（此前已配对过）默认“否”：本机可能是长期未同步的旧数据，
+  /// 即使补录不覆盖现行行，不推也更稳。
+  Future<void> _askPushExisting(BuildContext context,
+      {required bool wasPaired}) async {
     final push = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('推送配对前的数据？'),
-        content: const Text(
-            '将本机在配对前创建的歌单、收藏与播放权重推送到服务端吗？首台设备建议选“是”，其它设备随后会同步到这些数据（以本机为准）。'),
+        content: Text(
+          wasPaired
+              ? '将本机在配对前创建的歌单、收藏与播放权重推送到服务端吗？这是重新配对：若本机数据比其它设备旧，建议选“否”（只补服务端没有的数据，现行数据不受影响，但不推更稳）。'
+              : '将本机在配对前创建的歌单、收藏与播放权重推送到服务端吗？首台设备建议选“是”，其它设备随后会同步到这些数据（只补服务端没有的数据）。',
+        ),
         actions: [
-          TextButton(
-              onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text('否')),
-          FilledButton(
-              onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text('是')),
+          if (wasPaired)
+            FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('否')),
+          if (wasPaired)
+            TextButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: const Text('是')),
+          if (!wasPaired)
+            TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('否')),
+          if (!wasPaired)
+            FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: const Text('是')),
         ],
       ),
     );

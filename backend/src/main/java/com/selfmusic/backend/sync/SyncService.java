@@ -161,12 +161,23 @@ public class SyncService {
     }
 
     /**
+     * 补录标记：配对前存量补推事件（客户端 backfill）。补录事件“只建行、
+     * 不赢现行行”——首配空库照常建；重配旧设备不再冲掉现行数据，判输回
+     * correction 自纠。纯函数，可单测。
+     */
+    public static boolean isBackfill(JsonNode payload) {
+        return payload != null && payload.path("backfill").asBoolean(false);
+    }
+
+    /**
      * 权重绝对态（song.state，补推/纠偏用）：行级 LWW，判输返回快照纠偏。
      * 载荷缺键保持行上原值；全键齐备时即整行覆盖。
      * 例外：累计播放时长是单调量，取 `max(行值, 载荷值)`（与客户端落库同口径），
      * 旧快照晚到不把累计值写小。
+     * 补录事件行已存在（last_event_at 非空）即判输：只补没有的行。
      */
     private Object applySongState(PushEvent ev, SongState song) {
+        if (isBackfill(ev.payload()) && song.getLastEventAt() != null) return songSnapshot(song);
         if (!eventWins(ev.occurred_at(), song.getLastEventAt())) return songSnapshot(song);
         JsonNode p = ev.payload();
         if (p != null) {
@@ -435,6 +446,7 @@ public class SyncService {
      * 播放源元数据（create/update/delete）：LWW + 去重（kind+address）。
      * 名称不参与去重；配置不含密码。若事件 uuid 与既有同址源不同，回 correction
      * （携带权威 uuid），事件方据此重绑本地源标识。
+     * 补录 create 只建行、不赢现行行（同 uuid 或同址行已存在即判输回现行快照）。
      */
     private Object applySourceMeta(PushEvent ev) {
         JsonNode p = ev.payload();
@@ -459,12 +471,15 @@ public class SyncService {
             return null;
         }
 
+        final boolean backfill = isBackfill(p)
+                && SyncEventTypes.SOURCE_CREATE.equals(ev.type());
         SyncSource row = syncSourceRepository.findByClientUuid(uuid).orElse(null);
         if (row == null) {
             SyncSource same = syncSourceRepository.findByKindAndAddress(kind, address).orElse(null);
             if (same != null) {
                 // 同址去重合并：采纳既有权威 uuid，事件方收 correction 重绑。
-                if (!eventWins(ev.occurred_at(), same.getLastEventAt())) return sourceSnapshot(same);
+                // 补录只建行：同址行已存在即判输，不碰现行 name/config。
+                if (backfill || !eventWins(ev.occurred_at(), same.getLastEventAt())) return sourceSnapshot(same);
                 applySourceFields(same, p);
                 same.setLastEventAt(ev.occurred_at());
                 same.setSyncVer(nvlLong(same.getSyncVer()) + 1);
@@ -483,6 +498,8 @@ public class SyncService {
             syncSourceRepository.save(created);
             return null;
         }
+        // 补录 create 撞到同 uuid 行：只建行，已存在即判输回现行快照。
+        if (backfill) return sourceSnapshot(row);
         if (!eventWins(ev.occurred_at(), row.getLastEventAt())) return sourceSnapshot(row);
         // 地址可改：若与其它既有同址行冲突则合并（同址即同源，回 correction 重绑）。
         if (!address.equals(row.getAddress())) {
@@ -529,9 +546,12 @@ public class SyncService {
         if (SyncEventTypes.PLAYLIST_CREATE.equals(ev.type())) {
             String uuid = p == null ? null : p.path("client_uuid").asText(null);
             if (uuid == null || uuid.isBlank()) throw new BizException(40001, "client_uuid required");
-            // 幂等重试：同 uuid 已存在则按 update 走 LWW
+            // 幂等重试：同 uuid 已存在则按 update 走 LWW；
+            // 补录 create 只建行，已存在即判输回现行快照（不覆名）。
             if (playlistRepository.findByClientUuid(uuid).isPresent()) {
-                return applyPlaylistUpdate(ev, playlistRepository.findByClientUuid(uuid).orElseThrow());
+                Playlist existing = playlistRepository.findByClientUuid(uuid).orElseThrow();
+                if (isBackfill(p)) return playlistSnapshot(existing);
+                return applyPlaylistUpdate(ev, existing);
             }
             Playlist pl = new Playlist();
             pl.setClientUuid(uuid);
@@ -618,6 +638,9 @@ public class SyncService {
                                 pl.getId(), LEGACY_PREFIX + protocol, ref)
                         .orElse(null);
             }
+            // 补录 item_add 只建行：条目已存在不覆快照（不复活已删条目、不覆新标题），
+            // 直接 no-op（版本号亦不推进）。
+            if (item != null && isBackfill(p)) return;
             if (item == null) {
                 item = new PlaylistItem();
                 item.setPlaylist(pl);
@@ -776,7 +799,17 @@ public class SyncService {
         out.put("sources", sources);
         out.put("playlists", playlists);
         out.put("playstates", playstates);
+        // 时钟校准：客户端据此修正出队时间戳，治设备墙钟偏移导致的 LWW 误判。
+        out.put("server_time", serverTimeNow());
         return out;
+    }
+
+    /**
+     * 服务端当前时间（ISO-8601，客户端 `DateTime.parse` 可读）。
+     * 纯函数，可单测格式。
+     */
+    public static String serverTimeNow() {
+        return java.time.LocalDateTime.now().toString();
     }
 
     // ------------------------------------------------------------------
@@ -958,6 +991,8 @@ public class SyncService {
         out.put("duplicates", duplicates);
         out.put("rejected", rejected);
         out.put("corrections", corrections);
+        // 时钟校准：见 pull（客户端修正出队时间戳用）。
+        out.put("server_time", serverTimeNow());
         return out;
     }
 
