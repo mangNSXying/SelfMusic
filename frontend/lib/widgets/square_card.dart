@@ -15,9 +15,12 @@ class SquareCard extends StatelessWidget {
   final int titleMaxLines;
   final String? subtitle;
 
-  /// 封面文件路径；为空时显示 [fallbackIcon] 占位。
+  /// 封面文件路径；为空时显示 [fallback]（优先）或 [fallbackIcon] 占位。
   final String? coverPath;
   final IconData fallbackIcon;
+
+  /// 自定义占位（播放源类型徽标等）；为空时退回 [fallbackIcon]。
+  final Widget? fallback;
   final VoidCallback onTap;
   final VoidCallback? onLongPress;
 
@@ -40,6 +43,7 @@ class SquareCard extends StatelessWidget {
     this.subtitle,
     this.coverPath,
     this.fallbackIcon = Icons.album,
+    this.fallback,
     required this.onTap,
     this.onLongPress,
     this.cornerAction,
@@ -95,14 +99,17 @@ class SquareCard extends StatelessWidget {
                           // 缩略图 + 降解码：网格滑动不再逐卡解大图。
                           cacheWidth: decodeWidth,
                           cacheHeight: decodeWidth,
-                          errorBuilder: (_, __, ___) => Icon(fallbackIcon,
+                          errorBuilder: (_, __, ___) =>
+                              fallback ??
+                              Icon(fallbackIcon,
+                                  size: 48,
+                                  color: colorScheme.primary
+                                      .withValues(alpha: 0.6)))
+                      : fallback ??
+                          Icon(fallbackIcon,
                               size: 48,
                               color:
-                                  colorScheme.primary.withValues(alpha: 0.6)))
-                      : Icon(fallbackIcon,
-                          size: 48,
-                          color:
-                              colorScheme.primary.withValues(alpha: 0.6)),
+                                  colorScheme.primary.withValues(alpha: 0.6)),
                 ),
                 // 多选态隐藏角标菜单（避免误触），勾选框统一叠在左上角。
                 if (cornerAction != null && !selectionMode)

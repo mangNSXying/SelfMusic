@@ -880,6 +880,63 @@ class _DirectSourceTile extends StatelessWidget {
       _DirectSourceCard(sourceKey: sourceKey, plain: true);
 }
 
+/// 播放源类型图标（一类一图标）：本地=存储图标，远端=协议文字徽标。
+/// [framed] 为 true 时套 tinted 圆角徽标盒（列表行 leading 用），
+/// false 时只渲染裸图标/文字（方形卡片占位用，卡片底已自带 tint）。
+class _SourceKindIcon extends StatelessWidget {
+  final SourceKind kind;
+  final double size;
+  final bool framed;
+  const _SourceKindIcon(
+      {required this.kind, this.size = 40, this.framed = true});
+
+  @override
+  Widget build(BuildContext context) {
+    final primary = Theme.of(context).colorScheme.primary;
+    final Widget content;
+    if (kind == SourceKind.local) {
+      content = Icon(Icons.storage_outlined,
+          size: framed ? size * 0.6 : size,
+          color: primary.withValues(alpha: framed ? 1.0 : 0.6));
+    } else {
+      final label = switch (kind) {
+        SourceKind.webdav => 'WebDAV',
+        SourceKind.sftp => 'SFTP',
+        SourceKind.smb => 'SMB',
+        SourceKind.local => '',
+      };
+      content = FittedBox(
+        fit: BoxFit.scaleDown,
+        child: Text(label,
+            maxLines: 1,
+            style: TextStyle(
+                color: primary.withValues(alpha: framed ? 1.0 : 0.6),
+                fontWeight: FontWeight.w800,
+                fontSize: framed ? size * 0.3 : size * 0.42)),
+      );
+    }
+    if (!framed) {
+      return Padding(
+        padding: const EdgeInsets.all(16),
+        child: Center(child: content),
+      );
+    }
+    return Container(
+      width: size,
+      height: size,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: primary.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(size * 0.25),
+      ),
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: size * 0.1),
+        child: content,
+      ),
+    );
+  }
+}
+
 class _DirectSourceCard extends StatelessWidget {
   final String sourceKey;
 
@@ -901,8 +958,7 @@ class _DirectSourceCard extends StatelessWidget {
         isLocal || s.route == SourceRoute.direct ? '直连' : '代理';
 
     final tile = ListTile(
-      leading: Icon(isLocal ? Icons.folder : Icons.cloud,
-          color: Theme.of(context).colorScheme.primary),
+      leading: _SourceKindIcon(kind: s.kind),
       title: Text(s.name,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
@@ -923,7 +979,7 @@ class _DirectSourceCard extends StatelessWidget {
       subtitle: needsSecrets
           ? '待配置凭据 · 点击「编辑」补输后可用'
           : '$routeLabel · 已索引 $count 首',
-      fallbackIcon: isLocal ? Icons.folder : Icons.cloud,
+      fallback: _SourceKindIcon(kind: s.kind, size: 44, framed: false),
       onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
       cornerAction: _SourceMenu(sourceKey: sourceKey, direct: direct),
     );
