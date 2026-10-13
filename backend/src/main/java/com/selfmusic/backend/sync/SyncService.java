@@ -163,6 +163,8 @@ public class SyncService {
     /**
      * 权重绝对态（song.state，补推/纠偏用）：行级 LWW，判输返回快照纠偏。
      * 载荷缺键保持行上原值；全键齐备时即整行覆盖。
+     * 例外：累计播放时长是单调量，取 `max(行值, 载荷值)`（与客户端落库同口径），
+     * 旧快照晚到不把累计值写小。
      */
     private Object applySongState(PushEvent ev, SongState song) {
         if (!eventWins(ev.occurred_at(), song.getLastEventAt())) return songSnapshot(song);
@@ -173,12 +175,19 @@ public class SyncService {
             if (p.has("weight")) song.setWeight(BigDecimal.valueOf(p.path("weight").asDouble(factor(song).doubleValue())));
             if (p.has("frozen")) song.setFrozen(p.path("frozen").asBoolean(song.isFrozen()));
             if (p.has("is_favorite")) song.setFavorite(p.path("is_favorite").asBoolean(song.isFavorite()));
-            // 累计播放时长（秒）：与其它字段同样走行级 LWW（载荷缺键保持行上原值）。
-            if (p.has("play_sec")) song.setPlaySec(p.path("play_sec").asInt(nvl(song.getPlaySec())));
+            // 累计播放时长（秒）：单调合并，不随 LWW 倒退。
+            if (p.has("play_sec")) song.setPlaySec(mergePlaySec(song.getPlaySec(), p.path("play_sec").asInt()));
         }
         song.setLastEventAt(ev.occurred_at());
         songStateRepository.save(song);
         return null;
+    }
+
+    /**
+     * 累计播放时长合并：取 `max(行值, 本次值)`，null 按 0 处理。纯函数，可单测。
+     */
+    public static int mergePlaySec(Integer current, int incoming) {
+        return Math.max(current == null ? 0 : current, incoming);
     }
 
     /**

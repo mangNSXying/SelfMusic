@@ -306,7 +306,13 @@ class SelfMusicApp extends StatelessWidget {
       ..attachAppSettings(direct.settings)
       ..attachApi(api)
       ..attachServerAvailable(() => direct.isServerAvailable)
-      ..attachAudioGuard(AudioGuardPlatform.forCurrentPlatform());
+      ..attachAudioGuard(AudioGuardPlatform.forCurrentPlatform())
+      // 同步引擎钩子：实际播放态驱动后台同步门控（播放中后台仍同步），
+      // 播放/暂停/切歌后即时推一轮（单飞合并；未注入不影响播放）。
+      ..attachSyncHooks(
+        onPlayingChanged: sync.setPlaying,
+        onSyncPoke: sync.poke,
+      );
     player
       ..attachPersistence(
         index: direct.index,

@@ -77,12 +77,16 @@ void main() {
 
   tearDown(() async {
     engine.stop();
+    engine.setPlaying(false);
     SyncEngine.tickFast = savedTick;
     // 等飞行中的那一轮收尾：否则 close() 把写隔离置空后它再落库 settings 会撞
     // LocalIndex.settingsSet 里的 _writer!（被 _run 的 catch 吞成「同步失败」，
     // 顺带把退避计数推高，后续断言就不稳了）。
     try {
       await engine.syncNow();
+      // _dirty 跟进轮是 unawaited 的：再让一拍，等它跑完才 close，
+      // 否则它在 close 后读写 _writer! 报 NPE（仅日志噪音，但 deterministic）。
+      await Future<void>.delayed(const Duration(milliseconds: 100));
     } catch (_) {}
     index.close();
     if (tmp.existsSync()) tmp.deleteSync(recursive: true);
@@ -125,6 +129,67 @@ void main() {
     expect(api.pushes, greaterThan(pushesBefore),
         reason: '回前台应立刻补推积压的 outbox');
     expect(engine.isPolling, isTrue);
+  });
+
+  test('后台播放中（pause + setPlaying(true)）：继续同步', () async {
+    engine.start();
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    expect(api.pulls, greaterThan(0), reason: '前置条件：前台确实在同步');
+
+    // 退后台但仍在播放：定时器不该停（前台服务保活下网络可用）。
+    engine.pause();
+    engine.setPlaying(true);
+    expect(engine.isPolling, isTrue, reason: '播放中后台应保持轮询');
+    // 后台播放产生的新事件应被推走（用 pushes 断言：30s 拉间隔内 tick
+    // 只在有积压时才发起同步）。
+    await index.enqueueOutbox('song.state', {'a': 1});
+    final pushesBefore = api.pushes;
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    expect(api.pushes, greaterThan(pushesBefore),
+        reason: '播放中后台应继续同步（断点/权重收敛）');
+
+    // 播完/暂停：回落到停表。
+    engine.setPlaying(false);
+    expect(engine.isPolling, isFalse, reason: '后台且未播放应停表');
+    final pullsAfterStop = api.pulls;
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    expect(api.pulls, pullsAfterStop, reason: '停播后后台不再发起同步');
+  });
+
+  test('后台启动后开播（start 前已 pause + setPlaying(true)）：起表', () async {
+    engine.pause();
+    engine.start();
+    expect(engine.isPolling, isFalse, reason: '后台且未播放不应轮询');
+
+    engine.setPlaying(true);
+    expect(engine.isPolling, isTrue, reason: '后台开播应开始轮询');
+    engine.setPlaying(false);
+  });
+
+  test('poke：关键操作后即时同步一轮（合并单飞，不叠加定时器）', () async {
+    engine.start();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    final pullsBefore = api.pulls;
+    engine.poke();
+    var waited = 0;
+    while (api.pulls == pullsBefore && waited < 100) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      waited++;
+    }
+    expect(api.pulls, greaterThan(pullsBefore),
+        reason: 'poke 应立即触发一轮同步（播放/暂停/切歌）');
+    expect(engine.isPolling, isTrue);
+  });
+
+  test('setPlaying 幂等，不叠加定时器', () async {
+    engine.start();
+    engine.setPlaying(true);
+    engine.setPlaying(true);
+    expect(engine.isPolling, isTrue);
+    engine.pause();
+    expect(engine.isPolling, isTrue, reason: '播放中后台保持轮询');
+    engine.setPlaying(false);
+    expect(engine.isPolling, isFalse);
   });
 
   test('pause/resume 幂等，不叠加定时器', () async {

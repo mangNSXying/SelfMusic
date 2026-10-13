@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
+import '../data/local/sync_entity_key.dart';
 import '../utils/perf_log.dart';
 import 'api_client.dart';
 
@@ -14,8 +15,12 @@ import 'api_client.dart';
 /// 本引擎只负责把远端收敛结果搬进来、把本地变更搬出去。
 ///
 /// 触发：[start] 后 2s tick（有未确认事件立刻推；否则 30s 拉一次）+
-/// 启动/回前台/手动 [syncNow]。无 connectivity 依赖：断网时请求抛错进退避，
-/// 恢复后下一次 tick 自动追上（退避上限 30s）。
+/// 启动/回前台/手动 [syncNow]/播放操作 [poke]。无 connectivity 依赖：断网时
+/// 请求抛错进退避，恢复后下一次 tick 自动追上（退避上限 30s）。
+///
+/// 本机优先：每轮先推后拉；pull 快照命中“本地还有未推事件”的实体时跳过，
+/// 不覆盖本地脏行（等 push ack 后下一轮收敛）。push 回包的 corrections
+/// 是刚推完的仲裁结果，不受此限、照常自纠。
 class SyncEngine {
   /// 定时器周期。非常量：测试可临时调小，免得像生产那样真等 2s。
   @visibleForTesting
@@ -66,40 +71,66 @@ class SyncEngine {
 
   SyncEngine({required this.api, required this.index, required this.settings});
 
-  /// 应用是否在前台。false 时 [start] 的定时器不触发同步，避免应用退到后台
-  /// 后仍每 [tickFast]（2s）醒来一次做网络 IO——后台没有前台服务撑着，
-  /// 纯烧流量/电，且 Android 后台限制下大概率直接失败重试。
-  /// 前台服务只为「播放」而开，不该顺带把同步也拖进后台。
+  /// 应用是否在前台。false 且未播放时 [start] 的定时器不触发同步，避免
+  /// 应用退到后台后仍每 [tickFast]（2s）醒来一次做网络 IO——无前台服务撑着
+  /// 时纯烧流量/电，且 Android 后台限制下大概率直接失败重试。
+  /// 播放中后台例外：前台服务保活下网络可用，断点/权重继续收敛
+  /// （见 [_playing] 门控，四端一致、不做平台判断）。
   bool _appForeground = true;
 
-  /// 退到后台：停表。已在飞行中的一轮不打断（_inflight 自会收尾），
-  /// 只是不再发起新的。
+  /// 是否在发声（PlayerProvider 经 [setPlaying] 注入实际引擎态）。
+  bool _playing = false;
+
+  /// 播放态变化（含自动续播/守卫暂停全路径，由播放状态流驱动）。
+  void setPlaying(bool playing) {
+    if (_playing == playing) return;
+    _playing = playing;
+    _updatePolling();
+  }
+
+  /// 关键操作后的即时同步（播放/暂停/切歌）：单飞合并，已在飞行只记待办；
+  /// 退避窗口内按既有口径跳过（不断网锤），下个 tick 自动追上。
+  void poke() {
+    unawaited(syncNow());
+  }
+
+  /// 按“前台或播放中”重算定时器启停（pause/resume/setPlaying 共用）。
+  void _updatePolling() {
+    if (_appForeground || _playing) {
+      _tick ??= Timer.periodic(tickFast, (_) => unawaited(_onTick()));
+    } else {
+      _tick?.cancel();
+      _tick = null;
+    }
+  }
+
+  /// 退到后台：未播放则停表（已在飞行中的一轮不打断，[_inflight] 自会收尾，
+  /// 只是不再发起新的）；播放中后台保持同步。
   void pause() {
     if (!_appForeground) return;
     _appForeground = false;
-    _tick?.cancel();
-    _tick = null;
+    _updatePolling();
   }
 
   /// 回前台：重新起表；快路径先取最新断点；若积压了 outbox 或已过拉取间隔，立刻补一轮。
   void resume() {
     if (_appForeground) return;
     _appForeground = true;
-    _tick ??= Timer.periodic(tickFast, (_) => unawaited(_onTick()));
+    _updatePolling();
     unawaited(pullLatestBreakpoint());
     unawaited(_onTick());
   }
 
   void start() {
     stop();
-    if (!_appForeground) return; // 后台启动：等 resume()
+    if (!_appForeground && !_playing) return; // 后台且未播放：等 resume()/setPlaying(true)
     _tick = Timer.periodic(tickFast, (_) => unawaited(_onTick()));
     // 快路径先行：最新断点 1 RTT 到手，不受全量 pull 分页 backlog 拖累
     // （旧服务端 404 → 静默回退，全量 pull 仍是兜底）。
     unawaited(pullLatestBreakpoint());
-    // 启动首轮先拉后推（P3）：push 不参与断点恢复，却会多占一个 RTT 挡在
-    // pull 前面；积压 outbox 由下一个 2s tick 补推（pendingOutboxCount>0 即触发）。
-    unawaited(syncNow(pullOnly: true));
+    // 首轮即全量（先推后拉）：积压 outbox 本轮即推，不再等下一 tick；
+    // 断点恢复仍有快路径 1 RTT 先行，不被 push 挡住。
+    unawaited(syncNow());
   }
 
   /// 断点快路径（启动/回前台触发）：`GET /playstates/latest` 直取服务端最新
@@ -175,7 +206,7 @@ class SyncEngine {
   }
 
   Future<void> _onTick() async {
-    if (!_appForeground) return;
+    if (!_appForeground && !_playing) return;
     if (_inflight != null) return;
     final now = DateTime.now();
     final failAt = _lastFailAt;
@@ -189,7 +220,7 @@ class SyncEngine {
         pulledAt == null || now.difference(pulledAt) >= _pullInterval;
     // COUNT 走写隔离（含 acked 索引），主 isolate 不再每 2s 同步扫 outbox 表。
     final pending = await index.pendingOutboxCount();
-    if (!_appForeground) return; // 等待期间可能已退后台
+    if (!_appForeground && !_playing) return; // 等待期间可能已退后台（未播放才停）
     if (pending > 0 || needPull) {
       unawaited(syncNow());
     }
@@ -328,6 +359,13 @@ class SyncEngine {
     final seenPlaylists = <String>{};
     final seenSources = <String>{};
     final seenStates = <String>{};
+    // 本机优先 guard：本轮 push 已先执行，其 ack 的实体不在此集内；
+    // 仍有未推事件的实体跳过 pull 快照（等下一轮收敛）。
+    final guard = await _pendingGuardKeys();
+    var guardedSongs = 0;
+    var guardedPlaylists = 0;
+    var guardedSources = 0;
+    var guardedStates = 0;
     while (true) {
       final swFetch = Stopwatch()..start();
       final data = await api.syncPull(cursor);
@@ -354,6 +392,12 @@ class SyncEngine {
           final ref = m['source_ref'];
           if (ref is! String || ref.isEmpty) continue;
           if (!seenSongs.add('${m['source_id'] ?? ''}|$ref')) continue;
+          // 本机优先：本地有未推权重事件的歌，旧快照不覆盖本地脏行。
+          final songKey = syncEntityKey('song.state', m);
+          if (songKey != null && guard.songs.contains(songKey)) {
+            guardedSongs++;
+            continue;
+          }
           batch.add(m);
         }
         if (batch.isNotEmpty) {
@@ -373,6 +417,10 @@ class SyncEngine {
           final m = s.cast<String, dynamic>();
           final uuid = m['client_uuid'] as String?;
           if (uuid == null || uuid.isEmpty || !seenSources.add(uuid)) continue;
+          if (guard.sources.contains(uuid)) {
+            guardedSources++;
+            continue;
+          }
           await _applySource(m);
           applied++;
         }
@@ -388,6 +436,10 @@ class SyncEngine {
           final m = p.cast<String, dynamic>();
           final uuid = m['client_uuid'] as String?;
           if (uuid == null || uuid.isEmpty || !seenPlaylists.add(uuid)) continue;
+          if (guard.playlists.contains(uuid)) {
+            guardedPlaylists++;
+            continue;
+          }
           batch.add(m);
           _dirtyPlaylistUuids.add(uuid);
         }
@@ -408,6 +460,10 @@ class SyncEngine {
           final m = st.cast<String, dynamic>();
           final uuid = m['client_uuid'] as String?;
           if (uuid == null || uuid.isEmpty || !seenStates.add(uuid)) continue;
+          if (guard.states.contains(uuid)) {
+            guardedStates++;
+            continue;
+          }
           await index.applyPlaystateMirror(m);
           _breakpointsDirty = true;
           applied++;
@@ -421,7 +477,42 @@ class SyncEngine {
       if (data['has_more'] != true || pages >= _maxPullPages) break;
     }
     _flushSources();
-    perfLog('pull.total', '${swAll.elapsedMilliseconds}ms pages=$pages cursor=$cursor');
+    perfLog('pull.total',
+        '${swAll.elapsedMilliseconds}ms pages=$pages cursor=$cursor guardedSongs=$guardedSongs playlists=$guardedPlaylists sources=$guardedSources states=$guardedStates');
+  }
+
+  /// 待推实体 guard（本机优先）：从 outbox 按服务端同规则算实体键。
+  /// 读失败不阻塞同步——退化为既有无条件应用，下轮收敛。
+  Future<
+      ({
+        Set<String> songs,
+        Set<String> sources,
+        Set<String> playlists,
+        Set<String> states
+      })> _pendingGuardKeys() async {
+    final songs = <String>{};
+    final sources = <String>{};
+    final playlists = <String>{};
+    final states = <String>{};
+    try {
+      final pending = await index.pendingOutbox();
+      for (final e in pending) {
+        final k = syncEntityKey(e.type, e.payload);
+        if (k == null) continue;
+        if (k.startsWith('song|')) {
+          songs.add(k);
+        } else if (k.startsWith('playlist|')) {
+          playlists.add(k.substring('playlist|'.length));
+        } else if (k.startsWith('breakpoint|')) {
+          states.add(k.substring('breakpoint|'.length));
+        } else if (k.startsWith('source|')) {
+          sources.add(k.substring('source|'.length));
+        }
+      }
+    } catch (_) {
+      // guard 是保护性跳过，读不到就按全量应用处理。
+    }
+    return (songs: songs, sources: sources, playlists: playlists, states: states);
   }
 
   /// push correction 回执的快照落库（形状判分）：

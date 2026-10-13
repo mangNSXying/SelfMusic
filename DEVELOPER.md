@@ -661,7 +661,9 @@ abstract class MusicSource {
 
 - **先落库再上报**：调权 / 收藏 / 歌单 / 断点先写本地（`applyWeightEvent` 在写连接内原子读改写并同时入 `weight_outbox`），再由 `SyncEngine` 推送——**不要**在 UI 回调里直接调 API
 - **outbox 幂等**：每条事件带 `event_uuid`，服务端按 uuid 去重；直连歌曲**未配对或 `sync_enabled=0` 时不入队**，避免无限积压
-- **推拉节奏**：`SyncEngine` 2s tick 推增量、30s 拉增量、失败指数退避（上限 30s）、首帧后启动做一次增量校准。启动/回前台先走 `GET /playstates/latest` 断点快路径（1 RTT，旧服务端 404 静默回退），启动首轮 `pullOnly` 先拉后推（积压 outbox 下一 tick 补推），断点回调整轮 pull 结束后统一触发（single-flight、与首次恢复异步尾串行，不多页中途换曲）。**首帧轻量化**：`sync.start()` / `direct.attachApi()` / `ArtistResolver.start()` 统一在 `main()` 的 post-frame 回调里启动，不参与首帧渲染
+- **推拉节奏**：`SyncEngine` 2s tick 推增量、30s 拉增量、失败指数退避（上限 30s）、首帧后启动做一次增量校准。启动/回前台先走 `GET /playstates/latest` 断点快路径（1 RTT，旧服务端 404 静默回退），首轮即全量**先推后拉**（积压 outbox 本轮即推；`awaitFirstPull` 仍是 `pullOnly`，只负责把断点拉回来）。断点回调整轮 pull 结束后统一触发（single-flight、与首次恢复异步尾串行，不多页中途换曲）。播放/暂停/切歌经 `PlayerProvider.attachSyncHooks` 即时 `poke()` 一轮（单飞合并；暂停/停止先强制落最终断点再推，保证本轮带走最终位置）。**首帧轻量化**：`sync.start()` / `direct.attachApi()` / `ArtistResolver.start()` 统一在 `main()` 的 post-frame 回调里启动，不参与首帧渲染
+- **后台同步门控（播放中例外）**：退后台且未播放则停表（`pause()`，在飞轮次不打断）；**播放中后台保持 2s tick**（`setPlaying` 由播放状态流驱动，四端一致、不做平台判断——前台服务保活下网络可用）。暂停态后台不轮询，回前台/开播即补轮
+- **本机优先**：pull 快照命中“本地还有未推事件”的实体时跳过，不覆盖本地脏行（实体键 `sync_entity_key.dart` 与服务端 `entityKeyOf` 同规则；push 回包 corrections 是刚推完的仲裁结果、不受此限；ack 后下一轮自然收敛）
 - **断点采纳口径（取最新）**：`latest` 返回全局最新断点行（按 `updated_at`）。客户端恢复/补切时比对本机与远端镜像的 `updated_at`，远端更新才采纳；`db_writer._opApplyPlaystateMirror` 同口径守卫（旧快照不覆盖新镜像），服务端断点走行级 LWW。深层列表仅做队列重建用，不参与仲裁
 - **同步后台化（写隔离收口）**：outbox 读取 + `jsonDecode`（`pendingOutbox`/`pendingOutboxCount` op）、pull 快照的字段映射与落库（`applySongSnapshotsRaw` / `applyPlaylistSnapshots` / `applyPlaystateMirror`）、断点歌单存在性判定，全部在写隔离（`db_writer`）内完成；UI isolate 只 `await`。**ohos 例外**：无子 isolate，内联写按 200 行/事务分片、片间 `await` 让出事件循环（`_InlineDbWriter.opBatch`）；cursor 在整页应用后才推进，中途失败靠重拉幂等收敛
 - **跨页去重**：服务端只在单页内按实体去重，`_pull` 按 `source_id|ref` / uuid 跨页去重，重复快照只计数不重复落库
@@ -959,10 +961,10 @@ frozen=true                 → 权重锁定最低值，跳过自动调权
 
 - **方向**：客户端本地 SQLite 是运行时事实源；后端是多设备汇聚点。
 - **Pull**：每 30s `GET /sync/pull?since_cursor=`；cursor 为服务端 `sync_events.seq` 单调递增变更号。快照按实体去重（服务端单页内 + 客户端跨页）：每页只回该页事件涉及实体的**当前快照**；**`breakpoint.set` 只回断点（playstate），不携带歌单条目快照**（稳态流量放大器修复）。断点回调整轮 pull 结束后统一触发一次。
-- **断点快路径**：启动 / 回前台先打 `GET /playstates/latest`（1 RTT 直取全局最新断点快照；旧服务端 404 客户端静默回退，全量 pull 仍是兜底）。启动首轮 pull 均为 `pullOnly`（先拉后推），积压 outbox 由后续 2s tick 补推；套用 single-flight、与首次恢复的异步尾串行。
+- **断点快路径**：启动 / 回前台先打 `GET /playstates/latest`（1 RTT 直取全局最新断点快照；旧服务端 404 客户端静默回退，全量 pull 仍是兜底）。启动首轮即全量先推后拉（本机优先；`awaitFirstPull` 的恢复等待仍是 `pullOnly`）；套用 single-flight、与首次恢复的异步尾串行。
 - **事件日志压缩**：`sync_events` 只追加，服务端按「所有未吊销设备的最小 pull 水位」（`devices.last_pull_cursor`）定期回收旧事件，且**每实体保留最新一条**（`sync_events.entity_key` 锚点）；事件表不随使用时长无限增长，新设备首拉成本从 O(历史事件数) 收敛到 O(实体数)；`entity_key` 为空的旧行不参与压缩。
 - **Push**：本地权重事件 / 断点 / 歌单改动 → 写 `weight_outbox`（带 `event_uuid`）→ 2s 防抖批量上推；服务端按 uuid 幂等去重。事件类型（`SyncEventTypes`，前后端同名）：`song.complete / song.skip / song.complete_manual / song.liked / song.unfavorite / song.disliked / song.reset / song.state`（权重）、`playlist.create|update|delete` 与 `playlist.item_add|item_remove|item_move`、`source.create|update|delete`、`breakpoint.set`（载荷含 `deep_list_json`）。歌手身份**不参与同步**。
-- **累计播放时长**：`play_sec` 随 `song.state` 上下推（服务端行级 LWW），客户端应用快照取 `max(本地, 服务端)` 单调合并，不因乱序 / 旧快照倒退。
+- **累计播放时长**：`play_sec` 随 `song.state` 上下推，两端一律取 `max(行值, 快照值)` 单调合并（服务端 `mergePlaySec` + 客户端落库同口径），不因乱序 / 旧快照倒退。
 - **冲突（字段级合并）**：权重走**事件重算**（两设备并发点赞按到达序重放，不互抹）；收藏 / 歌单元数据 / 删除墓碑 / 断点走**行级 LWW**（事件 `occurred_at` vs 行 `last_event_at`，输方收 correction 回执自纠；仲裁时钟为服务端 `arrived_at`）；歌单条目按 seq 到达序重放（后到达胜出）。直接 REST 变更（歌单 CRUD / 断点 PUT / 调权 POST）同样先记事件再生效。
 - **歌曲身份**：服务端无曲库，统一为 `source_id + source_ref`（source_id=客户端源实例 uuid，旧数据为 `legacy:<协议>`）；权重 / 收藏落 `song_states`，歌单条目与断点自持身份及展示快照（pull 不覆盖客户端本地标题）；pull 身份收集恒不建行（已删歌曲不重新建行）。未配对（无后端地址）或 `sync_enabled=0` 时直连事件不进队，避免 outbox 无限积压。
 - **播放源同步**：`source.create/update/delete` + 行级 LWW；身份 `client_uuid`，去重键 `(kind, address)`（地址两端归一化——WebDAV 缺 scheme 补 https、去尾斜杠，SFTP 形态 `host:port/path`；转码强校验按同一归一化匹配）。本地文件夹源不参与；密码与私钥（含 passphrase）不入服务端（新设备显示「待配置密码」）；SFTP 主机密钥钉 `ssh_known_hosts` 亦不参与同步（各设备各自 TOFU）。存量远端源接入时补 uuid 并补发一次 create；旧协议级身份在设备重新上报时由服务端懒迁移。

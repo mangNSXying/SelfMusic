@@ -662,6 +662,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   void _setupPlayerStreams(AudioPlayer p) {
     p.playerStateStream.listen((st) {
+      // 播放门控同步引擎：后台播放中仍同步，暂停/停止回落到前台门控。
+      _onPlayingChanged?.call(st.playing);
       // 暂停/停止：结清当前挂钟窗口（positionStream 停止跳动，不再有 tick）。
       if (!st.playing) _playSecStop();
       if (st.processingState != ProcessingState.completed) return;
@@ -1297,12 +1299,34 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _fadeOutThenPause();
     notifyListeners();
     _syncSystemMedia();
+    _saveForcedAndPoke();
   }
 
   /// 关联服务器可达性门控（main 注入 `direct.isServerAvailable`）：
   /// 直连歌曲断点仅在连着服务器时上报，避免未配对用户 outbox 积压。
   void attachServerAvailable(bool Function() fn) {
     _serverAvailable = fn;
+  }
+
+  /// 同步引擎钩子（main 注入；未注入时播放不受影响）：
+  /// - [onPlayingChanged]：实际播放态（播放状态流驱动，含自动续播/守卫全路径），
+  ///   供 SyncEngine 做“后台播放中仍同步”门控；
+  /// - [onSyncPoke]：播放/暂停/切歌后的即时同步（单飞合并，不断网锤）。
+  void Function(bool playing)? _onPlayingChanged;
+  void Function()? _onSyncPoke;
+  void attachSyncHooks({
+    void Function(bool playing)? onPlayingChanged,
+    void Function()? onSyncPoke,
+  }) {
+    _onPlayingChanged = onPlayingChanged;
+    _onSyncPoke = onSyncPoke;
+  }
+
+  /// 切歌后的即时同步：断点先落 outbox，再 poke（保证本轮 push 能带走新事件）。
+  void _pokeSyncAfterSave(Future<void> Function() save) {
+    final poke = _onSyncPoke;
+    if (poke == null) return;
+    unawaited(save().then((_) => poke()));
   }
 
   List<Song> get queue => List.unmodifiable(_queue);
@@ -1744,7 +1768,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
       if (!alive()) return;
       unawaited(_applyEqualizerBands());
-      _saveState(player.position);
+      // 切歌即时同步：断点先落 outbox 再 poke（自动续播/手动点播同一路径）。
+      _pokeSyncAfterSave(() => _saveState(player.position));
       // 深层列表维护：歌单内播放推入末尾；外部点歌替换末尾。
       _trackDeepList(cur, push: fromPlaylist);
       _onTrackStarted?.call(_curSource ?? src, cur);
@@ -2701,12 +2726,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 淡出完成回调里（[_fadeOutThenPause] 内部 onDone）。
       _fadingPause = true;
       notifyListeners();
+      // 暂停即时同步：先推一次积压，实际暂停完成后强制落最终断点再推一次。
+      _onSyncPoke?.call();
       unawaited(_fadeOutThenPause().then((_) {
         // 实际暂停完成后（或渐变被清理路径/反向打断取消）再通知与回推
         // 系统媒体：通知栏/媒体中心以**实际**状态为准（规格假设），
         // 不随按钮提前翻转。
         notifyListeners();
         _syncSystemMedia();
+        _saveForcedAndPoke();
       }));
       return;
     }
@@ -2721,6 +2749,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _resumeOrReplay();
     notifyListeners();
     _syncSystemMedia();
+    // 恢复播放即时同步（播放态门控由状态流驱动，这里只推积压）。
+    _onSyncPoke?.call();
   }
 
   /// 恢复播放：若当前曲已播完（顺序模式队尾收尾或单曲播完），
@@ -2750,6 +2780,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _resumeOrReplay();
     notifyListeners();
     _syncSystemMedia();
+    _onSyncPoke?.call();
   }
 
   /// 通知栏「暂停/停止」回调（settings.md §3.6）。
@@ -2758,6 +2789,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _fadeOutThenPause();
     notifyListeners();
     _syncSystemMedia();
+    _saveForcedAndPoke();
   }
 
   /// 通知栏「停止」/ 任务被划掉：停止播放；默认清断点（通知栏「停止」= 用户显式
@@ -2776,6 +2808,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     if (clearResume) clearResumeState();
     notifyListeners();
+    _onSyncPoke?.call();
   }
 
   Future<void> seek(Duration d) async {
@@ -2797,7 +2830,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _saveState(Duration pos) async {
+  Future<void> _saveState(Duration pos, {bool forceBreakpoint = false}) async {
     final idx = _index;
     if (idx == null || _queue.isEmpty || _current == null) return;
     await idx.savePlayState(
@@ -2807,13 +2840,27 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       playlistUuid: _syncPlaylistUuid,
       anchorKey: _anchorKey,
     );
-    await _maybeEnqueueBreakpoint(idx, pos);
+    await _maybeEnqueueBreakpoint(idx, pos, force: forceBreakpoint);
   }
 
-  /// 阶段5 断点进 outbox（节流：同歌 25s 一次，切歌立即）。
+  /// 暂停/停止后的最终断点：强制进一次 outbox（不受 25s 节流限），
+  /// 落库完成后再 poke 即时同步，保证本轮 push 带走最终位置。
+  void _saveForcedAndPoke() {
+    if (_onSyncPoke == null || !_hasPlayScene) return;
+    Duration pos;
+    try {
+      pos = player.position;
+    } catch (_) {
+      return;
+    }
+    _pokeSyncAfterSave(() => _saveState(pos, forceBreakpoint: true));
+  }
+
+  /// 阶段5 断点进 outbox（节流：同歌 25s 一次，切歌立即；暂停/停止强制一次）。
   /// 队列归属已同步歌单且当前歌曲有身份即上报：服务器模式恒上报，
   /// 直连歌曲需连着服务器；其它情况只活本机。
-  Future<void> _maybeEnqueueBreakpoint(LocalIndex idx, Duration pos) async {
+  Future<void> _maybeEnqueueBreakpoint(LocalIndex idx, Duration pos,
+      {bool force = false}) async {
     final uuid = _syncPlaylistUuid;
     final cur = _current;
     if (uuid == null || cur == null) return;
@@ -2827,7 +2874,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     final key = '$uuid|${cur.source}|${cur.sourceRef}';
-    if (key != _lastBpKey || nowMs - _lastBpAtMs > 25000) {
+    if (force || key != _lastBpKey || nowMs - _lastBpAtMs > 25000) {
       _lastBpKey = key;
       _lastBpAtMs = nowMs;
       final sourceId = idx.sourceUuidOf(cur.sourceKey);

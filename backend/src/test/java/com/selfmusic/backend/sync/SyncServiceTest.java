@@ -232,6 +232,15 @@ class SyncServiceTest {
     }
 
     @Test
+    void mergePlaySecTakesMaxAndTreatsNullAsZero() {
+        // 旧快照晚到不把累计值写小（与客户端 max 口径一致）。
+        assertEquals(600, SyncService.mergePlaySec(600, 120));
+        assertEquals(900, SyncService.mergePlaySec(600, 900));
+        assertEquals(100, SyncService.mergePlaySec(null, 100));
+        assertEquals(0, SyncService.mergePlaySec(null, 0));
+    }
+
+    @Test
     void weightEventsDoNotTouchPlaySec() {
         SongState s = freshState();
         s.setPlaySec(3600);
