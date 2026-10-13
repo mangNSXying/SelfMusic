@@ -1835,7 +1835,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           if (injected != null) {
             await injected(s, cand);
           } else {
-            await _loadOnce(s, cand, probe: probeUsable);
+            // 重试轮跳过转码（首轮已试过，见 _loadOnce.skipTranscode）。
+            await _loadOnce(s, cand,
+                probe: probeUsable, skipTranscode: i > 0);
           }
           if (c > 0) {
             final label = line == 0 ? '主源' : '备用$line';
@@ -1925,7 +1927,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 自建字节流 [DirectAudioSource]。
   /// （转码关时）原文件缓存 → 原生 URL → 自建字节流（旧行为不变）。
   /// [probe] 为 false 时跳过装载前探针（该源已探明无响应，别再白等）。
-  Future<void> _loadOnce(Song s, MusicSource src, {bool probe = true}) async {
+  /// [skipTranscode] 为 true 时跳过转码分支（同一 [_playDirect] 内首轮已试过
+  /// 转码：429/502/超时几秒后重试大概率还是失败，别再占服务端转码许可
+  /// 反复 spawn ffmpeg；重试只走缓存/直连/字节流）。
+  Future<void> _loadOnce(Song s, MusicSource src,
+      {bool probe = true, bool skipTranscode = false}) async {
     final tag = mediaItemOf(s, title: displayTitle(s));
     final settings = _appSettings;
     final api = _transcodeApi;
@@ -1936,7 +1942,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           apiBaseUrl: (api.baseUrl as String?) ?? '',
           src: src,
         );
-    if (transcodeOn) {
+    if (transcodeOn && !skipTranscode) {
       // 与当前设置一致的预载转码产物：本地文件，原生 seek、无需重建请求。
       try {
         final variant = await _resolveTranscodeCache?.call(src, s);
@@ -1945,6 +1951,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           await player.setFilePath(variant, tag: tag);
           return;
         }
+        // 未命中才值得打一行（命中行在上面）：排查“预载了但没用上”时
+        // 与 [preload] 侧的 key 日志对照（接线缺失 vs 缓存行缺失）。
+        debugPrint('[play] ${src.kind} 无变体缓存'
+            '${_resolveTranscodeCache == null ? '（未接线）' : ''}《${s.title}》');
       } catch (_) {
         // 变体损坏等：继续走流式，下面原文件缓存仍可兜底。
       }
@@ -1959,7 +1969,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // SMB smb:// + 信封）。
     // 变体缓存命中已在上方返回；转码失败静默回落（原文件缓存 → 直连）。
     final proxyUrl = src.proxyOrigin(s);
-    if (proxyUrl != null &&
+    if (!skipTranscode &&
+        proxyUrl != null &&
         await _tryTranscodeLoad(s, src, proxyUrl, tag)) {
       return;
     }

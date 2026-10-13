@@ -1729,6 +1729,9 @@ class DirectSourceManager extends ChangeNotifier {
           final existing = index.cachedPath(vkey);
           if (existing != null) {
             // 变体已缓存：只刷新访问时间并登记保护，不再下载。
+            // key 打后 8 位：与播放侧“无变体缓存”行对照，排查预载/播放 key 不一致。
+            debugPrint('[preload] 变体命中《${s.title}》'
+                ' key=…${vkey.substring(vkey.length - 8)}');
             index.touchCache(vkey);
             cache.preloadCacheKey = vkey;
             return;
@@ -1743,9 +1746,10 @@ class DirectSourceManager extends ChangeNotifier {
           return;
         } on PreloadAbortedException {
           rethrow;
-        } catch (_) {
+        } catch (e) {
           // 变体预载失败：回退原文件预载（不断网兜底），下面继续。
-          debugPrint('[preload] 变体预载失败，回退原文件《${s.title}》');
+          // 原因必须带上（状态码/网络错，否则 429/502/401 全一个样没法查）。
+          debugPrint('[preload] 变体预载失败，回退原文件《${s.title}》: $e');
         }
       }
     }
@@ -1855,7 +1859,8 @@ class DirectSourceManager extends ChangeNotifier {
       }
       await index.cacheCommit(variantKey, tmp.path, total);
       committed = true;
-      debugPrint('[preload] 变体已缓存《${s.title}》${bitrate}k/$loudnorm');
+      debugPrint('[preload] 变体已缓存《${s.title}》${bitrate}k/$loudnorm'
+          ' key=…${variantKey.substring(variantKey.length - 8)}');
     } finally {
       client.close(force: true);
       if (!committed && tmp.existsSync()) {
