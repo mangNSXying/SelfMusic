@@ -80,6 +80,12 @@ class FvpAudioPlayer extends AudioPlayerPlatform {
   /// load 进行中：mdk 复位产生的 stopped 事件不算「播完」。
   bool _loading = false;
 
+  /// 当前装载的是服务端转码流（`/transcode/stream`）：三无流（无
+  /// Content-Length、不可 Range、无 Xing），mdk 报出的 duration 只是探测
+  /// 残值（常为几秒到几十秒），不可采信——置 null 让 app 侧回退歌曲元数据
+  /// 时长（[PlayerProvider.duration] 的既有兜底）。seek 也由此获得正确量程。
+  bool _transcodeStream = false;
+
   /// 已上报错误：随后 mdk 回 stopped 时不再当作 completed。
   bool _failed = false;
 
@@ -126,6 +132,7 @@ class FvpAudioPlayer extends AudioPlayerPlatform {
       // 请求头与 TLS 策略须在 setMedia 前设定（mdk 在 prepare 时读取 avio 选项）。
       _applyHttpSettings(src);
       // 探测策略同样在 prepare 前设定（mdk 在 prepare 时读取 avformat 选项）。
+      _transcodeStream = uri.contains('/transcode/stream');
       _applyProbePolicy(uri);
       _player.media = uri;
       final ret = await _player.prepare(
@@ -137,7 +144,9 @@ class FvpAudioPlayer extends AudioPlayerPlatform {
         );
       }
       final ms = _player.mediaInfo.duration;
-      _duration = ms > 0 ? Duration(milliseconds: ms) : null;
+      // 转码流不采信 mdk 的 duration（见 [_transcodeStream]）。
+      _duration =
+          (!_transcodeStream && ms > 0) ? Duration(milliseconds: ms) : null;
       _processingState = ProcessingStateMessage.ready;
       _emit();
       return LoadResponse(duration: _duration);
@@ -255,8 +264,11 @@ class FvpAudioPlayer extends AudioPlayerPlatform {
       return;
     }
     if (s.test(mdk.MediaStatus.loaded)) {
-      final ms = _player.mediaInfo.duration;
-      if (ms > 0) _duration = Duration(milliseconds: ms);
+      // 转码流的 duration 不可信（探测残值），只认 app 侧元数据兜底。
+      if (!_transcodeStream) {
+        final ms = _player.mediaInfo.duration;
+        if (ms > 0) _duration = Duration(milliseconds: ms);
+      }
       _processingState = (s.test(mdk.MediaStatus.buffering) &&
               !s.test(mdk.MediaStatus.buffered))
           ? ProcessingStateMessage.buffering
@@ -309,8 +321,9 @@ class FvpAudioPlayer extends AudioPlayerPlatform {
   /// 转码输出三无（无 Content-Length、`Accept-Ranges: none`、pipe 输出写不出
   /// 有效 Xing 时长头），常规探测（默认 probesize 5MB ≈ 整首 192k 体积）会把
   /// 整流读完才返回，`prepare()` 卡到 EOS（整首下完才播）。转码 URL 限小探测
-  /// 秒回（duration 取 null，app 侧已容忍）；其余恢复 ffmpeg 默认，避免影响
-  /// 直连/本地（同一 mdk 实例复用，必须显式复位，否则转码后播直连仍是小探测）。
+  /// 秒回（探测残值 duration 由 [_transcodeStream] 拦下、不回传）；其余恢复
+  /// ffmpeg 默认，避免影响直连/本地（同一 mdk 实例复用，必须显式复位，
+  /// 否则转码后播直连仍是小探测）。
   void _applyProbePolicy(String uri) {
     if (uri.contains('/transcode/stream')) {
       _player.setProperty('avformat.probesize', '524288');
