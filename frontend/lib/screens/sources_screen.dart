@@ -894,17 +894,11 @@ class _DirectSourceCard extends StatelessWidget {
     if (s == null) return const SizedBox.shrink();
     final count = direct.countOf(sourceKey);
     final isLocal = s.kind == SourceKind.local;
-    final isSftp = s.kind == SourceKind.sftp;
-    final isSmb = s.kind == SourceKind.smb;
     final needsSecrets = direct.sourceNeedsSecrets(sourceKey);
-    // 非本地源的播放链路（弹窗可配）：代理才走服务端转码，直连恒原生地址。
+    // 非本地源的播放链路（弹窗可配）：直连/代理二选一，互斥替换；
+    // 本地源恒直连。代理才走服务端转码，直连恒原生地址。
     final routeLabel =
-        !isLocal && s.route == SourceRoute.proxy ? ' · 代理' : '';
-    final kindLabel = isLocal
-        ? ' · 本地文件夹'
-        : (isSftp
-            ? ' · SFTP'
-            : (isSmb ? ' · SMB' : ''));
+        isLocal || s.route == SourceRoute.direct ? '直连' : '代理';
 
     final tile = ListTile(
       leading: Icon(isLocal ? Icons.folder : Icons.cloud,
@@ -918,7 +912,7 @@ class _DirectSourceCard extends StatelessWidget {
               ?.copyWith(fontWeight: FontWeight.w600)),
       subtitle: Text(needsSecrets
           ? '待配置凭据 · 点击「编辑」补输后可用'
-          : '直连$kindLabel$routeLabel · 已索引 $count 首'),
+          : '$routeLabel · 已索引 $count 首'),
       trailing: _SourceMenu(sourceKey: sourceKey, direct: direct),
       onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
     );
@@ -928,7 +922,7 @@ class _DirectSourceCard extends StatelessWidget {
       title: s.name,
       subtitle: needsSecrets
           ? '待配置凭据 · 点击「编辑」补输后可用'
-          : '直连$kindLabel$routeLabel · 已索引 $count 首',
+          : '$routeLabel · 已索引 $count 首',
       fallbackIcon: isLocal ? Icons.folder : Icons.cloud,
       onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
       cornerAction: _SourceMenu(sourceKey: sourceKey, direct: direct),
