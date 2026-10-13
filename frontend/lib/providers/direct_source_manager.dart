@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
 
 import '../data/sources/music_source.dart';
+import '../data/sources/transcode_variant.dart';
 import '../data/sources/meta_enrich.dart';
 import '../data/sources/scan_worker.dart';
 import '../data/sources/webdav_direct_source.dart';
@@ -1436,21 +1439,11 @@ class DirectSourceManager extends ChangeNotifier {
     if (src == null) throw StateError('源不存在：${song.sourceKey}');
     if (!src.supportsWrite) throw StateError('该源不支持删除');
     await src.deleteSong(song);
-    // 离线缓存：cache_key 由源侧计算，先删文件+行再清 DB 痕迹。
-    // （WebDAV/SFTP/SMB 三源都有 cacheKeyFor，对称处理。）
-    final cacheKey = src is WebdavDirectSource
-        ? src.cacheKeyFor(song)
-        : src is SftpDirectSource
-            ? src.cacheKeyFor(song)
-            : src is SmbDirectSource
-                ? src.cacheKeyFor(song)
-                : null;
-    if (cacheKey != null) {
-      try {
-        await index.deleteCache(cacheKey);
-      } catch (_) {
-        // 无缓存或删文件失败不挡主流程（DB 痕迹仍要清）。
-      }
+    // 离线缓存：原文件行 + 转码变体行对称清理（见 CacheManager）。
+    try {
+      await cache.deleteSongCache(src, song);
+    } catch (_) {
+      // 无缓存或删文件失败不挡主流程（DB 痕迹仍要清）。
     }
     await index.deleteSong(song.sourceKey, song.sourceRef);
     weight.notifyExternalWrite();
@@ -1715,11 +1708,44 @@ class DirectSourceManager extends ChangeNotifier {
   /// 开关关闭/非直连歌/已缓存直接返回；下载后走 LRU 淘汰（预载条目受保护），失败静默。
   /// 由 [_scheduleNextTrack] 以 [DirectTaskPriority.nextAudio] 排队调用
   /// （原先是切歌时直接并发开跑，会跟当前曲的补读抢同一条链路）。
+  ///
+  /// 转码开时优先预载与**当前设置一致的转码变体**（码率/响度 honoring 预载，
+  /// 与实际播放一致，本地秒开）；变体失败（429 并发满/503/断网）回退原文件
+  /// 预载（不断网兜底），再失败则静默。
   Future<void> preloadSong(Song s, {bool Function()? shouldAbort}) async {
     if (!settings.preloadNext) return;
     if (!s.isDirect) return;
     final src = sourceByKey(s.sourceKey);
     if (src == null) return;
+    if (_shouldPreloadTranscode(src)) {
+      final vkey = _transcodeKeyOf(src, s);
+      if (vkey == null) {
+        // 条件不满足（开关/后端/链路任一变化）：走下面原文件路径。
+      } else {
+        try {
+          final existing = index.cachedPath(vkey);
+          if (existing != null) {
+            // 变体已缓存：只刷新访问时间并登记保护，不再下载。
+            index.touchCache(vkey);
+            cache.preloadCacheKey = vkey;
+            return;
+          }
+          await _downloadTranscodeVariant(s, src, vkey,
+              bitrate: settings.transcodeBitrate,
+              loudnorm: settings.transcodeLoudnorm,
+              shouldAbort: shouldAbort);
+          index.touchCache(vkey);
+          cache.preloadCacheKey = vkey;
+          cache.evictIfNeeded();
+          return;
+        } on PreloadAbortedException {
+          rethrow;
+        } catch (_) {
+          // 变体预载失败：回退原文件预载（不断网兜底），下面继续。
+          debugPrint('[preload] 变体预载失败，回退原文件《${s.title}》');
+        }
+      }
+    }
     try {
       final existing = await src.cachedFilePath(s);
       if (existing != null) {
@@ -1739,6 +1765,101 @@ class DirectSourceManager extends ChangeNotifier {
       debugPrint('[preload] 放弃预载《${s.title}》（下一首已变）');
     } catch (_) {
       // 预载失败静默，不影响当前播放。
+    }
+  }
+
+  /// 该源当前是否应走转码变体预载（与播放侧 [shouldUseTranscode] 同口径）。
+  bool _shouldPreloadTranscode(MusicSource src) {
+    final api = _api;
+    if (api == null) return false;
+    return shouldUseTranscode(
+      enabled: settings.transcodeEnabled,
+      apiBaseUrl: api.baseUrl,
+      src: src,
+    );
+  }
+
+  /// 当前设置下该歌的转码变体缓存 key（条件不满足返回 null）。
+  String? _transcodeKeyOf(MusicSource src, Song s) {
+    if (!_shouldPreloadTranscode(src)) return null;
+    return cache.transcodeCacheKeyOf(src, s,
+        bitrate: settings.transcodeBitrate,
+        loudnorm: settings.transcodeLoudnorm);
+  }
+
+  /// 与当前转码设置一致的变体缓存路径（无则 null，供播放侧装载秒开）。
+  Future<String?> cachedTranscodePath(MusicSource src, Song s) async {
+    final k = _transcodeKeyOf(src, s);
+    if (k == null) return null;
+    return index.cachedPath(k);
+  }
+
+  /// 后台下载转码变体（Bearer + 回源鉴权头直调转码端点，流式落盘）：
+  /// 块粒度轮询 [shouldAbort]（换歌作废，半截文件自清）；非 200（429 并发满 /
+  /// 503 无 ffmpeg / 502 源失败）抛错由调用方回退原文件预载。
+  Future<void> _downloadTranscodeVariant(Song s, MusicSource src,
+      String variantKey,
+      {required int bitrate,
+      required String loudnorm,
+      bool Function()? shouldAbort}) async {
+    final api = _api;
+    if (api == null || api.baseUrl.isEmpty) {
+      throw StateError('transcode api 不可用');
+    }
+    final origin = src.proxyOrigin(s);
+    if (origin == null) throw StateError('该源无代理 origin');
+    final turl =
+        api.transcodeStreamUrl(origin, bitrate, loudnorm: loudnorm);
+    if (turl == null) throw StateError('转码 URL 构造失败');
+    if (index.isCached(variantKey)) return;
+    final headers = <String, String>{};
+    try {
+      final token = await api.getAccessToken();
+      if (token != null && token.isNotEmpty) {
+        headers['Authorization'] = 'Bearer $token';
+      }
+    } catch (_) {}
+    headers.addAll(await src.proxyAuthHeaders(s));
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
+    final tmp = File(p.join(index.cacheDir, '.tmp-$variantKey'));
+    var committed = false;
+    try {
+      final req = await client.getUrl(Uri.parse(turl));
+      headers.forEach(req.headers.set);
+      final resp = await req.close();
+      if (resp.statusCode != 200) {
+        await resp.drain<void>();
+        throw StateError('转码变体下载失败: ${resp.statusCode}');
+      }
+      // 大缓冲顺序写（同 WebDAV cacheSong 口径：攒够 1MB 再落盘）。
+      final sink = tmp.openSync(mode: FileMode.write);
+      final buf = BytesBuilder(copy: false);
+      var total = 0;
+      try {
+        await for (final chunk in resp) {
+          if (shouldAbort?.call() == true) {
+            throw const PreloadAbortedException();
+          }
+          buf.add(chunk);
+          total += chunk.length;
+          if (buf.length >= (1 << 20)) {
+            sink.writeFromSync(buf.takeBytes());
+          }
+        }
+        if (buf.isNotEmpty) sink.writeFromSync(buf.takeBytes());
+      } finally {
+        sink.closeSync();
+      }
+      await index.cacheCommit(variantKey, tmp.path, total);
+      committed = true;
+      debugPrint('[preload] 变体已缓存《${s.title}》${bitrate}k/$loudnorm');
+    } finally {
+      client.close(force: true);
+      if (!committed && tmp.existsSync()) {
+        try {
+          tmp.deleteSync();
+        } catch (_) {}
+      }
     }
   }
 

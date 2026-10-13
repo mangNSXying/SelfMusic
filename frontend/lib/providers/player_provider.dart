@@ -9,6 +9,7 @@ import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 import '../models/song.dart';
 import '../data/sources/music_source.dart';
+import '../data/sources/transcode_variant.dart';
 import '../data/sources/direct_audio_source.dart';
 import '../data/sources/meta_enrich.dart';
 import '../data/sources/webdav_url.dart';
@@ -27,26 +28,14 @@ import '../utils/song_title_format.dart';
 import '../utils/weight_curve.dart';
 import '../widgets/app_toast.dart';
 
+// 转码门控定义见 `data/sources/transcode_variant.dart`（播放装载与预载变体
+// 共用同一口径）；经本文件 re-export，单测 import 本文件即可。
+export '../data/sources/transcode_variant.dart' show shouldUseTranscode;
+
 /// 播放时长对一次播放的完播/跳过分档（stage2.md §2.3）：
 /// - >95% 记一次完播；<30% 记一次跳过；30%~95% 不记；
 /// - 时长无效（null 或 0）无法判定（自然结束时由调用方补偿记完播）。
 enum WeightJudgement { complete, skip, none }
-
-/// 转码门控（纯函数，可单测）：代理总开关开 + 后端可达 +
-/// 该源在新增/编辑弹窗中选了代理链路。直连源恒走原生 URL，开关不生效。
-/// kind 限定 webdav/sftp（服务端强校验按同类源匹配）。
-@visibleForTesting
-bool shouldUseTranscode({
-  required bool enabled,
-  required String apiBaseUrl,
-  required MusicSource src,
-}) =>
-    enabled &&
-    apiBaseUrl.isNotEmpty &&
-    (src.kind == SourceKind.webdav ||
-        src.kind == SourceKind.sftp ||
-        src.kind == SourceKind.smb) &&
-    src.route == SourceRoute.proxy;
 
 /// 按播放时长判定完播/跳过（毫秒比值，临界严格按「大于 95% / 小于 30%」）。
 @visibleForTesting
@@ -872,6 +861,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 下一首变了（插队/删曲/切模式）：通知外部重排下一两级任务。
   void Function(Song? next)? _onNextChanged;
 
+  /// 与当前转码设置一致的变体缓存路径（无则 null）：由 DirectSourceManager
+  /// 按当前码率/响度查变体缓存（接线见 main.dart）。未接线时按无变体处理。
+  Future<String?> Function(MusicSource src, Song s)? _resolveTranscodeCache;
+
   /// 测试：播放器是否已构造。
   @visibleForTesting
   bool get debugPlayerBuilt => _player != null;
@@ -1181,6 +1174,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     void Function(Song s)? onSongMetaRefreshed,
     void Function(Song? next)? onNextChanged,
     void Function(String key, Future<void> Function() body)? submitCurrentMeta,
+    Future<String?> Function(MusicSource src, Song s)? resolveTranscodeCache,
   }) {
     _index = index;
     _weight = weight;
@@ -1188,6 +1182,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _onSongMetaRefreshed = onSongMetaRefreshed;
     _onNextChanged = onNextChanged;
     _submitCurrentMeta = submitCurrentMeta;
+    _resolveTranscodeCache = resolveTranscodeCache;
   }
 
   /// 播放器实例，**首次使用时才构造**。
@@ -1851,8 +1846,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool probeTimedOut = false;
 
   /// 阶段6 无状态转码装载：成功返回 true（已 setUrl），失败/未启用返回 false
-  /// 由调用方回落直连。缓存永远存原文件，不走转码；整曲转码不支持 Range，
-  /// seek 由播放器重建请求（R8 允许 ±2s）。
+  /// 由调用方回落。原文件缓存作转码失败/断网兜底（见 [_loadOnce]）；整曲转码
+  /// 不支持 Range，seek 由播放器重建请求（R8 允许 ±2s）。
   Future<bool> _tryTranscodeLoad(
       Song s, MusicSource src, String originUrl, dynamic tag) async {
     try {
@@ -1899,33 +1894,54 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// 单次装载：优先离线缓存文件，其次原生 URL（Range/seek 更稳），
-  /// 最后回落到自建字节流 [DirectAudioSource]。
+  /// 单次装载（转码开时）：
+  /// 变体缓存（与当前码率/响度一致的转码产物，本地秒开）→ 转码流 →
+  /// 原文件缓存（转码失败/断网兜底）→ 原生 URL（Range/seek 更稳）→
+  /// 自建字节流 [DirectAudioSource]。
+  /// （转码关时）原文件缓存 → 原生 URL → 自建字节流（旧行为不变）。
   /// [probe] 为 false 时跳过装载前探针（该源已探明无响应，别再白等）。
   Future<void> _loadOnce(Song s, MusicSource src, {bool probe = true}) async {
     final tag = mediaItemOf(s, title: displayTitle(s));
-    final cached = await src.cachedFilePath(s);
-    if (cached != null) {
-      debugPrint('[play] ${src.kind} 缓存文件: $cached');
+    final settings = _appSettings;
+    final api = _transcodeApi;
+    final transcodeOn = settings != null &&
+        api != null &&
+        shouldUseTranscode(
+          enabled: settings.transcodeEnabled,
+          apiBaseUrl: (api.baseUrl as String?) ?? '',
+          src: src,
+        );
+    if (transcodeOn) {
+      // 与当前设置一致的预载转码产物：本地文件，原生 seek、无需重建请求。
       try {
-        await player.setFilePath(cached, tag: tag);
-        return;
-      } catch (e) {
-        // 缓存文件装载失败（如 ohos 沙箱真路径 mdk 打不开、缓存文件损坏）：
-        // 回落自建字节流，不让可播歌曲卡死在直连失败上（2026-10-07 ohos
-        // 直连改造的配套兜底；直连失败时字节流分支仍可用）。
-        debugPrint('[play] 缓存文件装载失败（回退字节流）: $e');
+        final variant = await _resolveTranscodeCache?.call(src, s);
+        if (variant != null) {
+          debugPrint('[play] ${src.kind} 转码变体缓存: $variant');
+          await player.setFilePath(variant, tag: tag);
+          return;
+        }
+      } catch (_) {
+        // 变体损坏等：继续走流式，下面原文件缓存仍可兜底。
       }
+    }
+    final cached = await src.cachedFilePath(s);
+    if (cached != null && !transcodeOn) {
+      if (await _playCachedFile(cached, src, tag)) return;
     }
     final direct = src.directStream(s);
     // 代理转码：开关开 + 后端可达 + 该源选了代理链路时优先走服务端；
     // origin 与鉴权头由源自备（WebDAV https URL + Basic / SFTP sftp:// + 信封 /
     // SMB smb:// + 信封）。
-    // 缓存命中已在上方返回（缓存永远存原文件），转码失败静默回落直连。
+    // 变体缓存命中已在上方返回；转码失败静默回落（原文件缓存 → 直连）。
     final proxyUrl = src.proxyOrigin(s);
     if (proxyUrl != null &&
         await _tryTranscodeLoad(s, src, proxyUrl, tag)) {
       return;
+    }
+    // 转码开但流失败（429 并发满 / 503 / 断网）：原文件缓存兜底，
+    // 不行再走直连（旧行为里原缓存恒首位，转码开时不再让它抢跑）。
+    if (transcodeOn && cached != null) {
+      if (await _playCachedFile(cached, src, tag)) return;
     }
     if (direct != null) {
       debugPrint('[play] ${src.kind} URL: ${direct.url}'
@@ -1969,6 +1985,23 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     debugPrint('[play] ${src.kind} 自建字节流: ${s.title}');
     await player.setAudioSource(
         DirectAudioSource(source: src, song: s, tag: tag));
+  }
+
+  /// 播本地缓存文件（原文件缓存 / 转码变体缓存共用）：成功 true；
+  /// 失败 false（调用方继续走流式，不让可播歌曲卡死）。
+  Future<bool> _playCachedFile(
+      String path, MusicSource src, dynamic tag) async {
+    debugPrint('[play] ${src.kind} 缓存文件: $path');
+    try {
+      await player.setFilePath(path, tag: tag);
+      return true;
+    } catch (e) {
+      // 缓存文件装载失败（如 ohos 沙箱真路径 mdk 打不开、缓存文件损坏）：
+      // 回落自建字节流，不让可播歌曲卡死在直连失败上（2026-10-07 ohos
+      // 直连改造的配套兜底；直连失败时字节流分支仍可用）。
+      debugPrint('[play] 缓存文件装载失败（回退字节流）: $e');
+      return false;
+    }
   }
 
   /// 懒补全：播放后把解析出的完整元数据（标题/歌手/专辑/专辑歌手/时长/曲目/年份/封面）

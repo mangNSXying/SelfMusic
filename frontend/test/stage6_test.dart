@@ -11,6 +11,7 @@ import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/data/sources/music_source.dart';
 import 'package:selfmusic/data/sources/sftp_direct_source.dart';
 import 'package:selfmusic/data/sources/smb_direct_source.dart';
+import 'package:selfmusic/data/sources/transcode_variant.dart';
 import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/services/api_client.dart';
 import 'package:sqlite3/open.dart';
@@ -313,6 +314,20 @@ void main() {
           shouldUseTranscode(
               enabled: true, apiBaseUrl: 'https://h', src: sftpDirect),
           isFalse);
+    });
+
+    test('transcodeVariantKey：同歌不同设置各一份，确定且文件名安全', () {
+      const base = 'abc123';
+      final a = transcodeVariantKey(base, 192, 'off');
+      // 确定性：同输入同输出。
+      expect(transcodeVariantKey(base, 192, 'off'), a);
+      // 区分度：码率/响度任一不同即不同 key（与原 key 也不同）。
+      expect(transcodeVariantKey(base, 256, 'off'), isNot(a));
+      expect(transcodeVariantKey(base, 192, '16'), isNot(a));
+      expect(transcodeVariantKey(base, 192, 'OFF'), a);
+      expect(a, isNot(base));
+      // 文件名安全：32 位小写 hex（md5，无路径分隔符与大小写问题）。
+      expect(RegExp(r'^[0-9a-f]{32}$').hasMatch(a), isTrue);
     });
   });
 }

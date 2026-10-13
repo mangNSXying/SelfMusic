@@ -125,6 +125,8 @@ class FvpAudioPlayer extends AudioPlayerPlatform {
       }
       // 请求头与 TLS 策略须在 setMedia 前设定（mdk 在 prepare 时读取 avio 选项）。
       _applyHttpSettings(src);
+      // 探测策略同样在 prepare 前设定（mdk 在 prepare 时读取 avformat 选项）。
+      _applyProbePolicy(uri);
       _player.media = uri;
       final ret = await _player.prepare(
           position: request.initialPosition?.inMilliseconds ?? 0);
@@ -301,6 +303,24 @@ class FvpAudioPlayer extends AudioPlayerPlatform {
     _player.setProperty('avio.headers', buildAvioHeaders(src.headers));
     _player.setProperty(
         'avio.tls_verify', ohosPlayerAllowSelfSigned ? '0' : '1');
+  }
+
+  /// 转码流探测策略（转码卡顿根因修复）：
+  /// 转码输出三无（无 Content-Length、`Accept-Ranges: none`、pipe 输出写不出
+  /// 有效 Xing 时长头），常规探测（默认 probesize 5MB ≈ 整首 192k 体积）会把
+  /// 整流读完才返回，`prepare()` 卡到 EOS（整首下完才播）。转码 URL 限小探测
+  /// 秒回（duration 取 null，app 侧已容忍）；其余恢复 ffmpeg 默认，避免影响
+  /// 直连/本地（同一 mdk 实例复用，必须显式复位，否则转码后播直连仍是小探测）。
+  void _applyProbePolicy(String uri) {
+    if (uri.contains('/transcode/stream')) {
+      _player.setProperty('avformat.probesize', '524288');
+      _player.setProperty('avformat.analyzeduration', '500000');
+      _player.setProperty('avformat.fflags', '+nobuffer');
+    } else {
+      _player.setProperty('avformat.probesize', '5000000');
+      _player.setProperty('avformat.analyzeduration', '0');
+      _player.setProperty('avformat.fflags', '-nobuffer');
+    }
   }
 
   /// 日志脱敏：隐藏 userinfo，避免凭据进日志。

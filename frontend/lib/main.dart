@@ -319,6 +319,7 @@ class SelfMusicApp extends StatelessWidget {
         onSongMetaRefreshed: (s) => direct.notifySongMetaChanged(),
         onNextChanged: (next) => direct.onNextChanged(next),
         submitCurrentMeta: direct.submitCurrentMeta,
+        resolveTranscodeCache: direct.cachedTranscodePath,
       )
       ..attachAudioHandlerIfAny(audioHandler);
     // 鸿蒙 AVSession 桥接线：attach 注册回推钩子与 direct 监听，

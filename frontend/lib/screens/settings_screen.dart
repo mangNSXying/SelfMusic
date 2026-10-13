@@ -542,7 +542,7 @@ class _TranscodeSectionState extends State<_TranscodeSection> {
             unknown
                 ? '经服务端代理播放：按需转码为 MP3（FLAC 源省流量）+ 可选响度均衡；正在探测服务端能力…'
                 : canUse
-                    ? '经服务端代理播放：按需转码为 MP3（FLAC 源省流量${_version == null ? '' : ' · 服务端 $_version'}）+ 可选响度均衡；缓存仍存原文件'
+                    ? '经服务端代理播放：按需转码为 MP3（FLAC 源省流量${_version == null ? '' : ' · 服务端 $_version'}）+ 可选响度均衡；缓存/预载按当前链路存（转码开时存转码产物）'
                     : '服务端不可用或无 ffmpeg（或未配对/旧服务端），开关不可用；播放自动走直连原文件',
             style: Theme.of(context)
                 .textTheme
