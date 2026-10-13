@@ -63,6 +63,11 @@ WeightJudgement judgeWeightRatio(Duration? duration, Duration position) {
 /// 按源 key 解析播放源的函数：`server` → 服务器代理源；`webdav:<name>` → 对应直连源。
 typedef SourceResolver = MusicSource? Function(String sourceKey);
 
+/// 按源 key 返回播放候选（主 + 备用，按线路偏好排序）：
+/// 每项为 `(source, lineIndex)`，lineIndex: 0=主用, 1=备用1, 2=备用2。
+typedef LineCandidatesResolver = List<(MusicSource, int)> Function(
+    String sourceKey);
+
 /// 播放模式（stage2.md §3）。
 enum PlayMode { sequence, loopList, loopOne, weighted }
 
@@ -95,7 +100,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   int _idx = 0;
   Song? _current;
   MusicSource? _curSource;
+
+  /// 当前曲实际走的线路（0=主用, 1=备用1, 2=备用2；供播放页线路菜单高亮）。
+  int _curLine = 0;
+  int get curLine => _curLine;
   SourceResolver? _resolver;
+
+  /// 备用候选解析（main 经 direct.lineCandidates 注入；为空则单线路）。
+  LineCandidatesResolver? _candidates;
+  void attachLineCandidates(LineCandidatesResolver r) => _candidates = r;
   LocalIndex? _index;
   SongWeightStore? _weight;
   AppSettings? _appSettings;
@@ -766,7 +779,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 测试入口：只跑装载重试（不碰队列/UI）。
   @visibleForTesting
-  Future<void> debugLoadDirect(Song s, MusicSource src,
+  Future<(MusicSource, int)> debugLoadDirect(Song s, MusicSource src,
           {required bool Function() alive}) =>
       _playDirect(s, src, alive: alive);
 
@@ -933,8 +946,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final token = ++_playToken;
     bool alive() => token == _playToken;
     try {
-      await _playDirect(cur, fresh, alive: alive);
+      final (used, line) = await _playDirect(cur, fresh, alive: alive);
       if (!alive()) return false;
+      _curSource = used;
+      _curLine = line;
       _loadFailStreak = 0;
       if (wasPlaying) {
         // 与 _play 同口径：自然播完时 playing 不复位，直接 play() 会空转，
@@ -1668,6 +1683,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 立即切换当前曲目并通知：后面的网络装载/缓冲再慢，播放页也先显示新曲。
       _current = cur;
       _curSource = src;
+      _curLine = 0;
       // 记录本次起始是否用户手动点播（改进.txt 功能7 完播判定用；任何新起始都会覆盖）。
       _startedManual = manual;
       // 用户主动起播 → 首轮同步晚到的远端断点不再回切。
@@ -1693,8 +1709,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           await player.pause();
         } catch (_) {}
       }
-      await _playDirect(cur, src, alive: alive);
+      final (used, line) = await _playDirect(cur, src, alive: alive);
       if (!alive()) return; // 已被更新的切歌接管
+      // Failover 成功：后续缓存/补读/歌词/预热一律走实际线路。
+      _curSource = used;
+      _curLine = line;
+      if (line != 0) {
+        AppToast.show('主源不可用，已切换到备用$line', isError: false);
+      }
       _loadFailStreak = 0;
       if (play) {
         // just_audio 的 play() 在内部 playing==true 时空转。上一首自然播完
@@ -1730,18 +1752,19 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _saveState(player.position);
       // 深层列表维护：歌单内播放推入末尾；外部点歌替换末尾。
       _trackDeepList(cur, push: fromPlaylist);
-      _onTrackStarted?.call(src, cur);
+      _onTrackStarted?.call(_curSource ?? src, cur);
       // 播放即重读当前歌曲元数据（不管之前是否读过，保证展示最新）。
       // 走直连任务队列：它必须抢在「下一首预载」和全库后台补读前面——
       // 界面上正显示着的那一行的标题/封面，比什么都急。
-      Future<void> enrichCurrent() => _enrichLazily(cur, src);
+      final enrichSrc = _curSource ?? src;
+      Future<void> enrichCurrent() => _enrichLazily(cur, enrichSrc);
       final submitMeta = _submitCurrentMeta;
       if (submitMeta != null) {
         submitMeta('${cur.sourceKey}\u0000${cur.sourceRef}', enrichCurrent);
       } else {
         unawaited(enrichCurrent());
       }
-      unawaited(_loadLyrics(cur, src));
+      unawaited(_loadLyrics(cur, enrichSrc));
       notifyListeners();
       _syncSystemMedia();
     } catch (e) {
@@ -1755,45 +1778,70 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// 直连源装载（带退避重试）：「切后台后还能播一两首、播完静默停住」的主因是
-  /// 后台网络被回收/连接超时，失败后没有重试也没有下一首兜底。重试会重建连接；
+  /// 直连源装载（带退避重试 + 备用 Failover）：「切后台后还能播一两首、
+  /// 播完静默停住」的主因是后台网络被回收/连接超时，失败后没有重试也没有
+  /// 下一首兜底。重试会重建连接；主源耗尽后按线路候选自动试备用（同
+  /// `sourceRef` 相对路径对应，跨类型亦可）；锁定线路时只走该路。
   /// [alive] 为假（已被更新的切歌接管）或正在退出时立即放弃，不再触碰播放器。
-  Future<void> _playDirect(Song s, MusicSource src,
+  /// 成功返回实际使用的 `(source, line)`，调用方据此更新 [_curSource]/[_curLine]。
+  Future<(MusicSource, int)> _playDirect(Song s, MusicSource src,
       {required bool Function() alive}) async {
+    List<(MusicSource, int)> cands;
+    try {
+      cands = _candidates?.call(s.sourceKey) ?? [(src, 0)];
+    } catch (_) {
+      cands = [(src, 0)];
+    }
+    if (cands.isEmpty) cands = [(src, 0)];
     Object? last;
-    final backoff = loadBackoff;
-    // 探针是否还值得做：超时过一次说明这台源当前无响应，后续重试不再重复白等
-    // [_probeTimeout]。原先每次尝试都先白等 10s 再去装载，单首最坏
-    // 10+15 / 1+10+15 / 3+10+15 ≈ 79s；现为 10 + 16 + 18 ≈ 44s。
-    // 不因探针超时就放弃装载——「首字节慢 12s」的源探针必超时而装载本可成功，
-    // 放弃会把它们误杀成「整队都播不了」。
-    var probeUsable = true;
-    for (var i = 0; i <= backoff.length; i++) {
-      if (!alive() || _shuttingDown) return;
-      if (i > 0) {
-        final wait = backoff[i - 1];
-        debugPrint('[play] ${wait.inSeconds}s 后重试装载《${s.title}》');
-        await Future.delayed(wait);
-        if (!alive() || _shuttingDown) return;
+    for (var c = 0; c < cands.length; c++) {
+      final (cand, line) = cands[c];
+      final isLast = c == cands.length - 1;
+      // 主线路（首候选）走完整退避；备用只单次尝试，避免 44s×3 的漫长卡死。
+      final attempts = (c == 0 && cands.length > 1)
+          ? loadBackoff.length + 1
+          : (cands.length == 1 ? loadBackoff.length + 1 : 1);
+      var probeUsable = true;
+      for (var i = 0; i < attempts; i++) {
+        if (!alive() || _shuttingDown) return (cand, line);
+        if (i > 0) {
+          final wait = loadBackoff[i - 1];
+          debugPrint('[play] ${wait.inSeconds}s 后重试装载《${s.title}》');
+          await Future.delayed(wait);
+          if (!alive() || _shuttingDown) return (cand, line);
+        }
+        try {
+          final injected = loadOverride;
+          if (injected != null) {
+            await injected(s, cand);
+          } else {
+            await _loadOnce(s, cand, probe: probeUsable);
+          }
+          if (c > 0) {
+            final label = line == 0 ? '主源' : '备用$line';
+            debugPrint('[play] 主源不可用，已切换到$label《${s.title}》');
+            // toast 交给调用方（有 context 的是 _play 的 catch，这里只记日志；
+            // 成功切换的提示在 _play 成功路径统一弹，避免 _loadOnce 内重复）。
+          }
+          return (cand, line);
+        } catch (e) {
+          if (e is PlayerInterruptedException) rethrow;
+          // 鉴权被拒重试也不会好：单线路立即失败；多线路则继续试下一备。
+          if (e is SourceAuthException && isLast) rethrow;
+          if (e is SourceAuthException) {
+            last = e;
+            break;
+          }
+          last = e;
+          if (probeTimedOut) {
+            probeUsable = false;
+            probeTimedOut = false;
+          }
+        }
       }
-      try {
-        final injected = loadOverride;
-        if (injected != null) {
-          await injected(s, src);
-        } else {
-          await _loadOnce(s, src, probe: probeUsable);
-        }
-        return;
-      } catch (e) {
-        // 被更新的装载接管（连按切歌）不是源错误，重试没有意义。
-        if (e is PlayerInterruptedException) rethrow;
-        // 鉴权被拒（401/403）重试也不会好：立即失败让提示尽早出现。
-        if (e is SourceAuthException) rethrow;
-        last = e;
-        if (probeTimedOut) {
-          probeUsable = false;
-          probeTimedOut = false;
-        }
+      if (!alive() || _shuttingDown) return (cand, line);
+      if (!isLast) {
+        debugPrint('[play] 线路${c == 0 ? '主源' : '备用$c'}失败，试下一线路《${s.title}》: $last');
       }
     }
     throw last ?? StateError('装载失败');

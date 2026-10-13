@@ -114,6 +114,76 @@ class _SourcesScreenState extends State<SourcesScreen>
   }
 }
 
+/// 备用源表单数据（本地不可做备用，故 kind 仅 webdav/sftp/smb）。
+class _FallbackData {
+  SourceKind kind;
+  SourceRoute route = SourceRoute.direct;
+  SftpAuthMethod authMethod = SftpAuthMethod.password;
+  late TextEditingController baseUrl;
+  late TextEditingController host;
+  late TextEditingController port;
+  late TextEditingController share;
+  late TextEditingController username;
+  late TextEditingController password;
+  late TextEditingController path;
+  late TextEditingController keyPem;
+  late TextEditingController keyPassphrase;
+  String? keyFileName;
+
+  _FallbackData({
+    this.kind = SourceKind.webdav,
+    Map<String, dynamic>? from,
+  }) {
+    final m = from ?? const {};
+    baseUrl = TextEditingController(text: m['baseUrl'] as String? ?? '');
+    host = TextEditingController(text: m['host'] as String? ?? '');
+    port = TextEditingController(
+        text: (m['port'] as num?)?.toString() ?? '');
+    share = TextEditingController(text: m['share'] as String? ?? '');
+    username = TextEditingController(text: m['username'] as String? ?? '');
+    password = TextEditingController(text: m['password'] as String? ?? '');
+    path = TextEditingController(text: m['path'] as String? ?? '');
+    keyPem = TextEditingController(text: m['keyPem'] as String? ?? '');
+    keyPassphrase =
+        TextEditingController(text: m['passphrase'] as String? ?? '');
+    route = parseSourceRoute(m['route']);
+    authMethod = parseSftpAuthMethod(m['authMethod']);
+    if (kind == SourceKind.webdav && from != null) {
+      // editableConfig 回填的 password 已在上。
+    }
+  }
+
+  Map<String, dynamic> toRawMap() {
+    final m = <String, dynamic>{
+      'kind': kind.name,
+      'baseUrl': baseUrl.text.trim(),
+      'host': host.text.trim(),
+      'port': int.tryParse(port.text.trim()) ?? 22,
+      'share': share.text.trim(),
+      'username': username.text.trim(),
+      'password': password.text,
+      'keyPem': keyPem.text,
+      'passphrase': keyPassphrase.text,
+      'authMethod': authMethod.name,
+      'path': path.text.trim(),
+      'route': route.name,
+    };
+    return m;
+  }
+
+  void dispose() {
+    baseUrl.dispose();
+    host.dispose();
+    port.dispose();
+    share.dispose();
+    username.dispose();
+    password.dispose();
+    path.dispose();
+    keyPem.dispose();
+    keyPassphrase.dispose();
+  }
+}
+
 /// 新增/编辑播放源弹窗：按源类型切换字段（WebDAV / 本地文件夹 / SFTP / SMB）。
 class _SourceDialog extends StatefulWidget {
   final String? editKey;
@@ -142,6 +212,8 @@ class _SourceDialogState extends State<_SourceDialog> {
   bool _testing = false;
   // 已导入的密钥文件名（仅展示用；密钥文本本身存在 _keyPem）。
   String? _keyFileName;
+  // 备用源（至多 kMaxFallbacks 个，本地不可做备）。
+  final List<_FallbackData> _fbs = [];
 
   bool get _isEdit => widget.editKey != null;
 
@@ -176,6 +248,16 @@ class _SourceDialogState extends State<_SourceDialog> {
     _keyPassphrase =
         TextEditingController(text: cfg['sftpPassphrase'] as String? ?? '');
     _route = parseSourceRoute(cfg['route']);
+    // 备用回填（editableConfig 已回填各槽位敏感字段）。
+    final rawFbs = parseFallbackConfigs(cfg['fallbacks']);
+    for (final fb in rawFbs) {
+      final kind = switch ((fb['kind'] as String? ?? '').trim()) {
+        'sftp' => SourceKind.sftp,
+        'smb' => SourceKind.smb,
+        _ => SourceKind.webdav,
+      };
+      _fbs.add(_FallbackData(kind: kind, from: fb));
+    }
     // 仅走 HTTP 的 WebDAV 地址失焦时可视化补 `https://`；
     // SFTP/SMB/本地路径不走 HTTP，禁止挂此逻辑。
     _baseUrlFocus = FocusNode();
@@ -199,7 +281,22 @@ class _SourceDialogState extends State<_SourceDialog> {
     _share.dispose();
     _keyPem.dispose();
     _keyPassphrase.dispose();
+    for (final fb in _fbs) {
+      fb.dispose();
+    }
     super.dispose();
+  }
+
+  void _addFallback() {
+    if (_fbs.length >= kMaxFallbacks) return;
+    setState(() => _fbs.add(_FallbackData()));
+  }
+
+  void _removeFallback(int i) {
+    setState(() {
+      _fbs[i].dispose();
+      _fbs.removeAt(i);
+    });
   }
 
   Future<void> _pickDirectory() async {
@@ -417,6 +514,475 @@ class _SourceDialogState extends State<_SourceDialog> {
     AppToast.show('连接成功', isError: false);
   }
 
+  // ---------- 备用源表单校验/测试（与主表单同口径，错误带备用序号） ----------
+
+  ({String host, int port, String username})? _readFbSftpForm(
+      int slot, _FallbackData fb) {
+    final label = fallbackLabel(slot);
+    final host = fb.host.text.trim();
+    if (host.isEmpty) {
+      setState(() => _error = '$label：请填写 SSH 主机');
+      return null;
+    }
+    final portRaw = fb.port.text.trim();
+    final port = portRaw.isEmpty ? 22 : int.tryParse(portRaw);
+    if (port == null || port < 1 || port > 65535) {
+      setState(() => _error = '$label：端口须为 1–65535 的数字（默认 22）');
+      return null;
+    }
+    final username = fb.username.text.trim();
+    if (username.isEmpty) {
+      setState(() => _error = '$label：请填写用户名');
+      return null;
+    }
+    if (fb.authMethod == SftpAuthMethod.password) {
+      if (fb.password.text.isEmpty) {
+        setState(() => _error = '$label：请填写密码');
+        return null;
+      }
+    } else {
+      if (!fb.keyPem.text.contains('PRIVATE KEY')) {
+        setState(() => _error = '$label：请粘贴 PEM 私钥文本（含 BEGIN/END 行）');
+        return null;
+      }
+    }
+    return (host: host, port: port, username: username);
+  }
+
+  ({String host, String share, String username})? _readFbSmbForm(
+      int slot, _FallbackData fb) {
+    final label = fallbackLabel(slot);
+    final host = fb.host.text.trim();
+    if (host.isEmpty) {
+      setState(() => _error = '$label：请填写 SMB 主机（IP 或主机名）');
+      return null;
+    }
+    final share = fb.share.text.trim();
+    if (share.isEmpty) {
+      setState(() => _error = '$label：请填写共享名（如 music）');
+      return null;
+    }
+    return (host: host, share: share, username: fb.username.text.trim());
+  }
+
+  Future<void> _importFbKeyFile(int slot, _FallbackData fb) async {
+    try {
+      final picked = await openFile();
+      if (picked == null) return;
+      final text = await picked.readAsString();
+      if (!text.contains('PRIVATE KEY')) {
+        if (!mounted) return;
+        setState(() => _error = '${fallbackLabel(slot)}：不是有效的私钥文件');
+        return;
+      }
+      if (text.length > 65536) {
+        if (!mounted) return;
+        setState(() => _error = '${fallbackLabel(slot)}：密钥文件过大（>64KB）');
+        return;
+      }
+      if (!mounted) return;
+      setState(() {
+        fb.keyPem.text = text.trim();
+        fb.keyFileName = picked.name;
+        _error = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = '${fallbackLabel(slot)}：读取密钥文件失败：${e.toString().replaceFirst(
+            RegExp(r'^(Bad state: |StateError: )'), '')}');
+    }
+  }
+
+  Future<void> _testFbSftpConnection(int slot, _FallbackData fb) async {
+    final form = _readFbSftpForm(slot, fb);
+    if (form == null || !mounted) return;
+    final direct = context.read<DirectSourceManager>();
+    setState(() {
+      _testing = true;
+      _error = null;
+    });
+    String fp;
+    try {
+      fp = await SftpDirectSource.fetchSftpFingerprint(
+        host: form.host,
+        port: form.port,
+        username: form.username,
+        authMethod: fb.authMethod,
+        password: fb.password.text,
+        keyPem: fb.keyPem.text,
+        keyPassphrase: fb.keyPassphrase.text,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _testing = false;
+        _error = '${fallbackLabel(slot)}：${e.toString().replaceFirst(
+            RegExp(r'^(Bad state: |StateError: )'), '')}';
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _testing = false);
+    final hostPort = sftpHostPort(form.host, form.port);
+    final pinned = direct.sshFingerprintOf(hostPort);
+    if (pinned == null || pinned.isEmpty) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: Text('确认主机指纹（${fallbackLabel(slot)}）'),
+          content: Text('首次连接该 SSH 主机，请确认指纹是你的服务器：\n\n$fp\n\n'
+              '确认后才会钉住并允许连接。'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.of(c).pop(false),
+                child: const Text('取消')),
+            FilledButton(
+                onPressed: () => Navigator.of(c).pop(true),
+                child: const Text('确认并记住')),
+          ],
+        ),
+      );
+      if (ok == true && mounted) {
+        await direct.pinSshHost(hostPort, fp);
+        if (mounted) AppToast.show('已确认并记住主机指纹', isError: false);
+      }
+      return;
+    }
+    if (pinned != fp) {
+      final update = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: const Text('主机指纹变更'),
+          content: Text('已记住的指纹：\n$pinned\n\n实际指纹：\n$fp\n\n'
+              '可能是中间人或服务器重装，核对无误后再更新。'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.of(c).pop(false),
+                child: const Text('取消')),
+            FilledButton(
+                onPressed: () => Navigator.of(c).pop(true),
+                child: const Text('确认更新',
+                    style: TextStyle(color: Colors.red))),
+          ],
+        ),
+      );
+      if (update == true && mounted) {
+        await direct.pinSshHost(hostPort, fp);
+        if (mounted) AppToast.show('主机指纹已更新', isError: false);
+      }
+      return;
+    }
+    AppToast.show('连接成功，指纹匹配', isError: false);
+  }
+
+  Future<void> _testFbSmbConnection(int slot, _FallbackData fb) async {
+    final form = _readFbSmbForm(slot, fb);
+    if (form == null || !mounted) return;
+    setState(() {
+      _testing = true;
+      _error = null;
+    });
+    try {
+      await SmbDirectSource.testConnection(
+        host: form.host,
+        share: form.share,
+        username: form.username,
+        password: fb.password.text,
+        useSmbConnect: isOhos,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _testing = false;
+        _error = '${fallbackLabel(slot)}：${e.toString().replaceFirst(
+            RegExp(r'^(Bad state: |StateError: )'), '')}';
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _testing = false);
+    AppToast.show('连接成功', isError: false);
+  }
+
+  Widget _buildFallbackCard(int i) {
+    final fb = _fbs[i];
+    final label = fallbackLabel(i);
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(label,
+                      style: const TextStyle(fontWeight: FontWeight.w600)),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close, size: 18),
+                  tooltip: '删除$label',
+                  onPressed: () => _removeFallback(i),
+                ),
+              ],
+            ),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SegmentedButton<SourceKind>(
+                segments: const [
+                  ButtonSegment(
+                    value: SourceKind.webdav,
+                    icon: Icon(Icons.cloud_outlined),
+                    label: Text('WebDAV'),
+                  ),
+                  ButtonSegment(
+                    value: SourceKind.sftp,
+                    icon: Icon(Icons.storage_outlined),
+                    label: Text('SFTP'),
+                  ),
+                  ButtonSegment(
+                    value: SourceKind.smb,
+                    icon: Icon(Icons.dns_outlined),
+                    label: Text('SMB'),
+                  ),
+                ],
+                selected: {fb.kind},
+                onSelectionChanged: (s) =>
+                    setState(() => fb.kind = s.first),
+              ),
+            ),
+            const SizedBox(height: 8),
+            if (fb.kind == SourceKind.webdav) ...[
+              TextField(
+                controller: fb.baseUrl,
+                keyboardType: TextInputType.url,
+                autocorrect: false,
+                decoration: const InputDecoration(
+                  labelText: '备用 WebDAV 地址',
+                  hintText: 'https://192.168.1.11/dav/music',
+                ),
+              ),
+              TextField(
+                controller: fb.username,
+                decoration: const InputDecoration(labelText: '用户名（可空）'),
+              ),
+              TextField(
+                controller: fb.password,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: '密码（可空）'),
+              ),
+            ] else if (fb.kind == SourceKind.sftp) ...[
+              TextField(
+                controller: fb.host,
+                decoration: const InputDecoration(
+                  labelText: '备用 SSH 主机',
+                  hintText: '192.168.1.11 或 nas2.local',
+                ),
+              ),
+              TextField(
+                controller: fb.port,
+                decoration: const InputDecoration(
+                  labelText: '端口（默认 22）',
+                  hintText: '22',
+                ),
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              ),
+              TextField(
+                controller: fb.username,
+                decoration: const InputDecoration(labelText: '用户名'),
+              ),
+              const SizedBox(height: 8),
+              SegmentedButton<SftpAuthMethod>(
+                segments: const [
+                  ButtonSegment(
+                    value: SftpAuthMethod.password,
+                    label: Text('密码'),
+                  ),
+                  ButtonSegment(
+                    value: SftpAuthMethod.key,
+                    label: Text('密钥'),
+                  ),
+                ],
+                selected: {fb.authMethod},
+                onSelectionChanged: (s) =>
+                    setState(() => fb.authMethod = s.first),
+              ),
+              if (fb.authMethod == SftpAuthMethod.password)
+                TextField(
+                  controller: fb.password,
+                  obscureText: true,
+                  decoration: const InputDecoration(labelText: '密码'),
+                )
+              else ...[
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () => _importFbKeyFile(i, fb),
+                        icon: const Icon(Icons.key_outlined, size: 18),
+                        label: const Text('导入密钥文件'),
+                      ),
+                    ),
+                    if (fb.keyPem.text.isNotEmpty)
+                      IconButton(
+                        icon: const Icon(Icons.clear),
+                        tooltip: '清除已导入密钥',
+                        onPressed: () => setState(() {
+                          fb.keyPem.clear();
+                          fb.keyFileName = null;
+                        }),
+                      ),
+                  ],
+                ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    fb.keyPem.text.isEmpty
+                        ? '未导入（支持 OpenSSH / PKCS8 私钥）'
+                        : fb.keyFileName != null
+                            ? '已导入 ${fb.keyFileName}（${fb.keyPem.text.length} 字符）'
+                            : '已保存密钥（${fb.keyPem.text.length} 字符）',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+                TextField(
+                  controller: fb.keyPassphrase,
+                  obscureText: true,
+                  decoration:
+                      const InputDecoration(labelText: '私钥口令（无则空）'),
+                ),
+              ],
+              TextField(
+                controller: fb.path,
+                decoration: const InputDecoration(
+                  labelText: '根目录（可空，空=登录目录）',
+                  hintText: '/music',
+                ),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed:
+                    _testing ? null : () => _testFbSftpConnection(i, fb),
+                icon: _testing
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.verified_outlined, size: 18),
+                label: const Text('测试连接'),
+              ),
+            ] else if (fb.kind == SourceKind.smb) ...[
+              TextField(
+                controller: fb.host,
+                decoration: const InputDecoration(
+                  labelText: '备用 SMB 主机',
+                  hintText: '192.168.1.11 或 nas2.local',
+                ),
+              ),
+              TextField(
+                controller: fb.share,
+                decoration: const InputDecoration(
+                  labelText: '共享名',
+                  hintText: 'music',
+                ),
+              ),
+              TextField(
+                controller: fb.username,
+                decoration: const InputDecoration(
+                    labelText: '用户名（可空，空即匿名）'),
+              ),
+              TextField(
+                controller: fb.password,
+                obscureText: true,
+                decoration: const InputDecoration(
+                    labelText: '密码（可空，空即匿名）'),
+              ),
+              TextField(
+                controller: fb.path,
+                decoration: const InputDecoration(
+                  labelText: '根目录（可空，空=共享根）',
+                  hintText: 'music/flac',
+                ),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: _testing ? null : () => _testFbSmbConnection(i, fb),
+                icon: _testing
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.verified_outlined, size: 18),
+                label: const Text('测试连接'),
+              ),
+            ],
+            const SizedBox(height: 8),
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Text('备用播放链路'),
+            ),
+            const SizedBox(height: 8),
+            SegmentedButton<SourceRoute>(
+              segments: const [
+                ButtonSegment(
+                  value: SourceRoute.direct,
+                  icon: Icon(Icons.bolt_outlined),
+                  label: Text('直连'),
+                ),
+                ButtonSegment(
+                  value: SourceRoute.proxy,
+                  icon: Icon(Icons.cloud_outlined),
+                  label: Text('代理'),
+                ),
+              ],
+              selected: {fb.route},
+              onSelectionChanged: (s) =>
+                  setState(() => fb.route = s.first),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 备用原始 Map（含敏感明文，供 manager 收敛）：失败置 [_error] 返回 null。
+  List<Map<String, dynamic>>? _readFallbackMaps() {
+    final out = <Map<String, dynamic>>[];
+    for (var i = 0; i < _fbs.length; i++) {
+      final fb = _fbs[i];
+      final label = fallbackLabel(i);
+      if (fb.kind == SourceKind.local) {
+        setState(() => _error = '$label：本地只可做主源，不可做备用源');
+        return null;
+      }
+      if (fb.kind == SourceKind.webdav) {
+        if (applyHttpsPrefixToController(fb.baseUrl)) setState(() {});
+        final url = fb.baseUrl.text.trim();
+        if (url.isEmpty) {
+          setState(() => _error = '$label：请填写 WebDAV 地址');
+          return null;
+        }
+        final direct = context.read<DirectSourceManager>();
+        final err = ApiClient.validateEndpointUrl(url,
+            allowHttp: direct.settings.allowInsecureHttp);
+        if (err != null) {
+          setState(() => _error = '$label：$err');
+          return null;
+        }
+      } else if (fb.kind == SourceKind.sftp) {
+        if (_readFbSftpForm(i, fb) == null) return null;
+      } else if (fb.kind == SourceKind.smb) {
+        if (_readFbSmbForm(i, fb) == null) return null;
+      }
+      out.add(fb.toRawMap());
+    }
+    return out;
+  }
+
   Future<void> _submit() async {
     final direct = context.read<DirectSourceManager>();
     final name = _name.text.trim();
@@ -424,11 +990,35 @@ class _SourceDialogState extends State<_SourceDialog> {
       setState(() => _error = '请填写名称');
       return;
     }
+    // 备用先校验（主配置校验失败时不弹备用错误，顺序：主 → 备用 → 去重）。
+    // 这里只做格式校验，去重在主配置就绪后统一做。
+    List<Map<String, dynamic>> fbMaps = const [];
+    if (_fbs.isNotEmpty) {
+      final parsed = _readFallbackMaps();
+      if (parsed == null) return;
+      fbMaps = parsed;
+    }
     // 编辑前记下旧链路：仅 route 真变化时才重载当前曲，避免改密码/改名等
     // 无关编辑打断正在播放。
     final oldRoute = _isEdit
         ? direct.sourceByKey(widget.editKey!)?.route
         : null;
+    // 主 + 备用去重（与 manager 同口径，提前报错避免半落库）。
+    String? fbErr;
+    try {
+      final primaryProbe = <String, dynamic>{
+        'baseUrl': _baseUrl.text.trim(),
+        'host': _host.text.trim(),
+        'port': int.tryParse(_port.text.trim()) ?? 22,
+        'share': _share.text.trim(),
+        'path': _path.text.trim(),
+      };
+      fbErr = direct.validateFallbacks(_kind.name, primaryProbe, fbMaps);
+    } catch (_) {}
+    if (fbErr != null) {
+      setState(() => _error = fbErr);
+      return;
+    }
     try {
       if (_kind == SourceKind.local) {
         final path = _path.text.trim();
@@ -438,9 +1028,9 @@ class _SourceDialogState extends State<_SourceDialog> {
         }
         if (_isEdit) {
           await direct.updateSource(widget.editKey!,
-              name: name, path: path);
+              name: name, path: path, fallbacks: fbMaps);
         } else {
-          await direct.addLocal(name: name, path: path);
+          await direct.addLocal(name: name, path: path, fallbacks: fbMaps);
         }
       } else if (_kind == SourceKind.sftp) {
         final form = _readSftpForm();
@@ -461,7 +1051,8 @@ class _SourceDialogState extends State<_SourceDialog> {
                   ? _keyPassphrase.text
                   : '',
               path: root,
-              route: _route);
+              route: _route,
+              fallbacks: fbMaps);
         } else {
           await direct.addSftp(
               name: name,
@@ -477,7 +1068,8 @@ class _SourceDialogState extends State<_SourceDialog> {
                   ? _keyPassphrase.text
                   : '',
               rootPath: root,
-              route: _route);
+              route: _route,
+              fallbacks: fbMaps);
         }
         if (!mounted) return;
         // 未钉指纹仍允许保存（离线等场景），首次扫描/播放会明确引导先确认。
@@ -499,7 +1091,8 @@ class _SourceDialogState extends State<_SourceDialog> {
               username: form.username,
               password: _password.text,
               path: root,
-              route: _route);
+              route: _route,
+              fallbacks: fbMaps);
         } else {
           await direct.addSmb(
               name: name,
@@ -508,7 +1101,8 @@ class _SourceDialogState extends State<_SourceDialog> {
               username: form.username,
               password: _password.text,
               rootPath: root,
-              route: _route);
+              route: _route,
+              fallbacks: fbMaps);
         }
       } else {
         // WebDAV 走 HTTP：保存前先把补全写回输入框（可视化），再校验。
@@ -549,14 +1143,16 @@ class _SourceDialogState extends State<_SourceDialog> {
               baseUrl: url,
               username: _username.text.trim(),
               password: _password.text,
-              route: _route);
+              route: _route,
+              fallbacks: fbMaps);
         } else {
           await direct.addWebdav(
               name: name,
               baseUrl: url,
               username: _username.text.trim(),
               password: _password.text,
-              route: _route);
+              route: _route,
+              fallbacks: fbMaps);
         }
       }
       // 播放链路（直连↔代理）即时生效：若编辑的是正在播放的源且 route 变了，
@@ -847,6 +1443,34 @@ class _SourceDialogState extends State<_SourceDialog> {
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
+            const SizedBox(height: 16),
+            const Divider(height: 16),
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Text('备用源（至多 2 个）',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+            ),
+            const SizedBox(height: 4),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '主源失败自动按相对路径切备用；本地只可做主源，不可做备用',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+            const SizedBox(height: 8),
+            for (var i = 0; i < _fbs.length; i++) _buildFallbackCard(i),
+            if (_fbs.length < kMaxFallbacks)
+              OutlinedButton.icon(
+                onPressed: _addFallback,
+                icon: const Icon(Icons.add, size: 18),
+                label: Text(_fbs.isEmpty ? '添加备用源' : '再添加一个备用源'),
+              )
+            else
+              Text(
+                '已达上限（2 个备用源）',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
             if (_error != null) ...[
               const SizedBox(height: 12),
               Align(
@@ -952,10 +1576,21 @@ class _DirectSourceCard extends StatelessWidget {
     final count = direct.countOf(sourceKey);
     final isLocal = s.kind == SourceKind.local;
     final needsSecrets = direct.sourceNeedsSecrets(sourceKey);
+    final fbCount = direct.fallbackCountOf(sourceKey);
+    final fbNeeds = fbCount > 0 && direct.fallbackNeedsSecrets(sourceKey);
+    final linePref = direct.linePrefOf(sourceKey);
     // 非本地源的播放链路（弹窗可配）：直连/代理二选一，互斥替换；
     // 本地源恒直连。代理才走服务端转码，直连恒原生地址。
     final routeLabel =
         isLocal || s.route == SourceRoute.direct ? '直连' : '代理';
+    final fbLabel = fbCount > 0 ? ' · 备×$fbCount' : '';
+    final lineLabel = linePref == SourceLine.auto
+        ? ''
+        : linePref == SourceLine.primary
+            ? ' · 线路:主用'
+            : linePref == SourceLine.fb0
+                ? ' · 线路:备用1'
+                : ' · 线路:备用2';
 
     final tile = ListTile(
       leading: _SourceKindIcon(kind: s.kind),
@@ -968,7 +1603,9 @@ class _DirectSourceCard extends StatelessWidget {
               ?.copyWith(fontWeight: FontWeight.w600)),
       subtitle: Text(needsSecrets
           ? '待配置凭据 · 点击「编辑」补输后可用'
-          : '$routeLabel · 已索引 $count 首'),
+          : fbNeeds
+              ? '$routeLabel$fbLabel$lineLabel · 备用待配凭据 · 已索引 $count 首'
+              : '$routeLabel$fbLabel$lineLabel · 已索引 $count 首'),
       trailing: _SourceMenu(sourceKey: sourceKey, direct: direct),
       onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
     );
@@ -978,7 +1615,9 @@ class _DirectSourceCard extends StatelessWidget {
       title: s.name,
       subtitle: needsSecrets
           ? '待配置凭据 · 点击「编辑」补输后可用'
-          : '$routeLabel · 已索引 $count 首',
+          : fbNeeds
+              ? '$routeLabel$fbLabel$lineLabel · 备用待配凭据 · 已索引 $count 首'
+              : '$routeLabel$fbLabel$lineLabel · 已索引 $count 首',
       fallback: _SourceKindIcon(kind: s.kind, size: 44, framed: false),
       onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
       cornerAction: _SourceMenu(sourceKey: sourceKey, direct: direct),
@@ -987,6 +1626,7 @@ class _DirectSourceCard extends StatelessWidget {
 }
 
 /// 播放源设置菜单（列表行 trailing / 方形卡片右上角共用）。
+/// 含线路切换（自动/主用/备用1/备用2，与播放页三点菜单同功能）。
 class _SourceMenu extends StatelessWidget {
   final String sourceKey;
   final DirectSourceManager direct;
@@ -994,11 +1634,23 @@ class _SourceMenu extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final fbCount = direct.fallbackCountOf(sourceKey);
+    final linePref = direct.linePrefOf(sourceKey);
+    String lineLabel(SourceLine l) {
+      final cur = linePref == l ? ' ✓' : '';
+      return switch (l) {
+        SourceLine.auto => '线路：自动$cur',
+        SourceLine.primary => '线路：主用$cur',
+        SourceLine.fb0 => '线路：备用1$cur',
+        SourceLine.fb1 => '线路：备用2$cur',
+      };
+    }
+
     return PopupMenuButton<String>(
       tooltip: '源设置',
       iconSize: 20,
       padding: EdgeInsets.zero,
-      onSelected: (v) {
+      onSelected: (v) async {
         switch (v) {
           case 'edit':
             showDialog<void>(
@@ -1006,10 +1658,50 @@ class _SourceMenu extends StatelessWidget {
                 builder: (_) => _SourceDialog(editKey: sourceKey));
           case 'delete':
             _confirmDelete(context, sourceKey, direct);
+          case 'line_auto':
+          case 'line_primary':
+          case 'line_fb0':
+          case 'line_fb1':
+            final line = switch (v) {
+              'line_primary' => SourceLine.primary,
+              'line_fb0' => SourceLine.fb0,
+              'line_fb1' => SourceLine.fb1,
+              _ => SourceLine.auto,
+            };
+            await direct.setLinePref(sourceKey, line);
+            if (context.mounted) {
+              AppToast.show(
+                  line == SourceLine.auto
+                      ? '已切到自动线路（主→备 Failover）'
+                      : line == SourceLine.primary
+                          ? '已锁定主用线路'
+                          : line == SourceLine.fb0
+                              ? '已锁定备用1线路'
+                              : '已锁定备用2线路',
+                  isError: false);
+              // 若正在播该源，重载当前曲使线路即时生效。
+              try {
+                final player = context.read<PlayerProvider>();
+                if (player.current?.sourceKey == sourceKey) {
+                  unawaited(player.reloadCurrentForPlaybackRoute());
+                }
+              } catch (_) {}
+            }
         }
       },
       itemBuilder: (c) => [
         const PopupMenuItem(value: 'edit', child: Text('编辑')),
+        if (fbCount > 0) ...[
+          const PopupMenuDivider(),
+          PopupMenuItem(value: 'line_auto', child: Text(lineLabel(SourceLine.auto))),
+          PopupMenuItem(
+              value: 'line_primary',
+              child: Text(lineLabel(SourceLine.primary))),
+          PopupMenuItem(value: 'line_fb0', child: Text(lineLabel(SourceLine.fb0))),
+          if (fbCount > 1)
+            PopupMenuItem(
+                value: 'line_fb1', child: Text(lineLabel(SourceLine.fb1))),
+        ],
         const PopupMenuDivider(),
         const PopupMenuItem(
           value: 'delete',
@@ -1017,6 +1709,63 @@ class _SourceMenu extends StatelessWidget {
         ),
       ],
     );
+  }
+}
+
+/// 播放页/任意处共用的线路切换菜单项构造（与 [_SourceMenu] 同文案/同行为）。
+List<PopupMenuEntry<String>> buildLineMenuItems(
+    DirectSourceManager direct, String sourceKey) {
+  final fbCount = direct.fallbackCountOf(sourceKey);
+  if (fbCount == 0) return const [];
+  final linePref = direct.linePrefOf(sourceKey);
+  String label(SourceLine l) {
+    final cur = linePref == l ? ' ✓' : '';
+    return switch (l) {
+      SourceLine.auto => '线路：自动$cur',
+      SourceLine.primary => '线路：主用$cur',
+      SourceLine.fb0 => '线路：备用1$cur',
+      SourceLine.fb1 => '线路：备用2$cur',
+    };
+  }
+
+  return [
+    const PopupMenuDivider(),
+    PopupMenuItem(value: 'line_auto', child: Text(label(SourceLine.auto))),
+    PopupMenuItem(
+        value: 'line_primary', child: Text(label(SourceLine.primary))),
+    PopupMenuItem(value: 'line_fb0', child: Text(label(SourceLine.fb0))),
+    if (fbCount > 1)
+      PopupMenuItem(value: 'line_fb1', child: Text(label(SourceLine.fb1))),
+  ];
+}
+
+/// 线路切换选中后的统一处理（源卡片与播放页共用）。
+Future<void> handleLineMenuSelected(
+    BuildContext context, String sourceKey, String v) async {
+  final direct = context.read<DirectSourceManager>();
+  final line = switch (v) {
+    'line_primary' => SourceLine.primary,
+    'line_fb0' => SourceLine.fb0,
+    'line_fb1' => SourceLine.fb1,
+    _ => SourceLine.auto,
+  };
+  await direct.setLinePref(sourceKey, line);
+  if (context.mounted) {
+    AppToast.show(
+        line == SourceLine.auto
+            ? '已切到自动线路（主→备 Failover）'
+            : line == SourceLine.primary
+                ? '已锁定主用线路'
+                : line == SourceLine.fb0
+                    ? '已锁定备用1线路'
+                    : '已锁定备用2线路',
+        isError: false);
+    try {
+      final player = context.read<PlayerProvider>();
+      if (player.current?.sourceKey == sourceKey) {
+        unawaited(player.reloadCurrentForPlaybackRoute());
+      }
+    } catch (_) {}
   }
 }
 

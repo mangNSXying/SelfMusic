@@ -135,6 +135,46 @@ class SecretStore {
   Future<void> deleteSmb(String sourceKey) =>
       storage.delete(key: _smbKey(sourceKey));
 
+  // ---------- 备用源槽位（`#fb0` / `#fb1` 后缀；与主槽位隔离） ----------
+
+  String _slotKey(String sourceKey, int slot) => '$sourceKey#fb$slot';
+
+  Future<String?> webdavPasswordFb(String sourceKey, int slot) =>
+      webdavPassword(_slotKey(sourceKey, slot));
+  Future<void> setWebdavPasswordFb(
+          String sourceKey, int slot, String? password) =>
+      setWebdavPassword(_slotKey(sourceKey, slot), password);
+  Future<void> migrateWebdavFb(
+          String oldKey, String newKey, int slot) =>
+      migrateWebdav(_slotKey(oldKey, slot), _slotKey(newKey, slot));
+  Future<void> deleteWebdavFb(String sourceKey, int slot) =>
+      deleteWebdav(_slotKey(sourceKey, slot));
+
+  Future<String?> sftpPasswordFb(String sourceKey, int slot) =>
+      sftpPassword(_slotKey(sourceKey, slot));
+  Future<String?> sftpKeyPemFb(String sourceKey, int slot) =>
+      sftpKeyPem(_slotKey(sourceKey, slot));
+  Future<String?> sftpKeyPassphraseFb(String sourceKey, int slot) =>
+      sftpKeyPassphrase(_slotKey(sourceKey, slot));
+  Future<void> setSftpSecretsFb(String sourceKey, int slot,
+          {String? password, String? keyPem, String? passphrase}) =>
+      setSftpSecrets(_slotKey(sourceKey, slot),
+          password: password, keyPem: keyPem, passphrase: passphrase);
+  Future<void> migrateSftpFb(String oldKey, String newKey, int slot) =>
+      migrateSftp(_slotKey(oldKey, slot), _slotKey(newKey, slot));
+  Future<void> deleteSftpFb(String sourceKey, int slot) =>
+      deleteSftp(_slotKey(sourceKey, slot));
+
+  Future<String?> smbPasswordFb(String sourceKey, int slot) =>
+      smbPassword(_slotKey(sourceKey, slot));
+  Future<void> setSmbPasswordFb(
+          String sourceKey, int slot, String? password) =>
+      setSmbPassword(_slotKey(sourceKey, slot), password);
+  Future<void> migrateSmbFb(String oldKey, String newKey, int slot) =>
+      migrateSmb(_slotKey(oldKey, slot), _slotKey(newKey, slot));
+  Future<void> deleteSmbFb(String sourceKey, int slot) =>
+      deleteSmb(_slotKey(sourceKey, slot));
+
   Future<String?> pairingKey() => storage.read(key: pairingKeyId);
 
   Future<void> setPairingKey(String? key) async {

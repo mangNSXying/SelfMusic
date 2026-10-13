@@ -302,6 +302,7 @@ class SelfMusicApp extends StatelessWidget {
   final nav = NavigationProvider();
     final player = PlayerProvider()
       ..attachSourceResolver((key) => direct.sourceByKey(key))
+      ..attachLineCandidates((key) => direct.lineCandidates(key))
       ..attachAppSettings(direct.settings)
       ..attachApi(api)
       ..attachServerAvailable(() => direct.isServerAvailable)

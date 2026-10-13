@@ -685,6 +685,25 @@ class AppSettings {
   set pauseOnDeviceDisconnect(bool v) =>
       index.settingsSet(kPauseOnDeviceDisconnect, v ? '1' : '0');
 
+  // ---------- 备用源（本地偏好，不进 knownKeys，不随设置导出/同步） ----------
+
+  /// 备用缺歌自动补齐（默认关）：主源播放成功后，后台抽查备用是否存在同 ref，
+  /// 缺失则把主源当前曲流式复制过去（单首按需，不做全库静默全量）。
+  static const String kFallbackAutoRepair = 'fallback_auto_repair';
+
+  bool get fallbackAutoRepair =>
+      (index.settingsGet(kFallbackAutoRepair) ?? '0') == '1';
+  set fallbackAutoRepair(bool v) =>
+      index.settingsSet(kFallbackAutoRepair, v ? '1' : '0');
+
+  /// 手动线路偏好（auto/primary/fb0/fb1，默认 auto）：按源 key 存。
+  static String _lineKey(String sourceKey) => 'source_line:$sourceKey';
+
+  String getSourceLine(String sourceKey) =>
+      index.settingsGet(_lineKey(sourceKey)) ?? 'auto';
+  setSourceLine(String sourceKey, String line) =>
+      index.settingsSet(_lineKey(sourceKey), line);
+
   /// 全部已知键（供设置导入导出筛选，settings.md §3.5）。
   static const List<String> knownKeys = [
     kCacheMaxBytes,

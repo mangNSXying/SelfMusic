@@ -1783,6 +1783,12 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
           onChanged: (v) => setState(() => _settings.preloadNext = v),
         ),
         SwitchListTile(
+          title: const Text('备用源缺歌自动补齐'),
+          subtitle: const Text('主源播放成功后，把当前曲复制到缺失该歌的备用（单首按需，需备用可写；默认关）'),
+          value: _settings.fallbackAutoRepair,
+          onChanged: (v) => setState(() => _settings.fallbackAutoRepair = v),
+        ),
+        SwitchListTile(
           title: const Text('睡眠定时默认播完最后曲目'),
           subtitle: const Text('到点不中断当前歌曲，放完这曲再暂停（弹窗内可单独调整）'),
           value: _settings.sleepPlayThroughDefault,

@@ -188,6 +188,11 @@ class DirectSourceManager extends ChangeNotifier {
   /// 各源 SMB 密码的内存镜像（持久化在 [SecretStore]；用户名与密码双空即匿名）。
   final Map<String, String> _smbPwds = {};
 
+  /// 备用源凭据内存镜像（key → slot → 凭据；持久化在 SecretStore `#fb*` 槽位）。
+  final Map<String, Map<int, String>> _webdavFbPwds = {};
+  final Map<String, Map<int, _SftpSecrets>> _sftpFbSecrets = {};
+  final Map<String, Map<int, String>> _smbFbPwds = {};
+
   int _favoriteVersion = 0;
 
   /// 收藏列表版本号：全局收藏面板监听该值刷新（避免全量 rebuild）。
@@ -333,6 +338,15 @@ class DirectSourceManager extends ChangeNotifier {
       ..remove('password')
       ..remove('keyPem')
       ..remove('passphrase');
+    // 备用同步：同样去敏感（各槽位只留非敏感连接参数）。
+    final rawFbs = sanitized['fallbacks'];
+    if (rawFbs is List) {
+      sanitized['fallbacks'] = [
+        for (final e in rawFbs)
+          if (e is Map) sanitizeFallbackConfig(Map<String, dynamic>.of(
+              e.map((k, v) => MapEntry(k.toString(), v))))
+      ];
+    }
     await index.enqueueOutbox(type, {
       'client_uuid': uuid,
       'kind': row.kind,
@@ -418,6 +432,48 @@ class DirectSourceManager extends ChangeNotifier {
           if (s is LocalDirectSource) '${s.key}|${s.rootPath}' else s.key
       ].join('\n');
 
+  Future<void> _loadFallbackSecrets(String key, Map<String, dynamic> cfg) async {
+    final fbs = parseFallbackConfigs(cfg['fallbacks']);
+    if (fbs.isEmpty) {
+      _webdavFbPwds.remove(key);
+      _sftpFbSecrets.remove(key);
+      _smbFbPwds.remove(key);
+      return;
+    }
+    final w = <int, String>{};
+    final s = <int, _SftpSecrets>{};
+    final m = <int, String>{};
+    for (var i = 0; i < fbs.length; i++) {
+      final kind = (fbs[i]['kind'] as String? ?? '').trim();
+      if (kind == 'webdav') {
+        w[i] = await secrets.webdavPasswordFb(key, i) ?? '';
+      } else if (kind == 'sftp') {
+        s[i] = _SftpSecrets(
+          password: await secrets.sftpPasswordFb(key, i) ?? '',
+          keyPem: await secrets.sftpKeyPemFb(key, i) ?? '',
+          passphrase: await secrets.sftpKeyPassphraseFb(key, i) ?? '',
+        );
+      } else if (kind == 'smb') {
+        m[i] = await secrets.smbPasswordFb(key, i) ?? '';
+      }
+    }
+    if (w.isEmpty) {
+      _webdavFbPwds.remove(key);
+    } else {
+      _webdavFbPwds[key] = w;
+    }
+    if (s.isEmpty) {
+      _sftpFbSecrets.remove(key);
+    } else {
+      _sftpFbSecrets[key] = s;
+    }
+    if (m.isEmpty) {
+      _smbFbPwds.remove(key);
+    } else {
+      _smbFbPwds[key] = m;
+    }
+  }
+
   Future<MusicSource?> _buildRowFromRow(DirectSourceRow r) async {
     try {
       if (r.kind == 'webdav') {
@@ -435,12 +491,14 @@ class DirectSourceManager extends ChangeNotifier {
         }
         _webdavPwds[r.key] = pwd ?? '';
         cfg['password'] = pwd ?? '';
+        await _loadFallbackSecrets(r.key, cfg);
         return _buildDirect(
             kind: r.kind, key: r.key, name: name, cfg: cfg);
       }
       if (r.kind == 'local') {
         final cfg = jsonDecode(r.config) as Map<String, dynamic>;
         final name = cfg['name'] as String? ?? r.name;
+        await _loadFallbackSecrets(r.key, cfg);
         return _buildDirect(
             kind: r.kind, key: r.key, name: name, cfg: cfg);
       }
@@ -452,6 +510,7 @@ class DirectSourceManager extends ChangeNotifier {
           keyPem: await secrets.sftpKeyPem(r.key) ?? '',
           passphrase: await secrets.sftpKeyPassphrase(r.key) ?? '',
         );
+        await _loadFallbackSecrets(r.key, cfg);
         return _buildDirect(
             kind: r.kind, key: r.key, name: name, cfg: cfg);
       }
@@ -469,6 +528,7 @@ class DirectSourceManager extends ChangeNotifier {
           await index.upsertSource(r.key, r.kind, r.name, jsonEncode(cfg));
         }
         _smbPwds[r.key] = pwd ?? '';
+        await _loadFallbackSecrets(r.key, cfg);
         return _buildDirect(
             kind: r.kind, key: r.key, name: name, cfg: cfg);
       }
@@ -737,7 +797,7 @@ class DirectSourceManager extends ChangeNotifier {
     );
   }
 
-  /// 读取某源的可编辑配置（含 kind/name/path/baseUrl/username/password）。
+  /// 读取某源的可编辑配置（含 kind/name/path/baseUrl/username/password + fallbacks）。
   Map<String, dynamic> editableConfig(String key) {
     final row = index.getSource(key);
     if (row == null) return const {};
@@ -754,6 +814,25 @@ class DirectSourceManager extends ChangeNotifier {
     cfg['sftpPassphrase'] = sm?.passphrase ?? '';
     // SMB 密码从内存镜像（SecretStore）回填，供编辑弹窗预填。
     cfg['smbPassword'] = _smbPwds[key] ?? '';
+    // 备用：每个槽位回填敏感字段供编辑弹窗预填（含各类型密码/密钥）。
+    final fbs = parseFallbackConfigs(cfg['fallbacks']);
+    final outFbs = <Map<String, dynamic>>[];
+    for (var i = 0; i < fbs.length; i++) {
+      final fb = Map<String, dynamic>.of(fbs[i]);
+      final kind = (fb['kind'] as String? ?? '').trim();
+      if (kind == 'webdav') {
+        fb['password'] = _webdavFbPwds[key]?[i] ?? '';
+      } else if (kind == 'sftp') {
+        final m = _sftpFbSecrets[key]?[i];
+        fb['password'] = m?.password ?? '';
+        fb['keyPem'] = m?.keyPem ?? '';
+        fb['passphrase'] = m?.passphrase ?? '';
+      } else if (kind == 'smb') {
+        fb['password'] = _smbFbPwds[key]?[i] ?? '';
+      }
+      outFbs.add(fb);
+    }
+    cfg['fallbacks'] = outFbs;
     return cfg;
   }
 
@@ -764,22 +843,286 @@ class DirectSourceManager extends ChangeNotifier {
   MusicSource? sourceByKey(String key) =>
       _sources.where((x) => x.key == key).firstOrNull;
 
+  // ---------- 备用源 ----------
+
+  /// 该逻辑源的备用配置（已 sanitize 的持久化形态，不含敏感明文）。
+  List<Map<String, dynamic>> fallbacksOf(String key) {
+    final row = index.getSource(key);
+    if (row == null) return const [];
+    try {
+      final cfg = jsonDecode(row.config) as Map<String, dynamic>;
+      return parseFallbackConfigs(cfg['fallbacks']);
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  int fallbackCountOf(String key) => fallbacksOf(key).length;
+
+  MusicSource? _buildFallbackDirect({
+    required String primaryKey,
+    required String primaryName,
+    required int slot,
+    required Map<String, dynamic> fb,
+  }) {
+    final kind = (fb['kind'] as String? ?? '').trim();
+    if (kind.isEmpty || kind == 'local') return null;
+    if (kind == 'webdav') {
+      final pwd = _webdavFbPwds[primaryKey]?[slot] ?? '';
+      return WebdavDirectSource(
+        name: primaryName,
+        baseUrl: fb['baseUrl'] as String? ?? '',
+        username: fb['username'] as String? ?? '',
+        password: pwd,
+        index: index,
+        allowSelfSigned: settings.allowSelfSigned,
+        route: parseSourceRoute(fb['route']),
+      );
+    }
+    if (kind == 'sftp') {
+      final m = _sftpFbSecrets[primaryKey]?[slot];
+      return SftpDirectSource(
+        name: primaryName,
+        host: fb['host'] as String? ?? '',
+        port: (fb['port'] as num?)?.toInt() ?? 22,
+        username: fb['username'] as String? ?? '',
+        authMethod: parseSftpAuthMethod(fb['authMethod']),
+        password: m?.password ?? '',
+        keyPem: m?.keyPem ?? '',
+        keyPassphrase: m?.passphrase ?? '',
+        index: index,
+        rootPath: fb['path'] as String? ?? '',
+        route: parseSourceRoute(fb['route']),
+      );
+    }
+    if (kind == 'smb') {
+      final pwd = _smbFbPwds[primaryKey]?[slot] ?? '';
+      return SmbDirectSource(
+        name: primaryName,
+        host: fb['host'] as String? ?? '',
+        share: fb['share'] as String? ?? '',
+        username: fb['username'] as String? ?? '',
+        password: pwd,
+        index: index,
+        rootPath: fb['path'] as String? ?? '',
+        useSmbConnect: isOhos,
+        route: parseSourceRoute(fb['route']),
+      );
+    }
+    return null;
+  }
+
+  /// 该逻辑源的备用实例（瞬态，不进 [_sources]，不索引不扫描）。
+  /// 相对路径对应：调用方用主源的 `song.sourceRef` 直接在备源上 open。
+  List<MusicSource> fallbackSourcesOf(String key) {
+    final row = index.getSource(key);
+    if (row == null) return const [];
+    final fbs = fallbacksOf(key);
+    if (fbs.isEmpty) return const [];
+    final out = <MusicSource>[];
+    for (var i = 0; i < fbs.length; i++) {
+      final src = _buildFallbackDirect(
+        primaryKey: key,
+        primaryName: row.name,
+        slot: i,
+        fb: fbs[i],
+      );
+      if (src != null) out.add(src);
+    }
+    return out;
+  }
+
+  /// 手动线路偏好（auto/primary/fb0/fb1）。
+  SourceLine linePrefOf(String key) =>
+      parseSourceLine(settings.getSourceLine(key));
+  Future<void> setLinePref(String key, SourceLine line) async {
+    settings.setSourceLine(key, line.name);
+    notifyListeners();
+  }
+
+  /// 播放候选排序：锁定线路只返回该路；auto 返回 [主, 备0, 备1] 中存在者。
+  /// 返回 `(source, lineIndex)`，lineIndex: 0=主, 1=备1, 2=备2。
+  List<(MusicSource, int)> lineCandidates(String key) {
+    final primary = sourceByKey(key);
+    if (primary == null) return const [];
+    final fbs = fallbackSourcesOf(key);
+    final pref = linePrefOf(key);
+    switch (pref) {
+      case SourceLine.primary:
+        return [(primary, 0)];
+      case SourceLine.fb0:
+        return fbs.isNotEmpty ? [(fbs[0], 1)] : [(primary, 0)];
+      case SourceLine.fb1:
+        return fbs.length > 1 ? [(fbs[1], 2)] : [(primary, 0)];
+      case SourceLine.auto:
+        final out = <(MusicSource, int)>[(primary, 0)];
+        for (var i = 0; i < fbs.length; i++) {
+          out.add((fbs[i], i + 1));
+        }
+        return out;
+    }
+  }
+
+  /// 备用是否待配凭据（供卡片提示）。
+  bool fallbackNeedsSecrets(String key) {
+    final fbs = fallbacksOf(key);
+    for (var i = 0; i < fbs.length; i++) {
+      final kind = (fbs[i]['kind'] as String? ?? '').trim();
+      if (kind == 'webdav' &&
+          ((_webdavFbPwds[key]?[i] ?? '').isEmpty)) {
+        // WebDAV 允许空密码（匿名），仅同步来源且有用户名才算待补？与主源口径
+        // 对齐：主源空密码即待补提示，此处同样提示空密码，避免静默失败。
+        // 匿名需求可在弹窗留空保存，播放时仍可尝试。
+        return true;
+      }
+      if (kind == 'smb') {
+        final u = (fbs[i]['username'] as String? ?? '').trim();
+        if (u.isNotEmpty && ((_smbFbPwds[key]?[i] ?? '').isEmpty)) return true;
+      }
+      if (kind == 'sftp') {
+        final m = _sftpFbSecrets[key]?[i];
+        final am = parseSftpAuthMethod(fbs[i]['authMethod']);
+        if (am == SftpAuthMethod.key) {
+          if ((m?.keyPem ?? '').isEmpty) return true;
+        } else {
+          if ((m?.password ?? '').isEmpty) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /// 校验备用列表（UI 保存前调用）：返回错误文案，null=通过。
+  /// 规则：至多2个、禁 local、地址必填且与主/彼此不重复。
+  String? validateFallbacks(
+      String primaryKind, Map<String, dynamic> primaryCfg, List<Map<String, dynamic>> fbs) {
+    if (fbs.length > kMaxFallbacks) return '至多可设置两个备用源';
+    final seen = <String>{};
+    final primaryAddr = sourceAddressOf(primaryKind, primaryCfg);
+    if (primaryAddr.isNotEmpty) seen.add('$primaryKind|$primaryAddr');
+    for (var i = 0; i < fbs.length; i++) {
+      final fb = fbs[i];
+      final kind = (fb['kind'] as String? ?? '').trim();
+      if (kind.isEmpty) return '${fallbackLabel(i)}请选择类型';
+      if (kind == 'local') return '本地只可做主源，不可做备用源';
+      final addr = fallbackAddressOf(fb);
+      if (addr.isEmpty) return '${fallbackLabel(i)}地址不完整';
+      final fp = '$kind|$addr';
+      if (seen.contains(fp)) return '${fallbackLabel(i)}与主源/其他备用重复';
+      seen.add(fp);
+    }
+    return null;
+  }
+
+  /// 持久化备用（含敏感收敛）：[rawFbs] 可携带 password/keyPem 等明文，
+  /// 返回 sanitize 后的可存形态。调用方负责落库 + [_emitSource]。
+  Future<List<Map<String, dynamic>>> _persistFallbackSecrets(
+      String key, List<Map<String, dynamic>> rawFbs) async {
+    final out = <Map<String, dynamic>>[];
+    // 先清旧槽位内存（删除备用即删凭据，避免残留）。
+    _webdavFbPwds.remove(key);
+    _sftpFbSecrets.remove(key);
+    _smbFbPwds.remove(key);
+    final w = <int, String>{};
+    final s = <int, _SftpSecrets>{};
+    final m = <int, String>{};
+    for (var i = 0; i < rawFbs.length && i < kMaxFallbacks; i++) {
+      final fb = Map<String, dynamic>.of(rawFbs[i]);
+      final kind = (fb['kind'] as String? ?? '').trim();
+      if (kind == 'webdav') {
+        final pwd = (fb['password'] as String? ?? '').toString();
+        w[i] = pwd;
+        await secrets.setWebdavPasswordFb(key, i, pwd);
+      } else if (kind == 'sftp') {
+        final entry = _SftpSecrets(
+          password: (fb['password'] as String? ?? '').toString(),
+          keyPem: (fb['keyPem'] as String? ?? '').toString(),
+          passphrase: (fb['passphrase'] as String? ?? '').toString(),
+        );
+        s[i] = entry;
+        await secrets.setSftpSecretsFb(key, i,
+            password: entry.password,
+            keyPem: entry.keyPem,
+            passphrase: entry.passphrase);
+      } else if (kind == 'smb') {
+        final pwd = (fb['password'] as String? ?? '').toString();
+        m[i] = pwd;
+        await secrets.setSmbPasswordFb(key, i, pwd);
+      }
+      out.add(sanitizeFallbackConfig(fb));
+    }
+    // 清掉超出新长度的旧槽位（缩减/删除备用时）。
+    for (var i = out.length; i < kMaxFallbacks; i++) {
+      await secrets.deleteWebdavFb(key, i);
+      await secrets.deleteSftpFb(key, i);
+      await secrets.deleteSmbFb(key, i);
+    }
+    if (w.isNotEmpty) _webdavFbPwds[key] = w;
+    if (s.isNotEmpty) _sftpFbSecrets[key] = s;
+    if (m.isNotEmpty) _smbFbPwds[key] = m;
+    return out;
+  }
+
+  /// 主源播放成功后的单首按需补齐（默认关）：抽查备源同 ref 是否存在，
+  /// 缺失则把主源当前曲流式复制过去。失败静默（不打断播放）。
+  Future<void> maybeRepairFallback(Song song) async {
+    if (!settings.fallbackAutoRepair) return;
+    if (!song.isDirect) return;
+    final primary = sourceByKey(song.sourceKey);
+    if (primary == null) return;
+    final fbs = fallbackSourcesOf(song.sourceKey);
+    if (fbs.isEmpty) return;
+    for (final fb in fbs) {
+      if (!fb.supportsWrite) continue;
+      try {
+        // 1 字节探针：存在即跳过，避免整曲搬运。
+        try {
+          await fb.open(song, range: const IntRange(0, 1)).then((o) async {
+            await for (final _ in o.stream) {
+              break;
+            }
+          });
+          continue;
+        } catch (_) {
+          // 不存在才继续复制；探针异常同样按缺失处理（404/无权限都会抛）。
+        }
+        final opened = await primary.open(song);
+        final total = opened.totalLength ?? song.fileSize;
+        final ref = song.sourceRef;
+        final slash = ref.lastIndexOf('/');
+        final parent = slash <= 0 ? '' : ref.substring(0, slash);
+        final filename =
+            slash < 0 ? ref : ref.substring(slash + 1);
+        if (filename.isEmpty || filename.contains('..')) continue;
+        await fb.uploadFile(parent, filename, opened.stream, total);
+      } catch (_) {
+        // 单备失败不影响其他备。
+      }
+    }
+  }
+
   Future<void> addWebdav({
     required String name,
     required String baseUrl,
     String username = '',
     String password = '',
     SourceRoute route = SourceRoute.direct,
+    List<Map<String, dynamic>> fallbacks = const [],
   }) async {
     final key = _webdavKey(name);
+    if (_sources.any((s) => s.key == key)) {
+      throw StateError('已存在同名播放源');
+    }
     _webdavPwds[key] = password;
     await secrets.setWebdavPassword(key, password);
+    final sanitizedFbs = await _persistFallbackSecrets(key, fallbacks);
     // config 不含密码（明文收敛到 SecretStore）；route 随配置持久化并同步。
     final cfg = <String, dynamic>{
       'name': name,
       'baseUrl': baseUrl,
       'username': username,
       'route': route.name,
+      if (sanitizedFbs.isNotEmpty) 'fallbacks': sanitizedFbs,
     };
     _sources.add(_buildDirect(
         kind: 'webdav', key: key, name: name, cfg: cfg));
@@ -790,15 +1133,21 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 新增本地文件夹源。
+  /// 新增本地文件夹源（本地只做主源，仍可配远端备用）。
   Future<void> addLocal({
     required String name,
     required String path,
+    List<Map<String, dynamic>> fallbacks = const [],
   }) async {
     final key = _localKey(name);
+    if (_sources.any((s) => s.key == key)) {
+      throw StateError('已存在同名播放源');
+    }
+    final sanitizedFbs = await _persistFallbackSecrets(key, fallbacks);
     final cfg = <String, dynamic>{
       'name': name,
       'path': path,
+      if (sanitizedFbs.isNotEmpty) 'fallbacks': sanitizedFbs,
     };
     _sources.add(
         _buildDirect(kind: 'local', key: key, name: name, cfg: cfg));
@@ -820,12 +1169,17 @@ class DirectSourceManager extends ChangeNotifier {
     String passphrase = '',
     String rootPath = '',
     SourceRoute route = SourceRoute.direct,
+    List<Map<String, dynamic>> fallbacks = const [],
   }) async {
     final key = _sftpKey(name);
+    if (_sources.any((s) => s.key == key)) {
+      throw StateError('已存在同名播放源');
+    }
     _sftpSecrets[key] = _SftpSecrets(
         password: password, keyPem: keyPem, passphrase: passphrase);
     await secrets.setSftpSecrets(key,
         password: password, keyPem: keyPem, passphrase: passphrase);
+    final sanitizedFbs = await _persistFallbackSecrets(key, fallbacks);
     final cfg = <String, dynamic>{
       'name': name,
       'host': host.trim(),
@@ -834,6 +1188,7 @@ class DirectSourceManager extends ChangeNotifier {
       'authMethod': authMethod.name,
       'path': rootPath.trim(),
       'route': route.name,
+      if (sanitizedFbs.isNotEmpty) 'fallbacks': sanitizedFbs,
     };
     _sources.add(
         _buildDirect(kind: 'sftp', key: key, name: name, cfg: cfg));
@@ -854,10 +1209,15 @@ class DirectSourceManager extends ChangeNotifier {
     String password = '',
     String rootPath = '',
     SourceRoute route = SourceRoute.direct,
+    List<Map<String, dynamic>> fallbacks = const [],
   }) async {
     final key = _smbKey(name);
+    if (_sources.any((s) => s.key == key)) {
+      throw StateError('已存在同名播放源');
+    }
     _smbPwds[key] = password;
     await secrets.setSmbPassword(key, password);
+    final sanitizedFbs = await _persistFallbackSecrets(key, fallbacks);
     final cfg = <String, dynamic>{
       'name': name,
       'host': host.trim(),
@@ -865,6 +1225,7 @@ class DirectSourceManager extends ChangeNotifier {
       'username': username.trim(),
       'path': rootPath.trim(),
       'route': route.name,
+      if (sanitizedFbs.isNotEmpty) 'fallbacks': sanitizedFbs,
     };
     _sources.add(
         _buildDirect(kind: 'smb', key: key, name: name, cfg: cfg));
@@ -896,6 +1257,7 @@ class DirectSourceManager extends ChangeNotifier {
     SftpAuthMethod? authMethod,
     String? keyPem,
     String? passphrase,
+    List<Map<String, dynamic>>? fallbacks,
   }) async {
     final row = index.getSource(key);
     if (row == null) return;
@@ -978,6 +1340,46 @@ class DirectSourceManager extends ChangeNotifier {
       _smbPwds.remove(key);
     }
 
+    // 备用源：全量替换（null=不动，用于仅改主字段的旧调用）。
+    if (fallbacks != null) {
+      // 改名先迁移旧槽位，再按新 key 重存（_persist 会清旧内存并写新键）。
+      if (newKey != key) {
+        for (var i = 0; i < kMaxFallbacks; i++) {
+          await secrets.migrateWebdavFb(key, newKey, i);
+          await secrets.migrateSftpFb(key, newKey, i);
+          await secrets.migrateSmbFb(key, newKey, i);
+        }
+        _webdavFbPwds.remove(key);
+        _sftpFbSecrets.remove(key);
+        _smbFbPwds.remove(key);
+      }
+      final sanitized = await _persistFallbackSecrets(newKey, fallbacks);
+      if (sanitized.isEmpty) {
+        cfg.remove('fallbacks');
+      } else {
+        cfg['fallbacks'] = sanitized;
+      }
+    } else if (newKey != key) {
+      // 仅改名：迁移备用槽位 + 配置内 fallbacks 原样保留。
+      for (var i = 0; i < kMaxFallbacks; i++) {
+        await secrets.migrateWebdavFb(key, newKey, i);
+        await secrets.migrateSftpFb(key, newKey, i);
+        await secrets.migrateSmbFb(key, newKey, i);
+      }
+      if (_webdavFbPwds.containsKey(key)) {
+        _webdavFbPwds[newKey] = _webdavFbPwds[key]!;
+        _webdavFbPwds.remove(key);
+      }
+      if (_sftpFbSecrets.containsKey(key)) {
+        _sftpFbSecrets[newKey] = _sftpFbSecrets[key]!;
+        _sftpFbSecrets.remove(key);
+      }
+      if (_smbFbPwds.containsKey(key)) {
+        _smbFbPwds[newKey] = _smbFbPwds[key]!;
+        _smbFbPwds.remove(key);
+      }
+    }
+
     final rebuilt = <MusicSource>[];
     for (final s in _sources) {
       if (s.key == key) {
@@ -1014,6 +1416,14 @@ class DirectSourceManager extends ChangeNotifier {
     await secrets.deleteSftp(key);
     _smbPwds.remove(key);
     await secrets.deleteSmb(key);
+    for (var i = 0; i < kMaxFallbacks; i++) {
+      await secrets.deleteWebdavFb(key, i);
+      await secrets.deleteSftpFb(key, i);
+      await secrets.deleteSmbFb(key, i);
+    }
+    _webdavFbPwds.remove(key);
+    _sftpFbSecrets.remove(key);
+    _smbFbPwds.remove(key);
     await index.deleteSource(key);
     notifyListeners();
   }
@@ -1363,6 +1773,11 @@ class DirectSourceManager extends ChangeNotifier {
     _playingSourceKey = s.sourceKey;
     _playingRef = s.sourceRef;
     _scheduleNextTrack(next);
+    // 主源播放成功才触发备用补齐（备用成功的 key 与 song.sourceKey 对不上，
+    // 天然跳过；避免“主挂了还从主读”做无用功）。
+    if (src.key == s.sourceKey) {
+      unawaited(maybeRepairFallback(s));
+    }
   }
 
   /// 下一首变了（插队/删曲/切模式）：作废过期的预载与预读，排新的。

@@ -20,6 +20,62 @@ SourceRoute parseSourceRoute(Object? v) => SourceRoute.values.firstWhere(
 /// 远端类型（webdav/smb/onedrive…）默认同步。
 bool isSyncableKind(String kind) => kind.isNotEmpty && kind != 'local';
 
+/// 备用源上限：每个逻辑源至多 2 个备用（主 + 备1 + 备2）。
+const int kMaxFallbacks = 2;
+
+/// 备用源在 SecretStore 中的槽位后缀（`#fb0` / `#fb1`）。
+String fallbackSlotSuffix(int slot) => '#fb$slot';
+
+/// 手动线路选择：auto=自动 Failover，primary=只走主用，fb0/fb1=锁定某备用。
+enum SourceLine { auto, primary, fb0, fb1 }
+
+/// 解析持久化的线路偏好；非法回落 auto。
+SourceLine parseSourceLine(Object? v) => SourceLine.values.firstWhere(
+      (e) => e.name == v,
+      orElse: () => SourceLine.auto,
+    );
+
+/// 备用源展示标签（`备用1` / `备用2`）。
+String fallbackLabel(int slot) => '备用${slot + 1}';
+
+/// 备用源配置键归一化：与主配置同形（kind/host/port/share/baseUrl/path/
+/// username/route/authMethod），不含 name/password/keyPem/passphrase 明文。
+Map<String, dynamic> sanitizeFallbackConfig(Map<String, dynamic> fb) {
+  final m = Map<String, dynamic>.of(fb)
+    ..remove('password')
+    ..remove('keyPem')
+    ..remove('passphrase')
+    ..remove('smbPassword')
+    ..remove('sftpPassword')
+    ..remove('sftpKeyPem')
+    ..remove('sftpPassphrase')
+    ..remove('name')
+    ..remove('key');
+  return m;
+}
+
+/// 从源 config JSON 中解析备用列表（容错：非 List/超限截断/非法项丢弃）。
+List<Map<String, dynamic>> parseFallbackConfigs(Object? v) {
+  if (v is! List) return const [];
+  final out = <Map<String, dynamic>>[];
+  for (final e in v) {
+    if (e is! Map) continue;
+    final m = Map<String, dynamic>.of(
+        e.map((k, vv) => MapEntry(k.toString(), vv)));
+    final kind = (m['kind'] as String? ?? '').trim();
+    if (kind.isEmpty || kind == 'local') continue;
+    out.add(m);
+    if (out.length >= kMaxFallbacks) break;
+  }
+  return out;
+}
+
+/// 备用地址指纹（去重/判重用；与 [sourceAddressOf] 同口径，kind 取备用自身 kind）。
+String fallbackAddressOf(Map<String, dynamic> fb) {
+  final kind = (fb['kind'] as String? ?? '').trim();
+  return sourceAddressOf(kind, fb);
+}
+
 /// 把源地址（可能来自历史配置/服务端快照的原始形态）归一化为同步标准形态：
 /// WebDAV 缺 scheme 补 `https://`（与 [webdavNormalizeBase] 一致）、去尾斜杠；
 /// SFTP 形态见 [normalizeSftpAddress]；其余类型仅 trim。
