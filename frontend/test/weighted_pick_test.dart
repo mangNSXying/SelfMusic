@@ -91,62 +91,83 @@ void main() {
     });
 
     test('规则1：低权重档前3次抽中抛弃，第4次作数', () {
-      const w = 200;
       final limit = WeightedDrawCooldown.normal.lowLimit;
       for (var d = 1; d <= limit; d++) {
         expect(
             PlayerProvider.weightedCooldownReject(
-                draws: d, stepsSincePlay: 1000, drawLimit: limit, window: w),
+                draws: d, drawLimit: limit, inCooldown: false),
             isTrue,
             reason: '第 $d 次抽中应抛弃');
       }
       expect(
           PlayerProvider.weightedCooldownReject(
-              draws: limit + 1,
-              stepsSincePlay: 1000,
-              drawLimit: limit,
-              window: w),
+              draws: limit + 1, drawLimit: limit, inCooldown: false),
           isFalse);
     });
 
     test('规则1：高权重档前2次抽中抛弃，第3次作数', () {
-      const w = 200;
       final limit = WeightedDrawCooldown.normal.highLimit;
       expect(limit, 2);
       expect(
           PlayerProvider.weightedCooldownReject(
-              draws: 1, stepsSincePlay: 1000, drawLimit: limit, window: w),
+              draws: 1, drawLimit: limit, inCooldown: false),
           isTrue);
       expect(
           PlayerProvider.weightedCooldownReject(
-              draws: 2, stepsSincePlay: 1000, drawLimit: limit, window: w),
+              draws: 2, drawLimit: limit, inCooldown: false),
           isTrue);
       expect(
           PlayerProvider.weightedCooldownReject(
-              draws: 3, stepsSincePlay: 1000, drawLimit: limit, window: w),
+              draws: 3, drawLimit: limit, inCooldown: false),
           isFalse);
     });
 
     test('规则1 关闭（上限 0）时任何抽中都不因次数被抛弃', () {
       expect(
           PlayerProvider.weightedCooldownReject(
-              draws: 1, stepsSincePlay: 1000, drawLimit: 0, window: 0),
+              draws: 1, drawLimit: 0, inCooldown: false),
           isFalse);
     });
 
-    test('规则2：距上次播放 <= 窗口即抛弃（含边界；窗口 0=关闭）', () {
+    test('规则2：在冷却窗口内即抛弃（与抽中次数无关）', () {
       expect(
           PlayerProvider.weightedCooldownReject(
-              draws: 99, stepsSincePlay: 200, drawLimit: 0, window: 200),
+              draws: 99, drawLimit: 0, inCooldown: true),
           isTrue);
       expect(
           PlayerProvider.weightedCooldownReject(
-              draws: 99, stepsSincePlay: 201, drawLimit: 0, window: 200),
-          isFalse);
+              draws: 99, drawLimit: 99, inCooldown: true),
+          isTrue);
       expect(
           PlayerProvider.weightedCooldownReject(
-              draws: 99, stepsSincePlay: 1, drawLimit: 0, window: 0),
+              draws: 99, drawLimit: 0, inCooldown: false),
           isFalse);
+    });
+  });
+
+  group('weightedCooldownWindowOf：深层列表末尾窗口', () {
+    test('取末尾 window 条身份集合，更早的历史不入冷却', () {
+      final history = [for (var i = 0; i < 10; i++) _song('k1', 's$i.mp3')];
+      final keys = PlayerProvider.weightedCooldownWindowOf(history, 3);
+      expect(keys,
+          {'k1\u0000s7.mp3', 'k1\u0000s8.mp3', 'k1\u0000s9.mp3'});
+    });
+
+    test('历史短于窗口 → 全部冷却；window<=0 → 空集（规则2 关）', () {
+      final history = [_song('k1', 'a.mp3'), _song('k1', 'b.mp3')];
+      expect(PlayerProvider.weightedCooldownWindowOf(history, 5).length, 2);
+      expect(PlayerProvider.weightedCooldownWindowOf(history, 0), isEmpty);
+      expect(PlayerProvider.weightedCooldownWindowOf(const [], 5), isEmpty);
+    });
+
+    test('同曲多次播放只占一个身份（集合语义）', () {
+      final history = [
+        _song('k1', 'a.mp3'),
+        _song('k2', 'b.mp3'),
+        _song('k1', 'a.mp3'),
+      ];
+      expect(PlayerProvider.weightedCooldownWindowOf(history, 3),
+          {'k1\u0000a.mp3', 'k2\u0000b.mp3'});
     });
   });
 

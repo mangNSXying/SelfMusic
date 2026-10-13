@@ -568,8 +568,9 @@ class AppSettings {
   set weightedDrawCooldown(WeightedDrawCooldown v) =>
       index.settingsSet(kWeightedDrawCooldown, v.name);
 
-  /// 曲数冷却比例（默认 0.2，范围 0~1，`0`=关闭）。削峰规则2：距上次播放步数
-  /// 不超过 `round(列表长度 × 本比例)` 的抽中直接抛弃。非法值回退默认、越界钳制。
+  /// 曲数冷却比例（默认 0.2，范围 0~1，`0`=关闭）。削峰规则2：位于「深层列表
+  /// （持久化播放历史）末尾 `round(列表长度 × 本比例)` 条」内的抽中直接抛弃
+  /// （跨重启/跨设备同步后仍生效）。非法值回退默认、越界钳制。
   double get weightedCountCooldownRatio {
     final raw = index.settingsGet(kWeightedCountCooldownRatio);
     final v = raw == null ? null : double.tryParse(raw);
