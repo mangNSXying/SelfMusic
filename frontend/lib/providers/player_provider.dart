@@ -2276,8 +2276,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   // ---------- 加权随机削峰（冷却） ----------
 
   /// 次数冷却计数（规则1）：键 `sourceKey\u0000sourceRef` → 自上次播放以来
-  /// 被抽中却抛弃的次数（落账时结算）。曲数冷却（规则2）不在这里——直接取
-  /// 深层列表末尾的曲数窗口（见 [weightedCooldownWindowOf]，天生持久化）。
+  /// 被抽中却抛弃的次数（落账时结算；起播落账时本歌清零为 0 而不删映射——落账
+  /// 即「播放过」，下次被抽中时规则1 生效）。曲数冷却（规则2）不走计数——取
+  /// 深层列表末尾的曲数窗口（见 [weightedCooldownWindowOf]，天生持久化），窗口
+  /// 内的歌进轮盘前即从候选池剔除（见 [excludeCooldownCandidates]），不参与
+  /// 随机、不再给规则1 供数，两规则彻底解耦（实验 ⑥）。
   final Map<String, int> _weightedDrawCounts = {};
 
   /// 最近一次 [_weightedPickIndex] 抽样链中被抛弃的抽中次数（键→次数），
@@ -2287,19 +2290,17 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 歌曲身份键（`sourceKey\0sourceRef`，与 completed 去重同口径）。
   static String weightedKeyOf(Song s) => '${s.sourceKey}\u0000${s.sourceRef}';
 
-  /// 【削峰补丁】加权抽样的冷却判定（纯函数，便于单测）：
-  /// - 规则1：自上次播放起被抽中的前 [drawLimit] 次抛弃（[draws] 为含本次的抽中
-  ///   次数，第 drawLimit+1 次才作数）；上限按权重档由设置决定，`0`=关闭规则1；
-  /// - 规则2：位于曲数冷却窗口内（[inCooldown]，即 [weightedCooldownWindowOf]
-  ///   给出的深层列表末尾身份集合）时抛弃。
-  /// 任一命中即抛弃。注意被规则2 拦下的抽中同样计入规则1 的次数——调用方
-  /// 每轮抛中都在 [draws] 上累加（见 [_weightedPickIndex]）。
+  /// 【削峰补丁】加权抽样的次数冷却判定（规则1，纯函数，便于单测）：
+  /// 自上次播放起被抽中的前 [drawLimit] 次抛弃（[draws] 为含本次的抽中次数，
+  /// 第 drawLimit+1 次才作数）；上限按权重档由设置决定，`0`=关闭规则1。
+  /// 曲数冷却（规则2）不再经由这里判定——窗口内的歌在进轮盘前已被
+  /// [excludeCooldownCandidates] 从候选池剔除、不参与随机（实验 ⑥：池排除
+  /// 覆盖更好、重抽更省，且不再给规则1 供数）。
   static bool weightedCooldownReject({
     required int draws,
     required int drawLimit,
-    required bool inCooldown,
   }) {
-    return draws <= drawLimit || inCooldown;
+    return draws <= drawLimit;
   }
 
   /// 【削峰补丁】曲数冷却窗口：深层列表（各锚定上下文持久化的播放历史）末尾
@@ -2316,16 +2317,31 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
   }
 
-  /// 【削峰补丁】加权随机实际播放落账：结算上一次抽样链的抛弃次数（被规则2
-  /// 拦下的抽中同样累加规则1 计数），并清零本首歌的次数计数（规则2 的
-  /// 「近期已播」由深层列表末端自然承担）。
+  /// 【削峰补丁】规则2 的候选池剔除（纯函数，便于单测）：从 [candidates] 中剔除
+  /// 身份落在 [cooldownKeys]（[weightedCooldownWindowOf] 给出的深层列表末尾窗口）
+  /// 内的下标——窗口内的歌不参与随机。若剔除后为空（窗口覆盖整表）则原样返回
+  /// 全量（交由规则1 兜底，避免空池）。
+  @visibleForTesting
+  static List<int> excludeCooldownCandidates(
+      List<int> candidates, List<Song> pool, Set<String> cooldownKeys) {
+    if (cooldownKeys.isEmpty) return candidates;
+    final kept = <int>[
+      for (final i in candidates)
+        if (!cooldownKeys.contains(weightedKeyOf(pool[i]))) i,
+    ];
+    return kept.isEmpty ? candidates : kept;
+  }
+
+  /// 【削峰补丁】加权随机实际播放落账：结算上一次抽样链的抛弃次数，并把本首歌
+  /// 的次数计数重置为 0（不清映射——落账即「播放过」，离开曲数窗口后被抽中时
+  /// 规则1 生效；规则2 的「近期已播」由深层列表末端自然承担）。
   /// 必须在歌曲真正起播时调用一次（见 [_playWeighted] 与 [startIndexForPlaylist]）。
   void _commitWeightedPlay(Song s) {
     _pendingWeightedRejections.forEach((key, times) {
       _weightedDrawCounts[key] = (_weightedDrawCounts[key] ?? 0) + times;
     });
     _pendingWeightedRejections = const <String, int>{};
-    _weightedDrawCounts.remove(weightedKeyOf(s));
+    _weightedDrawCounts[weightedKeyOf(s)] = 0;
   }
 
   /// 按当前播放顺序算法确定下一首（不播放，只确定；开关与预载无关）：
@@ -2578,8 +2594,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 在 [pool] 中排除 [exclude] 后按 factor 抽样，返回**池内下标**；池空返回 null。
   /// 已应用时长削弱（改进.txt 功能8）：effective = factor × 时长系数，钳回 [0.5,1.5]。
   ///
-  /// 【削峰补丁】抽样改为拒绝采样：命中曲数冷却窗口（深层列表末尾 [window] 条）
-  /// 或次数上限（规则1）的歌记一次抛弃、重抽，直到抽到可播对象。每次抛弃计入
+  /// 【削峰补丁】规则2 改为候选池剔除：深层列表末尾 [window] 条内的歌先从候选池
+  /// 拿掉（见 [excludeCooldownCandidates]），不参与随机、不再给规则1 供数；
+  /// 规则1（次数冷却）仍对池内已播过的歌做拒绝采样，抛弃计入
   /// [_pendingWeightedRejections]，实际起播时由 [_commitWeightedPlay] 落账。
   /// [useHistoryCooldown]：歌单「播放/从头播放」即将重锚清空深层列表，起播抽样
   /// 不带历史冷却（false）；常规推进取锚定上下文深层列表作冷却（true）。
@@ -2593,6 +2610,20 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     ];
     // 只剩当前曲（或全被排除）时退回全量，允许重播。
     if (candidates.isEmpty) candidates = [for (var i = 0; i < pool.length; i++) i];
+    // 规则2 窗口 = 列表长度 × 设置比例（默认 20%；比例 0=关闭规则2）；
+    // 冷却集合 = 深层列表（持久化播放历史）末尾 window 条，直接从候选池剔除
+    // （窗口覆盖整表时保留全量，交由规则1 兜底）。
+    final cooldown = _appSettings?.weightedDrawCooldown ??
+        WeightedDrawCooldown.normal;
+    final ratio = _appSettings?.weightedCountCooldownRatio ??
+        AppSettings.defaultWeightedCountCooldownRatio;
+    final window = (pool.length * ratio).round();
+    final dl = _deepList;
+    final cooldownKeys = useHistoryCooldown && dl != null
+        ? PlayerProvider.weightedCooldownWindowOf(dl.entries, window)
+        : const <String>{};
+    candidates =
+        PlayerProvider.excludeCooldownCandidates(candidates, pool, cooldownKeys);
     final store = _weight;
     // 整队一次性取回权重向量（按 sourceKey 分组批量查询），循环内不再逐首同步查库。
     final factors =
@@ -2606,25 +2637,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       weights.add((f * curve.multiplierFor(pool[i].duration?.toDouble()))
           .clamp(SongWeightStore.minFactor, SongWeightStore.maxFactor));
     }
-    // 规则2 窗口 = 列表长度 × 设置比例（默认 20%；比例 0=关闭规则2）；
-    // 冷却集合 = 深层列表（持久化播放历史）末尾 window 条。
-    final cooldown = _appSettings?.weightedDrawCooldown ??
-        WeightedDrawCooldown.normal;
-    final ratio = _appSettings?.weightedCountCooldownRatio ??
-        AppSettings.defaultWeightedCountCooldownRatio;
-    final window = (pool.length * ratio).round();
-    final dl = _deepList;
-    final cooldownKeys = useHistoryCooldown && dl != null
-        ? PlayerProvider.weightedCooldownWindowOf(dl.entries, window)
-        : const <String>{};
-    // 兜底：若所有候选都在冷却窗口内（深层历史已覆盖整张列表），继续重抽会
-    // 死循环 → 退回纯轮盘、不做冷却。
-    final anyOutside =
-        candidates.any((i) => !cooldownKeys.contains(weightedKeyOf(pool[i])));
-    if (!anyOutside) {
-      _pendingWeightedRejections = const <String, int>{};
-      return candidates[weightedPickByWheel(weights, _rng.nextDouble())];
-    }
+    // 规则1 拒绝采样：已播过的歌（计数非空）按档位抛弃前 N 次抽中。
     final overlay = <String, int>{};
     var rejects = 0;
     while (true) {
@@ -2632,16 +2645,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       final i = candidates[k];
       final key = weightedKeyOf(pool[i]);
       final count = _weightedDrawCounts[key];
-      final inCooldown = cooldownKeys.contains(key);
-      // 从未播放、且不在冷却窗口内：次数计数不适用，直接命中。
-      if (count != null || inCooldown) {
-        final draws = (count ?? 0) + (overlay[key] ?? 0) + 1;
+      // 从未播放（计数为空）：次数冷却不适用，直接命中。
+      if (count != null) {
+        final draws = count + (overlay[key] ?? 0) + 1;
         final reject = PlayerProvider.weightedCooldownReject(
           draws: draws,
           drawLimit: cooldown.limitFor(baseFactors[k]),
-          inCooldown: inCooldown,
         );
-        // 硬上限兜底：极端情况下（权重极低但全被压制）避免死循环。
+        // 硬上限兜底：极端情况下避免死循环。
         if (reject && rejects < 100000) {
           overlay[key] = (overlay[key] ?? 0) + 1;
           rejects++;

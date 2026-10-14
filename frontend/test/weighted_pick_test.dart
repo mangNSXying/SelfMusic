@@ -95,13 +95,13 @@ void main() {
       for (var d = 1; d <= limit; d++) {
         expect(
             PlayerProvider.weightedCooldownReject(
-                draws: d, drawLimit: limit, inCooldown: false),
+                draws: d, drawLimit: limit),
             isTrue,
             reason: '第 $d 次抽中应抛弃');
       }
       expect(
           PlayerProvider.weightedCooldownReject(
-              draws: limit + 1, drawLimit: limit, inCooldown: false),
+              draws: limit + 1, drawLimit: limit),
           isFalse);
     });
 
@@ -110,38 +110,49 @@ void main() {
       expect(limit, 2);
       expect(
           PlayerProvider.weightedCooldownReject(
-              draws: 1, drawLimit: limit, inCooldown: false),
+              draws: 1, drawLimit: limit),
           isTrue);
       expect(
           PlayerProvider.weightedCooldownReject(
-              draws: 2, drawLimit: limit, inCooldown: false),
+              draws: 2, drawLimit: limit),
           isTrue);
       expect(
           PlayerProvider.weightedCooldownReject(
-              draws: 3, drawLimit: limit, inCooldown: false),
+              draws: 3, drawLimit: limit),
           isFalse);
     });
 
     test('规则1 关闭（上限 0）时任何抽中都不因次数被抛弃', () {
       expect(
           PlayerProvider.weightedCooldownReject(
-              draws: 1, drawLimit: 0, inCooldown: false),
+              draws: 1, drawLimit: 0),
           isFalse);
     });
+  });
 
-    test('规则2：在冷却窗口内即抛弃（与抽中次数无关）', () {
+  group('excludeCooldownCandidates：曲数窗口池排除', () {
+    test('窗口内身份被剔除、窗口外保留', () {
+      final pool = [for (var i = 0; i < 5; i++) _song('k', 's$i.mp3')];
       expect(
-          PlayerProvider.weightedCooldownReject(
-              draws: 99, drawLimit: 0, inCooldown: true),
-          isTrue);
+          PlayerProvider.excludeCooldownCandidates(
+              [0, 1, 2, 3, 4], pool, {'k\u0000s1.mp3', 'k\u0000s3.mp3'}),
+          [0, 2, 4]);
+    });
+
+    test('冷却集合为空 → 原样返回（规则2 关）', () {
+      final pool = [for (var i = 0; i < 3; i++) _song('k', 's$i.mp3')];
       expect(
-          PlayerProvider.weightedCooldownReject(
-              draws: 99, drawLimit: 99, inCooldown: true),
-          isTrue);
+          PlayerProvider.excludeCooldownCandidates(
+              [0, 1, 2], pool, const <String>{}),
+          [0, 1, 2]);
+    });
+
+    test('剔除后为空 → 回退全量（避免空池）', () {
+      final pool = [_song('k', 'a.mp3'), _song('k', 'b.mp3')];
       expect(
-          PlayerProvider.weightedCooldownReject(
-              draws: 99, drawLimit: 0, inCooldown: false),
-          isFalse);
+          PlayerProvider.excludeCooldownCandidates(
+              [0, 1], pool, {'k\u0000a.mp3', 'k\u0000b.mp3'}),
+          [0, 1]);
     });
   });
 

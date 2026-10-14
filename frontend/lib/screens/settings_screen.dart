@@ -2059,7 +2059,7 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
 
   static String _countCooldownSummary(double ratio) => ratio <= 0
       ? '关（不启用曲数冷却）'
-      : '列表长度 × ${(ratio * 100).toStringAsFixed(0)}%';
+      : '列表长度 × ${(ratio * 100).toStringAsFixed(0)}%（窗口内不参与随机）';
 
   Future<void> _pickDrawCooldown() async {
     final current = _settings.weightedDrawCooldown;
@@ -2108,7 +2108,7 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
           autofocus: true,
           decoration: const InputDecoration(
             hintText: '0 ~ 1.00',
-            helperText: '近期已播（播放历史末尾「列表长度 × 比例」内）时重抽；0=关闭',
+            helperText: '播放历史末尾「列表长度 × 比例」内的歌不参与随机；0=关闭',
           ),
         ),
         actions: [
