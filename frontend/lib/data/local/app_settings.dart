@@ -31,6 +31,22 @@ enum SongTitleFormat {
       .firstWhere((e) => e.name == v, orElse: () => SongTitleFormat.artistTitle);
 }
 
+/// 在线元数据保存位置（设置→歌曲）。
+enum OnlineMetaSaveMode {
+  /// 仅应用缓存：歌词写 `song_lyrics`，封面写 `covers/`（全源安全，默认）。
+  appCache('仅应用缓存'),
+  /// 同时写本地 `.lrc`：DB 必写，本地源额外写同目录 `<stem>.lrc`
+  ///（或自定义歌词目录）；远端源自动跳过 sidecar。
+  sidecar('同时写本地.lrc');
+
+  const OnlineMetaSaveMode(this.label);
+  final String label;
+
+  static OnlineMetaSaveMode parse(String? v) =>
+      OnlineMetaSaveMode.values.firstWhere((e) => e.name == v,
+          orElse: () => OnlineMetaSaveMode.appCache);
+}
+
 /// 集合页（歌单/播放源/专辑/歌手）展示形式。
 enum CollectionViewMode {
   list('列表', 'list'),
@@ -691,6 +707,14 @@ class AppSettings {
   /// 缺失则把主源当前曲流式复制过去（单首按需，不做全库静默全量）。
   static const String kFallbackAutoRepair = 'fallback_auto_repair';
 
+  /// 在线元数据保存位置（设置→歌曲）：`appCache`=仅应用缓存（默认）；
+  /// `sidecar`=同时写本地 `.lrc`（仅本地源）。
+  static const String kOnlineMetaSaveMode = 'online_meta_save_mode';
+
+  /// 自定义歌词目录（sidecar 模式用）：空=写歌曲同目录；非空=写该目录
+  /// `<歌名>.lrc`。目录不存在时回退不同步写盘（只写 DB）。
+  static const String kOnlineMetaLyricDir = 'online_meta_lyric_dir';
+
   bool get fallbackAutoRepair =>
       (index.settingsGet(kFallbackAutoRepair) ?? '0') == '1';
   set fallbackAutoRepair(bool v) =>
@@ -703,6 +727,18 @@ class AppSettings {
       index.settingsGet(_lineKey(sourceKey)) ?? 'auto';
   setSourceLine(String sourceKey, String line) =>
       index.settingsSet(_lineKey(sourceKey), line);
+
+  // ---------- 在线元数据（设置→歌曲，纯前端 LRCLIB/MB-CAA） ----------
+
+  OnlineMetaSaveMode get onlineMetaSaveMode =>
+      OnlineMetaSaveMode.parse(index.settingsGet(kOnlineMetaSaveMode));
+  set onlineMetaSaveMode(OnlineMetaSaveMode v) =>
+      index.settingsSet(kOnlineMetaSaveMode, v.name);
+
+  String get onlineMetaLyricDir =>
+      index.settingsGet(kOnlineMetaLyricDir) ?? '';
+  set onlineMetaLyricDir(String v) =>
+      index.settingsSet(kOnlineMetaLyricDir, v);
 
   /// 全部已知键（供设置导入导出筛选，settings.md §3.5）。
   static const List<String> knownKeys = [
@@ -754,6 +790,8 @@ class AppSettings {
     kViewModeSources,
     kViewModeAlbums,
     kViewModeArtists,
+    kOnlineMetaSaveMode,
+    kOnlineMetaLyricDir,
     kSortSongs,
     kSortFavorites,
     kSortPlaylistDetail,

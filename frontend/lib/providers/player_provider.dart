@@ -1657,6 +1657,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (changed) notifyListeners();
   }
 
+  /// 在线歌词保存后：若 [song] 正在播放，重载歌词展示。
+  /// 非当前曲无需动作（下次播放时 `_loadLyrics` 会从索引读到新值）。
+  void reloadLyricsIfCurrent(Song song) {
+    final cur = _current;
+    if (cur == null || !_same(cur, song)) return;
+    unawaited(_loadLyrics(cur, _curSource));
+  }
+
   /// [fromPlaylist]：true = 自动推进（推入深层末尾）；false = 手动点播
   /// （替换深层末尾，不增长）。调用方约定：playAt / playQueue 手动路径一律
   /// false；_advance / _playWeighted / 删当前曲续播 / 断点恢复一律 true。

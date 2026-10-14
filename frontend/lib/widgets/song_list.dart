@@ -20,6 +20,7 @@ import '../utils/song_title_format.dart';
 import 'add_to_playlist.dart';
 import 'count_header.dart';
 import 'list_selection.dart';
+import 'online_meta_dialog.dart';
 import 'row_list.dart';
 import 'selection_badge.dart';
 import 'selection_bar.dart';
@@ -200,6 +201,11 @@ class SongTile extends StatelessWidget {
               context: context,
               builder: (_) => SongInfoDialog(song: song),
             );
+          case 'online':
+            showDialog<void>(
+              context: context,
+              builder: (_) => OnlineMetaDialog(song: song),
+            );
           default:
             onExtraMenu?.call(v);
         }
@@ -280,6 +286,16 @@ class SongTile extends StatelessWidget {
               Icon(Icons.info_outline),
               SizedBox(width: 12),
               Text('歌曲信息'),
+            ],
+          ),
+        ),
+        const PopupMenuItem(
+          value: 'online',
+          child: Row(
+            children: [
+              Icon(Icons.cloud_download_outlined),
+              SizedBox(width: 12),
+              Text('在线获取歌词/封面'),
             ],
           ),
         ),

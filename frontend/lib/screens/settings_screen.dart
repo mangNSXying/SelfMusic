@@ -1475,8 +1475,95 @@ class _SongsSettingsState extends State<_SongsSettings> {
             }
           },
         ),
+        const Divider(height: 32),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('在线元数据',
+              style: TextStyle(
+                  color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        ListTile(
+          title: const Text('歌词来源'),
+          subtitle: const Text('LRCLIB（免费无Key，仅歌词；中文小众覆盖弱）'),
+          trailing: const Icon(Icons.check, size: 20),
+          enabled: false,
+        ),
+        ListTile(
+          title: const Text('封面来源'),
+          subtitle: const Text('MusicBrainz 录音搜索 → Cover Art Archive（需 release 有图，无图常见）'),
+          trailing: const Icon(Icons.check, size: 20),
+          enabled: false,
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: SegmentedButton<OnlineMetaSaveMode>(
+            segments: const [
+              ButtonSegment(
+                  value: OnlineMetaSaveMode.appCache,
+                  label: Text('仅应用缓存')),
+              ButtonSegment(
+                  value: OnlineMetaSaveMode.sidecar,
+                  label: Text('同时写本地.lrc')),
+            ],
+            selected: {_settings.onlineMetaSaveMode},
+            onSelectionChanged: (s) {
+              setState(() => _settings.onlineMetaSaveMode = s.first);
+              context.read<DirectSourceManager>().refresh();
+            },
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Text(
+            _settings.onlineMetaSaveMode == OnlineMetaSaveMode.sidecar
+                ? '歌词必写应用缓存；本地源额外写同目录同名 .lrc（或下方自定义目录）。远端源自动跳过 sidecar。封面只写应用缓存 covers/，不污染用户目录。内嵌回写暂不支持。'
+                : '歌词写应用内 song_lyrics，封面写 covers/（全源安全，不动用户文件）。内嵌回写暂不支持。',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: cs.onSurface.withValues(alpha: 0.6)),
+          ),
+        ),
+        ListTile(
+          title: const Text('自定义歌词目录'),
+          subtitle: Text(_settings.onlineMetaLyricDir.isEmpty
+              ? '未设置（sidecar 时写歌曲同目录）'
+              : _settings.onlineMetaLyricDir),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (_settings.onlineMetaLyricDir.isNotEmpty)
+                IconButton(
+                  icon: const Icon(Icons.clear, size: 20),
+                  tooltip: '清除（恢复歌曲同目录）',
+                  onPressed: _settings.onlineMetaSaveMode !=
+                          OnlineMetaSaveMode.sidecar
+                      ? null
+                      : () {
+                          setState(() => _settings.onlineMetaLyricDir = '');
+                          context.read<DirectSourceManager>().refresh();
+                        },
+                ),
+              const Icon(Icons.chevron_right),
+            ],
+          ),
+          enabled: _settings.onlineMetaSaveMode == OnlineMetaSaveMode.sidecar,
+          onTap: _settings.onlineMetaSaveMode != OnlineMetaSaveMode.sidecar
+              ? null
+              : () => _pickLyricDir(context),
+        ),
       ],
     );
+  }
+
+  Future<void> _pickLyricDir(BuildContext context) async {
+    if (isOhos) {
+      AppToast.show('鸿蒙端暂不支持自定义歌词目录', isError: false);
+      return;
+    }
+    final dir = await getDirectoryPath(confirmButtonText: '选择');
+    if (dir == null || !context.mounted) return;
+    setState(() => _settings.onlineMetaLyricDir = dir);
+    context.read<DirectSourceManager>().refresh();
+    AppToast.show('已设置自定义歌词目录', isError: false);
   }
 
   Future<void> _editIgnoreDuration(BuildContext context) async {

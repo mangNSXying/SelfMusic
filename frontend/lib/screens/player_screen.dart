@@ -23,6 +23,7 @@ import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/lyrics_view.dart';
 import '../widgets/marquee_text.dart';
+import '../widgets/online_meta_dialog.dart';
 import '../widgets/pressable.dart';
 import '../widgets/player_sheet_anim.dart';
 import '../widgets/song_info_dialog.dart';
@@ -1681,6 +1682,8 @@ class _Cover extends StatelessWidget {
                         const PopupMenuItem(value: 'info', child: Text('歌曲信息')),
                         const PopupMenuItem(
                             value: 'edit', child: Text('修改歌曲元数据')),
+                        const PopupMenuItem(
+                            value: 'online', child: Text('在线获取歌词/封面')),
                         ...lineItems,
                       ];
                     },
@@ -1715,6 +1718,11 @@ class _Cover extends StatelessWidget {
       showDialog<void>(
         context: context,
         builder: (_) => _EditSongMetaDialog(song: song),
+      );
+    } else if (v == 'online') {
+      showDialog<void>(
+        context: context,
+        builder: (_) => OnlineMetaDialog(song: song),
       );
     } else if (v.startsWith('line_')) {
       final direct = context.read<DirectSourceManager>();
