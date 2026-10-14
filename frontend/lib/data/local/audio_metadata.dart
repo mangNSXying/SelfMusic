@@ -394,8 +394,8 @@ AudioMeta? _scanId3ChunkInRiff(Uint8List tail, AudioMeta meta) {
 
 /// 把位于 [start, end) 的 ID3v2 标签并入 [meta]（已有字段不覆盖）。
 ///
-/// 复用 mp3 那套帧解析：切出以 'ID3' 开头的视图后，帧偏移与 syncsafe 长度字段的
-/// 相对位置就和 mp3 完全一致。
+/// 复用 mp3 那套帧解析：切出以 'ID3' 开头的视图后，帧偏移与长度字段的
+/// 相对位置就和 mp3 完全一致（版本/扩展头口径见 [_id3TagToFrames]）。
 bool _applyId3Chunk(Uint8List b, int start, int end, AudioMeta meta) {
   if (end - start < 10) return false;
   if (b[start] != 0x49 || b[start + 1] != 0x44 || b[start + 2] != 0x33) {
@@ -720,17 +720,29 @@ AudioMeta _parseMp3(Uint8List head, int fileSize) {
 }
 
 /// 解析整个 ID3 tag 里的所有帧（含 APIC 从 [head] 中提取）。
+///
+/// 版本口径（ID3v2.3 vs v2.4）：
+/// - 标签头总长永远 syncsafe（两版本一致）；
+/// - 帧体长度 v2.4 为 syncsafe，v2.3 为普通 BE32（本文件此前统一按 syncsafe
+///   解，大 APIC 如 `BE=53178/syncsafe=10170` 会被截断成半图丢弃，其后帧也对不上）。
+/// - v2.2（3 字节 ID + BE24，帧头 6B）明确不支持：直接回空，上层走文件名回退。
+/// - 起始帧按版本跳过扩展头（见 [_id3FramesStart]），越界一律回退 base+10、不抛。
 Map<String, String> _id3TagToFrames(Uint8List head, int tagStart) {
   final out = <String, String>{};
-  var i = tagStart;
+  final base = tagStart - 10;
+  final version = _id3VersionAt(head, base);
+  if (version == 2) return out;
+  final framesStart = _id3FramesStart(head, base);
+  var i = framesStart < tagStart ? tagStart : framesStart;
   // 头部采样可能短于 ID3 tag 声明长度（如内嵌封面很大），以实际字节数为界，
   // 避免 sublist 越界抛 RangeError。
-  final declared = tagStart + _syncsafe(head, 6);
+  final declared = base + 10 + _syncsafe(head, base + 6);
   final limit = declared < head.length ? declared : head.length;
+  if (i < base + 10) i = base + 10;
   while (i + 10 <= limit) {
     final id = String.fromCharCodes(head.sublist(i, i + 4)).trim();
     if (id.isEmpty || id.codeUnitAt(0) == 0) break;
-    final size = _syncsafe(head, i + 4);
+    final size = _id3FrameSize(head, i + 4, version);
     if (size < 0 || i + 10 + size > head.length || i + 10 + size > limit) break;
     if (id == 'APIC') {
       // 交由 _apicOf 处理；这里跳过
@@ -750,12 +762,16 @@ Map<String, String> _id3TagToFrames(Uint8List head, int tagStart) {
 }
 
 Uint8List? _apicOf(Uint8List head) {
-  var i = 10;
-  final limit = 10 + _syncsafe(head, 6);
+  const base = 0;
+  final version = _id3VersionAt(head, base);
+  if (version == 2) return null;
+  var i = _id3FramesStart(head, base);
+  if (i < base + 10) i = base + 10;
+  final limit = base + 10 + _syncsafe(head, base + 6);
   while (i + 10 <= limit && i + 10 + 4 <= head.length) {
     final id = String.fromCharCodes(head.sublist(i, i + 4)).trim();
     if (id.isEmpty || id.codeUnitAt(0) == 0) break;
-    final size = _syncsafe(head, i + 4);
+    final size = _id3FrameSize(head, i + 4, version);
     if (size < 0 || i + 10 + size > head.length) break;
     if (id == 'APIC' && size > 8) {
       // 零拷贝视图：封面可达数 MB，避免 fromList/sublist 的整块复制占用主线程
@@ -1624,6 +1640,42 @@ int _syncsafe(List<int> b, int o) => (b[o] & 0x7F) << 21 |
     (b[o + 1] & 0x7F) << 14 |
     (b[o + 2] & 0x7F) << 7 |
     (b[o + 3] & 0x7F);
+
+/// ID3v2 主版本号（`base` 为 `ID3` 头起点，正常 0，RIFF 尾块为块内偏移）。
+/// 越界/无头时按 4 回退（保持旧行为，避免误伤存量 v2.4 单测）。
+int _id3VersionAt(List<int> b, int base) {
+  if (base < 0 || base + 4 > b.length) return 4;
+  return b[base + 3];
+}
+
+/// 帧体长度按版本分派：v2.4 syncsafe，v2.3（含其它未知版本）普通 BE32。
+/// 小帧两者相等，大 APIC 才分叉（如 `BE=53178/syncsafe=10170`）。
+int _id3FrameSize(List<int> b, int o, int version) =>
+    version == 4 ? _syncsafe(b, o) : _be32(b, o);
+
+/// 首帧起点：按版本跳过扩展头，越界/声明异常一律回退 `base+10`、不抛。
+///
+/// - 无扩展头（`flags bit6==0`）→ `base+10`；
+/// - v2.3：扩展头大小为 BE32 且**不含自身 4B**（正常 6/10），起点 `base+10+4+s`；
+/// - v2.4：扩展头大小为 syncsafe 且**为整个扩展头长**（最小 6），起点 `base+10+s`。
+int _id3FramesStart(List<int> b, int base) {
+  const fallback = 10;
+  if (base < 0 || base + 10 > b.length) return base + fallback;
+  final version = _id3VersionAt(b, base);
+  final flags = b[base + 5];
+  if ((flags & 0x40) == 0) return base + fallback;
+  if (base + 14 > b.length) return base + fallback;
+  if (version == 3) {
+    final s = _be32(b, base + 10);
+    if (s < 6 || s > kMetaRegionCapBytes) return base + fallback;
+    return base + 10 + 4 + s;
+  } else if (version == 4) {
+    final s = _syncsafe(b, base + 10);
+    if (s < 6 || s > kMetaRegionCapBytes) return base + fallback;
+    return base + 10 + s;
+  }
+  return base + fallback;
+}
 
 int _be32(List<int> b, int o) =>
     (b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3];

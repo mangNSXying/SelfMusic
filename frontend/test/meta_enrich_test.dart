@@ -39,7 +39,14 @@ Uint8List syncsafe(int v) => Uint8List.fromList([
       v & 0x7F,
     ]);
 
-/// 大内嵌封面 MP3（400KB APIC），模拟真实带高清封面的曲库。
+Uint8List be32(int v) => Uint8List.fromList([
+      (v >> 24) & 0xFF,
+      (v >> 16) & 0xFF,
+      (v >> 8) & 0xFF,
+      v & 0xFF,
+    ]);
+
+/// 大内嵌封面 MP3（400KB APIC，v2.3 帧长 BE32），模拟真实带高清封面的曲库。
 Uint8List bigCoverMp3() {
   final img = BytesBuilder();
   img.add([0xFF, 0xD8, 0xFF, 0xE0]);
@@ -48,7 +55,7 @@ Uint8List bigCoverMp3() {
   final body = <int>[0, ...'image/jpeg'.codeUnits, 0, 3, 0, ...img.toBytes()];
   final frame = <int>[
     ...'APIC'.codeUnits,
-    ...syncsafe(body.length),
+    ...be32(body.length),
     0, 0,
     ...body,
   ];
@@ -244,6 +251,54 @@ void main() {
     expect(reset, 1); // 仅 mp3/flac 且无封面的那一行
     final unread = index.unreadSongs('webdav:t', 10);
     expect(unread.map((s) => s.sourceRef), ['no_cover.flac']);
+
+    index.close();
+    dir.deleteSync(recursive: true);
+  });
+
+  test('ID3v2.3回填一次性重置：已读但无封面的 mp3/aac 回到未读，flac 不动', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir = await Directory.systemTemp.createTemp('selfmusic_id3_reenrich_');
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+
+    await index.upsertSongs([
+      DirectSongRow(
+        sourceKey: 'webdav:t',
+        ref: 'no_cover.mp3',
+        title: '无封面mp3',
+        format: 'mp3',
+        duration: 100,
+        size: 1,
+        mtime: 1,
+      ),
+      DirectSongRow(
+        sourceKey: 'webdav:t',
+        ref: 'no_cover.aac',
+        title: '无封面aac',
+        format: 'aac',
+        duration: 100,
+        size: 1,
+        mtime: 2,
+      ),
+      DirectSongRow(
+        sourceKey: 'webdav:t',
+        ref: 'no_cover.flac',
+        title: '无封面flac',
+        format: 'flac',
+        duration: 100,
+        size: 1,
+        mtime: 3,
+      ),
+    ]);
+    expect(index.unreadSongs('webdav:t', 10), isEmpty);
+
+    final reset = await index.resetMetaReadForMissingId3Covers();
+    expect(reset, 2);
+    final unread = index.unreadSongs('webdav:t', 10);
+    expect(unread.map((s) => s.sourceRef),
+        containsAll(['no_cover.mp3', 'no_cover.aac']));
 
     index.close();
     dir.deleteSync(recursive: true);

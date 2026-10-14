@@ -128,6 +128,12 @@ class AppSettings {
   /// 刻意不进 [knownKeys]：它与本机索引数据绑定，不随设置导出/导入。
   static const String kCoverReenrichV1Done = 'cover_reenrich_v1_done';
 
+  /// ID3v2.3 帧长回填补读是否已执行（设备本地一次性迁移标记）。
+  /// 旧版帧长统一按 syncsafe 解，v2.3 大 APIC（如 BE=53178/syncsafe=10170）
+  /// 会被截成半图丢弃、其后 USLT 也对不上，已标已读但无封面，需重置重读。
+  /// 刻意不进 [knownKeys]，同 V1。
+  static const String kCoverReenrichV2Done = 'cover_reenrich_v2_done';
+
   /// 元数据回填补读是否已执行（块序异常歌曲重读，设备本地一次性迁移标记）。
   /// 同上不进 [knownKeys]。
   static const String kMetaReenrichV2Done = 'meta_reenrich_v2_done';
@@ -336,6 +342,12 @@ class AppSettings {
       (index.settingsGet(kCoverReenrichV1Done) ?? '0') == '1';
   set coverReenrichV1Done(bool v) =>
       index.settingsSet(kCoverReenrichV1Done, v ? '1' : '0');
+
+  /// ID3v2.3 帧长回填补读标记：旧版帧长统一 syncsafe，v2.3 大 APIC 丢封面。
+  bool get coverReenrichV2Done =>
+      (index.settingsGet(kCoverReenrichV2Done) ?? '0') == '1';
+  set coverReenrichV2Done(bool v) =>
+      index.settingsSet(kCoverReenrichV2Done, v ? '1' : '0');
 
   /// 元数据回填补读标记：旧版解析在块序异常（PICTURE 在 VORBIS_COMMENT 之前等）
   /// 的文件上会提前中断、读不出歌手，见 direct_source_manager.init。

@@ -36,13 +36,14 @@ Uint8List jpeg(int bodyBytes) {
 }
 
 /// 带 TIT2/TPE1 + 可选 APIC 的 ID3v2.3 标签（含 10 字节头）。
+/// v2.3 帧长为 BE32（标签头总长仍 syncsafe）。
 Uint8List id3v2({
   String title = 'WAV 标题',
   String artist = 'WAV 歌手',
   int? imgBytes,
 }) {
   List<int> frame(String id, List<int> body) =>
-      [...id.codeUnits, ...syncsafe(body.length), 0, 0, ...body];
+      [...id.codeUnits, ...be32(body.length), 0, 0, ...body];
   final frames = <int>[
     ...frame('TIT2', [3, ...utf8.encode(title)]),
     ...frame('TPE1', [3, ...utf8.encode(artist)]),

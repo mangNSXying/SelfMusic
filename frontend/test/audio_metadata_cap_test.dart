@@ -42,6 +42,13 @@ Uint8List _syncsafe(int v) => Uint8List.fromList([
       v & 0x7F,
     ]);
 
+Uint8List _be32(int v) => Uint8List.fromList([
+      (v >> 24) & 0xFF,
+      (v >> 16) & 0xFF,
+      (v >> 8) & 0xFF,
+      v & 0xFF,
+    ]);
+
 Uint8List _bigJpeg(int bodyBytes) {
   final b = BytesBuilder();
   b.add([0xFF, 0xD8, 0xFF, 0xE0]);
@@ -64,7 +71,7 @@ Uint8List _id3WithApic(int imgBytes, {int? declareTagBytes}) {
   ];
   final frame = <int>[
     ...'APIC'.codeUnits,
-    ..._syncsafe(body.length),
+    ..._be32(body.length),
     0,
     0,
     ...body,

@@ -258,6 +258,14 @@ class LocalIndex {
         "WHERE meta_read=1 AND cover_path IS NULL AND format IN ('mp3','flac')");
   }
 
+  /// ID3v2.3 帧长回填补读（帧长 syncsafe/BE32 口径修复）：旧版把 v2.3 帧长按
+  /// v2.4 syncsafe 解，大 APIC 被截成半图丢弃、其后 USLT 也对不上，已标已读
+  /// 但无封面的 mp3/aac 行重置为未读，交给后台补读重取。返回重置行数。
+  Future<int> resetMetaReadForMissingId3Covers() {
+    return _writer!.execUpdated("UPDATE idx_songs SET meta_read=0 "
+        "WHERE meta_read=1 AND cover_path IS NULL AND format IN ('mp3','aac')");
+  }
+
   /// wav/aiFF 尾块标签回填补读（新增能力）：旧版只在头部找 RIFF/FORM 块，遇到
   /// `data`/`SSND` 就 break，工具写在音频块**之后**的 `id3 ` 块（标题/歌手/封面）
   /// 从来读不到，而这些行已标已读 → 不会被补读。把它们重置为未读。

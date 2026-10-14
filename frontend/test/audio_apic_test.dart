@@ -11,6 +11,14 @@ Uint8List syncsafe(int v) => Uint8List.fromList([
       v & 0x7F,
     ]);
 
+/// v2.3 帧长为普通 BE32（v2.4 才用 syncsafe）；标签头总长两版本都是 syncsafe。
+Uint8List be32(int v) => Uint8List.fromList([
+      (v >> 24) & 0xFF,
+      (v >> 16) & 0xFF,
+      (v >> 8) & 0xFF,
+      v & 0xFF,
+    ]);
+
 /// 最小 JPEG 字节（签名 + 结束标记 + 填充，足够签名校验）。
 final jpeg = Uint8List.fromList(
     [0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3, 4, 5, 6, 7, 0xFF, 0xD9]);
@@ -36,7 +44,7 @@ Uint8List id3WithApic({required int enc, required List<int> descBytes}) {
   ];
   final frame = <int>[
     ...'APIC'.codeUnits,
-    ...syncsafe(body.length),
+    ...be32(body.length),
     0,
     0,
     ...body,
@@ -64,7 +72,7 @@ Uint8List id3WithLargeApic({required int imgBytes}) {
   ];
   final frame = <int>[
     ...'APIC'.codeUnits,
-    ...syncsafe(body.length),
+    ...be32(body.length),
     0,
     0,
     ...body,
@@ -174,7 +182,7 @@ void main() {
       0, // 空描述
       ...'https://example.com/cover.jpg'.codeUnits,
     ];
-    final frame = <int>[...'APIC'.codeUnits, ...syncsafe(body.length), 0, 0, ...body];
+    final frame = <int>[...'APIC'.codeUnits, ...be32(body.length), 0, 0, ...body];
     final head = Uint8List.fromList([
       ...'ID3'.codeUnits,
       3, 0,
@@ -301,6 +309,166 @@ void main() {
       final junk = Uint8List.fromList(List.filled(100, 0x55));
       expect(coverReadHint(junk, 'mp3'), isNull);
       expect(coverReadHint(junk, 'flac'), isNull);
+    });
+  });
+
+  group('ID3v2.3 BE32 帧长（山本希望回歸）', () {
+    List<int> beFrame(String id, List<int> body) =>
+        [...id.codeUnits, ...be32(body.length), 0, 0, ...body];
+    List<int> syncFrame(String id, List<int> body) =>
+        [...id.codeUnits, ...syncsafe(body.length), 0, 0, ...body];
+
+    List<int> textBody(String text) => <int>[3, ...utf8.encode(text)];
+
+    Uint8List usltBody(String text) => Uint8List.fromList(
+        <int>[3, ...'eng'.codeUnits, 0, ...utf8.encode(text)]);
+
+    /// 复刻目标文件结构：小文本帧 + 大 APIC（BE 与 syncsafe 分叉）+ 其后 USLT。
+    /// APIC 体 `BE=53178/syncsafe=10170` 量级：旧逻辑截半图丢封面且后续全错位。
+    Uint8List v23WithApicAndUslt() {
+      final img = bigJpeg(50000);
+      // enc=1 + image/jpg + picType + BOM空描述（FF FE 00 00），同真实文件。
+      final apicBody = <int>[
+        1,
+        ...'image/jpg'.codeUnits,
+        0,
+        3,
+        0xFF, 0xFE, 0, 0,
+        ...img,
+      ];
+      // 断言前置：这个体量必须让 BE 与 syncsafe 分叉，否则测不到回归。
+      final be = Uint8List.fromList(
+          [(apicBody.length >> 24) & 0xFF, (apicBody.length >> 16) & 0xFF,
+           (apicBody.length >> 8) & 0xFF, apicBody.length & 0xFF]);
+      final ss = syncsafe(apicBody.length);
+      assert(be[0] != ss[0] || be[1] != ss[1] || be[2] != ss[2] || be[3] != ss[3],
+          '回归体量需让 BE 与 syncsafe 分叉，否则无意义');
+      final frames = <int>[
+        ...beFrame('TIT2', textBody('キズナヒトツ')),
+        ...beFrame('TPE1', textBody('山本希望')),
+        ...beFrame('TALB', textBody('千恋*万花')),
+        ...beFrame('APIC', apicBody),
+        ...beFrame('USLT', usltBody('[00:01.00]第一句').toList()),
+      ];
+      return Uint8List.fromList([
+        ...'ID3'.codeUnits,
+        3, 0, 0,
+        ...syncsafe(frames.length), // 标签头总长永远 syncsafe
+        ...frames,
+        0xFF, 0xFB, 0x90, 0x00,
+      ]);
+    }
+
+    test('v2.3 大 APIC：封面/标题/歌词一次读全', () {
+      final full = v23WithApicAndUslt();
+      final meta = parseAudioHead(full, 'mp3', full.length)!;
+      expect(meta.title, 'キズナヒトツ');
+      expect(meta.artist, '山本希望');
+      expect(meta.cover, isNotNull);
+      expect(meta.cover!.sublist(0, 2), [0xFF, 0xD8]);
+      expect(meta.cover!.sublist(meta.cover!.length - 2), [0xFF, 0xD9]);
+      expect(meta.cover!.length, greaterThan(50000));
+      expect(meta.lyrics, contains('第一句'));
+    });
+
+    test('v2.3 大 APIC 经 readAudioMeta 一次采样即得，无需补读', () async {
+      final full = v23WithApicAndUslt();
+      final calls = <List<int>>[];
+      Future<Uint8List> range(int s, int l) async {
+        calls.add([s, l]);
+        final end = (s + l) > full.length ? full.length : s + l;
+        return Uint8List.sublistView(full, s, end);
+      }
+      final meta = await readAudioMeta(
+          readRange: range, format: 'mp3', fileSize: full.length);
+      expect(meta, isNotNull);
+      expect(meta!.cover, isNotNull);
+      expect(meta.lyrics, contains('第一句'));
+      expect(calls.length, 1, reason: '标签在首采样内，不该补读');
+    });
+
+    test('v2.4 对照：同结构 syncsafe 口径行为不变', () {
+      final img = bigJpeg(1024);
+      final apicBody = <int>[0, ...'image/jpeg'.codeUnits, 0, 3, 0, ...img];
+      final frames = <int>[
+        ...syncFrame('TIT2', textBody('标题')),
+        ...syncFrame('APIC', apicBody),
+      ];
+      final full = Uint8List.fromList([
+        ...'ID3'.codeUnits,
+        4, 0, 0,
+        ...syncsafe(frames.length),
+        ...frames,
+        0xFF, 0xFB, 0x90, 0x00,
+      ]);
+      final meta = parseAudioHead(full, 'mp3', full.length)!;
+      expect(meta.title, '标题');
+      expect(meta.cover, isNotNull);
+      expect(meta.cover!.sublist(0, 2), [0xFF, 0xD8]);
+    });
+
+    test('v2.2 明确不支持：回空不抛，上层走回退', () {
+      final body = <int>[0, ...'Song'.codeUnits];
+      final full = Uint8List.fromList([
+        ...'ID3'.codeUnits,
+        2, 0, 0,
+        ...syncsafe(10 + body.length),
+        ...'TT2'.codeUnits,
+        (body.length >> 16) & 0xFF,
+        (body.length >> 8) & 0xFF,
+        body.length & 0xFF,
+        ...body,
+        0xFF, 0xFB, 0x90, 0x00,
+      ]);
+      final meta = parseAudioHead(full, 'mp3', full.length);
+      expect(meta, isNotNull);
+      expect(meta!.cover, isNull);
+    });
+
+    test('扩展头按版本跳过：v2.3 BE / v2.4 syncsafe', () {
+      Uint8List withExt({required int version}) {
+        final frames = <int>[
+          ...(version == 3
+              ? beFrame('TIT2', textBody('扩展头后标题'))
+              : syncFrame('TIT2', textBody('扩展头后标题'))),
+        ];
+        List<int> ext;
+        if (version == 3) {
+          // v2.3 扩展头：4B BE 大小（不含自身）+ flags(2) + padding(4) = 6
+          ext = <int>[0, 0, 0, 6, 0, 0, 0, 0, 0, 0];
+        } else {
+          // v2.4 扩展头：4B syncsafe 整个扩展头长（最小 6）+ flag字节数 + flags
+          ext = <int>[...syncsafe(6), 1, 0];
+        }
+        return Uint8List.fromList([
+          ...'ID3'.codeUnits,
+          version, 0,
+          0x40, // extended header 标志
+          ...syncsafe(ext.length + frames.length),
+          ...ext,
+          ...frames,
+          0xFF, 0xFB, 0x90, 0x00,
+        ]);
+      }
+
+      final v23 = withExt(version: 3);
+      expect(parseAudioHead(v23, 'mp3', v23.length)!.title, '扩展头后标题');
+      final v24 = withExt(version: 4);
+      expect(parseAudioHead(v24, 'mp3', v24.length)!.title, '扩展头后标题');
+    });
+
+    test('扩展头声明损坏：回退 base+10 不抛', () {
+      final frames = <int>[...beFrame('TIT2', textBody('标题'))];
+      final full = Uint8List.fromList([
+        ...'ID3'.codeUnits,
+        3, 0,
+        0x40, // 声称有扩展头，但长度写超大
+        ...syncsafe(10 + frames.length),
+        0x7F, 0x7F, 0x7F, 0x7F, // BE 极大，超上限 → 回退
+        ...frames,
+        0xFF, 0xFB, 0x90, 0x00,
+      ]);
+      expect(() => parseAudioHead(full, 'mp3', full.length), returnsNormally);
     });
   });
 }

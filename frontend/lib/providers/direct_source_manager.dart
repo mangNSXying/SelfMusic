@@ -629,6 +629,16 @@ class DirectSourceManager extends ChangeNotifier {
         settings.coverReenrichV1Done = true;
         if (reset > 0) debugPrint('封面回填补读：已重置 $reset 首待重读');
       }
+      // 一次性回填：旧版 ID3 帧长统一按 v2.4 syncsafe 解，v2.3 大 APIC
+      // （如 BE=53178/syncsafe=10170）被截成半图丢弃、其后 USLT 也对不上，
+      // 已标已读但无封面的 mp3/aac 行重置为未读，交给后台补读重取。
+      // 仅本机一次（不进 knownKeys）。
+      if (!settings.coverReenrichV2Done) {
+        perfPhase('direct.backfills.resetMissingId3Covers'); // TEMP-PROBE
+        final reset = await index.resetMetaReadForMissingId3Covers();
+        settings.coverReenrichV2Done = true;
+        if (reset > 0) debugPrint('ID3v2.3封面回填补读：已重置 $reset 首待重读');
+      }
       // 一次性回填：旧版解析在块序异常（如 FLAC 的 PICTURE 在 VORBIS_COMMENT
       // 之前）的文件上提前中断，已标已读却读不出歌手。重置这些行，交给后台
       // 补读用「从头完整读取」重取。仅本机一次（不进 knownKeys）。
