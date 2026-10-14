@@ -267,13 +267,17 @@ class ApiClient {
 
   /// 构造转码流 URL（不发请求，供 just_audio setUrl）。
   /// 调用方须把 WebDAV 鉴权经 headers 透传 X-Origin-Auth（见 player）。
+  /// [startSec] > 0 时带偏移重开流（seek 用；服务端输出端 -ss，见 S1）。
+  /// 预载/首播一律 0（不拼参数，URL 与旧行为逐字节一致）。
   String? transcodeStreamUrl(String originUrl, int bitrate,
-      {String loudnorm = 'off'}) {
+      {String loudnorm = 'off', double startSec = 0}) {
     if (dio.options.baseUrl.isEmpty) return null;
     final base = dio.options.baseUrl;
     final enc = Uri.encodeComponent(originUrl);
-    return '$base/api/v1/transcode/stream'
+    var u = '$base/api/v1/transcode/stream'
         '?origin=$enc&bitrate=$bitrate&loudnorm=$loudnorm';
+    if (startSec > 0) u += '&start_sec=$startSec';
+    return u;
   }
 
   // ---------- 多设备状态同步（阶段5，DEVELOPER.md「播放算法与同步协议」 / SyncEngine） ----------

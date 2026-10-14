@@ -40,7 +40,8 @@ import java.util.Set;
  *       随请求转发、不落地不记日志。</li>
  *   <li>输出恒为 MP3 CBR（bitrate 仅 192/256/320，默认 192；MP3 无 512 档——
  *       libmp3lame 会静默钳到 320，故不开放），整曲转码，
- *       不支持 Range（转码后字节≠源字节，R8：seek 由客户端重建请求）。</li>
+ *       不支持 Range（转码后字节≠源字节；seek 走 {@code start_sec} 重建请求，
+ *       见 R8：客户端拖进度即带偏移重开一条流）。</li>
  *   <li>并发由 {@link TranscodeService} 信号量门控（只 env，默认 2）；
  *       超限 429，客户端回落直连原文件。</li>
  *   <li>在 servlet 线程内**同步直写**响应，不用 {@code StreamingResponseBody}：
@@ -82,6 +83,7 @@ public class TranscodeController {
             @RequestParam("origin") String origin,
             @RequestParam(value = "bitrate", defaultValue = "192") String bitrate,
             @RequestParam(value = "loudnorm", defaultValue = "off") String loudnorm,
+            @RequestParam(value = "start_sec", defaultValue = "0") String startSec,
             @RequestHeader(value = "X-Origin-Auth", required = false) String originAuth,
             @RequestHeader(value = "X-Origin-Ssh", required = false) String originSsh,
             @RequestHeader(value = "X-Origin-Smb", required = false) String originSmb,
@@ -94,6 +96,7 @@ public class TranscodeController {
         if (!ALLOWED_LOUDNORM.contains(loud)) {
             throw new BizException(40001, "loudnorm 仅支持 off/14/16/23");
         }
+        double start = parseStartSec(startSec);
         URI uri = parseOrigin(origin);
         checkBlockedHost(uri);
         checkAgainstSyncedSources(uri);
@@ -110,8 +113,8 @@ public class TranscodeController {
             // X-Origin-Smb 信封内容）。
             boolean isSftp = "sftp".equalsIgnoreCase(uri.getScheme());
             boolean isSmb = "smb".equalsIgnoreCase(uri.getScheme());
-            log.info("transcode start scheme={} host={} bitrate={}k loudnorm={}",
-                    uri.getScheme(), uri.getHost(), rate, loud);
+            log.info("transcode start scheme={} host={} bitrate={}k loudnorm={} start_sec={}",
+                    uri.getScheme(), uri.getHost(), rate, loud, formatStartSec(start));
             InputStream originStream;
             if (isSftp) {
                 SshEnvelope.Credentials creds = SshEnvelope.parse(originSsh);
@@ -132,7 +135,7 @@ public class TranscodeController {
                 originStream = openHttpStream(uri, originAuth);
             }
             try {
-                ffmpeg = new ProcessBuilder(ffmpegArgs(rate, loud))
+                ffmpeg = new ProcessBuilder(ffmpegArgs(rate, loud, start))
                         .redirectErrorStream(false)
                         .start();
             } catch (IOException e) {
@@ -161,6 +164,7 @@ public class TranscodeController {
             response.setContentType("audio/mpeg");
             response.setHeader("Accept-Ranges", "none");
             response.setHeader("X-Transcoded-By", "selfmusic");
+            response.setHeader("X-Start-Sec", formatStartSec(start));
             try {
                 OutputStream out = response.getOutputStream();
                 try (InputStream mp3 = proc.getInputStream()) {
@@ -371,12 +375,24 @@ public class TranscodeController {
     /**
      * ffmpeg 命令组装（纯函数，可单测）：响度均衡开时在编码前插入单遍动态
      * loudnorm；off 时与旧行为一致、无 {@code -af}。
+     *
+     * <p>{@code startSec} 为输出端 {@code -ss}（解码后丢弃到目标点）：
+     * 输入是不可 seek 的 {@code pipe:0}，输入端 {@code -ss} 无效，只能走输出端。
+     * 开 loudnorm 时滤镜从 seek 点重新测量（单遍动态本就如此，注释备查）。
      */
     static List<String> ffmpegArgs(String rate, String loudnorm) {
+        return ffmpegArgs(rate, loudnorm, 0);
+    }
+
+    static List<String> ffmpegArgs(String rate, String loudnorm, double startSec) {
         List<String> cmd = new ArrayList<>(List.of(
                 "ffmpeg", "-hide_banner", "-loglevel", "error",
                 "-i", "pipe:0",
                 "-vn"));
+        if (startSec > 0) {
+            cmd.add("-ss");
+            cmd.add(formatStartSec(startSec));
+        }
         String filter = loudFilter(loudnorm);
         if (filter != null) {
             cmd.add("-af");
@@ -385,6 +401,33 @@ public class TranscodeController {
         cmd.addAll(List.of("-c:a", "libmp3lame", "-b:a", rate + "k",
                 "-f", "mp3", "pipe:1"));
         return cmd;
+    }
+
+    /**
+     * seek 偏移校验（纯函数，可单测）：缺省/空白按 0；负数、NaN、无穷、
+     * 超过 24h 一律 400（客户端重建请求的参数，不可信）。
+     */
+    static double parseStartSec(String raw) {
+        if (raw == null || raw.trim().isEmpty()) return 0;
+        final double v;
+        try {
+            v = Double.parseDouble(raw.trim());
+        } catch (NumberFormatException e) {
+            throw new BizException(40001, "start_sec 非法");
+        }
+        if (Double.isNaN(v) || Double.isInfinite(v) || v < 0
+                || v > 24 * 3600) {
+            throw new BizException(40001, "start_sec 非法");
+        }
+        return v;
+    }
+
+    /** ffmpeg/start 日志与响应头共用：整数去小数点，其余透传。 */
+    static String formatStartSec(double v) {
+        if (v == Math.rint(v) && !Double.isInfinite(v)) {
+            return Long.toString((long) v);
+        }
+        return Double.toString(v);
     }
 
     /** loudnorm 滤镜参数；off/未知（防御）返回 null（不加滤镜）。 */

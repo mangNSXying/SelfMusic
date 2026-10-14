@@ -2237,6 +2237,10 @@ class _PlayerSeek extends StatefulWidget {
 }
 
 class _PlayerSeekState extends State<_PlayerSeek> {
+  /// 拖动中的 thumb 位置（毫秒）：拖动过程只更新本地，松手才 seek 一次——
+  /// 直播转码态每次 seek 都重开一条服务端流，逐 tick 发 seek 等于连续重启。
+  double? _dragValue;
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<Duration>(
@@ -2248,6 +2252,7 @@ class _PlayerSeekState extends State<_PlayerSeek> {
         final dur = widget.player.duration ?? Duration.zero;
         final max = dur.inMilliseconds.toDouble();
         final cur = pos.inMilliseconds.toDouble().clamp(0, max == 0 ? 1 : max).toDouble();
+        final shown = _dragValue?.clamp(0, max == 0 ? 1 : max).toDouble() ?? cur;
         return Column(
           children: [
             SliderTheme(
@@ -2262,8 +2267,12 @@ class _PlayerSeekState extends State<_PlayerSeek> {
               child: Slider(
                 min: 0,
                 max: max == 0 ? 1 : max,
-                value: cur,
-                onChanged: (v) => widget.player.seek(Duration(milliseconds: v.toInt())),
+                value: shown,
+                onChanged: (v) => setState(() => _dragValue = v),
+                onChangeEnd: (v) {
+                  setState(() => _dragValue = null);
+                  widget.player.seek(Duration(milliseconds: v.toInt()));
+                },
               ),
             ),
             if (widget.showTime)
@@ -2272,7 +2281,7 @@ class _PlayerSeekState extends State<_PlayerSeek> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(formatClock(pos),
+                    Text(formatClock(Duration(milliseconds: shown.toInt())),
                         style: const TextStyle(fontFamily: 'monospace')),
                     Text(formatClock(dur),
                         style: const TextStyle(fontFamily: 'monospace')),
