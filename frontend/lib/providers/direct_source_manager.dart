@@ -1464,23 +1464,25 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 上传音频文件到源根（parentRef=''）并增量刷新索引。
-  /// 返回后调用方 toast + 局部刷新；大文件流式上传不驻留内存。
+  /// 上传音频文件到指定目录（[parentRef] 为源内相对路径，`''` = 源根）
+  /// 并增量刷新索引。返回后调用方 toast + 局部刷新；大文件流式上传不驻留内存。
   Future<void> uploadAudio(String sourceKey, String filename,
-      Stream<List<int>> bytes, int length) async {
+      Stream<List<int>> bytes, int length,
+      {String parentRef = ''}) async {
     final src = sourceByKey(sourceKey);
     if (src == null) throw StateError('源不存在：$sourceKey');
     if (!src.supportsWrite) throw StateError('该源不支持上传');
-    await src.uploadFile('', filename, bytes, length);
+    await src.uploadFile(parentRef, filename, bytes, length);
     // 上传后增量扫描该源（新文件指纹为 added，自动落库）。
     await scanSource(sourceKey);
   }
 
-  Future<void> createFolder(String sourceKey, String name) async {
+  Future<void> createFolder(String sourceKey, String name,
+      {String parentRef = ''}) async {
     final src = sourceByKey(sourceKey);
     if (src == null) throw StateError('源不存在：$sourceKey');
     if (!src.supportsWrite) throw StateError('该源不支持新建文件夹');
-    await src.createFolder('', name);
+    await src.createFolder(parentRef, name);
   }
 
   Future<ScanSummary>? _inFlightScan;
