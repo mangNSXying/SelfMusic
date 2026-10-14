@@ -379,21 +379,37 @@ class _CoverEditWindowState extends State<_CoverEditWindow> {
       title: const Text('封面'),
       content: SizedBox(
         width: 340,
-        height: 360,
-        child: Center(child: preview),
+        height: 400,
+        child: Column(
+          children: [
+            Expanded(child: Center(child: preview)),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _busy ? null : _pickFile,
+                    icon: const Icon(Icons.folder_open_outlined, size: 18),
+                    label: Text(_busy ? '处理中…' : '选择封面'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _openOnline,
+                    icon: const Icon(Icons.cloud_download_outlined, size: 18),
+                    label: const Text('在线获取'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('关闭'),
-        ),
-        TextButton(
-          onPressed: _busy ? null : _pickFile,
-          child: Text(_busy ? '处理中…' : '选择封面'),
-        ),
-        FilledButton(
-          onPressed: _openOnline,
-          child: const Text('在线获取'),
         ),
       ],
     );
@@ -557,42 +573,65 @@ class _LyricsEditWindowState extends State<_LyricsEditWindow> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return AlertDialog(
-      title: const Text('歌词'),
+      title: Text(_dirty ? '歌词 •未保存' : '歌词'),
       content: SizedBox(
         width: 460,
         height: 480,
-        child: TextField(
-          controller: _controller,
-          maxLines: null,
-          expands: true,
-          textAlignVertical: TextAlignVertical.top,
-          decoration: const InputDecoration(
-            hintText: '暂无歌词，可粘贴、选择文件或在线获取',
-            border: OutlineInputBorder(),
-          ),
+        child: Column(
+          children: [
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: _busy ? null : _pickFile,
+                  icon: const Icon(Icons.folder_open_outlined, size: 18),
+                  label: const Text('选择歌词'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _openOnline,
+                  icon: const Icon(Icons.cloud_download_outlined, size: 18),
+                  label: const Text('在线获取'),
+                ),
+                IconButton(
+                  onPressed: _undo.isEmpty ? null : _undoOnce,
+                  icon: const Icon(Icons.undo),
+                  tooltip: '撤回',
+                ),
+                IconButton(
+                  onPressed: _redo.isEmpty ? null : _redoOnce,
+                  icon: const Icon(Icons.redo),
+                  tooltip: '反撤回',
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: TextField(
+                controller: _controller,
+                maxLines: null,
+                expands: true,
+                textAlignVertical: TextAlignVertical.top,
+                decoration: InputDecoration(
+                  hintText: '暂无歌词，可粘贴、选择文件或在线获取',
+                  border: const OutlineInputBorder(),
+                  filled: _dirty ? true : false,
+                  fillColor: _dirty
+                      ? cs.primary.withValues(alpha: 0.04)
+                      : null,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('关闭'),
-        ),
-        TextButton(
-          onPressed: _busy ? null : _pickFile,
-          child: const Text('选择歌词'),
-        ),
-        TextButton(
-          onPressed: _openOnline,
-          child: const Text('在线获取'),
-        ),
-        TextButton(
-          onPressed: _undo.isEmpty ? null : _undoOnce,
-          child: const Text('撤回'),
-        ),
-        TextButton(
-          onPressed: _redo.isEmpty ? null : _redoOnce,
-          child: const Text('反撤回'),
         ),
         FilledButton(
           onPressed: _busy ? null : _save,
