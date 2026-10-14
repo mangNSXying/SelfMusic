@@ -4,9 +4,11 @@ import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
 import '../utils/duration_format.dart';
+import '../utils/play_stats.dart';
 import '../utils/url_display.dart';
 
-/// 歌曲信息弹窗：标题/歌手/专辑/流派/年份/时长/格式/来源/权重/收藏态。
+/// 歌曲信息弹窗：标题/歌手/专辑/流派/年份/时长/格式/来源/权重/收藏态
+/// ＋播放次数/播放时长/码率。
 ///
 /// 播放页封面「更多」与歌曲列表行三点菜单共用。
 class SongInfoDialog extends StatelessWidget {
@@ -27,6 +29,17 @@ class SongInfoDialog extends StatelessWidget {
     // 源不在本机时回落到持久化完整 URL 或源内引用；URL 百分号编码展示时解码。
     final displayPath = direct.sourceByKey(song.sourceKey)?.displayPath(song) ??
         decodeUrlForDisplay(song.sourceUrl ?? song.sourceRef);
+    // 播放统计：累计秒数→时长文案＋派生次数（play_stats 口径）。
+    final playSec = direct.weight.playSecOf(song);
+    // 码率：fileSize×8/时长（与宽行技术信息同口径；时长未知时省略）。
+    String? bitrate;
+    if (song.metaUnread) {
+      bitrate = Song.unreadLabel;
+    } else if (song.fileSize > 0 &&
+        song.duration != null &&
+        song.duration! > 0) {
+      bitrate = '${(song.fileSize * 8 / 1024 / song.duration!).round()} kbps';
+    }
     final rows = <List<String>>[
       ['标题', song.title],
       ['歌手', optField(song.artist) ?? '—'],
@@ -41,6 +54,9 @@ class SongInfoDialog extends StatelessWidget {
         ['时长',
             song.metaUnread ? Song.unreadLabel : formatDuration(song.duration)],
       if (song.format != null) ['格式', song.format!.toUpperCase()],
+      if (bitrate != null) ['码率', bitrate],
+      ['播放时长', playSecLabel(playSec)],
+      ['播放次数', playCountLabel(playSec, song.duration)],
       ['来源', '${song.source}（${song.sourceKey}）'],
       ['路径', displayPath],
       if (song.isDirect)

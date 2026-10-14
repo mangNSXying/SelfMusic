@@ -20,7 +20,10 @@ import 'app_toast.dart';
 /// 保存口径遵循设置 `online_meta_save_mode`（默认仅应用缓存）。
 class OnlineMetaDialog extends StatefulWidget {
   final Song song;
-  const OnlineMetaDialog({super.key, required this.song});
+
+  /// 初始页：0=歌词，1=封面，2=标签。
+  final int initialTab;
+  const OnlineMetaDialog({super.key, required this.song, this.initialTab = 0});
 
   @override
   State<OnlineMetaDialog> createState() => _OnlineMetaDialogState();
@@ -57,15 +60,20 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
     _title = TextEditingController(text: widget.song.title);
     _artist = TextEditingController(text: widget.song.artist ?? '');
     _album = TextEditingController(text: widget.song.albumName ?? '');
-    _tabs = TabController(length: 3, vsync: this);
+    _tabs = TabController(
+        length: 3,
+        vsync: this,
+        initialIndex: widget.initialTab.clamp(0, 2));
     final direct = context.read<DirectSourceManager>();
     _svc = OnlineMetaService(
       index: direct.index,
       settings: direct.settings,
     );
-    // 打开即搜一次歌词（最佳匹配直接高亮）。
+    // 打开即搜一次歌词（最佳匹配直接高亮）；封面页初始时同步搜封面。
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _searchLyrics();
+      if (!mounted) return;
+      _searchLyrics();
+      if (widget.initialTab == 1) _searchCovers();
     });
   }
 

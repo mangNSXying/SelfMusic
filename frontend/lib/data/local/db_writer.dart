@@ -1079,7 +1079,8 @@ void _opUpsertSongs(Database db, List<Map<String, dynamic>> rows) {
         album_artist=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.album_artist
           ELSE COALESCE(NULLIF(excluded.album_artist, ''), idx_songs.album_artist) END,
         track_no=COALESCE(excluded.track_no, idx_songs.track_no),
-        year=COALESCE(excluded.year, idx_songs.year),
+        year=CASE WHEN idx_songs.user_edited=1 THEN idx_songs.year
+          ELSE COALESCE(excluded.year, idx_songs.year) END,
         genre=COALESCE(excluded.genre, idx_songs.genre),
         duration=COALESCE(excluded.duration, idx_songs.duration),
         format=excluded.format, size=excluded.size, mtime=excluded.mtime,
@@ -1397,12 +1398,15 @@ void _opUpdateSongUserMeta(Database db, Map<String, dynamic> a) {
   final artist = a['artist'] as String?;
   final album = a['album'] as String?;
   final albumArtist = a['albumArtist'] as String?;
+  final year = a['year'] as int?;
+  final clearYear = (a['clearYear'] as bool?) ?? false;
   db.execute('''
     UPDATE idx_songs SET
       title=CASE WHEN ? IS NULL THEN title ELSE NULLIF(?, '') END,
       artist=CASE WHEN ? IS NULL THEN artist ELSE NULLIF(?, '') END,
       album=CASE WHEN ? IS NULL THEN album ELSE NULLIF(?, '') END,
       album_artist=CASE WHEN ? IS NULL THEN album_artist ELSE NULLIF(?, '') END,
+      year=CASE WHEN ? THEN NULL WHEN ? IS NULL THEN year ELSE ? END,
       user_edited=1
     WHERE source_key=? AND ref=?
   ''', [
@@ -1414,6 +1418,9 @@ void _opUpdateSongUserMeta(Database db, Map<String, dynamic> a) {
     album,
     albumArtist,
     albumArtist,
+    clearYear ? 1 : 0,
+    year,
+    year,
     sourceKey,
     songRef,
   ]);
@@ -1428,9 +1435,14 @@ void _opUpdateSongUserMeta(Database db, Map<String, dynamic> a) {
     if (title != null) j['title'] = title.isEmpty ? null : title;
     if (artist != null) j['artist'] = artist.isEmpty ? null : artist;
     if (album != null) j['albumName'] = album.isEmpty ? null : album;
-    if (albumArtist != null) {
-      j['albumArtist'] = albumArtist.isEmpty ? null : albumArtist;
-    }
+      if (albumArtist != null) {
+        j['albumArtist'] = albumArtist.isEmpty ? null : albumArtist;
+      }
+      if (clearYear) {
+        j['year'] = null;
+      } else if (year != null) {
+        j['year'] = year;
+      }
     db.execute(
         'UPDATE play_meta SET song_json=? WHERE source_key=? AND song_ref=?',
         [jsonEncode(j), sourceKey, songRef]);

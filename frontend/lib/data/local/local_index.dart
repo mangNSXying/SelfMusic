@@ -308,11 +308,17 @@ class LocalIndex {
     return rows.map(_rowToSong).toList();
   }
 
-  /// 用户手动修改歌曲元数据：标题/歌手/专辑落库并标记 user_edited=1（扫描不再覆盖），
+  /// 用户手动修改歌曲元数据：标题/歌手/专辑/年份落库并标记 user_edited=1（扫描不再覆盖），
   /// 同时同步 play_meta 歌曲快照中的对应字段（喜欢列表/断点恢复用快照渲染）。
-  /// 字段语义：null=不修改；''=清空（置 NULL，UI 显示为未知）。
+  /// 字段语义：null=不修改；''=清空（置 NULL，UI 显示为未知）；
+  /// 年份用 [year]/[clearYear]：null 且不清=不修改，非空=新值，clearYear=清空。
   Future<void> updateSongUserMeta(String sourceKey, String songRef,
-      {String? title, String? artist, String? album, String? albumArtist}) {
+      {String? title,
+      String? artist,
+      String? album,
+      String? albumArtist,
+      int? year,
+      bool clearYear = false}) {
     return _writer!.op<void>('updateSongUserMeta', {
       'sourceKey': sourceKey,
       'songRef': songRef,
@@ -320,6 +326,8 @@ class LocalIndex {
       'artist': artist,
       'album': album,
       'albumArtist': albumArtist,
+      'year': year,
+      'clearYear': clearYear,
     });
   }
 

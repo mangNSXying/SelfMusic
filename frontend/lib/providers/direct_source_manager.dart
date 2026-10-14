@@ -1679,17 +1679,25 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 用户手动修改歌曲元数据（标题/歌手/专辑/专辑歌手）。
+  /// 用户手动修改歌曲元数据（标题/歌手/专辑/专辑歌手/年份）。
   ///
-  /// 落库并标记扫描保护；字段语义：null=不修改，''=清空为未知，其余=新值。
+  /// 落库并标记扫描保护；字段语义：null=不修改，''=清空为未知，其余=新值；
+  /// 年份用 [year]/[clearYear]（null 且不清=不修改）。
   /// 返回刷新后的歌曲（供播放队列/当前歌曲同步），失败返回 null。
   Future<Song?> updateSongMeta(Song s,
       {String? title,
       String? artist,
       String? album,
-      String? albumArtist}) async {
+      String? albumArtist,
+      int? year,
+      bool clearYear = false}) async {
     await index.updateSongUserMeta(s.sourceKey, s.sourceRef,
-        title: title, artist: artist, album: album, albumArtist: albumArtist);
+        title: title,
+        artist: artist,
+        album: album,
+        albumArtist: albumArtist,
+        year: year,
+        clearYear: clearYear);
     _metaVersion++;
     _favoriteVersion++;
     // 改了歌手名 → 身份映射要跟着校准，否则歌手页/计数还挂在旧身份上。

@@ -195,6 +195,55 @@ void main() {
     dir.deleteSync(recursive: true);
   });
 
+  test('用户改年份：设置/清空/扫描不覆盖', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir = await Directory.systemTemp.createTemp('selfmusic_idxyear_');
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+
+    await index.upsertSongs([
+      DirectSongRow(
+        sourceKey: 'webdav:nas',
+        ref: '/dav/y.mp3',
+        title: 'y',
+        year: 2001,
+        duration: 200,
+        format: 'mp3',
+        size: 1024,
+        mtime: 1,
+      ),
+    ]);
+    // 设置年份。
+    await index.updateSongUserMeta('webdav:nas', '/dav/y.mp3', year: 1999);
+    var got = index.songByRef('webdav:nas', '/dav/y.mp3')!;
+    expect(got.year, 1999);
+    // 清空年份。
+    await index.updateSongUserMeta('webdav:nas', '/dav/y.mp3',
+        clearYear: true);
+    got = index.songByRef('webdav:nas', '/dav/y.mp3')!;
+    expect(got.year, isNull);
+    // 重设后扫描不覆盖。
+    await index.updateSongUserMeta('webdav:nas', '/dav/y.mp3', year: 2010);
+    await index.upsertSongs([
+      DirectSongRow(
+        sourceKey: 'webdav:nas',
+        ref: '/dav/y.mp3',
+        title: 'y',
+        year: 2020,
+        duration: 200,
+        format: 'mp3',
+        size: 1024,
+        mtime: 2,
+      ),
+    ]);
+    got = index.songByRef('webdav:nas', '/dav/y.mp3')!;
+    expect(got.year, 2010);
+
+    index.close();
+    dir.deleteSync(recursive: true);
+  });
+
   test('元数据已读标记：极简扫描未读、补读后已读、完整扫描直接已读', () async {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
     final dir = await Directory.systemTemp.createTemp('selfmusic_idxread_');

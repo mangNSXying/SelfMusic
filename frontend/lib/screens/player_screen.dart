@@ -1682,9 +1682,9 @@ class _Cover extends StatelessWidget {
                               value: 'songs', child: Text('歌单')),
                         const PopupMenuItem(value: 'info', child: Text('歌曲信息')),
                         const PopupMenuItem(
-                            value: 'edit', child: Text('修改歌曲元数据')),
+                            value: 'edit', child: Text('修改信息')),
                         const PopupMenuItem(
-                            value: 'online', child: Text('在线获取歌词/封面')),
+                            value: 'online', child: Text('在线获取元数据')),
                         ...lineItems,
                       ];
                     },
