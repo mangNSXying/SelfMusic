@@ -204,24 +204,24 @@ class _ServerSettingsState extends State<_ServerSettings> {
               MaterialPageRoute<void>(builder: (_) => const PairingScreen()),
             ),
           ),
-          const Divider(height: 24),
-          TextField(
-            controller: _controller,
-            focusNode: _urlFocus,
-            keyboardType: TextInputType.url,
-            autocorrect: false,
-            onSubmitted: (_) {
-              if (autoCompleteUrlController(_controller)) setState(() {});
-            },
-            decoration: const InputDecoration(
-              labelText: '后端地址',
-              hintText: 'https://192.168.1.10:18443',
-              helperText: '含协议与端口，留空表示未配置；未填协议自动补 https://',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.dns_outlined),
-            ),
-          ),
-          const SizedBox(height: 12),
+//           const Divider(height: 24),
+//           TextField(
+//             controller: _controller,
+//             focusNode: _urlFocus,
+//             keyboardType: TextInputType.url,
+//             autocorrect: false,
+//             onSubmitted: (_) {
+//               if (autoCompleteUrlController(_controller)) setState(() {});
+//             },
+//             decoration: const InputDecoration(
+//               labelText: '后端地址',
+//               hintText: 'https://192.168.1.10:18443',
+//               helperText: '含协议与端口，留空表示未配置；未填协议自动补 https://',
+//               border: OutlineInputBorder(),
+//               prefixIcon: Icon(Icons.dns_outlined),
+//             ),
+//           ),
+//           const SizedBox(height: 12),
           if (_saved.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
@@ -272,7 +272,7 @@ class _ServerSettingsState extends State<_ServerSettings> {
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('允许不安全 HTTP'),
-            subtitle: const Text('默认关闭，收不到明文 http:// 地址；缺省协议默认补 https://。后端地址与 WebDAV 地址均受此开关约束'),
+            subtitle: const Text('默认关闭，屏蔽 http:// 地址'),
             value: context
                 .read<DirectSourceManager>()
                 .settings
@@ -367,7 +367,7 @@ class _SyncSectionState extends State<_SyncSection> {
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: const Text('多设备同步'),
-          subtitle: const Text('权重 / 收藏 / 歌单 / 断点经服务端在设备间收敛（连着服务器时直连歌曲同样参与；关闭=仅本地）'),
+          subtitle: const Text('同步 权重 / 收藏 / 歌单 / 断点'),
           value: settings.syncEnabled,
           onChanged: (v) {
             settings.syncEnabled = v;
@@ -540,18 +540,18 @@ class _TranscodeSectionState extends State<_TranscodeSection> {
         const SizedBox(height: 4),
         Text(
             unknown
-                ? '经服务端代理播放：按需转码为 MP3（FLAC 源省流量）+ 可选响度均衡；正在探测服务端能力…'
+                ? '播放源设为代理生效；正在探测服务端能力…'
                 : canUse
-                    ? '经服务端代理播放：按需转码为 MP3（FLAC 源省流量${_version == null ? '' : ' · 服务端 $_version'}）+ 可选响度均衡；缓存/预载按当前链路存（转码开时存转码产物）'
-                    : '服务端不可用或无 ffmpeg（或未配对/旧服务端），开关不可用；播放自动走直连原文件',
+                    ? '播放源设为代理生效；（${_version == null ? '' : ' · 服务端 $_version'}）'
+                    : '服务端不可用或无 ffmpeg；播放自动走直连原文件',
             style: Theme.of(context)
                 .textTheme
                 .bodySmall
                 ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
-          title: const Text('播放时代理转码'),
-          subtitle: const Text('仅代理生效；失败回落直连（转码 seek 精度 ±2s）'),
+          title: const Text('转码省流'),
+          subtitle: const Text('失败回落直连'),
           value: settings.transcodeEnabled && canUse,
           onChanged: !canUse
               ? null
@@ -577,7 +577,7 @@ class _TranscodeSectionState extends State<_TranscodeSection> {
                 },
         ),
         const SizedBox(height: 8),
-        Text('响度均衡（LUFS，仅代理转码时生效）',
+        Text('响度均衡（需开启转码）',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color: cs.onSurface.withValues(alpha: 0.6))),
         const SizedBox(height: 4),
@@ -694,7 +694,7 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
           ],
         ),
         const SizedBox(height: 4),
-        Text('离线缓存与预载共用；超出后按 LRU 淘汰（当前播放/预载受保护）',
+        Text('离线缓存与预载共用',
             style: Theme.of(context)
                 .textTheme
                 .bodySmall
@@ -873,8 +873,8 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
           ),
           const SizedBox(height: 8),
           Text(theme.themeMode == ThemeMode.system
-              ? '随手机 / 电脑系统自动切换明暗'
-              : '固定使用当前所选明暗，不跟随系统',
+              ? '随系统自动切换明暗'
+              : '不跟随系统',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(color: colorScheme.onSurface.withValues(alpha: 0.6))),
           const Divider(),
           const SizedBox(height: 8),
@@ -942,17 +942,23 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
           const Divider(),
           const SizedBox(height: 8),
 
-          // 播放页切换动画
-          Text('播放页', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          // 切换动画
+          Text('动画', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.animation_outlined),
             title: const Text('页面切换动画'),
-            subtitle: Text('播放页、分组、设置等全部页面切换效果：${_transition.label}'),
+            subtitle: Text('页面切换效果：${_transition.label}'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _pickTransition(context),
           ),
+          const Divider(),
+          const SizedBox(height: 8),
+
+          // 播放页设定
+          Text('播放页', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('播放页滑动手势'),
@@ -972,7 +978,7 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
             leading: const Icon(Icons.title),
             title: const Text('标题显示格式'),
             subtitle: Text('当前：${_settings.songTitleFormat.label}'
-                '（补读元数据后按此格式展示，不修改存储字段）'),
+                '（不修改存储字段）'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _pickTitleFormat(context),
           ),
@@ -995,7 +1001,9 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('压缩图像画质'),
-            subtitle: const Text('开：列表/卡片用 768 长边 JPEG 缩略图，滑动更省；关：直接显示封面原图，画质无损（播放页恒用原图）'),
+            subtitle: Text(_settings.compressCoverImage
+                ? '开：用 JPEG 缩略图，后台创建缩略图可能会导致发热'
+                : '关：（推荐）直接显示原图'),
             value: _settings.compressCoverImage,
             onChanged: (v) async {
               setState(() => _settings.compressCoverImage = v);
@@ -1345,7 +1353,7 @@ class _SongsSettingsState extends State<_SongsSettings> {
         ),
         SwitchListTile(
           title: const Text('收藏自动缓存'),
-          subtitle: const Text('喜欢的歌自动下载离线可用'),
+          subtitle: const Text('歌曲离线可用'),
           value: _settings.autoCacheFavorites,
           onChanged: (v) {
             setState(() => _settings.autoCacheFavorites = v);
@@ -1359,18 +1367,18 @@ class _SongsSettingsState extends State<_SongsSettings> {
                   color: cs.primary, fontWeight: FontWeight.w600)),
         ),
         ListTile(
-          title: const Text('忽略音频（时长过滤）'),
+          title: const Text('时长过滤'),
           subtitle: Text(_settings.scanIgnoreMinDurationSec > 0
-              ? '补读到时长后忽略短于 ${_settings.scanIgnoreMinDurationSec} 秒的音频（首扫只建索引，不读文件，此时不生效）'
-              : '关闭（按时长不过滤）'),
+              ? '忽略短于 ${_settings.scanIgnoreMinDurationSec} 秒的音频（获取到时长信息后生效）'
+              : '关闭'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _editIgnoreDuration(context),
         ),
         ListTile(
-          title: const Text('忽略音频（大小过滤）'),
+          title: const Text('大小过滤'),
           subtitle: Text(_settings.scanIgnoreMinSizeBytes > 0
-              ? '扫描时忽略小于 ${_labelBytes(_settings.scanIgnoreMinSizeBytes)} 的音频'
-              : '关闭（按大小不过滤）'),
+              ? '忽略小于 ${_labelBytes(_settings.scanIgnoreMinSizeBytes)} 的音频'
+              : '关闭'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _editIgnoreBytes(context),
         ),
@@ -1382,13 +1390,13 @@ class _SongsSettingsState extends State<_SongsSettings> {
             setState(() => _settings.scanWifiOnly = v);
           },
         ),
-        const ListTile(
-          title: Text('扫描方式'),
-          subtitle: Text('快速：只建索引（文件名建索引，不读音频内容）。'
-              '元数据与封面由播放时和后台补读补齐'),
-          trailing: Icon(Icons.check, size: 20),
-          enabled: false,
-        ),
+//         const ListTile(
+//           title: Text('扫描方式'),
+//           subtitle: Text('快速：只建索引（文件名建索引，不读音频内容）。'
+//               '元数据与封面由播放时和后台补读补齐'),
+//           trailing: Icon(Icons.check, size: 20),
+//           enabled: false,
+//         ),
         ListTile(
           title: const Text('自动扫描间隔'),
           subtitle: Text(_settings.scanAutoIntervalMin > 0
@@ -1427,8 +1435,7 @@ class _SongsSettingsState extends State<_SongsSettings> {
         ),
         SwitchListTile(
           title: const Text('自动后台解析'),
-          subtitle: const Text('向 MusicBrainz 查询歌手身份（需联网；限流 1 次/秒，'
-              '失败自动退避重试）。关闭后仅保留本地归一去重'),
+          subtitle: const Text('向 MusicBrainz 查询歌手身份，关闭后仅保留本地归一去重'),
           value: _settings.artistResolveAuto,
           onChanged: (v) {
             setState(() => _settings.artistResolveAuto = v);
@@ -1439,7 +1446,7 @@ class _SongsSettingsState extends State<_SongsSettings> {
         ),
         ListTile(
           title: const Text('重试解析'),
-          subtitle: const Text('把未命中/待确认的歌手重置为重试解析'),
+          subtitle: const Text('重新解析 未命中/待确认 的歌手'),
           trailing: const Icon(Icons.refresh),
           onTap: () async {
             await context.read<ArtistResolver>().retryAll();
@@ -1450,14 +1457,14 @@ class _SongsSettingsState extends State<_SongsSettings> {
         ),
         ListTile(
           title: const Text('强制解析'),
-          subtitle: const Text('连已解析的歌手一起按 MB 重新拉取，成员也会重新展开；受 MB 限流，逐个顺序进行'),
+          subtitle: const Text('强制解析所有歌手（有限流，需等待）'),
           trailing: const Icon(Icons.playlist_add_check),
           onTap: () async {
             final ok = await showDialog<bool>(
               context: context,
               builder: (c) => AlertDialog(
-                title: const Text('强制解析全部歌手？'),
-                content: const Text('会把所有歌手（含已解析成功的）重新拉取一遍，并重新展开组合成员。请求受 MusicBrainz 限流，歌手多时需要跑一阵。'),
+                title: const Text('确认强制解析全部歌手？'),
+                content: const Text('会把所有歌手（含已解析成功的）重新拉取一遍，并重新展开组合成员。请求受 MusicBrainz 限流，需要一定时间。'),
                 actions: [
                   TextButton(
                       onPressed: () => Navigator.of(c).pop(false),
@@ -1782,7 +1789,7 @@ class _SongsSettingsState extends State<_SongsSettings> {
               autofocus: true,
             ),
             const SizedBox(height: 8),
-            const Text('0 表示关闭。开启后按固定周期增量扫描全部直连源；'
+            const Text('0 为关闭，建议关闭。开启后按固定周期增量扫描全部直连源；'
                 '本地目录变化也会自动触发增量扫描。'),
           ],
         ),
@@ -1865,13 +1872,13 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
         ),
         SwitchListTile(
           title: const Text('预载下一首'),
-          subtitle: const Text('播放时按播放顺序算法确定下一首并后台缓存（加权随机也先抽样确定并复用；开关只决定是否预载）'),
+          subtitle: const Text('确定下一首后进行预载'),
           value: _settings.preloadNext,
           onChanged: (v) => setState(() => _settings.preloadNext = v),
         ),
         SwitchListTile(
-          title: const Text('备用源缺歌自动补齐'),
-          subtitle: const Text('主源播放成功后，把当前曲复制到缺失该歌的备用（单首按需，需备用可写；默认关）'),
+          title: const Text('备用源自动补歌'),
+          subtitle: const Text('主源播放成功后，把当前曲复制到缺失该歌的备用源（需备用读写权限）'),
           value: _settings.fallbackAutoRepair,
           onChanged: (v) => setState(() => _settings.fallbackAutoRepair = v),
         ),
@@ -1939,7 +1946,7 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
         const Divider(height: 24),
         SwitchListTile(
           title: const Text('均衡器'),
-          subtitle: const Text('5 段频段增益（JustAudio 原生支持，Android 生效）'),
+          subtitle: const Text('5 段频段增益（目前仅安卓生效）'),
           value: _settings.equalizerEnabled,
           onChanged: _toggleEqualizer,
         ),
@@ -1981,7 +1988,7 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
         const Divider(height: 24),
         SwitchListTile(
           title: const Text('自动暂停/恢复'),
-          subtitle: const Text('通话等音频焦点抢占时自动暂停，结束后恢复（Android 生效）'),
+          subtitle: const Text('通话等音频焦点抢占时自动暂停，结束后恢复（目前仅安卓生效）'),
           value: _settings.audioFocusEnabled,
           onChanged: (v) {
             setState(() => _settings.audioFocusEnabled = v);
@@ -1990,7 +1997,7 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
         ),
         SwitchListTile(
           title: const Text('静音暂停'),
-          subtitle: const Text('媒体音量归零时自动暂停（Android/鸿蒙生效）'),
+          subtitle: const Text('媒体音量归零时自动暂停（安卓/鸿蒙生效）'),
           value: _settings.pauseOnZeroVolume,
           onChanged: (v) {
             setState(() => _settings.pauseOnZeroVolume = v);
@@ -1999,7 +2006,7 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
         ),
         SwitchListTile(
           title: const Text('断连暂停'),
-          subtitle: const Text('当前播放设备（如蓝牙音箱）断开时自动暂停；从蓝牙切到扬声器不暂停（Android/鸿蒙生效）'),
+          subtitle: const Text('当前播放设备（如蓝牙音箱）断开时自动暂停（安卓/鸿蒙生效）'),
           value: _settings.pauseOnDeviceDisconnect,
           onChanged: (v) {
             setState(() => _settings.pauseOnDeviceDisconnect = v);
@@ -2243,28 +2250,28 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
         ListTile(
           leading: const Icon(Icons.tune),
           title: const Text('导出设置'),
-          subtitle: const Text('本机设置 + 服务端地址 + 主题 → JSON 备份文件'),
+          subtitle: const Text('含 本机设置 + 服务端地址 + 主题'),
           trailing: const Icon(Icons.arrow_downward),
           onTap: () => _doExportSettings(),
         ),
         ListTile(
           leading: const Icon(Icons.upload_file),
-          title: const Text('导入设置（选择文件）'),
-          subtitle: const Text('从任意位置选择设置备份文件恢复'),
+          title: const Text('导入设置'),
+          subtitle: const Text('选择备份文件恢复设置'),
           trailing: const Icon(Icons.folder_open),
           onTap: () => _pickAndImport(BackupKind.settings),
         ),
         ListTile(
           leading: const Icon(Icons.queue_music),
           title: const Text('导出歌单'),
-          subtitle: const Text('全部歌单（含歌曲快照）→ JSON 备份文件'),
+          subtitle: const Text('全部歌单'),
           trailing: const Icon(Icons.arrow_downward),
           onTap: () => _doExportPlaylists(),
         ),
         ListTile(
           leading: const Icon(Icons.playlist_add),
-          title: const Text('导入歌单（选择文件）'),
-          subtitle: const Text('从任意位置选择歌单备份文件恢复'),
+          title: const Text('导入歌单'),
+          subtitle: const Text('选择备份文件恢复歌单'),
           trailing: const Icon(Icons.folder_open),
           onTap: () => _pickAndImport(BackupKind.playlists),
         ),
