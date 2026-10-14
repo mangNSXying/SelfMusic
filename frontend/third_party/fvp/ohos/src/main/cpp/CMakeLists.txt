@@ -31,4 +31,10 @@ target_link_libraries(${PLUGIN_NAME} PRIVATE
 
 include(../../../../cmake/deps.cmake)
 fvp_setup_deps()
+# VENDORED PATCH: FindMDK.cmake 把 mdk-ffmpeg/mdk-libass/mdk-dav1d 全挂在 mdk
+# 的 INTERFACE 链上（仅为了让它们随包拷贝）。本应用只做音频播放：libass
+# （字幕渲染）/libdav1d（AV1 视频解码）永不使用，且 libmdk 对二者是运行时
+# dlopen 可选加载（缺失只降级）。重设只留 mdk-ffmpeg，HAP 不再携带
+# libass.so/libdav1d.so（省 ~2MB）。升级 vendored fvp 时需重打本补丁。
+set_property(TARGET mdk PROPERTY INTERFACE_LINK_LIBRARIES mdk-ffmpeg)
 target_link_libraries(${PLUGIN_NAME} PRIVATE mdk)
