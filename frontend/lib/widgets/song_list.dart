@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
 import '../data/local/song_weight_store.dart';
 import '../data/sources/music_source.dart';
@@ -15,7 +16,9 @@ import '../providers/playlists_provider.dart';
 import '../utils/collection_sort.dart';
 import '../utils/cover_thumb.dart';
 import '../utils/duration_format.dart';
+import '../utils/playlist_group.dart';
 import '../utils/song_search.dart';
+import '../utils/source_folders.dart';
 import '../utils/song_title_format.dart';
 import 'add_to_playlist.dart';
 import 'count_header.dart';
@@ -585,6 +588,11 @@ class _SongListState extends State<SongList> {
   List<Song> _songs = const [];
   List<PlaylistItemRow> _items = const [];
 
+  /// 分组折叠状态（组名集合；默认全展开）与所属歌单。
+  /// 换歌单时按新 playlistId 从设置重载（见 [_ensureCollapsed]）。
+  int _collapsedPid = -1;
+  Set<String> _collapsed = {};
+
   /// 追焦目标 offset：队列同款固定上边距（目标行置于距顶 96px 处），
   /// 无需等 viewport；超出列表范围的值交由滚动位置钳位。
   double _focusOffset(int index) =>
@@ -632,6 +640,73 @@ class _SongListState extends State<SongList> {
     _songs = List.unmodifiable([for (final i in order) songs[i]]);
   }
 
+  /// 换歌单时重载折叠状态（build 内调用，不调 setState，只做幂等同步；
+  /// 与 [_syncSongs] 同模式）。
+  void _ensureCollapsed(AppSettings settings) {
+    if (_collapsedPid == widget.playlistId) return;
+    _collapsedPid = widget.playlistId;
+    _collapsed = settings.playlistGroupCollapsed(widget.playlistId);
+  }
+
+  /// 分组（视图层稳定分区；搜索中或分类为「无」时返回空，即平铺）。
+  /// 输入 [_songs] 已按「排列方式」排好，分组只分区不重排——组内顺序即
+  /// 排列结果，默认排序时即歌单原序。
+  List<PlaylistSongGroup> _computeGroups(
+      DirectSourceManager direct, bool searching) {
+    if (searching) return const [];
+    final mode = direct.settings.groupPlaylistDetail;
+    if (mode == PlaylistGroup.none) return const [];
+    return groupPlaylistSongs(_songs, mode, (s) {
+      final src = direct.sourceByKey(s.sourceKey);
+      return src == null ? '' : stripPrefixForSource(src);
+    });
+  }
+
+  void _persistCollapsed(AppSettings settings, List<PlaylistSongGroup> groups) {
+    final names = {for (final g in groups) g.name};
+    settings.setPlaylistGroupCollapsed(
+        widget.playlistId, _collapsed.intersection(names));
+  }
+
+  void _toggleCollapse(
+      AppSettings settings, List<PlaylistSongGroup> groups, String name) {
+    setState(() {
+      if (!_collapsed.remove(name)) _collapsed.add(name);
+      _persistCollapsed(settings, groups);
+    });
+  }
+
+  /// 长按任意标题行：有展开组则全折叠，否则全展开。
+  void _toggleAllCollapse(
+      AppSettings settings, List<PlaylistSongGroup> groups) {
+    final anyExpanded = groups.any((g) => !_collapsed.contains(g.name));
+    setState(() {
+      if (anyExpanded) {
+        _collapsed = {for (final g in groups) g.name};
+      } else {
+        _collapsed = {};
+      }
+      _persistCollapsed(settings, groups);
+    });
+  }
+
+  /// 播放本组歌曲（播完即止），锚点与整单播放一致。
+  Future<void> _playGroup(BuildContext c, List<Song> list) async {
+    if (list.isEmpty) return;
+    final provider = c.read<PlaylistsProvider>();
+    final uuid =
+        await provider.store.index.ensurePlaylistUuid(widget.playlistId);
+    if (!c.mounted) return;
+    final player = c.read<PlayerProvider>();
+    player.playQueue(list,
+        index: 0,
+        playlistUuid: uuid,
+        contextKey: PlayerProvider.anchorForPlaylist(uuid),
+        resetAnchor: true,
+        resumeFromBreakpoint: false);
+    c.read<NavigationProvider>().openPlayer();
+  }
+
   /// 兜底定位到第 [index] 行（首次数据未加载时的边缘情况）：
   /// 一次精确 jumpTo（固定行高保证落点必在视口内）。
   void _scrollToCurrent(int index) {
@@ -652,7 +727,17 @@ class _SongListState extends State<SongList> {
     var firstIdx = -1;
     if (provider.loaded && !_located) {
       _syncSongs(provider, direct.settings.sortPlaylistDetail, direct.weight);
-      firstIdx = _songs.indexWhere(player.isCurrent);
+      _ensureCollapsed(direct.settings);
+      final groups = _computeGroups(direct, false);
+      final rows = buildPlaylistDisplayRows(
+        groups: groups,
+        visible: [for (var i = 0; i < _songs.length; i++) i],
+        collapsed: _collapsed,
+      );
+      final songIdx = _songs.indexWhere(player.isCurrent);
+      if (songIdx >= 0) {
+        firstIdx = rows.indexWhere((r) => r.full == songIdx);
+      }
     }
     if (firstIdx >= 0) {
       _scroll = ScrollController(initialScrollOffset: _focusOffset(firstIdx));
@@ -765,9 +850,22 @@ class _SongListState extends State<SongList> {
         if (songMatchesQuery(_songs[i], query)) i,
     ];
     final currentIdx = _songs.indexWhere((s) => player.isCurrent(s));
-    final visibleCurrent = currentIdx < 0 ? -1 : visible.indexOf(currentIdx);
     // 多选键：与行渲染同源的 _songs 实时行（visible 为下标映射）。
     final visibleKeys = [for (final i in visible) songKey(_songs[i])];
+    // 分组（视图层稳定分区；搜索中/分类「无」时为空，即平铺）。
+    _ensureCollapsed(direct.settings);
+    final groupMode = direct.settings.groupPlaylistDetail;
+    final groups = _computeGroups(direct, searching);
+    final grouped = groups.isNotEmpty;
+    final rows = buildPlaylistDisplayRows(
+      groups: groups,
+      visible: visible,
+      collapsed: _collapsed,
+    );
+    final currentPos = currentIdx < 0
+        ? -1
+        : rows.indexWhere((r) => r.full == currentIdx);
+    final groupByName = {for (final g in groups) g.name: g};
 
     // 行级视图数据（R-1）：一次性算好派生文本/收藏/播放/选中等低频数据，
     // 签名不变时复用整表；行组件由此以值参数渲染，不再逐行订阅管理器。
@@ -790,11 +888,11 @@ class _SongListState extends State<SongList> {
       onWarm: () => direct.weight.warmMetaOf(_songs),
     );
 
-    // 打开歌单后自动定位到当前播放歌曲（仅一次；按可见下标）。
-    if (!_located && visibleCurrent >= 0) {
+    // 打开歌单后自动定位到当前播放歌曲（仅一次；按展示行位置，含组头行偏移）。
+    if (!_located && currentPos >= 0) {
       _located = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToCurrent(visibleCurrent);
+        _scrollToCurrent(currentPos);
       });
     }
 
@@ -889,10 +987,20 @@ class _SongListState extends State<SongList> {
         else
           CountHeader(
             count: searching ? visible.length : _songs.length,
-            trailing: SortMenuButton(
-              value: direct.settings.sortPlaylistDetail,
-              onChanged: (v) => setState(
-                  () => direct.settings.sortPlaylistDetail = v),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                PlaylistGroupButton(
+                  value: groupMode,
+                  onChanged: (v) => setState(
+                      () => direct.settings.groupPlaylistDetail = v),
+                ),
+                SortMenuButton(
+                  value: direct.settings.sortPlaylistDetail,
+                  onChanged: (v) => setState(
+                      () => direct.settings.sortPlaylistDetail = v),
+                ),
+              ],
             ),
           ),
         const Divider(height: 1),
@@ -906,13 +1014,68 @@ class _SongListState extends State<SongList> {
                   // 一帧构建 700+ 行与封面，进入必卡（实测 712 项 vs 16 项）。
                   : RowList(
                       controller: _scroll,
-                      count: visible.length,
+                      count: rows.length,
                       itemBuilder: (c, i) {
-                        final full = visible[i];
+                        final row = rows[i];
+                        // 分组标题行（72 高，与歌曲行同高，RowList 固定行高不受影响）。
+                        if (row.header != null) {
+                          final name = row.header!;
+                          final g = groupByName[name]!;
+                          final collapsed = _collapsed.contains(name);
+                          final scheme = Theme.of(c).colorScheme;
+                          return ListTile(
+                            leading: Container(
+                              width: 44,
+                              height: 44,
+                              decoration: ShapeDecoration(
+                                color: scheme.primary.withValues(alpha: 0.10),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(6)),
+                              ),
+                              child: Icon(
+                                  groupMode == PlaylistGroup.folder
+                                      ? Icons.folder
+                                      : Icons.album,
+                                  color: scheme.primary,
+                                  size: 24),
+                            ),
+                            title: Text(
+                              name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.w600),
+                            ),
+                            subtitle: Text('${g.count} 首',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.play_arrow),
+                                  tooltip: '播放该分组',
+                                  onPressed: () => _playGroup(c, [
+                                    for (final fi in g.songIndices) _songs[fi],
+                                  ]),
+                                ),
+                                Icon(collapsed
+                                    ? Icons.expand_more
+                                    : Icons.expand_less),
+                              ],
+                            ),
+                            onTap: () => _toggleCollapse(
+                                direct.settings, groups, name),
+                            // 长按任意标题行：有展开组则全折叠，否则全展开。
+                            onLongPress: () => _toggleAllCollapse(
+                                direct.settings, groups),
+                          );
+                        }
+                        final full = row.full!;
                         final itemRow = _items[full];
                         final s = _songs[full];
                         final isFirst = i == 0;
-                        final isLast = i == visible.length - 1;
+                        final isLast = i == rows.length - 1;
                         final key = songKey(s);
                         return SongTile(
                           song: s,
@@ -951,23 +1114,31 @@ class _SongListState extends State<SongList> {
                                     .anchorForPlaylist(uuid));
                             context.read<NavigationProvider>().openPlayer();
                           },
-                          // 歌单顺序相关操作：上移/下移/移除，追加在内置项之后。
-                          extraMenuItems: [
-                            PopupMenuItem(
-                              value: 'row:up',
-                              enabled: !isFirst,
-                              child: const Text('上移'),
-                            ),
-                            PopupMenuItem(
-                              value: 'row:down',
-                              enabled: !isLast,
-                              child: const Text('下移'),
-                            ),
-                            const PopupMenuItem(
-                              value: 'row:remove',
-                              child: Text('移除'),
-                            ),
-                          ],
+                          // 分组视图是重排展示，手动调序只在平铺下有意义：
+                          // 分组时隐藏上移/下移，仅保留移除。
+                          extraMenuItems: grouped
+                              ? const [
+                                  PopupMenuItem(
+                                    value: 'row:remove',
+                                    child: Text('移除'),
+                                  ),
+                                ]
+                              : [
+                                  PopupMenuItem(
+                                    value: 'row:up',
+                                    enabled: !isFirst,
+                                    child: const Text('上移'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'row:down',
+                                    enabled: !isLast,
+                                    child: const Text('下移'),
+                                  ),
+                                  const PopupMenuItem(
+                                    value: 'row:remove',
+                                    child: Text('移除'),
+                                  ),
+                                ],
                           onExtraMenu: (v) {
                             switch (v) {
                               case 'row:up':
@@ -991,6 +1162,80 @@ class _SongListState extends State<SongList> {
                       },
                     ),
         ),
+      ],
+    );
+  }
+}
+
+/// 歌单详情展示行：组头行（header 非空、full 为空）或歌曲行
+/// （full 为歌曲在已排序歌单中的下标）。
+///
+/// 分组只是视图层稳定分区，不改变底层歌曲顺序：点歌/多选/移除一律按 full
+/// 下标回到底层，点歌仍播整单。搜索中或分类为「无」时退化为平铺。
+typedef PlaylistDisplayRow = ({String? header, int? full});
+
+List<PlaylistDisplayRow> buildPlaylistDisplayRows({
+  required List<PlaylistSongGroup> groups,
+  required List<int> visible,
+  required Set<String> collapsed,
+}) {
+  if (groups.isEmpty) {
+    return [for (final i in visible) (header: null, full: i)];
+  }
+  final rows = <PlaylistDisplayRow>[];
+  for (final g in groups) {
+    rows.add((header: g.name, full: null));
+    if (collapsed.contains(g.name)) continue;
+    for (final i in g.songIndices) {
+      rows.add((header: null, full: i));
+    }
+  }
+  return rows;
+}
+
+/// 歌单详情「分类方式」按钮（挂在计数栏右侧、排列按钮左边）：
+/// 无 / 文件夹（直接父级）/ 专辑，当前项打勾。
+class PlaylistGroupButton extends StatelessWidget {
+  final PlaylistGroup value;
+  final ValueChanged<PlaylistGroup> onChanged;
+
+  const PlaylistGroupButton({
+    super.key,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<PlaylistGroup>(
+      tooltip: '分类方式',
+      icon: Icon(
+        switch (value) {
+          PlaylistGroup.folder => Icons.folder_outlined,
+          PlaylistGroup.album => Icons.album_outlined,
+          PlaylistGroup.none => Icons.category_outlined,
+        },
+        size: 20,
+      ),
+      onSelected: onChanged,
+      itemBuilder: (_) => [
+        for (final m in PlaylistGroup.values)
+          PopupMenuItem(
+            value: m,
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 28,
+                  child: m == value
+                      ? Icon(Icons.check,
+                          size: 18,
+                          color: Theme.of(context).colorScheme.primary)
+                      : null,
+                ),
+                Text(m.label),
+              ],
+            ),
+          ),
       ],
     );
   }

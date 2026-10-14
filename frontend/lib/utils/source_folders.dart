@@ -6,6 +6,24 @@
 /// [groupSourceSongs] 按当前目录切出「直属子文件夹 + 本层歌曲」。
 library;
 
+import '../data/sources/music_source.dart';
+import '../data/sources/smb_direct_source.dart';
+import '../data/sources/webdav_direct_source.dart';
+import '../data/sources/webdav_url.dart';
+
+/// 该源的「源内相对路径」剥离前缀：WebDAV 以 base 路径为源根，
+/// SMB 以 `rootPath` 为源根（兼容含 root 前缀的 legacy 行），
+/// 本地/SFTP 本就是相对路径无需剥离。
+///
+/// 多源混排（如歌单）时按每首歌的源单独取前缀；源已删除时传 `''`。
+String stripPrefixForSource(MusicSource source) {
+  if (source is WebdavDirectSource) {
+    return webdavPathOf(webdavNormalizeBase(source.baseUrl));
+  }
+  if (source is SmbDirectSource) return source.rootPath;
+  return '';
+}
+
 /// 切分源内路径：`\` → `/`、去首尾空白，按 `/` 切分并丢弃空段与 `.`。
 List<String> splitSourceRef(String ref) => ref
     .replaceAll('\\', '/')

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../../utils/collection_sort.dart';
+import '../../utils/playlist_group.dart';
 import 'local_index.dart';
 
 /// 播放页（播放/歌词）切换过渡动画。
@@ -219,6 +220,9 @@ class AppSettings {
   static const String kSortArtists = 'sort_artists';
   static const String kSortPlaylists = 'sort_playlists';
   static const String kSortSources = 'sort_sources';
+
+  /// 歌单详情分类方式（全局）：无 / 文件夹（直接父级）/ 专辑。
+  static const String kGroupPlaylistDetail = 'group_playlist_detail';
 
   /// 歌词追焦等待秒数（用户拖动歌词后多久恢复自动跟随；播放设置可调）。
   static const String kLyricFocusIdleSec = 'lyric_focus_idle_sec';
@@ -691,6 +695,24 @@ class AppSettings {
   CollectionSort get sortSources => _sort(kSortSources);
   set sortSources(CollectionSort v) => _setSort(kSortSources, v);
 
+  PlaylistGroup get groupPlaylistDetail =>
+      PlaylistGroupX.parse(index.settingsGet(kGroupPlaylistDetail));
+  set groupPlaylistDetail(PlaylistGroup v) =>
+      index.settingsSet(kGroupPlaylistDetail, v.name);
+
+  /// 歌单内分组折叠状态（按歌单持久化）：存折叠组名集合
+  /// （逐项 URI 编码后以 `|` 连接；组名本身可含任意字符）。
+  Set<String> playlistGroupCollapsed(int playlistId) {
+    final raw = index.settingsGet('playlist_group_collapsed_$playlistId');
+    if (raw == null || raw.isEmpty) return {};
+    return raw.split('|').map(Uri.decodeComponent).toSet();
+  }
+
+  void setPlaylistGroupCollapsed(int playlistId, Set<String> collapsed) {
+    final v = collapsed.map(Uri.encodeComponent).join('|');
+    index.settingsSet('playlist_group_collapsed_$playlistId', v);
+  }
+
   // ---------- 通知分区（settings.md §3.6） ----------
 
   bool get audioFocusEnabled =>
@@ -815,5 +837,6 @@ class AppSettings {
     kSortArtists,
     kSortPlaylists,
     kSortSources,
+    kGroupPlaylistDetail,
   ];
 }

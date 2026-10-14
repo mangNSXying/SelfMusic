@@ -7,9 +7,6 @@ import 'package:provider/provider.dart';
 
 import '../data/sources/music_source.dart';
 import '../data/sources/scan_worker.dart';
-import '../data/sources/smb_direct_source.dart';
-import '../data/sources/webdav_direct_source.dart';
-import '../data/sources/webdav_url.dart';
 import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/library_provider.dart';
@@ -214,17 +211,8 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
         _sel.cancel();
       });
 
-  /// 该源的「源内相对路径」剥离前缀：WebDAV 以 base 路径为源根，
-  /// SMB 以 `rootPath` 为源根（兼容含 root 前缀的 legacy 行），
-  /// 本地/SFTP 本就是相对路径无需剥离。
-  String _stripPrefix(MusicSource source) {
-    final s = source;
-    if (s is WebdavDirectSource) {
-      return webdavPathOf(webdavNormalizeBase(s.baseUrl));
-    }
-    if (s is SmbDirectSource) return s.rootPath;
-    return '';
-  }
+  /// 该源的「源内相对路径」剥离前缀（见 [stripPrefixForSource]）。
+  String _stripPrefix(MusicSource source) => stripPrefixForSource(source);
 
   /// 播放某文件夹下全部歌曲（递归含深层），与单曲点播同锚点，
   /// 深层列表/融合队列机制不变。
