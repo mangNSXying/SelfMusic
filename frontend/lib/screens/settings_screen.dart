@@ -2108,7 +2108,7 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
           autofocus: true,
           decoration: const InputDecoration(
             hintText: '0 ~ 1.00',
-            helperText: '距上次播放不超过「列表长度 × 比例」时重抽；0=关闭',
+            helperText: '近期已播（播放历史末尾「列表长度 × 比例」内）时重抽；0=关闭',
           ),
         ),
         actions: [

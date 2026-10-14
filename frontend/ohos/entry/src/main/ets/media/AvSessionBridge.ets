@@ -299,7 +299,7 @@ export default class AvSessionBridge implements MethodCallHandler {
       this.releaseCover();
       try {
         const metadata = this.buildMetadata(call);
-        (metadata as unknown as Record<string, unknown>).mediaImage = null;
+        (metadata as ESObject).mediaImage = null;
         await session.setAVMetadata(metadata);
         Log.i(TAG, '无封面已清图');
       } catch (err) {
@@ -335,7 +335,7 @@ export default class AvSessionBridge implements MethodCallHandler {
       this.releaseCover();
       try {
         const fallback = this.buildMetadata(call);
-        (fallback as unknown as Record<string, unknown>).mediaImage = null;
+        (fallback as ESObject).mediaImage = null;
         const cur = this.session;
         if (job === this.coverJob && cur === session) {
           await cur.setAVMetadata(fallback);
