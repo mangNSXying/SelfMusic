@@ -211,6 +211,11 @@ void main() {
       final u2 = api.transcodeStreamUrl('https://nas:5006/music/a.flac', 192,
           loudnorm: '16')!;
       expect(u2, contains('loudnorm=16'));
+      // start_sec：默认不拼（URL 与旧行为一致）；seek 时才带偏移。
+      expect(u, isNot(contains('start_sec')));
+      final u3 = api.transcodeStreamUrl('https://nas:5006/music/a.flac', 320,
+          loudnorm: '16', startSec: 90.5)!;
+      expect(u3, contains('start_sec=90.5'));
     });
 
     test('SFTP 地址与信封纯函数', () {

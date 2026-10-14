@@ -683,7 +683,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     });
     // 播放时长采集挂在这里：位置流在播放中持续跳动，暂停/停止时停止。
     p.positionStream.listen((pos) {
-      _maybeSaveState(pos);
+      // 直播转码态：流内位置叠加服务端偏移才是绝对位置（断点/权重同口径）。
+      final abs = (_liveTranscode && _transcodeStartSec > 0)
+          ? pos + Duration(milliseconds: _transcodeOffsetMs)
+          : pos;
+      _maybeSaveState(abs);
       _playSecReconcile(playing: p.playing);
     });
     // just_audio 0.9.x 没有 errorStream：平台侧错误只从 playbackEventStream 的
@@ -824,7 +828,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (idx == null) return;
     try {
       await idx.flushWrites();
-      if (_hasPlayScene) await _saveState(player.position);
+      if (_hasPlayScene) await _saveState(position);
     } catch (e) {
       debugPrint('[play] 退后台落库失败（忽略）: $e');
     }
@@ -834,7 +838,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _saveStateNow() async {
     if (!_hasPlayScene) return;
     try {
-      await _saveState(player.position);
+      await _saveState(position);
     } catch (e) {
       debugPrint('[play] 回前台写断点失败（忽略）: $e');
     }
@@ -889,7 +893,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
       return;
     }
-    final pos = player.position;
+    final pos = position;
     final wasPlaying = player.playing;
     final current = _current!;
     final source = _curSource;
@@ -899,8 +903,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _disposePlayer();
     _buildAndWire();
     await _play(current, source: source, play: wasPlaying);
+    // 直播转码态走分支 seek（带偏移重载），其余原生 seek。
     try {
-      await player.seek(pos);
+      await seek(pos);
     } catch (_) {}
     notifyListeners();
   }
@@ -933,7 +938,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) {
       // 查缓存失败按未缓存处理，继续重载。
     }
-    final pos = player.position;
+    final pos = position;
     final wasPlaying = player.playing && !_fadingPause;
     // 重载期间旧渐变作废，与 _play/applyAudioConfig 同口径。
     _cancelFadeAndComplete();
@@ -941,7 +946,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final token = ++_playToken;
     bool alive() => token == _playToken;
     try {
-      final (used, line) = await _playDirect(cur, fresh, alive: alive);
+      // 保位置：把绝对位置当作转码偏移透给装载（命中变体则本地 seek，
+      // 命中转码流则服务端 start_sec；直连/字节流装载后仍需原生 seek）。
+      final (used, line) = await _playDirect(cur, fresh,
+          alive: alive, startSec: pos.inMilliseconds / 1000.0);
       if (!alive()) return false;
       _curSource = used;
       _curLine = line;
@@ -965,9 +973,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         } catch (_) {}
       }
       if (!alive()) return false;
-      try {
-        await player.seek(pos);
-      } catch (_) {}
+      // 直播转码流已从偏移处起播（变体命中亦已本地 seek），无需再 seek；
+      // 其余链路（直连/字节流）仍需原生 seek 回原位置。
+      if (!_liveTranscode) {
+        try {
+          await player.seek(pos);
+        } catch (_) {}
+      }
       _saveState(player.position);
       notifyListeners();
       _syncSystemMedia();
@@ -1349,7 +1361,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         _restorePositionKey == _positionKeyOf(c)) {
       return Duration(milliseconds: r);
     }
-    return player.position;
+    final base = player.position;
+    // 直播转码流：播放器位置从流起点（偏移处）计，展示需叠加服务端 start_sec。
+    if (_liveTranscode && _transcodeStartSec > 0) {
+      return base + Duration(milliseconds: _transcodeOffsetMs);
+    }
+    return base;
   }
 
   /// 展示用总时长：播放器未装载出真实时长时，回退到当前歌曲元数据时长
@@ -1711,6 +1728,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _current = cur;
       _curSource = src;
       _curLine = 0;
+      // 新曲装载前复位直播转码态（旧曲的偏移不得漏到新曲的位置展示里；
+      // 实际链路由 _loadOnce 各成功分支重记）。
+      _liveTranscode = false;
+      _transcodeStartSec = 0;
       // 记录本次起始是否用户手动点播（改进.txt 功能7 完播判定用；任何新起始都会覆盖）。
       _startedManual = manual;
       // 用户主动起播 → 首轮同步晚到的远端断点不再回切。
@@ -1777,7 +1798,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (!alive()) return;
       unawaited(_applyEqualizerBands());
       // 切歌即时同步：断点先落 outbox 再 poke（自动续播/手动点播同一路径）。
-      _pokeSyncAfterSave(() => _saveState(player.position));
+      _pokeSyncAfterSave(() => _saveState(position));
       // 深层列表维护：歌单内播放推入末尾；外部点歌替换末尾。
       _trackDeepList(cur, push: fromPlaylist);
       _onTrackStarted?.call(_curSource ?? src, cur);
@@ -1812,8 +1833,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// `sourceRef` 相对路径对应，跨类型亦可）；锁定线路时只走该路。
   /// [alive] 为假（已被更新的切歌接管）或正在退出时立即放弃，不再触碰播放器。
   /// 成功返回实际使用的 `(source, line)`，调用方据此更新 [_curSource]/[_curLine]。
+  /// [startSec] 透传 [_loadOnce]（保位置重载用；首播/重试为 0）。
   Future<(MusicSource, int)> _playDirect(Song s, MusicSource src,
-      {required bool Function() alive}) async {
+      {required bool Function() alive, double startSec = 0}) async {
     List<(MusicSource, int)> cands;
     try {
       cands = _candidates?.call(s.sourceKey) ?? [(src, 0)];
@@ -1845,7 +1867,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           } else {
             // 重试轮跳过转码（首轮已试过，见 _loadOnce.skipTranscode）。
             await _loadOnce(s, cand,
-                probe: probeUsable, skipTranscode: i > 0);
+                probe: probeUsable, skipTranscode: i > 0, startSec: startSec);
           }
           if (c > 0) {
             final label = line == 0 ? '主源' : '备用$line';
@@ -1880,11 +1902,24 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 本次 [_loadOnce] 探针是否以超时收场（供 [_playDirect] 决定后续尝试还做不做）。
   bool probeTimedOut = false;
 
+  /// 当前播放是否为直播转码流（服务端无时长/不可 Range，见 S1）。
+  /// 为 true 时展示/存档位置 = [_transcodeStartSec] + 播放器位置；
+  /// seek 走带偏移重载（[_seekLiveTranscode]），不调原生 seek。
+  bool _liveTranscode = false;
+
+  /// 直播转码流的起始偏移（秒）：服务端 `start_sec`，首播/重载为 0。
+  double _transcodeStartSec = 0;
+
+  /// 偏移毫秒（position 叠加/positionStream 映射共用，避免重复换算）。
+  int get _transcodeOffsetMs => (_transcodeStartSec * 1000).round();
+
   /// 阶段6 无状态转码装载：成功返回 true（已 setUrl），失败/未启用返回 false
   /// 由调用方回落。原文件缓存作转码失败/断网兜底（见 [_loadOnce]）；整曲转码
-  /// 不支持 Range，seek 由播放器重建请求（R8 允许 ±2s）。
+  /// 不支持 Range，seek 走带偏移重载（[startSec] → 服务端输出端 -ss，R8）。
+  /// 成功时记 [_liveTranscode]/[_transcodeStartSec]（供 [position]/[seek]）。
   Future<bool> _tryTranscodeLoad(
-      Song s, MusicSource src, String originUrl, dynamic tag) async {
+      Song s, MusicSource src, String originUrl, dynamic tag,
+      {double startSec = 0}) async {
     try {
       final settings = _appSettings;
       final api = _transcodeApi;
@@ -1898,9 +1933,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
       final int bitrate = settings.transcodeBitrate;
       final String loudnorm = settings.transcodeLoudnorm;
-      final String? turl =
-          api.transcodeStreamUrl(originUrl, bitrate, loudnorm: loudnorm)
-              as String?;
+      final String? turl = api.transcodeStreamUrl(originUrl, bitrate,
+          loudnorm: loudnorm, startSec: startSec) as String?;
       if (turl == null) return false;
       final headers = <String, String>{};
       try {
@@ -1912,7 +1946,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 回源鉴权随请求转发（不落地）：各源经 proxyAuthHeaders 自备
       // （WebDAV Basic / SFTP 信封），默认空。
       headers.addAll(await src.proxyAuthHeaders(s));
-      debugPrint('[play] 转码代理 ${bitrate}k loudnorm=$loudnorm: $turl');
+      debugPrint('[play] 转码代理 ${bitrate}k loudnorm=$loudnorm'
+          '${startSec > 0 ? ' start_sec=$startSec' : ''}: $turl');
       final load = player.setUrl(turl, headers: headers, tag: tag);
       try {
         await load.timeout(_loadUrlTimeout);
@@ -1921,6 +1956,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugPrint('[play] 转码装载超时，回落直连');
         return false;
       }
+      _liveTranscode = true;
+      _transcodeStartSec = startSec;
       return true;
     } catch (e) {
       // 429 并发满 / 503 无 ffmpeg / 502 源失败：一律静默回落直连原文件。
@@ -1938,8 +1975,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// [skipTranscode] 为 true 时跳过转码分支（同一 [_playDirect] 内首轮已试过
   /// 转码：429/502/超时几秒后重试大概率还是失败，别再占服务端转码许可
   /// 反复 spawn ffmpeg；重试只走缓存/直连/字节流）。
+  /// [startSec] > 0 时转码分支带偏移重开流（seek/保位置重载用；变体命中则
+  /// 本地原生 seek，不走流式）。
   Future<void> _loadOnce(Song s, MusicSource src,
-      {bool probe = true, bool skipTranscode = false}) async {
+      {bool probe = true, bool skipTranscode = false, double startSec = 0}) async {
     final tag = mediaItemOf(s, title: displayTitle(s));
     final settings = _appSettings;
     final api = _transcodeApi;
@@ -1950,6 +1989,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           apiBaseUrl: (api.baseUrl as String?) ?? '',
           src: src,
         );
+    // 先按非直播态复位：各成功分支按实际链路重记（转码分支记 true）。
+    _liveTranscode = false;
+    _transcodeStartSec = 0;
     if (transcodeOn && !skipTranscode) {
       // 与当前设置一致的预载转码产物：本地文件，原生 seek、无需重建请求。
       try {
@@ -1957,6 +1999,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (variant != null) {
           debugPrint('[play] ${src.kind} 转码变体缓存: $variant');
           await player.setFilePath(variant, tag: tag);
+          if (startSec > 0) {
+            // 保位置重载命中变体：本地文件直接 seek，无需流式。
+            try {
+              await player.seek(
+                  Duration(milliseconds: (startSec * 1000).round()));
+            } catch (_) {}
+          }
           return;
         }
         // 未命中才值得打一行（命中行在上面）：排查“预载了但没用上”时
@@ -1979,7 +2028,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final proxyUrl = src.proxyOrigin(s);
     if (!skipTranscode &&
         proxyUrl != null &&
-        await _tryTranscodeLoad(s, src, proxyUrl, tag)) {
+        await _tryTranscodeLoad(s, src, proxyUrl, tag, startSec: startSec)) {
       return;
     }
     // 转码开但流失败（429 并发满 / 503 / 断网）：原文件缓存兜底，
@@ -2113,8 +2162,16 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get lyricsLoading => _lyricsLoading;
 
   /// 歌词页位置流（生产走 [player]，懒构造不额外建播放器）。
-  Stream<Duration> get lyricPositionStream =>
-      lyricsPositionOverride ?? player.positionStream;
+  /// 直播转码态叠加服务端偏移（歌词按绝对时间轴对齐）。
+  Stream<Duration> get lyricPositionStream {
+    final base = lyricsPositionOverride ?? player.positionStream;
+    return base.map((p) {
+      final s = _transcodeStartSec;
+      return (_liveTranscode && s > 0)
+          ? p + Duration(milliseconds: _transcodeOffsetMs)
+          : p;
+    });
+  }
 
   /// 歌词页位置流覆盖（仅测试：避免 widget 测试构造真实 AudioPlayer）。
   @visibleForTesting
@@ -2766,7 +2823,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final c = _current;
     if (c == null) return;
     if (target != null && _same(c, target)) return;
-    _emitWeight(c, completed: false, position: player.position);
+    _emitWeight(c, completed: false, position: position);
   }
 
   // ---------- 播放控制 ----------
@@ -2884,8 +2941,73 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _userTookOver = true;
     // 用户手动 seek 接管：恢复期的乐观位置失效，之后走真实位置。
     _clearRestorePosition();
-    await player.seek(d);
+    // 直播转码流不可原生 seek：带偏移重开流（服务端输出端 -ss）。
+    if (_liveTranscode) {
+      await _seekLiveTranscode(d);
+    } else {
+      await player.seek(d);
+    }
     _syncSystemMedia();
+  }
+
+  /// 直播转码流 seek：用目标位置作 `start_sec` 重开一条转码流，保播放态。
+  /// 旧链由 [_playToken] 作废（setUrl 打断旧流，迟到结果静默丢弃）；
+  /// 新流起不来时先回退原偏移（不断流），都不行才整曲重装。
+  Future<void> _seekLiveTranscode(Duration target) async {
+    final cur = _current;
+    final src = _curSource;
+    if (cur == null || src == null) return;
+    var ms = target.inMilliseconds;
+    if (ms < 0) ms = 0;
+    final dur = duration;
+    if (dur != null && ms > dur.inMilliseconds) ms = dur.inMilliseconds;
+    final prevSec = _transcodeStartSec;
+    final wasPlaying = player.playing && !_fadingPause;
+    final token = ++_playToken;
+    bool alive() => token == _playToken;
+    try {
+      final proxyUrl = src.proxyOrigin(cur);
+      final tag = mediaItemOf(cur, title: displayTitle(cur));
+      if (proxyUrl == null) return;
+      var ok = await _tryTranscodeLoad(cur, src, proxyUrl, tag,
+          startSec: ms / 1000.0);
+      if (!alive()) return;
+      if (!ok) {
+        // 新偏移起不来：回退原偏移保住不断流。
+        debugPrint('[play] 转码 seek 回退原偏移《${cur.title}》');
+        ok = await _tryTranscodeLoad(cur, src, proxyUrl, tag,
+            startSec: prevSec);
+        if (!alive()) return;
+        if (!ok) {
+          AppToast.show('转码 seek 失败，已保持原进度', isError: true);
+          return;
+        }
+      }
+      // 与 _play 同口径：先复位再播，避免自然播完态的 play() 空转。
+      if (wasPlaying) {
+        if (player.playing) {
+          try {
+            await player.pause();
+          } catch (_) {}
+        }
+        unawaited(player.play().catchError((Object e) {
+          if (!alive() || _shuttingDown) return;
+          debugPrint('[play] seek 后 play 异常《${cur.title}》: $e');
+        }));
+        _fadeIn();
+      } else if (player.playing) {
+        try {
+          await player.pause();
+        } catch (_) {}
+      }
+      if (!alive()) return;
+      _saveState(position);
+      notifyListeners();
+      _syncSystemMedia();
+    } catch (e) {
+      if (!alive()) return;
+      debugPrint('[play] 转码 seek 失败《${cur.title}》: $e');
+    }
   }
 
   // ---------- 断点（stage2.md §7） ----------
@@ -2918,7 +3040,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_onSyncPoke == null || !_hasPlayScene) return;
     Duration pos;
     try {
-      pos = player.position;
+      pos = position;
     } catch (_) {
       return;
     }

@@ -165,10 +165,10 @@ class TranscodeControllerTest {
         var c = controllerWith(src("https://nas:5006/music"));
         // 已下架的低档与非法值同样拒绝（档位现为 192/256/320）。
         assertThrows(BizException.class, () -> c.stream(
-                "https://nas:5006/music/a.flac", "128", "off", null, null, null,
+                "https://nas:5006/music/a.flac", "128", "off", "0", null, null, null,
                 new MockHttpServletResponse()));
         assertThrows(BizException.class, () -> c.stream(
-                "https://nas:5006/music/a.flac", "512", "off", null, null, null,
+                "https://nas:5006/music/a.flac", "512", "off", "0", null, null, null,
                 new MockHttpServletResponse()));
     }
 
@@ -176,10 +176,10 @@ class TranscodeControllerTest {
     void rejectsInvalidLoudnorm() {
         var c = controllerWith(src("https://nas:5006/music"));
         assertThrows(BizException.class, () -> c.stream(
-                "https://nas:5006/music/a.flac", "192", "99", null, null, null,
+                "https://nas:5006/music/a.flac", "192", "99", "0", null, null, null,
                 new MockHttpServletResponse()));
         assertThrows(BizException.class, () -> c.stream(
-                "https://nas:5006/music/a.flac", "192", "loud", null, null, null,
+                "https://nas:5006/music/a.flac", "192", "loud", "0", null, null, null,
                 new MockHttpServletResponse()));
     }
 
@@ -201,5 +201,46 @@ class TranscodeControllerTest {
                 .contains("loudnorm=I=-23:TP=-1.5:LRA=11"));
         assertNull(TranscodeController.loudFilter("off"));
         assertNull(TranscodeController.loudFilter("bogus"));
+    }
+
+    @Test
+    void ffmpegArgsSeekIsOutputOption() {
+        // 0 不加 -ss：旧行为一致。
+        assertFalse(TranscodeController.ffmpegArgs("192", "off", 0).contains("-ss"));
+        // >0 时 -ss 落在 -i 之后（输出端；pipe 输入不可 seek，只能解码丢弃）。
+        var cmd = TranscodeController.ffmpegArgs("320", "16", 90.5);
+        int i = cmd.indexOf("-i");
+        int ss = cmd.indexOf("-ss");
+        assertTrue(i >= 0 && ss > i);
+        assertEquals("90.5", cmd.get(ss + 1));
+        // 整数去小数点（日志/响应头同口径）。
+        var cmd2 = TranscodeController.ffmpegArgs("192", "off", 60);
+        assertEquals("60", cmd2.get(cmd2.indexOf("-ss") + 1));
+    }
+
+    @Test
+    void parseStartSecValidation() {
+        assertEquals(0, TranscodeController.parseStartSec(null));
+        assertEquals(0, TranscodeController.parseStartSec(""));
+        assertEquals(90.5, TranscodeController.parseStartSec("90.5"));
+        assertThrows(BizException.class,
+                () -> TranscodeController.parseStartSec("abc"));
+        assertThrows(BizException.class,
+                () -> TranscodeController.parseStartSec("-1"));
+        assertThrows(BizException.class,
+                () -> TranscodeController.parseStartSec("NaN"));
+        assertThrows(BizException.class,
+                () -> TranscodeController.parseStartSec("99999"));
+    }
+
+    @Test
+    void rejectsInvalidStartSec() {
+        var c = controllerWith(src("https://nas:5006/music"));
+        assertThrows(BizException.class, () -> c.stream(
+                "https://nas:5006/music/a.flac", "192", "off", "-5", null, null, null,
+                new MockHttpServletResponse()));
+        assertThrows(BizException.class, () -> c.stream(
+                "https://nas:5006/music/a.flac", "192", "off", "abc", null, null, null,
+                new MockHttpServletResponse()));
     }
 }
