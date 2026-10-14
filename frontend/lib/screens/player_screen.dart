@@ -21,6 +21,7 @@ import '../utils/perf_log.dart';
 import '../utils/song_title_format.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/edit_song_meta_dialog.dart';
 import '../widgets/lyrics_view.dart';
 import '../widgets/marquee_text.dart';
 import '../widgets/online_meta_dialog.dart';
@@ -1717,7 +1718,7 @@ class _Cover extends StatelessWidget {
     } else if (v == 'edit') {
       showDialog<void>(
         context: context,
-        builder: (_) => _EditSongMetaDialog(song: song),
+        builder: (_) => EditSongMetaDialog(song: song),
       );
     } else if (v == 'online') {
       showDialog<void>(
@@ -1776,114 +1777,6 @@ class _UnreadCoverPlaceholder extends StatelessWidget {
             color: cs.primary.withValues(alpha: 0.7),
           ),
         ),
-      ],
-    );
-  }
-}
-
-/// 修改歌曲元数据弹窗（全源）：标题/歌手/专辑可编辑。
-///
-/// 直连歌落库并标记扫描保护；服务端歌（后端只读）写入本地覆盖层，刷新即生效。
-class _EditSongMetaDialog extends StatefulWidget {
-  final Song song;
-  const _EditSongMetaDialog({required this.song});
-
-  @override
-  State<_EditSongMetaDialog> createState() => _EditSongMetaDialogState();
-}
-
-class _EditSongMetaDialogState extends State<_EditSongMetaDialog> {
-  late final TextEditingController _title;
-  late final TextEditingController _artist;
-  late final TextEditingController _albumArtist;
-  late final TextEditingController _album;
-
-  @override
-  void initState() {
-    super.initState();
-    _title = TextEditingController(text: widget.song.title);
-    _artist = TextEditingController(text: widget.song.artist ?? '');
-    _albumArtist = TextEditingController(text: widget.song.albumArtist ?? '');
-    _album = TextEditingController(text: widget.song.albumName ?? '');
-  }
-
-  @override
-  void dispose() {
-    _title.dispose();
-    _artist.dispose();
-    _albumArtist.dispose();
-    _album.dispose();
-    super.dispose();
-  }
-
-  Future<void> _save() async {
-    final title = _title.text.trim();
-    if (title.isEmpty) {
-      AppToast.error(StateError('标题不能为空'));
-      return;
-    }
-    // 字段语义：null=未改动不写；''=清空为未知；其余=新值。
-    String? delta(String input, String? current) {
-      final v = input.trim();
-      if (v == (current ?? '')) return null;
-      return v.isEmpty ? '' : v;
-    }
-
-    final direct = context.read<DirectSourceManager>();
-    final updated = await direct.updateSongMeta(
-      widget.song,
-      title: delta(title, widget.song.title),
-      artist: delta(_artist.text, widget.song.artist),
-      albumArtist: delta(_albumArtist.text, widget.song.albumArtist),
-      album: delta(_album.text, widget.song.albumName),
-    );
-    if (!mounted) return;
-    if (updated != null) {
-      context.read<PlayerProvider>().refreshSongMeta(updated);
-    }
-    Navigator.of(context).pop();
-    AppToast.show(
-        widget.song.isDirect ? '已保存歌曲信息（扫描不再覆盖）' : '已保存歌曲信息（本地覆盖）',
-        isError: false);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('修改歌曲元数据'),
-      content: SizedBox(
-        width: 340,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: _title,
-              decoration: const InputDecoration(labelText: '标题'),
-            ),
-            TextField(
-              controller: _artist,
-              decoration:
-                  const InputDecoration(labelText: '歌手（留空为未知）'),
-            ),
-            TextField(
-              controller: _albumArtist,
-              decoration:
-                  const InputDecoration(labelText: '专辑歌手（留空为未知）'),
-            ),
-            TextField(
-              controller: _album,
-              decoration:
-                  const InputDecoration(labelText: '专辑（留空为未知）'),
-            ),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
-        ),
-        FilledButton(onPressed: _save, child: const Text('保存')),
       ],
     );
   }

@@ -19,6 +19,7 @@ import '../utils/song_search.dart';
 import '../utils/song_title_format.dart';
 import 'add_to_playlist.dart';
 import 'count_header.dart';
+import 'edit_song_meta_dialog.dart';
 import 'list_selection.dart';
 import 'online_meta_dialog.dart';
 import 'row_list.dart';
@@ -201,6 +202,11 @@ class SongTile extends StatelessWidget {
               context: context,
               builder: (_) => SongInfoDialog(song: song),
             );
+          case 'edit':
+            showDialog<void>(
+              context: context,
+              builder: (_) => EditSongMetaDialog(song: song),
+            );
           case 'online':
             showDialog<void>(
               context: context,
@@ -286,6 +292,16 @@ class SongTile extends StatelessWidget {
               Icon(Icons.info_outline),
               SizedBox(width: 12),
               Text('歌曲信息'),
+            ],
+          ),
+        ),
+        const PopupMenuItem(
+          value: 'edit',
+          child: Row(
+            children: [
+              Icon(Icons.edit_outlined),
+              SizedBox(width: 12),
+              Text('修改歌曲元数据'),
             ],
           ),
         ),

@@ -20,6 +20,18 @@ SourceRoute parseSourceRoute(Object? v) => SourceRoute.values.firstWhere(
 /// 远端类型（webdav/smb/onedrive…）默认同步。
 bool isSyncableKind(String kind) => kind.isNotEmpty && kind != 'local';
 
+/// 元数据 sidecar 文件名判定（在线元数据写回用）：歌词 `.lrc`（大小写）
+/// 与常见封面图后缀。纯函数，可单测。
+bool isSidecarFileName(String name) {
+  final i = name.lastIndexOf('.');
+  if (i < 0 || i == name.length - 1) return false;
+  final ext = name.substring(i + 1).toLowerCase();
+  return ext == 'lrc' ||
+      ext == 'jpg' ||
+      ext == 'jpeg' ||
+      ext == 'png' ||
+      ext == 'webp';
+}
 /// 备用源上限：每个逻辑源至多 2 个备用（主 + 备1 + 备2）。
 const int kMaxFallbacks = 2;
 
@@ -335,13 +347,31 @@ abstract class MusicSource {
 
   /// 上传单个音频文件到 [parentRef] 目录下（parentRef 为 '' 即源根目录）。
   /// [filename] 不得含 `/` 与 `..`；实现应做穿越校验。
+  ///
+  /// 音频后缀之外的 sidecar（歌词/封面）走 [uploadSidecar]，不走本方法。
   Future<void> uploadFile(String parentRef, String filename,
           Stream<List<int>> bytes, int length) async =>
       throw UnimplementedError('$key 不支持上传');
 
+  /// 上传元数据 sidecar（歌词 `.lrc` / 封面图）到 [parentRef] 目录下。
+  ///
+  /// 语义与 [uploadFile] 相同（同名覆盖），但文件名必须是
+  /// [isSidecarFileName] 判定的 sidecar 后缀。默认转调 [uploadFile]，
+  /// 各源可按需覆盖（如上传口有音频后缀限制）。
+  Future<void> uploadSidecar(String parentRef, String filename,
+          Stream<List<int>> bytes, int length) async =>
+      uploadFile(parentRef, filename, bytes, length);
+
   /// 删除一首歌曲对应的远端/本地文件。
   Future<void> deleteSong(Song song) async =>
       throw UnimplementedError('$key 不支持删除');
+
+  /// 删除 [parentRef] 目录下的 sidecar 文件（嵌入后清理用）。
+  ///
+  /// 不存在按幂等成功计（嵌入时源目录可能本就没有该文件）。
+  /// 默认不支持，各源覆盖。
+  Future<void> deleteSidecar(String parentRef, String filename) async =>
+      throw UnimplementedError('$key 不支持删除 sidecar');
 
   /// 在 [parentRef] 下新建文件夹。
   Future<void> createFolder(String parentRef, String name) async =>

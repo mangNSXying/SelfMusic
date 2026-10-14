@@ -211,9 +211,9 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
       Navigator.of(context).pop();
       AppToast.show(
         r.sidecarPath != null
-            ? '歌词已保存（应用缓存 + ${r.sidecarPath}）'
+            ? '歌词已保存并覆盖 ${r.sidecarPath}（应用缓存同步）'
             : r.sidecarSkipped
-                ? '歌词已保存到应用缓存（sidecar 跳过：仅本地源可写）'
+                ? '歌词已保存到应用缓存（该源不支持写回，已跳过 sidecar）'
                 : '歌词已保存到应用缓存',
         isError: false,
       );
@@ -230,9 +230,10 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
     setState(() => _coverSaving = true);
     try {
       final bytes = _coverBytes!;
-      await _svc.applyCover(widget.song, bytes);
-      if (!mounted) return;
       final direct = context.read<DirectSourceManager>();
+      final src = direct.sourceByKey(widget.song.sourceKey);
+      final r = await _svc.applyCover(widget.song, bytes, src: src);
+      if (!mounted) return;
       final updated =
           direct.index.songByRef(widget.song.sourceKey, widget.song.sourceRef);
       if (updated != null) {
@@ -240,7 +241,14 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
         context.read<PlayerProvider>().refreshSongMeta(updated);
       }
       Navigator.of(context).pop();
-      AppToast.show('封面已保存到应用缓存', isError: false);
+      AppToast.show(
+        r.sidecarPath != null
+            ? '封面已保存并覆盖 ${r.sidecarPath}（应用缓存同步）'
+            : r.sidecarSkipped
+                ? '封面已保存到应用缓存（该源不支持写回，已跳过 cover.jpg）'
+                : '封面已保存到应用缓存',
+        isError: false,
+      );
     } catch (e) {
       if (!mounted) return;
       AppToast.error(e, '保存封面失败');
@@ -384,7 +392,7 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
             ),
             const SizedBox(height: 4),
             Text(
-              '歌词：LRCLIB · 封面：MB→CAA · 保存：${saveMode == OnlineMetaSaveMode.sidecar ? '应用缓存+本地.lrc' : '仅应用缓存'}（内嵌回写暂不支持）',
+              '歌词：LRCLIB · 封面：MB→CAA · 保存：${saveMode == OnlineMetaSaveMode.sidecar ? '应用缓存＋写回源目录（同名覆盖：<stem>.lrc / cover.jpg专辑级）' : '仅应用缓存'}（内嵌回写暂不支持）',
               style: Theme.of(context)
                   .textTheme
                   .bodySmall

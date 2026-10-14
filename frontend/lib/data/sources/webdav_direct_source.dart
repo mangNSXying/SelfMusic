@@ -419,8 +419,8 @@ class WebdavDirectSource implements MusicSource {
   @override
   Future<void> uploadFile(String parentRef, String filename,
       Stream<List<int>> bytes, int length) async {
-    if (!_audioExt(filename)) {
-      throw StateError('仅支持上传音频文件（mp3/flac/m4a/aac/ogg/wav/aif[f][c]）');
+    if (!_audioExt(filename) && !isSidecarFileName(filename)) {
+      throw StateError('仅支持上传音频文件（mp3/flac/m4a/aac/ogg/wav/aif[f][c]）与歌词/封面 sidecar（.lrc/.jpg/.png/.webp）');
     }
     final url = _writeUrl(parentRef, filename);
     final client = _newClient(allowSelfSigned);
@@ -444,6 +444,11 @@ class WebdavDirectSource implements MusicSource {
   }
 
   @override
+  Future<void> uploadSidecar(String parentRef, String filename,
+          Stream<List<int>> bytes, int length) =>
+      uploadFile(parentRef, filename, bytes, length);
+
+  @override
   Future<void> deleteSong(Song song) async {
     final url = _playUrl(song);
     if (url == null) throw StateError('WebDAV 缺少删除地址');
@@ -453,6 +458,31 @@ class WebdavDirectSource implements MusicSource {
       _auth(req, username, password);
       final resp = await _withDeadline(req.close(), _kRequestDeadline, 'WebDAV 删除（$url）');
       await resp.drain<void>();
+      if (resp.statusCode != 200 && resp.statusCode != 202 && resp.statusCode != 204) {
+        if (resp.statusCode == 401 || resp.statusCode == 403) {
+          throw SourceAuthException(WebdavStatusException(resp.statusCode, url).toString());
+        }
+        throw WebdavStatusException(resp.statusCode, url);
+      }
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  @override
+  Future<void> deleteSidecar(String parentRef, String filename) async {
+    if (!isSidecarFileName(filename)) {
+      throw StateError('仅支持删除歌词/封面 sidecar（.lrc/.jpg/.png/.webp）');
+    }
+    final url = _writeUrl(parentRef, filename);
+    final client = _newClient(allowSelfSigned);
+    try {
+      final req = await client.openUrl('DELETE', Uri.parse(url));
+      _auth(req, username, password);
+      final resp = await _withDeadline(req.close(), _kRequestDeadline, 'WebDAV 删除 sidecar（$url）');
+      await resp.drain<void>();
+      // 404=本就没有该文件：嵌入后清理的幂等语义，视为成功。
+      if (resp.statusCode == 404) return;
       if (resp.statusCode != 200 && resp.statusCode != 202 && resp.statusCode != 204) {
         if (resp.statusCode == 401 || resp.statusCode == 403) {
           throw SourceAuthException(WebdavStatusException(resp.statusCode, url).toString());

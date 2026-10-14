@@ -1503,7 +1503,7 @@ class _SongsSettingsState extends State<_SongsSettings> {
                   label: Text('仅应用缓存')),
               ButtonSegment(
                   value: OnlineMetaSaveMode.sidecar,
-                  label: Text('同时写本地.lrc')),
+                  label: Text('同时写回源目录')),
             ],
             selected: {_settings.onlineMetaSaveMode},
             onSelectionChanged: (s) {
@@ -1516,16 +1516,16 @@ class _SongsSettingsState extends State<_SongsSettings> {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Text(
             _settings.onlineMetaSaveMode == OnlineMetaSaveMode.sidecar
-                ? '歌词必写应用缓存；本地源额外写同目录同名 .lrc（或下方自定义目录）。远端源自动跳过 sidecar。封面只写应用缓存 covers/，不污染用户目录。内嵌回写暂不支持。'
+                ? '歌词/封面必写应用缓存，并覆盖写回源目录（歌词 <stem>.lrc，封面 cover.jpg 专辑级：同目录共享，杂烩目录后写盖先写）。远端经上传口直写、不经代理；服务端歌/鸿蒙本地自动跳过。封面应用缓存 covers/ 恒保留。内嵌回写暂不支持。'
                 : '歌词写应用内 song_lyrics，封面写 covers/（全源安全，不动用户文件）。内嵌回写暂不支持。',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color: cs.onSurface.withValues(alpha: 0.6)),
           ),
         ),
         ListTile(
-          title: const Text('自定义歌词目录'),
+          title: const Text('自定义歌词目录（仅本地）'),
           subtitle: Text(_settings.onlineMetaLyricDir.isEmpty
-              ? '未设置（sidecar 时写歌曲同目录）'
+              ? '未设置（写歌曲同目录；远端恒写歌曲同目录）'
               : _settings.onlineMetaLyricDir),
           trailing: Row(
             mainAxisSize: MainAxisSize.min,

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -18,11 +19,16 @@ import 'string_sim.dart';
 ///
 /// 保存口径（设置项 `online_meta_save_mode`，默认 `app_cache`）：
 /// - `app_cache`：只写 `song_lyrics` / `covers/<md5>.jpg`（全源安全）；
-/// - `sidecar`：额外尝试写本地同目录 `<stem>.lrc`（仅本地源、非鸿蒙、
-///
-///   有沙箱真路径时；远端源自动跳过，不报错）。
-/// 内嵌回写暂不支持（Dart 无 taglib 等价实现，风险高，UI 置灰说明）。
+/// - `sidecar`：额外写回源目录（P0：同名均覆盖）——歌词写同目录 `<stem>.lrc`
+///   （自定义歌词目录仅本地有效），封面写同目录 `cover.jpg`（专辑级：同目录
+///   多首歌共享一张，杂烩目录后写覆盖先写）；远端源经各源 `uploadFile`
+///   直写（播放读链路同路，不经服务端代理，无多余流量）；无真路径
+///   （服务端歌/远端未解析）时跳过，不报错。
+/// 内嵌回写暂不支持（Dart 无 taglib 等价实现，风险高，UI 置灰说明）；
+/// 嵌入引擎落地后，`deleteSidecars` 供“嵌入后删 sidecar”调用。
 class OnlineMetaService {
+  /// 专辑级封面 sidecar 文件名（与 `sibling_cover` 首个通用候选对齐）。
+  static const String kCoverSidecarName = 'cover.jpg';
   final LocalIndex index;
   final AppSettings settings;
   final LrclibProvider lrclib;
@@ -183,15 +189,24 @@ class OnlineMetaService {
     return (sidecarPath: path, sidecarSkipped: false);
   }
 
-  /// 保存封面：经 `persistCoverChunked` 落 `covers/` 并回填 `cover_path`。
-  /// 封面 sidecar 暂不写（covers/ 已是跨源唯一口径，避免污染用户目录）。
-  Future<String?> applyCover(Song song, List<int> bytes) async {
+  /// 保存封面：必写 `covers/` 并回填 `cover_path`；sidecar 模式下额外
+  /// 写回源目录 `cover.jpg`（专辑级，同名覆盖）。
+  /// [src] 为空（服务端歌）或源不支持写时 sidecar 跳过。
+  Future<({String? coverPath, String? sidecarPath, bool sidecarSkipped})>
+      applyCover(Song song, List<int> bytes, {MusicSource? src}) async {
     if (bytes.isEmpty) throw StateError('封面字节为空');
     final u8 = bytes is Uint8List ? bytes : Uint8List.fromList(bytes);
     final path = await index.persistCoverChunked(u8, song.sourceRef);
     if (path == null) throw StateError('封面校验失败（疑似截断/非图片）');
     await index.enrichSong(song.sourceKey, song.sourceRef, coverPath: path);
-    return path;
+    if (settings.onlineMetaSaveMode != OnlineMetaSaveMode.sidecar) {
+      return (coverPath: path, sidecarPath: null, sidecarSkipped: false);
+    }
+    final sidecar = await _writeSidecarCover(song, u8, src);
+    if (sidecar == null) {
+      return (coverPath: path, sidecarPath: null, sidecarSkipped: true);
+    }
+    return (coverPath: path, sidecarPath: sidecar, sidecarSkipped: false);
   }
 
   /// 在线标签回填：只写标题/歌手/专辑（null=不改，''=清空），复用扫描保护语义。
@@ -214,33 +229,98 @@ class OnlineMetaService {
 
   // ---------- sidecar ----------
 
-  /// 本地同目录写 `<stem>.lrc`；自定义歌词目录优先。
-  /// 返回落盘路径；不可写（远端源/鸿蒙/无路径/写失败）返回 null。
+  /// 源内父目录（`sourceRef` 去末段；无斜杠即源根 `''`）。
+  static String _parentOf(String ref) {
+    final slash = ref.lastIndexOf('/');
+    if (slash <= 0) return '';
+    return ref.substring(0, slash);
+  }
+
+  /// 歌词 sidecar 写回源目录：自定义歌词目录（仅本地）优先，否则歌曲同目录
+  /// `<stem>.lrc`。同名覆盖（P0）。返回展示用路径；不可写返回 null。
   Future<String?> _writeSidecarLrc(
       Song song, String content, MusicSource? src) async {
-    if (src == null) return null;
-    if (src.kind != SourceKind.local || !src.supportsWrite) return null;
+    if (src == null || !src.supportsWrite) return null;
     try {
-      final audioPath = await src.localSandboxPath(song);
-      if (audioPath == null || audioPath.isEmpty) return null;
+      // 自定义歌词目录仅本地有效（远端无意义）。
       final customDir = settings.onlineMetaLyricDir.trim();
-      late final String target;
-      if (customDir.isNotEmpty) {
+      if (customDir.isNotEmpty && src.kind == SourceKind.local) {
         final dir = Directory(customDir);
         if (!dir.existsSync()) return null;
-        target = p.join(dir.path, '${_safeFileName(_stemOf(song.sourceRef))}.lrc');
-      } else {
+        final leaf = '${_safeFileName(_stemOf(song.sourceRef))}.lrc';
+        final audioPath = await src.localSandboxPath(song);
+        if (audioPath == null || audioPath.isEmpty) return null;
+        final f = File(p.join(dir.path, leaf));
+        await f.writeAsString(content, flush: true);
+        return f.path;
+      }
+      if (src.kind == SourceKind.local) {
+        final audioPath = await src.localSandboxPath(song);
+        if (audioPath == null || audioPath.isEmpty) return null;
         final dir = p.dirname(audioPath);
         final stem = p.basenameWithoutExtension(audioPath);
         if (stem.isEmpty) return null;
-        target = p.join(dir, '$stem.lrc');
+        final f = File(p.join(dir, '$stem.lrc'));
+        await f.writeAsString(content, flush: true);
+        return f.path;
       }
-      final f = File(target);
-      await f.writeAsString(content, flush: true);
-      return target;
+      // 远端：经源上传口直写同目录（覆盖语义由各源 PUT/截断保证）。
+      final parent = _parentOf(song.sourceRef);
+      final leaf = '${_stemOf(song.sourceRef)}.lrc';
+      if (leaf == '.lrc') return null;
+      final bytes = Uint8List.fromList(utf8.encode(content));
+      await src.uploadSidecar(
+          parent, leaf, Stream.value(bytes), bytes.length);
+      return parent.isEmpty ? leaf : '$parent/$leaf';
     } catch (_) {
       return null;
     }
+  }
+
+  /// 封面 sidecar 写回源目录 `cover.jpg`（专辑级，同名覆盖）。
+  /// 返回展示用路径；不可写返回 null。
+  Future<String?> _writeSidecarCover(
+      Song song, Uint8List bytes, MusicSource? src) async {
+    if (src == null || !src.supportsWrite) return null;
+    try {
+      if (src.kind == SourceKind.local) {
+        final audioPath = await src.localSandboxPath(song);
+        if (audioPath == null || audioPath.isEmpty) return null;
+        final f = File(p.join(p.dirname(audioPath), kCoverSidecarName));
+        await f.writeAsBytes(bytes, flush: true);
+        return f.path;
+      }
+      final parent = _parentOf(song.sourceRef);
+      await src.uploadSidecar(parent, kCoverSidecarName,
+          Stream.value(bytes), bytes.length);
+      return parent.isEmpty
+          ? kCoverSidecarName
+          : '$parent/$kCoverSidecarName';
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 嵌入后删除 sidecar（嵌入引擎调用点；P4）。
+  ///
+  /// 删歌曲同目录 `<stem>.lrc` + `cover.jpg`（`.LRC` 大写变体一并尝试），
+  /// 不存在按幂等成功。DB（`song_lyrics`/`covers/`）与 `user_edited` 保留。
+  /// 返回实际删掉的展示路径。
+  Future<List<String>> deleteSidecars(Song song, MusicSource? src) async {
+    if (src == null || !src.supportsWrite) return const [];
+    final parent = _parentOf(song.sourceRef);
+    final stem = _stemOf(song.sourceRef);
+    final deleted = <String>[];
+    for (final leaf in ['$stem.lrc', '$stem.LRC', kCoverSidecarName]) {
+      if (leaf == '.lrc' || leaf == '.LRC') continue;
+      try {
+        await src.deleteSidecar(parent, leaf);
+        deleted.add(parent.isEmpty ? leaf : '$parent/$leaf');
+      } catch (_) {
+        // 幂等删除已在各源实现（404/不存在即成功）；其余错误跳过该文件。
+      }
+    }
+    return deleted;
   }
 
   static String _stemOf(String ref) {

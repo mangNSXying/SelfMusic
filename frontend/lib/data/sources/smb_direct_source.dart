@@ -135,8 +135,8 @@ class SmbDirectSource implements MusicSource {
       Stream<List<int>> bytes, int length) async {
     smbGuardWriteParent(parentRef);
     smbGuardWriteName(filename);
-    if (!isSmbAudioFile(filename)) {
-      throw StateError('仅支持上传音频文件（mp3/flac/m4a/aac/ogg/wav/aif[f][c]）');
+    if (!isSmbAudioFile(filename) && !isSidecarFileName(filename)) {
+      throw StateError('仅支持上传音频文件（mp3/flac/m4a/aac/ogg/wav/aif[f][c]）与歌词/封面 sidecar（.lrc/.jpg/.png/.webp）');
     }
     final remote = smbRemotePath(rootPath,
         parentRef.isEmpty ? filename : '$parentRef/$filename');
@@ -146,6 +146,11 @@ class SmbDirectSource implements MusicSource {
       await _pool.uploadChunked(remote, bytes);
     }
   }
+
+  @override
+  Future<void> uploadSidecar(String parentRef, String filename,
+          Stream<List<int>> bytes, int length) =>
+      uploadFile(parentRef, filename, bytes, length);
 
   @override
   Future<void> deleteSong(Song song) async {
@@ -158,8 +163,34 @@ class SmbDirectSource implements MusicSource {
   }
 
   @override
-  Future<void> createFolder(String parentRef, String name) async {
+  Future<void> deleteSidecar(String parentRef, String filename) async {
     smbGuardWriteParent(parentRef);
+    smbGuardWriteName(filename);
+    if (!isSidecarFileName(filename)) {
+      throw StateError('仅支持删除歌词/封面 sidecar（.lrc/.jpg/.png/.webp）');
+    }
+    final remote = smbRemotePath(rootPath,
+        parentRef.isEmpty ? filename : '$parentRef/$filename');
+    try {
+      if (useSmbConnect) {
+        await _conn.deleteFile(remote);
+      } else {
+        await _pool.deleteFile(remote);
+      }
+    } catch (e) {
+      // 不存在按幂等成功计（嵌入后清理时源目录可能本就没有该文件）。
+      if (_isNotFoundErr(e)) return;
+      rethrow;
+    }
+  }
+
+  /// 双后端“文件不存在”判定（dart_smb2 `文件或目录不存在` /
+  /// smb_connect `文件不存在`）：deleteSidecar 幂等语义用。
+  static bool _isNotFoundErr(Object e) =>
+      e is StateError && e.message.contains('不存在');
+
+  @override
+  Future<void> createFolder(String parentRef, String name) async {    smbGuardWriteParent(parentRef);
     smbGuardWriteName(name);
     final remote = smbRemotePath(rootPath,
         parentRef.isEmpty ? name : '$parentRef/$name');

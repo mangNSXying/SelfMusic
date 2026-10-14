@@ -326,9 +326,27 @@ class LocalDirectSource implements MusicSource {
   }
 
   @override
+  Future<void> uploadSidecar(String parentRef, String filename,
+          Stream<List<int>> bytes, int length) =>
+      uploadFile(parentRef, filename, bytes, length);
+
+  @override
   Future<void> deleteSong(Song song) async {
     if (isOhos) throw UnimplementedError('鸿蒙端暂不支持删除');
     final f = File(_absPath(song.sourceRef));
+    if (await f.exists()) await f.delete();
+  }
+
+  @override
+  Future<void> deleteSidecar(String parentRef, String filename) async {
+    if (isOhos) throw UnimplementedError('鸿蒙端暂不支持删除');
+    if (!isSidecarFileName(filename)) {
+      throw StateError('仅支持删除歌词/封面 sidecar（.lrc/.jpg/.png/.webp）');
+    }
+    _guardLeaf(filename);
+    final dirParts = parentRef.isEmpty ? <String>[] : _guardParts(parentRef);
+    final f = File(p.joinAll([rootPath, ...dirParts, filename]));
+    // 不存在按幂等成功计。
     if (await f.exists()) await f.delete();
   }
 

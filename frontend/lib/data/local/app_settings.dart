@@ -35,9 +35,11 @@ enum SongTitleFormat {
 enum OnlineMetaSaveMode {
   /// 仅应用缓存：歌词写 `song_lyrics`，封面写 `covers/`（全源安全，默认）。
   appCache('仅应用缓存'),
-  /// 同时写本地 `.lrc`：DB 必写，本地源额外写同目录 `<stem>.lrc`
-  ///（或自定义歌词目录）；远端源自动跳过 sidecar。
-  sidecar('同时写本地.lrc');
+
+  /// 同时写回源目录：DB 必写，额外覆盖写同目录 `<stem>.lrc`（自定义歌词
+  /// 目录仅本地有效）与 `cover.jpg`（专辑级，同目录共享）；远端源经上传口
+  /// 直写（不经服务端代理），不可写（服务端歌/鸿蒙本地/无路径）自动跳过。
+  sidecar('同时写回源目录');
 
   const OnlineMetaSaveMode(this.label);
   final String label;
@@ -708,11 +710,11 @@ class AppSettings {
   static const String kFallbackAutoRepair = 'fallback_auto_repair';
 
   /// 在线元数据保存位置（设置→歌曲）：`appCache`=仅应用缓存（默认）；
-  /// `sidecar`=同时写本地 `.lrc`（仅本地源）。
+  /// `sidecar`=同时写回源目录（歌词 `<stem>.lrc` + 封面 `cover.jpg`，同名覆盖）。
   static const String kOnlineMetaSaveMode = 'online_meta_save_mode';
 
-  /// 自定义歌词目录（sidecar 模式用）：空=写歌曲同目录；非空=写该目录
-  /// `<歌名>.lrc`。目录不存在时回退不同步写盘（只写 DB）。
+  /// 自定义歌词目录（sidecar 模式＋本地源用）：空=写歌曲同目录；非空=写该目录
+  /// `<歌名>.lrc`。目录不存在时回退不同步写盘（只写 DB）；远端源恒写歌曲同目录。
   static const String kOnlineMetaLyricDir = 'online_meta_lyric_dir';
 
   bool get fallbackAutoRepair =>

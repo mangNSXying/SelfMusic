@@ -372,8 +372,8 @@ class SftpDirectSource implements MusicSource {
       Stream<List<int>> bytes, int length) async {
     sftpGuardWriteParent(parentRef);
     sftpGuardWriteName(filename);
-    if (!_audioExt(filename)) {
-      throw StateError('仅支持上传音频文件（mp3/flac/m4a/aac/ogg/wav/aif[f][c]）');
+    if (!_audioExt(filename) && !isSidecarFileName(filename)) {
+      throw StateError('仅支持上传音频文件（mp3/flac/m4a/aac/ogg/wav/aif[f][c]）与歌词/封面 sidecar（.lrc/.jpg/.png/.webp）');
     }
     final abs = _absPath(
         parentRef.isEmpty ? filename : '$parentRef/$filename');
@@ -402,6 +402,11 @@ class SftpDirectSource implements MusicSource {
   }
 
   @override
+  Future<void> uploadSidecar(String parentRef, String filename,
+          Stream<List<int>> bytes, int length) =>
+      uploadFile(parentRef, filename, bytes, length);
+
+  @override
   Future<void> deleteSong(Song song) async {
     final abs = _absPath(song.sourceRef);
     await _withSftp((sftp) async {
@@ -413,6 +418,29 @@ class SftpDirectSource implements MusicSource {
         }
         if (e.code == SftpStatusCode.permissionDenied) {
           throw StateError('删除失败：无删除权限');
+        }
+        rethrow;
+      }
+    });
+  }
+
+  @override
+  Future<void> deleteSidecar(String parentRef, String filename) async {
+    sftpGuardWriteParent(parentRef);
+    sftpGuardWriteName(filename);
+    if (!isSidecarFileName(filename)) {
+      throw StateError('仅支持删除歌词/封面 sidecar（.lrc/.jpg/.png/.webp）');
+    }
+    final abs = _absPath(
+        parentRef.isEmpty ? filename : '$parentRef/$filename');
+    await _withSftp((sftp) async {
+      try {
+        await sftp.remove(abs);
+      } on SftpStatusError catch (e) {
+        // 不存在按幂等成功计（嵌入后清理时源目录可能本就没有该文件）。
+        if (e.code == SftpStatusCode.noSuchFile) return;
+        if (e.code == SftpStatusCode.permissionDenied) {
+          throw StateError('删除 sidecar 失败：无删除权限');
         }
         rethrow;
       }
