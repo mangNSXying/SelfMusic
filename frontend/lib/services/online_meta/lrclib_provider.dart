@@ -95,7 +95,8 @@ class LrclibProvider {
       return null;
     }
     return OnlineLyricCandidate(
-      id: (j['id'] as num?)?.toInt() ?? index,
+      onlineId: '${j['id'] ?? 'lrclib-$index'}',
+      source: OnlineMetaSource.lrclib,
       trackName: (j['trackName'] as String?) ?? (j['name'] as String?) ?? '',
       artistName: (j['artistName'] as String?) ?? '',
       albumName: (j['albumName'] as String?) ?? '',

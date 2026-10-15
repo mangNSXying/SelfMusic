@@ -1491,15 +1491,17 @@ class _SongsSettingsState extends State<_SongsSettings> {
         ),
         ListTile(
           title: const Text('歌词来源'),
-          subtitle: const Text('LRCLIB（免费无Key，仅歌词；中文小众覆盖弱）'),
-          trailing: const Icon(Icons.check, size: 20),
-          enabled: false,
+          subtitle: Text(
+              '${_settings.onlineMetaLyricSource.label}（无结果时手动换源，无自动串源）'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _pickLyricSource(context),
         ),
         ListTile(
           title: const Text('封面来源'),
-          subtitle: const Text('MusicBrainz 录音搜索 → Cover Art Archive（需 release 有图，无图常见）'),
-          trailing: const Icon(Icons.check, size: 20),
-          enabled: false,
+          subtitle: Text(
+              '${_settings.onlineMetaCoverSource.label}（无结果时手动换源，无自动串源）'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _pickCoverSource(context),
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -1571,6 +1573,108 @@ class _SongsSettingsState extends State<_SongsSettings> {
     setState(() => _settings.onlineMetaLyricDir = dir);
     context.read<DirectSourceManager>().refresh();
     AppToast.show('已设置自定义歌词目录', isError: false);
+  }
+
+  /// 歌词来源选择（手动设定，无自动串源）。
+  Future<void> _pickLyricSource(BuildContext context) async {
+    const notes = {
+      OnlineMetaLyricSource.lrclib: '免费无Key；中文小众覆盖弱',
+      OnlineMetaLyricSource.qq: '中文覆盖好；需联网直调 QQ 公开接口',
+      OnlineMetaLyricSource.netease: '中文覆盖好；反爬严格，失败请换源',
+    };
+    final chosen = await showDialog<OnlineMetaLyricSource>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: const Text('歌词来源'),
+        children: [
+          for (final s in OnlineMetaLyricSource.values)
+            SimpleDialogOption(
+              onPressed: () => Navigator.of(c).pop(s),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(s.label),
+                          Text(notes[s]!,
+                              style: Theme.of(c)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                      color: Theme.of(c)
+                                          .colorScheme
+                                          .onSurface
+                                          .withValues(alpha: 0.6))),
+                        ],
+                      ),
+                    ),
+                    if (s == _settings.onlineMetaLyricSource)
+                      Icon(Icons.check,
+                          color: Theme.of(c).colorScheme.primary),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (chosen == null || !context.mounted) return;
+    setState(() => _settings.onlineMetaLyricSource = chosen);
+    context.read<DirectSourceManager>().refresh();
+  }
+
+  /// 封面来源选择（手动设定，无自动串源）。
+  Future<void> _pickCoverSource(BuildContext context) async {
+    const notes = {
+      OnlineMetaCoverSource.mbCaa: '录音搜索→CAA；无图常见',
+      OnlineMetaCoverSource.qq: '中文覆盖好；800 方图',
+      OnlineMetaCoverSource.netease: '中文覆盖好；反爬严格，失败请换源',
+    };
+    final chosen = await showDialog<OnlineMetaCoverSource>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: const Text('封面来源'),
+        children: [
+          for (final s in OnlineMetaCoverSource.values)
+            SimpleDialogOption(
+              onPressed: () => Navigator.of(c).pop(s),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(s.label),
+                          Text(notes[s]!,
+                              style: Theme.of(c)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                      color: Theme.of(c)
+                                          .colorScheme
+                                          .onSurface
+                                          .withValues(alpha: 0.6))),
+                        ],
+                      ),
+                    ),
+                    if (s == _settings.onlineMetaCoverSource)
+                      Icon(Icons.check,
+                          color: Theme.of(c).colorScheme.primary),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (chosen == null || !context.mounted) return;
+    setState(() => _settings.onlineMetaCoverSource = chosen);
+    context.read<DirectSourceManager>().refresh();
   }
 
   Future<void> _editIgnoreDuration(BuildContext context) async {

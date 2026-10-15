@@ -50,6 +50,34 @@ enum OnlineMetaSaveMode {
           orElse: () => OnlineMetaSaveMode.appCache);
 }
 
+/// 在线歌词来源（设置→歌曲，用户手动设定，无自动串源）。
+enum OnlineMetaLyricSource {
+  lrclib('LRCLIB'),
+  qq('QQ音乐'),
+  netease('网易云');
+
+  const OnlineMetaLyricSource(this.label);
+  final String label;
+
+  static OnlineMetaLyricSource parse(String? v) =>
+      OnlineMetaLyricSource.values.firstWhere((e) => e.name == v,
+          orElse: () => OnlineMetaLyricSource.lrclib);
+}
+
+/// 在线封面来源（设置→歌曲，用户手动设定，无自动串源）。
+enum OnlineMetaCoverSource {
+  mbCaa('MB→CAA'),
+  qq('QQ音乐'),
+  netease('网易云');
+
+  const OnlineMetaCoverSource(this.label);
+  final String label;
+
+  static OnlineMetaCoverSource parse(String? v) =>
+      OnlineMetaCoverSource.values.firstWhere((e) => e.name == v,
+          orElse: () => OnlineMetaCoverSource.mbCaa);
+}
+
 /// 集合页（歌单/播放源/专辑/歌手）展示形式。
 enum CollectionViewMode {
   list('列表', 'list'),
@@ -752,6 +780,12 @@ class AppSettings {
   /// `<歌名>.lrc`。目录不存在时回退不同步写盘（只写 DB）；远端源恒写歌曲同目录。
   static const String kOnlineMetaLyricDir = 'online_meta_lyric_dir';
 
+  /// 在线歌词来源（`lrclib/qq/netease`，默认 LRCLIB；无自动串源）。
+  static const String kOnlineMetaLyricSource = 'online_meta_lyric_source';
+
+  /// 在线封面来源（`mbCaa/qq/netease`，默认 MB→CAA；无自动串源）。
+  static const String kOnlineMetaCoverSource = 'online_meta_cover_source';
+
   bool get fallbackAutoRepair =>
       (index.settingsGet(kFallbackAutoRepair) ?? '0') == '1';
   set fallbackAutoRepair(bool v) =>
@@ -776,6 +810,16 @@ class AppSettings {
       index.settingsGet(kOnlineMetaLyricDir) ?? '';
   set onlineMetaLyricDir(String v) =>
       index.settingsSet(kOnlineMetaLyricDir, v);
+
+  OnlineMetaLyricSource get onlineMetaLyricSource =>
+      OnlineMetaLyricSource.parse(index.settingsGet(kOnlineMetaLyricSource));
+  set onlineMetaLyricSource(OnlineMetaLyricSource v) =>
+      index.settingsSet(kOnlineMetaLyricSource, v.name);
+
+  OnlineMetaCoverSource get onlineMetaCoverSource =>
+      OnlineMetaCoverSource.parse(index.settingsGet(kOnlineMetaCoverSource));
+  set onlineMetaCoverSource(OnlineMetaCoverSource v) =>
+      index.settingsSet(kOnlineMetaCoverSource, v.name);
 
   /// 全部已知键（供设置导入导出筛选，settings.md §3.5）。
   static const List<String> knownKeys = [
@@ -829,6 +873,8 @@ class AppSettings {
     kViewModeArtists,
     kOnlineMetaSaveMode,
     kOnlineMetaLyricDir,
+    kOnlineMetaLyricSource,
+    kOnlineMetaCoverSource,
     kSortSongs,
     kSortFavorites,
     kSortPlaylistDetail,

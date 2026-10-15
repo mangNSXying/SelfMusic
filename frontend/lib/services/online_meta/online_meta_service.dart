@@ -12,10 +12,17 @@ import '../../data/sources/music_source.dart';
 import '../../models/song.dart';
 import 'lrclib_provider.dart';
 import 'musicbrainz_cover_provider.dart';
+import 'netease_provider.dart';
 import 'online_meta_models.dart';
+import 'qq_provider.dart';
 import 'string_sim.dart';
 
-/// 在线元数据门面（纯前端）：LRCLIB 歌词 + MB 录音搜索 + CAA 封面。
+/// 在线元数据门面（纯前端）：歌词 LRCLIB/QQ/网易 ＋ 封面 MB-CAA/QQ/网易。
+///
+/// 来源由设置 `online_meta_lyric_source / online_meta_cover_source` 手动设定，
+/// 无自动串源：所选源无结果/失败时报错并提示换源。
+/// LRCLIB 搜索自带正文；QQ/网易搜索只回曲目（无正文），预览/保存前经
+/// [ensureLyrics] 按 `onlineId` 懒取一次。
 ///
 /// 保存口径（设置项 `online_meta_save_mode`，默认 `app_cache`）：
 /// - `app_cache`：只写 `song_lyrics` / `covers/<md5>.jpg`（全源安全）；
@@ -33,19 +40,26 @@ class OnlineMetaService {
   final AppSettings settings;
   final LrclibProvider lrclib;
   final MusicBrainzCoverProvider mbCover;
+  final QqProvider qq;
+  final NeteaseProvider netease;
 
   OnlineMetaService({
     required this.index,
     required this.settings,
     LrclibProvider? lrclibProvider,
     MusicBrainzCoverProvider? mbCoverProvider,
+    QqProvider? qqProvider,
+    NeteaseProvider? neteaseProvider,
     Dio? dio,
   })  : lrclib = lrclibProvider ?? LrclibProvider(dio: dio),
-        mbCover = mbCoverProvider ?? MusicBrainzCoverProvider();
+        mbCover = mbCoverProvider ?? MusicBrainzCoverProvider(),
+        qq = qqProvider ?? QqProvider(dio: dio),
+        netease = neteaseProvider ?? NeteaseProvider(dio: dio);
 
   // ---------- 搜索 ----------
 
-  /// 歌词搜索：精确 + 模糊合并去重，按 MusicPlayer2 权重排序。
+  /// 歌词搜索：按设置来源路由（LRCLIB 精确+模糊；QQ/网易曲目搜索无正文），
+  /// 按 MusicPlayer2 权重排序。QQ/网易候选预览/保存前调 [ensureLyrics] 懒取。
   Future<List<OnlineLyricCandidate>> searchLyrics(
     Song song, {
     String? titleOverride,
@@ -58,7 +72,17 @@ class OnlineMetaService {
     if (title.isEmpty) return const [];
     final filename = _stemOf(song.sourceRef);
 
-    final merged = <int, OnlineLyricCandidate>{};
+    if (settings.onlineMetaLyricSource != OnlineMetaLyricSource.lrclib) {
+      final tracks = await _searchTracks(
+        settings.onlineMetaLyricSource,
+        title: title,
+        artist: artist,
+        album: album,
+      );
+      return _weigh(song, title, artist, album, filename, tracks);
+    }
+
+    final merged = <String, OnlineLyricCandidate>{};
     // 精确优先（duration 辅助匹配）。
     try {
       final exact = await lrclib.fetchExact(
@@ -67,7 +91,7 @@ class OnlineMetaService {
         album: album.isEmpty ? null : album,
         durationSec: song.duration,
       );
-      if (exact != null && exact.hasContent) merged[exact.id] = exact;
+      if (exact != null && exact.hasContent) merged[exact.onlineId] = exact;
     } catch (_) {
       // 精确失败不阻断模糊搜索。
     }
@@ -80,15 +104,75 @@ class OnlineMetaService {
         album: album.isEmpty ? null : album,
       );
       for (final c in list) {
-        merged.putIfAbsent(c.id, () => c);
+        merged.putIfAbsent(c.onlineId, () => c);
       }
     } catch (_) {
       if (merged.isEmpty) rethrow;
     }
+    return _weigh(song, title, artist, album, filename, merged.values);
+  }
 
+  /// QQ/网易曲目搜索（设置来源路由；MB-CAA 不走这里，走 [searchRecordings]）。
+  Future<List<OnlineLyricCandidate>> searchCoverTracks(
+    Song song, {
+    String? titleOverride,
+    String? artistOverride,
+    String? albumOverride,
+  }) async {
+    final coverSource = settings.onlineMetaCoverSource;
+    if (coverSource == OnlineMetaCoverSource.mbCaa) {
+      throw StateError('MB→CAA 封面走录音搜索（searchRecordings）');
+    }
+    final title = (titleOverride ?? song.title).trim();
+    final artist = (artistOverride ?? (song.artist ?? '')).trim();
+    final album = (albumOverride ?? (song.albumName ?? '')).trim();
+    if (title.isEmpty) return const [];
+    final lyricSource = coverSource == OnlineMetaCoverSource.qq
+        ? OnlineMetaLyricSource.qq
+        : OnlineMetaLyricSource.netease;
+    final tracks = await _searchTracks(
+      lyricSource,
+      title: title,
+      artist: artist,
+      album: album,
+    );
+    return _weigh(song, title, artist, album, _stemOf(song.sourceRef), tracks);
+  }
+
+  Future<List<OnlineLyricCandidate>> _searchTracks(
+    OnlineMetaLyricSource source, {
+    required String title,
+    required String artist,
+    required String album,
+  }) async {
+    switch (source) {
+      case OnlineMetaLyricSource.qq:
+        return qq.searchTracks(
+            title: title,
+            artist: artist.isEmpty ? null : artist,
+            album: album.isEmpty ? null : album);
+      case OnlineMetaLyricSource.netease:
+        return netease.searchTracks(
+            title: title,
+            artist: artist.isEmpty ? null : artist,
+            album: album.isEmpty ? null : album);
+      case OnlineMetaLyricSource.lrclib:
+        return const [];
+    }
+  }
+
+  /// MusicPlayer2 权重 + 时长加成排序（各来源共用）。
+  List<OnlineLyricCandidate> _weigh(
+    Song song,
+    String title,
+    String artist,
+    String album,
+    String filename,
+    Iterable<OnlineLyricCandidate> candidates,
+  ) {
     final out = <OnlineLyricCandidate>[];
     var i = 0;
-    for (final c in merged.values) {
+    for (final c in candidates) {
       final w = matchWeight(
         title: title,
         artist: artist,
@@ -99,7 +183,7 @@ class OnlineMetaService {
         filename: filename,
         index: i++,
       );
-      // 时长加成：LRCLIB 自带 duration，与本地差 ≤2s 视为强信号。
+      // 时长加成：来源自带 duration，与本地差 ≤2s 视为强信号。
       var bonus = 0.0;
       if (song.duration != null &&
           song.duration! > 0 &&
@@ -118,6 +202,25 @@ class OnlineMetaService {
     }
     out.sort((a, b) => b.matchWeight.compareTo(a.matchWeight));
     return out;
+  }
+
+  /// 懒取歌词正文（QQ/网易候选）：已有正文直接返回；否则按 `onlineId`
+  /// 取一次并回填。取不到时原样返回（调用方判 `hasContent` 提示）。
+  Future<OnlineLyricCandidate> ensureLyrics(
+      OnlineLyricCandidate candidate) async {
+    if (candidate.hasContent) return candidate;
+    switch (candidate.source) {
+      case OnlineMetaSource.qq:
+        final r = await qq.fetchLyric(candidate.onlineId);
+        return candidate.withLyrics(
+            syncedLyrics: r.syncedLyrics, plainLyrics: r.plainLyrics);
+      case OnlineMetaSource.netease:
+        final r = await netease.fetchLyric(candidate.onlineId);
+        return candidate.withLyrics(
+            syncedLyrics: r.syncedLyrics, plainLyrics: r.plainLyrics);
+      default:
+        return candidate;
+    }
   }
 
   /// 录音搜索（封面链第一步）：返回带权重的 MB 候选。
@@ -166,6 +269,32 @@ class OnlineMetaService {
       label: rec.releaseTitle ?? rec.title,
       bytes: bytes.toList(),
       matchWeight: rec.matchWeight,
+    );
+  }
+
+  /// 按 QQ/网易曲目候选取封面字节，校验完整性后返回。
+  /// 无封面返回 null（不抛错，由调用方提示换候选/换源）。
+  Future<OnlineCoverCandidate?> fetchTrackCover(
+      OnlineLyricCandidate candidate) async {
+    Uint8List? bytes;
+    switch (candidate.source) {
+      case OnlineMetaSource.qq:
+        bytes = await qq.fetchCoverBytes(candidate.onlineId);
+      case OnlineMetaSource.netease:
+        bytes = await netease.fetchCoverBytes(candidate.onlineId);
+      default:
+        return null;
+    }
+    if (bytes == null || bytes.isEmpty) return null;
+    if (!isCompleteImageBytes(bytes)) return null;
+    final label = candidate.albumName.isNotEmpty
+        ? candidate.albumName
+        : candidate.trackName;
+    return OnlineCoverCandidate(
+      releaseMbid: candidate.onlineId,
+      label: label,
+      bytes: bytes.toList(),
+      matchWeight: candidate.matchWeight,
     );
   }
 
