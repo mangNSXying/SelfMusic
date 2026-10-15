@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
+import '../screens/about_screen.dart';
 import '../screens/library_info_screen.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_provider.dart';
@@ -127,7 +128,7 @@ class _BottomBar extends StatelessWidget {
       children: [
         ListTile(
           dense: true,
-          leading: const Icon(Icons.info_outline),
+          leading: const Icon(Icons.bar_chart_outlined),
           title: const Text('歌曲信息'),
           subtitle: const Text('歌曲信息统计与分布',
               style: TextStyle(fontSize: 11)),
@@ -138,6 +139,20 @@ class _BottomBar extends StatelessWidget {
             }
             Navigator.of(context).push(MaterialPageRoute<void>(
                 builder: (_) => const LibraryInfoScreen()));
+          },
+        ),
+        ListTile(
+          dense: true,
+          leading: const Icon(Icons.info_outline),
+          title: const Text('关于软件'),
+          subtitle: const Text('版本与反馈', style: TextStyle(fontSize: 11)),
+          onTap: () {
+            // 移动端先收起抽屉，再压入关于页。
+            if (NavigationProviderHelper.isNarrow(context)) {
+              Scaffold.of(context).closeDrawer();
+            }
+            Navigator.of(context).push(MaterialPageRoute<void>(
+                builder: (_) => const AboutScreen()));
           },
         ),
         ListTile(
