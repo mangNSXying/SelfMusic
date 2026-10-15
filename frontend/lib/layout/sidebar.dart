@@ -128,8 +128,8 @@ class _BottomBar extends StatelessWidget {
         ListTile(
           dense: true,
           leading: const Icon(Icons.info_outline),
-          title: const Text('信息'),
-          subtitle: const Text('歌曲元数据读取情况汇总',
+          title: const Text('歌曲信息'),
+          subtitle: const Text('歌曲信息统计与分布',
               style: TextStyle(fontSize: 11)),
           onTap: () {
             // 移动端先收起抽屉，再压入信息页。

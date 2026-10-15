@@ -1467,7 +1467,7 @@ class LocalIndex {
     return _writer!.opBatch('applyPlaylistSnapshots', snapshots);
   }
 
-  /// 元数据读取情况汇总（侧边栏「信息」页，改进 B6-4）。
+  /// 元数据读取情况汇总（侧边栏「歌曲信息」页，改进 B6-4）。
   /// 口径：total=全部行；missing=失效行；其余维度按有效行（missing=0）统计
   /// 非空即"已获取"。码率无独立列，用"大小+时长齐全可估算"近似。
   Map<String, int> metaStats() {
@@ -1518,6 +1518,129 @@ class LocalIndex {
       FROM idx_songs WHERE missing=0 GROUP BY f ORDER BY c DESC
     ''');
     return {for (final r in rs) (r['f'] as String): (r['c'] as int)};
+  }
+
+  /// 播放数据总览（歌曲信息页用）：累计时长/次数 + 次数与时长分布。
+  ///
+  /// 口径与 [playCountOf] 一致：次数 = play_sec / 歌曲时长（未知时长按 0 次计，
+  /// 归入「未播放/0 次」档）。只统计有效行（missing=0），play_meta 缺行按 0 秒。
+  PlayOverview playOverview() {
+    final rs = _db!.select('''
+      SELECT COALESCE(p.play_sec,0) AS play_sec, i.duration AS duration
+      FROM idx_songs i
+      LEFT JOIN play_meta p ON p.source_key=i.source_key AND p.song_ref=i.ref
+      WHERE i.missing=0
+    ''');
+    var withPlay = 0;
+    var totalSec = 0;
+    var totalCount = 0.0;
+    var c0 = 0, cLt1 = 0, c1to5 = 0, cGt5 = 0;
+    var s0 = 0, sLt = 0, sMid = 0, sGt = 0;
+    for (final r in rs) {
+      final sec = (r['play_sec'] as num?)?.toInt() ?? 0;
+      final dur = (r['duration'] as num?)?.toInt();
+      totalSec += sec;
+      if (sec > 0) withPlay++;
+      if (sec <= 0) {
+        s0++;
+      } else if (sec < 600) {
+        sLt++;
+      } else if (sec <= 3600) {
+        sMid++;
+      } else {
+        sGt++;
+      }
+      double c = 0;
+      if (sec > 0 && dur != null && dur > 0) c = sec / dur;
+      totalCount += c;
+      if (c <= 0) {
+        c0++;
+      } else if (c < 1) {
+        cLt1++;
+      } else if (c <= 5) {
+        c1to5++;
+      } else {
+        cGt5++;
+      }
+    }
+    return PlayOverview(
+      total: rs.length,
+      withPlay: withPlay,
+      totalSec: totalSec,
+      totalCount: totalCount,
+      countZero: c0,
+      countLt1: cLt1,
+      count1to5: c1to5,
+      countGt5: cGt5,
+      secZero: s0,
+      secLt10m: sLt,
+      sec10mTo1h: sMid,
+      secGt1h: sGt,
+    );
+  }
+
+  /// 播放数据明细：全部有效歌曲的播放时长（play_sec 缺行按 0）。
+  /// 排序在 UI 侧完成（歌曲名/歌手/源/次数/时长）。
+  List<PlayDetailRow> playDetailRows() {
+    final rs = _db!.select('''
+      SELECT i.source_key AS source_key, i.ref AS ref, i.title AS title,
+             i.artist AS artist, i.duration AS duration,
+             COALESCE(p.play_sec,0) AS play_sec
+      FROM idx_songs i
+      LEFT JOIN play_meta p ON p.source_key=i.source_key AND p.song_ref=i.ref
+      WHERE i.missing=0
+      ORDER BY i.id
+    ''');
+    return [
+      for (final r in rs)
+        PlayDetailRow(
+          sourceKey: (r['source_key'] as String?) ?? '',
+          ref: (r['ref'] as String?) ?? '',
+          title: (r['title'] as String?) ?? 'Unknown',
+          artist: r['artist'] as String?,
+          duration: (r['duration'] as num?)?.toInt(),
+          playSec: (r['play_sec'] as num?)?.toInt() ?? 0,
+        ),
+    ];
+  }
+
+  /// 元数据明细：全部有效歌曲各维度原始值（与 [metaStats] 同口径）。
+  /// 缺失判定：文本列 null/'' 即缺；数字列 null 即缺；封面 path 非空即有；
+  /// 歌词 song_lyrics 有非空 content 即有；码率可估算 = size>0 && duration>0。
+  List<MetaDetailRow> metaDetailRows() {
+    final rs = _db!.select('''
+      SELECT i.source_key AS source_key, i.ref AS ref, i.title AS title,
+             i.artist AS artist, i.album AS album,
+             i.album_artist AS album_artist, i.genre AS genre,
+             i.track_no AS track_no, i.year AS year, i.duration AS duration,
+             i.cover_path AS cover_path, i.format AS format, i.size AS size,
+             COALESCE(i.meta_read,0) AS meta_read,
+             CASE WHEN l.content IS NOT NULL AND l.content<>'' THEN 1 ELSE 0 END AS has_lyrics
+      FROM idx_songs i
+      LEFT JOIN song_lyrics l ON l.source_key=i.source_key AND l.ref=i.ref
+      WHERE i.missing=0
+      ORDER BY i.id
+    ''');
+    return [
+      for (final r in rs)
+        MetaDetailRow(
+          sourceKey: (r['source_key'] as String?) ?? '',
+          ref: (r['ref'] as String?) ?? '',
+          title: (r['title'] as String?) ?? 'Unknown',
+          artist: r['artist'] as String?,
+          album: r['album'] as String?,
+          albumArtist: r['album_artist'] as String?,
+          genre: r['genre'] as String?,
+          trackNo: (r['track_no'] as num?)?.toInt(),
+          year: (r['year'] as num?)?.toInt(),
+          duration: (r['duration'] as num?)?.toInt(),
+          coverPath: r['cover_path'] as String?,
+          format: r['format'] as String?,
+          size: (r['size'] as num?)?.toInt() ?? 0,
+          metaRead: ((r['meta_read'] as num?)?.toInt() ?? 0) == 1,
+          hasLyrics: ((r['has_lyrics'] as num?)?.toInt() ?? 0) == 1,
+        ),
+    ];
   }
 
   /// pull 歌曲权重快照落 play_meta：先写 ('server', ref) 行（服务端歌曲），
@@ -2442,6 +2565,136 @@ class PlayMetaRow {
     this.songJson,
     this.playSec = 0,
   });
+}
+
+/// 播放数据总览（歌曲信息页用）：见 [LocalIndex.playOverview]。
+class PlayOverview {
+  final int total;
+  final int withPlay;
+  final int totalSec;
+  final double totalCount;
+  final int countZero;
+  final int countLt1;
+  final int count1to5;
+  final int countGt5;
+  final int secZero;
+  final int secLt10m;
+  final int sec10mTo1h;
+  final int secGt1h;
+  const PlayOverview({
+    required this.total,
+    required this.withPlay,
+    required this.totalSec,
+    required this.totalCount,
+    required this.countZero,
+    required this.countLt1,
+    required this.count1to5,
+    required this.countGt5,
+    required this.secZero,
+    required this.secLt10m,
+    required this.sec10mTo1h,
+    required this.secGt1h,
+  });
+}
+
+/// 播放数据明细行（歌曲信息页用）：见 [LocalIndex.playDetailRows]。
+class PlayDetailRow {
+  final String sourceKey;
+  final String ref;
+  final String title;
+  final String? artist;
+  final int? duration;
+  final int playSec;
+  const PlayDetailRow({
+    required this.sourceKey,
+    required this.ref,
+    required this.title,
+    this.artist,
+    this.duration,
+    required this.playSec,
+  });
+}
+
+/// 元数据明细行（歌曲信息页用）：见 [LocalIndex.metaDetailRows]。
+class MetaDetailRow {
+  final String sourceKey;
+  final String ref;
+  final String title;
+  final String? artist;
+  final String? album;
+  final String? albumArtist;
+  final String? genre;
+  final int? trackNo;
+  final int? year;
+  final int? duration;
+  final String? coverPath;
+  final String? format;
+  final int size;
+  final bool metaRead;
+  final bool hasLyrics;
+  const MetaDetailRow({
+    required this.sourceKey,
+    required this.ref,
+    required this.title,
+    this.artist,
+    this.album,
+    this.albumArtist,
+    this.genre,
+    this.trackNo,
+    this.year,
+    this.duration,
+    this.coverPath,
+    this.format,
+    required this.size,
+    required this.metaRead,
+    required this.hasLyrics,
+  });
+
+  bool get hasArtist => artist != null && artist!.isNotEmpty;
+  bool get hasAlbum => album != null && album!.isNotEmpty;
+  bool get hasAlbumArtist => albumArtist != null && albumArtist!.isNotEmpty;
+  bool get hasGenre => genre != null && genre!.isNotEmpty;
+  bool get hasTrackNo => trackNo != null;
+  bool get hasYear => year != null;
+  bool get hasDuration => duration != null && duration! > 0;
+  bool get hasCover => coverPath != null && coverPath!.isNotEmpty;
+  bool get hasFormat => format != null && format!.isNotEmpty;
+  bool get bitrateEstimable => size > 0 && hasDuration;
+
+  /// 缺失维度数（12 维，与总览页 [_dims] 对应，含 meta_read 本身）。
+  int get missingCount {
+    var m = 0;
+    if (!metaRead) m++;
+    if (!hasArtist) m++;
+    if (!hasAlbum) m++;
+    if (!hasAlbumArtist) m++;
+    if (!hasGenre) m++;
+    if (!hasTrackNo) m++;
+    if (!hasYear) m++;
+    if (!hasDuration) m++;
+    if (!hasCover) m++;
+    if (!hasLyrics) m++;
+    if (!hasFormat) m++;
+    if (!bitrateEstimable) m++;
+    return m;
+  }
+
+  /// 指定维度是否有（dim key 与总览页一致）。
+  bool hasDim(String dim) => switch (dim) {
+        'meta_read' => metaRead,
+        'artist' => hasArtist,
+        'album' => hasAlbum,
+        'album_artist' => hasAlbumArtist,
+        'genre' => hasGenre,
+        'track_no' => hasTrackNo,
+        'year' => hasYear,
+        'duration' => hasDuration,
+        'cover' => hasCover,
+        'lyrics' => hasLyrics,
+        'format' => hasFormat,
+        'bitrate' => bitrateEstimable,
+        _ => true,
+      };
 }
 
 /// 歌单行（stage2.md §1.2；clientUuid 为阶段5 跨设备全局标识）。

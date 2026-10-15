@@ -1,12 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../data/local/local_index.dart';
 import '../providers/direct_source_manager.dart';
 import '../services/artist_resolver.dart';
 import '../utils/build_stamp.dart';
+import '../utils/play_stats.dart';
+import 'library_info_extra_details.dart';
+import 'library_info_meta_detail.dart';
+import 'library_info_play_detail.dart';
 
-/// 侧边栏「信息」页（改进 B6-4）：汇总全部歌曲的元数据读取情况。
-/// 口径见 [LocalIndex.metaStats]：总数/已读/失效 + 各维度已获取数 + 格式分组。
+/// 侧边栏「歌曲信息」页：汇总全部歌曲的元数据读取情况 + 播放数据。
+/// 口径见 [LocalIndex.metaStats] / [LocalIndex.playOverview]。
 class LibraryInfoScreen extends StatelessWidget {
   const LibraryInfoScreen({super.key});
 
@@ -33,6 +38,7 @@ class LibraryInfoScreen extends StatelessWidget {
     final stats = index.metaStats();
     final formats = index.formatStats();
     final artistStats = index.artistStats();
+    final play = index.playOverview();
     final total = stats['total'] ?? 0;
     final valid = total - (stats['missing'] ?? 0);
     final cs = Theme.of(context).colorScheme;
@@ -56,11 +62,12 @@ class LibraryInfoScreen extends StatelessWidget {
                             color: cs.onSurface.withValues(alpha: 0.6))),
                   ),
                 const SizedBox(height: 12),
-                Text('各维度已获取',
-                    style: Theme.of(context)
-                        .textTheme
-                        .titleSmall
-                        ?.copyWith(fontWeight: FontWeight.w600)),
+                _SectionHeader(
+                  title: '元数据信息',
+                  onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                          builder: (_) => const MetaDetailScreen())),
+                ),
                 const SizedBox(height: 4),
                 for (final d in _dims)
                   _DimRow(
@@ -69,19 +76,21 @@ class LibraryInfoScreen extends StatelessWidget {
                       total: valid,
                       accent: cs.primary),
                 const SizedBox(height: 12),
-                Text('歌手身份',
-                    style: Theme.of(context)
-                        .textTheme
-                        .titleSmall
-                        ?.copyWith(fontWeight: FontWeight.w600)),
+                _SectionHeader(
+                  title: '歌手信息',
+                  onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                          builder: (_) => const ArtistDetailScreen())),
+                ),
                 const SizedBox(height: 4),
                 _ArtistStatusRow(artistStats),
                 const SizedBox(height: 12),
-                Text('格式分布',
-                    style: Theme.of(context)
-                        .textTheme
-                        .titleSmall
-                        ?.copyWith(fontWeight: FontWeight.w600)),
+                _SectionHeader(
+                  title: '格式分布',
+                  onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                          builder: (_) => const FormatDetailScreen())),
+                ),
                 const SizedBox(height: 4),
                 for (final e in formats.entries)
                   _DimRow(
@@ -89,8 +98,140 @@ class LibraryInfoScreen extends StatelessWidget {
                       got: e.value,
                       total: valid,
                       accent: cs.primary),
+                const SizedBox(height: 12),
+                _SectionHeader(
+                  title: '播放数据',
+                  onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                          builder: (_) => const PlayDetailScreen())),
+                ),
+                const SizedBox(height: 4),
+                _PlayOverviewCard(play: play),
+                const SizedBox(height: 8),
+                Text('按播放次数',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: cs.onSurface.withValues(alpha: 0.6))),
+                _DimRow(
+                    label: '未播放',
+                    got: play.countZero,
+                    total: valid,
+                    accent: cs.primary),
+                _DimRow(
+                    label: '小于 1 次',
+                    got: play.countLt1,
+                    total: valid,
+                    accent: cs.primary),
+                _DimRow(
+                    label: '1-5 次',
+                    got: play.count1to5,
+                    total: valid,
+                    accent: cs.primary),
+                _DimRow(
+                    label: '大于 5 次',
+                    got: play.countGt5,
+                    total: valid,
+                    accent: cs.primary),
+                const SizedBox(height: 4),
+                Text('按播放时长',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: cs.onSurface.withValues(alpha: 0.6))),
+                _DimRow(
+                    label: '未播放',
+                    got: play.secZero,
+                    total: valid,
+                    accent: cs.primary),
+                _DimRow(
+                    label: '10 分钟以内',
+                    got: play.secLt10m,
+                    total: valid,
+                    accent: cs.primary),
+                _DimRow(
+                    label: '10 分钟-1 小时',
+                    got: play.sec10mTo1h,
+                    total: valid,
+                    accent: cs.primary),
+                _DimRow(
+                    label: '1 小时以上',
+                    got: play.secGt1h,
+                    total: valid,
+                    accent: cs.primary),
               ],
             ),
+    );
+  }
+}
+
+/// 总览页分区标题：右侧 `>` 点击进入对应详情页。
+class _SectionHeader extends StatelessWidget {
+  final String title;
+  final VoidCallback onTap;
+  const _SectionHeader({required this.title, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          children: [
+            Text(title,
+                style: Theme.of(context)
+                    .textTheme
+                    .titleSmall
+                    ?.copyWith(fontWeight: FontWeight.w600)),
+            const Spacer(),
+            Icon(Icons.chevron_right,
+                size: 20,
+                color: Theme.of(context)
+                    .colorScheme
+                    .onSurface
+                    .withValues(alpha: 0.6)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 播放数据总览卡：累计次数/时长 + 有记录歌曲数。
+class _PlayOverviewCard extends StatelessWidget {
+  final PlayOverview play;
+  const _PlayOverviewCard({required this.play});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final total = play.total;
+    final withPlay = play.withPlay;
+    final totalSec = play.totalSec;
+    final totalCount = play.totalCount;
+    final pct = total <= 0 ? 0.0 : withPlay / total;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '累计 ${totalCount.toStringAsFixed(1)} 次 · ${playSecLabel(totalSec)}',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyMedium
+                  ?.copyWith(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+            LinearProgressIndicator(value: pct),
+            const SizedBox(height: 4),
+            Text(
+              '有播放记录 $withPlay / $total 首 · ${(pct * 100).toStringAsFixed(0)}%',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: cs.onSurface.withValues(alpha: 0.6)),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
