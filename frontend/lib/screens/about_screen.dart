@@ -200,15 +200,25 @@ class AboutScreen extends StatelessWidget {
     final now = DateTime.now();
     final fileName =
         'selfmusic_logs_${now.year}${_pad2(now.month)}${_pad2(now.day)}_${_pad2(now.hour)}${_pad2(now.minute)}${_pad2(now.second)}.txt';
-    final savePath = await getSaveLocation(
-      suggestedName: fileName,
-      confirmButtonText: '保存',
-    );
-    if (savePath == null || !context.mounted) return;
+    // file_selector 在 Android/iOS/OHOS 上未实现 getSaveLocation（抛
+    // UnimplementedError），仅桌面端可用；移动端改用目录选择后自行拼接文件名。
     try {
-      await LogBuffer.instance.exportToPath(savePath.path, since: const Duration(minutes: 1));
+      String targetPath;
+      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+        final saveLocation = await getSaveLocation(
+          suggestedName: fileName,
+          confirmButtonText: '保存',
+        );
+        if (saveLocation == null) return;
+        targetPath = saveLocation.path;
+      } else {
+        final dir = await getDirectoryPath(confirmButtonText: '选择');
+        if (dir == null) return;
+        targetPath = '$dir/$fileName';
+      }
+      await LogBuffer.instance.exportToPath(targetPath, since: const Duration(minutes: 1));
       if (!context.mounted) return;
-      AppToast.show('日志已导出：${savePath.path}', isError: false);
+      AppToast.show('日志已导出：$targetPath', isError: false);
     } catch (e) {
       if (!context.mounted) return;
       AppToast.error(e, '日志导出失败');
