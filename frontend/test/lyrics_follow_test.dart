@@ -40,6 +40,13 @@ String _lrc(int n) => List.generate(n, (i) {
 /// 第 [n] 行文本（n 从 1 起）。
 String _line(int n) => '第$n行';
 
+/// 整秒 → `[mm:ss.00]` 时间戳（与 [_lrc] 同格式，供自定义行长的用例拼 LRC）。
+String _stamp(int seconds) {
+  final m = (seconds ~/ 60).toString().padLeft(2, '0');
+  final s = (seconds % 60).toString().padLeft(2, '0');
+  return '[$m:$s.00]';
+}
+
 /// 行号 → 播放位置：第 n 行在 (n-1)*4s 处。
 Duration _posOf(int line) => Duration(seconds: (line - 1) * 4);
 
@@ -256,6 +263,66 @@ void main() {
       expect(scroll.offset, settled, reason: '主动画结束后又发生了收尾补移');
     }
     _expectCentered(tester, 11);
+
+    await pos.close();
+    player.dispose();
+  });
+
+  testWidgets('长行折行（行数随状态变化）时同样一次落位，不做二次校正', (tester) async {
+    // 44 个汉字：16px 排 1 行（44×16=704 ≤ 752），19px 排 2 行（44×19=836 > 752）——
+    // 即"激活即折行"，行高在换行帧从 42 跳到 75；译文再来一条 50 字（14px 1 行、
+    // 16px 2 行）覆盖"翻译过长"分支。字号若走补间，折行会在 200ms 里跨越阈值突然
+    // 发生，目标中途跳变 → 必然二次校正（真机反馈的那种"一直要补"）。
+    // 夹具取 20 行、长行放中间：保证对齐位不落进 maxScrollExtent 夹取区。
+    final long = '长' * 44;
+    final longTrans = '译' * 50;
+    final lrc = [
+      for (var i = 1; i <= 20; i++)
+        '${_stamp((i - 1) * 4)}'
+            '${i == 10 ? '$long / $longTrans' : '第$i行'}',
+    ].join('\n');
+    final pos = StreamController<Duration>();
+    final player = PlayerProvider()
+      ..lyricsPositionOverride = pos.stream
+      ..debugApplyLyrics(lrc);
+    await pumpLyrics(tester, player);
+
+    Rect rowOf(String text) => tester.getRect(find.ancestor(
+          of: find.text(text),
+          matching: find.byType(InkWell),
+        ));
+
+    pos.add(const Duration(seconds: 16)); // 第 5 行
+    await tester.pump();
+    await tester.pump();
+    await tester.pumpAndSettle();
+
+    // 换行到长行：主文本折行数 1 → 2、译文 1 → 2，行高必须在换行帧就定稿。
+    pos.add(const Duration(seconds: 36));
+    await tester.pump();
+    await tester.pump();
+    final atChange = rowOf(long).height;
+    expect(atChange, greaterThan(110),
+        reason: '长行（含长译文）激活后应按折行后的行高定稿');
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(rowOf(long).height, atChange,
+        reason: '折行后的行高在 200ms 内仍在变（折行随字号补间中途发生）');
+
+    // 主动画结束后不得再出现二次校正，且当前行确实回到对齐位。
+    await tester.pump(const Duration(milliseconds: 400));
+    final scroll = scrollOf(tester);
+    final settled = scroll.offset;
+    for (var i = 1; i <= 3; i++) {
+      pos.add(const Duration(seconds: 36) + Duration(milliseconds: 200 * i));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(scroll.offset, settled, reason: '折行场景出现了二次校正');
+    }
+    final view = tester.getRect(find.byType(LyricsView));
+    final r = rowOf(long);
+    expect((r.top - view.top - (view.height - r.height) * 0.42).abs(),
+        lessThan(8),
+        reason: '折行后的长行未回到对齐位');
 
     await pos.close();
     player.dispose();
