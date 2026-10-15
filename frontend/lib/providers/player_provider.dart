@@ -291,6 +291,37 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   DateTime? _lastStateSave;
   bool _restored = false;
 
+  /// 断点落库周期（真机取证 2026-10-15）：旧值 2s 太密——每次都要
+  /// `jsonEncode` 整个队列并重写 `play_state` 整行（队列 1207 首时实测
+  /// 序列化 28~61ms + 写库 9~24ms，全在 UI 线程，ohos 写层为内联写），
+  /// 表现为每两秒一次的掉帧。放宽到 10s；暂停/切歌/退后台/退出仍强制落库
+  /// （见 [_saveForcedAndPoke] 与 [onPause] 链路），崩溃最多丢 10s 位置。
+  static const Duration _stateSaveInterval = Duration(seconds: 10);
+
+  /// 上次落库的曲目身份：切歌立即落一次（不等 [_stateSaveInterval]），
+  /// 避免崩溃后回到上一首。
+  String? _lastSavedSongKey;
+
+  /// 队列 JSON 缓存（含缓存键）。
+  ///
+  /// 键取 `Object.hashAll(_queue)`：`Song` 字段全 `final` 且无自定义
+  /// `hashCode`/`==`，即对象身份哈希——队列内任何元素替换（元数据回填
+  /// `refreshSongMeta` 就是整对象替换）、增删、重排都会改哈希；代价仅 O(n)
+  /// 次指针读取（1207 首约数十微秒），远低于重编码的 28~61ms。
+  Object? _queueJsonKey;
+  String? _queueJsonCache;
+
+  /// 取队列 JSON（队列未变化则复用缓存，避免每 2s 周期性重编码大队列）。
+  String _encodedQueue() {
+    final key = Object.hashAll(_queue);
+    final cached = _queueJsonCache;
+    if (cached != null && key == _queueJsonKey) return cached;
+    final encoded = jsonEncode(_queue.map((s) => s.toJson()).toList());
+    _queueJsonKey = key;
+    _queueJsonCache = encoded;
+    return encoded;
+  }
+
   /// 用户在启动恢复后是否主动接管过播放（播放/暂停/切歌/seek/改队列）：
   /// 首轮同步晚到的远端断点此时不再回切，避免打断用户操作。
   bool _userTookOver = false;
@@ -298,7 +329,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 当前会话所依据的断点时间（本机恢复或远端镜像 adopted 时的 `updated_at`）。
   ///
   /// 与 `play_state.updated_at` **分离**：后者每次 `_saveState`（含 `_play` 起播、
-  /// 2s 节流写入）都会被刷新为客户端 `now`，不能用作「远端断点是否更新」的基准
+  /// 周期节流写入）都会被刷新为客户端 `now`，不能用作「远端断点是否更新」的基准
   /// （否则启动恢复 `_play` 覆盖本地时间后，远端镜像恒判更旧，跨设备续播永不生效）。
   DateTime? _breakpointBaselineAt;
 
@@ -834,7 +865,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// 回前台：强制写一次断点（跳过 [_maybeSaveState] 的 2s 节流）。
+  /// 回前台：强制写一次断点（跳过 [_maybeSaveState] 的 [_stateSaveInterval] 节流）。
   Future<void> _saveStateNow() async {
     if (!_hasPlayScene) return;
     try {
@@ -3014,9 +3045,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   void _maybeSaveState(Duration pos) {
     final now = DateTime.now();
-    if (_lastStateSave == null ||
-        now.difference(_lastStateSave!) >= const Duration(seconds: 2)) {
+    final key = _current == null ? null : _positionKeyOf(_current!);
+    // 切歌：立即落一次（否则崩溃后回到上一首）；其余按 [_stateSaveInterval] 节流。
+    final songChanged = key != _lastSavedSongKey;
+    if (songChanged ||
+        _lastStateSave == null ||
+        now.difference(_lastStateSave!) >= _stateSaveInterval) {
       _lastStateSave = now;
+      _lastSavedSongKey = key;
       unawaited(_saveState(pos));
     }
   }
@@ -3025,7 +3061,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final idx = _index;
     if (idx == null || _queue.isEmpty || _current == null) return;
     await idx.savePlayState(
-      jsonEncode(_queue.map((s) => s.toJson()).toList()),
+      _encodedQueue(),
       _idx,
       pos.inMilliseconds,
       playlistUuid: _syncPlaylistUuid,

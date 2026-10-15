@@ -146,8 +146,7 @@ void main() {
     player.dispose();
   });
 
-  testWidgets('拖动期间不回中，空闲超时后自动回中', (tester) async {
-    final pos = StreamController<Duration>();
+  testWidgets('拖动期间不回中，空闲超时后自动回中', (tester) async {    final pos = StreamController<Duration>();
     final player = playerWithLyrics(pos.stream);
     await pumpLyrics(tester, player);
 
@@ -174,6 +173,47 @@ void main() {
     await tester.pump(const Duration(seconds: 6));
     await tester.pumpAndSettle();
     _expectCentered(tester, 30);
+
+    await pos.close();
+    player.dispose();
+  });
+
+  testWidgets('位置事件比帧频还快时不得反复打断跟焦动画（真机 60+Hz 定时器回归）',
+      (tester) async {
+    final pos = StreamController<Duration>();
+    final player = playerWithLyrics(pos.stream);
+    await pumpLyrics(tester, player);
+
+    // 先停在首屏内可达的行上并归位。
+    pos.add(_posOf(8));
+    await tester.pump();
+    await tester.pump();
+    await tester.pumpAndSettle();
+    _expectCentered(tester, 8);
+
+    // 换行触发跟焦动画，并在动画期间每 16ms 继续发位置事件。
+    //
+    // 真机取证（2026-10-15 手机 Mate 90 Pro Max）：just_audio 的 positionStream
+    // 是 `Timer.periodic(duration/800)`（clamp 到 [16ms, 200ms]）——时长未知 /
+    // 短音频时按 16ms 跳，即 60+ 次/秒。旧实现每次事件都 animateTo，把进行中的
+    // 动画打断成逐帧重开（每段动画的第一次 tick 位移为 0），滚动退化为「逐帧
+    // 微移的爬行」，观感就是追焦卡顿（手指一碰即停——拖动会抑制跟焦）。
+    // 本用例钉住：动画期间的高频位置事件不得把动画打断成爬行，必须在
+    // 一段动画的合理时长内到位。
+    pos.add(_posOf(9));
+    await tester.pump();
+    var converged = false;
+    var frames = 0;
+    for (; frames < 60; frames++) {
+      await tester.pump(const Duration(milliseconds: 16)); // 一帧 + 一个 tick
+      pos.add(_posOf(9) + Duration(milliseconds: 16 * (frames + 1)));
+      if (_alignDelta(tester, 9).abs() < 8) {
+        converged = true;
+        break;
+      }
+    }
+    expect(converged, isTrue,
+        reason: '跟焦动画被高频位置事件反复打断：${frames * 16}ms 仍未到位');
 
     await pos.close();
     player.dispose();

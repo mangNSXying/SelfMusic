@@ -44,6 +44,24 @@ class _LyricsViewState extends State<LyricsView> {
   /// 正在飞向的目标偏移：动画途中位置事件不再重复发起同目标的滚动。
   double? _flying;
 
+  /// 跟焦动画代次：被换行/跳转/拖动取代的旧动画，其完成回调不得再改写飞行状态。
+  int _animGen = 0;
+
+  /// 是否有跟焦动画在飞（与 [_flying] 同生共死；只用 [_animating] 判定）。
+  bool _animating = false;
+
+  /// 在飞动画瞄准的行号（判断「换行了才重定目标」）。
+  int _flightIdx = -1;
+
+  /// 动画途中目标偏移漂移的容忍值（px）。
+  ///
+  /// 来源：当前行字号动画（16→19，height 1.5）让**行高**在 200ms 内从 42 长到
+  /// 46.5，带译文的行还要多 ~3px——即换行后目标最多漂 5~7px。取 4px：既让这类
+  /// 漂移大多被动画吸收（最多在换行窗口内微调 1~2 次），又远小于真实布局变化
+  /// （折行数变化 / 译文行出现 ≥20px，必须重定目标）。重开动画等于丢一帧位移，
+  /// 密集重开就是爬行卡顿（见 [_followCurrent]）。
+  static const double _retargetTolerance = 4;
+
   /// 用户拖动歌词后到空闲计时结束前暂停自动跟随，避免与手指抢滚动；
   /// 计时时长由「播放」设置里的歌词追焦等待决定。
   bool _followSuppressed = false;
@@ -261,6 +279,15 @@ class _LyricsViewState extends State<LyricsView> {
   /// 不再以「行号是否变化」为触发条件——行号已经记住但滚动失败时（如 ListView
   /// 懒构建导致目标行尚未构建、从播放页滑入时该页才刚创建）会永久卡住，
   /// 必须每次都按真实布局状态复核。
+  ///
+  /// 但「每次复核」不等于「每次都重开动画」：位置事件可能比帧频还快。just_audio
+  /// 的 positionStream = 播放事件 + `Timer.periodic(duration/800)`（夹在
+  /// [16ms, 200ms]），实际频率取决于后端播放事件频率——真机 2026-10-15 实测：
+  /// 同一首歌手机 68 次/秒（≈帧率、鸿蒙 fvp 媒体状态事件按帧触发）、平板 10 次/秒，
+  /// 这正是「手机卡、平板不复现」的根因。对进行中的动画逐次重开时，每段新动画的
+  /// 第一次 tick 位移恒为 0（ticker 起始时间在首帧才记），滚动退化成「逐帧微移的
+  /// 爬行」——现象就是追焦一卡一卡、高亮正常、手指一碰即停（拖动抑制跟焦）。
+  /// 因此动画进行中只做「目标是否真的变了」的裁决（换行/布局大幅变化才重定目标）。
   void _followCurrent({bool quick = false}) {
     if (!mounted || _followSuppressed) return;
     final idx = _current;
@@ -288,35 +315,60 @@ class _LyricsViewState extends State<LyricsView> {
         .offset
         .clamp(pos.minScrollExtent, pos.maxScrollExtent);
     _retry = 0;
-    if ((target - pos.pixels).abs() <= 0.5) {
-      _flying = null;
+
+    if (_animating) {
+      // 动画进行中：同一行且目标基本一致 → 交给动画自己走完（**不重开**）。
+      // 换行或布局大幅变化（行高动画、折行数变化）才打断旧动画、按新目标重开。
+      if (_flightIdx == idx && (_flying! - target).abs() <= _retargetTolerance) {
+        return;
+      }
+    } else if ((target - pos.pixels).abs() <= 0.5) {
+      // 静止复核：已在位，无需动作（自愈通过）。
       // 目标行已构建，把临时加宽的 cacheExtent 收回去。
       if (_wideCache) setState(() => _wideCache = false);
       return;
     }
-    // 已在飞向同一目标：等动画自己走完（位置事件比帧频快，别打断它）。
-    if (_flying != null && (_flying! - target).abs() <= 0.5) return;
 
-    _flying = target;
     if (_firstAlign) {
       // 首次归位（进页面/切歌）：瞬时到位，避免长距离滑行。
       _firstAlign = false;
+      _invalidateFlight(); // 作废可能的在飞动画（切歌/重载竞态）
       pos.jumpTo(target);
       if (_wideCache) setState(() => _wideCache = false);
       return;
     }
+    // 剩余距离短时用短动画：否则「只差几像素」也要磨 320ms，看着发滞。
+    final dist = (target - pos.pixels).abs();
+    final shortHop = quick || dist < 24;
+    final gen = ++_animGen;
+    _animating = true;
+    _flying = target;
+    _flightIdx = idx;
     unawaited(pos
         .animateTo(
           target,
-          duration: quick
+          duration: shortHop
               ? const Duration(milliseconds: 140)
               : const Duration(milliseconds: 320),
-          curve: quick ? Curves.easeOut : Curves.easeOutCubic,
+          curve: shortHop ? Curves.easeOut : Curves.easeOutCubic,
         )
-        .then<void>((_) => _flying = null, onError: (Object e, StackTrace s) {
-          _flying = null;
-          debugPrint('[lyrics] 跟焦滚动失败: $e');
-        }));
+        .then<void>((_) {
+      // 只有「当前这一段」动画的完成才能改写飞行状态：被换行/跳转取代的旧动画
+      // 完成回调不能把新动画的 _flying 清成 null（否则下一次复核会误判为
+      // 「没在飞」而重开，退化成逐帧爬行——旧实现的隐式 bug）。
+      if (gen == _animGen) {
+        _animating = false;
+        _flying = null;
+        _flightIdx = -1;
+      }
+    }, onError: (Object e, StackTrace s) {
+      if (gen == _animGen) {
+        _animating = false;
+        _flying = null;
+        _flightIdx = -1;
+      }
+      debugPrint('[lyrics] 跟焦滚动失败: $e');
+    }));
     if (_wideCache) setState(() => _wideCache = false);
     // 当前行放大/长句折行的样式动画（200ms）结束后行高才稳定；
     // 二次校正一次，避免「行高变化导致居中像素偏掉」。
@@ -327,9 +379,20 @@ class _LyricsViewState extends State<LyricsView> {
     });
   }
 
+  /// 作废在飞动画的记账（不主动打断滚动，交给新的滚动/手势接管）。
+  void _invalidateFlight() {
+    _animGen++;
+    _animating = false;
+    _flying = null;
+    _flightIdx = -1;
+  }
+
   /// 用户开始拖动：暂停跟焦并开始空闲计时。
   void _suppressFollow() {
     _followSuppressed = true;
+    // 拖动会接管滚动（在飞动画被 Scrollable 的 hold 顶掉），清理飞行记账，
+    // 让空闲超时恢复跟焦时从干净状态重新起一段动画。
+    _invalidateFlight();
     _recenter?.cancel();
     _armIdleTimer();
   }
