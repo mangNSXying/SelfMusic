@@ -7,6 +7,7 @@ import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/data/local/song_weight_store.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:selfmusic/utils/play_stats.dart';
+import 'package:selfmusic/data/local/sync_event_types.dart';
 import 'package:sqlite3/open.dart';
 
 DynamicLibrary _openOnLinux() {
@@ -93,6 +94,69 @@ void main() {
       await w.addPlaySec(s, 30);
       final row = index.listDirtyPlayMeta().firstWhere((m) => m.songRef == 'c.mp3');
       expect(row.playSec, 30);
+    });
+  });
+
+  group('play_sec 节流推送 song.state（5 分钟心跳 + 强制）', () {
+    Future<(LocalIndex, SongWeightStore)> openSynced() async {
+      final (index, _) = await _openStore();
+      final w = SongWeightStore(index, serverAvailable: () => true);
+      return (index, w);
+    }
+
+    test('落库后推送绝对态，载荷带累计值与权重快照', () async {
+      final (index, w) = await openSynced();
+      addTearDown(index.close);
+      final s = _song('sync.mp3');
+      await w.addPlaySec(s, 120);
+      expect(await w.syncPlaySec(s, force: true), isTrue);
+      final pending = await index.pendingOutbox();
+      expect(pending.length, 1);
+      expect(pending.single.type, SyncEventTypes.songState);
+      expect(pending.single.payload['source_ref'], 'sync.mp3');
+      expect(pending.single.payload['play_sec'], 120);
+      expect(pending.single.payload['weight'], 1.0);
+      expect(pending.single.payload.containsKey('backfill'), isFalse);
+    });
+
+    test('5 分钟内不重复推；force 不受限', () async {
+      final (index, w) = await openSynced();
+      addTearDown(index.close);
+      final s = _song('throttle.mp3');
+      await w.addPlaySec(s, 60);
+      expect(await w.syncPlaySec(s, force: true), isTrue);
+      expect(await index.pendingOutboxCount(), 1);
+      // 累计值增长但未过节流窗：不推
+      await w.addPlaySec(s, 60);
+      expect(await w.syncPlaySec(s), isFalse);
+      expect(await index.pendingOutboxCount(), 1);
+      // 强制推送不受限
+      expect(await w.syncPlaySec(s, force: true), isTrue);
+      expect(await index.pendingOutboxCount(), 2);
+      // 第二个事件带最新累计值
+      final last = (await index.pendingOutbox()).last;
+      expect(last.payload['play_sec'], 120);
+    });
+
+    test('未配对/占位身份不进队', () async {
+      final (index, _) = await _openStore();
+      addTearDown(index.close);
+      final gated = SongWeightStore(index, serverAvailable: () => false);
+      final s = _song('gated.mp3');
+      await gated.addPlaySec(s, 30);
+      expect(await gated.syncPlaySec(s, force: true), isFalse);
+      expect(await index.pendingOutboxCount(), 0);
+
+      final serverSong = Song(
+        id: 0,
+        sourceKey: 'server',
+        title: 'x',
+        source: 'server',
+        sourceRef: 'x.mp3',
+        fileSize: 0,
+      );
+      final w2 = SongWeightStore(index, serverAvailable: () => true);
+      expect(await w2.syncPlaySec(serverSong, force: true), isFalse);
     });
   });
 

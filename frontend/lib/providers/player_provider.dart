@@ -696,7 +696,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 播放门控同步引擎：后台播放中仍同步，暂停/停止回落到前台门控。
       _onPlayingChanged?.call(st.playing);
       // 暂停/停止：结清当前挂钟窗口（positionStream 停止跳动，不再有 tick）。
-      if (!st.playing) _playSecStop();
+      if (!st.playing) unawaited(_playSecStop());
       if (st.processingState != ProcessingState.completed) return;
       // 到点暂停会把 playing 置 false 并再发一次 completed：
       // 这种「已暂停」的完成事件不再处理，否则暂停后又被自动切歌。
@@ -829,7 +829,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         // Android 常在进程被杀时根本不给 detached，这段就白丢了；同时把写隔离
         // 里攒的批量落盘，别指望它在后台还能按时刷。
         // 必须等待断点落盘：避免进程被 LMK/Doze 在写入完成前杀掉导致断点丢失。
-        _playSecStop();
+        // 播放时长先结清（含强制推送），再冲写隔离，保证 outbox 事件不丢。
+        await _playSecStop();
         await _flushWritesQuietly();
         break;
       case AppLifecycleState.resumed:
@@ -1267,11 +1268,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   void _playSecReconcile({required bool playing}) {
     final s = _current;
     if (s == null || !playing) {
-      _playSecStop();
+      unawaited(_playSecStop());
       return;
     }
     if (_playSecSong == null || !_same(_playSecSong!, s)) {
-      _playSecFlush(); // 换歌：先结清上一首
+      unawaited(_playSecFlush(forcePush: true)); // 换歌：先结清上一首并强制推送
       _playSecSong = s;
     }
     final win = _playSecWindow ??= DateTime.now();
@@ -1279,30 +1280,35 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (r.sec > 0) {
       _playSecPending += r.sec;
       _playSecWindow = r.window;
-      if (_playSecPending >= _playSecFlushAt) _playSecFlush();
+      if (_playSecPending >= _playSecFlushAt) unawaited(_playSecFlush());
     }
   }
 
-  /// 暂停/停止/退出：结清窗口并立即落库。
-  void _playSecStop() {
+  /// 暂停/停止/退出：结清窗口并立即落库 + 强制推送播放时长。
+  Future<void> _playSecStop() async {
     final win = _playSecWindow;
     if (win != null) {
       final r = settlePlaySecWindow(win, DateTime.now());
       _playSecPending += r.sec;
       _playSecWindow = null;
     }
-    _playSecFlush();
+    await _playSecFlush(forcePush: true);
   }
 
-  /// 落库待结算秒数。播放时长是纯本地累计量，不逐次进 outbox；
-  /// 跨设备同步走 `song.state` 绝对态（见 SongWeightStore.backfill / 快照回写）。
-  void _playSecFlush() {
+  /// 落库待结算秒数 + 节流推送 `song.state`（5 分钟心跳，暂停/切歌/退出强制）。
+  /// 播放次数由时长派生，无需单独同步。
+  Future<void> _playSecFlush({bool forcePush = false}) async {
     final s = _playSecSong;
     final sec = _playSecPending;
     final w = _weight;
     if (s == null || sec <= 0 || w == null) return;
     _playSecPending = 0;
-    unawaited(w.addPlaySec(s, sec));
+    try {
+      await w.addPlaySec(s, sec);
+      await w.syncPlaySec(s, force: forcePush);
+    } catch (_) {
+      // 落库/入队失败静默：下次 flush 重试，不打断播放。
+    }
   }
 
   /// 关联用户设置：套用默认播放模式（settings.md §3.2 `play_mode_default`），
@@ -3669,6 +3675,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _cancelFadeAndComplete();
     _fadingPause = false;
     _sleepTick?.cancel();
+    // 先结清播放时长（含强制推送），再落库，保证最后一段不丢。
+    try {
+      await _playSecStop();
+    } catch (_) {}
     final p = _player;
     if (p == null) {
       // 从未播放过：没有实例可停，但断点/写队列仍要落库。
@@ -3703,7 +3713,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _playbackGuard?.dispose();
     _playbackGuard = null;
     // 退出前把最后一段播放时长结清（与 _saveState 同样不等待）。
-    _playSecStop();
+    unawaited(_playSecStop());
     final p = _player;
     _player = null;
     if (p != null) {

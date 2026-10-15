@@ -196,13 +196,68 @@ class SongWeightStore {
 
   /// 累计播放时长（秒）入账：改进.txt 要求「播放时长精确到秒、播放次数由它派生」。
   ///
-  /// 采集侧（[PlayerProvider]）按挂钟累计，只在暂停/切歌/退出时成批落库，
-  /// 不逐秒写。不同步事件：播放时长是本地累计量，同步走 `song.state` 绝对态
-  /// （见 [backfill] 与同步引擎的快照回写），避免 outbox 被逐秒事件刷屏。
+  /// 采集侧（[PlayerProvider]）按挂钟累计，只在 20s 批量/暂停/切歌/退出时成批落库，
+  /// 不逐秒写。跨设备同步走 `song.state` 绝对态节流推送（见 [syncPlaySec]），
+  /// 避免 outbox 被逐秒事件刷屏。
   Future<void> addPlaySec(Song s, int seconds) {
     if (seconds <= 0) return Future<void>.value();
     if (s.sourceRef.isEmpty) return Future<void>.value();
     return index.addPlaySec(s.sourceKey, s.sourceRef, seconds);
+  }
+
+  /// 播放时长上推节流：同首歌两次推送至少间隔 [playSecPushInterval]，
+  /// `force=true`（暂停/切歌/退出）不受限。调用方须先 `await addPlaySec`，
+  /// 此处读到的即含本次增量的累计值，随 `song.state` 绝对态上推
+  /// （服务端按 `max` 合并，旧值晚到不回退；缺键保持权重字段，见 SyncService）。
+  static Duration playSecPushInterval = const Duration(minutes: 5);
+
+  final Map<String, DateTime> _lastPlaySecPush = {};
+
+  /// 测试用：清空节流记忆。
+  void clearPlaySecPushThrottleForTest() => _lastPlaySecPush.clear();
+
+  Future<bool> syncPlaySec(Song s,
+      {bool force = false, DateTime? nowForTest}) async {
+    if (s.sourceRef.isEmpty) return false;
+    if (s.source.isEmpty || s.source == 'server') return false;
+    if (s.sourceKey != 'server' && !(serverAvailable?.call() ?? false)) {
+      return false;
+    }
+    final key = '${s.sourceKey}\u0000${s.sourceRef}';
+    final now = nowForTest ?? DateTime.now();
+    final last = _lastPlaySecPush[key];
+    if (!force &&
+        last != null &&
+        now.difference(last) < playSecPushInterval) {
+      return false;
+    }
+    PlayMetaRow m;
+    try {
+      m = index.playMetaOf(s.sourceKey, s.sourceRef);
+    } catch (_) {
+      return false;
+    }
+    if (m.playSec <= 0) return false;
+    var protocol = s.source;
+    if (protocol.isEmpty || protocol == 'server') {
+      protocol = index.getSource(s.sourceKey)?.kind ?? '';
+    }
+    if (protocol.isEmpty || protocol == 'server') return false;
+    final sourceId = index.sourceUuidOf(s.sourceKey);
+    await index.enqueueOutbox(SyncEventTypes.songState, {
+      'source': protocol,
+      'source_ref': s.sourceRef,
+      if (sourceId != null) 'source_id': sourceId,
+      'like_streak': m.likeStreak,
+      'dislike_streak': m.dislikeStreak,
+      'weight': m.factor,
+      'frozen': m.frozen,
+      'is_favorite': m.favorite,
+      'play_sec': m.playSec,
+    });
+    if (_lastPlaySecPush.length > 20000) _lastPlaySecPush.clear();
+    _lastPlaySecPush[key] = now;
+    return true;
   }
 
   /// 阶段5：有歌曲身份（source/sourceRef 非空、可解析）即进 outbox；服务端按
