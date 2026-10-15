@@ -218,4 +218,46 @@ void main() {
     await pos.close();
     player.dispose();
   });
+
+  testWidgets('换行后行高同帧定稿：跟焦一次落位，不出现收尾补移', (tester) async {
+    final pos = StreamController<Duration>();
+    final player = playerWithLyrics(pos.stream);
+    await pumpLyrics(tester, player);
+
+    pos.add(_posOf(10));
+    await tester.pump();
+    await tester.pump();
+    await tester.pumpAndSettle();
+    _expectCentered(tester, 10);
+
+    final scroll = scrollOf(tester);
+    Rect rowOf(int line) => tester.getRect(find.ancestor(
+          of: find.text(_line(line)),
+          matching: find.byType(InkWell),
+        ));
+
+    // 换行：新当前行放大、上一行回缩。字号/字重若走 200ms 补间，行高会在这段时间
+    // 里持续变化 → 跟焦目标漂移 → 落不到位、收尾再补一次（真机反馈的「补 4px」）。
+    pos.add(_posOf(11));
+    await tester.pump(); // 事件投递 + 重建
+    await tester.pump(); // 换行后的第一帧
+    final rowAtChange = rowOf(11).height;
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(rowOf(11).height, rowAtChange,
+        reason: '当前行行高在换行后 200ms 内仍在变（字号/字重参与了补间）——目标会漂');
+
+    // 主动画结束后必须已经到位：再等一段（含二次校正窗口）不得出现补移。
+    await tester.pump(const Duration(milliseconds: 360));
+    final settled = scroll.offset;
+    for (var i = 1; i <= 4; i++) {
+      pos.add(_posOf(11) + Duration(milliseconds: 200 * i));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(scroll.offset, settled, reason: '主动画结束后又发生了收尾补移');
+    }
+    _expectCentered(tester, 11);
+
+    await pos.close();
+    player.dispose();
+  });
 }

@@ -219,10 +219,10 @@ class _LyricsViewState extends State<LyricsView> {
                 child: Padding(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 24, vertical: 9),
-                  child: AnimatedDefaultTextStyle(
-                    duration: const Duration(milliseconds: 200),
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
+                  child: _LyricRowText(
+                    text: lines[i].text,
+                    translation: lines[i].translation,
+                    mainStyle: TextStyle(
                       fontSize: active ? 19 : 16,
                       height: 1.5,
                       fontWeight: active ? FontWeight.w700 : FontWeight.w400,
@@ -231,28 +231,16 @@ class _LyricsViewState extends State<LyricsView> {
                           : cs.onSurface
                               .withValues(alpha: near ? 0.72 : 0.38),
                     ),
-                    child: lines[i].translation == null
-                        ? Text(lines[i].text, textAlign: TextAlign.center)
-                        : Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(lines[i].text,
-                                  textAlign: TextAlign.center),
-                              const SizedBox(height: 2),
-                              Text(
-                                lines[i].translation!,
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontSize: active ? 16 : 14,
-                                  height: 1.4,
-                                  fontWeight: FontWeight.w400,
-                                  color: active
-                                      ? cs.primary.withValues(alpha: 0.85)
-                                      : cs.onSurface.withValues(
-                                          alpha: near ? 0.62 : 0.32),
-                                ),
-                              ),
-                            ],
+                    subStyle: lines[i].translation == null
+                        ? null
+                        : TextStyle(
+                            fontSize: active ? 16 : 14,
+                            height: 1.4,
+                            fontWeight: FontWeight.w400,
+                            color: active
+                                ? cs.primary.withValues(alpha: 0.85)
+                                : cs.onSurface.withValues(
+                                    alpha: near ? 0.62 : 0.32),
                           ),
                   ),
                 ),
@@ -406,5 +394,68 @@ class _LyricsViewState extends State<LyricsView> {
       _followSuppressed = false;
       _followCurrent();
     });
+  }
+}
+
+/// 歌词行文本：**布局属性（字号/字重）同帧切换，只有颜色补间**（200ms）。
+///
+/// 为什么不让字号参与补间：字号/字重一变，该行的折行与行高就变（当前行变高
+/// ~4.5px、带译文行再多 ~3px，上一行同步变矮），补间意味着这些变化在 200ms 里
+/// 持续发生——跟焦目标随之漂移，动画落点必然差几像素，收尾还得再挪一次
+/// （2026-10-15 真机反馈的「每次换行都补一下 4px」就是这么来的）。
+/// 改成同帧定稿后：换行那一帧排版即最终值，跟焦一次动画到位、复核即 noop。
+/// 颜色不影响排版，照旧补间，保留高亮渐变观感。
+class _LyricRowText extends StatelessWidget {
+  final String text;
+  final String? translation;
+
+  /// 主文本样式（含当前状态的字号/字重/颜色）。
+  final TextStyle mainStyle;
+
+  /// 译文样式（无译文为 null）。
+  final TextStyle? subStyle;
+
+  const _LyricRowText({
+    required this.text,
+    required this.translation,
+    required this.mainStyle,
+    required this.subStyle,
+  });
+
+  static const Duration _fade = Duration(milliseconds: 200);
+
+  @override
+  Widget build(BuildContext context) {
+    final main = _FadingText(text: text, style: mainStyle);
+    final sub = subStyle;
+    if (translation == null || sub == null) return main;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        main,
+        const SizedBox(height: 2),
+        _FadingText(text: translation!, style: sub),
+      ],
+    );
+  }
+}
+
+/// 单行文本：颜色从当前值补间到目标值（布局属性不参与补间）。
+class _FadingText extends StatelessWidget {
+  final String text;
+  final TextStyle style;
+  const _FadingText({required this.text, required this.style});
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<Color?>(
+      tween: ColorTween(end: style.color),
+      duration: _LyricRowText._fade,
+      builder: (context, color, _) => Text(
+        text,
+        textAlign: TextAlign.center,
+        style: style.copyWith(color: color ?? style.color),
+      ),
+    );
   }
 }
