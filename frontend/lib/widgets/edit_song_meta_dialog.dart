@@ -12,6 +12,7 @@ import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
 import '../services/online_meta/online_meta_service.dart';
 import 'app_toast.dart';
+import 'embed_progress_dialog.dart';
 import 'online_meta_dialog.dart';
 
 /// 修改信息弹窗（全源）：标题/歌手/专辑/年份可编辑，封面/歌词进子窗口。
@@ -159,6 +160,15 @@ class _EditSongMetaDialogState extends State<EditSongMetaDialog> {
     });
   }
 
+  Future<void> _openEmbed() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => EmbedProgressDialog(song: widget.song),
+    );
+    if (!mounted || ok != true) return;
+    _refreshMediaState();
+  }
+
   Future<void> _openCover() async {
     await showDialog<void>(
       context: context,
@@ -186,6 +196,16 @@ class _EditSongMetaDialogState extends State<EditSongMetaDialog> {
           File(_coverPath!).existsSync();
     } catch (_) {
       hasCover = false;
+    }
+    // 嵌入入口可见性（同步判定）：直连 + 源可写才显示；内容有无在进度窗内再查。
+    var canEmbed = false;
+    try {
+      final src = context
+          .read<DirectSourceManager>()
+          .sourceByKey(widget.song.sourceKey);
+      canEmbed = widget.song.isDirect && src != null && src.supportsWrite;
+    } catch (_) {
+      canEmbed = false;
     }
     return AlertDialog(
       title: const Text('修改信息'),
@@ -253,10 +273,21 @@ class _EditSongMetaDialogState extends State<EditSongMetaDialog> {
               ),
               Align(
                 alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  onPressed: _openOnline,
-                  icon: const Icon(Icons.cloud_download_outlined, size: 18),
-                  label: const Text('在线获取元数据…'),
+                child: Wrap(
+                  spacing: 4,
+                  children: [
+                    TextButton.icon(
+                      onPressed: _openOnline,
+                      icon: const Icon(Icons.cloud_download_outlined, size: 18),
+                      label: const Text('在线获取元数据…'),
+                    ),
+                    if (canEmbed)
+                      TextButton.icon(
+                        onPressed: _openEmbed,
+                        icon: const Icon(Icons.file_upload_outlined, size: 18),
+                        label: const Text('嵌入到文件…'),
+                      ),
+                  ],
                 ),
               ),
             ],

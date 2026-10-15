@@ -258,6 +258,17 @@ class LocalIndex {
         "WHERE meta_read=1 AND cover_path IS NULL AND format IN ('mp3','flac')");
   }
 
+  /// 内嵌成功后刷新文件指纹（size/mtime）：嵌入改写了文件，扫描不能再把它
+  /// 当“未变化”跳过、也不能当“新变化”重读覆盖——指纹同步后扫描即静默。
+  /// 文本保护（user_edited）与已读标记（meta_read）保持不变：文件标签与
+  /// DB 已一致（验签保证），song_lyrics/covers/ 即校验基准。
+  Future<void> updateFileFingerprint(
+      String sourceKey, String songRef, int size, int mtime) {
+    return _writer!.exec(
+        'UPDATE idx_songs SET size=?, mtime=? WHERE source_key=? AND ref=?',
+        [size, mtime, sourceKey, songRef]);
+  }
+
   /// ID3v2.3 帧长回填补读（帧长 syncsafe/BE32 口径修复）：旧版把 v2.3 帧长按
   /// v2.4 syncsafe 解，大 APIC 被截成半图丢弃、其后 USLT 也对不上，已标已读
   /// 但无封面的 mp3/aac 行重置为未读，交给后台补读重取。返回重置行数。
