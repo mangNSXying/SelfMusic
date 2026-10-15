@@ -234,6 +234,54 @@ void main() {
     index.close();
   });
 
+  test('远端复验：大封面触发头阶梯仍通过', () async {
+    final index = await _openIndex();
+    final settings = AppSettings(index);
+    final root = await Directory.systemTemp.createTemp('selfmusic_bigcover_');
+    await Directory('${root.path}/sub').create();
+    final origBytes = await File('$_tempDir/周杰伦 - 发如雪.flac').readAsBytes();
+    await File('${root.path}/sub/song.flac').writeAsBytes(origBytes);
+
+    // 400KB 伪 JPEG（头 FFD8＋尾 FFD9，过轻量校验；读侧不解码只验头尾）。
+    final bigCover = Uint8List(400 * 1024);
+    bigCover[0] = 0xFF;
+    bigCover[1] = 0xD8;
+    bigCover[bigCover.length - 2] = 0xFF;
+    bigCover[bigCover.length - 1] = 0xD9;
+    final coverPath = index.persistCover(bigCover, 'sub/song.flac');
+
+    const sourceKey = 'webdav:t';
+    const ref = 'sub/song.flac';
+    await index.upsertSongs([
+      DirectSongRow(
+        sourceKey: sourceKey,
+        ref: ref,
+        title: '发如雪',
+        artist: '周杰伦',
+        duration: 302,
+        format: 'flac',
+        size: origBytes.length,
+        mtime: 1,
+      ),
+    ]);
+    await index.setLyrics(sourceKey, ref, _lyrics);
+    await index.enrichSong(sourceKey, ref, coverPath: coverPath);
+    final song = index.songByRef(sourceKey, ref)!;
+
+    final svc = TagEmbedService(index: index, settings: settings);
+    final src = _FakeRemoteSource(root.path);
+    // 旧复验（固定 256KB 头）会在此用例误判失败并还原；新复验走头阶梯应通过。
+    await svc.embedSong(song, src);
+
+    final after = await _readBack(
+        '${root.path}/$ref', 'flac', await File('${root.path}/$ref').length());
+    expect(after, isNotNull);
+    expect(after!.lyrics, contains('嵌入流程歌'));
+    expect(after.cover, isNotNull);
+    expect(after.cover!.length, bigCover.length);
+    index.close();
+  });
+
   test('无可嵌入内容拒绝', () async {
     final index = await _openIndex();
     final settings = AppSettings(index);

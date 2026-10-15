@@ -252,8 +252,8 @@ class TagEmbedService {
     }
   }
 
-  /// 复验（远端 PUT 后）：头 + 尾（wav/aiff/m4a-at-end 标签在尾），
-  /// 确认新歌词/封面已生效。
+  /// 复验（远端 PUT 后）：直接复用读侧全路径（头阶梯＋尾），与本地验签
+  /// 同口径——固定 256KB 头会在新封面较大时截断误判。
   Future<bool> _remoteOk(MusicSource src, Song song, int fileSize,
       {required bool wantLyrics, required bool wantCover}) async {
     try {
@@ -267,30 +267,8 @@ class TagEmbedService {
         return Uint8List.fromList(buf);
       }
 
-      final fmt = _formatOf(song);
-      final headLen = fileSize < 262144 ? fileSize : 262144;
-      final head = await readRange(0, headLen);
-      if (head.isEmpty) return false;
-      var meta = parseAudioHead(head, fmt, fileSize);
-      final hint = tailReadHint(head, fmt, fileSize);
-      if (hint != null && hint > 0 && hint < fileSize) {
-        final tail = await readRange(fileSize - hint, hint);
-        if (tail.isNotEmpty) {
-          final tm = parseAudioTail(tail, fmt, fileSize, headMeta: meta);
-          if (tm != null) {
-            if (meta == null) {
-              meta = tm;
-            } else {
-              meta.title ??= tm.title;
-              meta.artist ??= tm.artist;
-              meta.album ??= tm.album;
-              meta.lyrics ??= tm.lyrics;
-              meta.cover ??= tm.cover;
-              meta.duration ??= tm.duration;
-            }
-          }
-        }
-      }
+      final meta = await readAudioMeta(
+          readRange: readRange, format: _formatOf(song), fileSize: fileSize);
       if (meta == null) return false;
       if (wantLyrics && (meta.lyrics == null || meta.lyrics!.trim().isEmpty)) {
         return false;
