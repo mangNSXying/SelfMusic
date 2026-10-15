@@ -379,7 +379,11 @@ AudioMeta? _parseRiffTail(Uint8List tail, {required bool le}) {
 AudioMeta? _scanId3ChunkInRiff(Uint8List tail, AudioMeta meta) {
   for (var i = 0; i + 10 <= tail.length; i++) {
     if (tail[i] != 0x69 && tail[i] != 0x49) continue; // 'i' / 'I'
-    if (tail[i + 1] != 0x64 || tail[i + 2] != 0x33) continue; // 'd' '3'
+    // 第二字节 'd' / 'D' 都认：小写 `id3 ` 与大写 `ID3 ` 块都常见
+    //（写入器统一写大写 `ID3 `，与 mutagen AIFF 口径对齐；此前只认小写，
+    // 大写块在窗口起点不对齐时会被漏检）。
+    final d = tail[i + 1];
+    if ((d != 0x64 && d != 0x44) || tail[i + 2] != 0x33) continue; // 'd'/'D' '3'
     if (tail[i + 3] != 0x20) continue; // ' '
     // i 是块 id 起点，块头 8 字节之后才是 ID3v2 头。
     final body = i + 8;
