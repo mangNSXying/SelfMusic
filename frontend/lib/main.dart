@@ -12,6 +12,7 @@ import 'platform/app_background.dart';
 import 'platform/harmonyos/ohos_bootstrap.dart';
 import 'platform/harmonyos/ohos_media_session.dart';
 import 'services/api_client.dart';
+import 'services/log_buffer.dart';
 import 'services/server_settings.dart';
 import 'services/selfmusic_audio_handler.dart';
 import 'services/playback_guard.dart';
@@ -49,12 +50,15 @@ const int kImageCacheMaxBytes = 512 << 20;
 const int kImageCacheMaxCount = 4096;
 
 Future<void> main() async {
-  // 临时诊断：主线程停滞探针（必须最先起，见 main_thread_probe）。
-  startMainThreadStallProbe();
-  // 冷启动定位：首个 perf 点同时是相对时间零点（见 perf_log），必须在最前。
-  perfLog('boot.entry');
-  WidgetsFlutterBinding.ensureInitialized();
-  perfLog('boot.ensureInitialized');
+  // 初始化应用内日志缓冲（先于其他初始化，确保能捕获全部启动日志）。
+  LogBuffer.instance.init();
+  runZonedGuarded(() async {
+    // 临时诊断：主线程停滞探针（必须最先起，见 main_thread_probe）。
+    startMainThreadStallProbe();
+    // 冷启动定位：首个 perf 点同时是相对时间零点（见 perf_log），必须在最前。
+    perfLog('boot.entry');
+    WidgetsFlutterBinding.ensureInitialized();
+    perfLog('boot.ensureInitialized');
   // 图片解码缓存扩容：默认 100MB/1000 张。播放页用的是全尺寸封面（单张解码
   // 内存可达十余 MB），连播几十首就会把列表缩略图全部挤出缓存，此后每次切页
   // 都要重新解码 → 长会话「越用越卡」。512MB 是上限而非预分配，LRU 照常淘汰；
@@ -227,6 +231,10 @@ Future<void> main() async {
   // main() 全链（含所有 await）走完的最终信号：ArkTS 启动看门狗据此解除
   // （超时未收到则向 Dart 发消息唤醒可能停滞的事件循环，见 ohos_bootstrap）。
   markBootReady();
+  }, (Object error, StackTrace stack) {
+    LogBuffer.instance.recordError(error, stack);
+    debugPrint('Uncaught zone error: $error\n$stack');
+  });
 }
 
 /// 回前台触发同步（阶段5）：无 connectivity 依赖，切后台期间的变更在恢复后追上。

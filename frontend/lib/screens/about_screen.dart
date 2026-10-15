@@ -1,11 +1,14 @@
 import 'dart:io';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../utils/build_stamp.dart';
 import '../widgets/app_toast.dart';
+import '../services/log_buffer.dart';
 
 /// 反馈收信人。
 const String kFeedbackEmail = 'kon@shamiko.site';
@@ -64,6 +67,15 @@ class AboutScreen extends StatelessWidget {
           const Divider(height: 1),
           ListTile(
             dense: true,
+            leading: const Icon(Icons.description_outlined),
+            title: const Text('收集日志'),
+            subtitle: const Text('导出最近一分钟内的应用日志', style: TextStyle(fontSize: 11)),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _collectLogs(context),
+          ),
+          const Divider(height: 1),
+          ListTile(
+            dense: true,
             leading: const Icon(Icons.mail_outline),
             title: const Text('反馈'),
             subtitle: const Text('$kFeedbackEmail · 调用系统邮件应用',
@@ -94,8 +106,38 @@ class AboutScreen extends StatelessWidget {
 
   /// 跳转系统默认邮件软件；无可用客户端时复制邮箱并弹窗明示地址。
   Future<void> _sendFeedback(BuildContext context) async {
+    if (!context.mounted) return;
+    final includeLogs = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('反馈'),
+        content: const Text('是否携带最近一分钟的应用日志？（有助于定位 Bug）'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(false),
+            child: const Text('不携带'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(c).pop(true),
+            child: const Text('携带并发送'),
+          ),
+        ],
+      ),
+    );
+    if (!context.mounted) return;
+
+    String extraBody = '';
+    String? logPath;
+    if (includeLogs == true) {
+      logPath = await _exportLogsToTemp();
+      if (logPath != null) {
+        extraBody =
+            '\n\n[日志文件：$logPath]\n请在邮件中附上该日志文件。';
+      }
+    }
+
     final body =
-        '\n\n---\nSelfMusic $kAppVersion${kBuildStamp.isNotEmpty ? '（$kBuildStamp）' : ''} · ${Platform.operatingSystem} ${Platform.operatingSystemVersion}';
+        '\n\n---\nSelfMusic $kAppVersion${kBuildStamp.isNotEmpty ? '（$kBuildStamp）' : ''} · ${Platform.operatingSystem} ${Platform.operatingSystemVersion}$extraBody';
     final uri = Uri(
       scheme: 'mailto',
       path: kFeedbackEmail,
@@ -133,4 +175,60 @@ class AboutScreen extends StatelessWidget {
       ),
     );
   }
+
+  Future<void> _collectLogs(BuildContext context) async {
+    if (!context.mounted) return;
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('收集日志'),
+        content: const Text('将收集应用最近一分钟内的日志。如有 Bug 请先复现问题，再点击“收集”。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(false),
+            child: const Text('返回'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(c).pop(true),
+            child: const Text('收集'),
+          ),
+        ],
+      ),
+    );
+    if (proceed != true || !context.mounted) return;
+
+    final now = DateTime.now();
+    final fileName =
+        'selfmusic_logs_${now.year}${_pad2(now.month)}${_pad2(now.day)}_${_pad2(now.hour)}${_pad2(now.minute)}${_pad2(now.second)}.txt';
+    final savePath = await getSaveLocation(
+      suggestedName: fileName,
+      confirmButtonText: '保存',
+    );
+    if (savePath == null || !context.mounted) return;
+    try {
+      await LogBuffer.instance.exportToPath(savePath.path, since: const Duration(minutes: 1));
+      if (!context.mounted) return;
+      AppToast.show('日志已导出：${savePath.path}', isError: false);
+    } catch (e) {
+      if (!context.mounted) return;
+      AppToast.error(e, '日志导出失败');
+    }
+  }
+
+  Future<String?> _exportLogsToTemp() async {
+    final dir = await getTemporaryDirectory();
+    final now = DateTime.now();
+    final fileName =
+        'selfmusic_logs_${now.year}${_pad2(now.month)}${_pad2(now.day)}_${_pad2(now.hour)}${_pad2(now.minute)}${_pad2(now.second)}.txt';
+    final path = '${dir.path}/$fileName';
+    try {
+      await LogBuffer.instance.exportToPath(path, since: const Duration(minutes: 1));
+      return path;
+    } catch (e) {
+      debugPrint('导出临时日志失败：$e');
+      return null;
+    }
+  }
+
+  String _pad2(int v) => v.toString().padLeft(2, '0');
 }
