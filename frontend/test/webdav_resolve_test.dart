@@ -116,4 +116,20 @@ void main() {
           'http://h/dav/%E5%8F%A4%ZZ');
     });
   });
+
+  group('webdavRelativeParent', () {
+    test('根目录歌曲：剥掉 base 前缀（防 .../dav/dav/... 写飞）', () {
+      expect(webdavRelativeParent('/dav', 'https://h/dav'), '');
+      expect(webdavRelativeParent('/dav/sub', 'https://h/dav'), 'sub');
+      expect(
+          webdavRelativeParent('/dav/古典/夜曲', 'https://h/dav'), '古典/夜曲');
+    });
+
+    test('本来就是相对形态/base 为根/对不上：原样返回', () {
+      expect(webdavRelativeParent('', 'https://h/dav'), '');
+      expect(webdavRelativeParent('sub', 'https://h/dav'), 'sub');
+      expect(webdavRelativeParent('/dav/sub', 'https://h/'), '/dav/sub');
+      expect(webdavRelativeParent('/other/sub', 'https://h/dav'), '/other/sub');
+    });
+  });
 }
