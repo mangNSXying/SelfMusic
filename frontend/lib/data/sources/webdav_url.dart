@@ -92,6 +92,23 @@ String _webdavEncodePathStrict(String ref) {
 String webdavResolveRef(String ref, String base) =>
     webdavResolve(webdavEncodePath(ref), base);
 
+/// 写操作 parentRef 归一化为相对 base 的形态（写口 URL 拼接用）。
+///
+/// 扫描入库的 ref 是服务器绝对路径解码态（如 base=`https://h/dav` 时 ref=
+/// `/dav/sub/song.mp3`），而写口 URL 按 `base + parent/leaf` 拼接——直接用
+/// ref 的父目录会把 base 前缀写两遍（`.../dav/dav/sub/...`，OpenList 等
+/// 会自动建目录而静默写飞）。这里剥掉一层 base 前缀；本来就是相对形态、
+/// base 为服务器根、或对不上的原样返回。
+String webdavRelativeParent(String parentRef, String base) {
+  final basePath = webdavPathOf(base); // '/dav' 或 '/'
+  if (basePath.isEmpty || basePath == '/') return parentRef;
+  if (parentRef == basePath) return '';
+  if (parentRef.startsWith('$basePath/')) {
+    return parentRef.substring(basePath.length + 1);
+  }
+  return parentRef;
+}
+
 /// 播放期重建（兼容历史 ENCODE 行）。
 ///
 /// 历史版本曾在 idx_songs.ref 里存 ENCODE 文本（如 `/dav/%E4%BD%90…%21.flac`），

@@ -407,8 +407,11 @@ class WebdavDirectSource implements MusicSource {
     } catch (_) {
       decodedParent = parentRef;
     }
+    // ref 是服务器绝对路径（含 base 前缀），写口按 base+parent 拼接：
+    // 先剥一层 base 前缀，否则写到翻倍路径（.../dav/dav/...）。
+    final relative = webdavRelativeParent(decodedParent, _base);
     final segs = <String>[
-      ...decodedParent.split('/').where((s) => s.isNotEmpty),
+      ...relative.split('/').where((s) => s.isNotEmpty),
       leaf,
     ];
     final enc = '/${segs.map(Uri.encodeComponent).join('/')}';
