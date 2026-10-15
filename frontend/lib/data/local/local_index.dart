@@ -1912,8 +1912,8 @@ class LocalIndex {
   /// 歌手页列表与详情页共用这一口径（列表的 songCount/albumCount 来自这里，
   /// 详情页的歌曲列表来自 [identitySongs]），避免两处各写一套计数后漂移。
   ///
-  /// 专辑数按全局专辑分组键统计（专辑歌手? 否则曲目歌手 + 专辑名），与
-  /// [Album.fromSongs] 一致——详情页的专辑分区按同一键分组，数字才对得上。
+  /// 专辑数按全局专辑分组键统计（有名专辑只看 trim 后专辑名，未知专辑才拼接
+  /// 歌手），与 [Album.fromSongs] 一致——详情页的专辑分区按同一键分组，数字才对得上。
   /// 实现见顶层 [identityDisplayStatsOf]。
   Map<String, ({int songs, int albums})> identityDisplayStats(
           {int minDurationSec = 0, int minSizeBytes = 0}) =>
@@ -2852,9 +2852,10 @@ Map<String, ({int songs, int albums})> identityDisplayStatsOf(
       SELECT u.k AS k,
              COUNT(DISTINCT m.source_key || char(1) || m.ref) AS n,
              COUNT(DISTINCT
-               COALESCE(NULLIF(i.album_artist,''), NULLIF(i.artist,''), 'Unknown')
-               || char(1) ||
-               COALESCE(NULLIF(i.album,''), 'Unknown Album')) AS albums
+               CASE WHEN TRIM(COALESCE(i.album,''))='' THEN
+                 COALESCE(NULLIF(TRIM(i.album_artist),''), NULLIF(TRIM(i.artist),''), 'Unknown')
+                 || char(1) || 'Unknown Album'
+               ELSE TRIM(i.album) END) AS albums
       FROM up u
       JOIN artist_song_map m ON m.artist_key=u.owner AND m.role='main'
       JOIN idx_songs i ON i.source_key=m.source_key AND i.ref=m.ref AND i.missing=0
@@ -2987,9 +2988,10 @@ List<Artist> identityFallbackGroupsOf(
   final rs = db.select('''
       SELECT s.artist raw, COUNT(*) n,
         COUNT(DISTINCT
-          COALESCE(NULLIF(s.album_artist,''), NULLIF(s.artist,''), 'Unknown')
-          || char(1) ||
-          COALESCE(NULLIF(s.album,''), 'Unknown Album')) al,
+          CASE WHEN TRIM(COALESCE(s.album,''))='' THEN
+            COALESCE(NULLIF(TRIM(s.album_artist),''), NULLIF(TRIM(s.artist),''), 'Unknown')
+            || char(1) || 'Unknown Album'
+          ELSE TRIM(s.album) END) al,
         (SELECT cover_path FROM idx_songs WHERE artist=s.artist AND cover_path IS NOT NULL
           $cover ORDER BY id LIMIT 1) c
       FROM idx_songs s

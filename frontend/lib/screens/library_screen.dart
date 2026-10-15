@@ -822,9 +822,28 @@ class _AlbumsViewState extends State<_AlbumsView>
     return albums
         .where((a) =>
             a.album.toLowerCase().contains(qq) ||
-            (a.artist.toLowerCase().contains(qq)))
+            a.artists.any((e) => e.toLowerCase().contains(qq)))
         .toList();
   }
+}
+
+/// 专辑副标题 spans：主歌手正常色、其余合作者淡化，末尾跟曲目数。
+/// 列表行与方形卡片共用，保证两处展示一致。
+InlineSpan albumSubtitleSpan(BuildContext context, Album album) {
+  final scheme = Theme.of(context).colorScheme;
+  final main = scheme.onSurface.withValues(alpha: 0.6);
+  final faint = scheme.onSurface.withValues(alpha: 0.38);
+  final parts = album.artists.isEmpty ? [album.artist] : album.artists;
+  final spans = <InlineSpan>[];
+  for (var i = 0; i < parts.length; i++) {
+    if (i > 0) {
+      spans.add(TextSpan(text: '、', style: TextStyle(color: faint)));
+    }
+    spans.add(TextSpan(
+        text: parts[i], style: TextStyle(color: i == 0 ? main : faint)));
+  }
+  spans.add(TextSpan(text: ' · ${album.trackCount}首', style: TextStyle(color: main)));
+  return TextSpan(children: spans);
 }
 
 /// 打开专辑歌曲弹层（卡片/列表两种形态共用）。
@@ -855,8 +874,12 @@ class _AlbumListTile extends StatelessWidget {
               .textTheme
               .bodyLarge
               ?.copyWith(fontWeight: FontWeight.w600)),
-      subtitle: Text('${album.artist} · ${album.trackCount}首',
-          maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: RichText(
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          text: TextSpan(
+              style: DefaultTextStyle.of(context).style,
+              children: [albumSubtitleSpan(context, album)])),
       onTap: () => _openAlbum(context, album),
     );
   }
@@ -867,13 +890,18 @@ class _AlbumCard extends StatelessWidget {
   const _AlbumCard({required this.album});
 
   @override
-  Widget build(BuildContext context) => SquareCard(
-        title: album.album,
-        subtitle: '${album.artist} · ${album.trackCount}首',
-        coverPath: album.coverPath,
-        fallbackIcon: Icons.album,
-        onTap: () => _openAlbum(context, album),
-      );
+  Widget build(BuildContext context) {
+    final parts =
+        album.artists.isEmpty ? [album.artist] : album.artists;
+    return SquareCard(
+      title: album.album,
+      subtitle: '${parts.join('、')} · ${album.trackCount}首',
+      subtitleSpan: albumSubtitleSpan(context, album),
+      coverPath: album.coverPath,
+      fallbackIcon: Icons.album,
+      onTap: () => _openAlbum(context, album),
+    );
+  }
 }
 
 class _AlbumSongsSheet extends StatelessWidget {

@@ -228,12 +228,10 @@ class LibraryProvider extends ChangeNotifier {
     await loadSongs(query: query);
   }
 
-  /// 客户端专辑查询对应歌曲（按 专辑歌手? + 专辑名 过滤合并列表，与分组规则一致）。
-  List<Song> albumSongs(Album album) => songs
-      .where((s) =>
-          _blank(s.albumArtist, _blank(s.artist, 'Unknown')) == album.artist &&
-          _blank(s.albumName, 'Unknown Album') == album.album)
-      .toList();
+  /// 客户端专辑查询对应歌曲（与 [Album.fromSongs]/[Album.containsSong]
+  /// 同一分组键：有名专辑只看专辑名，未知专辑再看歌手）。
+  List<Song> albumSongs(Album album) =>
+      songs.where(album.containsSong).toList();
 
   /// 歌手对应的歌曲列表。
   ///

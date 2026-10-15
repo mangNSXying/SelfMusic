@@ -15,6 +15,10 @@ class SquareCard extends StatelessWidget {
   final int titleMaxLines;
   final String? subtitle;
 
+  /// 富文本副标题（专辑卡主歌手正常、其余淡化用）：非空时优先渲染它，
+  /// 回退 [subtitle] 纯文本。调用方保证两者文本内容一致。
+  final InlineSpan? subtitleSpan;
+
   /// 封面文件路径；为空时显示 [fallback]（优先）或 [fallbackIcon] 占位。
   final String? coverPath;
   final IconData fallbackIcon;
@@ -41,6 +45,7 @@ class SquareCard extends StatelessWidget {
     required this.title,
     this.titleMaxLines = 1,
     this.subtitle,
+    this.subtitleSpan,
     this.coverPath,
     this.fallbackIcon = Icons.album,
     this.fallback,
@@ -56,6 +61,7 @@ class SquareCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final sub = subtitle;
+    final subSpan = subtitleSpan;
     // 尺寸由网格层一次性下发（R-3）：卡片自身不再做逐行 LayoutBuilder。
     // 独立使用（无网格）时退回最大卡宽估算，不影响几何（封面恒 1:1）。
     final metricsWidth = _SquareCardMetrics.maybeOf(context)?.itemWidth;
@@ -134,7 +140,16 @@ class SquareCard extends StatelessWidget {
                   .textTheme
                   .bodyMedium
                   ?.copyWith(fontWeight: FontWeight.w600)),
-          if (sub != null)
+          if (subSpan != null)
+            RichText(
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                text: TextSpan(
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color:
+                            colorScheme.onSurface.withValues(alpha: 0.6)),
+                    children: [subSpan])),
+          if (subSpan == null && sub != null)
             Text(sub,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
