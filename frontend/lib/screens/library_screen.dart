@@ -284,11 +284,14 @@ class _SectionPagerState extends State<SectionPager>
         _applied = target;
         if (_ctrl.hasClients && (target - current).abs() > 1) {
           // 跨多页：跳页 + 方向滑入，不再高速扫过中间分组。
-          // jumpToPage 同步通知会踩 build 期 markNeedsBuild，放到帧后执行。
-          final dir = target > current ? 1 : -1;
+          // 方向必须在本次 build 内落位：SlideTransition 的 Tween.begin 在
+          // build 时读取 _enterDir，帧后回调只改字段不会触发重建（section
+          // 未变，select 不标记本组件重建），动画会沿用上一次的方向——
+          // 历史 bug：反向跨页也从右滑入（方向滞后一跳）。
+          // jumpToPage 同步通知会踩 build 期 markNeedsBuild，仍放到帧后执行。
+          _enterDir = target > current ? 1 : -1;
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted || _applied != target || !_ctrl.hasClients) return;
-            _enterDir = dir;
             _enterCtrl.forward(from: 0);
             _ctrl.jumpToPage(target);
           });
