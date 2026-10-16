@@ -340,6 +340,9 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
           margin: const EdgeInsets.symmetric(vertical: 4),
           child: ExpansionTile(
             dense: true,
+            // 展开态默认画上下分割线（dividerColor），卡片本身已有边界，去掉。
+            shape: const Border(),
+            collapsedShape: const Border(),
             title:
                 Text(r.title, maxLines: 1, overflow: TextOverflow.ellipsis),
             subtitle: Text('$artist · ${r.sourceKey}',
