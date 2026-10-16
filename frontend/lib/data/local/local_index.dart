@@ -1592,66 +1592,40 @@ class LocalIndex {
 
   /// 播放数据明细：全部有效歌曲的播放时长（play_sec 缺行按 0）。
   /// 排序在 UI 侧完成（歌曲名/歌手/源/次数/时长）。
-  List<PlayDetailRow> playDetailRows() {
-    final rs = _db!.select('''
-      SELECT i.source_key AS source_key, i.ref AS ref, i.title AS title,
-             i.artist AS artist, i.duration AS duration,
-             COALESCE(p.play_sec,0) AS play_sec
-      FROM idx_songs i
-      LEFT JOIN play_meta p ON p.source_key=i.source_key AND p.song_ref=i.ref
-      WHERE i.missing=0
-      ORDER BY i.id
-    ''');
-    return [
-      for (final r in rs)
-        PlayDetailRow(
-          sourceKey: (r['source_key'] as String?) ?? '',
-          ref: (r['ref'] as String?) ?? '',
-          title: (r['title'] as String?) ?? 'Unknown',
-          artist: r['artist'] as String?,
-          duration: (r['duration'] as num?)?.toInt(),
-          playSec: (r['play_sec'] as num?)?.toInt() ?? 0,
-        ),
-    ];
+  List<PlayDetailRow> playDetailRows() => playDetailRowsOf(_db!);
+
+  /// 播放数据明细·后台 isolate 读（详情页入场不冻帧，见
+  /// [librarySnapshotInBackground] 同款口径）。
+  Future<List<PlayDetailRow>> playDetailRowsInBackground() {
+    final path = _dbPath;
+    if (path == null) return Future.value(const <PlayDetailRow>[]);
+    return runOffThread(() {
+      final db = openIsolateDatabase(path);
+      try {
+        return playDetailRowsOf(db);
+      } finally {
+        db.dispose();
+      }
+    });
   }
 
   /// 元数据明细：全部有效歌曲各维度原始值（与 [metaStats] 同口径）。
   /// 缺失判定：文本列 null/'' 即缺；数字列 null 即缺；封面 path 非空即有；
   /// 歌词 song_lyrics 有非空 content 即有；码率可估算 = size>0 && duration>0。
-  List<MetaDetailRow> metaDetailRows() {
-    final rs = _db!.select('''
-      SELECT i.source_key AS source_key, i.ref AS ref, i.title AS title,
-             i.artist AS artist, i.album AS album,
-             i.album_artist AS album_artist, i.genre AS genre,
-             i.track_no AS track_no, i.year AS year, i.duration AS duration,
-             i.cover_path AS cover_path, i.format AS format, i.size AS size,
-             COALESCE(i.meta_read,0) AS meta_read,
-             CASE WHEN l.content IS NOT NULL AND l.content<>'' THEN 1 ELSE 0 END AS has_lyrics
-      FROM idx_songs i
-      LEFT JOIN song_lyrics l ON l.source_key=i.source_key AND l.ref=i.ref
-      WHERE i.missing=0
-      ORDER BY i.id
-    ''');
-    return [
-      for (final r in rs)
-        MetaDetailRow(
-          sourceKey: (r['source_key'] as String?) ?? '',
-          ref: (r['ref'] as String?) ?? '',
-          title: (r['title'] as String?) ?? 'Unknown',
-          artist: r['artist'] as String?,
-          album: r['album'] as String?,
-          albumArtist: r['album_artist'] as String?,
-          genre: r['genre'] as String?,
-          trackNo: (r['track_no'] as num?)?.toInt(),
-          year: (r['year'] as num?)?.toInt(),
-          duration: (r['duration'] as num?)?.toInt(),
-          coverPath: r['cover_path'] as String?,
-          format: r['format'] as String?,
-          size: (r['size'] as num?)?.toInt() ?? 0,
-          metaRead: ((r['meta_read'] as num?)?.toInt() ?? 0) == 1,
-          hasLyrics: ((r['has_lyrics'] as num?)?.toInt() ?? 0) == 1,
-        ),
-    ];
+  List<MetaDetailRow> metaDetailRows() => metaDetailRowsOf(_db!);
+
+  /// 元数据明细·后台 isolate 读（详情页入场不冻帧）。
+  Future<List<MetaDetailRow>> metaDetailRowsInBackground() {
+    final path = _dbPath;
+    if (path == null) return Future.value(const <MetaDetailRow>[]);
+    return runOffThread(() {
+      final db = openIsolateDatabase(path);
+      try {
+        return metaDetailRowsOf(db);
+      } finally {
+        db.dispose();
+      }
+    });
   }
 
   /// pull 歌曲权重快照落 play_meta：先写 ('server', ref) 行（服务端歌曲），
@@ -3034,6 +3008,69 @@ List<Song> querySongs(
       $limitSql
     ''', args);
   return rows.map(songFromRow).toList();
+}
+
+/// 播放数据明细查询（详情页；后台 isolate 读共用，见
+/// [LocalIndex.playDetailRowsInBackground]）。排序在 UI 侧完成。
+List<PlayDetailRow> playDetailRowsOf(Database db) {
+  final rs = db.select('''
+    SELECT i.source_key AS source_key, i.ref AS ref, i.title AS title,
+           i.artist AS artist, i.duration AS duration,
+           COALESCE(p.play_sec,0) AS play_sec
+    FROM idx_songs i
+    LEFT JOIN play_meta p ON p.source_key=i.source_key AND p.song_ref=i.ref
+    WHERE i.missing=0
+    ORDER BY i.id
+  ''');
+  return [
+    for (final r in rs)
+      PlayDetailRow(
+        sourceKey: (r['source_key'] as String?) ?? '',
+        ref: (r['ref'] as String?) ?? '',
+        title: (r['title'] as String?) ?? 'Unknown',
+        artist: r['artist'] as String?,
+        duration: (r['duration'] as num?)?.toInt(),
+        playSec: (r['play_sec'] as num?)?.toInt() ?? 0,
+      ),
+  ];
+}
+
+/// 元数据明细查询（详情页；后台 isolate 读共用，见
+/// [LocalIndex.metaDetailRowsInBackground]）。
+List<MetaDetailRow> metaDetailRowsOf(Database db) {
+  final rs = db.select('''
+    SELECT i.source_key AS source_key, i.ref AS ref, i.title AS title,
+           i.artist AS artist, i.album AS album,
+           i.album_artist AS album_artist, i.genre AS genre,
+           i.track_no AS track_no, i.year AS year, i.duration AS duration,
+           i.cover_path AS cover_path, i.format AS format, i.size AS size,
+           COALESCE(i.meta_read,0) AS meta_read,
+           CASE WHEN l.content IS NOT NULL AND l.content<>'' THEN 1 ELSE 0 END AS has_lyrics
+    FROM idx_songs i
+    LEFT JOIN song_lyrics l ON l.source_key=i.source_key AND l.ref=i.ref
+    WHERE i.missing=0
+    ORDER BY i.id
+  ''');
+  return [
+    for (final r in rs)
+      MetaDetailRow(
+        sourceKey: (r['source_key'] as String?) ?? '',
+        ref: (r['ref'] as String?) ?? '',
+        title: (r['title'] as String?) ?? 'Unknown',
+        artist: r['artist'] as String?,
+        album: r['album'] as String?,
+        albumArtist: r['album_artist'] as String?,
+        genre: r['genre'] as String?,
+        trackNo: (r['track_no'] as num?)?.toInt(),
+        year: (r['year'] as num?)?.toInt(),
+        duration: (r['duration'] as num?)?.toInt(),
+        coverPath: r['cover_path'] as String?,
+        format: r['format'] as String?,
+        size: (r['size'] as num?)?.toInt() ?? 0,
+        metaRead: ((r['meta_read'] as num?)?.toInt() ?? 0) == 1,
+        hasLyrics: ((r['has_lyrics'] as num?)?.toInt() ?? 0) == 1,
+      ),
+  ];
 }
 
 /// 多源合并查询（启动/刷新快照用）：逐源查询后拼接，与

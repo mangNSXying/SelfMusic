@@ -9,7 +9,8 @@ import 'library_info_detail_shared.dart';
 /// 歌曲信息 → 播放数据详情：全部有效歌曲的播放次数与播放时长。
 ///
 /// 口径：次数 = play_sec / 歌曲时长（见 [playCountOf]），未知时长按 0 次。
-/// 宽屏（[isWideDetail]）用表格，窄屏用卡片（复用元数据详情页卡片样式）。
+/// 数据入场走后台 isolate（[DetailDataLoader]），宽屏用分页表格
+/// （[PaginatedDataTable] 只构建当前页行），窄屏用卡片。
 class PlayDetailScreen extends StatefulWidget {
   const PlayDetailScreen({super.key});
 
@@ -18,15 +19,50 @@ class PlayDetailScreen extends StatefulWidget {
 }
 
 class _PlayDetailScreenState extends State<PlayDetailScreen> {
+  late final DetailDataLoader<List<PlayDetailRow>> _loader;
+
   String _query = '';
   bool _onlyWithPlay = false;
 
   /// 0=歌曲名，1=歌手，2=播放次数，3=播放时长，4=播放源。
   int _sortColumn = 2;
   bool _ascending = false;
+  int _rowsPerPage = 25;
+  int _firstRowIndex = 0;
+  int _pageEpoch = 0;
   final _searchCtrl = TextEditingController();
 
   static const _sortLabels = ['歌曲名', '歌手', '次数', '时长', '源'];
+
+  @override
+  void initState() {
+    super.initState();
+    _loader = DetailDataLoader<List<PlayDetailRow>>(
+        () => context.read<DirectSourceManager>().index
+            .playDetailRowsInBackground());
+    _loader.onUpdate = () {
+      if (mounted) setState(() {});
+    };
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 登记索引依赖：扫描/元数据写入等数据变更通知 → 重跑后台查询。
+    context.watch<DirectSourceManager>();
+    _scheduleLoad();
+  }
+
+  bool _loadScheduled = false;
+  void _scheduleLoad() {
+    if (_loadScheduled) return;
+    _loadScheduled = true;
+    // 首帧后再查：首帧只出页面框架，重查询不冻入场。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadScheduled = false;
+      if (mounted) _loader.request();
+    });
+  }
 
   @override
   void dispose() {
@@ -50,8 +86,27 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final index = context.watch<DirectSourceManager>().index;
-    final all = index.playDetailRows();
+    final all = _loader.data;
+    if (all == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('播放数据')),
+        body: Center(
+          child: _loader.failed
+              ? Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('加载失败'),
+                    const SizedBox(height: 8),
+                    OutlinedButton(
+                      onPressed: _loader.request,
+                      child: const Text('重试'),
+                    ),
+                  ],
+                )
+              : const CircularProgressIndicator(),
+        ),
+      );
+    }
     var totalSec = 0;
     var totalCount = 0.0;
     for (final r in all) {
@@ -212,50 +267,59 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
     );
   }
 
-  /// 宽屏表格：列序 歌名、歌手、播放次数、播放时长、播放源。
+  /// 宽屏分页表格：列序 歌名、歌手、播放次数、播放时长、播放源。
+  ///
+  /// [PaginatedDataTable] 只构建当前页若干行（[rowsPerPage]），
+  /// 行数多时入场/翻页都不再整表 build。
   Widget _wideTable(List<PlayDetailRow> rows) {
+    // 过滤/排序（key）或数据刷新把行数缩到当前页之外时，重建回第 1 页。
+    if (rows.isNotEmpty && _firstRowIndex >= rows.length) {
+      _firstRowIndex = 0;
+      _pageEpoch++;
+    }
     return SingleChildScrollView(
-      scrollDirection: Axis.vertical,
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: DataTable(
-          sortColumnIndex: _sortColumn,
-          sortAscending: _ascending,
-          columns: [
-            DataColumn(
-              label: const Text('歌曲名'),
-              onSort: (i, asc) => _onSort(0, asc),
-            ),
-            DataColumn(
-              label: const Text('歌手'),
-              onSort: (i, asc) => _onSort(1, asc),
-            ),
-            DataColumn(
-              label: const Text('播放次数'),
-              numeric: true,
-              onSort: (i, asc) => _onSort(2, asc),
-            ),
-            DataColumn(
-              label: const Text('播放时长'),
-              numeric: true,
-              onSort: (i, asc) => _onSort(3, asc),
-            ),
-            DataColumn(
-              label: const Text('播放源'),
-              onSort: (i, asc) => _onSort(4, asc),
-            ),
-          ],
-          rows: [
-            for (final r in rows)
-              DataRow(cells: [
-                DataCell(cappedCell(r.title, 220)),
-                DataCell(cappedCell(r.artist ?? '', 160)),
-                DataCell(Text(playCountLabel(r.playSec, r.duration))),
-                DataCell(Text(playSecLabel(r.playSec))),
-                DataCell(cappedCell(r.sourceKey, 160)),
-              ]),
-          ],
-        ),
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      child: PaginatedDataTable(
+        key: ValueKey(
+            '$_pageEpoch|$_sortColumn|$_ascending|$_onlyWithPlay|$_query'),
+        source: _PlayRowSource(rows),
+        sortColumnIndex: _sortColumn,
+        sortAscending: _ascending,
+        rowsPerPage: _rowsPerPage,
+        availableRowsPerPage: const [15, 25, 50, 100],
+        onRowsPerPageChanged: (v) {
+          if (v != null) setState(() => _rowsPerPage = v);
+        },
+        onPageChanged: (i) => _firstRowIndex = i,
+        dataRowMinHeight: 40,
+        dataRowMaxHeight: 52,
+        headingRowHeight: 44,
+        horizontalMargin: 16,
+        columnSpacing: 28,
+        columns: [
+          DataColumn(
+            label: const Text('歌曲名'),
+            onSort: (i, asc) => _onSort(0, asc),
+          ),
+          DataColumn(
+            label: const Text('歌手'),
+            onSort: (i, asc) => _onSort(1, asc),
+          ),
+          DataColumn(
+            label: const Text('播放次数'),
+            numeric: true,
+            onSort: (i, asc) => _onSort(2, asc),
+          ),
+          DataColumn(
+            label: const Text('播放时长'),
+            numeric: true,
+            onSort: (i, asc) => _onSort(3, asc),
+          ),
+          DataColumn(
+            label: const Text('播放源'),
+            onSort: (i, asc) => _onSort(4, asc),
+          ),
+        ],
       ),
     );
   }
@@ -334,4 +398,33 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
       ),
     );
   }
+}
+
+/// 播放明细的行数据源：按需构建当前页各行的单元格。
+class _PlayRowSource extends DataTableSource {
+  _PlayRowSource(this.rows);
+
+  final List<PlayDetailRow> rows;
+
+  @override
+  DataRow? getRow(int index) {
+    if (index < 0 || index >= rows.length) return null;
+    final r = rows[index];
+    return DataRow.byIndex(index: index, cells: [
+      DataCell(cappedCell(r.title, 220)),
+      DataCell(cappedCell(r.artist ?? '', 160)),
+      DataCell(Text(playCountLabel(r.playSec, r.duration))),
+      DataCell(Text(playSecLabel(r.playSec))),
+      DataCell(cappedCell(r.sourceKey, 160)),
+    ]);
+  }
+
+  @override
+  int get rowCount => rows.length;
+
+  @override
+  bool get isRowCountApproximate => false;
+
+  @override
+  int get selectedRowCount => 0;
 }

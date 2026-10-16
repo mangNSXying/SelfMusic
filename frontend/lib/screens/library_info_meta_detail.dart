@@ -8,7 +8,8 @@ import 'library_info_detail_shared.dart';
 /// 歌曲信息 → 元数据详情：精确到每一首歌，各维度“有没有 / 是什么”。
 ///
 /// 过滤：搜索（歌名/歌手/专辑）+ 维度缺失过滤；排序：歌曲名 / 歌手 / 缺失数。
-/// 宽屏（[isWideDetail]）用表格直接显示各维度的值，窄屏用卡片。
+/// 数据入场走后台 isolate（[DetailDataLoader]），宽屏用分页表格
+/// （[PaginatedDataTable] 只构建当前页行），窄屏用卡片。
 class MetaDetailScreen extends StatefulWidget {
   const MetaDetailScreen({super.key});
 
@@ -17,10 +18,15 @@ class MetaDetailScreen extends StatefulWidget {
 }
 
 class _MetaDetailScreenState extends State<MetaDetailScreen> {
+  late final DetailDataLoader<List<MetaDetailRow>> _loader;
+
   String _query = '';
   String? _dimFilter; // null=全部，'missing_any'=有缺失，否则为维度 key
   int _sortMode = 0; // 0=歌曲名，1=歌手，2=缺失数
   bool _ascending = true;
+  int _rowsPerPage = 25;
+  int _firstRowIndex = 0;
+  int _pageEpoch = 0;
   final _searchCtrl = TextEditingController();
 
   static const dims = [
@@ -54,6 +60,36 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    _loader = DetailDataLoader<List<MetaDetailRow>>(
+        () => context.read<DirectSourceManager>().index
+            .metaDetailRowsInBackground());
+    _loader.onUpdate = () {
+      if (mounted) setState(() {});
+    };
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 登记索引依赖：扫描/元数据写入等数据变更通知 → 重跑后台查询。
+    context.watch<DirectSourceManager>();
+    _scheduleLoad();
+  }
+
+  bool _loadScheduled = false;
+  void _scheduleLoad() {
+    if (_loadScheduled) return;
+    _loadScheduled = true;
+    // 首帧后再查：首帧只出页面框架，重查询不冻入场。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadScheduled = false;
+      if (mounted) _loader.request();
+    });
+  }
+
+  @override
   void dispose() {
     _searchCtrl.dispose();
     super.dispose();
@@ -68,8 +104,27 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final index = context.watch<DirectSourceManager>().index;
-    final all = index.metaDetailRows();
+    final all = _loader.data;
+    if (all == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('元数据信息')),
+        body: Center(
+          child: _loader.failed
+              ? Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('加载失败'),
+                    const SizedBox(height: 8),
+                    OutlinedButton(
+                      onPressed: _loader.request,
+                      child: const Text('重试'),
+                    ),
+                  ],
+                )
+              : const CircularProgressIndicator(),
+        ),
+      );
+    }
 
     final q = _query.trim().toLowerCase();
     var rows = all.where((r) {
@@ -218,49 +273,51 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
     );
   }
 
-  /// 宽屏表格：歌曲 / 歌手 / 缺失数（可排序表头）+ 其余 11 维直接显示值。
+  /// 宽屏分页表格：歌曲 / 歌手 / 缺失数（可排序表头）+ 其余 11 维直接显示值。
   /// 缺失值红色显示，有值显示原文。
   Widget _wideTable(List<MetaDetailRow> rows) {
     final error = Theme.of(context).colorScheme.error;
-    TextStyle? missingStyle(bool ok) => ok
-        ? null
-        : TextStyle(color: error, fontWeight: FontWeight.w600);
+    TextStyle? missingStyle(bool ok) =>
+        ok ? null : TextStyle(color: error, fontWeight: FontWeight.w600);
+    // 过滤/排序（key）或数据刷新把行数缩到当前页之外时，重建回第 1 页。
+    if (rows.isNotEmpty && _firstRowIndex >= rows.length) {
+      _firstRowIndex = 0;
+      _pageEpoch++;
+    }
     return SingleChildScrollView(
-      scrollDirection: Axis.vertical,
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: DataTable(
-          sortColumnIndex: _sortMode,
-          sortAscending: _ascending,
-          columns: [
-            DataColumn(
-              label: const Text('歌曲名'),
-              onSort: (i, asc) => _onSort(0, asc),
-            ),
-            DataColumn(
-              label: const Text('歌手'),
-              onSort: (i, asc) => _onSort(1, asc),
-            ),
-            DataColumn(
-              label: const Text('缺失数'),
-              numeric: true,
-              onSort: (i, asc) => _onSort(2, asc),
-            ),
-            for (final d in wideDims) DataColumn(label: Text(d.$2)),
-          ],
-          rows: [
-            for (final r in rows)
-              DataRow(cells: [
-                DataCell(cappedCell(r.title, 200)),
-                DataCell(cappedCell(_v(r.artist), 140,
-                    style: missingStyle(r.hasArtist))),
-                DataCell(Text('${r.missingCount}')),
-                for (final d in wideDims)
-                  DataCell(cappedCell(_dimValue(r, d.$1), 140,
-                      style: missingStyle(r.hasDim(d.$1)))),
-              ]),
-          ],
-        ),
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      child: PaginatedDataTable(
+        key: ValueKey('$_pageEpoch|$_sortMode|$_ascending|$_dimFilter|$_query'),
+        source: _MetaRowSource(rows, missingStyle),
+        sortColumnIndex: _sortMode,
+        sortAscending: _ascending,
+        rowsPerPage: _rowsPerPage,
+        availableRowsPerPage: const [15, 25, 50, 100],
+        onRowsPerPageChanged: (v) {
+          if (v != null) setState(() => _rowsPerPage = v);
+        },
+        onPageChanged: (i) => _firstRowIndex = i,
+        dataRowMinHeight: 40,
+        dataRowMaxHeight: 52,
+        headingRowHeight: 44,
+        horizontalMargin: 16,
+        columnSpacing: 28,
+        columns: [
+          DataColumn(
+            label: const Text('歌曲名'),
+            onSort: (i, asc) => _onSort(0, asc),
+          ),
+          DataColumn(
+            label: const Text('歌手'),
+            onSort: (i, asc) => _onSort(1, asc),
+          ),
+          DataColumn(
+            label: const Text('缺失数'),
+            numeric: true,
+            onSort: (i, asc) => _onSort(2, asc),
+          ),
+          for (final d in wideDims) DataColumn(label: Text(d.$2)),
+        ],
       ),
     );
   }
@@ -311,25 +368,7 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
     );
   }
 
-  String _dimValue(MetaDetailRow r, String dim) => switch (dim) {
-        'meta_read' => r.metaRead ? '已读' : '待读取',
-        'artist' => _v(r.artist),
-        'album' => _v(r.album),
-        'album_artist' => _v(r.albumArtist),
-        'genre' => _v(r.genre),
-        'track_no' => r.trackNo?.toString() ?? '缺失',
-        'year' => r.year?.toString() ?? '缺失',
-        'duration' => r.duration != null && r.duration! > 0
-            ? '${r.duration} 秒'
-            : '缺失',
-        'cover' => r.hasCover ? '有' : '缺失',
-        'lyrics' => r.hasLyrics ? '有' : '缺失',
-        'format' => _v(r.format),
-        'bitrate' => r.bitrateEstimable ? '可估算' : '缺失',
-        _ => '',
-      };
-
-  String _v(String? s) => (s == null || s.isEmpty) ? '缺失' : s;
+  String _dimValue(MetaDetailRow r, String dim) => metaDimValue(r, dim);
 
   Widget _dimLine(BuildContext context, String label, String value,
       {required bool ok}) {
@@ -362,3 +401,58 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
     );
   }
 }
+
+/// 元数据明细的行数据源：按需构建当前页各行的单元格。
+class _MetaRowSource extends DataTableSource {
+  _MetaRowSource(this.rows, this.missingStyle);
+
+  final List<MetaDetailRow> rows;
+
+  /// 缺失单元格的红色样式（有值传 null）。
+  final TextStyle? Function(bool ok) missingStyle;
+
+  @override
+  DataRow? getRow(int index) {
+    if (index < 0 || index >= rows.length) return null;
+    final r = rows[index];
+    return DataRow.byIndex(index: index, cells: [
+      DataCell(cappedCell(r.title, 200)),
+      DataCell(
+          cappedCell(metaDimValue(r, 'artist'), 140,
+              style: missingStyle(r.hasArtist))),
+      DataCell(Text('${r.missingCount}')),
+      for (final d in _MetaDetailScreenState.wideDims)
+        DataCell(cappedCell(metaDimValue(r, d.$1), 140,
+            style: missingStyle(r.hasDim(d.$1)))),
+    ]);
+  }
+
+  @override
+  int get rowCount => rows.length;
+
+  @override
+  bool get isRowCountApproximate => false;
+
+  @override
+  int get selectedRowCount => 0;
+}
+
+/// 维度展示值：文本空/数字缺 → `缺失`（卡片与宽屏表格共用）。
+String metaDimValue(MetaDetailRow r, String dim) => switch (dim) {
+      'meta_read' => r.metaRead ? '已读' : '待读取',
+      'artist' => metaText(r.artist),
+      'album' => metaText(r.album),
+      'album_artist' => metaText(r.albumArtist),
+      'genre' => metaText(r.genre),
+      'track_no' => r.trackNo?.toString() ?? '缺失',
+      'year' => r.year?.toString() ?? '缺失',
+      'duration' =>
+        r.duration != null && r.duration! > 0 ? '${r.duration} 秒' : '缺失',
+      'cover' => r.hasCover ? '有' : '缺失',
+      'lyrics' => r.hasLyrics ? '有' : '缺失',
+      'format' => metaText(r.format),
+      'bitrate' => r.bitrateEstimable ? '可估算' : '缺失',
+      _ => '',
+    };
+
+String metaText(String? s) => (s == null || s.isEmpty) ? '缺失' : s;
