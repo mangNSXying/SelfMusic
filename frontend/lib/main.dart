@@ -652,8 +652,9 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
                 return const AppShell(content: AppContent());
               },
             ),
-            // 窄屏队列窗口由 [AppSheetLauncher] 插入根 Overlay（不 push 路由，
-            // 见 openQueueSheet / beginQueueSheetSwipe），不在本 Stack 内。
+            // 窄屏队列窗口由 [AppSheetLauncher] 的悬浮层承载（宿主 AppSheetHost
+            // 挂在 AppShell 内，不 push 路由，见 openQueueSheet /
+            // beginQueueSheetSwipe），不在本 Stack 内。
             ValueListenableBuilder<double>(
               valueListenable: _nav.playerProgress,
               builder: (c, p, _) {

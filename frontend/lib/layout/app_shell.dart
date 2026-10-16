@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
 import '../utils/interaction_gate.dart';
 import '../utils/motion.dart';
+import '../widgets/draggable_sheet.dart';
 import 'sidebar.dart';
 import 'top_bar.dart';
 import 'queue_panel.dart';
@@ -161,13 +162,25 @@ class _AppShellState extends State<AppShell> {
 
     if (!wide) {
       // 窄屏：顶部抽屉由 Drawer 承载；队列入口在顶栏与迷你播放条。
-      return Scaffold(
+      return _withSheetHost(Scaffold(
         key: _scaffoldKey,
         drawer: const Sidebar(),
         body: shell,
-      );
+      ));
     }
 
-    return Scaffold(body: shell);
+    return _withSheetHost(Scaffold(body: shell));
+  }
+
+  /// 叠加统一拖拽式窗口宿主（[AppSheetHost]）。
+  ///
+  /// 挂载点固定在 Scaffold 之外（不被 `MediaQuery.removePadding` 裁剪、悬浮层
+  /// 继承真实安全区）；窗口本身画在首页路由条目之上、后续 push 的菜单/弹窗
+  /// 路由之下（历史 bug：裸 OverlayEntry 会被导航历史重排压到路由之上，
+  /// 见 [AppSheetLauncher]）。
+  Widget _withSheetHost(Widget scaffold) {
+    return Stack(
+      children: [scaffold, const AppSheetHost()],
+    );
   }
 }

@@ -35,10 +35,10 @@ void toggleQueuePanel(BuildContext context) {
 
 /// 窄屏播放队列：统一拖拽式窗口（点击启动，标准展开动画）。
 ///
-/// 走 [AppSheetLauncher] 的根悬浮层而非 modal 路由：路由 push 会取消迷你条
-/// 上滑跟手的那根手指（见 [AppSheetLauncher]）。开合镜像到
-/// [NavigationProvider.queueOpen]（迷你条高亮、返回层级用），遮罩/关闭/返回
-/// 统一经 scope 收起并同步回关闭。
+/// 走 [AppSheetLauncher] 的悬浮层（[AppSheetHost] 宿主）而非 modal 路由：
+/// 路由 push 会取消迷你条上滑跟手的那根手指（见 [AppSheetLauncher]）。
+/// 开合镜像到 [NavigationProvider.queueOpen]（迷你条高亮、返回层级用），
+/// 遮罩/关闭/返回统一经 scope 收起并同步回关闭。
 Future<void> openQueueSheet(BuildContext context) {
   final nav = context.read<NavigationProvider>();
   final launcher = context.read<AppSheetLauncher>();
@@ -49,7 +49,6 @@ Future<void> openQueueSheet(BuildContext context) {
 
   nav.addListener(onNav);
   return launcher.openTap<void>(
-    context,
     builder: (c, scrollCtrl) => _QueueSheetContent(scrollCtrl: scrollCtrl),
     onOpen: nav.openQueue,
     onClose: () {
@@ -71,7 +70,6 @@ bool beginQueueSheetSwipe(BuildContext context) {
 
   nav.addListener(onNav);
   final started = launcher.beginSwipe<void>(
-    context,
     builder: (c, scrollCtrl) => _QueueSheetContent(scrollCtrl: scrollCtrl),
     onOpen: nav.openQueue,
     onClose: () {

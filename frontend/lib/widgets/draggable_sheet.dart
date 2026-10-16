@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../utils/motion.dart';
 import 'count_header.dart';
@@ -28,7 +29,7 @@ const double kAppSheetSwipeTravelFactor = 0.6;
 /// 统一拖拽式窗口（点击启动）：底部模态路由 + `DraggableScrollableSheet`。
 ///
 /// 适用于不需要「触发手指跟手」的入口（歌手/专辑歌曲弹层）。需要迷你条上滑
-/// 跟手的队列窗口走 [AppSheetLauncher] 的根悬浮层——路由 `push` 会触发
+/// 跟手的队列窗口走 [AppSheetLauncher] 的悬浮层——路由 `push` 会触发
 /// `NavigatorState._cancelActivePointers()`，把触发跟手的那根手指一并取消，
 /// 跟手无法继续（见 [AppSheetLauncher] 注释）。
 ///
@@ -59,7 +60,7 @@ Future<T?> showAppDraggableSheet<T>(
 
 /// 供统一窗口内容调用「关闭窗口」的祖先（路由/悬浮层通用）。
 ///
-/// 路由版可继续用 `Navigator.pop`；根悬浮层没有路由可 pop，必须经此回调收起
+/// 路由版可继续用 `Navigator.pop`；悬浮层没有路由可 pop，必须经此回调收起
 /// （否则会误 pop 底层页面）。
 class AppSheetScope extends InheritedWidget {
   const AppSheetScope({super.key, required this.close, required super.child});
@@ -194,12 +195,18 @@ class AppSheetTitleBar extends StatelessWidget {
   }
 }
 
-/// 统一拖拽式窗口的根悬浮层宿主（Root 持有，全 App 单例，经 Provider 下发）。
+/// 统一拖拽式窗口（跟手启动）的宿主启动器（Root 持有，全 App 单例，经 Provider 下发）。
 ///
-/// 用 `OverlayEntry`（而非 `showModalBottomSheet` 路由）承载窗口：迷你条上滑
-/// 跟手时窗口已插入，但**不 push 路由**——`Navigator.push` 会同步取消进行中的
-/// 手势指针，跟手第一帧即被打断（历史回归）。悬浮层由 [swipe] 逐帧写入展示
-/// 进度（0=隐藏 → 1=展开），点击启动则播放展开动画。
+/// 悬浮层基于 [OverlayPortal]、宿主为 [AppSheetHost]（挂在 [AppShell] 首页路由
+/// 内），既非 modal 路由也非裸 `OverlayEntry`：
+/// - 不 push 路由：`Navigator.push` 会同步取消进行中的手势指针，迷你条上滑
+///   跟手第一帧即被打断（历史回归）。悬浮层由 [swipeTo] 逐帧写入展示进度
+///   （0=隐藏 → 1=展开），点击启动则播放展开动画。
+/// - 不用裸 `OverlayEntry`：每次导航历史变更 `OverlayState.rearrange` 会把非
+///   路由悬浮层排到全部路由条目之上，窗口内三点菜单（导航器路由）反被窗口
+///   盖住（历史 bug，回归测试 queue_sheet_menu_test.dart）。[OverlayPortal] 的
+///   悬浮层固定画在宿主 OverlayEntry（首页路由）之上、随后 push 的路由之下，
+///   菜单/对话框正常浮在窗口上，且不 push 路由，跟手不受影响。
 class AppSheetLauncher {
   AppSheetLauncher({required TickerProvider vsync})
       : _progress = AnimationController(
@@ -208,35 +215,43 @@ class AppSheetLauncher {
         );
 
   final AnimationController _progress;
-  OverlayEntry? _entry;
+
+  /// 悬浮层显示控制（[AppSheetHost] 挂到 `OverlayPortal` 上）。
+  final OverlayPortalController _portal =
+      OverlayPortalController(debugLabel: 'AppSheetLauncher');
+
+  /// 本次窗口内容与尺寸配置；显示期间 [AppSheetHost] 重建悬浮层时读取。
+  Widget Function(BuildContext context, ScrollController scrollCtrl)? _builder;
+  AppSheetConfig _config = const AppSheetConfig();
+
   VoidCallback? _onClosed;
 
-  /// 窗口悬浮层是否已插入（含展开动画 / 跟手进行中）。
-  bool get isShowing => _entry != null;
+  /// 窗口悬浮层是否已展示（含展开动画 / 跟手进行中）。
+  bool get isShowing => _portal.isShowing;
 
   /// 跟手进行中的展示进度（0=隐藏 → 1=展开），供宿主松手吸附判定。
   double get swipeValue => _progress.value;
 
-  void _insert(
-    BuildContext context, {
+  /// 挂上窗口内容并显示悬浮层（宿主未挂载时先记录意图，随宿主挂载补显）。
+  void _show({
     required Widget Function(BuildContext context, ScrollController scrollCtrl)
         builder,
     required AppSheetConfig config,
   }) {
-    final overlay = Overlay.of(context, rootOverlay: true);
-    _entry = OverlayEntry(
-      builder: (c) => _SheetOverlay(
-        launcher: this,
-        builder: builder,
-        config: config,
-      ),
-    );
-    overlay.insert(_entry!);
+    _builder = builder;
+    _config = config;
+    _portal.show();
   }
 
-  /// 点击启动：插入悬浮层并播放展开动画。窗口已在展示则忽略。
-  Future<T?> openTap<T>(
-    BuildContext context, {
+  /// 悬浮层内容构建（作为 [AppSheetHost] 的 `overlayChildBuilder`）。
+  Widget _buildOverlay(BuildContext context) {
+    final builder = _builder;
+    if (builder == null) return const SizedBox.shrink();
+    return _SheetOverlay(launcher: this, builder: builder, config: _config);
+  }
+
+  /// 点击启动：显示悬浮层并播放展开动画。窗口已在展示则忽略。
+  Future<T?> openTap<T>({
     required Widget Function(BuildContext context, ScrollController scrollCtrl)
         builder,
     AppSheetConfig config = const AppSheetConfig(),
@@ -246,16 +261,15 @@ class AppSheetLauncher {
     if (isShowing) return Future.value(null);
     _onClosed = onClose;
     _progress.value = 0;
-    _insert(context, builder: builder, config: config);
+    _show(builder: builder, config: config);
     onOpen?.call();
     _progress.animateTo(1.0, curve: kPageMotionCurve);
     return Future.value(null);
   }
 
-  /// 滑动启动①：插入进度 0 的悬浮层，交由宿主手指驱动。
+  /// 滑动启动①：显示进度 0 的悬浮层，交由宿主手指驱动。
   /// 返回 false 表示窗口已在展示，宿主应忽略本次手势。
-  bool beginSwipe<T>(
-    BuildContext context, {
+  bool beginSwipe<T>({
     required Widget Function(BuildContext context, ScrollController scrollCtrl)
         builder,
     AppSheetConfig config = const AppSheetConfig(),
@@ -265,7 +279,7 @@ class AppSheetLauncher {
     if (isShowing) return false;
     _onClosed = onClose;
     _progress.value = 0;
-    _insert(context, builder: builder, config: config);
+    _show(builder: builder, config: config);
     onOpen?.call();
     return true;
   }
@@ -286,7 +300,7 @@ class AppSheetLauncher {
     }
   }
 
-  /// 收起并移除悬浮层（遮罩 / 关闭按钮 / 返回意图共用，幂等）。
+  /// 收起并隐藏悬浮层（遮罩 / 关闭按钮 / 返回意图共用，幂等）。
   void close() {
     if (!isShowing) return;
     if (_progress.value <= 0.001) {
@@ -299,17 +313,42 @@ class AppSheetLauncher {
   }
 
   void _remove() {
-    _entry?.remove();
-    _entry = null;
+    // 宿主已卸载时控制器处于未挂载态，hide() 反而会断言（仅在展示时收起）。
+    if (_portal.isShowing) _portal.hide();
+    _builder = null;
     final cb = _onClosed;
     _onClosed = null;
     cb?.call();
   }
 
   void dispose() {
-    _entry?.remove();
-    _entry = null;
+    if (_portal.isShowing) _portal.hide();
+    _builder = null;
     _progress.dispose();
+  }
+}
+
+/// [AppSheetLauncher] 的悬浮层宿主：挂在 [AppShell]（首页路由）内、Scaffold 之外。
+///
+/// `OverlayPortal` 需要 [Overlay] 祖先（根导航器自带）。宿主放在 Scaffold 之外，
+/// 让悬浮层继承到未被 `MediaQuery.removePadding` 裁剪的真实安全区（窗口顶部
+/// 让开状态栏，历史 bug）。悬浮层只画在宿主所在 OverlayEntry（首页路由条目）
+/// 之上、随后 push 的路由（菜单/对话框）之下（详见 [AppSheetLauncher]）。
+///
+/// 未接入 Provider 的调用方（AppShell 裸渲染的旧测试）降级为占位空盒。
+class AppSheetHost extends StatelessWidget {
+  const AppSheetHost({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    // 可空查找：没有 AppSheetLauncher 时返回 null（而非抛异常）。
+    final launcher = context.read<AppSheetLauncher?>();
+    if (launcher == null) return const SizedBox.shrink();
+    return OverlayPortal(
+      controller: launcher._portal,
+      overlayChildBuilder: launcher._buildOverlay,
+      child: const SizedBox.shrink(),
+    );
   }
 }
 
