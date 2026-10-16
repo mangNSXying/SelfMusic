@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart' show ValueListenable, ValueNotifier;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -77,6 +78,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _prevPlayerView = true;
   int _autoHideSec = 0;
   Timer? _autoHideTimer;
+
+  /// 歌单页（PageView 第 0 页）追焦信号：每次进入歌单页递增，页内列表
+  /// （[QueuePage]/[SongList]）据此重新定位到当前播放歌曲——邻页预热保活后
+  /// 重进不重挂载，只靠挂载追焦（initialScrollOffset）不够。
+  final ValueNotifier<int> _bandFocusTick = ValueNotifier<int>(0);
 
   /// 是否停在播放页（播放器带的第 1 页，竖屏分页/横屏整页同位置）——
   /// 只在播放页上计时隐藏。
@@ -215,6 +221,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _escFocus.dispose();
     // 离开播放页恢复熄屏策略（ohos 经 ohos_bootstrap 注册的平台实现生效）。
     unawaited(WakelockPlus.disable());
+    _bandFocusTick.dispose();
     _pageCtrl.dispose();
     super.dispose();
   }
@@ -478,6 +485,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   // 预热前滑向邻页：即时补建，避免白板（空闲仍是主触发，见 C）。
                   onPageChanged: (i) {
                     if (i != 1 && mounted) _scheduleWarmNeighbors();
+                    // 进入歌单页（左邻页）：要求页内列表重新追焦当前播放歌曲
+                    // （首歌单页可能已保活挂载，换歌后再进不会重挂载）。
+                    if (i == 0) _bandFocusTick.value++;
                   },
                   children: [
                     // 首帧避让（C）：邻页首帧占位，空闲预热后再装配——歌单页整单
@@ -496,12 +506,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                       player: player,
                                       direct: context
                                           .watch<DirectSourceManager>(),
-                                      cs: Theme.of(context).colorScheme)
+                                      cs: Theme.of(context).colorScheme,
+                                      focusTick: _bandFocusTick)
                                   : LandscapePlaylistSplit(
                                       player: player,
                                       direct: context
                                           .watch<DirectSourceManager>(),
-                                      cs: Theme.of(context).colorScheme),
+                                      cs: Theme.of(context).colorScheme,
+                                      focusTick: _bandFocusTick),
                             ),
                             const Positioned(
                                 top: 6,
@@ -510,7 +522,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           ],
                         )
                       else
-                        const _BandSongPage()
+                        _BandSongPage(focusTick: _bandFocusTick)
                     else
                       const SizedBox.shrink(),
                     if (landscape)
@@ -656,17 +668,25 @@ class _PlayerControlsHidden extends InheritedWidget {
 ///   Column，可直接嵌），供横屏「左歌单右播放」分栏的左栏复用。
 class _BandSongPage extends StatelessWidget {
   final bool embedded;
-  const _BandSongPage({this.embedded = false});
+
+  /// 重进歌单页的追焦信号（见 [_PlayerScreenState._bandFocusTick]），透传给
+  /// 页内列表（[QueuePage]/[SongList]）。
+  final ValueListenable<int>? focusTick;
+  const _BandSongPage({this.embedded = false, this.focusTick});
 
   @override
   Widget build(BuildContext context) {
     final player = context.watch<PlayerProvider>();
     final uuid = player.syncPlaylistUuid;
-    if (uuid == null) return QueuePage(embedded: embedded);
+    if (uuid == null) {
+      return QueuePage(embedded: embedded, focusTick: focusTick);
+    }
     final pid =
         context.watch<PlaylistsProvider>().store.index.playlistIdOfUuid(uuid);
-    if (pid == null) return QueuePage(embedded: embedded);
-    return SongList(playlistId: pid);
+    if (pid == null) {
+      return QueuePage(embedded: embedded, focusTick: focusTick);
+    }
+    return SongList(playlistId: pid, focusTick: focusTick);
   }
 }
 
@@ -1288,15 +1308,22 @@ class LandscapePlaylistSplit extends StatelessWidget {
   final PlayerProvider player;
   final DirectSourceManager direct;
   final ColorScheme cs;
+
+  /// 重进歌单页的追焦信号（透传给左栏歌单/队列列表）。
+  final ValueListenable<int>? focusTick;
   const LandscapePlaylistSplit(
-      {super.key, required this.player, required this.direct, required this.cs});
+      {super.key,
+      required this.player,
+      required this.direct,
+      required this.cs,
+      this.focusTick});
 
   @override
   Widget build(BuildContext context) {
     if (!player.hasCurrent) {
       return Row(
         children: [
-          const Expanded(child: _BandSongPage(embedded: true)),
+          Expanded(child: _BandSongPage(embedded: true, focusTick: focusTick)),
           SizedBox(
             width: 300,
             child: Center(
@@ -1316,7 +1343,8 @@ class LandscapePlaylistSplit extends StatelessWidget {
         final sideW = (c.maxWidth * 0.09).clamp(56.0, 72.0);
         return Row(
           children: [
-            const Expanded(child: _BandSongPage(embedded: true)),
+            Expanded(
+                child: _BandSongPage(embedded: true, focusTick: focusTick)),
             SizedBox(
               width: rightW,
               child: Row(
@@ -1481,8 +1509,15 @@ class DesktopPlaylistSplit extends StatelessWidget {
   final PlayerProvider player;
   final DirectSourceManager direct;
   final ColorScheme cs;
+
+  /// 重进歌单页的追焦信号（透传给左栏歌单/队列列表）。
+  final ValueListenable<int>? focusTick;
   const DesktopPlaylistSplit(
-      {super.key, required this.player, required this.direct, required this.cs});
+      {super.key,
+      required this.player,
+      required this.direct,
+      required this.cs,
+      this.focusTick});
 
   @override
   Widget build(BuildContext context) {
@@ -1490,7 +1525,7 @@ class DesktopPlaylistSplit extends StatelessWidget {
     if (!player.hasCurrent) {
       return Row(
         children: [
-          const Expanded(child: _BandSongPage(embedded: true)),
+          Expanded(child: _BandSongPage(embedded: true, focusTick: focusTick)),
           SizedBox(
             width: 320,
             child: Center(
@@ -1509,7 +1544,8 @@ class DesktopPlaylistSplit extends StatelessWidget {
         final cover = (size.height * 0.40).clamp(120.0, 280.0);
         return Row(
           children: [
-            const Expanded(child: _BandSongPage(embedded: true)),
+            Expanded(
+                child: _BandSongPage(embedded: true, focusTick: focusTick)),
             _DesktopPlayerColumn(
                 player: player,
                 direct: direct,

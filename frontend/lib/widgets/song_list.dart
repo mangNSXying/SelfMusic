@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -549,11 +550,16 @@ class SongList extends StatefulWidget {
   /// true：搜索跟随全局搜索框；false：页内自带搜索框。
   final bool globalSearch;
 
+  /// 重进歌单页的追焦信号（每进一次 +1）：歌单页被 PageView 预热保活后重进
+  /// 不重挂载，仅靠挂载追焦不够，tick 时重新定位当前播放歌曲。
+  final ValueListenable<int>? focusTick;
+
   const SongList({
     super.key,
     required this.playlistId,
     this.onBack,
     this.globalSearch = false,
+    this.focusTick,
   });
 
   @override
@@ -600,6 +606,7 @@ class _SongListState extends State<SongList> {
 
   @override
   void dispose() {
+    widget.focusTick?.removeListener(_onFocusTick);
     _scroll.dispose();
     _searchCtrl.dispose();
     super.dispose();
@@ -608,8 +615,15 @@ class _SongListState extends State<SongList> {
   @override
   void didUpdateWidget(covariant SongList oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 切换歌单后强制重取数据。
-    if (widget.playlistId != oldWidget.playlistId) _songsRevision = -1;
+    // 切换歌单后强制重取数据，并对新歌单重新追焦当前播放歌曲。
+    if (widget.playlistId != oldWidget.playlistId) {
+      _songsRevision = -1;
+      _located = false;
+    }
+    if (widget.focusTick != oldWidget.focusTick) {
+      oldWidget.focusTick?.removeListener(_onFocusTick);
+      widget.focusTick?.addListener(_onFocusTick);
+    }
   }
 
   /// 按数据版本拉取歌单条目；数据未变且排序未变时直接复用缓存（0 次 SQLite）。
@@ -707,12 +721,48 @@ class _SongListState extends State<SongList> {
     c.read<NavigationProvider>().openPlayer();
   }
 
-  /// 兜底定位到第 [index] 行（首次数据未加载时的边缘情况）：
+  /// 兜底/重进定位到第 [index] 行（展示行序，含组头偏移）：
   /// 一次精确 jumpTo（固定行高保证落点必在视口内）。
   void _scrollToCurrent(int index) {
     if (!mounted || !_scroll.hasClients) return;
     _scroll.jumpTo(_focusOffset(index)
         .clamp(0.0, _scroll.position.maxScrollExtent));
+  }
+
+  /// 当前播放歌曲在展示行序列里的位置（含组头行/搜索/排序偏移；
+  /// -1 = 未加载或不在本歌单）。口径与 build 内 currentPos 一致，
+  /// 供 tick 追焦在 build 之外复用。
+  int _currentDisplayPos() {
+    final provider = context.read<PlaylistsProvider>();
+    if (!provider.loaded) return -1;
+    final direct = context.read<DirectSourceManager>();
+    final player = context.read<PlayerProvider>();
+    _syncSongs(provider, direct.settings.sortPlaylistDetail, direct.weight);
+    _ensureCollapsed(direct.settings);
+    final query = (widget.globalSearch
+            ? context.read<NavigationProvider>().search
+            : _localQuery)
+        .trim()
+        .toLowerCase();
+    final visible = <int>[
+      for (var i = 0; i < _songs.length; i++)
+        if (songMatchesQuery(_songs[i], query)) i,
+    ];
+    final groups = _computeGroups(direct, query.isNotEmpty);
+    final rows = buildPlaylistDisplayRows(
+        groups: groups, visible: visible, collapsed: _collapsed);
+    final songIdx = _songs.indexWhere((s) => player.isCurrent(s));
+    if (songIdx < 0) return -1;
+    return rows.indexWhere((r) => r.full == songIdx);
+  }
+
+  /// 重进歌单页：下一帧再跳（回调可能发生在滚动/通知分发期间）。
+  void _onFocusTick() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final pos = _currentDisplayPos();
+      if (pos >= 0) _scrollToCurrent(pos);
+    });
   }
 
   @override
@@ -745,6 +795,7 @@ class _SongListState extends State<SongList> {
     } else {
       _scroll = ScrollController();
     }
+    widget.focusTick?.addListener(_onFocusTick);
     // 首帧后再刷新，避免 refresh() 的 notifyListeners 在 build 期间触发断言。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;

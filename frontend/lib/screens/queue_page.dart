@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -26,7 +27,11 @@ class QueuePage extends StatefulWidget {
   /// 多选移除/清空）与整页形态一致。
   final bool embedded;
 
-  const QueuePage({super.key, this.embedded = false});
+  /// 重进歌单页的追焦信号（每进一次 +1）：歌单页被 PageView 预热保活后重进
+  /// 不重挂载，仅靠 initState 的挂载追焦不够，tick 时重新定位当前播放歌曲。
+  final ValueListenable<int>? focusTick;
+
+  const QueuePage({super.key, this.embedded = false, this.focusTick});
 
   @override
   State<QueuePage> createState() => _QueuePageState();
@@ -48,16 +53,70 @@ class _QueuePageState extends State<QueuePage> {
   /// 行级视图数据缓存（R-1）。
   final SongRowCache _rowCache = SongRowCache();
 
+  /// 列表滚动控制器：打开即落实追焦（initialScrollOffset），重进经 tick 重定位。
+  late final ScrollController _scroll;
+
   @override
   void initState() {
     super.initState();
-    _sort = context.read<DirectSourceManager>().settings.sortQueue;
+    final direct = context.read<DirectSourceManager>();
+    _sort = direct.settings.sortQueue;
+    // 打开即定位到当前播放歌曲：进 state 时同步算出展示行位置（含排序映射），
+    // 用 initialScrollOffset 让首帧直接落在目标行（与播放队列弹层/SongList
+    // 同款口径：目标行置于列表顶下 96px）。
+    final player = context.read<PlayerProvider>();
+    final queue = player.queue;
+    var offset = 0.0;
+    if (queue.isNotEmpty) {
+      _rebuildVisible(queue, '', direct);
+      _sig = (_sort, '', queue.length);
+      final pos =
+          _visible.indexOf(player.currentIndex.clamp(0, queue.length - 1));
+      if (pos > 0) offset = _focusOffset(pos);
+    }
+    _scroll = ScrollController(initialScrollOffset: offset);
+    widget.focusTick?.addListener(_onFocusTick);
+  }
+
+  @override
+  void didUpdateWidget(covariant QueuePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.focusTick != oldWidget.focusTick) {
+      oldWidget.focusTick?.removeListener(_onFocusTick);
+      widget.focusTick?.addListener(_onFocusTick);
+    }
   }
 
   @override
   void dispose() {
+    widget.focusTick?.removeListener(_onFocusTick);
+    _scroll.dispose();
     _search.dispose();
     super.dispose();
+  }
+
+  /// 追焦目标 offset：目标行置于列表顶下 96px（与播放队列弹层同口径），
+  /// 超出列表范围的值交由滚动位置钳位。
+  double _focusOffset(int pos) =>
+      (pos * kRowExtent - 96).clamp(0.0, double.infinity);
+
+  /// 重定位到当前播放歌曲（展示序可能有搜索/排序差异，按展示行位置映射）。
+  void _jumpToCurrent() {
+    if (!mounted || !_scroll.hasClients) return;
+    final player = context.read<PlayerProvider>();
+    final queue = player.queue;
+    if (queue.isEmpty) return;
+    final pos =
+        _visible.indexOf(player.currentIndex.clamp(0, queue.length - 1));
+    if (pos < 0) return;
+    _scroll.jumpTo(_focusOffset(pos)
+        .clamp(0.0, _scroll.position.maxScrollExtent));
+  }
+
+  /// 重进歌单页：下一帧再跳（回调可能发生在滚动/通知分发期间，frame 期间
+  /// jumpTo 会与同帧滚动位置更新打架）。
+  void _onFocusTick() {
+    WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToCurrent());
   }
 
   bool _matches(Song s, String q, SongTitleFormat fmt) {
@@ -297,6 +356,7 @@ class _QueuePageState extends State<QueuePage> {
     return _visible.isEmpty
         ? Center(child: Text(queue.isEmpty ? '队列为空' : '无匹配歌曲'))
         : RowList(
+              controller: _scroll,
               count: _visible.length,
               itemBuilder: (c, i) {
                 final realIndex = _visible[i];
