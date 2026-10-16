@@ -35,10 +35,12 @@ const double kAppSheetSwipeTravelFactor = 0.6;
 /// `NavigatorState._cancelActivePointers()`，把触发跟手的那根手指一并取消，
 /// 跟手无法继续（见 [AppSheetLauncher] 注释）。
 ///
-/// 窗口语义（与队列悬浮层一致）：头部与列表共用同一个 scroll controller，
-/// 任意位置按下都可拖拽窗口或滚动列表；顶部安全区由路由 `useSafeArea`
-/// 消费，内容**不要**再套 `SafeArea(top: true)`（否则多出一整块状态栏空白）。
-/// 关闭通道经 [AppSheetScope] 注入（标题栏关闭按钮见 [AppSheetTitleBar]）。
+/// 窗口语义（与队列悬浮层一致）：头部与列表共用同一个 scroll controller——
+/// 列表处按下滚动列表（列表滚到顶部后继续下拖才收起窗口）；头部
+/// （[AppSheetTitleBar]）整块可抓，按下即直接改窗口高度（不先滚列表）。
+/// 顶部安全区由路由 `useSafeArea` 消费，内容**不要**再套
+/// `SafeArea(top: true)`（否则多出一整块状态栏空白）。关闭通道经
+/// [AppSheetScope] 注入（标题栏关闭按钮见 [AppSheetTitleBar]）。
 Future<T?> showAppDraggableSheet<T>(
   BuildContext context, {
   required Widget Function(BuildContext context, ScrollController scrollCtrl)
@@ -49,7 +51,38 @@ Future<T?> showAppDraggableSheet<T>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
-    builder: (c) => DraggableScrollableSheet(
+    builder: (c) => _AppSheetRouteBody(builder: builder, config: config),
+  );
+}
+
+/// 路由版窗口主体：持有窗口尺寸控制器（标题栏拖拽调高，见 [AppSheetTitleBar]）。
+/// 控制器生命周期 = 路由子树（含退出动画）：随主体 dispose 释放，晚于
+/// `DraggableScrollableSheet` 卸载时的 detach（子树先卸载）。
+class _AppSheetRouteBody extends StatefulWidget {
+  const _AppSheetRouteBody({required this.builder, required this.config});
+
+  final Widget Function(BuildContext context, ScrollController scrollCtrl)
+      builder;
+  final AppSheetConfig config;
+
+  @override
+  State<_AppSheetRouteBody> createState() => _AppSheetRouteBodyState();
+}
+
+class _AppSheetRouteBodyState extends State<_AppSheetRouteBody> {
+  final DraggableScrollableController _sheet = DraggableScrollableController();
+
+  @override
+  void dispose() {
+    _sheet.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final config = widget.config;
+    return DraggableScrollableSheet(
+      controller: _sheet,
       expand: false,
       initialChildSize: config.initialChildSize,
       minChildSize: config.minChildSize,
@@ -59,29 +92,45 @@ Future<T?> showAppDraggableSheet<T>(
       // 路由版关闭通道：pop 本弹层路由（悬浮层版由 [AppSheetLauncher] 注入）。
       builder: (c, scrollCtrl) => AppSheetScope(
         close: () => Navigator.of(c).pop(),
-        child: builder(c, scrollCtrl),
+        controller: _sheet,
+        child: widget.builder(c, scrollCtrl),
       ),
-    ),
-  );
+    );
+  }
 }
 
-/// 供统一窗口内容调用「关闭窗口」的祖先（路由/悬浮层通用）。
+/// 供统一窗口内容调用「关闭窗口」（[closeOf]）与「标题栏拖拽调高」
+/// （[controllerOf]）的祖先（路由/悬浮层通用）。
 ///
 /// 路由版（[showAppDraggableSheet]）注入的关闭走 `Navigator.pop`；悬浮层
 /// （[AppSheetLauncher]）注入其收起回调——悬浮层没有路由可 pop，误 pop 会
 /// 关掉底层页面。统一标题栏的关闭按钮经 [AppSheetScope.closeOf] 工作。
 class AppSheetScope extends InheritedWidget {
-  const AppSheetScope({super.key, required this.close, required super.child});
+  const AppSheetScope({
+    super.key,
+    required this.close,
+    this.controller,
+    required super.child,
+  });
 
   final VoidCallback close;
+
+  /// 窗口尺寸控制器（`DraggableScrollableSheet` 挂的那个）；未挂时为 null，
+  /// 标题栏退化为普通内容（拖动交回窗口自身的滚动语义）。
+  final DraggableScrollableController? controller;
 
   /// 关闭当前统一窗口（无匹配 scope 时静默忽略）。
   static void closeOf(BuildContext context) {
     context.getInheritedWidgetOfExactType<AppSheetScope>()?.close();
   }
 
+  /// 取窗口尺寸控制器（无匹配 scope / 未挂时返回 null）。
+  static DraggableScrollableController? controllerOf(BuildContext context) =>
+      context.getInheritedWidgetOfExactType<AppSheetScope>()?.controller;
+
   @override
-  bool updateShouldNotify(AppSheetScope oldWidget) => close != oldWidget.close;
+  bool updateShouldNotify(AppSheetScope oldWidget) =>
+      close != oldWidget.close || controller != oldWidget.controller;
 }
 
 /// 统一窗口的置顶标题栏（`SliverPersistentHeader` 固定）。
@@ -186,51 +235,71 @@ class AppSheetTitleBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    // 尺寸控制器（经 [AppSheetScope] 下发）：头部当抓手拖动时直接改窗口高度。
+    final controller = AppSheetScope.controllerOf(context);
     // 用 [heightOf] 固定总高：钉住的 head 声明高度须与子树实际高度严格一致，
     // 否则 SliverPersistentHeader 会因 layoutExtent/paintExtent 不等而断言。
     return SizedBox(
       height: heightOf(context),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // 拖拽把手（视觉提示；整头都是拖拽/滚动入口）。
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Container(
-              key: const ValueKey('app_sheet_handle'),
-              width: 36,
-              height: 4,
-              decoration: BoxDecoration(
-                color: cs.outlineVariant,
-                borderRadius: BorderRadius.circular(2),
+      child: GestureDetector(
+        // 头部整块可抓（把手/标题/计数行）：按住拖动直接改窗口高度。框架的
+        // DraggableScrollableSheet 只在列表滚到顶部（pixels == 0）时才把拖拽
+        // 用于改高度，否则一律滚列表——队列窗口打开即定位当前曲、列表常不在
+        // 顶部，拖头部会「纹丝不动」（回归 queue_sheet_gesture_test）。
+        behavior: HitTestBehavior.opaque,
+        onVerticalDragUpdate: controller == null
+            ? null
+            : (DragUpdateDetails d) => _dragSize(controller, d.delta.dy),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 拖拽把手（视觉提示；整头都是拖拽/滚动入口）。
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Container(
+                key: const ValueKey('app_sheet_handle'),
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: cs.outlineVariant,
+                  borderRadius: BorderRadius.circular(2),
+                ),
               ),
             ),
-          ),
-          // 标题行：单行省略 + 关闭按钮。
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 4, 4),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: _titleStyle(context),
+            // 标题行：单行省略 + 关闭按钮。
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 4, 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: _titleStyle(context),
+                    ),
                   ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () => AppSheetScope.closeOf(context),
-                ),
-              ],
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => AppSheetScope.closeOf(context),
+                  ),
+                ],
+              ),
             ),
-          ),
-          CountHeader(count: count, unit: unit),
-          const Divider(height: kRowSeparatorHeight),
-        ],
+            CountHeader(count: count, unit: unit),
+            const Divider(height: kRowSeparatorHeight),
+          ],
+        ),
       ),
     );
+  }
+
+  /// 头部拖动一帧：窗口高度随手指走。像素换算经控制器（自带尺寸上下限钳制；
+  /// 结果再按 [0,1] 钳制以满足 [DraggableScrollableController.jumpTo] 断言）。
+  static void _dragSize(DraggableScrollableController controller, double dy) {
+    if (!controller.isAttached) return;
+    final next = controller.pixelsToSize(controller.pixels - dy);
+    controller.jumpTo(next.clamp(0.0, 1.0));
   }
 }
 
@@ -393,7 +462,9 @@ class AppSheetHost extends StatelessWidget {
 
 /// 悬浮层内容：遮罩 + 底部统一窗口（`DraggableScrollableSheet`），整体按
 /// [_progress] 位移。顶部让开状态栏（顶部区域透明，触摸穿透到遮罩）。
-class _SheetOverlay extends StatelessWidget {
+/// 持有窗口尺寸控制器（标题栏拖拽调高，见 [AppSheetTitleBar]）：生命周期 =
+/// 悬浮层子树，随移除卸载而释放（晚于 `DraggableScrollableSheet` 的 detach）。
+class _SheetOverlay extends StatefulWidget {
   const _SheetOverlay({
     required this.launcher,
     required this.builder,
@@ -405,7 +476,22 @@ class _SheetOverlay extends StatelessWidget {
   final AppSheetConfig config;
 
   @override
+  State<_SheetOverlay> createState() => _SheetOverlayState();
+}
+
+class _SheetOverlayState extends State<_SheetOverlay> {
+  final DraggableScrollableController _sheet = DraggableScrollableController();
+
+  @override
+  void dispose() {
+    _sheet.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final launcher = widget.launcher;
+    final config = widget.config;
     final media = MediaQuery.of(context);
     final top = media.padding.top;
     final available = media.size.height - top;
@@ -436,6 +522,7 @@ class _SheetOverlay extends StatelessWidget {
               child: Transform.translate(
                 offset: Offset(0, (1 - p) * sheetHeight),
                 child: DraggableScrollableSheet(
+                  controller: _sheet,
                   expand: false,
                   initialChildSize: config.initialChildSize,
                   minChildSize: config.minChildSize,
@@ -453,7 +540,8 @@ class _SheetOverlay extends StatelessWidget {
                     ),
                     child: AppSheetScope(
                       close: launcher.close,
-                      child: builder(c2, scrollCtrl),
+                      controller: _sheet,
+                      child: widget.builder(c2, scrollCtrl),
                     ),
                   ),
                 ),

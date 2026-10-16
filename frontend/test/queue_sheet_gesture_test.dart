@@ -1,6 +1,7 @@
 import 'dart:ffi' show DynamicLibrary;
 import 'dart:io';
 
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
@@ -58,11 +59,13 @@ Song _song(int i) => Song(
 
 /// 置入非空播放队列：不触真实装载（loadOverride），只为让迷你播放条渲染
 /// 右侧队列入口（统一拖拽式窗口的点按/滑动两种启动都从这里进入）。
-Future<PlayerProvider> _playerWithQueue({int count = 3}) async {
+/// [playIndex] > 0 时把当前曲定位到该下标（复现「打开即定位、列表滚离顶部」）。
+Future<PlayerProvider> _playerWithQueue({int count = 3, int playIndex = 0}) async {
   final p = PlayerProvider();
   p.loadOverride = (s, src) async {};
   await p.playQueue([for (var i = 1; i <= count; i++) _song(i)],
       source: _FakeSource());
+  if (playIndex > 0) await p.playAt(playIndex);
   return p;
 }
 
@@ -74,7 +77,7 @@ Future<
       AppSheetLauncher Function() launcher,
       Finder entry,
       Finder Function() surface,
-    })> _pumpHost(WidgetTester tester, {int count = 3}) async {
+    })> _pumpHost(WidgetTester tester, {int count = 3, int playIndex = 0}) async {
   late final DirectSourceManager direct;
   late final PlayerProvider player;
   await tester.runAsync(() async {
@@ -83,7 +86,7 @@ Future<
     PathProviderPlatform.instance = _FakePathProvider(dir.path);
     direct = DirectSourceManager();
     await direct.init();
-    player = await _playerWithQueue(count: count);
+    player = await _playerWithQueue(count: count, playIndex: playIndex);
   });
   addTearDown(() {
     player.dispose();
@@ -235,6 +238,67 @@ void main() {
     expect(titleTop - sheetTop, lessThan(60.0), reason: '滚动后标题栏仍紧贴窗口顶部（置顶）');
     // 首行已被滚走（确认真发生了滚动，而非没动）。
     expect(inSheet('队列歌曲 1'), findsNothing);
+  });
+
+  testWidgets('队列窗口：列表滚离顶部后，拖标题栏/把手仍能升降窗口（回归）', (tester) async {
+    // 打开即定位当前曲（当前曲不在首行）→ 列表滚离顶部。旧行为：框架只在
+    // 列表处于顶部时才把拖拽用于改窗口高度，否则一律滚列表——拖标题栏/把手
+    // 纹丝不动，且高速上抛只会把窗口顶到全高、降不下来（用户反馈）。
+    final h = await _pumpHost(tester, count: 30, playIndex: 8);
+    final surface = h.surface();
+
+    await tester.tap(h.entry);
+    await tester.pumpAndSettle();
+
+    final pos = tester
+        .state<ScrollableState>(
+            find.descendant(of: surface, matching: find.byType(Scrollable)))
+        .position;
+    final initialPixels = pos.pixels;
+    expect(initialPixels, greaterThan(0), reason: '打开定位当前曲：列表应滚离顶部');
+
+    // ── 头部下拖 → 窗口收起（列表不动） ──
+    final before = tester.getTopLeft(surface).dy;
+    await tester.drag(
+        find.byKey(const ValueKey('app_sheet_handle')), const Offset(0, 200));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(tester.getTopLeft(surface).dy, greaterThan(before + 100),
+        reason: '列表不在顶部时，拖标题栏/把手仍应降下窗口');
+    expect(pos.pixels, closeTo(initialPixels, 0.01), reason: '拖头部不应滚动列表');
+
+    // ── 头部上拖 → 窗口升起（列表仍不动） ──
+    final mid = tester.getTopLeft(surface).dy;
+    await tester.drag(
+        find.byKey(const ValueKey('app_sheet_handle')), const Offset(0, -200));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(tester.getTopLeft(surface).dy, lessThan(mid - 100),
+        reason: '拖标题栏/把手应升起窗口');
+    expect(pos.pixels, closeTo(initialPixels, 0.01), reason: '拖头部不应滚动列表');
+
+    // ── 鼠标拖动同样生效（桌面端：框架默认不让鼠标拖滚动区，头部手势不受限） ──
+    final beforeMouse = tester.getTopLeft(surface).dy;
+    await tester.drag(find.byKey(const ValueKey('app_sheet_handle')),
+        const Offset(0, 200),
+        kind: PointerDeviceKind.mouse);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(tester.getTopLeft(surface).dy, greaterThan(beforeMouse + 100),
+        reason: '鼠标拖标题栏/把手也应升降窗口');
+
+    // ── 拖到极限：钳在 min/max，不越界（jumpTo 断言尺寸 ∈ [0,1]） ──
+    await tester.drag(
+        find.byKey(const ValueKey('app_sheet_handle')), const Offset(0, 800));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    final atMin = tester.getTopLeft(surface).dy;
+    await tester.drag(
+        find.byKey(const ValueKey('app_sheet_handle')), const Offset(0, -800));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(tester.getTopLeft(surface).dy, lessThan(atMin - 100),
+        reason: '拉到上限后仍可反向拖动（钳制不卡死）');
   });
 }
 
