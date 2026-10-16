@@ -18,7 +18,7 @@ class PlayDetailScreen extends StatefulWidget {
 class _PlayDetailScreenState extends State<PlayDetailScreen> {
   String _query = '';
   bool _onlyWithPlay = false;
-  int _sortColumn = 3;
+  int _sortColumn = 2;
   bool _ascending = false;
   final _searchCtrl = TextEditingController();
 
@@ -40,6 +40,18 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
     final d = r.duration;
     if (d == null || d <= 0) return 0;
     return r.playSec / d;
+  }
+
+  /// 文本列宽上限：超出部分在单元格内横向滚动显示（不截断、不换行）。
+  static Widget _cappedCell(String text, double maxWidth) {
+    final t = text.isEmpty ? '—' : text;
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: maxWidth),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Text(t, maxLines: 1, softWrap: false),
+      ),
+    );
   }
 
   @override
@@ -76,22 +88,22 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
           }
           break;
         case 2:
-          c = a.sourceKey.toLowerCase().compareTo(b.sourceKey.toLowerCase());
-          if (c == 0) {
-            c = a.title.toLowerCase().compareTo(b.title.toLowerCase());
-          }
-          break;
-        case 3:
           c = _countOf(a).compareTo(_countOf(b));
           if (c == 0) c = a.playSec.compareTo(b.playSec);
           if (c == 0) {
             c = a.title.toLowerCase().compareTo(b.title.toLowerCase());
           }
           break;
-        case 4:
-        default:
+        case 3:
           c = a.playSec.compareTo(b.playSec);
           if (c == 0) c = _countOf(a).compareTo(_countOf(b));
+          if (c == 0) {
+            c = a.title.toLowerCase().compareTo(b.title.toLowerCase());
+          }
+          break;
+        case 4:
+        default:
+          c = a.sourceKey.toLowerCase().compareTo(b.sourceKey.toLowerCase());
           if (c == 0) {
             c = a.title.toLowerCase().compareTo(b.title.toLowerCase());
           }
@@ -176,41 +188,30 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
                             onSort: (i, asc) => _onSort(1, asc),
                           ),
                           DataColumn(
-                            label: const Text('播放源'),
-                            onSort: (i, asc) => _onSort(2, asc),
-                          ),
-                          DataColumn(
                             label: const Text('播放次数'),
                             numeric: true,
-                            onSort: (i, asc) => _onSort(3, asc),
+                            onSort: (i, asc) => _onSort(2, asc),
                           ),
                           DataColumn(
                             label: const Text('播放时长'),
                             numeric: true,
+                            onSort: (i, asc) => _onSort(3, asc),
+                          ),
+                          DataColumn(
+                            label: const Text('播放源'),
                             onSort: (i, asc) => _onSort(4, asc),
                           ),
                         ],
                         rows: [
                           for (final r in rows)
                             DataRow(cells: [
-                              DataCell(ConstrainedBox(
-                                constraints:
-                                    const BoxConstraints(maxWidth: 220),
-                                child: Text(r.title,
-                                    overflow: TextOverflow.ellipsis),
-                              )),
-                              DataCell(Text(
-                                (r.artist == null || r.artist!.isEmpty)
-                                    ? '—'
-                                    : r.artist!,
-                                overflow: TextOverflow.ellipsis,
-                              )),
-                              DataCell(Text(r.sourceKey,
-                                  overflow: TextOverflow.ellipsis)),
+                              DataCell(_cappedCell(r.title, 220)),
+                              DataCell(_cappedCell(r.artist ?? '', 160)),
                               DataCell(Text(playCountLabel(
                                   r.playSec, r.duration))),
                               DataCell(
                                   Text(playSecLabel(r.playSec))),
+                              DataCell(_cappedCell(r.sourceKey, 160)),
                             ]),
                         ],
                       ),
