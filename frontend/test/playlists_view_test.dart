@@ -284,6 +284,12 @@ void main() {
     expect(find.textContaining('歌曲 400'), findsOneWidget);
     expect(find.byType(ListTile).evaluate().length, lessThan(40));
 
+    // 收尾让出：warmMetaOf 分期（每 300 首一批）批间 yieldToEventLoop 会排一个
+    // 零延时 Timer；本用例只用了无参 pump()（不推进假时钟），帧后回调排下的
+    // 这个 Timer 会悬到测试结束，触发「A Timer is still pending」不变量。
+    // 补一拍 elapse 让它跑完（不涉及任何断言语义）。
+    await tester.pump(Duration.zero);
+
     await tester.runAsync(() async {
       direct.dispose();
       dir.deleteSync(recursive: true);
