@@ -3,10 +3,12 @@ import 'package:provider/provider.dart';
 
 import '../data/local/local_index.dart';
 import '../providers/direct_source_manager.dart';
+import 'library_info_detail_shared.dart';
 
 /// 歌曲信息 → 元数据详情：精确到每一首歌，各维度“有没有 / 是什么”。
 ///
 /// 过滤：搜索（歌名/歌手/专辑）+ 维度缺失过滤；排序：歌曲名 / 歌手 / 缺失数。
+/// 宽屏（[isWideDetail]）用表格直接显示各维度的值，窄屏用卡片。
 class MetaDetailScreen extends StatefulWidget {
   const MetaDetailScreen({super.key});
 
@@ -36,10 +38,32 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
     ('bitrate', '码率（大小+时长估算）'),
   ];
 
+  /// 宽屏表格的维度列：除歌手（已有独立列）外的 11 维，直接显示值。
+  static const wideDims = [
+    ('meta_read', '已读'),
+    ('album', '专辑'),
+    ('album_artist', '专辑歌手'),
+    ('genre', '流派'),
+    ('track_no', '曲目号'),
+    ('year', '年份'),
+    ('duration', '时长'),
+    ('cover', '封面'),
+    ('lyrics', '歌词'),
+    ('format', '格式'),
+    ('bitrate', '码率'),
+  ];
+
   @override
   void dispose() {
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  void _onSort(int mode, bool ascending) {
+    setState(() {
+      _sortMode = mode;
+      _ascending = ascending;
+    });
   }
 
   @override
@@ -64,7 +88,8 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
       int c;
       switch (_sortMode) {
         case 1:
-          c = (a.artist ?? '').toLowerCase()
+          c = (a.artist ?? '')
+              .toLowerCase()
               .compareTo((b.artist ?? '').toLowerCase());
           if (c == 0) {
             c = a.title.toLowerCase().compareTo(b.title.toLowerCase());
@@ -85,8 +110,8 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
     }
 
     rows.sort(cmp);
+    final wide = isWideDetail(context);
 
-    final cs = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(title: const Text('元数据信息')),
       body: Column(
@@ -115,8 +140,7 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
                   ChoiceChip(
                     label: const Text('全部'),
                     selected: _dimFilter == null,
-                    onSelected: (_) =>
-                        setState(() => _dimFilter = null),
+                    onSelected: (_) => setState(() => _dimFilter = null),
                   ),
                   ChoiceChip(
                     label: const Text('有缺失'),
@@ -135,74 +159,39 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
               ),
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-            child: Row(
-              children: [
-                _sortBtn(context, 0, '歌曲名'),
-                const SizedBox(width: 6),
-                _sortBtn(context, 1, '歌手'),
-                const SizedBox(width: 6),
-                _sortBtn(context, 2, '缺失数'),
-                const Spacer(),
-                Text('${rows.length} / ${all.length} 首',
-                    style: Theme.of(context).textTheme.bodySmall),
-              ],
+          // 窄屏用按钮组排序，宽屏用表格表头排序。
+          if (!wide)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Row(
+                children: [
+                  _sortBtn(context, 0, '歌曲名'),
+                  const SizedBox(width: 6),
+                  _sortBtn(context, 1, '歌手'),
+                  const SizedBox(width: 6),
+                  _sortBtn(context, 2, '缺失数'),
+                  const Spacer(),
+                  Text('${rows.length} / ${all.length} 首',
+                      style: Theme.of(context).textTheme.bodySmall),
+                ],
+              ),
             ),
-          ),
+          if (wide)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: Text('${rows.length} / ${all.length} 首',
+                    style: Theme.of(context).textTheme.bodySmall),
+              ),
+            ),
           const SizedBox(height: 4),
           Expanded(
             child: rows.isEmpty
                 ? const Center(child: Text('无匹配歌曲'))
-                : ListView.builder(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-                    itemCount: rows.length,
-                    itemBuilder: (context, i) {
-                      final r = rows[i];
-                      final missing = r.missingCount;
-                      return Card(
-                        margin: const EdgeInsets.symmetric(vertical: 4),
-                        child: ExpansionTile(
-                          dense: true,
-                          title: Text(r.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis),
-                          subtitle: Text(
-                            '${(r.artist == null || r.artist!.isEmpty) ? '未知歌手' : r.artist} · ${(r.album == null || r.album!.isEmpty) ? '未知专辑' : r.album} · ${r.sourceKey}',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          trailing: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 8, vertical: 3),
-                            decoration: BoxDecoration(
-                              color: (missing == 0
-                                      ? cs.primary
-                                      : cs.error)
-                                  .withValues(alpha: 0.15),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(
-                              missing == 0 ? '全齐' : '缺 $missing 项',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(
-                                    color: missing == 0
-                                        ? cs.primary
-                                        : cs.error,
-                                  ),
-                            ),
-                          ),
-                          children: [
-                            for (final d in dims)
-                              _dimLine(context, d.$2, _dimValue(r, d.$1),
-                                  ok: r.hasDim(d.$1)),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
+                : wide
+                    ? _wideTable(rows)
+                    : _narrowCards(rows),
           ),
         ],
       ),
@@ -229,6 +218,99 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
     );
   }
 
+  /// 宽屏表格：歌曲 / 歌手 / 缺失数（可排序表头）+ 其余 11 维直接显示值。
+  /// 缺失值红色显示，有值显示原文。
+  Widget _wideTable(List<MetaDetailRow> rows) {
+    final error = Theme.of(context).colorScheme.error;
+    TextStyle? missingStyle(bool ok) => ok
+        ? null
+        : TextStyle(color: error, fontWeight: FontWeight.w600);
+    return SingleChildScrollView(
+      scrollDirection: Axis.vertical,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: DataTable(
+          sortColumnIndex: _sortMode,
+          sortAscending: _ascending,
+          columns: [
+            DataColumn(
+              label: const Text('歌曲名'),
+              onSort: (i, asc) => _onSort(0, asc),
+            ),
+            DataColumn(
+              label: const Text('歌手'),
+              onSort: (i, asc) => _onSort(1, asc),
+            ),
+            DataColumn(
+              label: const Text('缺失数'),
+              numeric: true,
+              onSort: (i, asc) => _onSort(2, asc),
+            ),
+            for (final d in wideDims) DataColumn(label: Text(d.$2)),
+          ],
+          rows: [
+            for (final r in rows)
+              DataRow(cells: [
+                DataCell(cappedCell(r.title, 200)),
+                DataCell(cappedCell(_v(r.artist), 140,
+                    style: missingStyle(r.hasArtist))),
+                DataCell(Text('${r.missingCount}')),
+                for (final d in wideDims)
+                  DataCell(cappedCell(_dimValue(r, d.$1), 140,
+                      style: missingStyle(r.hasDim(d.$1)))),
+              ]),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 窄屏卡片：标题=歌名，副标题=歌手·专辑·源，展开看 12 维值。
+  Widget _narrowCards(List<MetaDetailRow> rows) {
+    final cs = Theme.of(context).colorScheme;
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+      itemCount: rows.length,
+      itemBuilder: (context, i) {
+        final r = rows[i];
+        final missing = r.missingCount;
+        return Card(
+          margin: const EdgeInsets.symmetric(vertical: 4),
+          child: ExpansionTile(
+            dense: true,
+            title:
+                Text(r.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+            subtitle: Text(
+              '${(r.artist == null || r.artist!.isEmpty) ? '未知歌手' : r.artist} · ${(r.album == null || r.album!.isEmpty) ? '未知专辑' : r.album} · ${r.sourceKey}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: (missing == 0 ? cs.primary : cs.error)
+                    .withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                missing == 0 ? '全齐' : '缺 $missing 项',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: missing == 0 ? cs.primary : cs.error,
+                    ),
+              ),
+            ),
+            children: [
+              for (final d in dims)
+                _dimLine(context, d.$2, _dimValue(r, d.$1),
+                    ok: r.hasDim(d.$1)),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   String _dimValue(MetaDetailRow r, String dim) => switch (dim) {
         'meta_read' => r.metaRead ? '已读' : '待读取',
         'artist' => _v(r.artist),
@@ -247,8 +329,7 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
         _ => '',
       };
 
-  String _v(String? s) =>
-      (s == null || s.isEmpty) ? '缺失' : s;
+  String _v(String? s) => (s == null || s.isEmpty) ? '缺失' : s;
 
   Widget _dimLine(BuildContext context, String label, String value,
       {required bool ok}) {
