@@ -149,7 +149,7 @@ void main() {
         reason: '标题紧贴窗口顶部：窗口已让开顶部安全区，内容不得再垫一块状态栏空白');
 
     // ── 头部下拖 → 窗口缩小（多档拖拽） ──
-    final handle = find.byKey(const ValueKey('queue_sheet_handle'));
+    final handle = find.byKey(const ValueKey('app_sheet_handle'));
     expect(handle, findsOneWidget);
     final before = tester.getTopLeft(surface()).dy;
     await tester.drag(handle, const Offset(0, 200));

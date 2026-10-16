@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -36,6 +38,7 @@ const double kAppSheetSwipeTravelFactor = 0.6;
 /// 窗口语义（与队列悬浮层一致）：头部与列表共用同一个 scroll controller，
 /// 任意位置按下都可拖拽窗口或滚动列表；顶部安全区由路由 `useSafeArea`
 /// 消费，内容**不要**再套 `SafeArea(top: true)`（否则多出一整块状态栏空白）。
+/// 关闭通道经 [AppSheetScope] 注入（标题栏关闭按钮见 [AppSheetTitleBar]）。
 Future<T?> showAppDraggableSheet<T>(
   BuildContext context, {
   required Widget Function(BuildContext context, ScrollController scrollCtrl)
@@ -53,15 +56,20 @@ Future<T?> showAppDraggableSheet<T>(
       maxChildSize: config.maxChildSize,
       snap: config.snap,
       snapSizes: config.snapSizes,
-      builder: (c, scrollCtrl) => builder(c, scrollCtrl),
+      // 路由版关闭通道：pop 本弹层路由（悬浮层版由 [AppSheetLauncher] 注入）。
+      builder: (c, scrollCtrl) => AppSheetScope(
+        close: () => Navigator.of(c).pop(),
+        child: builder(c, scrollCtrl),
+      ),
     ),
   );
 }
 
 /// 供统一窗口内容调用「关闭窗口」的祖先（路由/悬浮层通用）。
 ///
-/// 路由版可继续用 `Navigator.pop`；悬浮层没有路由可 pop，必须经此回调收起
-/// （否则会误 pop 底层页面）。
+/// 路由版（[showAppDraggableSheet]）注入的关闭走 `Navigator.pop`；悬浮层
+/// （[AppSheetLauncher]）注入其收起回调——悬浮层没有路由可 pop，误 pop 会
+/// 关掉底层页面。统一标题栏的关闭按钮经 [AppSheetScope.closeOf] 工作。
 class AppSheetScope extends InheritedWidget {
   const AppSheetScope({super.key, required this.close, required super.child});
 
@@ -129,11 +137,13 @@ class _AppSheetHeaderDelegate extends SliverPersistentHeaderDelegate {
       old.height != height || old.color != color || old.child != child;
 }
 
-/// 统一窗口的置顶标题行：一行标题 + 歌曲数（[CountHeader]）+ 分隔线。
+/// 统一窗口的置顶标题栏：拖拽把手 + 标题行（关闭按钮）+ 歌曲数（[CountHeader]）
+/// + 分隔线。
 ///
 /// 与 [AppSheetHeader] 搭配：高度由 [heightOf] 按主题字号现算（对字体缩放稳健），
-/// 长标题单行省略号，钉死后不溢出/不抖动。专辑与歌手弹层共用，保证头部同构；
-/// 队列窗口头部另有拖拽把手与关闭按钮，不套用本组件。
+/// 长标题单行省略号，钉死后不溢出/不抖动。专辑 / 歌手 / 队列三个弹层共用，
+/// 保证头部同构；关闭按钮经 [AppSheetScope.closeOf] 收起窗口（路由/悬浮层由
+/// 各自启动器注入 scope）。
 class AppSheetTitleBar extends StatelessWidget {
   const AppSheetTitleBar({
     super.key,
@@ -146,9 +156,16 @@ class AppSheetTitleBar extends StatelessWidget {
   final int count;
   final String unit;
 
-  /// 标题行总高：上内边距 16 + 标题一行 + 下内边距 8 + 计数头 + 分隔线。
+  /// 标题栏总高：8+4（拖拽把手）+ 8 上边距 + 标题行（关闭按钮不小于最小点按
+  /// 尺寸）+ 4 下边距 + 计数头 + 分隔线。
   static double heightOf(BuildContext context) =>
-      16 + _lineHeight(context) + 8 + kListHeaderHeight + kRowSeparatorHeight;
+      8 +
+      4 +
+      8 +
+      math.max(kMinInteractiveDimension, _lineHeight(context)) +
+      4 +
+      kListHeaderHeight +
+      kRowSeparatorHeight;
 
   static double _lineHeight(BuildContext context) {
     final text = TextPainter(
@@ -168,6 +185,7 @@ class AppSheetTitleBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     // 用 [heightOf] 固定总高：钉住的 head 声明高度须与子树实际高度严格一致，
     // 否则 SliverPersistentHeader 会因 layoutExtent/paintExtent 不等而断言。
     return SizedBox(
@@ -175,16 +193,37 @@ class AppSheetTitleBar extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // 拖拽把手（视觉提示；整头都是拖拽/滚动入口）。
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: _titleStyle(context),
+            padding: const EdgeInsets.only(top: 8),
+            child: Container(
+              key: const ValueKey('app_sheet_handle'),
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: cs.outlineVariant,
+                borderRadius: BorderRadius.circular(2),
               ),
+            ),
+          ),
+          // 标题行：单行省略 + 关闭按钮。
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 4, 4),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: _titleStyle(context),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => AppSheetScope.closeOf(context),
+                ),
+              ],
             ),
           ),
           CountHeader(count: count, unit: unit),

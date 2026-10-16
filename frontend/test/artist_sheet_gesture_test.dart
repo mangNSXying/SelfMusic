@@ -245,4 +245,23 @@ void main() {
 
     await tester.runAsync(() => _dispose(direct, dir));
   });
+
+  testWidgets('歌手弹层：统一标题栏（拖拽把手 + 关闭按钮经 scope 收起）', (tester) async {
+    final (dir, direct, _) = await _pumpArtistSheet(tester);
+
+    // 统一标题栏（AppSheetTitleBar）的拖拽把手与队列窗口同键位。
+    expect(find.byKey(const ValueKey('app_sheet_handle')), findsOneWidget);
+
+    // 关闭按钮：路由版经 [AppSheetScope] 注入关闭通道（showAppDraggableSheet），
+    // 点击应 pop 本弹层路由。
+    final sheet = find.byType(DraggableScrollableSheet);
+    await tester.tap(
+        find.descendant(of: sheet, matching: find.byIcon(Icons.close)));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.byType(DraggableScrollableSheet), findsNothing,
+        reason: '关闭按钮应收起弹层（路由版 scope 通道生效）');
+
+    await tester.runAsync(() => _dispose(direct, dir));
+  });
 }

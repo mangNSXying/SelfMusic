@@ -81,8 +81,9 @@ bool beginQueueSheetSwipe(BuildContext context) {
   return started;
 }
 
-/// 窄屏队列窗口内容：头部（把手 + 标题 + 关闭）与队列列表共用窗口的
-/// scroll controller——任意位置按下都可拖拽/滚动窗口（与歌手详情页同构）。
+/// 窄屏队列窗口内容：头部走统一的 [AppSheetTitleBar]（拖拽把手 + 标题 + 关闭），
+/// 与队列列表共用窗口的 scroll controller——任意位置按下都可拖拽/滚动窗口
+/// （与歌手/专辑弹层同构）。
 ///
 /// 注意：顶部不再套 `SafeArea(top: true)`——统一窗口（悬浮层/路由）的外层已
 /// 消费顶部安全区（悬浮层顶部区域让开状态栏，内容从窗口顶边开始）；自建悬浮层
@@ -126,51 +127,15 @@ class _QueueSheetContentState extends State<_QueueSheetContent> {
   Widget build(BuildContext context) {
     final player = context.watch<PlayerProvider>();
     final queue = player.queue;
-    final cs = Theme.of(context).colorScheme;
     // 统一窗口外层已提供 Material 祖先（悬浮层 Material），SongTile 可直接使用。
     return CustomScrollView(
       controller: widget.scrollCtrl,
       slivers: [
-        // 置顶标题栏：滚动队列时标题与关闭按钮始终可见（仍在同一 scrollable，
-        // 头部同样可拖拽窗口）。高度 = 8+4(把手) + 8+48+4(标题行) + 1(分隔线)。
+        // 置顶标题栏：与专辑/歌手弹层同一组件（[AppSheetTitleBar]），滚动队列
+        // 时标题与关闭按钮始终可见（仍在同一 scrollable，头部同样可拖拽窗口）。
         AppSheetHeader(
-          height: 73,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // 拖拽把手（视觉提示；整头都是拖拽/滚动入口）。
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Container(
-                  key: const ValueKey('queue_sheet_handle'),
-                  width: 36,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: cs.outlineVariant,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 4, 4),
-                child: Row(
-                  children: [
-                    Text('播放队列',
-                        style: Theme.of(context)
-                            .textTheme
-                            .titleMedium
-                            ?.copyWith(fontWeight: FontWeight.bold)),
-                    const Spacer(),
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      onPressed: () => AppSheetScope.closeOf(context),
-                    ),
-                  ],
-                ),
-              ),
-              const Divider(height: 1),
-            ],
-          ),
+          height: AppSheetTitleBar.heightOf(context),
+          child: AppSheetTitleBar(title: '播放队列', count: queue.length),
         ),
         if (queue.isEmpty)
           const SliverFillRemaining(
