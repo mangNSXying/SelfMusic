@@ -76,6 +76,49 @@ void main() {
     });
   });
 
+  group('SMB 弹窗「路径」一字段（拆共享名/根目录）', () {
+    test('smbParseInputPath：首个斜杠前为共享名，其余为根目录', () {
+      expect((smbParseInputPath('Music/jaychou').share), 'Music');
+      expect((smbParseInputPath('Music/jaychou').rootPath), 'jaychou');
+      // 无斜杠：整串为共享名，根目录为空（=共享根）。
+      expect((smbParseInputPath('Music').share), 'Music');
+      expect((smbParseInputPath('Music').rootPath), '');
+      expect((smbParseInputPath('').share), '');
+      // 多段根目录 / 斜杠容错 / 穿越段过滤（与运行期同口径）。
+      final c = smbParseInputPath('/Music//jaychou/2000/');
+      expect((c.share, c.rootPath), ('Music', 'jaychou/2000'));
+      final d = smbParseInputPath(r'Music\jaychou');
+      expect((d.share, d.rootPath), ('Music', 'jaychou'));
+      expect((smbParseInputPath('Music/../etc').rootPath), 'etc');
+    });
+
+    test('smbJoinInputPath：编辑回填（无根目录只有共享名）', () {
+      expect(smbJoinInputPath(share: 'Music', rootPath: 'jaychou'),
+          'Music/jaychou');
+      expect(smbJoinInputPath(share: 'Music', rootPath: ''), 'Music');
+      expect(smbJoinInputPath(share: '', rootPath: ''), '');
+    });
+
+    test('往返一致：parse(join(x)) == x；join(parse(s)) == 规范化 s', () {
+      final a = smbParseInputPath(
+          smbJoinInputPath(share: 'Music', rootPath: 'jaychou/2000'));
+      expect((a.share, a.rootPath), ('Music', 'jaychou/2000'));
+      expect(smbJoinInputPath(
+              share: smbParseInputPath('Music/jaychou').share,
+              rootPath: smbParseInputPath('Music/jaychou').rootPath),
+          'Music/jaychou');
+    });
+
+    test('回归：walk 折前缀后的 ref 拼回不产生双重前缀', () {
+      // 病态（修复前）：walk 返回共享相对 "jaychou/可爱女人.flac"，
+      // 播放/展示再拼 rootPath → `\\host\share\jaychou\jaychou\可爱女人.flac`。
+      const rootPath = 'jaychou';
+      final ref = smbRelRef(rootPath, 'jaychou/可爱女人.flac');
+      expect(ref, '可爱女人.flac');
+      expect(smbRemotePath(rootPath, ref), 'jaychou/可爱女人.flac');
+    });
+  });
+
   group('SMB 同步地址（既有口径回归）', () {
     test('sourceAddressOf smb = host/share；smb 参与同步', () {
       expect(sourceAddressOf('smb', {'host': 'nas', 'share': 'music'}),

@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import '../data/local/app_settings.dart';
 import '../data/sources/music_source.dart';
 import '../data/sources/sftp_direct_source.dart';
+import '../data/sources/smb_common.dart';
 import '../data/sources/smb_direct_source.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart';
 import '../platform/harmonyos/ohos_platform_bridge.dart';
@@ -122,7 +123,7 @@ class _FallbackData {
   late TextEditingController baseUrl;
   late TextEditingController host;
   late TextEditingController port;
-  late TextEditingController share;
+  late TextEditingController smbPath;
   late TextEditingController username;
   late TextEditingController password;
   late TextEditingController path;
@@ -139,7 +140,12 @@ class _FallbackData {
     host = TextEditingController(text: m['host'] as String? ?? '');
     port = TextEditingController(
         text: (m['port'] as num?)?.toString() ?? '');
-    share = TextEditingController(text: m['share'] as String? ?? '');
+    smbPath = TextEditingController(
+        text: kind == SourceKind.smb
+            ? smbJoinInputPath(
+                share: m['share'] as String? ?? '',
+                rootPath: m['path'] as String? ?? '')
+            : '');
     username = TextEditingController(text: m['username'] as String? ?? '');
     password = TextEditingController(text: m['password'] as String? ?? '');
     path = TextEditingController(text: m['path'] as String? ?? '');
@@ -154,18 +160,26 @@ class _FallbackData {
   }
 
   Map<String, dynamic> toRawMap() {
+    // SMB 弹窗只填一个「路径」：落库前拆回 share/path 两键（存储结构不变）。
+    var shareOut = '';
+    var pathOut = path.text.trim();
+    if (kind == SourceKind.smb) {
+      final parsed = smbParseInputPath(smbPath.text);
+      shareOut = parsed.share;
+      pathOut = parsed.rootPath;
+    }
     final m = <String, dynamic>{
       'kind': kind.name,
       'baseUrl': baseUrl.text.trim(),
       'host': host.text.trim(),
       'port': int.tryParse(port.text.trim()) ?? 22,
-      'share': share.text.trim(),
+      'share': shareOut,
       'username': username.text.trim(),
       'password': password.text,
       'keyPem': keyPem.text,
       'passphrase': keyPassphrase.text,
       'authMethod': authMethod.name,
-      'path': path.text.trim(),
+      'path': pathOut,
       'route': route.name,
     };
     return m;
@@ -175,7 +189,7 @@ class _FallbackData {
     baseUrl.dispose();
     host.dispose();
     port.dispose();
-    share.dispose();
+    smbPath.dispose();
     username.dispose();
     password.dispose();
     path.dispose();
@@ -201,7 +215,7 @@ class _SourceDialogState extends State<_SourceDialog> {
   late final TextEditingController _password;
   late final TextEditingController _host;
   late final TextEditingController _port;
-  late final TextEditingController _share;
+  late final TextEditingController _smbPath;
   late final TextEditingController _keyPem;
   late final TextEditingController _keyPassphrase;
   late final FocusNode _baseUrlFocus;
@@ -238,7 +252,12 @@ class _SourceDialogState extends State<_SourceDialog> {
     _host = TextEditingController(text: cfg['host'] as String? ?? '');
     _port = TextEditingController(
         text: (cfg['port'] as num?)?.toString() ?? '');
-    _share = TextEditingController(text: cfg['share'] as String? ?? '');
+    _smbPath = TextEditingController(
+        text: _kind == SourceKind.smb
+            ? smbJoinInputPath(
+                share: cfg['share'] as String? ?? '',
+                rootPath: cfg['path'] as String? ?? '')
+            : '');
     // SMB 密码走独立键回填（匿名源为空；WebDAV/SFTP 沿用上面的 password/三件套）。
     if (_kind == SourceKind.smb) {
       _password.text = cfg['smbPassword'] as String? ?? '';
@@ -278,7 +297,7 @@ class _SourceDialogState extends State<_SourceDialog> {
     _password.dispose();
     _host.dispose();
     _port.dispose();
-    _share.dispose();
+    _smbPath.dispose();
     _keyPem.dispose();
     _keyPassphrase.dispose();
     for (final fb in _fbs) {
@@ -468,23 +487,31 @@ class _SourceDialogState extends State<_SourceDialog> {
     AppToast.show('连接成功，指纹匹配', isError: false);
   }
 
-  /// SMB 表单校验（弹窗保存与测试连接共用）：用户名与密码双空即匿名。
-  ({String host, String share, String username})? _readSmbForm() {
+  /// SMB 表单校验（弹窗保存与测试连接共用）：「路径」按首段拆成
+  /// 共享名/根目录（见 [smbParseInputPath]）；用户名与密码双空即匿名。
+  ({String host, String share, String rootPath, String username})?
+      _readSmbForm() {
     final host = _host.text.trim();
     if (host.isEmpty) {
       setState(() => _error = '请填写 SMB 主机（IP 或主机名）');
       return null;
     }
-    final share = _share.text.trim();
+    final (:share, :rootPath) = smbParseInputPath(_smbPath.text);
     if (share.isEmpty) {
-      setState(() => _error = '请填写共享名（如 music）');
+      setState(() => _error = '请填写路径（共享名或 共享名/子目录，如 music/flac）');
       return null;
     }
-    return (host: host, share: share, username: _username.text.trim());
+    return (
+      host: host,
+      share: share,
+      rootPath: rootPath,
+      username: _username.text.trim()
+    );
   }
 
-  /// SMB 测试连接：连上并列出根目录即成功。ohos 走 smb_connect，
-  /// 其余平台走 dart_smb2（与播放/扫描同后端）。不保存源（保存走 [_submit]）。
+  /// SMB 测试连接：连上并列出填写的「路径」即成功（带子目录时一并验证）。
+  /// ohos 走 smb_connect，其余平台走 dart_smb2（与播放/扫描同后端）。
+  /// 不保存源（保存走 [_submit]）。
   Future<void> _testSmbConnection() async {
     final form = _readSmbForm();
     if (form == null || !mounted) return;
@@ -496,6 +523,7 @@ class _SourceDialogState extends State<_SourceDialog> {
       await SmbDirectSource.testConnection(
         host: form.host,
         share: form.share,
+        rootPath: form.rootPath,
         username: form.username,
         password: _password.text,
         useSmbConnect: isOhos,
@@ -549,20 +577,26 @@ class _SourceDialogState extends State<_SourceDialog> {
     return (host: host, port: port, username: username);
   }
 
-  ({String host, String share, String username})? _readFbSmbForm(
-      int slot, _FallbackData fb) {
+  ({String host, String share, String rootPath, String username})?
+      _readFbSmbForm(int slot, _FallbackData fb) {
     final label = fallbackLabel(slot);
     final host = fb.host.text.trim();
     if (host.isEmpty) {
       setState(() => _error = '$label：请填写 SMB 主机（IP 或主机名）');
       return null;
     }
-    final share = fb.share.text.trim();
+    final (:share, :rootPath) = smbParseInputPath(fb.smbPath.text);
     if (share.isEmpty) {
-      setState(() => _error = '$label：请填写共享名（如 music）');
+      setState(() =>
+          _error = '$label：请填写路径（共享名或 共享名/子目录，如 music/flac）');
       return null;
     }
-    return (host: host, share: share, username: fb.username.text.trim());
+    return (
+      host: host,
+      share: share,
+      rootPath: rootPath,
+      username: fb.username.text.trim()
+    );
   }
 
   Future<void> _importFbKeyFile(int slot, _FallbackData fb) async {
@@ -686,6 +720,7 @@ class _SourceDialogState extends State<_SourceDialog> {
       await SmbDirectSource.testConnection(
         host: form.host,
         share: form.share,
+        rootPath: form.rootPath,
         username: form.username,
         password: fb.password.text,
         useSmbConnect: isOhos,
@@ -883,10 +918,11 @@ class _SourceDialogState extends State<_SourceDialog> {
                 ),
               ),
               TextField(
-                controller: fb.share,
+                controller: fb.smbPath,
                 decoration: const InputDecoration(
-                  labelText: '共享名',
-                  hintText: 'music',
+                  labelText: '路径',
+                  hintText: 'music 或 music/flac',
+                  helperText: '首个「/」前为共享名，其余为共享内目录',
                 ),
               ),
               TextField(
@@ -899,13 +935,6 @@ class _SourceDialogState extends State<_SourceDialog> {
                 obscureText: true,
                 decoration: const InputDecoration(
                     labelText: '密码（可空，空即匿名）'),
-              ),
-              TextField(
-                controller: fb.path,
-                decoration: const InputDecoration(
-                  labelText: '根目录（可空，空=共享根）',
-                  hintText: 'music/flac',
-                ),
               ),
               const SizedBox(height: 8),
               OutlinedButton.icon(
@@ -1006,12 +1035,14 @@ class _SourceDialogState extends State<_SourceDialog> {
     // 主 + 备用去重（与 manager 同口径，提前报错避免半落库）。
     String? fbErr;
     try {
+      final smbProbe =
+          _kind == SourceKind.smb ? smbParseInputPath(_smbPath.text) : null;
       final primaryProbe = <String, dynamic>{
         'baseUrl': _baseUrl.text.trim(),
         'host': _host.text.trim(),
         'port': int.tryParse(_port.text.trim()) ?? 22,
-        'share': _share.text.trim(),
-        'path': _path.text.trim(),
+        'share': smbProbe?.share ?? '',
+        'path': smbProbe?.rootPath ?? _path.text.trim(),
       };
       fbErr = direct.validateFallbacks(_kind.name, primaryProbe, fbMaps);
     } catch (_) {}
@@ -1082,7 +1113,6 @@ class _SourceDialogState extends State<_SourceDialog> {
       } else if (_kind == SourceKind.smb) {
         final form = _readSmbForm();
         if (form == null) return;
-        final root = _path.text.trim();
         if (_isEdit) {
           await direct.updateSource(widget.editKey!,
               name: name,
@@ -1090,7 +1120,7 @@ class _SourceDialogState extends State<_SourceDialog> {
               share: form.share,
               username: form.username,
               password: _password.text,
-              path: root,
+              path: form.rootPath,
               route: _route,
               fallbacks: fbMaps);
         } else {
@@ -1100,7 +1130,7 @@ class _SourceDialogState extends State<_SourceDialog> {
               share: form.share,
               username: form.username,
               password: _password.text,
-              rootPath: root,
+              rootPath: form.rootPath,
               route: _route,
               fallbacks: fbMaps);
         }
@@ -1376,10 +1406,11 @@ class _SourceDialogState extends State<_SourceDialog> {
                 ),
               ),
               TextField(
-                controller: _share,
+                controller: _smbPath,
                 decoration: const InputDecoration(
-                  labelText: '共享名',
-                  hintText: 'music',
+                  labelText: '路径',
+                  hintText: 'music 或 music/flac',
+                  helperText: '首个「/」前为共享名，其余为共享内目录',
                 ),
               ),
               TextField(
@@ -1392,13 +1423,6 @@ class _SourceDialogState extends State<_SourceDialog> {
                 obscureText: true,
                 decoration: const InputDecoration(
                     labelText: '密码（可空，空即匿名）'),
-              ),
-              TextField(
-                controller: _path,
-                decoration: const InputDecoration(
-                  labelText: '根目录（可空，空=共享根）',
-                  hintText: 'music/flac',
-                ),
               ),
               const SizedBox(height: 8),
               OutlinedButton.icon(

@@ -64,6 +64,33 @@ String smbRelRef(String rootPath, String remote) {
   return remoteParts.sublist(rootParts.length).join('/');
 }
 
+/// 弹窗「路径」输入 → `(共享名, 共享内根目录)`：首个 `/` 前的首段为共享名，
+/// 其余为根目录（无 `/` 则整串为共享名、根目录为空）。`\` 视同 `/`（Windows
+/// 习惯容错）；首尾/连续斜杠与 `.`/`..` 段过滤（与运行期 [smbRemotePath] 同口径）。
+/// 纯函数，可单测。
+({String share, String rootPath}) smbParseInputPath(String input) {
+  final parts = input
+      .trim()
+      .replaceAll('\\', '/')
+      .split('/')
+      .where((s) => s.isNotEmpty && s != '.' && s != '..')
+      .toList();
+  if (parts.isEmpty) return (share: '', rootPath: '');
+  return (share: parts.first, rootPath: parts.skip(1).join('/'));
+}
+
+/// `(共享名, 共享内根目录)` → 弹窗「路径」输入（编辑回填；无根目录只有共享名）。
+/// 纯函数，可单测。
+String smbJoinInputPath({required String share, required String rootPath}) {
+  final s = share.trim();
+  final r = rootPath
+      .split('/')
+      .where((x) => x.isNotEmpty && x != '.' && x != '..')
+      .join('/');
+  if (s.isEmpty) return r;
+  return r.isEmpty ? s : '$s/$r';
+}
+
 /// 音频后缀判定（与 WebDAV/SFTP 同集合）。
 bool isSmbAudioFile(String path) =>
     RegExp(r'\.(mp3|flac|m4a|aac|ogg|wav|aif|aiff|aifc)$', caseSensitive: false)

@@ -93,16 +93,19 @@ class SmbDirectSource implements MusicSource {
       );
 
   /// 测试连接（弹窗用；按平台选后端，不保存源）。
-  /// 主机/共享为空直接抛；连通性/鉴权错误按播放链路同口径映射。
+  /// 主机/共享为空直接抛；[rootPath] 非空时顺带验证该子目录可达；
+  /// 连通性/鉴权错误按播放链路同口径映射。
   static Future<void> testConnection({
     required String host,
     required String share,
     required String username,
     required String password,
     required bool useSmbConnect,
+    String rootPath = '',
   }) async {
     if (host.trim().isEmpty) throw StateError('请填写 SMB 主机');
     if (share.trim().isEmpty) throw StateError('请填写共享名');
+    final root = smbRemotePath(rootPath, '');
     if (useSmbConnect) {
       final b = SmbConnectBackend(
           host: host.trim(),
@@ -110,7 +113,7 @@ class SmbDirectSource implements MusicSource {
           username: username,
           password: password);
       try {
-        await b.testConnection();
+        await b.testConnection(root);
       } finally {
         await b.close();
       }
@@ -122,7 +125,7 @@ class SmbDirectSource implements MusicSource {
         username: username,
         password: password);
     try {
-      await b.testConnection();
+      await b.testConnection(root);
     } finally {
       await b.close();
     }

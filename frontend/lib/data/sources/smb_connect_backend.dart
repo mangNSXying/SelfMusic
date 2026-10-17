@@ -117,8 +117,11 @@ class SmbConnectBackend {
     }
   }
 
-  Future<void> testConnection() async {
-    await _withConn((c) => c.listFiles(_rootFolder()), 'SMB 连接测试（$_where）');
+  /// 测试连接：列出 [root]（空=共享根）；弹窗「路径」带子目录时顺带验证
+  /// 子目录可达（扫描就依赖它，早失败早提示）。
+  Future<void> testConnection([String root = '']) async {
+    await _withConn(
+        (c) => c.listFiles(_rootFolder(root)), 'SMB 连接测试（$_where）');
   }
 
   Future<int> fileSize(String remote) => _withConn((c) async {

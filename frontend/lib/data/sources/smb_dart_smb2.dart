@@ -93,8 +93,10 @@ class Smb2PoolBackend {
     }
   }
 
-  Future<void> testConnection() async {
-    await _withPool((p) => p.listDirectory(''), 'SMB 连接测试（$_where）');
+  /// 测试连接：列出 [remote]（空=共享根）；弹窗「路径」带子目录时顺带验证
+  /// 子目录可达（扫描就依赖它，早失败早提示）。
+  Future<void> testConnection([String remote = '']) async {
+    await _withPool((p) => p.listDirectory(remote), 'SMB 连接测试（$_where）');
   }
 
   Future<int> fileSize(String remote) => _withPool(
@@ -188,7 +190,8 @@ class Smb2PoolBackend {
 }
 
 /// 扫描 isolate 内递归枚举（同步 FFI；调用方传已洗好的连接参数）。
-/// 返回共享相对路径的原始条目（调用方再按 `rootPath` 折成 `ref`）。
+/// `ref` 为**源内相对**（已按 [root] 折前缀，与 smb_connect 后端同口径）；
+/// 全远端路径由调用方 `smbRemotePath(rootPath, ref)` 拼回，不再二次带前缀。
 Future<List<SmbScanEntry>> smb2Walk({
   required String host,
   required String share,
@@ -223,7 +226,7 @@ Future<List<SmbScanEntry>> smb2Walk({
       onFile?.call(done, files.length);
       if (minSizeBytes > 0 && f.size > 0 && f.size < minSizeBytes) continue;
       out.add(SmbScanEntry(
-        ref: f.remote,
+        ref: smbRelRef(root, f.remote),
         size: f.size,
         mtime: f.mtime,
       ));
