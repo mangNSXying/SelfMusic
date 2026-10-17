@@ -19,7 +19,8 @@ import 'smb_dart_smb2.dart';
 /// SMB 直连源完整实现（阶段 4，DEVELOPER.md「客户端播放源」）。
 ///
 /// - 双后端：非 ohos 走 `dart_smb2`（FFI libsmb2，SMB2/3），ohos 走 vendored
-///   `smb_connect`（纯 Dart，最高 SMB 2.1）；由 [useSmbConnect] 选择
+///   `smb_connect`（纯 Dart，协商上限 SMB 3.1.1，失败回退 SMB 2.1）；由
+///   [useSmbConnect] 选择
 ///   （`DirectSourceManager` 按 `isOhos` 传入，数据层不直接做平台判断）。
 /// - 扫描：在 worker isolate 内直连（`runScan` 驱动，可汇报进度/可取消），
 ///   枚举只取 ref/size/mtime（协议无 etag），落库逻辑与 WebDAV/SFTP 同口径；

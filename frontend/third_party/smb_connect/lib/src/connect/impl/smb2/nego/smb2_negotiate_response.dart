@@ -350,7 +350,7 @@ class Smb2NegotiateResponse extends ServerMessageBlock2Response
         negotiateContextCount != 0) {
       int ncpos = getHeaderStart() + negotiateContextOffset;
       List<NegotiateContextResponse?> contexts =
-          List.generate(length, (index) => null);
+          List<NegotiateContextResponse?>.filled(negotiateContextCount, null);
       for (int i = 0; i < negotiateContextCount; i++) {
         int type = SMBUtil.readInt2(buffer, ncpos);
         int dataLen = SMBUtil.readInt2(buffer, ncpos + 2);

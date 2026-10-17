@@ -66,24 +66,31 @@ abstract class SmbConnect {
     Function(SmbConnect)? onDisconnect,
   }) async {
     SmbTransport transport = SmbTransport(config, host);
-    if (!await transport.ensureConnected()) {
-      throw "Can't connect to $host";
-    }
-    SmbConnect connect;
-    if (!transport.isSMB2()) {
-      connect = Smb1Connect(config, transport);
-    } else {
-      connect = Smb2Connect(config, transport);
-    }
-    final session = connect.initSession();
-    await session.setup();
+    try {
+      if (!await transport.ensureConnected()) {
+        throw "Can't connect to $host";
+      }
+      SmbConnect connect;
+      if (!transport.isSMB2()) {
+        connect = Smb1Connect(config, transport);
+      } else {
+        connect = Smb2Connect(config, transport);
+      }
+      final session = connect.initSession();
+      await session.setup();
 
-    if (onDisconnect != null) {
-      transport.onDisconnect = (_) {
-        onDisconnect.call(connect);
-      };
+      if (onDisconnect != null) {
+        transport.onDisconnect = (_) {
+          onDisconnect.call(connect);
+        };
+      }
+      return connect;
+    } catch (_) {
+      // 失败时释放底层 socket（含 3.1.1 协商失败后回退 2.1 的场景），
+      // 避免每次重试泄漏一条半开连接。
+      await transport.close();
+      rethrow;
     }
-    return connect;
   }
 
   static Future<SmbConnect> connectAuth({

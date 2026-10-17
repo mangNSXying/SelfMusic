@@ -4,7 +4,8 @@
 ///   路径为 `rootPath/ref`（BACKSLASH 不出现在任何一层，对外统一 `/`，
 ///   两后端各自转义）；
 /// - 后端选择：非 ohos 走 `dart_smb2`（FFI libsmb2，SMB2/3），ohos 走 vendored
-///   `smb_connect`（纯 Dart，最高 SMB 2.1），见 DEVELOPER.md「客户端播放源」。
+///   `smb_connect`（纯 Dart，协商上限 SMB 3.1.1，失败回退 SMB 2.1），见
+///   DEVELOPER.md「客户端播放源」。
 library;
 
 import 'dart:convert';

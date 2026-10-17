@@ -56,6 +56,11 @@ class Smb2Session extends SmbSession {
     // request1.credit = 512;
     Smb2SessionSetupResponse response1 = await transport
         .sendrecv(request1, params: {RequestParam.RETAIN_PAYLOAD});
+    // SMB3.1.1 preauth 链：NEGOTIATE 之后依次追加 SESSION_SETUP 请求/响应原文。
+    final req1Raw = request1.getRawPayload();
+    if (req1Raw != null) transport.updatePreauthIntegrityHash(req1Raw);
+    final res1Raw = response1.getRawPayload();
+    if (res1Raw != null) transport.updatePreauthIntegrityHash(res1Raw);
     // sessId = response.getSessionId();
     if (config.debugPrint) {
       print("SessionId: ${response1.sessionId}");
@@ -78,6 +83,13 @@ class Smb2Session extends SmbSession {
     // request2.setRetainPayload();
     Smb2SessionSetupResponse response2 = await transport
         .sendrecv(request2, params: {RequestParam.RETAIN_PAYLOAD});
+    // 收齐第二次 SESSION_SETUP 后，preauth 链完整，派生的签名密钥才与
+    // 服务器一致（缺这一步 SMB3.1.1 会在签名校验/后续请求签名处失败）。
+    final req2Raw = request2.getRawPayload();
+    if (req2Raw != null) transport.updatePreauthIntegrityHash(req2Raw);
+    final res2Raw = response2.getRawPayload();
+    if (res2Raw != null) transport.updatePreauthIntegrityHash(res2Raw);
+    preauthIntegrityHash = transport.getPreauthIntegrityHash();
     token = response2.blob;
     if (config.debugPrint) {
       print("Smb session token2: ${token?.toHexString()}");
