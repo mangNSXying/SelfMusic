@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../platform/email_share.dart';
 import '../utils/build_stamp.dart';
 import '../widgets/app_toast.dart';
 import '../services/log_buffer.dart';
@@ -126,18 +127,28 @@ class AboutScreen extends StatelessWidget {
     );
     if (!context.mounted) return;
 
+    final meta =
+        'SelfMusic $kAppVersion${kBuildStamp.isNotEmpty ? '（$kBuildStamp）' : ''} · ${Platform.operatingSystem} ${Platform.operatingSystemVersion}';
+
     String extraBody = '';
-    String? logPath;
     if (includeLogs == true) {
-      logPath = await _exportLogsToTemp();
+      final logPath = await _exportLogsToTemp();
       if (logPath != null) {
-        extraBody =
-            '\n\n[日志文件：$logPath]\n请在邮件中附上该日志文件。';
+        // 优先走「自动带附件」的原生发送（Android 直达邮件应用 /
+        // 鸿蒙分享面板 / Linux xdg-email / Windows Thunderbird·Outlook）。
+        final attached = await sendEmailWithAttachment(
+          to: kFeedbackEmail,
+          subject: 'SelfMusic 反馈',
+          body: '\n\n---\n$meta',
+          attachmentPath: logPath,
+        );
+        if (attached) return;
+        // 附件通道不可用：回退 mailto（正文注明路径，手动附加）。
+        extraBody = '\n\n[日志文件：$logPath]\n请在邮件中附上该日志文件。';
       }
     }
 
-    final body =
-        '\n\n---\nSelfMusic $kAppVersion${kBuildStamp.isNotEmpty ? '（$kBuildStamp）' : ''} · ${Platform.operatingSystem} ${Platform.operatingSystemVersion}$extraBody';
+    final body = '\n\n---\n$meta$extraBody';
     final uri = Uri(
       scheme: 'mailto',
       path: kFeedbackEmail,
@@ -225,18 +236,37 @@ class AboutScreen extends StatelessWidget {
     }
   }
 
+  /// 导出日志到缓存子目录 `selfmusic_logs/`（Android FileProvider 按此目录
+  /// 授权给邮件应用读取；顺带清理 7 天前的旧日志防堆积）。
   Future<String?> _exportLogsToTemp() async {
-    final dir = await getTemporaryDirectory();
-    final now = DateTime.now();
-    final fileName =
-        'selfmusic_logs_${now.year}${_pad2(now.month)}${_pad2(now.day)}_${_pad2(now.hour)}${_pad2(now.minute)}${_pad2(now.second)}.txt';
-    final path = '${dir.path}/$fileName';
     try {
+      final base = await getTemporaryDirectory();
+      final dir = Directory('${base.path}/selfmusic_logs');
+      await dir.create(recursive: true);
+      final now = DateTime.now();
+      final fileName =
+          'selfmusic_logs_${now.year}${_pad2(now.month)}${_pad2(now.day)}_${_pad2(now.hour)}${_pad2(now.minute)}${_pad2(now.second)}.txt';
+      final path = '${dir.path}/$fileName';
       await LogBuffer.instance.exportToPath(path, since: const Duration(minutes: 1));
+      await _pruneOldLogs(dir);
       return path;
     } catch (e) {
       debugPrint('导出临时日志失败：$e');
       return null;
+    }
+  }
+
+  /// 删除 7 天前导出的临时日志（失败忽略，不影响本次导出）。
+  Future<void> _pruneOldLogs(Directory dir) async {
+    try {
+      final cutoff = DateTime.now().subtract(const Duration(days: 7));
+      await for (final entity in dir.list()) {
+        if (entity is! File) continue;
+        final stat = await entity.stat();
+        if (stat.modified.isBefore(cutoff)) await entity.delete();
+      }
+    } catch (e) {
+      debugPrint('清理旧日志失败（忽略）：$e');
     }
   }
 

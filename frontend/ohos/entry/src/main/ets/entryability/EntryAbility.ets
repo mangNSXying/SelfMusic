@@ -12,6 +12,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { GeneratedPluginRegistrant } from '../plugins/GeneratedPluginRegistrant';
 import AudioGuardBridge from '../media/AudioGuardBridge';
 import AvSessionBridge from '../media/AvSessionBridge';
+import EmailShareBridge from '../platform/EmailShareBridge';
 import PlatformBridge from '../platform/PlatformBridge';
 
 const TAG = 'SelfMusicBoot';
@@ -105,6 +106,7 @@ export default class EntryAbility extends FlutterAbility {
   private avSessionBridge: AvSessionBridge | null = null;
   private platformBridge: PlatformBridge | null = null;
   private audioGuardBridge: AudioGuardBridge | null = null;
+  private emailShareBridge: EmailShareBridge | null = null;
 
   configureFlutterEngine(flutterEngine: FlutterEngine): void {
     super.configureFlutterEngine(flutterEngine)
@@ -115,6 +117,9 @@ export default class EntryAbility extends FlutterAbility {
     // 系统能力平台桥（常亮/本地文件/蓝牙，selfmusic/platform）。
     this.platformBridge = new PlatformBridge(this.context);
     this.platformBridge.setup(flutterEngine)
+    // 反馈附件桥（反馈携带日志：systemShare 分享面板，selfmusic/email）。
+    this.emailShareBridge = new EmailShareBridge(this.context);
+    this.emailShareBridge.setup(flutterEngine)
     // 静音暂停/断连暂停信号源（com.shamiko.selfmusic/audio_guard，与 Android 同名通道）。
     this.audioGuardBridge = new AudioGuardBridge();
     this.audioGuardBridge.setup(flutterEngine)
@@ -150,6 +155,10 @@ export default class EntryAbility extends FlutterAbility {
     if (this.audioGuardBridge) {
       this.audioGuardBridge.shutdown();
       this.audioGuardBridge = null;
+    }
+    if (this.emailShareBridge) {
+      this.emailShareBridge.shutdown();
+      this.emailShareBridge = null;
     }
     super.onDestroy();
   }

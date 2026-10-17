@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 反馈附件共享范围：仅应用缓存目录下的 selfmusic_logs/ 子目录
+     （与 about_screen.dart 的 _exportLogsToTemp 写入位置一致） -->
+<paths>
+    <cache-path name="selfmusic_logs" path="selfmusic_logs/" />
+</paths>

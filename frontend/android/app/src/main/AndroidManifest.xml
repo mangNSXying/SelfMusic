@@ -57,6 +57,17 @@
                 <action android:name="android.intent.action.MEDIA_BUTTON" />
             </intent-filter>
         </receiver>
+        <!-- 反馈附件：FileProvider 把缓存目录 selfmusic_logs/ 下的日志文件
+             授权给邮件应用读取（content:// URI，无需存储权限；只授权该子目录） -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
@@ -77,6 +88,11 @@
              resolveActivity 被过滤永远返回 false（无需 QUERY_ALL_PACKAGES 权限） -->
         <intent>
             <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="mailto"/>
+        </intent>
+        <!-- 反馈附件：解析默认邮件应用（ACTION_SENDTO mailto）也要可见性声明 -->
+        <intent>
+            <action android:name="android.intent.action.SENDTO"/>
             <data android:scheme="mailto"/>
         </intent>
     </queries>
