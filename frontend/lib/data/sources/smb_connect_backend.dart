@@ -35,12 +35,17 @@ import 'smb_common.dart';
 ///
 /// 先按 NTSTATUS 标记判定（库抛的是 `SmbException extends Error`，消息含英文
 /// 标记；本工程自造的 StateError 全是中文消息，不会误伤），再透传本工程异常。
+const _smbAuthHint =
+    '用户名或密码可能不正确，或该共享无访问权限；若账密确认无误，'
+    '可能是服务器要求 SMB3 加密（鸿蒙纯 Dart 后端暂不支持），'
+    '请改用 WebDAV/SFTP，或仅在服务端放宽 SMB 加密';
+
 Object mapSmbConnectError(Object e, String what) {
   // 库内 Smb2Session 鉴权失败直接抛 SmbAuthException（message 为
   // "Logon failure..." / "Access is denied."）；先按类型判定，避免
   // 依赖英文文案。
   if (e is SmbAuthException) {
-    return SourceAuthException('$what：用户名或密码可能不正确，或该共享无访问权限');
+    return SourceAuthException('$what：$_smbAuthHint');
   }
   final s = e.toString().toUpperCase();
   if (s.contains('LOGON_FAILURE') ||
@@ -48,7 +53,7 @@ Object mapSmbConnectError(Object e, String what) {
       s.contains('UNKNOWN USER NAME OR BAD PASSWORD') ||
       s.contains('ACCOUNT_RESTRICTION') ||
       s.contains('ACCESS IS DENIED') && s.contains('SESSION')) {
-    return SourceAuthException('$what：用户名或密码可能不正确，或该共享无访问权限');
+    return SourceAuthException('$what：$_smbAuthHint');
   }
   if (s.contains('BAD_NETWORK_NAME') ||
       s.contains('BAD_NETWORK_PATH') ||
