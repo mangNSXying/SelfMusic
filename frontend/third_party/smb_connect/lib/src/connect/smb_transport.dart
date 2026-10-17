@@ -85,9 +85,15 @@ class SmbTransport {
     if (config.debugPrint) {
       print("Smb transport close called");
     }
-    await _inp.close();
+    // 连接尚未建立时 _inp/_socket 可能仍是 late 未初始化；关闭失败不应
+    // 覆盖原始连接异常（SmbConnect.connect 的失败清理路径会调用）。
+    try {
+      await _inp.close();
+    } catch (_) {}
     // await _out.close();
-    await _socket.close();
+    try {
+      await _socket.close();
+    } catch (_) {}
   }
 
   SmbNegotiationResponse? getNegotiatedResponse() => _negotiated;
@@ -130,8 +136,12 @@ class SmbTransport {
       }
       return true;
     } catch (e) {
-      print(e);
-      return false;
+      // SelfMusic 补丁：原先吞掉异常仅 return false，调用方只能看到
+      // "Can't connect to host"，无法区分「服务器拒绝 SMB2.1 / 鉴权失败 /
+      // 网络不可达」。这里原样抛出，交给 SmbConnectBackend.mapSmbConnectError
+      // 映射为面向用户的提示（并保留在 hilog 中便于排查）。
+      print('SMB connect failed: $e');
+      rethrow;
     }
   }
 
@@ -496,6 +506,18 @@ class SmbTransport {
     _preauthIntegrityHash =
         calculatePreauthHash(input, 0, input.length, _preauthIntegrityHash);
   }
+
+  /// SelfMusic 补丁：SMB3.1.1 的 preauth 完整性链需要包含
+  /// NEGOTIATE + 全部 SESSION_SETUP 请求/响应；Session 层在收齐后
+  /// 用本方法追加（原文由 retainPayload 保留）。
+  void updatePreauthIntegrityHash(Uint8List message) {
+    final dialect = _negotiated?.getSelectedDialect();
+    if (dialect == null || !dialect.atLeast(DialectVersion.SMB311)) return;
+    _updatePreauthHash(message);
+  }
+
+  /// 当前 preauth 完整性哈希（SMB3.1.1 派生签名/加密密钥用）。
+  Uint8List getPreauthIntegrityHash() => _preauthIntegrityHash;
 
   Uint8List calculatePreauthHash(
       Uint8List input, int off, int len, Uint8List? oldHash) {

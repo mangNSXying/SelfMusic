@@ -1,13 +1,20 @@
-/// ohos 端 SMB 后端（vendored `smb_connect`，纯 Dart，无原生二进制）。
+/// SMB 历史备用后端（vendored `smb_connect`，纯 Dart，无原生二进制）。
 ///
-/// - 方言最高 SMB 2.1（无 SMB3；NAS 需允许 SMB2 协商，见
-///   `third_party/smb_connect/PATCHES.md`）；
+/// 当前主流程已改为全平台 `dart_smb2`（ohos 打包 `libsmb2.so`），
+/// `useSmbConnect` 恒为 false；本类仅保留用于回溯/极端回退。
+///
+/// - 方言最高 SMB 3.1.1（修复上游协商上下文解析后启用）；SMB3 协商/建连
+///   失败（非鉴权原因）时自动回退 SMB 2.1，兼容只支持 SMB2 的旧 NAS。
+///   服务器若只允许 SMB3.1.1（`server min protocol = SMB3_11` 的 Samba），
+///   旧 2.1 后端会收到 NOT_SUPPORTED——这是鸿蒙/安卓差异的根因，见
+///   `third_party/smb_connect/PATCHES.md`；
 /// - 用户名与密码双空即匿名（`NtlmPasswordAuthenticator` 默认 ANONYMOUS）；
 /// - 读用 `RandomAccessFile`（setPosition + 分块 readInto + close，取消不留
 ///   服务端句柄；`openRead` 的 async* 流取消后关不掉句柄，不用）；
-/// - 错误为 `SmbException`（extends Error，消息含 NTSTATUS）：含 LOGON_FAILURE /
-///   ACCESS_DENIED → [SourceAuthException]；含 BAD_NETWORK_NAME / NOT_FOUND /
-///   NO_SUCH_FILE → StateError；其余 → [SmbStatusException]。
+/// - 错误为 `SmbException`（extends Error，`toString()` 为库内英文文案，
+///   如 "Logon failure…"/"Not supported"）：鉴权类 → [SourceAuthException]；
+///   BAD_NETWORK_NAME / NOT_FOUND / NO_SUCH_FILE → StateError；方言不支持 →
+///   带 SMB3 提示的 [SmbStatusException]；其余 → [SmbStatusException]。
 /// - 同一实例的连接按源复用；纯 Dart，扫描 isolate 内同样可用。
 library;
 
@@ -21,7 +28,8 @@ import 'package:smb_connect/smb_connect.dart'
         SmbFile,
         BaseConfiguration,
         DialectVersion,
-        NtlmPasswordAuthenticator;
+        NtlmPasswordAuthenticator,
+        SmbAuthException;
 
 import 'music_source.dart';
 import 'smb_common.dart';
@@ -30,12 +38,25 @@ import 'smb_common.dart';
 ///
 /// 先按 NTSTATUS 标记判定（库抛的是 `SmbException extends Error`，消息含英文
 /// 标记；本工程自造的 StateError 全是中文消息，不会误伤），再透传本工程异常。
+const _smbAuthHint =
+    '用户名或密码可能不正确，或该共享无访问权限；若账密确认无误，'
+    '可能是服务器要求 SMB3 加密（鸿蒙纯 Dart 后端暂不支持），'
+    '请改用 WebDAV/SFTP，或仅在服务端放宽 SMB 加密';
+
 Object mapSmbConnectError(Object e, String what) {
+  // 库内 Smb2Session 鉴权失败直接抛 SmbAuthException（message 为
+  // "Logon failure..." / "Access is denied."）；先按类型判定，避免
+  // 依赖英文文案。
+  if (e is SmbAuthException) {
+    return SourceAuthException('$what：$_smbAuthHint');
+  }
   final s = e.toString().toUpperCase();
   if (s.contains('LOGON_FAILURE') ||
+      s.contains('LOGON FAILURE') ||
+      s.contains('UNKNOWN USER NAME OR BAD PASSWORD') ||
       s.contains('ACCOUNT_RESTRICTION') ||
-      s.contains('ACCESS_DENIED') && s.contains('SESSION')) {
-    return SourceAuthException('$what：用户名或密码可能不正确，或该共享无访问权限');
+      s.contains('ACCESS IS DENIED') && s.contains('SESSION')) {
+    return SourceAuthException('$what：$_smbAuthHint');
   }
   if (s.contains('BAD_NETWORK_NAME') ||
       s.contains('BAD_NETWORK_PATH') ||
@@ -45,6 +66,15 @@ Object mapSmbConnectError(Object e, String what) {
       s.contains('OBJECT_PATH_NOT_FOUND')) {
     return StateError('$what：文件或目录不存在');
   }
+  if (s.contains('NOT_SUPPORTED') ||
+      s.contains('NOT SUPPORTED') ||
+      s.contains('NOT COMPATIBLE')) {
+    // 典型：服务器设了 server min protocol = SMB3_11，而协商列表里
+    // 没有可接受的方言（旧版仅到 SMB2.1 时会命中；库内表现为
+    // "This client is not compatible with the server."）。
+    return SmbStatusException(
+        '$what：服务器拒绝了当前 SMB 方言（可能要求 SMB3/3.1.1，或禁用了 SMB2）');
+  }
   // 本工程自造异常（全中文消息，走不到上面）原样透传，避免 what 前缀嵌套。
   if (e is SourceAuthException || e is StateError || e is SmbStatusException) {
     return e;
@@ -52,7 +82,8 @@ Object mapSmbConnectError(Object e, String what) {
   return SmbStatusException(smbShortErr(e, what));
 }
 
-BaseConfiguration _smbConnectConfig(String username, String password) =>
+BaseConfiguration _smbConnectConfig(String username, String password,
+        {bool smb3 = true}) =>
     BaseConfiguration(
       credentials: NtlmPasswordAuthenticator(
         username: username,
@@ -62,7 +93,8 @@ BaseConfiguration _smbConnectConfig(String username, String password) =>
       password: password,
       domain: '',
       bufferCacheSize: 0x1FFF,
-      maximumVersion: DialectVersion.SMB210,
+      // 先在方言列表里带上 3.1.1/3.0.x；服务器只支持 2.1 时会自动选 2.1。
+      maximumVersion: smb3 ? DialectVersion.SMB311 : DialectVersion.SMB210,
     );
 
 /// 主 isolate 播放/缓存用后端（连接按源复用；失败重建一次再试）。
@@ -95,7 +127,25 @@ class SmbConnectBackend {
       _conn = c;
       return c;
     } catch (e) {
-      throw mapSmbConnectError(e, 'SMB 连接失败（$_where）');
+      final mapped = mapSmbConnectError(e, 'SMB 连接失败（$_where）');
+      // 鉴权失败/目录不存在与方言无关，直接抛；网络不可达/超时也不必
+      // 重试另一种方言（否则每次请求要等两遍 35s 超时）。其余（例如
+      // 3.1.1 协商上下文、签名实现差异）回退只用 2.1 再试一次。服务器
+      // 只支持 3.1.1 时回退也会失败，此时保留第一次的错误。
+      if (mapped is SourceAuthException ||
+          mapped is StateError ||
+          e is SocketException ||
+          e is TimeoutException) {
+        throw mapped;
+      }
+      try {
+        final c = await SmbConnect.connect(
+            _smbConnectConfig(username, password, smb3: false), host);
+        _conn = c;
+        return c;
+      } catch (_) {
+        throw mapped;
+      }
     }
   }
 

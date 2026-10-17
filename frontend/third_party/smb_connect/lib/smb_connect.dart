@@ -8,3 +8,5 @@ export 'src/connect/impl/base_configuration.dart' show BaseConfiguration;
 export 'src/dialect_version.dart' show DialectVersion;
 export 'src/smb/ntlm_password_authenticator.dart'
     show NtlmPasswordAuthenticator;
+// SelfMusic 补丁：错误映射需要识别「账密错误」类型（SmbAuthException）。
+export 'src/exceptions.dart' show SmbAuthException, SmbException;

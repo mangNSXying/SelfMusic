@@ -168,6 +168,11 @@ class SmbException extends Error {
   String message;
   SmbException(this.message, [Object? e]);
 
+  /// SelfMusic 补丁：上游未覆写 toString，导致 `Instance of 'SmbException'`
+  /// 既丢失 NTSTATUS 文案、也无法按错误类型映射（上游 PR #10 同款修复）。
+  @override
+  String toString() => message;
+
   SmbException.code(int code, String? message)
       : this(message ?? "Error code: $code");
 }

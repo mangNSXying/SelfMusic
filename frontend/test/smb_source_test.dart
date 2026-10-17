@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:selfmusic/data/sources/music_source.dart';
 import 'package:selfmusic/data/sources/smb_common.dart';
 import 'package:selfmusic/data/sources/smb_connect_backend.dart';
+import 'package:smb_connect/smb_connect.dart' show SmbAuthException, SmbException;
 
 void main() {
   group('SMB 路径', () {
@@ -53,10 +54,35 @@ void main() {
   });
 
   group('SMB 错误映射', () {
+    test('smb_connect：SmbAuthException → SourceAuthException', () {
+      final e = mapSmbConnectError(
+          SmbAuthException('Logon failure: unknown user name or bad password.'),
+          'SMB 连接失败');
+      expect(e, isA<SourceAuthException>());
+    });
+
     test('smb_connect：LOGON_FAILURE → SourceAuthException', () {
       final e = mapSmbConnectError(
           StateError('NT_STATUS_LOGON_FAILURE'), 'SMB 读取');
       expect(e, isA<SourceAuthException>());
+    });
+
+    test('smb_connect：NOT_SUPPORTED → 方言提示', () {
+      final e =
+          mapSmbConnectError(SmbException('Not supported'), 'SMB 连接失败');
+      expect(e, isA<SmbStatusException>());
+      expect(e.toString(), contains('SMB 方言'));
+    });
+
+    test('smb_connect：Not compatible → 方言提示', () {
+      final e = mapSmbConnectError(SmbException(
+          'This client is not compatible with the server.'), 'SMB 连接失败');
+      expect(e, isA<SmbStatusException>());
+      expect(e.toString(), contains('SMB 方言'));
+    });
+
+    test('SmbException.toString 返回 message（不再 Instance of）', () {
+      expect(SmbException('Not supported').toString(), 'Not supported');
     });
 
     test('smb_connect：NOT_FOUND → StateError', () {
