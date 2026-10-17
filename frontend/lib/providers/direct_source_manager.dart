@@ -798,7 +798,7 @@ class DirectSourceManager extends ChangeNotifier {
         password: _smbPwds[key] ?? '',
         index: index,
         rootPath: cfg['path'] as String? ?? '',
-        useSmbConnect: isOhos,
+        useSmbConnect: false,
         route: parseSourceRoute(cfg['route']),
       );
     }
@@ -921,7 +921,7 @@ class DirectSourceManager extends ChangeNotifier {
         password: pwd,
         index: index,
         rootPath: fb['path'] as String? ?? '',
-        useSmbConnect: isOhos,
+        useSmbConnect: false,
         route: parseSourceRoute(fb['route']),
       );
     }

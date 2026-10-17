@@ -3,9 +3,9 @@
 /// - 路径：`ref` 为源内相对引用（`/` 分隔、相对 `rootPath`）；远端共享相对
 ///   路径为 `rootPath/ref`（BACKSLASH 不出现在任何一层，对外统一 `/`，
 ///   两后端各自转义）；
-/// - 后端选择：非 ohos 走 `dart_smb2`（FFI libsmb2，SMB2/3），ohos 走 vendored
-///   `smb_connect`（纯 Dart，协商上限 SMB 3.1.1，失败回退 SMB 2.1），见
-///   DEVELOPER.md「客户端播放源」。
+/// - 后端选择：全平台走 `dart_smb2`（FFI libsmb2，SMB2/3 + 加密）；ohos 通过
+///   打包的 `libsmb2.so` 同栈加载，见 DEVELOPER.md「客户端播放源」。
+/// - `smb_connect` 后端仅保留历史/调试备用，主流程不再使用。
 library;
 
 import 'dart:convert';

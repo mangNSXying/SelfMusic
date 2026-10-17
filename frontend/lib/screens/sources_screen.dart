@@ -526,7 +526,7 @@ class _SourceDialogState extends State<_SourceDialog> {
         rootPath: form.rootPath,
         username: form.username,
         password: _password.text,
-        useSmbConnect: isOhos,
+        useSmbConnect: false,
       );
     } catch (e) {
       if (!mounted) return;
@@ -723,7 +723,7 @@ class _SourceDialogState extends State<_SourceDialog> {
         rootPath: form.rootPath,
         username: form.username,
         password: fb.password.text,
-        useSmbConnect: isOhos,
+        useSmbConnect: false,
       );
     } catch (e) {
       if (!mounted) return;

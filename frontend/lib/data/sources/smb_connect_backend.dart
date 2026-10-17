@@ -1,4 +1,7 @@
-/// ohos 端 SMB 后端（vendored `smb_connect`，纯 Dart，无原生二进制）。
+/// SMB 历史备用后端（vendored `smb_connect`，纯 Dart，无原生二进制）。
+///
+/// 当前主流程已改为全平台 `dart_smb2`（ohos 打包 `libsmb2.so`），
+/// `useSmbConnect` 恒为 false；本类仅保留用于回溯/极端回退。
 ///
 /// - 方言最高 SMB 3.1.1（修复上游协商上下文解析后启用）；SMB3 协商/建连
 ///   失败（非鉴权原因）时自动回退 SMB 2.1，兼容只支持 SMB2 的旧 NAS。
