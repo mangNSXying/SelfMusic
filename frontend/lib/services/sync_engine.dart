@@ -16,12 +16,13 @@ import 'api_client.dart';
 /// 本引擎只负责把远端收敛结果搬进来、把本地变更搬出去。
 ///
 /// 触发：[start] 后 2s tick（有未确认事件立刻推；否则 30s 拉一次）+
-/// 启动/回前台/手动 [syncNow]/播放操作 [poke]。无 connectivity 依赖：断网时
-/// 请求抛错进退避，恢复后下一次 tick 自动追上（退避上限 30s）。
+/// 启动/回前台/手动 [syncNow]/播放操作 [poke]。冷启动首轮只拉不推（先掌握
+/// 远端再上报积压；推由后续全量轮承担），其余轮次先推后拉。无 connectivity
+/// 依赖：断网时请求抛错进退避，恢复后下一次 tick 自动追上（退避上限 30s）。
 ///
-/// 本机优先：每轮先推后拉；pull 快照命中“本地还有未推事件”的实体时跳过，
-/// 不覆盖本地脏行（等 push ack 后下一轮收敛）。push 回包的 corrections
-/// 是刚推完的仲裁结果，不受此限、照常自纠。
+/// 本机优先：常规轮先推后拉（冷启动首轮只拉）；pull 快照命中“本地还有未推
+/// 事件”的实体时跳过，不覆盖本地脏行（等 push ack 后下一轮收敛）。push
+/// 回包的 corrections 是刚推完的仲裁结果，不受此限、照常自纠。
 class SyncEngine {
   /// 定时器周期。非常量：测试可临时调小，免得像生产那样真等 2s。
   @visibleForTesting
@@ -143,9 +144,10 @@ class SyncEngine {
     // 快路径先行：最新断点 1 RTT 到手，不受全量 pull 分页 backlog 拖累
     // （旧服务端 404 → 静默回退，全量 pull 仍是兜底）。
     unawaited(pullLatestBreakpoint());
-    // 首轮即全量（先推后拉）：积压 outbox 本轮即推，不再等下一 tick；
-    // 断点恢复仍有快路径 1 RTT 先行，不被 push 挡住。
-    unawaited(syncNow());
+    // 冷启动首轮只拉不推：先掌握远端最新（其它设备可能已前进），再上报积压。
+    // 首轮在飞行时 tick 被单飞挡下，收尾后首个 tick（2s）见积压才发全量轮
+    // （先推后拉）——「先拉后推」自然成立，不需要额外闸门。
+    unawaited(syncNow(pullOnly: true));
   }
 
   /// 断点快路径（启动/回前台触发）：`GET /playstates/latest` 直取服务端最新

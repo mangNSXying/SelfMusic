@@ -257,6 +257,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? _lastBpKey;
   int _lastBpAtMs = 0;
 
+  /// 上次入队（或恢复/采用）的断点位置：`occurred_at` 语义=「最后操作时间」，
+  /// 暂停态原样补写（生命周期/退出落盘）不刷新时钟不重推（[-1]=从未上报）。
+  int _lastBpPosMs = -1;
+
   /// 断点跳过原因去重（诊断日志）：同因连续出现只打一条，
   /// 原因变化或成功入队即重置（本方法约每 10s 被调一次，逐次打会刷屏）。
   String? _lastBpSkipReason;
@@ -823,6 +827,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<(MusicSource, int)> debugLoadDirect(Song s, MusicSource src,
           {required bool Function() alive}) =>
       _playDirect(s, src, alive: alive);
+
+  /// 测试入口：把断点节流时钟拨老（模拟「距上次入队 >25s」），验证节流
+  /// 过期后暂停态原样补写仍不回推（无变化不刷 occurred_at 的回归防线）。
+  @visibleForTesting
+  void debugAgeBreakpointThrottle(Duration age) {
+    _lastBpAtMs = DateTime.now().millisecondsSinceEpoch - age.inMilliseconds;
+  }
 
   // ---------- 任务被划掉（Android 通知栏路径） ----------
 
@@ -3159,8 +3170,17 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     final key = '$uuid|${cur.source}|${cur.sourceRef}';
+    // occurred_at 语义=「最后操作时间」：非强制的落盘补写（回前台/退后台/退出
+    // 落盘、周期保存）只在断点**真的变了**（切歌/位置前进）时才入队；暂停态
+    // 原样补写直接跳过——否则会把本机陈旧断点盖上 now 推上服务端，被 LWW 收下
+    // 后覆盖其它设备更新的进度（回前台补写毒源，与冷启动恢复同款）。
+    if (!force && key == _lastBpKey && pos.inMilliseconds == _lastBpPosMs) {
+      _logBpSkip('断点无变化（补写不刷新 occurred_at）');
+      return;
+    }
     if (force || key != _lastBpKey || nowMs - _lastBpAtMs > 25000) {
       _lastBpKey = key;
+      _lastBpPosMs = pos.inMilliseconds;
       _lastBpAtMs = nowMs;
       _lastBpSkipReason = null;
       final sourceId = idx.sourceUuidOf(cur.sourceKey);
@@ -3404,7 +3424,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
         _current = _queue[0];
       }
-      // 恢复本机断点同样不立即回推（复用 25s 节流）：避免本机旧位置以更新的
+      // 恢复本机断点同样不立即回推（复用 25s 节流 + 装载后记录位置进
+      // [_lastBpPosMs]：暂停态原样补写不再入队）：避免本机旧位置以更新的
       // occurred_at 覆盖正在播放的领播端；随后真实播放位置流会重新入队。
       _lastBpKey = '$_syncPlaylistUuid|${_current!.source}|${_current!.sourceRef}';
       _lastBpAtMs = DateTime.now().millisecondsSinceEpoch;
@@ -3437,6 +3458,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
         // 真实 seek 完成（装载失败/no-op 同样经过这里）：乐观值退场。
         _clearRestorePosition();
+        // 记录恢复后的真实位置：暂停态原样补写不再回推（无变化不刷 occurred_at）。
+        _lastBpPosMs = position.inMilliseconds;
       }
       notifyListeners();
       _syncSystemMedia();
@@ -3506,7 +3529,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _current = _queue[_idx];
     // 采用远端断点为当前状态：基准=镜像比较时钟（最后操作时间，F4），
     // 并对刚 adopted 的状态做一次回推节流——跟随端不应以更新的 occurred_at
-    // 把暂停位置写回服务端、反过来覆盖正在播放的领播端（复用 25s 节流）。
+    // 把暂停位置写回服务端、反过来覆盖正在播放的领播端（25s 节流 + 装载后
+    // 记录位置：无变化补写永不回推）。
     _breakpointBaselineAt = DateTime.tryParse(m.compareClock);
     final adopted = _current!;
     _lastBpKey = '$_syncPlaylistUuid|${adopted.source}|${adopted.sourceRef}';
@@ -3528,6 +3552,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
       // 真实 seek 完成：乐观值退场。
       _clearRestorePosition();
+      // 记录采用后的真实位置：暂停态原样补写不再回推（无变化不刷 occurred_at）。
+      _lastBpPosMs = position.inMilliseconds;
       notifyListeners();
       _syncSystemMedia();
       AppToast.show('已从其他设备继续播放（${_fmtMs(pos)}）', isError: false);

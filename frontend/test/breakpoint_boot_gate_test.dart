@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio_platform_interface/just_audio_platform_interface.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
@@ -319,5 +320,45 @@ void main() {
         reason: '未走启动恢复（断点续播关）时闸门默认已开，不许回归出「永不推断点」');
     await player.pauseFromNotifier();
     await Future<void>.delayed(const Duration(milliseconds: 150));
+  });
+
+  test('暂停态补写不刷新断点时钟：节流过期后原样补写也不回推，seek 变化才入队', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+    await player.restorePreferRemote();
+    await settle();
+    // 无镜像 → 本机最新：首个判定开闸（模拟 boot 收敛完成）。
+    await player.applyNewerMirrorIfAny();
+    await settle();
+    expect(await index.pendingOutboxCount(), 0,
+        reason: '恢复/判定期不得入队（闸门 + 无变化补写）');
+
+    // 把节流时钟拨老 30s：旧实现此时认为「距上次入队已过 25s」，下一次暂停态
+    // 补写就会把旧断点盖上 now 推上去（回前台毒源的完整条件）。
+    player.debugAgeBreakpointThrottle(const Duration(seconds: 30));
+
+    // 回前台补写：暂停态原样（位置未变）→ 必须不入队。
+    player.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    await settle();
+    expect(await index.pendingOutboxCount(), 0,
+        reason: '暂停态原样补写：节流过期也不得回推（无变化不刷 occurred_at）');
+
+    // 正面对照：位置真的变了（用户 seek）→ 补写正常入队。
+    await player.seek(const Duration(seconds: 20));
+    player.didChangeAppLifecycleState(AppLifecycleState.paused);
+    await settle();
+    final pending = await index.pendingOutbox();
+    expect(pending.length, 1, reason: '位置变化（seek）属真实变化：补写必须入队');
+    expect(pending.single.type, 'breakpoint.set');
+    expect(pending.single.payload['source_ref'], '/x/a.flac');
+    expect((pending.single.payload['position_ms'] as num).toInt(), 20000);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
   });
 }

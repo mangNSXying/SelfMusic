@@ -10,10 +10,11 @@ import 'package:selfmusic/services/api_client.dart';
 import 'package:selfmusic/services/sync_engine.dart';
 import 'package:sqlite3/open.dart';
 
-/// 启动先推后拉（本机优先）：`start()` 的首轮即全量——积压 outbox 本轮即推，
-/// 不再等下一 tick；断点恢复仍有 `pullLatestBreakpoint` 快路径 1 RTT 先行，
-/// 不被 push 挡住。`awaitFirstPull()` 仍是 pullOnly（只负责把断点拉回来，
-/// 不叠加新一轮）。Root 只等在飞行首轮收尾。
+/// 启动先拉后推：`start()` 的首轮只做全量拉（pullOnly）——先掌握远端最新，
+/// 积压 outbox 不抢在远端状态之前上推；推由后续全量轮承担：首轮在飞行时 tick
+/// 被单飞挡下，收尾后首个 tick 见积压才发全量轮（先推后拉）。断点恢复仍有
+/// `pullLatestBreakpoint` 快路径 1 RTT 先行。`awaitFirstPull()` 等在飞行首轮
+/// 收尾，不叠加新一轮。Root 只等在飞行首轮收尾。
 DynamicLibrary _openOnLinux() {
   try {
     return DynamicLibrary.open('libsqlite3.so');
@@ -98,24 +99,29 @@ void main() {
     if (tmp.existsSync()) tmp.deleteSync(recursive: true);
   });
 
-  test('start 首轮即全量：先推后拉，积压 outbox 本轮带走', () async {
+  test('start 首轮只拉不推：积压 outbox 不进启动轮，后续全量轮带走', () async {
     await index.enqueueOutbox('song.state', {'a': 1});
 
     engine.start();
 
-    // 等首轮完成（push+pull 同轮）。
+    // 等启动首轮（纯拉）完全收尾。
     var waited = 0;
-    while ((api.pulls == 0 || api.pushes == 0) && waited < 100) {
+    while (api.pulls == 0 && waited < 100) {
       await Future<void>.delayed(const Duration(milliseconds: 10));
       waited++;
     }
+    await Future<void>.delayed(const Duration(milliseconds: 100));
     expect(api.pulls, greaterThan(0), reason: '启动首轮应立即拉取');
-    expect(api.pushes, greaterThan(0),
-        reason: '本机优先：启动首轮先推后拉，积压 outbox 本轮即推');
-    expect(await index.pendingOutboxCount(), 0, reason: '事件已被本轮带走');
+    expect(api.pushes, 0, reason: '冷启动首轮只拉不推：先掌握远端再上报积压');
+    expect(await index.pendingOutboxCount(), 1, reason: '积压未被启动轮带走');
+
+    // 后续全量轮（tick/poke/手动同口径）：积压照常先推后拉带走。
+    await engine.syncNow(force: true);
+    expect(api.pushes, greaterThan(0), reason: '后续全量轮补推积压');
+    expect(await index.pendingOutboxCount(), 0, reason: '事件已被全量轮带走');
   });
 
-  test('start 首轮顺序：push 先于 pull（旧快照不覆盖本地脏行）', () async {
+  test('全量轮顺序：push 先于 pull（旧快照不覆盖本地脏行）', () async {
     final order = <String>[];
     final api = _OrderApi(order);
     final eng = SyncEngine(
@@ -123,13 +129,19 @@ void main() {
     await index.enqueueOutbox('song.state', {'a': 1});
 
     eng.start();
+    // 等启动首轮（纯拉）完全收尾，再验证后续全量轮的推拉顺序。
     var waited = 0;
-    while (order.length < 2 && waited < 100) {
+    while (order.isEmpty && waited < 100) {
       await Future<void>.delayed(const Duration(milliseconds: 10));
       waited++;
     }
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(order, ['pull'], reason: '冷启动首轮只拉');
+    order.clear();
+
+    await eng.syncNow(force: true);
     expect(order, ['push', 'pull'],
-        reason: '本机优先：push 必须先于 pull，否则旧快照先落库覆盖脏行');
+        reason: '本机优先：全量轮 push 必须先于 pull，否则旧快照先落库覆盖脏行');
     eng.stop();
   });
 
@@ -165,7 +177,7 @@ void main() {
   });
 }
 
-/// 记录 push/pull 相对顺序的 Api（首轮先推后断言言用）。
+/// 记录 push/pull 相对顺序的 Api（全量轮先推后拉顺序断言用）。
 class _OrderApi extends ApiClient {
   final List<String> order;
   _OrderApi(this.order);
