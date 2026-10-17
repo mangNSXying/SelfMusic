@@ -1,0 +1,706 @@
+
+import {
+  Any,
+  EventChannel,
+  EventSink,
+  FlutterEngine,
+  Log,
+  MethodCall,
+  MethodCallHandler,
+  MethodChannel,
+  MethodResult,
+  StreamHandler
+} from '@ohos/flutter_ohos';
+import { media } from '@kit.MediaKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
+import { BusinessError } from '@kit.BasicServicesKit';
+
+const TAG = 'SelfMusicAvPlayer';
+/** 与 Dart 侧（just_audio_avplayer.dart）约定的方法通道。 */
+const METHOD_CHANNEL = 'selfmusic/avplayer';
+/** 与 Dart 侧约定的事件通道（100ms 位置上报等）。 */
+const EVENT_CHANNEL = 'selfmusic/avplayer/events';
+
+/**
+ * 单个 AVPlayer 实例的桥内状态。
+ *
+ * load 的完成信号来自 stateChange（prepared / error），因此把 resolve/reject
+ * 暂存在 entry 上；同一实例同一时刻只允许一个 load（just_audio 串行调用）。
+ */
+class PlayerEntry {
+  readonly id: string;
+  player: media.AVPlayer | null = null;
+  /** 本地文件 fd（-1=无）；由本桥负责关闭（AVFileDescriptor 文档口径）。 */
+  fd: number = -1;
+  /** 本次 load 已置源，等待 initialized 后触发 prepare。 */
+  preparing: boolean = false;
+  onPrepared: ((durationMs: number) => void) | null = null;
+  onLoadError: ((message: string) => void) | null = null;
+  /** error 事件与 error 状态可能先后到达，只上报一次。 */
+  errorReported: boolean = false;
+  /** error 态 reset 不可靠，下次 load 直接 release + 重建。 */
+  needsRecreate: boolean = false;
+  released: boolean = false;
+  /** prepared 前收到的音量（AVPlayer 仅在 prepared 后允许 setVolume）。 */
+  pendingVolume: number = -1;
+
+  constructor(id: string) {
+    this.id = id;
+  }
+}
+
+/**
+ * 鸿蒙系统 AVPlayer 播放桥（替代 fvp/libmdk 的 PoC 实现）。
+ *
+ * 通道协议：
+ * - 方法 selfmusic/avplayer：
+ *   createPlayer{playerId} / load{playerId,url|filePath,headersJson,initialPositionMs}
+ *   play / pause / stop / seek{positionMs} / setVolume{volume} /
+ *   reset / dispose / disposeAll（后三者均带 playerId 或空）
+ * - 事件 selfmusic/avplayer/events：Map 负载，均带 type + playerId：
+ *   state / position / duration / buffered / seekDone / ended / error
+ *
+ * 关键约定：
+ * - 监听必须先于置源注册（官方要求，否则丢 stateChange）；
+ * - 文件走 fdSrc（fd 由桥持有到 reset/dispose 再关）；
+ * - 带请求头走 createMediaSourceWithUrl + setMediaSource（API 12+）；
+ * - error 态只上报并标记重建，不在错误回调里 reset（错误回调内 reset 可能再次抛错）。
+ */
+export default class AvPlayerBridge implements MethodCallHandler, StreamHandler {
+  private methodChannel: MethodChannel | null = null;
+  private eventChannel: EventChannel | null = null;
+  private sink: EventSink | null = null;
+  private players: Map<string, PlayerEntry> = new Map();
+
+  /** EntryAbility.configureFlutterEngine 中调用：注册方法/事件双通道。 */
+  setup(flutterEngine: FlutterEngine): void {
+    const messenger = flutterEngine.getDartExecutor().getBinaryMessenger();
+    this.methodChannel = new MethodChannel(messenger, METHOD_CHANNEL);
+    this.methodChannel.setMethodCallHandler(this);
+    this.eventChannel = new EventChannel(messenger, EVENT_CHANNEL);
+    this.eventChannel.setStreamHandler(this);
+    Log.w(TAG, 'AVPlayer 桥就绪');
+  }
+
+  /** EntryAbility.onDestroy 中调用：释放所有播放器。 */
+  shutdown(): void {
+    for (const entry of this.players.values()) {
+      this.releaseEntry(entry);
+    }
+    this.players.clear();
+    this.sink = null;
+  }
+
+  onListen(args: Any, events: EventSink): void {
+    this.sink = events;
+    Log.i(TAG, '事件通道已订阅');
+  }
+
+  onCancel(args: Any): void {
+    this.sink = null;
+    Log.i(TAG, '事件通道已取消');
+  }
+
+  onMethodCall(call: MethodCall, result: MethodResult): void {
+    this.dispatch(call, result).catch((e: Error): void => {
+      Log.e(TAG, `${call.method} 异常: ${e.message}`);
+      result.error('avplayer', e.message, null);
+    });
+  }
+
+  private async dispatch(call: MethodCall, result: MethodResult): Promise<void> {
+    switch (call.method) {
+      case 'createPlayer':
+        await this.handleCreate(call, result);
+        return;
+      case 'load':
+        await this.handleLoad(call, result);
+        return;
+      case 'play':
+        await this.handlePlay(call, result);
+        return;
+      case 'pause':
+        await this.handlePause(call, result);
+        return;
+      case 'stop':
+        await this.handleStop(call, result);
+        return;
+      case 'seek':
+        this.handleSeek(call, result);
+        return;
+      case 'setVolume':
+        this.handleSetVolume(call, result);
+        return;
+      case 'reset':
+        await this.handleReset(call, result);
+        return;
+      case 'dispose':
+        await this.handleDispose(call, result, false);
+        return;
+      case 'disposeAll':
+        await this.handleDispose(call, result, true);
+        return;
+      default:
+        result.notImplemented();
+        return;
+    }
+  }
+
+  // ---------- 方法实现 ----------
+
+  private async handleCreate(call: MethodCall, result: MethodResult): Promise<void> {
+    const id = this.stringArg(call, 'playerId');
+    if (id === null) {
+      result.error('400', '缺少 playerId', null);
+      return;
+    }
+    const old = this.players.get(id);
+    if (old !== undefined) {
+      await this.releaseEntry(old);
+    }
+    const entry = new PlayerEntry(id);
+    await this.createNative(entry);
+    this.players.set(id, entry);
+    result.success(null);
+  }
+
+  private async handleLoad(call: MethodCall, result: MethodResult): Promise<void> {
+    const id = this.stringArg(call, 'playerId');
+    if (id === null) {
+      result.error('400', '缺少 playerId', null);
+      return;
+    }
+    const entry = this.players.get(id);
+    if (entry === undefined) {
+      result.error('404', `播放器不存在: ${id}`, null);
+      return;
+    }
+    const url = this.stringArg(call, 'url');
+    const filePath = this.stringArg(call, 'filePath');
+    if (url === null && filePath === null) {
+      result.error('400', 'url/filePath 至少一个', null);
+      return;
+    }
+    const headers = this.parseHeaders(this.stringArg(call, 'headersJson'));
+    const initialMs = this.numberArg(call, 'initialPositionMs') ?? 0;
+    Log.w(TAG, `load ${id} file=${filePath !== null} headerCount=${Object.keys(headers).length} initialMs=${initialMs}`);
+    try {
+      const durationMs = await this.loadInternal(entry, url, filePath, headers, initialMs);
+      Log.w(TAG, `load ${id} ok durationMs=${durationMs}`);
+      const out: Map<string, string | number> = new Map();
+      out.set('durationMs', durationMs);
+      result.success(out);
+    } catch (e) {
+      const msg = (e as Error).message;
+      Log.e(TAG, `load 失败 ${id}: ${msg}`);
+      result.error('load', msg, null);
+    }
+  }
+
+  private async handlePlay(call: MethodCall, result: MethodResult): Promise<void> {
+    const entry = this.entryOf(call);
+    const player = entry !== null ? entry.player : null;
+    if (entry === null || player === null) {
+      result.error('404', '播放器不存在', null);
+      return;
+    }
+    const state = player.state;
+    if (state === 'playing') {
+      result.success(null);
+      return;
+    }
+    if (state !== 'prepared' && state !== 'paused' && state !== 'completed') {
+      Log.w(TAG, `play 忽略：state=${state}`);
+      result.success(null);
+      return;
+    }
+    try {
+      await player.play();
+      result.success(null);
+    } catch (e) {
+      Log.w(TAG, `play 忽略异常 ${entry.id}: ${(e as BusinessError).code}`);
+      result.success(null);
+    }
+  }
+
+  private async handlePause(call: MethodCall, result: MethodResult): Promise<void> {
+    const entry = this.entryOf(call);
+    const player = entry !== null ? entry.player : null;
+    if (entry === null || player === null) {
+      result.error('404', '播放器不存在', null);
+      return;
+    }
+    if (player.state !== 'playing') {
+      result.success(null);
+      return;
+    }
+    try {
+      await player.pause();
+      result.success(null);
+    } catch (e) {
+      Log.w(TAG, `pause 忽略异常 ${entry.id}: ${(e as BusinessError).code}`);
+      result.success(null);
+    }
+  }
+
+  private async handleStop(call: MethodCall, result: MethodResult): Promise<void> {
+    const entry = this.entryOf(call);
+    const player = entry !== null ? entry.player : null;
+    if (entry === null || player === null) {
+      result.error('404', '播放器不存在', null);
+      return;
+    }
+    const state = player.state;
+    if (state !== 'prepared' && state !== 'playing' && state !== 'paused' && state !== 'completed') {
+      result.success(null);
+      return;
+    }
+    try {
+      await player.stop();
+      result.success(null);
+    } catch (e) {
+      Log.w(TAG, `stop 忽略异常 ${entry.id}: ${(e as BusinessError).code}`);
+      result.success(null);
+    }
+  }
+
+  private handleSeek(call: MethodCall, result: MethodResult): void {
+    const entry = this.entryOf(call);
+    const player = entry !== null ? entry.player : null;
+    const ms = this.numberArg(call, 'positionMs');
+    if (entry === null || player === null) {
+      result.error('404', '播放器不存在', null);
+      return;
+    }
+    if (ms === null || ms < 0) {
+      result.error('400', 'positionMs 非法', null);
+      return;
+    }
+    const state = player.state;
+    if (state !== 'prepared' && state !== 'playing' && state !== 'paused' && state !== 'completed') {
+      Log.w(TAG, `seek 忽略：state=${state}`);
+      result.success(null);
+      return;
+    }
+    try {
+      player.seek(ms, media.SeekMode.SEEK_CLOSEST);
+      result.success(null);
+    } catch (e) {
+      result.error(`${(e as BusinessError).code}`, (e as BusinessError).message, null);
+    }
+  }
+
+  private handleSetVolume(call: MethodCall, result: MethodResult): void {
+    const entry = this.entryOf(call);
+    const player = entry !== null ? entry.player : null;
+    const volume = this.numberArg(call, 'volume');
+    if (entry === null || player === null) {
+      result.error('404', '播放器不存在', null);
+      return;
+    }
+    if (volume === null) {
+      result.error('400', 'volume 非法', null);
+      return;
+    }
+    const v = volume < 0 ? 0 : (volume > 1 ? 1 : volume);
+    const state = player.state;
+    if (state !== 'prepared' && state !== 'playing' && state !== 'paused' && state !== 'completed') {
+      // 装载期 just_audio 会先下发音量：暂存，prepared 后补发
+      // （AVPlayer 在 idle/initialized 调 setVolume 会报 5400102）。
+      entry.pendingVolume = v;
+      result.success(null);
+      return;
+    }
+    try {
+      player.setVolume(v);
+      result.success(null);
+    } catch (e) {
+      Log.w(TAG, `setVolume 忽略异常 ${entry.id}: ${(e as BusinessError).code}`);
+      result.success(null);
+    }
+  }
+
+  private async handleReset(call: MethodCall, result: MethodResult): Promise<void> {
+    const entry = this.entryOf(call);
+    if (entry === null || entry.player === null) {
+      result.success(null);
+      return;
+    }
+    await this.resetEntry(entry);
+    result.success(null);
+  }
+
+  private async handleDispose(call: MethodCall, result: MethodResult, all: boolean): Promise<void> {
+    if (all) {
+      for (const entry of this.players.values()) {
+        await this.releaseEntry(entry);
+      }
+      this.players.clear();
+      result.success(null);
+      return;
+    }
+    const id = this.stringArg(call, 'playerId');
+    if (id === null) {
+      result.error('400', '缺少 playerId', null);
+      return;
+    }
+    const entry = this.players.get(id);
+    if (entry !== undefined) {
+      await this.releaseEntry(entry);
+      this.players.delete(id);
+    }
+    result.success(null);
+  }
+
+  // ---------- 原生实现 ----------
+
+  private async createNative(entry: PlayerEntry): Promise<void> {
+    const player = await media.createAVPlayer();
+    entry.player = player;
+    entry.released = false;
+    this.attachListeners(entry);
+  }
+
+  private attachListeners(entry: PlayerEntry): void {
+    const player = entry.player;
+    if (player === null) {
+      return;
+    }
+    player.on('stateChange', (state: media.AVPlayerState, reason: media.StateChangeReason): void => {
+      this.onStateChange(entry, state, reason);
+    });
+    player.on('error', (err: BusinessError): void => {
+      this.onError(entry, err);
+    });
+    player.on('timeUpdate', (time: number): void => {
+      this.emitEvent(entry.id, 'position', time);
+    });
+    player.on('durationUpdate', (duration: number): void => {
+      this.emitEvent(entry.id, 'duration', duration);
+    });
+    player.on('bufferingUpdate', (infoType: media.BufferingInfoType, value: number): void => {
+      this.emitBuffered(entry.id, infoType, value);
+    });
+    player.on('seekDone', (time: number): void => {
+      this.emitEvent(entry.id, 'seekDone', time);
+    });
+    player.on('endOfStream', (): void => {
+      this.emitEvent(entry.id, 'ended', 0);
+    });
+  }
+
+  private onStateChange(entry: PlayerEntry, state: media.AVPlayerState, reason: media.StateChangeReason): void {
+    Log.w(TAG, `${entry.id} state=${state} reason=${reason}`);
+    if (state === 'initialized') {
+      if (entry.preparing) {
+        const player = entry.player;
+        if (player !== null) {
+          player.prepare().catch((e: BusinessError): void => {
+            this.failLoad(entry, `prepare 失败 ${e.code}: ${e.message}`);
+          });
+        }
+      }
+      return;
+    }
+    if (state === 'prepared') {
+      const duration = entry.player !== null ? entry.player.duration : -1;
+      const resolve = entry.onPrepared;
+      entry.onPrepared = null;
+      entry.onLoadError = null;
+      entry.preparing = false;
+      this.emitStateEvent(entry.id, 'prepared');
+      if (entry.pendingVolume >= 0 && entry.player !== null) {
+        try {
+          entry.player.setVolume(entry.pendingVolume);
+        } catch (e) {
+          Log.w(TAG, `${entry.id} 补发音量失败: ${(e as BusinessError).code}`);
+        }
+        entry.pendingVolume = -1;
+      }
+      if (resolve !== null) {
+        resolve(duration);
+      }
+      return;
+    }
+    if (state === 'playing') {
+      this.emitStateEvent(entry.id, 'playing');
+      return;
+    }
+    if (state === 'paused') {
+      this.emitStateEvent(entry.id, 'paused');
+      return;
+    }
+    if (state === 'completed') {
+      this.emitStateEvent(entry.id, 'completed');
+      return;
+    }
+    if (state === 'stopped') {
+      this.emitStateEvent(entry.id, 'stopped');
+      return;
+    }
+    if (state === 'idle') {
+      this.emitStateEvent(entry.id, 'idle');
+      return;
+    }
+    if (state === 'error') {
+      if (!entry.errorReported) {
+        entry.errorReported = true;
+        entry.needsRecreate = true;
+        this.emitError(entry.id, -1, 'AVPlayer 进入 error 状态');
+      }
+      this.failLoad(entry, 'AVPlayer 进入 error 状态');
+      return;
+    }
+    // released 不上报（dispose 路径无需驱动 Dart 状态机）。
+  }
+
+  private onError(entry: PlayerEntry, err: BusinessError): void {
+    Log.e(TAG, `${entry.id} error ${err.code}: ${err.message}`);
+    // 5400102 = Operate Not Permit（如装载期 setVolume / 非法状态操作）。
+    // 不是源/网络错误，不能打断装载或触发重建。
+    if (err.code === 5400102) {
+      return;
+    }
+    if (!entry.errorReported) {
+      entry.errorReported = true;
+      entry.needsRecreate = true;
+      this.emitError(entry.id, err.code, err.message);
+    }
+    this.failLoad(entry, `AVPlayer 错误 ${err.code}: ${err.message}`);
+  }
+
+  private failLoad(entry: PlayerEntry, message: string): void {
+    const reject = entry.onLoadError;
+    entry.onLoadError = null;
+    entry.onPrepared = null;
+    entry.preparing = false;
+    if (reject !== null) {
+      reject(message);
+    }
+  }
+
+  private async loadInternal(entry: PlayerEntry, url: string | null, filePath: string | null,
+    headers: Record<string, string>, initialMs: number): Promise<number> {
+    if (entry.player === null || entry.needsRecreate || entry.released) {
+      if (entry.player !== null) {
+        await this.releaseEntry(entry);
+      }
+      await this.createNative(entry);
+    }
+    const player = entry.player;
+    if (player === null) {
+      throw new Error('AVPlayer 创建失败');
+    }
+    // 上一个源先复位：just_audio 可能对同一实例连续 load。
+    if (player.state !== 'idle') {
+      try {
+        await player.reset();
+      } catch (e) {
+        Log.w(TAG, `${entry.id} reset 失败，重建播放器: ${(e as BusinessError).code}`);
+        await this.releaseEntry(entry);
+        await this.createNative(entry);
+      }
+    }
+    const active = entry.player;
+    if (active === null) {
+      throw new Error('AVPlayer 重建失败');
+    }
+    Log.w(TAG, `loadInternal ${entry.id} state=${active.state} file=${filePath !== null} headerCount=${Object.keys(headers).length}`);
+    this.closeFd(entry);
+    entry.errorReported = false;
+    entry.needsRecreate = false;
+    entry.preparing = true;
+
+    const prepared = new Promise<number>((resolve: (durationMs: number) => void,
+      reject: (message: string) => void): void => {
+      entry.onPrepared = resolve;
+      entry.onLoadError = reject;
+    });
+
+    try {
+      if (filePath !== null) {
+        const file = fs.openSync(filePath, fs.OpenMode.READ_ONLY);
+        entry.fd = file.fd;
+        const stat = fs.statSync(filePath);
+        active.fdSrc = {
+          fd: file.fd,
+          offset: 0,
+          length: stat.size
+        };
+        Log.w(TAG, `load ${entry.id} fdSrc fd=${file.fd} size=${stat.size}`);
+      } else if (url !== null && Object.keys(headers).length > 0) {
+        const source = media.createMediaSourceWithUrl(url, headers);
+        Log.w(TAG, `load ${entry.id} setMediaSource headerCount=${Object.keys(headers).length}`);
+        // 注意：部分系统版本 setMediaSource 同步返回 void（非 Promise），
+        // 不能 .then；进度由 stateChange（initialized→prepared）与 15s
+        // 兜底定时器驱动，失败由 error 回调收口。
+        try {
+          active.setMediaSource(source);
+        } catch (e) {
+          this.failLoad(entry, `setMediaSource 失败 ${(e as BusinessError).code}: ${(e as BusinessError).message}`);
+          throw new Error('setMediaSource 失败');
+        }
+      } else if (url !== null) {
+        active.url = url;
+        Log.w(TAG, `load ${entry.id} url set state=${active.state}`);
+      } else {
+        throw new Error('url/filePath 均为空');
+      }
+    } catch (e) {
+      throw new Error(`置源失败: ${(e as BusinessError).message}`);
+    }
+
+    const timer = setTimeout((): void => {
+      this.failLoad(entry, 'load 超时（15s 未 prepared）');
+    }, 15000);
+    try {
+      const duration = await prepared;
+      if (initialMs > 0) {
+        try {
+          active.seek(initialMs, media.SeekMode.SEEK_CLOSEST);
+        } catch (e) {
+          Log.w(TAG, `${entry.id} 初始 seek 失败: ${(e as BusinessError).code}`);
+        }
+      }
+      return duration;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async resetEntry(entry: PlayerEntry): Promise<void> {
+    const player = entry.player;
+    this.closeFd(entry);
+    entry.preparing = false;
+    entry.onPrepared = null;
+    entry.onLoadError = null;
+    if (player === null) {
+      return;
+    }
+    try {
+      if (player.state !== 'idle' && player.state !== 'released') {
+        await player.reset();
+      }
+      entry.errorReported = false;
+      entry.needsRecreate = false;
+    } catch (e) {
+      Log.w(TAG, `${entry.id} reset 失败，标记重建: ${(e as BusinessError).code}`);
+      entry.needsRecreate = true;
+    }
+  }
+
+  private async releaseEntry(entry: PlayerEntry): Promise<void> {
+    this.closeFd(entry);
+    const player = entry.player;
+    entry.player = null;
+    entry.released = true;
+    entry.preparing = false;
+    entry.onPrepared = null;
+    if (entry.onLoadError !== null) {
+      const reject = entry.onLoadError;
+      entry.onLoadError = null;
+      reject('播放器已释放');
+    }
+    if (player === null) {
+      return;
+    }
+    try {
+      player.off('stateChange');
+      player.off('error');
+      player.off('timeUpdate');
+      player.off('durationUpdate');
+      player.off('bufferingUpdate');
+      player.off('seekDone');
+      player.off('endOfStream');
+      await player.release();
+    } catch (e) {
+      Log.w(TAG, `${entry.id} release 失败: ${(e as BusinessError).code}`);
+    }
+  }
+
+  private closeFd(entry: PlayerEntry): void {
+    if (entry.fd < 0) {
+      return;
+    }
+    try {
+      fs.closeSync(entry.fd);
+    } catch (e) {
+      Log.w(TAG, `${entry.id} 关闭 fd 失败: ${(e as BusinessError).code}`);
+    }
+    entry.fd = -1;
+  }
+
+  // ---------- 事件 ----------
+
+  private emitEvent(playerId: string, type: string, value: number): void {
+    const event: Map<string, string | number> = new Map();
+    event.set('type', type);
+    event.set('playerId', playerId);
+    event.set('value', value);
+    this.sink?.success(event);
+  }
+
+  private emitStateEvent(playerId: string, state: string): void {
+    const event: Map<string, string | number> = new Map();
+    event.set('type', 'state');
+    event.set('playerId', playerId);
+    event.set('state', state);
+    this.sink?.success(event);
+  }
+
+  private emitBuffered(playerId: string, infoType: media.BufferingInfoType, value: number): void {
+    const event: Map<string, string | number> = new Map();
+    event.set('type', 'buffered');
+    event.set('playerId', playerId);
+    event.set('infoType', infoType);
+    event.set('value', value);
+    this.sink?.success(event);
+  }
+
+  private emitError(playerId: string, code: number, message: string): void {
+    const event: Map<string, string | number> = new Map();
+    event.set('type', 'error');
+    event.set('playerId', playerId);
+    event.set('code', code);
+    event.set('message', message);
+    this.sink?.success(event);
+  }
+
+  // ---------- 参数工具 ----------
+
+  private stringArg(call: MethodCall, key: string): string | null {
+    const v = call.argument(key) as string | null;
+    return v ?? null;
+  }
+
+  private numberArg(call: MethodCall, key: string): number | null {
+    const v = call.argument(key) as number | null;
+    return v ?? null;
+  }
+
+  private parseHeaders(json: string | null): Record<string, string> {
+    const out: Record<string, string> = {};
+    if (json === null || json.length === 0) {
+      return out;
+    }
+    try {
+      const parsed = JSON.parse(json) as Record<string, string>;
+      const keys: string[] = Object.keys(parsed);
+      for (const k of keys) {
+        out[k] = parsed[k];
+      }
+    } catch (e) {
+      Log.w(TAG, `headersJson 解析失败: ${(e as Error).message}`);
+    }
+    return out;
+  }
+
+  private entryOf(call: MethodCall): PlayerEntry | null {
+    const id = this.stringArg(call, 'playerId');
+    if (id === null) {
+      return null;
+    }
+    const entry = this.players.get(id);
+    return entry !== undefined ? entry : null;
+  }
+}
