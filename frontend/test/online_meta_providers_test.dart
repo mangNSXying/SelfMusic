@@ -51,6 +51,12 @@ class _FakeOnlineAdapter implements HttpClientAdapter {
         Headers.contentTypeHeader: ['image/jpeg'],
       });
     }
+    if (body is String) {
+      // 现实 QQ 口径：JSON 正文但 Content-Type 非 JSON（x-javascript/plain）。
+      return ResponseBody.fromString(body, 200, headers: {
+        Headers.contentTypeHeader: ['application/x-javascript;charset=utf-8'],
+      });
+    }
     return ResponseBody.fromString(jsonEncode(body), 200, headers: {
       Headers.contentTypeHeader: [Headers.jsonContentType],
     });
@@ -70,8 +76,9 @@ Dio _dioOf(Map<String, Object> routes) {
 Uint8List _miniJpeg() => Uint8List.fromList(
     [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0xFF, 0xD9]);
 
-Map<String, Object> _qqRoutes({String lyric = '', String trans = ''}) => {
-      'c.y.qq.com/soso/fcgi-bin/client_search_cp': {
+/// QQ 主搜索口（search_for_qq_cp）路由体。
+Map<String, Object> _qqSearchLegacy() => {
+      'c.y.qq.com/soso/fcgi-bin/search_for_qq_cp': {
         'code': 0,
         'data': {
           'song': {
@@ -80,6 +87,7 @@ Map<String, Object> _qqRoutes({String lyric = '', String trans = ''}) => {
                 'songname': '海阔天空',
                 'songmid': '001p7ZZ83R1M9z',
                 'albumname': '海阔天空',
+                'albummid': '002qvqEU1EU9CJ',
                 'interval': 326,
                 'singer': [
                   {'name': 'Beyond'}
@@ -89,10 +97,65 @@ Map<String, Object> _qqRoutes({String lyric = '', String trans = ''}) => {
           }
         },
       },
+    };
+
+/// QQ musicu 备搜索口路由体（与 musicu 歌词同 host+path，勿同时挂）。
+Map<String, Object> _qqSearchMusicu() => {
+      'u.y.qq.com/cgi-bin/musicu.fcg': {
+        'code': 0,
+        'req': {
+          'code': 0,
+          'data': {
+            'body': {
+              'song': {
+                'list': [
+                  {
+                    'mid': '001p7ZZ83R1M9z',
+                    'name': '海阔天空',
+                    'interval': 326,
+                    'album': {'mid': '002qvqEU1EU9CJ', 'name': '海阔天空'},
+                    'singer': [
+                      {'name': 'Beyond'}
+                    ],
+                  }
+                ],
+              },
+            },
+          },
+        },
+      },
+    };
+
+/// QQ musicu 歌词路由体（lyric/trans 走 base64，同真实口径）。
+Map<String, Object> _qqLyricMusicu({
+  String lyric = '',
+  String trans = '',
+  int crypt = 0,
+}) =>
+    {
+      'u.y.qq.com/cgi-bin/musicu.fcg': {
+        'code': 0,
+        'req': {
+          'code': 0,
+          'data': {
+            'crypt': crypt,
+            'lyric': lyric.isEmpty ? '' : base64.encode(utf8.encode(lyric)),
+            'trans': trans.isEmpty ? '' : base64.encode(utf8.encode(trans)),
+          },
+        },
+      },
+    };
+
+/// QQ 旧歌词口备胎路由体（nobase64=1：明文直出）。
+Map<String, Object> _qqLyricLegacy({String lyric = '', String trans = ''}) => {
       'c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg': {
         'lyric': lyric,
         'trans': trans,
       },
+    };
+
+/// QQ 封面详情（album.mid）路由体。
+Map<String, Object> _qqCoverDetail() => {
       'c.y.qq.com/v8/fcg-bin/fcg_play_single_song.fcg': {
         'code': 0,
         'data': [
@@ -101,9 +164,12 @@ Map<String, Object> _qqRoutes({String lyric = '', String trans = ''}) => {
           }
         ],
       },
-      'y.gtimg.cn/music/photo_new/T002R800x800M000002qvqEU1EU9CJ.jpg':
-          _miniJpeg(),
     };
+
+const String _qqCoverHostPath =
+    'y.gtimg.cn/music/photo_new/T002R800x800M000002qvqEU1EU9CJ.jpg';
+
+Map<String, Object> _qqCoverImage() => {_qqCoverHostPath: _miniJpeg()};
 
 Map<String, Object> _neRoutes() => {
       'music.163.com/api/search/get/': {
@@ -161,8 +227,8 @@ Song _song() => Song.direct(
     );
 
 void main() {
-  test('QQ 搜索解析：songmid/时长/歌手', () async {
-    final qq = QqProvider(dio: _dioOf(_qqRoutes()));
+  test('QQ 搜索：主口 search_for_qq_cp 解析', () async {
+    final qq = QqProvider(dio: _dioOf(_qqSearchLegacy()));
     final list = await qq.searchTracks(title: '海阔天空', artist: 'Beyond');
     expect(list.length, 1);
     final c = list.first;
@@ -175,24 +241,98 @@ void main() {
     expect(c.hasContent, isFalse);
   });
 
-  test('QQ 歌词：明文 lyric/trans 映射', () async {
-    final qq = QqProvider(
-        dio: _dioOf(_qqRoutes(
-            lyric: '[00:18.46]今天我\n', trans: 'translation\n')));
-    final r = await qq.fetchLyric('001p7ZZ83R1M9z');
-    expect(r.syncedLyrics, contains('[00:18.46]'));
-    expect(r.plainLyrics, 'translation');
+  test('QQ 搜索：主口不可用自动换 musicu 备', () async {
+    // 主口路由缺失 → 404 → 备胎接管。
+    final qq = QqProvider(dio: _dioOf(_qqSearchMusicu()));
+    final list = await qq.searchTracks(title: '海阔天空', artist: 'Beyond');
+    expect(list.length, 1);
+    expect(list.first.onlineId, '001p7ZZ83R1M9z');
+    expect(list.first.durationSec, 326);
   });
 
-  test('QQ 歌词：base64 自动解一次', () async {
+  test('QQ 搜索：非 JSON Content-Type（x-javascript）手解一次', () async {
+    final raw = jsonEncode(
+        _qqSearchLegacy()['c.y.qq.com/soso/fcgi-bin/search_for_qq_cp']);
+    final qq = QqProvider(
+        dio: _dioOf({
+      'c.y.qq.com/soso/fcgi-bin/search_for_qq_cp': raw,
+    }));
+    final list = await qq.searchTracks(title: '海阔天空', artist: 'Beyond');
+    expect(list.length, 1);
+    expect(list.first.onlineId, '001p7ZZ83R1M9z');
+  });
+
+  test('QQ 歌词：非 JSON Content-Type（text/plain）手解一次', () async {
+    final raw = jsonEncode(_qqLyricMusicu(
+        lyric: '[00:01.00]hi\n')['u.y.qq.com/cgi-bin/musicu.fcg']);
+    final qq = QqProvider(
+        dio: _dioOf({
+      'u.y.qq.com/cgi-bin/musicu.fcg': raw,
+    }));
+    final r = await qq.fetchLyric('001p7ZZ83R1M9z');
+    expect(r.syncedLyrics, contains('[00:01.00]hi'));
+  });
+
+  test('QQ 搜索：musicu 风控 2001 转中文错', () async {
+    final qq = QqProvider(
+        dio: _dioOf({
+      'u.y.qq.com/cgi-bin/musicu.fcg': {
+        'code': 0,
+        'req': {'code': 2001, 'data': <String, Object>{}},
+      },
+    }));
+    expect(
+      () => qq.searchTracks(title: '海阔天空', artist: 'Beyond'),
+      throwsA(isA<StateError>()),
+    );
+  });
+
+  test('QQ 歌词：musicu base64 主路径（同步+译文）', () async {
+    final qq = QqProvider(
+        dio: _dioOf(_qqLyricMusicu(
+            lyric: '[00:18.46]今天我寒夜里看雪飘过\n',
+            trans: '[00:18.46]translation\n')));
+    final r = await qq.fetchLyric('001p7ZZ83R1M9z');
+    expect(r.syncedLyrics, contains('[00:18.46]今天我'));
+    expect(r.plainLyrics, contains('translation'));
+  });
+
+  test('QQ 歌词：加密返回（crypt=1）回落旧接口', () async {
+    final qq = QqProvider(
+        dio: _dioOf({
+      ..._qqLyricMusicu(lyric: '[00:01.00]garbled\n', crypt: 1),
+      ..._qqLyricLegacy(lyric: '[00:02.00]fallback\n'),
+    }));
+    final r = await qq.fetchLyric('001p7ZZ83R1M9z');
+    expect(r.syncedLyrics, contains('[00:02.00]fallback'));
+  });
+
+  test('QQ 歌词：主口失败回落旧接口（base64 自动解）', () async {
     final raw = base64.encode(utf8.encode('[00:01.00]hello\n'));
-    final qq = QqProvider(dio: _dioOf(_qqRoutes(lyric: raw)));
+    final qq = QqProvider(dio: _dioOf(_qqLyricLegacy(lyric: raw)));
     final r = await qq.fetchLyric('001p7ZZ83R1M9z');
     expect(r.syncedLyrics, contains('[00:01.00]hello'));
   });
 
-  test('QQ 封面：album.mid 拼图链出字节', () async {
-    final qq = QqProvider(dio: _dioOf(_qqRoutes()));
+  test('QQ 封面：搜索缓存 albumMid 直连（免详情请求）', () async {
+    // 只挂搜索口 + 图片口；若误走详情（2 步）会 404 抛错。
+    final qq = QqProvider(
+        dio: _dioOf({
+      ..._qqSearchLegacy(),
+      ..._qqCoverImage(),
+    }));
+    await qq.searchTracks(title: '海阔天空', artist: 'Beyond');
+    final bytes = await qq.fetchCoverBytes('001p7ZZ83R1M9z');
+    expect(bytes, isNotNull);
+    expect(bytes!.length, greaterThan(0));
+  });
+
+  test('QQ 封面：缓存未命中回落详情两步', () async {
+    final qq = QqProvider(
+        dio: _dioOf({
+      ..._qqCoverDetail(),
+      ..._qqCoverImage(),
+    }));
     final bytes = await qq.fetchCoverBytes('001p7ZZ83R1M9z');
     expect(bytes, isNotNull);
     expect(bytes!.length, greaterThan(0));
@@ -217,7 +357,8 @@ void main() {
   });
 
   test('网易反爬码（-460）转中文错', () async {
-    final ne = NeteaseProvider(dio: _dioOf({
+    final ne = NeteaseProvider(
+        dio: _dioOf({
       'music.163.com/api/search/get/': {'code': -460},
     }));
     expect(
@@ -265,8 +406,12 @@ void main() {
       index: index,
       settings: settings,
       qqProvider: QqProvider(
-          dio: _dioOf(_qqRoutes(
-              lyric: '[00:18.46]今天我\n', trans: 'translation\n'))),
+          dio: _dioOf({
+        ..._qqSearchLegacy(),
+        ..._qqLyricMusicu(
+            lyric: '[00:18.46]今天我\n', trans: '[00:18.46]translation\n'),
+        ..._qqCoverImage(),
+      })),
     );
     final song = _song();
     final list = await svc.searchLyrics(song);
