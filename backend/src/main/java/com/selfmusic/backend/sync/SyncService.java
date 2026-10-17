@@ -178,7 +178,11 @@ public class SyncService {
      */
     private Object applySongState(PushEvent ev, SongState song) {
         if (isBackfill(ev.payload()) && song.getLastEventAt() != null) return songSnapshot(song);
-        if (!eventWins(ev.occurred_at(), song.getLastEventAt())) return songSnapshot(song);
+        if (!eventWins(ev.occurred_at(), song.getLastEventAt())) {
+            log.debug("song.state 判输（保留服务端较新行） ref={} device={} occurred={} lastEventAt={}",
+                    song.getSourceRef(), ev.device_client_id(), ev.occurred_at(), song.getLastEventAt());
+            return songSnapshot(song);
+        }
         JsonNode p = ev.payload();
         if (p != null) {
             if (p.has("like_streak")) song.setLikeStreak(p.path("like_streak").asInt(nvl(song.getLikeStreak())));
@@ -237,6 +241,7 @@ public class SyncService {
         if (events.size() > PUSH_EVENT_LIMIT) {
             throw new BizException(40001, "too many events (max " + PUSH_EVENT_LIMIT + ")");
         }
+        log.info("sync.push 开始 device={} events={}", authClientId, events.size());
 
         // 同批内排序：playlist.create 优先（条目/断点依赖歌单先存在），其余按 occurred_at
         List<PushEvent> sorted = events.stream()
@@ -248,10 +253,14 @@ public class SyncService {
             if (ev.event_uuid() == null || ev.event_uuid().isBlank()
                     || ev.type() == null || ev.type().isBlank()) {
                 rejected.add(reject(String.valueOf(ev.event_uuid()), "invalid event"));
+                log.warn("sync.push 拒绝 device={} uuid={} reason=invalid event",
+                        authClientId, ev.event_uuid());
                 continue;
             }
             if (!authClientId.equals(ev.device_client_id())) {
                 rejected.add(reject(ev.event_uuid(), "device_mismatch"));
+                log.warn("sync.push 拒绝 device={} uuid={} reason=device_mismatch(事件设备={})",
+                        authClientId, ev.event_uuid(), ev.device_client_id());
                 continue;
             }
             if (syncEventRepository.findByEventUuid(ev.event_uuid()).isPresent()) {
@@ -270,13 +279,25 @@ public class SyncService {
                 row.setEntityKey(entityKeyOf(ev.type(), ev.payload()));
                 syncEventRepository.save(row);
                 applied.add(ev.event_uuid());
-                if (correction != null) corrections.put(ev.event_uuid(), correction);
+                if (correction != null) {
+                    corrections.put(ev.event_uuid(), correction);
+                    log.info("sync.push 判输回执 device={} uuid={} type={}",
+                            authClientId, ev.event_uuid(), ev.type());
+                }
             } catch (BizException be) {
                 rejected.add(reject(ev.event_uuid(), be.getMessage()));
+                log.warn("sync.push 拒绝 device={} uuid={} type={} reason={}",
+                        authClientId, ev.event_uuid(), ev.type(), be.getMessage());
             }
         }
         touchDevice(authClientId, null);
-        return pushResult(syncEventRepository.maxSeq(), applied, duplicates, rejected, corrections);
+        Map<String, Object> result =
+                pushResult(syncEventRepository.maxSeq(), applied, duplicates, rejected, corrections);
+        // 汇总行（与客户端 push.batch/push.ack 时间线对齐用）。
+        log.info("sync.push 完成 device={} applied={} duplicates={} rejected={} corrections={} cursor={}",
+                authClientId, applied.size(), duplicates.size(), rejected.size(),
+                corrections.size(), result.get("cursor"));
+        return result;
     }
 
     /**
@@ -463,7 +484,11 @@ public class SyncService {
         if (SyncEventTypes.SOURCE_DELETE.equals(ev.type())) {
             SyncSource row = syncSourceRepository.findByClientUuid(uuid).orElse(null);
             if (row == null || row.isDeleted()) return null; // 重复删除：幂等 no-op
-            if (!eventWins(ev.occurred_at(), row.getLastEventAt())) return sourceSnapshot(row);
+            if (!eventWins(ev.occurred_at(), row.getLastEventAt())) {
+                log.debug("source.delete 判输（保留服务端较新行） uuid={} device={} occurred={} lastEventAt={}",
+                        uuid, ev.device_client_id(), ev.occurred_at(), row.getLastEventAt());
+                return sourceSnapshot(row);
+            }
             row.setDeleted(true);
             row.setLastEventAt(ev.occurred_at());
             row.setSyncVer(nvlLong(row.getSyncVer()) + 1);
@@ -500,7 +525,11 @@ public class SyncService {
         }
         // 补录 create 撞到同 uuid 行：只建行，已存在即判输回现行快照。
         if (backfill) return sourceSnapshot(row);
-        if (!eventWins(ev.occurred_at(), row.getLastEventAt())) return sourceSnapshot(row);
+        if (!eventWins(ev.occurred_at(), row.getLastEventAt())) {
+            log.debug("source.update 判输（保留服务端较新行） uuid={} device={} occurred={} lastEventAt={}",
+                    uuid, ev.device_client_id(), ev.occurred_at(), row.getLastEventAt());
+            return sourceSnapshot(row);
+        }
         // 地址可改：若与其它既有同址行冲突则合并（同址即同源，回 correction 重绑）。
         if (!address.equals(row.getAddress())) {
             SyncSource conflict = syncSourceRepository
@@ -568,7 +597,11 @@ public class SyncService {
         Playlist pl = playlistOf(p);
         if (SyncEventTypes.PLAYLIST_DELETE.equals(ev.type())) {
             if (pl.isDeleted()) return null; // 重复删除：幂等 no-op
-            if (!eventWins(ev.occurred_at(), pl.getLastEventAt())) return playlistSnapshot(pl);
+            if (!eventWins(ev.occurred_at(), pl.getLastEventAt())) {
+                log.debug("playlist.delete 判输（保留服务端较新行） uuid={} device={} occurred={} lastEventAt={}",
+                        pl.getClientUuid(), ev.device_client_id(), ev.occurred_at(), pl.getLastEventAt());
+                return playlistSnapshot(pl);
+            }
             pl.setDeleted(true);
             pl.setLastEventAt(ev.occurred_at());
             pl.setSyncVer(nvlLong(pl.getSyncVer()) + 1);
@@ -579,7 +612,11 @@ public class SyncService {
     }
 
     private Object applyPlaylistUpdate(PushEvent ev, Playlist pl) {
-        if (!eventWins(ev.occurred_at(), pl.getLastEventAt())) return playlistSnapshot(pl);
+        if (!eventWins(ev.occurred_at(), pl.getLastEventAt())) {
+            log.debug("playlist.update 判输（保留服务端较新行） uuid={} device={} occurred={} lastEventAt={}",
+                    pl.getClientUuid(), ev.device_client_id(), ev.occurred_at(), pl.getLastEventAt());
+            return playlistSnapshot(pl);
+        }
         JsonNode p = ev.payload();
         if (p != null && p.has("name")) pl.setName(p.path("name").asText(pl.getName()));
         if (p != null && p.has("description")) {
@@ -682,11 +719,20 @@ public class SyncService {
             ns.setPlaylistId(pl.getId());
             return ns;
         });
+        int incomingPos = p == null ? 0 : p.path("position_ms").asInt(0);
+        // 断点 LWW 的两个分支都落日志：排查「旧数据覆盖服务端新数据」时，
+        // 用 来件.occurred_at vs 现行.lastEvent_at + 两台设备号对齐时间线。
         if (!eventWins(ev.occurred_at(), st.getLastEventAt())) {
+            log.info("sync.breakpoint 判输（保留服务端断点） playlist={} 来件[device={} occurred={} pos={}ms] 现行[lastEventAt={} device={} pos={}ms]",
+                    pl.getClientUuid(), ev.device_client_id(), ev.occurred_at(), incomingPos,
+                    st.getLastEventAt(), st.getDeviceClientId(), st.getPositionMs());
             return playstateSnapshot(st, pl.getClientUuid());
         }
         String ref = refOf(p);
         if (ref == null || ref.isBlank()) throw new BizException(40001, "source_ref required");
+        log.info("sync.breakpoint 接受（覆盖现行） playlist={} 来件[device={} occurred={} pos={}ms] 现行[lastEventAt={} device={} pos={}ms]",
+                pl.getClientUuid(), ev.device_client_id(), ev.occurred_at(), incomingPos,
+                st.getLastEventAt(), st.getDeviceClientId(), st.getPositionMs());
         st.setSourceId(sourceIdOf(p));
         st.setSource(protocolOf(p));
         st.setSourceRef(ref);
@@ -801,6 +847,9 @@ public class SyncService {
         out.put("playstates", playstates);
         // 时钟校准：客户端据此修正出队时间戳，治设备墙钟偏移导致的 LWW 误判。
         out.put("server_time", serverTimeNow());
+        log.info("sync.pull device={} since={} page={} cursor={} has_more={} songs={} sources={} playlists={} playstates={}",
+                authClientId, sinceCursor, page.size(), cursor, out.get("has_more"),
+                songs.size(), sources.size(), playlists.size(), playstates.size());
         return out;
     }
 
@@ -884,6 +933,11 @@ public class SyncService {
         m.put("source_ref", st.getSourceRef());
         m.put("device_client_id", st.getDeviceClientId());
         m.put("position_ms", st.getPositionMs());
+        // 最后操作时间（= 命中事件的 occurred_at）：客户端镜像比较/启动补切
+        // 以它为时钟（旧数据 null 时客户端回退 updated_at）。updated_at 是
+        // 服务端写入/上传时间，仅作诊断，不再参与「谁更新」的比较。
+        m.put("last_event_at",
+                st.getLastEventAt() == null ? null : st.getLastEventAt().toString());
         m.put("updated_at", st.getUpdatedAt() == null ? null : st.getUpdatedAt().toString());
         m.put("deep_list", st.getDeepListJson() == null ? null
                 : parseDeepList(st.getDeepListJson()));

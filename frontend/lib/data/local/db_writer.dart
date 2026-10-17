@@ -1254,22 +1254,33 @@ void _opApplyPlaystateMirror(Database db, Map<String, dynamic> a) {
   }
   final deep = a['deep_list'];
   final inUpdatedAt = (a['updated_at'] as String?) ?? DateTime.now().toIso8601String();
+  // F4 比较时钟 = 最后操作时间 last_event_at（空则回退 updated_at），
+  // 与推送 LWW（occurred_at）/服务端 /playstates/latest 同口径；
+  // updated_at 只是服务端写入/上传时间，仅作诊断。
+  final inLastEventAt = a['last_event_at'] as String?;
+  final inClock = (inLastEventAt == null || inLastEventAt.isEmpty)
+      ? inUpdatedAt
+      : inLastEventAt;
   // 最新时间胜出：已存镜像更新则保留，防止 pull/快路径乱序把旧快照写回来。
   final cur = db.select(
-      'SELECT updated_at FROM breakpoint_mirror WHERE playlist_uuid=?',
+      'SELECT updated_at, last_event_at FROM breakpoint_mirror WHERE playlist_uuid=?',
       [uuid]);
   if (cur.isNotEmpty) {
-    final curAt = cur.first['updated_at'] as String?;
-    if (curAt != null && inUpdatedAt.compareTo(curAt) <= 0) return;
+    final curUpdated = cur.first['updated_at'] as String?;
+    final curLast = cur.first['last_event_at'] as String?;
+    final curClock = (curLast == null || curLast.isEmpty) ? curUpdated : curLast;
+    if (curClock != null && inClock.compareTo(curClock) <= 0) return;
   }
   db.execute(
       'INSERT INTO breakpoint_mirror(playlist_uuid, song_id, source_id, source, source_ref, '
-      'position_ms, deep_list_json, updated_at, device_id) VALUES(?,?,?,?,?,?,?,?,?) '
+      'position_ms, deep_list_json, updated_at, device_id, last_event_at) '
+      'VALUES(?,?,?,?,?,?,?,?,?,?) '
       'ON CONFLICT(playlist_uuid) DO UPDATE SET '
       'song_id=excluded.song_id, source_id=excluded.source_id, source=excluded.source, '
       'source_ref=excluded.source_ref, position_ms=excluded.position_ms, '
       'deep_list_json=excluded.deep_list_json, '
-      'updated_at=excluded.updated_at, device_id=excluded.device_id',
+      'updated_at=excluded.updated_at, device_id=excluded.device_id, '
+      'last_event_at=excluded.last_event_at',
       [
         uuid,
         (a['song_id'] as num?)?.toInt(),
@@ -1279,7 +1290,9 @@ void _opApplyPlaystateMirror(Database db, Map<String, dynamic> a) {
         (a['position_ms'] as num?)?.toInt() ?? 0,
         deep is List ? jsonEncode(deep) : null,
         inUpdatedAt,
-        null,
+        // 来源设备（自写回声过滤/诊断用；旧快照无该字段时为 null）。
+        a['device_client_id'],
+        inLastEventAt,
       ]);
 }
 

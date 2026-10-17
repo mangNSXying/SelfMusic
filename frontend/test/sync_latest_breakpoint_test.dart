@@ -174,6 +174,89 @@ void main() {
     index.close();
   });
 
+  test('快路径：自写回声（本设备 device_client_id）→ 不落镜像不通知', () async {
+    final index = await _openIndex();
+    await index.applyPlaylistSnapshots([_playlist()]);
+    final api = _FastPathApi(
+        snapshot: {..._playstate(), 'device_client_id': 'test-client'});
+    final engine = _engine(index, api);
+    var fired = 0;
+    engine.onBreakpointsApplied = () => fired++;
+
+    await engine.pullLatestBreakpoint();
+
+    expect(api.fetches, 1);
+    expect(fired, 0, reason: '自写回声不该惊动播放器（本机状态不旧于它）');
+    expect(index.breakpointMirrorOf('pl-1'), isNull,
+        reason: '本设备推上去的断点再拉回来：不入镜像（回退旧曲回路的一环）');
+
+    engine.stop();
+    index.close();
+  });
+
+  test('快路径：他人快照落库带上来源设备与最后操作时间（F2/F4 字段）', () async {
+    final index = await _openIndex();
+    await index.applyPlaylistSnapshots([_playlist()]);
+    final api = _FastPathApi(snapshot: {
+      ..._playstate(),
+      'device_client_id': 'other-client',
+      'updated_at': '2026-10-09T12:00:10',
+      'last_event_at': '2026-10-09T11:59:30',
+    });
+    final engine = _engine(index, api);
+
+    await engine.pullLatestBreakpoint();
+
+    final mirror = index.breakpointMirrorOf('pl-1');
+    expect(mirror, isNotNull);
+    expect(mirror!.deviceId, 'other-client');
+    expect(mirror.lastEventAt, '2026-10-09T11:59:30');
+    expect(mirror.compareClock, '2026-10-09T11:59:30',
+        reason: '比较时钟取最后操作时间，不取上传时间 updated_at');
+
+    engine.stop();
+    index.close();
+  });
+
+  test('镜像写入守卫：以 last_event_at 为时钟（updated_at 只诊断不参与）', () async {
+    final index = await _openIndex();
+    await index.applyPlaylistSnapshots([_playlist()]);
+
+    Map<String, dynamic> snap(String ref, String at, {String? lastEvent}) => {
+          'client_uuid': 'pl-1',
+          'source': 'webdav',
+          'source_ref': ref,
+          'position_ms': 111,
+          'deep_list': [],
+          'updated_at': at,
+          if (lastEvent != null) 'last_event_at': lastEvent,
+        };
+    String ref() => index.breakpointMirrorOf('pl-1')!.sourceRef!;
+
+    await index.applyPlaystateMirror(
+        snap('a', '2026-01-01T00:00:20', lastEvent: '2026-01-01T00:00:05'));
+    expect(ref(), 'a');
+
+    // 上传时间更晚但最后操作时间更早 → 是旧事件，不得覆盖
+    // （修复前按 updated_at 比较会误覆盖，把旧断点写回来）。
+    await index.applyPlaystateMirror(
+        snap('b', '2026-01-01T00:00:30', lastEvent: '2026-01-01T00:00:01'));
+    expect(ref(), 'a', reason: '比较只看最后操作时间：updated_at 更新也压不过旧事件');
+
+    // 最后操作时间更新 → 覆盖（即便上传时间更早）。
+    await index.applyPlaystateMirror(
+        snap('c', '2026-01-01T00:00:15', lastEvent: '2026-01-01T00:00:09'));
+    expect(ref(), 'c');
+
+    // 旧数据（无 last_event_at）回退 updated_at 比较：更早不覆盖、更晚覆盖。
+    await index.applyPlaystateMirror(snap('d', '2026-01-01T00:00:08'));
+    expect(ref(), 'c');
+    await index.applyPlaystateMirror(snap('e', '2026-01-01T00:00:12'));
+    expect(ref(), 'e');
+
+    index.close();
+  });
+
   test('镜像写入守卫：更新覆盖、更早不覆盖（最新时间）', () async {
     final index = await _openIndex();
     await index.applyPlaylistSnapshots([_playlist()]);

@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
 import '../data/local/sync_entity_key.dart';
+import '../data/local/sync_event_types.dart';
 import '../utils/perf_log.dart';
 import 'api_client.dart';
 
@@ -39,6 +40,20 @@ class SyncEngine {
   DateTime? _lastPullAt;
   DateTime? _lastFailAt;
   int _failCount = 0;
+
+  /// 早退类日志（未启用/未配对/退避中）节流：最多每 60s 一条，
+  /// 避免 2s tick 反复打同一行（tick 会不断重试）。
+  DateTime? _lastIdleLogAt;
+
+  void _logIdle(String reason) {
+    final now = DateTime.now();
+    final last = _lastIdleLogAt;
+    if (last != null && now.difference(last) < const Duration(seconds: 60)) {
+      return;
+    }
+    _lastIdleLogAt = now;
+    perfLog('sync.idle', reason);
+  }
 
   /// 最近一次同步结果（UI 展示/调试用）。
   String lastError = '';
@@ -136,22 +151,46 @@ class SyncEngine {
   /// 断点快路径（启动/回前台触发）：`GET /playstates/latest` 直取服务端最新
   /// 断点并落镜像+通知，1 个 RTT，不随 pull cursor backlog 分页。
   /// 失败只记日志、不进退避——它是全量 pull 的加速器而非替代。
+  /// 每个静默返回分支都记 skip 日志（排查「断点为什么没同步过来」）。
   Future<void> pullLatestBreakpoint() async {
     if (!settings.syncEnabled) return;
     if (api.baseUrl.isEmpty) return;
     final sw = Stopwatch()..start();
     try {
       final clientId = await api.getClientId();
-      if (clientId == null || clientId.isEmpty) return; // 未配对
+      if (clientId == null || clientId.isEmpty) {
+        perfLog('fastPath.skip', '未配对');
+        return;
+      }
       final snap = await api.fetchLatestBreakpoint();
-      if (snap == null) return;
+      if (snap == null) {
+        perfLog('fastPath.skip',
+            '${sw.elapsedMilliseconds}ms 服务端无断点/端点不可用');
+        return;
+      }
       final uuid = snap['client_uuid'];
-      if (uuid is! String || uuid.isEmpty) return;
+      if (uuid is! String || uuid.isEmpty) {
+        perfLog('fastPath.skip', '快照缺 client_uuid');
+        return;
+      }
+      // F2 自写回声过滤：本设备推上去的断点再被拉回来时，本机运行时状态必然
+      // 不旧于它；落镜像/通知套用只会把旧快照盖回本机（毒化回路的一环）。
+      final device = snap['device_client_id'];
+      if (device is String && device == clientId) {
+        perfLog('fastPath.skip',
+            '${sw.elapsedMilliseconds}ms 自写回声（本设备 device=$device）uuid=$uuid pos=${snap['position_ms']}');
+        return;
+      }
       await index.applyPlaystateMirror(snap);
       // 歌单未同步/已删时镜像未落（applyPlaystateMirror 会丢弃），无从套用就不通知。
-      if (index.breakpointMirrorOf(uuid) == null) return;
+      if (index.breakpointMirrorOf(uuid) == null) {
+        perfLog('fastPath.skip',
+            '镜像未落（歌单未同步/已删）uuid=$uuid device=${snap['device_client_id']}');
+        return;
+      }
       _breakpointsDirty = true;
-      perfLog('fastPath mirrorApplied', '${sw.elapsedMilliseconds}ms uuid=$uuid');
+      perfLog('fastPath mirrorApplied',
+          '${sw.elapsedMilliseconds}ms uuid=$uuid device=${snap['device_client_id']} pos=${snap['position_ms']} updated=${snap['updated_at']}');
       _flushBreakpoints();
     } catch (e) {
       debugPrint('SyncEngine 断点快路径失败（回退全量 pull）：$e');
@@ -227,20 +266,32 @@ class SyncEngine {
   }
 
   Future<void> _run({required bool pullOnly, required bool force}) async {
-    if (!settings.syncEnabled) return;
-    if (api.baseUrl.isEmpty) return;
+    if (!settings.syncEnabled) {
+      _logIdle('同步开关关闭');
+      return;
+    }
+    if (api.baseUrl.isEmpty) {
+      _logIdle('未配置服务器地址');
+      return;
+    }
     if (!force) {
       final failAt = _lastFailAt;
       if (failAt != null) {
         var backoff = Duration(seconds: 1 << _failCount.clamp(0, 5));
         if (backoff > _maxBackoff) backoff = _maxBackoff;
-        if (DateTime.now().difference(failAt) < backoff) return;
+        if (DateTime.now().difference(failAt) < backoff) {
+          _logIdle('退避中（还剩 ${backoff.inSeconds}s）');
+          return;
+        }
       }
     }
     final sw = Stopwatch()..start();
     final clientId = await api.getClientId();
     perfLog('sync.run clientId', '${sw.elapsedMilliseconds}ms');
-    if (clientId == null || clientId.isEmpty) return; // 未配对
+    if (clientId == null || clientId.isEmpty) {
+      _logIdle('未配对（无 clientId）');
+      return;
+    }
     try {
       lastPushed = 0;
       final swPush = Stopwatch()..start();
@@ -274,6 +325,18 @@ class SyncEngine {
     // 读写与 payload 解码都在写隔离（OutboxRow.payload 已是 Map）。
     final pending = await index.pendingOutbox();
     if (pending.isEmpty) return;
+    // 排查「旧数据覆盖服务端新数据」：先记录本批要推什么、时间戳是多少。
+    final byType = <String, int>{};
+    for (final e in pending) {
+      byType[e.type] = (byType[e.type] ?? 0) + 1;
+    }
+    perfLog('push.batch', 'n=${pending.length} $byType');
+    for (final e in pending) {
+      if (e.type != SyncEventTypes.breakpointSet) continue;
+      final p = e.payload;
+      perfLog('push.breakpoint',
+          'uuid=${e.eventUuid} playlist=${p['playlist_uuid']} ref=${p['source_ref']} pos=${p['position_ms']}ms occurred=${e.occurredAt}');
+    }
     final data = await api.syncPush(clientId, [
       for (final e in pending)
         {
@@ -290,6 +353,8 @@ class SyncEngine {
     final duplicates = _strList(data['duplicates']);
     await index.deleteOutbox([...applied, ...duplicates]);
     lastPushed = applied.length + duplicates.length;
+    perfLog('push.ack',
+        'applied=${applied.length} duplicates=${duplicates.length} cursor=${data['cursor']}');
     final rejected = data['rejected'];
     if (rejected is List) {
       final uuids = [
@@ -297,12 +362,19 @@ class SyncEngine {
           if (r is Map && r['event_uuid'] is String) r['event_uuid'] as String
       ];
       await index.deadLetterOutbox(uuids);
-      if (uuids.isNotEmpty) debugPrint('SyncEngine 死信事件：$uuids');
+      if (uuids.isNotEmpty) {
+        debugPrint('SyncEngine 死信事件：$uuids');
+        perfLog('push.rejected', [
+          for (final r in rejected)
+            if (r is Map) '${r['event_uuid']}=${r['reason']}'
+        ].join(' | '));
+      }
     }
     final corrections = data['corrections'];
-    if (corrections is Map) {
+    if (corrections is Map && corrections.isNotEmpty) {
+      perfLog('push.corrections', 'n=${corrections.length}');
       for (final v in corrections.values) {
-        if (v is Map<String, dynamic>) await _applySnapshot(v);
+        if (v is Map<String, dynamic>) await _applySnapshot(v, clientId);
       }
     }
     _flushSources();
@@ -367,6 +439,7 @@ class SyncEngine {
     var guardedPlaylists = 0;
     var guardedSources = 0;
     var guardedStates = 0;
+    var selfStates = 0;
     while (true) {
       final swFetch = Stopwatch()..start();
       final data = await api.syncPull(cursor);
@@ -466,6 +539,13 @@ class SyncEngine {
             guardedStates++;
             continue;
           }
+          // F2 自写回声过滤：快照来源是本设备则不入镜像（本机运行时/断点
+          // 必然不旧于它；入镜像只会招来“自己套用自己的旧快照”）。
+          final device = m['device_client_id'];
+          if (device is String && device == clientId) {
+            selfStates++;
+            continue;
+          }
           await index.applyPlaystateMirror(m);
           _breakpointsDirty = true;
           applied++;
@@ -480,17 +560,20 @@ class SyncEngine {
     }
     _flushSources();
     perfLog('pull.total',
-        '${swAll.elapsedMilliseconds}ms pages=$pages cursor=$cursor guardedSongs=$guardedSongs playlists=$guardedPlaylists sources=$guardedSources states=$guardedStates');
+        '${swAll.elapsedMilliseconds}ms pages=$pages cursor=$cursor guardedSongs=$guardedSongs playlists=$guardedPlaylists sources=$guardedSources states=$guardedStates selfStates=$selfStates');
   }
 
   /// 服务端时钟校准：push/pull 回包的 `server_time` 与本地钟的差值即偏移，
   /// 交给 outbox 入队口修正后续事件时间戳（旧服务端无该字段则忽略，
   /// 退化为本地钟）。解析失败同样忽略，不阻塞同步。
+  /// 每次校准打一条日志：排查客户端钟偏移导致 LWW 误判（旧数据覆盖新数据）用。
   void _noteServerTime(Object? v) {
     if (v is! String || v.isEmpty) return;
     final serverNow = DateTime.tryParse(v);
     if (serverNow == null) return;
-    index.setClockSkew(serverNow.difference(DateTime.now()));
+    final skew = serverNow.difference(DateTime.now());
+    index.setClockSkew(skew);
+    perfLog('sync.clockSkew', '${skew.inMilliseconds}ms server_time=$v');
   }
 
   /// 待推实体 guard（本机优先）：从 outbox 按服务端同规则算实体键。
@@ -530,21 +613,39 @@ class SyncEngine {
   /// push correction 回执的快照落库（形状判分）：
   /// 含 kind+address=播放源，含 items=歌单，含 position_ms=断点，含 like_streak=歌曲权重。
   /// 落库一律走服务端原始形态直通写隔离（与 pull 同一路径）。
-  Future<void> _applySnapshot(Map<String, dynamic> s) async {
+  /// 每条 correction 都是「服务端判我方事件输」的证据，记录关键字段供时间线对齐。
+  /// [clientId] 本设备号（F2 自写回声过滤用；未知则不过滤）。
+  Future<void> _applySnapshot(Map<String, dynamic> s, [String? clientId]) async {
     if (s.containsKey('kind') && s.containsKey('address')) {
+      perfLog('push.correction',
+          'source uuid=${s['client_uuid']} kind=${s['kind']} address=${s['address']} deleted=${s['deleted']}');
       await _applySource(s);
     } else if (s.containsKey('items')) {
       final uuid = s['client_uuid'] as String?;
       if (uuid == null || uuid.isEmpty) return;
+      perfLog('push.correction',
+          'playlist uuid=$uuid name=${s['name']} sync_ver=${s['sync_ver']} items=${(s['items'] as List?)?.length}');
       await index.applyPlaylistSnapshots([s]);
       _playlistsDirty = true;
       _dirtyPlaylistUuids.add(uuid);
     } else if (s.containsKey('position_ms')) {
+      perfLog('push.correction',
+          'breakpoint playlist=${s['client_uuid']} device=${s['device_client_id']} pos=${s['position_ms']} updated=${s['updated_at']} lastEvent=${s['last_event_at']}');
+      // F2 自写回声过滤：correction 回的是当前赢家行；赢家是本设备时本机状态
+      // 必然不旧于它，无需入镜像（否则可能触发套用自己的旧快照）。
+      final device = s['device_client_id'];
+      if (clientId != null && device is String && device == clientId) {
+        perfLog('push.correction.skipSelf',
+            'breakpoint playlist=${s['client_uuid']} device=$device');
+        return;
+      }
       await index.applyPlaystateMirror(s);
       _breakpointsDirty = true;
     } else if (s.containsKey('like_streak')) {
       final ref = s['source_ref'];
       if (ref is! String || ref.isEmpty) return;
+      perfLog('push.correction',
+          'song ref=$ref weight=${s['weight']} fav=${s['is_favorite']} frozen=${s['frozen']}');
       await index.applySongSnapshotRaw(s);
       _songStatesDirty = true;
     }

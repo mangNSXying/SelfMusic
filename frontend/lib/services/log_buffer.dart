@@ -4,8 +4,11 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
-/// 简易应用内日志缓冲区：捕获 [debugPrint]/[print] 输出，按时间保留最近
-/// 的日志条目，用于「收集日志」功能导出最近一分钟的日志。
+import '../utils/perf_log.dart';
+
+/// 简易应用内日志缓冲区：捕获 [debugPrint] 输出与 [perfLog] 埋点
+/// （经 [perfLogSink] 注入，dart:core 的 print 无法被劫持），按时间保留
+/// 最近的日志条目，用于「收集日志」功能导出最近一分钟的日志。
 class LogEntry {
   final DateTime time;
   final String level;
@@ -57,6 +60,10 @@ class LogBuffer {
       _append('DEBUG', message ?? '');
       originalDebugPrint(message, wrapWidth: wrapWidth);
     };
+
+    // perfLog 走 dart:core 的 print（无法劫持为 Flutter 依赖），改用
+    // 注入出口：控制台照常 print，App 内导出也包含 `[perf]` 行。
+    perfLogSink = (String line) => _append('PERF', line);
 
     // 捕获 Zone 中未处理的异常日志。
     FlutterError.onError = (FlutterErrorDetails details) {
@@ -139,7 +146,8 @@ class LogBuffer {
   }
 }
 
-/// 包装 [print] 以写入日志缓冲区（perfLog/debugPrint 已走 debugPrint）。
+/// 手动补记一行 PRINT 级日志（仅进缓冲区；控制台输出场景请直接用 print）。
+/// 当前项目未使用：perfLog 经 [perfLogSink]、debugPrint 被劫持，均已入缓冲。
 void logPrint(Object? object) {
   LogBuffer.instance.append('PRINT', object?.toString() ?? '');
   // 忽略原始 print，避免双重（项目主要用 debugPrint/perfLog）

@@ -60,7 +60,7 @@ class PlayStateControllerTest {
 
     @Test
     void returnsLatestPlaystateSnapshot() {
-        when(playStateRepository.findTopByOrderByUpdatedAtDescPlaylistIdDesc())
+        when(playStateRepository.findLatest())
                 .thenReturn(Optional.of(state(7, 42000)));
         when(playlistRepository.findById(7L))
                 .thenReturn(Optional.of(playlist("pl-uuid", false)));
@@ -71,18 +71,33 @@ class PlayStateControllerTest {
         assertEquals(42000, data.get("position_ms"));
         assertEquals("dav:/a.mp3", data.get("source_ref"));
         assertEquals("2026-10-09T12:00", data.get("updated_at"));
+        assertNull(data.get("last_event_at"), "旧行缺最后操作时间 → null（客户端回退 updated_at）");
+    }
+
+    @Test
+    void returnsLastEventAtAsCompareClock() {
+        PlayState st = state(7, 42000);
+        st.setLastEventAt(LocalDateTime.of(2026, 10, 9, 11, 59, 30));
+        when(playStateRepository.findLatest()).thenReturn(Optional.of(st));
+        when(playlistRepository.findById(7L))
+                .thenReturn(Optional.of(playlist("pl-uuid", false)));
+
+        Map<String, Object> data = latest();
+        assertNotNull(data);
+        assertEquals("2026-10-09T11:59:30", data.get("last_event_at"));
+        assertEquals("2026-10-09T12:00", data.get("updated_at"));
     }
 
     @Test
     void returnsNullWhenNoRows() {
-        when(playStateRepository.findTopByOrderByUpdatedAtDescPlaylistIdDesc())
+        when(playStateRepository.findLatest())
                 .thenReturn(Optional.empty());
         assertNull(latest());
     }
 
     @Test
     void returnsNullWhenPlaylistMissing() {
-        when(playStateRepository.findTopByOrderByUpdatedAtDescPlaylistIdDesc())
+        when(playStateRepository.findLatest())
                 .thenReturn(Optional.of(state(7, 42000)));
         when(playlistRepository.findById(7L)).thenReturn(Optional.empty());
         assertNull(latest());
@@ -90,7 +105,7 @@ class PlayStateControllerTest {
 
     @Test
     void returnsNullWhenPlaylistDeleted() {
-        when(playStateRepository.findTopByOrderByUpdatedAtDescPlaylistIdDesc())
+        when(playStateRepository.findLatest())
                 .thenReturn(Optional.of(state(7, 42000)));
         when(playlistRepository.findById(7L))
                 .thenReturn(Optional.of(playlist("pl-uuid", true)));
@@ -99,7 +114,7 @@ class PlayStateControllerTest {
 
     @Test
     void returnsNullWhenPlaylistNotSyncable() {
-        when(playStateRepository.findTopByOrderByUpdatedAtDescPlaylistIdDesc())
+        when(playStateRepository.findLatest())
                 .thenReturn(Optional.of(state(7, 42000)));
         when(playlistRepository.findById(7L))
                 .thenReturn(Optional.of(playlist(null, false)));

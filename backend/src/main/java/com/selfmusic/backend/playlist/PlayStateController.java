@@ -12,6 +12,8 @@ import com.selfmusic.backend.sync.PushEvent;
 import com.selfmusic.backend.sync.SyncController;
 import com.selfmusic.backend.sync.SyncEventTypes;
 import com.selfmusic.backend.sync.SyncService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
@@ -29,6 +31,8 @@ import java.util.UUID;
 @RequestMapping("/api/v1/playstates")
 @Transactional
 public class PlayStateController {
+
+    private static final Logger log = LoggerFactory.getLogger(PlayStateController.class);
 
     private final PlaylistRepository playlistRepository;
     private final PlayStateRepository playStateRepository;
@@ -53,13 +57,26 @@ public class PlayStateController {
      */
     @GetMapping("/latest")
     public ApiResponse<Map<String, Object>> latest() {
-        PlayState st = playStateRepository.findTopByOrderByUpdatedAtDescPlaylistIdDesc()
-                .orElse(null);
-        if (st == null) return ApiResponse.ok(null);
+        PlayState st = playStateRepository.findLatest().orElse(null);
+        if (st == null) {
+            log.debug("playstates.latest 无断点记录");
+            return ApiResponse.ok(null);
+        }
         Playlist p = playlistRepository.findById(st.getPlaylistId()).orElse(null);
-        if (p == null || p.isDeleted()) return ApiResponse.ok(null);
+        if (p == null || p.isDeleted()) {
+            log.debug("playstates.latest 歌单不可用 playlistId={} deleted={}",
+                    st.getPlaylistId(), p != null && p.isDeleted());
+            return ApiResponse.ok(null);
+        }
         String uuid = p.getClientUuid();
-        if (uuid == null || uuid.isBlank()) return ApiResponse.ok(null);
+        if (uuid == null || uuid.isBlank()) {
+            log.debug("playstates.latest 歌单不可同步（无 client_uuid）playlistId={}",
+                    p.getId());
+            return ApiResponse.ok(null);
+        }
+        log.info("playstates.latest 命中 playlist={} device={} pos={}ms last_event_at={} updated_at={}",
+                uuid, st.getDeviceClientId(), st.getPositionMs(), st.getLastEventAt(),
+                st.getUpdatedAt());
         return ApiResponse.ok(SyncService.playstateSnapshot(st, uuid));
     }
 

@@ -28,3 +28,9 @@ spring:
   devtools:
     restart:
       enabled: true
+
+# 同步排障日志（断点/LWW 覆盖问题）：INFO 已含 push/pull 汇总、断点 LWW
+# 判输/接受、fast path 命中等；事件级明细（song.state 等判输、latest 未命中）
+# 为 DEBUG。按需临时打开，无需改本文件：
+#   LOGGING_LEVEL_COM_SELFMUSIC_BACKEND_SYNC=DEBUG
+#   LOGGING_LEVEL_COM_SELFMUSIC_BACKEND_PLAYLIST=DEBUG

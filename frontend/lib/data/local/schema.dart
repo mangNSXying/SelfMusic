@@ -193,7 +193,8 @@ void applySchema(Database db) {
       source_ref    TEXT,
       position_ms   INTEGER NOT NULL DEFAULT 0,
       updated_at    TEXT NOT NULL,
-      device_id     TEXT
+      device_id     TEXT,
+      last_event_at TEXT
     );
   ''');
   // 深层列表：每个锚定上下文一条「仅可修改末尾值」的历史栈（JSON 快照，仅本机）。
@@ -215,6 +216,14 @@ void applySchema(Database db) {
   }
   if (!mirrorCols.contains('deep_list_json')) {
     db.execute('ALTER TABLE breakpoint_mirror ADD COLUMN deep_list_json TEXT');
+  }
+  if (!mirrorCols.contains('last_event_at')) {
+    // 比较时钟升级（F4）：镜像「最后操作时间」（= 命中事件的 occurred_at，
+    // 与推送 LWW/服务端 latest 同口径；空值回退 updated_at）。加列时清空一次
+    // 镜像表——旧行缺该字段，且此前「本机旧态盖上上传时间戳」的毒缓存正是
+    // 需要清除的对象，交由同步重建。
+    db.execute('ALTER TABLE breakpoint_mirror ADD COLUMN last_event_at TEXT');
+    db.execute('DELETE FROM breakpoint_mirror');
   }
   // 歌单跨设备全局标识 + 删除墓碑（本地删除仍硬删，墓碑只活在服务端）。
   final playlistCols = db

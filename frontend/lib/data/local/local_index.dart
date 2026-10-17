@@ -16,6 +16,7 @@ import '../../utils/cover_thumb.dart';
 import '../../utils/chunked_scheduler.dart' show ChunkYield, yieldToEventLoop;
 import '../../utils/off_thread.dart';
 import '../../utils/main_thread_probe.dart';
+import '../../utils/perf_log.dart';
 import '../sources/webdav_url.dart';
 import 'audio_metadata.dart';
 import 'db_writer.dart';
@@ -1356,6 +1357,9 @@ class LocalIndex {
     _clockSkew = skew;
   }
 
+  /// 当前时钟偏移（诊断日志/测试用）。
+  Duration get clockSkew => _clockSkew;
+
   /// 当前时钟偏移（测试用）。
   Duration get clockSkewForTest => _clockSkew;
 
@@ -1367,11 +1371,16 @@ class LocalIndex {
     final uuid = newEventUuid();
     var ts = DateTime.now().add(_clockSkew);
     final last = _lastOccurredAt;
-    if (last != null && !ts.isAfter(last)) {
+    // bumped=单调 guard 生效：修正后仍不晚于上次入队（skew 回跳/同毫秒），
+    // 被顶到上次 +1ms——排查「旧数据覆盖服务端新数据」时据此看时间戳来源。
+    final bumped = last != null && !ts.isAfter(last);
+    if (bumped) {
       ts = last.add(const Duration(milliseconds: 1));
     }
     _lastOccurredAt = ts;
     final now = ts.toIso8601String();
+    perfLog('outbox.enqueue',
+        'type=$type uuid=$uuid occurred=$now skew=${_clockSkew.inMilliseconds}ms${bumped ? ' bumped' : ''}');
     await _writer!.exec(
         'INSERT INTO weight_outbox(event_uuid, type, payload, occurred_at, acked, created_at) '
         'VALUES(?,?,?,?,0,?)',
@@ -1679,6 +1688,8 @@ class LocalIndex {
   }
 
   /// pull 断点写入镜像表（不碰运行时 play_state，见 SyncEngine）。
+  /// [lastEventAt] = 服务端「最后操作时间」（命中事件 occurred_at）；比较时钟
+  /// 取 `lastEventAt ?? updatedAt`（见 BreakpointMirrorRow.compareClock）。
   Future<void> upsertBreakpointMirror({
     required String playlistUuid,
     int? songId,
@@ -1689,15 +1700,18 @@ class LocalIndex {
     String? deepListJson,
     required String updatedAt,
     String? deviceId,
+    String? lastEventAt,
   }) {
     return _writer!.exec(
         'INSERT INTO breakpoint_mirror(playlist_uuid, song_id, source_id, source, source_ref, '
-        'position_ms, deep_list_json, updated_at, device_id) VALUES(?,?,?,?,?,?,?,?,?) '
+        'position_ms, deep_list_json, updated_at, device_id, last_event_at) '
+        'VALUES(?,?,?,?,?,?,?,?,?,?) '
         'ON CONFLICT(playlist_uuid) DO UPDATE SET '
         'song_id=excluded.song_id, source_id=excluded.source_id, source=excluded.source, '
         'source_ref=excluded.source_ref, position_ms=excluded.position_ms, '
         'deep_list_json=excluded.deep_list_json, '
-        'updated_at=excluded.updated_at, device_id=excluded.device_id',
+        'updated_at=excluded.updated_at, device_id=excluded.device_id, '
+        'last_event_at=excluded.last_event_at',
         [
           playlistUuid,
           songId,
@@ -1707,7 +1721,8 @@ class LocalIndex {
           positionMs,
           deepListJson,
           updatedAt,
-          deviceId
+          deviceId,
+          lastEventAt
         ]);
   }
 
@@ -1719,7 +1734,7 @@ class LocalIndex {
 
   BreakpointMirrorRow? breakpointMirrorOf(String playlistUuid) {
     final rs = _db!.select(
-        'SELECT playlist_uuid, song_id, source_id, source, source_ref, position_ms, deep_list_json, updated_at, device_id '
+        'SELECT playlist_uuid, song_id, source_id, source, source_ref, position_ms, deep_list_json, updated_at, device_id, last_event_at '
         'FROM breakpoint_mirror WHERE playlist_uuid=?',
         [playlistUuid]);
     if (rs.isEmpty) return null;
@@ -1734,6 +1749,7 @@ class LocalIndex {
       deepListJson: r['deep_list_json'] as String?,
       updatedAt: r['updated_at'] as String,
       deviceId: r['device_id'] as String?,
+      lastEventAt: r['last_event_at'] as String?,
     );
   }
 
@@ -1866,7 +1882,7 @@ class LocalIndex {
   List<BreakpointMirrorRow> allBreakpointMirrors() {
     final rs = _db!.select(
         'SELECT playlist_uuid, song_id, source_id, source, source_ref, position_ms, '
-        'deep_list_json, updated_at, device_id FROM breakpoint_mirror');
+        'deep_list_json, updated_at, device_id, last_event_at FROM breakpoint_mirror');
     return [
       for (final r in rs)
         BreakpointMirrorRow(
@@ -1879,6 +1895,7 @@ class LocalIndex {
           deepListJson: r['deep_list_json'] as String?,
           updatedAt: r['updated_at'] as String,
           deviceId: r['device_id'] as String?,
+          lastEventAt: r['last_event_at'] as String?,
         ),
     ];
   }
@@ -2810,6 +2827,9 @@ class BreakpointMirrorRow {
   final String? deepListJson;
   final String updatedAt;
   final String? deviceId;
+
+  /// 最后操作时间（= 服务端命中事件的 occurred_at；旧数据可能为空）。
+  final String? lastEventAt;
   const BreakpointMirrorRow({
     required this.playlistUuid,
     this.songId,
@@ -2820,7 +2840,13 @@ class BreakpointMirrorRow {
     this.deepListJson,
     required this.updatedAt,
     this.deviceId,
+    this.lastEventAt,
   });
+
+  /// 比较时钟（F4）：最后操作时间优先，旧数据回退上传时间 updated_at。
+  /// 与服务端 /playstates/latest 排序、推送 LWW（occurred_at）同口径。
+  String get compareClock =>
+      (lastEventAt == null || lastEventAt!.isEmpty) ? updatedAt : lastEventAt!;
 }
 
 /// 歌手处理.txt：ARTISTS 精炼身份行（names/groups 为 JSON 数组）。

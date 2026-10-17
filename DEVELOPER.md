@@ -665,7 +665,9 @@ abstract class MusicSource {
 - **推拉节奏**：`SyncEngine` 2s tick 推增量、30s 拉增量、失败指数退避（上限 30s）、首帧后启动做一次增量校准。启动/回前台先走 `GET /playstates/latest` 断点快路径（1 RTT，旧服务端 404 静默回退），首轮即全量**先推后拉**（积压 outbox 本轮即推；`awaitFirstPull` 仍是 `pullOnly`，只负责把断点拉回来）。断点回调整轮 pull 结束后统一触发（single-flight、与首次恢复异步尾串行，不多页中途换曲）。播放/暂停/切歌经 `PlayerProvider.attachSyncHooks` 即时 `poke()` 一轮（单飞合并；暂停/停止先强制落最终断点再推，保证本轮带走最终位置）。**首帧轻量化**：`sync.start()` / `direct.attachApi()` / `ArtistResolver.start()` 统一在 `main()` 的 post-frame 回调里启动，不参与首帧渲染
 - **后台同步门控（播放中例外）**：退后台且未播放则停表（`pause()`，在飞轮次不打断）；**播放中后台保持 2s tick**（`setPlaying` 由播放状态流驱动，四端一致、不做平台判断——前台服务保活下网络可用）。暂停态后台不轮询，回前台/开播即补轮
 - **本机优先**：pull 快照命中“本地还有未推事件”的实体时跳过，不覆盖本地脏行（实体键 `sync_entity_key.dart` 与服务端 `entityKeyOf` 同规则；push 回包 corrections 是刚推完的仲裁结果、不受此限；ack 后下一轮自然收敛）
-- **断点采纳口径（取最新）**：`latest` 返回全局最新断点行（按 `updated_at`）。客户端恢复/补切时比对本机与远端镜像的 `updated_at`，远端更新才采纳；`db_writer._opApplyPlaystateMirror` 同口径守卫（旧快照不覆盖新镜像），服务端断点走行级 LWW。深层列表仅做队列重建用，不参与仲裁
+- **断点采纳口径（取最新，最后操作时间为钟）**：`GET /playstates/latest` 返回全局最新断点行，排序与「谁更新」的比较一律用**最后操作时间 `last_event_at`**（= 命中事件的 `occurred_at`；服务端 `coalesce(last_event_at, updated_at)` 兼容旧行，客户端 `compareClock = last_event_at ?? updated_at`）——`updated_at` 是服务端写入/上传时间，只作诊断，不参与仲裁。客户端恢复/补切时比对本机与远端镜像的比较时钟，远端更新才采纳；`db_writer._opApplyPlaystateMirror` 同口径守卫（旧快照不覆盖新镜像）；服务端断点走行级 LWW（`occurred_at` vs `last_event_at`）。深层列表仅做队列重建用，不参与仲裁
+- **启动收敛闸门（防旧态盖新）**：恢复发起（`restoreIfAny`/`restorePreferRemote`）即关闸——首个 `applyNewerMirrorIfAny` 判定跑完（或 30s 兜底超时）前，断点一律不入队：本机恢复出的旧断点可能已被远端更新，此时盖 now 的 `occurred_at` 推上去会被服务端 LWW 收下（毒源），随后本机又把自己的回声拉回来（回退旧曲的完整回路）。暂停/停止的**强制**断点在闸后**补跑一次**（`_bootForcedPending`）；周期保存直接丢弃。无恢复路径（未开断点续播）时闸门默认已开
+- **自写回声过滤**：快照来源 `device_client_id` == 本设备（fastPath / pull playstates / push corrections 三条落镜像路径）一律跳过、不落 `breakpoint_mirror`、不通知播放器——本机运行时状态必然不旧于自己推上去的数据，回流只会招来「自己套用自己的旧快照」；镜像行持久化来源设备（`breakpoint_mirror.device_id`）供诊断与排查
 - **同步后台化（写隔离收口）**：outbox 读取 + `jsonDecode`（`pendingOutbox`/`pendingOutboxCount` op）、pull 快照的字段映射与落库（`applySongSnapshotsRaw` / `applyPlaylistSnapshots` / `applyPlaystateMirror`）、断点歌单存在性判定，全部在写隔离（`db_writer`）内完成；UI isolate 只 `await`。**ohos 例外**：无子 isolate，内联写按 200 行/事务分片、片间 `await` 让出事件循环（`_InlineDbWriter.opBatch`）；cursor 在整页应用后才推进，中途失败靠重拉幂等收敛
 - **跨页去重**：服务端只在单页内按实体去重，`_pull` 按 `source_id|ref` / uuid 跨页去重，重复快照只计数不重复落库
 - **落库回调帧末投递**：`onSourcesApplied/onSongStatesApplied/onPlaylistsApplied` 经 `scheduleAfterFrame`（`utils/frame_scheduler.dart`）推迟到帧末；歌单回调携带本轮变更 uuid，`PlaylistsProvider.refresh(changedUuids:)` 只重查变更歌单计数（避免同步一次 N+1 全量重查）；源 watcher 仅在本地源 key/rootPath 真变化时重建
@@ -972,7 +974,7 @@ frozen=true                 → 权重锁定最低值，跳过自动调权
 - **时钟校准**：`occurred_at` 是各设备墙钟入队时间，偏移会导致 LWW 误判旧赢新。push/pull 回包带 `server_time`，客户端记 `skew = serverTime - now` 并修正后续入队时间戳（`LocalIndex.setClockSkew`，唯一入队口；旧服务端无该字段退化为本地钟）；修正值回跳时本机单调 guard 兜住（新戳不得小于上次 +1ms）。skew 内存态，重启后下次同步重建。
 - **歌曲身份**：服务端无曲库，统一为 `source_id + source_ref`（source_id=客户端源实例 uuid，旧数据为 `legacy:<协议>`）；权重 / 收藏落 `song_states`，歌单条目与断点自持身份及展示快照（pull 不覆盖客户端本地标题）；pull 身份收集恒不建行（已删歌曲不重新建行）。未配对（无后端地址）或 `sync_enabled=0` 时直连事件不进队，避免 outbox 无限积压。
 - **播放源同步**：`source.create/update/delete` + 行级 LWW；身份 `client_uuid`，去重键 `(kind, address)`（地址两端归一化——WebDAV 缺 scheme 补 https、去尾斜杠，SFTP 形态 `host:port/path`；转码强校验按同一归一化匹配）。本地文件夹源不参与；密码与私钥（含 passphrase）不入服务端（新设备显示「待配置密码」）；SFTP 主机密钥钉 `ssh_known_hosts` 亦不参与同步（各设备各自 TOFU）。存量远端源接入时补 uuid 并补发一次 create；旧协议级身份在设备重新上报时由服务端懒迁移。
-- **跨设备断点消费**：`breakpoint.set` 快照带来源设备；客户端 pull 落 `breakpoint_mirror`；启动恢复与歌单「播放全部」会比较本机 `play_state`（含歌单归属 `playlist_uuid`）与镜像的 `updated_at`，远端更新时自动从该进度续播并 toast；目标歌本机无源时退到其后第一首可播条目，全不可播则回落本机恢复。
+- **跨设备断点消费**：`breakpoint.set` 快照带来源设备与最后操作时间；客户端 pull 落 `breakpoint_mirror`（自写回声过滤，见上）；启动恢复与歌单「播放全部」会比较本机 `play_state`（含歌单归属 `playlist_uuid`）与镜像比较时钟（`last_event_at ?? updated_at`），远端更新时自动从该进度续播并 toast；目标歌本机无源时退到其后第一首可播条目，全不可播则回落本机恢复。
 - 直连模式（无服务器）：上述全部跳过，数据只在本机。
 
 ### 歌手身份聚合（MusicBrainz 后台解析）

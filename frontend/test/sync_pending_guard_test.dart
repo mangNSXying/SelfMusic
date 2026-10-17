@@ -253,6 +253,46 @@ void main() {
     expect(index.breakpointMirrorOf(uuid)!.positionMs, 99999);
   });
 
+  test('断点：自写回声（device=本设备）不入镜像；他人快照照常收敛（F2）', () async {
+    final id = await index.createPlaylist('回声歌单');
+    final uuid = index.playlistUuidOf(id)!;
+    api.pullStates = [
+      {
+        'client_uuid': uuid,
+        'source': 'webdav',
+        'source_ref': '/self.mp3',
+        'position_ms': 111,
+        'updated_at': '2026-01-01T00:00:10',
+        'last_event_at': '2026-01-01T00:00:05',
+        'device_client_id': 'test-client',
+        'deep_list': [],
+      },
+    ];
+    await engine.syncNow(pullOnly: true, force: true);
+    expect(index.breakpointMirrorOf(uuid), isNull,
+        reason: '本设备自己的断点快照不回流（本机状态不旧于它）');
+
+    api.pullStates = [
+      {
+        'client_uuid': uuid,
+        'source': 'webdav',
+        'source_ref': '/other.mp3',
+        'position_ms': 222,
+        'updated_at': '2026-01-01T00:00:20',
+        'last_event_at': '2026-01-01T00:00:15',
+        'device_client_id': 'other-client',
+        'deep_list': [],
+      },
+    ];
+    await engine.syncNow(pullOnly: true, force: true);
+    final mirror = index.breakpointMirrorOf(uuid);
+    expect(mirror, isNotNull, reason: '他人设备的快照照常落库');
+    expect(mirror!.positionMs, 222);
+    expect(mirror.deviceId, 'other-client');
+    expect(mirror.lastEventAt, '2026-01-01T00:00:15');
+    expect(mirror.compareClock, '2026-01-01T00:00:15');
+  });
+
   test('播放源：有未推事件时旧快照不建行，ack 后收敛', () async {
     final pending = await index.enqueueOutbox('source.create', {
       'client_uuid': 'src-1',

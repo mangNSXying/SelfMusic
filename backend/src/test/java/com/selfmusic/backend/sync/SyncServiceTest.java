@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.selfmusic.backend.common.BizException;
 import com.selfmusic.backend.domain.entity.SongState;
+import com.selfmusic.backend.domain.entity.PlayState;
 import com.selfmusic.backend.domain.entity.SyncEvent;
 import org.junit.jupiter.api.Test;
 
@@ -229,6 +230,28 @@ class SyncServiceTest {
         // 旧行 play_sec 为 null → 快照给 0（客户端按缺键/0 处理都不会崩）
         s.setPlaySec(null);
         assertEquals(0, SyncService.songSnapshot(s).get("play_sec"));
+    }
+
+    @Test
+    void playstateSnapshotCarriesLastEventAt() {
+        PlayState st = new PlayState();
+        st.setPlaylistId(7L);
+        st.setSource("webdav");
+        st.setSourceRef("/music/a.mp3");
+        st.setDeviceClientId("dev-a");
+        st.setPositionMs(42000);
+        st.setLastEventAt(LocalDateTime.of(2026, 10, 9, 11, 59, 30));
+        st.setUpdatedAt(LocalDateTime.of(2026, 10, 9, 12, 0, 0));
+
+        Map<String, Object> m = SyncService.playstateSnapshot(st, "pl-uuid");
+        // F4：最后操作时间随快照下发（客户端镜像比较时钟，与推送 LWW 同口径）；
+        // updated_at 是服务端写入/上传时间，仅作诊断。
+        assertEquals("2026-10-09T11:59:30", m.get("last_event_at"));
+        assertEquals("2026-10-09T12:00", m.get("updated_at"));
+
+        // 旧行缺 last_event_at → 字段为 null（客户端回退 updated_at 比较）。
+        st.setLastEventAt(null);
+        assertNull(SyncService.playstateSnapshot(st, "pl-uuid").get("last_event_at"));
     }
 
     @Test

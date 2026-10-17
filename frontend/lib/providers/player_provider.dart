@@ -257,6 +257,21 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? _lastBpKey;
   int _lastBpAtMs = 0;
 
+  /// 断点跳过原因去重（诊断日志）：同因连续出现只打一条，
+  /// 原因变化或成功入队即重置（本方法约每 10s 被调一次，逐次打会刷屏）。
+  String? _lastBpSkipReason;
+
+  /// F1 启动收敛闸门：进程启动恢复出本机断点后、首个 [applyNewerMirrorIfAny]
+  /// 跑完（或兜底超时）前，断点一律不入队——本机恢复态可能已被远端更新，
+  /// 此时用 now 盖上 occurred_at 推上去正是「旧数据覆盖新数据」的毒源
+  /// （服务端 LWW 按时间戳收下它），随后本机又把自己的回声拉回来（回退旧曲
+  /// 的完整回路）。默认已开：无恢复路径（未开断点续播/测试）不受影响。
+  bool _bootConverged = true;
+  Timer? _bootGateTimer;
+
+  /// 闸门关闭期间被挡下的「暂停/停止强制断点」：开闸后补跑一次。
+  bool _bootForcedPending = false;
+
   /// 播放时懒补全元数据：正在补全的歌（sourceKey|sourceRef）去重集合。
   final Set<String> _enriching = {};
 
@@ -1510,7 +1525,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           final localAt = (local != null && local.playlistUuid == playlistUuid)
               ? DateTime.tryParse(local.updatedAt)
               : null;
-          final mAt = DateTime.tryParse(m.updatedAt);
+          final mAt = DateTime.tryParse(m.compareClock);
           if (mAt != null && (localAt == null || mAt.isAfter(localAt))) {
             if (await _restoreFromMirror(idx, m)) return;
           }
@@ -3089,20 +3104,57 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _pokeSyncAfterSave(() => _saveState(pos, forceBreakpoint: true));
   }
 
+  /// 关闸（启动恢复发起时）：见 [_bootConverged]。兜底超时防「同步从未
+  /// 回调、闸门永闭」；30s 远大于快路径/首拉 + 恢复尾的耗时量级。
+  void _closeBootGate() {
+    _bootConverged = false;
+    _bootGateTimer?.cancel();
+    _bootGateTimer = Timer(const Duration(seconds: 30), () {
+      _openBootGate('超时兜底');
+    });
+    perfLog('bp.bootGate close', '等待首个远端镜像判定');
+  }
+
+  /// 开闸（首个镜像判定跑完/超时兜底）：被挡下的强制断点在闸开后补跑一次。
+  void _openBootGate(String why) {
+    if (_bootConverged) return;
+    _bootConverged = true;
+    _bootGateTimer?.cancel();
+    _bootGateTimer = null;
+    perfLog('bp.bootGate open', why);
+    if (_bootForcedPending) {
+      _bootForcedPending = false;
+      _saveForcedAndPoke();
+    }
+  }
+
   /// 阶段5 断点进 outbox（节流：同歌 25s 一次，切歌立即；暂停/停止强制一次）。
   /// 队列归属已同步歌单且当前歌曲有身份即上报：服务器模式恒上报，
   /// 直连歌曲需连着服务器；其它情况只活本机。
+  /// 跳过/入队均有日志（[bp.skip]/[bp.enqueue]）：排查「断点没推上去」用。
   Future<void> _maybeEnqueueBreakpoint(LocalIndex idx, Duration pos,
       {bool force = false}) async {
+    if (!_bootConverged) {
+      // F1：启动恢复出的本机断点可能已被远端更新——等首个镜像判定给出
+      // 结论（套用远端 / 确认本机最新）再入队；强制断点开闸后补跑。
+      if (force) _bootForcedPending = true;
+      _logBpSkip('启动收敛未完成（暂不推送，防旧态盖新）');
+      return;
+    }
     final uuid = _syncPlaylistUuid;
     final cur = _current;
-    if (uuid == null || cur == null) return;
+    if (uuid == null || cur == null) {
+      _logBpSkip(cur == null ? '无当前曲' : '无归属歌单（未绑定已同步歌单）');
+      return;
+    }
     if (cur.source.isEmpty ||
         cur.source == 'server' ||
         cur.sourceRef.isEmpty) {
+      _logBpSkip('歌曲无同步身份（source/sourceRef 空）');
       return;
     }
     if (cur.sourceKey != 'server' && !(_serverAvailable?.call() ?? false)) {
+      _logBpSkip('直连源且服务器不可用');
       return;
     }
     final nowMs = DateTime.now().millisecondsSinceEpoch;
@@ -3110,6 +3162,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (force || key != _lastBpKey || nowMs - _lastBpAtMs > 25000) {
       _lastBpKey = key;
       _lastBpAtMs = nowMs;
+      _lastBpSkipReason = null;
       final sourceId = idx.sourceUuidOf(cur.sourceKey);
       final dl = _deepList;
       // 深层列表以身份数组随断点携带（有序 {source, source_ref}），对端按身份重建。
@@ -3118,7 +3171,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           if (s.source.isNotEmpty && s.sourceRef.isNotEmpty)
             {'source': s.source, 'source_ref': s.sourceRef},
       ];
-      await idx.enqueueOutbox(SyncEventTypes.breakpointSet, {
+      final eventUuid = await idx.enqueueOutbox(SyncEventTypes.breakpointSet, {
         'playlist_uuid': uuid,
         'source': cur.source,
         'source_ref': cur.sourceRef,
@@ -3126,7 +3179,18 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         'position_ms': pos.inMilliseconds,
         'deep_list': deepList,
       });
+      perfLog('bp.enqueue',
+          'uuid=$eventUuid playlist=$uuid ref=${cur.sourceRef} pos=${pos.inMilliseconds}ms force=$force skew=${idx.clockSkew.inMilliseconds}ms');
+    } else {
+      _logBpSkip('节流中（同歌 25s 一次）');
     }
+  }
+
+  /// 断点跳过原因日志（同因只打一次，见 [_lastBpSkipReason]）。
+  void _logBpSkip(String reason) {
+    if (_lastBpSkipReason == reason) return;
+    _lastBpSkipReason = reason;
+    perfLog('bp.skip', reason);
   }
 
   /// 启动恢复（仅本机断点）：装载上次队列与位置，暂停态不自动播放。
@@ -3134,6 +3198,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final idx = _index;
     if (idx == null || _restored) return Future<void>.value();
     _restored = true;
+    _closeBootGate();
     _suppressSyncNotify = true;
     scheduleMicrotask(() => _suppressSyncNotify = false);
     final f = _restoreLocal(idx, idx.getPlayState());
@@ -3147,6 +3212,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final idx = _index;
     if (idx == null || _restored) return Future<void>.value();
     _restored = true;
+    _closeBootGate();
     // 同步恢复前缀在 Root.initState 的 build 期内执行，期间的 notify 会被
     // framework 断言（setState during build）；同步前缀结束时（首个 await 后
     // 的微任务）解除，后续异步阶段的通知照常。
@@ -3160,7 +3226,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _restorePreferRemoteInner(LocalIndex idx) async {
     final local = idx.getPlayState();
     final best = _newestMirror(idx);
-    final bestAt = best == null ? null : DateTime.tryParse(best.updatedAt);
+    final bestAt =
+        best == null ? null : DateTime.tryParse(best.compareClock);
     final localAt = local == null ? null : DateTime.tryParse(local.updatedAt);
     if (best != null &&
         bestAt != null &&
@@ -3170,12 +3237,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _restoreLocal(idx, local);
   }
 
-  /// 当前全部断点镜像里 `updated_at` 最新的一行（无则 null）。
+  /// 当前全部断点镜像里「最后操作时间」最新的一行（无则 null；F4 比较时钟 =
+  /// `lastEventAt ?? updatedAt`，与推送 LWW/服务端 /playstates/latest 同口径）。
   BreakpointMirrorRow? _newestMirror(LocalIndex idx) {
     BreakpointMirrorRow? best;
     DateTime? bestAt;
     for (final m in idx.allBreakpointMirrors()) {
-      final t = DateTime.tryParse(m.updatedAt);
+      final t = DateTime.tryParse(m.compareClock);
       if (t == null) continue;
       if (bestAt == null || t.isAfter(bestAt)) {
         best = m;
@@ -3203,6 +3271,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_applyingMirror) {
       _mirrorApplyQueued = true;
       if (viaSync) _mirrorApplyViaSync = true;
+      perfLog('mirror.apply queued', 'viaSync=$viaSync（进行中，收尾后补跑）');
       return;
     }
     _applyingMirror = true;
@@ -3213,25 +3282,53 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         _mirrorApplyQueued = false;
         _mirrorApplyViaSync = false;
         // 播放中绝不打断领播端（缓冲中的瞬态 false 由基准比较再兜一层）。
-        if (_hasPlayScene && playing) return;
+        if (_hasPlayScene && playing) {
+          perfLog('mirror.apply skip', '正在播放不打断');
+          return;
+        }
         // 启动补切：用户已主动交互过则不再回切（viaSync 的显式同步不受此限）。
-        if (!sync && _userTookOver) return;
+        if (!sync && _userTookOver) {
+          perfLog('mirror.apply skip', '用户已接管');
+          return;
+        }
         final swWait = Stopwatch()..start();
         final restoring = _restoreFuture;
         if (restoring != null) await restoring;
         perfLog('mirror.apply waitRestore',
             '${swWait.elapsedMilliseconds}ms viaSync=$sync');
-        if (_shuttingDown) return;
-        if (_hasPlayScene && playing) return;
-        if (!sync && _userTookOver) return;
+        if (_shuttingDown) {
+          perfLog('mirror.apply skip', '应用退出中');
+          return;
+        }
+        if (_hasPlayScene && playing) {
+          perfLog('mirror.apply skip', '正在播放不打断（恢复尾后）');
+          return;
+        }
+        if (!sync && _userTookOver) {
+          perfLog('mirror.apply skip', '用户已接管（恢复尾后）');
+          return;
+        }
         final swLookup = Stopwatch()..start();
         final best = _newestMirror(idx);
-        if (best == null) return;
-        final bestAt = DateTime.tryParse(best.updatedAt);
-        if (bestAt == null) return;
+        if (best == null) {
+          perfLog('mirror.apply skip', '无断点镜像');
+          return;
+        }
+        final bestAt = DateTime.tryParse(best.compareClock);
+        if (bestAt == null) {
+          perfLog('mirror.apply skip',
+              '镜像比较时钟无效 uuid=${best.playlistUuid} clock=${best.compareClock} updated=${best.updatedAt}');
+          return;
+        }
         final base = _breakpointBaselineAt;
         perfLog('mirror.apply lookup', '${swLookup.elapsedMilliseconds}ms');
-        if (base != null && !bestAt.isAfter(base)) return;
+        if (base != null && !bestAt.isAfter(base)) {
+          perfLog('mirror.apply skip',
+              '镜像不新于基准 uuid=${best.playlistUuid} clock=${bestAt.toIso8601String()} base=${base.toIso8601String()}');
+          return;
+        }
+        perfLog('mirror.apply adopt',
+            'uuid=${best.playlistUuid} device=${best.deviceId} pos=${best.positionMs}ms clock=${bestAt.toIso8601String()} lastEvent=${best.lastEventAt} updated=${best.updatedAt} base=${base?.toIso8601String()} viaSync=$sync');
         final swApply = Stopwatch()..start();
         await _restoreFromMirror(idx, best);
         perfLog('mirror.apply restoreFromMirror',
@@ -3239,6 +3336,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       } while (_mirrorApplyQueued);
     } finally {
       _applyingMirror = false;
+      // F1：首个镜像判定跑完即开闸——无论套用与否，「远端有什么」已掌握，
+      // 此后本机状态（套用了远端或确认本机最新）可以正常上报。
+      _openBootGate('首个镜像判定完成');
     }
   }
 
@@ -3404,15 +3504,17 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _queue = _fusedQueue(_fusedBase!);
     _idx = _fusedIndexOf(start, songs).clamp(0, _queue.length - 1);
     _current = _queue[_idx];
-    // 采用远端断点为当前状态：基准=镜像时间（供后续「是否更新」判断），
+    // 采用远端断点为当前状态：基准=镜像比较时钟（最后操作时间，F4），
     // 并对刚 adopted 的状态做一次回推节流——跟随端不应以更新的 occurred_at
     // 把暂停位置写回服务端、反过来覆盖正在播放的领播端（复用 25s 节流）。
-    _breakpointBaselineAt = DateTime.tryParse(m.updatedAt);
+    _breakpointBaselineAt = DateTime.tryParse(m.compareClock);
     final adopted = _current!;
     _lastBpKey = '$_syncPlaylistUuid|${adopted.source}|${adopted.sourceRef}';
     _lastBpAtMs = DateTime.now().millisecondsSinceEpoch;
     // 乐观位置（同步前缀即设）：退到断点曲之后的首曲时为 0。
     final pos = (found >= 0 && start == found) ? m.positionMs : 0;
+    perfLog('restoreMirror adopt',
+        'uuid=${m.playlistUuid} device=${m.deviceId} ref=${m.sourceRef} pos=${pos}ms base=${m.compareClock} lastEvent=${m.lastEventAt} updated=${m.updatedAt} found=$found');
     _restorePositionMs = pos;
     _restorePositionKey = _positionKeyOf(_current!);
     final swPlay = Stopwatch()..start();
@@ -3710,6 +3812,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _cancelFadeAndComplete();
     _fadingPause = false;
     _sleepTick?.cancel();
+    _bootGateTimer?.cancel();
+    _bootGateTimer = null;
     _playbackGuard?.dispose();
     _playbackGuard = null;
     // 退出前把最后一段播放时长结清（与 _saveState 同样不等待）。
