@@ -12,7 +12,6 @@ import { systemShare } from '@kit.ShareKit';
 import { uniformTypeDescriptor as utd } from '@kit.ArkData';
 import { fileUri } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { window } from '@kit.ArkUI';
 
 const TAG = 'SelfMusicEmailShare';
 /** 与 Dart 侧（email_share.dart）约定的反馈邮件通道。 */
@@ -80,12 +79,12 @@ export default class EmailShareBridge implements MethodCallHandler {
         description: body ?? ''
       });
       const controller = new systemShare.ShareController(data);
-      // 分享面板挂在主窗口的 UIContext 上（Ability 层无页面 UIContext）。
-      const win = await window.getLastWindow(this.context);
+      // ShareKit 的 show() 要求 UIAbilityContext（不是窗口 UIContext）；
+      // 直接使用 EntryAbility 构造时注入的 Ability 上下文。
       const options: systemShare.ShareControllerOptions = {
         selectionMode: systemShare.SelectionMode.SINGLE
       };
-      await controller.show(win.getUIContext(), options);
+      await controller.show(this.context, options);
       result.success(true);
     } catch (e) {
       const err = e as BusinessError;
