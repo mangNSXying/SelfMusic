@@ -65,13 +65,13 @@ Future<void> main() async {
   // 六个分区的缩略图工作集约百 MB，余量足够。上限取值与复核见 [kImageCacheMaxBytes]。
   PaintingBinding.instance.imageCache.maximumSizeBytes = kImageCacheMaxBytes;
   PaintingBinding.instance.imageCache.maximumSize = kImageCacheMaxCount;
-  // 鸿蒙引导（sqlite3 系统库 / secure storage 文件实现 / just_audio→fvp 适配）：
+  // 鸿蒙引导（sqlite3 系统库 / secure storage 文件实现 / just_audio→AVPlayer 适配）：
   // 必须先于任何存储访问与播放器创建；其它平台内部直接返回。
   await setupOhos();
   perfLog('boot.setupOhos done');
   // 桌面端（Windows/Linux）音频后端统一 media_kit（底层 libmpv）：默认参数即
   // Windows/Linux 启用、Android 关闭（Android 继续走 ExoPlayer），无需平台判断。
-  // ohos 上其内部 UniversalPlatform 判断为 no-op，由上面的 FvpJustAudio 接管。
+  // ohos 上其内部 UniversalPlatform 判断为 no-op，由上面的 AvPlayerJustAudio 接管。
   JustAudioMediaKit.ensureInitialized();
   perfLog('boot.mediaKit done');
   // 系统音量混合器 / 进程列表里显示的名字（默认 'JustAudioMediaKit'）。

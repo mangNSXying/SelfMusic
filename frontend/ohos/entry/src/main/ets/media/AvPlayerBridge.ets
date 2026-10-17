@@ -50,7 +50,7 @@ class PlayerEntry {
 }
 
 /**
- * 鸿蒙系统 AVPlayer 播放桥（替代 fvp/libmdk 的 PoC 实现）。
+ * 鸿蒙系统 AVPlayer 播放桥（just_audio 的 ohos 播放后端）。
  *
  * 通道协议：
  * - 方法 selfmusic/avplayer：

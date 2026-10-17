@@ -670,8 +670,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 我们的「允许自签」开关，故自签 NAS（https + 权威 CA 不认的证书）
       // 走代理必然 TLS 失败——扫描/探测都好好的，一到播放就报错。
       // 顺带好处：原生 Range/seek 比代理转发的自建字节流更稳。
-      // Android（ExoPlayer）与鸿蒙（fvp/mdk）都能原生发请求头：前者走
-      // setDefaultRequestProperties，后者走 avio.headers（见 just_audio_fvp）。
+      // Android（ExoPlayer）与鸿蒙（AVPlayer）都能原生发请求头：前者走
+      // setDefaultRequestProperties，后者走 setMediaSource(headers)
+      // （见 just_audio_avplayer.dart）。
       // 其余平台（桌面 mpv）仍依赖代理转发，不能一起关。
       useProxyForRequestHeaders: !_nativeRequestHeadersSupported,
       audioPipeline: _eq != null
@@ -681,7 +682,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 当前平台能否由原生播放器直接发送请求头（不经过 just_audio 的 Dart 代理）。
-  /// Android=ExoPlayer；鸿蒙=fvp/libmdk（`avio.headers`）。鸿蒙上那个回环代理
+  /// Android=ExoPlayer；鸿蒙=AVPlayer（`setMediaSource(url, headers)`）。鸿蒙上那个回环代理
   /// 会在 fork 引擎主 isolate 死锁/空转（2026-10-12 播放卡死根因），必须绕开。
   static bool get _nativeRequestHeadersSupported =>
       !kIsWeb && (Platform.isAndroid || isOhos);
@@ -795,9 +796,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 整队都不可播时也不会无限跳歌。
   static const int _loadFailSkipLimit = 3;
 
-  /// 装载看门狗：原生装载器（ohos fvp/mdk、桌面 mpv）对「主机不可达/
-  /// 无响应」的 open 没有应用层超时——真机实测 IPv6 路由丢失时 mdk
+  /// 装载看门狗：原生装载器（ohos AVPlayer、桌面 mpv）对「主机不可达/
+  /// 无响应」的 open 可能没有应用层超时——历史实测（mdk）IPv6 路由丢失时
   /// prepare 永久挂起，UI 卡 00:00/00:00、点播放无响应（2026-09-30）。
+  /// AVPlayer 自带 15s 网络超时，本看门狗仍作兜底。
   /// 超时后交 [loadBackoff] 退避重试，重试耗尽走既有装载失败提示/跳曲。
   /// ExoPlayer 自带连接超时通常先于此报错（对 Android 无感）。
   static const Duration _loadUrlTimeout = Duration(seconds: 15);
@@ -2103,7 +2105,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugPrint('[play] ${src.kind} URL: ${direct.url}'
           '${direct.headers != null && direct.headers!.isNotEmpty ? ' (headers: ${direct.headers!.keys.join(",")})' : ' (无 headers)'}');
       // 装载前快速鉴权探针：1 字节 Range 走完 DNS/TCP/TLS/鉴权。401/403
-      // 直接失败——原生播放器（fvp/ExoPlayer）对错误响应只会无限缓冲，
+      // 直接失败——原生播放器（AVPlayer/ExoPlayer）对错误响应只会无限缓冲，
       // 进度停 0:00 无任何提示（2026-09-29 真机实测，密码过期即此表现）。
       // 其余探针异常不阻塞装载（网络抖动交给播放器自身重试）。
       probeTimedOut = false;

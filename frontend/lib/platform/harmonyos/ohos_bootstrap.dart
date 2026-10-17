@@ -10,7 +10,6 @@ import 'package:sqlite3/open.dart' as sqlite3_open;
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 
 import 'just_audio_avplayer.dart';
-import 'just_audio_fvp.dart';
 import 'path_provider_ohos_retry.dart';
 import 'secure_storage_ohos.dart';
 import 'wakelock_plus_ohos.dart';
@@ -35,12 +34,6 @@ void markBootReady() {
 /// 不用 `Platform.isOhos`：stable 工具链的 dart:io 没有该 getter，
 /// `operatingSystem` 字符串比较在两套 SDK 下都可编译且行为一致。
 bool get isOhos => !kIsWeb && Platform.operatingSystem == 'ohos';
-
-/// PoC 开关：true=系统 AVPlayer（just_audio_avplayer.dart）；
-/// false=旧 fvp/libmdk 适配层。回滚出包：
-/// `--dart-define=SELFMUSIC_OHOS_AVPLAYER=false`。
-const bool kOhosUseAvPlayer =
-    bool.fromEnvironment('SELFMUSIC_OHOS_AVPLAYER', defaultValue: true);
 
 /// ohos 上 sqlite3 的系统库加载函数。
 ///
@@ -82,7 +75,7 @@ Future<void> _loadRootCerts() async {
 ///    [OhosSecureStorage] 文件实现；且包前端 `_selectOptions` 在 ohos 上
 ///    必抛 UnsupportedError（启动白屏真凶），默认实例经
 ///    [createSecureStorage] 绕过包前端（见该文件说明）
-/// 3. just_audio：无 ohos 实现，接 [FvpJustAudio]（fvp/libmdk 适配层）
+/// 3. just_audio：无 ohos 实现，接 [AvPlayerJustAudio]（系统 AVPlayer 桥）
 /// 4. path_provider：保险层——多点惰性断言安装重试包装（verify-4 实证
 ///    注册器在 main 前已跑完、从未覆盖；断言防未来引擎行为变化），在途
 ///    调用由看门狗 poke 驱动重发；超时重发与兜底路径仅作附加保险
@@ -97,13 +90,11 @@ Future<void> _loadRootCerts() async {
 /// - audio_service / permission_handler：调用点均已 Platform.isAndroid 门控
 Future<void> setupOhos() async {
   if (!isOhos) return;
-  debugPrint('[ohos] 启动引导：sqlite3 / secure storage / just_audio(fvp) / wakelock');
+  debugPrint('[ohos] 启动引导：sqlite3 / secure storage / just_audio(avplayer) / wakelock');
   sqlite3_open.open.overrideForAll(_openSqliteOnOhos);
   FlutterSecureStoragePlatform.instance = OhosSecureStorage();
-  // 音频后端：默认系统 AVPlayer（PoC），可用 dart-define 回滚到 fvp。
-  // 两个实现均实现 just_audio_platform_interface，PlayerProvider 无感。
-  JustAudioPlatform.instance =
-      kOhosUseAvPlayer ? AvPlayerJustAudio() : FvpJustAudio();
+  // 音频后端：系统 AVPlayer（just_audio_platform_interface 实现）。
+  JustAudioPlatform.instance = AvPlayerJustAudio();
   // wakelock_plus：默认实例（MethodChannel）在 ohos 上抛
   // MissingPluginException，替换为平台桥实现（WakelockPlus.enable/disable
   // 均经 WakelockPlusPlatformInterface.instance 路由）。

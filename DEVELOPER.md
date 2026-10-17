@@ -137,7 +137,7 @@ selfmusic/
 │   │   ├── widgets/                  # 共享组件（SongTile / CoverThumb / lyrics_view / add_to_playlist / view_mode_toggle 等）
 │   │   └── screens/                  # library / playlists_view / sources / source_browse_view / settings / player / pairing / devices（阶段5 设备管理）
 │   ├── android/ linux/ windows/ ohos/   # 各平台壳工程（ohos 的 build-profile.json5 含本机签名材料不入库，模板 build-profile.json5.example）
-│   ├── third_party/               # vendored fork：fvp（ohos 平台声明 + 删 video_player 依赖链）、audio_service（通知栏 5 键自定义按钮）
+│   ├── third_party/               # vendored fork：audio_service（通知栏 5 键自定义按钮）、dart_smb2、smb_connect
 │   └── pubspec.yaml
 ├── scripts/init.sql                  # 数据库初始化脚本（v2 schema + 阶段5 sync_events / playlists.client_uuid+deleted+last_event_at / play_states.last_event_at）
 ├── scripts/migration_003_sync.sql    # 存量库补表/补列（阶段5；新部署只需 init.sql）
@@ -521,8 +521,8 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 
 现状（`lib/platform/harmonyos/`）：
 
-- `ohos_bootstrap.dart`：`setupOhos()` 在 `main()` 里 `runApp` 前调用，装配六件事——sqlite3 `open.overrideForAll`（顶层函数，isolate 安全）、`FlutterSecureStoragePlatform` 桩、`JustAudioPlatform` fvp 适配、path_provider 重试包装、HTTPS 根证书注入、`WakelockPlusPlatformInterface` 常亮平台实现（2026-10）
-- `just_audio_fvp.dart` / `secure_storage_ohos.dart`：音频后端与安全存储的 ohos 实现
+- `ohos_bootstrap.dart`：`setupOhos()` 在 `main()` 里 `runApp` 前调用，装配六件事——sqlite3 `open.overrideForAll`（顶层函数，isolate 安全）、`FlutterSecureStoragePlatform` 桩、`JustAudioPlatform` AVPlayer 适配、path_provider 重试包装、HTTPS 根证书注入、`WakelockPlusPlatformInterface` 常亮平台实现（2026-10）
+- `just_audio_avplayer.dart` / `secure_storage_ohos.dart`：音频后端（系统 AVPlayer 桥）与安全存储的 ohos 实现
 - `ohos_platform_bridge.dart` / `wakelock_plus_ohos.dart`（2026-10）：系统能力平台桥 Dart 封装（常亮/本地文件/蓝牙，见「鸿蒙适配·系统能力平台桥」）
 - 平台判定统一用 `Platform.operatingSystem == 'ohos'`（stable 工具链没有 `Platform.isOhos` getter，见「[鸿蒙适配](#鸿蒙适配)」）
 - 其余平台差异目前靠条件导入式的一层封装（`just_audio` 默认 Android 走 ExoPlayer、桌面走 media_kit），尚**未**抽成统一 `capabilities` 接口——新增平台能力时优先考虑在 `lib/platform/` 补齐
@@ -680,7 +680,7 @@ abstract class MusicSource {
 - **歌词三通道**：内嵌标签（mp3 `USLT` / FLAC `LYRICS`·`UNSYNCEDLYRICS`）→ 同目录同名 `.lrc`（local/WebDAV 通用，UTF-8/UTF-16 BOM 兼容，后端不提供歌词）；解析为 LRC 文本入库 `song_lyrics`（`(source_key,ref)` 主键，三态：内容 / 显式标记缺失 / 未读取），缺失标记避免每次播放重复读文件。
 - **歌词页**：与播放进度同步滚动 + 居中高亮当前行 + 点击任意行 seek；手动拖动暂停跟随，空闲「追焦等待」超时后回中，切歌归位；`lrc_parser.dart` 支持多标签 / `offset` / 毫秒位数 / 纯文本退化 / 二分定位 / 译文行 ` / ` 换行。
 - **歌词跟焦为自愈式**（`lyrics_view.dart`）：每次位置事件都按真实布局复核当前行是否在位，不以「行号是否变化」为触发条件——`ListView.builder` 懒构建导致目标行尚未构建时，先临时加宽 `cacheExtent` 让目标行被构建（经典 `double` 写法以兼容 ohos 分支，最多补滚 3 次），再用 `RenderAbstractViewport.getOffsetToReveal` 只滚歌词列表（不用 `Scrollable.ensureVisible`，避免把外层 `PageView` 一起拖动）；首次归位 `jumpTo`、换行 `animateTo`；拖动抑制为续期式空闲计时。
-  **复核 ≠ 重开动画**（2026-10-15 真机取证）：位置事件可以比帧频还快——just_audio 的 `positionStream` = 播放事件 + `Timer.periodic(duration/800)`，而鸿蒙 fvp 后端的媒体状态事件在部分机型上按帧率触发（手机实测 68 次/秒，同曲平板 10 次/秒，这也正是「平板不复现」的原因）。旧实现每次事件都 `animateTo`，把 320ms 的缓动拆成逐帧重开：**每段新动画的第一次 tick 位移恒为 0**（ticker 起始时间在首帧才记），滚动退化为爬行卡顿（现象：追焦一卡一卡、手指一碰即不卡、当前行高亮正常）。现规则：动画在飞期间只有「换行」或目标漂移超过 `_retargetTolerance`（4px）才重定目标，其余交给动画自己走完；动画完成回调带代次校验（`_animGen`），旧动画被取代后不得清空新动画的飞行状态；剩余距离 <24px 用 140ms 短动画。回归用例：`test/lyrics_follow_test.dart`「位置事件比帧频还快时不得反复打断跟焦动画」
+  **复核 ≠ 重开动画**（2026-10-15 真机取证）：位置事件可以比帧频还快——just_audio 的 `positionStream` = 播放事件 + `Timer.periodic(duration/800)`，鸿蒙位置事件由 AVPlayer `timeUpdate` 驱动（默认 100ms；旧 fvp 后端在部分机型按帧率触发 68 次/秒，平板 10 次/秒，这也正是「平板不复现」的原因）。旧实现每次事件都 `animateTo`，把 320ms 的缓动拆成逐帧重开：**每段新动画的第一次 tick 位移恒为 0**（ticker 起始时间在首帧才记），滚动退化为爬行卡顿（现象：追焦一卡一卡、手指一碰即不卡、当前行高亮正常）。现规则：动画在飞期间只有「换行」或目标漂移超过 `_retargetTolerance`（4px）才重定目标，其余交给动画自己走完；动画完成回调带代次校验（`_animGen`），旧动画被取代后不得清空新动画的飞行状态；剩余距离 <24px 用 140ms 短动画。回归用例：`test/lyrics_follow_test.dart`「位置事件比帧频还快时不得反复打断跟焦动画」
   **行高必须在换行帧定稿**（2026-10-15 真机反馈「每次换行收尾补 4px」的根因）：字号/字重若走 200ms 补间，行高在换行后持续变化（当前行变高 4.5px、上一行同步变矮），目标由「上一行行顶 + 本行行高×0.42」共同决定 → 动画落点必然差几像素，收尾还得补一次；**长行/长译文更糟**：折行数在补间中途跨越阈值突然 +1 行，目标整行跳变（≥24px）→ 每次都二次校正。故行文本拆 `_LyricRowText`/`_FadingText`：字号/字重同帧切换，只有颜色补间（颜色不影响排版）。回归用例：`test/lyrics_follow_test.dart`「换行后行高同帧定稿」「长行折行（行数随状态变化）时同样一次落位」——两条用例在旧写法下必失败（实测：折行用例报 `Expected >110, Actual 88`）
 - **后台播放**：Android 走 `audio_service` 自研处理器（`SelfMusicAudioHandler`），返回桌面 / 切后台**继续播放**；通知栏「退出软件」/ 划掉任务 / 侧边栏「退出」才真正停止。**前台服务恒注册**，`notification_controls=false` 只隐藏通知里的 5 个按钮（后台保活不受该开关影响）；鸿蒙 AVSession 桥同理恒注册（见「[鸿蒙适配](#鸿蒙适配)」）。
 - **睡眠定时四模式**：指定时间 / 时长 / 曲数 / 列表结尾（+ 播放完最后曲目）；「指定时长/曲数」滚轮选择并**记忆上次值**（`sleep_default_duration_minutes` / `sleep_default_count`）；「播放结束退出软件」仅当次生效（开时 `shutdown()` 后 `exit(0)`，否则暂停驻留）。
@@ -713,8 +713,8 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 
 ### 客户端播放要点（装载/切歌/返回）
 
-- **装载前置鉴权探针**：原生装载器（fvp/ExoPlayer）对 401/403 错误响应只会无限缓冲，进度停 0:00 且无任何提示（2026-09-29 密码过期真机实测）。`_loadOnce` 在 setUrl 前先发 1 字节 Range 探针（`MusicSource.probe`，与取流路径同口径）：401/403 立即失败提示，其余探针异常忽略后继续装载（网络抖动交给播放器重试）
-- **装载看门狗（2026-09-30）**：mdk/mpv 对「主机不可达/无响应」的 open 没有应用层超时——真机实测 IPv6 路由丢失时 mdk prepare 永久挂起，UI 卡 00:00/00:00、点播放无响应。setUrl 统一裹 15s 超时（`PlayerProvider._loadUrlTimeout`），超时按装载失败进入 `loadBackoff` 退避重试、耗尽后走失败提示/自动跳曲；被放弃的迟到结果用 `Future.ignore()` 吞掉防 unhandled。ExoPlayer 自带连接超时通常先报错，对 Android 无感
+- **装载前置鉴权探针**：原生装载器（AVPlayer/ExoPlayer）对 401/403 错误响应只会无限缓冲，进度停 0:00 且无任何提示（2026-09-29 密码过期真机实测）。`_loadOnce` 在 setUrl 前先发 1 字节 Range 探针（`MusicSource.probe`，与取流路径同口径）：401/403 立即失败提示，其余探针异常忽略后继续装载（网络抖动交给播放器重试）
+- **装载看门狗（2026-09-30）**：原生播放器对「主机不可达/无响应」的 open 可能没有应用层超时——历史实测（mdk）IPv6 路由丢失时 prepare 永久挂起，UI 卡 00:00/00:00、点播放无响应。setUrl 统一裹 15s 超时（`PlayerProvider._loadUrlTimeout`），超时按装载失败进入 `loadBackoff` 退避重试、耗尽后走失败提示/自动跳曲；被放弃的迟到结果用 `Future.ignore()` 吞掉防 unhandled。AVPlayer/ExoPlayer 自带连接超时通常先报错，看门狗仅作兜底
 - **自动切歌 play 空转问题（2026-09-30）**：just_audio 的 `play()` 首行 `if (playing) return`——上一首自然播完 playing 不会自动复位，装载下一首后 `play()` 静默空转、平台层收不到播放指令。ohos 表现为切歌无声 + 进度条靠 Dart 时钟插值假走（暂停时回跳 0）；Android 因 ExoPlayer `playWhenReady` 状态跨装载保持而恰好正常。修复在 `PlayerProvider._play`：装载完成需要播放时先 `pause()` 复位 playing 再 `play()`——**该复位逻辑为必要修复，请勿删除或"优化"**，详见该处注释
 - **返回手势 = 转后台**：移动端侧滑/返回键不退出应用（后台续播），收口在 `platform/app_background.dart`（Android 通道 `com.shamiko.selfmusic/app`、ohos 通道 `selfmusic/app`，均为 `moveToBackground`），`main.dart` 的 `_onPopInvoked` 是唯一调用点、通道失败兜底原行为；桌面端恒 false。调整退出行为只动这两处
 
@@ -728,7 +728,7 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 |------|-----------|------|
 | path_provider | `path_provider_ohos` 2.2.1 + 超时重试包装（保险层：1s 超时 × 5 次重发 + 沙盒回退；旧"引擎吞回复"假设已被实测否定，见下节） | ✅ 直接用 + 保险 |
 | file_selector | 备份导入导出直接用；本地文件夹源「选择目录」的 `getDirectoryPath` 在 `file_selector_ohos` 未实现（调用必抛异常）→ ohos 改走平台桥 `pickDirectory`（DocumentViewPicker FOLDER + fileShare 持久化，见「系统能力平台桥」） | ✅ 分场景处理 |
-| **just_audio（音频后端）** | **fvp**（libmdk 后端，官方支持 HarmonyOS 5.0+）+ 自写纯 Dart 适配层 `just_audio_platform_interface` → fvp Player，无 ArkTS | ✅ 已实现（`lib/platform/harmonyos/just_audio_fvp.dart`） |
+| **just_audio（音频后端）** | **系统 AVPlayer**（API 12+）+ 自写纯 Dart 适配层 `just_audio_platform_interface` → ArkTS 桥 `AvPlayerBridge.ets`（方法/事件双通道） | ✅ 已实现（`lib/platform/harmonyos/just_audio_avplayer.dart`，2026-10 真机 P0 全过） |
 | flutter_secure_storage | 两层适配：① `FlutterSecureStoragePlatform` 文件 shim；② **前端类绕过**——上游 9.2.4 的 `_selectOptions()` 对 ohos 无条件 throw 且 `_platform` 是逐调用 getter（包级注册平台实例救不了前端），子类 `OhosFlutterSecureStorage` 覆写六入口直调平台实例 + `createSecureStorage()` 工厂收口构造点 | ✅ 已实现（`secure_storage_ohos.dart`） |
 | permission_handler | 桩包同样不兼容；应用内调用点均已 `Platform.isAndroid` 门控，ohos 不触发 | ✅ 无需处理 |
 | wakelock_plus | 桩包不兼容 → `setupOhos` 注册 `OhosWakelockPlusPlatform`（`wakelock_plus_ohos.dart`，转接平台桥 keepScreenOn → `window.setWindowKeepScreenOn`），player_screen 的 ohos guard 移除、常亮逻辑全平台统一 | ✅ 已实现（2026-10，见「系统能力平台桥」） |
@@ -740,15 +740,16 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 关键事实：
 - **跨 SDK 兼容铁律**：stable 工具链的 `dart:io` 没有 `Platform.isOhos` getter，所有 ohos 判断必须写 `Platform.operatingSystem == 'ohos'`（两套 SDK 都可编译且行为一致），见 `lib/platform/harmonyos/ohos_bootstrap.dart` 的 `isOhos`
 - **stable 新 API 在 ohos 分支可能不存在**：同一 `lib/` 要在两套 SDK 下编译，新 API 先查 ohos 分支（3.41.9）有没有——实例：`ScrollCacheExtent` 类 ohos 分支没有，`lyrics_view.dart` 的 cacheExtent 改回经典 `double` 写法（2026-09-30）。analyze 双跑（stable + ohos 分支）是这类问题的验收闸门
-- WebDAV 直连鉴权只有 `Authorization: Basic` → 适配层解码回 user:pass percent-encode 折进 URL userinfo（FFmpeg 原生承载，mdk 不支持自定义请求头）；`DirectAudioSource` 字节流（just_audio 内建 localhost 代理）为兜底，三种音源形态（file://、https://+Basic、127.0.0.1 代理）都到达 `ProgressiveAudioSourceMessage` 统一处理
-- fvp 构建期经 CMake 从 sourceforge 下载 mdk 预编译库（可用 `FVP_DEPS_URL` 环境变量换镜像）；实际打入 hap 的 native 库：libfvp.so（FFI 桥，~64KB）+ libmdk.so（2MB）+ libffmpeg.so（7.4MB）+ libc++_shared.so（libmdk 的 NEEDED），ohos FFI 加载层已内置。libass.so（字幕）/libdav1d.so（AV1 视频解码）经 CMakeLists.txt 的 VENDORED PATCH 从 mdk 的 INTERFACE 打包链剔除（音乐播放不使用；libmdk 对二者是运行时 dlopen 可选加载，缺失仅降级），2026-10 实测剔除前 HAP 44.1MB → 剔除后 42.1MB（arm64-v8a）
+- WebDAV 直连鉴权走 `Authorization: Basic` 头；鸿蒙 AVPlayer 经 `media.createMediaSourceWithUrl(url, headers)` 原生透传（Bearer / X-Origin-* 同理），文件/回环字节流走 `fdSrc`/`http://127.0.0.1`。`DirectAudioSource` 字节流（just_audio 内建 localhost 代理）为兜底，三种音源形态（file://、https://+Basic、127.0.0.1 代理）都到达 `ProgressiveAudioSourceMessage` 统一处理
+- 鸿蒙播放由系统 AVPlayer 提供，**不再随包分发播放/解码 .so**：HAP 的 native 库只剩 libapp / libflutter / libsqlite3（自编译）/ libsmb2（SMB FFI）。2026-10 全量替换实测 HAP 43.0MB → **32.1MB**（arm64-v8a），构建期也不再下载 mdk 预编译库
+- 自签证书：真机实测 **Media Kit 不校验 TLS**（从未安装过的自签叶证书直接可播）；`允许自签` 开关只影响 dart:io 的扫描/探测/API。注意这是相对 mdk（默认校验证书）的安全行为变化（HTTPS 播放可被中间人替换流/窃取 `Authorization` 头），产品上已知悉并接受
+- 转码流：AVPlayer 报出的 duration 可能为无效大值（实测 53,686,988ms），适配层按 URL 含 `/transcode/stream` 强制忽略、回退歌曲元数据时长；seek 走应用层 `start_sec` 重载（服务端 ffmpeg 重启约 4s）
 - flutter 工具自动把带 ohos 模块的插件写入 `ohos/build-profile.json5` modules 与 har overrides，无需手工接线
-- fvp 用 vendored 副本 `frontend/third_party/fvp`（ohos-only 平台声明 + 删除 video_player 依赖链 + 剔除 libass/libdav1d 进包，三处补丁见该目录 pubspec.yaml / lib/fvp.dart / ohos/src/main/cpp/CMakeLists.txt 的 VENDORED PATCH 注释），升级 = 重新复制 0.38.1 源码 + 重打三个补丁
 
 适配层实现（`lib/platform/harmonyos/`，2026-09）：
-- `ohos_bootstrap.dart`：`setupOhos()` 在 `main()` 里 runApp 前调用，六件事全部仅 ohos 生效——sqlite3 overrideForAll（顶层函数，**仅本 isolate 有效**：不随 Isolate.spawn 传入子 isolate，ohos 写层因此退化内联，见 `db_writer.dart` 头注释）、`FlutterSecureStoragePlatform.instance = OhosSecureStorage()`（包级注册只覆盖平台侧，前端类另需绕过，见上表）、`JustAudioPlatform.instance = FvpJustAudio()`、`PathProviderPlatform.instance = OhosRetryingPathProvider(原实现)`（单点收口：启动链全部路径调用均经该 instance）、`SecurityContext` 根证书注入（`_loadRootCerts`）、`WakelockPlusPlatformInterface.instance = OhosWakelockPlusPlatform()`（2026-10，常亮见下节）
+- `ohos_bootstrap.dart`：`setupOhos()` 在 `main()` 里 runApp 前调用，六件事全部仅 ohos 生效——sqlite3 overrideForAll（顶层函数，**仅本 isolate 有效**：不随 Isolate.spawn 传入子 isolate，ohos 写层因此退化内联，见 `db_writer.dart` 头注释）、`FlutterSecureStoragePlatform.instance = OhosSecureStorage()`（包级注册只覆盖平台侧，前端类另需绕过，见上表）、`JustAudioPlatform.instance = AvPlayerJustAudio()`、`PathProviderPlatform.instance = OhosRetryingPathProvider(原实现)`（单点收口：启动链全部路径调用均经该 instance）、`SecurityContext` 根证书注入（`_loadRootCerts`）、`WakelockPlusPlatformInterface.instance = OhosWakelockPlusPlatform()`（2026-10，常亮见下节）
 - `path_provider_ohos_retry.dart`：1s 超时 × 5 次重发的保险包装 + 全超时沙盒路径回退（命中时日志 `[ohos] path_provider.* 响应超时`）；旧"引擎竞态吞回复"假设已被 verify-5/6 逐消息对账否定（见下节），保留理由：路径查询幂等、成本为零、覆盖未证实的极端时序
-- `just_audio_fvp.dart`：`FvpJustAudio.init/disposePlayer` 管理播放器表；`FvpAudioPlayer` 实现负载面 load/play/pause/seek/setVolume（+speed/loop 顺带），pitch/shuffle/skipSilence 静默 no-op；mdk 状态映射：`prepare()<0` 抛 PlatformException、`state=stopped` 且非加载复位/错误 → `completed`（自动切歌依赖）、`MediaStatus.invalid`/`onEvent error` → 错误上报、位置用 200ms Timer 轮询（mdk 无位置流）、同一媒体重复 load 前先回 stopped 复位（mdk prepare 对已加载返回 -1）；音量两侧语义一致（0.0-1.0）；mdk prepare 对不可达主机**无超时**——应用层看门狗兜底（见「[客户端播放要点](#客户端播放要点装载切歌返回)」）
+- `just_audio_avplayer.dart`：`AvPlayerJustAudio.init/disposePlayer` 管理播放器表；`AvPlayerHandle` 实现负载面 load/play/pause/seek/setVolume，pitch/shuffle/speed/loop 静默 no-op（应用层自实现循环）；事件映射：ArkTS 侧 `stateChange/position/duration/buffered/seekDone/error` → `PlaybackEventMessage`；错误必须 `_events.addError`（just_audio 0.9.46 不读 errorCode 字段）；位置由 AVPlayer timeUpdate 原生上报（默认 100ms），无 Dart 轮询；文件走 `fdSrc`（fd 由 ArkTS 持有到 reset/dispose）；带请求头走 `setMediaSource(createMediaSourceWithUrl)`（注意该 API 在目标机同步返回 void，不能 `.then`）；`setVolume` 在 prepared 前暂存、prepared 后补发，5400102 视为非致命
 - `secure_storage_ohos.dart`：文档目录单 JSON 文件 + 整文件 base64 混淆，内存即权威源；读写失败不抛（密钥问题不崩登录/配对流程）；对应 platform_interface 1.1.2 Map-options 签名（flutter_secure_storage 9.2.4 锁定该版本，`*Params` API 是 1.2+ 才有，勿混淆）
 
 启动白屏根因（2026-09 真机取证）：两个应用/生态层问题，与引擎无关。
@@ -776,7 +777,7 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
     sqlite3.c -o frontend/ohos/entry/libs/arm64-v8a/libsqlite3.so
   ```
 
-  hvigor 自动把 `entry/libs/arm64-v8a/` 打进 hap（与 fvp 的 .so 同机制），应用 dlopen 按名命中包内副本
+  hvigor 自动把 `entry/libs/arm64-v8a/` 打进 hap，应用 dlopen 按名命中包内副本
 - 上游反馈（待办）：① flutter_secure_storage 支持 ohos（`_selectOptions` 放行或官方 ohos 分支）；② `sqlite3_flutter_libs` ohos 移植
 - **验证（verify-6）**：启动引导 → 服务端设置加载完成 → db-writer 内联就绪 → 直连源就绪 → 进入 runApp → 看门狗解除，全链 1.4s 点亮；进程存活无崩溃标记，FlutterView 持续输出 `Display on` / `avoidAreaChangeCallback`（视图真实渲染非白屏）
 
@@ -814,7 +815,7 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 
 构建验证状态（2026-09）：
 - 双 SDK `flutter analyze` 零问题（ohos 3.41.9 与 stable 各自通过；两 SDK 的 pub get 会对 meta/test_api/vector_math 等 4 个 flutter_test 传递依赖来回改写 lock，属已知无害现象）
-- `flutter build hap --debug` 编译链全通：ArkTS（三插件 GeneratedPluginRegistrant）+ native（libfvp.so/libmdk.so arm64-v8a）+ Dart（kernel_blob JIT），assembleHap 出 signed hap；release 出包用根目录 `build-ohos.ps1`（`hap` 参数出三架构 arm64/armv7/x86，缺省出 AGC 发布签名 .app）
+- `flutter build hap --debug` 编译链全通：ArkTS（GeneratedPluginRegistrant）+ Dart（kernel_blob JIT）+ `entry/libs` 预编译库（libsqlite3/libsmb2），assembleHap 出 signed hap；release 出包用根目录 `build-ohos.ps1`（`hap` 参数出三架构 arm64/armv7/x86，缺省出 AGC 发布签名 .app）
 - 真机部署已走通：`devecocli signature generate`（签名材料落 `~/.ohos/config/`）→ 出包 → `hdc install -r` / `devecocli run`
 - **签名材料不入库**：`devecocli signature generate` 会把本机材料路径写进 `ohos/build-profile.json5`，该文件已 gitignore；仓库只留 `build-profile.json5.example` 模板（新机器复制一份改名即可）
 - 启动白屏已修复（两个应用/生态层根因，见上文）：verify-6 全链路点亮，看门狗 1 次 poke 即解除
@@ -840,7 +841,9 @@ devecocli run   # 或 hdc install <hap 路径> 后手动启动
 
 PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV 浏览 + 本地索引 + 真机点播一首歌；跑不通则按「[风险与开放问题](#风险与开放问题)」R2 降级「仅 WebDAV 直连」。
 
-**验收结论（2026-09-30 全部通过，PoC 转日常使用）**：直连 WebDAV 浏览/扫描/点播 ✓；fvp 重复 load 复位（重播同一首）✓；completed→自动切歌 ✓（初版 play 空转无声已修，见「客户端播放要点」）；WebDAV Basic 鉴权折叠被 FFmpeg 接受 ✓。此外装载看门狗（不可达主机 15s 有界失败）、AVSession 播控、横竖屏、应用图标、宽屏队列面板（无界宽度布局崩溃 + 状态栏让位）均已真机验收。后续问题按普通 bug 修，不再按 PoC 口径管理。
+**验收结论（2026-09-30 全部通过，PoC 转日常使用）**：直连 WebDAV 浏览/扫描/点播 ✓；重复 load 复位（重播同一首）✓；completed→自动切歌 ✓（初版 play 空转无声已修，见「客户端播放要点」）；WebDAV Basic 鉴权 ✓。此外装载看门狗（不可达主机 15s 有界失败）、AVSession 播控、横竖屏、应用图标、宽屏队列面板（无界宽度布局崩溃 + 状态栏让位）均已真机验收。后续问题按普通 bug 修，不再按 PoC 口径管理。
+
+**播放后端替换（2026-10-17 真机验收）**：fvp/libmdk 全量替换为系统 AVPlayer（`just_audio_avplayer.dart` + `AvPlayerBridge.ets`）。P0 全过：自签 HTTPS（Media Kit 不校验证书，自签叶直接可播）、转码流（位置/进度/seek 重载）、明文 HTTP、Authorization 头、SFTP/SMB 回环字节流、AIFF/AIFC/Ogg Opus/hi-res FLAC、fdSrc 本地缓存。HAP 43.0MB → 32.1MB，构建期不再下载 mdk。安全行为变化：HTTPS 播放的 TLS 校验不再由应用掌控（见「鸿蒙适配·关键事实」）。
 
 ### 新机接入（团队协作，2026-10）
 
@@ -911,7 +914,7 @@ PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV �
    hdc shell aa start -a EntryAbility -b com.shamiko.selfmusic
    ```
 
-8. **日常**：日志 `hdc shell hilog`（Dart `debugPrint` 进 hilog）；截图/布局树可用 devecocli（可选，需另装 DevEco Code，本流程不依赖）。首次构建 fvp 经 CMake 从 sourceforge 下载 mdk 预编译库（约 12MB，arm64-v8a），网络受限时设 `FVP_DEPS_URL` 换镜像。
+8. **日常**：日志 `hdc shell hilog`（Dart `debugPrint` 进 hilog）；截图/布局树可用 devecocli（可选，需另装 DevEco Code，本流程不依赖）。鸿蒙播放后端已换成系统 AVPlayer，首次构建不再下载 mdk/ffmpeg 预编译库（旧 fvp 方案的 CMake 下载/解压流程已移除）。
 
 团队约定：`build-profile.json5` / `local.properties` / `*.bat` / `*.ps1` / `pubspec.lock` 均本机私有不提交；ohos 平台判断一律 `Platform.operatingSystem == 'ohos'`（「跨 SDK 兼容铁律」）；共用账号的 AGC 调试证书/Profile 有配额，废弃设备与过期 Profile 及时在 AGC「设备管理」清理。
 
@@ -1071,7 +1074,7 @@ Docker Hub 网络不通。解决方案任选：
 | # | 风险 | 影响 | 缓解 |
 |---|------|------|------|
 | R1 | SMB 移动端 FFI 稳定性 / ohos libsmb2 交叉编译与打包 | 真机不可用 | 全平台统一 `dart_smb2`（FFI libsmb2），ohos 手工打包 `libsmb2.so`（DevEco NDK，见 `third_party/dart_smb2/PATCHES.md`）；`smb_connect` 仅作历史备用；残余风险靠真机验收覆盖 |
-| R2 | 鸿蒙三方 Flutter 分支平台通道兼容 + pub 插件生态缺口 | 鸿蒙端可用性 | **已验证可控**：核心依赖全部落地（fvp / secure_storage 双层适配 / sqlite3 随包 / path_provider 重试 / audio_session / AVSession 替代 audio_service）；仅 `cached_network_image`（sqflite 传递依赖缺失）曲库封面降级为已知问题（依赖仍声明锁定、代码零 import，封面走本地 `CoverThumb`/`image` 包 + ohos `makeCoverThumb` 桥） |
+| R2 | 鸿蒙三方 Flutter 分支平台通道兼容 + pub 插件生态缺口 | 鸿蒙端可用性 | **已验证可控**：核心依赖全部落地（AVPlayer 播放桥 / secure_storage 双层适配 / sqlite3 随包 / path_provider 重试 / audio_session / AVSession 替代 audio_service）；仅 `cached_network_image`（sqflite 传递依赖缺失）曲库封面降级为已知问题（依赖仍声明锁定、代码零 import，封面走本地 `CoverThumb`/`image` 包 + ohos `makeCoverThumb` 桥） |
 | R3 | WebDAV 服务端差异（PROPFIND 深度 / 鉴权 / 限流） | 个别云盘不可用 | 连接测试按钮 + 超时重试封装 |
 | R4 | 直连扫描耗流量 / 电量 | 用户感知差 | 仅 Wi-Fi 扫描开关；增量指纹（size/mtime/etag）跳过未变文件；快速只建索引扫描零读头；补读走严格 Range（按结构定位，不整读）；单源上限 20k |
 | R5 | ffmpeg 容器 CPU 占用 | 多设备并发卡顿 | 全局并发上限默认 2；超限降级透传 / 回落直连 |

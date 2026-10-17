@@ -5,9 +5,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:just_audio_platform_interface/just_audio_platform_interface.dart';
 
-/// 鸿蒙系统 AVPlayer 的 just_audio 平台实现（PoC：替换 fvp/libmdk 后端）。
+/// 鸿蒙系统 AVPlayer 的 just_audio 平台实现（ohos 播放后端）。
 ///
-/// 与 [FvpJustAudio] 同契约：PlayerProvider / just_audio 不感知后端差异。
+/// 与 PlayerProvider / just_audio 同契约：应用层不感知后端差异。
 /// 差异只有两处：
 /// - 位置/时长由 ArkTS 侧 AVPlayer 事件上报（timeUpdate 默认 100ms），
 ///   不再用 200ms Dart Timer 轮询；
@@ -168,7 +168,7 @@ class AvPlayerHandle extends AudioPlayerPlatform {
         'volume': request.volume,
       });
     } catch (e) {
-      // 音量异常不影响播放主链路（与 fvp 侧静默口径一致）。
+      // 音量异常不影响播放主链路（与平台侧静默口径一致）。
       debugPrint('[AvPlayerHandle] setVolume 忽略异常: $e');
     }
     return SetVolumeResponse();

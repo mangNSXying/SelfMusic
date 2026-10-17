@@ -26,10 +26,10 @@ import '../local/audio_metadata.dart';
 /// - ohos（鸿蒙）：[rootPath] 为系统目录选择器授权 URI（`file://docs/...`）。
 ///   dart:io 无法访问授权 URI，扫描在主 isolate 经平台桥完成（[scan] 的
 ///   isOhos 分支）；[cachedFilePath] 经桥解析沙箱真路径（openSync(uri).path）
-///   返回后播放走 setFilePath 直连（mdk 原生 file://，2026-10-07 修复：
+///   返回后播放走 setFilePath 直连（AVPlayer fdSrc，2026-10-07 修复：
 ///   绕开 just_audio 本地代理——真机取证代理对死锁后事件通知空转烧
 ///   ~1.5 核 CPU），解析失败回退 [open] 的字节流分支（512 KiB 分块
-///   readRange → DirectAudioSource → just_audio 本地代理 → fvp/mdk），
+///   readRange → DirectAudioSource → just_audio 本地代理 → AVPlayer），
 ///   元数据/封面/歌词补读同路径自动复用。
 class LocalDirectSource implements MusicSource {
   @override
@@ -198,10 +198,10 @@ class LocalDirectSource implements MusicSource {
 
   /// 本地文件即本体，直接返回绝对路径走 `setFilePath`（无需经过 open 流）。
   /// ohos：授权目录 URI 先经桥解析沙箱真路径（openSync(uri).path），dart:io
-  /// 能看到即进程内原生（mdk）可开——播放直连绕开 just_audio 本地代理
+  /// 能看到即进程内原生（AVPlayer fdSrc）可开——播放直连绕开 just_audio 本地代理
   /// （2026-10-07 修复：代理对死锁后 socket 事件通知 ~305µs 周期空转，
   /// ~2.9k HandleMessage/s 烧 ~1.5 核 CPU）；解析失败/路径不可见回退
-  /// DirectAudioSource 字节流兜底（[open] → just_audio 本地代理 → fvp）。
+  /// DirectAudioSource 字节流兜底（[open] → just_audio 本地代理 → AVPlayer）。
   @override
   Future<String?> cachedFilePath(Song song) async {
     if (isOhos) {

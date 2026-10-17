@@ -125,7 +125,7 @@ export default class EntryAbility extends FlutterAbility {
     // 静音暂停/断连暂停信号源（com.shamiko.selfmusic/audio_guard，与 Android 同名通道）。
     this.audioGuardBridge = new AudioGuardBridge();
     this.audioGuardBridge.setup(flutterEngine)
-    // AVPlayer 播放桥（PoC：替代 fvp/libmdk，selfmusic/avplayer）。
+    // AVPlayer 播放桥（系统播放器，selfmusic/avplayer）。
     this.avPlayerBridge = new AvPlayerBridge();
     this.avPlayerBridge.setup(flutterEngine)
     // 返回手势转后台：moveAbilityToBackground 与 home 键等效，UIAbility 与

@@ -458,7 +458,7 @@ export default class AvSessionBridge implements MethodCallHandler {
 
   /**
    * AUDIO_PLAYBACK 长时任务（进程保活兜底）。失败仅记录不阻断——AVSession
-   * 本身已接管通知与播控（且实测 fvp 音频路径切后台本就不停）。
+   * 本身已接管通知与播控（且实测 AVPlayer 音频路径切后台本就不停）。
    */
   private async startBackgroundTask(): Promise<void> {
     if (this.backgroundRunning) {
