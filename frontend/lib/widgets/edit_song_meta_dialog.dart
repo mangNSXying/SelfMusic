@@ -163,6 +163,8 @@ class _EditSongMetaDialogState extends State<EditSongMetaDialog> {
   Future<void> _openEmbed() async {
     final ok = await showDialog<bool>(
       context: context,
+      // 执行中含“整传后还原”等收尾逻辑，禁止点外部误关（取消走弹窗按钮）。
+      barrierDismissible: false,
       builder: (_) => EmbedProgressDialog(song: widget.song),
     );
     if (!mounted || ok != true) return;

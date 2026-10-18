@@ -1379,6 +1379,33 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _saveForcedAndPoke();
   }
 
+  /// 文件写盘/上传前暂停（嵌入等外部写操作调用）：走与暂停同一路径（含
+  /// 淡出），并**等待引擎实际暂停完成后**才返回，保证写盘时无人读文件。
+  ///
+  /// 返回 true 表示本次调用把播放暂停了（调用方写完后应恢复播放）；
+  /// 未在播 / 用户刚点的暂停仍在收尾 → 返回 false（不接管、不替用户恢复）。
+  Future<bool> pauseForFileWrite() async {
+    final p = _player;
+    if (p == null || _shuttingDown || _disposed) return false;
+    if (_fadingPause) {
+      // 淡出在途：等实际暂停落地再放行写盘，但不接管恢复。
+      final f = _fadeOutCompleter?.future;
+      if (f != null) {
+        try {
+          await f;
+        } catch (_) {}
+      }
+      return false;
+    }
+    if (!p.playing) return false;
+    _userTookOver = true;
+    await _fadeOutThenPause();
+    notifyListeners();
+    _syncSystemMedia();
+    _saveForcedAndPoke();
+    return true;
+  }
+
   /// 关联服务器可达性门控（main 注入 `direct.isServerAvailable`）：
   /// 直连歌曲断点仅在连着服务器时上报，避免未配对用户 outbox 积压。
   void attachServerAvailable(bool Function() fn) {

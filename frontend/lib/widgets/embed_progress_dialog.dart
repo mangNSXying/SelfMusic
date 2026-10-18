@@ -27,6 +27,9 @@ class _EmbedProgressDialogState extends State<EmbedProgressDialog> {
   double? _fraction;
   String _error = '';
 
+  /// 写盘前因同曲在播而自动暂停（流程结束后恢复）。
+  bool _pausedByUs = false;
+
   bool _loading = true;
   String? _target;
   bool _hasLyrics = false;
@@ -86,20 +89,8 @@ class _EmbedProgressDialogState extends State<EmbedProgressDialog> {
     }
   }
 
-  bool _isCurrentPlaying() {
-    final player = context.read<PlayerProvider>();
-    final cur = player.current;
-    return cur != null &&
-        cur.sourceKey == widget.song.sourceKey &&
-        cur.sourceRef == widget.song.sourceRef &&
-        player.playing;
-  }
-
   Future<void> _start() async {
-    if (_isCurrentPlaying()) {
-      AppToast.show('正在播放该歌曲，请先暂停', isError: true);
-      return;
-    }
+    final player = context.read<PlayerProvider>();
     setState(() {
       _started = true;
       _aborted = false;
@@ -124,6 +115,15 @@ class _EmbedProgressDialogState extends State<EmbedProgressDialog> {
           });
         },
         shouldAbort: () => _aborted,
+        // 写盘/上传前：正在播放的恰是本曲时自动暂停（等引擎实际暂停），
+        // 流程结束（成功/失败/取消）统一在 finally 恢复。
+        beforeWrite: () async {
+          final cur = player.current;
+          final same = cur != null &&
+              cur.sourceKey == widget.song.sourceKey &&
+              cur.sourceRef == widget.song.sourceRef;
+          if (same) _pausedByUs = await player.pauseForFileWrite();
+        },
       );
       if (!mounted) return;
       Navigator.of(context).pop(true);
@@ -137,6 +137,12 @@ class _EmbedProgressDialogState extends State<EmbedProgressDialog> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = '$e');
+    } finally {
+      // 恢复播放与窗口是否还在无关（用捕获的 provider，不依赖 context）。
+      if (_pausedByUs) {
+        _pausedByUs = false;
+        await player.toggle();
+      }
     }
   }
 
@@ -197,10 +203,12 @@ class _EmbedProgressDialogState extends State<EmbedProgressDialog> {
           ),
         ] else ...[
           TextButton(
-            onPressed: () {
-              setState(() => _aborted = true);
-            },
-            child: const Text('取消'),
+            onPressed: _aborted
+                ? null
+                : () {
+                    setState(() => _aborted = true);
+                  },
+            child: Text(_aborted ? '取消中…' : '取消'),
           ),
         ],
       ],
@@ -245,7 +253,7 @@ class _EmbedProgressDialogState extends State<EmbedProgressDialog> {
         ),
         const SizedBox(height: 4),
         Text(
-          '同名 sidecar（<stem>.lrc / cover.jpg）将在验签通过后删除；应用缓存保留；同曲在播需先暂停。',
+          '同名 sidecar（<stem>.lrc / cover.jpg）将在验签通过后删除；应用缓存保留；同曲在播将在写盘前自动暂停，完成后自动恢复。',
           style: hint,
         ),
         if (_error.isNotEmpty) ...[
@@ -278,6 +286,11 @@ class _EmbedProgressDialogState extends State<EmbedProgressDialog> {
           const SizedBox(height: 8),
           Text(_error,
               style: TextStyle(color: cs.error, fontSize: 13)),
+        ],
+        if (_aborted) ...[
+          const SizedBox(height: 8),
+          Text('已请求取消：正在上传时会等整传完成后还原原文件（不再半截掐断）。',
+              style: TextStyle(fontSize: 12, color: cs.error)),
         ],
       ],
     );

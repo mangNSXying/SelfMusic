@@ -41,6 +41,12 @@ class _FakeRemoteSource extends MusicSource {
   final String root;
   _FakeRemoteSource(this.root);
 
+  /// 上传次数（含还原回传），供顺序/还原断言。
+  int uploads = 0;
+
+  /// 每次 uploadFile 开头回调（用例里可翻转取消标志模拟“上传中取消”）。
+  void Function()? onUpload;
+
   @override
   String get key => 'webdav:t';
 
@@ -93,6 +99,8 @@ class _FakeRemoteSource extends MusicSource {
   @override
   Future<void> uploadFile(String parentRef, String filename,
       Stream<List<int>> bytes, int length) async {
+    uploads++;
+    onUpload?.call();
     final dir = parentRef.isEmpty ? root : '$root/$parentRef';
     await Directory(dir).create(recursive: true);
     final sink = File('$dir/$filename').openWrite();
@@ -305,6 +313,127 @@ void main() {
       () => svc.embedSong(song, _FakeRemoteSource(root.path)),
       throwsA(isA<StateError>()),
     );
+    index.close();
+  });
+
+  test('写前钩子：本地在 rename 前调用，原文件未动', () async {
+    final index = await _openIndex();
+    final settings = AppSettings(index);
+    final root = await Directory.systemTemp.createTemp('selfmusic_hooklocal_');
+    final origBytes = await File('$_tempDir/test-audio-aiff-16bit-44khz.aiff')
+        .readAsBytes();
+    await File('${root.path}/s.aiff').writeAsBytes(origBytes);
+
+    const sourceKey = 'local:t';
+    const ref = 's.aiff';
+    await index.upsertSongs([
+      DirectSongRow(
+        sourceKey: sourceKey,
+        ref: ref,
+        title: 's',
+        duration: 30,
+        format: 'aiff',
+        size: origBytes.length,
+        mtime: 1,
+      ),
+    ]);
+    await index.setLyrics(sourceKey, ref, _lyrics);
+    final song = index.songByRef(sourceKey, ref)!;
+
+    final svc = TagEmbedService(index: index, settings: settings);
+    var hooks = 0;
+    await svc.embedSong(
+      song,
+      LocalDirectSource(name: 't', rootPath: root.path, index: index),
+      beforeWrite: () async {
+        hooks++;
+        // 钩子必须落在 rename 之前：此刻原文件还是旧字节。
+        expect(await File('${root.path}/$ref').readAsBytes(), origBytes);
+      },
+    );
+    expect(hooks, 1);
+    // 写盘已发生（歌词进文件）。
+    final after = await _readBack(
+        '${root.path}/$ref', 'aiff', await File('${root.path}/$ref').length());
+    expect(after!.lyrics, contains('嵌入流程歌'));
+    index.close();
+  });
+
+  test('写前钩子：远端在 PUT 前调用且只调一次', () async {
+    final index = await _openIndex();
+    final settings = AppSettings(index);
+    final root = await Directory.systemTemp.createTemp('selfmusic_hookremote_');
+    await Directory('${root.path}/sub').create();
+    final origBytes = await File('$_tempDir/周杰伦 - 发如雪.flac').readAsBytes();
+    await File('${root.path}/sub/song.flac').writeAsBytes(origBytes);
+
+    const sourceKey = 'webdav:t';
+    const ref = 'sub/song.flac';
+    await index.upsertSongs([
+      DirectSongRow(
+        sourceKey: sourceKey,
+        ref: ref,
+        title: '发如雪',
+        artist: '周杰伦',
+        duration: 302,
+        format: 'flac',
+        size: origBytes.length,
+        mtime: 1,
+      ),
+    ]);
+    await index.setLyrics(sourceKey, ref, _lyrics);
+    final song = index.songByRef(sourceKey, ref)!;
+
+    final svc = TagEmbedService(index: index, settings: settings);
+    final src = _FakeRemoteSource(root.path);
+    var hooks = 0;
+    var uploadsAtHook = -1;
+    await svc.embedSong(song, src, beforeWrite: () async {
+      hooks++;
+      uploadsAtHook = src.uploads;
+    });
+    expect(hooks, 1);
+    expect(uploadsAtHook, 0); // 钩子先于 PUT
+    expect(src.uploads, 1); // 正常流程只上传一次（无还原回传）
+    index.close();
+  });
+
+  test('上传中取消：整传完成后回传备份还原并抛取消', () async {
+    final index = await _openIndex();
+    final settings = AppSettings(index);
+    final root = await Directory.systemTemp.createTemp('selfmusic_abort_');
+    await Directory('${root.path}/sub').create();
+    final origBytes = await File('$_tempDir/周杰伦 - 发如雪.flac').readAsBytes();
+    await File('${root.path}/sub/song.flac').writeAsBytes(origBytes);
+
+    const sourceKey = 'webdav:t';
+    const ref = 'sub/song.flac';
+    await index.upsertSongs([
+      DirectSongRow(
+        sourceKey: sourceKey,
+        ref: ref,
+        title: '发如雪',
+        artist: '周杰伦',
+        duration: 302,
+        format: 'flac',
+        size: origBytes.length,
+        mtime: 1,
+      ),
+    ]);
+    await index.setLyrics(sourceKey, ref, _lyrics);
+    final song = index.songByRef(sourceKey, ref)!;
+
+    final svc = TagEmbedService(index: index, settings: settings);
+    final src = _FakeRemoteSource(root.path);
+    var abort = false;
+    // 第一次 PUT 开始后请求取消：整传不允许掐断，应在传完后还原。
+    src.onUpload = () => abort = true;
+    await expectLater(
+      svc.embedSong(song, src, shouldAbort: () => abort),
+      throwsA(isA<PreloadAbortedException>()),
+    );
+    expect(src.uploads, 2); // 新文件 + 还原回传
+    expect(await File('${root.path}/$ref').readAsBytes(), origBytes);
     index.close();
   });
 }

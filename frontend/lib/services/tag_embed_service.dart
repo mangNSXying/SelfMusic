@@ -1,9 +1,10 @@
 /// 内嵌编排器（纯前端直连源，不经服务端）：远端 GET 整首→本地改→验签→
 /// PUT 覆盖→复验→清 sidecar→刷指纹；本地同目录 tmp+rename 原子替换。
 ///
-/// 前置：直连歌 + 源 supportsWrite + DB 有歌词或封面；同曲在播需先暂停
-/// （调用方在 UI 层处理）。失败一律抛错（调用方 toast），源文件只在
-/// “改完且验签通过”后才被触碰；PUT 失败/复验失败用本地 .bak 还原。
+/// 前置：直连歌 + 源 supportsWrite + DB 有歌词或封面；同曲在播由调用方经
+/// [embedSong] 的 `beforeWrite` 钩子在写盘前自动暂停（写完后恢复）。失败
+/// 一律抛错（调用方 toast），源文件只在“改完且验签通过”后才被触碰；
+/// PUT 失败/复验失败用本地 .bak 还原。
 library;
 
 import 'dart:io';
@@ -76,12 +77,16 @@ class TagEmbedService {
     return slash < 0 ? ref : ref.substring(slash + 1);
   }
 
-  /// 执行嵌入（见文件头流程）。[shouldAbort] 在下载/上传循环中轮询。
+  /// 执行嵌入（见文件头流程）。[shouldAbort] 在下载循环与落盘前轮询
+  /// （PUT 一旦发起不再中断，取消在整传完成后还原处理）。
+  /// [beforeWrite] 在**触碰源文件之前**（本地 rename / 远端 PUT 前）等待，
+  /// 供调用方暂停正在播放的同曲；恢复由调用方在流程结束后自行处理。
   Future<void> embedSong(
     Song song,
     MusicSource src, {
     EmbedProgressCallback? onProgress,
     bool Function()? shouldAbort,
+    Future<void> Function()? beforeWrite,
   }) async {
     void checkAborted() {
       if (shouldAbort?.call() ?? false) {
@@ -150,7 +155,9 @@ class TagEmbedService {
       await _verifyEmbedded(tmpOut, song,
           wantLyrics: r.lyricsEmbedded, wantCover: r.coverEmbedded);
       checkAborted();
-      // ---- 4. 落盘
+      // ---- 4. 落盘（写前钩子：调用方在此暂停正在播放的同曲并等落地）
+      await beforeWrite?.call();
+      checkAborted();
       if (isLocal) {
         final orig = await _requireLocalPath(src, song);
         await File(tmpOut).rename(orig);
@@ -160,9 +167,10 @@ class TagEmbedService {
         final leaf = leafOf(song.sourceRef);
         final bytes = await File(tmpOut).readAsBytes();
         var sent = 0;
+        // PUT 一旦发起就不得中途掐断（半截上传会给源站留坏文件且无法
+        // 事后还原）；取消请求在整传完成后统一处理：回传备份还原。
         Stream<List<int>> chunks() async* {
           while (sent < bytes.length) {
-            checkAborted();
             final n = (bytes.length - sent) < 1048576
                 ? bytes.length - sent
                 : 1048576;
@@ -174,13 +182,16 @@ class TagEmbedService {
         }
 
         await src.uploadFile(parent, leaf, chunks(), bytes.length);
+        if (shouldAbort?.call() ?? false) {
+          // 整传完成后才发现取消：回传原文件，保持源站与取消前一致。
+          await _restoreRemote(src, parent, leaf, bak);
+          throw const PreloadAbortedException();
+        }
         // ---- 5. 复验：头+尾确认新标签已生效；失败还原备份。
         onProgress?.call(EmbedPhase.verifyingRemote, null);
         if (!await _remoteOk(src, song, await File(tmpOut).length(),
             wantLyrics: r.lyricsEmbedded, wantCover: r.coverEmbedded)) {
-          final bakBytes = await File(bak).readAsBytes();
-          await src.uploadFile(
-              parent, leaf, Stream.value(bakBytes), bakBytes.length);
+          await _restoreRemote(src, parent, leaf, bak);
           throw StateError('上传后复验失败，已还原原文件');
         }
       }
@@ -212,6 +223,13 @@ class TagEmbedService {
     final path = await src.localSandboxPath(song);
     if (path == null || path.isEmpty) throw StateError('本地文件不可达');
     return path;
+  }
+
+  /// 远端还原：把本地备份整文件回传（复验失败 / 上传后取消共用）。
+  Future<void> _restoreRemote(
+      MusicSource src, String parent, String leaf, String bak) async {
+    final bakBytes = await File(bak).readAsBytes();
+    await src.uploadFile(parent, leaf, Stream.value(bakBytes), bakBytes.length);
   }
 
   /// 验签：读侧全路径重读嵌入产物（标题/时长 sanity + 歌词/封面 presence）。
