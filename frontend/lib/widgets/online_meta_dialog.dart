@@ -10,8 +10,8 @@ import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
 import '../services/online_meta/online_meta_models.dart';
 import '../services/online_meta/online_meta_service.dart';
-import '../utils/lrc_parser.dart';
 import 'app_toast.dart';
+import 'online_meta_detail_dialog.dart';
 
 /// 单曲在线获取（纯前端）：LRCLIB 歌词 + MB→CAA 封面 + 标签回填。
 ///
@@ -50,17 +50,14 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
   String _coverError = '';
   List<MbRecordingCandidate> _recs = const [];
   int _recSel = 0;
-  Uint8List? _coverBytes;
-  String _coverLabel = '';
-  bool _coverLoadingBytes = false;
   bool _coverSaving = false;
 
   /// QQ/网易封面页的曲目候选（与 MB 录音候选二选一展示）。
   List<OnlineLyricCandidate> _trackCands = const [];
   int _trackSel = 0;
-  Uint8List? _trackCoverBytes;
-  String _trackCoverLabel = '';
-  bool _trackCoverLoading = false;
+
+  /// 封面字节缓存（详情查看/保存共用；新搜索清空，避免二次下载）。
+  final Map<String, ({Uint8List bytes, String label})> _coverCache = {};
 
   bool _tagSaving = false;
 
@@ -129,7 +126,7 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
               '无结果：${_lyricSource.label}找不到（换关键词重搜，或去设置换源）';
         }
       });
-      // QQ/网易搜索不带正文：最佳匹配直接懒取，预览立即可见。
+      // QQ/网易搜索不带正文：预取最佳匹配正文（列表徽标与保存即用）。
       if (list.isNotEmpty && !list.first.hasContent) {
         await _ensureLyric(0);
       }
@@ -186,8 +183,7 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
     setState(() {
       _coverSearching = true;
       _coverError = '';
-      _coverBytes = null;
-      _coverLabel = '';
+      _coverCache.clear();
     });
     try {
       final list = await _svc.searchRecordings(
@@ -206,7 +202,6 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
           _coverError = '找到录音但均无 release（CAA 需 release MBID，无图可下）';
         }
       });
-      if (list.isNotEmpty) await _loadCoverBytes();
     } on DioException catch (e) {
       if (!mounted) return;
       // MB 限流 429/503：退避后重试由用户手动点搜索。
@@ -219,47 +214,28 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
     }
   }
 
-  Future<void> _loadCoverBytes() async {
-    if (_recs.isEmpty) return;
+  /// 取选中 MB 录音的封面字节（缓存优先）。无 release/无图 → null 并置
+  /// 列表下提示；网络失败抛错（保存流程统一 toast，详情窗自带错误态）。
+  Future<({Uint8List bytes, String label})?> _ensureMbCover() async {
+    if (_recs.isEmpty) return null;
     final rec = _recs[_recSel.clamp(0, _recs.length - 1)];
     if (rec.releaseId == null || rec.releaseId!.isEmpty) {
-      setState(() {
-        _coverBytes = null;
-        _coverLabel = '';
-        _coverError = '该录音无 release（换一个候选）';
-      });
-      return;
+      if (mounted) setState(() => _coverError = '该录音无 release（换一个候选）');
+      return null;
     }
-    setState(() {
-      _coverLoadingBytes = true;
-      _coverError = '';
-      _coverBytes = null;
-    });
-    try {
-      final c = await _svc.fetchCover(rec);
-      if (!mounted) return;
-      setState(() {
-        _coverLoadingBytes = false;
-        if (c == null) {
-          _coverError = '该 release 无封面（CAA 404 常见，换一个候选）';
-        } else {
-          _coverBytes = Uint8List.fromList(c.bytes);
-          _coverLabel = c.label;
-        }
-      });
-    } on DioException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _coverLoadingBytes = false;
-        _coverError = '封面下载失败：${_dioMsg(e)}';
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _coverLoadingBytes = false;
-        _coverError = '封面下载失败：$e';
-      });
+    final key = _mbCoverKey(rec);
+    final hit = _coverCache[key];
+    if (hit != null) return hit;
+    final c = await _svc.fetchCover(rec);
+    if (c == null) {
+      if (mounted) {
+        setState(() => _coverError = '该 release 无封面（CAA 404 常见，换一个候选）');
+      }
+      return null;
     }
+    final entry = (bytes: Uint8List.fromList(c.bytes), label: c.label);
+    _coverCache[key] = entry;
+    return entry;
   }
 
   /// QQ/网易封面页的曲目搜索（与歌词页同源候选，选中即取图）。
@@ -270,8 +246,7 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
       _coverError = '';
       _trackCands = const [];
       _trackSel = 0;
-      _trackCoverBytes = null;
-      _trackCoverLabel = '';
+      _coverCache.clear();
     });
     try {
       final list = await _svc.searchCoverTracks(
@@ -289,7 +264,6 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
               '无结果：${_coverSource.label}找不到（换关键词重搜，或去设置换源）';
         }
       });
-      if (list.isNotEmpty) await _loadTrackCoverBytes();
     } on DioException catch (e) {
       if (!mounted) return;
       setState(() => _coverError = '网络失败：${_dioMsg(e)}');
@@ -301,40 +275,22 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
     }
   }
 
-  Future<void> _loadTrackCoverBytes() async {
-    if (_trackCands.isEmpty) return;
+  /// 取选中 QQ/网易曲目候选的封面字节（缓存优先）。无图 → null 并置提示；
+  /// 网络失败抛错（保存流程统一 toast，详情窗自带错误态）。
+  Future<({Uint8List bytes, String label})?> _ensureTrackCover() async {
+    if (_trackCands.isEmpty) return null;
     final cand = _trackCands[_trackSel.clamp(0, _trackCands.length - 1)];
-    setState(() {
-      _trackCoverLoading = true;
-      _coverError = '';
-      _trackCoverBytes = null;
-      _trackCoverLabel = '';
-    });
-    try {
-      final c = await _svc.fetchTrackCover(cand);
-      if (!mounted) return;
-      setState(() {
-        _trackCoverLoading = false;
-        if (c == null) {
-          _coverError = '该候选无封面（换一个候选或换源）';
-        } else {
-          _trackCoverBytes = Uint8List.fromList(c.bytes);
-          _trackCoverLabel = c.label;
-        }
-      });
-    } on DioException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _trackCoverLoading = false;
-        _coverError = '封面下载失败：${_dioMsg(e)}';
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _trackCoverLoading = false;
-        _coverError = '封面下载失败：$e';
-      });
+    final key = _trackCoverKey(cand);
+    final hit = _coverCache[key];
+    if (hit != null) return hit;
+    final c = await _svc.fetchTrackCover(cand);
+    if (c == null) {
+      if (mounted) setState(() => _coverError = '该候选无封面（换一个候选或换源）');
+      return null;
     }
+    final entry = (bytes: Uint8List.fromList(c.bytes), label: c.label);
+    _coverCache[key] = entry;
+    return entry;
   }
 
   Future<void> _saveLyrics() async {
@@ -357,7 +313,6 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
       final r = await _svc.applyLyrics(widget.song, content, src: src);
       if (!mounted) return;
       context.read<PlayerProvider>().reloadLyricsIfCurrent(widget.song);
-      Navigator.of(context).pop();
       AppToast.show(
         r.sidecarPath != null
             ? '歌词已保存并覆盖 ${r.sidecarPath}（应用缓存同步）'
@@ -374,30 +329,18 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
     }
   }
 
+  /// 保存封面（MB 录音口径）：取字节（缓存/懒取）→ 应用；保存后留窗。
   Future<void> _saveCover() async {
-    if (_coverBytes == null || _coverBytes!.isEmpty || _coverSaving) return;
-    setState(() => _coverSaving = true);
+    if (_recs.isEmpty || _coverSaving) return;
+    setState(() {
+      _coverSaving = true;
+      _coverError = '';
+    });
     try {
-      final bytes = _coverBytes!;
-      final direct = context.read<DirectSourceManager>();
-      final src = direct.sourceByKey(widget.song.sourceKey);
-      final r = await _svc.applyCover(widget.song, bytes, src: src);
+      final entry = await _ensureMbCover();
       if (!mounted) return;
-      final updated =
-          direct.index.songByRef(widget.song.sourceKey, widget.song.sourceRef);
-      if (updated != null) {
-        direct.refresh();
-        context.read<PlayerProvider>().refreshSongMeta(updated);
-      }
-      Navigator.of(context).pop();
-      AppToast.show(
-        r.sidecarPath != null
-            ? '封面已保存并覆盖 ${r.sidecarPath}（应用缓存同步）'
-            : r.sidecarSkipped
-                ? '封面已保存到应用缓存（该源不支持写回，已跳过 cover.jpg）'
-                : '封面已保存到应用缓存',
-        isError: false,
-      );
+      if (entry == null) return; // 具体原因已置 _coverError
+      await _applyCoverBytes(entry.bytes);
     } catch (e) {
       if (!mounted) return;
       AppToast.error(e, '保存封面失败');
@@ -431,41 +374,46 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
         title: c.trackName, artist: c.artistName, album: c.albumName);
   }
 
-  /// 保存 QQ/网易曲目封面（预览字节 → 应用缓存 + sidecar）。
+  /// 保存封面（QQ/网易曲目口径）：取字节（缓存/懒取）→ 应用；保存后留窗。
   Future<void> _saveTrackCover() async {
-    if (_trackCoverBytes == null ||
-        _trackCoverBytes!.isEmpty ||
-        _coverSaving) {
-      return;
-    }
-    setState(() => _coverSaving = true);
+    if (_trackCands.isEmpty || _coverSaving) return;
+    setState(() {
+      _coverSaving = true;
+      _coverError = '';
+    });
     try {
-      final bytes = _trackCoverBytes!;
-      final direct = context.read<DirectSourceManager>();
-      final src = direct.sourceByKey(widget.song.sourceKey);
-      final r = await _svc.applyCover(widget.song, bytes, src: src);
+      final entry = await _ensureTrackCover();
       if (!mounted) return;
-      final updated =
-          direct.index.songByRef(widget.song.sourceKey, widget.song.sourceRef);
-      if (updated != null) {
-        direct.refresh();
-        context.read<PlayerProvider>().refreshSongMeta(updated);
-      }
-      Navigator.of(context).pop();
-      AppToast.show(
-        r.sidecarPath != null
-            ? '封面已保存并覆盖 ${r.sidecarPath}（应用缓存同步）'
-            : r.sidecarSkipped
-                ? '封面已保存到应用缓存（该源不支持写回，已跳过 cover.jpg）'
-                : '封面已保存到应用缓存',
-        isError: false,
-      );
+      if (entry == null) return;
+      await _applyCoverBytes(entry.bytes);
     } catch (e) {
       if (!mounted) return;
       AppToast.error(e, '保存封面失败');
     } finally {
       if (mounted) setState(() => _coverSaving = false);
     }
+  }
+
+  /// 应用封面字节（应用缓存 + sidecar）；成功 toast，失败上抛（留窗）。
+  Future<void> _applyCoverBytes(Uint8List bytes) async {
+    final direct = context.read<DirectSourceManager>();
+    final src = direct.sourceByKey(widget.song.sourceKey);
+    final r = await _svc.applyCover(widget.song, bytes, src: src);
+    if (!mounted) return;
+    final updated =
+        direct.index.songByRef(widget.song.sourceKey, widget.song.sourceRef);
+    if (updated != null) {
+      direct.refresh();
+      context.read<PlayerProvider>().refreshSongMeta(updated);
+    }
+    AppToast.show(
+      r.sidecarPath != null
+          ? '封面已保存并覆盖 ${r.sidecarPath}（应用缓存同步）'
+          : r.sidecarSkipped
+              ? '封面已保存到应用缓存（该源不支持写回，已跳过 cover.jpg）'
+              : '封面已保存到应用缓存',
+      isError: false,
+    );
   }
 
   Future<void> _applyTags({String? title, String? artist, String? album}) async {
@@ -489,7 +437,6 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
       if (updated != null) {
         context.read<DirectSourceManager>().refresh();
         context.read<PlayerProvider>().refreshSongMeta(updated);
-        Navigator.of(context).pop();
         AppToast.show('已回填标题/歌手/专辑（扫描不再覆盖）', isError: false);
       } else {
         AppToast.show('在线值与本地一致，无需回填', isError: false);
@@ -638,33 +585,133 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
     );
   }
 
+  /// 打开歌词候选详情窗（QQ/网易懒取正文，取到后回填列表）。
+  void _openLyricDetail(int i) {
+    if (_lyrics.isEmpty) return;
+    final idx = i.clamp(0, _lyrics.length - 1);
+    final c = _lyrics[idx];
+    setState(() => _lyricSel = idx);
+    showDialog<void>(
+      context: context,
+      builder: (_) => LyricDetailDialog(
+        candidate: c,
+        ensure: (cand) => _svc.ensureLyrics(cand),
+        isBest: idx == 0,
+        onLoaded: (full) {
+          if (!mounted || idx >= _lyrics.length) return;
+          setState(() => _lyrics[idx] = full);
+        },
+      ),
+    );
+  }
+
+  /// 打开 MB 录音封面详情窗（懒取字节并缓存回主窗）。
+  void _openMbCoverDetail(int i) {
+    if (_recs.isEmpty) return;
+    final idx = i.clamp(0, _recs.length - 1);
+    final rec = _recs[idx];
+    setState(() => _recSel = idx);
+    final key = _mbCoverKey(rec);
+    final hit = _coverCache[key];
+    showDialog<void>(
+      context: context,
+      builder: (_) => CoverDetailDialog(
+        header:
+            '${rec.title} — ${rec.artist.isEmpty ? '未知歌手' : rec.artist}',
+        metaLines: [
+          '来源 ${OnlineMetaSource.mbCaa}',
+          'release ${rec.releaseTitle ?? '无（无图可下）'}',
+          '匹配 ${rec.matchWeight.toStringAsFixed(2)}${idx == 0 ? ' · 最佳匹配' : ''}',
+        ],
+        initialBytes: hit?.bytes,
+        initialLabel: hit?.label ?? '',
+        load: () async {
+          final c = await _svc.fetchCover(rec);
+          if (c == null) return null;
+          return (bytes: Uint8List.fromList(c.bytes), label: c.label);
+        },
+        onLoaded: (bytes, label) {
+          _coverCache[key] = (bytes: bytes, label: label);
+        },
+      ),
+    );
+  }
+
+  /// 打开 QQ/网易曲目封面详情窗（懒取字节并缓存回主窗）。
+  void _openTrackCoverDetail(int i) {
+    if (_trackCands.isEmpty) return;
+    final idx = i.clamp(0, _trackCands.length - 1);
+    final cand = _trackCands[idx];
+    setState(() => _trackSel = idx);
+    final key = _trackCoverKey(cand);
+    final hit = _coverCache[key];
+    showDialog<void>(
+      context: context,
+      builder: (_) => CoverDetailDialog(
+        header:
+            '${cand.trackName} — ${cand.artistName.isEmpty ? '未知歌手' : cand.artistName}',
+        metaLines: [
+          '来源 ${cand.source}',
+          '专辑 ${cand.albumName.isEmpty ? '未知' : cand.albumName}'
+              '${cand.durationSec != null ? ' · ${_fmtDur(cand.durationSec!)}' : ''}',
+          '匹配 ${cand.matchWeight.toStringAsFixed(2)}${idx == 0 ? ' · 最佳匹配' : ''}',
+        ],
+        initialBytes: hit?.bytes,
+        initialLabel: hit?.label ?? '',
+        load: () async {
+          final c = await _svc.fetchTrackCover(cand);
+          if (c == null) return null;
+          return (bytes: Uint8List.fromList(c.bytes), label: c.label);
+        },
+        onLoaded: (bytes, label) {
+          _coverCache[key] = (bytes: bytes, label: label);
+        },
+      ),
+    );
+  }
+
+  static String _mbCoverKey(MbRecordingCandidate r) => 'mb:${r.releaseId}';
+  static String _trackCoverKey(OnlineLyricCandidate c) =>
+      't:${c.source}:${c.onlineId}';
+
+  /// 列表下方的细字状态（列表非空时的取数/无图提示）。
+  Widget _statusLine(String text, ColorScheme cs) {
+    if (text.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Text(text,
+          style: TextStyle(color: cs.error, fontSize: 12),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          textAlign: TextAlign.center),
+    );
+  }
+
+  /// 候选行尾的「查看」按钮（打开独立详情窗）。
+  Widget _detailButton(VoidCallback onPressed, String tooltip) => IconButton(
+        icon: const Icon(Icons.open_in_new, size: 18),
+        tooltip: tooltip,
+        visualDensity: VisualDensity.compact,
+        onPressed: onPressed,
+      );
+
   Widget _lyricTab() {
     if (_lyricSearching) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_lyricError.isNotEmpty && _lyrics.isEmpty) {
+    if (_lyrics.isEmpty) {
       return Center(
-        child: Text(_lyricError, textAlign: TextAlign.center),
+        child: Text(_lyricError.isEmpty ? '暂无候选，换关键词重搜' : _lyricError,
+            textAlign: TextAlign.center),
       );
     }
-    if (_lyrics.isEmpty) {
-      return const Center(child: Text('暂无候选，换关键词重搜'));
-    }
-    final sel = _lyrics[_lyricSel.clamp(0, _lyrics.length - 1)];
-    final preview = _lyricLoading
-        ? '正文加载中…'
-        : sel.hasContent
-            ? _lyricPreview(sel.saveContent)
-            : '该候选暂无正文（选中后自动加载，仍无请换候选）';
+    final cs = Theme.of(context).colorScheme;
     return Column(
       children: [
         Expanded(
           child: RadioGroup<int>(
             groupValue: _lyricSel,
-            onChanged: (v) {
-              setState(() => _lyricSel = v ?? 0);
-              _ensureLyric(_lyricSel);
-            },
+            onChanged: (v) => setState(() => _lyricSel = v ?? 0),
             child: ListView.builder(
               itemCount: _lyrics.length,
               itemBuilder: (c, i) {
@@ -673,6 +720,7 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
                 return RadioListTile<int>(
                   dense: true,
                   value: i,
+                  controlAffinity: ListTileControlAffinity.leading,
                   title: Text(
                     '${e.trackName} — ${e.artistName}',
                     maxLines: 1,
@@ -686,18 +734,14 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
+                  secondary:
+                      _detailButton(() => _openLyricDetail(i), '查看歌词详情'),
                 );
               },
             ),
           ),
         ),
-        const Divider(height: 8),
-        Expanded(
-          child: SingleChildScrollView(
-            child: Text(preview,
-                style: const TextStyle(fontSize: 12, height: 1.5)),
-          ),
-        ),
+        _statusLine(_lyricError, cs),
         const SizedBox(height: 8),
         Row(
           children: [
@@ -739,16 +783,13 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
             textAlign: TextAlign.center),
       );
     }
+    final cs = Theme.of(context).colorScheme;
     return Column(
       children: [
-        SizedBox(
-          height: 120,
+        Expanded(
           child: RadioGroup<int>(
             groupValue: _recSel,
-            onChanged: (v) {
-              setState(() => _recSel = v ?? 0);
-              _loadCoverBytes();
-            },
+            onChanged: (v) => setState(() => _recSel = v ?? 0),
             child: ListView.builder(
               itemCount: _recs.length,
               itemBuilder: (c, i) {
@@ -756,6 +797,7 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
                 return RadioListTile<int>(
                   dense: true,
                   value: i,
+                  controlAffinity: ListTileControlAffinity.leading,
                   title: Text(
                     '${e.title} — ${e.artist.isEmpty ? '未知歌手' : e.artist}',
                     maxLines: 1,
@@ -766,29 +808,14 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
+                  secondary:
+                      _detailButton(() => _openMbCoverDetail(i), '查看封面详情'),
                 );
               },
             ),
           ),
         ),
-        const Divider(height: 8),
-        Expanded(
-          child: Center(
-            child: _coverLoadingBytes
-                ? const CircularProgressIndicator()
-                : _coverBytes != null
-                    ? Image.memory(_coverBytes!, fit: BoxFit.contain)
-                    : Text(
-                        _coverError.isEmpty ? '无预览' : _coverError,
-                        textAlign: TextAlign.center,
-                      ),
-          ),
-        ),
-        if (_coverLabel.isNotEmpty)
-          Text(_coverLabel,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12)),
+        _statusLine(_coverError, cs),
         const SizedBox(height: 8),
         Row(
           children: [
@@ -801,9 +828,7 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
             const SizedBox(width: 8),
             Expanded(
               child: FilledButton(
-                onPressed: (_coverBytes == null || _coverSaving)
-                    ? null
-                    : _saveCover,
+                onPressed: _coverSaving ? null : _saveCover,
                 child: Text(_coverSaving ? '保存中…' : '保存封面'),
               ),
             ),
@@ -813,7 +838,7 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
     );
   }
 
-  /// QQ/网易封面页：曲目候选（与歌词页同源）+ 选中即取图预览。
+  /// QQ/网易封面页：曲目候选（与歌词页同源），行尾「查看」开大图详情。
   Widget _trackCoverTab() {
     if (_coverSearching) {
       return const Center(child: CircularProgressIndicator());
@@ -824,16 +849,13 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
             textAlign: TextAlign.center),
       );
     }
+    final cs = Theme.of(context).colorScheme;
     return Column(
       children: [
-        SizedBox(
-          height: 120,
+        Expanded(
           child: RadioGroup<int>(
             groupValue: _trackSel,
-            onChanged: (v) {
-              setState(() => _trackSel = v ?? 0);
-              _loadTrackCoverBytes();
-            },
+            onChanged: (v) => setState(() => _trackSel = v ?? 0),
             child: ListView.builder(
               itemCount: _trackCands.length,
               itemBuilder: (c, i) {
@@ -841,6 +863,7 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
                 return RadioListTile<int>(
                   dense: true,
                   value: i,
+                  controlAffinity: ListTileControlAffinity.leading,
                   title: Text(
                     '${e.trackName} — ${e.artistName.isEmpty ? '未知歌手' : e.artistName}',
                     maxLines: 1,
@@ -853,29 +876,14 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
+                  secondary: _detailButton(
+                      () => _openTrackCoverDetail(i), '查看封面详情'),
                 );
               },
             ),
           ),
         ),
-        const Divider(height: 8),
-        Expanded(
-          child: Center(
-            child: _trackCoverLoading
-                ? const CircularProgressIndicator()
-                : _trackCoverBytes != null
-                    ? Image.memory(_trackCoverBytes!, fit: BoxFit.contain)
-                    : Text(
-                        _coverError.isEmpty ? '无预览' : _coverError,
-                        textAlign: TextAlign.center,
-                      ),
-          ),
-        ),
-        if (_trackCoverLabel.isNotEmpty)
-          Text(_trackCoverLabel,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12)),
+        _statusLine(_coverError, cs),
         const SizedBox(height: 8),
         Row(
           children: [
@@ -888,9 +896,7 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
             const SizedBox(width: 8),
             Expanded(
               child: FilledButton(
-                onPressed: (_trackCoverBytes == null || _coverSaving)
-                    ? null
-                    : _saveTrackCover,
+                onPressed: _coverSaving ? null : _saveTrackCover,
                 child: Text(_coverSaving ? '保存中…' : '保存封面'),
               ),
             ),
@@ -944,24 +950,6 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
         const Text('说明：只回填标题/歌手/专辑，不含流派/年份/曲目号；封面/歌词请在前两页单独保存。'),
       ],
     );
-  }
-
-  static String _lyricPreview(String content) {
-    // 预览：解析后取前 20 行（纯文本直接截断），避免超长对话框卡顿。
-    try {
-      final p = parseLyrics(content);
-      if (p.lines.isNotEmpty) {
-        final take = p.lines.take(20).map((e) => e.text).join('\n');
-        return p.lines.length > 20 ? '$take\n…' : take;
-      }
-      final t = (p.plain ?? content).trim();
-      if (t.length > 600) return '${t.substring(0, 600)}\n…';
-      return t;
-    } catch (_) {
-      final t = content.trim();
-      if (t.length > 600) return '${t.substring(0, 600)}\n…';
-      return t;
-    }
   }
 
   static String _fmtDur(double sec) {
