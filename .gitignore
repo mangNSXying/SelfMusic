@@ -1,8 +1,3 @@
-# 排除具体文件
-!scripts/init.sql
-!DEVELOPER.md
-!README.md
-
 # 具体文件
 .env
 error.log
@@ -20,6 +15,7 @@ testmusic/
 nginx/
 spec/
 articals/
+.gradle/
 
 # 泛匹配
 # 注：曾用 *.md / *.txt / *test* 全局忽略，会静默吞掉 vendored 副本与
@@ -42,7 +38,7 @@ articals/
 *.md
 # pubspec.lock 不入库：stable 与 ohos 两套 SDK 的 pub get 会互相改写部分
 # 传递依赖版本（meta/test_api 等），提交 lock 只会制造往返噪音；
-# 版本一致性由 pubspec 约束保证。
+# 版本一致性由 pubspec 约束保证。   
 *.lock
 
 # 鸿蒙构建产物（hvigor/ohpm 在 vendored fvp 副本内展开的中间物）
@@ -52,13 +48,17 @@ frontend/third_party/fvp/ohos/build/
 frontend/third_party/fvp/ohos/oh_modules/
 frontend/third_party/fvp/ohos/oh-package-lock.json5
 
-# Gradle 在 vendored audio_service 副本内展开的同步缓存
-frontend/third_party/audio_service/android/.gradle/
-
 # 本机相关文件：源文件不入库，模板以 *.example 入库（新机器复制后改名再改）
 # 注：frontend/android/gradle.properties 含 AGP 9 必需开关，Flutter 不会自动生成，别忘了复制
 /frontend/android/gradle.properties
+frontend/third_party/dart_smb2/android/src/main/jniLibs/
 /run-windows.bat
 /run-android.sh
 /build-android.sh
 /build-ohos.ps1
+
+# 排除具体文件
+!scripts/init.sql
+!DEVELOPER.md
+!README.md
+!overview.md
