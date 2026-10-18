@@ -13,7 +13,7 @@
 
     <groupId>com.selfmusic</groupId>
     <artifactId>backend</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
+    <version>1.0.0</version>
     <name>SelfMusic Backend</name>
     <description>SelfMusic backend API</description>
 

@@ -1,6 +1,8 @@
 FROM maven:3.9-eclipse-temurin-21 AS builder
 WORKDIR /app
 COPY pom.xml .
+# Maven 走阿里云镜像（CN 直连 central 只有百 KB/s 级）；换源改 settings.xml。
+COPY settings.xml /root/.m2/settings.xml
 RUN mvn dependency:go-offline -B
 COPY src ./src
 RUN mvn package -DskipTests -B

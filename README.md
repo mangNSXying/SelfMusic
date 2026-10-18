@@ -66,7 +66,7 @@ mysql -u root -p < scripts/init.sql
 docker compose --env-file .env up -d --build backend-dev   # 日常开发，端口 18089
 docker compose --env-file .env up -d --build backend       # 生产镜像，端口 18088
 
-curl http://localhost:18089/api/health   # {"status":"UP","service":"SelfMusic API",...}
+curl http://localhost:18089/api/v1/health   # {"status":"UP","service":"SelfMusic API",...}
 ```
 
 ### 4. 启动前端

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 镜像构建期 Maven 走阿里云中央仓镜像：CN 网络直连 Maven Central 常只有百 KB/s 级，
+     实测阿里云 >4 MB/s。仅随 prod/dev 镜像构建生效（COPY 到 /root/.m2/settings.xml），
+     不影响宿主机本地 mvn 命令；海外构建想换源改这里即可。 -->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+  <mirrors>
+    <mirror>
+      <id>aliyun-central</id>
+      <name>Aliyun Maven Central mirror</name>
+      <url>https://maven.aliyun.com/repository/public</url>
+      <mirrorOf>central</mirrorOf>
+    </mirror>
+  </mirrors>
+</settings>
