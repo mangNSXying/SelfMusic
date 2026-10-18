@@ -71,7 +71,7 @@ class CacheManager {
       await src.cacheSong(s);
       final k = cacheKeyOf(src, s);
       if (k != null) index.touchCache(k);
-      evictIfNeeded();
+      await evictIfNeeded();
     } catch (_) {
       // 缓存失败静默：不影响收藏行为，下次播放直连歌仍可手动缓存。
     }
@@ -79,7 +79,11 @@ class CacheManager {
 
   /// 超出上限时按最近最少使用淘汰（跳过正在播放条目）。
   /// 上限取「生效值」（custom=本地；follow_server=服务端建议，settings.md §3.3）。
-  void evictIfNeeded() {
+  ///
+  /// 逐行删除、单行失败（文件被占用/权限）跳过继续：删不掉的那份留给下一轮，
+  /// 不能中断整轮，也不能让异常上抛——淘汰是后台维护动作，调用方（手动缓存、
+  /// 收藏、预载）只关心自己的下载，删除失败会误报「缓存失败」。
+  Future<void> evictIfNeeded() async {
     final maxBytes = settings.effectiveCacheMaxBytes;
     final maxSongs = settings.effectiveCacheSongLimit;
     if (maxBytes <= 0 && maxSongs <= 0) return;
@@ -96,7 +100,12 @@ class CacheManager {
           (preloadCacheKey != null && row.cacheKey == preloadCacheKey)) {
         continue;
       }
-      index.deleteCache(row.cacheKey);
+      try {
+        await index.deleteCache(row.cacheKey);
+      } catch (_) {
+        // 行与文件都还在，计数不能减；跳过这一行继续处理更旧的。
+        continue;
+      }
       total -= row.size;
       remaining -= 1;
     }

@@ -958,9 +958,13 @@ class _ToolRow extends StatelessWidget {
       AppToast.show('仅直连歌曲可缓存', isError: false);
       return;
     }
-    await direct.cacheSong(src, s);
-    if (context.mounted) {
-      AppToast.show('已开始缓存', isError: false);
+    try {
+      await direct.cacheSong(src, s);
+      if (context.mounted) {
+        AppToast.show('已缓存，可离线播放', isError: false);
+      }
+    } catch (e) {
+      AppToast.error(e, '缓存失败');
     }
   }
 

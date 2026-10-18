@@ -1717,10 +1717,17 @@ class DirectSourceManager extends ChangeNotifier {
     return index.songByRef(s.sourceKey, s.sourceRef);
   }
 
+  /// 手动缓存（列表菜单/播放页）：只缓存**原文件**（离线兜底），不碰转码
+  /// 变体——变体是预载路径按当前设置取用的行为（见 [preloadSong]），两条路
+  /// 有意分开。失败抛给调用方（UI 提示），与其他两条路静默的语义不同。
   Future<void> cacheSong(MusicSource src, Song s) async {
     await src.cacheSong(s);
-    cache.currentCacheKey = cache.cacheKeyOf(src, s);
-    cache.evictIfNeeded();
+    // 已缓存的歌（源侧 isCached 短路）在此刷新访问时间；新下载的 commit 已写
+    // now——两条都保证它排 LRU 队尾，本轮的 [CacheManager.evictIfNeeded] 不会
+    // 先删它。**不要动 currentCacheKey**：那是「正在播放」的豁免槽，手动缓存
+    // 不是当前播放，顶掉它会让真正在播的歌失去保护（预载同理，见 preloadSong）。
+    cache.touch(src, s);
+    await cache.evictIfNeeded();
     notifyListeners();
   }
 
@@ -1759,7 +1766,7 @@ class DirectSourceManager extends ChangeNotifier {
               shouldAbort: shouldAbort);
           index.touchCache(vkey);
           cache.preloadCacheKey = vkey;
-          cache.evictIfNeeded();
+          await cache.evictIfNeeded();
           return;
         } on PreloadAbortedException {
           rethrow;
@@ -1782,7 +1789,7 @@ class DirectSourceManager extends ChangeNotifier {
       final k = cache.cacheKeyOf(src, s);
       if (k != null) index.touchCache(k);
       cache.preloadCacheKey = k;
-      cache.evictIfNeeded();
+      await cache.evictIfNeeded();
     } on PreloadAbortedException {
       // 下一首变了，这份预载作废：不提示、不重试（缓存目录里的半截临时文件
       // 已由 cacheSong 自己清掉）。
@@ -1916,6 +1923,11 @@ class DirectSourceManager extends ChangeNotifier {
     final k = cache.cacheKeyOf(src, s);
     if (k != null && cache.preloadCacheKey == k) cache.preloadCacheKey = null;
     cache.touch(src, s);
+    // 转码开且当前设置下的变体已缓存：装载实际用的就是这份变体（PlayerProvider
+    // 的 _resolveTranscodeCache → [cachedTranscodePath]），LRU 访问时间必须同步
+    // 刷新，否则它停在预载时刻、重播也不会变新，会比原文件先被淘汰。
+    final vk = _transcodeKeyOf(src, s);
+    if (vk != null && index.cachedPath(vk) != null) index.touchCache(vk);
     _playingSourceKey = s.sourceKey;
     _playingRef = s.sourceRef;
     _scheduleNextTrack(next);
