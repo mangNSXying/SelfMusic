@@ -1475,7 +1475,16 @@ class LocalIndex {
     final rs =
         _db!.select('SELECT id FROM playlists WHERE client_uuid=?', [uuid]);
     if (rs.isEmpty) return null;
-    return rs.first['id'] as int;
+    return rs.first['id'] as int?;
+  }
+
+  /// 歌单名（uuid → name）：播控中心历史歌单显示名（avQueueName）用，
+  /// 查不到返回 null（调用方兜底「正在播放」）。
+  String? playlistNameOfUuid(String uuid) {
+    final rs =
+        _db!.select('SELECT name FROM playlists WHERE client_uuid=?', [uuid]);
+    if (rs.isEmpty) return null;
+    return rs.first['name'] as String?;
   }
 
   /// pull 歌单快照落库（deleted=true 则本地硬删）。

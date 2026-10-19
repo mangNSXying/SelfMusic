@@ -39,7 +39,9 @@ const ABILITY_NAME = 'EntryAbility';
  *   - destroy：主动收卡（销毁会话+停长时任务）。
  * - ArkTS → Dart（系统播控卡按钮 → 方法名直传）：
  *   play / pause / stop / playNext / playPrevious / seek(time) /
- *   setLoopMode(mode) / toggleFavorite(assetId)。
+ *   setLoopMode(mode) / toggleFavorite(assetId)；
+ *   insightPlay(playlistId)（播控中心 PlayMusicList 意图调用，非会话命令，
+ *   由意图执行器经静态投递段转投，冷启动 Dart 未就绪时先暂存）。
  *
  * 会话生命周期（AVSession 规范）：create → setAVMetadata + setAVPlaybackState
  * + on(命令) → activate；元数据与命令注册必须先于 activate。
@@ -69,6 +71,45 @@ export default class AvSessionBridge implements MethodCallHandler {
 
   constructor(context: common.UIAbilityContext) {
     this.context = context;
+    AvSessionBridge.instance = this;
+  }
+
+  /** 全局单例引用：意图执行器（PlayMusicListExecutor）无构造入参注入路径，
+   * 经静态入口投递（见 handleInsightPlay）。 */
+  private static instance: AvSessionBridge | null = null;
+
+  /** Dart 侧就绪标志（boot 通道 ready 上报）：就绪前到达的意图调用暂存。 */
+  private static dartReady: boolean = false;
+
+  /** 暂存的意图播放请求（undefined=无暂存，null=续播语义，字符串=歌单标识）。 */
+  private static pendingInsightPlaylist: string | null | undefined = undefined;
+
+  /**
+   * 播控中心 PlayMusicList 意图调用静态入口（意图执行器调用）：
+   * Dart 未就绪（冷启动意图先于 main() 完成）时暂存请求，由
+   * [notifyDartReady] 放行——投递不进冷启动关键路径；Dart 侧
+   * （ohos_media_session.dart）以 'insightPlay' 命令接收，
+   * playlistId 为 null 表示续播最近队列（历史歌单兜底语义）。
+   */
+  static handleInsightPlay(playlistId: string | null): void {
+    const inst = AvSessionBridge.instance;
+    if (!AvSessionBridge.dartReady || inst == null || inst.channel == null) {
+      AvSessionBridge.pendingInsightPlaylist = playlistId;
+      return;
+    }
+    inst.channel.invokeMethod('insightPlay', playlistId);
+  }
+
+  /** Dart main() 完成（EntryAbility.onBootReady）后调用：放行暂存的意图请求。 */
+  static notifyDartReady(): void {
+    AvSessionBridge.dartReady = true;
+    const pending = AvSessionBridge.pendingInsightPlaylist;
+    AvSessionBridge.pendingInsightPlaylist = undefined;
+    if (pending === undefined) {
+      return;
+    }
+    const inst = AvSessionBridge.instance;
+    inst?.channel?.invokeMethod('insightPlay', pending);
   }
 
   /** EntryAbility.configureFlutterEngine 中调用。 */
@@ -155,6 +196,14 @@ export default class AvSessionBridge implements MethodCallHandler {
         await session.setAVMetadata(this.buildMetadata(call));
         await session.setAVPlaybackState(this.buildPlaybackState(call));
         await session.activate();
+        // 显式声明支持后台播放（audio 会话默认即 ENABLE_BACKGROUND_PLAY，
+        // 显式声明防默认值变化；API 24+，失败仅记录不影响卡片）。
+        try {
+          await session.setBackgroundPlayMode(avSession.BackgroundPlayMode.ENABLE_BACKGROUND_PLAY);
+        } catch (err) {
+          const e = err as BusinessError;
+          Log.w(TAG, `设置后台播放模式失败（忽略）：${e.code} ${e.message}`);
+        }
         await this.startBackgroundTask();
         Log.i(TAG, `AVSession 已激活（assetId=${AvSessionBridge.argString(call, 'assetId') ?? ''}）`);
         result.success(null);
@@ -274,6 +323,17 @@ export default class AvSessionBridge implements MethodCallHandler {
     if (lyric != null) {
       metadata.lyric = lyric;
     }
+    // 歌单标识/名称（播控中心历史歌单归属，API 11/12+）：与曲目元数据同推。
+    // avQueueId 是播控中心区分歌单的稳定键，需在同队列播放期间保持不变
+    //（Dart 侧以歌单 uuid / 队列内容指纹保证，见 ohos_media_session.dart）。
+    const queueId = AvSessionBridge.argString(call, 'queueId');
+    if (queueId != null && queueId !== '') {
+      metadata.avQueueId = queueId;
+    }
+    const queueName = AvSessionBridge.argString(call, 'queueName');
+    if (queueName != null && queueName !== '') {
+      metadata.avQueueName = queueName;
+    }
     // 封面不走本方法（两段式，见 updateCover）：先推文字卡片，封面异步补。
     return metadata;
   }
@@ -321,6 +381,10 @@ export default class AvSessionBridge implements MethodCallHandler {
       }
       const metadata = this.buildMetadata(call);
       metadata.mediaImage = pixelMap;
+      // 歌单封面与曲目封面同源（v1：当前曲目封面即队列封面），同一次
+      // setAVMetadata 一并下发，零额外解码/IPC。省略时系统保留上一队列
+      // 封面（实测 merge 语义，同 mediaImage），故仅在有图时设置、无图不清。
+      metadata.avQueueImage = pixelMap;
       await session.setAVMetadata(metadata);
       // 新封面已过 IPC：释放上一张、接住新引用（保持引用直至下次替换）。
       this.releaseCover();

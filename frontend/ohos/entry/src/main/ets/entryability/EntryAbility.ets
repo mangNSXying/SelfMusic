@@ -193,6 +193,8 @@ export default class EntryAbility extends FlutterAbility {
       clearTimeout(this.bootTimerId);
       this.bootTimerId = -1;
     }
+    // Dart 就绪：放行播控中心意图（PlayMusicList）冷启动期间的暂存投递。
+    AvSessionBridge.notifyDartReady();
     Log.i(TAG, 'Dart 启动就绪（ready），看门狗解除');
   }
 

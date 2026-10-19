@@ -27,3 +27,23 @@ Future<bool> moveAppToBackground() async {
   }
   return false;
 }
+
+/// 退出进程前的平台收口钩子：鸿蒙侧由 main.dart 注册（播控桥收卡——
+/// AVSession 销毁 + 长时任务停止，await 300ms 封顶；exit(0) 前未确认
+/// destroy 已被 ArkTS 处理的话进程即死、播控卡与长时任务悬挂，表现为
+/// 播控中心幽灵卡）。未注册（非鸿蒙/桥未建）直接跳过。
+Future<void> Function()? beforeExitHook;
+
+/// 退出进程的统一收口：先跑 [beforeExitHook]（异常吞掉，不许拦住退出），
+/// 再 exit(0)。调用方仍需先完成各自的播放器 shutdown / 断点落库。
+Future<void> exitAppGracefully() async {
+  final hook = beforeExitHook;
+  if (hook != null) {
+    try {
+      await hook();
+    } catch (_) {
+      // 收口异常不许拦住退出。
+    }
+  }
+  exit(0);
+}

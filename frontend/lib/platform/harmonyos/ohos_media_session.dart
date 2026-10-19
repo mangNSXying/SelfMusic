@@ -37,6 +37,13 @@ import '../../utils/cover_thumb.dart';
 /// - 播放态：2=PLAY，3=PAUSE（AVSession PlaybackState）；
 /// - 循环模式：0=sequence，1=loopOne，2=loopList，3=weighted
 ///   （AVSession LoopMode：SEQUENCE/SINGLE/LIST/SHUFFLE）。
+///
+/// 播控中心「冷启动续播/历史歌单」（Intents Kit PlayMusicList 意图）：
+/// ArkTS 侧意图执行器经 AvSessionBridge 静态投递转 'insightPlay' 命令到本桥
+/// （playlistId 为 null 表示续播最近队列）→ PlayerProvider.insightPlayFromSystem；
+/// 元数据里的 queueId/queueName 上报为 AVMetadata.avQueueId/avQueueName
+/// （播控中心历史歌单归属与显示名，avQueueImage 由 ArkTS 侧封面补推段
+/// 复用曲目封面 PixelMap 一并下发）。
 class OhosMediaSessionBridge {
   static const _channel = MethodChannel('selfmusic/avsession');
 
@@ -75,6 +82,15 @@ class OhosMediaSessionBridge {
   /// 连切静默期：窗口内无新切歌才推终态。
   static const _churnSettle = Duration(seconds: 2);
 
+  /// destroy 往返超时封顶：退出收口不允许被通道异常卡住。
+  static const _destroyTimeout = Duration(milliseconds: 300);
+
+  /// attach 前到达的意图播放暂存（冷启动竞态：boot ready 的 flush 可能快于
+  /// 首帧 attach——markBootReady 在 runApp 后立即发，首帧在定时器上跑）。
+  /// [_pendingInsightSeen] 区分「暂存了 null playlistId」与「无暂存」。
+  bool _pendingInsightSeen = false;
+  String? _pendingInsightPlaylist;
+
   OhosMediaSessionBridge(this._direct, {this.showControls = true}) {
     _channel.setMethodCallHandler(_onCommand);
   }
@@ -86,6 +102,17 @@ class OhosMediaSessionBridge {
     // 收藏变化 / 内嵌歌词补读晚到（notifySongMetaChanged）都经 direct 广播，
     // 低频事件，无条件全量补推一次。
     _direct.addListener(_onDirectChanged);
+    // 冷启动竞态兜底：attach 前暂存的播控中心意图播放在此补投（微任务
+    // 延迟出 build 期，避免恢复/播放在 build 期内同步展开）。
+    if (_pendingInsightSeen) {
+      _pendingInsightSeen = false;
+      final pid = _pendingInsightPlaylist;
+      _pendingInsightPlaylist = null;
+      scheduleMicrotask(() {
+        final p = _player;
+        if (p != null) p.insightPlayFromSystem(pid);
+      });
+    }
   }
 
   void _onDirectChanged() {
@@ -185,7 +212,36 @@ class OhosMediaSessionBridge {
             ? ''
             : coverDisplayPath(s.coverPath!),
         'lyric': _clipLyric(_direct.index.lyricsOf(s.sourceKey, s.sourceRef)),
+        // 播控中心历史歌单（avQueueId/avQueueName 口径）：同一队列播放期间
+        // （含切歌）必须恒定，否则历史歌单按曲目碎片化。
+        'queueId': _queueId(p),
+        'queueName': _queueName(p),
       };
+
+  /// 歌单稳定标识：歌单 uuid 优先（跨会话/跨设备稳定，恢复链会还原它）；
+  /// 非歌单上下文（专辑/搜索/外部点歌）用队列内容指纹——队列内容不变则
+  /// 标识不变（切歌不影响），内容变化（增删/换列）才换新条目。
+  String? _queueId(PlayerProvider p) {
+    final uuid = p.syncPlaylistUuid;
+    if (uuid != null && uuid.isNotEmpty) return uuid;
+    final q = p.queue;
+    if (q.isEmpty) return null;
+    var h = q.length;
+    for (final s in q) {
+      h = Object.hash(h, s.sourceKey, s.sourceRef);
+    }
+    return 'q-$h';
+  }
+
+  /// 歌单显示名：歌单名（uuid → name），非歌单上下文兜底「正在播放」。
+  String _queueName(PlayerProvider p) {
+    final uuid = p.syncPlaylistUuid;
+    if (uuid != null && uuid.isNotEmpty) {
+      final name = _direct.index.playlistNameOfUuid(uuid);
+      if (name != null && name.isNotEmpty) return name;
+    }
+    return '正在播放';
+  }
 
   /// 播放态 int 约定：2=PLAY / 3=PAUSE（sync 的触发时机均为稳定态，
   /// 缓冲/完结等瞬态不单独上报）。
@@ -223,10 +279,20 @@ class OhosMediaSessionBridge {
     return utf8.decode(bytes.sublist(0, cut), allowMalformed: true);
   }
 
-  /// 系统播控卡按钮 → provider。方法名与 ArkTS 侧转发一致。
+  /// 系统播控卡按钮 / 播控中心意图 → provider。方法名与 ArkTS 侧转发一致。
   Future<Object?> _onCommand(MethodCall call) async {
     final p = _player;
-    if (p == null) return null;
+    if (p == null) {
+      // attach 前仅播控中心意图调用可能到达（冷启动竞态，见 attach 兜底）：
+      // 暂存待 attach 补投；其余命令无接收方，丢弃。
+      if (call.method == 'insightPlay') {
+        _pendingInsightSeen = true;
+        _pendingInsightPlaylist = call.arguments is String
+            ? call.arguments as String?
+            : null;
+      }
+      return null;
+    }
     switch (call.method) {
       case 'play':
         await p.resumeFromNotifier();
@@ -238,6 +304,12 @@ class OhosMediaSessionBridge {
         await p.stopFromNotifier();
         // stopFromNotifier 不清当前曲，桥侧显式收卡（销毁会话+停长时任务）。
         _destroy();
+        break;
+      case 'insightPlay':
+        // 播控中心 PlayMusicList 意图调用（冷启动续播/历史歌单）：
+        // playlistId 缺失/null 表示续播最近队列。
+        final pid = call.arguments;
+        await p.insightPlayFromSystem(pid is String ? pid : null);
         break;
       case 'playNext':
         await p.next();
@@ -264,14 +336,31 @@ class OhosMediaSessionBridge {
   }
 
   /// 收卡：通知 ArkTS 销毁会话并复位本地状态（下次播放重新 start）。
+  /// fire-and-forget（播控卡 stop 按钮/队列清空路径，不阻塞播放流程）。
   void _destroy() {
+    unawaited(_destroyAwaitable());
+  }
+
+  /// 退出收口入口（awaitable，app_background.exitAppGracefully 调用）：
+  /// 等待 destroy 往返（[_destroyTimeout] 超时封顶）——exit(0) 前必须确认
+  /// 收卡消息已被 ArkTS 处理，否则进程即死、播控卡与长时任务悬挂
+  /// （播控中心幽灵卡根因）。
+  Future<void> destroy() => _destroyAwaitable();
+
+  Future<void> _destroyAwaitable() async {
     _metaTimer?.cancel();
     _metaTimer = null;
     if (!_started) return;
     _started = false;
     _lastPushedAssetId = null;
     _lastPushedCoverPath = null;
-    _invoke('destroy', null);
+    try {
+      await _channel
+          .invokeMethod<void>('destroy', null)
+          .timeout(_destroyTimeout);
+    } catch (_) {
+      // 通道异常/超时：收卡失败不阻塞调用方（播放器主流程/退出流程）。
+    }
   }
 
   /// 通道调用统一兜底：桥的任何异常都不允许影响播放器主流程。
