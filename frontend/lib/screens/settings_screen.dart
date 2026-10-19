@@ -2092,7 +2092,7 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
         const Divider(height: 24),
         SwitchListTile(
           title: const Text('自动暂停/恢复'),
-          subtitle: const Text('通话等音频焦点抢占时自动暂停，结束后恢复（目前仅安卓生效）'),
+          subtitle: const Text('通话等音频焦点抢占时自动暂停，结束后恢复（安卓/鸿蒙生效）'),
           value: _settings.audioFocusEnabled,
           onChanged: (v) {
             setState(() => _settings.audioFocusEnabled = v);

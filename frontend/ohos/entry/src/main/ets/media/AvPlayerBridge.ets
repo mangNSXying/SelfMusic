@@ -12,6 +12,7 @@ import {
   StreamHandler
 } from '@ohos/flutter_ohos';
 import { media } from '@kit.MediaKit';
+import { audio } from '@kit.AudioKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 
@@ -58,7 +59,8 @@ class PlayerEntry {
  *   play / pause / stop / seek{positionMs} / setVolume{volume} /
  *   reset / dispose / disposeAll（后三者均带 playerId 或空）
  * - 事件 selfmusic/avplayer/events：Map 负载，均带 type + playerId：
- *   state / position / duration / buffered / seekDone / ended / error
+ *   state / position / duration / buffered / seekDone / ended / error /
+ *   audioInterrupt（hint/forced/wasPlaying/positionMs）
  *
  * 关键约定：
  * - 监听必须先于置源注册（官方要求，否则丢 stateChange）；
@@ -387,6 +389,9 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
     player.on('endOfStream', (): void => {
       this.emitEvent(entry.id, 'ended', 0);
     });
+    player.on('audioInterrupt', (event: audio.InterruptEvent): void => {
+      this.onAudioInterrupt(entry, event);
+    });
   }
 
   private onStateChange(entry: PlayerEntry, state: media.AVPlayerState, reason: media.StateChangeReason): void {
@@ -427,7 +432,10 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
       return;
     }
     if (state === 'paused') {
-      this.emitStateEvent(entry.id, 'paused');
+      // 手动暂停时 just_audio 已先翻 playing=false 并冻结在墙钟插值位置；
+      // 这里把原生真实停顿位置一并带回，适配层在 _emit 前刷新 _position，
+      // 避免进度条回跳到上一次 timeUpdate（最多 100ms）。
+      this.emitStateEvent(entry.id, 'paused', this.readCurrentTime(entry.player));
       return;
     }
     if (state === 'completed') {
@@ -452,6 +460,59 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
       return;
     }
     // released 不上报（dispose 路径无需驱动 Dart 状态机）。
+  }
+
+  /**
+   * 音频焦点中断（系统强制暂停/恢复）。
+   *
+   * 关键：鸿蒙系统抢占焦点时会直接暂停音频流，但 AVPlayer.state 仍保持
+   * 'playing'，且不会自动恢复。这里必须：
+   * - 在 pause/stop hint 时主动 player.pause()，让 stateChange 驱动 Dart 同步；
+   * - 把中断时刻的 currentTime 一并上报，Dart 侧据此把进度从墙钟插值回退到
+   *   真实停顿点；
+   * - RESUME 只通知 Dart，由 PlayerProvider 按 audio_focus_enabled 决定是否
+   *   play()，避免“忽略音频焦点”开关失效。
+   */
+  private onAudioInterrupt(entry: PlayerEntry, event: audio.InterruptEvent): void {
+    const player = entry.player;
+    if (player === null || entry.released) {
+      return;
+    }
+    const wasPlaying = player.state === 'playing';
+    const forced = event.forceType === audio.InterruptForceType.INTERRUPT_FORCE;
+    let positionMs = -1;
+    try {
+      positionMs = player.currentTime;
+    } catch (e) {
+      // 极端状态下 currentTime 不可读：位置交给 Dart 侧最后一次上报。
+      positionMs = -1;
+    }
+    Log.w(TAG, `${entry.id} audioInterrupt hint=${event.hintType} force=${event.forceType} wasPlaying=${wasPlaying} pos=${positionMs}`);
+
+    if (event.hintType === audio.InterruptHint.INTERRUPT_HINT_PAUSE) {
+      this.emitInterrupt(entry.id, 'pause', forced, wasPlaying, positionMs);
+      if (wasPlaying) {
+        player.pause().catch((e: BusinessError): void => {
+          Log.w(TAG, `${entry.id} 焦点暂停同步失败: ${e.code}`);
+        });
+      }
+      return;
+    }
+    if (event.hintType === audio.InterruptHint.INTERRUPT_HINT_STOP) {
+      this.emitInterrupt(entry.id, 'stop', forced, wasPlaying, positionMs);
+      if (wasPlaying) {
+        // 用 pause 而非 stop：保留当前进度，用户可手动继续。
+        player.pause().catch((e: BusinessError): void => {
+          Log.w(TAG, `${entry.id} 焦点停止同步失败: ${e.code}`);
+        });
+      }
+      return;
+    }
+    if (event.hintType === audio.InterruptHint.INTERRUPT_HINT_RESUME) {
+      this.emitInterrupt(entry.id, 'resume', forced, wasPlaying, positionMs);
+      return;
+    }
+    // DUCK/UNDUCK 由系统调音量，播放状态不变；只记录日志。
   }
 
   private onError(entry: PlayerEntry, err: BusinessError): void {
@@ -612,6 +673,7 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
       player.off('bufferingUpdate');
       player.off('seekDone');
       player.off('endOfStream');
+      player.off('audioInterrupt');
       await player.release();
     } catch (e) {
       Log.w(TAG, `${entry.id} release 失败: ${(e as BusinessError).code}`);
@@ -640,11 +702,38 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
     this.sink?.success(event);
   }
 
-  private emitStateEvent(playerId: string, state: string): void {
+  private emitStateEvent(playerId: string, state: string, positionMs: number = -1): void {
     const event: Map<string, string | number> = new Map();
     event.set('type', 'state');
     event.set('playerId', playerId);
     event.set('state', state);
+    if (positionMs >= 0) {
+      event.set('positionMs', positionMs);
+    }
+    this.sink?.success(event);
+  }
+
+  /** 读原生当前播放位置（ms）；不可读时返回 -1，由 Dart 沿用最后一次上报。 */
+  private readCurrentTime(player: media.AVPlayer | null): number {
+    if (player === null) {
+      return -1;
+    }
+    try {
+      return player.currentTime;
+    } catch (e) {
+      return -1;
+    }
+  }
+
+  private emitInterrupt(playerId: string, hint: string, forced: boolean,
+    wasPlaying: boolean, positionMs: number): void {
+    const event: Map<string, string | number> = new Map();
+    event.set('type', 'audioInterrupt');
+    event.set('playerId', playerId);
+    event.set('hint', hint);
+    event.set('forced', forced ? 1 : 0);
+    event.set('wasPlaying', wasPlaying ? 1 : 0);
+    event.set('positionMs', positionMs);
     this.sink?.success(event);
   }
 

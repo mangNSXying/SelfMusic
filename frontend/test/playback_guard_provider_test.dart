@@ -10,6 +10,7 @@ import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/data/sources/music_source.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:selfmusic/providers/player_provider.dart';
+import 'package:selfmusic/services/audio_focus_monitor.dart';
 import 'package:selfmusic/services/playback_guard.dart';
 import 'package:sqlite3/open.dart';
 
@@ -34,10 +35,18 @@ class _FakePlatformPlayer extends AudioPlayerPlatform {
   _FakePlatformPlayer(super.id);
 
   final _events = StreamController<PlaybackEventMessage>.broadcast();
+  final _playerData = StreamController<PlayerDataMessage>.broadcast();
   Completer<void>? _playDone;
 
   @override
   Stream<PlaybackEventMessage> get playbackEventMessageStream => _events.stream;
+
+  @override
+  Stream<PlayerDataMessage> get playerDataMessageStream => _playerData.stream;
+
+  /// 模拟鸿蒙适配层从原生回传的实际播放态。
+  void emitPlaying(bool playing) =>
+      _playerData.add(PlayerDataMessage(playing: playing));
 
   PlaybackEventMessage _event(ProcessingStateMessage state) =>
       PlaybackEventMessage(
@@ -97,7 +106,19 @@ class _FakePlatformPlayer extends AudioPlayerPlatform {
           SetShuffleOrderRequest request) async =>
       SetShuffleOrderResponse();
 
-  Future<void> close() => _events.close();
+  Future<void> close() async {
+    await _events.close();
+    await _playerData.close();
+  }
+}
+
+class _FakeFocusPlatform implements AudioFocusPlatform {
+  final _controller = StreamController<AudioFocusEvent>.broadcast();
+
+  @override
+  Stream<AudioFocusEvent> get events => _controller.stream;
+  void emit(AudioFocusEvent e) => _controller.add(e);
+  Future<void> close() => _controller.close();
 }
 
 class _FakeJustAudio extends JustAudioPlatform {
@@ -171,6 +192,7 @@ void main() {
   late Directory dir;
   late LocalIndex index;
   late _FakeGuardPlatform guard;
+  late _FakeFocusPlatform focus;
 
   setUp(() async {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
@@ -184,11 +206,13 @@ void main() {
     JustAudioPlatform.instance = fakeAudio;
 
     guard = _FakeGuardPlatform();
+    focus = _FakeFocusPlatform();
   });
 
   tearDown(() async {
     JustAudioPlatform.instance = savedAudio;
     await guard.close();
+    await focus.close();
     index.close();
     try {
       dir.deleteSync(recursive: true);
@@ -237,6 +261,134 @@ void main() {
       guard.emit(const AudioGuardEvent.volume(0));
       await Future<void>.delayed(const Duration(milliseconds: 100));
       expect(p.playing, isTrue);
+    } finally {
+      p.dispose();
+    }
+  });
+
+  test('鸿蒙焦点强制暂停：UI 同步暂停，恢复时按开关自动续播', () async {
+    final settings = AppSettings(index);
+    settings.fadeEnabled = false;
+    settings.audioFocusEnabled = true;
+
+    final p = PlayerProvider();
+    try {
+      p.attachAppSettings(settings);
+      p.attachAudioFocus(focus);
+      await p.playQueue([_song('a.mp3', 'A')], source: _FakeSource());
+      expect(p.playing, isTrue);
+      final platform = fakeAudio.players.values.single;
+
+      // 系统强制暂停：原生桥回调先到，适配层随后回传 playing=false。
+      focus.emit(const AudioFocusEvent(
+        type: AudioFocusEventType.pause,
+        forced: true,
+        wasPlaying: true,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      platform.emitPlaying(false);
+      await pumpUntil(() => !p.playing);
+      expect(p.playing, isFalse);
+
+      // 焦点恢复：开关打开 → Provider 走正常恢复路径。
+      focus.emit(const AudioFocusEvent(
+        type: AudioFocusEventType.resume,
+        forced: false,
+        wasPlaying: false,
+      ));
+      await pumpUntil(() => p.playing);
+      expect(p.playing, isTrue);
+    } finally {
+      p.dispose();
+    }
+  });
+
+  test('鸿蒙焦点恢复：开关关闭不自动续播', () async {
+    final settings = AppSettings(index);
+    settings.fadeEnabled = false;
+    settings.audioFocusEnabled = false;
+
+    final p = PlayerProvider();
+    try {
+      p.attachAppSettings(settings);
+      p.attachAudioFocus(focus);
+      await p.playQueue([_song('a.mp3', 'A')], source: _FakeSource());
+      expect(p.playing, isTrue);
+      final platform = fakeAudio.players.values.single;
+
+      focus.emit(const AudioFocusEvent(
+        type: AudioFocusEventType.pause,
+        forced: true,
+        wasPlaying: true,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      platform.emitPlaying(false);
+      await pumpUntil(() => !p.playing);
+
+      focus.emit(const AudioFocusEvent(
+        type: AudioFocusEventType.resume,
+        forced: false,
+        wasPlaying: false,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(p.playing, isFalse);
+    } finally {
+      p.dispose();
+    }
+  });
+
+  test('鸿蒙焦点暂停期间用户手动暂停：恢复事件不自动续播', () async {
+    final settings = AppSettings(index);
+    settings.fadeEnabled = false;
+    settings.audioFocusEnabled = true;
+
+    final p = PlayerProvider();
+    try {
+      p.attachAppSettings(settings);
+      p.attachAudioFocus(focus);
+      await p.playQueue([_song('a.mp3', 'A')], source: _FakeSource());
+      final platform = fakeAudio.players.values.single;
+
+      focus.emit(const AudioFocusEvent(
+        type: AudioFocusEventType.pause,
+        forced: true,
+        wasPlaying: true,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      platform.emitPlaying(false);
+      await pumpUntil(() => !p.playing);
+
+      // 用户已明确暂停（例如点了通知栏/播放页暂停）→ 焦点恢复不得抢回播放。
+      await p.pauseFromNotifier();
+      focus.emit(const AudioFocusEvent(
+        type: AudioFocusEventType.resume,
+        forced: false,
+        wasPlaying: false,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(p.playing, isFalse);
+    } finally {
+      p.dispose();
+    }
+  });
+
+  test('原生 playing=false 会 notifyListeners（Android 焦点自动暂停）', () async {
+    final settings = AppSettings(index);
+    settings.fadeEnabled = false;
+
+    final p = PlayerProvider();
+    try {
+      p.attachAppSettings(settings);
+      await p.playQueue([_song('a.mp3', 'A')], source: _FakeSource());
+      expect(p.playing, isTrue);
+      final platform = fakeAudio.players.values.single;
+
+      var notifications = 0;
+      p.addListener(() => notifications++);
+      platform.emitPlaying(false);
+      await pumpUntil(() => !p.playing);
+      expect(p.playing, isFalse);
+      expect(notifications, greaterThan(0));
     } finally {
       p.dispose();
     }

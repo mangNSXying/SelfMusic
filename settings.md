@@ -69,7 +69,7 @@
 | 常亮限定蓝牙设备 | `keep_screen_on_device` | `''`（不限定） | 仅在下列**任一**蓝牙设备处于连接状态时才保持常亮；值是设备名 JSON 数组（如 `[" buds","car"]`，旧版单对象 `{"a":" buds"}` 仍可读，由 `btDevicesFromSetting` 兼容）。设备名来自**已配对**列表（`getBondedDevices`），选择器为多选复选框；进入播放页后每 5s 轮询连接状态（`BluetoothProfile.LE_AUDIO`，Android 13+ 需该 profile；已授权 `BLUETOOTH_CONNECT` 才有意义，权限被收回时提示未授权） |
 | 淡入淡出 | `fade_enabled` + `fade_duration_ms` | 开，2000 ms（0.5~2 s） | 从暂停恢复到播放 / 播放挥手暂停前做 `setVolume` 软件渐变（16 ms 周期），全平台可用；不依赖音频后端 crossfade。关闭时无渐变直接切换。时长有效域 [500, 2000] ms（0.1 s 步进），越界历史值读取时钳制到最近边界 |
 | 均衡器 | `equalizer_enabled` + `eq_bands` | 关 | 5 频段增益（`eq_bands`=JSON 整数数组：低音 60 Hz / 中低 230 Hz / 中音 910 Hz / 中高 3.6 kHz / 高音 14 kHz，范围 -12~+12 dB）。**仅 Android**（just_audio `AndroidEqualizer` 注入 `AudioPipeline`）；Linux/macOS 无公开 mpv Dart API，开关与滑块界面仍可见但不生效 |
-| 音频焦点（自动暂停/恢复） | `audio_focus_enabled` | `true` | 来电 / 其他 App 抢占时的暂停-恢复。just_audio `handleInterruptions`，切换后重建播放器即时生效（Android）。原在「通知」分区，现归「播放」分区 |
+| 音频焦点（自动暂停/恢复） | `audio_focus_enabled` | `true` | 来电 / 其他 App 抢占时的暂停-恢复。**Android**：just_audio `handleInterruptions`（`audio_session`），切换后重建播放器即时生效。**鸿蒙**：`AvPlayerBridge.ets` 监听 AVPlayer `audioInterrupt`；系统强制暂停后同步 AVPlayer/Dart `playing` 与真实位置并落断点，`INTERRUPT_HINT_RESUME` 时由 `PlayerProvider` 按本开关自动续播（原生 AVPlayer 不会自动恢复；关闭开关只取消自动续播，系统抢占仍会强制暂停）。原在「通知」分区，现归「播放」分区 |
 | 静音暂停 | `pause_on_zero_volume` | `false`（关） | 媒体音量归零时自动暂停当前播放。**仅 Android/鸿蒙**：自持原生监听（Android：`Settings.System` 音量变化，`AudioGuard.kt`；鸿蒙：系统音量事件，`AudioGuardBridge.ets`），不经 `audio_session` 的 becoming-noisy（后者只在音频焦点开启时注册）。其它平台开关可见但不生效 |
 | 断连暂停 | `pause_on_device_disconnect` | `false`（关） | 当前播放输出设备（蓝牙音箱/耳机/有线/USB）断开时自动暂停。**仅 Android/鸿蒙**：Android 监听 `ACTION_AUDIO_BECOMING_NOISY`（系统在**活跃输出**被移除时广播）；鸿蒙监听设备连接状态变化并比对活跃输出（`AudioGuardBridge.ets`）。因此「蓝牙连着但声音走扬声器」时断开蓝牙不暂停、用户主动从蓝牙切扬声器也不暂停，符合预期语义。其它平台开关可见但不生效 |
 
@@ -233,7 +233,7 @@ mode == follow_server → 有服务端镜像用镜像，无镜像回退本地自
 | 导入导出设置 / 歌单 | 本地文件 + `file_selector`，无后端依赖 | ✅ 已实现（设置、歌单分开导出；导入支持选择文件） |
 | 淡入淡出 / 均衡器 | 音频后端能力验证 | ✅ 已实现（淡入淡出全平台；均衡器仅 Android，真机验证） |
 | 通知栏 / 后台播放 | Android 壳 + `audio_service` | ✅ 已实现（实现见 §3.6；真机验证） |
-| 音频焦点自动暂停/恢复 | just_audio `handleInterruptions` | ✅ 已实现（`设置 → 播放`；真机验证） |
+| 音频焦点自动暂停/恢复 | just_audio `handleInterruptions` / 鸿蒙 AVPlayer `audioInterrupt` | ✅ 已实现（`设置 → 播放`；Android 沿用既有链路，鸿蒙待真机回归） |
 | 配对密钥显示/复制（`设置 → 服务端 → 配对服务器`） | 后端端点 + 前端 | ✅ 已实现（`GET /api/v1/admin/pairing-token`，配对服务器副标题遮显、配对页明文可复制） |
 | 缓存目录展示（`设置 → 服务端`） | 客户端本地 | ✅ 已实现（真实路径 + 占用 + 点击复制） |
 | 默认 HTTPS + 「允许不安全 HTTP」+「信任自签名证书」开关 | 网络安全加固 | ✅ 已实现（§3.3.1；`ApiClient.validateEndpointUrl` 约束后端/WebDAV/配对地址，自签名开关覆盖 dio + dart:io 直连） |

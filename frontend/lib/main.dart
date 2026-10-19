@@ -12,6 +12,7 @@ import 'platform/app_background.dart';
 import 'platform/harmonyos/ohos_bootstrap.dart';
 import 'platform/harmonyos/ohos_media_session.dart';
 import 'services/api_client.dart';
+import 'services/audio_focus_monitor.dart';
 import 'services/log_buffer.dart';
 import 'services/server_settings.dart';
 import 'services/selfmusic_audio_handler.dart';
@@ -315,6 +316,8 @@ class SelfMusicApp extends StatelessWidget {
       ..attachApi(api)
       ..attachServerAvailable(() => direct.isServerAvailable)
       ..attachAudioGuard(AudioGuardPlatform.forCurrentPlatform())
+      // 鸿蒙 AVPlayer 音频焦点（Android 由 just_audio 内部处理，空流）。
+      ..attachAudioFocus(AudioFocusPlatform.forCurrentPlatform())
       // 同步引擎钩子：实际播放态驱动后台同步门控（播放中后台仍同步），
       // 播放/暂停/切歌后即时推一轮（单飞合并；未注入不影响播放）。
       ..attachSyncHooks(

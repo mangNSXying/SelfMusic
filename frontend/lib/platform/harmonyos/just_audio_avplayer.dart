@@ -5,6 +5,39 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:just_audio_platform_interface/just_audio_platform_interface.dart';
 
+/// 鸿蒙 AVPlayer `audioInterrupt` 的 hint 类型。
+enum AvPlayerFocusHint { pause, resume, stop, duck, unduck }
+
+/// 一次原生音频焦点中断（由 `AvPlayerBridge.ets` 上报）。
+class AvPlayerFocusEvent {
+  final String playerId;
+  final AvPlayerFocusHint hint;
+
+  /// 系统已强制暂停/停止（`INTERRUPT_FORCE`）。
+  final bool forced;
+
+  /// 中断发生前 AVPlayer 是否处于 playing。系统强制暂停不会把 state 改成
+  /// paused，该字段必须在调用 pause() 前采样。
+  final bool wasPlaying;
+
+  /// 中断时刻的原生位置（毫秒）；未知时为 null。
+  final Duration? position;
+
+  const AvPlayerFocusEvent({
+    required this.playerId,
+    required this.hint,
+    required this.forced,
+    required this.wasPlaying,
+    this.position,
+  });
+}
+
+final StreamController<AvPlayerFocusEvent> _focusEvents =
+    StreamController<AvPlayerFocusEvent>.broadcast();
+
+/// 全局焦点事件流：PlayerProvider 经 `AudioFocusPlatform` 消费。
+Stream<AvPlayerFocusEvent> get avPlayerFocusEvents => _focusEvents.stream;
+
 /// 鸿蒙系统 AVPlayer 的 just_audio 平台实现（ohos 播放后端）。
 ///
 /// 与 PlayerProvider / just_audio 同契约：应用层不感知后端差异。
@@ -83,6 +116,12 @@ class AvPlayerHandle extends AudioPlayerPlatform {
   final StreamController<PlaybackEventMessage> _events =
       StreamController<PlaybackEventMessage>.broadcast();
 
+  /// 原生播放态回传：鸿蒙系统强制暂停音频流时 AVPlayer.state 仍是 playing，
+  /// 只有桥里的 audioInterrupt 回调能感知。把原生 paused/stopped 同步给
+  /// just_audio，`playing`/进度条才不会继续假走。
+  final StreamController<PlayerDataMessage> _playerData =
+      StreamController<PlayerDataMessage>.broadcast();
+
   ProcessingStateMessage _processingState = ProcessingStateMessage.idle;
   Duration _position = Duration.zero;
   Duration _buffered = Duration.zero;
@@ -92,8 +131,10 @@ class AvPlayerHandle extends AudioPlayerPlatform {
   bool _released = false;
 
   @override
-  Stream<PlaybackEventMessage> get playbackEventMessageStream =>
-      _events.stream;
+  Stream<PlaybackEventMessage> get playbackEventMessageStream => _events.stream;
+
+  @override
+  Stream<PlayerDataMessage> get playerDataMessageStream => _playerData.stream;
 
   @override
   Future<LoadResponse> load(LoadRequest request) async {
@@ -118,7 +159,8 @@ class AvPlayerHandle extends AudioPlayerPlatform {
       playUrl = '';
     }
     try {
-      final result = await _channel.invokeMethod<Map<dynamic, dynamic>>('load', {
+      final result =
+          await _channel.invokeMethod<Map<dynamic, dynamic>>('load', {
         'playerId': id,
         if (filePath != null) 'filePath': filePath else 'url': playUrl,
         'headersJson': jsonEncode(source.headers ?? const <String, String>{}),
@@ -206,7 +248,15 @@ class AvPlayerHandle extends AudioPlayerPlatform {
     switch (type) {
       case 'state':
         final state = event['state'];
-        if (state is String) _onNativeState(state);
+        if (state is String) {
+          // paused 状态自带原生真实停顿位置：先刷新 _position 再 _emit，
+          // 防止手动暂停后进度条回跳到上一次 timeUpdate。
+          final positionMs = event['positionMs'];
+          if (positionMs is num && positionMs >= 0) {
+            _position = Duration(milliseconds: positionMs.toInt());
+          }
+          _onNativeState(state);
+        }
         break;
       case 'position':
         final value = event['value'];
@@ -242,6 +292,9 @@ class AvPlayerHandle extends AudioPlayerPlatform {
           _emit();
         }
         break;
+      case 'audioInterrupt':
+        _onAudioInterrupt(event);
+        break;
       case 'error':
         final code = event['code'];
         final message = event['message'];
@@ -259,15 +312,25 @@ class AvPlayerHandle extends AudioPlayerPlatform {
   void _onNativeState(String state) {
     switch (state) {
       case 'prepared':
+        _processingState = ProcessingStateMessage.ready;
+        _emit();
+        break;
       case 'playing':
+        _processingState = ProcessingStateMessage.ready;
+        _emit();
+        _emitPlaying(true);
+        break;
       case 'paused':
         _processingState = ProcessingStateMessage.ready;
         _emit();
+        _emitPlaying(false);
         break;
       case 'completed':
         _processingState = ProcessingStateMessage.completed;
         _position = _duration ?? _position;
         _emit();
+        // 不在这里翻 playing=false：PlayerProvider 依赖 st.playing 为 true
+        // 处理自动续播；完成态由 processingState=completed 表达。
         break;
       case 'stopped':
       case 'idle':
@@ -276,8 +339,63 @@ class AvPlayerHandle extends AudioPlayerPlatform {
         if (_loading) return;
         _processingState = ProcessingStateMessage.idle;
         _emit();
+        _emitPlaying(false);
         break;
     }
+  }
+
+  /// 原生 audioInterrupt → Dart。
+  ///
+  /// 关键顺序：
+  /// 1. 先投递焦点事件，让 PlayerProvider 置「焦点暂停」标记；
+  /// 2. 再用中断时刻的原生位置刷新 _position 并翻转 playing=false。
+  ///    这样 just_audio 的 position getter 从墙钟插值立刻退回停顿点 T1，
+  ///    Provider 收口时保存的断点也是 T1，而不是假走的 T2。
+  void _onAudioInterrupt(Map<dynamic, dynamic> event) {
+    final hint = _focusHintOf(event['hint']);
+    if (hint == null) return;
+    final forced = event['forced'] == true || event['forced'] == 1;
+    final wasPlaying = event['wasPlaying'] == true || event['wasPlaying'] == 1;
+    final rawPosition = event['positionMs'];
+    final position = rawPosition is num && rawPosition >= 0
+        ? Duration(milliseconds: rawPosition.toInt())
+        : null;
+
+    _focusEvents.add(AvPlayerFocusEvent(
+      playerId: id,
+      hint: hint,
+      forced: forced,
+      wasPlaying: wasPlaying,
+      position: position,
+    ));
+
+    if ((hint == AvPlayerFocusHint.pause || hint == AvPlayerFocusHint.stop) &&
+        wasPlaying) {
+      if (position != null) _position = position;
+      _emit();
+      _emitPlaying(false);
+    }
+  }
+
+  static AvPlayerFocusHint? _focusHintOf(dynamic raw) {
+    switch (raw) {
+      case 'pause':
+        return AvPlayerFocusHint.pause;
+      case 'resume':
+        return AvPlayerFocusHint.resume;
+      case 'stop':
+        return AvPlayerFocusHint.stop;
+      case 'duck':
+        return AvPlayerFocusHint.duck;
+      case 'unduck':
+        return AvPlayerFocusHint.unduck;
+    }
+    return null;
+  }
+
+  void _emitPlaying(bool value) {
+    if (_released || _playerData.isClosed) return;
+    _playerData.add(PlayerDataMessage(playing: value));
   }
 
   Future<void> release({bool notifyNative = true}) async {
@@ -291,6 +409,7 @@ class AvPlayerHandle extends AudioPlayerPlatform {
       }
     }
     await _events.close();
+    await _playerData.close();
   }
 
   void _emit() {

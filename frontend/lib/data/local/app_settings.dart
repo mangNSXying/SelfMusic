@@ -200,7 +200,8 @@ class AppSettings {
   static const String kEqualizerEnabled = 'equalizer_enabled';
   static const String kEqBands = 'eq_bands';
 
-  /// 音频焦点（settings.md §3.6）：Android 来电/他应用抢占时自动暂停-恢复。
+  /// 音频焦点（settings.md §3.6）：Android 走 just_audio handleInterruptions，
+  /// 鸿蒙走 AVPlayer audioInterrupt；来电/他应用抢占时自动暂停-恢复。
   static const String kAudioFocusEnabled = 'audio_focus_enabled';
 
   /// 静音暂停（Android/鸿蒙）：媒体音量归零时自动暂停。
