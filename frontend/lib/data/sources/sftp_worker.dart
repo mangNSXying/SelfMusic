@@ -4,9 +4,11 @@ import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import 'music_source.dart';
 import 'sftp_common.dart';
+import 'sftp_direct_transport.dart';
 
 /// 读批大小：主 isolate 一次最多拉这么多已解密字节。256KB 约等于 320kbps
 /// 音频 6 秒，起播/seek 的首批延迟足够小；同时把跨 isolate 缓冲上限钉死。
@@ -43,6 +45,14 @@ bool _uploadRetryable(Object e) {
         code == SftpStatusCode.connectionLost;
   }
   return true; // worker 退出/关闭、socket 层错误等
+}
+
+/// worker 基础设施启动失败（`Isolate.spawn` 抛错 / boot 超时 / 缺少命令
+/// 端口）：与 SSH 层错误区分开，供传输层决定「当次转旧直连 / 连续失败后
+/// 永久降级」。SSH 连不上、鉴权失败、指纹失配等真实业务错误不在此列，
+/// 不触发降级——旧直连会遇到同样的失败，只会掩盖真实原因。
+class SftpWorkerUnavailableException extends SftpStatusException {
+  const SftpWorkerUnavailableException(super.message);
 }
 
 void _trace(String message) => sftpTrace(message);
@@ -126,7 +136,8 @@ class SftpWorker {
       );
       final bootMsg = await boot.first.timeout(const Duration(seconds: 30));
       if (bootMsg is! Map) {
-        throw const SftpStatusException('SFTP worker 启动失败：无 boot 响应');
+        throw const SftpWorkerUnavailableException(
+            'SFTP worker 启动失败：无 boot 响应');
       }
       final msg = bootMsg.cast<String, Object?>();
       if (msg['fatal'] != null) {
@@ -138,7 +149,7 @@ class SftpWorker {
       }
       final cmd = msg['cmd'];
       if (cmd is! SendPort) {
-        throw const SftpStatusException('SFTP worker 启动失败：缺少命令端口');
+        throw const SftpWorkerUnavailableException('SFTP worker 启动失败：缺少命令端口');
       }
       _trace('ready $host:$port in ${started.elapsedMilliseconds}ms');
       return SftpWorker._(cmd, reply, isolate);
@@ -156,7 +167,8 @@ class SftpWorker {
           e is StateError) {
         rethrow;
       }
-      throw SftpStatusException(shortSftpError(e, 'SFTP worker 启动失败'));
+      throw SftpWorkerUnavailableException(
+          shortSftpError(e, 'SFTP worker 启动失败'));
     } finally {
       boot.close();
     }
@@ -490,6 +502,70 @@ class SftpIsolateTransport implements SftpTransport {
   int _idleTicks = 0;
   bool _disposed = false;
 
+  /// 旧直连兜底（worker 启动失败后惰性创建；正常路径不建连）。
+  SftpDirectTransport? _direct;
+
+  /// worker 连续启动失败达到 [_kStartFailuresBeforeDegrade] 后永久降级：
+  /// 本实例不再尝试 spawn，全部操作走 [_direct]。只统计传输层启动失败
+  /// （[SftpWorkerUnavailableException]），SSH/鉴权错误不计入。
+  bool _degraded = false;
+  int _startFailures = 0;
+
+  /// 连续启动失败多少次后永久降级。首次失败只影响当次操作（立即转直连），
+  /// 下一次仍给 worker 一次机会——偶发瞬态失败（内存压力等）不至于让整个
+  /// 源会话退回 UI isolate 解密；连续两次才认为是平台性问题。
+  static const int _kStartFailuresBeforeDegrade = 2;
+
+  /// 仅供测试：非空时替代 [SftpWorker.start]（故障注入，验证降级调度）。
+  @visibleForTesting
+  static Future<SftpWorker> Function()? debugStartOverride;
+
+  /// 记录一次 worker 启动失败；达到阈值时永久降级并输出诊断日志。
+  void _noteStartFailure() {
+    _startFailures++;
+    if (_startFailures >= _kStartFailuresBeforeDegrade) {
+      if (!_degraded) {
+        _degraded = true;
+        _trace('worker 连续启动失败 $_startFailures 次，'
+            '$host:$port 永久改走旧直连');
+      }
+    } else {
+      _trace('worker 启动失败 $_startFailures 次，本次操作转旧直连');
+    }
+  }
+
+  SftpDirectTransport _directTransport() => _direct ??= SftpDirectTransport(
+        host: host,
+        port: port,
+        username: username,
+        authMethod: authMethod,
+        password: password,
+        keyPem: keyPem,
+        keyPassphrase: keyPassphrase,
+        pinnedFp: pinnedFp,
+      );
+
+  /// 统一调度：worker 可用时走 worker；启动失败或已永久降级时走旧直连。
+  /// 已降级实例的后续操作零等待，不再为每次调用白付一次 spawn/boot 超时。
+  Future<T> _dispatch<T>(
+    Future<T> Function(SftpWorker worker) viaWorker,
+    Future<T> Function(SftpDirectTransport direct) viaDirect,
+  ) async {
+    if (_disposed) throw StateError('SFTP worker 传输已关闭');
+    if (_degraded) return viaDirect(_directTransport());
+    final SftpWorker worker;
+    try {
+      worker = await _ensureWorker();
+    } on SftpWorkerUnavailableException catch (e) {
+      // 命令还未下发，本次操作转旧直连是安全的。
+      _trace('worker 不可用（$e），本次操作转旧直连');
+      return viaDirect(_directTransport());
+    }
+    // 命令已下发（含掉线重放）后 worker 再启动失败时不转直连：操作可能已
+    // 在远端生效，转直连重复投递会改变语义（如删除第二次报「不存在」）。
+    return _withWorker(worker, viaWorker);
+  }
+
   /// 并发去重：多个命令（起播/读标签/歌词）会在同一帧里先后进来，
   /// 若无 [_starting] 守卫，每个调用都会看到 `_worker == null` 而各起一个
   /// worker（真机日志实测两条 SSH 握手并发、首个 isolate 被覆盖后泄漏）。
@@ -509,16 +585,26 @@ class SftpIsolateTransport implements SftpTransport {
   }
 
   Future<SftpWorker> _startWorker() async {
-    final next = await SftpWorker.start(
-      host: host,
-      port: port,
-      username: username,
-      authMethod: authMethod,
-      password: password,
-      keyPem: keyPem,
-      keyPassphrase: keyPassphrase,
-      pinnedFp: pinnedFp,
-    );
+    final override = debugStartOverride;
+    final SftpWorker next;
+    try {
+      next = await (override != null
+          ? override()
+          : SftpWorker.start(
+              host: host,
+              port: port,
+              username: username,
+              authMethod: authMethod,
+              password: password,
+              keyPem: keyPem,
+              keyPassphrase: keyPassphrase,
+              pinnedFp: pinnedFp,
+            ));
+    } on SftpWorkerUnavailableException {
+      _noteStartFailure();
+      rethrow;
+    }
+    _startFailures = 0;
     if (_disposed) {
       // close() 在握手期间被调用：新 worker 直接回收，不留给无人引用的状态。
       try {
@@ -558,9 +644,12 @@ class SftpIsolateTransport implements SftpTransport {
     } catch (_) {}
   }
 
-  Future<T> _withWorker<T>(Future<T> Function(SftpWorker worker) fn) async {
+  Future<T> _withWorker<T>(
+    SftpWorker worker,
+    Future<T> Function(SftpWorker worker) fn,
+  ) async {
     try {
-      return await fn(await _ensureWorker());
+      return await fn(worker);
     } on SourceAuthException {
       rethrow;
     } on SshHostKeyMismatch {
@@ -599,8 +688,10 @@ class SftpIsolateTransport implements SftpTransport {
   }
 
   @override
-  Future<void> probe(String path) =>
-      _withWorker((worker) => worker.probe(path));
+  Future<void> probe(String path) => _dispatch<void>(
+        (worker) => worker.probe(path),
+        (direct) => direct.probe(path),
+      );
 
   @override
   Future<SftpOpenResult> open(
@@ -609,12 +700,20 @@ class SftpIsolateTransport implements SftpTransport {
     int? length,
     int fallbackTotal = 0,
   }) =>
-      _withWorker((worker) => worker.open(
-            path,
-            start: start,
-            length: length,
-            fallbackTotal: fallbackTotal,
-          ));
+      _dispatch<SftpOpenResult>(
+        (worker) => worker.open(
+          path,
+          start: start,
+          length: length,
+          fallbackTotal: fallbackTotal,
+        ),
+        (direct) => direct.open(
+          path,
+          start: start,
+          length: length,
+          fallbackTotal: fallbackTotal,
+        ),
+      );
 
   /// 上传：断线自动重连一次并续传。
   ///
@@ -623,10 +722,29 @@ class SftpIsolateTransport implements SftpTransport {
   /// 确认落盘的数据则以 `truncate: false` 重开会话并重放 [pending]
   /// （相同字节覆盖写是幂等的），否则重新截断从头来。业务错误
   /// （权限/不存在）不重试，原样抛给调用方。
+  ///
+  /// worker 启动失败发生在消费源流之前：整次上传转旧直连重投，流不受影响。
   @override
   Future<void> upload(String path, Stream<List<int>> bytes, int length) async {
+    if (_disposed) throw StateError('SFTP worker 传输已关闭');
+    if (_degraded) return _directTransport().upload(path, bytes, length);
+    final SftpWorker worker;
+    try {
+      worker = await _ensureWorker();
+    } on SftpWorkerUnavailableException catch (e) {
+      _trace('worker 不可用（$e），本次上传转旧直连');
+      return _directTransport().upload(path, bytes, length);
+    }
+    await _uploadViaWorker(worker, path, bytes);
+  }
+
+  Future<void> _uploadViaWorker(
+    SftpWorker initial,
+    String path,
+    Stream<List<int>> bytes,
+  ) async {
     final iterator = StreamIterator<List<int>>(bytes);
-    var worker = await _ensureWorker();
+    var worker = initial;
     int? uploadId;
     Uint8List? pending; // 已读出、尚未确认落盘的最后一批
     var pendingAt = 0; // [pending] 在文件中的绝对偏移
@@ -688,21 +806,34 @@ class SftpIsolateTransport implements SftpTransport {
   }
 
   @override
-  Future<void> remove(String path) =>
-      _withWorker((worker) => worker.remove(path));
+  Future<void> remove(String path) => _dispatch<void>(
+        (worker) => worker.remove(path),
+        (direct) => direct.remove(path),
+      );
 
   @override
-  Future<void> mkdir(String path) =>
-      _withWorker((worker) => worker.mkdir(path));
+  Future<void> mkdir(String path) => _dispatch<void>(
+        (worker) => worker.mkdir(path),
+        (direct) => direct.mkdir(path),
+      );
 
   @override
-  Future<bool> isDirectory(String path) =>
-      _withWorker((worker) => worker.isDirectory(path));
+  Future<bool> isDirectory(String path) => _dispatch<bool>(
+        (worker) => worker.isDirectory(path),
+        (direct) => direct.isDirectory(path),
+      );
 
   @override
   Future<void> close() async {
     _disposed = true;
+    _degraded = false;
+    _startFailures = 0;
     await _closeWorker();
+    final direct = _direct;
+    _direct = null;
+    try {
+      await direct?.close();
+    } catch (_) {}
   }
 }
 
