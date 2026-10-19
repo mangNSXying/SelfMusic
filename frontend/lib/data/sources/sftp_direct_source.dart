@@ -132,7 +132,8 @@ class SftpDirectSource implements MusicSource {
         pinnedFp: pinnedFp,
       );
 
-  /// 仅取主机指纹（测试连接流程用）。实现在 [SftpConnection]。
+  /// 仅取主机指纹（测试连接流程用）。走一次性 isolate，避免 SSH 密码学
+  /// 计算占住 UI isolate；实现在 [SftpConnection.fetchFingerprintInIsolate]。
   static Future<String> fetchSftpFingerprint({
     required String host,
     required int port,
@@ -142,7 +143,7 @@ class SftpDirectSource implements MusicSource {
     required String keyPem,
     required String keyPassphrase,
   }) =>
-      SftpConnection.fetchFingerprint(
+      SftpConnection.fetchFingerprintInIsolate(
         host: host,
         port: port,
         username: username,
@@ -184,6 +185,9 @@ class SftpDirectSource implements MusicSource {
             pinnedFp: pinned,
           );
     _transport = next;
+    SftpWorker.trace(
+        'transport=${next is SftpIsolateTransport ? 'worker' : 'direct'} '
+        '$host:$port');
     return next;
   }
 

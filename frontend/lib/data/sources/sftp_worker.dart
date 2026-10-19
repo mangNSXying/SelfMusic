@@ -23,6 +23,8 @@ const int _kUploadBatchBytes = 256 * 1024;
 const int _kUploadChunkBytes = 64 * 1024;
 const int _kUploadMaxPending = 4;
 
+void _trace(String message) => sftpTrace(message);
+
 /// 长活 SFTP worker 的主 isolate 代理。
 ///
 /// 每个 [SftpDirectSource] 持有至多一个 worker；SSH 握手、SFTP 请求、AES-GCM
@@ -63,6 +65,9 @@ class SftpWorker {
   static bool enabled = Platform.operatingSystem != 'ohos' ||
       const bool.fromEnvironment('SFTP_WORKER_ISOLATE');
 
+  /// 供传输层写同一条 `[sftp-worker]` 诊断日志（受 SFTP_WORKER_TRACE 控制）。
+  static void trace(String message) => _trace(message);
+
   /// 启动 worker 并完成 SSH/SFTP 建连。建连失败会在 boot 阶段返回，主 isolate
   /// 不执行任何 KEX/解密。
   static Future<SftpWorker> start({
@@ -78,6 +83,8 @@ class SftpWorker {
     final boot = ReceivePort();
     final reply = ReceivePort();
     Isolate? isolate;
+    final started = Stopwatch()..start();
+    _trace('spawn $host:$port user=$username auth=${authMethod.name}');
     try {
       isolate = await Isolate.spawn(
         _sftpWorkerEntry,
@@ -101,6 +108,8 @@ class SftpWorker {
       }
       final msg = bootMsg.cast<String, Object?>();
       if (msg['fatal'] != null) {
+        _trace('boot fatal $host:$port after ${started.elapsedMilliseconds}ms: '
+            '${msg['fatal']}');
         throw sftpExceptionFromPayload(
           (msg['fatal'] as Map?)?.cast<String, Object?>() ?? msg,
         );
@@ -109,8 +118,11 @@ class SftpWorker {
       if (cmd is! SendPort) {
         throw const SftpStatusException('SFTP worker 启动失败：缺少命令端口');
       }
+      _trace('ready $host:$port in ${started.elapsedMilliseconds}ms');
       return SftpWorker._(cmd, reply, isolate);
     } catch (e) {
+      _trace(
+          'start failed $host:$port after ${started.elapsedMilliseconds}ms: $e');
       try {
         isolate?.kill(priority: Isolate.immediate);
       } catch (_) {}
@@ -167,6 +179,7 @@ class SftpWorker {
       }
     }
     if (m['t'] == 'exit' && !_closed) {
+      _trace('isolate exited unexpectedly');
       _failAll(StateError('SFTP worker 意外退出'));
     }
   }
@@ -177,6 +190,7 @@ class SftpWorker {
     int? length,
     int fallbackTotal = 0,
   }) async {
+    _trace('open $path start=$start length=$length');
     final m = await _send('open', <String, Object?>{
       'path': path,
       'start': start,
@@ -186,6 +200,7 @@ class SftpWorker {
     final id = m['id'] as int;
     final contentLength = (m['contentLength'] as num?)?.toInt() ?? 0;
     final totalLength = (m['totalLength'] as num?)?.toInt();
+    _trace('open ok id=$id content=$contentLength total=$totalLength');
     late final _ReadState state;
     final controller = StreamController<List<int>>(
       onListen: () {
@@ -329,6 +344,7 @@ class _ReadState {
   bool requesting = false;
   bool closed = false;
   bool listened = false;
+  bool firstDataLogged = false;
   Timer? listenDeadline;
 
   void requestNext() {
@@ -356,6 +372,10 @@ class _ReadState {
         final bytes = m['bytes'];
         if (bytes is Uint8List) {
           received += bytes.length;
+          if (!firstDataLogged) {
+            firstDataLogged = true;
+            _trace('read first data id=$id bytes=${bytes.length}');
+          }
           controller.add(bytes);
         }
         break;
@@ -380,6 +400,7 @@ class _ReadState {
 
   void cancel() {
     if (closed) return;
+    _trace('read cancel id=$id received=$received/$contentLength');
     closed = true;
     _cancelDeadline();
     worker._removeRead(id);
@@ -400,6 +421,7 @@ class _ReadState {
 
   void fail(Object error) {
     if (closed) return;
+    _trace('read fail id=$id received=$received: $error');
     closed = true;
     _cancelDeadline();
     controller.addError(error);
@@ -408,6 +430,8 @@ class _ReadState {
 
   void _finish({required bool sendCancel}) {
     if (closed) return;
+    _trace('read finish id=$id received=$received/$contentLength '
+        'sendCancel=$sendCancel');
     closed = true;
     _cancelDeadline();
     worker._removeRead(id);
@@ -448,12 +472,30 @@ class SftpIsolateTransport implements SftpTransport {
   });
 
   SftpWorker? _worker;
+  Future<SftpWorker>? _starting;
   Timer? _idleSweep;
   int _idleTicks = 0;
+  bool _disposed = false;
 
-  Future<SftpWorker> _ensureWorker() async {
+  /// 并发去重：多个命令（起播/读标签/歌词）会在同一帧里先后进来，
+  /// 若无 [_starting] 守卫，每个调用都会看到 `_worker == null` 而各起一个
+  /// worker（真机日志实测两条 SSH 握手并发、首个 isolate 被覆盖后泄漏）。
+  Future<SftpWorker> _ensureWorker() {
     final cur = _worker;
-    if (cur != null && !cur.isClosed) return cur;
+    if (cur != null && !cur.isClosed) return Future.value(cur);
+    final starting = _starting;
+    if (starting != null) return starting;
+    if (_disposed) {
+      return Future.error(StateError('SFTP worker 传输已关闭'));
+    }
+    final future = _startWorker();
+    _starting = future;
+    return future.whenComplete(() {
+      if (identical(_starting, future)) _starting = null;
+    });
+  }
+
+  Future<SftpWorker> _startWorker() async {
     final next = await SftpWorker.start(
       host: host,
       port: port,
@@ -464,6 +506,13 @@ class SftpIsolateTransport implements SftpTransport {
       keyPassphrase: keyPassphrase,
       pinnedFp: pinnedFp,
     );
+    if (_disposed) {
+      // close() 在握手期间被调用：新 worker 直接回收，不留给无人引用的状态。
+      try {
+        await next.close();
+      } catch (_) {}
+      throw StateError('SFTP worker 传输已关闭');
+    }
     _worker = next;
     _idleTicks = 0;
     _idleSweep ??= Timer.periodic(const Duration(minutes: 1), (_) {
@@ -508,10 +557,12 @@ class SftpIsolateTransport implements SftpTransport {
     } on SftpStatusException catch (e) {
       if (e.code == SftpStatusCode.noConnection ||
           e.code == SftpStatusCode.connectionLost) {
+        _trace('reconnect after status ${e.code}: ${e.message}');
         return _reconnectAndRetry(fn);
       }
       rethrow;
-    } catch (_) {
+    } catch (e) {
+      _trace('reconnect after error: $e');
       return _reconnectAndRetry(fn);
     }
   }
@@ -572,7 +623,10 @@ class SftpIsolateTransport implements SftpTransport {
       _withWorker((worker) => worker.isDirectory(path));
 
   @override
-  Future<void> close() => _closeWorker();
+  Future<void> close() async {
+    _disposed = true;
+    await _closeWorker();
+  }
 }
 
 // ---------- worker isolate ----------
@@ -670,6 +724,8 @@ Future<void> _sftpWorkerEntry(Map<String, Object?> params) async {
   final reply = params['reply'] as SendPort;
   final cmd = ReceivePort();
   late final OpenedSftpConnection conn;
+  final started = Stopwatch()..start();
+  _trace('isolate entered');
   try {
     conn = await SftpConnection.open(
       host: params['host'] as String,
@@ -681,7 +737,9 @@ Future<void> _sftpWorkerEntry(Map<String, Object?> params) async {
       keyPassphrase: params['keyPassphrase'] as String,
       pinnedFp: params['pinnedFp'] as String,
     );
+    _trace('isolate connected in ${started.elapsedMilliseconds}ms');
   } catch (e) {
+    _trace('isolate boot failed after ${started.elapsedMilliseconds}ms: $e');
     try {
       boot.send(<String, Object?>{'fatal': _sftpErrorPayload(e)});
     } catch (_) {}

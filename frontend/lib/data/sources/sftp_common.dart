@@ -1,9 +1,19 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:isolate';
 
 import 'package:dartssh2/dartssh2.dart';
+import 'package:flutter/foundation.dart';
 
 import 'music_source.dart';
+
+/// 真机 PoC 诊断开关：`--dart-define=SFTP_WORKER_TRACE=true`。
+/// 只在明确排查 worker 生命周期/读流/测试连接时打开，正常构建无日志。
+const bool sftpTraceEnabled = bool.fromEnvironment('SFTP_WORKER_TRACE');
+
+void sftpTrace(String message) {
+  if (sftpTraceEnabled) debugPrint('[sftp-worker] $message');
+}
 
 /// SFTP 认证方式：密码 / 粘贴的 PEM 私钥文本（含 passphrase 的加密私钥另填）。
 enum SftpAuthMethod { password, key }
@@ -254,5 +264,92 @@ class SftpConnection {
     } finally {
       client.close();
     }
+  }
+
+  /// 测试连接用：在一次性 isolate 里取指纹。SSH KEX/验签/解密不在 UI
+  /// isolate 执行，弹窗「测试连接」期间界面不再被同步密码学计算卡住。
+  /// 异常用结构化载荷跨 isolate 还原，类型与 [fetchFingerprint] 一致。
+  static Future<String> fetchFingerprintInIsolate({
+    required String host,
+    required int port,
+    required String username,
+    required SftpAuthMethod authMethod,
+    required String password,
+    required String keyPem,
+    required String keyPassphrase,
+  }) async {
+    final started = Stopwatch()..start();
+    sftpTrace('fingerprint $host:$port start');
+    final result = await Isolate.run<Map<String, Object?>>(() async {
+      try {
+        final fp = await fetchFingerprint(
+          host: host,
+          port: port,
+          username: username,
+          authMethod: authMethod,
+          password: password,
+          keyPem: keyPem,
+          keyPassphrase: keyPassphrase,
+        );
+        return <String, Object?>{'ok': true, 'fp': fp};
+      } catch (e) {
+        return <String, Object?>{
+          'ok': false,
+          'error': _fingerprintErrorPayload(e)
+        };
+      }
+    });
+    if (result['ok'] == true) {
+      sftpTrace(
+          'fingerprint $host:$port done in ${started.elapsedMilliseconds}ms');
+      return result['fp'] as String;
+    }
+    sftpTrace(
+        'fingerprint $host:$port failed in ${started.elapsedMilliseconds}ms');
+    final payload =
+        (result['error'] as Map?)?.cast<String, Object?>() ?? result;
+    throw _fingerprintErrorFromPayload(payload);
+  }
+}
+
+Map<String, Object?> _fingerprintErrorPayload(Object e) {
+  if (e is SourceAuthException) {
+    return <String, Object?>{'kind': 'auth', 'message': e.message};
+  }
+  if (e is SshHostKeyMismatch) {
+    return <String, Object?>{
+      'kind': 'hostKey',
+      'message': e.toString(),
+      'actual': e.actual,
+    };
+  }
+  if (e is SftpStatusException) {
+    return <String, Object?>{
+      'kind': 'status',
+      'message': e.message,
+      'code': e.code,
+    };
+  }
+  if (e is StateError) {
+    return <String, Object?>{'kind': 'state', 'message': e.message.toString()};
+  }
+  return <String, Object?>{'kind': 'unknown', 'message': e.toString()};
+}
+
+Object _fingerprintErrorFromPayload(Map<String, Object?> m) {
+  switch (m['kind']) {
+    case 'auth':
+      return SourceAuthException((m['message'] as String?) ?? 'SFTP 鉴权失败');
+    case 'hostKey':
+      return SshHostKeyMismatch((m['actual'] as String?) ?? '');
+    case 'status':
+      return SftpStatusException(
+        (m['message'] as String?) ?? 'SFTP 请求失败',
+        code: (m['code'] as num?)?.toInt(),
+      );
+    case 'state':
+      return StateError((m['message'] as String?) ?? 'SFTP 状态错误');
+    default:
+      return SftpStatusException((m['message'] as String?) ?? 'SFTP 请求失败');
   }
 }
