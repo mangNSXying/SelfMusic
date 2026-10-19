@@ -25,7 +25,9 @@ import '../local/audio_metadata.dart';
 /// - Android 读取共享存储需运行时权限（READ_MEDIA_AUDIO / READ_EXTERNAL_STORAGE），扫描前申请。
 /// - ohos（鸿蒙）：[rootPath] 为系统目录选择器授权 URI（`file://docs/...`）。
 ///   dart:io 无法访问授权 URI，扫描在主 isolate 经平台桥完成（[scan] 的
-///   isOhos 分支）；[cachedFilePath] 经桥解析沙箱真路径（openSync(uri).path）
+///   isOhos 分支）；持久化授权在进程重启后需先激活，所有 URI 访问
+///   （扫描/播放/补读）统一经 [OhosPlatformBridge.ensureDirectoryActivated]
+///   幂等激活；[cachedFilePath] 经桥解析沙箱真路径（openSync(uri).path）
 ///   返回后播放走 setFilePath 直连（AVPlayer fdSrc，2026-10-07 修复：
 ///   绕开 just_audio 本地代理——真机取证代理对死锁后事件通知空转烧
 ///   ~1.5 核 CPU），解析失败回退 [open] 的字节流分支（512 KiB 分块
@@ -132,20 +134,22 @@ class LocalDirectSource implements MusicSource {
   }
 
   /// ohos 目录枚举：直接列举（同会话临时授权与已激活的持久化授权均可
-  /// 读），失败时激活持久化授权后重试一次——重启后首次扫描落入重试分支
-  /// （持久化数据存系统数据库，每次启动需手动激活才生效）。激活也失败
-  /// （授权被撤销/目录删除/从未持久化成功）时 PlatformException 上抛，由
-  /// [_ohosScan] 统一转译为用户文案。
+  /// 读），失败时幂等激活持久化授权后重试一次——重启后首次扫描落入重试
+  /// 分支（持久化数据存系统数据库，每次启动需手动激活才生效）。激活也
+  /// 失败（授权被撤销/目录删除/从未持久化成功）时 PlatformException 上抛，
+  /// 由 [_ohosScan] 统一转译为用户文案。
   ///
   /// 不采用「先激活再枚举」：先枚举后激活重试在「会话内 activate 异常」
   /// 与「持久化未成功」两种场景下行为均正确，且常规路径少一次桥调用
   /// （2026-10-06 引入；2026-10-07 hilog 证实该环节工作正常——根因是
   /// ArkTS 侧把 URI 直接传给仅收沙箱路径的 fs.listFile，已修复）。
+  /// 激活走 [OhosPlatformBridge.ensureDirectoryActivated]：成功进程内缓存，
+  /// 后续播放/补读不再重复激活。
   Future<List<OhosDirEntry>> _listOhosDirectory() async {
     try {
       return await OhosPlatformBridge.listDirectory(rootPath);
     } on PlatformException {
-      await OhosPlatformBridge.activateDirectory(rootPath);
+      await OhosPlatformBridge.ensureDirectoryActivated(rootPath);
       return await OhosPlatformBridge.listDirectory(rootPath);
     }
   }
@@ -205,7 +209,11 @@ class LocalDirectSource implements MusicSource {
   @override
   Future<String?> cachedFilePath(Song song) async {
     if (isOhos) {
-      final path = await OhosPlatformBridge.resolvePath(rootPath, song.sourceRef);
+      // 冷启动后持久化授权尚未激活：resolvePath 失败时先激活再重试
+      // （2026-10-19 修复：此前只有扫描路径激活，重启后直接播放/断点恢复
+      // 会一路回退到 readRange 仍失败，最终「无法加载，正在尝试下一首」）。
+      final path = await OhosPlatformBridge.resolvePathWithActivation(
+          rootPath, song.sourceRef);
       if (path == null) return null;
       return File(path).existsSync() ? path : null;
     }
@@ -221,7 +229,9 @@ class LocalDirectSource implements MusicSource {
   @override
   Future<String?> localSandboxPath(Song song) async {
     if (isOhos) {
-      final path = await OhosPlatformBridge.resolvePath(rootPath, song.sourceRef);
+      // 同 cachedFilePath：冷启动首次补读也需先激活持久化授权。
+      final path = await OhosPlatformBridge.resolvePathWithActivation(
+          rootPath, song.sourceRef);
       if (path == null) return null;
       return File(path).existsSync() ? path : null;
     }
@@ -231,7 +241,12 @@ class LocalDirectSource implements MusicSource {
 
   @override
   Future<OpenedStream> open(Song song, {IntRange? range}) async {
-    if (isOhos) return _openOhos(song, range);
+    if (isOhos) {
+      // 字节流兜底同样直接 openSync(uri + rel)，冷启动首次访问前必须
+      // 先激活持久化授权；失败不阻断（会话内临时授权仍可用）。
+      await OhosPlatformBridge.ensureDirectoryActivated(rootPath);
+      return _openOhos(song, range);
+    }
     final file = File(_absPath(song.sourceRef));
     final len = await file.length();
     final start = range?.start ?? 0;

@@ -11,8 +11,9 @@ import 'package:flutter/services.dart';
 /// plan.md「Contracts & Interfaces」为准）：
 /// - 常亮：[keepScreenOn] → window.setWindowKeepScreenOn；
 /// - 本地文件：[pickDirectory]（选择器 + 持久化授权）→ [listDirectory]
-///   （递归枚举；失败时 [activateDirectory] 激活后重试，重启后首次扫描
-///   走重试分支）→ [readRange]（范围读）；
+///   （递归枚举）→ [readRange]（范围读）；持久化授权在进程重启后需先激活，
+///   扫描/播放/补读的所有 URI 访问前统一经 [ensureDirectoryActivated]
+///   幂等激活（同 URI 单飞 + 成功缓存）；
 /// - 蓝牙：[requestBluetoothPermission] / [hasBluetoothPermission] /
 ///   [listBondedDevices] / [connectedDevices]；
 /// - 封面缩略图：[makeCoverThumb]（@ohos.multimedia.image 原生管线——fork
@@ -69,6 +70,71 @@ class OhosPlatformBridge {
         'activateDirectory', <String, Object?>{'uri': uri});
   }
 
+  /// 进程内已成功激活的目录 URI（成功才缓存；失败允许下次重试）。
+  static final Set<String> _activatedDirs = <String>{};
+
+  /// 同 URI 激活中的单飞 Future（并发访问只发一次桥调用）。
+  static final Map<String, Future<bool>> _activatingDirs =
+      <String, Future<bool>>{};
+
+  /// 幂等激活已持久化的目录授权（鸿蒙每次进程启动后都需激活一次）。
+  ///
+  /// - 同 URI 单飞：并发/重复调用共享同一个 Future，成功后进程内缓存；
+  /// - 失败只 `debugPrint` 并返回 `false`，不向上抛——调用方按「本次访问
+  ///   失败」处理（会话内临时授权仍可能可用，回退路径继续尝试）；
+  /// - 失败不缓存，下次访问会重试（用户重新选择目录后无需重启进程）。
+  static Future<bool> ensureDirectoryActivated(String uri) {
+    if (uri.isEmpty) return Future<bool>.value(false);
+    if (_activatedDirs.contains(uri)) return Future<bool>.value(true);
+    final inflight = _activatingDirs[uri];
+    if (inflight != null) return inflight;
+    final future = _activateDirectoryOnce(uri);
+    _activatingDirs[uri] = future;
+    future.whenComplete(() {
+      if (identical(_activatingDirs[uri], future)) _activatingDirs.remove(uri);
+    });
+    return future;
+  }
+
+  static Future<bool> _activateDirectoryOnce(String uri) async {
+    try {
+      await activateDirectory(uri);
+      _activatedDirs.add(uri);
+      debugPrint('[ohos] 目录授权已激活: $uri');
+      return true;
+    } on PlatformException catch (e) {
+      debugPrint('[ohos] 目录授权激活失败（下次访问重试）: $e');
+      return false;
+    } on MissingPluginException catch (e) {
+      debugPrint('[ohos] 目录授权激活桥未装配: $e');
+      return false;
+    } catch (e) {
+      // 任何非平台异常也不阻断播放链路；不缓存，下次访问重试。
+      debugPrint('[ohos] 目录授权激活异常（下次访问重试）: $e');
+      return false;
+    }
+  }
+
+  /// 解析文件沙箱真路径，失败时先幂等激活目录授权再重试一次。
+  ///
+  /// 重启后首次访问的持久化授权尚未激活，[resolvePath] 会返回 `null`；
+  /// 这里统一兜住「激活 → 重试」，避免播放/补读各自实现。
+  static Future<String?> resolvePathWithActivation(
+      String uri, String rel) async {
+    // 首次失败不打印「回退字节流」——冷启动未激活属预期，激活后会重试。
+    final first = await _resolvePath(uri, rel, logFailure: false);
+    if (first != null) return first;
+    if (!await ensureDirectoryActivated(uri)) return null;
+    return _resolvePath(uri, rel, logFailure: true);
+  }
+
+  /// 仅供单测：清空激活缓存（静态状态跨用例共享）。
+  @visibleForTesting
+  static void debugResetDirectoryActivation() {
+    _activatedDirs.clear();
+    _activatingDirs.clear();
+  }
+
   /// 递归枚举授权目录（快照：rel/size/mtime），供扫描 diff 使用。
   static Future<List<OhosDirEntry>> listDirectory(String uri) async {
     final raw = await _channel.invokeMethod<List<dynamic>>('listDirectory',
@@ -111,16 +177,23 @@ class OhosPlatformBridge {
   /// 死锁后 socket 事件通知以 ~305µs 周期空转（~2.9k HandleMessage/s，
   /// ~1.5 核 CPU），启动断点恢复即触发。失败/桥未装配返回 null，调用方
   /// 回退字节流分支（行为同修复前）。
-  static Future<String?> resolvePath(String uri, String rel) async {
+  ///
+  /// 业务层优先用 [resolvePathWithActivation]：冷启动后持久化授权未激活时
+  /// 会自动激活并重试一次，避免直接落到字节流分支后 readRange 同样失败。
+  static Future<String?> resolvePath(String uri, String rel) =>
+      _resolvePath(uri, rel, logFailure: true);
+
+  static Future<String?> _resolvePath(String uri, String rel,
+      {required bool logFailure}) async {
     final fullRel = rel.startsWith('/') ? rel : '/$rel';
     try {
       return await _channel.invokeMethod<String>('resolvePath',
           <String, Object?>{'uri': uri, 'rel': fullRel});
     } on PlatformException catch (e) {
-      debugPrint('[ohos] resolvePath 失败（回退字节流分支）: $e');
+      if (logFailure) debugPrint('[ohos] resolvePath 失败（回退字节流分支）: $e');
       return null;
     } on MissingPluginException catch (e) {
-      debugPrint('[ohos] resolvePath 桥未装配: $e');
+      if (logFailure) debugPrint('[ohos] resolvePath 桥未装配: $e');
       return null;
     }
   }
