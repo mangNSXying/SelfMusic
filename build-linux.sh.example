@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# 打 Linux 桌面 release 包（按本机架构自动选 x64 / arm64）。
+# 产物：frontend/build/dist/SelfMusic-<版本>-linux-<架构>-<时间戳>.tar.gz
+# 音频后端 libmpv 随包分发，目标机无需另装 mpv。
+# 构建机依赖：clang / cmake / ninja / pkg-config / libgtk-3-dev（缺什么 flutter doctor 会提示）。
+# 源文件不入库，模板见本文件；复制为 build-linux.sh 后按需改分发段。
+# 用法：bash build-linux.sh [额外 flutter build 参数]
+set -euo pipefail
+
+cd "$(dirname "$0")/frontend"
+
+# 用 FVM 等独立 SDK 时改成对应的 flutter 可执行文件路径。
+FLUTTER_BIN=${FLUTTER_BIN:-flutter}
+STAMP="$(date +%Y%m%d-%H%M%S)"
+
+case "$(uname -m)" in
+    x86_64 | amd64) ARCH=x64 ;;
+    aarch64 | arm64) ARCH=arm64 ;;
+    *)
+        echo "不支持的架构：$(uname -m)（Flutter Linux 只出 x64 / arm64）" >&2
+        exit 1
+        ;;
+esac
+
+# 版本号取 pubspec.yaml 的 version 主段（去掉 +build）。
+VERSION="$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml)"
+VERSION="${VERSION%%+*}"
+VERSION=${VERSION:-0.0.0}
+
+"$FLUTTER_BIN" pub get
+"$FLUTTER_BIN" build linux --release --dart-define=BUILD_STAMP="$STAMP" "$@"
+
+BUNDLE_DIR="build/linux/$ARCH/release/bundle"
+if [[ ! -x "$BUNDLE_DIR/selfmusic" ]]; then
+    echo "构建产物缺失：$BUNDLE_DIR/selfmusic" >&2
+    exit 1
+fi
+
+DIST_DIR="${DIST_DIR:-build/dist}"
+mkdir -p "$DIST_DIR"
+ARCHIVE="$DIST_DIR/SelfMusic-$VERSION-linux-$ARCH-$STAMP.tar.gz"
+tar -C "$BUNDLE_DIR" -czf "$ARCHIVE" .
+
+echo "出包完成：$(pwd)/$ARCHIVE"
+sha256sum "$ARCHIVE"
+
+# 拷贝到自建分发位置（按本机实际路径改；不需要就整段删掉）：
+# cp "$ARCHIVE" <分发目录>/
