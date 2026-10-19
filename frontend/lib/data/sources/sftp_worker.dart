@@ -12,10 +12,19 @@ import 'sftp_common.dart';
 /// 音频 6 秒，起播/seek 的首批延迟足够小；同时把跨 isolate 缓冲上限钉死。
 const int _kReadBatchBytes = 256 * 1024;
 
-/// worker 内部 SFTP 读的块大小与在飞请求数。解密在 worker isolate，不再受
-/// UI 帧率约束，可以放开并发换吞吐；单个 worker 仍只服务一个源，避免抢带宽。
+/// worker 内部 SFTP 读块大小；单个 64KB 请求约合 320kbps 音频 1.6 秒。
 const int _kReadChunkBytes = 64 * 1024;
-const int _kReadMaxPending = 4;
+
+/// 单个读流（一个 SFTP 文件句柄）在飞的 64KB 读块上限；多个流共享
+/// [_kReadGlobalConcurrency] 的全局配额。单流 4 路约等于原实现的每流并发，
+/// 起播/顺序读吞吐不变；多流（播放 + 补读 + seek 旧流）才被全局配额收口。
+const int _kReadPerStreamConcurrency = 4;
+
+/// 全 worker 在飞的 SFTP 读请求总数上限（原先每流各 4 路、叠加无上限）。
+/// 真机实测：一场 seek 会有旧流 + 新流 + 重复流的十几路 64KB 读在飞，
+/// `open`/`stat` 控制请求排在它们后面要 3s 级才返回；限流后控制请求
+/// 最多只需等 4 个读，seek 打开延迟降到 RTT 量级。
+const int _kReadGlobalConcurrency = 4;
 
 /// 上传批大小：主 isolate 攒够再跨 isolate 发，减少消息往返；worker 内
 /// `writeBytes` 再按 64KB 扇出。
@@ -631,6 +640,60 @@ class SftpIsolateTransport implements SftpTransport {
 
 // ---------- worker isolate ----------
 
+/// worker 读调度闸门：控制请求（open/stat/probe）优先于读。
+///
+/// - [enterControl]/[exitControl] 包住控制请求：期间不再下发新的读请求；
+/// - [acquireReadSlot]/[releaseReadSlot] 限制全 worker 在飞读请求数。
+///
+/// 只能约束“新下发”的请求，已在途的无法撤回；因此上限设小，让控制请求
+/// 最多排队短于一两个 RTT 窗口。真机日志里 seek 时 `open ok` 曾拖到
+/// 3.5s（排在十几路 64KB 读之后），就是缺这道闸门。
+class _WorkerReadGate {
+  int _controlOps = 0;
+  Completer<void> _controlIdle = Completer<void>()..complete();
+  int _inFlight = 0;
+  final List<Completer<void>> _waiters = [];
+
+  void enterControl() {
+    if (_controlOps == 0) _controlIdle = Completer<void>();
+    _controlOps++;
+  }
+
+  void exitControl() {
+    if (_controlOps == 0) return;
+    _controlOps--;
+    if (_controlOps == 0 && !_controlIdle.isCompleted) {
+      _controlIdle.complete();
+    }
+  }
+
+  Future<void> acquireReadSlot() async {
+    while (true) {
+      // 控制请求（尤其 seek 的 open/stat）优先：在飞期间不下发新读。
+      await _controlIdle.future;
+      if (_inFlight < _kReadGlobalConcurrency) {
+        _inFlight++;
+        return;
+      }
+      final waiter = Completer<void>();
+      _waiters.add(waiter);
+      await waiter.future;
+    }
+  }
+
+  void releaseReadSlot() {
+    if (_inFlight == 0) return;
+    _inFlight--;
+    while (_waiters.isNotEmpty) {
+      final next = _waiters.removeAt(0);
+      if (!next.isCompleted) {
+        next.complete();
+        return;
+      }
+    }
+  }
+}
+
 class _WorkerFile {
   _WorkerFile({
     required this.id,
@@ -638,12 +701,14 @@ class _WorkerFile {
     required this.offset,
     required this.end,
     required this.reply,
+    required this.gate,
   });
 
   final int id;
   final SftpFile file;
   final int? end;
   final SendPort reply;
+  final _WorkerReadGate gate;
   int offset;
   bool reading = false;
   bool cancelled = false;
@@ -659,27 +724,45 @@ class _WorkerFile {
     if (reading || cancelled || closed) return;
     reading = true;
     try {
-      final remaining = end == null ? maxBytes : end! - offset;
-      if (remaining <= 0) {
+      final requested = end == null ? maxBytes : end! - offset;
+      if (requested <= 0) {
         send(<String, Object?>{'t': 'eof'});
         await close();
         return;
       }
+      final base = offset;
+      final queue = <Future<Uint8List?>>[];
+      var reserved = 0;
+
+      void topUp() {
+        while (!cancelled &&
+            !closed &&
+            reserved < requested &&
+            queue.length < _kReadPerStreamConcurrency) {
+          final want = requested - reserved > _kReadChunkBytes
+              ? _kReadChunkBytes
+              : requested - reserved;
+          final future = _readChunk(base + reserved, want);
+          // 取消时这个 future 可能不再被 await；先吞掉错误防 unhandled。
+          future.ignore();
+          queue.add(future);
+          reserved += want;
+        }
+      }
+
+      topUp();
       var got = 0;
-      await for (final chunk in file.read(
-        length: remaining,
-        offset: offset,
-        chunkSize: _kReadChunkBytes,
-        maxPendingRequests: _kReadMaxPending,
-      )) {
-        if (cancelled || closed) break;
+      while (got < requested && queue.isNotEmpty && !cancelled && !closed) {
+        final chunk = await queue.removeAt(0);
+        topUp();
+        if (cancelled || closed) return;
+        if (chunk == null || chunk.isEmpty) break;
         offset += chunk.length;
         got += chunk.length;
         send(<String, Object?>{'t': 'data', 'bytes': chunk});
-        if (got >= remaining) break;
       }
       if (cancelled || closed) return;
-      final eof = (end != null && offset >= end!) || got < remaining;
+      final eof = (end != null && offset >= end!) || got < requested;
       send(<String, Object?>{'t': 'batchDone', 'eof': eof});
       if (eof) await close();
     } catch (e) {
@@ -692,6 +775,30 @@ class _WorkerFile {
       await close();
     } finally {
       reading = false;
+    }
+  }
+
+  /// 读一个不超过 [want] 字节的块；并发上限交给 [gate] 统一调度。
+  /// 短读（OpenSSH 会把请求裁剪到较小回复）由 dartssh2 在同一流内补齐
+  /// 到 [want]；流自然结束=EOF。
+  Future<Uint8List?> _readChunk(int at, int want) async {
+    await gate.acquireReadSlot();
+    try {
+      if (cancelled || closed) return null;
+      final buf = BytesBuilder(copy: false);
+      await for (final chunk in file.read(
+        length: want,
+        offset: at,
+        chunkSize: want,
+        maxPendingRequests: 1,
+      )) {
+        buf.add(chunk);
+        if (buf.length >= want) break;
+      }
+      if (buf.isEmpty) return null;
+      return buf.takeBytes();
+    } finally {
+      gate.releaseReadSlot();
     }
   }
 
@@ -749,6 +856,7 @@ Future<void> _sftpWorkerEntry(Map<String, Object?> params) async {
 
   final files = <int, _WorkerFile>{};
   final uploads = <int, _WorkerUpload>{};
+  final gate = _WorkerReadGate();
   var closing = false;
 
   void replyOk(int id, [Map<String, Object?>? extra]) {
@@ -770,6 +878,7 @@ Future<void> _sftpWorkerEntry(Map<String, Object?> params) async {
   Future<void> handleOpen(Map<String, Object?> m) async {
     final id = m['id'] as int;
     SftpFile? file;
+    gate.enterControl();
     try {
       if (closing) throw StateError('SFTP worker 正在关闭');
       file = await conn.sftp.open(
@@ -777,11 +886,15 @@ Future<void> _sftpWorkerEntry(Map<String, Object?> params) async {
         mode: SftpFileOpenMode.read,
       );
       final fallbackTotal = (m['fallbackTotal'] as num?)?.toInt() ?? 0;
-      int total;
-      try {
-        total = (await file.stat()).size ?? fallbackTotal;
-      } catch (_) {
-        total = fallbackTotal;
+      int total = fallbackTotal;
+      // 索引里的文件大小几乎总是准的（扫描时写入）；有它就跳过 stat，
+      // 让 seek 的 open 少一个 RTT。未知大小才去问服务器。
+      if (total <= 0) {
+        try {
+          total = (await file.stat()).size ?? 0;
+        } catch (_) {
+          total = 0;
+        }
       }
       final begin = (m['start'] as num?)?.toInt() ?? 0;
       final length = (m['length'] as num?)?.toInt();
@@ -800,6 +913,7 @@ Future<void> _sftpWorkerEntry(Map<String, Object?> params) async {
         offset: begin,
         end: end,
         reply: reply,
+        gate: gate,
       );
       file = null; // 句柄所有权已交给 _WorkerFile
       replyOk(id, <String, Object?>{
@@ -811,12 +925,15 @@ Future<void> _sftpWorkerEntry(Map<String, Object?> params) async {
       try {
         await file?.close();
       } catch (_) {}
+    } finally {
+      gate.exitControl();
     }
   }
 
   Future<void> handleProbe(Map<String, Object?> m) async {
     final id = m['id'] as int;
     SftpFile? file;
+    gate.enterControl();
     try {
       if (closing) throw StateError('SFTP worker 正在关闭');
       file = await conn.sftp.open(
@@ -828,6 +945,7 @@ Future<void> _sftpWorkerEntry(Map<String, Object?> params) async {
     } catch (e) {
       replyError(id, e);
     } finally {
+      gate.exitControl();
       try {
         await file?.close();
       } catch (_) {}
@@ -927,12 +1045,15 @@ Future<void> _sftpWorkerEntry(Map<String, Object?> params) async {
 
   Future<void> handleIsDir(Map<String, Object?> m) async {
     final id = m['id'] as int;
+    gate.enterControl();
     try {
       if (closing) throw StateError('SFTP worker 正在关闭');
       final attrs = await conn.sftp.stat(m['path'] as String);
       replyOk(id, <String, Object?>{'isDirectory': attrs.isDirectory});
     } catch (e) {
       replyError(id, e);
+    } finally {
+      gate.exitControl();
     }
   }
 
