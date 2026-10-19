@@ -1,6 +1,6 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../platform/app_background.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../screens/about_screen.dart';
@@ -193,7 +193,8 @@ class _BottomBar extends StatelessWidget {
     );
     if (ok != true || !context.mounted) return;
     await context.read<PlayerProvider>().shutdown();
-    exit(0);
+    // 退出收口：鸿蒙侧先销毁播控卡/停长时任务（beforeExitHook），再退进程。
+    await exitAppGracefully();
   }
 }
 

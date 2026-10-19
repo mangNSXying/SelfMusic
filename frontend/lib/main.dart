@@ -180,6 +180,9 @@ Future<void> main() async {
   if (!kIsWeb && isOhos) {
     ohosMediaSession = OhosMediaSessionBridge(direct,
         showControls: direct.settings.notificationControls);
+    // 退出收口钩子：exit(0) 前先销毁播控卡/停长时任务（await 封顶 300ms，
+    // 见 app_background.exitAppGracefully / 桥 destroy）。
+    beforeExitHook = () => ohosMediaSession!.destroy();
   }
 
   // 阶段5 多设备同步引擎：首帧后启动（见下方首帧后启动块），回前台追一次。
@@ -601,7 +604,8 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
           // 只结束 Activity：audio_service 前台服务继续，后台播放不中断。
           SystemNavigator.pop();
         } else {
-          player.shutdown().whenComplete(() => exit(0));
+          // ohos 兜底退出：先收播控卡/停长时任务（beforeExitHook），再退进程。
+          player.shutdown().then((_) => exitAppGracefully());
         }
       }));
       return;

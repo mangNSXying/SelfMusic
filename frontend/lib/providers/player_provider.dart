@@ -18,6 +18,7 @@ import '../data/local/app_settings.dart';
 import '../data/local/song_weight_store.dart';
 import '../data/deep_list.dart';
 import '../data/local/sync_event_types.dart';
+import '../platform/app_background.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
 import '../services/audio_focus_monitor.dart';
 import '../services/playback_guard.dart';
@@ -608,10 +609,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// 「播放结束退出软件」：先走正常停机（落库断点/停播放器），再退进程。
+  /// 「播放结束退出软件」：先走正常停机（落库断点/停播放器），再走退出
+  /// 收口（鸿蒙侧销毁播控卡/停长时任务，见 app_background）后退进程。
   Future<void> _quitAfterSleep() async {
     await shutdown();
-    exit(0);
+    await exitAppGracefully();
   }
 
   Future<void> _pauseNowForSleep() async {
@@ -629,11 +631,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _syncSystemMedia();
   }
 
-  /// 曲末预切后退软件：断点落在下一首 0 处，再走正常停机并退进程。
+  /// 曲末预切后退软件：断点落在下一首 0 处，再走正常停机，最后经退出
+  /// 收口（鸿蒙侧销毁播控卡/停长时任务）退进程。
   Future<void> _advancePausedThenQuit() async {
     await _advance(play: false, autoAdvanceOnFailure: true);
     await shutdown();
-    exit(0);
+    await exitAppGracefully();
   }
 
   /// 曲目自然播放结束时被调用：返回 true 表示由睡眠定时接管（不再自动切歌）。
@@ -3146,6 +3149,26 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
     _syncSystemMedia();
     _onSyncPoke?.call();
+  }
+
+  /// 播控中心 PlayMusicList 意图调用（鸿蒙「冷启动续播/历史歌单」，经
+  /// ohos_media_session.dart 'insightPlay' 转发）。[playlistId] 为播控中心
+  /// 回传的歌单标识（avQueueId 口径），v1 语义统一为「续播最近队列」：
+  /// 有播放现场（含恢复中）先等恢复尾收尾再续播；无现场（冷启动未恢复——
+  /// 含「断点续播」开关关闭场景，卡片播放是显式用户动作，恢复链照走）
+  /// 先走断点恢复（暂停态装载）再续播。无可恢复队列时空转（不抛错）。
+  Future<void> insightPlayFromSystem(String? playlistId) async {
+    debugPrint('[player] 播控中心意图播放：playlistId=$playlistId');
+    if (_shuttingDown) return;
+    if (!_hasPlayScene) {
+      // 幂等恢复入口（_restored 守卫）：未恢复才发起，恢复中/已恢复立即返回。
+      await restorePreferRemote();
+    } else {
+      final restoring = _restoreFuture;
+      if (restoring != null) await restoring;
+    }
+    if (_shuttingDown || !_hasPlayScene) return;
+    await resumeFromNotifier();
   }
 
   /// 通知栏「暂停/停止」回调（settings.md §3.6）。
