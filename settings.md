@@ -64,7 +64,7 @@
 | 睡眠定时默认时长 | `sleep_default_duration_minutes` | `30` | 睡眠弹窗「指定时长」模式的默认分钟数（播放页内可临时调整，弹窗内记忆上次选值） |
 | 睡眠定时默认曲数 | `sleep_default_count` | `3` | 睡眠弹窗「指定曲数」模式的默认首数（播放页内可临时调整，弹窗内记忆上次选值） |
 | 预载下一首 | `preload_next` | `true`（开） | 播放时按播放顺序算法确定下一首并后台缓存（开关在 `设置 → 服务端`；加权随机也先抽样确定并在切歌时复用；开关只决定是否预载） |
-| 播放页权重信息显示 | `player_show_weight` | `true`（显示） | 播放页是否展示当前歌曲 liked / factor 权重芯片（读取 `play_meta`） |
+| 播放页权重信息显示 | `player_show_weight` | `true`（显示） | 播放页是否展示当前歌曲 liked / factor 权重芯片（读取 `play_meta`；「不喜欢」锁定态显示 0.1） |
 | 播放页屏幕常亮 | `player_keep_screen_on` | `false`（关） | 仅在播放页打开期间生效，离开播放页恢复系统熄屏策略（ohos 无 `wakelock_plus` 实现，跳过） |
 | 常亮限定蓝牙设备 | `keep_screen_on_device` | `''`（不限定） | 仅在下列**任一**蓝牙设备处于连接状态时才保持常亮；值是设备名 JSON 数组（如 `[" buds","car"]`，旧版单对象 `{"a":" buds"}` 仍可读，由 `btDevicesFromSetting` 兼容）。设备名来自**已配对**列表（`getBondedDevices`），选择器为多选复选框；进入播放页后每 5s 轮询连接状态（`BluetoothProfile.LE_AUDIO`，Android 13+ 需该 profile；已授权 `BLUETOOTH_CONNECT` 才有意义，权限被收回时提示未授权） |
 | 淡入淡出 | `fade_enabled` + `fade_duration_ms` | 开，2000 ms（0.5~2 s） | 从暂停恢复到播放 / 播放挥手暂停前做 `setVolume` 软件渐变（16 ms 周期），全平台可用；不依赖音频后端 crossfade。关闭时无渐变直接切换。时长有效域 [500, 2000] ms（0.1 s 步进），越界历史值读取时钳制到最近边界 |

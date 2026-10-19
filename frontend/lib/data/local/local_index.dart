@@ -703,6 +703,7 @@ class LocalIndex {
     required double maxFactor,
     required double step,
     required double defaultFactor,
+    required double dislikedFactor,
   }) {
     return _writer!.op<void>('applyWeightEvent', {
       'sourceKey': sourceKey,
@@ -714,6 +715,7 @@ class LocalIndex {
       'maxFactor': maxFactor,
       'step': step,
       'defaultFactor': defaultFactor,
+      'dislikedFactor': dislikedFactor,
     });
   }
 
@@ -1132,6 +1134,33 @@ class LocalIndex {
           [sourceKey, ...chunk]);
       for (final r in rs) {
         result[r['song_ref'] as String] = (r['factor'] as num).toDouble();
+      }
+    }
+    return result;
+  }
+
+  /// 批量读抽样权重行（纯读）：`factor` + `frozen` 两列，与 [playFactorsOf] 同款
+  /// 分片 IN 查询。加权抽样需要锁定态（「不喜欢」）来按固定最低权重计权，而整行
+  /// [playMetasOf] 会带 `song_json` 大字段，队列每次推进都读不划算。
+  Map<String, ({double factor, bool frozen})> playWeightRowsOf(
+      String sourceKey, Iterable<String> refs) {
+    final refsList = refs.toSet().toList();
+    if (refsList.isEmpty) return const {};
+    final result = <String, ({double factor, bool frozen})>{};
+    const chunkSize = 500;
+    for (var start = 0; start < refsList.length; start += chunkSize) {
+      final end = min(start + chunkSize, refsList.length);
+      final chunk = refsList.sublist(start, end);
+      final placeholders = List.filled(chunk.length, '?').join(',');
+      final rs = _db!.select(
+          'SELECT song_ref, factor, frozen FROM play_meta '
+          'WHERE source_key=? AND song_ref IN ($placeholders)',
+          [sourceKey, ...chunk]);
+      for (final r in rs) {
+        result[r['song_ref'] as String] = (
+          factor: (r['factor'] as num).toDouble(),
+          frozen: (r['frozen'] as int) == 1,
+        );
       }
     }
     return result;

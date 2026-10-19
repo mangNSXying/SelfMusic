@@ -61,6 +61,9 @@ public class SyncService {
     public static final BigDecimal FACTOR_MAX = new BigDecimal("1.5");
     public static final BigDecimal FACTOR_STEP = new BigDecimal("0.1");
 
+    /** 「不喜欢」锁定态的固定权重：低于自动调权下限 {@link #FACTOR_MIN} 的唯一取值，与客户端 {@code SongWeightStore.dislikedFactor} 严格镜像。 */
+    public static final BigDecimal DISLIKED_FACTOR = new BigDecimal("0.1");
+
     public static final int PUSH_EVENT_LIMIT = 500;
     public static final int PULL_EVENT_LIMIT = 2000;
 
@@ -143,7 +146,8 @@ public class SyncService {
             case SyncEventTypes.SONG_DISLIKED -> {
                 boolean enabled = payload != null && payload.path("enabled").asBoolean(true);
                 if (enabled) {
-                    song.setWeight(FACTOR_MIN);
+                    // 手动不喜欢 → 固定最低特殊档 0.1（低于自动调权下限，老语义为 FACTOR_MIN）。
+                    song.setWeight(DISLIKED_FACTOR);
                     song.setFrozen(true);
                 } else {
                     song.setWeight(BigDecimal.ONE);
@@ -173,7 +177,8 @@ public class SyncService {
      * 权重绝对态（song.state，补推/纠偏用）：行级 LWW，判输返回快照纠偏。
      * 载荷缺键保持行上原值；全键齐备时即整行覆盖。
      * 例外：累计播放时长是单调量，取 `max(行值, 载荷值)`（与客户端落库同口径），
-     * 旧快照晚到不把累计值写小。
+     * 旧快照晚到不把累计值写小；「不喜欢」锁定行（frozen）权重恒归一为
+     * {@link #DISLIKED_FACTOR}（老语义 0.5 收敛到 0.1）。
      * 补录事件行已存在（last_event_at 非空）即判输：只补没有的行。
      */
     private Object applySongState(PushEvent ev, SongState song) {
@@ -193,6 +198,9 @@ public class SyncService {
             // 累计播放时长（秒）：单调合并，不随 LWW 倒退。
             if (p.has("play_sec")) song.setPlaySec(mergePlaySec(song.getPlaySec(), p.path("play_sec").asInt()));
         }
+        // 「不喜欢」锁定行权重归一：历史语义写的是自动调权下限 0.5，现固定最低档
+        // DISLIKED_FACTOR——老行/异常快照随任意一次绝对态推送自愈。
+        song.setWeight(normalizeFrozenWeight(song.isFrozen(), factor(song)));
         song.setLastEventAt(ev.occurred_at());
         songStateRepository.save(song);
         return null;
@@ -873,7 +881,9 @@ public class SyncService {
         m.put("source_ref", s.getSourceRef());
         m.put("like_streak", nvl(s.getLikeStreak()));
         m.put("dislike_streak", nvl(s.getDislikeStreak()));
-        m.put("weight", s.getWeight() == null ? 1.0 : s.getWeight().doubleValue());
+        // 锁定行权重出线即归一（DB 老行可能仍是 FACTOR_MIN 0.5）：客户端拉到的即 0.1。
+        m.put("weight", normalizeFrozenWeight(s.isFrozen(),
+                s.getWeight() == null ? BigDecimal.ONE : s.getWeight()).doubleValue());
         m.put("frozen", s.isFrozen());
         m.put("is_favorite", s.isFavorite());
         m.put("play_sec", nvl(s.getPlaySec()));
@@ -1059,6 +1069,15 @@ public class SyncService {
 
     private static BigDecimal factor(SongState song) {
         return song.getWeight() == null ? BigDecimal.ONE : song.getWeight();
+    }
+
+    /**
+     * 「不喜欢」锁定行权重归一：锁定即固定最低档 {@link #DISLIKED_FACTOR}
+     * （与客户端抽样侧的锁定态计权口径镜像）。纯函数，可单测。
+     */
+    public static BigDecimal normalizeFrozenWeight(boolean frozen, BigDecimal weight) {
+        if (!frozen) return weight;
+        return DISLIKED_FACTOR;
     }
 
     private static int nvl(Integer v) { return v == null ? 0 : v; }

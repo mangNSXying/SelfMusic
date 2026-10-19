@@ -60,7 +60,7 @@ class SongInfoDialog extends StatelessWidget {
       ['来源', '${song.source}（${song.sourceKey}）'],
       ['路径', displayPath],
       if (song.isDirect)
-        ['权重', direct.weight.factorOf(song).toStringAsFixed(1)],
+        ['权重', direct.weight.effectiveFactorOf(song).toStringAsFixed(1)],
       if (song.isDirect) ['状态', states.isEmpty ? '—' : states.join(' · ')],
     ];
     return AlertDialog(

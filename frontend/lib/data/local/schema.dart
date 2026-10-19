@@ -261,6 +261,10 @@ void applySchema(Database db) {
     db.execute(
         'ALTER TABLE play_meta ADD COLUMN play_sec INTEGER NOT NULL DEFAULT 0');
   }
+  // 「不喜欢」锁定行权重刷新（一次性、幂等）：历史语义写的是自动调权下限 0.5，
+  // 现改为固定最低档 0.1（SongWeightStore.dislikedFactor）。只降不升，重跑无匹配行。
+  db.execute(
+      'UPDATE play_meta SET factor = 0.1 WHERE frozen <> 0 AND factor > 0.1');
   // 收藏一次性回填迁移：idx_songs.is_favorite → play_meta，此后以 play_meta 为准。
   db.execute('''
     INSERT OR IGNORE INTO play_meta(source_key, song_ref, is_favorite)

@@ -1679,9 +1679,10 @@ class DirectSourceManager extends ChangeNotifier {
         minDurationSec: f.minDurationSec, minSizeBytes: f.minSizeBytes);
   }
 
-  /// 是否处于「不喜欢」态（权重锁定最低）。
+  /// 是否处于「不喜欢」态（权重锁定 [SongWeightStore.dislikedFactor] = 0.1）。
   bool isDisliked(Song s) => weight.isDisliked(s);
-  /// 手动「不喜欢」开关：开 → 权重降到最低并锁定；关 → 解锁回到 1.0。
+  /// 手动「不喜欢」开关：开 → 权重降到 0.1（低于自动调权下限的特殊档）并锁定；
+  /// 关 → 解锁回到 1.0。
   Future<void> setDisliked(Song s, bool disliked) async {
     await weight.setDisliked(s, disliked);
     _favoriteVersion++;

@@ -77,6 +77,48 @@ void main() {
     });
   });
 
+  group('effectiveWeight：单曲有效抽样权重（不喜欢锁定态例外）', () {
+    test('常规：factor × 时长系数钳回 [0.5, 1.5]', () {
+      expect(
+          PlayerProvider.effectiveWeight(
+              factor: 1.0, frozen: false, curveMultiplier: 1.0),
+          1.0);
+      // 时长削弱把权重压到下限以下 → 钳回 0.5（非锁定态不破下限）。
+      expect(
+          PlayerProvider.effectiveWeight(
+              factor: 0.5, frozen: false, curveMultiplier: 0.5),
+          SongWeightStore.minFactor);
+      expect(
+          PlayerProvider.effectiveWeight(
+              factor: 1.5, frozen: false, curveMultiplier: 1.5),
+          SongWeightStore.maxFactor);
+      // 时长未知（系数 1.0）保持原 factor。
+      expect(
+          PlayerProvider.effectiveWeight(
+              factor: 0.8, frozen: false, curveMultiplier: 1.0),
+          closeTo(0.8, 1e-9));
+    });
+
+    test('不喜欢锁定态：恒 0.1，不乘时长削弱、不被下限钳回', () {
+      expect(
+          SongWeightStore.dislikedFactor, lessThan(SongWeightStore.minFactor));
+      // 长歌削弱系数 0.5 也不影响锁定值。
+      expect(
+          PlayerProvider.effectiveWeight(
+              factor: SongWeightStore.dislikedFactor,
+              frozen: true,
+              curveMultiplier: 0.5),
+          SongWeightStore.dislikedFactor);
+      // 老数据/快照仍带 0.5 时，锁定位一样按 0.1 计权。
+      expect(
+          PlayerProvider.effectiveWeight(
+              factor: SongWeightStore.minFactor,
+              frozen: true,
+              curveMultiplier: 1.0),
+          SongWeightStore.dislikedFactor);
+    });
+  });
+
   group('weightedCooldownReject：削峰冷却判定', () {
     test('WeightedDrawCooldown 档位映射（off/weak/normal → 0/0、1/2、2/3）', () {
       expect(WeightedDrawCooldown.off.limitFor(2.0), 0);

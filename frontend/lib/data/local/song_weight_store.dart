@@ -9,7 +9,8 @@ import 'sync_event_types.dart';
 
 /// 歌曲权重与收藏的统一点（stage2.md §1.5 / §2.1）。
 ///
-/// - factor 连续取值 0.5 ≤ factor ≤ 1.5，步长 0.1，初始 1.0。
+/// - factor 连续取值 0.5 ≤ factor ≤ 1.5，步长 0.1，初始 1.0；唯一例外是
+///   「不喜欢」锁定态 [dislikedFactor]（0.1，仅手动开关写入，不参与自动调权）。
 /// - 事件（complete/skip/liked/unfavorite/reset）驱动 factor 调整，写回 play_meta。
 /// - 完播/跳过按「播放时长 >95% 记完播、<30% 记跳过」（30%~95% 不记）由上层判定后
 ///   分发到 [onCompleted]/[onSkipped]；同一首歌的完播与跳过次数互斥——每次事件
@@ -20,6 +21,11 @@ class SongWeightStore {
   static const double maxFactor = 1.5;
   static const double step = 0.1;
   static const double defaultFactor = 1.0;
+
+  /// 「不喜欢」锁定态的固定权重：低于自动调权下限 [minFactor] 的**唯一**取值，
+  /// 只由手动不喜欢开关（[setDisliked]）写入。抽样侧按原值计权——不乘时长削弱、
+  /// 不被 [minFactor] 钳回（见 `PlayerProvider.effectiveWeight`）。
+  static const double dislikedFactor = 0.1;
 
   final LocalIndex index;
 
@@ -97,6 +103,13 @@ class SongWeightStore {
 
   double factorOf(Song s) => metaOf(s).factor;
 
+  /// 展示用有效权重：锁定态（「不喜欢」）恒为 [dislikedFactor]，其余取存储 factor。
+  /// 抽样侧的同类口径见 `PlayerProvider.effectiveWeight`（还叠加时长削弱曲线）。
+  double effectiveFactorOf(Song s) {
+    final m = metaOf(s);
+    return m.frozen ? dislikedFactor : m.factor;
+  }
+
   /// 批量读整队权重（加权抽样用）：按 sourceKey 分组各一次批量查询，
   /// 返回 map<sourceKey, map<songRef, factor>>；未记录的歌曲不放入，
   /// 上层取 [defaultFactor]，避免对每首歌在主连接做一次同步查库。
@@ -109,6 +122,24 @@ class SongWeightStore {
     bySource.forEach((key, refs) {
       final factors = index.playFactorsOf(key, refs);
       if (factors.isNotEmpty) result[key] = factors;
+    });
+    return result;
+  }
+
+  /// 批量读整队抽样权重行（加权抽样用）：与 [factorsOf] 同款分组批量查询，
+  /// 额外带 `frozen`（「不喜欢」锁定态）——抽样侧据此把锁定行按 [dislikedFactor]
+  /// 计权。整行 [metaOf] 会带 `song_json` 大字段，队列每次推进都整表读不划算，
+  /// 故单列查询。
+  Map<String, Map<String, ({double factor, bool frozen})>> weightRowsOf(
+      List<Song> songs) {
+    final bySource = <String, List<String>>{};
+    for (final s in songs) {
+      bySource.putIfAbsent(s.sourceKey, () => []).add(s.sourceRef);
+    }
+    final result = <String, Map<String, ({double factor, bool frozen})>>{};
+    bySource.forEach((key, refs) {
+      final rows = index.playWeightRowsOf(key, refs);
+      if (rows.isNotEmpty) result[key] = rows;
     });
     return result;
   }
@@ -145,7 +176,7 @@ class SongWeightStore {
 
   /// 完播（播放时长 >95%，通常为自然结束）：like_streak++，dislike 清零（覆盖先前跳过）；
   /// streak≥3 → factor+0.1（≤1.5）并清零。
-  /// 「不喜欢」（frozen）态只记 streak，不自动调权（权重锁定最低）。
+  /// 「不喜欢」（frozen）态只记 streak，不自动调权（权重锁定 [dislikedFactor]）。
   Future<void> onCompleted(Song s) async {
     await _apply(s, 'complete');
     await _emit(s, SyncEventTypes.songComplete);
@@ -173,17 +204,17 @@ class SongWeightStore {
     await _emit(s, SyncEventTypes.songLiked);
   }
 
-  /// 取消喜欢 / 收藏：非锁定态 factor 回落 1.0；「不喜欢」锁定态保持最低权重。
+  /// 取消喜欢 / 收藏：非锁定态 factor 回落 1.0；「不喜欢」锁定态保持 [dislikedFactor]。
   Future<void> setUnliked(Song s) async {
     await _apply(s, 'unfavorite');
     await _emit(s, SyncEventTypes.songUnfavorite);
   }
 
-  /// 是否处于「不喜欢」态（权重锁定最低）。
+  /// 是否处于「不喜欢」态（权重锁定 [dislikedFactor]）。
   bool isDisliked(Song s) => metaOf(s).frozen;
 
-  /// 手动「不喜欢」开关：开 → 权重直接降到最低并锁定（跳过自动调权）；
-  /// 关 → 解锁并回到 1.0；不影响收藏状态。
+  /// 手动「不喜欢」开关：开 → 权重直接降到 [dislikedFactor]（低于自动调权下限
+  /// 的特殊档）并锁定（跳过自动调权）；关 → 解锁并回到 1.0；不影响收藏状态。
   Future<void> setDisliked(Song s, bool disliked) async {
     await _apply(s, 'disliked', enabled: disliked);
     await _emit(s, SyncEventTypes.songDisliked, {'enabled': disliked});
@@ -274,7 +305,8 @@ class SongWeightStore {
         minFactor: minFactor,
         maxFactor: maxFactor,
         step: step,
-        defaultFactor: defaultFactor);
+        defaultFactor: defaultFactor,
+        dislikedFactor: dislikedFactor);
     _metaCache.clear();
   }
 

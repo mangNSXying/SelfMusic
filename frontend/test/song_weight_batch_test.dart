@@ -62,10 +62,17 @@ void main() {
       expect(keys.factorOf(s), weight.factorOf(s), reason: s.sourceRef);
       expect(keys.playSecOf(s), weight.playSecOf(s), reason: s.sourceRef);
     }
-    // 批量值与真实状态对得上（喜欢 → 1.5；不喜欢 → 0.5；累计播放时长）。
+    // 批量值与真实状态对得上（喜欢 → 1.5；不喜欢 → 0.1；累计播放时长）。
     expect(keys.factorOf(songs[0]), 1.5);
-    expect(keys.factorOf(songs[2]), 0.5);
+    expect(keys.factorOf(songs[2]), 0.1);
     expect(keys.playSecOf(songs[4]), 42);
+    // 抽样权重行批量读：带 frozen，锁定行按 0.1 计权；未匹配源不返回。
+    final rows = weight.weightRowsOf(songs);
+    expect(rows['webdav:a']?['r2']?.factor, SongWeightStore.dislikedFactor);
+    expect(rows['webdav:a']?['r2']?.frozen, isTrue);
+    expect(rows['webdav:a']?['r0']?.factor, 1.5);
+    expect(rows['webdav:a']?['r0']?.frozen, isFalse);
+    expect(rows.containsKey('webdav:z'), isFalse);
     // 只取需要的键时不触发另一类查询（返回空 map，默认值兜底）。
     final onlyFactors = weight.sortKeysOf(songs, factors: true);
     expect(onlyFactors.factorOf(songs[0]), 1.5);
@@ -108,6 +115,7 @@ void main() {
     expect(a.containsKey('nope'), isFalse);
     final frozenRow = index.playMetasOf('webdav:a', ['r2']);
     expect(frozenRow['r2']!.frozen, isTrue);
+    expect(frozenRow['r2']!.factor, SongWeightStore.dislikedFactor);
 
     // 批量值与逐首读口径一致（未匹配行在批量里是缺失，逐首为默认行）。
     for (final s in songs) {

@@ -926,20 +926,20 @@ PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV �
 
 ### 加权播放
 
-设列表 n 首（n≥2）：`基础权重 w₀ = 1/n`，`weight = w₀ × factor`，`factor ∈ [0.5, 1.5]`、连续取值、步长 0.1、初始 1.0。
+设列表 n 首（n≥2）：`基础权重 w₀ = 1/n`，`weight = w₀ × factor`，`factor ∈ [0.5, 1.5]`、连续取值、步长 0.1、初始 1.0；唯一例外是「不喜欢」锁定态——固定 `0.1`（`dislikedFactor`，低于下限、只由手动开关写入）。
 
 ```
 连续完整播放（like_streak≥3）→ factor 提高 0.1（上限 1.5）
 连续中断（dislike_streak≥3）→ factor 降低 0.1（下限 0.5）
 liked / 手动喜欢            → factor 直接 1.5（并解除「不喜欢」锁定）
-手动不喜欢（开关）          → factor 直接 0.5 并锁定（frozen=true）
-frozen=true                 → 权重锁定最低值，跳过自动调权
-选中概率 p_i = factor_i / Σfactor_j（对候选集合归一化）
+手动不喜欢（开关）          → factor 直接 0.1 并锁定（frozen=true）
+frozen=true                 → 权重锁定 0.1，跳过自动调权与时长削弱
+选中概率 p_i = factor_i / Σfactor_j（对候选集合归一化；锁定态按 0.1 代入）
 ```
 
 选歌（加权随机模式）：**并非无放回抽取**——每步从队列**全量**（排除上一首，n≥2 时对剩余归一化）按 factor 采样，喜欢的歌可在一轮中多次、不喜欢的歌可能要若干轮才播一次，无固定「单轮」长度，每步独立随机采样。
 
-**时长削弱**（设置 `>歌曲`：`curve_weight_enabled` + `curve_weight_segments`）：抽样时按歌曲时长乘分段系数 `effective = factor × curve(duration)` 再钳回 [0.5,1.5]；分段作用域 `[min,max)` 命中第一段即止，`max=null` 表示「超过 min 恒生效」，未命中 / 时长未知 = 1.0（不削弱）。**仅抽样侧即时计算**：不落库、不改 `play_meta`、服务端零改动。
+**时长削弱**（设置 `>歌曲`：`curve_weight_enabled` + `curve_weight_segments`）：抽样时按歌曲时长乘分段系数 `effective = factor × curve(duration)` 再钳回 [0.5,1.5]；分段作用域 `[min,max)` 命中第一段即止，`max=null` 表示「超过 min 恒生效」，未命中 / 时长未知 = 1.0（不削弱）。**「不喜欢」锁定态例外**：恒 0.1，不乘系数也不被下限钳回。**仅抽样侧即时计算**：不落库、不改 `play_meta`、服务端零改动。
 
 事件规则（后端 `SyncService` 与本地 `db_writer` 严格镜像同一语义，事件经 `song.complete_manual` 等同步）：
 
@@ -949,8 +949,8 @@ frozen=true                 → 权重锁定最低值，跳过自动调权
 | complete_manual | **用户手动点播**（`_play(manual:true)` 起始）且自然完播 | like_streak=0、dislike_streak=0、factor=min(1.5, +0.1)（不依赖 3 次门槛——主动点选并听完即强正面信号）；锁定态不动权重 |
 | skip | 被 next/prev/换歌打断且比例 <30% | dislike_streak++，like_streak=0；非锁定态 dislike_streak≥3 → factor=max(0.5, −0.1)、streak 清零；锁定态只记 streak |
 | liked | 手动喜欢 / 收藏 | favorite=true，factor=1.5，解除「不喜欢」锁定（frozen=false） |
-| unfavorite | 取消喜欢 / 收藏 | favorite=false；非锁定态 factor 回 1.0；锁定态保持最低权重 |
-| disliked | 手动不喜欢（开关式） | favorite 不变；开 → factor=0.5 且 frozen=true；关 → 解锁回 1.0 |
+| unfavorite | 取消喜欢 / 收藏 | favorite=false；非锁定态 factor 回 1.0；锁定态保持 0.1 |
+| disliked | 手动不喜欢（开关式） | favorite 不变；开 → factor=0.1 且 frozen=true；关 → 解锁回 1.0 |
 | reset | 手动重置 | 双 streak 清零，factor 回 1.0，解除「不喜欢」锁定 |
 
 > `complete_manual` 仅**用户主动选择**（playAt / playQueue / 播放页点行 / 歌单「播放全部」）起始的歌自然完播才计数；`next()`/`prev()`/自动下一首/失败重试均为非手动起点。

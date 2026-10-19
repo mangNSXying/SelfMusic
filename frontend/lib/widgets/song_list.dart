@@ -192,7 +192,7 @@ class SongTile extends StatelessWidget {
           case 'dislike':
             direct.setDisliked(song, !disliked);
             AppToast.show(
-                !disliked ? '已标记不喜欢，权重降到最低' : '已取消不喜欢',
+                !disliked ? '已标记不喜欢，权重降到 0.1' : '已取消不喜欢',
                 isError: false);
           case 'cache':
             unawaited(_cacheSong(context, direct));

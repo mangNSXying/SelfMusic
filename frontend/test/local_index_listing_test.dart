@@ -130,15 +130,16 @@ void main() {
       fileSize: 1024,
     );
 
-    // 标记不喜欢 → 权重最低并锁定。
+    // 标记不喜欢 → 固定最低特殊档 0.1 并锁定（低于自动调权下限 0.5）。
     await weight.setDisliked(song, true);
     expect(weight.isDisliked(song), isTrue);
-    expect(weight.factorOf(song), SongWeightStore.minFactor);
+    expect(weight.factorOf(song), SongWeightStore.dislikedFactor);
+    expect(weight.effectiveFactorOf(song), SongWeightStore.dislikedFactor);
     // 锁定后跳过/播完只记 streak，不调权重。
     await weight.onSkipped(song);
     await weight.onSkipped(song);
     await weight.onSkipped(song);
-    expect(weight.factorOf(song), SongWeightStore.minFactor);
+    expect(weight.factorOf(song), SongWeightStore.dislikedFactor);
     expect(weight.isDisliked(song), isTrue);
 
     // 再次点击取消 → 解锁回 1.0。

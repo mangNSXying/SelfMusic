@@ -996,7 +996,7 @@ class _ToolRow extends StatelessWidget {
           ),
           IconButton(
             iconSize: 22,
-            tooltip: disliked ? '取消不喜欢' : '不喜欢（权重降到最低）',
+            tooltip: disliked ? '取消不喜欢' : '不喜欢（权重降到 0.1）',
             color: disliked
                 ? Colors.orange
                 : cs.onSurface.withValues(alpha: 0.55),
@@ -1005,7 +1005,7 @@ class _ToolRow extends StatelessWidget {
             onPressed: () {
               direct.setDisliked(s, !disliked);
               AppToast.show(
-                  !disliked ? '已标记不喜欢，权重降到最低' : '已取消不喜欢',
+                  !disliked ? '已标记不喜欢，权重降到 0.1' : '已取消不喜欢',
                   isError: false);
             },
           ),

@@ -90,7 +90,7 @@ class SyncServiceTest {
         off.put("enabled", true);
         SyncService.applySongEvent(s, SyncEventTypes.SONG_DISLIKED, off);
         assertTrue(s.isFrozen());
-        assertEquals(0, new BigDecimal("0.5").compareTo(s.getWeight()));
+        assertEquals(0, new BigDecimal("0.1").compareTo(s.getWeight()));
 
         ObjectNode on = new ObjectMapper().createObjectNode();
         on.put("enabled", false);
@@ -107,22 +107,37 @@ class SyncServiceTest {
 
     @Test
     void unfavoriteKeepsWeightWhenFrozen() {
+        // 锁定态（不喜欢）权重固定最低特殊档 0.1，取消收藏不动它。
         SongState s = freshState();
         s.setFrozen(true);
-        s.setWeight(new BigDecimal("0.5"));
+        s.setWeight(new BigDecimal("0.1"));
         SyncService.applySongEvent(s, SyncEventTypes.SONG_UNFAVORITE, new ObjectMapper().createObjectNode());
-        assertEquals(0, new BigDecimal("0.5").compareTo(s.getWeight()));
+        assertEquals(0, new BigDecimal("0.1").compareTo(s.getWeight()));
     }
 
     @Test
     void frozenSkipsAutoAdjustButCountsStreak() {
         SongState s = freshState();
         s.setFrozen(true);
-        s.setWeight(new BigDecimal("0.5"));
+        s.setWeight(new BigDecimal("0.1"));
         ObjectNode empty = new ObjectMapper().createObjectNode();
         for (int i = 0; i < 5; i++) SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE, empty);
-        assertEquals(0, new BigDecimal("0.5").compareTo(s.getWeight()));
+        assertEquals(0, new BigDecimal("0.1").compareTo(s.getWeight()));
         assertEquals(5, s.getLikeStreak());
+    }
+
+    @Test
+    void frozenWeightNormalizedToDislikedFactor() {
+        // 锁定行权重恒归一为 DISLIKED_FACTOR（老语义 0.5 / 异常快照自愈）。
+        assertEquals(0, SyncService.DISLIKED_FACTOR.compareTo(
+                SyncService.normalizeFrozenWeight(true, new BigDecimal("0.5"))));
+        assertEquals(0, SyncService.DISLIKED_FACTOR.compareTo(
+                SyncService.normalizeFrozenWeight(true, null)));
+        // 非锁定行原样保留（自动调权区间不动）。
+        assertEquals(0, new BigDecimal("0.9").compareTo(
+                SyncService.normalizeFrozenWeight(false, new BigDecimal("0.9"))));
+        assertEquals(0, new BigDecimal("0.5").compareTo(
+                SyncService.normalizeFrozenWeight(false, new BigDecimal("0.5"))));
     }
 
     @Test
@@ -151,9 +166,9 @@ class SyncServiceTest {
 
         SongState f = freshState();
         f.setFrozen(true);
-        f.setWeight(new BigDecimal("0.5"));
+        f.setWeight(new BigDecimal("0.1"));
         SyncService.applySongEvent(f, SyncEventTypes.SONG_COMPLETE_MANUAL, empty);
-        assertEquals(0, new BigDecimal("0.5").compareTo(f.getWeight()));
+        assertEquals(0, new BigDecimal("0.1").compareTo(f.getWeight()));
         assertEquals(0, f.getLikeStreak());
         assertEquals(0, f.getDislikeStreak());
     }
@@ -230,6 +245,20 @@ class SyncServiceTest {
         // 旧行 play_sec 为 null → 快照给 0（客户端按缺键/0 处理都不会崩）
         s.setPlaySec(null);
         assertEquals(0, SyncService.songSnapshot(s).get("play_sec"));
+    }
+
+    @Test
+    void songSnapshotNormalizesFrozenWeight() {
+        SongState s = freshState();
+        // 老行：锁定但权重仍是 0.5 → 快照出线即 0.1。
+        s.setFrozen(true);
+        s.setWeight(new BigDecimal("0.5"));
+        assertEquals(0.1, (Double) SyncService.songSnapshot(s).get("weight"), 1e-9);
+
+        // 非锁定行原样出线（自动调权区间不动）。
+        s.setFrozen(false);
+        s.setWeight(new BigDecimal("0.9"));
+        assertEquals(0.9, (Double) SyncService.songSnapshot(s).get("weight"), 1e-9);
     }
 
     @Test

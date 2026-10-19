@@ -189,7 +189,7 @@ void main() {
       expect(w.metaOf(s).frozen, isTrue);
       await w.onCompletedManual(s);
       final m = w.metaOf(s);
-      expect(m.factor, SongWeightStore.minFactor);
+      expect(m.factor, SongWeightStore.dislikedFactor);
       expect(m.likeStreak, 0);
       expect(m.dislikeStreak, 0);
     });

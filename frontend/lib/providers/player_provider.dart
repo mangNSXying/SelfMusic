@@ -1606,11 +1606,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   String displayTitle(Song s) => formatSongTitleWith(s, _appSettings);
 
   /// 当前歌曲权重因子（无存储时为空；用于播放页展示，可选）。
+  /// 展示口径与抽样一致：「不喜欢」锁定态显示 0.1（[SongWeightStore.dislikedFactor]）。
   double? get currentWeightFactor {
     final s = _current;
     final w = _weight;
     if (s == null || w == null) return null;
-    return w.factorOf(s);
+    return w.effectiveFactorOf(s);
   }
 
   void setMode(PlayMode m) {
@@ -2861,7 +2862,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 加权抽样的下标版（队列下一首与歌单起播共用）：
   /// 在 [pool] 中排除 [exclude] 后按 factor 抽样，返回**池内下标**；池空返回 null。
-  /// 已应用时长削弱（改进.txt 功能8）：effective = factor × 时长系数，钳回 [0.5,1.5]。
+  /// 已应用时长削弱（改进.txt 功能8）：effective = factor × 时长系数，钳回 [0.5,1.5]；
+  /// 「不喜欢」锁定行例外，恒按 0.1 计权（见 [effectiveWeight]）。
   ///
   /// 【削峰补丁】规则2 改为候选池剔除：深层列表末尾 [window] 条内的歌先从候选池
   /// 拿掉（见 [excludeCooldownCandidates]），不参与随机、不再给规则1 供数；
@@ -2894,17 +2896,21 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     candidates =
         PlayerProvider.excludeCooldownCandidates(candidates, pool, cooldownKeys);
     final store = _weight;
-    // 整队一次性取回权重向量（按 sourceKey 分组批量查询），循环内不再逐首同步查库。
-    final factors =
-        store == null ? const <String, Map<String, double>>{} : store.factorsOf(pool);
+    // 整队一次性取回权重行（按 sourceKey 分组批量查询），循环内不再逐首同步查库。
+    final rows = store == null
+        ? const <String, Map<String, ({double factor, bool frozen})>>{}
+        : store.weightRowsOf(pool);
     final weights = <double>[];
     final baseFactors = <double>[];
     for (final i in candidates) {
-      final f = factors[pool[i].sourceKey]?[pool[i].sourceRef] ??
-          SongWeightStore.defaultFactor;
+      final row = rows[pool[i].sourceKey]?[pool[i].sourceRef];
+      final f = row?.factor ?? SongWeightStore.defaultFactor;
       baseFactors.add(f);
-      weights.add((f * curve.multiplierFor(pool[i].duration?.toDouble()))
-          .clamp(SongWeightStore.minFactor, SongWeightStore.maxFactor));
+      weights.add(PlayerProvider.effectiveWeight(
+        factor: f,
+        frozen: row?.frozen ?? false,
+        curveMultiplier: curve.multiplierFor(pool[i].duration?.toDouble()),
+      ));
     }
     // 规则1 拒绝采样：已播过的歌（计数非空）按档位抛弃前 N 次抽中。
     final overlay = <String, int>{};
@@ -2933,13 +2939,29 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// 单曲有效抽样权重（纯函数，便于直接单测）：
+  /// 「不喜欢」锁定态（[frozen]）恒为 [SongWeightStore.dislikedFactor]——这是低于
+  /// 自动调权下限的唯一取值，不乘时长削弱曲线、不被下限钳回（用户手动确认的
+  /// 「不想听」优先级高于一切自动调整）；其余歌曲 = `factor × 时长系数` 钳回
+  /// [SongWeightStore.minFactor, SongWeightStore.maxFactor]。
+  static double effectiveWeight({
+    required double factor,
+    required bool frozen,
+    required double curveMultiplier,
+  }) =>
+      frozen
+          ? SongWeightStore.dislikedFactor
+          : (factor * curveMultiplier)
+              .clamp(SongWeightStore.minFactor, SongWeightStore.maxFactor);
+
   /// 加权轮盘：把 [weights] 按比例铺成 `[0,total)` 上的连续区段，取随机点 [r]
   /// （`[0,1)`，由调用方注入）落中哪段即返回该下标。
   ///
   /// 纯函数（不依赖实例状态），随机值由调用方注入——同 [startIndexForOrder]
   /// 的约定，便于确定性单测。每次命中概率 = `weights[i] / total`。
-  /// [weights] 需非空（调用方已保证池非空），且各权重恒为正（上层钳回
-  /// `[minFactor, maxFactor]`，杜绝零概率空槽）。
+  /// [weights] 需非空（调用方已保证池非空），且各权重恒为正（上层 [effectiveWeight]
+  /// 保证：常规钳回 `[minFactor, maxFactor]`，锁定态取 [SongWeightStore.dislikedFactor]，
+  /// 杜绝零概率空槽）。
   static int weightedPickByWheel(List<double> weights, double r) {
     var total = 0.0;
     for (final w in weights) {

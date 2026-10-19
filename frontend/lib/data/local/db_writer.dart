@@ -909,6 +909,7 @@ void _opApplyWeightEvent(Database db, Map<String, dynamic> a) {
   final maxF = (a['maxFactor'] as num).toDouble();
   final step = (a['step'] as num).toDouble();
   final defF = (a['defaultFactor'] as num).toDouble();
+  final dislikedF = (a['dislikedFactor'] as num).toDouble();
   final songJson = a['songJson'] as String?;
   _migrateRef(db, sourceKey, songRef);
   final cur = _curMeta(db, sourceKey, songRef);
@@ -958,7 +959,9 @@ void _opApplyWeightEvent(Database db, Map<String, dynamic> a) {
       final on = a['enabled'] as bool;
       ls = 0;
       ds = 0;
-      f = on ? minF : defF;
+      // 开 → 固定最低特殊档 [dislikedF]（低于自动调权下限 0.5，抽样侧不钳制）；
+      // 关 → 解锁回默认 1.0。
+      f = on ? dislikedF : defF;
       frozen = on;
       break;
     case 'reset':
