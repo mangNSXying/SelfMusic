@@ -24,7 +24,11 @@ void main() {
         .setMockMethodCallHandler(channel, handler);
   }
 
-  setUp(calls.clear);
+  setUp(() {
+    calls.clear();
+    // 目录激活缓存是进程级静态状态：逐用例清空，避免相互影响。
+    OhosPlatformBridge.debugResetDirectoryActivation();
+  });
 
   tearDown(() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -194,6 +198,108 @@ void main() {
           timeout: const Duration(milliseconds: 20));
       expect(to.ok, isFalse);
       expect(to.timeout, isTrue);
+    });
+  });
+
+  group('目录持久化授权激活（重启后播放修复）', () {
+    test('成功后进程内缓存：重复调用只触发一次 activateDirectory', () async {
+      mockChannel((call) async {
+        calls.add(call);
+        return null;
+      });
+
+      const uri = 'file://docs/storage/Users/currentUser/Music';
+      expect(await OhosPlatformBridge.ensureDirectoryActivated(uri), isTrue);
+      expect(await OhosPlatformBridge.ensureDirectoryActivated(uri), isTrue);
+
+      final activates =
+          calls.where((c) => c.method == 'activateDirectory').toList();
+      expect(activates, hasLength(1));
+      expect(activates.single.arguments, <String, Object?>{'uri': uri});
+    });
+
+    test('并发调用单飞：共享同一次原生激活', () async {
+      final gate = Completer<Object?>();
+      mockChannel((call) {
+        calls.add(call);
+        return gate.future;
+      });
+
+      const uri = 'file://docs/storage/Users/currentUser/Music2';
+      final a = OhosPlatformBridge.ensureDirectoryActivated(uri);
+      final b = OhosPlatformBridge.ensureDirectoryActivated(uri);
+      await Future<void>.delayed(Duration.zero);
+      expect(calls, hasLength(1));
+
+      gate.complete(null);
+      expect(await a, isTrue);
+      expect(await b, isTrue);
+      expect(calls, hasLength(1));
+    });
+
+    test('激活失败返回 false 且不缓存：下次访问重试', () async {
+      var attempts = 0;
+      mockChannel((call) async {
+        calls.add(call);
+        if (call.method != 'activateDirectory') return null;
+        attempts++;
+        if (attempts == 1) {
+          throw PlatformException(
+              code: '13900001', message: 'permission denied');
+        }
+        return null;
+      });
+
+      const uri = 'file://docs/storage/Users/currentUser/Music3';
+      expect(await OhosPlatformBridge.ensureDirectoryActivated(uri), isFalse);
+      expect(await OhosPlatformBridge.ensureDirectoryActivated(uri), isTrue);
+      expect(attempts, 2);
+    });
+
+    test('resolvePath 首次失败 → 激活 → 重试成功', () async {
+      var resolveCalls = 0;
+      mockChannel((call) async {
+        calls.add(call);
+        if (call.method == 'activateDirectory') return null;
+        if (call.method == 'resolvePath') {
+          resolveCalls++;
+          if (resolveCalls == 1) {
+            throw PlatformException(code: '13900001', message: 'not activated');
+          }
+          return '/data/storage/el2/base/Music/a.flac';
+        }
+        return null;
+      });
+
+      const uri = 'file://docs/storage/Users/currentUser/Music4';
+      final path = await OhosPlatformBridge.resolvePathWithActivation(
+          uri, 'a.flac');
+
+      expect(path, '/data/storage/el2/base/Music/a.flac');
+      expect(resolveCalls, 2);
+      expect(
+          calls.where((c) => c.method == 'activateDirectory'), hasLength(1));
+      // 激活成功已缓存：后续解析不再重复激活。
+      calls.clear();
+      final again = await OhosPlatformBridge.resolvePathWithActivation(
+          uri, 'b.flac');
+      expect(again, '/data/storage/el2/base/Music/a.flac');
+      expect(calls.where((c) => c.method == 'activateDirectory'), isEmpty);
+    });
+
+    test('resolvePath 首次成功时不触发激活', () async {
+      mockChannel((call) async {
+        calls.add(call);
+        if (call.method == 'resolvePath') return '/sandbox/a.flac';
+        return null;
+      });
+
+      const uri = 'file://docs/storage/Users/currentUser/Music5';
+      final path = await OhosPlatformBridge.resolvePathWithActivation(
+          uri, 'a.flac');
+
+      expect(path, '/sandbox/a.flac');
+      expect(calls.where((c) => c.method == 'activateDirectory'), isEmpty);
     });
   });
 }
