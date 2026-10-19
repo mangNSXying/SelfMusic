@@ -11,6 +11,7 @@ import '../../utils/chunked_scheduler.dart' show ChunkYield, yieldToEventLoop;
 import '../local/audio_metadata.dart';
 import '../local/local_index.dart';
 import 'music_source.dart';
+import 'sftp_worker.dart';
 import 'sibling_cover.dart';
 
 /// 后台元数据补读（播放链路共用）：头部直读 → 按结构定位补读 → 解析 → 回填索引 → 标已读。
@@ -184,17 +185,17 @@ void _logEnrich(Song song, Stopwatch sw) {
 /// 抛异常后调用方（`_enrichViaDart` → `_enrichLazily`/后台补读）按“读失败”处理：
 /// 不标已读，下次播放/补读重试。
 ///
-/// **ohos + SFTP 让出节拍**：dartssh2 的纯 Dart AEAD 解密运行在 UI isolate，
-/// 整段下载会把主线程连续占满（`sftp_direct_source.open` 已限「单请求在飞 +
-/// 16KB 块」，这里再补「读一块歇一块」的节拍），给渲染/输入留事件循环窗口——
-/// 否则后台补读期间界面持续掉帧（真机 2026-10-11 取证）。仅 SFTP 需要：
-/// WebDAV/本地走原生网络与文件栈，不占主线程同步时间。
+/// **旧直连 SFTP 让出节拍**：仅当 worker isolate 未启用时，dartssh2 的纯 Dart
+/// AEAD 解密仍运行在 UI isolate，整段下载会把主线程连续占满（直连传输已限
+/// 「单请求在飞 + 16KB 块」，这里再补「读一块歇一块」的节拍），给渲染/输入留
+/// 事件循环窗口——否则后台补读期间界面持续掉帧（真机 2026-10-11 取证）。
+/// worker 路径解密已移出 UI isolate，不再需要节拍；WebDAV/本地也不占主线程。
 Future<Uint8List> _readRange(
     MusicSource src, Song song, int start, int length) async {
   perfPhase('meta.readRange.$start+$length'); // TEMP-PROBE
   final buf = BytesBuilder(copy: false);
   final opened = await src.open(song, range: IntRange(start, length));
-  final pace = isOhos && src.kind == SourceKind.sftp;
+  final pace = !SftpWorker.enabled && src.kind == SourceKind.sftp;
   await for (final chunk in opened.stream) {
     buf.add(chunk);
     if (buf.length >= length) break;

@@ -123,6 +123,13 @@ class DirectSourceManager extends ChangeNotifier {
   final LocalIndex index = LocalIndex();
   final List<MusicSource> _sources = [];
 
+  /// 备用源实例缓存：`lineCandidates` 每次播放都会调用，旧实现每次新建实例，
+  /// SFTP 走 worker 后会按播放次数泄漏 isolate/SSH 会话。[_fallbackSignature]
+  /// 用持久化配置 + 内存密钥表身份做失效判定；实例无读流时 worker 侧还会空闲
+  /// 自收，配置变更后即使缓存旧实例也不再累积。
+  final Map<String, List<MusicSource>> _fallbackCache = {};
+  final Map<String, String> _fallbackSignature = {};
+
   /// 直连补读的串行优先级队列（当前曲元数据 → 下一首音频 → 下一首元数据 → 全库）。
   final DirectTaskQueue tasks = DirectTaskQueue();
   bool _ready = false;
@@ -425,6 +432,11 @@ class DirectSourceManager extends ChangeNotifier {
     _sources
       ..clear()
       ..addAll(rebuilt);
+    // 已删除的主源：其备用实例不会再被使用，直接关会话（worker/直连都会释放）。
+    final aliveKeys = _sources.map((s) => s.key).toSet();
+    for (final k in _fallbackCache.keys.toList()) {
+      if (!aliveKeys.contains(k)) _dropFallbackCache(k, close: true);
+    }
     // watcher 重建只在「本地源的 key/路径」真变化时做：同步每次落库重载都
     // 取消+重挂目录监听是纯浪费，还会丢掉去抖状态与新事件窗口。
     if (_watcherSignature(_sources) != oldSig) restartAutoScan();
@@ -743,6 +755,16 @@ class DirectSourceManager extends ChangeNotifier {
       t.cancel();
     }
     _scanTokens.clear();
+    for (final src in _sources) {
+      unawaited(src.close());
+    }
+    for (final list in _fallbackCache.values) {
+      for (final src in list) {
+        unawaited(src.close());
+      }
+    }
+    _fallbackCache.clear();
+    _fallbackSignature.clear();
     _scanProgress.close();
     super.dispose();
   }
@@ -927,11 +949,23 @@ class DirectSourceManager extends ChangeNotifier {
 
   /// 该逻辑源的备用实例（瞬态，不进 [_sources]，不索引不扫描）。
   /// 相对路径对应：调用方用主源的 `song.sourceRef` 直接在备源上 open。
+  ///
+  /// 实例按 [key] 缓存：`lineCandidates` 每次播放都会调用，旧实现每次新建实例，
+  /// SFTP worker 化后会按播放次数泄漏 isolate/SSH 会话。缓存签名含持久化备用
+  /// 配置与内存密钥表身份；配置/密钥变化时旧实例不主动 close（可能正在播放），
+  /// 交给 worker 空闲回收，避免打断当前流。
   List<MusicSource> fallbackSourcesOf(String key) {
     final row = index.getSource(key);
     if (row == null) return const [];
     final fbs = fallbacksOf(key);
-    if (fbs.isEmpty) return const [];
+    if (fbs.isEmpty) {
+      _fallbackCache.remove(key);
+      _fallbackSignature.remove(key);
+      return const [];
+    }
+    final signature = _fallbackSignatureOf(key, fbs);
+    final cached = _fallbackCache[key];
+    if (cached != null && _fallbackSignature[key] == signature) return cached;
     final out = <MusicSource>[];
     for (var i = 0; i < fbs.length; i++) {
       final src = _buildFallbackDirect(
@@ -942,7 +976,29 @@ class DirectSourceManager extends ChangeNotifier {
       );
       if (src != null) out.add(src);
     }
+    _fallbackCache[key] = out;
+    _fallbackSignature[key] = signature;
     return out;
+  }
+
+  /// 备用缓存签名：配置 JSON + 三个内存密钥表对象身份（重新加载会换新 Map）。
+  String _fallbackSignatureOf(String key, List<Map<String, dynamic>> fbs) {
+    final w = identityHashCode(_webdavFbPwds[key]);
+    final s = identityHashCode(_sftpFbSecrets[key]);
+    final m = identityHashCode(_smbFbPwds[key]);
+    return '${jsonEncode(fbs)}|$w|$s|$m';
+  }
+
+  /// 移除某主源的备用缓存。源被删除时 [close] 为 true（会话确定不再使用）；
+  /// 仅配置变化时保持 false，避免打断正在播放的旧实例。
+  void _dropFallbackCache(String key, {bool close = false}) {
+    final old = _fallbackCache.remove(key);
+    _fallbackSignature.remove(key);
+    if (close && old != null) {
+      for (final src in old) {
+        unawaited(src.close());
+      }
+    }
   }
 
   /// 手动线路偏好（auto/primary/fb0/fb1）。
@@ -1405,6 +1461,10 @@ class DirectSourceManager extends ChangeNotifier {
     _sources
       ..clear()
       ..addAll(rebuilt);
+    // 配置可能变化（含备用槽）：丢掉旧缓存签名，下次播放重建实例；旧实例
+    // 不主动 close，避免打断正在播放的备用线路。
+    _dropFallbackCache(key);
+    if (newKey != key) _dropFallbackCache(newKey);
     if (newKey != key) {
       await index.renameSource(key, newKey);
     }
@@ -1422,7 +1482,12 @@ class DirectSourceManager extends ChangeNotifier {
       w.dispose();
     }
     _watchers.removeWhere((w) => gone.contains(w));
+    final removedSources = _sources.where((s) => s.key == key).toList();
     _sources.removeWhere((s) => s.key == key);
+    for (final src in removedSources) {
+      unawaited(src.close());
+    }
+    _dropFallbackCache(key, close: true);
     _webdavPwds.remove(key);
     await secrets.deleteWebdav(key);
     _sftpSecrets.remove(key);

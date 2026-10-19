@@ -9,25 +9,25 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:path/path.dart' as p;
 
 import '../../models/song.dart';
-import '../../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
 import 'music_source.dart';
 import 'scan_worker.dart';
+import 'sftp_common.dart';
+import 'sftp_direct_transport.dart';
+import 'sftp_worker.dart';
 import '../local/local_index.dart';
 import '../local/audio_metadata.dart';
 
-/// SFTP 认证方式：密码 / 粘贴的 PEM 私钥文本（含 passphrase 的加密私钥另填）。
-enum SftpAuthMethod { password, key }
-
-/// 解析持久化/同步来的认证方式；缺失或非法回落密码（旧配置兼容）。
-SftpAuthMethod parseSftpAuthMethod(Object? v) =>
-    SftpAuthMethod.values.firstWhere(
-      (e) => e.name == v,
-      orElse: () => SftpAuthMethod.password,
-    );
-
-/// `host:port` 钉键（host 小写；与 `normalizeSftpAddress` 的主机段同口径）。
-String sftpHostPort(String host, int port) =>
-    '${host.trim().toLowerCase()}:$port';
+// 兼容既有 import：认证方式、纯函数与异常仍从本文件导出。
+export 'sftp_common.dart'
+    show
+        SftpAuthMethod,
+        parseSftpAuthMethod,
+        sftpHostPort,
+        sftpOriginUrl,
+        sftpGuardWriteName,
+        sftpGuardWriteParent,
+        SftpStatusException,
+        SshHostKeyMismatch;
 
 /// X-Origin-Ssh 信封体（base64url(JSON)：`{u, p?, k?, pp?, hk}`），供服务端
 /// 代理回源鉴权（内存态单次使用，见 §4.6）。纯函数，可单测。
@@ -45,43 +45,6 @@ String buildSshEnvelope({
     if (passphrase != null && passphrase.isNotEmpty) m['pp'] = passphrase;
   }
   return base64Url.encode(utf8.encode(jsonEncode(m)));
-}
-
-/// 代理 origin（`sftp://host:port/逐段编码路径`，无 userinfo；凭据走信封）。
-/// 纯函数，可单测。IPv6 主机自动加方括号。
-String sftpOriginUrl({
-  required String host,
-  required int port,
-  required String ref,
-}) {
-  var h = host.trim();
-  if (h.contains(':') && !(h.startsWith('[') && h.endsWith(']'))) {
-    h = '[$h]';
-  }
-  final enc = ref
-      .split('/')
-      .where((s) => s.isNotEmpty)
-      .map(Uri.encodeComponent)
-      .join('/');
-  return 'sftp://$h:$port/$enc';
-}
-
-/// SFTP 写路径守卫（与 WebDAV 同口径）：禁分隔符与 `..`。纯函数，可单测。
-void sftpGuardWriteName(String name) {
-  if (name.isEmpty || name.contains('/') || name.contains('\\')) {
-    throw StateError('文件名非法：$name');
-  }
-  if (name == '.' || name == '..' || name.contains('..')) {
-    throw StateError('文件名非法（路径穿越）：$name');
-  }
-}
-
-/// 写父目录守卫（与 WebDAV 同口径）：各段禁 `.`/`..`。纯函数，可单测。
-void sftpGuardWriteParent(String parentRef) {
-  final parts = parentRef.split('/').where((s) => s.isNotEmpty);
-  if (parts.any((s) => s == '.' || s == '..')) {
-    throw StateError('目录非法（路径穿越）：$parentRef');
-  }
 }
 
 /// SFTP 直连源完整实现（阶段 7，`dartssh2` 纯 Dart）。
@@ -143,14 +106,12 @@ class SftpDirectSource implements MusicSource {
 
   // ---------- 连接 ----------
 
-  SSHClient? _client;
-  SftpClient? _sftp;
+  /// 传输层（worker 或旧直连）。懒创建，`close()` 后下次操作重新建。
+  SftpTransport? _transport;
 
-  /// 建连（调用方传已钉指纹做校验；`pinnedFp` 为空=未知主机，直接抛错引导
-  /// 用户走弹窗测试连接流程，绝不静默信任）。密钥文本非法抛 [SourceAuthException]
-  /// （指回密钥/口令）；指纹失配抛 [SshHostKeyMismatch]（带实际指纹）；
-  /// 鉴权失败抛 [SourceAuthException]；其余连通性问题抛 [SftpStatusException]。
-  static Future<({SSHClient client, SftpClient sftp})> openSftp({
+  /// 建连（扫描 isolate / 直连兜底用）。主播放链路请走 [_transportFor]，
+  /// 优选 worker isolate，避免 KEX/AEAD 解密占用 UI isolate。
+  static Future<OpenedSftpConnection> openSftp({
     required String host,
     required int port,
     required String username,
@@ -159,70 +120,19 @@ class SftpDirectSource implements MusicSource {
     required String keyPem,
     required String keyPassphrase,
     required String? pinnedFp,
-  }) async {
-    if (pinnedFp == null || pinnedFp.isEmpty) {
-      throw StateError('未知 SSH 主机，请先测试连接并确认主机指纹');
-    }
-    List<SSHIdentity>? identities;
-    if (authMethod == SftpAuthMethod.key) {
-      try {
-        identities = SSHKeyPair.fromPem(
-            keyPem, keyPassphrase.isEmpty ? null : keyPassphrase);
-      } catch (e) {
-        throw const SourceAuthException('SFTP 密钥无法解析：请检查密钥文本与 passphrase');
-      }
-    }
-    late final SSHSocket socket;
-    try {
-      socket = await SSHSocket.connect(host, port,
-          timeout: const Duration(seconds: 15));
-    } catch (e) {
-      throw SftpStatusException(
-          _shortErrStatic(e, 'SFTP 连接失败（$host:$port）'));
-    }
-    String? presented;
-    final client = SSHClient(
-      socket,
-      username: username,
-      onVerifyHostKey: (type, fp) async {
-        presented = utf8.decode(fp);
-        return presented == pinnedFp;
-      },
-      identities: identities,
-      onPasswordRequest:
-          authMethod == SftpAuthMethod.password ? () => password : null,
-    );
-    try {
-      await client.authenticated;
-    } catch (e) {
-      client.close();
-      // 指纹优先：verifier 拒收后的错误可能被包装变形，一律以实际指纹为准。
-      final got = presented;
-      if (got != null && got != pinnedFp) throw SshHostKeyMismatch(got);
-      if (e is SSHAuthError) {
-        throw const SourceAuthException('SFTP 鉴权失败：用户名或密码/密钥可能已更改，'
-            '请编辑该源重输');
-      }
-      throw SftpStatusException(_shortErrStatic(e, 'SFTP 建连失败'));
-    }
-    try {
-      final sftp = await client.sftp();
-      return (client: client, sftp: sftp);
-    } catch (e) {
-      client.close();
-      throw SftpStatusException(_shortErrStatic(e, 'SFTP 子系统失败'));
-    }
-  }
+  }) =>
+      SftpConnection.open(
+        host: host,
+        port: port,
+        username: username,
+        authMethod: authMethod,
+        password: password,
+        keyPem: keyPem,
+        keyPassphrase: keyPassphrase,
+        pinnedFp: pinnedFp,
+      );
 
-  static String _shortErrStatic(Object e, String what) {
-    final s = e.toString().replaceFirst(
-        RegExp(r'^(Bad state: |StateError: )'), '');
-    return s.length > 160 ? what : '$what：$s';
-  }
-
-  /// 仅取主机指纹（测试连接流程用）：接受任意主机密钥，**调用方必须随后向
-  /// 用户展示并钉住**，不得用于播放/扫描。鉴权失败抛 [SourceAuthException]，
-  /// 其余连通性问题抛 [SftpStatusException]。
+  /// 仅取主机指纹（测试连接流程用）。实现在 [SftpConnection]。
   static Future<String> fetchSftpFingerprint({
     required String host,
     required int port,
@@ -231,59 +141,8 @@ class SftpDirectSource implements MusicSource {
     required String password,
     required String keyPem,
     required String keyPassphrase,
-  }) async {
-    List<SSHIdentity>? identities;
-    if (authMethod == SftpAuthMethod.key) {
-      try {
-        identities = SSHKeyPair.fromPem(
-            keyPem, keyPassphrase.isEmpty ? null : keyPassphrase);
-      } catch (e) {
-        throw const SourceAuthException('SFTP 密钥无法解析：请检查密钥文本与 passphrase');
-      }
-    }
-    late final SSHSocket socket;
-    try {
-      socket = await SSHSocket.connect(host, port,
-          timeout: const Duration(seconds: 15));
-    } catch (e) {
-      throw SftpStatusException(
-          _shortErrStatic(e, 'SFTP 连接失败（$host:$port）'));
-    }
-    String? fp;
-    final client = SSHClient(
-      socket,
-      username: username,
-      onVerifyHostKey: (type, f) async {
-        fp = utf8.decode(f);
-        return true;
-      },
-      identities: identities,
-      onPasswordRequest:
-          authMethod == SftpAuthMethod.password ? () => password : null,
-    );
-    try {
-      await client.authenticated;
-      final got = fp;
-      if (got == null || got.isEmpty) throw StateError('未能获取主机指纹');
-      return got;
-    } on SSHAuthError {
-      throw const SourceAuthException('SFTP 鉴权失败：用户名或密码/密钥可能不正确');
-    } catch (e) {
-      throw SftpStatusException(_shortErrStatic(e, 'SFTP 建连失败'));
-    } finally {
-      client.close();
-    }
-  }
-
-  /// 共享连接（懒建连；操作失败疑似掉线时重建一次再试）。
-  Future<SftpClient> _sftpClient() async {
-    final pinned = index.sshFingerprint(hostPort);
-    if (pinned == null || pinned.isEmpty) {
-      throw StateError('未知 SSH 主机，请先测试连接并确认主机指纹');
-    }
-    Future<SftpClient> connect() async {
-      await close();
-      final opened = await openSftp(
+  }) =>
+      SftpConnection.fetchFingerprint(
         host: host,
         port: port,
         username: username,
@@ -291,80 +150,44 @@ class SftpDirectSource implements MusicSource {
         password: password,
         keyPem: keyPem,
         keyPassphrase: keyPassphrase,
-        pinnedFp: pinned,
       );
-      _client = opened.client;
-      _sftp = opened.sftp;
-      return opened.sftp;
-    }
 
-    final cur = _sftp;
+  /// 懒创建传输层。worker 路径在 Android/桌面/iOS 默认启用；OHOS 默认仍走
+  /// 旧直连（`SftpWorker.enabled == false`），真机 PoC 通过后可用
+  /// `--dart-define=SFTP_WORKER_ISOLATE=true` 打开。
+  SftpTransport _transportFor() {
+    final cur = _transport;
     if (cur != null) return cur;
-    try {
-      return await connect();
-    } on SourceAuthException {
-      rethrow;
-    } on StateError {
-      rethrow;
-    } on SshHostKeyMismatch {
-      rethrow;
-    } catch (e) {
-      throw SftpStatusException(_shortErr(e, 'SFTP 连接失败'));
+    final pinned = index.sshFingerprint(hostPort);
+    if (pinned == null || pinned.isEmpty) {
+      throw StateError('未知 SSH 主机，请先测试连接并确认主机指纹');
     }
-  }
-
-  /// 疑似掉线时重建一次再试（鉴权/指纹类错误直接抛，不重试）。
-  ///
-  /// **业务性状态错误不重连**（2026-10-11 真机取证）：同目录图片回退会逐个
-  /// open 不存在的候选路径，服务端回 `SftpStatusCode.noSuchFile`——这是正常
-  /// 探测结果而非掉线；旧实现对任何异常都 `close()` + 重连，每个候选白付一次
-  /// SSH 握手（纯 Dart KEX/验签跑在主线程，实测单次 ~600ms stall，一首无内嵌
-  /// 封面的歌最多 11 个候选 → 5~7s 连续卡顿的主要来源）。只有连接类状态错误
-  /// （noConnection / connectionLost）与未知异常才走重建。
-  Future<T> _withSftp<T>(Future<T> Function(SftpClient sftp) fn) async {
-    try {
-      return await fn(await _sftpClient());
-    } on SftpStatusError catch (e) {
-      if (e.code == SftpStatusCode.noConnection ||
-          e.code == SftpStatusCode.connectionLost) {
-        return _reconnectAndRetry(fn);
-      }
-      throw SftpStatusException(_shortErr(e, 'SFTP 请求失败'));
-    } on SourceAuthException {
-      rethrow;
-    } on StateError {
-      rethrow;
-    } on SshHostKeyMismatch {
-      rethrow;
-    } catch (_) {
-      return _reconnectAndRetry(fn);
-    }
-  }
-
-  /// 重建连接后重试一次；鉴权/指纹类错误直接抛（重连也无意义）。
-  Future<T> _reconnectAndRetry<T>(
-      Future<T> Function(SftpClient sftp) fn) async {
-    await close();
-    try {
-      return await fn(await _sftpClient());
-    } catch (e) {
-      if (e is SourceAuthException ||
-          e is StateError ||
-          e is SshHostKeyMismatch) {
-        rethrow;
-      }
-      throw SftpStatusException(_shortErr(e, 'SFTP 请求失败'));
-    }
-  }
-
-  static String _shortErr(Object e, String what) {
-    final s = e.toString().replaceFirst(
-        RegExp(r'^(Bad state: |StateError: )'), '');
-    return s.length > 160 ? what : '$what：$s';
+    final next = SftpWorker.enabled
+        ? SftpIsolateTransport(
+            host: host,
+            port: port,
+            username: username,
+            authMethod: authMethod,
+            password: password,
+            keyPem: keyPem,
+            keyPassphrase: keyPassphrase,
+            pinnedFp: pinned,
+          )
+        : SftpDirectTransport(
+            host: host,
+            port: port,
+            username: username,
+            authMethod: authMethod,
+            password: password,
+            keyPem: keyPem,
+            keyPassphrase: keyPassphrase,
+            pinnedFp: pinned,
+          );
+    _transport = next;
+    return next;
   }
 
   /// SFTP 写操作：上传（流式分块，覆盖同名）/ 删文件 / 建目录。
-  /// 走 [_withSftp]（共享连接、掉线重建一次、TOFU 指纹门槛与读侧一致）；
   /// 无权限类错误转中文 StateError（鉴权已过，这是文件系统权限问题），
   /// 其余沿用读侧映射。
   @override
@@ -373,32 +196,18 @@ class SftpDirectSource implements MusicSource {
     sftpGuardWriteParent(parentRef);
     sftpGuardWriteName(filename);
     if (!_audioExt(filename) && !isSidecarFileName(filename)) {
-      throw StateError('仅支持上传音频文件（mp3/flac/m4a/aac/ogg/wav/aif[f][c]）与歌词/封面 sidecar（.lrc/.jpg/.png/.webp）');
+      throw StateError(
+          '仅支持上传音频文件（mp3/flac/m4a/aac/ogg/wav/aif[f][c]）与歌词/封面 sidecar（.lrc/.jpg/.png/.webp）');
     }
-    final abs = _absPath(
-        parentRef.isEmpty ? filename : '$parentRef/$filename');
-    await _withSftp((sftp) async {
-      SftpFile? file;
-      try {
-        file = await sftp.open(abs,
-            mode: SftpFileOpenMode.write |
-                SftpFileOpenMode.create |
-                SftpFileOpenMode.truncate);
-        final writer = file.write(
-          bytes.map((c) => c is Uint8List ? c : Uint8List.fromList(c)),
-        );
-        await writer.done;
-      } on SftpStatusError catch (e) {
-        if (e.code == SftpStatusCode.permissionDenied) {
-          throw StateError('上传失败：无写入权限（$abs）');
-        }
-        rethrow;
-      } finally {
-        try {
-          await file?.close();
-        } catch (_) {}
+    final abs = _absPath(parentRef.isEmpty ? filename : '$parentRef/$filename');
+    try {
+      await _transportFor().upload(abs, bytes, length);
+    } on SftpStatusException catch (e) {
+      if (e.code == SftpStatusCode.permissionDenied) {
+        throw StateError('上传失败：无写入权限（$abs）');
       }
-    });
+      rethrow;
+    }
   }
 
   @override
@@ -409,19 +218,17 @@ class SftpDirectSource implements MusicSource {
   @override
   Future<void> deleteSong(Song song) async {
     final abs = _absPath(song.sourceRef);
-    await _withSftp((sftp) async {
-      try {
-        await sftp.remove(abs);
-      } on SftpStatusError catch (e) {
-        if (e.code == SftpStatusCode.noSuchFile) {
-          throw StateError('删除失败：文件不存在（可能已被删除）');
-        }
-        if (e.code == SftpStatusCode.permissionDenied) {
-          throw StateError('删除失败：无删除权限');
-        }
-        rethrow;
+    try {
+      await _transportFor().remove(abs);
+    } on SftpStatusException catch (e) {
+      if (e.code == SftpStatusCode.noSuchFile) {
+        throw StateError('删除失败：文件不存在（可能已被删除）');
       }
-    });
+      if (e.code == SftpStatusCode.permissionDenied) {
+        throw StateError('删除失败：无删除权限');
+      }
+      rethrow;
+    }
   }
 
   @override
@@ -431,20 +238,17 @@ class SftpDirectSource implements MusicSource {
     if (!isSidecarFileName(filename)) {
       throw StateError('仅支持删除歌词/封面 sidecar（.lrc/.jpg/.png/.webp）');
     }
-    final abs = _absPath(
-        parentRef.isEmpty ? filename : '$parentRef/$filename');
-    await _withSftp((sftp) async {
-      try {
-        await sftp.remove(abs);
-      } on SftpStatusError catch (e) {
-        // 不存在按幂等成功计（嵌入后清理时源目录可能本就没有该文件）。
-        if (e.code == SftpStatusCode.noSuchFile) return;
-        if (e.code == SftpStatusCode.permissionDenied) {
-          throw StateError('删除 sidecar 失败：无删除权限');
-        }
-        rethrow;
+    final abs = _absPath(parentRef.isEmpty ? filename : '$parentRef/$filename');
+    try {
+      await _transportFor().remove(abs);
+    } on SftpStatusException catch (e) {
+      // 不存在按幂等成功计（嵌入后清理时源目录可能本就没有该文件）。
+      if (e.code == SftpStatusCode.noSuchFile) return;
+      if (e.code == SftpStatusCode.permissionDenied) {
+        throw StateError('删除 sidecar 失败：无删除权限');
       }
-    });
+      rethrow;
+    }
   }
 
   @override
@@ -452,36 +256,32 @@ class SftpDirectSource implements MusicSource {
     sftpGuardWriteParent(parentRef);
     sftpGuardWriteName(name);
     final abs = _absPath(parentRef.isEmpty ? name : '$parentRef/$name');
-    await _withSftp((sftp) async {
-      try {
-        await sftp.mkdir(abs);
-      } on SftpStatusError catch (e) {
-        // 已存在即成功（与 WebDAV 405/409 口径一致）：stat 确认是目录才认，
-        // 同名文件不认（避免把"建目录撞上文件"误判为成功）。
-        if (e.code == SftpStatusCode.failure) {
-          try {
-            if ((await sftp.stat(abs)).isDirectory) return;
-          } catch (_) {}
-          throw StateError('新建文件夹失败：同名文件已存在');
-        }
-        if (e.code == SftpStatusCode.permissionDenied) {
-          throw StateError('新建文件夹失败：无写入权限');
-        }
-        rethrow;
+    final transport = _transportFor();
+    try {
+      await transport.mkdir(abs);
+    } on SftpStatusException catch (e) {
+      // 已存在即成功（与 WebDAV 405/409 口径一致）：stat 确认是目录才认，
+      // 同名文件不认（避免把"建目录撞上文件"误判为成功）。
+      if (e.code == SftpStatusCode.failure) {
+        try {
+          if (await transport.isDirectory(abs)) return;
+        } catch (_) {}
+        throw StateError('新建文件夹失败：同名文件已存在');
       }
-    });
+      if (e.code == SftpStatusCode.permissionDenied) {
+        throw StateError('新建文件夹失败：无写入权限');
+      }
+      rethrow;
+    }
   }
 
   @override
   Future<void> close() async {
+    final transport = _transport;
+    _transport = null;
     try {
-      await _sftp?.close();
+      await transport?.close();
     } catch (_) {}
-    try {
-      _client?.close();
-    } catch (_) {}
-    _sftp = null;
-    _client = null;
   }
 
   // ---------- 直连扫描 ----------
@@ -517,9 +317,7 @@ class SftpDirectSource implements MusicSource {
     );
 
     // 数据安全闸（与 WebDAV 同）：正常完成却为空、而库里有曲时中止防误清库。
-    if (out.isEmpty &&
-        known.isNotEmpty &&
-        !(token?.cancelled ?? false)) {
+    if (out.isEmpty && known.isNotEmpty && !(token?.cancelled ?? false)) {
       throw ScanWorkerException('扫描结果为 0，但本地库已有 ${known.length} 首；'
           '为防止误清库已中止。如确认服务器目录已清空，请删除并重建该源');
     }
@@ -595,8 +393,7 @@ class SftpDirectSource implements MusicSource {
         username: username,
         password: authMethod == SftpAuthMethod.password ? password : null,
         keyPem: authMethod == SftpAuthMethod.key ? keyPem : null,
-        passphrase:
-            authMethod == SftpAuthMethod.key ? keyPassphrase : null,
+        passphrase: authMethod == SftpAuthMethod.key ? keyPassphrase : null,
         fingerprint: fp,
       ),
     };
@@ -605,96 +402,31 @@ class SftpDirectSource implements MusicSource {
   /// 预热：小偏移试读——够走完 SSH 握手/鉴权/SFTP，又不下载音频。
   @override
   Future<void> probe(Song song) async {
-    await _withSftp((sftp) async {
-      final file = await sftp.open(_absPath(song.sourceRef),
-          mode: SftpFileOpenMode.read);
-      try {
-        await file.read(length: 1, offset: 0).first;
-      } finally {
-        try {
-          await file.close();
-        } catch (_) {}
-      }
-    });
+    await _transportFor().probe(_absPath(song.sourceRef));
   }
 
   @override
   Future<OpenedStream> open(Song song, {IntRange? range}) async {
-    return _withSftp((sftp) async {
-      final file = await sftp.open(_absPath(song.sourceRef),
-          mode: SftpFileOpenMode.read);
-      int total;
-      try {
-        total = (await file.stat()).size ?? song.fileSize;
-      } catch (_) {
-        // stat 失败回退索引大小（可能为 0，即未知）。
-        total = song.fileSize;
-      }
-      final start = range?.start ?? 0;
-      final end = range == null
-          ? total
-          : (range.end == null ? total : (range.end! + 1).clamp(0, total));
-      final contentLength = range == null ? total : (end - start);
-      // 主线程让出纪律（2026-10-11 真机取证）：dartssh2 的纯 Dart AES-GCM 解密
-      // 跑在 UI isolate；`read()` 默认 64 并发 × 16KB 扇出会把整段 Range（补读
-      // 可达 16MB）灌成一条微任务链，实测单次同步块 9~11s（THREAD_BLOCK_6S 强杀
-      // 与全局卡顿的直接来源，冻结堆栈：SSHTransport._consumeAeadPacket →
-      // pointycastle GCMBlockCipher）。限「单请求在飞 + 64KB 块」后，解密与网络
-      // 事件交替推进，单次同步块收敛到几十 ms；LAN 吞吐仍受解密速率上限约束，
-      // 不额外损失。**勿放开 maxPendingRequests**，除非把解密移出 UI isolate。
-      final src = file.read(
-          length: contentLength <= 0 ? null : contentLength,
-          offset: start,
-          chunkSize: 16 * 1024,
-          maxPendingRequests: 1);
-      // 句柄随流走：结束/出错/取消都关（seek 取消不留服务器句柄）。
-      var closed = false;
-      Future<void> closeFile() async {
-        if (closed) return;
-        closed = true;
-        try {
-          await file.close();
-        } catch (_) {}
-      }
-
-      late final StreamController<List<int>> controller;
-      late StreamSubscription<Uint8List> sub;
-      controller = StreamController<List<int>>(
-        onListen: () {
-          sub = src.listen(
-            controller.add,
-            onError: (Object e) async {
-              controller.addError(e);
-              await controller.close();
-              await closeFile();
-            },
-            onDone: () async {
-              await controller.close();
-              await closeFile();
-            },
-            cancelOnError: false,
-          );
-        },
-        onCancel: () async {
-          await sub.cancel();
-          await closeFile();
-        },
-      );
-      return OpenedStream(
-        contentLength: contentLength,
-        contentType: _mimeOf(_extOf(song.sourceRef)),
-        stream: controller.stream,
-        totalLength: total > 0 ? total : null,
-      );
-    });
+    final res = await _transportFor().open(
+      _absPath(song.sourceRef),
+      start: range?.start,
+      length: range?.length,
+      fallbackTotal: song.fileSize,
+    );
+    return OpenedStream(
+      contentLength: res.contentLength,
+      contentType: _mimeOf(_extOf(song.sourceRef)),
+      stream: res.stream,
+      totalLength: res.totalLength,
+    );
   }
 
   // ---------- 离线缓存（DEVELOPER.md「客户端同步与缓存批处理」，同 WebDAV 口径） ----------
 
   static const int _cacheWriteBufBytes = 1 << 20;
 
-  /// 缓存下载的让出节拍（ohos）：每个 16KB 解密块后歇 6ms，避免整曲缓存
-  /// 长时间占满 UI isolate（语义同 [open] 的限流注释；非 ohos 不启用）。
+  /// 缓存下载的让出节拍（仅旧直连路径）：每个 16KB 解密块后歇 6ms，避免整曲
+  /// 缓存长时间占满 UI isolate。worker 路径解密不在 UI isolate，无需节拍。
   static const Duration _cachePaceSleep = Duration(milliseconds: 6);
 
   String cacheKeyFor(Song song) =>
@@ -729,10 +461,10 @@ class SftpDirectSource implements MusicSource {
           if (buf.length >= _cacheWriteBufBytes) {
             sink.writeFromSync(buf.takeBytes());
           }
-          // ohos：与元数据补读同一让出纪律（见 open 的 maxPendingRequests 注释）——
-          // 整曲缓存持续跑纯 Dart 解密，若不歇息会长时间占满 UI isolate 导致掉帧；
-          // 缓存是后台行为，慢一点换取界面可响应。
-          if (isOhos) {
+          // 仅旧直连：与元数据补读同一让出纪律（见直连传输的 maxPendingRequests
+          // 注释）——整曲缓存持续跑纯 Dart 解密，若不歇息会长时间占满 UI
+          // isolate 导致掉帧；缓存是后台行为，慢一点换取界面可响应。
+          if (!SftpWorker.enabled) {
             await Future<void>.delayed(_cachePaceSleep);
           }
         }
@@ -785,25 +517,6 @@ class SftpDirectSource implements MusicSource {
       };
 
   String get configJson => jsonEncode(configJ);
-}
-
-/// SFTP 非 2xx 语义外的连接/协议错误：toString 面向用户直接展示。
-class SftpStatusException implements Exception {
-  final String message;
-  const SftpStatusException(this.message);
-
-  @override
-  String toString() => message;
-}
-
-/// 扫描 isolate 内主机指纹失配：携带实际指纹供主 isolate 转抛展示。
-class SshHostKeyMismatch implements Exception {
-  final String actual;
-  const SshHostKeyMismatch(this.actual);
-
-  @override
-  String toString() => 'SSH 主机指纹与已确认的不一致（实际 $actual）：'
-      '可能是中间人或服务器重装，请核对后重新确认';
 }
 
 // ---------- isolate worker（runScan entry） ----------
@@ -883,17 +596,17 @@ Future<List<_SftpWalkOut>> _sftpWalk({
   try {
     final base = rootPath.isEmpty ? '/' : rootPath;
     final files = <_SftpEntry>[];
-    await _listRecursive(sftp, base, '', files,
-        isCancelled: isCancelled);
+    await _listRecursive(sftp, base, '', files, isCancelled: isCancelled);
     if (isCancelled?.call() ?? false) return const [];
-    onProgress?.call(ScanProgress(listing: false, done: 0, total: files.length));
+    onProgress
+        ?.call(ScanProgress(listing: false, done: 0, total: files.length));
     final out = <_SftpWalkOut>[];
     var done = 0;
     for (final f in files) {
       done++;
       if (isCancelled?.call() ?? false) break;
-      onProgress?.call(
-          ScanProgress(listing: false, done: done, total: files.length));
+      onProgress
+          ?.call(ScanProgress(listing: false, done: done, total: files.length));
       if (minSizeBytes > 0 && f.size > 0 && f.size < minSizeBytes) continue;
       final fp = known[f.ref];
       final kind = fp == null ? _OutKind.added : _OutKind.updated;
@@ -928,27 +641,26 @@ class _SftpEntry {
   final String ref;
   final int size;
   final int mtime;
-  const _SftpEntry({required this.ref, required this.size, required this.mtime});
+  const _SftpEntry(
+      {required this.ref, required this.size, required this.mtime});
 }
 
 /// 递归枚举（有界并发暂不做：SFTP 单连接串行 readdir 足够快，大目录由进度展示）。
-Future<void> _listRecursive(SftpClient sftp, String absDir, String relBase,
-    List<_SftpEntry> out,
+Future<void> _listRecursive(
+    SftpClient sftp, String absDir, String relBase, List<_SftpEntry> out,
     {bool Function()? isCancelled}) async {
   late final List<SftpName> names;
   try {
     names = await sftp.listdir(absDir);
   } catch (e) {
-    throw StateError(
-        SftpDirectSource._shortErrStatic(e, 'SFTP 列目录失败（$absDir）'));
+    throw StateError(shortSftpError(e, 'SFTP 列目录失败（$absDir）'));
   }
   for (final n in names) {
     if (isCancelled?.call() ?? false) return;
     if (n.filename == '.' || n.filename == '..') continue;
     final rel = relBase.isEmpty ? n.filename : '$relBase/${n.filename}';
-    final abs = absDir.endsWith('/')
-        ? '$absDir${n.filename}'
-        : '$absDir/${n.filename}';
+    final abs =
+        absDir.endsWith('/') ? '$absDir${n.filename}' : '$absDir/${n.filename}';
     final isDir = n.attr.mode?.type == SftpFileType.directory;
     if (isDir) {
       await _listRecursive(sftp, abs, rel, out, isCancelled: isCancelled);
