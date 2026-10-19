@@ -32,6 +32,19 @@ const int _kUploadBatchBytes = 256 * 1024;
 const int _kUploadChunkBytes = 64 * 1024;
 const int _kUploadMaxPending = 4;
 
+/// 上传失败是否值得断线续传：只有连接类错误可以重试；权限/不存在等业务
+/// 状态码原样抛给调用方，避免把真实失败原因掩盖成「重试后仍失败」。
+bool _uploadRetryable(Object e) {
+  if (e is SourceAuthException || e is SshHostKeyMismatch) return false;
+  if (e is SftpStatusException) {
+    final code = e.code;
+    return code == null ||
+        code == SftpStatusCode.noConnection ||
+        code == SftpStatusCode.connectionLost;
+  }
+  return true; // worker 退出/关闭、socket 层错误等
+}
+
 void _trace(String message) => sftpTrace(message);
 
 /// 长活 SFTP worker 的主 isolate 代理。
@@ -242,48 +255,39 @@ class SftpWorker {
     await _send('probe', <String, Object?>{'path': path});
   }
 
-  /// 上传不做自动重试：字节流是一次性的，失败后重放会丢数据/重复写。调用方
-  /// （缓存/手动上传）可重新打开源文件再发一次。
-  Future<void> upload(String path, Stream<List<int>> bytes, int length) async {
-    if (_closed) throw StateError('SFTP worker 已关闭');
-    final started = await _send(
-        'uploadStart', <String, Object?>{'path': path, 'length': length});
-    final id = started['id'] as int;
-    final iterator = StreamIterator<List<int>>(bytes);
-    final buf = BytesBuilder(copy: false);
-    var ended = false;
-    try {
-      while (await iterator.moveNext()) {
-        final chunk = iterator.current;
-        buf.add(chunk);
-        if (buf.length >= _kUploadBatchBytes) {
-          await _uploadChunk(id, buf.takeBytes());
-        }
-      }
-      final tail = buf.takeBytes();
-      if (tail.isNotEmpty) await _uploadChunk(id, tail);
-      await _send('uploadEnd', <String, Object?>{'uploadId': id});
-      ended = true;
-    } finally {
-      await iterator.cancel();
-      if (!ended) {
-        // 让 worker 关句柄；主 isolate 不等待结果，避免失败路径再卡一次。
-        if (!_closed) {
-          _cmd.send(<String, Object?>{
-            't': 'uploadAbort',
-            'id': -1,
-            'uploadId': id,
-          });
-        }
-      }
-    }
+  /// 开始一次上传，返回上传句柄；[truncate]=false 时不截断远端文件，
+  /// 供断线续传按绝对偏移覆盖写（见 [SftpIsolateTransport.upload]）。
+  Future<int> uploadBegin(String path, {bool truncate = true}) async {
+    final m = await _send('uploadStart', <String, Object?>{
+      'path': path,
+      'truncate': truncate,
+    });
+    return m['id'] as int;
   }
 
-  Future<void> _uploadChunk(int uploadId, Uint8List chunk) async {
+  /// 写一批明文；[offset] 是批在文件中的绝对偏移（续传重发时不变）。
+  Future<void> uploadChunk(int uploadId, int offset, Uint8List bytes) async {
     await _send('uploadChunk', <String, Object?>{
       'uploadId': uploadId,
-      'bytes': chunk,
+      'offset': offset,
+      'bytes': bytes,
     });
+  }
+
+  Future<void> uploadEnd(int uploadId) async {
+    await _send('uploadEnd', <String, Object?>{'uploadId': uploadId});
+  }
+
+  /// 放弃上传：只通知 worker 关远端句柄，不等回复，避免失败路径再卡一次。
+  void uploadAbort(int uploadId) {
+    if (_closed) return;
+    try {
+      _cmd.send(<String, Object?>{
+        't': 'uploadAbort',
+        'id': -1,
+        'uploadId': uploadId,
+      });
+    } catch (_) {}
   }
 
   Future<void> remove(String path) async {
@@ -612,11 +616,75 @@ class SftpIsolateTransport implements SftpTransport {
             fallbackTotal: fallbackTotal,
           ));
 
+  /// 上传：断线自动重连一次并续传。
+  ///
+  /// 字节流是一次性的，不能靠调用方重开源文件重发，所以由这里驱动：
+  /// 每批带绝对偏移发出，发出前记为 [pending]；连接类失败后重连，若已有
+  /// 确认落盘的数据则以 `truncate: false` 重开会话并重放 [pending]
+  /// （相同字节覆盖写是幂等的），否则重新截断从头来。业务错误
+  /// （权限/不存在）不重试，原样抛给调用方。
   @override
   Future<void> upload(String path, Stream<List<int>> bytes, int length) async {
-    // 不重试：流只能消费一次。worker 启动失败仍可在此抛给调用方。
-    final worker = await _ensureWorker();
-    await worker.upload(path, bytes, length);
+    final iterator = StreamIterator<List<int>>(bytes);
+    var worker = await _ensureWorker();
+    int? uploadId;
+    Uint8List? pending; // 已读出、尚未确认落盘的最后一批
+    var pendingAt = 0; // [pending] 在文件中的绝对偏移
+    var batchStart = 0; // 当前批缓冲的起始绝对偏移
+    var staged = 0; // 已从源流读出并交给上传的总字节数（含缓冲/在飞的批）
+    var resumed = false;
+    final batch = BytesBuilder(copy: false);
+
+    Future<void> openSession({required bool truncate}) async {
+      uploadId = await worker.uploadBegin(path, truncate: truncate);
+      SftpWorker.trace('upload open $path truncate=$truncate id=$uploadId');
+    }
+
+    // 连接类失败后重连一次并重放当前 RPC；重放用绝对偏移覆盖最后一批。
+    Future<T> guard<T>(Future<T> Function() op) async {
+      try {
+        return await op();
+      } catch (e) {
+        if (resumed || !_uploadRetryable(e)) rethrow;
+        resumed = true;
+        SftpWorker.trace('upload 断线续传 $path：$e');
+        final acked = pending == null ? staged : pendingAt;
+        await _closeWorker();
+        worker = await _ensureWorker();
+        if (uploadId != null) {
+          // 首块之前失败时会话还没建立，交给重放的 op 自己开。
+          await openSession(truncate: acked == 0);
+        }
+        return await op();
+      }
+    }
+
+    Future<void> flush() async {
+      if (batch.length == 0) return;
+      pending = batch.takeBytes();
+      pendingAt = batchStart;
+      await guard(() => worker.uploadChunk(uploadId!, pendingAt, pending!));
+      pending = null;
+      batchStart = staged;
+    }
+
+    var done = false;
+    try {
+      await guard(() => openSession(truncate: true));
+      while (await iterator.moveNext()) {
+        final chunk = iterator.current;
+        batch.add(chunk);
+        staged += chunk.length;
+        if (batch.length >= _kUploadBatchBytes) await flush();
+      }
+      await flush();
+      await guard(() => worker.uploadEnd(uploadId!));
+      done = true;
+    } finally {
+      await iterator.cancel();
+      final id = uploadId;
+      if (!done && id != null) worker.uploadAbort(id);
+    }
   }
 
   @override
@@ -957,16 +1025,16 @@ Future<void> _sftpWorkerEntry(Map<String, Object?> params) async {
     SftpFile? file;
     try {
       if (closing) throw StateError('SFTP worker 正在关闭');
-      file = await conn.sftp.open(
-        m['path'] as String,
-        mode: SftpFileOpenMode.write |
-            SftpFileOpenMode.create |
-            SftpFileOpenMode.truncate,
-      );
+      // 续传（truncate=false）保留已落盘内容：主 isolate 会用绝对偏移
+      // 覆盖写最后一批，重发相同字节是幂等的。
+      var mode = SftpFileOpenMode.write | SftpFileOpenMode.create;
+      if (m['truncate'] != false) mode = mode | SftpFileOpenMode.truncate;
+      file = await conn.sftp.open(m['path'] as String, mode: mode);
       uploads[id] = _WorkerUpload(file);
       file = null;
       replyOk(id);
     } catch (e) {
+      _trace('uploadStart failed truncate=${m['truncate']}: $e');
       replyError(id, e);
       try {
         await file?.close();
@@ -982,17 +1050,19 @@ Future<void> _sftpWorkerEntry(Map<String, Object?> params) async {
       replyError(id, StateError('上传句柄不存在'));
       return;
     }
+    final offset = (m['offset'] as num?)?.toInt() ?? upload.offset;
     try {
       final bytes = m['bytes'] as Uint8List;
       await upload.file.writeBytes(
         bytes,
-        offset: upload.offset,
+        offset: offset,
         chunkSize: _kUploadChunkBytes,
         maxPendingRequests: _kUploadMaxPending,
       );
-      upload.offset += bytes.length;
+      upload.offset = offset + bytes.length;
       replyOk(id);
     } catch (e) {
+      _trace('uploadChunk failed at $offset: $e');
       replyError(id, e);
     }
   }

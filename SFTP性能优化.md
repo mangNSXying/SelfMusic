@@ -1,6 +1,6 @@
 # SFTP 性能优化方案（Android / OHOS 通用）
 
-> 状态：**第一步（SFTP Worker Isolate）已落地**，待真机验证。
+> 状态：**第一步（SFTP Worker Isolate）已落地**；鸿蒙真机 PoC 已验证 worker 模式核心链路（流播 / seek / 并发 spawn 修复），OHOS 默认开关待 soak 后切换。
 > 适用代码：`frontend/lib/data/sources/`。
 
 ## 1. 现象
@@ -63,17 +63,19 @@ SftpIsolateTransport                _sftpWorkerEntry
 
 | 命令 | 说明 |
 | --- | --- |
-| `open` | 打开文件，返回 `contentLength` / `totalLength` |
-| `read` | 请求一批明文（默认 256KB，worker 内按 64KB × 4 并发读） |
+| `open` | 打开文件，返回 `contentLength` / `totalLength`；调用方给了索引大小时跳过 `stat`（seek 少一个 RTT） |
+| `read` | 请求明文；worker 内 64KB 流水线，受下面读闸门调度 |
 | `cancel` | 取消读流并关闭句柄 |
 | `probe` | 读 1 字节预热 |
-| `uploadStart` / `uploadChunk` / `uploadEnd` / `uploadAbort` | 流式上传 |
+| `uploadStart` / `uploadChunk` / `uploadEnd` / `uploadAbort` | 流式上传；批带绝对偏移，连接类失败可用 `truncate: false` 重开会话续传 |
 | `remove` / `mkdir` / `isDir` | 写操作与目录探测 |
 | `close` | 关闭 SFTP/SSH 并退出 worker |
 
 事件（worker → UI）：`openOk` / `data` / `batchDone` / `eof` / `error` / `closed`。
 
-流控：主 isolate 一次只请求一批，收到 `batchDone` 且未暂停才请求下一批；暂停/取消立即停止拉取。内存上限约为「一个 256KB 批 + 主 isolate 控制器缓冲」。
+流控：主 isolate 每次发一条 `read`（`maxBytes` 256KB），收到 `batchDone` 且未暂停才发下一条；暂停/取消立即停止拉取。打开时已知文件总长（索引大小，`handleOpen` 会跳过 `stat`）时，一条 `read` 命令内 worker 会按 64KB 流水线把剩余区间持续传完，不再逐批往返；未知总长时才按 256KB 一批往返。主 isolate 收到的数据进入流的 `StreamController`，内存上界为当前打开的单个区间（单曲量级）。
+
+读调度（`_WorkerReadGate`）：`open`/`probe`/`isDir` 等控制请求优先——控制请求在飞期间不再下发新读；全 worker 在飞读请求上限 4（原先每流各 4、多流叠加无上限）。真机口径：seek 的 `open` 从 3.5s 降到毫秒级。
 
 错误跨 isolate 用结构化载荷传递（`kind` + `message` + `code`），在主 isolate 还原为：
 
@@ -82,13 +84,15 @@ SftpIsolateTransport                _sftpWorkerEntry
 - `SftpStatusException(code)`：远端 SFTP 状态错误（上传/删除的权限、文件不存在分支继续可用）；
 - `StateError`：配置/未知主机等。
 
+诊断：`--dart-define=SFTP_WORKER_TRACE=true` 打开 `[sftp-worker]` 日志（spawn / 握手 / 首块 / 取消 / 重连），正常构建无输出。
+
 ### 3.3 平台开关与降级
 
 `SftpWorker.enabled`：
 
 - Android / iOS / 桌面默认 **true**；
-- OHOS 因 fork engine 的长活 isolate 行为尚未真机 PoC，默认 **false**，走旧直连；
-- OHOS 验证时可编译期打开：
+- OHOS 默认仍为 **false**（走旧直连）；`--dart-define=SFTP_WORKER_ISOLATE=true` 已在真机验证 worker 流播 / seek / 并发 spawn 修复（2026-10-19/20），待 10 分钟级 soak + 上传 / 补读验证后切换默认；
+- OHOS 验证时编译期打开：
 
 ```bash
 flutter build hap --dart-define=SFTP_WORKER_ISOLATE=true
@@ -104,15 +108,17 @@ flutter build hap --dart-define=SFTP_WORKER_ISOLATE=true
 2. **worker 空闲回收**：worker 内没有打开的读流、也没有未完成命令时，若持续 10 分钟空闲则自动关闭 isolate 与 SSH 会话。暂停中的播放仍保留读流，不会被误关。
 3. **源删除/整体重载**：删除源时关闭主源与备用源实例；重载时清理已不存在主源的备用缓存。
 4. **Manager dispose**：关闭所有主源与备用源。
+5. **并发 spawn 去重**：`_ensureWorker` 对「正在启动」的 worker 去重（起播 / 补读 / 歌词同帧并发只起一个）；`close()` 期间新起的 worker 自动回收，不留孤儿会话。
+6. **测试连接 isolate 化**：取指纹走一次性 `Isolate.run`，测试连接弹窗期间 UI 不再被 SSH 握手/解密占据（异常跨 isolate 结构化还原，类型不变）。
 
 ## 4. 改动文件
 
 | 文件 | 内容 |
 | --- | --- |
-| `frontend/lib/data/sources/sftp_common.dart` | 新增：认证方式/纯函数/异常、`SftpOpenResult`、`SftpTransport` 抽象、`SftpConnection`（SSH 建连与指纹） |
+| `frontend/lib/data/sources/sftp_common.dart` | 新增：认证方式/纯函数/异常、`SftpOpenResult`、`SftpTransport` 抽象、`SftpConnection`（SSH 建连与指纹、测试连接一次性 isolate、`sftpTrace` 开关） |
 | `frontend/lib/data/sources/sftp_direct_transport.dart` | 新增：旧直连传输实现（行为与改动前一致） |
-| `frontend/lib/data/sources/sftp_worker.dart` | 新增：worker 入口、RPC、流控、`SftpIsolateTransport`、空闲回收 |
-| `frontend/lib/data/sources/sftp_direct_source.dart` | 改造：业务逻辑走 `SftpTransport`；扫描 isolate 不变；缓存让出节拍改为仅旧直连启用 |
+| `frontend/lib/data/sources/sftp_worker.dart` | 新增：worker 入口、RPC、64KB 读流水线、`_WorkerReadGate` 读调度、并发 spawn 去重、`SftpIsolateTransport`、空闲回收 |
+| `frontend/lib/data/sources/sftp_direct_source.dart` | 改造：业务逻辑走 `SftpTransport`；测试连接走一次性 isolate；扫描 isolate 不变；缓存让出节拍改为仅旧直连启用 |
 | `frontend/lib/data/sources/meta_enrich.dart` | 让出节拍改为仅旧直连启用 |
 | `frontend/lib/providers/direct_source_manager.dart` | 备用源缓存、删除/重载/dispose 时关闭会话 |
 
@@ -122,8 +128,10 @@ flutter build hap --dart-define=SFTP_WORKER_ISOLATE=true
 
 - [x] 第一步：worker isolate 与传输抽象落地（Android/桌面/iOS 启用，OHOS 保留旧直连）。
   - 已在 Linux 上用本地 SFTP 服务端做协议冒烟：worker 启动、全量读、Range 读、上传（跨批/跨块）、建目录、删除文件、关闭，全部通过。
-- [ ] OHOS PoC：真机 spawn 长活 isolate，验证 10 分钟以上播放/补读/上传后 UI 无 `THREAD_BLOCK_6S`，再打开 `SFTP_WORKER_ISOLATE=true`。
-- [ ] 上传断线重试：当前上传不自动重试（字节流一次性），失败后由调用方重新打开源文件再传；可考虑 worker 内暂存最近批次做幂等重放。
+- [x] worker 生命周期与诊断收口（`7960b30`）：并发 spawn 去重 / `close()` 竞态回收、测试连接 `Isolate.run` 化、`SFTP_WORKER_TRACE` 日志开关。
+- [x] OHOS worker 真机 PoC 核心链路（`fe7def7`）：spawn / 流播 / seek 精准落点 / 快速连点；读调度闸门把 seek 的 `open` 从 3.5s 收到毫秒级。
+- [ ] OHOS 默认切换：完成 10 分钟级播放 + 补读 + 上传 soak、无 `THREAD_BLOCK_6S` 后，把 OHOS 默认切到 worker（保留 `--dart-define` 一键回退）。
+- [x] 上传断线续传（worker 路径）：每批带绝对偏移发送；连接类失败自动重连一次——已有确认落盘的数据时以 `truncate: false` 重开会话并重放最后一批（相同字节覆盖写，幂等），否则重新截断从头来。业务错误（权限/不存在）不重试、原样抛出。本地故障注入冒烟通过（8MB 上传中途掐线，重连续传后读回逐字节一致）。旧直连路径仍不重试（见 §8）。
 - [ ] worker 崩溃自动降级：连续启动失败时回退旧直连并记录日志。
 - [ ] 多源并发上限：多 SFTP 源同时活动时限制 worker 数量/带宽，避免互相抢网络。
 
@@ -148,17 +156,18 @@ flutter build hap --dart-define=SFTP_WORKER_ISOLATE=true
 
 ### 6.3 OHOS PoC
 
-在 `SftpWorker.enabled` 为 false 的默认构建验证旧直连行为不回退；再用：
+已完成（真机，`flutter build hap --dart-define=SFTP_WORKER_ISOLATE=true`）：
 
-```bash
-flutter build hap --dart-define=SFTP_WORKER_ISOLATE=true
-```
+- worker 稳定启动（`Isolate.spawn` + 长活 ReceivePort），无 THREAD_BLOCK 类强杀；
+- 流播正常；seek 精准落点（46.7% 目标点 `open` 9ms 返回、10 秒后位置=目标+播放时长）；
+- 快速连点 6 次落点仍准确，无归零 / 卡旧值；
+- 期间修复：并发 spawn 去重、读调度闸门（见 §5）。
 
-观察：
+待完成（切换 OHOS 默认前）：
 
-- worker 能否稳定启动（`Isolate.spawn` + 长活 ReceivePort）；
-- 长时间播放/补读后是否出现线程强杀、isolate 崩溃；
-- 若失败，记录 `SFTP worker 启动失败`/`意外退出` 日志，保持默认 false 即可。
+- 10 分钟以上连续播放 + 全库元数据补读 + 上传 / 删除，确认无 `THREAD_BLOCK_6S`；
+- 排查可加 `--dart-define=SFTP_WORKER_TRACE=true` 看 `[sftp-worker]` 生命周期日志；
+- 通过后切换默认；若失败，默认保持 false 即走旧直连，或用编译期开关回退。
 
 ## 7. 回滚
 
@@ -167,6 +176,13 @@ flutter build hap --dart-define=SFTP_WORKER_ISOLATE=true
 
 ## 8. 已知限制
 
-- 上传不自动重试（一次性字节流），断线后需调用方重发；
+- 上传断线续传只覆盖 worker 路径；旧直连（OHOS 默认未切 worker 时生效）仍是一次性字节流，断线后需调用方重发；
 - 未给单个 worker 设置带宽上限，非常快的网络下 worker 会尽量占带宽，但只影响该源，不影响 UI isolate；
 - 打开但从未被监听的读流仍会持有远端句柄，直到 worker 空闲回收；正常播放/补读路径都会监听或取消。
+
+## 9. 更新记录
+
+- 2026-10-19 `80deaee`：第一步落地（worker isolate + 传输抽象 + 生命周期收口）。
+- 2026-10-19 `7960b30`：并发 spawn 去重与 `close()` 竞态回收；测试连接 `Isolate.run` 化；`SFTP_WORKER_TRACE` 日志开关。
+- 2026-10-20 `fe7def7`：读调度闸门（控制请求优先 + 全局在飞读上限 4）、64KB 读流水线、已知大小时 `open` 跳过 `stat`；鸿蒙真机流播 / seek 验证。
+- 2026-10-20 待提交：worker 路径上传断线续传（绝对偏移批写 + 一次重连 + 最后一批幂等重放）；本地故障注入冒烟通过。
