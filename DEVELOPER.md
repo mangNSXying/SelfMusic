@@ -784,7 +784,7 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 其他鸿蒙配置事实（2026-09 收尾两连修，真机已验收）：
 
 - 横竖屏：module.json5 abilities 的 `orientation` 字段 **fork 模板默认缺失 = 窗口不随传感器旋转**（与 Android manifest 无 screenOrientation 的行为不一致，勿想当然）；补 `"orientation": "auto_rotation"` 即放行（Flutter 侧 `player_screen.dart` 横屏分支本就存在，纯配置层问题），控制中心旋转锁定关闭时横屏 UI 正常触发。HAP 内 module.json 可明文核对该字段
-- 应用图标：`AppScope/resources/base/media/app_icon.png` + `entry/src/main/resources/base/media/icon.png` 两个文件（模板默认 = Flutter 默认图 144×144），直接覆盖内容即可，`$media:app_icon`/`$media:icon` 引用与资源 ID 不动；图标源 `frontend/assets/selfmusic.png`（1277×1287 满铺圆角+透明四角）整幅缩放 288×288，非等比畸变 0.8% 不可见
+- 应用图标：`AppScope/resources/base/media/app_icon.png` + `entry/src/main/resources/base/media/icon.png` 两个文件（模板默认 = Flutter 默认图 144×144），直接覆盖内容即可，`$media:app_icon`/`$media:icon` 引用与资源 ID 不动；图标源 = 仓库根 `selfmusic-sharp.png`（2026-10 起，1024×1024 / 841 KB / 32bpp 带透明；hvigor 打包会自动重编码压至 512×512 / 238 KB 进 HAP，无需手动缩放；2026-10-19 MatePad Air 真机复验通过：桌面/启动/主界面）；旧源 `frontend/assets/selfmusic.png` 288×288 圆角方案弃用，Flutter 侧资产文件保留未动
 
 通知栏媒体播控（AVSession 桥，2026-09-29 真机验收）：
 
