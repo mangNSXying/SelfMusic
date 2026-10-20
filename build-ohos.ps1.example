@@ -1,4 +1,7 @@
 ﻿# 鸿蒙出包脚本（模板，入库；本机副本不入库）
+# 产物统一命名：SelfMusic_<版本>_ohos_<架构>_release.<扩展名>
+#   .\build-ohos.ps1          AGC 发布签名 .app（arm64）→ SelfMusic_<版本>_ohos_arm64_release.app
+#   .\build-ohos.ps1 hap      release 双架构 HAP（arm64/x64）→ SelfMusic_<版本>_ohos_arm64-x64_release.hap
 # 复制为 build-ohos.ps1 后改下面的工具链路径：
 #   Copy-Item build-ohos.ps1.example build-ohos.ps1
 #   notepad build-ohos.ps1
@@ -12,6 +15,33 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-Location -Path (Join-Path $PSScriptRoot 'frontend')
+$Frontend = (Get-Location).Path
+
+# ---- 产物统一命名：SelfMusic_<版本>_ohos_<架构>_release.<扩展名> ----
+$AppName = 'SelfMusic'
+$Mode = 'release'
+$Pubspec = Get-Content (Join-Path $Frontend 'pubspec.yaml') -Raw
+$VersionMatch = [regex]::Match($Pubspec, '(?m)^version:\s*([^\s#]+)')
+$Version = if ($VersionMatch.Success) {
+    $VersionMatch.Groups[1].Value.Split('+')[0]
+}
+else {
+    '0.0.0'
+}
+$DistDir = Join-Path $Frontend 'build\dist'
+New-Item -ItemType Directory -Path $DistDir -Force | Out-Null
+
+function Copy-Artifact([string]$Source, [string]$Arch) {
+    if (-not (Test-Path $Source)) {
+        throw "构建产物缺失：$Source"
+    }
+    $Ext = [System.IO.Path]::GetExtension($Source)
+    $Dest = Join-Path $DistDir "${AppName}_${Version}_ohos_${Arch}_${Mode}${Ext}"
+    Copy-Item -Path $Source -Destination $Dest -Force
+    Write-Host "出包完成：$Dest"
+    $Hash = (Get-FileHash $Dest -Algorithm SHA256).Hash.ToLower()
+    Write-Host "SHA256：$Hash"
+}
 
 # 本机工具链路径（换机器改这里）
 # FLUTTER 指向 ohos 分支的 flutter.bat（stable 与 Harmony fork 两套 SDK 可并存，
@@ -37,7 +67,11 @@ if ($Target -ne 'app' -and $Target -ne 'hap') {
 # ohos-arm-release\armeabi_v7a_release.har 缺失会让 ohpm install 直接失败。
 if ($Target -eq 'hap') {
     & $Flutter build hap --release --target-platform ohos-arm64 --target-platform ohos-x64
-    exit $LASTEXITCODE
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+    Copy-Artifact (Join-Path $Frontend 'build\ohos\hap\entry-default-signed.hap') 'arm64-x64'
+    exit 0
 }
 
 # ---- app：临时切发布签名 - 出包 - 无条件还原 ----
@@ -92,6 +126,6 @@ finally {
 }
 
 if ($ExitCode -eq 0) {
-    Write-Host '出包完成：frontend\build\ohos\app\ohos-default-signed.app'
+    Copy-Artifact (Join-Path $Frontend 'build\ohos\app\ohos-default-signed.app') 'arm64'
 }
 exit $ExitCode

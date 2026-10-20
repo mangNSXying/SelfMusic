@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 打 Linux 桌面 release 包（按本机架构自动选 x64 / arm64）。
-# 产物：frontend/build/dist/SelfMusic-<版本>-linux-<架构>-<时间戳>.tar.gz
+# 产物：frontend/build/dist/SelfMusic_<版本>_linux_<架构>_release.tar.gz
 # 音频后端 libmpv 随包分发，目标机无需另装 mpv。
 # 构建机依赖：clang / cmake / ninja / pkg-config / libgtk-3-dev（缺什么 flutter doctor 会提示）。
 # 源文件不入库，模板见本文件；复制为 build-linux.sh 后按需改分发段。
@@ -12,6 +12,7 @@ cd "$(dirname "$0")/frontend"
 # 用 FVM 等独立 SDK 时改成对应的 flutter 可执行文件路径。
 FLUTTER_BIN=${FLUTTER_BIN:-flutter}
 STAMP="$(date +%Y%m%d-%H%M%S)"
+MODE=release
 
 case "$(uname -m)" in
     x86_64 | amd64) ARCH=x64 ;;
@@ -38,7 +39,7 @@ fi
 
 DIST_DIR="${DIST_DIR:-build/dist}"
 mkdir -p "$DIST_DIR"
-ARCHIVE="$DIST_DIR/SelfMusic-$VERSION-linux-$ARCH-$STAMP.tar.gz"
+ARCHIVE="$DIST_DIR/SelfMusic_${VERSION}_linux_${ARCH}_${MODE}.tar.gz"
 tar -C "$BUNDLE_DIR" -czf "$ARCHIVE" .
 
 echo "出包完成：$(pwd)/$ARCHIVE"
