@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
+import '../widgets/count_header.dart';
 import '../widgets/draggable_sheet.dart';
 import '../widgets/row_list.dart';
 import '../widgets/song_list.dart';
@@ -246,6 +247,8 @@ class _QueuePanelState extends State<QueuePanel> {
                   ],
                 ),
               ),
+              // 计数栏：与窄屏窗口标题栏同一组件（[CountHeader]）。
+              CountHeader(count: queue.length),
               const Divider(height: 1),
               Expanded(
                 child: queue.isEmpty
