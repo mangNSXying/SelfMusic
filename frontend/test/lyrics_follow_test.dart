@@ -107,6 +107,25 @@ void main() {
     await tester.pump();
   }
 
+  testWidgets('列表未挂载时位置事件不得访问 ScrollPosition', (tester) async {
+    // 切到无歌词/纯文本/加载态时 ListView 会被移除，ScrollController 随之
+    // detach。若此前位置事件已安排帧末跟焦，回调里先读 `_scroll.position`
+    // 会抛 "ScrollController not attached to any scroll views"。
+    final pos = StreamController<Duration>();
+    final player = playerWithLyrics(pos.stream);
+    await pumpLyrics(tester, player);
+
+    pos.add(_posOf(5)); // 先安排一次帧末跟焦
+    await tester.idle(); // 只投递流事件，不进入帧
+    player.debugApplyLyrics(''); // 帧前切到空态，移除 ListView
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+
+    await pos.close();
+    player.dispose();
+  });
+
   testWidgets('目标行在首屏外：首次跟焦即回中（改进.txt 卡死回归）', (tester) async {
     final pos = StreamController<Duration>();
     final player = playerWithLyrics(pos.stream);

@@ -281,8 +281,10 @@ class _LyricsViewState extends State<LyricsView> {
   void _followCurrent({bool quick = false}) {
     if (!mounted || _followSuppressed) return;
     final idx = _current;
-    final pos = _scroll.position;
+    // 必须先确认已挂载：切到加载/纯文本/空态时 ListView 已被移除，此时读取
+    // `position` 会抛 "ScrollController not attached to any scroll views"。
     if (idx < 0 || !_scroll.hasClients) return;
+    final pos = _scroll.position;
     // 视口/内容尺寸未就绪时算出的目标偏移不可信，等下一次触发。
     if (!pos.hasViewportDimension || !pos.hasContentDimensions) return;
 
