@@ -541,7 +541,8 @@ class LocalIndex {
   /// 让补读用修复后的解析重取。每次启动都跑，自动清理存量半图。
   ///
   /// 目录遍历与逐文件校验（同步 IO，封面目录可能上万文件）放后台 isolate；
-  /// 原来在主 isolate 分块让出事件循环仍会穿插卡 UI。ohos 无子 isolate 退化为内联。
+  /// 原来在主 isolate 分块让出事件循环仍会穿插卡 UI。ohos 当前经
+  /// `runOffThread` 的历史守卫内联（子 isolate 实际可用，见 `off_thread.dart`）。
   Future<int> cleanupInvalidCovers() async {
     final root = _dir;
     if (root == null || _db == null) return 0;

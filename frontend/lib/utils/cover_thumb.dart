@@ -103,8 +103,9 @@ Future<void> ensureCoverThumb(String coverPath) async {
   try {
     final src = File(coverPath);
     if (!src.existsSync()) return;
-    // ohos：解码/EXIF/缩放/编码全部下沉任务池/Worker 独立线程——fork 引擎上
-    // 子 isolate 也会卡 UI（spec R-1），主 isolate 亦不读原图字节、不跑管线。
+    // ohos：解码/EXIF/缩放/编码全部下沉任务池/Worker 独立线程。早期观察到的
+    // UI 块来自 runOffThread 当时的 OHOS 内联守卫（不是子 isolate 本身）；
+    // 原生管线保留：系统解码/编码更快，且主 isolate 不读原图字节、不跑管线。
     // 测试开关仅供 flutter_test 在非 ohos 宿主覆盖该分支（plan.md R-7）。
     if (Platform.operatingSystem == 'ohos' || forceNativeThumbInTests) {
       final sw = Stopwatch()..start();

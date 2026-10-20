@@ -6,10 +6,11 @@ typedef ChunkYield = Future<void> Function();
 /// 把一段可切分的纯 Dart 重活按 [chunkSize] 分片执行，每片之间 [yieldTo]
 /// 让出 UI isolate 事件循环，避免长同步块独占线程造成滑动/过渡动画长帧。
 ///
-/// 为什么需要它：fork 引擎在 ohos 上无法可靠 spawn 子 isolate（`runOffThread`
-/// 退化为同 isolate 内联执行，见 `utils/off_thread.dart`），Dart 侧只剩「分帧
-/// 让出」这条路（plan.md R-5）。本工具把整块循环切成小片，让出后引擎才有机会
-/// 处理动画/输入事件。
+/// 为什么需要它：根 isolate 上的可切分纯 Dart 重活如果一次性跑完，会长时间
+/// 独占 UI 事件循环（OHOS 还会触发 `THREAD_BLOCK_6S`）。子 isolate 本身可用
+/// （见 `runScan` 与 SFTP worker），但平台通道、不可发送对象、小任务仍适合
+/// 留在根 isolate——此时用「分帧让出」把整块循环切成小片，让出后引擎才有机会
+/// 处理动画/输入事件（plan.md R-5）。
 ///
 /// 语义：同步遍历 [0, length)，每 [chunkSize] 个调用一次 [process]；分片之间
 /// `await yieldTo()`。**幂等**——不修改外部状态，重复调用结果一致；**可中断**——

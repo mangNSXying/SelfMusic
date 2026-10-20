@@ -16,13 +16,15 @@ import 'package:flutter/services.dart';
 ///   幂等激活（同 URI 单飞 + 成功缓存）；
 /// - 蓝牙：[requestBluetoothPermission] / [hasBluetoothPermission] /
 ///   [listBondedDevices] / [connectedDevices]；
-/// - 封面缩略图：[makeCoverThumb]（@ohos.multimedia.image 原生管线——fork
-///   引擎无子 isolate、`runOffThread` 在 ohos 内联，纯 Dart 编码会阻塞 UI
-///   isolate，解码/缩放/编码/写盘全部下沉 ArkTS 侧）；
+/// - 封面缩略图：[makeCoverThumb]（@ohos.multimedia.image 原生管线——当时
+///   `runOffThread` 在 ohos 内联（历史守卫，不是引擎不能 spawn 子 isolate），
+///   纯 Dart 编码会阻塞 UI isolate；原生管线保留：系统解码/编码更快，且解码/
+///   缩放/编码/写盘全部下沉 ArkTS 侧）；
 /// - 音频元数据：[extractAudioMeta]（2026-10-11 ohos-meta-enrich-native feature
-///   ——同样因 fork 引擎无子 isolate、`runOffThread` 在 ohos 内联，纯 Dart
-///   标签解析/封面提取会以秒级同步块独占主线程，下沉 ArkTS `@Concurrent` 任务池
-///   的 `AVMetadataExtractor` 管线，Dart 只收结构化结果并落库）。
+///   ——同样因当时 `runOffThread` 在 ohos 内联，纯 Dart 标签解析/封面提取会以
+///   秒级同步块独占主线程，下沉 ArkTS `@Concurrent` 任务池的
+///   `AVMetadataExtractor` 管线，Dart 只收结构化结果并落库；原生管线保留：
+///   系统解析更快且不把大文件读进 Dart）。
 ///
 /// 仅被 `isOhos` 分支调用（Android/桌面走各自实现，零回归）。
 ///
@@ -298,7 +300,7 @@ class OhosPlatformBridge {
   ///
   /// 失败兜底（plan.md R-5）：[PlatformException] / [MissingPluginException] /
   /// [TimeoutException] 与 false/ok=false 返回一律 debugPrint 诊断日志后返回
-  /// 失败，**绝不抛出、绝不回退内联 Dart 编码**（fork 引擎上等于把数百 ms UI 块
+  /// 失败，**绝不抛出、绝不回退内联 Dart 编码**（根 isolate 上等于把数百 ms UI 块
   /// 请回来）——调用方按「缩略图是纯优化」静默回原图显示。15s 超时上限覆盖
   /// 原生解码大图的合法秒级耗时，超时后本轮放弃、下次触发重试；[timeout]
   /// 仅供测试注入。

@@ -18,8 +18,9 @@ import 'schema.dart';
 ///
 /// 目标（DEVELOPER.md「客户端本地数据层」：启动磁盘 I/O 风暴修复）：
 /// 1. 写/fsync 不与 UI 帧竞争——桌面/移动常规平台经后台 isolate（见
-///    [_IsolateDbWriter]）离开 UI 线程；ohos 因引擎/包限制退化为同 isolate
-///    内联写（见 [_InlineDbWriter] 头注释）；
+///    [_IsolateDbWriter]）离开 UI 线程；ohos 当前退化为同 isolate 内联写
+///    （见 [_InlineDbWriter] 头注释；原因是 sqlite3 override 不跨 isolate，
+///    不是引擎不能 spawn）；
 /// 2. 队列内多条语句自动合并为**单个事务**（WAL 下一次顺序追加 + 一次 checkpoint
 ///    fsync），把「逐行 autocommit 的几万次小块写」收敛成少量大块顺序写；
 /// 3. `PRAGMA synchronous=NORMAL`：WAL 模式下仅 checkpoint 才 fsync。
@@ -30,8 +31,9 @@ abstract class DbWriter {
   /// 启动并初始化写层。
   ///
   /// - 非 ohos：后台写隔离 [_IsolateDbWriter]（fsync/写盘离开 UI 线程）。
-  /// - ohos：同 isolate 内联写 [_InlineDbWriter]（fork 引擎上跨 isolate 方案
-  ///   不可用，见该类头注释——曾致 main() 挂死、白屏）。
+  /// - ohos：同 isolate 内联写 [_InlineDbWriter]（子 isolate 内 sqlite3 加载
+  ///   失败且 init 无超时，曾致 main() 挂死、白屏；不是引擎不能 spawn，见该类
+  ///   头注释）。
   ///
   /// print 分段日志：写层是启动链白屏排查的关键分段，本文件保持纯 Dart
   /// 不依赖 foundation，故用 print。
@@ -218,20 +220,23 @@ class _IsolateDbWriter implements DbWriter {
 /// ohos 上的写层退化实现：同 isolate 第二条连接直写（PoC 级）。
 ///
 /// 为什么不用写隔离（真机取证 2026-09，白屏根因链第二层）：
-/// 1. `open.overrideForAll`（setupOhos 注入的 libsqlite3.so 加载）是库级
-///    可变状态，**不随 Isolate.spawn 进入子 isolate**——子 isolate 里
+/// 1. `open.overrideForAll`（setupOhos 注入的 libsqlite3.so 加载）是 isolate
+///    局部状态，**不随 Isolate.spawn 进入子 isolate**——子 isolate 里
 ///    `sqlite3.open` 走默认加载器，'ohos' 不在 sqlite3 2.9.4 的已知平台
 ///    枚举内，必抛 `UnsupportedError`（load_library.dart `_defaultOpen`）；
-/// 2. fork 引擎（HAR 1.0.0-4cbeea6a36f1）上子 isolate 能否可靠拉起存疑
-///    （VM service 实测 isolate 组内无子 isolate 成员）。
-/// 两者叠加：写隔离的 init 回执必然失败/缺席，而 [DbWriter.start] 位于
-/// main() 的 await 链上（无兜底）→ runApp 永不执行 → 永久白屏。
+/// 2. 当时没有验证子 isolate 的启动回执，且 [DbWriter.start] 位于 main() 的
+///    await 链上（无超时、无兜底）——init 失败即 runApp 永不执行 → 永久白屏。
+///
+/// 2026-10-20 更正：第 1 条是真实原因；第 2 条不是「引擎不能 spawn」——
+/// `runScan` 自 2026-09 起就在 OHOS 用 `Isolate.spawn` 跑扫描，SFTP 长活
+/// worker 也在 2026-10 通过真机验证。后续在 `openIsolateDatabase` 内为子
+/// isolate 重新注入 OHOS override，并给 [DbWriter.start] 加启动超时/内联兜底
+/// 后，可切回 [_IsolateDbWriter]。
 ///
 /// PoC 取舍：写在本 isolate 同步执行。WAL 下与主读连接并发安全
 /// （busy_timeout=30s），复合操作复用隔离版的 `_runOp`/`_runOpBatch`；
 /// 写盘占用 UI 线程的窗口已按「批量分片 + 片间让出事件循环」压缩
 /// （见 [opBatch]，同步 pull 的千级快照行不再是一个巨型同步块）。
-/// 正式版随引擎 isolate 修复切回 [_IsolateDbWriter]。
 class _InlineDbWriter implements DbWriter {
   _InlineDbWriter._(this._db);
 
@@ -360,9 +365,14 @@ class _InlineDbWriter implements DbWriter {
 
 /// 在后台 isolate 内打开数据库连接（写隔离与后台读快照共用）。
 ///
-/// 后台 isolate 拿不到主 isolate 的 `open.overrideFor`（测试即如此覆盖）；
-/// Linux 发行版又常只有 `libsqlite3.so.0` 而无 `-dev` 符号链接，sqlite3
-/// 包默认只试前者。故在此按候选名解析一次，保证后台 isolate 在任何平台都能起库。
+/// 后台 isolate 拿不到主 isolate 的 `open.overrideForAll`；Linux 发行版又常
+/// 只有 `libsqlite3.so.0` 而无 `-dev` 符号链接，sqlite3 包默认只试前者。
+/// 故在此按候选名解析一次，保证后台 isolate 在任何平台都能起库。
+///
+/// 注意：OHOS 尚未在此注入 `libsqlite3.so` override（sqlite3 2.9.4 的
+/// `OperatingSystem` 枚举没有 ohos，子 isolate 会走默认加载器并抛
+/// `UnsupportedError`）。这是 `runOffThread` 当前在 OHOS 保持内联的原因；
+/// 不是引擎不能 spawn 子 isolate。
 Database openIsolateDatabase(String path) {
   if (Platform.isLinux) {
     open.overrideFor(OperatingSystem.linux, () {

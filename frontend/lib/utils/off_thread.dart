@@ -11,8 +11,11 @@ bool forceOffThreadIsolateInTests = false;
 /// 把纯 Dart 重活（JSON 编解码、大列表建模/分组、目录遍历）放到后台 isolate，
 /// 避免阻塞 UI isolate。
 ///
-/// ohos：fork 引擎不能可靠 spawn 子 isolate（见 db_writer 的
-/// `_InlineDbWriter` 头注释），退化为同 isolate 执行——与写层口径一致。
+/// ohos：当前仍内联，但**不是引擎不能 spawn 子 isolate**——这是历史守卫。
+/// 2026-10-20 已由 `runScan`（长期使用 `Isolate.spawn`）与 SFTP 长活 worker
+/// 证伪「无子 isolate」。去掉该守卫前，必须先让 `openIsolateDatabase` 在子
+/// isolate 内重新注入 sqlite3 的 OHOS override，否则后台读快照会
+/// `UnsupportedError`（见 db_writer 的 `_InlineDbWriter` 头注释）。
 /// 测试环境默认同样内联（见 [forceOffThreadIsolateInTests]）。
 ///
 /// **调用点复核（R-5，T014）**：全部调用点均为**启动/刷新/落库后处理**，不在
