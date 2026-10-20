@@ -18,6 +18,14 @@ class AppShell extends StatefulWidget {
   final Widget content;
   const AppShell({super.key, required this.content});
 
+  /// 宽屏判定（UI10）：宽 ≥900，或横屏（宽>高）一律按桌面布局
+  ///（常驻可收缩侧边栏 + 右队列槽 + 内容多列自适应）。
+  /// 竖屏窄屏仍走抽屉。宽屏内容区整页详情也按同一口径分流。
+  static bool isWide(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    return size.width >= 900 || size.width > size.height;
+  }
+
   @override
   State<AppShell> createState() => _AppShellState();
 }
@@ -35,16 +43,8 @@ class _AppShellState extends State<AppShell> {
     _gate = InteractionGate.maybeOf(context);
   }
 
-  /// 宽屏判定（UI10）：宽 ≥900，或横屏（宽>高）一律按桌面布局
-  ///（常驻可收缩侧边栏 + 右队列槽 + 内容多列自适应）。
-  /// 竖屏窄屏仍走抽屉。
-  static bool isWide(BuildContext context) {
-    final size = MediaQuery.sizeOf(context);
-    return size.width >= 900 || size.width > size.height;
-  }
-
   void _toggleSidebar() {
-    if (!isWide(context)) {
+    if (!AppShell.isWide(context)) {
       _scaffoldKey.currentState?.openDrawer();
     } else {
       setState(() => _sidebarVisible = !_sidebarVisible);
@@ -69,7 +69,7 @@ class _AppShellState extends State<AppShell> {
 
   @override
   Widget build(BuildContext context) {
-    final wide = isWide(context);
+    final wide = AppShell.isWide(context);
     // 订阅收窄（T005）：布局壳只关注队列面板开合；区段/搜索/播放页等变更
     // 不再牵连整壳重建。
     final nav = context.read<NavigationProvider>();

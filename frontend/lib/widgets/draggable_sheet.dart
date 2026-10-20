@@ -193,23 +193,34 @@ class _AppSheetHeaderDelegate extends SliverPersistentHeaderDelegate {
 /// 长标题单行省略号，钉死后不溢出/不抖动。专辑 / 歌手 / 队列三个弹层共用，
 /// 保证头部同构；关闭按钮经 [AppSheetScope.closeOf] 收起窗口（路由/悬浮层由
 /// 各自启动器注入 scope）。
+///
+/// 宽屏详情页复用同一标题栏：无 [AppSheetScope]（无尺寸控制器）时自动不画
+/// 拖拽把手、[heightOf] 同步少去把手占位；用 [leading] 换成返回箭头并关掉
+/// [showClose] 即可，其余（标题/计数/分隔线）与弹层一致。
 class AppSheetTitleBar extends StatelessWidget {
   const AppSheetTitleBar({
     super.key,
     required this.title,
     required this.count,
     this.unit = '首',
+    this.leading,
+    this.showClose = true,
   });
 
   final String title;
   final int count;
   final String unit;
 
-  /// 标题栏总高：8+4（拖拽把手）+ 8 上边距 + 标题行（关闭按钮不小于最小点按
-  /// 尺寸）+ 4 下边距 + 计数头 + 分隔线。
+  /// 标题行最左侧的附加控件（宽屏详情页放返回箭头；弹层为 null）。
+  final Widget? leading;
+
+  /// 是否显示右侧关闭按钮（宽屏详情页用返回箭头，置 false）。
+  final bool showClose;
+
+  /// 标题栏总高：8+4（拖拽把手，仅弹层）+ 8 上边距 + 标题行（关闭按钮不小于
+  /// 最小点按尺寸）+ 4 下边距 + 计数头 + 分隔线。
   static double heightOf(BuildContext context) =>
-      8 +
-      4 +
+      (AppSheetScope.controllerOf(context) == null ? 0 : 8 + 4) +
       8 +
       math.max(kMinInteractiveDimension, _lineHeight(context)) +
       4 +
@@ -236,6 +247,7 @@ class AppSheetTitleBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     // 尺寸控制器（经 [AppSheetScope] 下发）：头部当抓手拖动时直接改窗口高度。
+    // 无控制器 = 整页形态（宽屏详情页）：不画把手，也少去把手占位。
     final controller = AppSheetScope.controllerOf(context);
     // 用 [heightOf] 固定总高：钉住的 head 声明高度须与子树实际高度严格一致，
     // 否则 SliverPersistentHeader 会因 layoutExtent/paintExtent 不等而断言。
@@ -254,23 +266,25 @@ class AppSheetTitleBar extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             // 拖拽把手（视觉提示；整头都是拖拽/滚动入口）。
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Container(
-                key: const ValueKey('app_sheet_handle'),
-                width: 36,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: cs.outlineVariant,
-                  borderRadius: BorderRadius.circular(2),
+            if (controller != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Container(
+                  key: const ValueKey('app_sheet_handle'),
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: cs.outlineVariant,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
                 ),
               ),
-            ),
-            // 标题行：单行省略 + 关闭按钮。
+            // 标题行：单行省略 + 关闭按钮（整页形态：返回箭头，无关闭按钮）。
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 4, 4),
+              padding: EdgeInsets.fromLTRB(leading == null ? 16 : 4, 8, 4, 4),
               child: Row(
                 children: [
+                  if (leading != null) leading!,
                   Expanded(
                     child: Text(
                       title,
@@ -279,10 +293,11 @@ class AppSheetTitleBar extends StatelessWidget {
                       style: _titleStyle(context),
                     ),
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.close),
-                    onPressed: () => AppSheetScope.closeOf(context),
-                  ),
+                  if (showClose)
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => AppSheetScope.closeOf(context),
+                    ),
                 ],
               ),
             ),
