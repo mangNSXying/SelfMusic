@@ -9,15 +9,13 @@ import 'package:url_launcher/url_launcher.dart';
 import '../platform/email_share.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
 import '../platform/harmonyos/ohos_platform_bridge.dart';
+import '../utils/app_version.dart';
 import '../utils/build_stamp.dart';
 import '../widgets/app_toast.dart';
 import '../services/log_buffer.dart';
 
 /// 反馈收信人。
 const String kFeedbackEmail = 'kon@shamiko.site';
-
-/// 应用版本：与 `pubspec.yaml` 的 `version` 保持一致（改版本时同步改这里）。
-const String kAppVersion = '1.0.1+3';
 
 /// 侧边栏「关于软件」页：展示软件图标与名字 + 反馈入口。
 class AboutScreen extends StatelessWidget {
@@ -27,9 +25,6 @@ class AboutScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final versionLabel = kBuildStamp.isNotEmpty
-        ? '版本 $kAppVersion（$kBuildStamp）'
-        : '版本 $kAppVersion';
     return Scaffold(
       appBar: AppBar(title: const Text('关于软件')),
       body: ListView(
@@ -58,10 +53,20 @@ class AboutScreen extends StatelessWidget {
                       ?.copyWith(fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  versionLabel,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: cs.onSurface.withValues(alpha: 0.6)),
+                FutureBuilder<String>(
+                  future: AppVersion.load(),
+                  builder: (context, snapshot) {
+                    final version = snapshot.data ?? '…';
+                    // final versionlabel = '版本 $version';
+                    final versionLabel = kBuildStamp.isNotEmpty
+                        ? '版本 $version（$kBuildStamp）'
+                        : '版本 $version';
+                    return Text(
+                      versionLabel,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: cs.onSurface.withValues(alpha: 0.6)),
+                    );
+                  },
                 ),
               ],
             ),
@@ -129,8 +134,9 @@ class AboutScreen extends StatelessWidget {
     );
     if (!context.mounted) return;
 
+    final appVersion = await AppVersion.load();
     final meta =
-        'SelfMusic $kAppVersion${kBuildStamp.isNotEmpty ? '（$kBuildStamp）' : ''} · ${Platform.operatingSystem} ${Platform.operatingSystemVersion}';
+        'SelfMusic $appVersion${kBuildStamp.isNotEmpty ? '（$kBuildStamp）' : ''} · ${Platform.operatingSystem} ${Platform.operatingSystemVersion}';
 
     String extraBody = '';
     if (includeLogs == true) {
