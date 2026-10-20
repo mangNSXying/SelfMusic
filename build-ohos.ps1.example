@@ -42,13 +42,31 @@ if ($Target -eq 'hap') {
 
 # ---- app：临时切发布签名 - 出包 - 无条件还原 ----
 # release.cer / release.p7b 放 %USERPROFILE%\.ohos\config\，由 AGC 签发。
-# 脚本只把 build-profile.json5 里的 default_ohos_*.cer / *.p7b 换成 release.*，
-# storeFile、keyAlias 保持 debug 侧原值；出包结束（含失败）无条件还原原文件。
+# 脚本只换 build-profile.json5 里的 certpath/profile 两个字段，storeFile、keyAlias、
+# 密码保持 debug 侧原值；出包结束（含失败）无条件还原原文件。
+# 注意：不能按 default_ohos_* 文件名匹配——DevEco 自动签名写的可能是
+# debug-shared.cer / debug.p7b，按文件名替换会静默失效，最终拿 debug Profile 出包。
 $ConfigDir = Join-Path $env:USERPROFILE '.ohos\config'
-if (-not (Test-Path (Join-Path $ConfigDir 'release.cer'))) {
-    Write-Host "[缺发布材料] $ConfigDir\release.cer 不存在"
+$ReleaseCer = Join-Path $ConfigDir 'release.cer'
+$ReleaseProfile = Join-Path $ConfigDir 'release.p7b'
+$Missing = @($ReleaseCer, $ReleaseProfile) | Where-Object { -not (Test-Path $_) }
+if ($Missing) {
+    $Missing | ForEach-Object { Write-Host "[缺发布材料] $_ 不存在" }
     Write-Host '先在 AGC 签发发布证书/发布 Profile，命名为 release.cer / release.p7b 放入上述目录'
     exit 1
+}
+
+# AGC 7014：包内权限必须是 Profile 申请权限的子集。
+# FILE_ACCESS_PERSIST 是 ACL 权限，module.json5 里有还不够，release.p7b 的
+# acls.allowed-acls 里也必须有；缺了会在上传时报「Profile文件内不存在」。
+$ModuleJson = Get-Content (Join-Path (Get-Location) 'ohos\entry\src\main\module.json5') -Raw
+$ProfileText = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($ReleaseProfile))
+if ($ModuleJson -match 'ohos\.permission\.FILE_ACCESS_PERSIST' -and
+    $ProfileText -notmatch 'ohos\.permission\.FILE_ACCESS_PERSIST') {
+    Write-Host '[警告] release.p7b 的 ACL 权限未包含 ohos.permission.FILE_ACCESS_PERSIST'
+    Write-Host '       AGC 上传会报 7014（Profile 文件内不存在）。'
+    Write-Host '       请到 AGC 编辑/新建发布 Profile，在 ACL（受限）权限中勾选该权限，'
+    Write-Host '       重新下载 release.p7b 覆盖后重跑本脚本。'
 }
 
 $Profile = Join-Path (Get-Location) 'ohos\build-profile.json5'
@@ -57,9 +75,15 @@ Copy-Item -Path $Profile -Destination $Backup -Force
 
 try {
     $Text = [System.IO.File]::ReadAllText($Profile)
-    $Text = $Text -replace 'default_ohos_[^\\]+\.cer', 'release.cer' `
-        -replace 'default_ohos_[^\\]+\.p7b', 'release.p7b'
-    [System.IO.File]::WriteAllText($Profile, $Text, (New-Object System.Text.UTF8Encoding($false)))
+    $CerPath = $ReleaseCer -replace '\\', '/'
+    $ProfilePath = $ReleaseProfile -replace '\\', '/'
+    $NewText = $Text -replace "(?m)^(\s*certpath\s*:\s*)'[^']*'", "`$1'$CerPath'" `
+        -replace "(?m)^(\s*profile\s*:\s*)'[^']*'", "`$1'$ProfilePath'"
+    if ($NewText -notmatch [regex]::Escape($CerPath) -or
+        $NewText -notmatch [regex]::Escape($ProfilePath)) {
+        throw 'build-profile.json5 里没找到 certpath/profile 字段，无法切换发布签名'
+    }
+    [System.IO.File]::WriteAllText($Profile, $NewText, (New-Object System.Text.UTF8Encoding($false)))
     & $Flutter build app --release --target-platform ohos-arm64
     $ExitCode = $LASTEXITCODE
 }
