@@ -327,9 +327,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 断点落库周期（真机取证 2026-10-15）：旧值 2s 太密——每次都要
   /// `jsonEncode` 整个队列并重写 `play_state` 整行（队列 1207 首时实测
-  /// 序列化 28~61ms + 写库 9~24ms，全在 UI 线程，ohos 写层为内联写），
-  /// 表现为每两秒一次的掉帧。放宽到 10s；暂停/切歌/退后台/退出仍强制落库
-  /// （见 [_saveForcedAndPoke] 与 [onPause] 链路），崩溃最多丢 10s 位置。
+  /// 序列化 28~61ms + 当时 ohos 内联写库 9~24ms，均在 UI 线程），表现为
+  /// 每两秒一次的掉帧。写层现已默认后台隔离，但队列序列化仍在 UI；故保留
+  /// 10s 周期。暂停/切歌/退后台/退出仍强制落库（见 [_saveForcedAndPoke]
+  /// 与 [onPause] 链路），崩溃最多丢 10s 位置。
   static const Duration _stateSaveInterval = Duration(seconds: 10);
 
   /// 上次落库的曲目身份：切歌立即落一次（不等 [_stateSaveInterval]），

@@ -14,32 +14,49 @@ import '../../utils/perf_log.dart';
 import 'artist_names.dart';
 import 'schema.dart';
 
-/// SQLite 写层：主线程只读，写按平台走两种实现之一（[DbWriter.start] 分派）。
+/// SQLite 写层：主线程只读，写全平台走后台 isolate（[DbWriter.start] 分派）。
 ///
 /// 目标（DEVELOPER.md「客户端本地数据层」：启动磁盘 I/O 风暴修复）：
-/// 1. 写/fsync 不与 UI 帧竞争——桌面/移动常规平台经后台 isolate（见
-///    [_IsolateDbWriter]）离开 UI 线程；ohos 写层当前仍退化为同 isolate 内联写
-///    （见 [_InlineDbWriter] 头注释；原因是 sqlite3 override 不跨 isolate，
-///    不是引擎不能 spawn；后台读快照已走子 isolate）；
+/// 1. 写/fsync 不与 UI 帧竞争——后台写 isolate [_IsolateDbWriter] 离开 UI
+///    线程；OHOS 子 isolate 内由 [openIsolateDatabase] 重新注入 sqlite3
+///    override，与后台读快照同一套机制；
 /// 2. 队列内多条语句自动合并为**单个事务**（WAL 下一次顺序追加 + 一次 checkpoint
 ///    fsync），把「逐行 autocommit 的几万次小块写」收敛成少量大块顺序写；
 /// 3. `PRAGMA synchronous=NORMAL`：WAL 模式下仅 checkpoint 才 fsync。
 ///
+/// OHOS 兜底：写 isolate 的 spawn/boot/init 超过 [_ohosWriterStartTimeout]
+/// 或初始化报错时，杀掉半启动 isolate 并回退 [_InlineDbWriter]（同 isolate
+/// 第二条连接、分片让出）。启动链因此有上界，不会重演 init 失败导致
+/// runApp 永不执行的永久白屏。
+///
 /// 一致性约定：全部调用按到达顺序 FIFO 执行；需要回执的调用在**落库后**才完成
 /// Future（主线程读连接通过 WAL 立刻可见已提交数据）；纯 fire 的写仅保证最终一致。
 abstract class DbWriter {
+  /// OHOS 写隔离启动上限（spawn + boot 握手 + init 建表/迁移合计）。
+  ///
+  /// 只作为白屏兜底，不参与正常路径；首次大库迁移在慢盘上可能接近该值，
+  /// 故不能压到帧级超时。超时后内联兜底会重跑幂等 schema/迁移。
+  static const Duration _ohosWriterStartTimeout = Duration(seconds: 8);
+
   /// 启动并初始化写层。
   ///
-  /// - 非 ohos：后台写隔离 [_IsolateDbWriter]（fsync/写盘离开 UI 线程）。
-  /// - ohos：同 isolate 内联写 [_InlineDbWriter]（子 isolate 内 sqlite3 加载
-  ///   失败且 init 无超时，曾致 main() 挂死、白屏；不是引擎不能 spawn，见该类
-  ///   头注释）。
+  /// - 常规平台：后台写隔离 [_IsolateDbWriter]（fsync/写盘离开 UI 线程）。
+  /// - OHOS：同样走写隔离；启动失败/超时回退同 isolate 内联写
+  ///   [_InlineDbWriter]（见 [_ohosWriterStartTimeout]）。子 isolate 可用已由
+  ///   `runScan`、SFTP 长活 worker 与 `runOffThread` 真机验证；sqlite3 override
+  ///   不跨 isolate 才是当初内联的真实原因。
   ///
   /// print 分段日志：写层是启动链白屏排查的关键分段，本文件保持纯 Dart
   /// 不依赖 foundation，故用 print。
   static Future<DbWriter> start(String dbPath) async {
     if (Platform.operatingSystem == 'ohos') {
-      return _InlineDbWriter.start(dbPath);
+      try {
+        return await _IsolateDbWriter.start(dbPath,
+            startupTimeout: _ohosWriterStartTimeout);
+      } catch (e, st) {
+        print('[db-writer] ohos 写隔离启动失败，回退内联: $e\n$st');
+        return _InlineDbWriter.start(dbPath);
+      }
     }
     return _IsolateDbWriter.start(dbPath);
   }
@@ -75,7 +92,7 @@ abstract class DbWriter {
   void dispose();
 }
 
-// ---------- 后台写隔离实现（非 ohos） ----------
+// ---------- 全平台后台写隔离 ----------
 
 class _IsolateDbWriter implements DbWriter {
   _IsolateDbWriter._(this._cmd, this._isolate) {
@@ -90,19 +107,68 @@ class _IsolateDbWriter implements DbWriter {
   bool _closed = false;
 
   /// 启动并初始化：开连接 → WAL/NORMAL/busy_timeout → 建表迁移（幂等）。
-  static Future<DbWriter> start(String dbPath) async {
+  ///
+  /// [startupTimeout] 仅 OHOS 传入，spawn / boot 握手 / init 共用一个截止
+  /// 时间；任一步失败或超时都先杀掉半启动 isolate，再 rethrow 给
+  /// [DbWriter.start] 决定是否内联兜底——绝不能留下第二个写连接。
+  static Future<DbWriter> start(String dbPath,
+      {Duration? startupTimeout}) async {
     final boot = ReceivePort();
+    final sw = Stopwatch()..start();
+
+    Duration? remaining() {
+      if (startupTimeout == null) return null;
+      final left = startupTimeout - sw.elapsed;
+      return left > Duration.zero ? left : Duration.zero;
+    }
+
+    Future<T> withDeadline<T>(Future<T> f) {
+      final left = remaining();
+      return left == null ? f : f.timeout(left);
+    }
+
     print('[db-writer] spawning');
-    final isolate = await Isolate.spawn(_writerEntry, boot.sendPort,
-        debugName: 'local-db-writer');
-    print('[db-writer] spawn done');
-    final cmd = await boot.first as SendPort;
-    print('[db-writer] boot port received');
-    boot.close();
-    final w = _IsolateDbWriter._(cmd, isolate);
-    await w._send('init', {'path': dbPath});
-    print('[db-writer] init done');
-    return w;
+    Isolate? isolate;
+    _IsolateDbWriter? w;
+    var bootClosed = false;
+    try {
+      final spawn = Isolate.spawn(_writerEntry, boot.sendPort,
+          debugName: 'local-db-writer');
+      if (startupTimeout == null) {
+        isolate = await spawn;
+      } else {
+        try {
+          isolate = await withDeadline(spawn);
+        } on TimeoutException {
+          // spawn 超时没有 Isolate 句柄；等它真正返回后立刻杀掉，避免留下
+          // 一个看不见的写 isolate（boot 端口已随外层 catch 关闭）。
+          unawaited(spawn.then<void>((spawned) {
+            spawned.kill(priority: Isolate.immediate);
+          }, onError: (Object _) {}));
+          rethrow;
+        }
+      }
+      print('[db-writer] spawn done');
+      final cmd = await withDeadline(boot.first) as SendPort;
+      print('[db-writer] boot port received');
+      boot.close();
+      bootClosed = true;
+      w = _IsolateDbWriter._(cmd, isolate!);
+      await withDeadline(w._send('init', {'path': dbPath}));
+      print('[db-writer] init done');
+      return w;
+    } catch (e) {
+      print('[db-writer] 启动失败（${sw.elapsedMilliseconds}ms）: $e');
+      if (!bootClosed) boot.close();
+      if (w != null) {
+        // init 已拿到命令端口但未完成：dispose 会杀 isolate 并关回包端口。
+        // 不能让它与内联兜底同时保留写连接。
+        w.dispose();
+      } else {
+        isolate?.kill(priority: Isolate.immediate);
+      }
+      rethrow;
+    }
   }
 
   @override
@@ -215,25 +281,24 @@ class _IsolateDbWriter implements DbWriter {
   }
 }
 
-// ---------- ohos 内联写实现 ----------
+// ---------- OHOS 启动兜底：同 isolate 内联写 ----------
 
-/// ohos 上的写层退化实现：同 isolate 第二条连接直写（PoC 级）。
+/// OHOS 写隔离启动失败/超时时的兜底：同 isolate 第二条连接直写。
 ///
-/// 为什么不用写隔离（真机取证 2026-09，白屏根因链第二层）：
+/// **不是默认路径**；正常走 [_IsolateDbWriter]。保留本实现是为了让启动链
+/// 有确定的上界：
 /// 1. `open.overrideForAll`（setupOhos 注入的 libsqlite3.so 加载）是 isolate
-///    局部状态，**不随 Isolate.spawn 进入子 isolate**——子 isolate 里
-///    `sqlite3.open` 走默认加载器，'ohos' 不在 sqlite3 2.9.4 的已知平台
-///    枚举内，必抛 `UnsupportedError`（load_library.dart `_defaultOpen`）；
-/// 2. 当时没有验证子 isolate 的启动回执，且 [DbWriter.start] 位于 main() 的
-///    await 链上（无超时、无兜底）——init 失败即 runApp 永不执行 → 永久白屏。
+///    局部状态，不随 `Isolate.spawn` 进入子 isolate——子 isolate 内由
+///    [openIsolateDatabase] 重新注入；若注入/spawn/init 仍失败，直接回退本类。
+/// 2. 2026-09 真机白屏的根因正是「override 未继承 + [DbWriter.start] 在
+///    main() await 链上无超时/无兜底」。C 已加 [_ohosWriterStartTimeout]，
+///    超时/失败后回退本类，不再让 runApp 永不执行。
 ///
-/// 2026-10-20 更正：第 1 条是真实原因；第 2 条不是「引擎不能 spawn」——
-/// `runScan` 自 2026-09 起就在 OHOS 用 `Isolate.spawn` 跑扫描，SFTP 长活
-/// worker 也在 2026-10 通过真机验证。`openIsolateDatabase` 已为子 isolate
-/// 重新注入 OHOS override（后台读快照随之启用）；写层切回还需给
-/// [DbWriter.start] 加启动超时/内联兜底（C）。
+/// 历史补充：子 isolate 本身一直可用——`runScan` 自 2026-09 起在 OHOS 用
+/// `Isolate.spawn` 跑扫描，SFTP 长活 worker 与 `runOffThread` 也已在 2026-10
+/// 真机验证；问题从来不是引擎不能 spawn。
 ///
-/// PoC 取舍：写在本 isolate 同步执行。WAL 下与主读连接并发安全
+/// 兜底取舍：写在本 isolate 同步执行。WAL 下与主读连接并发安全
 /// （busy_timeout=30s），复合操作复用隔离版的 `_runOp`/`_runOpBatch`；
 /// 写盘占用 UI 线程的窗口已按「批量分片 + 片间让出事件循环」压缩
 /// （见 [opBatch]，同步 pull 的千级快照行不再是一个巨型同步块）。
@@ -248,8 +313,9 @@ class _InlineDbWriter implements DbWriter {
   bool _closed = false;
 
   static Future<DbWriter> start(String dbPath) async {
-    // 加载 override 已由 setupOhos 在本 isolate 注入（main() 首步）。
-    final db = sqlite3.open(dbPath);
+    // 正常路径由 setupOhos 在主 isolate 注入 override；兜底也自己再解析一次，
+    // 避免「写隔离失败正是因为 override 没生效」时内联同样起不来。
+    final db = openIsolateDatabase(dbPath);
     db.execute('PRAGMA synchronous=NORMAL;');
     db.execute('PRAGMA busy_timeout=30000;');
     db.execute('PRAGMA wal_autocheckpoint=1000;');
@@ -257,7 +323,7 @@ class _InlineDbWriter implements DbWriter {
     // 启动一次性迁移（探测 + 迁移）在写连接内完成：主线程 open() 不再做
     // 任何读扫描（曾把 play_meta 的 instr 全表探测挂在启动 await 链上）。
     _migrateLegacyRefsIfNeeded(db);
-    print('[db-writer] ohos 内联模式就绪');
+    print('[db-writer] ohos 内联兜底就绪');
     return _InlineDbWriter._(db);
   }
 
@@ -320,7 +386,7 @@ class _InlineDbWriter implements DbWriter {
       return;
     }
     // 歌曲权重快照 pull 主路径：整页可达成千上万行，整批事务会长时间独占
-    // UI 线程（ohos 内联写）。切成小事务，片间让出事件循环，让动画/输入
+    // UI 线程（OHOS 内联兜底）。切成小事务，片间让出事件循环，让动画/输入
     // 有机会插进来。cursor 在整页应用完成后才推进，中途失败/退出由重拉
     // 幂等收敛（快照应用本身幂等）。
     var chunks = 0;
@@ -729,7 +795,7 @@ void _inTx(Database db, void Function() body) {
 }
 
 /// 把 [list] 按 [size] 切成连续子列表（[size] < 1 时按 1）。
-/// ohos 内联写按此分片落库并在片间让出事件循环（见 `_InlineDbWriter.opBatch`）。
+/// OHOS 内联兜底按此分片落库并在片间让出事件循环（见 `_InlineDbWriter.opBatch`）。
 List<List<T>> chunkedSublists<T>(List<T> list, int size) {
   final step = size < 1 ? 1 : size;
   final out = <List<T>>[];

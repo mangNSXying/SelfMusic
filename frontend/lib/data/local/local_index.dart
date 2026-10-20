@@ -44,8 +44,8 @@ class LocalIndex {
     //（db_writer），主连接不再重复 CREATE/ALTER/PRAGMA，也不在启动链上做
     // 任何读扫描（曾把 instr 全表探测压在 UI 线程启动 await 链上）。
     final writerFuture = DbWriter.start(dbPath);
-    // 读连接（主线程，只读使用；写经 _writer：常规平台后台隔离、ohos 内联，
-    // 见 db_writer.dart）。
+    // 读连接（主线程，只读使用；写经 _writer：全平台后台隔离，OHOS 仅在
+    // 写隔离启动失败/超时时回退内联，见 db_writer.dart）。
     _db = sqlite3.open(dbPath);
     print('[index] 主连接已打开');
     _db!.execute('PRAGMA busy_timeout=30000;');

@@ -71,7 +71,8 @@ Future<void> _loadRootCerts() async {
 /// 六件事（全部仅 ohos 生效，其它平台零影响）：
 /// 1. sqlite3：package:sqlite3 在 ohos 上默认 `throw UnsupportedError`
 ///    （OperatingSystem 枚举无 ohos），override 为加载系统 `libsqlite3.so`
-///    （本地索引 local_index.dart 依赖）
+///    （本地索引 local_index.dart 依赖）。override 仅本 isolate 有效；写隔离
+///    与后台读快照在子 isolate 内由 `openIsolateDatabase` 重新注入。
 /// 2. flutter_secure_storage：官方 ohos 桩全版本 sdk<3.0.0 不可用，换
 ///    [OhosSecureStorage] 文件实现；且包前端 `_selectOptions` 在 ohos 上
 ///    必抛 UnsupportedError（启动白屏真凶），默认实例经

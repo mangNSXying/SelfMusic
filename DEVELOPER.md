@@ -283,7 +283,7 @@ selfmusic/
 - `song_key` 统一为 `(来源标识, source_ref)` 复合键；收藏状态只认 `play_meta.is_favorite`（旧 `idx_songs.is_favorite` 仅一次性回填）
 - 凭据加密：WebDAV/SMB 密码、SFTP 密钥经 `flutter_secure_storage` 存放，SQLite 只存引用键
 - 无 `created_at/updated_at` 统一约定；时间列按需命名（`last_scan_at` / `cached_at` / `updated_at`）
-- 写必须走写隔离，不要在主 isolate 直接 `db.execute` 写语句（**例外：ohos**——`DbWriter` 退化内联写，见「[鸿蒙适配](#鸿蒙适配)」与 `db_writer.dart`）
+- 写必须走写隔离，不要在主 isolate 直接 `db.execute` 写语句（OHOS 仅当写隔离启动失败/超时，`DbWriter` 才回退内联兜底；见「[鸿蒙适配](#鸿蒙适配)」与 `db_writer.dart`）
 
 ---
 
@@ -581,9 +581,9 @@ abstract class MusicSource {
 - **复合逻辑用 `op`**：读改写必须在写连接内原子完成，不能「主连接读 → 主线程算 → 写连接写」。已封装的 op：`applyWeightEvent` / `setFavorite` / `upsertPlayMeta` / `upsertSongs` / `clearMissing` / `renameSource` / `deleteSource` / `movePlaylistItem` / `updateSongUserMeta` / `apply*Snapshot` / `migrateMetaRefs` 等（完整清单见 `db_writer.dart` 的 `_runOp`）
 - **播放统计用挂钟 + 写连接累加**：`play_meta.play_sec` 由 `player_provider` 在「暂停 / 切歌 / 退出 / 位置事件」处结算（`DateTime.now` 差值，非位置采样，故后台节流不影响），经 `DbWriter.addPlaySec` 在写连接内累加；`shutdown()` 需先 flush 再关写连接。**不要为它开周期定时器**——`fake_async` 下会留下 pending timer 导致测试失败
 - **落库时机要显式**：`LocalIndex.flushWrites()` 在**导出 / 导入备份**（`backup_service.dart`）与**退出**（`player_provider` 的 `shutdown()`）前必须调用；进程被杀时排队中的写会丢，因此只允许把它用在可重算的派生数据上
-- **断点（`play_state`）不能高频整写**：该行含整个队列 JSON（1207 首实测约 240KB）。真机取证（2026-10-15，`ohos` 内联写 + UI 线程）：每 2s 一次「重编码队列 + 重写整行」= 序列化 28~61ms + 写库 9~24ms，表现为周期性掉帧。现口径：**队列 JSON 按 `Object.hashAll(_queue)` 做缓存**（`Song` 字段全 `final`，身份哈希即内容指纹；队列元素替换/增删/重排都会失效），**周期落库放宽到 `_stateSaveInterval`=10s**，切歌（`_lastSavedSongKey` 变化）/暂停/退后台/退出仍强制落库。改动落库频率前先确认队列规模 × 频率的乘积
+- **断点（`play_state`）不能高频整写**：该行含整个队列 JSON（1207 首实测约 240KB）。真机取证（2026-10-15，当时 `ohos` 写层为内联写，序列化与写库都在 UI 线程）：每 2s 一次「重编码队列 + 重写整行」= 序列化 28~61ms + 写库 9~24ms，表现为周期性掉帧。现口径：**队列 JSON 按 `Object.hashAll(_queue)` 做缓存**（`Song` 字段全 `final`，身份哈希即内容指纹；队列元素替换/增删/重排都会失效），**周期落库放宽到 `_stateSaveInterval`=10s**，切歌（`_lastSavedSongKey` 变化）/暂停/退后台/退出仍强制落库。写层现已默认后台隔离，但队列序列化仍在 UI，故保留 10s 周期；改动落库频率前先确认队列规模 × 频率的乘积
 - **数据迁移在写隔离 `init` 里跑**：历史 `play_meta` 的 `ENCODE(ref)` 脏值由 `migrateMetaRefs` 在开连接时修一次（幂等）
-- **平台差异**：写隔离是独立 isolate，拿不到主 isolate 的 `open.overrideFor`（测试正是靠它注入），因此 `_openWriterDb` 自己解析 `libsqlite3`——Linux 依次试 `libsqlite3.so` / `libsqlite3.so.0`（发行版常只有后者）
+- **平台差异**：写隔离是独立 isolate，拿不到主 isolate 的 `open.overrideFor`（测试正是靠它注入），因此 `openIsolateDatabase` 自己解析 `libsqlite3`——Linux 依次试 `libsqlite3.so` / `libsqlite3.so.0`（发行版常只有后者）；OHOS 在子 isolate 内重新注入随包 `libsqlite3.so`（sqlite3 2.9.4 的 `OperatingSystem` 枚举没有 ohos）。OHOS 写隔离启动有 **8s** 上限（spawn + boot + init），超时或报错会杀掉半启动 isolate 并回退 `_InlineDbWriter`（同 isolate 内联、200 行/事务分片、片间让出），避免启动白屏
 
 测试约定：写是异步的，断言落库结果前先 `await index.flushWrites()`；组件测试里用 `settleWriter(tester)` 辅助冲刷写队列（`test/playlists_view_test.dart` / `test/song_tile_test.dart`），不要靠固定 `Future.delayed` 猜时间。
 
@@ -640,7 +640,7 @@ abstract class MusicSource {
 
 - **统一原则**：鸿蒙上 Dart 根 isolate 即应用主线程，**留在根 isolate 的**可切分纯 Dart 重活必须**片间 `await` 让出事件循环**（统一用 `utils/chunked_scheduler.dart` 的 `runChunked`/`runChunkedCancellable`，或公开的 `yieldToEventLoop()` 钩子），保证单次同步块 < 50ms；纯 Dart 重活**优先移到子 isolate**（`Isolate.run`/`Isolate.spawn`，OHOS 已由 `runScan` 与 SFTP worker 真机验证）。`runOffThread` 已于 2026-10-20 全平台走真实后台 isolate（OHOS 的 DB 读在子 isolate 内由 `openIsolateDatabase` 重新注入 sqlite3 override；应急回退 `--dart-define=OFF_THREAD_DIRECT=true`）；注意子 isolate **不继承**平台通道、插件单例、`open.overrideForAll`，需要这些能力的代码要么留在根 isolate，要么在子 isolate 内显式重建。
 
-> **2026-10-20 更正**：早期文档中的「fork 引擎无子 isolate」是误判。`runScan`（`Isolate.spawn`）自 2026-09 起在 OHOS 用于 WebDAV/SFTP/SMB 扫描并通过 2026-09-30 PoC；2026-10 SFTP 长活 worker 再次验证。`runOffThread` 的 OHOS 内联守卫已于 2026-10-20 移除（全平台真实后台 isolate，DB 读在子 isolate 内注入 sqlite3 override）；`DbWriter` 写层仍内联，真实原因也是 sqlite3 override 不跨 isolate（不是不能 spawn），待加启动兜底后切回。详见 `db_writer.dart` / `off_thread.dart` 头注释。
+> **2026-10-20 更正**：早期文档中的「fork 引擎无子 isolate」是误判。`runScan`（`Isolate.spawn`）自 2026-09 起在 OHOS 用于 WebDAV/SFTP/SMB 扫描并通过 2026-09-30 PoC；2026-10 SFTP 长活 worker 再次验证。`runOffThread` 的 OHOS 内联守卫已于 2026-10-20 移除（全平台真实后台 isolate，DB 读在子 isolate 内注入 sqlite3 override）。`DbWriter` 写层也已切回写隔离：子 isolate 内由 `openIsolateDatabase` 注入 override，并加 8s 启动超时/内联兜底，不再是「待切回」。详见 `db_writer.dart` / `off_thread.dart` 头注释。
 - **补读兜底路径切片（`meta_enrich.dart` 的 `_enrichViaDart`，P1）**：远程源无本地缓存时无法走原生，纯 Dart 读序（解析 → 封面处理 → 落盘/哈希 → 落库）各阶段之间 `await yieldToEventLoop()`；`readAudioMeta` 传 `yieldTo`，头部/尾部阶梯每轮之间让出；封面落盘改走 `LocalIndex.persistCoverChunked`（md5 哈希 + 写盘分片让出）。
 - **解析器字节区间切片（`audio_metadata.dart`）**：大内嵌封面**不再整块复制**——mp3 APIC / flac PICTURE / m4a covr 一律用 `Uint8List.sublistView` 零拷贝视图（解析只校验前 12 字节签名）；ogg/flac 的 base64 内嵌封面（`METADATA_BLOCK_PICTURE`/`COVERART`）解析阶段只**登记**字符串（`AudioMeta.pendingCoverB64`），解码挪到 `readAudioMeta` 末尾分片进行（`_decodeBase64Chunked`，按 4 字符对齐切段、段间让出）；`parseAudioHead` 同步调用方（扫描/单测）仍在末尾一步到位解码，逐字节零回归。
 - **原生路径判定修正（`meta_enrich.dart` + `MusicSource.localSandboxPath`，R-2）**：原生 `extractAudioMeta` 的可用性以「**是否存在可打开的本地沙箱真路径**」判定，**不得**再把原生绑死在「离线缓存登记」上——本地源本体即本地文件（旧判定用 `cachedFilePath==null` 对本地源误判为不可用）。`LocalDirectSource.localSandboxPath` 显式表达「原生可用性」；远端源默认委托 `cachedFilePath`（未缓存 = null → 走切片后的 Dart 兜底）。
@@ -670,7 +670,7 @@ abstract class MusicSource {
 - **断点采纳口径（取最新，最后操作时间为钟）**：`GET /playstates/latest` 返回全局最新断点行，排序与「谁更新」的比较一律用**最后操作时间 `last_event_at`**（= 命中事件的 `occurred_at`；服务端 `coalesce(last_event_at, updated_at)` 兼容旧行，客户端 `compareClock = last_event_at ?? updated_at`）——`updated_at` 是服务端写入/上传时间，只作诊断，不参与仲裁。客户端恢复/补切时比对本机与远端镜像的比较时钟，远端更新才采纳；`db_writer._opApplyPlaystateMirror` 同口径守卫（旧快照不覆盖新镜像）；服务端断点走行级 LWW（`occurred_at` vs `last_event_at`）。深层列表仅做队列重建用，不参与仲裁
 - **启动收敛闸门（防旧态盖新）**：恢复发起（`restoreIfAny`/`restorePreferRemote`）即关闸——首个 `applyNewerMirrorIfAny` 判定跑完（或 30s 兜底超时）前，断点一律不入队：本机恢复出的旧断点可能已被远端更新，此时盖 now 的 `occurred_at` 推上去会被服务端 LWW 收下（毒源），随后本机又把自己的回声拉回来（回退旧曲的完整回路）。暂停/停止的**强制**断点在闸后**补跑一次**（`_bootForcedPending`）；周期保存直接丢弃。同类防线（非启动期）：**暂停态补写不刷新 `occurred_at`**——非强制补写只在断点真的变了（切歌/位置前进）时才入队，原样补写直接跳过（回前台/退后台/退出落盘都走这条，否则旧断点盖 now 推上去与启动期毒源同款）。无恢复路径（未开断点续播）时闸门默认已开
 - **自写回声过滤**：快照来源 `device_client_id` == 本设备（fastPath / pull playstates / push corrections 三条落镜像路径）一律跳过、不落 `breakpoint_mirror`、不通知播放器——本机运行时状态必然不旧于自己推上去的数据，回流只会招来「自己套用自己的旧快照」；镜像行持久化来源设备（`breakpoint_mirror.device_id`）供诊断与排查
-- **同步后台化（写隔离收口）**：outbox 读取 + `jsonDecode`（`pendingOutbox`/`pendingOutboxCount` op）、pull 快照的字段映射与落库（`applySongSnapshotsRaw` / `applyPlaylistSnapshots` / `applyPlaystateMirror`）、断点歌单存在性判定，全部在写隔离（`db_writer`）内完成；UI isolate 只 `await`。**ohos 现状**：仍走内联写（`_InlineDbWriter`），按 200 行/事务分片、片间 `await` 让出事件循环（`_InlineDbWriter.opBatch`）；cursor 在整页应用后才推进，中途失败靠重拉幂等收敛。内联的真实原因是 `open.overrideForAll` 只在当前 isolate 生效，子 isolate 里 `sqlite3.open` 会抛 `UnsupportedError`——**不是引擎不能 spawn**；子 isolate 内已注入 override（2026-10-20，后台读快照已启用），写层切回还需启动兜底（C）
+- **同步后台化（写隔离收口）**：outbox 读取 + `jsonDecode`（`pendingOutbox`/`pendingOutboxCount` op）、pull 快照的字段映射与落库（`applySongSnapshotsRaw` / `applyPlaylistSnapshots` / `applyPlaystateMirror`）、断点歌单存在性判定，全部在写隔离（`db_writer`）内完成；UI isolate 只 `await`。**OHOS**：写隔离已于 2026-10-20 切回（子 isolate 内由 `openIsolateDatabase` 注入 sqlite3 override），正常路径不再在 UI 线程写库；仅当写隔离启动超过 8s 或初始化失败时回退 `_InlineDbWriter`，兜底路径按 200 行/事务分片、片间 `await` 让出事件循环。cursor 在整页应用后才推进，中途失败靠重拉幂等收敛。内联的历史原因是 `open.overrideForAll` 只在当前 isolate 生效，子 isolate 里 `sqlite3.open` 会抛 `UnsupportedError`——**不是引擎不能 spawn**
 - **跨页去重**：服务端只在单页内按实体去重，`_pull` 按 `source_id|ref` / uuid 跨页去重，重复快照只计数不重复落库
 - **落库回调帧末投递**：`onSourcesApplied/onSongStatesApplied/onPlaylistsApplied` 经 `scheduleAfterFrame`（`utils/frame_scheduler.dart`）推迟到帧末；歌单回调携带本轮变更 uuid，`PlaylistsProvider.refresh(changedUuids:)` 只重查变更歌单计数（避免同步一次 N+1 全量重查）；源 watcher 仅在本地源 key/rootPath 真变化时重建
 - **拉到的快照走 `apply*Snapshot` op**：身份收集恒不建行（已删歌曲不重新建行）；远端断点落 `breakpoint_mirror`，不直接改运行时 `play_state`
@@ -749,7 +749,7 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 - flutter 工具自动把带 ohos 模块的插件写入 `ohos/build-profile.json5` modules 与 har overrides，无需手工接线
 
 适配层实现（`lib/platform/harmonyos/`，2026-09）：
-- `ohos_bootstrap.dart`：`setupOhos()` 在 `main()` 里 runApp 前调用，六件事全部仅 ohos 生效——sqlite3 overrideForAll（顶层函数，**仅本 isolate 有效**：不随 Isolate.spawn 传入子 isolate；子 isolate 内可自行注入，ohos 写层因此当前内联，见 `db_writer.dart` 头注释；不是引擎限制）、`FlutterSecureStoragePlatform.instance = OhosSecureStorage()`（包级注册只覆盖平台侧，前端类另需绕过，见上表）、`JustAudioPlatform.instance = AvPlayerJustAudio()`、`PathProviderPlatform.instance = OhosRetryingPathProvider(原实现)`（单点收口：启动链全部路径调用均经该 instance）、`SecurityContext` 根证书注入（`_loadRootCerts`）、`WakelockPlusPlatformInterface.instance = OhosWakelockPlusPlatform()`（2026-10，常亮见下节）
+- `ohos_bootstrap.dart`：`setupOhos()` 在 `main()` 里 runApp 前调用，六件事全部仅 ohos 生效——sqlite3 overrideForAll（顶层函数，**仅本 isolate 有效**：不随 Isolate.spawn 传入子 isolate；子 isolate 内由 `openIsolateDatabase` 重新注入，写隔离与后台读快照均可用；不是引擎限制）、`FlutterSecureStoragePlatform.instance = OhosSecureStorage()`（包级注册只覆盖平台侧，前端类另需绕过，见上表）、`JustAudioPlatform.instance = AvPlayerJustAudio()`、`PathProviderPlatform.instance = OhosRetryingPathProvider(原实现)`（单点收口：启动链全部路径调用均经该 instance）、`SecurityContext` 根证书注入（`_loadRootCerts`）、`WakelockPlusPlatformInterface.instance = OhosWakelockPlusPlatform()`（2026-10，常亮见下节）
 - `path_provider_ohos_retry.dart`：1s 超时 × 5 次重发的保险包装 + 全超时沙盒路径回退（命中时日志 `[ohos] path_provider.* 响应超时`）；旧"引擎竞态吞回复"假设已被 verify-5/6 逐消息对账否定（见下节），保留理由：路径查询幂等、成本为零、覆盖未证实的极端时序
 - `just_audio_avplayer.dart`：`AvPlayerJustAudio.init/disposePlayer` 管理播放器表；`AvPlayerHandle` 实现负载面 load/play/pause/seek/setVolume，pitch/shuffle/speed/loop 静默 no-op（应用层自实现循环）；事件映射：ArkTS 侧 `stateChange/position/duration/buffered/seekDone/error` → `PlaybackEventMessage`；错误必须 `_events.addError`（just_audio 0.9.46 不读 errorCode 字段）；位置由 AVPlayer timeUpdate 原生上报（默认 100ms），无 Dart 轮询；文件走 `fdSrc`（fd 由 ArkTS 持有到 reset/dispose）；带请求头走 `setMediaSource(createMediaSourceWithUrl)`（注意该 API 在目标机同步返回 void，不能 `.then`）；`setVolume` 在 prepared 前暂存、prepared 后补发，5400102 视为非致命
 - `secure_storage_ohos.dart`：文档目录单 JSON 文件 + 整文件 base64 混淆，内存即权威源；读写失败不抛（密钥问题不崩登录/配对流程）；对应 platform_interface 1.1.2 Map-options 签名（flutter_secure_storage 9.2.4 锁定该版本，`*Params` API 是 1.2+ 才有，勿混淆）
@@ -781,7 +781,7 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 
   hvigor 自动把 `entry/libs/arm64-v8a/` 打进 hap，应用 dlopen 按名命中包内副本
 - 上游反馈（待办）：① flutter_secure_storage 支持 ohos（`_selectOptions` 放行或官方 ohos 分支）；② `sqlite3_flutter_libs` ohos 移植
-- **验证（verify-6）**：启动引导 → 服务端设置加载完成 → db-writer 内联就绪 → 直连源就绪 → 进入 runApp → 看门狗解除，全链 1.4s 点亮；进程存活无崩溃标记，FlutterView 持续输出 `Display on` / `avoidAreaChangeCallback`（视图真实渲染非白屏）
+- **验证（verify-6）**：启动引导 → 服务端设置加载完成 → db-writer 就绪（当时为内联；现默认写隔离，失败/超时才回退内联）→ 直连源就绪 → 进入 runApp → 看门狗解除，全链 1.4s 点亮；进程存活无崩溃标记，FlutterView 持续输出 `Display on` / `avoidAreaChangeCallback`（视图真实渲染非白屏）
 
 其他鸿蒙配置事实（2026-09 收尾两连修，真机已验收）：
 

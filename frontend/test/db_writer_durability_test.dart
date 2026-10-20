@@ -37,7 +37,8 @@ void main() {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
     tmp = Directory.systemTemp.createTempSync('selfmusic_dbwriter_');
     dbPath = '${tmp.path}/t.db';
-    // 建表（写隔离的 init 只做 PRAGMA，不负责 schema）。
+    // 先建库建表；写隔离 init 会幂等重跑 applySchema，这里只是让用例
+    // 不用等首次建库，并便于直接构造坏 SQL。
     final seed = sqlite3.open(dbPath);
     applySchema(seed);
     seed.dispose();
@@ -126,5 +127,15 @@ void main() {
     await w.close();
     await expectLater(w.flush().timeout(const Duration(seconds: 5)),
         throwsA(isA<StateError>()));
+  });
+
+  test('写隔离 init 失败会清理半启动 isolate，不挂起', () async {
+    // 父目录不存在 → 子 isolate 内 open 必然失败。启动方必须收到明确错误
+    // 并清掉半启动 isolate，而不是把 main() 的 await 链挂死。
+    final badPath = '${tmp.path}/missing-dir/t.db';
+    await expectLater(
+      DbWriter.start(badPath).timeout(const Duration(seconds: 5)),
+      throwsA(isA<StateError>()),
+    );
   });
 }
