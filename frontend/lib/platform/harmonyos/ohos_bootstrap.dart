@@ -37,8 +37,9 @@ bool get isOhos => !kIsWeb && Platform.operatingSystem == 'ohos';
 
 /// ohos 上 sqlite3 的系统库加载函数。
 ///
-/// 必须是顶层函数：sqlite3 异步 API（isolate）场景要求 open 回调可跨
-/// isolate 引用（当前仅主 isolate 同步 open，仍按规范写顶层）。
+/// 必须是顶层函数：sqlite3 异步 API/子 isolate 场景要求 open 回调可跨
+/// isolate 引用；主 isolate 在 setup 时注入，OHOS 后台读快照在子 isolate
+/// 内由 `openIsolateDatabase` 重新注入（`db_writer.dart`）。
 DynamicLibrary _openSqliteOnOhos() => DynamicLibrary.open('libsqlite3.so');
 
 /// ohos 版 Dart VM 不内嵌 Mozilla 根证书包，只在 `/etc/ssl/certs/cacert.pem`

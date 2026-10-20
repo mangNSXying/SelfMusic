@@ -18,9 +18,9 @@ import 'schema.dart';
 ///
 /// 目标（DEVELOPER.md「客户端本地数据层」：启动磁盘 I/O 风暴修复）：
 /// 1. 写/fsync 不与 UI 帧竞争——桌面/移动常规平台经后台 isolate（见
-///    [_IsolateDbWriter]）离开 UI 线程；ohos 当前退化为同 isolate 内联写
+///    [_IsolateDbWriter]）离开 UI 线程；ohos 写层当前仍退化为同 isolate 内联写
 ///    （见 [_InlineDbWriter] 头注释；原因是 sqlite3 override 不跨 isolate，
-///    不是引擎不能 spawn）；
+///    不是引擎不能 spawn；后台读快照已走子 isolate）；
 /// 2. 队列内多条语句自动合并为**单个事务**（WAL 下一次顺序追加 + 一次 checkpoint
 ///    fsync），把「逐行 autocommit 的几万次小块写」收敛成少量大块顺序写；
 /// 3. `PRAGMA synchronous=NORMAL`：WAL 模式下仅 checkpoint 才 fsync。
@@ -229,9 +229,9 @@ class _IsolateDbWriter implements DbWriter {
 ///
 /// 2026-10-20 更正：第 1 条是真实原因；第 2 条不是「引擎不能 spawn」——
 /// `runScan` 自 2026-09 起就在 OHOS 用 `Isolate.spawn` 跑扫描，SFTP 长活
-/// worker 也在 2026-10 通过真机验证。后续在 `openIsolateDatabase` 内为子
-/// isolate 重新注入 OHOS override，并给 [DbWriter.start] 加启动超时/内联兜底
-/// 后，可切回 [_IsolateDbWriter]。
+/// worker 也在 2026-10 通过真机验证。`openIsolateDatabase` 已为子 isolate
+/// 重新注入 OHOS override（后台读快照随之启用）；写层切回还需给
+/// [DbWriter.start] 加启动超时/内联兜底（C）。
 ///
 /// PoC 取舍：写在本 isolate 同步执行。WAL 下与主读连接并发安全
 /// （busy_timeout=30s），复合操作复用隔离版的 `_runOp`/`_runOpBatch`；
@@ -363,16 +363,23 @@ class _InlineDbWriter implements DbWriter {
 
 // ---------- 写隔离入口 ----------
 
+/// OHOS 子 isolate 的 sqlite3 加载器。
+///
+/// `open.overrideForAll` 只在调用它的 isolate 生效，主 isolate 的 setupOhos
+/// 注入不会进入子 isolate；sqlite3 2.9.4 的 `OperatingSystem` 枚举又没有
+/// ohos，默认加载器会直接抛 `UnsupportedError`。这里在子 isolate 内重新
+/// 注册随包分发的 `libsqlite3.so`。
+DynamicLibrary _openSqliteOnOhos() => DynamicLibrary.open('libsqlite3.so');
+
 /// 在后台 isolate 内打开数据库连接（写隔离与后台读快照共用）。
 ///
 /// 后台 isolate 拿不到主 isolate 的 `open.overrideForAll`；Linux 发行版又常
 /// 只有 `libsqlite3.so.0` 而无 `-dev` 符号链接，sqlite3 包默认只试前者。
 /// 故在此按候选名解析一次，保证后台 isolate 在任何平台都能起库。
 ///
-/// 注意：OHOS 尚未在此注入 `libsqlite3.so` override（sqlite3 2.9.4 的
-/// `OperatingSystem` 枚举没有 ohos，子 isolate 会走默认加载器并抛
-/// `UnsupportedError`）。这是 `runOffThread` 当前在 OHOS 保持内联的原因；
-/// 不是引擎不能 spawn 子 isolate。
+/// OHOS：sqlite3 2.9.4 的 `OperatingSystem` 枚举没有 ohos，且主 isolate 的
+/// override 不继承——这里在子 isolate 内单独注入随包分发的 `libsqlite3.so`，
+/// 否则 `sqlite3.open` 会抛 `UnsupportedError`。
 Database openIsolateDatabase(String path) {
   if (Platform.isLinux) {
     open.overrideFor(OperatingSystem.linux, () {
@@ -386,6 +393,9 @@ Database openIsolateDatabase(String path) {
       }
       throw StateError('无法加载 libsqlite3：$last');
     });
+  }
+  if (Platform.operatingSystem == 'ohos') {
+    open.overrideForAll(_openSqliteOnOhos);
   }
   return sqlite3.open(path);
 }
