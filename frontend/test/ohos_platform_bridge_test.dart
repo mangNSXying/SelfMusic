@@ -302,4 +302,66 @@ void main() {
       expect(calls.where((c) => c.method == 'activateDirectory'), isEmpty);
     });
   });
+
+  group('saveFile（鸿蒙日志导出，2026-10-20）', () {
+    test('方法名与参数透传：suggestedName/sourcePath 原样过通道，返回保存 URI',
+        () async {
+      const savedUri =
+          'file://docs/storage/Users/currentUser/Download/selfmusic_logs.txt';
+      mockChannel((call) async {
+        calls.add(call);
+        return savedUri;
+      });
+
+      final saved = await OhosPlatformBridge.saveFile(
+        suggestedName: 'selfmusic_logs.txt',
+        sourcePath: '/data/storage/el2/base/cache/selfmusic_logs/tmp.txt',
+      );
+
+      expect(saved, savedUri);
+      expect(calls.single.method, 'saveFile');
+      expect(calls.single.arguments, <String, Object?>{
+        'suggestedName': 'selfmusic_logs.txt',
+        'sourcePath': '/data/storage/el2/base/cache/selfmusic_logs/tmp.txt',
+      });
+    });
+
+    test('用户取消（原生 success(null) 或空串）→ null，不抛异常', () async {
+      mockChannel((call) async => null);
+      expect(
+          await OhosPlatformBridge.saveFile(
+              suggestedName: 'a.txt', sourcePath: '/tmp/a.txt'),
+          isNull);
+
+      mockChannel((call) async => '');
+      expect(
+          await OhosPlatformBridge.saveFile(
+              suggestedName: 'a.txt', sourcePath: '/tmp/a.txt'),
+          isNull);
+    });
+
+    test('真实失败（PlatformException）向上抛，由调用方提示导出失败', () async {
+      mockChannel((call) async {
+        throw PlatformException(code: '500', message: '日志写入目标文件失败');
+      });
+
+      expect(
+        OhosPlatformBridge.saveFile(
+            suggestedName: 'a.txt', sourcePath: '/tmp/a.txt'),
+        throwsA(isA<PlatformException>()),
+      );
+    });
+
+    test('桥未装配（旧原生包）抛 MissingPluginException，不静默当取消', () async {
+      mockChannel((call) async {
+        throw MissingPluginException();
+      });
+
+      expect(
+        OhosPlatformBridge.saveFile(
+            suggestedName: 'a.txt', sourcePath: '/tmp/a.txt'),
+        throwsA(isA<MissingPluginException>()),
+      );
+    });
+  });
 }

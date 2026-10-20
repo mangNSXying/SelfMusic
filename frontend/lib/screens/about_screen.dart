@@ -7,6 +7,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../platform/email_share.dart';
+import '../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
+import '../platform/harmonyos/ohos_platform_bridge.dart';
 import '../utils/build_stamp.dart';
 import '../widgets/app_toast.dart';
 import '../services/log_buffer.dart';
@@ -213,7 +215,23 @@ class AboutScreen extends StatelessWidget {
         'selfmusic_logs_${now.year}${_pad2(now.month)}${_pad2(now.day)}_${_pad2(now.hour)}${_pad2(now.minute)}${_pad2(now.second)}.txt';
     // file_selector 在 Android/iOS/OHOS 上未实现 getSaveLocation（抛
     // UnimplementedError），仅桌面端可用；移动端改用目录选择后自行拼接文件名。
+    // 鸿蒙例外：file_selector_ohos 连 getDirectoryPath 都没实现（pigeon
+    // 通道无处理器，必抛 channel-error），改走平台桥的保存选择器。
     try {
+      if (isOhos) {
+        final tempPath = await _exportLogsToTemp();
+        if (tempPath == null) {
+          throw StateError('临时日志写入失败');
+        }
+        final savedUri = await OhosPlatformBridge.saveFile(
+          suggestedName: fileName,
+          sourcePath: tempPath,
+        );
+        if (savedUri == null) return; // 用户取消。
+        if (!context.mounted) return;
+        AppToast.show('日志已导出：$savedUri', isError: false);
+        return;
+      }
       String targetPath;
       if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
         final saveLocation = await getSaveLocation(

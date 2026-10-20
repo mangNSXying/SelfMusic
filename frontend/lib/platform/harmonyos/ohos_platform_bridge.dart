@@ -24,7 +24,10 @@ import 'package:flutter/services.dart';
 ///   ——同样因当时 `runOffThread` 在 ohos 内联，纯 Dart 标签解析/封面提取会以
 ///   秒级同步块独占主线程，下沉 ArkTS `@Concurrent` 任务池的
 ///   `AVMetadataExtractor` 管线，Dart 只收结构化结果并落库；原生管线保留：
-///   系统解析更快且不把大文件读进 Dart）。
+///   系统解析更快且不把大文件读进 Dart）；
+/// - 日志导出：[saveFile]（2026-10-20）——`file_selector_ohos` 未实现
+///   `getDirectoryPath`（pigeon 通道无处理器，调用必抛 channel-error），
+///   改走 DocumentViewPicker 保存模式 + 原生复制。
 ///
 /// 仅被 `isOhos` 分支调用（Android/桌面走各自实现，零回归）。
 ///
@@ -63,6 +66,28 @@ class OhosPlatformBridge {
       debugPrint('[ohos] pickDirectory 桥未装配: $e');
       return null;
     }
+  }
+
+  /// 拉起系统文件保存界面，把 [sourcePath]（沙箱临时日志）复制到用户选择
+  /// 的位置，返回保存后的 URI（`file://docs/...`）；用户取消返回 null。
+  ///
+  /// 背景（2026-10-20 日志导出修复）：`file_selector_ohos` 0.5.0 未实现
+  /// `getDirectoryPath`（pigeon 通道没注册处理器），鸿蒙端调用必抛
+  /// `PlatformException(channel-error, Unable to establish connection on
+  /// channel.)`；日志导出改走本桥的 DocumentViewPicker 保存模式。
+  ///
+  /// 与 [pickDirectory] 不同，真实失败不吞：向上抛 [PlatformException]，
+  /// 由调用方 toast「日志导出失败」——静默返回 null 会被误判为用户取消。
+  static Future<String?> saveFile({
+    required String suggestedName,
+    required String sourcePath,
+  }) async {
+    final saved =
+        await _channel.invokeMethod<String>('saveFile', <String, Object?>{
+      'suggestedName': suggestedName,
+      'sourcePath': sourcePath,
+    });
+    return (saved == null || saved.isEmpty) ? null : saved;
   }
 
   /// 重启后激活已持久化的目录授权；失败（授权被撤销/目录删除）抛

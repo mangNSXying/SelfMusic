@@ -8,7 +8,7 @@ import {
   MethodResult
 } from '@ohos/flutter_ohos';
 import { common } from '@kit.AbilityKit';
-import { picker, fileShare, fileIo, ListFileOptions, ReadOptions } from '@kit.CoreFileKit';
+import { picker, fileShare, fileIo, ListFileOptions, ReadOptions, WriteOptions } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { window } from '@kit.ArkUI';
 import { abilityAccessCtrl, bundleManager, Permissions } from '@kit.AbilityKit';
@@ -22,6 +22,8 @@ const TAG = 'SelfMusicPlatform';
 const PLATFORM_CHANNEL = 'selfmusic/platform';
 /** readRange 单次读取上限（2 MiB 防御，Dart 侧按 512 KiB 分块调用）。 */
 const READ_RANGE_MAX_BYTES = 2 * 1024 * 1024;
+/** saveFile 复制日志的块大小（日志通常 < 1 MiB，分块避免整文件驻留内存）。 */
+const SAVE_CHUNK_BYTES = 64 * 1024;
 
 /** makeCoverThumb 参数缺省值（与 Dart 侧 kCoverThumbMaxEdge / kCoverThumbQuality 对齐）。 */
 const THUMB_MAX_EDGE_DEFAULT = 768;
@@ -99,7 +101,7 @@ interface DirEntry {
  *   方向→降采样→JPEG 重编码→原子落盘）在**任务池/Worker 独立线程**执行，
  *   UI 主线程只派发与收结果（ohos-thumb-taskpool feature，R-1/R-3/R-8）。
  *
- * 通道协议（selfmusic/platform，Dart → ArkTS，11 个方法，契约以 plan.md
+ * 通道协议（selfmusic/platform，Dart → ArkTS，12 个方法，契约以 plan.md
  * 「Contracts & Interfaces」为准）：
  * - keepScreenOn {enable:bool} → null（窗口获取失败 error 上抛，Dart 记日志）
  * - pickDirectory {} → {uri,persisted} | null（用户取消 null；persistPermission
@@ -126,6 +128,11 @@ interface DirEntry {
  *   的 `@Concurrent`（`AVMetadataExtractor`）在任务池执行，主线程只派发与收结果；
  *   有界并发 [META_MAX_INFLIGHT]。任何失败 ok=false（附 error），Dart 侧据此
  *   **不标已读**（既有重试语义）并回退既有 Dart 解析路径，绝不向 Dart 抛错。
+ * - saveFile {suggestedName,sourcePath} → string | null（2026-10-20 日志导出
+ *   修复）：`file_selector_ohos` 未实现 getDirectoryPath（pigeon 通道无处理
+ *   器，调用必抛 channel-error），改用 DocumentViewPicker 保存模式选目标 +
+ *   把沙箱临时日志复制到选择结果 URI。用户取消（13900042/空结果）回 null，
+ *   真实失败 error 上抛，Dart 侧 toast。
  */
 export default class PlatformBridge implements MethodCallHandler {
   private context: common.UIAbilityContext;
@@ -161,6 +168,12 @@ export default class PlatformBridge implements MethodCallHandler {
         break;
       case 'pickDirectory':
         this.handlePickDirectory(result)
+          .catch((): void => {
+            // handler 内部全量兜底，此处仅为满足 Promise 必须处理。
+          });
+        break;
+      case 'saveFile':
+        this.handleSaveFile(call, result)
           .catch((): void => {
             // handler 内部全量兜底，此处仅为满足 Promise 必须处理。
           });
@@ -307,6 +320,100 @@ export default class PlatformBridge implements MethodCallHandler {
       Log.w(TAG, `checkPersistentPermission 失败：${e.code} ${e.message}`);
     }
     return false;
+  }
+
+  // ---------- 日志导出（saveFile） ----------
+
+  /**
+   * 导出日志到用户选择的位置（2026-10-20 修复 channel-error）：鸿蒙
+   * `file_selector_ohos` 的 `getDirectoryPath` 未实现（pigeon 通道无处理器，
+   * Dart 调用必抛 `Unable to establish connection on channel.`），故「收集
+   * 日志」改走本桥：
+   * 1. DocumentViewPicker 保存模式（`newFileNames` 预填文件名）拉起系统
+   *    文件保存界面，用户选目录/文件名；
+   * 2. 用户取消（13900042/空结果）返回 null，不算失败；
+   * 3. 选择结果 URI 当场仍有临时写授权，把 Dart 侧已写好的沙箱临时日志
+   *    分块复制过去，返回保存 URI（Dart 侧展示）。
+   *
+   * 失败（选择器不可用/目标不可写）error 上抛，由 Dart 侧 toast
+   * 「日志导出失败」。
+   */
+  private async handleSaveFile(call: MethodCall, result: MethodResult): Promise<void> {
+    const suggestedName = PlatformBridge.argString(call, 'suggestedName');
+    const sourcePath = PlatformBridge.argString(call, 'sourcePath');
+    if (suggestedName == null || suggestedName === '' ||
+      sourcePath == null || sourcePath === '') {
+      result.error('401', 'saveFile 参数非法', null);
+      return;
+    }
+    try {
+      const options = new picker.DocumentSaveOptions();
+      options.newFileNames = [suggestedName];
+      // 必须在 UIAbility 前台调用（选择器拉起系统 FilePicker 界面）。
+      const documentViewPicker = new picker.DocumentViewPicker(this.context);
+      const uris: Array<string> = await documentViewPicker.save(options);
+      if (uris == null || uris.length === 0) {
+        Log.i(TAG, 'saveFile：用户取消（空结果）');
+        result.success(null);
+        return;
+      }
+      const savedUri = uris[0];
+      const copied = await this.copyFileToUri(sourcePath, savedUri);
+      if (!copied) {
+        result.error('500', '日志写入目标文件失败', null);
+        return;
+      }
+      Log.i(TAG, `saveFile：已保存 ${savedUri}`);
+      result.success(savedUri);
+    } catch (err) {
+      const e = err as BusinessError;
+      // 13900042：用户取消选择（Picker 以 reject 表达取消，属正常路径）。
+      if (e.code === 13900042) {
+        Log.i(TAG, 'saveFile：用户取消');
+        result.success(null);
+        return;
+      }
+      Log.e(TAG, `saveFile 失败：${e.code} ${e.message}`);
+      const code = e.code != null ? `${e.code}` : '500';
+      const message = e.message != null ? e.message : JSON.stringify(err);
+      result.error(code, message, null);
+    }
+  }
+
+  /** 沙箱临时日志 → 选择器返回的 URI（分块复制；返回是否完整写入）。 */
+  private async copyFileToUri(sourcePath: string, destUri: string): Promise<boolean> {
+    let src: fileIo.File | null = null;
+    let dst: fileIo.File | null = null;
+    try {
+      src = fileIo.openSync(sourcePath, fileIo.OpenMode.READ_ONLY);
+      dst = fileIo.openSync(destUri,
+        fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
+      const size = fileIo.statSync(src.fd).size;
+      const buffer = new ArrayBuffer(SAVE_CHUNK_BYTES);
+      let offset = 0;
+      while (offset < size) {
+        const want = Math.min(SAVE_CHUNK_BYTES, size - offset);
+        const readOptions: ReadOptions = { offset: offset, length: want };
+        const readLen = await fileIo.read(src.fd, buffer, readOptions);
+        if (readLen <= 0) {
+          return false;
+        }
+        const writeOptions: WriteOptions = { offset: offset, length: readLen };
+        const writeLen = await fileIo.write(dst.fd, buffer, writeOptions);
+        if (writeLen !== readLen) {
+          return false;
+        }
+        offset += readLen;
+      }
+      return offset === size;
+    } finally {
+      if (src != null) {
+        fileIo.closeSync(src);
+      }
+      if (dst != null) {
+        fileIo.closeSync(dst);
+      }
+    }
   }
 
   /**
