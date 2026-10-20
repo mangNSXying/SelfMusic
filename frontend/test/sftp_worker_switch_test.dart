@@ -3,64 +3,54 @@ import 'package:selfmusic/data/sources/sftp_worker.dart';
 
 /// worker 路径编译期开关矩阵（`SFTP_WORKER_DIRECT` / `SFTP_WORKER_ISOLATE`）。
 /// 纯函数解析，不依赖真实平台与 dart-define。
+/// 2026-10-20 起全平台（含 OHOS）默认启用 worker。
 void main() {
   group('SftpWorker 开关解析', () {
-    test('SFTP_WORKER_DIRECT：全平台强制旧直连，优先级最高', () {
+    test('SFTP_WORKER_DIRECT=true：全平台强制旧直连，优先级最高', () {
       expect(
-        SftpWorker.resolveWorkerEnabled(
-            forceDirect: true, workerIsolate: 'true', os: 'linux'),
+        SftpWorker.resolveWorkerEnabled(forceDirect: true, workerIsolate: ''),
         isFalse,
       );
       expect(
         SftpWorker.resolveWorkerEnabled(
-            forceDirect: true, workerIsolate: 'false', os: 'ohos'),
+            forceDirect: true, workerIsolate: 'true'),
         isFalse,
       );
       expect(
         SftpWorker.resolveWorkerEnabled(
-            forceDirect: true, workerIsolate: '', os: 'android'),
+            forceDirect: true, workerIsolate: 'false'),
         isFalse,
       );
     });
 
-    test('SFTP_WORKER_ISOLATE：显式指定优先于平台默认', () {
+    test('SFTP_WORKER_ISOLATE=false：显式关闭 worker', () {
       expect(
         SftpWorker.resolveWorkerEnabled(
-            forceDirect: false, workerIsolate: 'false', os: 'android'),
+            forceDirect: false, workerIsolate: 'false'),
         isFalse,
+      );
+    });
+
+    test('默认全平台启用 worker（含 OHOS）', () {
+      expect(
+        SftpWorker.resolveWorkerEnabled(forceDirect: false, workerIsolate: ''),
+        isTrue,
       );
       expect(
         SftpWorker.resolveWorkerEnabled(
-            forceDirect: false, workerIsolate: 'true', os: 'ohos'),
+            forceDirect: false, workerIsolate: 'true'),
         isTrue,
       );
     });
 
-    test('都未指定：OHOS 暂关（等 soak 翻默认），其余平台开', () {
+    test('其它取值按默认（只有 false 显式关闭、DIRECT 显式回退）', () {
       expect(
-        SftpWorker.resolveWorkerEnabled(
-            forceDirect: false, workerIsolate: '', os: 'ohos'),
-        isFalse,
-      );
-      for (final os in ['android', 'linux', 'macos', 'ios', 'windows']) {
-        expect(
-          SftpWorker.resolveWorkerEnabled(
-              forceDirect: false, workerIsolate: '', os: os),
-          isTrue,
-          reason: os,
-        );
-      }
-    });
-
-    test('其它取值不改变平台默认（只有 true/false 生效）', () {
-      expect(
-        SftpWorker.resolveWorkerEnabled(
-            forceDirect: false, workerIsolate: '1', os: 'ohos'),
-        isFalse,
+        SftpWorker.resolveWorkerEnabled(forceDirect: false, workerIsolate: '1'),
+        isTrue,
       );
       expect(
         SftpWorker.resolveWorkerEnabled(
-            forceDirect: false, workerIsolate: 'yes', os: 'android'),
+            forceDirect: false, workerIsolate: 'yes'),
         isTrue,
       );
     });

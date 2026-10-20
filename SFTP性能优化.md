@@ -1,6 +1,6 @@
 # SFTP 性能优化方案（Android / OHOS 通用）
 
-> 状态：**第一步（SFTP Worker Isolate）已落地**；鸿蒙真机 PoC 已验证 worker 模式核心链路（流播 / seek / 并发 spawn 修复），OHOS 默认开关待 soak 后切换。
+> 状态：**worker isolate 全平台默认启用**（OHOS 2026-10-20 翻默认）；鸿蒙真机 PoC 已验证流播 / seek / 并发 spawn 修复，上传断线续传、启动失败自动降级、多源软上限、编译期强制回退开关均已落地。
 > 适用代码：`frontend/lib/data/sources/`。
 
 ## 1. 现象
@@ -88,17 +88,15 @@ SftpIsolateTransport                _sftpWorkerEntry
 
 ### 3.3 平台开关与降级
 
-`SftpWorker.enabled`：
+`SftpWorker.enabled`（全平台默认 **true**，含 OHOS；2026-10-20 翻默认）：
 
-- Android / iOS / 桌面默认 **true**；
-- OHOS 默认仍为 **false**（走旧直连）；`--dart-define=SFTP_WORKER_ISOLATE=true` 已在真机验证 worker 流播 / seek / 并发 spawn 修复（2026-10-19/20），待 10 分钟级 soak + 上传 / 补读验证后切换默认（切换 = 把 `resolveWorkerEnabled` 里 OHOS 的默认翻成 `true`，一行）；
 - 编译期开关（全平台 `--dart-define`，不需要改代码）：
   - `SFTP_WORKER_DIRECT=true`：强制旧直连（应急回退，优先级最高）；
-  - `SFTP_WORKER_ISOLATE=true|false`：显式指定本平台是否用 worker，优先于平台默认（OHOS 上打开验证 / 任意平台上一键关）；
-- OHOS 验证时编译期打开：
+  - `SFTP_WORKER_ISOLATE=false`：显式关闭 worker（`=true` 与默认等价）；
+- OHOS 真机 PoC（开关启用时的历史路径）用 `SFTP_WORKER_ISOLATE=true` 验证，现已并入默认；临时回退旧直连：
 
 ```bash
-flutter build hap --dart-define=SFTP_WORKER_ISOLATE=true
+flutter build hap --dart-define=SFTP_WORKER_DIRECT=true
 ```
 
 旧直连（`sftp_direct_transport.dart`）完整保留，行为与改动前一致：共享连接、掉线重建一次、`maxPendingRequests: 1`、OHOS 让出节拍。这样即使 worker 在某平台不稳定，也能一键切回。
@@ -141,7 +139,7 @@ flutter build hap --dart-define=SFTP_WORKER_ISOLATE=true
   - 已在 Linux 上用本地 SFTP 服务端做协议冒烟：worker 启动、全量读、Range 读、上传（跨批/跨块）、建目录、删除文件、关闭，全部通过。
 - [x] worker 生命周期与诊断收口（`7960b30`）：并发 spawn 去重 / `close()` 竞态回收、测试连接 `Isolate.run` 化、`SFTP_WORKER_TRACE` 日志开关。
 - [x] OHOS worker 真机 PoC 核心链路（`fe7def7`）：spawn / 流播 / seek 精准落点 / 快速连点；读调度闸门把 seek 的 `open` 从 3.5s 收到毫秒级。
-- [ ] OHOS 默认切换：完成 10 分钟级播放 + 补读 + 上传 soak、无 `THREAD_BLOCK_6S` 后，把 `resolveWorkerEnabled` 里 OHOS 的默认翻成 `true`（一行）。一键回退已就位：`--dart-define=SFTP_WORKER_DIRECT=true`（全平台强制旧直连）/ `SFTP_WORKER_ISOLATE=false`；此外 worker 启动类失败会自动降级。
+- [x] OHOS 默认切换：全平台默认 worker（`resolveWorkerEnabled` 去平台分支，默认 true）。一键回退：`--dart-define=SFTP_WORKER_DIRECT=true`（全平台强制旧直连）/ `SFTP_WORKER_ISOLATE=false`；此外 worker 启动类失败会自动降级。真机 soak 复核仍建议执行（见 §6.3）。
 - [x] 上传断线续传（worker 路径）：每批带绝对偏移发送；连接类失败自动重连一次——已有确认落盘的数据时以 `truncate: false` 重开会话并重放最后一批（相同字节覆盖写，幂等），否则重新截断从头来。业务错误（权限/不存在）不重试、原样抛出。本地故障注入冒烟通过（8MB 上传中途掐线，重连续传后读回逐字节一致）。旧直连路径仍不重试（见 §8）。
 - [x] worker 启动失败自动降级：启动类失败（spawn 抛错 / boot 超时 / 无命令端口）当次操作转旧直连，连续 2 次后本源永久降级；SSH/鉴权错误不降级。故障注入单测（`test/sftp_worker_fallback_test.dart`）+ 本地服务端冒烟（降级后读/上传真实可用、字节一致）通过。
 - [x] 多源并发上限：全局存活 worker 软上限 3；新 worker 启动前回收最久未用的空闲 worker（无读流、无在飞命令、无租约），全忙时不强行回收。当前操作与整次上传持租约。本地 5 源冒烟：存活数始终 ≤ 3、进行中的读流不被回收、全部关闭后归零。
@@ -174,22 +172,22 @@ flutter build hap --dart-define=SFTP_WORKER_ISOLATE=true
 - 快速连点 6 次落点仍准确，无归零 / 卡旧值；
 - 期间修复：并发 spawn 去重、读调度闸门（见 §5）。
 
-待完成（切换 OHOS 默认前）：
+切换后复核（建议，真机默认即 worker）：
 
 - 10 分钟以上连续播放 + 全库元数据补读 + 上传 / 删除，确认无 `THREAD_BLOCK_6S`；
 - 排查可加 `--dart-define=SFTP_WORKER_TRACE=true` 看 `[sftp-worker]` 生命周期日志；
-- 通过后切换默认（翻一行）；若失败，默认保持 false 即走旧直连，或 `--dart-define=SFTP_WORKER_DIRECT=true` 强制回退。
+- 若出现异常：`--dart-define=SFTP_WORKER_DIRECT=true` 强制旧直连回退（或 `SFTP_WORKER_ISOLATE=false`）。
 
 ## 7. 回滚
 
 - 所有平台：`--dart-define=SFTP_WORKER_DIRECT=true` 强制旧直连（不用改代码；旧直连代码与节拍逻辑完整保留）。
 - 任意平台显式关闭/打开 worker：`--dart-define=SFTP_WORKER_ISOLATE=false|true`。
-- OHOS 默认未切前：不传 `--dart-define` 即走旧直连。
+- OHOS 现已随全平台默认启用 worker（2026-10-20 翻默认，真机 PoC 与修复已验证）。
 - 另：worker 启动类失败会自动降级旧直连（见 §3.3），不需要手动干预。
 
 ## 8. 已知限制
 
-- 上传断线续传只覆盖 worker 路径；旧直连（OHOS 默认未切 worker 时生效）仍是一次性字节流，断线后需调用方重发；
+- 上传断线续传只覆盖 worker 路径；旧直连（显式回退 / 启动失败自动降级时生效）仍是一次性字节流，断线后需调用方重发；
 - 未给单个 worker 设置带宽上限，非常快的网络下 worker 会尽量占带宽，但只影响该源，不影响 UI isolate；
 - 打开但从未被监听的读流仍会持有远端句柄，直到 worker 空闲回收；正常播放/补读路径都会监听或取消。
 
@@ -202,3 +200,4 @@ flutter build hap --dart-define=SFTP_WORKER_ISOLATE=true
 - 2026-10-20：worker 启动失败自动降级旧直连（当次操作转直连 + 连续 2 次永久降级并记录日志）；故障注入单测与本地服务端冒烟通过。
 - 2026-10-20：多源 worker 软上限 3（LRU 回收空闲 worker、忙/持租约不回收；操作与上传持租约）；本地 5 源冒烟通过。
 - 2026-10-20：worker 路径编译期强制回退开关 `SFTP_WORKER_DIRECT=true`（全平台）+ `SFTP_WORKER_ISOLATE=true|false` 双向显式指定；开关矩阵单测。
+- 2026-10-20：OHOS 默认翻转为 worker（全平台默认启用；回退开关与自动降级保持不变）。
