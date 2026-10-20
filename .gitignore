@@ -52,6 +52,8 @@ frontend/third_party/fvp/ohos/oh-package-lock.json5
 # 注：frontend/android/gradle.properties 含 AGP 9 必需开关，Flutter 不会自动生成，别忘了复制
 /frontend/android/gradle.properties
 frontend/third_party/dart_smb2/android/src/main/jniLibs/
+# windows/libs/ 下 libsmb2.dll 由 CMake 从 GitHub Releases 自动下载并校验 SHA，本地缓存不入库
+frontend/third_party/dart_smb2/windows/libs/
 /run-windows.bat
 /run-android.sh
 /build-android.sh
