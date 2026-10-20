@@ -16,6 +16,8 @@ nginx/
 spec/
 articals/
 .gradle/
+# avplayer PoC 未完成（README 引用的 serve-test-https.py / detect-audio-codec.py 尚未提交），完成后移除本行
+tools/
 
 # 泛匹配
 # 注：曾用 *.md / *.txt / *test* 全局忽略，会静默吞掉 vendored 副本与
