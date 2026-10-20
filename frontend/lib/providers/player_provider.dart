@@ -3122,7 +3122,26 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 恢复播放：若当前曲已播完（顺序模式队尾收尾或单曲播完），
   /// 先回到 0 处再播——否则 play() 会立刻再次 completed，表现为「按了没反应」。
+  ///
+  /// 启动恢复（[_restoreFuture]）尚未收尾时先等它：恢复链的 `_play(play:false)`
+  /// 仍在装载/seek，此时直接下发 play 会在 OHOS AVPlayer prepared 之前被桥丢弃
+  /// （`AvPlayerBridge.handlePlay` 对非可播态静默忽略），随后恢复尾又会因
+  /// `player.playing == true` 执行 pause——冷启动/播控卡点播放无声即此竞态。
   Future<void> _resumeOrReplay() async {
+    if (_shuttingDown || _disposed) return;
+    final restoring = _restoreFuture;
+    if (restoring != null) {
+      try {
+        await restoring;
+      } catch (e) {
+        debugPrint('[play] 等待启动恢复失败（忽略）：$e');
+        return;
+      }
+      if (_shuttingDown || _disposed) return;
+      // 恢复结束仍无现场（无可恢复队列/恢复失败）：不要继续 play() 把本地
+      // playing 置真而实际没有音源。
+      if (_current == null) return;
+    }
     if (player.processingState == ProcessingState.completed) {
       try {
         await player.seek(Duration.zero);
@@ -3139,6 +3158,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 通知栏「播放」回调（settings.md §3.6）。
   Future<void> resumeFromNotifier() async {
+    // 无播放现场且没有在途恢复（队列为空/已被清空）：播控卡点播放不应白建
+    // 播放器、把本地 playing 置真。恢复中即使当前曲还没落位也要继续，
+    // 交给 [_resumeOrReplay] 等恢复收尾后再判断。
+    if (_current == null && _restoreFuture == null) return;
     _userTookOver = true;
     _audioFocusPaused = false;
     _audioFocusSavePending = false;

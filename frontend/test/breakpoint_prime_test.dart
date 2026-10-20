@@ -57,9 +57,14 @@ class _FakeSource extends MusicSource {
 }
 
 class _FakePlatformPlayer extends AudioPlayerPlatform {
-  _FakePlatformPlayer(super.id);
+  _FakePlatformPlayer(super.id, this._owner);
 
+  final _FakeJustAudio _owner;
   final _events = StreamController<PlaybackEventMessage>.broadcast();
+
+  /// 平台侧实际收到的 play/pause 次数（竞态回归用）。
+  int playCalls = 0;
+  int pauseCalls = 0;
 
   @override
   Stream<PlaybackEventMessage> get playbackEventMessageStream => _events.stream;
@@ -79,15 +84,24 @@ class _FakePlatformPlayer extends AudioPlayerPlatform {
 
   @override
   Future<LoadResponse> load(LoadRequest request) async {
+    if (!_owner.loadStarted.isCompleted) _owner.loadStarted.complete();
+    final gate = _owner.loadGate;
+    if (gate != null) await gate.future;
     _emit(request.initialPosition ?? Duration.zero);
     return LoadResponse(duration: const Duration(minutes: 3));
   }
 
   @override
-  Future<PlayResponse> play(PlayRequest request) async => PlayResponse();
+  Future<PlayResponse> play(PlayRequest request) async {
+    playCalls += 1;
+    return PlayResponse();
+  }
 
   @override
-  Future<PauseResponse> pause(PauseRequest request) async => PauseResponse();
+  Future<PauseResponse> pause(PauseRequest request) async {
+    pauseCalls += 1;
+    return PauseResponse();
+  }
 
   @override
   Future<SeekResponse> seek(SeekRequest request) async {
@@ -126,9 +140,15 @@ class _FakePlatformPlayer extends AudioPlayerPlatform {
 class _FakeJustAudio extends JustAudioPlatform {
   final players = <String, _FakePlatformPlayer>{};
 
+  /// load 已进入（用于在装载挂起时插入用户操作）。
+  final loadStarted = Completer<void>();
+
+  /// 非空时 load 阻塞到其完成（模拟启动恢复的慢装载）。
+  Completer<void>? loadGate;
+
   @override
   Future<AudioPlayerPlatform> init(InitRequest request) async =>
-      players[request.id] = _FakePlatformPlayer(request.id);
+      players[request.id] = _FakePlatformPlayer(request.id, this);
 
   @override
   Future<DisposePlayerResponse> disposePlayer(
@@ -311,5 +331,57 @@ void main() {
     expect(player.position.inMilliseconds, lessThan(5000));
     // 放干平台事件投递（见上）。
     await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
+
+  test('恢复装载期点播放：等恢复完成后再下发 play，恢复尾不再 pause', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+
+    final fake = JustAudioPlatform.instance as _FakeJustAudio;
+    final gate = Completer<void>();
+    fake.loadGate = gate;
+
+    final restore = player.restorePreferRemote();
+    await fake.loadStarted.future;
+    final fakePlayer = fake.players.values.single;
+    expect(fakePlayer.playCalls, 0);
+
+    // 首帧已显示当前曲/断点，用户此刻点播放；恢复装载仍挂起。
+    final resume = player.resumeFromNotifier();
+    await Future<void>.delayed(Duration.zero);
+    expect(fakePlayer.playCalls, 0,
+        reason: '恢复装载/prepared 完成前不得下发 play');
+
+    gate.complete();
+    await Future.wait([restore, resume]);
+    // play() 内部先 await AudioSession.instance，再下发平台 play；放干这条异步链。
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(fakePlayer.playCalls, 1, reason: '恢复完成后应下发一次 play');
+    expect(fakePlayer.pauseCalls, 0, reason: '恢复尾不得把用户的播放请求 pause 掉');
+    expect(player.playing, isTrue);
+
+    // 放干平台事件投递（见上）。
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
+
+  test('无播放现场点播放：不构造播放器，不进入假播放态', () async {
+    final (index, player, _) = await setup(['/x/a.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    expect(player.debugPlayerBuilt, isFalse);
+    await player.resumeFromNotifier();
+    expect(player.debugPlayerBuilt, isFalse,
+        reason: '无当前曲时 play 不应为了读 processingState 白建播放器');
   });
 }
