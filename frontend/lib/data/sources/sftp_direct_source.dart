@@ -153,9 +153,9 @@ class SftpDirectSource implements MusicSource {
         keyPassphrase: keyPassphrase,
       );
 
-  /// 懒创建传输层。worker 路径在 Android/桌面/iOS 默认启用；OHOS 默认仍走
-  /// 旧直连（`SftpWorker.enabled == false`），真机 PoC 通过后可用
-  /// `--dart-define=SFTP_WORKER_ISOLATE=true` 打开。
+  /// 懒创建传输层。worker 路径在 Android/桌面/iOS 默认启用；OHOS 真机 PoC
+  /// 已过、待 soak 后翻默认，之前默认走旧直连（`SftpWorker.enabled == false`）。
+  /// 编译期强制回退：`--dart-define=SFTP_WORKER_DIRECT=true`（全平台走旧直连）。
   SftpTransport _transportFor() {
     final cur = _transport;
     if (cur != null) return cur;

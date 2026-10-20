@@ -7,8 +7,8 @@ import 'music_source.dart';
 import 'sftp_common.dart';
 
 /// 旧路径：SSH/SFTP 连接与纯 Dart 解密全部在当前 isolate（通常是 UI
-/// isolate）。保留它作为 OHOS 未验证 long-lived worker 前的稳妥兜底，也作为
-/// worker 启动失败时的手动降级开关目标。
+/// isolate）。保留它作为 OHOS 默认未切 worker 前的稳妥兜底，也作为 worker
+/// 启动失败自动降级与编译期开关（`SFTP_WORKER_DIRECT=true`）的降级目标。
 ///
 /// 注意：这里的 `maxPendingRequests: 1` / 16KB 块只把单次同步块压小，**没有
 /// 把解密移出 UI isolate**；worker 路径才是根治。

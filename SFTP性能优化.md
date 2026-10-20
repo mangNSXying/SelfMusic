@@ -91,7 +91,10 @@ SftpIsolateTransport                _sftpWorkerEntry
 `SftpWorker.enabled`：
 
 - Android / iOS / 桌面默认 **true**；
-- OHOS 默认仍为 **false**（走旧直连）；`--dart-define=SFTP_WORKER_ISOLATE=true` 已在真机验证 worker 流播 / seek / 并发 spawn 修复（2026-10-19/20），待 10 分钟级 soak + 上传 / 补读验证后切换默认；
+- OHOS 默认仍为 **false**（走旧直连）；`--dart-define=SFTP_WORKER_ISOLATE=true` 已在真机验证 worker 流播 / seek / 并发 spawn 修复（2026-10-19/20），待 10 分钟级 soak + 上传 / 补读验证后切换默认（切换 = 把 `resolveWorkerEnabled` 里 OHOS 的默认翻成 `true`，一行）；
+- 编译期开关（全平台 `--dart-define`，不需要改代码）：
+  - `SFTP_WORKER_DIRECT=true`：强制旧直连（应急回退，优先级最高）；
+  - `SFTP_WORKER_ISOLATE=true|false`：显式指定本平台是否用 worker，优先于平台默认（OHOS 上打开验证 / 任意平台上一键关）；
 - OHOS 验证时编译期打开：
 
 ```bash
@@ -138,7 +141,7 @@ flutter build hap --dart-define=SFTP_WORKER_ISOLATE=true
   - 已在 Linux 上用本地 SFTP 服务端做协议冒烟：worker 启动、全量读、Range 读、上传（跨批/跨块）、建目录、删除文件、关闭，全部通过。
 - [x] worker 生命周期与诊断收口（`7960b30`）：并发 spawn 去重 / `close()` 竞态回收、测试连接 `Isolate.run` 化、`SFTP_WORKER_TRACE` 日志开关。
 - [x] OHOS worker 真机 PoC 核心链路（`fe7def7`）：spawn / 流播 / seek 精准落点 / 快速连点；读调度闸门把 seek 的 `open` 从 3.5s 收到毫秒级。
-- [ ] OHOS 默认切换：完成 10 分钟级播放 + 补读 + 上传 soak、无 `THREAD_BLOCK_6S` 后，把 OHOS 默认切到 worker（保留 `--dart-define` 一键回退）。
+- [ ] OHOS 默认切换：完成 10 分钟级播放 + 补读 + 上传 soak、无 `THREAD_BLOCK_6S` 后，把 `resolveWorkerEnabled` 里 OHOS 的默认翻成 `true`（一行）。一键回退已就位：`--dart-define=SFTP_WORKER_DIRECT=true`（全平台强制旧直连）/ `SFTP_WORKER_ISOLATE=false`；此外 worker 启动类失败会自动降级。
 - [x] 上传断线续传（worker 路径）：每批带绝对偏移发送；连接类失败自动重连一次——已有确认落盘的数据时以 `truncate: false` 重开会话并重放最后一批（相同字节覆盖写，幂等），否则重新截断从头来。业务错误（权限/不存在）不重试、原样抛出。本地故障注入冒烟通过（8MB 上传中途掐线，重连续传后读回逐字节一致）。旧直连路径仍不重试（见 §8）。
 - [x] worker 启动失败自动降级：启动类失败（spawn 抛错 / boot 超时 / 无命令端口）当次操作转旧直连，连续 2 次后本源永久降级；SSH/鉴权错误不降级。故障注入单测（`test/sftp_worker_fallback_test.dart`）+ 本地服务端冒烟（降级后读/上传真实可用、字节一致）通过。
 - [x] 多源并发上限：全局存活 worker 软上限 3；新 worker 启动前回收最久未用的空闲 worker（无读流、无在飞命令、无租约），全忙时不强行回收。当前操作与整次上传持租约。本地 5 源冒烟：存活数始终 ≤ 3、进行中的读流不被回收、全部关闭后归零。
@@ -175,12 +178,14 @@ flutter build hap --dart-define=SFTP_WORKER_ISOLATE=true
 
 - 10 分钟以上连续播放 + 全库元数据补读 + 上传 / 删除，确认无 `THREAD_BLOCK_6S`；
 - 排查可加 `--dart-define=SFTP_WORKER_TRACE=true` 看 `[sftp-worker]` 生命周期日志；
-- 通过后切换默认；若失败，默认保持 false 即走旧直连，或用编译期开关回退。
+- 通过后切换默认（翻一行）；若失败，默认保持 false 即走旧直连，或 `--dart-define=SFTP_WORKER_DIRECT=true` 强制回退。
 
 ## 7. 回滚
 
-- OHOS：不传 `--dart-define` 即走旧直连。
-- Android/桌面/iOS：临时把 `SftpWorker.enabled` 改为 `false`（或加同样的 dart-define 反向开关）即可全局回到旧直连；旧直连代码与节拍逻辑完整保留。
+- 所有平台：`--dart-define=SFTP_WORKER_DIRECT=true` 强制旧直连（不用改代码；旧直连代码与节拍逻辑完整保留）。
+- 任意平台显式关闭/打开 worker：`--dart-define=SFTP_WORKER_ISOLATE=false|true`。
+- OHOS 默认未切前：不传 `--dart-define` 即走旧直连。
+- 另：worker 启动类失败会自动降级旧直连（见 §3.3），不需要手动干预。
 
 ## 8. 已知限制
 
@@ -196,3 +201,4 @@ flutter build hap --dart-define=SFTP_WORKER_ISOLATE=true
 - 2026-10-20 `fc1d4d1`：worker 路径上传断线续传（绝对偏移批写 + 一次重连 + 最后一批幂等重放）；本地故障注入冒烟通过。
 - 2026-10-20：worker 启动失败自动降级旧直连（当次操作转直连 + 连续 2 次永久降级并记录日志）；故障注入单测与本地服务端冒烟通过。
 - 2026-10-20：多源 worker 软上限 3（LRU 回收空闲 worker、忙/持租约不回收；操作与上传持租约）；本地 5 源冒烟通过。
+- 2026-10-20：worker 路径编译期强制回退开关 `SFTP_WORKER_DIRECT=true`（全平台）+ `SFTP_WORKER_ISOLATE=true|false` 双向显式指定；开关矩阵单测。

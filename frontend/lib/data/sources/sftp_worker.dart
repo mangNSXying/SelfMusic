@@ -64,8 +64,10 @@ void _trace(String message) => sftpTrace(message);
 /// 这样即使 `dartssh2` 解密占满一个 isolate，UI 仍有自己的事件循环。
 ///
 /// 平台开关：Android/桌面/iOS 默认启用；OHOS 因 fork engine 的 isolate 行为
-/// 尚未真机 PoC，默认走旧直连（见 [enabled]），验证通过后用
-/// `--dart-define=SFTP_WORKER_ISOLATE=true` 打开。
+/// 真机 PoC 已通过、待 soak 后翻默认，之前默认走旧直连。可用
+/// `--dart-define=SFTP_WORKER_DIRECT=true` 全平台强制旧直连，或用
+/// `--dart-define=SFTP_WORKER_ISOLATE=true|false` 显式指定
+/// （见 [resolveWorkerEnabled]）。
 class SftpWorker {
   SftpWorker._(this._cmd, this._reply, this._isolate) {
     _live.add(this);
@@ -97,9 +99,40 @@ class SftpWorker {
   /// 在暂停期间被误关。
   bool get busy => _leases > 0 || _reads.isNotEmpty || _pending.isNotEmpty;
 
-  /// 是否启用 worker 路径。OHOS 默认关闭；验证通过后可用 dart-define 打开。
-  static bool enabled = Platform.operatingSystem != 'ohos' ||
-      const bool.fromEnvironment('SFTP_WORKER_ISOLATE');
+  /// 是否启用 worker 路径，由 [resolveWorkerEnabled] 在启动时解析：
+  /// - Android / iOS / 桌面默认 **true**；
+  /// - OHOS 默认 **false**（旧直连），真机 soak 通过后把解析逻辑里
+  ///   `os != 'ohos'` 翻成 `true`（一行）；
+  /// - `--dart-define` 编译期开关（见 [resolveWorkerEnabled] 的注释）。
+  static bool enabled = resolveWorkerEnabled(
+    forceDirect: const bool.fromEnvironment('SFTP_WORKER_DIRECT'),
+    workerIsolate: const String.fromEnvironment('SFTP_WORKER_ISOLATE'),
+    os: Platform.operatingSystem,
+  );
+
+  /// [enabled] 的解析逻辑（纯函数，便于单测开关矩阵）。
+  ///
+  /// - `--dart-define=SFTP_WORKER_DIRECT=true`：全平台强制旧直连（应急
+  ///   回退，优先级最高，不需要改代码）；
+  /// - `--dart-define=SFTP_WORKER_ISOLATE=true|false`：显式指定本平台是否
+  ///   用 worker，优先于平台默认（OHOS 上打开验证 / 任意平台上一键关）；
+  /// - 都未指定：按平台默认（OHOS 暂走旧直连）。
+  @visibleForTesting
+  static bool resolveWorkerEnabled({
+    required bool forceDirect,
+    required String workerIsolate,
+    required String os,
+  }) {
+    if (forceDirect) return false;
+    switch (workerIsolate) {
+      case 'true':
+        return true;
+      case 'false':
+        return false;
+      default:
+        return os != 'ohos';
+    }
+  }
 
   /// 供传输层写同一条 `[sftp-worker]` 诊断日志（受 SFTP_WORKER_TRACE 控制）。
   static void trace(String message) => _trace(message);
