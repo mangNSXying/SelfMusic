@@ -374,6 +374,86 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 100));
   });
 
+  test('恢复装载期连点两次播放：恢复完成后保持暂停，不补发 play', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+
+    final fake = JustAudioPlatform.instance as _FakeJustAudio;
+    final gate = Completer<void>();
+    fake.loadGate = gate;
+
+    final restore = player.restorePreferRemote();
+    await fake.loadStarted.future;
+    final fakePlayer = fake.players.values.single;
+
+    // 第一次点播放：目标态立即翻真，但装载未完成不下发平台 play。
+    final first = player.toggle();
+    await Future<void>.delayed(Duration.zero);
+    expect(player.playing, isTrue, reason: '等待期按钮目标态应先响应');
+    expect(fakePlayer.playCalls, 0);
+
+    // 第二次点播放：目标态翻回暂停，恢复尾不应再补发 play。
+    await player.toggle();
+    expect(player.playing, isFalse);
+
+    gate.complete();
+    await Future.wait([restore, first]);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(fakePlayer.playCalls, 0, reason: '偶数次连点最终应保持暂停');
+    expect(fakePlayer.pauseCalls, 0);
+    expect(player.playing, isFalse);
+
+    // 放干平台事件投递（见上）。
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
+
+  test('恢复装载期连点两次播控播放：只下发一次 play', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+
+    final fake = JustAudioPlatform.instance as _FakeJustAudio;
+    final gate = Completer<void>();
+    fake.loadGate = gate;
+
+    final restore = player.restorePreferRemote();
+    await fake.loadStarted.future;
+    final fakePlayer = fake.players.values.single;
+
+    final first = player.resumeFromNotifier();
+    final second = player.resumeFromNotifier();
+    await Future<void>.delayed(Duration.zero);
+    expect(fakePlayer.playCalls, 0);
+
+    gate.complete();
+    await Future.wait([restore, first, second]);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(fakePlayer.playCalls, 1, reason: '连点应合并为一次 play');
+    expect(player.playing, isTrue);
+
+    // 放干平台事件投递（见上）。
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
+
   test('无播放现场点播放：不构造播放器，不进入假播放态', () async {
     final (index, player, _) = await setup(['/x/a.flac']);
     addTearDown(index.close);

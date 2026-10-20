@@ -373,6 +373,16 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// （main.dart 的「先恢复、后拉取、再补切」约束）。
   Future<void>? _restoreFuture;
 
+  /// 启动恢复期间用户连点播放/暂停的待应用目标态。
+  ///
+  /// 非 null 时表示恢复尚未收尾：true=恢复完播放，false=恢复完保持暂停。
+  /// 连点只翻转这里，恢复尾统一执行一次，避免多次 `play()`/淡入叠加；
+  /// [playing] 在等待期直接返回它，按钮目标态仍能即时响应。
+  bool? _restoreResumeTarget;
+
+  /// 等启动恢复收尾后统一应用待办目标态的 single-flight。
+  Future<void>? _restoreResumeFuture;
+
   /// 断点套用 single-flight：恢复/套用进行中再触发只记一次待办，结束后用最新
   /// 镜像补跑一次，避免并发 `_play` 与多页 pull 期间的连续换曲（冷启动卡顿根因）。
   bool _applyingMirror = false;
@@ -1195,6 +1205,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 语义）；渐变被清理路径（切歌/停止/退出/重建）或反向打断取消时，Future
   /// 同样会完成——但**不**执行暂停，由接管方决定后续状态。
   Future<void> _fadeOutThenPause() async {
+    // 启动恢复期已有待播放目标时，主动暂停直接取消它；恢复尾看到 false
+    // 就不会再补一次 play。
+    if (_restoreResumeTarget != null) _restoreResumeTarget = false;
     // 用户/守卫/通知栏/睡眠/写盘等主动暂停：取消“焦点暂停后自动续播”意图。
     // 焦点抢占本身不经过这里（原生桥已暂停），故不会误清标记。
     _audioFocusPaused = false;
@@ -1481,6 +1494,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 避免恢复后迟到的淡出回调把音量/意图位复位。
     _cancelFadeAndComplete();
     _fadingPause = false;
+    // 焦点恢复也是明确的播放意图：覆盖恢复期被连点取消的目标态。
+    if (_restoreFuture != null) _restoreResumeTarget = true;
     await _resumeOrReplay();
     if (_disposed || _shuttingDown) return;
     notifyListeners();
@@ -1593,11 +1608,17 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
   /// 界面/目标播放态：淡出暂停进行中（pending-pause，[_fadingPause]）时提前
   /// 翻转为 false——播放/暂停按钮点击后一帧内响应目标意图，不等音频淡出完成；
-  /// 渐变之外的任意时刻与实际播放状态一致。
+  /// 启动恢复等待期返回 [_restoreResumeTarget]（连点后的待应用目标态）；
+  /// 其余渐变之外的任意时刻与实际播放状态一致。
   ///
   /// provider 内部对**实际**播放状态的判断（睡眠定时、断点保存、切歌复位、
   /// [toggle] 分支等）不经此 getter，一律直引 `player.playing`。
-  bool get playing => _fadingPause ? false : player.playing;
+  bool get playing {
+    if (_fadingPause) return false;
+    final restoreTarget = _restoreResumeTarget;
+    if (restoreTarget != null) return restoreTarget;
+    return player.playing;
+  }
   PlayMode get mode => _mode;
 
   /// 是否为当前播放曲（按 sourceKey + sourceRef，避免多源 id 碰撞）。
@@ -1915,6 +1936,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 解决了快速 next/prev 时旧 setUrl 的 connection abort / source error  toast 刷屏。
     final token = ++_playToken;
     bool alive() => token == _playToken;
+    // 用户手动起播新曲：恢复期等待中的播放/暂停目标态作废，避免旧意图
+    // 在恢复收尾后又对新曲补一次 play。恢复自身的 `_play(play:false)` 不能
+    // 取消——用户可能在恢复的异步前缀期间已经点过播放。
+    if (manual && _restoreResumeTarget != null) {
+      _restoreResumeTarget = false;
+    }
     // 新曲开始前清掉上一首的预取结果与 completed 去重标记。
     _peekedNext = null;
     _completedKey = null;
@@ -3078,6 +3105,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 用户主动点按钮（含“系统暂停后点恢复”）：取消焦点恢复意图。
     _audioFocusPaused = false;
     _audioFocusSavePending = false;
+    // 启动恢复还没收尾：连点只翻转待应用目标态。奇数次恢复完播放，
+    // 偶数次保持暂停；恢复尾只执行一次，不会叠多次 play()/淡入。
+    final restoreTarget = _restoreResumeTarget;
+    if (restoreTarget != null) {
+      _restoreResumeTarget = !restoreTarget;
+      notifyListeners();
+      return;
+    }
     if (player.playing) {
       if (_fadingPause) {
         // 淡出进行中反向打断：取消暂停意图，音量从当前值平滑回升。
@@ -3113,6 +3148,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _cancelFadeAndComplete();
       _fadingPause = false;
     }
+    if (_restoreFuture != null) {
+      // 恢复装载/seek 还没收尾：先立目标态（按钮立即翻「播放中」），
+      // 由 [_resumeOrReplay] 等恢复完再真正下发 play。
+      _restoreResumeTarget = true;
+      notifyListeners();
+    }
     await _resumeOrReplay();
     notifyListeners();
     _syncSystemMedia();
@@ -3124,13 +3165,33 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 先回到 0 处再播——否则 play() 会立刻再次 completed，表现为「按了没反应」。
   ///
   /// 启动恢复（[_restoreFuture]）尚未收尾时先等它：恢复链的 `_play(play:false)`
-  /// 仍在装载/seek，此时直接下发 play 会在 OHOS AVPlayer prepared 之前被桥丢弃
-  /// （`AvPlayerBridge.handlePlay` 对非可播态静默忽略），随后恢复尾又会因
-  /// `player.playing == true` 执行 pause——冷启动/播控卡点播放无声即此竞态。
+  /// 仍在装载/seek，此时直接下发 play 会与恢复尾的 pause 打架——冷启动/
+  /// 播控卡点播放无声即此竞态。等待期间连点由 [_restoreResumeTarget] 记录，
+  /// 恢复完后只执行一次，避免多次 play()/淡入叠加。
   Future<void> _resumeOrReplay() async {
     if (_shuttingDown || _disposed) return;
     final restoring = _restoreFuture;
     if (restoring != null) {
+      final inFlight = _restoreResumeFuture;
+      if (inFlight != null) {
+        await inFlight;
+        return;
+      }
+      final f = _resumeAfterRestore(restoring);
+      _restoreResumeFuture = f;
+      try {
+        await f;
+      } finally {
+        if (identical(_restoreResumeFuture, f)) _restoreResumeFuture = null;
+      }
+      return;
+    }
+    await _resumePlaybackNow();
+  }
+
+  /// 等启动恢复收尾后按最新目标态执行一次恢复。
+  Future<void> _resumeAfterRestore(Future<void> restoring) async {
+    try {
       try {
         await restoring;
       } catch (e) {
@@ -3138,15 +3199,27 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
       if (_shuttingDown || _disposed) return;
-      // 恢复结束仍无现场（无可恢复队列/恢复失败）：不要继续 play() 把本地
-      // playing 置真而实际没有音源。
+      // 连点偶数次：恢复完保持暂停；无现场也不 play（避免本地 playing
+      // 置真却没有音源）。目标态在真正下发 play 前还可能被再次翻转。
+      final target = _restoreResumeTarget;
+      if (target == false) return;
       if (_current == null) return;
+      await _resumePlaybackNow();
+    } finally {
+      // 无论正常/取消/异常，等待期目标态都不留到恢复之后。
+      _restoreResumeTarget = null;
     }
+  }
+
+  Future<void> _resumePlaybackNow() async {
     if (player.processingState == ProcessingState.completed) {
       try {
         await player.seek(Duration.zero);
       } catch (_) {}
     }
+    // 恢复期目标态可能在上面的 seek 期间又被连点翻转；以最新值为准。
+    if (_restoreResumeTarget == false) return;
+    _restoreResumeTarget = null;
     // 同 [_play]：play() 的 Future 到播完/暂停才 complete，不能 await，否则
     // toggle()/通知栏「播放」的 _syncSystemMedia() 被推迟（前台服务/唤醒锁
     // 起不来，后台播放不成立）。
@@ -3162,6 +3235,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 播放器、把本地 playing 置真。恢复中即使当前曲还没落位也要继续，
     // 交给 [_resumeOrReplay] 等恢复收尾后再判断。
     if (_current == null && _restoreFuture == null) return;
+    if (_restoreFuture != null) _restoreResumeTarget = true;
     _userTookOver = true;
     _audioFocusPaused = false;
     _audioFocusSavePending = false;
@@ -3208,6 +3282,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 停掉，与丢弃队列一致），划掉任务路径传 `clearResume: false` 保留断点/队列。
   /// 处理器的 `super.stop()` 随后把状态置 idle，前台服务/通知随之结束。
   Future<void> stopFromNotifier({bool clearResume = true}) async {
+    // 启动恢复期已有待播放目标时，停止直接取消它。
+    if (_restoreResumeTarget != null) _restoreResumeTarget = false;
     // 清理路径：取消渐变 + 收口挂起的淡出 Future（不暂停）+ 复位意图位。
     _cancelFadeAndComplete();
     _fadingPause = false;
@@ -4061,6 +4137,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   void dispose() {
     if (!kIsWeb) WidgetsBinding.instance.removeObserver(this);
     _disposed = true;
+    _restoreResumeTarget = null;
     // 清理路径：取消渐变 + 收口挂起的淡出 Future（不暂停）+ 复位意图位。
     _cancelFadeAndComplete();
     _fadingPause = false;
