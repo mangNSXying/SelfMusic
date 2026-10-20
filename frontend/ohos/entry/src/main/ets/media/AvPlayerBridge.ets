@@ -44,6 +44,8 @@ class PlayerEntry {
   released: boolean = false;
   /** prepared 前收到的音量（AVPlayer 仅在 prepared 后允许 setVolume）。 */
   pendingVolume: number = -1;
+  /** prepared 前收到的 play（just_audio 激活平台时会先 play 再 load）。 */
+  pendingPlay: boolean = false;
 
   constructor(id: string) {
     this.id = id;
@@ -66,6 +68,8 @@ class PlayerEntry {
  * - 监听必须先于置源注册（官方要求，否则丢 stateChange）；
  * - 文件走 fdSrc（fd 由桥持有到 reset/dispose 再关）；
  * - 带请求头走 createMediaSourceWithUrl + setMediaSource（API 12+）；
+ * - play 在 prepared 之前到达时挂起，prepared 后补发；pause/stop/reset/装载
+ *   失败会取消挂起，避免“先点播放再点暂停”在装载完成后又自己响起来；
  * - error 态只上报并标记重建，不在错误回调里 reset（错误回调内 reset 可能再次抛错）。
  */
 export default class AvPlayerBridge implements MethodCallHandler, StreamHandler {
@@ -212,7 +216,15 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
       return;
     }
     if (state !== 'prepared' && state !== 'paused' && state !== 'completed') {
-      Log.w(TAG, `play 忽略：state=${state}`);
+      if (state === 'idle' || state === 'initialized' || state === 'stopped') {
+        // just_audio 激活平台时会先下发 play、再 load：此刻原生还没有可播
+        // 音源，不能丢意图。load 完成（prepared + 初始 seek）后补发一次。
+        entry.pendingPlay = true;
+        Log.w(TAG, `play 挂起：state=${state}，prepared 后补发`);
+      } else {
+        entry.pendingPlay = false;
+        Log.w(TAG, `play 忽略：state=${state}`);
+      }
       result.success(null);
       return;
     }
@@ -232,7 +244,12 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
       result.error('404', '播放器不存在', null);
       return;
     }
+    const hadPendingPlay = entry.pendingPlay;
+    entry.pendingPlay = false;
     if (player.state !== 'playing') {
+      if (hadPendingPlay) {
+        Log.w(TAG, `pause 取消挂起的 play：state=${player.state}`);
+      }
       result.success(null);
       return;
     }
@@ -252,6 +269,7 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
       result.error('404', '播放器不存在', null);
       return;
     }
+    entry.pendingPlay = false;
     const state = player.state;
     if (state !== 'prepared' && state !== 'playing' && state !== 'paused' && state !== 'completed') {
       result.success(null);
@@ -335,6 +353,7 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
   private async handleDispose(call: MethodCall, result: MethodResult, all: boolean): Promise<void> {
     if (all) {
       for (const entry of this.players.values()) {
+        entry.pendingPlay = false;
         await this.releaseEntry(entry);
       }
       this.players.clear();
@@ -348,6 +367,7 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
     }
     const entry = this.players.get(id);
     if (entry !== undefined) {
+      entry.pendingPlay = false;
       await this.releaseEntry(entry);
       this.players.delete(id);
     }
@@ -535,6 +555,7 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
     entry.onLoadError = null;
     entry.onPrepared = null;
     entry.preparing = false;
+    entry.pendingPlay = false;
     if (reject !== null) {
       reject(message);
     }
@@ -623,6 +644,16 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
           Log.w(TAG, `${entry.id} 初始 seek 失败: ${(e as BusinessError).code}`);
         }
       }
+      // just_audio 激活平台时可能先 play 再 load：在 prepared + 初始 seek
+      // 都完成后再补发，避免从 0 起播闪一下再跳到断点。
+      const pendingPlayer = entry.player;
+      if (entry.pendingPlay && pendingPlayer !== null && !entry.released) {
+        entry.pendingPlay = false;
+        Log.w(TAG, `${entry.id} load 完成，补发挂起的 play`);
+        pendingPlayer.play().catch((e: BusinessError): void => {
+          Log.w(TAG, `${entry.id} 补发 play 失败: ${e.code}`);
+        });
+      }
       return duration;
     } finally {
       clearTimeout(timer);
@@ -635,6 +666,7 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
     entry.preparing = false;
     entry.onPrepared = null;
     entry.onLoadError = null;
+    entry.pendingPlay = false;
     if (player === null) {
       return;
     }
