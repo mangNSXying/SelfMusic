@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import '../models/album.dart';
+import '../models/artist.dart';
+import '../models/song.dart';
 import '../theme/app_theme.dart';
 import '../utils/perf_log.dart';
 
@@ -19,6 +22,29 @@ typedef NavRouteKey = ({
   String? sourceKey,
   int? playlistId,
 });
+
+/// 宽屏内容区详情页的目标（专辑/歌手）。
+///
+/// 只在宽屏进入（窄屏仍走统一拖拽弹层）：内容区整页叠在分组列表之上，底层
+/// 列表常驻保活。歌曲列表随目标一起快照，语义与窄屏弹层一致——打开期间后台
+/// 解析/扫描不就地刷新，重新进入才取新数据。
+sealed class DetailRoute {
+  const DetailRoute();
+}
+
+class AlbumDetailRoute extends DetailRoute {
+  const AlbumDetailRoute(this.album, this.songs);
+
+  final Album album;
+  final List<Song> songs;
+}
+
+class ArtistDetailRoute extends DetailRoute {
+  const ArtistDetailRoute(this.artist, this.songs);
+
+  final Artist artist;
+  final List<Song> songs;
+}
 
 // 导航状态：驱动首页（全屏播放页）与 AppShell 内容区切换。
 //
@@ -44,6 +70,13 @@ class NavigationProvider extends ChangeNotifier {
   bool _playerView = true;
   String? _browsingSourceKey;
   int? _browsingPlaylistId;
+
+  /// 宽屏详情栈（底 → 顶）：专辑/歌手整页叠在分组列表之上，最多两层。
+  final List<DetailRoute> _details = <DetailRoute>[];
+
+  /// 详情栈版本号：进/出栈或清空时 +1，供 [AppContent] 以最小字段订阅
+  /// 「详情栈变化」（不 watch 整个导航对象，区段/搜索等通知不牵连重建）。
+  int _detailRevision = 0;
 
   /// 播放队列面板是否展开（宽屏右侧常驻 / 窄屏统一拖拽式窗口的开合镜像，
   /// 窄屏由窗口收起时同步回关闭）。
@@ -102,6 +135,16 @@ class NavigationProvider extends ChangeNotifier {
   /// 播放队列面板是否展开。
   bool get queueOpen => _queueOpen;
 
+  /// 宽屏详情栈快照（底 → 顶；最多两层；空=位于分组列表）。
+  ///
+  /// 返回不可变**快照**而非活动视图：叠层组件要靠新旧两份列表的差异判定
+  /// 进出动画（活动视图会让"旧"列表跟着变化，永远看不出差异）。
+  List<DetailRoute> get details =>
+      List<DetailRoute>.unmodifiable(_details);
+
+  /// 详情栈版本号（订阅收窄用，见 [AppContent]）。
+  int get detailRevision => _detailRevision;
+
   /// 内容区路由的最小关注字段稳定组合（订阅契约读取入口，R-4 / T003 / T008）。
   ///
   /// 供内容路由单次 `context.select` 订阅 [section] + 设置分区 + 源内 key +
@@ -129,7 +172,7 @@ class NavigationProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 层级返回（底 → 顶）：播放页 < 内容页（含源内/歌单详情） < 队列面板 < 设置页。
+  /// 层级返回（底 → 顶）：播放页 < 内容页（含源内/歌单/详情页） < 队列面板 < 设置页。
   ///
   /// 窄屏侧边抽屉是系统路由，返回键由框架先关闭，到不了这里；窄屏队列窗口
   /// 是根悬浮层（非路由），返回键经此逐级回退关闭。
@@ -145,6 +188,10 @@ class NavigationProvider extends ChangeNotifier {
     if (_queueOpen) {
       _queueOpen = false;
       notifyListeners();
+      return true;
+    }
+    if (_details.isNotEmpty) {
+      exitDetail();
       return true;
     }
     if (_browsingPlaylistId != null) {
@@ -172,6 +219,7 @@ class NavigationProvider extends ChangeNotifier {
     _playerView = false;
     _browsingSourceKey = null;
     _browsingPlaylistId = null;
+    _clearDetails();
     notifyListeners();
   }
 
@@ -179,6 +227,7 @@ class NavigationProvider extends ChangeNotifier {
   void enterSource(String key) {
     _slideOffset = const Offset(1, 0);
     _browsingSourceKey = key;
+    _clearDetails();
     notifyListeners();
   }
 
@@ -196,6 +245,7 @@ class NavigationProvider extends ChangeNotifier {
   void enterPlaylist(int id) {
     _slideOffset = const Offset(1, 0);
     _browsingPlaylistId = id;
+    _clearDetails();
     notifyListeners();
   }
 
@@ -206,10 +256,47 @@ class NavigationProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 宽屏进入专辑详情页（内容区整页叠层，底层列表保活）。
+  void enterAlbum(Album album, List<Song> songs) {
+    _slideOffset = const Offset(1, 0);
+    _pushDetail(AlbumDetailRoute(album, songs));
+  }
+
+  /// 宽屏进入歌手详情页（内容区整页叠层，底层列表保活）。
+  void enterArtist(Artist artist, List<Song> songs) {
+    _slideOffset = const Offset(1, 0);
+    _pushDetail(ArtistDetailRoute(artist, songs));
+  }
+
+  /// 关闭栈顶详情页（回到上一层详情/分组列表）。
+  void exitDetail() {
+    if (_details.isEmpty) return;
+    _slideOffset = const Offset(-1, 0);
+    _details.removeLast();
+    _detailRevision++;
+    notifyListeners();
+  }
+
+  void _pushDetail(DetailRoute route) {
+    // 只保留最近两层：主流程是「歌手 → 专辑」，成员身份链不无限堆叠。
+    if (_details.length >= 2) _details.removeAt(0);
+    _details.add(route);
+    _detailRevision++;
+    notifyListeners();
+  }
+
+  /// 离开分组区时清空详情栈（详情层只属于分组区）。
+  void _clearDetails() {
+    if (_details.isEmpty) return;
+    _details.clear();
+    _detailRevision++;
+  }
+
   void openSettings(SettingsItem item) {
     _slideOffset = const Offset(1, 0);
     _settings = item;
     _playerView = false;
+    _clearDetails();
     notifyListeners();
   }
 

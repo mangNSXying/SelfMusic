@@ -30,12 +30,13 @@ import 'sibling_cover.dart';
 /// 返回是否解析成功：成功才标已读；未识别容器（无法解析）返回 false 且不标已读。
 /// 取流失败抛异常，由调用方决定重试策略。
 ///
-/// **ohos 分支（spec/ohos-meta-enrich-native）**：fork 引擎无子 isolate、
-/// `runOffThread` 在 ohos 内联，纯 Dart 解析会以秒级同步块独占主线程（真机
-/// `THREAD_BLOCK_6S` 强杀根因）。故 ohos 上标签解析/封面提取改由原生
-/// `@Concurrent` 任务池的 `AVMetadataExtractor` 完成（[OhosPlatformBridge.extractAudioMeta]），
-/// 见 [_enrichViaNative]；非 ohos 与 ohos 原生不可用时仍走 [_enrichViaDart]
-/// 的既有纯 Dart 读序（非 ohos 逐字节零回归）。
+/// **ohos 分支（spec/ohos-meta-enrich-native）**：当时 `runOffThread` 在 ohos
+/// 内联（历史守卫，**不是引擎不能 spawn 子 isolate**），纯 Dart 解析会以秒级
+/// 同步块独占主线程（真机 `THREAD_BLOCK_6S` 强杀根因）。故 ohos 上标签解析/
+/// 封面提取改由原生 `@Concurrent` 任务池的 `AVMetadataExtractor` 完成
+/// （[OhosPlatformBridge.extractAudioMeta]），见 [_enrichViaNative]；非 ohos 与
+/// ohos 原生不可用时仍走 [_enrichViaDart] 的既有纯 Dart 读序（非 ohos 逐字节零回归）。
+/// 原生管线保留：系统解析比纯 Dart 更快，且不把大文件/封面字节读进 Dart。
 Future<bool> enrichSongMeta(
     LocalIndex index, MusicSource src, Song song) async {
   perfPhase('meta.enrich'); // TEMP-PROBE

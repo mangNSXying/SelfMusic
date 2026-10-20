@@ -171,6 +171,7 @@ flutter build hap --dart-define=SFTP_WORKER_DIRECT=true
 - 流播正常；seek 精准落点（46.7% 目标点 `open` 9ms 返回、10 秒后位置=目标+播放时长）；
 - 快速连点 6 次落点仍准确，无归零 / 卡旧值；
 - 期间修复：并发 spawn 去重、读调度闸门（见 §5）。
+- 本次 PoC 同时确认 OHOS 可长期运行 `Isolate.spawn`（长活 worker + 双向端口）；`DEVELOPER.md` 旧「fork 引擎无子 isolate」表述已于 2026-10-20 更正。
 
 切换后复核（建议，真机默认即 worker）：
 

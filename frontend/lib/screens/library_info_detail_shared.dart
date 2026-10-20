@@ -25,8 +25,9 @@ Widget cappedCell(String text, double maxWidth, {TextStyle? style}) {
 
 /// 详情页全量数据的异步装载器（入场不冻帧）。
 ///
-/// - [request] 在后台 isolate 查库（详见 `runOffThread`；ohos/测试内联），
-///   查询期间保留 [data] 旧值不闪屏（首次为 null，调用方显示 loading）；
+/// - [request] 在后台 isolate 查库（详见 `runOffThread`；测试环境内联，OHOS
+///   与其它平台一样走真实子 isolate），查询期间保留 [data] 旧值不闪屏
+///   （首次为 null，调用方显示 loading）；
 /// - 查询在途时再次 [request] 只置脏，完成后补查一次，避免扫描期
 ///   高频通知把全量查询叠成一串；
 /// - [onUpdate] 在数据落地（或失败）时回调，调用方 setState 驱动重建。

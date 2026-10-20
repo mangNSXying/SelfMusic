@@ -163,7 +163,8 @@ class SftpDirectTransport implements SftpTransport {
       // 与全局卡顿的直接来源，冻结堆栈：SSHTransport._consumeAeadPacket →
       // pointycastle GCMBlockCipher）。限「单请求在飞 + 64KB 块」后，解密与网络
       // 事件交替推进，单次同步块收敛到几十 ms；LAN 吞吐仍受解密速率上限约束，
-      // 不额外损失。**勿放开 maxPendingRequests**，除非把解密移出 UI isolate。
+      // 不额外损失。**勿放开 maxPendingRequests**，除非把解密移出 UI isolate
+      // （worker 路径已做到并默认启用；本文件是回退路径）。
       final src = file.read(
         length: contentLength <= 0 ? null : contentLength,
         offset: begin,

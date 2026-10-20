@@ -1,5 +1,6 @@
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
@@ -127,5 +128,11 @@ void main() {
         }
       }
     }
+  });
+
+  test('测试环境 runOffThread 默认内联', () async {
+    final mainId = Isolate.current.hashCode;
+    final childId = await runOffThread(() => Isolate.current.hashCode);
+    expect(childId, mainId);
   });
 }

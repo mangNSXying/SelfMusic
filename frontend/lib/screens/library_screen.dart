@@ -8,6 +8,7 @@ import '../providers/navigation_provider.dart';
 import '../providers/direct_source_manager.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
+import '../layout/app_shell.dart';
 import '../models/song.dart';
 import '../models/album.dart';
 import '../models/artist.dart';
@@ -23,6 +24,7 @@ import '../widgets/app_toast.dart';
 import '../widgets/area_switcher.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
+import '../widgets/detail_stack.dart';
 import '../widgets/draggable_sheet.dart';
 import '../widgets/row_list.dart';
 import '../widgets/list_selection.dart';
@@ -53,15 +55,16 @@ class AppContent extends StatelessWidget {
       perfLog('boot.firstBuild AppContent');
     }
     // 订阅收窄（T008）：内容路由只订阅"路由键"（section + 设置分区 + 源内 key +
-    // 歌单详情 id），一次 record select 覆盖全部路由依赖；搜索/队列/播放页等
-    // 变更不再牵连内容路由重建。areaKey/areaLevel/slideOffset 由上述字段派生，
-    // 在本次重建内即时读取即可。
+    // 歌单详情 id）与"详情栈版本"，一次 record select 覆盖全部路由依赖；搜索/
+    // 队列/播放页等变更不再牵连内容路由重建。areaKey/areaLevel/slideOffset 由
+    // 上述字段派生，在本次重建内即时读取即可。
     final nav = context.read<NavigationProvider>();
-    final routeKey =
-        context.select<NavigationProvider, NavRouteKey>((n) => n.routeKey);
+    context.select<NavigationProvider, (NavRouteKey, int)>(
+        (n) => (n.routeKey, n.detailRevision));
+    final routeKey = nav.routeKey;
     final transition =
         context.watch<DirectSourceManager>().settings.playerTransition;
-    final page = _areaPage(routeKey);
+    final page = _areaPage(context, routeKey, transition);
     if (transition == PlayerTransition.none) return page;
     if (transition == PlayerTransition.slide) {
       // 分层切换：底层静止垫底，只有高层移动，不透黑底。
@@ -84,7 +87,8 @@ class AppContent extends StatelessWidget {
   }
 
   /// 当前区域页面（设置 / 源内浏览 / 歌单详情 / 六分组 pager）。
-  Widget _areaPage(NavRouteKey routeKey) {
+  Widget _areaPage(
+      BuildContext context, NavRouteKey routeKey, PlayerTransition transition) {
     if (routeKey.settings != null) {
       return const SettingsScreen();
     }
@@ -98,7 +102,28 @@ class AppContent extends StatelessWidget {
       return PlaylistDetailView(playlistId: routeKey.playlistId!);
     }
     // 六个顶级分组：滑动模式跟手 PageView，其余模式松手触发区切换。
-    return const SectionPager();
+    // 宽屏专辑/歌手详情页叠在 Pager 之上：底层 Pager 常驻（滚动位置/状态保活），
+    // 详情页首次进入才构建、出栈即销毁。窄屏仍走统一拖拽弹层，不经过这里。
+    final nav = context.read<NavigationProvider>();
+    return DetailStack(
+      base: const SectionPager(),
+      routes: nav.details,
+      transition: transition,
+      // 分组变化（顶栏/横滑）时详情直接消失，不残留到新分组上。
+      baseKey: '${nav.areaKey}/${nav.section.name}',
+      builder: _detailPage,
+    );
+  }
+
+  /// 宽屏详情页（按路由类型构建；数据在页面 State 里只取一次）。
+  Widget _detailPage(BuildContext context, DetailRoute route) {
+    if (route is AlbumDetailRoute) {
+      return _AlbumDetailPage(album: route.album, songs: route.songs);
+    }
+    if (route is ArtistDetailRoute) {
+      return _ArtistDetailPage(artist: route.artist, songs: route.songs);
+    }
+    return const SizedBox.shrink();
   }
 }
 
@@ -849,12 +874,16 @@ InlineSpan albumSubtitleSpan(BuildContext context, Album album) {
   return TextSpan(children: spans);
 }
 
-/// 打开专辑歌曲弹层（卡片/列表两种形态共用）。
+/// 打开专辑歌曲详情：宽屏=内容区整页（叠层，底层列表保活），窄屏=统一拖拽弹层。
 Future<void> _openAlbum(BuildContext context, Album album) async {
   final lib = context.read<LibraryProvider>();
   final songs = lib.albumSongs(album);
   if (!context.mounted) return;
-  showAppDraggableSheet<void>(
+  if (AppShell.isWide(context)) {
+    context.read<NavigationProvider>().enterAlbum(album, songs);
+    return;
+  }
+  await showAppDraggableSheet<void>(
     context,
     builder: (c, scrollCtrl) =>
         _AlbumSongsSheet(album: album, songs: songs, scrollCtrl: scrollCtrl),
@@ -918,15 +947,49 @@ class _AlbumSongsSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return _AlbumSongsView(
+      album: album,
+      songs: songs,
+      scrollCtrl: scrollCtrl,
+      fromSheet: true,
+      header: AppSheetTitleBar(title: album.album, count: songs.length),
+    );
+  }
+}
+
+/// 专辑歌曲视图（窄屏弹层 / 宽屏整页共用）。
+///
+/// 只差外壳：弹层带把手/关闭按钮、点歌先关窗；整页带返回箭头、点歌不关页
+///（播放页盖在上方，关掉播放页回到详情）。列表与计数口径完全一致。
+class _AlbumSongsView extends StatelessWidget {
+  final Album album;
+  final List<Song> songs;
+  final ScrollController scrollCtrl;
+  final Widget header;
+
+  /// true=窄屏弹层（点歌先 pop 关窗）；false=宽屏整页（保持页面）。
+  final bool fromSheet;
+
+  const _AlbumSongsView({
+    required this.album,
+    required this.songs,
+    required this.scrollCtrl,
+    required this.header,
+    required this.fromSheet,
+  });
+
+  @override
+  Widget build(BuildContext context) {
     final player = context.read<PlayerProvider>();
     final lib = context.read<LibraryProvider>();
+    final nav = context.read<NavigationProvider>();
     return CustomScrollView(
       controller: scrollCtrl,
       slivers: [
         // 置顶标题行：滚动歌曲时专辑名/歌曲数常驻顶部（与队列/歌手弹层同构）。
         AppSheetHeader(
           height: AppSheetTitleBar.heightOf(context),
-          child: AppSheetTitleBar(title: album.album, count: songs.length),
+          child: header,
         ),
         SliverRowList(
           count: songs.length,
@@ -937,16 +1000,70 @@ class _AlbumSongsSheet extends StatelessWidget {
               source: lib.sourceFor(s.sourceKey),
               playing: player.isCurrent(s),
               onPlay: () {
-                Navigator.of(c).pop();
+                if (fromSheet) Navigator.of(c).pop();
                 player.playQueue(songs,
                     index: i,
                     contextKey: PlayerProvider.anchorForAlbum(album.id));
-                context.read<NavigationProvider>().openPlayer();
+                nav.openPlayer();
               },
             );
           },
         ),
       ],
+    );
+  }
+}
+
+/// 宽屏专辑详情页：内容区整页（铺满，无宽度上限），内容与窄屏弹层同构。
+class _AlbumDetailPage extends StatefulWidget {
+  final Album album;
+  final List<Song> songs;
+  const _AlbumDetailPage({required this.album, required this.songs});
+
+  @override
+  State<_AlbumDetailPage> createState() => _AlbumDetailPageState();
+}
+
+class _AlbumDetailPageState extends State<_AlbumDetailPage> {
+  final ScrollController _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      // 不透明底：详情层盖住底层分组列表（列表仍挂在树上保活）。
+      color: Theme.of(context).scaffoldBackgroundColor,
+      child: _AlbumSongsView(
+        album: widget.album,
+        songs: widget.songs,
+        scrollCtrl: _scroll,
+        fromSheet: false,
+        header: AppSheetTitleBar(
+          title: widget.album.album,
+          count: widget.songs.length,
+          leading: const _DetailBackButton(),
+          showClose: false,
+        ),
+      ),
+    );
+  }
+}
+
+/// 宽屏详情页标题栏左侧的返回箭头（弹层形态仍用右下/右上关闭）。
+class _DetailBackButton extends StatelessWidget {
+  const _DetailBackButton();
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      icon: const Icon(Icons.arrow_back),
+      tooltip: '返回',
+      onPressed: () => context.read<NavigationProvider>().exitDetail(),
     );
   }
 }
@@ -1086,6 +1203,10 @@ void _openArtist(BuildContext context, Artist artist, ArtistResolver resolver) {
   final lib = context.read<LibraryProvider>();
   final songs = lib.artistSongs(artist);
   if (!context.mounted) return;
+  if (AppShell.isWide(context)) {
+    context.read<NavigationProvider>().enterArtist(artist, songs);
+    return;
+  }
   showAppDraggableSheet<void>(
     context,
     // 弹层可上拉到全高：顶部安全区由统一窗口的路由外层 SafeArea 消费
@@ -1349,7 +1470,6 @@ class _ArtistSongsSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final player = context.read<PlayerProvider>();
     final lib = context.read<LibraryProvider>();
     // 详情只在人物身份下有内容（组合/角色的关系挂在成员树上，不在这里展开）。
     // 只查一次：artistDetail 会跑展示曲目数统计，别在 build 里查两遍。
@@ -1357,6 +1477,46 @@ class _ArtistSongsSheet extends StatelessWidget {
     // 本歌手的专辑：与列表行「N 张专辑」同一分组口径（Album.fromSongs），
     // 所以这里的专辑个数应与 artist.albumCount 一致。
     final albums = Album.fromSongs(songs);
+    return _ArtistSongsView(
+      artist: artist,
+      songs: songs,
+      detail: detail,
+      albums: albums,
+      scrollCtrl: scrollCtrl,
+      fromSheet: true,
+      header: AppSheetTitleBar(title: artist.name, count: songs.length),
+    );
+  }
+}
+
+/// 歌手歌曲视图（窄屏弹层 / 宽屏整页共用）：
+/// 标题栏 + 专辑横条 + 详情块 + 歌曲列表 + 右下「重新解析」。
+class _ArtistSongsView extends StatelessWidget {
+  final Artist artist;
+  final List<Song> songs;
+  final ArtistDetail? detail;
+  final List<Album> albums;
+  final ScrollController scrollCtrl;
+  final Widget header;
+
+  /// true=窄屏弹层（点歌/重新解析先关窗）；false=宽屏整页（保持页面）。
+  final bool fromSheet;
+
+  const _ArtistSongsView({
+    required this.artist,
+    required this.songs,
+    required this.detail,
+    required this.albums,
+    required this.scrollCtrl,
+    required this.header,
+    required this.fromSheet,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final player = context.read<PlayerProvider>();
+    final lib = context.read<LibraryProvider>();
+    final nav = context.read<NavigationProvider>();
     return Stack(
       children: [
         // 头部与歌曲列表共用同一个 Scrollable / sheet controller：任意位置按下
@@ -1368,7 +1528,7 @@ class _ArtistSongsSheet extends StatelessWidget {
           slivers: [
             AppSheetHeader(
               height: AppSheetTitleBar.heightOf(context),
-              child: AppSheetTitleBar(title: artist.name, count: songs.length),
+              child: header,
             ),
             if (albums.isNotEmpty || detail != null)
               SliverToBoxAdapter(
@@ -1377,7 +1537,7 @@ class _ArtistSongsSheet extends StatelessWidget {
                   children: [
                     if (albums.isNotEmpty)
                       _ArtistAlbumsStrip(albums: albums, artistSongs: songs),
-                    if (detail != null) _ArtistDetailBlock(detail: detail),
+                    if (detail != null) _ArtistDetailBlock(detail: detail!),
                   ],
                 ),
               ),
@@ -1390,12 +1550,12 @@ class _ArtistSongsSheet extends StatelessWidget {
                   source: lib.sourceFor(s.sourceKey),
                   playing: player.isCurrent(s),
                   onPlay: () {
-                    Navigator.of(c).pop();
+                    if (fromSheet) Navigator.of(c).pop();
                     player.playQueue(songs,
                         index: i,
                         contextKey:
                             PlayerProvider.anchorForArtist(artist.name));
-                    context.read<NavigationProvider>().openPlayer();
+                    nav.openPlayer();
                   },
                 );
               },
@@ -1411,7 +1571,7 @@ class _ArtistSongsSheet extends StatelessWidget {
             icon: Icons.sync_alt,
             label: '重新解析',
             tooltip: '重新解析 ${artist.name}',
-            onPressed: () => _forceReParse(context, artist),
+            onPressed: () => _forceReParse(context),
           ),
         ),
       ],
@@ -1419,8 +1579,9 @@ class _ArtistSongsSheet extends StatelessWidget {
   }
 
   /// 把这一位歌手打回 pending 并直跑一轮（含已解析成功的），受 MB 1 req/s 限流。
-  Future<void> _forceReParse(BuildContext context, Artist artist) async {
+  Future<void> _forceReParse(BuildContext context) async {
     final resolver = context.read<ArtistResolver>();
+    final nav = context.read<NavigationProvider>();
     final ok = await showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
@@ -1437,12 +1598,70 @@ class _ArtistSongsSheet extends StatelessWidget {
       ),
     );
     if (ok != true) return;
-    // 弹页里的歌曲/详情是打开那一刻的快照，解析完身份可能变（合流、改判真人），
-    // 留着旧数据容易误读：先关掉，歌手页会就地刷新。
-    if (context.mounted) Navigator.of(context).pop();
+    // 弹页/整页里的歌曲/详情是打开那一刻的快照，解析完身份可能变（合流、改判
+    // 真人），留着旧数据容易误读：先退出详情（弹层关窗/整页出栈），列表会就
+    // 地刷新。
+    if (!context.mounted) return;
+    if (fromSheet) {
+      Navigator.of(context).pop();
+    } else {
+      nav.exitDetail();
+    }
     await resolver.forceRetryOne(
         artistKey: artist.identityKey, canonicalKey: artist.canonicalKey);
     AppToast.show('已开始重新解析 ${artist.name}', isError: false);
+  }
+}
+
+/// 宽屏歌手详情页：内容区整页（铺满，无宽度上限），内容与窄屏弹层同构。
+class _ArtistDetailPage extends StatefulWidget {
+  final Artist artist;
+  final List<Song> songs;
+  const _ArtistDetailPage({required this.artist, required this.songs});
+
+  @override
+  State<_ArtistDetailPage> createState() => _ArtistDetailPageState();
+}
+
+class _ArtistDetailPageState extends State<_ArtistDetailPage> {
+  final ScrollController _scroll = ScrollController();
+  late final ArtistDetail? _detail;
+  late final List<Album> _albums;
+
+  @override
+  void initState() {
+    super.initState();
+    // 打开时刻的快照（与弹层一致）：只取一次，不随播放/后台通知重算。
+    _detail = context.read<LibraryProvider>().artistDetail(widget.artist);
+    _albums = Album.fromSongs(widget.songs);
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      // 不透明底：详情层盖住底层分组列表（列表仍挂在树上保活）。
+      color: Theme.of(context).scaffoldBackgroundColor,
+      child: _ArtistSongsView(
+        artist: widget.artist,
+        songs: widget.songs,
+        detail: _detail,
+        albums: _albums,
+        scrollCtrl: _scroll,
+        fromSheet: false,
+        header: AppSheetTitleBar(
+          title: widget.artist.name,
+          count: widget.songs.length,
+          leading: const _DetailBackButton(),
+          showClose: false,
+        ),
+      ),
+    );
   }
 }
 
@@ -1510,6 +1729,10 @@ class _ArtistAlbumsStrip extends StatelessWidget {
 
   void _openAlbumOfArtist(BuildContext context, Album album) {
     final songs = artistSongs.where((s) => album.containsSong(s)).toList();
+    if (AppShell.isWide(context)) {
+      context.read<NavigationProvider>().enterAlbum(album, songs);
+      return;
+    }
     showAppDraggableSheet<void>(
       context,
       builder: (c, scrollCtrl) =>
