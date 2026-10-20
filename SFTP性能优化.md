@@ -117,6 +117,7 @@ flutter build hap --dart-define=SFTP_WORKER_ISOLATE=true
 4. **Manager dispose**：关闭所有主源与备用源。
 5. **并发 spawn 去重**：`_ensureWorker` 对「正在启动」的 worker 去重（起播 / 补读 / 歌词同帧并发只起一个）；`close()` 期间新起的 worker 自动回收，不留孤儿会话。
 6. **测试连接 isolate 化**：取指纹走一次性 `Isolate.run`，测试连接弹窗期间 UI 不再被 SSH 握手/解密占据（异常跨 isolate 结构化还原，类型不变）。
+7. **多源 worker 软上限**：全局存活 worker 上限 3；新 worker 启动前若已达上限，回收最久未用的**空闲** worker（无读流、无在飞命令、无操作租约）。全部忙时不强行回收——宁可短暂超一点，不打断正在播放/补读的源。避免多 SFTP 源同时活动时各自常驻一条 SSH 连接、互相抢带宽。当前操作窗口与整次上传期间持有租约，不会被当成空闲回收。
 
 ## 4. 改动文件
 
@@ -124,7 +125,7 @@ flutter build hap --dart-define=SFTP_WORKER_ISOLATE=true
 | --- | --- |
 | `frontend/lib/data/sources/sftp_common.dart` | 新增：认证方式/纯函数/异常、`SftpOpenResult`、`SftpTransport` 抽象、`SftpConnection`（SSH 建连与指纹、测试连接一次性 isolate、`sftpTrace` 开关） |
 | `frontend/lib/data/sources/sftp_direct_transport.dart` | 新增：旧直连传输实现（行为与改动前一致） |
-| `frontend/lib/data/sources/sftp_worker.dart` | 新增：worker 入口、RPC、64KB 读流水线、`_WorkerReadGate` 读调度、并发 spawn 去重、`SftpIsolateTransport`、空闲回收 |
+| `frontend/lib/data/sources/sftp_worker.dart` | 新增：worker 入口、RPC、64KB 读流水线、`_WorkerReadGate` 读调度、并发 spawn 去重、启动失败降级、多源软上限、`SftpIsolateTransport`、空闲回收 |
 | `frontend/lib/data/sources/sftp_direct_source.dart` | 改造：业务逻辑走 `SftpTransport`；测试连接走一次性 isolate；扫描 isolate 不变；缓存让出节拍改为仅旧直连启用 |
 | `frontend/lib/data/sources/meta_enrich.dart` | 让出节拍改为仅旧直连启用 |
 | `frontend/lib/providers/direct_source_manager.dart` | 备用源缓存、删除/重载/dispose 时关闭会话 |
@@ -140,7 +141,7 @@ flutter build hap --dart-define=SFTP_WORKER_ISOLATE=true
 - [ ] OHOS 默认切换：完成 10 分钟级播放 + 补读 + 上传 soak、无 `THREAD_BLOCK_6S` 后，把 OHOS 默认切到 worker（保留 `--dart-define` 一键回退）。
 - [x] 上传断线续传（worker 路径）：每批带绝对偏移发送；连接类失败自动重连一次——已有确认落盘的数据时以 `truncate: false` 重开会话并重放最后一批（相同字节覆盖写，幂等），否则重新截断从头来。业务错误（权限/不存在）不重试、原样抛出。本地故障注入冒烟通过（8MB 上传中途掐线，重连续传后读回逐字节一致）。旧直连路径仍不重试（见 §8）。
 - [x] worker 启动失败自动降级：启动类失败（spawn 抛错 / boot 超时 / 无命令端口）当次操作转旧直连，连续 2 次后本源永久降级；SSH/鉴权错误不降级。故障注入单测（`test/sftp_worker_fallback_test.dart`）+ 本地服务端冒烟（降级后读/上传真实可用、字节一致）通过。
-- [ ] 多源并发上限：多 SFTP 源同时活动时限制 worker 数量/带宽，避免互相抢网络。
+- [x] 多源并发上限：全局存活 worker 软上限 3；新 worker 启动前回收最久未用的空闲 worker（无读流、无在飞命令、无租约），全忙时不强行回收。当前操作与整次上传持租约。本地 5 源冒烟：存活数始终 ≤ 3、进行中的读流不被回收、全部关闭后归零。
 
 ## 6. 验证清单
 
@@ -194,3 +195,4 @@ flutter build hap --dart-define=SFTP_WORKER_ISOLATE=true
 - 2026-10-20 `fe7def7`：读调度闸门（控制请求优先 + 全局在飞读上限 4）、64KB 读流水线、已知大小时 `open` 跳过 `stat`；鸿蒙真机流播 / seek 验证。
 - 2026-10-20 `fc1d4d1`：worker 路径上传断线续传（绝对偏移批写 + 一次重连 + 最后一批幂等重放）；本地故障注入冒烟通过。
 - 2026-10-20：worker 启动失败自动降级旧直连（当次操作转直连 + 连续 2 次永久降级并记录日志）；故障注入单测与本地服务端冒烟通过。
+- 2026-10-20：多源 worker 软上限 3（LRU 回收空闲 worker、忙/持租约不回收；操作与上传持租约）；本地 5 源冒烟通过。

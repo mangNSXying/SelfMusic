@@ -68,6 +68,9 @@ void _trace(String message) => sftpTrace(message);
 /// `--dart-define=SFTP_WORKER_ISOLATE=true` 打开。
 class SftpWorker {
   SftpWorker._(this._cmd, this._reply, this._isolate) {
+    _live.add(this);
+    // 新建即视为最近使用：多源上限淘汰时不会先挑刚起来的 worker。
+    _lastUsed = ++_useSeq;
     _reply.listen(
       _onMessage,
       onError: (Object e) => _failAll(StateError('SFTP worker 通信失败：$e')),
@@ -89,9 +92,10 @@ class SftpWorker {
 
   bool get isClosed => _closed;
 
-  /// 有打开的读流或未完成的命令。空闲回收只看这个，不靠定时器猜播放状态：
-  /// 暂停的播放仍保留读流，不会在暂停期间被误关。
-  bool get busy => _reads.isNotEmpty || _pending.isNotEmpty;
+  /// 有打开的读流、未完成的命令或宿主租约（正在执行的操作）。空闲回收与
+  /// 多源上限只看这个，不靠定时器猜播放状态：暂停的播放仍保留读流，不会
+  /// 在暂停期间被误关。
+  bool get busy => _leases > 0 || _reads.isNotEmpty || _pending.isNotEmpty;
 
   /// 是否启用 worker 路径。OHOS 默认关闭；验证通过后可用 dart-define 打开。
   static bool enabled = Platform.operatingSystem != 'ohos' ||
@@ -99,6 +103,43 @@ class SftpWorker {
 
   /// 供传输层写同一条 `[sftp-worker]` 诊断日志（受 SFTP_WORKER_TRACE 控制）。
   static void trace(String message) => _trace(message);
+
+  /// 全局存活 worker 软上限：多 SFTP 源同时活动时，避免每个源各常驻一条
+  /// SSH 连接、互相抢带宽。新 worker 启动前若已达上限，先回收最久未用的
+  /// **空闲** worker（无读流、无在飞命令、无租约）；全部忙时不强行回收，
+  /// 宁可短暂超一点，也不打断正在播放/补读的源。
+  static const int maxLiveWorkers = 3;
+
+  /// 存活 worker 注册表；淘汰按 [_lastUsed] 找最久未用。
+  static final List<SftpWorker> _live = [];
+  static int _useSeq = 0;
+  int _lastUsed = 0;
+  int _leases = 0;
+
+  /// 由传输层在拉起新 worker 前调用：超上限时回收最久未用的空闲 worker。
+  static void evictIdleForCapacity() {
+    if (_live.length < maxLiveWorkers) return;
+    final idle = _live.where((w) => !w._closed && !w.busy).toList()
+      ..sort((a, b) => a._lastUsed.compareTo(b._lastUsed));
+    for (final worker in idle) {
+      if (_live.length < maxLiveWorkers) break;
+      _trace('evict idle worker (live=${_live.length}, '
+          'max=$maxLiveWorkers)');
+      unawaited(worker.close());
+    }
+  }
+
+  /// 仅供测试/冒烟：当前存活 worker 数。
+  @visibleForTesting
+  static int get liveWorkerCount => _live.length;
+
+  /// 宿主传输在操作期间持有租约；防止「已取得 worker、命令尚未发出」的
+  /// 窗口里被 [evictIdleForCapacity] 回收（发送失败会变成用户可见错误）。
+  void _lease() => _leases++;
+
+  void _release() {
+    if (_leases > 0) _leases--;
+  }
 
   /// 启动 worker 并完成 SSH/SFTP 建连。建连失败会在 boot 阶段返回，主 isolate
   /// 不执行任何 KEX/解密。
@@ -178,6 +219,7 @@ class SftpWorker {
     if (_closed) {
       return Future.error(StateError('SFTP worker 已关闭'));
     }
+    _lastUsed = ++_useSeq;
     final id = _seq++;
     final completer = Completer<Map<String, Object?>>();
     _pending[id] = completer;
@@ -318,6 +360,7 @@ class SftpWorker {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    _live.remove(this);
     for (final read in _reads.values.toList()) {
       read.detach();
     }
@@ -563,7 +606,15 @@ class SftpIsolateTransport implements SftpTransport {
     }
     // 命令已下发（含掉线重放）后 worker 再启动失败时不转直连：操作可能已
     // 在远端生效，转直连重复投递会改变语义（如删除第二次报「不存在」）。
-    return _withWorker(worker, viaWorker);
+    //
+    // 租约覆盖整个操作窗口（含「已取到 worker、命令未发」的微任务间隙），
+    // 多源上限回收空闲 worker 时不会把它挑走。
+    worker._lease();
+    try {
+      return await _withWorker(worker, viaWorker);
+    } finally {
+      worker._release();
+    }
   }
 
   /// 并发去重：多个命令（起播/读标签/歌词）会在同一帧里先后进来，
@@ -585,6 +636,8 @@ class SftpIsolateTransport implements SftpTransport {
   }
 
   Future<SftpWorker> _startWorker() async {
+    // 多源并发：全局存活 worker 达上限时，先回收最久未用的空闲 worker。
+    SftpWorker.evictIdleForCapacity();
     final override = debugStartOverride;
     final SftpWorker next;
     try {
@@ -767,8 +820,12 @@ class SftpIsolateTransport implements SftpTransport {
         resumed = true;
         SftpWorker.trace('upload 断线续传 $path：$e');
         final acked = pending == null ? staged : pendingAt;
+        final old = worker;
         await _closeWorker();
         worker = await _ensureWorker();
+        // 租约转交到新 worker；若上面抛错，finally 仍释放 old 的租约。
+        old._release();
+        worker._lease();
         if (uploadId != null) {
           // 首块之前失败时会话还没建立，交给重放的 op 自己开。
           await openSession(truncate: acked == 0);
@@ -786,6 +843,9 @@ class SftpIsolateTransport implements SftpTransport {
       batchStart = staged;
     }
 
+    // 整次上传期间持有租约：上传是活跃写操作，不该被多源上限当成空闲回收
+    // （虽然断线续传能兜住，但没必要凭空制造重连）。
+    worker._lease();
     var done = false;
     try {
       await guard(() => openSession(truncate: true));
@@ -799,6 +859,7 @@ class SftpIsolateTransport implements SftpTransport {
       await guard(() => worker.uploadEnd(uploadId!));
       done = true;
     } finally {
+      worker._release();
       await iterator.cancel();
       final id = uploadId;
       if (!done && id != null) worker.uploadAbort(id);
