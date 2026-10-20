@@ -57,6 +57,13 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
 
+# sqlite.org 不可达网络的逃生门：设 SQLITE3_LOCAL_SRC 环境变量指向本地
+# sqlite-autoconf 源码目录（含 sqlite3.c），sqlite3_flutter_libs 的 FetchContent
+# 会直接取本地源码、跳过下载（MakeAvailable 对无 CMakeLists.txt 的目录只做 populate，
+# 插件自己编 sqlite3.c，不吃 autoconf 的构建系统）。
+if(DEFINED ENV{SQLITE3_LOCAL_SRC} AND EXISTS "$ENV{SQLITE3_LOCAL_SRC}")
+  set(FETCHCONTENT_SOURCE_DIR_SQLITE3 "$ENV{SQLITE3_LOCAL_SRC}")
+endif()
 
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
