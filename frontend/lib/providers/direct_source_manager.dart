@@ -28,6 +28,7 @@ import '../services/artist_resolver.dart';
 import '../services/secret_store.dart';
 import '../utils/cover_thumb.dart';
 import '../utils/chunked_scheduler.dart';
+import '../utils/source_folders.dart';
 import '../utils/perf_log.dart';
 import '../utils/main_thread_probe.dart';
 import '../utils/interaction_gate.dart';
@@ -221,6 +222,10 @@ class DirectSourceManager extends ChangeNotifier {
   int _settingsVersion = 0;
   int get settingsVersion => _settingsVersion;
 
+  /// 播放源配置版本号：增删改源后自增，供分组缓存（文件夹/前缀解析）失效重算。
+  int _sourcesRevision = 0;
+  int get sourcesRevision => _sourcesRevision;
+
   /// 设置变更后调用：通知列表类页面重查（歌曲/专辑/歌手/喜欢/源浏览 + 计数）。
   void settingsChanged() {
     _settingsVersion++;
@@ -258,6 +263,7 @@ class DirectSourceManager extends ChangeNotifier {
 
   /// 按设置重启周期自动扫描定时器 + 本地目录监视（检测到变化即增量扫描）。
   void restartAutoScan() {
+    _sourcesRevision++;
     _autoScanTimer?.cancel();
     _autoScanTimer = null;
     final minutes = settings.scanAutoIntervalMin;
@@ -1484,6 +1490,7 @@ class DirectSourceManager extends ChangeNotifier {
     _watchers.removeWhere((w) => gone.contains(w));
     final removedSources = _sources.where((s) => s.key == key).toList();
     _sources.removeWhere((s) => s.key == key);
+    _sourcesRevision++;
     for (final src in removedSources) {
       unawaited(src.close());
     }
@@ -1545,6 +1552,10 @@ class DirectSourceManager extends ChangeNotifier {
     if (src == null) throw StateError('源不存在：$sourceKey');
     if (!src.supportsWrite) throw StateError('该源不支持新建文件夹');
     await src.createFolder(parentRef, name);
+    // 记录「应用内新建过的文件夹」：空文件夹不在索引里，逐级浏览靠它显示。
+    final path = normalizeDir(parentRef.isEmpty ? name : '$parentRef/$name');
+    if (path.isNotEmpty) settings.addSourceCreatedFolder(sourceKey, path);
+    notifyListeners();
   }
 
   Future<ScanSummary>? _inFlightScan;

@@ -91,12 +91,16 @@ class SourceFolder {
 /// 按当前目录分组：[relRefs] 为已折叠的源内相对路径（与歌曲列表等长），
 /// [dir] 为当前目录（`''` = 源根）。
 ///
+/// [extraFolders] 为「已存在但没有歌曲」的文件夹路径（如应用内刚新建的空
+/// 文件夹）：只要位于当前目录下，就按直属子文件夹显示（计数 0）。
+///
 /// 返回直属子文件夹（按名排序）与直属歌曲在原列表中的下标（保原顺序，
 /// 即 `songsOf` 的歌手/专辑/曲目序）。
 ({List<SourceFolder> folders, List<int> songIndices}) groupSourceSongs(
   List<String> relRefs,
-  String dir,
-) {
+  String dir, {
+  Iterable<String> extraFolders = const [],
+}) {
   final current = normalizeDir(dir);
   final prefix = current.isEmpty ? '' : '$current/';
   final counts = <String, int>{};
@@ -117,6 +121,19 @@ class SourceFolder {
       counts[child] = (counts[child] ?? 0) + 1;
     }
   }
+  // 空文件夹：只补「直属子文件夹」，深层由下一次进入该层时再补。
+  for (final raw in extraFolders) {
+    final path = normalizeDir(raw);
+    if (path.isEmpty || path == current) continue;
+    if (prefix.isNotEmpty && !path.startsWith(prefix)) continue;
+    final rest = prefix.isEmpty ? path : path.substring(prefix.length);
+    if (rest.isEmpty) continue;
+    final slash = rest.indexOf('/');
+    final child = prefix.isEmpty
+        ? (slash < 0 ? rest : rest.substring(0, slash))
+        : '$current/${slash < 0 ? rest : rest.substring(0, slash)}';
+    counts.putIfAbsent(child, () => 0);
+  }
   final folders = counts.entries
       .map((e) => SourceFolder(
             name: baseNameOf(e.key),
@@ -126,6 +143,41 @@ class SourceFolder {
       .toList()
     ..sort((a, b) => a.name.compareTo(b.name));
   return (folders: folders, songIndices: indices);
+}
+
+/// 逐级文件夹结果的缓存：目录、路径列表身份或空文件夹集合变化时才重算。
+class SourceFolderCache {
+  Object? _refs;
+  String _dir = '';
+  Object? _extra;
+  ({List<SourceFolder> folders, List<int> songIndices}) _data =
+      (folders: const [], songIndices: const []);
+
+  ({List<SourceFolder> folders, List<int> songIndices}) resolve({
+    required List<String> relRefs,
+    required String dir,
+    required Iterable<String> extraFolders,
+  }) {
+    final key = extraFolders.toList();
+    if (identical(_refs, relRefs) &&
+        _dir == dir &&
+        _sameList(_extra as List<String>?, key)) {
+      return _data;
+    }
+    _refs = relRefs;
+    _dir = dir;
+    _extra = key;
+    _data = groupSourceSongs(relRefs, dir, extraFolders: key);
+    return _data;
+  }
+
+  static bool _sameList(List<String>? a, List<String> b) {
+    if (a == null || a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
 }
 
 /// 当前目录切片（含深层）的原下标：文件夹「播放该文件夹」用（递归范围）。

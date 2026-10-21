@@ -34,7 +34,8 @@ void main() {
     });
 
     test('已是相对路径时不误伤', () {
-      expect(displayRelRef('rock/song.mp3', stripPrefix: 'music'), 'rock/song.mp3');
+      expect(displayRelRef('rock/song.mp3', stripPrefix: 'music'),
+          'rock/song.mp3');
       expect(displayRelRef('a.mp3', stripPrefix: ''), 'a.mp3');
     });
 
@@ -88,6 +89,32 @@ void main() {
       final g = groupSourceSongs(refs, 'gone');
       expect(g.folders, isEmpty);
       expect(g.songIndices, isEmpty);
+    });
+
+    test('空文件夹：按直属子文件夹显示且计数 0', () {
+      final g = groupSourceSongs(const [], '');
+      expect(g.folders.map((f) => f.name), isEmpty);
+      final g2 = groupSourceSongs(const [], '', extraFolders: ['新建/深层', '空']);
+      expect(g2.folders.map((f) => f.name), ['新建', '空']);
+      expect(g2.folders.every((f) => f.total == 0), isTrue);
+      // 进入新建后显示深层（仍为空）。
+      final g3 = groupSourceSongs(const [], '新建', extraFolders: ['新建/深层', '空']);
+      expect(g3.folders.map((f) => f.name), ['深层']);
+      // 文件夹已有歌时不重复，计数以歌曲为准。
+      final g4 =
+          groupSourceSongs(const ['rock/a.mp3'], '', extraFolders: ['rock']);
+      expect(g4.folders.single.total, 1);
+    });
+
+    test('SourceFolderCache 命中与失效', () {
+      final cache = SourceFolderCache();
+      const refs2 = ['a/x.mp3'];
+      final a = cache.resolve(relRefs: refs2, dir: '', extraFolders: const []);
+      final b = cache.resolve(relRefs: refs2, dir: '', extraFolders: const []);
+      expect(identical(a, b), isTrue);
+      final c = cache.resolve(relRefs: refs2, dir: 'a', extraFolders: const []);
+      expect(identical(a, c), isFalse);
+      expect(c.songIndices, [0]);
     });
   });
 

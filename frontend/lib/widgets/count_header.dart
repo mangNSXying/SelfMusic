@@ -16,14 +16,25 @@ class CountHeader extends StatelessWidget {
   /// 行尾控件（如 ViewModeToggle）；为空时右侧留常规内边距。
   final Widget? trailing;
 
+  /// 自定义文案（如播放源页的「本层 X 首 · N 个文件夹 · 共 Y 首」）；
+  /// 为空时按 [unit] 生成「共 N …」。
+  final String? label;
+
+  /// 自定义图标（为空时按 [unit] 推导）。
+  final IconData? icon;
+
   const CountHeader({
     super.key,
     required this.count,
     this.unit = '首',
     this.trailing,
+    this.label,
+    this.icon,
   });
 
-  String get _label => switch (unit) {
+  String get _label =>
+      label ??
+      switch (unit) {
         '张' => '共 $count 张专辑',
         '位' => '共 $count 位歌手',
         '个歌单' => '共 $count 个歌单',
@@ -31,7 +42,9 @@ class CountHeader extends StatelessWidget {
         _ => '共 $count 首歌曲',
       };
 
-  IconData get _icon => switch (unit) {
+  IconData get _icon =>
+      icon ??
+      switch (unit) {
         '张' => Icons.album,
         '位' => Icons.person_outline,
         '个歌单' => Icons.queue_music,

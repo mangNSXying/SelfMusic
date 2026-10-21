@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import '../../utils/collection_sort.dart';
-import '../../utils/playlist_group.dart';
+import '../../utils/song_groups.dart';
 import 'local_index.dart';
 
 /// 播放页（播放/歌词）切换过渡动画。
@@ -250,8 +250,14 @@ class AppSettings {
   static const String kSortPlaylists = 'sort_playlists';
   static const String kSortSources = 'sort_sources';
 
-  /// 歌单详情分类方式（全局）：无 / 文件夹（直接父级）/ 专辑。
+  /// 播放源详情歌曲排列方式（源内浏览页）。
+  static const String kSortSourceSongs = 'sort_source_songs';
+
+  /// 各页分类方式（全局）：无 / 文件夹（直接父级或逐级）/ 专辑。
   static const String kGroupPlaylistDetail = 'group_playlist_detail';
+  static const String kGroupFavorites = 'group_favorites';
+  static const String kGroupSongs = 'group_songs';
+  static const String kGroupSource = 'group_source';
 
   /// 歌词追焦等待秒数（用户拖动歌词后多久恢复自动跟随；播放设置可调）。
   static const String kLyricFocusIdleSec = 'lyric_focus_idle_sec';
@@ -724,22 +730,65 @@ class AppSettings {
   CollectionSort get sortSources => _sort(kSortSources);
   set sortSources(CollectionSort v) => _setSort(kSortSources, v);
 
-  PlaylistGroup get groupPlaylistDetail =>
-      PlaylistGroupX.parse(index.settingsGet(kGroupPlaylistDetail));
-  set groupPlaylistDetail(PlaylistGroup v) =>
+  CollectionSort get sortSourceSongs => _sort(kSortSourceSongs);
+  set sortSourceSongs(CollectionSort v) => _setSort(kSortSourceSongs, v);
+
+  SongGroupMode get groupPlaylistDetail =>
+      SongGroupModeX.parse(index.settingsGet(kGroupPlaylistDetail));
+  set groupPlaylistDetail(SongGroupMode v) =>
       index.settingsSet(kGroupPlaylistDetail, v.name);
 
-  /// 歌单内分组折叠状态（按歌单持久化）：存折叠组名集合
+  SongGroupMode get groupFavorites =>
+      SongGroupModeX.parse(index.settingsGet(kGroupFavorites));
+  set groupFavorites(SongGroupMode v) =>
+      index.settingsSet(kGroupFavorites, v.name);
+
+  SongGroupMode get groupSongs =>
+      SongGroupModeX.parse(index.settingsGet(kGroupSongs));
+  set groupSongs(SongGroupMode v) => index.settingsSet(kGroupSongs, v.name);
+
+  /// 播放源页默认保持旧的逐级文件夹浏览；显式选「无」后按平铺记忆。
+  SongGroupMode get groupSource => SongGroupModeX.parse(
+      index.settingsGet(kGroupSource) ?? SongGroupMode.folder.name);
+  set groupSource(SongGroupMode v) => index.settingsSet(kGroupSource, v.name);
+
+  /// 列表分组折叠状态（按集合持久化，[collectionKey] 如 `playlist:12` /
+  /// `favorites` / `songs` / `source:webdav:nas`）：存折叠组名集合
   /// （逐项 URI 编码后以 `|` 连接；组名本身可含任意字符）。
-  Set<String> playlistGroupCollapsed(int playlistId) {
-    final raw = index.settingsGet('playlist_group_collapsed_$playlistId');
+  Set<String> groupCollapsed(String collectionKey) {
+    final raw = index.settingsGet('group_collapsed_$collectionKey');
+    if (raw == null) {
+      // 兼容上个版本按歌单落的旧键（`playlist:<id>` 首次读取时迁移）；
+      // 新键存在但为空串 = 用户已全部展开，不能再回落到旧键。
+      if (collectionKey.startsWith('playlist:')) {
+        final id = collectionKey.substring('playlist:'.length);
+        final legacy = index.settingsGet('playlist_group_collapsed_$id');
+        if (legacy != null && legacy.isNotEmpty) {
+          return legacy.split('|').map(Uri.decodeComponent).toSet();
+        }
+      }
+      return {};
+    }
+    if (raw.isEmpty) return {};
+    return raw.split('|').map(Uri.decodeComponent).toSet();
+  }
+
+  void setGroupCollapsed(String collectionKey, Set<String> collapsed) {
+    final v = collapsed.map(Uri.encodeComponent).join('|');
+    index.settingsSet('group_collapsed_$collectionKey', v);
+  }
+
+  /// 源内「应用内新建过、可能还没有歌曲」的文件夹（逐级模式用于显示空文件夹）。
+  Set<String> sourceCreatedFolders(String sourceKey) {
+    final raw = index.settingsGet('source_created_folders_$sourceKey');
     if (raw == null || raw.isEmpty) return {};
     return raw.split('|').map(Uri.decodeComponent).toSet();
   }
 
-  void setPlaylistGroupCollapsed(int playlistId, Set<String> collapsed) {
-    final v = collapsed.map(Uri.encodeComponent).join('|');
-    index.settingsSet('playlist_group_collapsed_$playlistId', v);
+  void addSourceCreatedFolder(String sourceKey, String path) {
+    final set = sourceCreatedFolders(sourceKey)..add(path);
+    index.settingsSet('source_created_folders_$sourceKey',
+        set.map(Uri.encodeComponent).join('|'));
   }
 
   // ---------- 通知分区（settings.md §3.6） ----------
@@ -884,6 +933,10 @@ class AppSettings {
     kSortArtists,
     kSortPlaylists,
     kSortSources,
+    kSortSourceSongs,
     kGroupPlaylistDetail,
+    kGroupFavorites,
+    kGroupSongs,
+    kGroupSource,
   ];
 }

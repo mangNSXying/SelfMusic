@@ -27,12 +27,11 @@ import '../widgets/count_header.dart';
 import '../widgets/detail_stack.dart';
 import '../widgets/draggable_sheet.dart';
 import '../widgets/row_list.dart';
-import '../widgets/list_selection.dart';
 import '../widgets/page_transition.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
+import '../widgets/song_collection_view.dart';
 import '../widgets/song_list.dart';
-import '../widgets/song_row_view.dart';
 import '../widgets/sort_menu_button.dart';
 import '../widgets/square_card.dart';
 import '../widgets/view_mode_toggle.dart';
@@ -364,27 +363,27 @@ class _LikedViewState extends State<_LikedView>
   @override
   bool get wantKeepAlive => true;
 
-  final Selection<String> _sel = Selection<String>();
-
-  /// 行级视图数据缓存（R-1）：签名不变时复用整表。
-  final SongRowCache _rowCache = SongRowCache();
-
-  /// 收藏列表缓存：仅在（收藏版本, 设置版本）变化时查库（滑动/重绘不重复全量查询）。
-  /// 设置版本同步忽略排除规则的生效：忽略音频改动后喜欢页即时过滤（改进.txt 功能6）。
+  /// 收藏列表缓存：仅在（收藏版本, 设置版本, 元数据版本）变化时查库
+  /// （滑动/重绘不重复全量查询）。设置版本同步忽略排除规则的生效：
+  /// 忽略音频改动后喜欢页即时过滤（改进.txt 功能6）；元数据版本让编辑
+  /// 专辑/歌手后分组即时生效。
   int _favVersion = -1;
   int _favSettingsVer = -1;
+  int _favMetaVer = -1;
   List<Song> _favAll = const [];
 
-  /// 排序/过滤结果按 (收藏版本, 设置版本, 搜索词, 排序偏好) 缓存：build 因 AnyChange 重跑时
-  /// 不重排（权重排序每首一次 SQL，几千首重排一次 = 上万条同步查询）。
-  (int, int, String, CollectionSort)? _sortedKey;
+  /// 排序/过滤结果按 (收藏版本, 设置版本, 元数据版本, 搜索词, 排序偏好) 缓存：
+  /// build 因 AnyChange 重跑时不重排（权重排序每首一次 SQL）。
+  (int, int, int, String, CollectionSort)? _sortedKey;
   _SortedResult _sorted = const _SortedResult([], []);
 
   List<Song> _favoritesOf(DirectSourceManager direct) {
     if (direct.favoriteVersion != _favVersion ||
-        direct.settingsVersion != _favSettingsVer) {
+        direct.settingsVersion != _favSettingsVer ||
+        direct.metaVersion != _favMetaVer) {
       _favVersion = direct.favoriteVersion;
       _favSettingsVer = direct.settingsVersion;
+      _favMetaVer = direct.metaVersion;
       _favAll = direct.favoriteSongs();
     }
     return _favAll;
@@ -393,9 +392,10 @@ class _LikedViewState extends State<_LikedView>
   /// 过滤 + 排序，命中缓存直接复用（喜欢页数据不变时 build 重跑 0 次排序/查询）。
   _SortedResult _sortSongs(DirectSourceManager direct, String search) {
     final pref = direct.settings.sortFavorites;
-    final key = (_favVersion, _favSettingsVer, search, pref);
-    if (_sortedKey == key) return _sorted;
+    // 先按版本刷新收藏全集，再用刷新后的版本号做缓存键（避免首帧多排一次）。
     final all = _favoritesOf(direct);
+    final key = (_favVersion, _favSettingsVer, _favMetaVer, search, pref);
+    if (_sortedKey == key) return _sorted;
     final filtered = filterSongs(all, search);
     // 权重/播放统计排序批量预取（一次分片查询），不再逐首同步查库。
     final keys = direct.weight.sortKeysOf(filtered,
@@ -407,24 +407,19 @@ class _LikedViewState extends State<_LikedView>
     return _sorted;
   }
 
-  void _toggle(String key) => setState(() {
-        _sel.active = true;
-        _sel.toggle(key);
-      });
-
-  void _playSelected(List<Song> songs) {
-    final selected = selectedSongs(_sel, songs);
-    _sel.cancel();
+  void _playSelected(List<Song> selected, VoidCallback clear) {
+    if (selected.isEmpty) return;
+    clear();
     context
         .read<PlayerProvider>()
         .playQueue(selected, contextKey: PlayerProvider.anchorForLiked());
     context.read<NavigationProvider>().openPlayer();
   }
 
-  void _unlikeSelected(List<Song> songs) {
+  void _unlikeSelected(List<Song> selected, VoidCallback clear) {
+    if (selected.isEmpty) return;
+    clear();
     final direct = context.read<DirectSourceManager>();
-    final selected = selectedSongs(_sel, songs);
-    _sel.cancel();
     final player = context.read<PlayerProvider>();
     for (final s in selected) {
       direct.setFavorite(s, false);
@@ -439,103 +434,51 @@ class _LikedViewState extends State<_LikedView>
     final direct = context.watch<DirectSourceManager>();
     // 订阅收窄（T011）：喜欢页只关注全局搜索词；区段索引变更不重建、不重排。
     final search = context.select<NavigationProvider, String>((n) => n.search);
-    final player = context.read<PlayerProvider>();
     final lib = context.read<LibraryProvider>();
     final res = _sortSongs(direct, search);
-    final all = res.raw;
     final songs = res.songs;
-
-    // 行级视图数据（R-1）：懒算派生文本/收藏态并缓存，行组件纯参数渲染。
-    final wide = MediaQuery.sizeOf(context).width >= kSongTileWideInfoWidth;
-    _rowCache.begin(
-      (
-        identityHashCode(songs),
-        _favVersion,
-        _favSettingsVer,
-        direct.metaVersion,
-        direct.settingsVersion,
-        direct.settings.songTitleFormat,
-        wide,
-      ),
-      songs.length,
-      onWarm: () => direct.weight.warmMetaOf(songs),
-    );
 
     return Stack(
       children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 多选栏与计数栏共用同一位置（多选时覆盖「共 xx」，退出恢复）。
-            if (_sel.active)
-              SelectionBar(
-                total: songs.length,
-                selectedCount: _sel.of(songs.map(songKey)).length,
-                onToggleAll: () =>
-                    setState(() => _sel.setAll(songs.map(songKey))),
-                onCancel: () => setState(_sel.cancel),
-                actions: [
-                  SelectionAction(
-                    icon: Icons.play_arrow,
-                    label: '播放选中',
-                    onPressed: _sel.isEmpty ? null : () => _playSelected(songs),
-                  ),
-                  SelectionAction(
-                    icon: Icons.favorite_border,
-                    label: '取消喜欢',
-                    onPressed:
-                        _sel.isEmpty ? null : () => _unlikeSelected(songs),
-                  ),
-                ],
-              )
-            else
-              CountHeader(
-                count: songs.length,
-                trailing: SortMenuButton(
-                  value: direct.settings.sortFavorites,
-                  onChanged: (v) =>
-                      setState(() => direct.settings.sortFavorites = v),
-                ),
+        Positioned.fill(
+          child: SongCollectionView(
+            songs: songs,
+            searching: search.trim().isNotEmpty,
+            collectionKey: 'favorites',
+            groupMode: direct.settings.groupFavorites,
+            onGroupModeChanged: (v) =>
+                setState(() => direct.settings.groupFavorites = v),
+            sort: direct.settings.sortFavorites,
+            onSortChanged: (v) =>
+                setState(() => direct.settings.sortFavorites = v),
+            sourceOf: (s) => lib.sourceFor(s.sourceKey),
+            emptyText: res.raw.isEmpty ? '暂无喜欢的歌曲，去歌曲页点 ♡ 收藏' : '无匹配歌曲',
+            countLabel: (n, _) => '共 $n 首歌曲',
+            onPlay: (list, i) {
+              context.read<PlayerProvider>().playQueue(list,
+                  index: i, contextKey: PlayerProvider.anchorForLiked());
+              context.read<NavigationProvider>().openPlayer();
+            },
+            onPlayGroup: (list) => context
+                .read<PlayerProvider>()
+                .playQueue(list, contextKey: PlayerProvider.anchorForLiked()),
+            selectionActions: (selected, clear) => [
+              SelectionAction(
+                icon: Icons.play_arrow,
+                label: '播放选中',
+                onPressed: selected.isEmpty
+                    ? null
+                    : () => _playSelected(selected, clear),
               ),
-            if (_sel.active) const Divider(height: 1),
-            Expanded(
-              child: songs.isEmpty
-                  ? Center(
-                      child: Text(all.isEmpty ? '暂无喜欢的歌曲，去歌曲页点 ♡ 收藏' : '无匹配歌曲'))
-                  : RowList(
-                      count: songs.length,
-                      itemBuilder: (c, i) {
-                        final s = songs[i];
-                        return SongTile(
-                          song: s,
-                          source: lib.sourceFor(s.sourceKey),
-                          row: _rowCache.rowAt(i, () {
-                            final meta = direct.weight.metaOf(s);
-                            return SongRowView.of(
-                              song: s,
-                              titleFormat: direct.settings.songTitleFormat,
-                              favorite: meta.favorite,
-                              disliked: meta.frozen,
-                              wide: wide,
-                            );
-                          }),
-                          onPlay: () {
-                            player.playQueue(songs,
-                                index: i,
-                                contextKey: PlayerProvider.anchorForLiked());
-                            context.read<NavigationProvider>().openPlayer();
-                          },
-                          playing: player.isCurrent(s),
-                          selectionMode: _sel.active,
-                          selected: _sel.contains(songKey(s)),
-                          onSelect: () => _toggle(songKey(s)),
-                          onStartSelect: () =>
-                              setState(() => _sel.startWith(songKey(s))),
-                        );
-                      },
-                    ),
-            ),
-          ],
+              SelectionAction(
+                icon: Icons.favorite_border,
+                label: '取消喜欢',
+                onPressed: selected.isEmpty
+                    ? null
+                    : () => _unlikeSelected(selected, clear),
+              ),
+            ],
+          ),
         ),
         Positioned(
           right: 16,
@@ -564,11 +507,6 @@ class _SongsViewState extends State<_SongsView>
   /// （allSongs 全表扫描）与万吨排序，KeepAlive 保留使来回滑动 0 查询。
   @override
   bool get wantKeepAlive => true;
-
-  final Selection<String> _sel = Selection<String>();
-
-  /// 行级视图数据缓存（R-1）。
-  final SongRowCache _rowCache = SongRowCache();
 
   /// 排序/过滤结果缓存（同喜欢页）：
   /// 键 = (歌曲全集身份, 搜索词, 排序偏好)。build 重跑不重排不重查。
@@ -606,23 +544,18 @@ class _SongsViewState extends State<_SongsView>
     });
   }
 
-  void _toggle(String key) => setState(() {
-        _sel.active = true;
-        _sel.toggle(key);
-      });
-
-  void _playSelected(List<Song> songs) {
-    final selected = selectedSongs(_sel, songs);
-    _sel.cancel();
+  void _playSelected(List<Song> selected, VoidCallback clear) {
+    if (selected.isEmpty) return;
+    clear();
     context
         .read<PlayerProvider>()
         .playQueue(selected, contextKey: PlayerProvider.anchorForSongs());
     context.read<NavigationProvider>().openPlayer();
   }
 
-  void _addToPlaylistSelected(List<Song> songs) {
-    final selected = selectedSongs(_sel, songs);
-    _sel.cancel();
+  void _addToPlaylistSelected(List<Song> selected, VoidCallback clear) {
+    if (selected.isEmpty) return;
+    clear();
     showAddToPlaylistSheetForSongs(context, selected);
   }
 
@@ -630,7 +563,6 @@ class _SongsViewState extends State<_SongsView>
   Widget build(BuildContext context) {
     super.build(context);
     final lib = context.watch<LibraryProvider>();
-    final player = context.read<PlayerProvider>();
     final direct = context.watch<DirectSourceManager>();
 
     // 订阅收窄（T011）：歌曲页只关注全局搜索词；区段索引变更不重建、不重排。
@@ -638,22 +570,6 @@ class _SongsViewState extends State<_SongsView>
 
     // 依据全局搜索词过滤（喜欢页共用同一匹配函数），再按本页排序偏好排序。
     final songs = _sortSongs(lib, direct, search).songs;
-
-    // 行级视图数据（R-1）：懒算派生文本/收藏态并缓存，行组件纯参数渲染。
-    final wide = MediaQuery.sizeOf(context).width >= kSongTileWideInfoWidth;
-    _rowCache.begin(
-      (
-        identityHashCode(songs),
-        lib.songs.length,
-        direct.metaVersion,
-        direct.favoriteVersion,
-        direct.settingsVersion,
-        direct.settings.songTitleFormat,
-        wide,
-      ),
-      songs.length,
-      onWarm: () => direct.weight.warmMetaOf(songs),
-    );
 
     return Column(
       children: [
@@ -663,75 +579,46 @@ class _SongsViewState extends State<_SongsView>
               padding: const EdgeInsets.all(8),
               child:
                   Text(lib.error!, style: const TextStyle(color: Colors.red))),
-        // 多选栏与计数栏共用同一位置（多选时覆盖「共 xx」，退出恢复）。
-        if (_sel.active)
-          SelectionBar(
-            total: songs.length,
-            selectedCount: _sel.of(songs.map(songKey)).length,
-            onToggleAll: () => setState(() => _sel.setAll(songs.map(songKey))),
-            onCancel: () => setState(_sel.cancel),
-            actions: [
+        Expanded(
+          child: SongCollectionView(
+            songs: songs,
+            searching: search.trim().isNotEmpty,
+            collectionKey: 'songs',
+            groupMode: direct.settings.groupSongs,
+            onGroupModeChanged: (v) =>
+                setState(() => direct.settings.groupSongs = v),
+            sort: direct.settings.sortSongs,
+            onSortChanged: (v) => setState(() => direct.settings.sortSongs = v),
+            sourceOf: (s) => lib.sourceFor(s.sourceKey),
+            emptyText: '暂无歌曲',
+            emptyPlaceholder: _EmptyHint(onRefresh: lib.loadSongs),
+            countLabel: (n, _) => '共 $n 首歌曲',
+            onRefresh: lib.loadSongs,
+            onPlay: (list, i) {
+              context.read<PlayerProvider>().playQueue(list,
+                  index: i, contextKey: PlayerProvider.anchorForSongs());
+              context.read<NavigationProvider>().openPlayer();
+            },
+            onPlayGroup: (list) => context
+                .read<PlayerProvider>()
+                .playQueue(list, contextKey: PlayerProvider.anchorForSongs()),
+            selectionActions: (selected, clear) => [
               SelectionAction(
                 icon: Icons.play_arrow,
                 label: '播放选中',
-                onPressed: _sel.isEmpty ? null : () => _playSelected(songs),
+                onPressed: selected.isEmpty
+                    ? null
+                    : () => _playSelected(selected, clear),
               ),
               SelectionAction(
                 icon: Icons.playlist_add,
                 label: '加入歌单',
-                onPressed:
-                    _sel.isEmpty ? null : () => _addToPlaylistSelected(songs),
+                onPressed: selected.isEmpty
+                    ? null
+                    : () => _addToPlaylistSelected(selected, clear),
               ),
             ],
-          )
-        else
-          CountHeader(
-            count: songs.length,
-            trailing: SortMenuButton(
-              value: direct.settings.sortSongs,
-              onChanged: (v) => setState(() => direct.settings.sortSongs = v),
-            ),
           ),
-        Expanded(
-          child: songs.isEmpty
-              ? _EmptyHint(onRefresh: lib.loadSongs)
-              : RowList(
-                  count: songs.length,
-                  onRefresh: lib.loadSongs,
-                  itemBuilder: (c, i) {
-                    final s = songs[i];
-                    return SongTile(
-                      song: s,
-                      source: lib.sourceFor(s.sourceKey),
-                      row: _rowCache.rowAt(
-                        i,
-                        () {
-                          final meta = direct.weight.metaOf(s);
-                          return SongRowView.of(
-                            song: s,
-                            titleFormat: direct.settings.songTitleFormat,
-                            favorite: meta.favorite,
-                            disliked: meta.frozen,
-                            wide: wide,
-                          );
-                        },
-                      ),
-                      onPlay: () {
-                        player.playQueue(songs,
-                            index: i,
-                            contextKey: PlayerProvider.anchorForSongs());
-                        context.read<NavigationProvider>().openPlayer();
-                      },
-                      playing: player.isCurrent(s),
-                      selectionMode: _sel.active,
-                      selected: _sel.contains(songKey(s)),
-                      onSelect: () => _toggle(songKey(s)),
-                      onStartSelect: () {
-                        setState(() => _sel.startWith(songKey(s)));
-                      },
-                    );
-                  },
-                ),
         ),
       ],
     );
