@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
@@ -84,6 +85,11 @@ class SyncEngine {
   /// 断点变更时触发一次（对标 onSongStatesApplied）。
   void Function()? onBreakpointsApplied;
   bool _breakpointsDirty = false;
+
+  /// push 返回深层列表合并快照时的回调（快照, 本设备刚推的 deep_list）。
+  /// 与 [onBreakpointsApplied] 不同：这里只更新历史，不 seek/不打断播放。
+  Future<void> Function(Map<String, dynamic> snapshot, List<dynamic> sent)?
+      onBreakpointMerged;
 
   SyncEngine({required this.api, required this.index, required this.settings});
 
@@ -327,20 +333,47 @@ class SyncEngine {
     // 读写与 payload 解码都在写隔离（OutboxRow.payload 已是 Map）。
     final pending = await index.pendingOutbox();
     if (pending.isEmpty) return;
+
+    // 同一歌单的断点事件只推最新一条：离线期间每次切歌/暂停都入队，
+    // 逐条推会把同一后缀重复追加到服务端分支。旧事件在最新事件 ack 后删除；
+    // 若最新事件被拒，旧事件仍保留，下一轮兜底。
+    final bpGroups = <String, List<OutboxRow>>{};
+    for (final e in pending) {
+      if (e.type != SyncEventTypes.breakpointSet) continue;
+      final uuid = e.payload['playlist_uuid'];
+      if (uuid is! String || uuid.isEmpty) continue;
+      bpGroups.putIfAbsent(uuid, () => []).add(e);
+    }
+    final superseded = <String, List<String>>{};
+    final coalesced = <String>{};
+    for (final group in bpGroups.values) {
+      if (group.length <= 1) continue;
+      final keep = group.last.eventUuid;
+      superseded[keep] = [
+        for (final e in group.take(group.length - 1)) e.eventUuid
+      ];
+      coalesced.addAll(superseded[keep]!);
+    }
+    final sendRows = [
+      for (final e in pending)
+        if (!coalesced.contains(e.eventUuid)) e,
+    ];
+    final sendByUuid = {for (final e in sendRows) e.eventUuid: e};
     // 排查「旧数据覆盖服务端新数据」：先记录本批要推什么、时间戳是多少。
     final byType = <String, int>{};
-    for (final e in pending) {
+    for (final e in sendRows) {
       byType[e.type] = (byType[e.type] ?? 0) + 1;
     }
-    perfLog('push.batch', 'n=${pending.length} $byType');
-    for (final e in pending) {
+    perfLog('push.batch',
+        'n=${pending.length} send=${sendRows.length} coalesced=${coalesced.length} $byType');
+    for (final e in sendRows) {
       if (e.type != SyncEventTypes.breakpointSet) continue;
       final p = e.payload;
       perfLog('push.breakpoint',
-          'uuid=${e.eventUuid} playlist=${p['playlist_uuid']} ref=${p['source_ref']} pos=${p['position_ms']}ms occurred=${e.occurredAt}');
+          'uuid=${e.eventUuid} playlist=${p['playlist_uuid']} ref=${p['source_ref']} pos=${p['position_ms']}ms base=${p['base_deep_list'] is List ? (p['base_deep_list'] as List).length : -1} added=${p['deep_added'] is List ? (p['deep_added'] as List).length : -1} occurred=${e.occurredAt}');
     }
     final data = await api.syncPush(clientId, [
-      for (final e in pending)
+      for (final e in sendRows)
         {
           'event_uuid': e.eventUuid,
           'device_client_id': clientId,
@@ -353,10 +386,15 @@ class SyncEngine {
     _noteServerTime(data['server_time']);
     final applied = _strList(data['applied']);
     final duplicates = _strList(data['duplicates']);
-    await index.deleteOutbox([...applied, ...duplicates]);
-    lastPushed = applied.length + duplicates.length;
+    final acked = {...applied, ...duplicates};
+    final remove = <String>{...acked};
+    for (final entry in superseded.entries) {
+      if (acked.contains(entry.key)) remove.addAll(entry.value);
+    }
+    await index.deleteOutbox(remove);
+    lastPushed = acked.length;
     perfLog('push.ack',
-        'applied=${applied.length} duplicates=${duplicates.length} cursor=${data['cursor']}');
+        'applied=${applied.length} duplicates=${duplicates.length} removed=${remove.length} cursor=${data['cursor']}');
     final rejected = data['rejected'];
     if (rejected is List) {
       final uuids = [
@@ -377,6 +415,63 @@ class SyncEngine {
       perfLog('push.corrections', 'n=${corrections.length}');
       for (final v in corrections.values) {
         if (v is Map<String, dynamic>) await _applySnapshot(v, clientId);
+      }
+    }
+
+    // 深层列表合并回执：与 corrections 分开、无条件强制落镜像，并回调播放器
+    // 合并历史。即使 device_client_id 是本设备也不能走自写回声过滤——快照里含
+    // 对端分支；base 由播放器采用后推进，避免把未采用的远端分支写进 base。
+    final merged = data['merged'];
+    final mergedUuids = <String>{};
+    if (merged is Map && merged.isNotEmpty) {
+      perfLog('push.merged', 'n=${merged.length}');
+      for (final entry in merged.entries) {
+        final eventUuid = entry.key;
+        final raw = entry.value;
+        if (eventUuid is! String || raw is! Map) continue;
+        final snap = raw.cast<String, dynamic>();
+        try {
+          await index.applyPlaystateMirror(snap, force: true);
+        } catch (e) {
+          // 快照落库失败也要继续回调合并历史，避免一条坏回执拖垮整轮 ack。
+          debugPrint('SyncEngine merged 镜像落库失败：$e');
+        }
+        mergedUuids.add(eventUuid);
+        // 不置 _breakpointsDirty：merged 只补历史，不能触发
+        // applyNewerMirrorIfAny 切歌/seek（尤其非当前歌单的回执）。
+        final sent = sendByUuid[eventUuid]?.payload['deep_list'];
+        final cb = onBreakpointMerged;
+        if (cb != null) {
+          try {
+            await cb(snap, sent is List ? sent : const []);
+          } catch (e) {
+            // 回执已落镜像；运行时历史合并失败不应让整轮 push 失败
+            //（事件已删除，重试也不会再收到同一条 merged）。base 保持旧值，
+            // 下一轮按全量/前缀重新收敛。
+            debugPrint('SyncEngine merged 历史应用失败：$e');
+          }
+        }
+        perfLog('push.merged.apply',
+            'uuid=$eventUuid playlist=${snap['client_uuid']} deep=${(snap['deep_list'] as List?)?.length ?? 0}');
+      }
+    }
+    // 已推断点：base 对齐本设备刚推的全量分支（不跟服务端 merged，避免
+    // 本机尚未采用的远端分支让旧列表被误判为非追加）。merged 用回调里
+    // 实际采用后的本地列表更新 base。
+    for (final row in sendRows) {
+      if (row.type != SyncEventTypes.breakpointSet ||
+          !acked.contains(row.eventUuid) ||
+          mergedUuids.contains(row.eventUuid)) {
+        continue;
+      }
+      final uuid = row.payload['playlist_uuid'];
+      final deep = row.payload['deep_list'];
+      if (uuid is String && uuid.isNotEmpty && deep is List) {
+        try {
+          await index.setBreakpointBaseDeepList(uuid, jsonEncode(deep));
+        } catch (e) {
+          debugPrint('SyncEngine 断点 base 更新失败：$e');
+        }
       }
     }
     _flushSources();

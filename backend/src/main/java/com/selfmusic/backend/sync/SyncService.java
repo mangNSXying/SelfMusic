@@ -46,11 +46,14 @@ import com.selfmusic.backend.domain.repository.SyncSourceRepository;
  * 合并矩阵：
  * - 权重事件（song.*）：事件重算（本类 {@link #applySongEvent}，§7.1 翻版），
  *   非绝对值覆盖，两设备并发点赞按到达序依次重放，不互相抹掉；
- * - 歌单元数据 / 删除墓碑 / 断点：行级 LWW，以事件 occurred_at vs 行 last_event_at
- *   为准（{@link #eventWins} 纯函数），输方收 correction 回执自行纠正；
+ * - 歌单元数据 / 删除墓碑 / 断点当前曲与进度：行级 LWW，以事件 occurred_at vs
+ *   行 last_event_at 为准（{@link #eventWins} 纯函数），输方收 correction 回执自行纠正；
+ * - 断点深层列表：新客户端带 `deep_added`（纯追加后缀）时执行服务端分支追加，
+ *   带 `base_deep_list` 时执行三向列表合并（base/server/device），两端分支都保留；
+ *   旧客户端无新字段时仍按整行 LWW 兼容；
  * - 歌单条目：按 seq 到达序重放，后到达胜出，天然收敛；
  * - 仲裁时钟：occurred_at 缺失或打平时，后处理（到达序）胜出；行 last_event_at
- *   为空（首写）恒胜。客户端本地时钟不可信，不做跨时钟比较之外的推断。
+ *   为空（首写）恒胜。合并回执用不小于两分支的时钟，避免对端镜像时钟拒收。
  */
 @Service
 public class SyncService {
@@ -243,8 +246,10 @@ public class SyncService {
         List<String> duplicates = new ArrayList<>();
         List<Map<String, String>> rejected = new ArrayList<>();
         Map<String, Object> corrections = new LinkedHashMap<>();
+        Map<String, Object> merged = new LinkedHashMap<>();
         if (events == null || events.isEmpty()) {
-            return pushResult(syncEventRepository.maxSeq(), applied, duplicates, rejected, corrections);
+            return pushResult(syncEventRepository.maxSeq(), applied, duplicates, rejected,
+                    corrections, merged);
         }
         if (events.size() > PUSH_EVENT_LIMIT) {
             throw new BizException(40001, "too many events (max " + PUSH_EVENT_LIMIT + ")");
@@ -276,7 +281,7 @@ public class SyncService {
                 continue;
             }
             try {
-                Object correction = applyEvent(ev);
+                ApplyOutcome outcome = applyEvent(ev);
                 SyncEvent row = new SyncEvent();
                 row.setEventUuid(ev.event_uuid());
                 row.setDeviceClientId(ev.device_client_id());
@@ -287,9 +292,14 @@ public class SyncService {
                 row.setEntityKey(entityKeyOf(ev.type(), ev.payload()));
                 syncEventRepository.save(row);
                 applied.add(ev.event_uuid());
-                if (correction != null) {
-                    corrections.put(ev.event_uuid(), correction);
+                if (outcome.correction() != null) {
+                    corrections.put(ev.event_uuid(), outcome.correction());
                     log.info("sync.push 判输回执 device={} uuid={} type={}",
+                            authClientId, ev.event_uuid(), ev.type());
+                }
+                if (outcome.merged() != null) {
+                    merged.put(ev.event_uuid(), outcome.merged());
+                    log.info("sync.push 合并回执 device={} uuid={} type={}",
                             authClientId, ev.event_uuid(), ev.type());
                 }
             } catch (BizException be) {
@@ -299,36 +309,43 @@ public class SyncService {
             }
         }
         touchDevice(authClientId, null);
-        Map<String, Object> result =
-                pushResult(syncEventRepository.maxSeq(), applied, duplicates, rejected, corrections);
+        Map<String, Object> result = pushResult(syncEventRepository.maxSeq(), applied,
+                duplicates, rejected, corrections, merged);
         // 汇总行（与客户端 push.batch/push.ack 时间线对齐用）。
-        log.info("sync.push 完成 device={} applied={} duplicates={} rejected={} corrections={} cursor={}",
+        log.info("sync.push 完成 device={} applied={} duplicates={} rejected={} corrections={} merged={} cursor={}",
                 authClientId, applied.size(), duplicates.size(), rejected.size(),
-                corrections.size(), result.get("cursor"));
+                corrections.size(), merged.size(), result.get("cursor"));
         return result;
     }
 
+    /** 单事件应用结果：correction=判输快照，merged=深层列表合并后的快照。 */
+    private record ApplyOutcome(Object correction, Object merged) {
+        static ApplyOutcome none() { return new ApplyOutcome(null, null); }
+        static ApplyOutcome correction(Object snap) { return new ApplyOutcome(snap, null); }
+        static ApplyOutcome merged(Object snap) { return new ApplyOutcome(null, snap); }
+    }
+
     /**
-     * 应用单个已去重事件。返回 null=服务端接受；返回快照= LWW 判输，
-     * 调用方把快照放入 corrections，客户端用它纠正本地。
+     * 应用单个已去重事件。correction 快照进 push 回执 corrections；
+     * merged 快照进独立 merged 通道（即使 device_client_id 是本机也要强制套用）。
      */
-    private Object applyEvent(PushEvent ev) {
+    private ApplyOutcome applyEvent(PushEvent ev) {
         JsonNode p = ev.payload();
         return switch (typeGroup(ev.type())) {
             case "song" -> {
                 SongState song = stateOf(p, true);
                 if (SyncEventTypes.SONG_STATE.equals(ev.type())) {
-                    yield applySongState(ev, song);
+                    yield ApplyOutcome.correction(applySongState(ev, song));
                 }
                 applySongEvent(song, ev.type(), p);
                 songStateRepository.save(song);
-                yield null;
+                yield ApplyOutcome.none();
             }
-            case "source_meta" -> applySourceMeta(ev);
-            case "playlist_meta" -> applyPlaylistMeta(ev);
+            case "source_meta" -> ApplyOutcome.correction(applySourceMeta(ev));
+            case "playlist_meta" -> ApplyOutcome.correction(applyPlaylistMeta(ev));
             case "playlist_item" -> {
                 applyPlaylistItem(ev);
-                yield null;
+                yield ApplyOutcome.none();
             }
             case "breakpoint" -> applyBreakpoint(ev);
             default -> throw new BizException(40001, "unknown event group: " + ev.type());
@@ -719,7 +736,7 @@ public class SyncService {
         }
     }
 
-    private Object applyBreakpoint(PushEvent ev) {
+    private ApplyOutcome applyBreakpoint(PushEvent ev) {
         JsonNode p = ev.payload();
         Playlist pl = playlistOf(p);
         PlayState st = playStateRepository.findById(pl.getId()).orElseGet(() -> {
@@ -728,32 +745,163 @@ public class SyncService {
             return ns;
         });
         int incomingPos = p == null ? 0 : p.path("position_ms").asInt(0);
-        // 断点 LWW 的两个分支都落日志：排查「旧数据覆盖服务端新数据」时，
-        // 用 来件.occurred_at vs 现行.lastEvent_at + 两台设备号对齐时间线。
+        String ref = refOf(p);
+        if (ref == null || ref.isBlank()) throw new BizException(40001, "source_ref required");
+        int capacity = playlistCapacity(pl);
+
+        boolean hasBase = p != null && p.has("base_deep_list")
+                && p.path("base_deep_list").isArray();
+        boolean hasAdded = p != null && p.has("deep_added")
+                && p.path("deep_added").isArray();
+        boolean hasFull = p != null && p.has("deep_list")
+                && p.path("deep_list").isArray();
+        List<JsonNode> incoming = hasFull ? deepNodes(p.path("deep_list")) : null;
+
+        // 非追加操作（上一首/替换末尾/清空）无法从快照 diff 精确还原：
+        // 客户端带上次确认的 base 走三向合并，两端分支都保留。
+        if (hasBase) {
+            List<JsonNode> base = deepNodes(p.path("base_deep_list"));
+            List<JsonNode> server = parseDeepNodes(st.getDeepListJson());
+            // 新协议必须带全量 deep_list；缺失时按“不改历史”处理，避免误清空。
+            List<JsonNode> device = incoming == null ? server : incoming;
+            List<JsonNode> merged = mergeDeepLists(base, server, device, capacity);
+            boolean changedFromIncoming = incoming != null
+                    && !sameDeepKeys(merged, incoming);
+            st.setDeepListJson(deepJson(merged));
+            applyBreakpointCurrent(st, ev, p, ref);
+            st.setLastEventAt(changedFromIncoming
+                    ? mergeClock(st.getLastEventAt(), ev.occurred_at())
+                    : acceptClock(st.getLastEventAt(), eventTime(ev)));
+            playStateRepository.save(st);
+            log.info("sync.breakpoint 三向合并 playlist={} device={} base={} server={} deviceList={} merged={} changed={} clock={}",
+                    pl.getClientUuid(), ev.device_client_id(), base.size(),
+                    server.size(), device.size(), merged.size(), changedFromIncoming,
+                    st.getLastEventAt());
+            return changedFromIncoming
+                    ? ApplyOutcome.merged(playstateSnapshot(st, pl.getClientUuid()))
+                    : ApplyOutcome.none();
+        }
+
+        if (hasAdded) {
+            List<JsonNode> added = deepNodes(p.path("deep_added"));
+            String serverRaw = st.getDeepListJson();
+            List<JsonNode> server = parseDeepNodes(serverRaw);
+            boolean serverMissing = serverRaw == null || serverRaw.isBlank();
+
+            // 空后缀 = 仅位置更新：不覆盖服务端深层列表，仍按 LWW 仲裁当前曲/进度。
+            if (added.isEmpty()) {
+                if (!eventWins(ev.occurred_at(), st.getLastEventAt())) {
+                    log.info("sync.breakpoint 位置判输（保留服务端断点） playlist={} 来件[device={} occurred={} pos={}ms] 现行[lastEventAt={} device={} pos={}ms]",
+                            pl.getClientUuid(), ev.device_client_id(), ev.occurred_at(),
+                            incomingPos, st.getLastEventAt(), st.getDeviceClientId(),
+                            st.getPositionMs());
+                    return ApplyOutcome.correction(playstateSnapshot(st, pl.getClientUuid()));
+                }
+                // 服务端从未有过深层列表（旧行/首写）→ 用本次全量做种子。
+                if (serverMissing && incoming != null) {
+                    st.setDeepListJson(deepJson(dedupeDeep(incoming, capacity)));
+                }
+                applyBreakpointCurrent(st, ev, p, ref);
+                st.setLastEventAt(ev.occurred_at());
+                playStateRepository.save(st);
+                List<JsonNode> current = parseDeepNodes(st.getDeepListJson());
+                // 服务端历史与设备全量不同（例如对端已合并出另一分支）时也回
+                // merged 快照：设备只更新历史、不 seek，下一轮就能看到完整分支。
+                boolean historyDiff = incoming != null
+                        && !sameDeepKeys(current, incoming);
+                log.info("sync.breakpoint 位置接受 playlist={} device={} occurred={} pos={}ms deep={} histDiff={}",
+                        pl.getClientUuid(), ev.device_client_id(), ev.occurred_at(),
+                        incomingPos, current.size(), historyDiff);
+                return historyDiff
+                        ? ApplyOutcome.merged(playstateSnapshot(st, pl.getClientUuid()))
+                        : ApplyOutcome.none();
+            }
+
+            // 纯追加：服务端当前分支 + 设备新增后缀。服务端无历史时用设备全量
+            // 兜底（新库/旧行没有可追加的 base）。
+            List<JsonNode> merged = (serverMissing && incoming != null)
+                    ? dedupeDeep(incoming, capacity)
+                    : appendDeepAdded(server, added, capacity);
+            boolean changedFromIncoming = incoming == null
+                    || !sameDeepKeys(merged, incoming);
+            st.setDeepListJson(deepJson(merged));
+            applyBreakpointCurrent(st, ev, p, ref);
+            st.setLastEventAt(changedFromIncoming
+                    ? mergeClock(st.getLastEventAt(), ev.occurred_at())
+                    : acceptClock(st.getLastEventAt(), eventTime(ev)));
+            playStateRepository.save(st);
+            log.info("sync.breakpoint 追加合并 playlist={} device={} server={} added={} merged={} changed={} clock={}",
+                    pl.getClientUuid(), ev.device_client_id(), server.size(),
+                    added.size(), merged.size(), changedFromIncoming,
+                    st.getLastEventAt());
+            return changedFromIncoming
+                    ? ApplyOutcome.merged(playstateSnapshot(st, pl.getClientUuid()))
+                    : ApplyOutcome.none();
+        }
+
+        // 旧客户端/旧协议：无 base/added 字段，整行 LWW（保持向后兼容）。
         if (!eventWins(ev.occurred_at(), st.getLastEventAt())) {
             log.info("sync.breakpoint 判输（保留服务端断点） playlist={} 来件[device={} occurred={} pos={}ms] 现行[lastEventAt={} device={} pos={}ms]",
                     pl.getClientUuid(), ev.device_client_id(), ev.occurred_at(), incomingPos,
                     st.getLastEventAt(), st.getDeviceClientId(), st.getPositionMs());
-            return playstateSnapshot(st, pl.getClientUuid());
+            return ApplyOutcome.correction(playstateSnapshot(st, pl.getClientUuid()));
         }
-        String ref = refOf(p);
-        if (ref == null || ref.isBlank()) throw new BizException(40001, "source_ref required");
-        log.info("sync.breakpoint 接受（覆盖现行） playlist={} 来件[device={} occurred={} pos={}ms] 现行[lastEventAt={} device={} pos={}ms]",
+        log.info("sync.breakpoint 接受（旧协议覆盖现行） playlist={} 来件[device={} occurred={} pos={}ms] 现行[lastEventAt={} device={} pos={}ms]",
                 pl.getClientUuid(), ev.device_client_id(), ev.occurred_at(), incomingPos,
                 st.getLastEventAt(), st.getDeviceClientId(), st.getPositionMs());
+        applyBreakpointCurrent(st, ev, p, ref);
+        // 旧协议没有合并语义：深层列表原样保存（空/缺失置空）。
+        st.setDeepListJson(hasFull ? p.path("deep_list").toString() : null);
+        st.setLastEventAt(ev.occurred_at());
+        playStateRepository.save(st);
+        return ApplyOutcome.none();
+    }
+
+    private static void applyBreakpointCurrent(PlayState st, PushEvent ev, JsonNode p,
+                                               String ref) {
         st.setSourceId(sourceIdOf(p));
         st.setSource(protocolOf(p));
         st.setSourceRef(ref);
         st.setDeviceClientId(ev.device_client_id());
-        st.setPositionMs(p.path("position_ms").asInt(0));
-        // 深层列表（播放历史）：原样保存 JSON 数组（元素 {source, source_ref}），
-        // 对端据此重建融合队列；空/缺失则置空（旧客户端向后兼容）。
-        st.setDeepListJson(p.has("deep_list") && !p.path("deep_list").isNull()
-                ? p.path("deep_list").toString()
-                : null);
-        st.setLastEventAt(ev.occurred_at());
-        playStateRepository.save(st);
-        return null;
+        st.setPositionMs(p == null ? 0 : p.path("position_ms").asInt(0));
+    }
+
+    private int playlistCapacity(Playlist pl) {
+        long n = playlistItemRepository.countByPlaylistId(pl.getId());
+        if (n <= 0) return 0;
+        return n > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) n;
+    }
+
+    /**
+     * 合并时钟取不小于两分支的服务端时间，且严格大于两边，避免对端镜像
+     * 时钟用 `<=` 拒收（设备墙钟跑到未来时 now 也可能不够新）。
+     */
+    static LocalDateTime mergeClock(LocalDateTime current, LocalDateTime incoming) {
+        LocalDateTime out = current;
+        if (incoming != null && (out == null || incoming.isAfter(out))) out = incoming;
+        LocalDateTime now = LocalDateTime.now();
+        if (out == null || now.isAfter(out)) out = now;
+        // 1ms 步进：覆盖 MySQL/ISO 序列化的微秒/毫秒精度。
+        if (current != null && !out.isAfter(current)) {
+            out = current.plusNanos(1_000_000);
+        }
+        if (incoming != null && !out.isAfter(incoming)) {
+            out = incoming.plusNanos(1_000_000);
+        }
+        return out;
+    }
+
+    /** 历史未变但仍接受了本次当前曲/进度：时钟只前进，不允许被旧事件回退。 */
+    static LocalDateTime acceptClock(LocalDateTime current, LocalDateTime incoming) {
+        if (incoming != null && (current == null || incoming.isAfter(current))) {
+            return incoming;
+        }
+        if (current == null) return incoming;
+        return current.plusNanos(1_000_000);
+    }
+
+    private static LocalDateTime eventTime(PushEvent ev) {
+        return ev.occurred_at() == null ? LocalDateTime.now() : ev.occurred_at();
     }
 
     // ------------------------------------------------------------------
@@ -954,6 +1102,121 @@ public class SyncService {
         return m;
     }
 
+    // ------------------------------------------------------------------
+    // 深层列表合并（纯函数，可单测）
+    // ------------------------------------------------------------------
+
+    /** 深层列表元素身份：与客户端现有 `source_ref` 匹配口径一致。 */
+    static String deepRef(JsonNode e) {
+        if (e == null || !e.isObject()) return null;
+        String ref = e.path("source_ref").asText(null);
+        return (ref == null || ref.isBlank()) ? null : ref;
+    }
+
+    /** 过滤无效元素后的深层列表节点。 */
+    static List<JsonNode> deepNodes(JsonNode array) {
+        if (array == null || !array.isArray()) return List.of();
+        List<JsonNode> out = new ArrayList<>();
+        for (JsonNode e : array) {
+            if (deepRef(e) != null) out.add(e);
+        }
+        return out;
+    }
+
+    static List<JsonNode> parseDeepNodes(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        try {
+            return deepNodes(STATIC_MAPPER.readTree(json));
+        } catch (IOException | IllegalArgumentException e) {
+            return List.of();
+        }
+    }
+
+    static List<String> deepKeys(List<JsonNode> list) {
+        List<String> out = new ArrayList<>(list.size());
+        for (JsonNode e : list) out.add(deepRef(e));
+        return out;
+    }
+
+    static boolean sameDeepKeys(List<JsonNode> a, List<JsonNode> b) {
+        if (a.size() != b.size()) return false;
+        for (int i = 0; i < a.size(); i++) {
+            String ka = deepRef(a.get(i));
+            String kb = deepRef(b.get(i));
+            if (ka == null || !ka.equals(kb)) return false;
+        }
+        return true;
+    }
+
+    /**
+     * 去重保留最后出现项（深层列表“最近播放”在尾部），再按容量从头部裁剪。
+     * 容量来自歌单当前条目数；溢出只丢最旧端，两端新增的尾部都保留。
+     */
+    static List<JsonNode> dedupeDeep(List<JsonNode> list, int capacity) {
+        LinkedHashMap<String, JsonNode> byRef = new LinkedHashMap<>();
+        for (JsonNode e : list) {
+            String ref = deepRef(e);
+            if (ref == null) continue;
+            byRef.remove(ref);
+            byRef.put(ref, e);
+        }
+        List<JsonNode> out = new ArrayList<>(byRef.values());
+        int cap = Math.max(0, capacity);
+        if (out.size() > cap) {
+            out = new ArrayList<>(out.subList(out.size() - cap, out.size()));
+        }
+        return out;
+    }
+
+    /** 纯追加：服务端当前分支 + 设备新增后缀。 */
+    static List<JsonNode> appendDeepAdded(List<JsonNode> server,
+                                          List<JsonNode> added,
+                                          int capacity) {
+        List<JsonNode> out = new ArrayList<>(server.size() + added.size());
+        out.addAll(server);
+        out.addAll(added);
+        return dedupeDeep(out, capacity);
+    }
+
+    /**
+     * 三向列表合并：C=base/server/device 最长公共前缀，
+     * result = C + server[C:] + device[C:]（去重保留最后、按容量裁头）。
+     *
+     * 快路径保证非追加操作可自动裁决：
+     * - server==base：设备分支（含 pop/replace/clear）胜出；
+     * - device==base：服务端分支胜出（本设备未改历史，不抹对端）；
+     * - server==device：幂等收敛。
+     * 两端都改时先保留服务端分支、再接设备分支，并以设备分支为末尾。
+     */
+    static List<JsonNode> mergeDeepLists(List<JsonNode> base,
+                                         List<JsonNode> server,
+                                         List<JsonNode> device,
+                                         int capacity) {
+        if (sameDeepKeys(server, base)) return dedupeDeep(device, capacity);
+        if (sameDeepKeys(device, base)) return dedupeDeep(server, capacity);
+        if (sameDeepKeys(server, device)) return dedupeDeep(server, capacity);
+
+        List<String> bk = deepKeys(base);
+        List<String> sk = deepKeys(server);
+        List<String> dk = deepKeys(device);
+        int max = Math.min(bk.size(), Math.min(sk.size(), dk.size()));
+        int c = 0;
+        while (c < max && bk.get(c).equals(sk.get(c)) && bk.get(c).equals(dk.get(c))) {
+            c++;
+        }
+        List<JsonNode> out = new ArrayList<>();
+        out.addAll(base.subList(0, c));
+        out.addAll(server.subList(c, server.size()));
+        out.addAll(device.subList(c, device.size()));
+        return dedupeDeep(out, capacity);
+    }
+
+    static String deepJson(List<JsonNode> list) {
+        var arr = STATIC_MAPPER.createArrayNode();
+        for (JsonNode e : list) arr.add(e);
+        return arr.toString();
+    }
+
     /** 深层列表 JSON 字符串 → 列表（坏数据返回空列表，不抛错）。 */
     static List<Object> parseDeepList(String json) {
         if (json == null || json.isBlank()) return List.of();
@@ -1048,13 +1311,17 @@ public class SyncService {
     private static Map<String, Object> pushResult(long cursor, List<String> applied,
                                                   List<String> duplicates,
                                                   List<Map<String, String>> rejected,
-                                                  Map<String, Object> corrections) {
+                                                  Map<String, Object> corrections,
+                                                  Map<String, Object> merged) {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("cursor", cursor);
         out.put("applied", applied);
         out.put("duplicates", duplicates);
         out.put("rejected", rejected);
         out.put("corrections", corrections);
+        // 深层列表合并快照按 event_uuid 键控；客户端即使发现
+        // device_client_id 是自己也必须强制套用（其中含对端分支）。
+        out.put("merged", merged);
         // 时钟校准：见 pull（客户端修正出队时间戳用）。
         out.put("server_time", serverTimeNow());
         return out;

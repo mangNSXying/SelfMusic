@@ -444,6 +444,13 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
           .read<PlayerProvider>()
           .applyNewerMirrorIfAny(viaSync: true));
     };
+    // push 深层列表合并回执：只并入历史/融合队列，不 seek、不打断当前播放。
+    _syncEngine.onBreakpointMerged = (snapshot, sentDeepList) async {
+      if (!mounted) return;
+      await context
+          .read<PlayerProvider>()
+          .applyMergedBreakpointHistory(snapshot, sentDeepList);
+    };
     _sheetAnim = PlayerSheetAnimator(
       vsync: this,
       progress: _nav.playerProgress,

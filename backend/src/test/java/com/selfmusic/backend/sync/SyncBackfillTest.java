@@ -1,7 +1,9 @@
 package com.selfmusic.backend.sync;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.selfmusic.backend.domain.entity.PlayState;
 import com.selfmusic.backend.domain.entity.Playlist;
 import com.selfmusic.backend.domain.entity.PlaylistItem;
 import com.selfmusic.backend.domain.entity.SongState;
@@ -248,6 +250,192 @@ class SyncBackfillTest {
         assertNotNull(snap, "补录 source 撞同址行应判输回现行快照");
         assertEquals("src-old", snap.get("client_uuid"));
         verify(syncSources, never()).save(any(SyncSource.class));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void breakpointAppendMergesServerBranchEvenWhenEventIsOlder() {
+        Playlist pl = playlistRow();
+        PlayState st = new PlayState();
+        st.setPlaylistId(7L);
+        st.setSource("webdav");
+        st.setSourceRef("/b.mp3");
+        st.setDeviceClientId("dev-b");
+        st.setPositionMs(1000);
+        st.setLastEventAt(T2);
+        st.setDeepListJson(deepJson("/a.mp3", "/b.mp3", "/s.mp3"));
+        when(playlists.findByClientUuid("p-1")).thenReturn(Optional.of(pl));
+        when(playStates.findById(7L)).thenReturn(Optional.of(st));
+        when(items.countByPlaylistId(7L)).thenReturn(4L);
+        when(playStates.save(any(PlayState.class))).thenAnswer(i -> i.getArgument(0));
+
+        ObjectNode p = mapper.createObjectNode();
+        p.put("playlist_uuid", "p-1");
+        p.put("source", "webdav");
+        p.put("source_ref", "/d.mp3");
+        p.put("position_ms", 42000);
+        p.set("deep_list", deepArray("/a.mp3", "/b.mp3", "/d.mp3"));
+        p.set("deep_added", deepArray("/d.mp3"));
+        // 事件时间早于服务端（离线设备后同步）：深层列表仍必须合并，不丢分支。
+        Map<String, Object> out = service().push("dev-a",
+                List.of(event("e1", SyncEventTypes.BREAKPOINT_SET, T1, p)));
+
+        assertEquals(List.of("e1"), out.get("applied"));
+        assertEquals(List.of("/a.mp3", "/b.mp3", "/s.mp3", "/d.mp3"),
+                deepRefs(st.getDeepListJson()));
+        assertTrue(st.getLastEventAt().isAfter(T2), "合并时钟不得小于两边");
+        Map<String, Object> merged = (Map<String, Object>) out.get("merged");
+        assertNotNull(merged.get("e1"), "服务端分支变化应回 merged 快照");
+        Map<String, Object> snap = (Map<String, Object>) merged.get("e1");
+        assertEquals(42000, snap.get("position_ms"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void breakpointBaseMergeKeepsBothBranchesAndDeviceTail() {
+        Playlist pl = playlistRow();
+        PlayState st = new PlayState();
+        st.setPlaylistId(7L);
+        st.setSourceRef("/b.mp3");
+        st.setLastEventAt(T2);
+        st.setDeepListJson(deepJson("/a.mp3", "/b.mp3", "/s.mp3"));
+        when(playlists.findByClientUuid("p-1")).thenReturn(Optional.of(pl));
+        when(playStates.findById(7L)).thenReturn(Optional.of(st));
+        when(items.countByPlaylistId(7L)).thenReturn(10L);
+        when(playStates.save(any(PlayState.class))).thenAnswer(i -> i.getArgument(0));
+
+        ObjectNode p = mapper.createObjectNode();
+        p.put("playlist_uuid", "p-1");
+        p.put("source", "webdav");
+        p.put("source_ref", "/d.mp3");
+        p.put("position_ms", 5000);
+        p.set("base_deep_list", deepArray("/a.mp3", "/b.mp3"));
+        p.set("deep_list", deepArray("/a.mp3", "/b.mp3", "/d.mp3"));
+        Map<String, Object> out = service().push("dev-a",
+                List.of(event("e1", SyncEventTypes.BREAKPOINT_SET, T1, p)));
+
+        assertEquals(List.of("e1"), out.get("applied"));
+        assertEquals(List.of("/a.mp3", "/b.mp3", "/s.mp3", "/d.mp3"),
+                deepRefs(st.getDeepListJson()));
+        Map<String, Object> merged = (Map<String, Object>) out.get("merged");
+        assertNotNull(merged.get("e1"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void breakpointPositionOnlyKeepsServerHistoryAndUsesLww() {
+        Playlist pl = playlistRow();
+        PlayState st = new PlayState();
+        st.setPlaylistId(7L);
+        st.setSourceRef("/b.mp3");
+        st.setLastEventAt(T2);
+        st.setDeepListJson(deepJson("/a.mp3", "/b.mp3"));
+        when(playlists.findByClientUuid("p-1")).thenReturn(Optional.of(pl));
+        when(playStates.findById(7L)).thenReturn(Optional.of(st));
+        when(items.countByPlaylistId(7L)).thenReturn(10L);
+        when(playStates.save(any(PlayState.class))).thenAnswer(i -> i.getArgument(0));
+
+        ObjectNode p = mapper.createObjectNode();
+        p.put("playlist_uuid", "p-1");
+        p.put("source", "webdav");
+        p.put("source_ref", "/stale.mp3");
+        p.put("position_ms", 1);
+        p.set("deep_list", deepArray("/a.mp3", "/stale.mp3"));
+        p.set("deep_added", mapper.createArrayNode());
+        Map<String, Object> out = service().push("dev-a",
+                List.of(event("e1", SyncEventTypes.BREAKPOINT_SET, T1, p)));
+
+        assertEquals(List.of("e1"), out.get("applied"));
+        assertEquals(List.of("/a.mp3", "/b.mp3"), deepRefs(st.getDeepListJson()),
+                "空后缀只更新位置，不得用落后的全量覆盖服务端历史");
+        assertTrue(((Map<String, Object>) out.get("corrections")).containsKey("e1"));
+        assertTrue(((Map<String, Object>) out.get("merged")).isEmpty());
+    }
+
+    @Test
+    void breakpointAppendUnchangedKeepsClockMonotonic() {
+        Playlist pl = playlistRow();
+        PlayState st = new PlayState();
+        st.setPlaylistId(7L);
+        st.setSourceRef("/b.mp3");
+        st.setLastEventAt(T2);
+        st.setDeepListJson(deepJson("/a.mp3", "/b.mp3"));
+        when(playlists.findByClientUuid("p-1")).thenReturn(Optional.of(pl));
+        when(playStates.findById(7L)).thenReturn(Optional.of(st));
+        when(items.countByPlaylistId(7L)).thenReturn(10L);
+        when(playStates.save(any(PlayState.class))).thenAnswer(i -> i.getArgument(0));
+
+        ObjectNode p = mapper.createObjectNode();
+        p.put("playlist_uuid", "p-1");
+        p.put("source", "webdav");
+        p.put("source_ref", "/b.mp3");
+        p.put("position_ms", 6000);
+        p.set("deep_list", deepArray("/a.mp3", "/b.mp3"));
+        p.set("deep_added", deepArray("/b.mp3"));
+        // 离线旧事件、历史结果与来件相同：仍接受当前曲/进度，但时钟不能回退。
+        Map<String, Object> out = service().push("dev-a",
+                List.of(event("e1", SyncEventTypes.BREAKPOINT_SET, T1, p)));
+
+        assertEquals(List.of("e1"), out.get("applied"));
+        assertEquals(List.of("/a.mp3", "/b.mp3"), deepRefs(st.getDeepListJson()));
+        assertEquals(6000, st.getPositionMs());
+        assertTrue(st.getLastEventAt().isAfter(T2), "历史未变也不能把 last_event_at 回退");
+        assertTrue(((Map<String, Object>) out.get("merged")).isEmpty());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void breakpointPositionOnlyWinsReturnsMergedWhenServerHasOtherBranch() {
+        Playlist pl = playlistRow();
+        PlayState st = new PlayState();
+        st.setPlaylistId(7L);
+        st.setSourceRef("/b.mp3");
+        st.setLastEventAt(T1);
+        st.setDeepListJson(deepJson("/a.mp3", "/b.mp3", "/s.mp3"));
+        when(playlists.findByClientUuid("p-1")).thenReturn(Optional.of(pl));
+        when(playStates.findById(7L)).thenReturn(Optional.of(st));
+        when(items.countByPlaylistId(7L)).thenReturn(10L);
+        when(playStates.save(any(PlayState.class))).thenAnswer(i -> i.getArgument(0));
+
+        ObjectNode p = mapper.createObjectNode();
+        p.put("playlist_uuid", "p-1");
+        p.put("source", "webdav");
+        p.put("source_ref", "/b.mp3");
+        p.put("position_ms", 7777);
+        p.set("deep_list", deepArray("/a.mp3", "/b.mp3"));
+        p.set("deep_added", mapper.createArrayNode());
+        Map<String, Object> out = service().push("dev-a",
+                List.of(event("e1", SyncEventTypes.BREAKPOINT_SET, T3, p)));
+
+        assertEquals(List.of("e1"), out.get("applied"));
+        assertEquals(List.of("/a.mp3", "/b.mp3", "/s.mp3"),
+                deepRefs(st.getDeepListJson()), "位置更新不得覆盖服务端历史");
+        assertEquals(7777, st.getPositionMs());
+        assertTrue(((Map<String, Object>) out.get("corrections")).isEmpty());
+        Map<String, Object> merged = (Map<String, Object>) out.get("merged");
+        assertNotNull(merged.get("e1"), "服务端有另一分支时应回 merged，设备才能补齐历史");
+        Map<String, Object> snap = (Map<String, Object>) merged.get("e1");
+        assertEquals(7777, snap.get("position_ms"));
+    }
+
+    private ArrayNode deepArray(String... refs) {
+        ArrayNode arr = mapper.createArrayNode();
+        for (String ref : refs) {
+            ObjectNode e = mapper.createObjectNode();
+            e.put("source", "webdav");
+            e.put("source_ref", ref);
+            arr.add(e);
+        }
+        return arr;
+    }
+
+    private String deepJson(String... refs) {
+        return deepArray(refs).toString();
+    }
+
+    private static List<String> deepRefs(String json) {
+        return SyncService.parseDeepNodes(json).stream()
+                .map(SyncService::deepRef).toList();
     }
 
     @Test

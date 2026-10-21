@@ -188,6 +188,57 @@ void main() {
     index.close();
   });
 
+  test('断点同步 base 持久化 + force 合并快照绕过镜像时钟', () async {
+    final index = await _openIndex();
+    final id = await index.createPlaylist('base 歌单');
+    final uuid = index.playlistUuidOf(id)!;
+
+    await index.setBreakpointBaseDeepList(
+        uuid, '[{"source":"webdav","source_ref":"/a.mp3"}]');
+    expect(index.breakpointBaseDeepList(uuid), contains('/a.mp3'));
+
+    // 普通镜像：较新者落库；base 不跟镜像走（由播放器采用历史时显式推进）。
+    await index.applyPlaystateMirror({
+      'client_uuid': uuid,
+      'source': 'webdav',
+      'source_ref': '/b.mp3',
+      'position_ms': 1000,
+      'updated_at': '2026-10-01T00:00:00',
+      'last_event_at': '2026-10-01T00:00:00',
+      'deep_list': [
+        {'source': 'webdav', 'source_ref': '/a.mp3'},
+        {'source': 'webdav', 'source_ref': '/b.mp3'},
+      ],
+    });
+    expect(index.breakpointMirrorOf(uuid)!.sourceRef, '/b.mp3');
+    expect(index.breakpointBaseDeepList(uuid), contains('/a.mp3'));
+    expect(index.breakpointBaseDeepList(uuid), isNot(contains('/b.mp3')));
+
+    // force：即使 last_event_at 更旧也写入（push merged 回执含对端分支）。
+    await index.applyPlaystateMirror({
+      'client_uuid': uuid,
+      'source': 'webdav',
+      'source_ref': '/c.mp3',
+      'position_ms': 2000,
+      'updated_at': '2026-01-01T00:00:00',
+      'last_event_at': '2026-01-01T00:00:00',
+      'deep_list': [
+        {'source': 'webdav', 'source_ref': '/a.mp3'},
+        {'source': 'webdav', 'source_ref': '/c.mp3'},
+      ],
+    }, force: true);
+    expect(index.breakpointMirrorOf(uuid)!.sourceRef, '/c.mp3');
+    expect(index.breakpointBaseDeepList(uuid), contains('/a.mp3'));
+    expect(index.breakpointBaseDeepList(uuid), isNot(contains('/c.mp3')));
+
+    // 播放器真正采用某份历史后才显式推进 base。
+    await index.setBreakpointBaseDeepList(
+        uuid, '[{"source":"webdav","source_ref":"/c.mp3"}]');
+    expect(index.breakpointBaseDeepList(uuid), contains('/c.mp3'));
+
+    index.close();
+  });
+
   test('pull 歌曲快照带 play_sec；累计值只增不减（单调量不被旧值覆盖）', () async {
     final index = await _openIndex();
 

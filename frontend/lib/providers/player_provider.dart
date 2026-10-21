@@ -18,6 +18,7 @@ import '../data/local/app_settings.dart';
 import '../data/local/song_weight_store.dart';
 import '../data/deep_list.dart';
 import '../data/local/sync_event_types.dart';
+import '../data/deep_list_sync.dart';
 import '../platform/app_background.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
 import '../services/audio_focus_monitor.dart';
@@ -367,6 +368,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 周期节流写入）都会被刷新为客户端 `now`，不能用作「远端断点是否更新」的基准
   /// （否则启动恢复 `_play` 覆盖本地时间后，远端镜像恒判更旧，跨设备续播永不生效）。
   DateTime? _breakpointBaselineAt;
+
+  /// 已收到 merged 回执、但本机运行时未采用的歌单：禁止
+  /// [applyNewerMirrorIfAny] 自动切过去（回执只补历史，不 seek/不打断）。
+  /// 用户显式打开该歌单时解除；重启后该集合为空，启动恢复仍可正常套用。
+  final Set<String> _suppressAutoMirror = <String>{};
 
   /// 启动恢复的飞行中 Future：远端断点套用前先等它收尾。恢复的同步前缀已经在
   /// 首帧前完成，但音频装载/seek 的异步尾在跑；两者并发会双重装载、状态抖动
@@ -1692,6 +1698,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     if (resetAnchor) {
       // 「播放/从头播放」：清空深层历史 + 重锚到目标（歌单）。
+      if (playlistUuid != null) _suppressAutoMirror.remove(playlistUuid);
       _syncPlaylistUuid = playlistUuid;
       _fusedBase = null;
       _bindDeepList(key, listSize: resolved.length, reset: true);
@@ -1725,6 +1732,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     if (_anchorKey == null) {
       // 首个列表即锚定：建立融合队列。
+      if (playlistUuid != null) _suppressAutoMirror.remove(playlistUuid);
       _syncPlaylistUuid = playlistUuid;
       _bindDeepList(key, listSize: resolved.length);
       _fusedBase = resolved;
@@ -1739,6 +1747,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     if (key == _anchorKey) {
       // 同一锚定上下文：保留深层历史，仅随列表长度更新容量后重建融合队列。
+      if (playlistUuid != null) _suppressAutoMirror.remove(playlistUuid);
       _syncPlaylistUuid = playlistUuid;
       _bindDeepList(key, listSize: resolved.length);
       _fusedBase = resolved;
@@ -3487,11 +3496,17 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       final sourceId = idx.sourceUuidOf(cur.sourceKey);
       final dl = _deepList;
       // 深层列表以身份数组随断点携带（有序 {source, source_ref}），对端按身份重建。
-      final deepList = [
+      final deepList = <DeepEntry>[
         for (final s in (dl?.entries ?? const <Song>[]))
           if (s.source.isNotEmpty && s.sourceRef.isNotEmpty)
-            {'source': s.source, 'source_ref': s.sourceRef},
+            <String, dynamic>{'source': s.source, 'source_ref': s.sourceRef},
       ];
+      // base = 上次与服务端确认的深层列表。本地若只是在其后追加，合并只消费
+      // deep_added 后缀，服务端保留另一设备并发的分支；pop/replace/clear 等
+      // 非追加操作则带全量 base 走三向合并（第一版自动裁决，不做冲突弹窗）。
+      // deep_list 仍随载荷携带：用于服务端首写兜底、无合并回执时确认 base。
+      final base = parseDeepEntries(idx.breakpointBaseDeepList(uuid));
+      final appendMode = deepListStartsWith(base, deepList);
       final eventUuid = await idx.enqueueOutbox(SyncEventTypes.breakpointSet, {
         'playlist_uuid': uuid,
         'source': cur.source,
@@ -3499,9 +3514,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (sourceId != null) 'source_id': sourceId,
         'position_ms': pos.inMilliseconds,
         'deep_list': deepList,
+        if (appendMode) 'deep_added': deepList.sublist(base.length),
+        if (!appendMode) 'base_deep_list': base,
       });
       perfLog('bp.enqueue',
-          'uuid=$eventUuid playlist=$uuid ref=${cur.sourceRef} pos=${pos.inMilliseconds}ms force=$force skew=${idx.clockSkew.inMilliseconds}ms');
+          'uuid=$eventUuid playlist=$uuid ref=${cur.sourceRef} pos=${pos.inMilliseconds}ms force=$force base=${base.length} append=$appendMode skew=${idx.clockSkew.inMilliseconds}ms');
     } else {
       _logBpSkip('节流中（同歌 25s 一次）');
     }
@@ -3564,6 +3581,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     BreakpointMirrorRow? best;
     DateTime? bestAt;
     for (final m in idx.allBreakpointMirrors()) {
+      if (_suppressAutoMirror.contains(m.playlistUuid)) continue;
       final t = DateTime.tryParse(m.compareClock);
       if (t == null) continue;
       if (bestAt == null || t.isAfter(bestAt)) {
@@ -3572,6 +3590,79 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
     return best;
+  }
+
+  /// 应用 push 合并回执里的深层列表：只更新历史/融合队列，**不 seek、不打断**。
+  ///
+  /// [sentDeepList] 是本设备刚推上去的分支（base）；[snapshot.deep_list] 是
+  /// 服务端合并结果（含对端分支）。若 push 在途期间本地又播了新歌，以
+  /// base=sent、server=merged、device=当前本地做三向合并，保住 ack 期间新增。
+  Future<void> applyMergedBreakpointHistory(
+      Map<String, dynamic> snapshot, List<dynamic> sentDeepList) async {
+    final uuid = snapshot['client_uuid'] as String?;
+    if (uuid == null || uuid.isEmpty) return;
+    // 非当前歌单：merged 已由 SyncEngine 强制落 mirror；base 保持本机旧值，
+    // 下次恢复/绑定时由镜像采用流程推进。
+    if (uuid != _syncPlaylistUuid) {
+      _suppressAutoMirror.add(uuid);
+      return;
+    }
+    if (_deepList == null || _fusedBase == null) return;
+    final dl = _deepList!;
+    final capacity = dl.capacity > 0 ? dl.capacity : _fusedBase!.length;
+    if (capacity <= 0) return;
+    final sent = parseDeepEntries(sentDeepList);
+    final server = parseDeepEntries(snapshot['deep_list']);
+    final local = <DeepEntry>[
+      for (final s in dl.entries)
+        if (s.source.isNotEmpty && s.sourceRef.isNotEmpty)
+          <String, dynamic>{'source': s.source, 'source_ref': s.sourceRef},
+    ];
+    final merged = mergeDeepLists(
+      base: sent,
+      server: server,
+      device: local,
+      capacity: capacity,
+    );
+    final refIndex = _refIndexMap(_fusedBase!);
+    final songs =
+        _deepListFromMirror(jsonEncode(merged), _fusedBase!, refIndex);
+    if (songs.isEmpty && merged.isNotEmpty) return;
+    // 服务端已确认的分支（按本机歌单解析）；base 必须取它而不是本地 merged：
+    // push 在途期间新播的 X 只在本地，base=merged+X 会让下一轮误判成
+    // “无新增”而永远不把 X 推上去。base=server 时下一轮正好把 X 作为后缀补推。
+    final serverSongs =
+        _deepListFromMirror(jsonEncode(server), _fusedBase!, refIndex);
+    _deepList = DeepListController(capacity: capacity, entries: songs);
+    _persistDeepList();
+    _rebuildFusedQueue(target: _current);
+    // 本设备已成为更“新”的合并态：抬基准，避免随后 pull 的自写回声
+    // 或 applyNewerMirrorIfAny 再把队列/进度回切。
+    final last = snapshot['last_event_at'] as String?;
+    final rawClock = (last == null || last.isEmpty)
+        ? snapshot['updated_at'] as String?
+        : last;
+    final at = rawClock == null ? null : DateTime.tryParse(rawClock);
+    if (at != null) _breakpointBaselineAt = at;
+    perfLog('bp.mergedHistory',
+        'uuid=$uuid sent=${sent.length} server=${server.length} local=${local.length} merged=${merged.length}');
+    notifyListeners();
+    // 本地历史/队列已应用，base 落库放到最后：DB 慢或失败不能拖住/回滚
+    // 运行时合并，下一轮仍可按全量重新收敛。
+    final idx = _index;
+    if (idx != null) {
+      try {
+        await idx.setBreakpointBaseDeepList(
+            uuid,
+            jsonEncode([
+              for (final s in serverSongs)
+                <String, dynamic>{
+                  'source': s.source,
+                  'source_ref': s.sourceRef,
+                },
+            ]));
+      } catch (_) {}
+    }
   }
 
   /// 有比「当前会话所依据的断点」更新的远端镜像时切过去（歌曲+进度+深层列表）。
@@ -3802,6 +3893,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 深层历史/融合队列/seek 照常按镜像重建，仅省掉 DB 查询与行映射。
     final prevBase =
         (_syncPlaylistUuid == m.playlistUuid) ? _fusedBase : null;
+    _suppressAutoMirror.remove(m.playlistUuid);
     _syncPlaylistUuid = m.playlistUuid;
     _bindDeepList(PlayerProvider.anchorForPlaylist(m.playlistUuid),
         listSize: songs.length);
@@ -3810,10 +3902,28 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final dlEntries = _deepListFromMirror(m.deepListJson, songs, refIndex);
     perfLog('restoreMirror deepList',
         '${swDeep.elapsedMilliseconds}ms entries=${dlEntries.length}');
-    if (dlEntries.isNotEmpty) {
-      _deepList = DeepListController(
-          capacity: songs.length, entries: dlEntries);
+    final rawDeep = m.deepListJson;
+    var mirrorCleared = false;
+    if (rawDeep != null && rawDeep.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawDeep);
+        // 只有合法的空数组才代表服务端明确清空；坏 JSON 不能用来清本机历史。
+        if (decoded is List) mirrorCleared = decoded.isEmpty;
+      } catch (_) {}
+    }
+    String? adoptedBaseJson;
+    if (dlEntries.isNotEmpty || mirrorCleared) {
+      _deepList =
+          DeepListController(capacity: songs.length, entries: dlEntries);
       _persistDeepList();
+      // base 只跟本机实际采用的深层列表对齐（空镜像=服务端明确清空）。
+      adoptedBaseJson = jsonEncode([
+        for (final s in dlEntries)
+          <String, dynamic>{
+            'source': s.source,
+            'source_ref': s.sourceRef,
+          },
+      ]);
     }
     final swResolve = Stopwatch()..start();
     if (prevBase != null && _sameSongRefs(songs, prevBase)) {
@@ -3842,6 +3952,16 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         'uuid=${m.playlistUuid} device=${m.deviceId} ref=${m.sourceRef} pos=${pos}ms base=${m.compareClock} lastEvent=${m.lastEventAt} updated=${m.updatedAt} found=$found');
     _restorePositionMs = pos;
     _restorePositionKey = _positionKeyOf(_current!);
+    // base 写库放在同步前缀（当前曲/乐观位置就绪）之后：启动恢复首帧不能被
+    // 写隔离阻塞，否则会先闪占位再跳曲。base 仍只跟本机实际采用的列表对齐。
+    if (adoptedBaseJson != null) {
+      try {
+        await idx.setBreakpointBaseDeepList(m.playlistUuid, adoptedBaseJson);
+      } catch (_) {
+        // base 是同步优化元数据，写失败不应阻断本次恢复；下一轮按全量/
+        // 前缀重新收敛。
+      }
+    }
     final swPlay = Stopwatch()..start();
     try {
       await _play(_current!, play: false);
@@ -4094,6 +4214,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _fusedBase = null;
       _index?.deleteDeepList(key);
     }
+    _suppressAutoMirror.remove(playlistUuid);
     if (_syncPlaylistUuid == playlistUuid) _syncPlaylistUuid = null;
   }
 

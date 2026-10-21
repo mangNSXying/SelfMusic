@@ -388,6 +388,59 @@ class SyncServiceTest {
         assertEquals(Set.of("p1"), c.playstateUuids());
     }
 
+    @Test
+    void mergeDeepListsKeepsServerBranchThenDeviceBranch() throws Exception {
+        List<JsonNode> base = nodes("a", "b");
+        List<JsonNode> server = nodes("a", "b", "s");
+        List<JsonNode> device = nodes("a", "b", "d");
+
+        List<JsonNode> merged = SyncService.mergeDeepLists(base, server, device, 10);
+
+        assertEquals(List.of("a", "b", "s", "d"), refs(merged));
+    }
+
+    @Test
+    void mergeDeepListsFastPathsPopClearAndServerOnlyChange() throws Exception {
+        // 设备分支相对 base 只做了非追加操作（上一首/清空）：设备分支胜出。
+        assertEquals(List.of("a"),
+                refs(SyncService.mergeDeepLists(nodes("a", "b"), nodes("a", "b"),
+                        nodes("a"), 10)));
+        assertEquals(List.of(),
+                refs(SyncService.mergeDeepLists(nodes("a", "b"), nodes("a", "b"),
+                        List.of(), 10)));
+        // 本设备未改历史：服务端其它设备的新增保留。
+        assertEquals(List.of("a", "b", "s"),
+                refs(SyncService.mergeDeepLists(nodes("a", "b"),
+                        nodes("a", "b", "s"), nodes("a", "b"), 10)));
+    }
+
+    @Test
+    void appendDeepAddedDedupesKeepLastAndTrimsOldest() throws Exception {
+        List<JsonNode> merged = SyncService.appendDeepAdded(
+                nodes("a", "b", "c"), nodes("b", "d"), 4);
+        // b 在设备后缀中再次出现 → 去掉较早位置，保留最后位置（尾部最新）。
+        assertEquals(List.of("a", "c", "b", "d"), refs(merged));
+
+        // 容量溢出只裁最旧端，保留两设备最近的尾部。
+        assertEquals(List.of("b", "c", "d"), refs(SyncService.appendDeepAdded(
+                nodes("a", "b", "c"), nodes("d"), 3)));
+    }
+
+    private List<JsonNode> nodes(String... refs) throws Exception {
+        var arr = mapper.createArrayNode();
+        for (String ref : refs) {
+            ObjectNode e = mapper.createObjectNode();
+            e.put("source", "webdav");
+            e.put("source_ref", ref);
+            arr.add(e);
+        }
+        return SyncService.deepNodes(arr);
+    }
+
+    private static List<String> refs(List<JsonNode> list) {
+        return list.stream().map(SyncService::deepRef).toList();
+    }
+
     private SyncEvent event(String type, String device, String payload) {
         SyncEvent e = new SyncEvent();
         e.setType(type);

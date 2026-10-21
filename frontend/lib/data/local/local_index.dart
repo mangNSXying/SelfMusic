@@ -1775,8 +1775,13 @@ class LocalIndex {
 
   /// pull 断点镜像·服务端原始形态直通：playlist 存在性判定（本地已删则清镜像）
   /// 与 upsert 都在写隔离内完成（原先 playlistIdOfUuid 是 UI 线程同步查询）。
-  Future<void> applyPlaystateMirror(Map<String, dynamic> snapshot) {
-    return _writer!.op<void>('applyPlaystateMirror', snapshot);
+  /// [force]：push 的 merged 回执即使时钟不新也要落库（其中含对端分支）。
+  Future<void> applyPlaystateMirror(Map<String, dynamic> snapshot,
+      {bool force = false}) {
+    return _writer!.op<void>('applyPlaystateMirror', {
+      ...snapshot,
+      if (force) '_force': true,
+    });
   }
 
   BreakpointMirrorRow? breakpointMirrorOf(String playlistUuid) {
@@ -1800,9 +1805,32 @@ class LocalIndex {
     );
   }
 
+  /// 本机已采用且与服务端确认过的深层列表（身份 JSON）；null=从未确认。
+  String? breakpointBaseDeepList(String playlistUuid) {
+    final rs = _db!.select(
+        'SELECT deep_list_json FROM breakpoint_sync_base WHERE playlist_uuid=?',
+        [playlistUuid]);
+    return rs.isEmpty ? null : rs.first['deep_list_json'] as String?;
+  }
+
+  Future<void> setBreakpointBaseDeepList(
+      String playlistUuid, String deepListJson) {
+    return _writer!.exec(
+        'INSERT INTO breakpoint_sync_base(playlist_uuid, deep_list_json, updated_at) '
+        'VALUES(?,?,?) ON CONFLICT(playlist_uuid) DO UPDATE SET '
+        'deep_list_json=excluded.deep_list_json, updated_at=excluded.updated_at',
+        [playlistUuid, deepListJson, DateTime.now().toIso8601String()]);
+  }
+
   Future<void> deleteBreakpointMirror(String playlistUuid) {
     return _writer!.exec(
         'DELETE FROM breakpoint_mirror WHERE playlist_uuid=?', [playlistUuid]);
+  }
+
+  Future<void> deleteBreakpointSyncBase(String playlistUuid) {
+    return _writer!.exec(
+        'DELETE FROM breakpoint_sync_base WHERE playlist_uuid=?',
+        [playlistUuid]);
   }
 
   // ---------- 深层列表（隐藏历史栈，仅本机，按锚定键键控） ----------

@@ -197,6 +197,17 @@ void applySchema(Database db) {
       last_event_at TEXT
     );
   ''');
+  // 断点深层列表同步 base：每个歌单本机已采用且与服务端确认的深层列表
+  // （身份 JSON）。纯追加时合并只消费 base 之后的后缀；非追加（上一首/
+  // 替换/清空）则带上 base 做三向合并。与 mirror 分表，避免本机推送 ack
+  // 更新时伪造一条远端镜像。
+  db.execute('''
+    CREATE TABLE IF NOT EXISTS breakpoint_sync_base (
+      playlist_uuid TEXT PRIMARY KEY,
+      deep_list_json TEXT NOT NULL,
+      updated_at     TEXT NOT NULL
+    );
+  ''');
   // 深层列表：每个锚定上下文一条「仅可修改末尾值」的历史栈（JSON 快照，仅本机）。
   // playlist_uuid 列存储通用锚定键（playlist:<uuid>/liked/songs/album:<id>/
   // artist:<name>/source:<key>），非歌单锚定亦可持久化。

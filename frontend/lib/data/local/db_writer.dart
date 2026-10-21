@@ -1339,8 +1339,11 @@ void _opApplyPlaystateMirror(Database db, Map<String, dynamic> a) {
       db.select('SELECT 1 FROM playlists WHERE client_uuid=?', [uuid]);
   if (exists.isEmpty) {
     db.execute('DELETE FROM breakpoint_mirror WHERE playlist_uuid=?', [uuid]);
+    db.execute(
+        'DELETE FROM breakpoint_sync_base WHERE playlist_uuid=?', [uuid]);
     return;
   }
+  final force = a['_force'] == true;
   final deep = a['deep_list'];
   final inUpdatedAt = (a['updated_at'] as String?) ?? DateTime.now().toIso8601String();
   // F4 比较时钟 = 最后操作时间 last_event_at（空则回退 updated_at），
@@ -1354,7 +1357,7 @@ void _opApplyPlaystateMirror(Database db, Map<String, dynamic> a) {
   final cur = db.select(
       'SELECT updated_at, last_event_at FROM breakpoint_mirror WHERE playlist_uuid=?',
       [uuid]);
-  if (cur.isNotEmpty) {
+  if (!force && cur.isNotEmpty) {
     final curUpdated = cur.first['updated_at'] as String?;
     final curLast = cur.first['last_event_at'] as String?;
     final curClock = (curLast == null || curLast.isEmpty) ? curUpdated : curLast;
@@ -1383,6 +1386,10 @@ void _opApplyPlaystateMirror(Database db, Map<String, dynamic> a) {
         a['device_client_id'],
         inLastEventAt,
       ]);
+  // 注意：不在这里推进 breakpoint_sync_base。base 必须与「本机已采用的深层
+  // 列表」对齐；镜像可能属于非当前歌单，若跟着服务端合并结果前进，本机旧
+  // 列表会被误判成非追加分支，下一次 push 可能把对端分支抹掉。base 由
+  // 播放器采用镜像/合并回执时显式写入。
 }
 
 bool _opApplySourceSnapshot(Database db, Map<String, dynamic> a) {
@@ -1643,6 +1650,8 @@ void _opDeletePlaylist(Database db, int id) {
   // 歌单删除同时清理其深层列表（隐藏历史栈）。
   if (uuid != null && uuid.isNotEmpty) {
     db.execute('DELETE FROM deep_lists WHERE playlist_uuid=?', [uuid]);
+    db.execute(
+        'DELETE FROM breakpoint_sync_base WHERE playlist_uuid=?', [uuid]);
   }
 }
 

@@ -241,6 +241,9 @@ void main() {
     expect(player.queue.map((s) => s.sourceRef).take(2).toList(),
         ['/x/a.flac', '/x/b.flac'],
         reason: '深层列表应随断点套用');
+    final base = index.breakpointBaseDeepList(uuid);
+    expect(base, contains('/x/a.flac'));
+    expect(base, contains('/x/b.flac'), reason: '播放器采用镜像历史后 base 必须对齐本机列表');
   });
 
   test('打开歌单点播放：起播前消费远端断点并套用深层列表', () async {
@@ -345,6 +348,182 @@ void main() {
     expect(player.current?.sourceRef, '/x/b.flac',
         reason: '同歌单取最新：更新的远端镜像胜出');
     expect(player.position.inMilliseconds, 30000);
+  });
+
+  test('远端明确清空深层历史：空镜像也清空本机并同步 base', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+    await index.saveDeepList('playlist:$uuid',
+        jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]));
+    await player.restorePreferRemote();
+    expect(player.queue.map((s) => s.sourceRef).take(2).toList(),
+        ['/x/a.flac', '/x/b.flac']);
+
+    await index.upsertBreakpointMirror(
+      playlistUuid: uuid,
+      sourceRef: '/x/a.flac',
+      source: 'webdav',
+      positionMs: 30000,
+      deepListJson: '[]',
+      updatedAt:
+          DateTime.now().add(const Duration(seconds: 5)).toIso8601String(),
+    );
+    await player.applyNewerMirrorIfAny();
+
+    expect(player.current?.sourceRef, '/x/a.flac');
+    expect(player.queue.map((s) => s.sourceRef).take(2).toList(),
+        ['/x/a.flac', '/x/b.flac'],
+        reason: '清空历史后从当前曲按歌单基座续播');
+    expect(index.breakpointBaseDeepList(uuid), '[]',
+        reason: '空镜像表示服务端明确清空，base 必须同步为空');
+  });
+
+  test('坏 deep_list_json 不清本机历史', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+    await index.saveDeepList(
+        'playlist:$uuid',
+        jsonEncode(
+            [_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]));
+    await player.restorePreferRemote();
+
+    await index.upsertBreakpointMirror(
+      playlistUuid: uuid,
+      sourceRef: '/x/a.flac',
+      source: 'webdav',
+      positionMs: 30000,
+      deepListJson: 'not-json',
+      updatedAt:
+          DateTime.now().add(const Duration(seconds: 5)).toIso8601String(),
+    );
+    await player.applyNewerMirrorIfAny();
+
+    expect(player.current?.sourceRef, '/x/a.flac');
+    expect(player.queue.map((s) => s.sourceRef).take(2).toList(),
+        ['/x/a.flac', '/x/b.flac'],
+        reason: '坏 JSON 不是明确清空，不能抹掉本机历史');
+    expect(index.breakpointBaseDeepList(uuid), isNull,
+        reason: '坏 JSON 不能被当成“已采用的空列表”写进 base');
+  });
+
+  test('push 在途新增：base 取服务端已确认分支，下一轮仍会把本地新增补推', () async {
+    final (index, player, uuid) =
+        await setup(['/x/a.flac', '/x/b.flac', '/x/s.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    await player.playQueue(
+      [_song('/x/a.flac'), _song('/x/b.flac'), _song('/x/s.flac')],
+      index: 0,
+      source: _FakeSource(),
+      playlistUuid: uuid,
+      contextKey: 'playlist:$uuid',
+      resetAnchor: true,
+    );
+    await player.next();
+    expect(player.current?.sourceRef, '/x/b.flac');
+    expect(player.queue.map((s) => s.sourceRef).take(2).toList(),
+        ['/x/a.flac', '/x/b.flac'],
+        reason: '发送时本地历史为 [a,b]');
+
+    // 服务端合并出 [a,s]；sent=[a]，push 在途期间本地又播了 b。
+    await player.applyMergedBreakpointHistory(
+      {
+        'client_uuid': uuid,
+        'source': 'webdav',
+        'source_ref': '/x/b.flac',
+        'position_ms': 1,
+        'last_event_at': DateTime.now().toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
+        'deep_list': [
+          {'source': 'webdav', 'source_ref': '/x/a.flac'},
+          {'source': 'webdav', 'source_ref': '/x/s.flac'},
+        ],
+      },
+      [
+        {'source': 'webdav', 'source_ref': '/x/a.flac'},
+      ],
+    );
+
+    expect(player.queue.map((s) => s.sourceRef).take(3).toList(),
+        ['/x/a.flac', '/x/s.flac', '/x/b.flac'],
+        reason: '本地在途新增 b 必须留在合并结果末尾');
+    final base = index.breakpointBaseDeepList(uuid)!;
+    expect(base, contains('/x/s.flac'), reason: 'base 必须包含服务端已确认的 s');
+    expect(base, isNot(contains('/x/b.flac')),
+        reason: 'b 尚未上推，不能进入 base，否则下一轮会漏推');
+  });
+
+  test('非当前歌单的 merged 回执不触发自动套用/切歌', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    final otherId = await index.createPlaylist('other');
+    final otherUuid = index.playlistUuidOf(otherId)!;
+    await index.addPlaylistItem(otherId,
+        sourceKey: 'webdav:test',
+        songRef: '/x/c.flac',
+        title: 'c',
+        source: 'webdav');
+
+    await player.playQueue(
+      [_song('/x/a.flac'), _song('/x/b.flac')],
+      index: 0,
+      source: _FakeSource(),
+      playlistUuid: uuid,
+      contextKey: 'playlist:$uuid',
+      resetAnchor: true,
+    );
+    expect(player.current?.sourceRef, '/x/a.flac');
+
+    // 非当前歌单收到 merged：只补镜像/历史，不允许随后 flush 自动切过去。
+    final future = DateTime.now().add(const Duration(seconds: 5));
+    await player.applyMergedBreakpointHistory(
+      {
+        'client_uuid': otherUuid,
+        'source': 'webdav',
+        'source_ref': '/x/c.flac',
+        'position_ms': 1000,
+        'last_event_at': future.toIso8601String(),
+        'updated_at': future.toIso8601String(),
+        'deep_list': [
+          {'source': 'webdav', 'source_ref': '/x/c.flac'},
+        ],
+      },
+      const [],
+    );
+    await index.upsertBreakpointMirror(
+      playlistUuid: otherUuid,
+      sourceRef: '/x/c.flac',
+      source: 'webdav',
+      positionMs: 1000,
+      deepListJson: _deepListJson(['/x/c.flac']),
+      updatedAt: future.toIso8601String(),
+    );
+
+    await player.applyNewerMirrorIfAny(viaSync: true);
+
+    expect(player.current?.sourceRef, '/x/a.flac',
+        reason: '非当前歌单的合并回执只补历史，不能把正在播放的歌单切走');
   });
 
   test('同歌单：更早的镜像不覆盖本机较新历史', () async {
