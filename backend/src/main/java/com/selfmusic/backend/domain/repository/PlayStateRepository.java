@@ -10,10 +10,10 @@ public interface PlayStateRepository extends JpaRepository<PlayState, Long> {
 
     /**
      * 全局最新一行断点（快路径 GET /playstates/latest 用）。
-     * 排序基准与推送 LWW/客户端镜像比较一致：最后操作时间 last_event_at
-     * （= 命中事件的 occurred_at；旧数据缺该字段时退化为 updated_at 上传时间）。
-     * playlistId 兜底保证确定性。
+     *
+     * <p>v2 以服务端接受 head 的时间 {@code headUpdatedAt} 排序，不受客户端钟
+     * 影响；旧数据/旧客户端没有 headUpdatedAt 时回退 last_event_at/updated_at。</p>
      */
-    @Query("select s from PlayState s order by coalesce(s.lastEventAt, s.updatedAt) desc, s.playlistId desc")
+    @Query("select s from PlayState s order by coalesce(s.headUpdatedAt, s.lastEventAt, s.updatedAt) desc, s.playlistId desc")
     Optional<PlayState> findLatest();
 }

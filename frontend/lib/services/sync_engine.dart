@@ -91,6 +91,31 @@ class SyncEngine {
   Future<void> Function(Map<String, dynamic> snapshot, List<dynamic> sent)?
       onBreakpointMerged;
 
+  /// v2 push 回执：按 playlist 返回权威 head+history 快照。
+  Future<void> Function(Map<String, dynamic> snapshot, List<dynamic> sent)?
+      onBreakpointSnapshot;
+
+  /// 服务端协议声明（v2=true；旧服务端不回调/回调 false）。
+  Future<void> Function(bool v2, String? serverEpoch)? onBreakpointProtocol;
+
+  /// 断点事件被服务端死信：值是该事件的 op_id（旧事件可能为空）。播放器只
+  /// 清匹配的 pending head，避免误清刚产生的更新操作。
+  void Function(Map<String, String> opByPlaylist)? onBreakpointRejected;
+
+  /// 断点事件已被服务端处理（applied/duplicates）：值是该事件的 op_id。
+  /// 播放器据此只清「对应的」pending head，不误清新开播的更新操作。
+  Future<void> Function(Map<String, String> opByPlaylist)? onBreakpointAcked;
+
+  Future<void> _noteBreakpointProtocol(Object? data) async {
+    if (data is! Map) return;
+    // 旧服务端完全没有该字段：不能回调 false 把刚识别出的 v2 又降级。
+    if (!data.containsKey('breakpoint_protocol')) return;
+    final v2 = (data['breakpoint_protocol'] as num?)?.toInt() == 2;
+    final epoch = data['server_epoch'];
+    final cb = onBreakpointProtocol;
+    if (cb != null) await cb(v2, epoch is String ? epoch : null);
+  }
+
   SyncEngine({required this.api, required this.index, required this.settings});
 
   /// 应用是否在前台。false 且未播放时 [start] 的定时器不触发同步，避免
@@ -181,10 +206,13 @@ class SyncEngine {
         perfLog('fastPath.skip', '快照缺 client_uuid');
         return;
       }
+      await _noteBreakpointProtocol(snap);
+      final v2 = (snap['breakpoint_protocol'] as num?)?.toInt() == 2;
       // F2 自写回声过滤：本设备推上去的断点再被拉回来时，本机运行时状态必然
       // 不旧于它；落镜像/通知套用只会把旧快照盖回本机（毒化回路的一环）。
+      // v2 例外：快照可能含对端历史分支，且 head/history rev 可安全去重。
       final device = snap['device_client_id'];
-      if (device is String && device == clientId) {
+      if (!v2 && device is String && device == clientId) {
         perfLog('fastPath.skip',
             '${sw.elapsedMilliseconds}ms 自写回声（本设备 device=$device）uuid=$uuid pos=${snap['position_ms']}');
         return;
@@ -359,6 +387,14 @@ class SyncEngine {
         if (!coalesced.contains(e.eventUuid)) e,
     ];
     final sendByUuid = {for (final e in sendRows) e.eventUuid: e};
+    // v2 回执按 playlist 键控；记录每个歌单本批最后一条断点事件的 deep_list，
+    // 供播放器历史三向合并使用。
+    final sentBpByPlaylist = <String, OutboxRow>{};
+    for (final e in sendRows) {
+      if (e.type != SyncEventTypes.breakpointSet) continue;
+      final uuid = e.payload['playlist_uuid'];
+      if (uuid is String && uuid.isNotEmpty) sentBpByPlaylist[uuid] = e;
+    }
     // 排查「旧数据覆盖服务端新数据」：先记录本批要推什么、时间戳是多少。
     final byType = <String, int>{};
     for (final e in sendRows) {
@@ -384,6 +420,9 @@ class SyncEngine {
     ]);
     if (data == null) throw Exception('push 无响应');
     _noteServerTime(data['server_time']);
+    await _noteBreakpointProtocol(data);
+    final breakpointProtocol =
+        (data['breakpoint_protocol'] as num?)?.toInt() == 2;
     final applied = _strList(data['applied']);
     final duplicates = _strList(data['duplicates']);
     final acked = {...applied, ...duplicates};
@@ -408,6 +447,19 @@ class SyncEngine {
           for (final r in rejected)
             if (r is Map) '${r['event_uuid']}=${r['reason']}'
         ].join(' | '));
+        final rejectedOps = <String, String>{};
+        for (final uuid in uuids) {
+          final row = sendByUuid[uuid];
+          if (row?.type != SyncEventTypes.breakpointSet) continue;
+          final playlist = row!.payload['playlist_uuid'];
+          if (playlist is String && playlist.isNotEmpty) {
+            final op = row.payload['op_id'];
+            rejectedOps[playlist] = op is String ? op : '';
+          }
+        }
+        if (rejectedOps.isNotEmpty) {
+          onBreakpointRejected?.call(rejectedOps);
+        }
       }
     }
     final corrections = data['corrections'];
@@ -415,6 +467,64 @@ class SyncEngine {
       perfLog('push.corrections', 'n=${corrections.length}');
       for (final v in corrections.values) {
         if (v is Map<String, dynamic>) await _applySnapshot(v, clientId);
+      }
+    }
+
+    // v2 回执：按 playlist 返回权威 head+history。无条件落镜像（含本设备
+    // 自己的 op，快照可能已并入对端历史），再交给播放器按版本应用。
+    final v2Breakpoints = data['breakpoints'];
+    final v2Handled = <String>{};
+    if (breakpointProtocol && v2Breakpoints is Map && v2Breakpoints.isNotEmpty) {
+      perfLog('push.breakpointsV2', 'n=${v2Breakpoints.length}');
+      for (final entry in v2Breakpoints.entries) {
+        final uuid = entry.key;
+        final raw = entry.value;
+        if (uuid is! String || raw is! Map) continue;
+        final snap = raw.cast<String, dynamic>();
+        v2Handled.add(uuid);
+        try {
+          await index.applyPlaystateMirror(snap, force: true);
+        } catch (e) {
+          debugPrint('SyncEngine v2 断点镜像落库失败：$e');
+        }
+        final sentRow = sentBpByPlaylist[uuid];
+        final sent = sentRow?.payload['deep_list'];
+        final cb = onBreakpointSnapshot;
+        if (cb != null) {
+          try {
+            await cb(snap, sent is List ? sent : const []);
+          } catch (e) {
+            debugPrint('SyncEngine v2 断点快照应用失败：$e');
+          }
+        }
+        perfLog('push.breakpointsV2.apply',
+            'playlist=$uuid head=${snap['head_rev']} history=${snap['history_rev']} headOp=${snap['head_op_id']}');
+      }
+      // v2 的快照含权威历史分支，不再走下面的旧 base 盲推进；base 由播放器
+      // 在合并历史/采用快照后按服务端分支显式对齐。
+    }
+    // 已处理的断点事件要回报 op_id：只清匹配的 pending，避免快照里出现
+    // 别家 head 时误清新开播（更晚）的本地操作。必须在快照回调之后调用。
+    if (breakpointProtocol && acked.isNotEmpty) {
+      final ackedOps = <String, String>{};
+      for (final uuid in acked) {
+        final row = sendByUuid[uuid];
+        if (row?.type != SyncEventTypes.breakpointSet) continue;
+        final playlist = row!.payload['playlist_uuid'];
+        final opId = row.payload['op_id'];
+        if (playlist is String && playlist.isNotEmpty && opId is String) {
+          ackedOps[playlist] = opId;
+        }
+      }
+      if (ackedOps.isNotEmpty) {
+        final cb = onBreakpointAcked;
+        if (cb != null) {
+          try {
+            await cb(ackedOps);
+          } catch (e) {
+            debugPrint('SyncEngine v2 断点 ack 回报失败：$e');
+          }
+        }
       }
     }
 
@@ -466,7 +576,10 @@ class SyncEngine {
       }
       final uuid = row.payload['playlist_uuid'];
       final deep = row.payload['deep_list'];
-      if (uuid is String && uuid.isNotEmpty && deep is List) {
+      if (uuid is String &&
+          uuid.isNotEmpty &&
+          deep is List &&
+          !v2Handled.contains(uuid)) {
         try {
           await index.setBreakpointBaseDeepList(uuid, jsonEncode(deep));
         } catch (e) {
@@ -543,6 +656,8 @@ class SyncEngine {
       final fetchMs = swFetch.elapsedMilliseconds;
       if (data == null) throw Exception('pull 无响应');
       _noteServerTime(data['server_time']);
+      await _noteBreakpointProtocol(data);
+      final pullV2 = (data['breakpoint_protocol'] as num?)?.toInt() == 2;
       final rawSongs = data['songs'] is List ? (data['songs'] as List).length : 0;
       final rawSources =
           data['sources'] is List ? (data['sources'] as List).length : 0;
@@ -638,8 +753,9 @@ class SyncEngine {
           }
           // F2 自写回声过滤：快照来源是本设备则不入镜像（本机运行时/断点
           // 必然不旧于它；入镜像只会招来“自己套用自己的旧快照”）。
+          // v2 例外：同一 head 的快照可能已合并对端历史，且 rev 可安全去重。
           final device = m['device_client_id'];
-          if (device is String && device == clientId) {
+          if (!pullV2 && device is String && device == clientId) {
             selfStates++;
             continue;
           }

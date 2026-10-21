@@ -451,6 +451,30 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
           .read<PlayerProvider>()
           .applyMergedBreakpointHistory(snapshot, sentDeepList);
     };
+    // v2：push 回执按 playlist 返回权威 head/history；只应用版本，不 seek。
+    _syncEngine.onBreakpointSnapshot = (snapshot, sentDeepList) async {
+      if (!mounted) return;
+      await context
+          .read<PlayerProvider>()
+          .applyV2BreakpointSnapshot(snapshot, sentDeepList);
+    };
+    // 服务端声明协议版本/epoch：切 v2 或重置本地 revision（DB 重建）。
+    _syncEngine.onBreakpointProtocol = (v2, epoch) async {
+      if (!mounted) return;
+      await context
+          .read<PlayerProvider>()
+          .setBreakpointProtocolV2(v2, serverEpoch: epoch);
+    };
+    _syncEngine.onBreakpointRejected = (uuids) {
+      if (!mounted) return;
+      unawaited(context
+          .read<PlayerProvider>()
+          .clearPendingHeadFor(uuids));
+    };
+    _syncEngine.onBreakpointAcked = (ops) async {
+      if (!mounted) return;
+      await context.read<PlayerProvider>().onBreakpointAckedOps(ops);
+    };
     _sheetAnim = PlayerSheetAnimator(
       vsync: this,
       progress: _nav.playerProgress,
@@ -518,6 +542,11 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
     _nav.playerProgress.removeListener(_onPlayerProgress);
     _syncEngine.onPlaylistsApplied = null;
     _syncEngine.onBreakpointsApplied = null;
+    _syncEngine.onBreakpointMerged = null;
+    _syncEngine.onBreakpointSnapshot = null;
+    _syncEngine.onBreakpointProtocol = null;
+    _syncEngine.onBreakpointRejected = null;
+    _syncEngine.onBreakpointAcked = null;
     _sheetAnim.dispose();
     _sheetLauncher.dispose();
     _gate?.setPlayerSheetDragging(false);

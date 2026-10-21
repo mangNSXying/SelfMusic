@@ -1353,39 +1353,97 @@ void _opApplyPlaystateMirror(Database db, Map<String, dynamic> a) {
   final inClock = (inLastEventAt == null || inLastEventAt.isEmpty)
       ? inUpdatedAt
       : inLastEventAt;
+  final isV2 = a.containsKey('head_rev');
+  final inHeadRev = (a['head_rev'] as num?)?.toInt() ?? 0;
+  final inHistoryRev = (a['history_rev'] as num?)?.toInt() ?? 0;
   // 最新时间胜出：已存镜像更新则保留，防止 pull/快路径乱序把旧快照写回来。
+  // v2 行改用 head_rev/history_rev 判断；force 只绕过墙钟，不绕版本。
   final cur = db.select(
-      'SELECT updated_at, last_event_at FROM breakpoint_mirror WHERE playlist_uuid=?',
+      'SELECT updated_at, last_event_at, head_rev, history_rev '
+      'FROM breakpoint_mirror WHERE playlist_uuid=?',
       [uuid]);
-  if (!force && cur.isNotEmpty) {
+  if (!isV2 && !force && cur.isNotEmpty) {
     final curUpdated = cur.first['updated_at'] as String?;
     final curLast = cur.first['last_event_at'] as String?;
     final curClock = (curLast == null || curLast.isEmpty) ? curUpdated : curLast;
     if (curClock != null && inClock.compareTo(curClock) <= 0) return;
   }
-  db.execute(
-      'INSERT INTO breakpoint_mirror(playlist_uuid, song_id, source_id, source, source_ref, '
-      'position_ms, deep_list_json, updated_at, device_id, last_event_at) '
-      'VALUES(?,?,?,?,?,?,?,?,?,?) '
-      'ON CONFLICT(playlist_uuid) DO UPDATE SET '
-      'song_id=excluded.song_id, source_id=excluded.source_id, source=excluded.source, '
-      'source_ref=excluded.source_ref, position_ms=excluded.position_ms, '
-      'deep_list_json=excluded.deep_list_json, '
-      'updated_at=excluded.updated_at, device_id=excluded.device_id, '
-      'last_event_at=excluded.last_event_at',
-      [
-        uuid,
-        (a['song_id'] as num?)?.toInt(),
-        a['source_id'],
-        a['source'],
-        a['source_ref'],
-        (a['position_ms'] as num?)?.toInt() ?? 0,
-        deep is List ? jsonEncode(deep) : null,
-        inUpdatedAt,
-        // 来源设备（自写回声过滤/诊断用；旧快照无该字段时为 null）。
-        a['device_client_id'],
-        inLastEventAt,
-      ]);
+  if (isV2 && cur.isNotEmpty) {
+    final curHead = cur.first['head_rev'] as int? ?? 0;
+    final curHistory = cur.first['history_rev'] as int? ?? 0;
+    // 头和历史都没有更新：不用写；同版本但 force（merged 回执）仍允许刷新
+    // 非版本字段（位置/设备诊断）。
+    if (inHeadRev < curHead && inHistoryRev <= curHistory && !force) return;
+  }
+  if (isV2) {
+    // head 字段只跟随更高 head_rev；deep_list 只跟随更高 history_rev。
+    // 这样乱序到达的旧快照不会把新播放头/新历史写回去。
+    db.execute(
+        'INSERT INTO breakpoint_mirror(playlist_uuid, song_id, source_id, source, source_ref, '
+        'position_ms, deep_list_json, updated_at, device_id, last_event_at, '
+        'head_rev, history_rev, head_clock, head_op_id, head_session, head_playing, head_updated_at) '
+        'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
+        'ON CONFLICT(playlist_uuid) DO UPDATE SET '
+        'song_id=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.song_id ELSE breakpoint_mirror.song_id END, '
+        'source_id=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.source_id ELSE breakpoint_mirror.source_id END, '
+        'source=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.source ELSE breakpoint_mirror.source END, '
+        'source_ref=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.source_ref ELSE breakpoint_mirror.source_ref END, '
+        'position_ms=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.position_ms ELSE breakpoint_mirror.position_ms END, '
+        'deep_list_json=CASE WHEN excluded.deep_list_json IS NOT NULL AND excluded.history_rev >= breakpoint_mirror.history_rev THEN excluded.deep_list_json ELSE breakpoint_mirror.deep_list_json END, '
+        'device_id=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.device_id ELSE breakpoint_mirror.device_id END, '
+        'last_event_at=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.last_event_at ELSE breakpoint_mirror.last_event_at END, '
+        'updated_at=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.updated_at ELSE breakpoint_mirror.updated_at END, '
+        'head_rev=MAX(breakpoint_mirror.head_rev, excluded.head_rev), '
+        'history_rev=MAX(breakpoint_mirror.history_rev, CASE WHEN excluded.deep_list_json IS NOT NULL THEN excluded.history_rev ELSE 0 END), '
+        'head_clock=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_clock ELSE breakpoint_mirror.head_clock END, '
+        'head_op_id=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_op_id ELSE breakpoint_mirror.head_op_id END, '
+        'head_session=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_session ELSE breakpoint_mirror.head_session END, '
+        'head_playing=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_playing ELSE breakpoint_mirror.head_playing END, '
+        'head_updated_at=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_updated_at ELSE breakpoint_mirror.head_updated_at END',
+        [
+          uuid,
+          (a['song_id'] as num?)?.toInt(),
+          a['source_id'],
+          a['source'],
+          a['source_ref'],
+          (a['position_ms'] as num?)?.toInt() ?? 0,
+          deep is List ? jsonEncode(deep) : null,
+          inUpdatedAt,
+          a['device_client_id'],
+          inLastEventAt,
+          inHeadRev,
+          inHistoryRev,
+          a['head_clock'],
+          a['head_op_id'],
+          a['head_session'],
+          (a['head_playing'] == true) ? 1 : 0,
+          a['head_updated_at'],
+        ]);
+  } else {
+    db.execute(
+        'INSERT INTO breakpoint_mirror(playlist_uuid, song_id, source_id, source, source_ref, '
+        'position_ms, deep_list_json, updated_at, device_id, last_event_at) '
+        'VALUES(?,?,?,?,?,?,?,?,?,?) '
+        'ON CONFLICT(playlist_uuid) DO UPDATE SET '
+        'song_id=excluded.song_id, source_id=excluded.source_id, source=excluded.source, '
+        'source_ref=excluded.source_ref, position_ms=excluded.position_ms, '
+        'deep_list_json=excluded.deep_list_json, '
+        'updated_at=excluded.updated_at, device_id=excluded.device_id, '
+        'last_event_at=excluded.last_event_at',
+        [
+          uuid,
+          (a['song_id'] as num?)?.toInt(),
+          a['source_id'],
+          a['source'],
+          a['source_ref'],
+          (a['position_ms'] as num?)?.toInt() ?? 0,
+          deep is List ? jsonEncode(deep) : null,
+          inUpdatedAt,
+          // 来源设备（自写回声过滤/诊断用；旧快照无该字段时为 null）。
+          a['device_client_id'],
+          inLastEventAt,
+        ]);
+  }
   // 注意：不在这里推进 breakpoint_sync_base。base 必须与「本机已采用的深层
   // 列表」对齐；镜像可能属于非当前歌单，若跟着服务端合并结果前进，本机旧
   // 列表会被误判成非追加分支，下一次 push 可能把对端分支抹掉。base 由

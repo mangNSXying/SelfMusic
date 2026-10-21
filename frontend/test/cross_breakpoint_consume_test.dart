@@ -192,6 +192,7 @@ void main() {
     expect(uuid, isNotNull);
     final player = PlayerProvider()
       ..attachSourceResolver((key) => key == 'webdav:test' ? _FakeSource() : null)
+      ..attachServerAvailable(() => true)
       ..attachPersistence(
         index: index,
         weight: SongWeightStore(index),
@@ -200,6 +201,269 @@ void main() {
       );
     return (index, player, uuid!);
   }
+
+  test('启动恢复不产生 v2 head 事件（恢复不是真实播放操作）', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+    player.setBreakpointProtocolV2(true, serverEpoch: 'epoch-1');
+    player.attachSyncHooks(onSyncPoke: () {});
+
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+    await player.restorePreferRemote();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(await index.pendingOutbox(), isEmpty,
+        reason: '启动恢复/装载只应用状态，不能生成 head 操作');
+  });
+
+  test('v2 起播生成 play_track，seek 复用同一会话并标记 seek', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+    player.setBreakpointProtocolV2(true, serverEpoch: 'epoch-1');
+    player.attachSyncHooks(onSyncPoke: () {});
+
+    await player.playQueue(
+      [_song('/x/a.flac'), _song('/x/b.flac')],
+      index: 0,
+      source: _FakeSource(),
+      playlistUuid: uuid,
+      contextKey: 'playlist:$uuid',
+      resetAnchor: true,
+      resumeFromBreakpoint: false,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    var events = await index.pendingOutbox();
+    var bps = events.where((e) => e.type == 'breakpoint.set').toList();
+    expect(bps, isNotEmpty);
+    final first = bps.last.payload;
+    expect(first['protocol'], 2);
+    expect(first['intent'], 'play_track');
+    expect(first['op_clock'], matches(RegExp(r'^\d+-\d+$')));
+    final session = (first['head'] as Map)['session_id'] as String;
+    expect(session, isNotEmpty);
+    expect(first['head']['source_ref'], '/x/a.flac');
+    expect(first['head']['playing'], true);
+
+    // 清掉起播事件，只观察 seek 的 head 操作。
+    await index.deleteOutbox(bps.map((e) => e.eventUuid));
+    await player.seek(const Duration(seconds: 42));
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    events = await index.pendingOutbox();
+    bps = events.where((e) => e.type == 'breakpoint.set').toList();
+    expect(bps, hasLength(1));
+    final seek = bps.single.payload;
+    expect(seek['intent'], 'seek');
+    expect((seek['head']['position_ms'] as num).toDouble(), closeTo(42000, 50));
+    expect(seek['head']['session_id'], session,
+        reason: 'seek 是同一播放会话内的真实操作');
+  });
+
+  test('v2 head 未变时只合并对端历史，不 seek 不打断', () async {
+    final (index, player, uuid) =
+        await setup(['/x/a.flac', '/x/b.flac', '/x/s.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+    player.setBreakpointProtocolV2(true, serverEpoch: 'epoch-1');
+
+    await index.savePlayState(
+      jsonEncode([
+        _song('/x/a.flac').toJson(),
+        _song('/x/b.flac').toJson(),
+        _song('/x/s.flac').toJson(),
+      ]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+    await index.saveDeepList(
+        'playlist:$uuid',
+        jsonEncode([
+          _song('/x/a.flac').toJson(),
+          _song('/x/b.flac').toJson(),
+        ]));
+    await player.restorePreferRemote();
+    expect(player.current?.sourceRef, '/x/a.flac');
+    expect(player.position.inMilliseconds, 10000);
+
+    final base = <dynamic>[
+      {'source': 'webdav', 'source_ref': '/x/a.flac'},
+      {'source': 'webdav', 'source_ref': '/x/b.flac'},
+    ];
+    await player.applyV2BreakpointSnapshot({
+      'client_uuid': uuid,
+      'head_rev': 1,
+      'history_rev': 1,
+      'head_op_id': 'op-remote-1',
+      'head_session': 's-remote',
+      'head_device': 'dev-b',
+      'head_clock': '1000-0',
+      'source': 'webdav',
+      'source_ref': '/x/a.flac',
+      'position_ms': 10000,
+      'deep_list': base,
+      'last_event_at': DateTime.now().toIso8601String(),
+      'updated_at': DateTime.now().toIso8601String(),
+    }, base);
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    await player.applyV2BreakpointSnapshot({
+      'client_uuid': uuid,
+      'head_rev': 1,
+      'history_rev': 2,
+      'head_op_id': 'op-remote-1',
+      'head_session': 's-remote',
+      'head_device': 'dev-b',
+      'head_clock': '1000-0',
+      'source': 'webdav',
+      'source_ref': '/x/a.flac',
+      'position_ms': 10000,
+      'deep_list': [
+        {'source': 'webdav', 'source_ref': '/x/a.flac'},
+        {'source': 'webdav', 'source_ref': '/x/b.flac'},
+        {'source': 'webdav', 'source_ref': '/x/s.flac'},
+      ],
+      'last_event_at': DateTime.now().toIso8601String(),
+      'updated_at': DateTime.now().toIso8601String(),
+    }, base);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(player.current?.sourceRef, '/x/a.flac', reason: 'head 未变不得切歌');
+    expect(player.position.inMilliseconds, 10000, reason: '历史合并不得 seek');
+    expect(player.queue.map((s) => s.sourceRef).take(3).toList(),
+        ['/x/a.flac', '/x/b.flac', '/x/s.flac']);
+    final savedBase = index.breakpointBaseDeepList(uuid);
+    expect(savedBase, contains('/x/s.flac'));
+    final state = index.breakpointSyncStateOf(uuid);
+    expect(state?.appliedHistoryRev, 2);
+  });
+
+  test('本机 pending head 未被服务端裁决前，远端新 head 被 defer', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+    player.setBreakpointProtocolV2(true, serverEpoch: 'epoch-1');
+    player.attachSyncHooks(onSyncPoke: () {});
+    await player.restorePreferRemote();
+
+    await player.playQueue(
+      [_song('/x/a.flac'), _song('/x/b.flac')],
+      index: 0,
+      source: _FakeSource(),
+      playlistUuid: uuid,
+      contextKey: 'playlist:$uuid',
+      resetAnchor: true,
+      resumeFromBreakpoint: false,
+    );
+    // 等起播事件落 pending（push 尚未被模拟服务端确认）。
+    final deadline = DateTime.now().add(const Duration(seconds: 2));
+    while (index.breakpointSyncStateOf(uuid)?.pendingHeadOpId == null &&
+        DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(index.breakpointSyncStateOf(uuid)?.pendingHeadOpId, isNotNull);
+
+    // 直接停底层播放器，不通过 UI（不产生新的真实操作/head）。
+    await player.player.pause();
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    await index.upsertBreakpointMirror(
+      playlistUuid: uuid,
+      sourceRef: '/x/b.flac',
+      source: 'webdav',
+      positionMs: 5000,
+      deepListJson:
+          '[{"source":"webdav","source_ref":"/x/a.flac"},'
+          '{"source":"webdav","source_ref":"/x/b.flac"}]',
+      updatedAt: DateTime.now().toIso8601String(),
+      lastEventAt: DateTime.now().toIso8601String(),
+      headRev: 10,
+      historyRev: 10,
+      headClock: '9000-0',
+      headOpId: 'op-remote',
+      headSession: 's-remote',
+      headPlaying: false,
+      headUpdatedAt: DateTime.now().toIso8601String(),
+    );
+
+    await player.applyNewerMirrorIfAny(viaSync: true);
+    expect(player.current?.sourceRef, '/x/a.flac',
+        reason: '本机 head 未裁决前不得被远端新 head 顶掉');
+
+    final pendingOp = index.breakpointSyncStateOf(uuid)?.pendingHeadOpId;
+    expect(pendingOp, isNotNull);
+    // 更早的 ack 不能清掉更新的 pending（只有 op_id 匹配才清）。
+    await player.onBreakpointAckedOps({uuid: 'stale-op'});
+    expect(index.breakpointSyncStateOf(uuid)?.pendingHeadOpId, pendingOp);
+    // 对应 ack 清 pending 后立刻采用被 defer 的服务端 head。
+    await player.onBreakpointAckedOps({uuid: pendingOp!});
+    expect(player.current?.sourceRef, '/x/b.flac');
+    expect(index.breakpointSyncStateOf(uuid)?.appliedHeadRev, 10);
+  });
+
+  test('server_epoch 变化清空本地已应用 revision（镜像/断点内容保留）', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+    player.setBreakpointProtocolV2(true, serverEpoch: 'epoch-1');
+    await index.saveBreakpointSyncState(
+      playlistUuid: uuid,
+      appliedHeadRev: 7,
+      appliedHistoryRev: 8,
+      serverEpoch: 'epoch-1',
+    );
+    await index.upsertBreakpointMirror(
+      playlistUuid: uuid,
+      sourceRef: '/x/a.flac',
+      source: 'webdav',
+      positionMs: 1000,
+      deepListJson: '[{"source":"webdav","source_ref":"/x/a.flac"}]',
+      updatedAt: DateTime.now().toIso8601String(),
+      headRev: 7,
+      historyRev: 8,
+      headClock: '7000-0',
+      headOpId: 'op-local',
+      headSession: 's-local',
+      headPlaying: true,
+      headUpdatedAt: DateTime.now().toIso8601String(),
+    );
+    await player.setBreakpointProtocolV2(true, serverEpoch: 'epoch-1');
+    expect(index.breakpointSyncStateOf(uuid)?.appliedHeadRev, 7);
+
+    await player.setBreakpointProtocolV2(true, serverEpoch: 'epoch-2');
+    // 全局重置会清空同步状态行（revision 全部作废），镜像内容保留但版本归零。
+    expect(index.breakpointSyncStateOf(uuid), isNull);
+    final mirror = index.breakpointMirrorOf(uuid);
+    expect(mirror, isNotNull);
+    expect(mirror!.headRev, 0);
+    expect(mirror.historyRev, 0);
+    expect(mirror.sourceRef, '/x/a.flac');
+  });
+
+  test('网络响应先于本机恢复：按本地记录的 epoch 识别变化并重置', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+    await index.saveBreakpointSyncState(
+      playlistUuid: uuid,
+      appliedHeadRev: 9,
+      appliedHistoryRev: 9,
+      serverEpoch: 'epoch-old',
+    );
+    expect(index.breakpointStoredServerEpoch(), 'epoch-old');
+    // 模拟进程刚启动、内存还没有 epoch，但网络响应已经到了。
+    await player.setBreakpointProtocolV2(true, serverEpoch: 'epoch-new');
+    expect(index.breakpointSyncStateOf(uuid), isNull);
+    expect(index.breakpointStoredServerEpoch(), isNull);
+  });
 
   test('冷启动：恢复后写入的 now 不得遮蔽比基准新的远端断点（含深层列表）', () async {
     final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);

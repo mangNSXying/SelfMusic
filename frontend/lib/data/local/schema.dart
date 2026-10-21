@@ -110,7 +110,8 @@ void applySchema(Database db) {
       position_ms INTEGER NOT NULL,
       updated_at  TEXT NOT NULL,
       playlist_uuid TEXT,
-      anchor_key    TEXT
+      anchor_key    TEXT,
+      session_id    TEXT
     );
   ''');
   final stateCols = db
@@ -123,6 +124,10 @@ void applySchema(Database db) {
   // 融合队列锚定键（任意列表上下文：playlist:<uuid>/liked/songs/album/artist/source）。
   if (!stateCols.contains('anchor_key')) {
     db.execute('ALTER TABLE play_state ADD COLUMN anchor_key TEXT');
+  }
+  // v2 播放会话 id：pause/resume/seek/progress 复用；新起播换新会话。
+  if (!stateCols.contains('session_id')) {
+    db.execute('ALTER TABLE play_state ADD COLUMN session_id TEXT');
   }
   final cacheCols = db
       .select('PRAGMA table_info(cache)')
@@ -194,7 +199,14 @@ void applySchema(Database db) {
       position_ms   INTEGER NOT NULL DEFAULT 0,
       updated_at    TEXT NOT NULL,
       device_id     TEXT,
-      last_event_at TEXT
+      last_event_at TEXT,
+      head_rev      INTEGER NOT NULL DEFAULT 0,
+      history_rev   INTEGER NOT NULL DEFAULT 0,
+      head_clock    TEXT,
+      head_op_id    TEXT,
+      head_session  TEXT,
+      head_playing  INTEGER NOT NULL DEFAULT 0,
+      head_updated_at TEXT
     );
   ''');
   // 断点深层列表同步 base：每个歌单本机已采用且与服务端确认的深层列表
@@ -205,7 +217,21 @@ void applySchema(Database db) {
     CREATE TABLE IF NOT EXISTS breakpoint_sync_base (
       playlist_uuid TEXT PRIMARY KEY,
       deep_list_json TEXT NOT NULL,
+      history_rev    INTEGER NOT NULL DEFAULT 0,
       updated_at     TEXT NOT NULL
+    );
+  ''');
+  // v2 断点同步状态：已应用的 head/history 版本 + 本地待确认的 head 操作。
+  // head_rev/history_rev 只增；server_epoch 变化时清零（服务端 DB 重建）。
+  db.execute('''
+    CREATE TABLE IF NOT EXISTS breakpoint_sync_state (
+      playlist_uuid        TEXT PRIMARY KEY,
+      applied_head_rev     INTEGER NOT NULL DEFAULT 0,
+      applied_history_rev  INTEGER NOT NULL DEFAULT 0,
+      pending_head_op_id   TEXT,
+      session_id           TEXT,
+      server_epoch         TEXT,
+      updated_at           TEXT NOT NULL
     );
   ''');
   // 深层列表：每个锚定上下文一条「仅可修改末尾值」的历史栈（JSON 快照，仅本机）。
@@ -235,6 +261,40 @@ void applySchema(Database db) {
     // 需要清除的对象，交由同步重建。
     db.execute('ALTER TABLE breakpoint_mirror ADD COLUMN last_event_at TEXT');
     db.execute('DELETE FROM breakpoint_mirror');
+  }
+  // v2：head/history 版本与 head 操作元数据。旧镜像行 rev=0，首轮拉取会
+  // 按服务端快照补齐；不清空镜像，避免升级瞬间把本地续播状态清掉。
+  if (!mirrorCols.contains('head_rev')) {
+    db.execute(
+        'ALTER TABLE breakpoint_mirror ADD COLUMN head_rev INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!mirrorCols.contains('history_rev')) {
+    db.execute(
+        'ALTER TABLE breakpoint_mirror ADD COLUMN history_rev INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!mirrorCols.contains('head_clock')) {
+    db.execute('ALTER TABLE breakpoint_mirror ADD COLUMN head_clock TEXT');
+  }
+  if (!mirrorCols.contains('head_op_id')) {
+    db.execute('ALTER TABLE breakpoint_mirror ADD COLUMN head_op_id TEXT');
+  }
+  if (!mirrorCols.contains('head_session')) {
+    db.execute('ALTER TABLE breakpoint_mirror ADD COLUMN head_session TEXT');
+  }
+  if (!mirrorCols.contains('head_playing')) {
+    db.execute(
+        'ALTER TABLE breakpoint_mirror ADD COLUMN head_playing INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!mirrorCols.contains('head_updated_at')) {
+    db.execute('ALTER TABLE breakpoint_mirror ADD COLUMN head_updated_at TEXT');
+  }
+  final baseCols = db
+      .select('PRAGMA table_info(breakpoint_sync_base)')
+      .map((r) => r['name'] as String)
+      .toSet();
+  if (!baseCols.contains('history_rev')) {
+    db.execute(
+        'ALTER TABLE breakpoint_sync_base ADD COLUMN history_rev INTEGER NOT NULL DEFAULT 0');
   }
   // 歌单跨设备全局标识 + 删除墓碑（本地删除仍硬删，墓碑只活在服务端）。
   final playlistCols = db

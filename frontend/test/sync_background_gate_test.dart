@@ -151,6 +151,9 @@ void main() {
     // 播完/暂停：回落到停表。
     engine.setPlaying(false);
     expect(engine.isPolling, isFalse, reason: '后台且未播放应停表');
+    // 停表时可能有一轮同步已在飞行（或 _dirty 收尾补跑）；先等它结束再取基准，
+    // 否则会把「停表前已排队的一轮」误判为停表后仍在轮询（全量套件下偶发）。
+    await Future<void>.delayed(const Duration(milliseconds: 50));
     final pullsAfterStop = api.pulls;
     await Future<void>.delayed(const Duration(milliseconds: 150));
     expect(api.pulls, pullsAfterStop, reason: '停播后后台不再发起同步');

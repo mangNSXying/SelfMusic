@@ -74,10 +74,13 @@ public class PlayStateController {
                     p.getId());
             return ApiResponse.ok(null);
         }
-        log.info("playstates.latest 命中 playlist={} device={} pos={}ms last_event_at={} updated_at={}",
-                uuid, st.getDeviceClientId(), st.getPositionMs(), st.getLastEventAt(),
-                st.getUpdatedAt());
-        return ApiResponse.ok(SyncService.playstateSnapshot(st, uuid));
+        log.info("playstates.latest 命中 playlist={} device={} pos={}ms headRev={} historyRev={} updated_at={}",
+                uuid, st.getDeviceClientId(), st.getPositionMs(), st.getHeadRev(),
+                st.getHistoryRev(), st.getUpdatedAt());
+        Map<String, Object> snapshot = SyncService.playstateSnapshot(st, uuid);
+        snapshot.put("breakpoint_protocol", 2);
+        snapshot.put("server_epoch", syncService.serverEpoch());
+        return ApiResponse.ok(snapshot);
     }
 
     @PutMapping("/{playlistId}")

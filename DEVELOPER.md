@@ -142,6 +142,7 @@ selfmusic/
 ├── scripts/init.sql                  # 数据库初始化脚本（v2 schema + 阶段5 sync_events / playlists.client_uuid+deleted+last_event_at / play_states.last_event_at）
 ├── scripts/migration_003_sync.sql    # 存量库补表/补列（阶段5；新部署只需 init.sql）
 ├── scripts/migration_009_sync_payload_mediumtext.sql # sync_events.payload / play_states.deep_list_json TEXT→MEDIUMTEXT（断点 deep_list 超 64 KiB 修复）
+├── scripts/migration_010_breakpoint_head_v2.sql # 断点协议 v2：play_states 增加 head_*/history_rev（head/history 分离）+ 旧行回填
 ├── nginx/selfmusic.conf              # Nginx 反代模板（部署到宿主机）
 ├── docker-compose.yml                # backend（18088）+ backend-dev（18089，profile: dev）
 ├── run-linux.sh                      # Linux 快速运行：cd frontend && flutter run -d linux
@@ -244,14 +245,14 @@ selfmusic/
 | `song_states` | 直连歌权重 / 收藏状态（`source_id`+`source_ref` 唯一，无曲库字段；含 `play_sec`） |
 | `sync_sources` | 播放源同步（`client_uuid` 唯一；`kind+address` 去重；config 不含密码） |
 | `playlists` / `playlist_items` | 歌单与条目（条目自持 `source_id/source_ref` + 标题/歌手/专辑/时长快照） |
-| `play_states` | 每列表断点（自持歌曲身份 + `device_client_id`；含 `deep_list_json` MEDIUMTEXT） |
+| `play_states` | 每列表断点（自持歌曲身份 + `device_client_id`；`deep_list_json` MEDIUMTEXT；v2 另有 `head_rev/head_clock/head_device/head_op_id/head_session/head_playing/head_updated_at` 与 `history_rev`，head/history 分离仲裁） |
 | `sync_events` | 同步事件流水（`seq` 单调 cursor；`entity_key` 锚点供压缩；`payload` 为 MEDIUMTEXT，容纳断点 deep_list） |
 | `settings` | 全局设置（含 `pairing_token`） |
 | `devices` | 已配对设备（`client_id` / `token_hash` / `refresh_token_hash` / 过期时间 / `revoked` / `last_pull_cursor`） |
 
 > 原 `albums/songs/covers/scan_tasks` 已随服务端曲库移除（`migration_004`）。
 
-`settings` 实际存量为三键：`pairing_token`（env 镜像）、`cache_max_bytes`（默认 5 GiB）、`cache_song_limit`（默认 200）。缓存两键权威来源 = init.sql 预置 + 每次启动被 `CACHE_MAX_MIB` / `CACHE_SONG_LIMIT` env 覆盖写入。
+`settings` 实际存量为四键：`pairing_token`（env 镜像）、`cache_max_bytes`（默认 5 GiB）、`cache_song_limit`（默认 200）、`sync.server_epoch`（断点协议 v2 的服务端数据代次，首次使用自动生成，DB 重建后自动换新；客户端据此清空本地 revision）。缓存两键权威来源 = init.sql 预置 + 每次启动被 `CACHE_MAX_MIB` / `CACHE_SONG_LIMIT` env 覆盖写入。
 
 服务器端开发规范：
 
@@ -273,9 +274,10 @@ selfmusic/
 | `playlists` / `playlist_items` | 歌单与条目（含快照字段 + `sort_order`、`source`、`client_uuid`、`deleted` 墓碑） |
 | `app_settings` | 客户端设置键值表（缓存配置 + 7 个排序持久化键等） |
 | `song_lyrics` | 歌词：`(source_key,ref)` PK + `content`（LRC）+ 三态收录 |
-| `play_state` | 断点：单行 `id=1`（`queue_json + idx + position_ms + updated_at` + `playlist_uuid` + `anchor_key`） |
-| `weight_outbox` / `breakpoint_mirror` | 同步流水与跨设备断点镜像（镜像含 `deep_list_json`） |
-| `breakpoint_sync_base` | 每个歌单本机已采用且与服务端确认过的深层列表（纯追加后缀 / 三向合并 base；不随镜像盲进） |
+| `play_state` | 断点：单行 `id=1`（`queue_json + idx + position_ms + updated_at` + `playlist_uuid` + `anchor_key` + `session_id`） |
+| `weight_outbox` / `breakpoint_mirror` | 同步流水与跨设备断点镜像（镜像含 `deep_list_json` + v2 `head_rev/history_rev/head_clock/head_op_id/head_session/head_playing/head_updated_at`） |
+| `breakpoint_sync_base` | 每个歌单本机已采用且与服务端确认过的深层列表（纯追加后缀 / 三向合并 base；带 `history_rev`；不随镜像盲进） |
+| `breakpoint_sync_state` | 每个歌单的 v2 同步状态：`applied_head_rev / applied_history_rev / pending_head_op_id / session_id / server_epoch` |
 | `deep_lists` | 深层列表：`playlist_uuid` PK + 有界历史栈 `entries_json` |
 | `artists` / `artist_canon` / `artist_song_map` / `artist_member` | 歌手身份聚合（纯本地，不参与同步；见「[歌手身份聚合](#歌手身份聚合musicbrainz-后台解析)」） |
 
@@ -318,11 +320,11 @@ selfmusic/
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/sync/pull?since_cursor=` | 增量拉取（歌单 + 权重 + 断点快照），返回新 cursor；`since=0` 为启动全量校准；超 2000 事件分页（`has_more`） |
-| POST | `/sync/push` | 批量上推事件流水；幂等按 `event_uuid` 去重；LWW 判输回 correction 快照 |
+| GET | `/sync/pull?since_cursor=` | 增量拉取（歌单 + 权重 + 断点快照），返回新 cursor；`since=0` 为启动全量校准；超 2000 事件分页（`has_more`）；回包带 `breakpoint_protocol: 2` + `server_epoch` |
+| POST | `/sync/push` | 批量上推事件流水；幂等按 `event_uuid` 去重；LWW 判输回 correction 快照；v2 另回按 `playlist_uuid` 键控的 `breakpoints` 权威 head+history 快照与 `breakpoint_protocol/server_epoch` |
 | CRUD | `/playlists` 系列（含 `{id}/items` 增删改） | 直接 REST 变更同样走事件管线（服务端代写事件） |
 | PUT | `/playstates/{playlistId}` | `{source_id, source_ref, position_ms}`（可选 `deep_list`）；行级 LWW，判输回服务端快照 |
-| GET | `/playstates/latest` | 全局最新断点快照（启动 / 回前台快路径，1 RTT；无行 / 歌单缺失或已删 / 不可同步时 `data=null`） |
+| GET | `/playstates/latest` | 全局最新断点快照（启动 / 回前台快路径，1 RTT；无行 / 歌单缺失或已删 / 不可同步时 `data=null`）；回包带 `breakpoint_protocol: 2` + `server_epoch`，排序按 `head_updated_at` |
 
 ### 管理
 
@@ -670,7 +672,7 @@ abstract class MusicSource {
 - **推拉节奏**：`SyncEngine` 2s tick 推增量、30s 拉增量、失败指数退避（上限 30s）、首帧后启动做一次增量校准。启动/回前台先走 `GET /playstates/latest` 断点快路径（1 RTT，旧服务端 404 静默回退），**冷启动首轮只拉不推**（`pullOnly`：先掌握远端再上报积压；首轮在飞行时 tick 被单飞挡下，收尾后首个 tick 见积压才发全量轮先推后拉；`awaitFirstPull` 等这轮收尾，不重复发起）。断点回调整轮 pull 结束后统一触发（single-flight、与首次恢复异步尾串行，不多页中途换曲）。播放/暂停/切歌经 `PlayerProvider.attachSyncHooks` 即时 `poke()` 一轮（单飞合并；暂停/停止先强制落最终断点再推，保证本轮带走最终位置）。**首帧轻量化**：`sync.start()` / `direct.attachApi()` / `ArtistResolver.start()` 统一在 `main()` 的 post-frame 回调里启动，不参与首帧渲染
 - **后台同步门控（播放中例外）**：退后台且未播放则停表（`pause()`，在飞轮次不打断）；**播放中后台保持 2s tick**（`setPlaying` 由播放状态流驱动，四端一致、不做平台判断——前台服务保活下网络可用）。暂停态后台不轮询，回前台/开播即补轮
 - **本机优先**：pull 快照命中“本地还有未推事件”的实体时跳过，不覆盖本地脏行（实体键 `sync_entity_key.dart` 与服务端 `entityKeyOf` 同规则；push 回包 corrections 是刚推完的仲裁结果、不受此限；ack 后下一轮自然收敛）
-- **断点采纳口径（取最新，最后操作时间为钟）**：`GET /playstates/latest` 返回全局最新断点行，排序与「谁更新」的比较一律用**最后操作时间 `last_event_at`**（= 命中事件的 `occurred_at`；服务端 `coalesce(last_event_at, updated_at)` 兼容旧行，客户端 `compareClock = last_event_at ?? updated_at`）——`updated_at` 是服务端写入/上传时间，只作诊断，不参与仲裁。客户端恢复/补切时比对本机与远端镜像的比较时钟，远端更新才采纳；`db_writer._opApplyPlaystateMirror` 同口径守卫（旧快照不覆盖新镜像）。服务端断点的当前曲/进度走行级 LWW（`occurred_at` vs `last_event_at`）；**深层列表不参与 LWW**，走下面的分支合并
+- **断点采纳口径（v2 按版本，legacy 按最后操作时间）**：v2 客户端同一歌单用 `head_rev`/`history_rev` 是否前进判断（`breakpoint_sync_state` 持久化已应用版本；pending head 未确认前 defer 远端 head），跨歌单仍按 `head_updated_at`；legacy 路径保持原口径：`GET /playstates/latest` 全局最新断点行，排序与「谁更新」比较一律用**最后操作时间 `last_event_at`**（= 命中事件的 `occurred_at`；服务端 `coalesce(last_event_at, updated_at)` 兼容旧行，客户端 `compareClock = last_event_at ?? updated_at`）——`updated_at` 是服务端写入/上传时间，只作诊断，不参与仲裁。`db_writer` 按 v2 版本或 legacy 时钟守卫（旧快照不覆盖新镜像）。服务端断点当前曲/进度 v2 走 head HLC，legacy 走行级 LWW；**深层列表不参与 LWW**，走下面的分支合并
 - **启动收敛闸门（防旧态盖新）**：恢复发起（`restoreIfAny`/`restorePreferRemote`）即关闸——首个 `applyNewerMirrorIfAny` 判定跑完（或 30s 兜底超时）前，断点一律不入队：本机恢复出的旧断点可能已被远端更新，此时盖 now 的 `occurred_at` 推上去会被服务端 LWW 收下（毒源），随后本机又把自己的回声拉回来（回退旧曲的完整回路）。暂停/停止的**强制**断点在闸后**补跑一次**（`_bootForcedPending`）；周期保存直接丢弃。同类防线（非启动期）：**暂停态补写不刷新 `occurred_at`**——非强制补写只在断点真的变了（切歌/位置前进）时才入队，原样补写直接跳过（回前台/退后台/退出落盘都走这条，否则旧断点盖 now 推上去与启动期毒源同款）。无恢复路径（未开断点续播）时闸门默认已开
 - **自写回声过滤**：快照来源 `device_client_id` == 本设备（fastPath / pull playstates / push corrections 三条落镜像路径）一律跳过、不落 `breakpoint_mirror`、不通知播放器——本机运行时状态必然不旧于自己推上去的数据，回流只会招来「自己套用自己的旧快照」；镜像行持久化来源设备（`breakpoint_mirror.device_id`）供诊断与排查
 - **同步后台化（写隔离收口）**：outbox 读取 + `jsonDecode`（`pendingOutbox`/`pendingOutboxCount` op）、pull 快照的字段映射与落库（`applySongSnapshotsRaw` / `applyPlaylistSnapshots` / `applyPlaystateMirror`）、断点歌单存在性判定，全部在写隔离（`db_writer`）内完成；UI isolate 只 `await`。**OHOS**：写隔离已于 2026-10-20 切回（子 isolate 内由 `openIsolateDatabase` 注入 sqlite3 override），正常路径不再在 UI 线程写库；仅当写隔离启动超过 8s 或初始化失败时回退 `_InlineDbWriter`，兜底路径按 200 行/事务分片、片间 `await` 让出事件循环。cursor 在整页应用后才推进，中途失败靠重拉幂等收敛。内联的历史原因是 `open.overrideForAll` 只在当前 isolate 生效，子 isolate 里 `sqlite3.open` 会抛 `UnsupportedError`——**不是引擎不能 spawn**
@@ -977,14 +979,20 @@ frozen=true                 → 权重锁定 0.1，跳过自动调权与时长�
 - **Pull**：每 30s `GET /sync/pull?since_cursor=`；cursor 为服务端 `sync_events.seq` 单调递增变更号。快照按实体去重（服务端单页内 + 客户端跨页）：每页只回该页事件涉及实体的**当前快照**；**`breakpoint.set` 只回断点（playstate），不携带歌单条目快照**（稳态流量放大器修复）。断点回调整轮 pull 结束后统一触发一次。
 - **断点快路径**：启动 / 回前台先打 `GET /playstates/latest`（1 RTT 直取全局最新断点快照；旧服务端 404 客户端静默回退，全量 pull 仍是兜底）。启动首轮只拉不推（`pullOnly`：先掌握远端再上报积压，推由后续全量轮先推后拉带走；`awaitFirstPull` 等首轮收尾）；套用 single-flight、与首次恢复的异步尾串行。
 - **事件日志压缩**：`sync_events` 只追加，服务端按「所有未吊销设备的最小 pull 水位」（`devices.last_pull_cursor`）定期回收旧事件，且**每实体保留最新一条**（`sync_events.entity_key` 锚点）；事件表不随使用时长无限增长，新设备首拉成本从 O(历史事件数) 收敛到 O(实体数)；`entity_key` 为空的旧行不参与压缩。
-- **Push**：本地权重事件 / 断点 / 歌单改动 → 写 `weight_outbox`（带 `event_uuid`）→ 2s 防抖批量上推；服务端按 uuid 幂等去重。事件类型（`SyncEventTypes`，前后端同名）：`song.complete / song.skip / song.complete_manual / song.liked / song.unfavorite / song.disliked / song.reset / song.state`（权重）、`playlist.create|update|delete` 与 `playlist.item_add|item_remove|item_move`、`source.create|update|delete`、`breakpoint.set`（载荷含 `deep_list`；纯追加另带 `deep_added`，位置-only 用空 `deep_added`，非追加带 `base_deep_list`）。同一歌单的离线断点事件在 push 前只保留最新一条，旧事件随 ack 清理，避免同一后缀重复追加。歌手身份**不参与同步**。配对前存量补推（权重 `backfill()` / 歌单 `backfill()` / 源自举）带 `backfill:true` 标记：服务端“只建行、不赢现行行”（`create` 已存在判输、`item_add` 已存在条目不覆快照；首配空库照常建）。push/pull 回包带 `server_time`（见下「时钟校准」）。
+- **Push**：本地权重事件 / 断点 / 歌单改动 → 写 `weight_outbox`（带 `event_uuid`）→ 2s 防抖批量上推；服务端按 uuid 幂等去重。事件类型（`SyncEventTypes`，前后端同名）：`song.complete / song.skip / song.complete_manual / song.liked / song.unfavorite / song.disliked / song.reset / song.state`（权重）、`playlist.create|update|delete` 与 `playlist.item_add|item_remove|item_move`、`source.create|update|delete`、`breakpoint.set`（载荷含 `deep_list`；纯追加另带 `deep_added`，位置-only 用空 `deep_added`，非追加带 `base_deep_list`；v2 另带 `protocol:2 + op_id + op_clock + intent + head{session_id,playing,...}`，见「断点协议 v2」）。同一歌单的离线断点事件在 push 前只保留最新一条，旧事件随 ack 清理，避免同一后缀重复追加。歌手身份**不参与同步**。配对前存量补推（权重 `backfill()` / 歌单 `backfill()` / 源自举）带 `backfill:true` 标记：服务端“只建行、不赢现行行”（`create` 已存在判输、`item_add` 已存在条目不覆快照；首配空库照常建）。push/pull 回包带 `server_time`（见下「时钟校准」）。
 - **累计播放时长**：`play_sec` 随 `song.state` 上下推，两端一律取 `max(行值, 快照值)` 单调合并（服务端 `mergePlaySec` + 客户端落库同口径），不因乱序 / 旧快照倒退。
-- **冲突（字段级合并）**：权重走**事件重算**（两设备并发点赞按到达序重放，不互抹）；收藏 / 歌单元数据 / 删除墓碑 / 断点当前曲与进度走**行级 LWW**（事件 `occurred_at` vs 行 `last_event_at`，输方收 correction 回执自纠；仲裁时钟为服务端 `arrived_at`）；歌单条目按 seq 到达序重放（后到达胜出）。直接 REST 变更（歌单 CRUD / 断点 PUT / 调权 POST）同样先记事件再生效。
+- **冲突（字段级合并）**：权重走**事件重算**（两设备并发点赞按到达序重放，不互抹）；收藏 / 歌单元数据 / 删除墓碑走**行级 LWW**（事件 `occurred_at` vs 行 `last_event_at`，输方收 correction 回执自纠；仲裁时钟为服务端 `arrived_at`）；歌单条目按 seq 到达序重放（后到达胜出）。直接 REST 变更（歌单 CRUD / 断点 PUT / 调权 POST）同样先记事件再生效。**断点当前曲/进度例外**：v2 客户端改由 `head_*` HLC 仲裁（见下条「断点协议 v2」），`last_event_at` 行级 LWW 仅保留给旧客户端 / 旧协议 / `PUT /playstates/{id}`。
 - **断点深层列表分支合并**：客户端本地 `breakpoint_sync_base` 记录每个歌单**本机已采用且与服务端确认过**的深层列表；拉取镜像但播放器未采用时不得推进 base，否则本机旧列表会被误判成非追加分支。本地若只是 base 的尾部追加，合并只消费 `deep_added` 后缀，服务端执行 `server + deep_added`；若发生上一首/替换末尾/清空等非追加操作，push 带 `base_deep_list` 走三向列表合并 `C + server[C:] + device[C:]`（`C`=最长公共前缀，身份按 `source_ref`，去重保留最后，超容量只裁最旧端）。`deep_list` 仍随载荷携带：服务端首写/旧行无历史时用全量兜底，无合并回执时客户端用它确认 base。服务端在结果与来件不同时于 push 回包 `merged`（按 event_uuid 键控）返回完整快照；位置-only 事件在服务端历史与来件不同时也回 `merged`。客户端即使 `device_client_id` 是自己也强制落镜像，非当前歌单只落镜像并抑制自动套用；当前歌单只更新历史/融合队列、不 seek、不打断播放，base 按本机实际采用结果推进。合并时钟取 `max(现行 last_event_at, 来件 occurred_at, 服务端 now)` 且严格大于两边，避免对端镜像时钟拒收；历史未变但接受了当前曲/进度时时钟只前进不回退。
+- **断点协议 v2（head/history 分离，最后一次真实操作赢）**：服务端先升级，客户端从 pull/push/latest 回包看到 `breakpoint_protocol: 2` 后切 v2（旧服务端无该字段继续走 legacy，旧客户端忽略新字段）。v2 把断点拆成「当前播放头 head」与「深层历史 history」：
+  - **head 仲裁**：真实播放操作（`play_track/pause/resume/seek`）才产生 head 操作，携带设备侧 HLC `op_clock`（`wall-counter`，服务端按认证 `clientId` 补设备维度后比较 `wall-counter-device`）与唯一 `op_id`；服务端单调保留时钟最大的操作，判输方不再回 correction 弹窗/回退，直接在 push 回包 `breakpoints` 里看到权威快照。`progress` 心跳只允许当前 `head_device`、同 `head_session`、同曲上报，只刷新位置/播放态与 `head_rev`，**不推进 `head_clock`/`head_op_id`/`head_session`**——否则一次心跳会把时钟推高，令另一台设备稍后到达的真实操作被误判为旧。
+  - **history 合并**：`history_rev` 只随深层列表变化递增；head 判输时历史合并照常执行，离线两端新增内容都不丢（继续复用「断点深层列表分支合并」的三向合并）：`play_track` 被接受时把当前曲补到历史尾部并递增 `history_rev`；容量溢出只从最旧端裁剪。
+  - **客户端状态机**：按歌单持久化 `applied_head_rev`/`applied_history_rev`/`pending_head_op_id`/`session_id`/`server_epoch`。真实操作写 pending head；启动恢复、周期保存、回前台/退后台补写不是真实操作，只发 `progress` 或不发，绝不产生 head（恢复装载也不再借 `pushPlayed` 改写历史）。pending 期间 pull 的远端 head 一律 defer，直到 push 回执裁决（接受 / 判输 / 死信清 pending 后，由 `applyNewerMirrorIfAny` 在空闲时套用；播放中绝不打断）。`server_epoch` 变化时清空本地 revision（镜像内容保留），防 DB 重建后旧高版本挡新快照。
+  - **回执与镜像**：`breakpoints` 按 `playlist_uuid` 键控（旧 `merged` 仍按 `event_uuid`），客户端无条件落 `breakpoint_mirror`；镜像写入按 `head_rev`/`history_rev` 分别守卫，旧 head 不回退当前曲/进度，旧 history 不回退深层列表，`force` 只绕墙钟不绕版本。merged/历史-only 快照只更新深层历史与融合队列，**不 seek、不打断播放**；非当前歌单只落镜像并抑制自动套用。
+  - **兼容**：`last_event_at`/`updated_at`/`deep_list` 字段保留；旧协议路径（无 `protocol` 或 `<2`）继续走行级 LWW + 分支合并，服务端对旧行回填 `head_rev=history_rev=1`（`migration_010`），保证首次升级即可比较版本。
 - **时钟校准**：`occurred_at` 是各设备墙钟入队时间，偏移会导致 LWW 误判旧赢新。push/pull 回包带 `server_time`，客户端记 `skew = serverTime - now` 并修正后续入队时间戳（`LocalIndex.setClockSkew`，唯一入队口；旧服务端无该字段退化为本地钟）；修正值回跳时本机单调 guard 兜住（新戳不得小于上次 +1ms）。skew 内存态，重启后下次同步重建。
 - **歌曲身份**：服务端无曲库，统一为 `source_id + source_ref`（source_id=客户端源实例 uuid，旧数据为 `legacy:<协议>`）；权重 / 收藏落 `song_states`，歌单条目与断点自持身份及展示快照（pull 不覆盖客户端本地标题）；pull 身份收集恒不建行（已删歌曲不重新建行）。未配对（无后端地址）或 `sync_enabled=0` 时直连事件不进队，避免 outbox 无限积压。
 - **播放源同步**：`source.create/update/delete` + 行级 LWW；身份 `client_uuid`，去重键 `(kind, address)`（地址两端归一化——WebDAV 缺 scheme 补 https、去尾斜杠，SFTP 形态 `host:port/path`；转码强校验按同一归一化匹配）。本地文件夹源不参与；密码与私钥（含 passphrase）不入服务端（新设备显示「待配置密码」）；SFTP 主机密钥钉 `ssh_known_hosts` 亦不参与同步（各设备各自 TOFU）。存量远端源接入时补 uuid 并补发一次 create；旧协议级身份在设备重新上报时由服务端懒迁移。
-- **跨设备断点消费**：`breakpoint.set` 快照带来源设备与最后操作时间；客户端 pull 落 `breakpoint_mirror`（自写回声过滤，见上）；启动恢复与歌单「播放全部」会比较本机 `play_state`（含歌单归属 `playlist_uuid`）与镜像比较时钟（`last_event_at ?? updated_at`），远端更新时自动从该进度续播并 toast；目标歌本机无源时退到其后第一首可播条目，全不可播则回落本机恢复。
+- **跨设备断点消费**：`breakpoint.set` 快照带来源设备与最后操作时间；客户端 pull 落 `breakpoint_mirror`（自写回声过滤，见上）。v2 同一歌单按 `head_rev` 是否前进判断「谁更新」，跨歌单/legacy 仍按比较时钟（`last_event_at ?? updated_at`，v2 行优先 `head_updated_at`）；本机有未确认 pending head 时先不上远端。启动恢复与歌单「播放全部」在远端更新时自动从该进度续播并 toast；目标歌本机无源时退到其后第一首可播条目，全不可播则回落本机恢复。远端赢家只要本机还在播就不打断，等暂停/回前台/下轮同步再套用；深层历史照常先合并。
 - 直连模式（无服务器）：上述全部跳过，数据只在本机。
 
 ### 歌手身份聚合（MusicBrainz 后台解析）

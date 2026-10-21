@@ -281,6 +281,58 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 原因变化或成功入队即重置（本方法约每 10s 被调一次，逐次打会刷屏）。
   String? _lastBpSkipReason;
 
+  // ---------- 协议 v2：head/history 分离 ----------
+
+  /// 服务端是否已声明支持 v2。首轮响应前保持 false（走旧协议保护）；
+  /// 收到 `breakpoint_protocol>=2` 后切到 v2。v2 事件仍携带全部旧字段，
+  /// 因此升级过程中旧服务端也能按旧协议消费。
+  bool _breakpointV2 = false;
+
+  /// 当前播放会话 id：play_track 换新，pause/resume/seek/progress 复用。
+  String? _v2SessionId;
+
+  /// 本机已发出、尚未确认的 head 操作 id（防远端旧 head 抢先应用）。
+  String? _pendingHeadOpId;
+
+  /// 已应用的 head/history 版本；v2 快照只在版本更高时套用。
+  int _appliedHeadRev = 0;
+  int _appliedHistoryRev = 0;
+  String? _v2ServerEpoch;
+
+  /// 下一次断点事件的意图（由用户/播放器操作显式设置；null=自动判断）。
+  String? _nextBpIntent;
+
+  /// 协议 v2 能力切换（SyncEngine 收到服务端声明后调用）。
+  ///
+  /// [serverEpoch] 变化意味着服务端 revision 空间重建：清本地已应用版本，
+  /// 让首轮快照重新落地；本机断点/镜像内容保留。
+  Future<void> setBreakpointProtocolV2(bool v2, {String? serverEpoch}) async {
+    if (_breakpointV2 != v2) {
+      _breakpointV2 = v2;
+      perfLog('bp.protocol', v2 ? 'v2' : 'legacy');
+    }
+    if (serverEpoch != null && serverEpoch.isNotEmpty) {
+      final idx = _index;
+      // 启动顺序可能是「网络先回、本机断点后恢复」：内存还没有 epoch 时，
+      // 用本地已记录过的 epoch 判断是否变化。
+      final previous = _v2ServerEpoch ?? idx?.breakpointStoredServerEpoch();
+      final changed = previous != null && previous != serverEpoch;
+      _v2ServerEpoch = serverEpoch;
+      if (changed) {
+        _appliedHeadRev = 0;
+        _appliedHistoryRev = 0;
+        _pendingHeadOpId = null;
+        if (idx != null) {
+          // 必须等重置完成再让调用方落快照，否则旧的高 rev 会把新快照拒掉。
+          await idx.resetBreakpointSyncRevs(serverEpoch);
+        }
+        perfLog('bp.epoch', 'server epoch changed -> reset revisions');
+      }
+    }
+  }
+
+  bool get breakpointProtocolV2 => _breakpointV2;
+
   /// F1 启动收敛闸门：进程启动恢复出本机断点后、首个 [applyNewerMirrorIfAny]
   /// 跑完（或兜底超时）前，断点一律不入队——本机恢复态可能已被远端更新，
   /// 此时用 now 盖上 occurred_at 推上去正是「旧数据覆盖新数据」的毒源
@@ -1939,7 +1991,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       bool play = true,
       bool fromPlaylist = true,
       bool autoAdvanceOnFailure = false,
-      bool manual = false}) async {
+      bool manual = false,
+      bool emitBreakpoint = true}) async {
     // 连按切歌 guard：每次 _play 领一个单调令牌，后续 await 间隙若令牌过期
     //（更新的切歌已接管），静默丢弃，不报错、不覆盖、不触发副作用。
     // 解决了快速 next/prev 时旧 setUrl 的 connection abort / source error  toast 刷屏。
@@ -2051,9 +2104,17 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (!alive()) return;
       unawaited(_applyEqualizerBands());
       // 切歌即时同步：断点先落 outbox 再 poke（自动续播/手动点播同一路径）。
-      _pokeSyncAfterSave(() => _saveState(position));
+      // 恢复装载不产生 head 事件：启动恢复只是应用状态，不是用户操作。
+      if (emitBreakpoint) {
+        _nextBpIntent = 'play_track';
+        _pokeSyncAfterSave(() => _saveState(position));
+      } else {
+        unawaited(_saveState(position, enqueueBreakpoint: false));
+      }
       // 深层列表维护：歌单内播放推入末尾；外部点歌替换末尾。
-      _trackDeepList(cur, push: fromPlaylist);
+      // 恢复装载（emitBreakpoint=false）不是真实播放操作，绝不能借 pushPlayed
+      // 改写历史（容量已满且当前曲不在尾部时会把历史清空重来）。
+      if (emitBreakpoint) _trackDeepList(cur, push: fromPlaylist);
       _onTrackStarted?.call(_curSource ?? src, cur);
       // 播放即重读当前歌曲元数据（不管之前是否读过，保证展示最新）。
       // 走直连任务队列：它必须抢在「下一首预载」和全库后台补读前面——
@@ -3236,6 +3297,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       debugPrint('[play] play 调用异常（忽略）：$e');
     }));
     _fadeIn();
+    // v2：继续播放是真实操作，参与 head 仲裁（旧协议下 intent 被忽略）。
+    _saveForcedAndPoke(intent: 'resume');
   }
 
   /// 通知栏「播放」回调（settings.md §3.6）。
@@ -3320,6 +3383,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     } else {
       await player.seek(d);
     }
+    // v2：seek 是真实操作，参与 head 仲裁；进度心跳不能代替它。
+    _saveForcedAndPoke(intent: 'seek');
     _syncSystemMedia();
   }
 
@@ -3399,7 +3464,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _saveState(Duration pos, {bool forceBreakpoint = false}) async {
+  Future<void> _saveState(Duration pos,
+      {bool forceBreakpoint = false,
+      bool enqueueBreakpoint = true,
+      String? intent}) async {
     final idx = _index;
     if (idx == null || _queue.isEmpty || _current == null) return;
     await idx.savePlayState(
@@ -3408,13 +3476,19 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       pos.inMilliseconds,
       playlistUuid: _syncPlaylistUuid,
       anchorKey: _anchorKey,
+      sessionId: _v2SessionId,
     );
-    await _maybeEnqueueBreakpoint(idx, pos, force: forceBreakpoint);
+    if (!enqueueBreakpoint) return;
+    await _maybeEnqueueBreakpoint(idx, pos,
+        force: forceBreakpoint, intent: intent);
   }
 
   /// 暂停/停止后的最终断点：强制进一次 outbox（不受 25s 节流限），
   /// 落库完成后再 poke 即时同步，保证本轮 push 带走最终位置。
-  void _saveForcedAndPoke() {
+  ///
+  /// [intent] 是 v2 语义：pause/resume/seek 都是真实播放操作，会参与 head
+  /// 仲裁；旧协议忽略该参数。
+  void _saveForcedAndPoke({String intent = 'pause'}) {
     if (_onSyncPoke == null || !_hasPlayScene) return;
     Duration pos;
     try {
@@ -3422,7 +3496,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) {
       return;
     }
-    _pokeSyncAfterSave(() => _saveState(pos, forceBreakpoint: true));
+    _pokeSyncAfterSave(
+        () => _saveState(pos, forceBreakpoint: true, intent: intent));
   }
 
   /// 关闸（启动恢复发起时）：见 [_bootConverged]。兜底超时防「同步从未
@@ -3454,14 +3529,16 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 直连歌曲需连着服务器；其它情况只活本机。
   /// 跳过/入队均有日志（[bp.skip]/[bp.enqueue]）：排查「断点没推上去」用。
   Future<void> _maybeEnqueueBreakpoint(LocalIndex idx, Duration pos,
-      {bool force = false}) async {
-    if (!_bootConverged) {
-      // F1：启动恢复出的本机断点可能已被远端更新——等首个镜像判定给出
-      // 结论（套用远端 / 确认本机最新）再入队；强制断点开闸后补跑。
+      {bool force = false, String? intent}) async {
+    if (!_breakpointV2 && !_bootConverged) {
+      // F1（仅旧协议）：启动恢复出的本机断点可能已被远端更新——等首个镜像
+      // 判定给出结论再入队。v2 的 head 由 HLC/版本仲裁，不需要这个闸门。
       if (force) _bootForcedPending = true;
       _logBpSkip('启动收敛未完成（暂不推送，防旧态盖新）');
       return;
     }
+    final requestedIntent = _nextBpIntent;
+    _nextBpIntent = null;
     final uuid = _syncPlaylistUuid;
     final cur = _current;
     if (uuid == null || cur == null) {
@@ -3480,15 +3557,26 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     final key = '$uuid|${cur.source}|${cur.sourceRef}';
+    final autoIntent = key != _lastBpKey ? 'play_track' : 'progress';
+    final bpIntent =
+        _breakpointV2 ? (intent ?? requestedIntent ?? autoIntent) : null;
     // occurred_at 语义=「最后操作时间」：非强制的落盘补写（回前台/退后台/退出
     // 落盘、周期保存）只在断点**真的变了**（切歌/位置前进）时才入队；暂停态
-    // 原样补写直接跳过——否则会把本机陈旧断点盖上 now 推上服务端，被 LWW 收下
-    // 后覆盖其它设备更新的进度（回前台补写毒源，与冷启动恢复同款）。
-    if (!force && key == _lastBpKey && pos.inMilliseconds == _lastBpPosMs) {
+    // 原样补写直接跳过——否则会把本机陈旧断点盖上 now 推上服务端。
+    // v2 只有 progress 受此限制；pause/resume/seek/play_track 是真实操作，
+    // 即使位置相同也必须参与 head 仲裁。
+    if (!force &&
+        key == _lastBpKey &&
+        pos.inMilliseconds == _lastBpPosMs &&
+        (!_breakpointV2 || bpIntent == 'progress')) {
       _logBpSkip('断点无变化（补写不刷新 occurred_at）');
       return;
     }
-    if (force || key != _lastBpKey || nowMs - _lastBpAtMs > 25000) {
+    final throttled = !force && key == _lastBpKey && nowMs - _lastBpAtMs <= 25000;
+    final allowed = _breakpointV2
+        ? (bpIntent != 'progress' || !throttled)
+        : !throttled;
+    if (allowed) {
       _lastBpKey = key;
       _lastBpPosMs = pos.inMilliseconds;
       _lastBpAtMs = nowMs;
@@ -3506,8 +3594,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 非追加操作则带全量 base 走三向合并（第一版自动裁决，不做冲突弹窗）。
       // deep_list 仍随载荷携带：用于服务端首写兜底、无合并回执时确认 base。
       final base = parseDeepEntries(idx.breakpointBaseDeepList(uuid));
-      final appendMode = deepListStartsWith(base, deepList);
-      final eventUuid = await idx.enqueueOutbox(SyncEventTypes.breakpointSet, {
+      // base 为空（升级后首次/从未确认过）时不能把它当成“公共前缀为空”的
+      // 三向 base：那会把本机整段历史当成对端没有的分支重复拼接。只发全量
+      // deep_list，让服务端以自身历史为 base 做安全合并。
+      final hasBase = base.isNotEmpty;
+      final appendMode = hasBase && deepListStartsWith(base, deepList);
+      final payload = <String, dynamic>{
         'playlist_uuid': uuid,
         'source': cur.source,
         'source_ref': cur.sourceRef,
@@ -3515,13 +3607,59 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         'position_ms': pos.inMilliseconds,
         'deep_list': deepList,
         if (appendMode) 'deep_added': deepList.sublist(base.length),
-        if (!appendMode) 'base_deep_list': base,
-      });
+        if (hasBase && !appendMode) 'base_deep_list': base,
+      };
+      if (_breakpointV2 && bpIntent != null) {
+        final session = bpIntent == 'play_track'
+            ? _newSessionId()
+            : (_v2SessionId ??= _newSessionId());
+        _v2SessionId = session;
+        final opId = LocalIndex.newEventUuid();
+        final playingNow = player.playing && !_fadingPause;
+        final headPlaying = switch (bpIntent) {
+          'pause' => false,
+          'resume' || 'play_track' => true,
+          _ => playingNow,
+        };
+        payload.addAll({
+          'protocol': 2,
+          'op_id': opId,
+          'op_clock': idx.nextBreakpointClock(),
+          'intent': bpIntent,
+          'head': <String, dynamic>{
+            'source': cur.source,
+            'source_ref': cur.sourceRef,
+            if (sourceId != null) 'source_id': sourceId,
+            'position_ms': pos.inMilliseconds,
+            'playing': headPlaying,
+            'session_id': session,
+          },
+        });
+        if (bpIntent != 'progress') {
+          _pendingHeadOpId = opId;
+          try {
+            await idx.saveBreakpointSyncState(
+              playlistUuid: uuid,
+              pendingHeadOpId: opId,
+              sessionId: session,
+              serverEpoch: _v2ServerEpoch,
+            );
+          } catch (_) {}
+        }
+      }
+      final eventUuid =
+          await idx.enqueueOutbox(SyncEventTypes.breakpointSet, payload);
       perfLog('bp.enqueue',
-          'uuid=$eventUuid playlist=$uuid ref=${cur.sourceRef} pos=${pos.inMilliseconds}ms force=$force base=${base.length} append=$appendMode skew=${idx.clockSkew.inMilliseconds}ms');
+          'uuid=$eventUuid playlist=$uuid ref=${cur.sourceRef} pos=${pos.inMilliseconds}ms force=$force intent=${bpIntent ?? 'legacy'} base=${base.length} append=$appendMode skew=${idx.clockSkew.inMilliseconds}ms');
     } else {
       _logBpSkip('节流中（同歌 25s 一次）');
     }
+  }
+
+  String _newSessionId() {
+    final a = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+    final b = _rng.nextInt(0x7fffffff).toRadixString(36);
+    return 's-$a-$b';
   }
 
   /// 断点跳过原因日志（同因只打一次，见 [_lastBpSkipReason]）。
@@ -3564,25 +3702,52 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _restorePreferRemoteInner(LocalIndex idx) async {
     final local = idx.getPlayState();
     final best = _newestMirror(idx);
-    final bestAt =
-        best == null ? null : DateTime.tryParse(best.compareClock);
-    final localAt = local == null ? null : DateTime.tryParse(local.updatedAt);
-    if (best != null &&
-        bestAt != null &&
-        (localAt == null || bestAt.isAfter(localAt))) {
+    var preferMirror = false;
+    if (best != null) {
+      final state = idx.breakpointSyncStateOf(best.playlistUuid);
+      final localUuid = local?.playlistUuid;
+      final localPending = localUuid == null
+          ? null
+          : idx.breakpointSyncStateOf(localUuid)?.pendingHeadOpId;
+      final isV2 = best.headRev > 0 || (state?.appliedHeadRev ?? 0) > 0;
+      if (localPending != null && localPending != best.headOpId) {
+        // 本机还有未确认的真实操作：先保留本机现场，等 push 裁决（即使
+        // 全局最新镜像属于别的歌单，也不在 pending 未定时切走）。
+        preferMirror = false;
+      } else if (isV2 && localUuid == best.playlistUuid) {
+        // 同一歌单按版本判断。
+        preferMirror = best.headRev > (state?.appliedHeadRev ?? 0);
+      } else {
+        final rawBest = isV2 &&
+                best.headUpdatedAt != null &&
+                best.headUpdatedAt!.isNotEmpty
+            ? best.headUpdatedAt!
+            : best.compareClock;
+        final bestAt = DateTime.tryParse(rawBest);
+        final localAt = local == null ? null : DateTime.tryParse(local.updatedAt);
+        preferMirror = bestAt != null &&
+            (localAt == null || bestAt.isAfter(localAt));
+      }
+    }
+    if (preferMirror && best != null) {
       if (await _restoreFromMirror(idx, best)) return;
     }
     await _restoreLocal(idx, local);
   }
 
-  /// 当前全部断点镜像里「最后操作时间」最新的一行（无则 null；F4 比较时钟 =
-  /// `lastEventAt ?? updatedAt`，与推送 LWW/服务端 /playstates/latest 同口径）。
+  /// 当前全部断点镜像里最新的一行。v2 行用服务端 head_updated_at 排序
+  /// （不受客户端墙钟影响）；旧行进回 lastEventAt/updatedAt。
   BreakpointMirrorRow? _newestMirror(LocalIndex idx) {
     BreakpointMirrorRow? best;
     DateTime? bestAt;
     for (final m in idx.allBreakpointMirrors()) {
       if (_suppressAutoMirror.contains(m.playlistUuid)) continue;
-      final t = DateTime.tryParse(m.compareClock);
+      final raw = (m.headRev > 0 &&
+              m.headUpdatedAt != null &&
+              m.headUpdatedAt!.isNotEmpty)
+          ? m.headUpdatedAt!
+          : m.compareClock;
+      final t = DateTime.tryParse(raw);
       if (t == null) continue;
       if (bestAt == null || t.isAfter(bestAt)) {
         best = m;
@@ -3592,13 +3757,57 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     return best;
   }
 
+  /// 已应用的 head/history 版本：当前歌单读内存，其它歌单读同步状态表。
+  int _appliedHeadRevFor(LocalIndex idx, String uuid) => uuid == _syncPlaylistUuid
+      ? _appliedHeadRev
+      : (idx.breakpointSyncStateOf(uuid)?.appliedHeadRev ?? 0);
+
+  int _appliedHistoryRevFor(LocalIndex idx, String uuid) =>
+      uuid == _syncPlaylistUuid
+          ? _appliedHistoryRev
+          : (idx.breakpointSyncStateOf(uuid)?.appliedHistoryRev ?? 0);
+
+  /// 仅把 v2 镜像里的历史合并进当前歌单（head 版本不变）。
+  Future<void> _applyV2HistoryOnly(
+      LocalIndex idx, BreakpointMirrorRow m) async {
+    if (m.playlistUuid != _syncPlaylistUuid) return;
+    if (m.deepListJson == null) {
+      // 服务端没有完整 deep_list：按“不改历史”处理，也不推进已应用版本，
+      // 等带完整列表的快照（同 history_rev 也会被重新处理）。
+      perfLog('bp.historyOnly', '缺 deep_list 不改历史 uuid=${m.playlistUuid} rev=${m.historyRev}');
+      return;
+    }
+    if (_deepList == null || _fusedBase == null) return;
+    final baseRaw = idx.breakpointBaseDeepList(m.playlistUuid);
+    final base = parseDeepEntries(baseRaw);
+    final snapshot = <String, dynamic>{
+      'client_uuid': m.playlistUuid,
+      'deep_list': m.deepListJson == null
+          ? null
+          : jsonDecode(m.deepListJson!),
+      'history_rev': m.historyRev,
+      'updated_at': m.updatedAt,
+      'last_event_at': m.lastEventAt,
+    };
+    await applyMergedBreakpointHistory(snapshot, base);
+    _appliedHistoryRev = m.historyRev;
+    try {
+      await idx.saveBreakpointSyncState(
+        playlistUuid: m.playlistUuid,
+        appliedHistoryRev: m.historyRev,
+        serverEpoch: _v2ServerEpoch,
+      );
+    } catch (_) {}
+  }
+
   /// 应用 push 合并回执里的深层列表：只更新历史/融合队列，**不 seek、不打断**。
   ///
   /// [sentDeepList] 是本设备刚推上去的分支（base）；[snapshot.deep_list] 是
   /// 服务端合并结果（含对端分支）。若 push 在途期间本地又播了新歌，以
   /// base=sent、server=merged、device=当前本地做三向合并，保住 ack 期间新增。
   Future<void> applyMergedBreakpointHistory(
-      Map<String, dynamic> snapshot, List<dynamic> sentDeepList) async {
+      Map<String, dynamic> snapshot, List<dynamic> sentDeepList,
+      {int? historyRev}) async {
     final uuid = snapshot['client_uuid'] as String?;
     if (uuid == null || uuid.isEmpty) return;
     // 非当前歌单：merged 已由 SyncEngine 强制落 mirror；base 保持本机旧值，
@@ -3660,9 +3869,116 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
                   'source': s.source,
                   'source_ref': s.sourceRef,
                 },
-            ]));
+            ]),
+            historyRev: historyRev ?? (snapshot['history_rev'] as num?)?.toInt());
       } catch (_) {}
     }
+  }
+
+  /// 断点事件已被服务端处理（applied/duplicates）：若正好是本机当前 pending
+  /// 的 op 才清除；更晚的新 pending 不能被更早的回执误清。清除后立刻尝试
+  /// 套用服务端权威 head（此前被 pending defer 的远端赢家）。
+  Future<void> onBreakpointAckedOps(Map<String, String> opByPlaylist) async {
+    final uuid = _syncPlaylistUuid;
+    if (uuid == null) return;
+    final opId = opByPlaylist[uuid];
+    if (opId == null || opId != _pendingHeadOpId) return;
+    _pendingHeadOpId = null;
+    final idx = _index;
+    if (idx != null) {
+      try {
+        await idx.saveBreakpointSyncState(
+          playlistUuid: uuid,
+          clearPending: true,
+          serverEpoch: _v2ServerEpoch,
+        );
+      } catch (_) {}
+    }
+    perfLog('bp.pendingClear', 'acked op=$opId playlist=$uuid');
+    await applyNewerMirrorIfAny(viaSync: true);
+  }
+
+  /// 断点事件被服务端死信：只清匹配的 pending head（旧事件无 op_id 时才无条件
+  /// 清），允许后续 pull 套用服务端权威状态，同时不误清刚产生的更新操作。
+  Future<void> clearPendingHeadFor(Map<String, String> opByPlaylist) async {
+    final uuid = _syncPlaylistUuid;
+    if (uuid == null) return;
+    final opId = opByPlaylist[uuid];
+    if (opId == null) return;
+    if (_pendingHeadOpId == null) return;
+    if (opId.isNotEmpty && opId != _pendingHeadOpId) return;
+    _pendingHeadOpId = null;
+    final idx = _index;
+    if (idx != null) {
+      try {
+        await idx.saveBreakpointSyncState(
+          playlistUuid: uuid,
+          clearPending: true,
+          serverEpoch: _v2ServerEpoch,
+        );
+      } catch (_) {}
+    }
+    perfLog('bp.pendingClear', 'rejected playlist=$uuid');
+  }
+
+  /// 应用 push 回执里的 v2 权威快照（按 playlist）。
+  ///
+  /// - 历史有前进：合并进本地深层列表，但绝不 seek/打断播放；
+  /// - head 是本机刚推的 op：确认并清 pending，不改当前播放；
+  /// - head 是服务端裁决出的别家操作：先记录版本，真正套用交给
+  ///   [applyNewerMirrorIfAny]（播放中会跳过，暂停/下次同步再切）。
+  Future<void> applyV2BreakpointSnapshot(
+      Map<String, dynamic> snapshot, List<dynamic> sentDeepList) async {
+    final uuid = snapshot['client_uuid'] as String?;
+    if (uuid == null || uuid.isEmpty) return;
+    _breakpointV2 = true;
+    final inHeadRev = (snapshot['head_rev'] as num?)?.toInt() ?? 0;
+    final inHistoryRev = (snapshot['history_rev'] as num?)?.toInt() ?? 0;
+    final opId = snapshot['head_op_id'] as String?;
+    final ownHead = opId != null && opId == _pendingHeadOpId;
+    if (uuid != _syncPlaylistUuid) {
+      // 非当前歌单只落镜像（SyncEngine 已强制写）；禁止自动切歌。
+      _suppressAutoMirror.add(uuid);
+      if (ownHead) _pendingHeadOpId = null;
+      return;
+    }
+    final hasDeepList = snapshot['deep_list'] is List;
+    final historyAdvanced = inHistoryRev > _appliedHistoryRev && hasDeepList;
+    if (historyAdvanced) {
+      await applyMergedBreakpointHistory(snapshot, sentDeepList,
+          historyRev: inHistoryRev);
+      _appliedHistoryRev = inHistoryRev;
+    }
+    final headAdvanced = inHeadRev > _appliedHeadRev;
+    if (ownHead) {
+      _pendingHeadOpId = null;
+      if (headAdvanced) _appliedHeadRev = inHeadRev;
+      final session = snapshot['head_session'] as String?;
+      if (session != null && session.isNotEmpty) _v2SessionId = session;
+    } else if (headAdvanced) {
+      // 服务端 head 是别家操作：不能在这里把 _appliedHeadRev 推进到服务端
+      // 版本，否则随后的 applyNewerMirrorIfAny 会误以为「已应用」而永远不
+      // 切换；也不能在此清 pending——快照可能对应的是更早的 push，而本机
+      // 可能已有更晚的 pending 操作在飞（ack 回报会按 op_id 精确清理）。
+      // 不直接 seek：让镜像状态机在空闲时套用，播放中仍不打断。
+      unawaited(applyNewerMirrorIfAny(viaSync: true));
+    }
+    final idx = _index;
+    if (idx != null) {
+      try {
+        await idx.saveBreakpointSyncState(
+          playlistUuid: uuid,
+          appliedHeadRev: _appliedHeadRev,
+          appliedHistoryRev: _appliedHistoryRev,
+          clearPending: _pendingHeadOpId == null,
+          sessionId: _v2SessionId,
+          serverEpoch: _v2ServerEpoch,
+        );
+      } catch (_) {}
+    }
+    notifyListeners();
+    perfLog('bp.v2Ack',
+        'uuid=$uuid own=$ownHead head=$inHeadRev/$_appliedHeadRev history=$inHistoryRev/$_appliedHistoryRev pending=$_pendingHeadOpId');
   }
 
   /// 有比「当前会话所依据的断点」更新的远端镜像时切过去（歌曲+进度+深层列表）。
@@ -3726,21 +4042,51 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           perfLog('mirror.apply skip', '无断点镜像');
           return;
         }
-        final bestAt = DateTime.tryParse(best.compareClock);
-        if (bestAt == null) {
-          perfLog('mirror.apply skip',
-              '镜像比较时钟无效 uuid=${best.playlistUuid} clock=${best.compareClock} updated=${best.updatedAt}');
-          return;
-        }
-        final base = _breakpointBaselineAt;
         perfLog('mirror.apply lookup', '${swLookup.elapsedMilliseconds}ms');
-        if (base != null && !bestAt.isAfter(base)) {
-          perfLog('mirror.apply skip',
-              '镜像不新于基准 uuid=${best.playlistUuid} clock=${bestAt.toIso8601String()} base=${base.toIso8601String()}');
-          return;
+        final useV2 = _breakpointV2 || best.headRev > 0;
+        if (useV2) {
+          // 本机还有待确认的 head 操作：先把服务端快照让给 push 回执裁决。
+          // 否则 pull 的旧 head（包括别的歌单）可能在我们 push 前把本地新
+          // head 套掉。
+          if (_pendingHeadOpId != null &&
+              best.headOpId != _pendingHeadOpId) {
+            perfLog('mirror.apply skip',
+                '本机 head 待确认 pending=$_pendingHeadOpId remote=${best.headOpId}');
+            return;
+          }
+          final appliedHead =
+              _appliedHeadRevFor(idx, best.playlistUuid);
+          final appliedHistory =
+              _appliedHistoryRevFor(idx, best.playlistUuid);
+          final headNewer = best.headRev > appliedHead;
+          final historyNewer = best.historyRev > appliedHistory;
+          if (!headNewer && !historyNewer) {
+            perfLog('mirror.apply skip',
+                'v2 版本未前进 uuid=${best.playlistUuid} head=${best.headRev}/$appliedHead history=${best.historyRev}/$appliedHistory');
+            return;
+          }
+          if (!headNewer && historyNewer) {
+            await _applyV2HistoryOnly(idx, best);
+            perfLog('mirror.apply historyOnly',
+                'uuid=${best.playlistUuid} history=${best.historyRev}');
+            continue;
+          }
+        } else {
+          final bestAt = DateTime.tryParse(best.compareClock);
+          if (bestAt == null) {
+            perfLog('mirror.apply skip',
+                '镜像比较时钟无效 uuid=${best.playlistUuid} clock=${best.compareClock} updated=${best.updatedAt}');
+            return;
+          }
+          final base = _breakpointBaselineAt;
+          if (base != null && !bestAt.isAfter(base)) {
+            perfLog('mirror.apply skip',
+                '镜像不新于基准 uuid=${best.playlistUuid} clock=${bestAt.toIso8601String()} base=${base.toIso8601String()}');
+            return;
+          }
         }
         perfLog('mirror.apply adopt',
-            'uuid=${best.playlistUuid} device=${best.deviceId} pos=${best.positionMs}ms clock=${bestAt.toIso8601String()} lastEvent=${best.lastEventAt} updated=${best.updatedAt} base=${base?.toIso8601String()} viaSync=$sync');
+            'uuid=${best.playlistUuid} device=${best.deviceId} pos=${best.positionMs}ms headRev=${best.headRev} historyRev=${best.historyRev} lastEvent=${best.lastEventAt} updated=${best.updatedAt} viaSync=$sync');
         final swApply = Stopwatch()..start();
         await _restoreFromMirror(idx, best);
         perfLog('mirror.apply restoreFromMirror',
@@ -3781,6 +4127,36 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
               idx.playlistIdOfUuid(st.playlistUuid!) != null)
           ? st.playlistUuid
           : null;
+      // v2 本地状态：会话/已应用版本/pending head。旧库没有这些行，保持
+      // 内存默认值，不误判为已应用。
+      if (_syncPlaylistUuid != null) {
+        final ss = idx.breakpointSyncStateOf(_syncPlaylistUuid!);
+        final knownEpoch = _v2ServerEpoch;
+        if (knownEpoch != null &&
+            ss != null &&
+            ss.serverEpoch != null &&
+            ss.serverEpoch != knownEpoch) {
+          // 网络响应先到（已知新 epoch），本机旧状态后到：按 epoch 变化
+          // 先作废旧 revision，再恢复本机断点。
+          _appliedHeadRev = 0;
+          _appliedHistoryRev = 0;
+          _pendingHeadOpId = null;
+          _v2SessionId = st.sessionId;
+          await idx.resetBreakpointSyncRevs(knownEpoch);
+          perfLog('bp.epoch', 'restore saw stale epoch -> reset revisions');
+        } else if (ss != null) {
+          _appliedHeadRev = ss.appliedHeadRev;
+          _appliedHistoryRev = ss.appliedHistoryRev;
+          _pendingHeadOpId = ss.pendingHeadOpId;
+          _v2SessionId = ss.sessionId ?? st.sessionId;
+          _v2ServerEpoch = ss.serverEpoch ?? knownEpoch;
+          if (ss.appliedHeadRev > 0 || ss.appliedHistoryRev > 0) {
+            _breakpointV2 = true;
+          }
+        } else {
+          _v2SessionId = st.sessionId;
+        }
+      }
       // 锚定键：新版断点携带 anchorKey；旧行按 playlistUuid 推导。
       final anchorKey = st.anchorKey ??
           (st.playlistUuid != null
@@ -3838,7 +4214,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
             (atBreakpoint && st.positionMs > 0) ? st.positionMs : 0;
         _restorePositionKey = _positionKeyOf(_current!);
         final restoredSong = _current!;
-        await _play(_current!, play: false);
+        await _play(_current!, play: false, emitBreakpoint: false);
         // 装载期间用户可能已切歌：只对仍是恢复目标的当前曲 seek，不把新歌
         // 拽回旧断点（用户接管优先）。
         final cur = _current;
@@ -3946,6 +4322,25 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final adopted = _current!;
     _lastBpKey = '$_syncPlaylistUuid|${adopted.source}|${adopted.sourceRef}';
     _lastBpAtMs = DateTime.now().millisecondsSinceEpoch;
+    // v2：采用远端 head/history 后推进本地版本；pending head 已由服务端
+    // 裁决（接受或拒绝），这里都清掉，避免后续快照被旧 guard 永久挡住。
+    if (m.headRev > 0 || m.historyRev > 0) {
+      _breakpointV2 = true;
+      _v2SessionId = m.headSession ?? _v2SessionId;
+      _appliedHeadRev = m.headRev;
+      _appliedHistoryRev = m.historyRev;
+      _pendingHeadOpId = null;
+      try {
+        await idx.saveBreakpointSyncState(
+          playlistUuid: m.playlistUuid,
+          appliedHeadRev: m.headRev,
+          appliedHistoryRev: m.historyRev,
+          clearPending: true,
+          sessionId: _v2SessionId,
+          serverEpoch: _v2ServerEpoch,
+        );
+      } catch (_) {}
+    }
     // 乐观位置（同步前缀即设）：退到断点曲之后的首曲时为 0。
     final pos = (found >= 0 && start == found) ? m.positionMs : 0;
     perfLog('restoreMirror adopt',
@@ -3956,7 +4351,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 写隔离阻塞，否则会先闪占位再跳曲。base 仍只跟本机实际采用的列表对齐。
     if (adoptedBaseJson != null) {
       try {
-        await idx.setBreakpointBaseDeepList(m.playlistUuid, adoptedBaseJson);
+        await idx.setBreakpointBaseDeepList(
+            m.playlistUuid, adoptedBaseJson,
+            historyRev: m.historyRev > 0 ? m.historyRev : null);
       } catch (_) {
         // base 是同步优化元数据，写失败不应阻断本次恢复；下一轮按全量/
         // 前缀重新收敛。
@@ -3964,7 +4361,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     final swPlay = Stopwatch()..start();
     try {
-      await _play(_current!, play: false);
+      await _play(_current!, play: false, emitBreakpoint: false);
       perfLog('restoreMirror playLoad', '${swPlay.elapsedMilliseconds}ms');
       // 装载期间用户可能已切歌：只对仍是恢复目标的当前曲 seek（见 _restoreLocal）。
       final cur = _current;

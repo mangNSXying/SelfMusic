@@ -15,6 +15,7 @@ import com.selfmusic.backend.domain.repository.PlaylistRepository;
 import com.selfmusic.backend.domain.repository.SongStateRepository;
 import com.selfmusic.backend.domain.repository.SyncEventRepository;
 import com.selfmusic.backend.domain.repository.SyncSourceRepository;
+import com.selfmusic.backend.domain.service.SettingService;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -42,12 +43,14 @@ class SyncBackfillTest {
     private final PlaylistItemRepository items = mock(PlaylistItemRepository.class);
     private final PlayStateRepository playStates = mock(PlayStateRepository.class);
     private final DeviceRepository devices = mock(DeviceRepository.class);
+    private final SettingService settings = mock(SettingService.class);
 
     private SyncService service() {
         when(syncEvents.findByEventUuid(any())).thenReturn(Optional.empty());
         when(devices.findByClientId(any())).thenReturn(Optional.empty());
+        when(settings.get("sync.server_epoch", "")).thenReturn("test-epoch");
         return new SyncService(syncEvents, songStates, syncSources, playlists,
-                items, playStates, devices, mapper);
+                items, playStates, devices, settings, mapper);
     }
 
     private static final LocalDateTime T1 = LocalDateTime.of(2026, 1, 1, 0, 0, 0);
@@ -416,6 +419,214 @@ class SyncBackfillTest {
         assertNotNull(merged.get("e1"), "服务端有另一分支时应回 merged，设备才能补齐历史");
         Map<String, Object> snap = (Map<String, Object>) merged.get("e1");
         assertEquals(7777, snap.get("position_ms"));
+    }
+
+    private ObjectNode v2Payload(String ref, String intent, String clock,
+                                 String session, int pos, boolean playing,
+                                 ArrayNode base, ArrayNode deep) {
+        ObjectNode p = mapper.createObjectNode();
+        p.put("protocol", 2);
+        p.put("playlist_uuid", "p-1");
+        p.put("op_id", "op-" + clock);
+        p.put("op_clock", clock);
+        p.put("intent", intent);
+        p.put("source", "webdav");
+        p.put("source_ref", ref);
+        p.put("position_ms", pos);
+        ObjectNode head = mapper.createObjectNode();
+        head.put("source", "webdav");
+        head.put("source_ref", ref);
+        head.put("position_ms", pos);
+        head.put("playing", playing);
+        if (session != null) head.put("session_id", session);
+        p.set("head", head);
+        p.put("deep_list", deep);
+        p.put("base_deep_list", base);
+        return p;
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void breakpointV2NewerPlayWinsAndHistoryMerges() {
+        Playlist pl = playlistRow();
+        PlayState st = new PlayState();
+        st.setPlaylistId(7L);
+        st.setSourceRef("/b.mp3");
+        st.setDeviceClientId("dev-b");
+        st.setHeadDevice("dev-b");
+        st.setHeadSession("s-b");
+        st.setHeadClock("1000-0");
+        st.setHeadRev(1L);
+        st.setHistoryRev(1L);
+        st.setHeadPlaying(true);
+        st.setDeepListJson(deepJson("/a.mp3", "/b.mp3"));
+        when(playlists.findByClientUuid("p-1")).thenReturn(Optional.of(pl));
+        when(playStates.findById(7L)).thenReturn(Optional.of(st));
+        when(items.countByPlaylistId(7L)).thenReturn(10L);
+        when(playStates.save(any(PlayState.class))).thenAnswer(i -> i.getArgument(0));
+
+        ObjectNode p = v2Payload("/c.mp3", "play_track", "2000-0", "s-a", 9000,
+                true, deepArray("/a.mp3", "/b.mp3"),
+                deepArray("/a.mp3", "/b.mp3", "/c.mp3"));
+        Map<String, Object> out = service().push("dev-a",
+                List.of(event("e1", SyncEventTypes.BREAKPOINT_SET, T1, p)));
+
+        assertEquals(List.of("e1"), out.get("applied"));
+        assertEquals("/c.mp3", st.getSourceRef(), "最后一次真实播放操作赢");
+        assertEquals("dev-a", st.getHeadDevice());
+        assertEquals("s-a", st.getHeadSession());
+        assertEquals(2L, st.getHeadRev());
+        assertEquals(List.of("/a.mp3", "/b.mp3", "/c.mp3"),
+                deepRefs(st.getDeepListJson()));
+        assertTrue(((Map<String, Object>) out.get("corrections")).isEmpty());
+        Map<String, Object> bps = (Map<String, Object>) out.get("breakpoints");
+        assertNotNull(bps.get("p-1"), "v2 回执按 playlist 回权威快照");
+        Map<String, Object> snap = (Map<String, Object>) bps.get("p-1");
+        assertEquals("/c.mp3", snap.get("source_ref"));
+        assertEquals(2L, snap.get("head_rev"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void breakpointV2OlderPauseLosesButHistoryStillMerges() {
+        Playlist pl = playlistRow();
+        PlayState st = new PlayState();
+        st.setPlaylistId(7L);
+        st.setSourceRef("/b.mp3");
+        st.setDeviceClientId("dev-b");
+        st.setHeadDevice("dev-b");
+        st.setHeadSession("s-b");
+        st.setHeadClock("3000-0");
+        st.setHeadRev(4L);
+        st.setHistoryRev(2L);
+        st.setHeadPlaying(true);
+        st.setPositionMs(1000);
+        st.setDeepListJson(deepJson("/a.mp3", "/b.mp3", "/s.mp3"));
+        when(playlists.findByClientUuid("p-1")).thenReturn(Optional.of(pl));
+        when(playStates.findById(7L)).thenReturn(Optional.of(st));
+        when(items.countByPlaylistId(7L)).thenReturn(10L);
+        when(playStates.save(any(PlayState.class))).thenAnswer(i -> i.getArgument(0));
+
+        // 离线设备后到：head 很旧，但它听过的 /d.mp3 不能丢。
+        ObjectNode p = v2Payload("/d.mp3", "play_track", "1000-0", "s-a", 42000,
+                true, deepArray("/a.mp3", "/b.mp3"),
+                deepArray("/a.mp3", "/b.mp3", "/d.mp3"));
+        Map<String, Object> out = service().push("dev-a",
+                List.of(event("e1", SyncEventTypes.BREAKPOINT_SET, T2, p)));
+
+        assertEquals("/b.mp3", st.getSourceRef(), "旧 head 不能覆盖新 head");
+        assertEquals("dev-b", st.getHeadDevice());
+        assertEquals(4L, st.getHeadRev(), "head 判输不递增 head_rev");
+        assertEquals(List.of("/a.mp3", "/b.mp3", "/s.mp3", "/d.mp3"),
+                deepRefs(st.getDeepListJson()), "对端历史仍必须并入");
+        assertTrue(st.getHistoryRev() > 2L);
+        Map<String, Object> snap = (Map<String, Object>)
+                ((Map<String, Object>) out.get("breakpoints")).get("p-1");
+        assertEquals("/b.mp3", snap.get("source_ref"));
+        assertEquals(4L, snap.get("head_rev"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void breakpointV2ProgressFromNonHeadDeviceIsIgnored() {
+        Playlist pl = playlistRow();
+        PlayState st = new PlayState();
+        st.setPlaylistId(7L);
+        st.setSourceRef("/b.mp3");
+        st.setDeviceClientId("dev-b");
+        st.setHeadDevice("dev-b");
+        st.setHeadSession("s-b");
+        st.setHeadClock("1000-0");
+        st.setHeadRev(2L);
+        st.setHistoryRev(2L);
+        st.setPositionMs(1000);
+        st.setDeepListJson(deepJson("/a.mp3", "/b.mp3"));
+        when(playlists.findByClientUuid("p-1")).thenReturn(Optional.of(pl));
+        when(playStates.findById(7L)).thenReturn(Optional.of(st));
+        when(items.countByPlaylistId(7L)).thenReturn(10L);
+        when(playStates.save(any(PlayState.class))).thenAnswer(i -> i.getArgument(0));
+
+        ObjectNode p = v2Payload("/b.mp3", "progress", "9999-0", "s-b", 8000,
+                true, deepArray("/a.mp3", "/b.mp3"),
+                deepArray("/a.mp3", "/b.mp3"));
+        service().push("dev-a",
+                List.of(event("e1", SyncEventTypes.BREAKPOINT_SET, T3, p)));
+
+        assertEquals(1000, st.getPositionMs(), "跟随端/非 head 设备的 progress 不能改进度");
+        assertEquals(2L, st.getHeadRev());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void breakpointV2ProgressDoesNotAdvanceHeadClock() {
+        Playlist pl = playlistRow();
+        PlayState st = new PlayState();
+        st.setPlaylistId(7L);
+        st.setSourceRef("/b.mp3");
+        st.setDeviceClientId("dev-a");
+        st.setHeadDevice("dev-a");
+        st.setHeadSession("s-a");
+        st.setHeadClock("1000-0");
+        st.setHeadOpId("op-play-a");
+        st.setHeadRev(2L);
+        st.setHistoryRev(2L);
+        st.setPositionMs(1000);
+        st.setDeepListJson(deepJson("/a.mp3", "/b.mp3"));
+        when(playlists.findByClientUuid("p-1")).thenReturn(Optional.of(pl));
+        when(playStates.findById(7L)).thenReturn(Optional.of(st));
+        when(items.countByPlaylistId(7L)).thenReturn(10L);
+        when(playStates.save(any(PlayState.class))).thenAnswer(i -> i.getArgument(0));
+
+        ObjectNode progress = v2Payload("/b.mp3", "progress", "5000-0", "s-a", 5000,
+                true, deepArray("/a.mp3", "/b.mp3"),
+                deepArray("/a.mp3", "/b.mp3"));
+        service().push("dev-a",
+                List.of(event("e1", SyncEventTypes.BREAKPOINT_SET, T1, progress)));
+        assertEquals(5000, st.getPositionMs());
+        assertEquals("1000-0", st.getHeadClock(), "progress 不得把 head 操作时钟推高");
+        assertEquals("op-play-a", st.getHeadOpId());
+
+        // 另一台设备在「原 play 之后、心跳之前」的真实操作：时钟 3000 仍应胜出。
+        ObjectNode play = v2Payload("/c.mp3", "play_track", "3000-0", "s-b", 0,
+                true, deepArray("/a.mp3", "/b.mp3"),
+                deepArray("/a.mp3", "/b.mp3", "/c.mp3"));
+        PushEvent playEvent = new PushEvent("e2", "dev-b",
+                SyncEventTypes.BREAKPOINT_SET, T2, play);
+        service().push("dev-b", List.of(playEvent));
+        assertEquals("/c.mp3", st.getSourceRef(), "心跳不能让稍早的真实操作误判为旧");
+        assertEquals(4L, st.getHeadRev());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void breakpointV2PauseOnHeadSessionAccepted() {
+        Playlist pl = playlistRow();
+        PlayState st = new PlayState();
+        st.setPlaylistId(7L);
+        st.setSourceRef("/b.mp3");
+        st.setDeviceClientId("dev-a");
+        st.setHeadDevice("dev-a");
+        st.setHeadSession("s-a");
+        st.setHeadClock("1000-0");
+        st.setHeadRev(2L);
+        st.setHistoryRev(2L);
+        st.setHeadPlaying(true);
+        st.setDeepListJson(deepJson("/a.mp3", "/b.mp3"));
+        when(playlists.findByClientUuid("p-1")).thenReturn(Optional.of(pl));
+        when(playStates.findById(7L)).thenReturn(Optional.of(st));
+        when(items.countByPlaylistId(7L)).thenReturn(10L);
+        when(playStates.save(any(PlayState.class))).thenAnswer(i -> i.getArgument(0));
+
+        ObjectNode p = v2Payload("/b.mp3", "pause", "2000-0", "s-a", 5500,
+                false, deepArray("/a.mp3", "/b.mp3"),
+                deepArray("/a.mp3", "/b.mp3"));
+        service().push("dev-a",
+                List.of(event("e1", SyncEventTypes.BREAKPOINT_SET, T2, p)));
+
+        assertEquals(5500, st.getPositionMs());
+        assertEquals(false, st.getHeadPlaying());
+        assertEquals(3L, st.getHeadRev());
+        assertEquals("s-a", st.getHeadSession());
     }
 
     private ArrayNode deepArray(String... refs) {

@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Function;
 
 import org.slf4j.Logger;
@@ -35,6 +36,7 @@ import com.selfmusic.backend.domain.repository.PlaylistRepository;
 import com.selfmusic.backend.domain.repository.SongStateRepository;
 import com.selfmusic.backend.domain.repository.SyncEventRepository;
 import com.selfmusic.backend.domain.repository.SyncSourceRepository;
+import com.selfmusic.backend.domain.service.SettingService;
 
 /**
  * 阶段5 同步引擎服务端（DEVELOPER.md「API 设计」／「播放算法与同步协议」，字段级合并）。
@@ -80,6 +82,7 @@ public class SyncService {
     private final PlaylistItemRepository playlistItemRepository;
     private final PlayStateRepository playStateRepository;
     private final DeviceRepository deviceRepository;
+    private final SettingService settingService;
     private final ObjectMapper objectMapper;
 
     public SyncService(SyncEventRepository syncEventRepository,
@@ -89,6 +92,7 @@ public class SyncService {
                        PlaylistItemRepository playlistItemRepository,
                        PlayStateRepository playStateRepository,
                        DeviceRepository deviceRepository,
+                       SettingService settingService,
                        ObjectMapper objectMapper) {
         this.syncEventRepository = syncEventRepository;
         this.songStateRepository = songStateRepository;
@@ -97,7 +101,19 @@ public class SyncService {
         this.playlistItemRepository = playlistItemRepository;
         this.playStateRepository = playStateRepository;
         this.deviceRepository = deviceRepository;
+        this.settingService = settingService;
         this.objectMapper = objectMapper;
+    }
+
+    /** 协议 v2 的服务器数据代次：DB 重建/迁移后客户端据此重置本地 revision。 */
+    public String serverEpoch() {
+        String key = "sync.server_epoch";
+        String epoch = settingService.get(key, "");
+        if (epoch == null || epoch.isBlank()) {
+            epoch = UUID.randomUUID().toString();
+            settingService.set(key, epoch);
+        }
+        return epoch;
     }
 
     /** 静态纯函数（断点快照等）专用的映射器，避免依赖注入实例上下文。 */
@@ -228,6 +244,56 @@ public class SyncService {
     }
 
     /**
+     * 播放头 HLC：`wallMillis-counter-deviceId`，按字典序比较（wall, counter, device）。
+     *
+     * <p>HLC 不依赖客户端裸墙钟做「谁更新」的唯一判断：客户端用服务端
+     * server_time 做时钟校准，同一毫秒内递增 counter；deviceId 兜底保证全序。</p>
+     */
+    public record Hlc(long wallMs, int counter, String deviceId) implements Comparable<Hlc> {
+        public static Hlc parse(String raw, String fallbackDevice) {
+            if (raw == null || raw.isBlank()) return null;
+            String[] parts = raw.split("-", 3);
+            if (parts.length < 2) return null;
+            try {
+                long wall = Long.parseLong(parts[0]);
+                int counter = Integer.parseInt(parts[1]);
+                String device = parts.length >= 3 && !parts[2].isBlank()
+                        ? parts[2] : fallbackDevice;
+                if (device == null || device.isBlank()) return null;
+                return new Hlc(wall, counter, device);
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
+
+        public static Hlc fromOccurred(LocalDateTime occurred, String device) {
+            if (occurred == null || device == null || device.isBlank()) return null;
+            long wall = occurred.toInstant(java.time.ZoneOffset.UTC).toEpochMilli();
+            return new Hlc(wall, 0, device);
+        }
+
+        public String encode() {
+            return wallMs + "-" + counter + "-" + deviceId;
+        }
+
+        @Override
+        public int compareTo(Hlc o) {
+            int c = Long.compare(wallMs, o.wallMs);
+            if (c != 0) return c;
+            c = Integer.compare(counter, o.counter);
+            if (c != 0) return c;
+            return deviceId.compareTo(o.deviceId);
+        }
+    }
+
+    /** 事件里的操作时钟：优先 op_clock，缺失回退 occurred_at（旧客户端/测试）。 */
+    public static Hlc eventClock(PushEvent ev, JsonNode p) {
+        String raw = p == null ? null : p.path("op_clock").asText(null);
+        Hlc hlc = Hlc.parse(raw, ev.device_client_id());
+        return hlc != null ? hlc : Hlc.fromOccurred(ev.occurred_at(), ev.device_client_id());
+    }
+
+    /**
      * 自我回灌过滤：本设备产生的事件在 pull 收集实体时跳过（cursor 照常推进）。
      * push 已强制 device_client_id == authClientId，故比对可靠；历史/缺失设备号保守保留。
      */
@@ -247,9 +313,10 @@ public class SyncService {
         List<Map<String, String>> rejected = new ArrayList<>();
         Map<String, Object> corrections = new LinkedHashMap<>();
         Map<String, Object> merged = new LinkedHashMap<>();
+        Map<String, Object> breakpoints = new LinkedHashMap<>();
         if (events == null || events.isEmpty()) {
             return pushResult(syncEventRepository.maxSeq(), applied, duplicates, rejected,
-                    corrections, merged);
+                    corrections, merged, breakpoints);
         }
         if (events.size() > PUSH_EVENT_LIMIT) {
             throw new BizException(40001, "too many events (max " + PUSH_EVENT_LIMIT + ")");
@@ -278,10 +345,12 @@ public class SyncService {
             }
             if (syncEventRepository.findByEventUuid(ev.event_uuid()).isPresent()) {
                 duplicates.add(ev.event_uuid());
+                collectV2BreakpointSnapshot(ev, breakpoints);
                 continue;
             }
             try {
                 ApplyOutcome outcome = applyEvent(ev);
+                collectV2BreakpointSnapshot(ev, breakpoints);
                 SyncEvent row = new SyncEvent();
                 row.setEventUuid(ev.event_uuid());
                 row.setDeviceClientId(ev.device_client_id());
@@ -310,12 +379,29 @@ public class SyncService {
         }
         touchDevice(authClientId, null);
         Map<String, Object> result = pushResult(syncEventRepository.maxSeq(), applied,
-                duplicates, rejected, corrections, merged);
+                duplicates, rejected, corrections, merged, breakpoints);
         // 汇总行（与客户端 push.batch/push.ack 时间线对齐用）。
-        log.info("sync.push 完成 device={} applied={} duplicates={} rejected={} corrections={} merged={} cursor={}",
+        log.info("sync.push 完成 device={} applied={} duplicates={} rejected={} corrections={} merged={} breakpoints={} cursor={}",
                 authClientId, applied.size(), duplicates.size(), rejected.size(),
-                corrections.size(), merged.size(), result.get("cursor"));
+                corrections.size(), merged.size(), breakpoints.size(), result.get("cursor"));
         return result;
+    }
+
+    /**
+     * v2 push 回执：按 playlist 维度回权威 head+history 快照（不是 event_uuid）。
+     * 同一批多事件同一歌单时以最后一次应用结果为准。
+     */
+    private void collectV2BreakpointSnapshot(PushEvent ev, Map<String, Object> out) {
+        if (!SyncEventTypes.BREAKPOINT_SET.equals(ev.type()) || ev.payload() == null) return;
+        JsonNode p = ev.payload();
+        if (p.path("protocol").asInt(0) < 2) return;
+        String uuid = p.path("playlist_uuid").asText(null);
+        if (uuid == null || uuid.isBlank()) return;
+        Playlist pl = playlistRepository.findByClientUuid(uuid).orElse(null);
+        if (pl == null) return;
+        PlayState st = playStateRepository.findById(pl.getId()).orElse(null);
+        if (st == null) return;
+        out.put(uuid, playstateSnapshot(st, uuid));
     }
 
     /** 单事件应用结果：correction=判输快照，merged=深层列表合并后的快照。 */
@@ -757,6 +843,11 @@ public class SyncService {
                 && p.path("deep_list").isArray();
         List<JsonNode> incoming = hasFull ? deepNodes(p.path("deep_list")) : null;
 
+        // v2：head 与 history 分开仲裁；head 输了也照常合并历史。
+        if (p != null && p.path("protocol").asInt(0) >= 2) {
+            return applyBreakpointV2(ev, p, pl, st, capacity, hasBase, hasAdded, incoming);
+        }
+
         // 非追加操作（上一首/替换末尾/清空）无法从快照 diff 精确还原：
         // 客户端带上次确认的 base 走三向合并，两端分支都保留。
         if (hasBase) {
@@ -854,6 +945,149 @@ public class SyncService {
         st.setDeepListJson(hasFull ? p.path("deep_list").toString() : null);
         st.setLastEventAt(ev.occurred_at());
         playStateRepository.save(st);
+        return ApplyOutcome.none();
+    }
+
+    /**
+     * 协议 v2 断点：历史三向合并与 head HLC 仲裁独立执行。
+     *
+     * <p>head 的接受规则：</p>
+     * <ul>
+     *   <li>{@code play_track}：新的真实起播/切歌，op_clock 更大即赢；</li>
+     *   <li>{@code pause/resume/seek}：必须作用于当前 session（session 缺失时按
+     *       source_ref 匹配），op_clock 更大才赢；</li>
+     *   <li>{@code progress}：只接受当前 head 设备、当前 session 的进度心跳，
+     *       不改变「谁是最新操作」；</li>
+     *   <li>{@code history_only}：绝不改 head，只合并历史。</li>
+     * </ul>
+     *
+     * <p>历史即使 head 输了也照常合并：离线设备听过的歌不能因为当前曲输掉而丢。</p>
+     */
+    private ApplyOutcome applyBreakpointV2(PushEvent ev, JsonNode p, Playlist pl,
+                                           PlayState st, int capacity,
+                                           boolean hasBase, boolean hasAdded,
+                                           List<JsonNode> incoming) {
+        List<JsonNode> server = parseDeepNodes(st.getDeepListJson());
+        List<JsonNode> mergedHistory = server;
+        boolean historyChanged = false;
+
+        if (hasBase) {
+            List<JsonNode> base = deepNodes(p.path("base_deep_list"));
+            List<JsonNode> device = incoming == null ? server : incoming;
+            mergedHistory = mergeDeepLists(base, server, device, capacity);
+            historyChanged = !sameDeepKeys(mergedHistory, server);
+        } else if (hasAdded) {
+            List<JsonNode> added = deepNodes(p.path("deep_added"));
+            // 新库/旧行无历史：用本次全量做种子；否则服务端分支 + 设备后缀。
+            mergedHistory = (server.isEmpty() && incoming != null)
+                    ? dedupeDeep(incoming, capacity)
+                    : appendDeepAdded(server, added, capacity);
+            historyChanged = !sameDeepKeys(mergedHistory, server);
+        } else if (incoming != null) {
+            // 没带 base 的 v2 客户端：以服务端为 base 做三向合并，避免整表覆盖；
+            // 两边都改时服务端分支在前、设备分支在后。
+            mergedHistory = mergeDeepLists(server, server, incoming, capacity);
+            historyChanged = !sameDeepKeys(mergedHistory, server);
+        }
+
+        String intent = p.path("intent").asText("play_track");
+        JsonNode head = p.path("head").isObject() ? p.path("head") : p;
+        Hlc incomingClock = eventClock(ev, p);
+        if (incomingClock == null) {
+            incomingClock = new Hlc(System.currentTimeMillis(), 0, ev.device_client_id());
+        }
+        Hlc currentClock = Hlc.parse(st.getHeadClock(), st.getHeadDevice());
+        boolean headChanged = false;
+
+        if (!"history_only".equals(intent)) {
+            String ref = refOf(head);
+            if (ref == null || ref.isBlank()) ref = st.getSourceRef();
+            String session = head.path("session_id").asText(null);
+            boolean sameSession = session == null || st.getHeadSession() == null
+                    || session.equals(st.getHeadSession());
+            boolean sameTrack = ref == null || st.getSourceRef() == null
+                    || ref.equals(st.getSourceRef());
+            boolean clockWins = currentClock == null
+                    || incomingClock.compareTo(currentClock) > 0;
+
+            boolean accept = false;
+            switch (intent) {
+                case "progress" -> {
+                    // 进度心跳不能改歌、不能改会话；只允许当前 head 设备上报。
+                    // 它还必须是同一首曲（同会话但换曲的陈旧心跳不能改 head）。
+                    accept = clockWins
+                            && sameSession
+                            && sameTrack
+                            && ev.device_client_id().equals(st.getHeadDevice());
+                }
+                case "pause", "resume", "seek" -> {
+                    // 暂停/继续/seek 可以来自跟随设备，但必须仍作用于同一会话/同一曲，
+                    // 防止旧会话在别处新起播后又被它的旧暂停覆盖。
+                    accept = clockWins && sameSession && sameTrack;
+                }
+                case "play_track" -> accept = clockWins;
+                default -> accept = clockWins;
+            }
+            if (accept) {
+                final boolean progress = "progress".equals(intent);
+                if (!progress) {
+                    if (head.hasNonNull("source_id")) st.setSourceId(sourceIdOf(head));
+                    if (head.hasNonNull("source")) st.setSource(protocolOf(head));
+                    if (head.hasNonNull("source_ref")) st.setSourceRef(ref);
+                    st.setHeadSession("play_track".equals(intent)
+                            ? (session == null ? UUID.randomUUID().toString() : session)
+                            : (session == null ? st.getHeadSession() : session));
+                }
+                if (head.has("position_ms")) {
+                    st.setPositionMs(head.path("position_ms").asInt(0));
+                }
+                if (head.has("playing")) {
+                    st.setHeadPlaying(head.path("playing").asBoolean(false));
+                } else if ("pause".equals(intent)) {
+                    st.setHeadPlaying(false);
+                } else if ("resume".equals(intent) || "play_track".equals(intent)) {
+                    st.setHeadPlaying(true);
+                }
+                st.setDeviceClientId(ev.device_client_id());
+                // progress 只刷新进度/播放态，不改变「谁是最新真实操作」：
+                // head_clock/head_op_id/head_session 保持上一次真实操作的值。
+                // 否则一次心跳会把时钟推高，使另一台设备稍后到达的真实操作
+                // 因 clockWins 失败而被误判为旧操作。
+                if (!progress) {
+                    st.setHeadDevice(ev.device_client_id());
+                    st.setHeadOpId(p.path("op_id").asText(ev.event_uuid()));
+                    st.setHeadClock(incomingClock.encode());
+                }
+                st.setHeadUpdatedAt(LocalDateTime.now());
+                st.setLastEventAt(eventTime(ev));
+                st.setHeadRev(st.getHeadRev() + 1);
+                headChanged = true;
+            }
+        }
+
+        // 当前曲必须出现在历史里（play_track 被接受时补一次尾部；已有则不动）。
+        if (headChanged && "play_track".equals(intent)
+                && st.getSourceRef() != null && !st.getSourceRef().isBlank()) {
+            List<String> keys = deepKeys(mergedHistory);
+            String ref = st.getSourceRef();
+            if (keys.isEmpty() || !ref.equals(keys.get(keys.size() - 1))) {
+                var e = STATIC_MAPPER.createObjectNode();
+                if (st.getSource() != null) e.put("source", st.getSource());
+                e.put("source_ref", ref);
+                mergedHistory.add(e);
+                mergedHistory = dedupeDeep(mergedHistory, capacity);
+                historyChanged = true;
+            }
+        }
+
+        if (historyChanged) {
+            st.setDeepListJson(deepJson(mergedHistory));
+            st.setHistoryRev(st.getHistoryRev() + 1);
+        }
+        playStateRepository.save(st);
+        log.info("sync.breakpoint v2 playlist={} device={} intent={} clock={} headChanged={} historyChanged={} headRev={} historyRev={}",
+                pl.getClientUuid(), ev.device_client_id(), intent, incomingClock.encode(),
+                headChanged, historyChanged, st.getHeadRev(), st.getHistoryRev());
         return ApplyOutcome.none();
     }
 
@@ -1001,6 +1235,9 @@ public class SyncService {
         out.put("sources", sources);
         out.put("playlists", playlists);
         out.put("playstates", playstates);
+        // v2：客户端据此切换到「head_rev/history_rev」路径；旧服务端无此字段。
+        out.put("breakpoint_protocol", 2);
+        out.put("server_epoch", serverEpoch());
         // 时钟校准：客户端据此修正出队时间戳，治设备墙钟偏移导致的 LWW 误判。
         out.put("server_time", serverTimeNow());
         log.info("sync.pull device={} since={} page={} cursor={} has_more={} songs={} sources={} playlists={} playstates={}",
@@ -1091,9 +1328,19 @@ public class SyncService {
         m.put("source_ref", st.getSourceRef());
         m.put("device_client_id", st.getDeviceClientId());
         m.put("position_ms", st.getPositionMs());
-        // 最后操作时间（= 命中事件的 occurred_at）：客户端镜像比较/启动补切
-        // 以它为时钟（旧数据 null 时客户端回退 updated_at）。updated_at 是
-        // 服务端写入/上传时间，仅作诊断，不再参与「谁更新」的比较。
+        // v2：head 版本与历史版本分开；客户端只用 rev 判断是否应用，
+        // head_clock 仅用于服务端仲裁/诊断，不再让客户端比较墙钟。
+        m.put("head_rev", st.getHeadRev());
+        m.put("head_clock", st.getHeadClock());
+        m.put("head_device", st.getHeadDevice());
+        m.put("head_op_id", st.getHeadOpId());
+        m.put("head_session", st.getHeadSession());
+        m.put("head_playing", st.getHeadPlaying());
+        m.put("head_updated_at",
+                st.getHeadUpdatedAt() == null ? null : st.getHeadUpdatedAt().toString());
+        m.put("history_rev", st.getHistoryRev());
+        // 旧协议字段：仍保留给未升级客户端和诊断。
+        // 最后操作时间（= 命中事件的 occurred_at）；updated_at 是服务端写入时间。
         m.put("last_event_at",
                 st.getLastEventAt() == null ? null : st.getLastEventAt().toString());
         m.put("updated_at", st.getUpdatedAt() == null ? null : st.getUpdatedAt().toString());
@@ -1308,20 +1555,25 @@ public class SyncService {
         }
     }
 
-    private static Map<String, Object> pushResult(long cursor, List<String> applied,
-                                                  List<String> duplicates,
-                                                  List<Map<String, String>> rejected,
-                                                  Map<String, Object> corrections,
-                                                  Map<String, Object> merged) {
+    private Map<String, Object> pushResult(long cursor, List<String> applied,
+                                           List<String> duplicates,
+                                           List<Map<String, String>> rejected,
+                                           Map<String, Object> corrections,
+                                           Map<String, Object> merged,
+                                           Map<String, Object> breakpoints) {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("cursor", cursor);
         out.put("applied", applied);
         out.put("duplicates", duplicates);
         out.put("rejected", rejected);
         out.put("corrections", corrections);
-        // 深层列表合并快照按 event_uuid 键控；客户端即使发现
+        // 旧协议：深层列表合并快照按 event_uuid 键控；客户端即使发现
         // device_client_id 是自己也必须强制套用（其中含对端分支）。
         out.put("merged", merged);
+        // v2：按 playlist 维度回权威 head+history；旧客户端忽略。
+        out.put("breakpoints", breakpoints);
+        out.put("breakpoint_protocol", 2);
+        out.put("server_epoch", serverEpoch());
         // 时钟校准：见 pull（客户端修正出队时间戳用）。
         out.put("server_time", serverTimeNow());
         return out;

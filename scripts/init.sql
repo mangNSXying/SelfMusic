@@ -12,7 +12,8 @@
 --   song_states 增加 play_sec（migration_007）
 --   事件日志压缩支撑：devices.last_pull_cursor + sync_events.entity_key（migration_008）
 --   sync_events.payload / play_states.deep_list_json 扩为 MEDIUMTEXT，容纳大歌单的 deep_list 断点载荷（migration_009）
--- 注意：本文件已内含 migration_002…009 的全部结果，**全新部署只需执行本文件**；
+--   play_states 增加 head_rev/head_clock/head_device/head_op_id/head_session/head_playing/head_updated_at/history_rev（migration_010，断点协议 v2）
+-- 注意：本文件已内含 migration_002…010 的全部结果，**全新部署只需执行本文件**；
 --   存量库升级请按文末「升级说明」顺序执行各 migration 文件，勿执行本文件。
 -- =====================================================================
 
@@ -98,8 +99,17 @@ CREATE TABLE IF NOT EXISTS play_states (
     device_client_id VARCHAR(36)  NULL COMMENT '上报设备 client_id（跨设备续播提示用）',
     position_ms      INT DEFAULT 0,
     deep_list_json   MEDIUMTEXT NULL COMMENT '深层列表（播放历史）JSON，跨设备续播重建队列用（大歌单可超 TEXT 64 KiB）',
-    last_event_at    DATETIME(3) NULL COMMENT '最后一次应用的断点事件 occurred_at（LWW）',
+    head_rev         BIGINT NOT NULL DEFAULT 0 COMMENT '播放头版本：head 被接受时 +1',
+    head_clock       VARCHAR(80) NULL COMMENT '最后接受的 head 操作时钟（HLC wall-counter-device）',
+    head_device      VARCHAR(64) NULL COMMENT '最后接受的 head 来源设备',
+    head_op_id       VARCHAR(64) NULL COMMENT '最后接受的 head 操作 id',
+    head_session     VARCHAR(64) NULL COMMENT '播放会话 id（progress 只接受同会话）',
+    head_playing     BOOLEAN NOT NULL DEFAULT FALSE COMMENT '服务端 head 是否处于播放态',
+    head_updated_at  DATETIME(3) NULL COMMENT '服务端接受 head 的时间（全局最近歌单排序用）',
+    history_rev      BIGINT NOT NULL DEFAULT 0 COMMENT '深层历史版本：历史变化时 +1',
+    last_event_at    DATETIME(3) NULL COMMENT '旧协议 LWW 兼容字段（v2 新客户端不再用于正确性比较）',
     updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_play_states_head_updated (head_updated_at),
     CONSTRAINT fk_state_playlist FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -170,13 +180,14 @@ CREATE TABLE IF NOT EXISTS sync_sources (
 -- ---------------------------------------------------------------------
 INSERT INTO settings (skey, svalue) VALUES
     ('cache_max_bytes', '5368709120'),
-    ('cache_song_limit', '200')
+    ('cache_song_limit', '200'),
+    ('sync.server_epoch', UUID())
 ON DUPLICATE KEY UPDATE skey = skey;
 -- pairing_token 由应用首次启动生成写入（权威源 env PAIRING_TOKEN），不在此预置
 
 -- =====================================================================
 -- 升级说明：
---   全新部署：执行本文件即可（已内含 migration_002…009 的全部结果），
+--   全新部署：执行本文件即可（已内含 migration_002…010 的全部结果），
 --     随后启动后端（ddl-auto=validate 校验实体与表一致）。
 --   存量库升级（旧 v2 + 服务端曲库）：不要执行本文件，按以下顺序执行各迁移，
 --     每步之间保持顺序（006/007 断言的列依赖前序迁移）：
@@ -188,5 +199,6 @@ ON DUPLICATE KEY UPDATE skey = skey;
 --       migration_007_play_sec.sql
 --       migration_008_event_compaction.sql
 --       migration_009_sync_payload_mediumtext.sql
+--       migration_010_breakpoint_head_v2.sql
 --   风险：migration_004 不可逆（删除 songs/albums/covers/scan_tasks），执行前备份。
 -- =====================================================================

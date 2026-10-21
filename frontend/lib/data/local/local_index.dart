@@ -1401,6 +1401,27 @@ class LocalIndex {
   /// 当前时钟偏移（测试用）。
   Duration get clockSkewForTest => _clockSkew;
 
+  // v2 断点操作时钟：wallMillis-counter。设备维度由服务端用 auth clientId
+  // 补齐（同一 wall+counter 时再按设备全序），客户端无需异步读设备号。
+  int _hlcWallMs = 0;
+  int _hlcCounter = 0;
+
+  /// 生成一个本机单调递增的 HLC 操作时钟（`wall-counter`）。
+  ///
+  /// 注意：这不是「事件时间戳」；它只用于「最后一次真实播放操作」的仲裁。
+  /// 进程重启后 counter 归零，若墙钟回拨，服务端仍会用 head_rev 拒绝更旧
+  /// 的 head，历史合并不受影响。
+  String nextBreakpointClock() {
+    final now = DateTime.now().add(_clockSkew).millisecondsSinceEpoch;
+    if (now > _hlcWallMs) {
+      _hlcWallMs = now;
+      _hlcCounter = 0;
+    } else {
+      _hlcCounter++;
+    }
+    return '$_hlcWallMs-$_hlcCounter';
+  }
+
   /// 本地变更入队（uuid 同步生成，落库进写隔离后返回）。
   /// `occurred_at` 按时钟偏移修正后保证本机单调递增。
   /// 返回 event_uuid。
@@ -1748,17 +1769,36 @@ class LocalIndex {
     required String updatedAt,
     String? deviceId,
     String? lastEventAt,
+    int headRev = 0,
+    int historyRev = 0,
+    String? headClock,
+    String? headOpId,
+    String? headSession,
+    bool headPlaying = false,
+    String? headUpdatedAt,
   }) {
     return _writer!.exec(
         'INSERT INTO breakpoint_mirror(playlist_uuid, song_id, source_id, source, source_ref, '
-        'position_ms, deep_list_json, updated_at, device_id, last_event_at) '
-        'VALUES(?,?,?,?,?,?,?,?,?,?) '
+        'position_ms, deep_list_json, updated_at, device_id, last_event_at, '
+        'head_rev, history_rev, head_clock, head_op_id, head_session, head_playing, head_updated_at) '
+        'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
         'ON CONFLICT(playlist_uuid) DO UPDATE SET '
-        'song_id=excluded.song_id, source_id=excluded.source_id, source=excluded.source, '
-        'source_ref=excluded.source_ref, position_ms=excluded.position_ms, '
-        'deep_list_json=excluded.deep_list_json, '
-        'updated_at=excluded.updated_at, device_id=excluded.device_id, '
-        'last_event_at=excluded.last_event_at',
+        'song_id=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.song_id ELSE breakpoint_mirror.song_id END, '
+        'source_id=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.source_id ELSE breakpoint_mirror.source_id END, '
+        'source=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.source ELSE breakpoint_mirror.source END, '
+        'source_ref=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.source_ref ELSE breakpoint_mirror.source_ref END, '
+        'position_ms=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.position_ms ELSE breakpoint_mirror.position_ms END, '
+        'deep_list_json=CASE WHEN excluded.deep_list_json IS NOT NULL AND excluded.history_rev >= breakpoint_mirror.history_rev THEN excluded.deep_list_json ELSE breakpoint_mirror.deep_list_json END, '
+        'updated_at=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.updated_at ELSE breakpoint_mirror.updated_at END, '
+        'device_id=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.device_id ELSE breakpoint_mirror.device_id END, '
+        'last_event_at=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.last_event_at ELSE breakpoint_mirror.last_event_at END, '
+        'head_rev=MAX(breakpoint_mirror.head_rev, excluded.head_rev), '
+        'history_rev=MAX(breakpoint_mirror.history_rev, CASE WHEN excluded.deep_list_json IS NOT NULL THEN excluded.history_rev ELSE 0 END), '
+        'head_clock=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_clock ELSE breakpoint_mirror.head_clock END, '
+        'head_op_id=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_op_id ELSE breakpoint_mirror.head_op_id END, '
+        'head_session=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_session ELSE breakpoint_mirror.head_session END, '
+        'head_playing=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_playing ELSE breakpoint_mirror.head_playing END, '
+        'head_updated_at=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_updated_at ELSE breakpoint_mirror.head_updated_at END',
         [
           playlistUuid,
           songId,
@@ -1769,7 +1809,14 @@ class LocalIndex {
           deepListJson,
           updatedAt,
           deviceId,
-          lastEventAt
+          lastEventAt,
+          headRev,
+          historyRev,
+          headClock,
+          headOpId,
+          headSession,
+          headPlaying ? 1 : 0,
+          headUpdatedAt,
         ]);
   }
 
@@ -1786,23 +1833,13 @@ class LocalIndex {
 
   BreakpointMirrorRow? breakpointMirrorOf(String playlistUuid) {
     final rs = _db!.select(
-        'SELECT playlist_uuid, song_id, source_id, source, source_ref, position_ms, deep_list_json, updated_at, device_id, last_event_at '
+        'SELECT playlist_uuid, song_id, source_id, source, source_ref, position_ms, '
+        'deep_list_json, updated_at, device_id, last_event_at, head_rev, history_rev, '
+        'head_clock, head_op_id, head_session, head_playing, head_updated_at '
         'FROM breakpoint_mirror WHERE playlist_uuid=?',
         [playlistUuid]);
     if (rs.isEmpty) return null;
-    final r = rs.first;
-    return BreakpointMirrorRow(
-      playlistUuid: r['playlist_uuid'] as String,
-      songId: r['song_id'] as int?,
-      sourceId: r['source_id'] as String?,
-      source: r['source'] as String?,
-      sourceRef: r['source_ref'] as String?,
-      positionMs: r['position_ms'] as int,
-      deepListJson: r['deep_list_json'] as String?,
-      updatedAt: r['updated_at'] as String,
-      deviceId: r['device_id'] as String?,
-      lastEventAt: r['last_event_at'] as String?,
-    );
+    return BreakpointMirrorRow.fromMap(rs.first);
   }
 
   /// 本机已采用且与服务端确认过的深层列表（身份 JSON）；null=从未确认。
@@ -1813,13 +1850,114 @@ class LocalIndex {
     return rs.isEmpty ? null : rs.first['deep_list_json'] as String?;
   }
 
+  /// [historyRev] 非空时同步记录该 base 对应的服务端历史版本；普通镜像
+  /// 拉取/只落镜像的路径不得推进它（base 必须与本机已采用列表对齐）。
   Future<void> setBreakpointBaseDeepList(
-      String playlistUuid, String deepListJson) {
+      String playlistUuid, String deepListJson, {int? historyRev}) {
     return _writer!.exec(
-        'INSERT INTO breakpoint_sync_base(playlist_uuid, deep_list_json, updated_at) '
-        'VALUES(?,?,?) ON CONFLICT(playlist_uuid) DO UPDATE SET '
-        'deep_list_json=excluded.deep_list_json, updated_at=excluded.updated_at',
-        [playlistUuid, deepListJson, DateTime.now().toIso8601String()]);
+        'INSERT INTO breakpoint_sync_base(playlist_uuid, deep_list_json, history_rev, updated_at) '
+        'VALUES(?,?,?,?) ON CONFLICT(playlist_uuid) DO UPDATE SET '
+        'deep_list_json=excluded.deep_list_json, '
+        'history_rev=CASE WHEN ? IS NULL THEN breakpoint_sync_base.history_rev '
+        'ELSE excluded.history_rev END, '
+        'updated_at=excluded.updated_at',
+        [
+          playlistUuid,
+          deepListJson,
+          historyRev ?? 0,
+          DateTime.now().toIso8601String(),
+          historyRev,
+        ]);
+  }
+
+  int breakpointBaseHistoryRev(String playlistUuid) {
+    final rs = _db!.select(
+        'SELECT history_rev FROM breakpoint_sync_base WHERE playlist_uuid=?',
+        [playlistUuid]);
+    return rs.isEmpty ? 0 : (rs.first['history_rev'] as int? ?? 0);
+  }
+
+  // ---------- 断点协议 v2 同步状态 ----------
+
+  BreakpointSyncState? breakpointSyncStateOf(String playlistUuid) {
+    final rs = _db!.select(
+        'SELECT playlist_uuid, applied_head_rev, applied_history_rev, '
+        'pending_head_op_id, session_id, server_epoch '
+        'FROM breakpoint_sync_state WHERE playlist_uuid=?',
+        [playlistUuid]);
+    if (rs.isEmpty) return null;
+    final r = rs.first;
+    return BreakpointSyncState(
+      playlistUuid: r['playlist_uuid'] as String,
+      appliedHeadRev: r['applied_head_rev'] as int? ?? 0,
+      appliedHistoryRev: r['applied_history_rev'] as int? ?? 0,
+      pendingHeadOpId: r['pending_head_op_id'] as String?,
+      sessionId: r['session_id'] as String?,
+      serverEpoch: r['server_epoch'] as String?,
+    );
+  }
+
+  Future<void> saveBreakpointSyncState({
+    required String playlistUuid,
+    int? appliedHeadRev,
+    int? appliedHistoryRev,
+    String? pendingHeadOpId,
+    bool clearPending = false,
+    String? sessionId,
+    String? serverEpoch,
+  }) {
+    final now = DateTime.now().toIso8601String();
+    return _writer!.exec(
+        'INSERT INTO breakpoint_sync_state(playlist_uuid, applied_head_rev, '
+        'applied_history_rev, pending_head_op_id, session_id, server_epoch, updated_at) '
+        'VALUES(?,?,?,?,?,?,?) ON CONFLICT(playlist_uuid) DO UPDATE SET '
+        'applied_head_rev=MAX(breakpoint_sync_state.applied_head_rev, excluded.applied_head_rev), '
+        'applied_history_rev=MAX(breakpoint_sync_state.applied_history_rev, excluded.applied_history_rev), '
+        'pending_head_op_id=CASE WHEN ? THEN NULL ELSE '
+        'COALESCE(excluded.pending_head_op_id, breakpoint_sync_state.pending_head_op_id) END, '
+        'session_id=COALESCE(excluded.session_id, breakpoint_sync_state.session_id), '
+        'server_epoch=COALESCE(excluded.server_epoch, breakpoint_sync_state.server_epoch), '
+        'updated_at=excluded.updated_at',
+        [
+          playlistUuid,
+          appliedHeadRev ?? 0,
+          appliedHistoryRev ?? 0,
+          pendingHeadOpId,
+          sessionId,
+          serverEpoch,
+          now,
+          clearPending ? 1 : 0,
+        ]);
+  }
+
+  /// 任一歌单已记录的服务端代次（用于启动时先收到网络响应、后恢复本机
+  /// 断点的顺序下仍能识别 epoch 变化）。
+  String? breakpointStoredServerEpoch() {
+    final rs = _db!.select(
+        'SELECT server_epoch FROM breakpoint_sync_state '
+        'WHERE server_epoch IS NOT NULL AND server_epoch != \'\' LIMIT 1');
+    if (rs.isEmpty) return null;
+    final v = rs.first['server_epoch'] as String?;
+    return (v == null || v.isEmpty) ? null : v;
+  }
+
+  Future<void> resetBreakpointSyncStateForEpoch(
+      String playlistUuid, String serverEpoch) {
+    return _writer!.exec(
+        'INSERT INTO breakpoint_sync_state(playlist_uuid, applied_head_rev, '
+        'applied_history_rev, pending_head_op_id, session_id, server_epoch, updated_at) '
+        'VALUES(?,0,0,NULL,NULL,?,?) ON CONFLICT(playlist_uuid) DO UPDATE SET '
+        'applied_head_rev=0, applied_history_rev=0, pending_head_op_id=NULL, '
+        'server_epoch=excluded.server_epoch, updated_at=excluded.updated_at',
+        [playlistUuid, serverEpoch, DateTime.now().toIso8601String()]);
+  }
+
+  /// 服务端 epoch 变化（DB 重建/迁移）：本地 revision 全部作废重来。
+  /// 保留断点镜像的当前值（本机续播仍可用），只清版本号与 pending。
+  Future<void> resetBreakpointSyncRevs(String serverEpoch) async {
+    await _writer!.exec(
+        'UPDATE breakpoint_mirror SET head_rev=0, history_rev=0');
+    await _writer!.exec('DELETE FROM breakpoint_sync_state');
   }
 
   Future<void> deleteBreakpointMirror(String playlistUuid) {
@@ -1895,26 +2033,28 @@ class LocalIndex {
   // ---------- 断点（stage2.md §1.4） ----------
 
   Future<void> savePlayState(String queueJson, int idx, int positionMs,
-      {String? playlistUuid, String? anchorKey}) {
+      {String? playlistUuid, String? anchorKey, String? sessionId}) {
     return _writer!.exec(
-        'INSERT INTO play_state(id, queue_json, idx, position_ms, updated_at, playlist_uuid, anchor_key) '
-        'VALUES(1,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET '
+        'INSERT INTO play_state(id, queue_json, idx, position_ms, updated_at, playlist_uuid, anchor_key, session_id) '
+        'VALUES(1,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET '
         'queue_json=excluded.queue_json, idx=excluded.idx, '
         'position_ms=excluded.position_ms, updated_at=excluded.updated_at, '
-        'playlist_uuid=excluded.playlist_uuid, anchor_key=excluded.anchor_key',
+        'playlist_uuid=excluded.playlist_uuid, anchor_key=excluded.anchor_key, '
+        'session_id=COALESCE(excluded.session_id, play_state.session_id)',
         [
           queueJson,
           idx,
           positionMs,
           DateTime.now().toIso8601String(),
           playlistUuid,
-          anchorKey
+          anchorKey,
+          sessionId,
         ]);
   }
 
   PlayStateRow? getPlayState() {
     final rs = _db!.select(
-        'SELECT queue_json, idx, position_ms, updated_at, playlist_uuid, anchor_key FROM play_state WHERE id=1');
+        'SELECT queue_json, idx, position_ms, updated_at, playlist_uuid, anchor_key, session_id FROM play_state WHERE id=1');
     if (rs.isEmpty) return null;
     final r = rs.first;
     return PlayStateRow(
@@ -1924,6 +2064,7 @@ class LocalIndex {
       updatedAt: r['updated_at'] as String,
       playlistUuid: r['playlist_uuid'] as String?,
       anchorKey: r['anchor_key'] as String?,
+      sessionId: r['session_id'] as String?,
     );
   }
 
@@ -1957,22 +2098,10 @@ class LocalIndex {
   List<BreakpointMirrorRow> allBreakpointMirrors() {
     final rs = _db!.select(
         'SELECT playlist_uuid, song_id, source_id, source, source_ref, position_ms, '
-        'deep_list_json, updated_at, device_id, last_event_at FROM breakpoint_mirror');
-    return [
-      for (final r in rs)
-        BreakpointMirrorRow(
-          playlistUuid: r['playlist_uuid'] as String,
-          songId: r['song_id'] as int?,
-          sourceId: r['source_id'] as String?,
-          source: r['source'] as String?,
-          sourceRef: r['source_ref'] as String?,
-          positionMs: r['position_ms'] as int,
-          deepListJson: r['deep_list_json'] as String?,
-          updatedAt: r['updated_at'] as String,
-          deviceId: r['device_id'] as String?,
-          lastEventAt: r['last_event_at'] as String?,
-        ),
-    ];
+        'deep_list_json, updated_at, device_id, last_event_at, head_rev, history_rev, '
+        'head_clock, head_op_id, head_session, head_playing, head_updated_at '
+        'FROM breakpoint_mirror');
+    return [for (final r in rs) BreakpointMirrorRow.fromMap(r)];
   }
 
   Future<void> clearPlayState() {
@@ -2845,6 +2974,9 @@ class PlayStateRow {
   /// 融合队列锚定键（任意列表上下文：playlist:<uuid>/liked/songs/album:<id>/
   /// artist:<id>/source:<key>；重启恢复锚定与深层历史用）。
   final String? anchorKey;
+
+  /// v2 播放会话 id（旧数据为空）。
+  final String? sessionId;
   const PlayStateRow({
     required this.queueJson,
     required this.idx,
@@ -2852,6 +2984,7 @@ class PlayStateRow {
     required this.updatedAt,
     this.playlistUuid,
     this.anchorKey,
+    this.sessionId,
   });
 }
 
@@ -2905,6 +3038,16 @@ class BreakpointMirrorRow {
 
   /// 最后操作时间（= 服务端命中事件的 occurred_at；旧数据可能为空）。
   final String? lastEventAt;
+
+  /// v2：head/history 独立版本；旧服务端/旧镜像行为 0。
+  final int headRev;
+  final int historyRev;
+  final String? headClock;
+  final String? headOpId;
+  final String? headSession;
+  final bool headPlaying;
+  final String? headUpdatedAt;
+
   const BreakpointMirrorRow({
     required this.playlistUuid,
     this.songId,
@@ -2916,12 +3059,60 @@ class BreakpointMirrorRow {
     required this.updatedAt,
     this.deviceId,
     this.lastEventAt,
+    this.headRev = 0,
+    this.historyRev = 0,
+    this.headClock,
+    this.headOpId,
+    this.headSession,
+    this.headPlaying = false,
+    this.headUpdatedAt,
   });
 
+  factory BreakpointMirrorRow.fromMap(Map<String, dynamic> r) {
+    return BreakpointMirrorRow(
+      playlistUuid: r['playlist_uuid'] as String,
+      songId: r['song_id'] as int?,
+      sourceId: r['source_id'] as String?,
+      source: r['source'] as String?,
+      sourceRef: r['source_ref'] as String?,
+      positionMs: r['position_ms'] as int? ?? 0,
+      deepListJson: r['deep_list_json'] as String?,
+      updatedAt: r['updated_at'] as String,
+      deviceId: r['device_id'] as String?,
+      lastEventAt: r['last_event_at'] as String?,
+      headRev: r['head_rev'] as int? ?? 0,
+      historyRev: r['history_rev'] as int? ?? 0,
+      headClock: r['head_clock'] as String?,
+      headOpId: r['head_op_id'] as String?,
+      headSession: r['head_session'] as String?,
+      headPlaying: (r['head_playing'] as int? ?? 0) != 0,
+      headUpdatedAt: r['head_updated_at'] as String?,
+    );
+  }
+
   /// 比较时钟（F4）：最后操作时间优先，旧数据回退上传时间 updated_at。
-  /// 与服务端 /playstates/latest 排序、推送 LWW（occurred_at）同口径。
+  /// v2 的本地状态机用 head_rev/history_rev 判断，不依赖这个墙钟。
   String get compareClock =>
       (lastEventAt == null || lastEventAt!.isEmpty) ? updatedAt : lastEventAt!;
+}
+
+/// 每歌单的 v2 断点同步状态。
+class BreakpointSyncState {
+  final String playlistUuid;
+  final int appliedHeadRev;
+  final int appliedHistoryRev;
+  final String? pendingHeadOpId;
+  final String? sessionId;
+  final String? serverEpoch;
+
+  const BreakpointSyncState({
+    required this.playlistUuid,
+    this.appliedHeadRev = 0,
+    this.appliedHistoryRev = 0,
+    this.pendingHeadOpId,
+    this.sessionId,
+    this.serverEpoch,
+  });
 }
 
 /// 歌手处理.txt：ARTISTS 精炼身份行（names/groups 为 JSON 数组）。

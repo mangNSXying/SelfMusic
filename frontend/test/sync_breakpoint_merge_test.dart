@@ -31,6 +31,12 @@ class _MergeApi extends ApiClient {
   List<dynamic>? mergedDeepList;
   List<dynamic>? correctionDeepList;
   String correctionSourceRef = '/s.mp3';
+  bool v2 = false;
+  String v2HeadRef = '/s.mp3';
+  String v2Session = 's-remote';
+  int v2HeadRev = 3;
+  int v2HistoryRev = 4;
+  List<dynamic> v2DeepList = const [];
 
   @override
   String get baseUrl => 'https://sync.example';
@@ -76,6 +82,34 @@ class _MergeApi extends ApiClient {
         };
       }
     }
+    final breakpoints = <String, dynamic>{};
+    if (v2) {
+      for (final e in events) {
+        if (e['type'] != 'breakpoint.set') continue;
+        final payload = e['payload'];
+        if (payload is! Map) continue;
+        final uuid = payload['playlist_uuid'];
+        if (uuid is! String) continue;
+        breakpoints[uuid] = {
+          'client_uuid': uuid,
+          'source': payload['source'] ?? 'webdav',
+          'source_ref': v2HeadRef,
+          'device_client_id': 'other-device',
+          'position_ms': payload['position_ms'] ?? 0,
+          'head_rev': v2HeadRev,
+          'history_rev': v2HistoryRev,
+          'head_clock': '2000-0-other-device',
+          'head_device': 'other-device',
+          'head_op_id': 'op-remote',
+          'head_session': v2Session,
+          'head_playing': true,
+          'head_updated_at': '2026-01-02T00:00:00',
+          'last_event_at': '2026-01-01T00:00:00',
+          'updated_at': '2026-01-01T00:00:00',
+          'deep_list': v2DeepList,
+        };
+      }
+    }
     return {
       'applied': [
         for (final e in events)
@@ -84,6 +118,9 @@ class _MergeApi extends ApiClient {
       'duplicates': [],
       'corrections': corrections,
       'merged': merged,
+      'breakpoints': breakpoints,
+      if (v2) 'breakpoint_protocol': 2,
+      if (v2) 'server_epoch': 'epoch-test',
     };
   }
 
@@ -247,5 +284,164 @@ void main() {
         reason: 'base 跟本机已采用列表走；服务端赢家留在镜像，等播放器采用后再推进');
     expect(index.breakpointMirrorOf(uuid)!.sourceRef, '/s.mp3');
     expect(await index.pendingOutbox(), isEmpty);
+  });
+  test('v2 push 回执按 playlist 回调快照并落 head/history 镜像', () async {
+    final id = await index.createPlaylist('v2 歌单');
+    final uuid = index.playlistUuidOf(id)!;
+    api.v2 = true;
+    api.v2HeadRef = '/s.mp3';
+    api.v2DeepList = [
+      {'source': 'webdav', 'source_ref': '/a.mp3'},
+      {'source': 'webdav', 'source_ref': '/s.mp3'},
+    ];
+    await index.enqueueOutbox('breakpoint.set', {
+      'playlist_uuid': uuid,
+      'protocol': 2,
+      'op_id': 'op-local',
+      'op_clock': '1000-0',
+      'intent': 'play_track',
+      'source': 'webdav',
+      'source_ref': '/b.mp3',
+      'position_ms': 3000,
+      'deep_list': [
+        {'source': 'webdav', 'source_ref': '/a.mp3'},
+        {'source': 'webdav', 'source_ref': '/b.mp3'},
+      ],
+      'base_deep_list': [
+        {'source': 'webdav', 'source_ref': '/a.mp3'},
+      ],
+    });
+    bool? gotV2;
+    String? gotEpoch;
+    Map<String, dynamic>? gotSnapshot;
+    List<dynamic>? gotSent;
+    engine.onBreakpointProtocol = (v2, epoch) async {
+      gotV2 = v2;
+      gotEpoch = epoch;
+    };
+    engine.onBreakpointSnapshot = (snapshot, sent) async {
+      gotSnapshot = snapshot;
+      gotSent = sent;
+    };
+
+    await engine.syncNow(force: true);
+
+    expect(gotV2, isTrue);
+    expect(gotEpoch, 'epoch-test');
+    expect(gotSnapshot, isNotNull);
+    expect(gotSnapshot!['head_rev'], 3);
+    expect(gotSnapshot!['history_rev'], 4);
+    expect(gotSnapshot!['head_op_id'], 'op-remote');
+    expect(gotSent, hasLength(2), reason: '回调收到本设备刚推的 deep_list');
+    final mirror = index.breakpointMirrorOf(uuid)!;
+    expect(mirror.headRev, 3);
+    expect(mirror.historyRev, 4);
+    expect(mirror.headOpId, 'op-remote');
+    expect(mirror.headSession, 's-remote');
+    expect(mirror.deepListJson, contains('/s.mp3'));
+    // v2 的 base 不盲跟回执，必须由播放器在采用历史后推进。
+    expect(index.breakpointBaseDeepList(uuid), isNull);
+    expect(await index.pendingOutbox(), isEmpty);
+  });
+
+  test('v2 镜像版本防护：旧 head 不回退 head，新 history 仍可前进', () async {
+    final id = await index.createPlaylist('v2 版本防护');
+    final uuid = index.playlistUuidOf(id)!;
+    await index.upsertBreakpointMirror(
+      playlistUuid: uuid,
+      sourceRef: '/x/new.mp3',
+      source: 'webdav',
+      positionMs: 5000,
+      deepListJson: '[{"source":"webdav","source_ref":"/x/a.mp3"}]',
+      updatedAt: '2026-01-01T00:00:00',
+      headRev: 5,
+      historyRev: 2,
+      headClock: '5000-0',
+      headOpId: 'op-new',
+      headSession: 's-new',
+      headPlaying: true,
+      headUpdatedAt: '2026-01-01T00:00:00',
+    );
+    await index.upsertBreakpointMirror(
+      playlistUuid: uuid,
+      sourceRef: '/x/old.mp3',
+      source: 'webdav',
+      positionMs: 1000,
+      deepListJson: '[{"source":"webdav","source_ref":"/x/a.mp3"},'
+          '{"source":"webdav","source_ref":"/x/s.mp3"}]',
+      updatedAt: '2026-01-02T00:00:00',
+      headRev: 4,
+      historyRev: 3,
+      headClock: '4000-0',
+      headOpId: 'op-old',
+      headSession: 's-old',
+      headPlaying: false,
+      headUpdatedAt: '2026-01-02T00:00:00',
+    );
+
+    final row = index.breakpointMirrorOf(uuid)!;
+    expect(row.headRev, 5);
+    expect(row.headOpId, 'op-new');
+    expect(row.sourceRef, '/x/new.mp3');
+    expect(row.positionMs, 5000);
+    expect(row.historyRev, 3);
+    expect(row.deepListJson, contains('/x/s.mp3'));
+  });
+
+  test('v2 快照缺 deep_list：只更新 head，不清历史也不推进 history_rev', () async {
+    final id = await index.createPlaylist('v2 缺 deep');
+    final uuid = index.playlistUuidOf(id)!;
+    await index.upsertBreakpointMirror(
+      playlistUuid: uuid,
+      sourceRef: '/x/a.mp3',
+      source: 'webdav',
+      positionMs: 1000,
+      deepListJson: '[{"source":"webdav","source_ref":"/x/a.mp3"}]',
+      updatedAt: '2026-01-01T00:00:00',
+      headRev: 2,
+      historyRev: 2,
+      headClock: '2000-0',
+      headOpId: 'op-2',
+      headSession: 's-2',
+      headPlaying: false,
+      headUpdatedAt: '2026-01-01T00:00:00',
+    );
+    await index.upsertBreakpointMirror(
+      playlistUuid: uuid,
+      sourceRef: '/x/new.mp3',
+      source: 'webdav',
+      positionMs: 3000,
+      deepListJson: null,
+      updatedAt: '2026-01-02T00:00:00',
+      headRev: 3,
+      historyRev: 3,
+      headClock: '3000-0',
+      headOpId: 'op-3',
+      headSession: 's-3',
+      headPlaying: true,
+      headUpdatedAt: '2026-01-02T00:00:00',
+    );
+
+    final row = index.breakpointMirrorOf(uuid)!;
+    expect(row.headRev, 3);
+    expect(row.sourceRef, '/x/new.mp3');
+    expect(row.historyRev, 2, reason: '缺 deep_list 的快照不得推进历史版本');
+    expect(row.deepListJson, contains('/x/a.mp3'));
+  });
+
+  test('v2 base history_rev 只随显式对齐推进', () async {
+    final id = await index.createPlaylist('v2 base rev');
+    final uuid = index.playlistUuidOf(id)!;
+    const first = '[{"source":"webdav","source_ref":"/x/a.mp3"}]';
+    const second = '[{"source":"webdav","source_ref":"/x/a.mp3"},'
+        '{"source":"webdav","source_ref":"/x/s.mp3"}]';
+    await index.setBreakpointBaseDeepList(uuid, first, historyRev: 4);
+    expect(index.breakpointBaseHistoryRev(uuid), 4);
+    await index.setBreakpointBaseDeepList(uuid, first);
+    expect(index.breakpointBaseHistoryRev(uuid), 4,
+        reason: '普通镜像/只落库路径不得无意推进 base revision');
+    await index.setBreakpointBaseDeepList(uuid, second, historyRev: 5);
+    expect(index.breakpointBaseHistoryRev(uuid), 5);
+    expect(index.breakpointBaseDeepList(uuid), contains('/x/s.mp3'));
   });
 }
