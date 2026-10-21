@@ -204,10 +204,15 @@ int? _mp3CoverReadHint(Uint8List head) {
 /// VORBIS_COMMENT 之前」这种合法块序下会误判成已到头：封面拿到了，**排在它后面
 /// 的标题/歌手永远读不到**（这正是旧实现必须靠整读兜底的原因之一）。
 int? _flacCoverReadHint(Uint8List head) {
-  if (head.length < 8 || String.fromCharCodes(head.sublist(0, 4)) != 'fLaC') {
+  final start = _flacMagicOffset(head);
+  if (start < 0) {
+    // 前置 ID3v2 标签本身超出头部采样：先补到标签尾（再多 4 字节拿到魔数），
+    // 下一轮再按块列表继续。
+    final id3Len = _leadingId3v2Len(head);
+    if (id3Len > 0) return id3Len + 4;
     return null;
   }
-  var i = 4;
+  var i = start + 4;
   var last = false;
   while (!last && i + 4 <= head.length) {
     final hdr = head[i];
@@ -681,10 +686,9 @@ AudioMeta _parseMp3Minimal(Uint8List head) {
 
 AudioMeta _parseFlacMinimal(Uint8List head) {
   final meta = AudioMeta();
-  if (head.length < 4 || String.fromCharCodes(head.sublist(0, 4)) != 'fLaC') {
-    return meta;
-  }
-  var i = 4;
+  final flacStart = _flacMagicOffset(head);
+  if (flacStart < 0) return meta;
+  var i = flacStart + 4;
   bool last = false;
   while (!last && i + 4 <= head.length) {
     final hdr = head[i];
@@ -697,6 +701,8 @@ AudioMeta _parseFlacMinimal(Uint8List head) {
     if (blockType == 4) _parseVorbisComment(body, meta);
     i += 4 + len;
   }
+  // 前置 ID3v2 兜底（MusicPlayer2/TagLib 的 union 读口径：Xiph 优先、ID3 补缺）。
+  _applyFlacId3Fallback(head, meta, allowLyrics: false);
   return meta;
 }
 
@@ -1017,11 +1023,13 @@ int? _bitrateFromFrame(Uint8List head, int offset) {
 
 AudioMeta _parseFlac(Uint8List head, int fileSize) {
   final meta = AudioMeta();
-  if (head.length < 4 || String.fromCharCodes(head.sublist(0, 4)) != 'fLaC') return meta;
-  var i = 4;
+  final flacStart = _flacMagicOffset(head);
+  if (flacStart < 0) return meta;
+  var i = flacStart + 4;
   bool last = false;
   int? sampleRate;
   int? totalSamples;
+  var sawVorbisEntries = false;
   while (!last && i + 4 <= head.length) {
     final hdr = head[i];
     last = (hdr & 0x80) != 0;
@@ -1046,9 +1054,11 @@ AudioMeta _parseFlac(Uint8List head, int fileSize) {
       }
     } else if (blockType == 4) {
       // VORBIS_COMMENT
+      if (_vorbisCommentEntryCount(body) > 0) sawVorbisEntries = true;
       _parseVorbisComment(body, meta);
     } else if (blockType == 6) {
-      // PICTURE
+      // PICTURE（MusicPlayer2/TagLib 口径：FLAC 封面只认块列表里的 PICTURE，
+      // 前置 ID3v2 的 APIC 不读）
       meta.cover ??= _parseFlacPicture(body);
     }
     i += 4 + len;
@@ -1059,7 +1069,82 @@ AudioMeta _parseFlac(Uint8List head, int fileSize) {
       totalSamples > 0) {
     meta.duration = (totalSamples / sampleRate).round();
   }
+  // 前置 ID3v2 兜底：歌词只在 FLAC 完全没有 Vorbis 条目时取 USLT——对应
+  // MusicPlayer2/TagLib 的 `properties()` 只取“第一个非空标签”的规则。
+  _applyFlacId3Fallback(head, meta, allowLyrics: !sawVorbisEntries);
   return meta;
+}
+
+/// 前置 ID3v2 标签总长（无标签/头不完整返回 0）。
+///
+/// FLAC 规范不允许 ID3v2 前置，但部分老工具会这么写；MusicPlayer2 使用的
+/// TagLib 明确支持（`read()` 先找 ID3v2，再从标签末尾找 `fLaC`），读侧照此
+/// 口径容忍。
+int _leadingId3v2Len(Uint8List head) {
+  if (head.length < 10 ||
+      head[0] != 0x49 ||
+      head[1] != 0x44 ||
+      head[2] != 0x33) {
+    return 0;
+  }
+  final len = 10 + _syncsafe(head, 6) + ((head[5] & 0x10) != 0 ? 10 : 0);
+  return len > 0 ? len : 0;
+}
+
+/// FLAC 魔数偏移：标准文件为 0；前置 ID3v2 时从其声明长度之后找 `fLaC`
+/// （TagLib 的 `find("fLaC", ID3v2Location + ID3v2OriginalSize)` 同口径）。
+/// 找不到返回 -1。
+int _flacMagicOffset(Uint8List head) {
+  if (head.length >= 4 && _startsWith(head, 'fLaC'.codeUnits)) return 0;
+  final id3Len = _leadingId3v2Len(head);
+  if (id3Len <= 0) return -1;
+  for (var i = id3Len; i + 4 <= head.length; i++) {
+    if (head[i] == 0x66 &&
+        head[i + 1] == 0x4C &&
+        head[i + 2] == 0x61 &&
+        head[i + 3] == 0x43) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/// Vorbis comment 条目数（vendor 之后 u32；越界/伪造 count 按 0）。
+int _vorbisCommentEntryCount(List<int> b) {
+  if (b.length < 8) return 0;
+  final vendorLen = _le32(b, 0);
+  final p = 4 + vendorLen;
+  if (vendorLen < 0 || p + 4 > b.length) return 0;
+  final n = _le32(b, p);
+  if (n <= 0) return 0;
+  // 至少有一个完整条目才算「非空」：声明 count 但条目截断时不能屏蔽 ID3 兜底。
+  final q = p + 4;
+  if (q + 4 > b.length) return 0;
+  final len = _le32(b, q);
+  if (len < 0 || q + 4 + len > b.length) return 0;
+  return n;
+}
+
+/// 把前置 ID3v2 的文本帧按“Xiph 优先、ID3 补缺”并入 [meta]。
+///
+/// 对应 MusicPlayer2 `GetFlacTagInfo` 的 union 取值与 `GetFlacPropertyMap`
+/// 的键级兜底；封面不在此处处理（TagLib 的 `pictureList()` 不读 APIC）。
+void _applyFlacId3Fallback(Uint8List head, AudioMeta meta,
+    {required bool allowLyrics}) {
+  if (_leadingId3v2Len(head) <= 0) return;
+  final frames = _id3TagToFrames(head, 10);
+  if (frames.isEmpty) return;
+  meta.title ??= frames['TIT2'];
+  meta.artist ??= frames['TPE1'];
+  meta.albumArtist ??= frames['TPE2'];
+  meta.album ??= frames['TALB'];
+  meta.genre ??= frames['TCON'];
+  meta.year ??= _yearOf(frames['TYER'] ?? frames['TDRC']);
+  meta.trackNo ??= _trackOf(frames['TRCK']);
+  if (allowLyrics && meta.lyrics == null) {
+    final lyrics = frames['USLT'];
+    if (lyrics != null && lyrics.trim().isNotEmpty) meta.lyrics = lyrics;
+  }
 }
 
 void _parseVorbisComment(List<int> body, AudioMeta meta) {

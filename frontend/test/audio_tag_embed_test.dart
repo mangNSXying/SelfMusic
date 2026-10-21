@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -55,6 +56,81 @@ Future<String> _copyToTemp(String name) async {
   await File('$_tempDir/$name').copy(dst);
   return dst;
 }
+
+/// 构造最小可解析 FLAC：STREAMINFO + 可选 VORBIS_COMMENT + PADDING + 伪音频。
+Uint8List _flacBytes({List<String> entries = const []}) {
+  final si = List<int>.filled(34, 0);
+  const sampleRate = 44100;
+  const totalSamples = 44100;
+  si[10] = (sampleRate >> 12) & 0xFF;
+  si[11] = (sampleRate >> 4) & 0xFF;
+  si[12] = (sampleRate & 0x0F) << 4;
+  si[13] = (totalSamples >> 32) & 0x0F;
+  si[14] = (totalSamples >> 24) & 0xFF;
+  si[15] = (totalSamples >> 16) & 0xFF;
+  si[16] = (totalSamples >> 8) & 0xFF;
+  si[17] = totalSamples & 0xFF;
+  List<int> u32le(int v) =>
+      [v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF];
+  final vc = <int>[];
+  final vendor = utf8.encode('test');
+  vc.addAll(u32le(vendor.length));
+  vc.addAll(vendor);
+  vc.addAll(u32le(entries.length));
+  for (final e in entries) {
+    final b = utf8.encode(e);
+    vc.addAll(u32le(b.length));
+    vc.addAll(b);
+  }
+  List<int> block(int type, List<int> body, {bool last = false}) => [
+        (last ? 0x80 : 0) | type,
+        (body.length >> 16) & 0xFF,
+        (body.length >> 8) & 0xFF,
+        body.length & 0xFF,
+        ...body,
+      ];
+  return Uint8List.fromList([
+    ...'fLaC'.codeUnits,
+    ...block(0, si),
+    if (entries.isNotEmpty) ...block(4, vc),
+    ...block(1, List<int>.filled(16, 0), last: true),
+    1, 2, 3, 4, 5, 6, 7, 8,
+  ]);
+}
+
+Uint8List _id3v23Frame(String id, List<int> body) => Uint8List.fromList([
+      ...id.codeUnits,
+      (body.length >> 24) & 0xFF,
+      (body.length >> 16) & 0xFF,
+      (body.length >> 8) & 0xFF,
+      body.length & 0xFF,
+      0,
+      0,
+      ...body,
+    ]);
+
+Uint8List _id3v23Tag(List<Uint8List> frames) {
+  final body = <int>[];
+  for (final f in frames) {
+    body.addAll(f);
+  }
+  return Uint8List.fromList([
+    ...'ID3'.codeUnits,
+    0x03,
+    0x00,
+    0x00,
+    (body.length >> 21) & 0x7F,
+    (body.length >> 14) & 0x7F,
+    (body.length >> 7) & 0x7F,
+    body.length & 0x7F,
+    ...body,
+  ]);
+}
+
+List<int> _id3Utf8Body(String s) => [3, ...utf8.encode(s)];
+List<int> _id3UsltBody(String s) => [3, ...'eng'.codeUnits, 0, ...utf8.encode(s)];
+List<int> _id3ApicBody(Uint8List img) =>
+    [3, ...'image/jpeg'.codeUnits, 0, 3, 0, ...img];
 
 void main() {
   test('mp3 嵌入：歌词+封面，旧帧保留，时长不变', () async {
@@ -189,6 +265,99 @@ void main() {
     // 原文件 id3 块里有 USLT（旧歌词）：扫描兜底必须找到大写 ID3 块。
     expect(meta!.lyrics, isNotNull);
     expect(meta.lyrics!.isNotEmpty, isTrue);
+  });
+
+  test('FLAC 前置 ID3v2：读侧可读，写入后输出标准 FLAC 并迁移 APIC 封面', () async {
+    final src = await _copyToTemp('林俊杰 - 独舞.flac');
+    final before = await _readBack(src, 'flac');
+    expect(before, isNotNull);
+    expect(before!.title, '独舞');
+    expect(before.artist, '林俊杰');
+    expect(before.album, '和自己对话');
+    expect(before.duration, isNotNull);
+    // MusicPlayer2/TagLib 口径：FLAC 封面只认 PICTURE 块，不读前置 ID3 APIC。
+    expect(before.cover, isNull);
+    expect(before.lyrics, isNull);
+
+    final dst = '$src.norm.flac';
+    final r = await embedAudioTags(srcPath: src, dstPath: dst, lyrics: _lyrics);
+    expect(r.lyricsEmbedded, isTrue);
+    expect(r.coverEmbedded, isFalse);
+
+    final file = File(dst);
+    final head4 = await _rangeOf(file, 0, 4);
+    final len = await file.length();
+    final tail = await _rangeOf(file, len - 128, 128);
+    expect(String.fromCharCodes(head4), 'fLaC'); // 无前置 ID3v2
+    expect(String.fromCharCodes(tail.sublist(0, 3)), isNot('TAG')); // ID3v1 已剥离
+
+    final after = await _readBack(dst, 'flac');
+    expect(after, isNotNull);
+    expect(after!.title, '独舞'); // Vorbis 文本保留
+    expect(after.artist, '林俊杰');
+    expect(after.album, '和自己对话');
+    expect(after.albumArtist, '林俊杰');
+    expect(after.year, 2015);
+    expect(after.duration, before.duration);
+    expect(after.lyrics, contains('第一行'));
+    expect(after.cover, isNotNull); // 原 APIC 封面已转成标准 PICTURE
+  });
+
+  test('FLAC 前置 ID3v2：Vorbis 无文本时迁移 ID3 文本/USLT/APIC 后变标准 FLAC', () async {
+    final dir = await Directory.systemTemp.createTemp('selfmusic_flac_id3_');
+    final src = '${dir.path}/id3-prefixed.flac';
+    final id3 = _id3v23Tag([
+      _id3v23Frame('TIT2', _id3Utf8Body('ID3 标题')),
+      _id3v23Frame('TPE1', _id3Utf8Body('ID3 歌手')),
+      _id3v23Frame('TPE2', _id3Utf8Body('ID3 专辑歌手')),
+      _id3v23Frame('TALB', _id3Utf8Body('ID3 专辑')),
+      _id3v23Frame('TCON', _id3Utf8Body('Pop')),
+      _id3v23Frame('TYER', _id3Utf8Body('2015')),
+      _id3v23Frame('TRCK', _id3Utf8Body('3/12')),
+      _id3v23Frame('USLT', _id3UsltBody('ID3 内嵌歌词')),
+      _id3v23Frame('APIC', _id3ApicBody(_fakeJpeg())),
+    ]);
+    await File(src).writeAsBytes([...id3, ..._flacBytes()], flush: true);
+
+    final before = await _readBack(src, 'flac');
+    expect(before, isNotNull);
+    expect(before!.title, 'ID3 标题');
+    expect(before.artist, 'ID3 歌手');
+    expect(before.albumArtist, 'ID3 专辑歌手');
+    expect(before.album, 'ID3 专辑');
+    expect(before.genre, 'Pop');
+    expect(before.year, 2015);
+    expect(before.trackNo, 3);
+    expect(before.lyrics, 'ID3 内嵌歌词'); // 无 Vorbis 条目 → USLT 兜底
+    expect(before.cover, isNull);
+
+    // 仅写新歌词：旧文本/旧 APIC 仍需迁移，USLT 歌词被新歌词替换。
+    final dst = '$src.lyrics.flac';
+    final r = await embedAudioTags(srcPath: src, dstPath: dst, lyrics: _lyrics);
+    expect(r.lyricsEmbedded, isTrue);
+    final raw = await File(dst).readAsBytes();
+    expect(String.fromCharCodes(raw.sublist(0, 4)), 'fLaC');
+
+    final after = await _readBack(dst, 'flac');
+    expect(after, isNotNull);
+    expect(after!.title, 'ID3 标题');
+    expect(after.artist, 'ID3 歌手');
+    expect(after.albumArtist, 'ID3 专辑歌手');
+    expect(after.album, 'ID3 专辑');
+    expect(after.genre, 'Pop');
+    expect(after.year, 2015);
+    expect(after.trackNo, 3);
+    expect(after.lyrics, contains('第一行'));
+    expect(after.cover, isNotNull); // APIC → PICTURE
+    expect(after.cover!.length, _fakeJpeg().length);
+
+    // 仅写封面：不写新歌词时 USLT 也要迁移成 LYRICS，避免丢弃 ID3 后丢歌词。
+    final dst2 = '$src.cover.flac';
+    await embedAudioTags(srcPath: src, dstPath: dst2, coverBytes: _fakeJpeg());
+    final after2 = await _readBack(dst2, 'flac');
+    expect(after2, isNotNull);
+    expect(after2!.lyrics, 'ID3 内嵌歌词');
+    expect(after2.cover!.length, _fakeJpeg().length);
   });
 
   test('空输入抛错：歌词封面均空', () async {

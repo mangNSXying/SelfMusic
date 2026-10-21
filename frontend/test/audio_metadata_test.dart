@@ -364,6 +364,167 @@ void main() {
     });
   });
 
+  group('parseAudioHead - flac 前置 ID3v2（MusicPlayer2/TagLib 口径）', () {
+    Uint8List id3v23Frame(String id, List<int> body) => Uint8List.fromList([
+          ...id.codeUnits,
+          (body.length >> 24) & 0xFF,
+          (body.length >> 16) & 0xFF,
+          (body.length >> 8) & 0xFF,
+          body.length & 0xFF,
+          0,
+          0, // 帧 flags
+          ...body,
+        ]);
+
+    Uint8List id3v23Tag(List<Uint8List> frames) {
+      final body = <int>[];
+      for (final f in frames) {
+        body.addAll(f);
+      }
+      return Uint8List.fromList([
+        ...'ID3'.codeUnits,
+        0x03,
+        0x00,
+        0x00,
+        ...syncsafe(body.length),
+        ...body,
+      ]);
+    }
+
+    List<int> utf8Body(String s) => [3, ...utf8.encode(s)];
+    List<int> usltBody(String s) => [3, ...'eng'.codeUnits, 0, ...utf8.encode(s)];
+    List<int> apicBody(List<int> img) =>
+        [3, ...'image/jpeg'.codeUnits, 0, 3, 0, ...img];
+    Uint8List fakeJpeg() => Uint8List.fromList([
+          0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46,
+          0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0xFF, 0xD9,
+        ]);
+
+    Uint8List flacHead({List<String> entries = const []}) {
+      final si = List<int>.filled(34, 0);
+      const sampleRate = 44100;
+      const totalSamples = 44100;
+      si[10] = (sampleRate >> 12) & 0xFF;
+      si[11] = (sampleRate >> 4) & 0xFF;
+      si[12] = (sampleRate & 0x0F) << 4;
+      si[13] = (totalSamples >> 32) & 0x0F;
+      si[14] = (totalSamples >> 24) & 0xFF;
+      si[15] = (totalSamples >> 16) & 0xFF;
+      si[16] = (totalSamples >> 8) & 0xFF;
+      si[17] = totalSamples & 0xFF;
+      List<int> u32le(int v) =>
+          [v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF];
+      final vc = <int>[];
+      final vendor = utf8.encode('test');
+      vc.addAll(u32le(vendor.length));
+      vc.addAll(vendor);
+      vc.addAll(u32le(entries.length));
+      for (final e in entries) {
+        final b = utf8.encode(e);
+        vc.addAll(u32le(b.length));
+        vc.addAll(b);
+      }
+      List<int> block(int type, List<int> body, {bool last = false}) => [
+            (last ? 0x80 : 0) | type,
+            (body.length >> 16) & 0xFF,
+            (body.length >> 8) & 0xFF,
+            body.length & 0xFF,
+            ...body,
+          ];
+      return Uint8List.fromList([
+        ...'fLaC'.codeUnits,
+        ...block(0, si),
+        if (entries.isNotEmpty) ...block(4, vc),
+        ...block(1, List<int>.filled(16, 0), last: true),
+        1, 2, 3, 4, 5, 6, 7, 8, // 伪音频区（读侧不校验）
+      ]);
+    }
+
+    test('Xiph 优先：文本/歌词取 VORBIS_COMMENT，ID3 APIC 不作为封面', () {
+      final id3 = id3v23Tag([
+        id3v23Frame('TIT2', utf8Body('ID3 标题')),
+        id3v23Frame('TPE1', utf8Body('ID3 歌手')),
+        id3v23Frame('TALB', utf8Body('ID3 专辑')),
+        id3v23Frame('USLT', usltBody('ID3 歌词')),
+        id3v23Frame('APIC', apicBody(fakeJpeg())),
+      ]);
+      final flac = flacHead(entries: [
+        'TITLE=FLAC 标题',
+        'ARTIST=FLAC 歌手',
+        'ALBUM=FLAC 专辑',
+        'LYRICS=FLAC 歌词',
+      ]);
+      final full = Uint8List.fromList([...id3, ...flac]);
+      final meta = parseAudioHead(full, 'flac', full.length)!;
+      expect(meta.title, 'FLAC 标题');
+      expect(meta.artist, 'FLAC 歌手');
+      expect(meta.album, 'FLAC 专辑');
+      expect(meta.lyrics, 'FLAC 歌词'); // Xiph 有内容 → 不读 ID3 USLT
+      expect(meta.cover, isNull); // 只认 FLAC PICTURE，不读 APIC
+      expect(meta.duration, 1);
+    });
+
+    test('FLAC 无 Vorbis 条目时，文本与 USLT 按 ID3 兜底', () {
+      final id3 = id3v23Tag([
+        id3v23Frame('TIT2', utf8Body('ID3 标题')),
+        id3v23Frame('TPE1', utf8Body('ID3 歌手')),
+        id3v23Frame('TPE2', utf8Body('ID3 专辑歌手')),
+        id3v23Frame('TALB', utf8Body('ID3 专辑')),
+        id3v23Frame('TCON', utf8Body('Pop')),
+        id3v23Frame('TYER', utf8Body('2015')),
+        id3v23Frame('TRCK', utf8Body('3/12')),
+        id3v23Frame('USLT', usltBody('ID3 歌词')),
+        id3v23Frame('APIC', apicBody(fakeJpeg())),
+      ]);
+      final flac = flacHead();
+      final full = Uint8List.fromList([...id3, ...flac]);
+      final meta = parseAudioHead(full, 'flac', full.length)!;
+      expect(meta.title, 'ID3 标题');
+      expect(meta.artist, 'ID3 歌手');
+      expect(meta.albumArtist, 'ID3 专辑歌手');
+      expect(meta.album, 'ID3 专辑');
+      expect(meta.genre, 'Pop');
+      expect(meta.year, 2015);
+      expect(meta.trackNo, 3);
+      expect(meta.lyrics, 'ID3 歌词'); // 没有 Vorbis 标签 → 取 USLT
+      expect(meta.cover, isNull); // 封面仍不取 APIC
+      expect(meta.duration, 1);
+    });
+
+    test('前置 ID3 标签超过首轮采样：提示补到标签尾，readAudioMeta 阶梯读全', () async {
+      // 300KB APIC → ID3 标签大于 64KB 首轮窗口，fLaC 在采样之外。
+      final bigJpeg = Uint8List.fromList([
+        0xFF, 0xD8,
+        ...List<int>.filled(300 * 1024, 0x11),
+        0xFF, 0xD9,
+      ]);
+      final id3 = id3v23Tag([
+        id3v23Frame('TIT2', utf8Body('大标签之后')),
+        id3v23Frame('APIC', apicBody(bigJpeg)),
+      ]);
+      final flac = flacHead(entries: ['ARTIST=阶梯歌手']);
+      final full = Uint8List.fromList([...id3, ...flac]);
+      const headBytes = 64 * 1024;
+      final head = Uint8List.sublistView(full, 0, headBytes);
+      expect(coverReadHint(head, 'flac'), id3.length + 4);
+
+      final meta = await readAudioMeta(
+        readRange: (start, length) async {
+          final end = start + length > full.length ? full.length : start + length;
+          return Uint8List.sublistView(full, start, end);
+        },
+        format: 'flac',
+        fileSize: full.length,
+        headBytes: headBytes,
+      );
+      expect(meta, isNotNull);
+      expect(meta!.title, '大标签之后');
+      expect(meta.artist, '阶梯歌手');
+      expect(meta.duration, 1);
+      expect(meta.cover, isNull);
+    });
+  });
+
   test('mp3 ID3 tag 声明长度超出头部采样时不越界', () {
     // 仅 ID3v2 头 10 字节，声明 tag 长度 100000，远大于实际 10 字节。
     final head = Uint8List.fromList([

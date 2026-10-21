@@ -5,7 +5,9 @@
 /// 写入策略（原型已用 temp/ 5 种文件 + mutagen/ffprobe/自家读侧三方验证）：
 /// - mp3：重建头部 ID3v2（版本保持 v2.3/v2.4，帧体一律 UTF-8；v2.2 拒绝改写）；
 /// - flac：重建元数据块（STREAMINFO 保留，VORBIS_COMMENT 合并 LYRICS，
-///   类型 3 PICTURE 替换，其余块保留，末块置 last 位）；
+///   类型 3 PICTURE 替换，其余块保留，末块置 last 位）；前置 ID3v2 / 尾部
+///   ID3v1 属于非标准壳，输出时丢弃，丢弃前把 ID3 文本/USLT/APIC 迁移到
+///   Vorbis comment / PICTURE（Xiph 已有键优先）；
 /// - wav/aiff：删除既有 `ID3 ` 块（`LIST INFO` 等不动），尾部追加新块
 ///   （统一大写 `ID3 `，与 mutagen AIFF 口径对齐），修正容器总长；
 /// - m4a：重建 `ilst`（©lyr/covr 替换，其余 item 保留），尺寸上卷
@@ -419,67 +421,287 @@ int _flacPictureType(Uint8List body) {
 }
 
 bool _isLyricKey(Uint8List entry) {
-  var key = '';
-  try {
-    final s = utf8.decode(entry, allowMalformed: true);
-    final eq = s.indexOf('=');
-    if (eq <= 0) return false;
-    key = s.substring(0, eq).trim().toUpperCase();
-  } catch (_) {
-    return false;
-  }
+  final key = _vorbisEntryKey(entry);
   return key == 'LYRICS' ||
       key == 'UNSYNCEDLYRICS' ||
       key == 'UNSYNCED LYRICS' ||
       key == 'LYRIC';
 }
 
+/// Vorbis comment 条目的键（`KEY=value` 的 KEY，大写；无 `=` 返回空）。
+String _vorbisEntryKey(Uint8List entry) {
+  try {
+    final s = utf8.decode(entry, allowMalformed: true);
+    final eq = s.indexOf('=');
+    if (eq <= 0) return '';
+    return s.substring(0, eq).trim().toUpperCase();
+  } catch (_) {
+    return '';
+  }
+}
+
+/// 前置 ID3v2 中可迁移到 FLAC 标签的内容。
+class _FlacId3Migration {
+  final Map<String, String> text; // Vorbis 键 → 值
+  final String? lyrics;
+  final Uint8List? cover;
+  const _FlacId3Migration(this.text, this.lyrics, this.cover);
+}
+
+/// 解码 ID3 文本帧（enc 0/1/2/3，多值取第一个非空段）。
+String _decodeId3TextFrame(Uint8List bytes) {
+  if (bytes.isEmpty) return '';
+  final enc = bytes[0];
+  var body = Uint8List.sublistView(bytes, 1);
+  String text;
+  if (enc == 3) {
+    text = utf8.decode(body, allowMalformed: true);
+  } else if (enc == 2) {
+    final units = <int>[];
+    for (var i = 0; i + 1 < body.length; i += 2) {
+      units.add((body[i] << 8) | body[i + 1]);
+    }
+    text = String.fromCharCodes(units);
+  } else if (enc == 1) {
+    if (body.length >= 2 && body[0] == 0xFF && body[1] == 0xFE) {
+      body = Uint8List.sublistView(body, 2);
+    }
+    final units = <int>[];
+    for (var i = 0; i + 1 < body.length; i += 2) {
+      units.add((body[i + 1] << 8) | body[i]);
+    }
+    text = String.fromCharCodes(units);
+  } else {
+    // enc 0：规范是 ISO-8859-1，但大量中文文件实际写 UTF-8（与读侧同口径）。
+    try {
+      text = utf8.decode(body, allowMalformed: false);
+    } catch (_) {
+      text = String.fromCharCodes(body);
+    }
+  }
+  final parts = text.split('\u0000');
+  for (final p in parts) {
+    final v = p.trim();
+    if (v.isNotEmpty) return v;
+  }
+  return '';
+}
+
+String _decodeId3Uslt(Uint8List data) {
+  if (data.length < 5) return '';
+  final enc = data[0];
+  var p = 4; // encoding + language
+  if (enc == 1 || enc == 2) {
+    while (p + 1 < data.length && !(data[p] == 0 && data[p + 1] == 0)) {
+      p += 2;
+    }
+    p += 2;
+  } else {
+    final z = data.indexOf(0, p);
+    if (z >= 0) p = z + 1;
+  }
+  if (p >= data.length) return '';
+  return _decodeId3TextFrame(
+      Uint8List.fromList([enc, ...Uint8List.sublistView(data, p)]));
+}
+
+/// 从 APIC 帧体提取（图片类型, 图片字节）；URL 引用/半图返回 null。
+({int type, Uint8List data})? _decodeId3Apic(Uint8List body) {
+  if (body.length < 6) return null;
+  final enc = body[0];
+  var p = 1;
+  final mimeEnd = body.indexOf(0, p);
+  if (mimeEnd < 0) return null;
+  final mime = String.fromCharCodes(Uint8List.sublistView(body, p, mimeEnd));
+  if (mime == '-->') return null;
+  p = mimeEnd + 1;
+  if (p >= body.length) return null;
+  final type = body[p];
+  p += 1;
+  if (enc == 1 || enc == 2) {
+    var q = p;
+    var terminated = false;
+    while (q + 1 < body.length) {
+      if (body[q] == 0 && body[q + 1] == 0) {
+        q += 2;
+        terminated = true;
+        break;
+      }
+      q += 2;
+    }
+    if (!terminated) return null;
+    p = q;
+  } else {
+    final z = body.indexOf(0, p);
+    if (z < 0) return null;
+    p = z + 1;
+  }
+  if (p >= body.length) return null;
+  final img = Uint8List.sublistView(body, p);
+  if (!isCompleteImageBytes(img)) return null;
+  return (type: type, data: img);
+}
+
+/// 解析前置 ID3v2，产出迁移到标准 FLAC 标签的内容。
+_FlacId3Migration _flacId3Migration(Uint8List tag) {
+  final parsed = _parseId3Tag(tag);
+  if (parsed == null) throw StateError('前置 ID3 标签解析失败，拒绝改写');
+  final text = <String, String>{};
+  void put(String key, Uint8List body) {
+    if (text.containsKey(key)) return;
+    final v = _decodeId3TextFrame(body);
+    if (v.isNotEmpty) text[key] = v;
+  }
+
+  String? lyrics;
+  Uint8List? cover;
+  var coverType = -1;
+  for (final f in parsed.frames) {
+    switch (f.id) {
+      case 'TIT2':
+        put('TITLE', f.body);
+      case 'TPE1':
+        put('ARTIST', f.body);
+      case 'TPE2':
+        put('ALBUMARTIST', f.body);
+      case 'TALB':
+        put('ALBUM', f.body);
+      case 'TCON':
+        put('GENRE', f.body);
+      case 'TYER':
+      case 'TDRC':
+        put('DATE', f.body);
+      case 'TRCK':
+        put('TRACKNUMBER', f.body);
+      case 'USLT':
+        if (lyrics == null) {
+          final v = _decodeId3Uslt(f.body);
+          if (v.isNotEmpty) lyrics = v;
+        }
+      case 'APIC':
+        final apic = _decodeId3Apic(f.body);
+        if (apic != null && (cover == null || apic.type == 3)) {
+          cover = apic.data;
+          coverType = apic.type;
+          if (coverType == 3) {
+            // 继续找下一个 APIC 也不会更好：类型 3 已是首选。
+          }
+        }
+    }
+  }
+  return _FlacId3Migration(text, lyrics, cover);
+}
+
+/// 定位 FLAC 数据起点：标准文件在 0；允许前置 ID3v2（TagLib/MusicPlayer2 可读），
+/// 返回其字节以便迁移后丢弃。找不到抛 [StateError]。
+Future<({int flacStart, Uint8List? id3Tag})> _locateFlac(
+    RandomAccessFile raf, int fileLen) async {
+  final head = await raf.read(10);
+  if (head.length >= 4 &&
+      head[0] == 0x66 &&
+      head[1] == 0x4C &&
+      head[2] == 0x61 &&
+      head[3] == 0x43) {
+    return (flacStart: 0, id3Tag: null);
+  }
+  if (head.length < 10 ||
+      head[0] != 0x49 ||
+      head[1] != 0x44 ||
+      head[2] != 0x33) {
+    throw StateError('不是 FLAC 文件');
+  }
+  if (head[3] == 2) throw UnsupportedError('ID3v2.2 不支持改写');
+  if (head[3] != 3 && head[3] != 4) {
+    throw StateError('未知 ID3 版本 v2.${head[3]}，拒绝改写');
+  }
+  final size = _syncsafeDecode(head, 6);
+  final total = 10 + size + ((head[5] & 0x10) != 0 ? 10 : 0);
+  if (total > kMetaRegionCapBytes) {
+    throw StateError('ID3 声明长度异常（$size），拒绝改写');
+  }
+  if (total > fileLen) throw StateError('ID3 tag 被截断，拒绝改写');
+  await raf.setPosition(0);
+  final tag = await raf.read(total);
+  if (tag.length < total) throw StateError('ID3 tag 被截断，拒绝改写');
+  // 声明长度可能被工具多写/少写少量填充：在标签尾之后 64KB 内找 fLaC
+  //（TagLib 是扫到文件尾，这里给一个边界，避免异常文件把整首扫一遍）。
+  const slack = 64 * 1024;
+  final probeLen = fileLen - total < slack + 4 ? fileLen - total : slack + 4;
+  await raf.setPosition(total);
+  final probe = await raf.read(probeLen);
+  for (var i = 0; i + 4 <= probe.length; i++) {
+    if (probe[i] == 0x66 &&
+        probe[i + 1] == 0x4C &&
+        probe[i + 2] == 0x61 &&
+        probe[i + 3] == 0x43) {
+      return (flacStart: total + i, id3Tag: Uint8List.fromList(tag));
+    }
+  }
+  throw StateError('前置 ID3 标签之后未找到 FLAC 数据');
+}
+
 Future<TagEmbedResult> _embedFlac(
     String src, String dst, String? lyrics, Uint8List? cover) async {
   final raf = await File(src).open();
-  final magic = await raf.read(4);
-  if (magic.length < 4 ||
-      magic[0] != 0x66 ||
-      magic[1] != 0x4C ||
-      magic[2] != 0x61 ||
-      magic[3] != 0x43) {
-    await raf.close();
-    throw StateError('不是 FLAC 文件');
-  }
+  final fileLen = await raf.length();
   final types = <int>[];
   final bodies = <Uint8List>[];
-  var metaTotal = 4;
-  var last = false;
-  while (!last) {
-    final h = await raf.read(4);
-    if (h.length < 4) {
-      await raf.close();
-      throw StateError('FLAC 元数据块截断');
+  var flacStart = 0;
+  Uint8List? id3Tag;
+  var flacMetaLen = 4;
+  var audioStart = 0;
+  var audioLen = 0;
+  try {
+    final located = await _locateFlac(raf, fileLen);
+    flacStart = located.flacStart;
+    id3Tag = located.id3Tag;
+    await raf.setPosition(flacStart + 4);
+    var last = false;
+    while (!last) {
+      final h = await raf.read(4);
+      if (h.length < 4) throw StateError('FLAC 元数据块截断');
+      last = (h[0] & 0x80) != 0;
+      final type = h[0] & 0x7F;
+      final len = (h[1] << 16) | (h[2] << 8) | h[3];
+      if (len < 0 || flacMetaLen + 4 + len > kMetaRegionCapBytes) {
+        throw StateError('FLAC 元数据块过大（$len），拒绝改写');
+      }
+      final body = await raf.read(len);
+      if (body.length < len) throw StateError('FLAC 元数据块截断');
+      types.add(type);
+      bodies.add(Uint8List.fromList(body));
+      flacMetaLen += 4 + len;
     }
-    last = (h[0] & 0x80) != 0;
-    final type = h[0] & 0x7F;
-    final len = (h[1] << 16) | (h[2] << 8) | h[3];
-    if (len < 0 || metaTotal + 4 + len > kMetaRegionCapBytes) {
-      await raf.close();
-      throw StateError('FLAC 元数据块过大（$len），拒绝改写');
+    audioStart = flacStart + flacMetaLen;
+    audioLen = fileLen - audioStart;
+    if (audioLen < 0) throw StateError('FLAC 文件截断');
+    // 尾部 ID3v1（固定 128B，'TAG' 开头）同样不符合 FLAC 规范：写标准输出时一并
+    // 剥掉（其文本不迁移：本应用读侧不读 FLAC 的 ID3v1，且三字段信息通常已在
+    // Vorbis comment / 前置 ID3v2 中）。
+    if (audioLen >= 128) {
+      await raf.setPosition(fileLen - 128);
+      final tail = await raf.read(128);
+      if (tail.length == 128 &&
+          tail[0] == 0x54 &&
+          tail[1] == 0x41 &&
+          tail[2] == 0x47) {
+        audioLen -= 128;
+      }
     }
-    final body = await raf.read(len);
-    if (body.length < len) {
-      await raf.close();
-      throw StateError('FLAC 元数据块截断');
-    }
-    types.add(type);
-    bodies.add(Uint8List.fromList(body));
-    metaTotal += 4 + len;
+  } finally {
+    await raf.close();
   }
-  final audioStart = metaTotal;
-  await raf.close();
   if (!types.contains(0)) throw StateError('FLAC 缺少 STREAMINFO');
+
+  // 前置 ID3v2：读侧按 TagLib 口径可识别，写侧统一输出标准 FLAC（丢弃前置壳），
+  // 丢弃前把文本/歌词/封面迁移到 Vorbis comment / PICTURE（Xiph 已有的键优先）。
+  final migrated = id3Tag == null ? null : _flacId3Migration(id3Tag);
 
   Uint8List? streaminfo;
   Uint8List vendor = Uint8List.fromList(' PrototypeEmbed'.codeUnits);
   List<Uint8List> vcEntries = [];
   var sawVc = false;
+  var hasFrontPicture = false;
   final keptOthers = <MapEntry<int, Uint8List>>[];
   var lyricOk = false, coverOk = false;
   for (var i = 0; i < types.length; i++) {
@@ -496,6 +718,7 @@ Future<TagEmbedResult> _embedFlac(
       if (cover != null && cover.isNotEmpty && pt == 3) {
         continue; // 旧封面图丢弃（下面重建）
       }
+      if (pt == 3) hasFrontPicture = true;
       keptOthers.add(MapEntry(t, b));
     } else if (t == 1) {
       continue; // PADDING 丢弃（重建时补小 padding）
@@ -504,24 +727,52 @@ Future<TagEmbedResult> _embedFlac(
     }
   }
   final newEntries = <Uint8List>[];
+  final keys = <String>{};
+  for (final e in vcEntries) {
+    if (lyrics != null && lyrics.isNotEmpty && _isLyricKey(e)) continue;
+    newEntries.add(e);
+    final key = _vorbisEntryKey(e);
+    if (key.isNotEmpty) keys.add(key);
+  }
+  bool hasLyricKey() => keys.any((k) =>
+      k == 'LYRICS' || k == 'UNSYNCEDLYRICS' || k == 'UNSYNCED LYRICS' ||
+      k == 'LYRIC');
   if (lyrics != null && lyrics.isNotEmpty) {
-    for (final e in vcEntries) {
-      if (!_isLyricKey(e)) newEntries.add(e);
-    }
     newEntries.add(Uint8List.fromList(utf8.encode('LYRICS=$lyrics')));
     lyricOk = true;
-  } else {
-    newEntries.addAll(vcEntries);
+  } else if (migrated?.lyrics != null && !hasLyricKey()) {
+    newEntries
+        .add(Uint8List.fromList(utf8.encode('LYRICS=${migrated!.lyrics}')));
+  }
+  if (migrated != null) {
+    for (final kv in migrated.text.entries) {
+      if (keys.contains(kv.key)) continue;
+      newEntries.add(Uint8List.fromList(utf8.encode('${kv.key}=${kv.value}')));
+      keys.add(kv.key);
+    }
+  }
+  Uint8List? migratedCover;
+  if ((cover == null || cover.isEmpty) &&
+      !hasFrontPicture &&
+      migrated?.cover != null) {
+    try {
+      _coverMime(migrated!.cover!); // 仅支持的类型才迁移，否则宁可不放封面
+      migratedCover = migrated.cover;
+    } catch (_) {
+      // 封面类型不支持（如 BMP）：其余标签照写。
+    }
   }
   if (cover != null && cover.isNotEmpty) {
     coverOk = true;
   }
   final seq = <MapEntry<int, Uint8List>>[
     MapEntry(0, streaminfo!),
-    if (sawVc || lyricOk)
+    if (sawVc || newEntries.isNotEmpty)
       MapEntry(4, _buildVorbisBlock(vendor, newEntries)),
     if (cover != null && cover.isNotEmpty)
       MapEntry(6, _buildFlacPicture(cover, _coverMime(cover))),
+    if (migratedCover != null)
+      MapEntry(6, _buildFlacPicture(migratedCover, _coverMime(migratedCover))),
     ...keptOthers,
     MapEntry(1, Uint8List(1024)),
   ];
@@ -535,11 +786,9 @@ Future<TagEmbedResult> _embedFlac(
   final meta = out.takeBytes();
   final inRaf = await File(src).open();
   final outSink = File(dst).openWrite();
-  var newSize = meta.length;
   try {
     outSink.add(meta);
-    await _pipeRange(inRaf, outSink, audioStart, -1);
-    newSize += await File(src).length() - audioStart;
+    await _pipeRange(inRaf, outSink, audioStart, audioLen);
   } finally {
     await inRaf.close();
     await outSink.close();
@@ -548,7 +797,7 @@ Future<TagEmbedResult> _embedFlac(
       format: 'flac',
       lyricsEmbedded: lyricOk,
       coverEmbedded: coverOk,
-      newSize: newSize);
+      newSize: meta.length + audioLen);
 }
 
 // ---------- WAV / AIFF ----------

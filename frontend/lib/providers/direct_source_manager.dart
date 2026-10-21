@@ -672,6 +672,17 @@ class DirectSourceManager extends ChangeNotifier {
         settings.riffTailMetaV1Done = true;
         if (reset > 0) debugPrint('wav/aiFF 尾块标签回填：已重置 $reset 首待重读');
       }
+      // 一次性回填：旧版 FLAC 解析要求 `fLaC` 在 offset 0，带前置 ID3v2 的文件
+      // （部分老工具写入）会读空却已标已读（artist 为空）；重置交给后台补读按
+      // TagLib/MusicPlayer2 口径重取。仅本机一次（不进 knownKeys）。
+      if (!settings.flacId3PrefixMetaV1Done) {
+        perfPhase('direct.backfills.resetFlacId3Prefix'); // TEMP-PROBE
+        final reset = await index.resetMetaReadForFlacId3Prefix();
+        settings.flacId3PrefixMetaV1Done = true;
+        if (reset > 0) {
+          debugPrint('FLAC 前置 ID3v2 回填补读：已重置 $reset 首待重读');
+        }
+      }
       // 后台清理历史无效封面（旧解析缺陷可能写脏数据），清理到的歌标未读待补读。
       perfPhase('direct.backfills.cleanupInvalidCovers'); // TEMP-PROBE
       final cleaned = await index.cleanupInvalidCovers();

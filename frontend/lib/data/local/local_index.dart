@@ -288,6 +288,14 @@ class LocalIndex {
         "AND format IN ('wav','aif','aiff','aifc')");
   }
 
+  /// FLAC 前置 ID3v2 回填补读（TagLib/MusicPlayer2 口径）：旧版解析要求
+  /// `fLaC` 必须在 offset 0，带前置 ID3v2 的文件会整首读空却已标已读
+  /// （artist 为空）。重置这些行，交给后台补读重取。返回重置行数。
+  Future<int> resetMetaReadForFlacId3Prefix() {
+    return _writer!.execUpdated("UPDATE idx_songs SET meta_read=0 "
+        "WHERE meta_read=1 AND artist IS NULL AND format IN ('flac')");
+  }
+
   /// 块序异常元数据回填补读（旧版解析遇大封面/PICTURE 在 VORBIS_COMMENT
   /// 之前时提前中断，已标已读却没有歌手等信息）：把始终没有歌手的行重置为
   /// 未读，交给后台补读用「从头完整读取」重取。[sourceKeys] 限定直连源
