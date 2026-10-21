@@ -141,6 +141,7 @@ selfmusic/
 │   └── pubspec.yaml
 ├── scripts/init.sql                  # 数据库初始化脚本（v2 schema + 阶段5 sync_events / playlists.client_uuid+deleted+last_event_at / play_states.last_event_at）
 ├── scripts/migration_003_sync.sql    # 存量库补表/补列（阶段5；新部署只需 init.sql）
+├── scripts/migration_009_sync_payload_mediumtext.sql # sync_events.payload / play_states.deep_list_json TEXT→MEDIUMTEXT（断点 deep_list 超 64 KiB 修复）
 ├── nginx/selfmusic.conf              # Nginx 反代模板（部署到宿主机）
 ├── docker-compose.yml                # backend（18088）+ backend-dev（18089，profile: dev）
 ├── run-linux.sh                      # Linux 快速运行：cd frontend && flutter run -d linux
@@ -236,15 +237,15 @@ selfmusic/
 
 ### 服务端（MySQL 8）
 
-> `scripts/init.sql` 为**权威库表定义（全量合并到 v3）**，已内含 `scripts/migration_002…007` 的全部结果；应用启动 `ddl-auto: validate` 校验实体与表一致性。**全新部署只执行 init.sql**；存量旧库（仍带曲库的 v2）按 migration_002…007 顺序升级，勿重跑 init.sql。
+> `scripts/init.sql` 为**权威库表定义（全量合并到 v3）**，已内含 `scripts/migration_002…009` 的全部结果；应用启动 `ddl-auto: validate` 校验实体与表一致性。**全新部署只执行 init.sql**；存量旧库（仍带曲库的 v2）按 migration_002…009 顺序升级，勿重跑 init.sql。
 
 | 表 | 说明 |
 |----|------|
 | `song_states` | 直连歌权重 / 收藏状态（`source_id`+`source_ref` 唯一，无曲库字段；含 `play_sec`） |
 | `sync_sources` | 播放源同步（`client_uuid` 唯一；`kind+address` 去重；config 不含密码） |
 | `playlists` / `playlist_items` | 歌单与条目（条目自持 `source_id/source_ref` + 标题/歌手/专辑/时长快照） |
-| `play_states` | 每列表断点（自持歌曲身份 + `device_client_id`；含 `deep_list_json`） |
-| `sync_events` | 同步事件流水（`seq` 单调 cursor；`entity_key` 锚点供压缩） |
+| `play_states` | 每列表断点（自持歌曲身份 + `device_client_id`；含 `deep_list_json` MEDIUMTEXT） |
+| `sync_events` | 同步事件流水（`seq` 单调 cursor；`entity_key` 锚点供压缩；`payload` 为 MEDIUMTEXT，容纳断点 deep_list） |
 | `settings` | 全局设置（含 `pairing_token`） |
 | `devices` | 已配对设备（`client_id` / `token_hash` / `refresh_token_hash` / 过期时间 / `revoked` / `last_pull_cursor`） |
 

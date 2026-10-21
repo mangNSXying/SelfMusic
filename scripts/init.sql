@@ -11,7 +11,8 @@
 --   play_states 增加 deep_list_json（migration_006）
 --   song_states 增加 play_sec（migration_007）
 --   事件日志压缩支撑：devices.last_pull_cursor + sync_events.entity_key（migration_008）
--- 注意：本文件已内含 migration_002…008 的全部结果，**全新部署只需执行本文件**；
+--   sync_events.payload / play_states.deep_list_json 扩为 MEDIUMTEXT，容纳大歌单的 deep_list 断点载荷（migration_009）
+-- 注意：本文件已内含 migration_002…009 的全部结果，**全新部署只需执行本文件**；
 --   存量库升级请按文末「升级说明」顺序执行各 migration 文件，勿执行本文件。
 -- =====================================================================
 
@@ -96,7 +97,7 @@ CREATE TABLE IF NOT EXISTS play_states (
     source_ref       VARCHAR(500) NULL COMMENT '源内路径',
     device_client_id VARCHAR(36)  NULL COMMENT '上报设备 client_id（跨设备续播提示用）',
     position_ms      INT DEFAULT 0,
-    deep_list_json   TEXT NULL COMMENT '深层列表（播放历史）JSON，跨设备续播重建队列用',
+    deep_list_json   MEDIUMTEXT NULL COMMENT '深层列表（播放历史）JSON，跨设备续播重建队列用（大歌单可超 TEXT 64 KiB）',
     last_event_at    DATETIME(3) NULL COMMENT '最后一次应用的断点事件 occurred_at（LWW）',
     updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     CONSTRAINT fk_state_playlist FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
@@ -133,7 +134,7 @@ CREATE TABLE IF NOT EXISTS sync_events (
     event_uuid       VARCHAR(36) NOT NULL COMMENT '客户端生成，幂等键',
     device_client_id VARCHAR(36) NOT NULL COMMENT '来源设备 client_id（须与认证身份一致）',
     type             VARCHAR(30) NOT NULL COMMENT 'song.complete/skip/complete_manual/liked/unfavorite/disliked/reset/state，playlist.*，playlist.item_*，source.*，breakpoint.set',
-    payload          TEXT NULL COMMENT 'JSON 载荷',
+    payload          MEDIUMTEXT NULL COMMENT 'JSON 载荷（breakpoint.set 的 deep_list 可能超过 TEXT 64 KiB 上限）',
     occurred_at      DATETIME(3) NULL COMMENT '客户端发生时间（毫秒精度，LWW 比较用）',
     entity_key       VARCHAR(200) NULL COMMENT '事件实体键（压缩锚点：song|source_id|ref / source|uuid / playlist|uuid / breakpoint|uuid；null 不参与压缩）',
     arrived_at       TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP(3) COMMENT '服务端仲裁时钟（occurred_at 缺失或打平时用）',
@@ -175,7 +176,7 @@ ON DUPLICATE KEY UPDATE skey = skey;
 
 -- =====================================================================
 -- 升级说明：
---   全新部署：执行本文件即可（已内含 migration_002…008 的全部结果），
+--   全新部署：执行本文件即可（已内含 migration_002…009 的全部结果），
 --     随后启动后端（ddl-auto=validate 校验实体与表一致）。
 --   存量库升级（旧 v2 + 服务端曲库）：不要执行本文件，按以下顺序执行各迁移，
 --     每步之间保持顺序（006/007 断言的列依赖前序迁移）：
@@ -186,5 +187,6 @@ ON DUPLICATE KEY UPDATE skey = skey;
 --       migration_006_deep_list.sql
 --       migration_007_play_sec.sql
 --       migration_008_event_compaction.sql
+--       migration_009_sync_payload_mediumtext.sql
 --   风险：migration_004 不可逆（删除 songs/albums/covers/scan_tasks），执行前备份。
 -- =====================================================================

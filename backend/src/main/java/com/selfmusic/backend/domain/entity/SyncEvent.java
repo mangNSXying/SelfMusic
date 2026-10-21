@@ -24,7 +24,12 @@ public class SyncEvent {
     @Column(nullable = false, length = 30)
     private String type;
 
-    @Column(columnDefinition = "TEXT")
+    /**
+     * JSON 载荷。不能再用 TEXT：breakpoint.set 随断点携带完整 deep_list，
+     * 大歌单（上千条）时单条事件会超过 TEXT 的 64 KiB 上限，插入报 1406
+     * 并让整批 push 500 重试。MEDIUMTEXT 上限 16 MiB。
+     */
+    @Column(columnDefinition = "MEDIUMTEXT")
     private String payload;
 
     @Column(name = "occurred_at")

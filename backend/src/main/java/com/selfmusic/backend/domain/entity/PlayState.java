@@ -32,8 +32,8 @@ public class PlayState {
     @Column(name = "position_ms")
     private Integer positionMs = 0;
 
-    /** 深层列表（播放历史，JSON 数组，元素为 {source, source_ref} 身份），跨设备续播重建队列用。 */
-    @Column(name = "deep_list_json", columnDefinition = "TEXT")
+    /** 深层列表（播放历史，JSON 数组，元素为 {source, source_ref} 身份），跨设备续播重建队列用。大歌单可超过 TEXT 64 KiB，故用 MEDIUMTEXT。 */
+    @Column(name = "deep_list_json", columnDefinition = "MEDIUMTEXT")
     private String deepListJson;
 
     @Column(name = "last_event_at")
