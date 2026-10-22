@@ -133,6 +133,34 @@ class PlaylistStore {
     });
   }
 
+  /// 删除某播放源在全部歌单中的条目（删源收口）。
+  ///
+  /// 先按歌单分组补发 `playlist.item_remove`（此时 source 行仍在，
+  /// `source_id` 可解析），再一次性删本地行；离线时只删本地，事件不积压。
+  Future<void> removeItemsOfSource(String sourceKey) async {
+    final items = index.playlistItemsOfSource(sourceKey);
+    if (items.isEmpty) return;
+    final byPlaylist = <int, List<PlaylistItemRow>>{};
+    for (final item in items) {
+      byPlaylist.putIfAbsent(item.playlistId, () => []).add(item);
+    }
+    for (final entry in byPlaylist.entries) {
+      final uuid = await index.ensurePlaylistUuid(entry.key);
+      for (final item in entry.value) {
+        final s = songOf(item);
+        if (!_syncable(s)) continue;
+        await index.enqueueOutbox(SyncEventTypes.playlistItemRemove, {
+          'playlist_uuid': uuid,
+          'source': s.source,
+          'source_ref': s.sourceRef,
+          if (index.sourceUuidOf(s.sourceKey) != null)
+            'source_id': index.sourceUuidOf(s.sourceKey),
+        });
+      }
+    }
+    await index.removePlaylistItemsOfSource(sourceKey);
+  }
+
   /// 该歌是否已在指定歌单（兼容历史 ref 形态）。
   bool contains(int playlistId, Song s) =>
       index

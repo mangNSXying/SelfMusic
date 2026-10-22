@@ -1568,6 +1568,9 @@ class DirectSourceManager extends ChangeNotifier {
     _webdavFbPwds.remove(key);
     _sftpFbSecrets.remove(key);
     _smbFbPwds.remove(key);
+    // 源已不可播放：歌单里属于它的条目一并移除（在线时补发 item_remove，
+    // 由 PlaylistStore.removeItemsOfSource 收口）。
+    await playlists.removeItemsOfSource(key);
     await index.deleteSource(key);
     notifyListeners();
   }

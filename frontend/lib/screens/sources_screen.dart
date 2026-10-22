@@ -17,6 +17,7 @@ import '../platform/harmonyos/ohos_platform_bridge.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
+import '../providers/playlists_provider.dart';
 import '../services/api_client.dart';
 import '../utils/collection_sort.dart';
 import '../utils/url_input.dart';
@@ -2041,21 +2042,25 @@ Future<void> handleLineMenuSelected(
 /// 删除源二次确认（列表/卡片共用）。
 Future<void> _confirmDelete(
     BuildContext context, String key, DirectSourceManager direct) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('删除源'),
-        content: const Text('确定删除该播放源吗？其本地索引也会一并清除。'),
-        actions: appDialogActions(
-          c,
-          confirmLabel: '删除',
-          destructive: true,
-          onCancel: () => Navigator.of(c).pop(false),
-          onConfirm: () => Navigator.of(c).pop(true),
-        ),
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (c) => AlertDialog(
+      title: const Text('删除源'),
+      content: const Text('确定删除该播放源吗？其本地索引与歌单中的相关歌曲也会一并清除。'),
+      actions: appDialogActions(
+        c,
+        confirmLabel: '删除',
+        destructive: true,
+        onCancel: () => Navigator.of(c).pop(false),
+        onConfirm: () => Navigator.of(c).pop(true),
       ),
-    );
-    if (ok == true) {
-      direct.removeSource(key);
+    ),
+  );
+  if (ok == true) {
+    await direct.removeSource(key);
+    if (context.mounted) {
+      // 删源同时清理了歌单条目：刷新计数与详情缓存。
+      context.read<PlaylistsProvider>().refresh();
     }
   }
+}

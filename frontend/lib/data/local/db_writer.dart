@@ -1716,6 +1716,9 @@ void _opDeletePlaylist(Database db, int id) {
 void _opDeleteSource(Database db, String key) {
   db.execute('DELETE FROM sources WHERE key=?', [key]);
   db.execute('DELETE FROM idx_songs WHERE source_key=?', [key]);
+  // 歌单条目随源删除清理：源已不可播放，留在歌单里只会变成无法播放的
+  // 悬挂快照（本地删除源与其它设备同步删除源两条路径共用本函数）。
+  db.execute('DELETE FROM playlist_items WHERE source_key=?', [key]);
   // 歌手身份映射随源删除清理（歌手处理.txt）。
   db.execute('DELETE FROM artist_song_map WHERE source_key=?', [key]);
 }

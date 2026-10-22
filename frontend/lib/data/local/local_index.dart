@@ -1379,21 +1379,38 @@ class LocalIndex {
       FROM playlist_items WHERE playlist_id=?
       ORDER BY sort_order, id
     ''', [playlistId]);
-    return rs
-        .map((r) => PlaylistItemRow(
-              id: r['id'] as int,
-              playlistId: r['playlist_id'] as int,
-              sourceKey: r['source_key'] as String,
-              songRef: r['song_ref'] as String,
-              title: r['title'] as String,
-              artist: r['artist'] as String?,
-              album: r['album'] as String?,
-              coverPath: r['cover_path'] as String?,
-              sortOrder: r['sort_order'] as int,
-              source: r['source'] as String?,
-            ))
-        .toList();
+    return rs.map(_rowToPlaylistItem).toList();
   }
+
+  /// 某源在全部歌单中的条目（删除源前取快照，用于补发 item_remove）。
+  List<PlaylistItemRow> playlistItemsOfSource(String sourceKey) {
+    final rs = _db!.select('''
+      SELECT id, playlist_id, source_key, song_ref, title, artist, album,
+             cover_path, sort_order, source
+      FROM playlist_items WHERE source_key=?
+      ORDER BY playlist_id, sort_order, id
+    ''', [sourceKey]);
+    return rs.map(_rowToPlaylistItem).toList();
+  }
+
+  /// 删除某源在全部歌单中的条目（单条 SQL，源删除时与索引清理一并完成）。
+  Future<void> removePlaylistItemsOfSource(String sourceKey) {
+    return _writer!
+        .exec('DELETE FROM playlist_items WHERE source_key=?', [sourceKey]);
+  }
+
+  PlaylistItemRow _rowToPlaylistItem(Row r) => PlaylistItemRow(
+        id: r['id'] as int,
+        playlistId: r['playlist_id'] as int,
+        sourceKey: r['source_key'] as String,
+        songRef: r['song_ref'] as String,
+        title: r['title'] as String,
+        artist: r['artist'] as String?,
+        album: r['album'] as String?,
+        coverPath: r['cover_path'] as String?,
+        sortOrder: r['sort_order'] as int,
+        source: r['source'] as String?,
+      );
 
   /// 上移/下移歌单内条目（交换相邻 sort_order）。
   /// 相邻判定在写连接内完成（见 db_writer `movePlaylistItem`）。

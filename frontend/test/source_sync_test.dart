@@ -132,6 +132,62 @@ void main() {
     index.close();
   });
 
+  test('删除源时一并清除该源在歌单中的条目（其它源条目保留）', () async {
+    final index = await _openIndex();
+    await index.upsertSource('webdav:NAS', 'webdav', 'NAS',
+        jsonEncode({'name': 'NAS', 'baseUrl': _addr}));
+    final uuid = await index.ensureSourceUuid('webdav:NAS');
+    final pid = await index.createPlaylist('p');
+    await index.addPlaylistItem(pid,
+        sourceKey: 'webdav:NAS', songRef: '/music/a.flac', title: 'A');
+    await index.addPlaylistItem(pid,
+        sourceKey: 'local:Other', songRef: '/music/b.flac', title: 'B');
+
+    expect(
+        await index.applySourceSnapshot(
+          uuid: uuid,
+          kind: 'webdav',
+          name: null,
+          address: _addr,
+          config: null,
+          enabled: true,
+          deleted: true,
+        ),
+        isTrue);
+
+    final items = index.playlistItems(pid);
+    expect(items.length, 1);
+    expect(items.single.sourceKey, 'local:Other');
+
+    index.close();
+  });
+
+  test('删源前补发歌单条目 item_remove，且 source_id 仍可解析', () async {
+    final index = await _openIndex();
+    await index.upsertSource('webdav:NAS', 'webdav', 'NAS',
+        jsonEncode({'name': 'NAS', 'baseUrl': _addr}));
+    final uuid = await index.ensureSourceUuid('webdav:NAS');
+    final pid = await index.createPlaylist('p');
+    await index.addPlaylistItem(pid,
+        sourceKey: 'webdav:NAS',
+        songRef: '/music/a.flac',
+        title: 'A',
+        source: 'webdav');
+    final store = PlaylistStore(index, serverAvailable: () => true);
+
+    await store.removeItemsOfSource('webdav:NAS');
+
+    expect(index.playlistItems(pid), isEmpty);
+    final removals = [
+      for (final e in await index.pendingOutbox())
+        if (e.type == SyncEventTypes.playlistItemRemove) e
+    ];
+    expect(removals.length, 1);
+    expect(removals.single.payload['source_id'], uuid);
+
+    index.close();
+  });
+
   test('源实例 uuid：权重 / 歌单条目载荷携带 source_id', () async {
     final index = await _openIndex();
     await index.upsertSource('webdav:NAS', 'webdav', 'NAS',
