@@ -25,6 +25,13 @@ const READ_RANGE_MAX_BYTES = 2 * 1024 * 1024;
 /** saveFile 复制日志的块大小（日志通常 < 1 MiB，分块避免整文件驻留内存）。 */
 const SAVE_CHUNK_BYTES = 64 * 1024;
 
+/** 文件级本地源：单次最多选择 500 个（API 20 及之前的上限，兼容鸿蒙 6）。 */
+const PICK_FILE_MAX = 500;
+/** persist/activate 单批上限（官方建议不超过 500，取 100 留余量）。 */
+const GRANT_CHUNK_SIZE = 100;
+/** 文件选择器的音频后缀过滤（与 Dart 侧 _audioExt 保持一致）。 */
+const AUDIO_SUFFIX_FILTER = '音频|.mp3,.flac,.m4a,.aac,.ogg,.wav,.aif,.aiff,.aifc';
+
 /** makeCoverThumb 参数缺省值（与 Dart 侧 kCoverThumbMaxEdge / kCoverThumbQuality 对齐）。 */
 const THUMB_MAX_EDGE_DEFAULT = 768;
 const THUMB_QUALITY_DEFAULT = 82;
@@ -80,6 +87,27 @@ interface DirEntry {
   size: number;
   /** 上次修改时间（秒，与 Dart 侧指纹 mtime 语义一致）。 */
   mtime: number;
+}
+
+/** 文件多选结果（Dart 侧 OhosPickedFile）。 */
+interface PickedFile {
+  uri: string;
+  name: string;
+  size: number;
+  mtime: number;
+  /** 本次选择后是否成功持久化授权（false=仅本次会话可用）。 */
+  persisted: boolean;
+  /** 选择时是否可打开（false 仍返回，由扫描/界面提示）。 */
+  readable: boolean;
+}
+
+/** 文件 URI stat 结果（Dart 侧 OhosFileStat）。 */
+interface FileStat {
+  uri: string;
+  ok: boolean;
+  size: number;
+  mtime: number;
+  code: string;
 }
 
 /**
@@ -166,10 +194,35 @@ export default class PlatformBridge implements MethodCallHandler {
           .catch((): void => {
           });
         break;
+      case 'supportsFolderSelection':
+        this.handleSupportsFolderSelection(result);
+        break;
       case 'pickDirectory':
         this.handlePickDirectory(result)
           .catch((): void => {
             // handler 内部全量兜底，此处仅为满足 Promise 必须处理。
+          });
+        break;
+      case 'pickAudioFiles':
+        this.handlePickAudioFiles(result)
+          .catch((): void => {
+            // handler 内部全量兜底，此处仅为满足 Promise 必须处理。
+          });
+        break;
+      case 'activateUris':
+        this.handleActivateUris(call, result)
+          .catch((): void => {
+          });
+        break;
+      case 'statFileUris':
+        this.handleStatFileUris(call, result);
+        break;
+      case 'resolveFileUri':
+        this.handleResolveFileUri(call, result);
+        break;
+      case 'readFileUriRange':
+        this.handleReadFileUriRange(call, result)
+          .catch((): void => {
           });
         break;
       case 'saveFile':
@@ -257,6 +310,21 @@ export default class PlatformBridge implements MethodCallHandler {
   // ---------- 本地文件（US1） ----------
 
   /**
+   * 当前设备/系统是否支持系统目录选择（FOLDER）。
+   *
+   * `DocumentSelectMode.FOLDER` 在 Phone/Tablet 上从 API 26.0.0（鸿蒙 7）才开始
+   * 生效，鸿蒙 6 手机/平板调用会让系统 FilePicker 弹出「功能未开放，敬请期待」。
+   * Dart 侧在拉起目录选择器前必须先查本方法；不支持的设备改走
+   * [`pickAudioFiles`] 的文件多选降级路线。
+   */
+  private handleSupportsFolderSelection(result: MethodResult): void {
+    const supported: boolean =
+      canIUse('SystemCapability.FileManagement.UserFileService.FolderSelection');
+    Log.i(TAG, `supportsFolderSelection：${supported}`);
+    result.success(supported);
+  }
+
+  /**
    * 系统目录选择器（DocumentViewPicker FOLDER 模式，Phone 单选目录）+
    * 当场持久化授权。持久化必须趁选择器临时授权仍在存活的同一会话内完成
    * （临时授权随应用退出清除），因此选择与持久化在一步内收口。
@@ -264,6 +332,11 @@ export default class PlatformBridge implements MethodCallHandler {
    * 仍可用）；对已持久化的 URI 重复调用按幂等成功处理。
    */
   private async handlePickDirectory(result: MethodResult): Promise<void> {
+    // 防御：鸿蒙 6 手机/平板不支持 FOLDER，直接拉起会弹系统「功能未开放」。
+    if (!canIUse('SystemCapability.FileManagement.UserFileService.FolderSelection')) {
+      result.error('801', '当前系统SDK无法选择文件夹，建议更新鸿蒙7', null);
+      return;
+    }
     try {
       const options = new picker.DocumentSelectOptions();
       options.selectMode = picker.DocumentSelectMode.FOLDER;
@@ -320,6 +393,289 @@ export default class PlatformBridge implements MethodCallHandler {
       Log.w(TAG, `checkPersistentPermission 失败：${e.code} ${e.message}`);
     }
     return false;
+  }
+
+  /**
+   * 文件多选（鸿蒙 6 手机/平板没有 FOLDER 能力时的降级入口）。
+   *
+   * 使用 `DocumentViewPicker` 的 FILE 模式 + 音频后缀过滤，避免
+   * `AudioViewPicker` 返回媒体 URI（媒体 URI 的持久化从 API 22 才支持）。
+   * 选择完成后立即逐 URI 持久化授权（分块），返回名称/大小/mtime/
+   * persisted/readable，供 Dart 侧建立文件级本地源。
+   */
+  private async handlePickAudioFiles(result: MethodResult): Promise<void> {
+    try {
+      const options = new picker.DocumentSelectOptions();
+      options.selectMode = picker.DocumentSelectMode.FILE;
+      options.maxSelectNumber = PICK_FILE_MAX;
+      options.fileSuffixFilters = [AUDIO_SUFFIX_FILTER];
+      const documentViewPicker = new picker.DocumentViewPicker(this.context);
+      let uris: Array<string> = [];
+      try {
+        uris = await documentViewPicker.select(options);
+      } catch (err) {
+        const e = err as BusinessError;
+        // Picker 以 reject 表达取消（同 saveFile）。
+        if (e.code === 13900042) {
+          Log.i(TAG, 'pickAudioFiles：用户取消');
+          result.success(null);
+          return;
+        }
+        Log.e(TAG, `pickAudioFiles 选择失败：${e.code} ${e.message}`);
+        result.error(`${e.code}`, e.message, null);
+        return;
+      }
+      if (uris == null || uris.length === 0) {
+        Log.i(TAG, 'pickAudioFiles：用户取消（空结果）');
+        result.success(null);
+        return;
+      }
+      const persisted: Array<boolean> = await this.persistUris(uris);
+      const out: Array<PickedFile> = [];
+      for (let i = 0; i < uris.length; i++) {
+        const uri = uris[i];
+        let size = 0;
+        let mtime = 0;
+        let readable = false;
+        let file: fileIo.File | null = null;
+        try {
+          file = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY);
+          const stat = fileIo.statSync(file.fd);
+          size = stat.size;
+          mtime = stat.mtime;
+          readable = true;
+        } catch (err) {
+          const e = err as BusinessError;
+          Log.w(TAG, `pickAudioFiles stat 失败：${e.code} ${e.message}`);
+        } finally {
+          if (file != null) {
+            fileIo.closeSync(file);
+          }
+        }
+        const item: PickedFile = {
+          'uri': uri,
+          'name': PlatformBridge.fileNameFromUri(uri),
+          'size': size,
+          'mtime': mtime,
+          'persisted': i < persisted.length && persisted[i],
+          'readable': readable
+        };
+        out.push(item);
+      }
+      Log.i(TAG, `pickAudioFiles：${out.length} 个文件`);
+      result.success(out);
+    } catch (err) {
+      const e = err as BusinessError;
+      Log.e(TAG, `pickAudioFiles 失败：${e.code} ${e.message}`);
+      result.error(`${e.code}`, e.message, null);
+    }
+  }
+
+  /**
+   * 批量持久化文件/目录授权：单批 [GRANT_CHUNK_SIZE] 个；整批失败时用
+   * checkPersistentPermission 复核（重复选择同一批文件的幂等场景）。
+   */
+  private async persistUris(uris: Array<string>): Promise<Array<boolean>> {
+    const out: Array<boolean> = [];
+    for (let i = 0; i < uris.length; i++) {
+      out.push(false);
+    }
+    for (let start = 0; start < uris.length; start += GRANT_CHUNK_SIZE) {
+      const end = Math.min(start + GRANT_CHUNK_SIZE, uris.length);
+      const policies: Array<fileShare.PolicyInfo> = [];
+      for (let i = start; i < end; i++) {
+        const policy: fileShare.PolicyInfo = {
+          uri: uris[i],
+          operationMode: fileShare.OperationMode.READ_MODE
+        };
+        policies.push(policy);
+      }
+      try {
+        await fileShare.persistPermission(policies);
+        for (let i = start; i < end; i++) {
+          out[i] = true;
+        }
+      } catch (err) {
+        const e = err as BusinessError<Array<fileShare.PolicyErrorResult>>;
+        Log.w(TAG, `persistUris 失败：${e.code} ${e.message}` +
+          `${PlatformBridge.policyErrorDetail(e.data)}`);
+        try {
+          const checked: Array<boolean> =
+            await fileShare.checkPersistentPermission(policies);
+          for (let i = start; i < end; i++) {
+            const j = i - start;
+            if (j < checked.length && checked[j]) {
+              out[i] = true;
+            }
+          }
+        } catch (checkErr) {
+          const ce = checkErr as BusinessError;
+          Log.w(TAG, `persistUris checkPersistentPermission 失败：${ce.code} ${ce.message}`);
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * 批量激活已持久化的文件 URI（进程重启后必须激活才能访问）。
+   * 返回与入参同序的 boolean；整块失败时逐条重试，避免单个坏 URI 拖垮
+   * 同批其它文件。
+   */
+  private async handleActivateUris(call: MethodCall, result: MethodResult): Promise<void> {
+    const uris = PlatformBridge.argStringArray(call, 'uris');
+    if (uris == null || uris.length === 0) {
+      result.error('401', '缺少 uris 参数', null);
+      return;
+    }
+    const out: Array<boolean> = [];
+    for (let i = 0; i < uris.length; i++) {
+      out.push(false);
+    }
+    for (let start = 0; start < uris.length; start += GRANT_CHUNK_SIZE) {
+      const end = Math.min(start + GRANT_CHUNK_SIZE, uris.length);
+      const policies: Array<fileShare.PolicyInfo> = [];
+      for (let i = start; i < end; i++) {
+        const policy: fileShare.PolicyInfo = {
+          uri: uris[i],
+          operationMode: fileShare.OperationMode.READ_MODE
+        };
+        policies.push(policy);
+      }
+      try {
+        await fileShare.activatePermission(policies);
+        for (let i = start; i < end; i++) {
+          out[i] = true;
+        }
+      } catch (err) {
+        const e = err as BusinessError<Array<fileShare.PolicyErrorResult>>;
+        Log.w(TAG, `activateUris 批量失败，逐条重试：${e.code} ${e.message}` +
+          `${PlatformBridge.policyErrorDetail(e.data)}`);
+        for (let i = start; i < end; i++) {
+          const policy: fileShare.PolicyInfo = {
+            uri: uris[i],
+            operationMode: fileShare.OperationMode.READ_MODE
+          };
+          try {
+            await fileShare.activatePermission([policy]);
+            out[i] = true;
+          } catch (oneErr) {
+            const oe = oneErr as BusinessError;
+            Log.w(TAG, `activateUris 失败：${uris[i]} ${oe.code} ${oe.message}`);
+          }
+        }
+      }
+    }
+    Log.i(TAG, `activateUris：${out.filter((v: boolean): boolean => v).length}/${uris.length}`);
+    result.success(out);
+  }
+
+  /** 批量 stat 文件 URI（名称/大小/mtime 由 Dart 侧用于扫描 diff）。 */
+  private handleStatFileUris(call: MethodCall, result: MethodResult): void {
+    const uris = PlatformBridge.argStringArray(call, 'uris');
+    if (uris == null || uris.length === 0) {
+      result.error('401', '缺少 uris 参数', null);
+      return;
+    }
+    const out: Array<FileStat> = [];
+    for (const uri of uris) {
+      const item: FileStat = {
+        'uri': uri,
+        'ok': false,
+        'size': 0,
+        'mtime': 0,
+        'code': ''
+      };
+      let file: fileIo.File | null = null;
+      try {
+        file = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY);
+        const stat = fileIo.statSync(file.fd);
+        item.ok = true;
+        item.size = stat.size;
+        item.mtime = stat.mtime;
+      } catch (err) {
+        const e = err as BusinessError;
+        item.code = e.code != null ? `${e.code}` : '500';
+      } finally {
+        if (file != null) {
+          fileIo.closeSync(file);
+        }
+      }
+      out.push(item);
+    }
+    result.success(out);
+  }
+
+  /** 文件 URI → 沙箱真路径（供播放 setFilePath 直连）。 */
+  private handleResolveFileUri(call: MethodCall, result: MethodResult): void {
+    const uri = PlatformBridge.argString(call, 'uri');
+    if (uri == null || uri === '') {
+      result.error('401', '缺少 uri 参数', null);
+      return;
+    }
+    let file: fileIo.File | null = null;
+    try {
+      file = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY);
+      const path = file.path;
+      if (path == null || path === '') {
+        result.error('402', '文件 URI 解析沙箱路径失败（file.path 为空）', null);
+        return;
+      }
+      Log.i(TAG, 'resolveFileUri：成功');
+      result.success(path);
+    } catch (err) {
+      const e = err as BusinessError;
+      Log.e(TAG, `resolveFileUri 失败：${e.code} ${e.message}`);
+      result.error(`${e.code}`, e.message, null);
+    } finally {
+      if (file != null) {
+        fileIo.closeSync(file);
+      }
+    }
+  }
+
+  /** 文件 URI 范围读（与目录 readRange 共用 [readRangeAt]）。 */
+  private async handleReadFileUriRange(call: MethodCall,
+    result: MethodResult): Promise<void> {
+    const uri = PlatformBridge.argString(call, 'uri');
+    const offset = PlatformBridge.argNumber(call, 'offset');
+    const length = PlatformBridge.argNumber(call, 'length');
+    if (uri == null || uri === '' || offset == null || offset < 0 || length == null) {
+      result.error('401', 'readFileUriRange 参数非法', null);
+      return;
+    }
+    if (length <= 0 || length > READ_RANGE_MAX_BYTES) {
+      result.error('401',
+        `readFileUriRange length 非法：${length}（上限 ${READ_RANGE_MAX_BYTES}）`, null);
+      return;
+    }
+    await this.readRangeAt('readFileUriRange', uri, offset, length, result);
+  }
+
+  /** 目录 readRange / 文件 readFileUriRange 共用的精确范围读。 */
+  private async readRangeAt(label: string, path: string, offset: number,
+    length: number, result: MethodResult): Promise<void> {
+    let file: fileIo.File | null = null;
+    try {
+      file = fileIo.openSync(path, fileIo.OpenMode.READ_ONLY);
+      const buffer = new ArrayBuffer(length);
+      const options: ReadOptions = { offset: offset, length: length };
+      const readLen = await fileIo.read(file.fd, buffer, options);
+      if (readLen !== length) {
+        result.error('13900030',
+          `${label} 读取不完整：期望 ${length}，实际 ${readLen}`, null);
+        return;
+      }
+      result.success(new Uint8Array(buffer));
+    } catch (err) {
+      const e = err as BusinessError;
+      Log.e(TAG, `${label} 失败：${e.code} ${e.message}`);
+      result.error(`${e.code}`, e.message, null);
+    } finally {
+      if (file != null) {
+        fileIo.closeSync(file);
+      }
+    }
   }
 
   // ---------- 日志导出（saveFile） ----------
@@ -515,27 +871,7 @@ export default class PlatformBridge implements MethodCallHandler {
       result.error('401', `readRange length 非法：${length}（上限 ${READ_RANGE_MAX_BYTES}）`, null);
       return;
     }
-    let file: fileIo.File | null = null;
-    try {
-      file = fileIo.openSync(uri + rel, fileIo.OpenMode.READ_ONLY);
-      const buffer = new ArrayBuffer(length);
-      const options: ReadOptions = { offset: offset, length: length };
-      const readLen = await fileIo.read(file.fd, buffer, options);
-      if (readLen !== length) {
-        // 契约要求精确 length 字节：文件被截短/offset 越界按 error 上抛。
-        result.error('13900030', `readRange 读取不完整：期望 ${length}，实际 ${readLen}`, null);
-        return;
-      }
-      result.success(new Uint8Array(buffer));
-    } catch (err) {
-      const e = err as BusinessError;
-      Log.e(TAG, `readRange 失败：${e.code} ${e.message}`);
-      result.error(`${e.code}`, e.message, null);
-    } finally {
-      if (file != null) {
-        fileIo.closeSync(file);
-      }
-    }
+    await this.readRangeAt('readRange', uri + rel, offset, length, result);
   }
 
   /**
@@ -832,5 +1168,40 @@ export default class PlatformBridge implements MethodCallHandler {
 
   private static argBool(call: MethodCall, key: string): boolean | null {
     return call.argument(key) as boolean | null;
+  }
+
+  private static argStringArray(call: MethodCall, key: string): Array<string> | null {
+    const arr = call.argument(key) as Array<string> | null;
+    if (arr == null || !Array.isArray(arr)) {
+      return null;
+    }
+    const out: Array<string> = [];
+    for (const item of arr) {
+      if (typeof item !== 'string' || item === '') {
+        return null;
+      }
+      out.push(item);
+    }
+    return out;
+  }
+
+  /** 从 document URI 提取文件名（去掉 query/fragment，再做 decode）。 */
+  private static fileNameFromUri(uri: string): string {
+    let s = uri;
+    const q = s.indexOf('?');
+    if (q >= 0) {
+      s = s.substring(0, q);
+    }
+    const h = s.indexOf('#');
+    if (h >= 0) {
+      s = s.substring(0, h);
+    }
+    const slash = s.lastIndexOf('/');
+    const raw = slash >= 0 ? s.substring(slash + 1) : s;
+    try {
+      return decodeURIComponent(raw);
+    } catch (err) {
+      return raw;
+    }
   }
 }

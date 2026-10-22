@@ -26,8 +26,8 @@ void main() {
 
   setUp(() {
     calls.clear();
-    // 目录激活缓存是进程级静态状态：逐用例清空，避免相互影响。
-    OhosPlatformBridge.debugResetDirectoryActivation();
+    // 能力/授权缓存是进程级静态状态：逐用例清空，避免相互影响。
+    OhosPlatformBridge.debugResetCapabilityCache();
   });
 
   tearDown(() {
@@ -272,17 +272,16 @@ void main() {
       });
 
       const uri = 'file://docs/storage/Users/currentUser/Music4';
-      final path = await OhosPlatformBridge.resolvePathWithActivation(
-          uri, 'a.flac');
+      final path =
+          await OhosPlatformBridge.resolvePathWithActivation(uri, 'a.flac');
 
       expect(path, '/data/storage/el2/base/Music/a.flac');
       expect(resolveCalls, 2);
-      expect(
-          calls.where((c) => c.method == 'activateDirectory'), hasLength(1));
+      expect(calls.where((c) => c.method == 'activateDirectory'), hasLength(1));
       // 激活成功已缓存：后续解析不再重复激活。
       calls.clear();
-      final again = await OhosPlatformBridge.resolvePathWithActivation(
-          uri, 'b.flac');
+      final again =
+          await OhosPlatformBridge.resolvePathWithActivation(uri, 'b.flac');
       expect(again, '/data/storage/el2/base/Music/a.flac');
       expect(calls.where((c) => c.method == 'activateDirectory'), isEmpty);
     });
@@ -295,17 +294,188 @@ void main() {
       });
 
       const uri = 'file://docs/storage/Users/currentUser/Music5';
-      final path = await OhosPlatformBridge.resolvePathWithActivation(
-          uri, 'a.flac');
+      final path =
+          await OhosPlatformBridge.resolvePathWithActivation(uri, 'a.flac');
 
       expect(path, '/sandbox/a.flac');
       expect(calls.where((c) => c.method == 'activateDirectory'), isEmpty);
     });
   });
 
+  group('文件夹能力检测与文件级本地源', () {
+    test('supportsFolderSelection 进程内缓存：重复调用只查一次原生', () async {
+      mockChannel((call) async {
+        calls.add(call);
+        return false;
+      });
+
+      expect(await OhosPlatformBridge.supportsFolderSelection(), isFalse);
+      expect(await OhosPlatformBridge.supportsFolderSelection(), isFalse);
+      expect(calls, hasLength(1));
+      expect(calls.single.method, 'supportsFolderSelection');
+    });
+
+    test('supportsFolderSelection 桥未装配按不支持处理（走文件降级）', () async {
+      mockChannel((call) async => throw MissingPluginException());
+      expect(await OhosPlatformBridge.supportsFolderSelection(), isFalse);
+    });
+
+    test('pickAudioFiles 解析 uri/name/size/mtime/persisted/readable', () async {
+      mockChannel((call) async {
+        calls.add(call);
+        return <Object?>[
+          <String, Object?>{
+            'uri': 'file://docs/a.mp3',
+            'name': 'a.mp3',
+            'size': 123,
+            'mtime': 456,
+            'persisted': true,
+            'readable': true,
+          },
+          <String, Object?>{
+            'uri': 'file://docs/b.flac',
+            'name': 'b.flac',
+            'size': 'bad',
+            'persisted': false,
+          },
+        ];
+      });
+
+      final files = await OhosPlatformBridge.pickAudioFiles();
+      expect(files, hasLength(2));
+      expect(calls.single.method, 'pickAudioFiles');
+      expect(files!.first.uri, 'file://docs/a.mp3');
+      expect(files.first.name, 'a.mp3');
+      expect(files.first.size, 123);
+      expect(files.first.mtime, 456);
+      expect(files.first.persisted, isTrue);
+      expect(files.first.readable, isTrue);
+      expect(files[1].size, 0);
+      expect(files[1].persisted, isFalse);
+      expect(files[1].readable, isFalse);
+    });
+
+    test('pickAudioFiles 用户取消返回 null，真实失败向上抛', () async {
+      mockChannel((call) async => null);
+      expect(await OhosPlatformBridge.pickAudioFiles(), isNull);
+
+      mockChannel((call) async {
+        throw PlatformException(code: '13900001', message: 'boom');
+      });
+      expect(OhosPlatformBridge.pickAudioFiles(),
+          throwsA(isA<PlatformException>()));
+    });
+
+    test('activateUris 按 100 分批透传并保序解析', () async {
+      final uris = [for (var i = 0; i < 150; i++) 'file://docs/$i.mp3'];
+      mockChannel((call) async {
+        calls.add(call);
+        final batch = (call.arguments as Map)['uris'] as List;
+        expect(batch.length, lessThanOrEqualTo(100));
+        return [for (final _ in batch) true];
+      });
+
+      final flags = await OhosPlatformBridge.activateUris(uris);
+      expect(flags, hasLength(150));
+      expect(flags.every((v) => v), isTrue);
+      expect(calls, hasLength(2));
+      expect((calls[0].arguments as Map)['uris'], hasLength(100));
+      expect((calls[1].arguments as Map)['uris'], hasLength(50));
+    });
+
+    test('ensureUrisActivated 成功缓存：已激活 URI 不再过通道', () async {
+      mockChannel((call) async {
+        calls.add(call);
+        final batch = (call.arguments as Map)['uris'] as List;
+        return [for (final _ in batch) true];
+      });
+
+      expect(
+          await OhosPlatformBridge.ensureUrisActivated(
+              ['file://docs/a.mp3', 'file://docs/b.mp3']),
+          [true, true]);
+      expect(
+          await OhosPlatformBridge.ensureUrisActivated(['file://docs/a.mp3']),
+          [true]);
+      expect(calls, hasLength(1));
+
+      expect(
+          await OhosPlatformBridge.ensureUrisActivated(['file://docs/c.mp3']),
+          [true]);
+      expect(calls, hasLength(2));
+    });
+
+    test('statFileUris 解析失败项与错误码', () async {
+      mockChannel((call) async {
+        calls.add(call);
+        return <Object?>[
+          <String, Object?>{
+            'uri': 'file://docs/a.mp3',
+            'ok': true,
+            'size': 10,
+            'mtime': 20,
+            'code': '',
+          },
+          <String, Object?>{
+            'uri': 'file://docs/gone.mp3',
+            'ok': false,
+            'code': '13900002',
+          },
+        ];
+      });
+
+      final stats =
+          await OhosPlatformBridge.statFileUris(['file://docs/a.mp3']);
+      expect(calls.single.method, 'statFileUris');
+      expect(stats, hasLength(2));
+      expect(stats.first.ok, isTrue);
+      expect(stats.first.size, 10);
+      expect(stats[1].ok, isFalse);
+      expect(stats[1].code, '13900002');
+    });
+
+    test('resolveFileUriWithActivation 首次失败 → 批量激活 → 重试成功', () async {
+      var resolves = 0;
+      mockChannel((call) async {
+        calls.add(call);
+        if (call.method == 'activateUris') return [true];
+        if (call.method == 'resolveFileUri') {
+          resolves++;
+          if (resolves == 1) {
+            throw PlatformException(code: '13900001', message: 'not activated');
+          }
+          return '/sandbox/a.mp3';
+        }
+        return null;
+      });
+
+      final path = await OhosPlatformBridge.resolveFileUriWithActivation(
+          'file://docs/a.mp3');
+      expect(path, '/sandbox/a.mp3');
+      expect(resolves, 2);
+      expect(calls.where((c) => c.method == 'activateUris'), hasLength(1));
+    });
+
+    test('readFileUriRange 参数透传并返回字节', () async {
+      mockChannel((call) async {
+        calls.add(call);
+        return Uint8List.fromList([1, 2, 3]);
+      });
+
+      final data =
+          await OhosPlatformBridge.readFileUriRange('file://docs/a.mp3', 5, 3);
+      expect(data, [1, 2, 3]);
+      expect(calls.single.method, 'readFileUriRange');
+      expect(calls.single.arguments, <String, Object?>{
+        'uri': 'file://docs/a.mp3',
+        'offset': 5,
+        'length': 3,
+      });
+    });
+  });
+
   group('saveFile（鸿蒙日志导出，2026-10-20）', () {
-    test('方法名与参数透传：suggestedName/sourcePath 原样过通道，返回保存 URI',
-        () async {
+    test('方法名与参数透传：suggestedName/sourcePath 原样过通道，返回保存 URI', () async {
       const savedUri =
           'file://docs/storage/Users/currentUser/Download/selfmusic_logs.txt';
       mockChannel((call) async {

@@ -12,6 +12,7 @@ import '../data/sources/meta_enrich.dart';
 import '../data/sources/scan_worker.dart';
 import '../data/sources/webdav_direct_source.dart';
 import '../data/sources/local_direct_source.dart';
+import '../data/sources/local_file_direct_source.dart';
 import '../data/sources/sftp_direct_source.dart';
 import '../data/sources/smb_direct_source.dart';
 import '../data/local/local_index.dart';
@@ -360,8 +361,9 @@ class DirectSourceManager extends ChangeNotifier {
     if (rawFbs is List) {
       sanitized['fallbacks'] = [
         for (final e in rawFbs)
-          if (e is Map) sanitizeFallbackConfig(Map<String, dynamic>.of(
-              e.map((k, v) => MapEntry(k.toString(), v))))
+          if (e is Map)
+            sanitizeFallbackConfig(Map<String, dynamic>.of(
+                e.map((k, v) => MapEntry(k.toString(), v))))
       ];
     }
     await index.enqueueOutbox(type, {
@@ -404,14 +406,12 @@ class DirectSourceManager extends ChangeNotifier {
   }
 
   /// SSH 主机指纹存取（TOFU 钉，`ssh_known_hosts`，不参与同步）。
-  String? sshFingerprintOf(String hostPort) =>
-      index.sshFingerprint(hostPort);
+  String? sshFingerprintOf(String hostPort) => index.sshFingerprint(hostPort);
 
   Future<void> pinSshHost(String hostPort, String fingerprint) =>
       index.sshPin(hostPort, fingerprint);
 
-  Future<void> forgetSshHost(String hostPort) =>
-      index.sshForget(hostPort);
+  Future<void> forgetSshHost(String hostPort) => index.sshForget(hostPort);
 
   /// 同步落库后重建内存源列表（源集合可能新增/改名/删除/改配置）。
   /// 存量补推（歌单 + 权重绝对态）：把配对前建的数据补进 outbox，
@@ -421,7 +421,11 @@ class DirectSourceManager extends ChangeNotifier {
   Future<Map<String, int>> backfillNow() async {
     final pl = await playlists.backfill();
     final songs = await weight.backfill();
-    return {'playlists': pl['playlists']!, 'items': pl['items']!, 'songs': songs};
+    return {
+      'playlists': pl['playlists']!,
+      'items': pl['items']!,
+      'songs': songs
+    };
   }
 
   Future<void> reloadSourcesFromIndex() async {
@@ -455,7 +459,8 @@ class DirectSourceManager extends ChangeNotifier {
           if (s is LocalDirectSource) '${s.key}|${s.rootPath}' else s.key
       ].join('\n');
 
-  Future<void> _loadFallbackSecrets(String key, Map<String, dynamic> cfg) async {
+  Future<void> _loadFallbackSecrets(
+      String key, Map<String, dynamic> cfg) async {
     final fbs = parseFallbackConfigs(cfg['fallbacks']);
     if (fbs.isEmpty) {
       _webdavFbPwds.remove(key);
@@ -515,15 +520,13 @@ class DirectSourceManager extends ChangeNotifier {
         _webdavPwds[r.key] = pwd ?? '';
         cfg['password'] = pwd ?? '';
         await _loadFallbackSecrets(r.key, cfg);
-        return _buildDirect(
-            kind: r.kind, key: r.key, name: name, cfg: cfg);
+        return _buildDirect(kind: r.kind, key: r.key, name: name, cfg: cfg);
       }
       if (r.kind == 'local') {
         final cfg = jsonDecode(r.config) as Map<String, dynamic>;
         final name = cfg['name'] as String? ?? r.name;
         await _loadFallbackSecrets(r.key, cfg);
-        return _buildDirect(
-            kind: r.kind, key: r.key, name: name, cfg: cfg);
+        return _buildDirect(kind: r.kind, key: r.key, name: name, cfg: cfg);
       }
       if (r.kind == 'sftp') {
         final cfg = jsonDecode(r.config) as Map<String, dynamic>;
@@ -534,8 +537,7 @@ class DirectSourceManager extends ChangeNotifier {
           passphrase: await secrets.sftpKeyPassphrase(r.key) ?? '',
         );
         await _loadFallbackSecrets(r.key, cfg);
-        return _buildDirect(
-            kind: r.kind, key: r.key, name: name, cfg: cfg);
+        return _buildDirect(kind: r.kind, key: r.key, name: name, cfg: cfg);
       }
       if (r.kind == 'smb') {
         var cfg = jsonDecode(r.config) as Map<String, dynamic>;
@@ -552,8 +554,7 @@ class DirectSourceManager extends ChangeNotifier {
         }
         _smbPwds[r.key] = pwd ?? '';
         await _loadFallbackSecrets(r.key, cfg);
-        return _buildDirect(
-            kind: r.kind, key: r.key, name: name, cfg: cfg);
+        return _buildDirect(kind: r.kind, key: r.key, name: name, cfg: cfg);
       }
     } catch (e) {
       // 损坏的源配置：记日志再丢行。曾出现"源在安卓可见、鸿蒙不可见"的
@@ -610,10 +611,8 @@ class DirectSourceManager extends ChangeNotifier {
     // 压缩图像画质开关（默认关）：同步给 cover_thumb 全局闸（显示+生成共用）。
     setCoverThumbCompressionEnabled(settings.compressCoverImage);
     cache = CacheManager(index, settings);
-    weight = SongWeightStore(index,
-        serverAvailable: () => isServerAvailable);
-    playlists = PlaylistStore(index,
-        serverAvailable: () => isServerAvailable);
+    weight = SongWeightStore(index, serverAvailable: () => isServerAvailable);
+    playlists = PlaylistStore(index, serverAvailable: () => isServerAvailable);
     final rows = index.listSources();
     perfLog('boot.directInit listSources done', 'rows=${rows.length}');
     for (final r in rows) {
@@ -803,6 +802,13 @@ class DirectSourceManager extends ChangeNotifier {
     required Map<String, dynamic> cfg,
   }) {
     if (kind == 'local') {
+      if (cfg['mode'] == 'files') {
+        return LocalFileDirectSource(
+          name: name,
+          files: parseLocalFileEntries(cfg),
+          index: index,
+        );
+      }
       return LocalDirectSource(
         name: name,
         rootPath: cfg['path'] as String? ?? '',
@@ -1054,8 +1060,7 @@ class DirectSourceManager extends ChangeNotifier {
     final fbs = fallbacksOf(key);
     for (var i = 0; i < fbs.length; i++) {
       final kind = (fbs[i]['kind'] as String? ?? '').trim();
-      if (kind == 'webdav' &&
-          ((_webdavFbPwds[key]?[i] ?? '').isEmpty)) {
+      if (kind == 'webdav' && ((_webdavFbPwds[key]?[i] ?? '').isEmpty)) {
         // WebDAV 允许空密码（匿名），仅同步来源且有用户名才算待补？与主源口径
         // 对齐：主源空密码即待补提示，此处同样提示空密码，避免静默失败。
         // 匿名需求可在弹窗留空保存，播放时仍可尝试。
@@ -1080,8 +1085,8 @@ class DirectSourceManager extends ChangeNotifier {
 
   /// 校验备用列表（UI 保存前调用）：返回错误文案，null=通过。
   /// 规则：至多2个、禁 local、地址必填且与主/彼此不重复。
-  String? validateFallbacks(
-      String primaryKind, Map<String, dynamic> primaryCfg, List<Map<String, dynamic>> fbs) {
+  String? validateFallbacks(String primaryKind, Map<String, dynamic> primaryCfg,
+      List<Map<String, dynamic>> fbs) {
     if (fbs.length > kMaxFallbacks) return '至多可设置两个备用源';
     final seen = <String>{};
     final primaryAddr = sourceAddressOf(primaryKind, primaryCfg);
@@ -1177,8 +1182,7 @@ class DirectSourceManager extends ChangeNotifier {
         final ref = song.sourceRef;
         final slash = ref.lastIndexOf('/');
         final parent = slash <= 0 ? '' : ref.substring(0, slash);
-        final filename =
-            slash < 0 ? ref : ref.substring(slash + 1);
+        final filename = slash < 0 ? ref : ref.substring(slash + 1);
         if (filename.isEmpty || filename.contains('..')) continue;
         await fb.uploadFile(parent, filename, opened.stream, total);
       } catch (_) {
@@ -1210,8 +1214,7 @@ class DirectSourceManager extends ChangeNotifier {
       'route': route.name,
       if (sanitizedFbs.isNotEmpty) 'fallbacks': sanitizedFbs,
     };
-    _sources.add(_buildDirect(
-        kind: 'webdav', key: key, name: name, cfg: cfg));
+    _sources.add(_buildDirect(kind: 'webdav', key: key, name: name, cfg: cfg));
     await index.upsertSource(key, 'webdav', name, jsonEncode(cfg));
     await index.ensureSourceUuid(key);
     await _emitSource(SyncEventTypes.sourceCreate, key);
@@ -1235,8 +1238,34 @@ class DirectSourceManager extends ChangeNotifier {
       'path': path,
       if (sanitizedFbs.isNotEmpty) 'fallbacks': sanitizedFbs,
     };
-    _sources.add(
-        _buildDirect(kind: 'local', key: key, name: name, cfg: cfg));
+    _sources.add(_buildDirect(kind: 'local', key: key, name: name, cfg: cfg));
+    await index.upsertSource(key, 'local', name, jsonEncode(cfg));
+    restartAutoScan();
+    notifyListeners();
+  }
+
+  /// 新增文件级本地源（鸿蒙 6 手机/平板无系统文件夹选择能力时的降级形态）。
+  ///
+  /// 配置为 `{"mode":"files","files":[...]}`；不写 path、不参与跨设备同步、
+  /// 不可做备用源。已持久化授权的文件 URI 存配置，进程重启后扫描/播放前
+  /// 由 [OhosPlatformBridge.ensureUrisActivated] 激活。
+  Future<void> addLocalFiles({
+    required String name,
+    required List<LocalFileEntry> files,
+    List<Map<String, dynamic>> fallbacks = const [],
+  }) async {
+    final key = _localKey(name);
+    if (_sources.any((s) => s.key == key)) {
+      throw StateError('已存在同名播放源');
+    }
+    if (files.isEmpty) throw StateError('请至少选择一个音频文件');
+    final sanitizedFbs = await _persistFallbackSecrets(key, fallbacks);
+    final cfg = <String, dynamic>{
+      'name': name,
+      ...localFilesConfig(files),
+      if (sanitizedFbs.isNotEmpty) 'fallbacks': sanitizedFbs,
+    };
+    _sources.add(_buildDirect(kind: 'local', key: key, name: name, cfg: cfg));
     await index.upsertSource(key, 'local', name, jsonEncode(cfg));
     restartAutoScan();
     notifyListeners();
@@ -1276,8 +1305,7 @@ class DirectSourceManager extends ChangeNotifier {
       'route': route.name,
       if (sanitizedFbs.isNotEmpty) 'fallbacks': sanitizedFbs,
     };
-    _sources.add(
-        _buildDirect(kind: 'sftp', key: key, name: name, cfg: cfg));
+    _sources.add(_buildDirect(kind: 'sftp', key: key, name: name, cfg: cfg));
     await index.upsertSource(key, 'sftp', name, jsonEncode(cfg));
     await index.ensureSourceUuid(key);
     await _emitSource(SyncEventTypes.sourceCreate, key);
@@ -1313,8 +1341,7 @@ class DirectSourceManager extends ChangeNotifier {
       'route': route.name,
       if (sanitizedFbs.isNotEmpty) 'fallbacks': sanitizedFbs,
     };
-    _sources.add(
-        _buildDirect(kind: 'smb', key: key, name: name, cfg: cfg));
+    _sources.add(_buildDirect(kind: 'smb', key: key, name: name, cfg: cfg));
     await index.upsertSource(key, 'smb', name, jsonEncode(cfg));
     await index.ensureSourceUuid(key);
     await _emitSource(SyncEventTypes.sourceCreate, key);
@@ -1333,6 +1360,7 @@ class DirectSourceManager extends ChangeNotifier {
     String key, {
     String? name,
     String? path,
+    List<LocalFileEntry>? localFiles,
     String? baseUrl,
     String? username,
     String? password,
@@ -1355,6 +1383,12 @@ class DirectSourceManager extends ChangeNotifier {
     if (newName.isEmpty) throw StateError('源名称不能为空');
     cfg['name'] = newName;
     if (path != null) cfg['path'] = path;
+    if (localFiles != null) {
+      if (localFiles.isEmpty) throw StateError('请至少选择一个音频文件');
+      cfg['mode'] = 'files';
+      cfg['files'] = [for (final f in localFiles) f.toJson()];
+      cfg.remove('path');
+    }
     if (baseUrl != null) cfg['baseUrl'] = baseUrl;
     if (username != null) cfg['username'] = username;
     if (route != null) cfg['route'] = route.name;
@@ -1469,8 +1503,8 @@ class DirectSourceManager extends ChangeNotifier {
     final rebuilt = <MusicSource>[];
     for (final s in _sources) {
       if (s.key == key) {
-        rebuilt.add(_buildDirect(
-            kind: row.kind, key: newKey, name: newName, cfg: cfg));
+        rebuilt.add(
+            _buildDirect(kind: row.kind, key: newKey, name: newName, cfg: cfg));
       } else {
         rebuilt.add(s);
       }
@@ -1546,8 +1580,8 @@ class DirectSourceManager extends ChangeNotifier {
 
   /// 上传音频文件到指定目录（[parentRef] 为源内相对路径，`''` = 源根）
   /// 并增量刷新索引。返回后调用方 toast + 局部刷新；大文件流式上传不驻留内存。
-  Future<void> uploadAudio(String sourceKey, String filename,
-      Stream<List<int>> bytes, int length,
+  Future<void> uploadAudio(
+      String sourceKey, String filename, Stream<List<int>> bytes, int length,
       {String parentRef = ''}) async {
     final src = sourceByKey(sourceKey);
     if (src == null) throw StateError('源不存在：$sourceKey');
@@ -1633,8 +1667,7 @@ class DirectSourceManager extends ChangeNotifier {
           }
         },
       );
-      await index.updateSourceScan(
-          key, token.cancelled ? 'cancelled' : 'done');
+      await index.updateSourceScan(key, token.cancelled ? 'cancelled' : 'done');
       // 扫描有增改 → 元数据版本自增（全局库/LibraryProvider 就地刷新）。
       if (summary.added > 0 || summary.updated > 0) {
         _metaVersion++;
@@ -1660,9 +1693,10 @@ class DirectSourceManager extends ChangeNotifier {
   /// 零依赖 Wi-Fi 探测（best-effort）：存在 `wlan` 网卡即认为在 Wi-Fi。
   static Future<bool> _hasWifi() async {
     try {
-      final ifaces = await NetworkInterface.list(
-          type: InternetAddressType.IPv4);
-      return ifaces.any((i) => i.name.toLowerCase().contains('wlan') ||
+      final ifaces =
+          await NetworkInterface.list(type: InternetAddressType.IPv4);
+      return ifaces.any((i) =>
+          i.name.toLowerCase().contains('wlan') ||
           i.name.toLowerCase().contains('wifi'));
     } catch (_) {
       return true; // 探测失败放行，避免误锁扫描。
@@ -1768,6 +1802,7 @@ class DirectSourceManager extends ChangeNotifier {
 
   /// 是否处于「不喜欢」态（权重锁定 [SongWeightStore.dislikedFactor] = 0.1）。
   bool isDisliked(Song s) => weight.isDisliked(s);
+
   /// 手动「不喜欢」开关：开 → 权重降到 0.1（低于自动调权下限的特殊档）并锁定；
   /// 关 → 解锁回到 1.0。
   Future<void> setDisliked(Song s, bool disliked) async {
@@ -1916,8 +1951,8 @@ class DirectSourceManager extends ChangeNotifier {
   /// 后台下载转码变体（Bearer + 回源鉴权头直调转码端点，流式落盘）：
   /// 块粒度轮询 [shouldAbort]（换歌作废，半截文件自清）；非 200（429 并发满 /
   /// 503 无 ffmpeg / 502 源失败）抛错由调用方回退原文件预载。
-  Future<void> _downloadTranscodeVariant(Song s, MusicSource src,
-      String variantKey,
+  Future<void> _downloadTranscodeVariant(
+      Song s, MusicSource src, String variantKey,
       {required int bitrate,
       required String loudnorm,
       bool Function()? shouldAbort}) async {
@@ -1927,8 +1962,7 @@ class DirectSourceManager extends ChangeNotifier {
     }
     final origin = src.proxyOrigin(s);
     if (origin == null) throw StateError('该源无代理 origin');
-    final turl =
-        api.transcodeStreamUrl(origin, bitrate, loudnorm: loudnorm);
+    final turl = api.transcodeStreamUrl(origin, bitrate, loudnorm: loudnorm);
     if (turl == null) throw StateError('转码 URL 构造失败');
     if (index.isCached(variantKey)) return;
     final headers = <String, String>{};
@@ -1939,7 +1973,8 @@ class DirectSourceManager extends ChangeNotifier {
       }
     } catch (_) {}
     headers.addAll(await src.proxyAuthHeaders(s));
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 15);
     final tmp = File(p.join(index.cacheDir, '.tmp-$variantKey'));
     var committed = false;
     try {
@@ -1992,7 +2027,8 @@ class DirectSourceManager extends ChangeNotifier {
   Future<void> _runPreloadTask(Song s) async {
     final ticket = ++_preloadTicket;
     _preloadAborted = false;
-    await preloadSong(s, shouldAbort: () => _preloadAborted || ticket != _preloadTicket);
+    await preloadSong(s,
+        shouldAbort: () => _preloadAborted || ticket != _preloadTicket);
   }
 
   String? cachedPathOf(MusicSource src, Song s) {
@@ -2060,7 +2096,9 @@ class DirectSourceManager extends ChangeNotifier {
     if (src == null || !src.supportsDirect) return;
     final row = index.songByRef(s.sourceKey, s.sourceRef);
     if (row == null || row.metaRead) return;
-    if (row.sourceKey == _playingSourceKey && row.sourceRef == _playingRef) return;
+    if (row.sourceKey == _playingSourceKey && row.sourceRef == _playingRef) {
+      return;
+    }
     try {
       await enrichSongMeta(index, src, row);
     } catch (_) {
@@ -2072,7 +2110,8 @@ class DirectSourceManager extends ChangeNotifier {
 
   /// 供 PlayerProvider 把「当前曲元数据/封面」排到队列最前（接线见 main.dart）。
   void submitCurrentMeta(String key, Future<void> Function() body) {
-    tasks.submit(DirectTaskPriority.currentMeta, key: 'currentMeta/$key', body: body);
+    tasks.submit(DirectTaskPriority.currentMeta,
+        key: 'currentMeta/$key', body: body);
   }
 
   bool _enrichRunning = false;
