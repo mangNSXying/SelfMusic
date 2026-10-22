@@ -24,8 +24,68 @@ import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
 import '../widgets/sort_menu_button.dart';
 import '../widgets/row_list.dart';
+import '../widgets/single_choice_group.dart';
 import '../widgets/square_card.dart';
 import '../widgets/view_mode_toggle.dart';
+
+const _remoteKindOptions = <SingleChoiceOption<SourceKind>>[
+  SingleChoiceOption(
+    value: SourceKind.webdav,
+    label: 'WebDAV',
+    icon: Icons.cloud_outlined,
+  ),
+  SingleChoiceOption(
+    value: SourceKind.sftp,
+    label: 'SFTP',
+    icon: Icons.storage_outlined,
+  ),
+  SingleChoiceOption(
+    value: SourceKind.smb,
+    label: 'SMB',
+    icon: Icons.dns_outlined,
+  ),
+];
+
+const _mainKindOptions = <SingleChoiceOption<SourceKind>>[
+  SingleChoiceOption(
+    value: SourceKind.webdav,
+    label: 'WebDAV',
+    icon: Icons.cloud_outlined,
+  ),
+  SingleChoiceOption(
+    value: SourceKind.local,
+    label: '本地文件夹',
+    icon: Icons.folder_outlined,
+  ),
+  SingleChoiceOption(
+    value: SourceKind.sftp,
+    label: 'SFTP',
+    icon: Icons.storage_outlined,
+  ),
+  SingleChoiceOption(
+    value: SourceKind.smb,
+    label: 'SMB',
+    icon: Icons.dns_outlined,
+  ),
+];
+
+const _sftpAuthOptions = <SingleChoiceOption<SftpAuthMethod>>[
+  SingleChoiceOption(value: SftpAuthMethod.password, label: '密码'),
+  SingleChoiceOption(value: SftpAuthMethod.key, label: '密钥'),
+];
+
+const _routeOptions = <SingleChoiceOption<SourceRoute>>[
+  SingleChoiceOption(
+    value: SourceRoute.direct,
+    label: '直连',
+    icon: Icons.bolt_outlined,
+  ),
+  SingleChoiceOption(
+    value: SourceRoute.proxy,
+    label: '代理',
+    icon: Icons.cloud_outlined,
+  ),
+];
 
 /// 播放源管理页：直连源（WebDAV / 本地文件夹）列表（支持列表/卡片切换）。
 ///
@@ -755,30 +815,10 @@ class _SourceDialogState extends State<_SourceDialog> {
                 ),
               ],
             ),
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: SegmentedButton<SourceKind>(
-                segments: const [
-                  ButtonSegment(
-                    value: SourceKind.webdav,
-                    icon: Icon(Icons.cloud_outlined),
-                    label: Text('WebDAV'),
-                  ),
-                  ButtonSegment(
-                    value: SourceKind.sftp,
-                    icon: Icon(Icons.storage_outlined),
-                    label: Text('SFTP'),
-                  ),
-                  ButtonSegment(
-                    value: SourceKind.smb,
-                    icon: Icon(Icons.dns_outlined),
-                    label: Text('SMB'),
-                  ),
-                ],
-                selected: {fb.kind},
-                onSelectionChanged: (s) =>
-                    setState(() => fb.kind = s.first),
-              ),
+            SingleChoiceGroup<SourceKind>(
+              options: _remoteKindOptions,
+              value: fb.kind,
+              onChanged: (v) => setState(() => fb.kind = v),
             ),
             const SizedBox(height: 8),
             if (fb.kind == SourceKind.webdav) ...[
@@ -822,20 +862,10 @@ class _SourceDialogState extends State<_SourceDialog> {
                 decoration: const InputDecoration(labelText: '用户名'),
               ),
               const SizedBox(height: 8),
-              SegmentedButton<SftpAuthMethod>(
-                segments: const [
-                  ButtonSegment(
-                    value: SftpAuthMethod.password,
-                    label: Text('密码'),
-                  ),
-                  ButtonSegment(
-                    value: SftpAuthMethod.key,
-                    label: Text('密钥'),
-                  ),
-                ],
-                selected: {fb.authMethod},
-                onSelectionChanged: (s) =>
-                    setState(() => fb.authMethod = s.first),
+              SingleChoiceGroup<SftpAuthMethod>(
+                options: _sftpAuthOptions,
+                value: fb.authMethod,
+                onChanged: (v) => setState(() => fb.authMethod = v),
               ),
               if (fb.authMethod == SftpAuthMethod.password)
                 TextField(
@@ -948,22 +978,10 @@ class _SourceDialogState extends State<_SourceDialog> {
               child: Text('备用播放链路'),
             ),
             const SizedBox(height: 8),
-            SegmentedButton<SourceRoute>(
-              segments: const [
-                ButtonSegment(
-                  value: SourceRoute.direct,
-                  icon: Icon(Icons.bolt_outlined),
-                  label: Text('直连'),
-                ),
-                ButtonSegment(
-                  value: SourceRoute.proxy,
-                  icon: Icon(Icons.cloud_outlined),
-                  label: Text('代理'),
-                ),
-              ],
-              selected: {fb.route},
-              onSelectionChanged: (s) =>
-                  setState(() => fb.route = s.first),
+            SingleChoiceGroup<SourceRoute>(
+              options: _routeOptions,
+              value: fb.route,
+              onChanged: (v) => setState(() => fb.route = v),
             ),
           ],
         ),
@@ -1217,38 +1235,11 @@ class _SourceDialogState extends State<_SourceDialog> {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (!_isEdit) ...[
-              // 四段（WebDAV/本地/SFTP/SMB）总宽在手机窄屏上可能超出弹窗：
-              // SegmentedButton 自身不可滚动，末尾的 SMB 段会被裁掉，故包一层
-              // 横滑保证可达；宽屏下内容一次放下，无滚动、无视觉变化。
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: SegmentedButton<SourceKind>(
-                  segments: const [
-                    ButtonSegment(
-                      value: SourceKind.webdav,
-                      icon: Icon(Icons.cloud_outlined),
-                      label: Text('WebDAV'),
-                    ),
-                    ButtonSegment(
-                      value: SourceKind.local,
-                      icon: Icon(Icons.folder_outlined),
-                      label: Text('本地文件夹'),
-                    ),
-                    ButtonSegment(
-                      value: SourceKind.sftp,
-                      icon: Icon(Icons.storage_outlined),
-                      label: Text('SFTP'),
-                    ),
-                    ButtonSegment(
-                      value: SourceKind.smb,
-                      icon: Icon(Icons.dns_outlined),
-                      label: Text('SMB'),
-                    ),
-                  ],
-                  selected: {_kind},
-                  onSelectionChanged: (s) =>
-                      setState(() => _kind = s.first),
-                ),
+              // 四个源类型在窄屏自动换行（2+2），不再横向滚动。
+              SingleChoiceGroup<SourceKind>(
+                options: _mainKindOptions,
+                value: _kind,
+                onChanged: (v) => setState(() => _kind = v),
               ),
               const SizedBox(height: 16),
             ],
@@ -1315,20 +1306,10 @@ class _SourceDialogState extends State<_SourceDialog> {
                 decoration: const InputDecoration(labelText: '用户名'),
               ),
               const SizedBox(height: 8),
-              SegmentedButton<SftpAuthMethod>(
-                segments: const [
-                  ButtonSegment(
-                    value: SftpAuthMethod.password,
-                    label: Text('密码'),
-                  ),
-                  ButtonSegment(
-                    value: SftpAuthMethod.key,
-                    label: Text('密钥'),
-                  ),
-                ],
-                selected: {_authMethod},
-                onSelectionChanged: (s) =>
-                    setState(() => _authMethod = s.first),
+              SingleChoiceGroup<SftpAuthMethod>(
+                options: _sftpAuthOptions,
+                value: _authMethod,
+                onChanged: (v) => setState(() => _authMethod = v),
               ),
               if (_authMethod == SftpAuthMethod.password)
                 TextField(
@@ -1441,22 +1422,10 @@ class _SourceDialogState extends State<_SourceDialog> {
                 child: Text('播放链路'),
               ),
               const SizedBox(height: 8),
-              SegmentedButton<SourceRoute>(
-                segments: const [
-                  ButtonSegment(
-                    value: SourceRoute.direct,
-                    icon: Icon(Icons.bolt_outlined),
-                    label: Text('直连'),
-                  ),
-                  ButtonSegment(
-                    value: SourceRoute.proxy,
-                    icon: Icon(Icons.cloud_outlined),
-                    label: Text('代理'),
-                  ),
-                ],
-                selected: {_route},
-                onSelectionChanged: (s) =>
-                    setState(() => _route = s.first),
+              SingleChoiceGroup<SourceRoute>(
+                options: _routeOptions,
+                value: _route,
+                onChanged: (v) => setState(() => _route = v),
               ),
               const SizedBox(height: 4),
               Text(

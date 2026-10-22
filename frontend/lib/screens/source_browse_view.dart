@@ -18,6 +18,7 @@ import '../utils/source_folders.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/header_action_button.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_collection_view.dart';
@@ -352,7 +353,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
             child: LayoutBuilder(
               builder: (context, constraints) {
                 // 窄屏：上传/新建文件夹收进三点菜单，把宽度留给标题与
-                // 「播放 / 扫描」两个主操作；宽屏直接平铺工具图标。
+                // 「播放 / 扫描」两个头部动作；宽屏直接平铺工具图标。
                 final compact = constraints.maxWidth < 520;
                 final playable = !searching && songs.isNotEmpty;
                 // 源里还没有歌时，扫描才是这一页唯一的主操作。
@@ -365,19 +366,15 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                       )
                     : const Icon(Icons.refresh, size: 18);
 
-                final scanButton = scanPrimary
-                    ? FilledButton.icon(
-                        onPressed: _scanning ? null : _scan,
-                        icon: scanIcon,
-                        label: const Text('扫描'),
-                      )
-                    : OutlinedButton.icon(
-                        onPressed: _scanning ? null : _scan,
-                        icon: scanIcon,
-                        label: const Text('扫描'),
-                      );
+                final scanButton = HeaderActionButton(
+                  primary: scanPrimary,
+                  icon: scanIcon,
+                  label: '扫描',
+                  onPressed: _scanning ? null : _scan,
+                );
 
-                final writeActions = !source.supportsWrite
+                // 扫描中上传/新建本来就不可用，顺带隐藏给「取消扫描」腾位。
+                final writeActions = _scanning || !source.supportsWrite
                     ? const <Widget>[]
                     : compact
                         ? <Widget>[
@@ -452,10 +449,11 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                       ),
                     ),
                     if (playable) ...[
-                      FilledButton.icon(
-                        onPressed: () => _playAll(context, source, songs),
+                      HeaderActionButton(
+                        primary: true,
                         icon: const Icon(Icons.play_arrow),
-                        label: const Text('播放'),
+                        label: '播放',
+                        onPressed: () => _playAll(context, source, songs),
                       ),
                       const SizedBox(width: 8),
                     ],

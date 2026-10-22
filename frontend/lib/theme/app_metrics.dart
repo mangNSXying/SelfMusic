@@ -15,6 +15,13 @@ const double kButtonRadius = 12;
 /// 内容页计数栏/工具条按钮的边长。
 const double kToolbarButtonSize = 36;
 
+/// 内容页头部动作按钮（播放/扫描等）高度：比标准按钮更紧凑，
+/// 给标题和工具图标留出横向空间。
+const double kHeaderButtonHeight = 36;
+
+/// 内容页头部动作按钮水平内边距。
+const double kHeaderButtonHorizontalPadding = 12;
+
 /// 内容页工具条图标尺寸。
 const double kToolbarIconSize = 20;
 
