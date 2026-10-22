@@ -5,6 +5,7 @@ import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/playlists_provider.dart';
 import '../utils/song_title_format.dart';
+import 'app_dialog_actions.dart';
 import 'app_toast.dart';
 
 /// 弹出「加入歌单」选择器（stage2.md §5）：底部弹层列出歌单，无歌单可现场新建。
@@ -86,17 +87,16 @@ class _AddToPlaylistSheet extends StatelessWidget {
             autofocus: true,
             decoration: const InputDecoration(hintText: '名称'),
           ),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
-            TextButton(
-                onPressed: () {
-                  final t = ctrl.text.trim();
-                  if (t.isEmpty) return;
-                  Navigator.of(c).pop(t);
-                },
-                child: const Text('创建')),
-          ],
+          actions: appDialogActions(
+            c,
+            confirmLabel: '创建',
+            onCancel: () => Navigator.of(c).pop(),
+            onConfirm: () {
+              final t = ctrl.text.trim();
+              if (t.isEmpty) return;
+              Navigator.of(c).pop(t);
+            },
+          ),
         ),
       );
       if (name != null && name.isNotEmpty && context.mounted) {

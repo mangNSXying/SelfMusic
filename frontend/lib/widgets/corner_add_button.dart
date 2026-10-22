@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../theme/app_metrics.dart';
+
 /// 页面右下角圆角矩形悬浮按钮（歌单/喜欢/播放源的新建入口，歌手页的重新解析入口）。
 ///
 /// 配合 Stack + Positioned(right: 16, bottom: 16) 使用。
@@ -21,27 +23,28 @@ class CornerAddButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final text = label;
+    final radius = BorderRadius.circular(kButtonRadius);
     return Material(
       color: scheme.primary,
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: radius,
       elevation: 4,
       child: InkWell(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: radius,
         onTap: onPressed,
         child: Tooltip(
           message: tooltip,
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
             child: text == null
-                ? Icon(icon, color: Colors.white, size: 26)
+                ? Icon(icon, color: scheme.onPrimary, size: 26)
                 : Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(icon, color: Colors.white, size: 22),
+                      Icon(icon, color: scheme.onPrimary, size: 22),
                       const SizedBox(width: 8),
                       Text(text,
-                          style: const TextStyle(
-                              color: Colors.white,
+                          style: TextStyle(
+                              color: scheme.onPrimary,
                               fontWeight: FontWeight.w600)),
                     ],
                   ),

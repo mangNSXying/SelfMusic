@@ -7,6 +7,7 @@ import '../services/api_client.dart';
 import '../services/server_settings.dart';
 import '../utils/platform_info.dart';
 import '../utils/url_input.dart';
+import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
 
 class PairingScreen extends StatefulWidget {
@@ -81,14 +82,14 @@ class _PairingScreenState extends State<PairingScreen> {
       builder: (c) => AlertDialog(
         title: const Text('取消配对'),
         content: const Text('取消后服务端功能不可用，直连模式不受影响。确定取消？'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(false),
-              child: const Text('保留')),
-          FilledButton(
-              onPressed: () => Navigator.of(c).pop(true),
-              child: const Text('取消配对')),
-        ],
+        actions: appDialogActions(
+          c,
+          cancelLabel: '保留',
+          confirmLabel: '取消配对',
+          destructive: true,
+          onCancel: () => Navigator.of(c).pop(false),
+          onConfirm: () => Navigator.of(c).pop(true),
+        ),
       ),
     );
     if (ok != true || !mounted) return;
@@ -250,11 +251,11 @@ class _PairingScreenState extends State<PairingScreen> {
   }
 
   /// 配对成功后询问是否推送配对前数据（首配/重配都问）：
-  /// 选“是”→ 补推本机存量歌单与权重（补录事件只补服务端没有的数据，
+  /// 选「推送」→ 补推本机存量歌单与权重（补录事件只补服务端没有的数据，
   /// 现行数据不受影响），事件进 outbox 后自动上推；
-  /// 选“否”→ 不推（本次配对不再问；重配会再问）。
-  /// 重配（此前已配对过）默认“否”：本机可能是长期未同步的旧数据，
-  /// 即使补录不覆盖现行行，不推也更稳。
+  /// 选「不推送」→ 不推（本次配对不再问；重配会再问）。
+  /// 重配（此前已配对过）不设默认：本机可能是长期未同步的旧数据，若比
+  /// 其它设备旧，不推送更稳。
   Future<void> _askPushExisting(BuildContext context,
       {required bool wasPaired}) async {
     final push = await showDialog<bool>(
@@ -263,27 +264,16 @@ class _PairingScreenState extends State<PairingScreen> {
         title: const Text('推送配对前的数据？'),
         content: Text(
           wasPaired
-              ? '将本机在配对前创建的歌单、收藏与播放权重推送到服务端吗？这是重新配对：若本机数据比其它设备旧，建议选“否”（只补服务端没有的数据，现行数据不受影响，但不推更稳）。'
-              : '将本机在配对前创建的歌单、收藏与播放权重推送到服务端吗？首台设备建议选“是”，其它设备随后会同步到这些数据（只补服务端没有的数据）。',
+              ? '将本机在配对前创建的歌单、收藏与播放权重推送到服务端吗？这是重新配对：只补服务端没有的数据，现行数据不受影响；若本机数据比其它设备旧，不推送更稳。'
+              : '将本机在配对前创建的歌单、收藏与播放权重推送到服务端吗？首台设备建议推送，其它设备随后会同步到这些数据（只补服务端没有的数据）。',
         ),
-        actions: [
-          if (wasPaired)
-            FilledButton(
-                onPressed: () => Navigator.of(ctx).pop(false),
-                child: const Text('否')),
-          if (wasPaired)
-            TextButton(
-                onPressed: () => Navigator.of(ctx).pop(true),
-                child: const Text('是')),
-          if (!wasPaired)
-            TextButton(
-                onPressed: () => Navigator.of(ctx).pop(false),
-                child: const Text('否')),
-          if (!wasPaired)
-            FilledButton(
-                onPressed: () => Navigator.of(ctx).pop(true),
-                child: const Text('是')),
-        ],
+        actions: appDialogActions(
+          ctx,
+          cancelLabel: '不推送',
+          confirmLabel: '推送',
+          onCancel: () => Navigator.of(ctx).pop(false),
+          onConfirm: () => Navigator.of(ctx).pop(true),
+        ),
       ),
     );
     if (!context.mounted) return;
@@ -349,47 +339,46 @@ class _ServerAddressCard extends StatelessWidget {
             border: OutlineInputBorder(),
           ),
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
-          FilledButton(
-            onPressed: () async {
-              // 后端地址走 HTTP：保存前先把补全写回输入框（可视化）。
-              if (applyHttpsPrefixToController(ctrl)) {
-                AppToast.show('已自动补全 https:// 前缀', isError: false);
-              }
-              final entered = ctrl.text.trim();
-              var err = ApiClient.validateEndpointUrl(entered,
-                  allowHttp: context
-                      .read<DirectSourceManager>()
-                      .settings
-                      .allowInsecureHttp);
-              if (err != null) {
-                if (urlIsExplicitHttp(entered)) {
-                  final ok = await ensureHttpAllowed(context, entered);
-                  if (!context.mounted) return;
-                  if (ok) {
-                    err = ApiClient.validateEndpointUrl(entered,
-                        allowHttp: context
-                            .read<DirectSourceManager>()
-                            .settings
-                            .allowInsecureHttp);
-                  } else {
-                    AppToast.show(err);
-                    return;
-                  }
-                }
-                if (err != null) {
+        actions: appDialogActions(
+          c,
+          confirmLabel: '保存',
+          onCancel: () => Navigator.of(c).pop(),
+          onConfirm: () async {
+            // 后端地址走 HTTP：保存前先把补全写回输入框（可视化）。
+            if (applyHttpsPrefixToController(ctrl)) {
+              AppToast.show('已自动补全 https:// 前缀', isError: false);
+            }
+            final entered = ctrl.text.trim();
+            var err = ApiClient.validateEndpointUrl(entered,
+                allowHttp: context
+                    .read<DirectSourceManager>()
+                    .settings
+                    .allowInsecureHttp);
+            if (err != null) {
+              if (urlIsExplicitHttp(entered)) {
+                final ok = await ensureHttpAllowed(context, entered);
+                if (!context.mounted) return;
+                if (ok) {
+                  err = ApiClient.validateEndpointUrl(entered,
+                      allowHttp: context
+                          .read<DirectSourceManager>()
+                          .settings
+                          .allowInsecureHttp);
+                } else {
                   AppToast.show(err);
                   return;
                 }
               }
-              await settings.setBaseUrl(entered);
-              api.setBaseUrl(settings.baseUrl);
-              if (c.mounted) Navigator.of(c).pop();
-            },
-            child: const Text('保存'),
-          ),
-        ],
+              if (err != null) {
+                AppToast.show(err);
+                return;
+              }
+            }
+            await settings.setBaseUrl(entered);
+            api.setBaseUrl(settings.baseUrl);
+            if (c.mounted) Navigator.of(c).pop();
+          },
+        ),
       ),
     );
     ctrl.dispose();

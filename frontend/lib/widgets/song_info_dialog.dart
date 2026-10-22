@@ -6,6 +6,7 @@ import '../providers/direct_source_manager.dart';
 import '../utils/duration_format.dart';
 import '../utils/play_stats.dart';
 import '../utils/url_display.dart';
+import 'app_dialog_actions.dart';
 
 /// 歌曲信息弹窗：标题/歌手/专辑/流派/年份/时长/格式/来源/权重/收藏态
 /// ＋播放次数/播放时长/码率。
@@ -94,12 +95,7 @@ class SongInfoDialog extends StatelessWidget {
           ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('关闭'),
-        ),
-      ],
+      actions: [appDialogCloseAction(context)],
     );
   }
 }

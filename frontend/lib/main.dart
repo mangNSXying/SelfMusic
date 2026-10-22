@@ -30,6 +30,7 @@ import 'theme/app_theme.dart';
 import 'screens/library_screen.dart';
 import 'screens/player_screen.dart';
 import 'layout/app_shell.dart';
+import 'widgets/app_dialog_actions.dart';
 import 'widgets/app_toast.dart';
 import 'widgets/draggable_sheet.dart';
 import 'utils/perf_log.dart';
@@ -724,25 +725,22 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
       builder: (ctx) => AlertDialog(
         title: const Text('会话已过期'),
         content: const Text('服务端登录已过期，多设备同步将暂停；本地播放不受影响。可在「设置 → 服务端」重新配对。'),
-        actions: [
-          TextButton(
-            onPressed: () {
-              auth.acceptSessionExpired();
-              setState(() => _expiryDialogShown = false);
-              Navigator.of(ctx).pop();
-            },
-            child: const Text('稍后'),
+        actions: appDialogActions(
+          ctx,
+          cancelLabel: '稍后',
+          confirmLabel: '去配对',
+          onCancel: () {
+            auth.acceptSessionExpired();
+            setState(() => _expiryDialogShown = false);
+            Navigator.of(ctx).pop();
+          },
+          onConfirm: () {
+            auth.acceptSessionExpired();
+            setState(() => _expiryDialogShown = false);
+            Navigator.of(ctx).pop();
+            context.read<NavigationProvider>().openSettings(SettingsItem.server);
+          },
           ),
-          FilledButton(
-            onPressed: () {
-              auth.acceptSessionExpired();
-              setState(() => _expiryDialogShown = false);
-              Navigator.of(ctx).pop();
-              context.read<NavigationProvider>().openSettings(SettingsItem.server);
-            },
-            child: const Text('去配对'),
-          ),
-        ],
       ),
     );
   }

@@ -13,9 +13,9 @@
 
 ## 快速开始
 
-> 前置：需自备MySQL数据库，推荐 8.0 版本；建表脚本 `scripts/init.sql` 在源码仓库中。
+> 前置：需自备 MySQL 8 数据库。只需建库建账号，表结构由后端启动时 Flyway 自动创建/升级。
 
-**1. 建库建用户**（`init.sql` 只建表，不含建库）
+**1. 建库建用户**
 
 ```sql
 CREATE DATABASE selfmusic CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -24,9 +24,7 @@ GRANT ALL PRIVILEGES ON selfmusic.* TO 'selfmusic_user'@'%';
 FLUSH PRIVILEGES;
 ```
 
-```bash
-mysql -h <MySQL地址> -u root -p selfmusic < scripts/init.sql
-```
+> 不需要手工执行建表 SQL；启动容器后 Flyway 会自动执行 `db/migration` 下的迁移。
 
 **2. 启动容器**
 

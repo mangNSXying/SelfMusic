@@ -11,6 +11,7 @@ import '../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
 import '../platform/harmonyos/ohos_platform_bridge.dart';
 import '../utils/app_version.dart';
 import '../utils/build_stamp.dart';
+import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
 import '../services/log_buffer.dart';
 
@@ -120,16 +121,13 @@ class AboutScreen extends StatelessWidget {
       builder: (c) => AlertDialog(
         title: const Text('反馈'),
         content: const Text('是否携带最近一分钟的应用日志？（有助于定位 Bug）'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(c).pop(false),
-            child: const Text('不携带'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(c).pop(true),
-            child: const Text('携带并发送'),
-          ),
-        ],
+        actions: appDialogActions(
+          c,
+          cancelLabel: '不携带',
+          confirmLabel: '携带并发送',
+          onCancel: () => Navigator.of(c).pop(false),
+          onConfirm: () => Navigator.of(c).pop(true),
+        ),
       ),
     );
     if (!context.mounted) return;
@@ -185,12 +183,7 @@ class AboutScreen extends StatelessWidget {
         content: const SelectableText(
           '未检测到可用的邮件应用，请手动发送邮件至：\n$kFeedbackEmail',
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(c).pop(),
-            child: const Text('确定'),
-          ),
-        ],
+        actions: [appDialogCloseAction(c, label: '确定')],
       ),
     );
   }
@@ -202,16 +195,13 @@ class AboutScreen extends StatelessWidget {
       builder: (c) => AlertDialog(
         title: const Text('收集日志'),
         content: const Text('将收集应用最近一分钟内的日志。如有 Bug 请先复现问题，再点击“收集”。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(c).pop(false),
-            child: const Text('返回'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(c).pop(true),
-            child: const Text('收集'),
-          ),
-        ],
+        actions: appDialogActions(
+          c,
+          cancelLabel: '返回',
+          confirmLabel: '收集',
+          onCancel: () => Navigator.of(c).pop(false),
+          onConfirm: () => Navigator.of(c).pop(true),
+        ),
       ),
     );
     if (proceed != true || !context.mounted) return;

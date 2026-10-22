@@ -20,6 +20,7 @@ import '../utils/interaction_gate.dart';
 import '../utils/motion.dart';
 import '../utils/song_search.dart';
 import '../widgets/add_to_playlist.dart';
+import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/area_switcher.dart';
 import '../widgets/corner_add_button.dart';
@@ -1223,14 +1224,12 @@ Future<void> _showRetryConfirm(
       content: Text(artist.status == 'local'
           ? '上次解析未找到可靠身份（MusicBrainz 可能未收录），确认后立即重试。'
           : '该歌手尚未解析，确认后立即尝试。'),
-      actions: [
-        TextButton(
-            onPressed: () => Navigator.of(c).pop(true),
-            child: const Text('重试')),
-        TextButton(
-            onPressed: () => Navigator.of(c).pop(false),
-            child: const Text('取消')),
-      ],
+      actions: appDialogActions(
+        c,
+        confirmLabel: '重试',
+        onCancel: () => Navigator.of(c).pop(false),
+        onConfirm: () => Navigator.of(c).pop(true),
+      ),
     ),
   );
   if (ok == true) {
@@ -1474,14 +1473,12 @@ class _ArtistSongsView extends StatelessWidget {
       builder: (c) => AlertDialog(
         title: Text('重新解析「${artist.name}」？'),
         content: const Text('会把这一位歌手（含已解析成功的）按 MusicBrainz 重新拉取一遍，组合成员也会重新展开。'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(false),
-              child: const Text('取消')),
-          FilledButton(
-              onPressed: () => Navigator.of(c).pop(true),
-              child: const Text('开始')),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '开始',
+          onCancel: () => Navigator.of(c).pop(false),
+          onConfirm: () => Navigator.of(c).pop(true),
+        ),
       ),
     );
     if (ok != true) return;

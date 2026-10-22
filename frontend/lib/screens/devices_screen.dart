@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../services/api_client.dart';
+import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
 
 /// 已配对设备管理（阶段5）：列表 / 改名 / 吊销（调 `DeviceAdminController`）。
@@ -62,13 +63,12 @@ class _DevicesScreenState extends State<DevicesScreen> {
           controller: ctrl,
           decoration: const InputDecoration(labelText: '设备名'),
         ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
-          FilledButton(
-              onPressed: () => Navigator.of(c).pop(ctrl.text.trim()),
-              child: const Text('保存')),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '保存',
+          onCancel: () => Navigator.of(c).pop(),
+          onConfirm: () => Navigator.of(c).pop(ctrl.text.trim()),
+        ),
       ),
     );
     ctrl.dispose();
@@ -90,14 +90,13 @@ class _DevicesScreenState extends State<DevicesScreen> {
         title: const Text('吊销设备？'),
         content: Text('「${d['name']}」的令牌将即刻失效。'
             '${isSelf ? '这是本机，吊销后需重新配对。' : ''}'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(false),
-              child: const Text('取消')),
-          FilledButton(
-              onPressed: () => Navigator.of(c).pop(true),
-              child: const Text('吊销')),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '吊销',
+          destructive: true,
+          onCancel: () => Navigator.of(c).pop(false),
+          onConfirm: () => Navigator.of(c).pop(true),
+        ),
       ),
     );
     if (ok != true || !mounted) return;

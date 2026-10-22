@@ -1,5 +1,6 @@
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -422,8 +423,7 @@ void main() {
     });
   });
 
-  testWidgets('歌单详情播放入口：播放 + 并列「从头播放」图标（空三点菜单移除）',
-      (tester) async {
+  testWidgets('歌单详情播放入口：播放 + 并列「从头播放」文字按钮（空三点菜单移除）', (tester) async {
     late final Directory dir;
     late final DirectSourceManager direct;
     late final int plId;
@@ -455,8 +455,20 @@ void main() {
 
     expect(find.text('播放'), findsOneWidget);
     expect(find.text('播放全部'), findsNothing);
-    expect(find.byTooltip('从头播放'), findsOneWidget);
+    expect(find.text('从头播放'), findsOneWidget);
+    expect(find.byIcon(Icons.replay), findsOneWidget);
+    expect(find.byTooltip('从头播放'), findsNothing);
     expect(find.byTooltip('更多播放方式'), findsNothing);
+
+    // 窄屏：两枚按钮仍带文字，标题让位但不溢出。
+    tester.view.physicalSize = const ui.Size(320, 640);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expect(find.text('播放'), findsOneWidget);
+    expect(find.text('从头播放'), findsOneWidget);
 
     await tester.runAsync(() async {
       direct.dispose();
@@ -464,8 +476,7 @@ void main() {
     });
   });
 
-  testWidgets('歌单详情多选：已选计数随勾选增长，搜索后全选只选命中项（回归 id 分叉）',
-      (tester) async {
+  testWidgets('歌单详情多选：已选计数随勾选增长，搜索后全选只选命中项（回归 id 分叉）', (tester) async {
     late final Directory dir;
     late final DirectSourceManager direct;
     late final int plId;
@@ -537,7 +548,7 @@ void main() {
     await tester.tap(find.text('从歌单移除'));
     await tester.pumpAndSettle();
     expect(find.text('确定从歌单中移除选中的 1 首歌曲？'), findsOneWidget);
-    await tester.tap(find.widgetWithText(TextButton, '移除'));
+    await tester.tap(find.widgetWithText(FilledButton, '移除'));
     await settleWriter(tester);
 
     expect(find.text('已选 1'), findsNothing);

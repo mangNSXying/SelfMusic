@@ -11,6 +11,7 @@ import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
 import '../services/online_meta/online_meta_service.dart';
+import 'app_dialog_actions.dart';
 import 'app_toast.dart';
 import 'embed_progress_dialog.dart';
 import 'online_meta_dialog.dart';
@@ -296,13 +297,12 @@ class _EditSongMetaDialogState extends State<EditSongMetaDialog> {
           ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
-        ),
-        FilledButton(onPressed: _save, child: const Text('保存')),
-      ],
+      actions: appDialogActions(
+        context,
+        confirmLabel: '保存',
+        onCancel: () => Navigator.of(context).pop(),
+        onConfirm: _save,
+      ),
     );
   }
 }
@@ -439,12 +439,7 @@ class _CoverEditWindowState extends State<_CoverEditWindow> {
           ],
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('关闭'),
-        ),
-      ],
+      actions: [appDialogCloseAction(context, label: '关闭')],
     );
   }
 }
@@ -652,25 +647,21 @@ class _LyricsEditWindowState extends State<_LyricsEditWindow> {
                   hintText: '暂无歌词，可粘贴、选择文件或在线获取',
                   border: const OutlineInputBorder(),
                   filled: _dirty ? true : false,
-                  fillColor: _dirty
-                      ? cs.primary.withValues(alpha: 0.04)
-                      : null,
+                  fillColor: _dirty ? cs.primary.withValues(alpha: 0.04) : null,
                 ),
               ),
             ),
           ],
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('关闭'),
-        ),
-        FilledButton(
-          onPressed: _busy ? null : _save,
-          child: Text(_busy ? '保存中…' : '保存'),
-        ),
-      ],
+      actions: appDialogActions(
+        context,
+        cancelLabel: '关闭',
+        confirmLabel: _busy ? '保存中…' : '保存',
+        confirmEnabled: !_busy,
+        onCancel: () => Navigator.of(context).pop(),
+        onConfirm: _save,
+      ),
     );
   }
 }

@@ -29,7 +29,7 @@ void main() {
         ),
       ),
     ));
-    await tester.tap(find.byTooltip('排序'));
+    await tester.tap(find.byIcon(Icons.sort));
     await tester.pumpAndSettle();
     return picked;
   }
@@ -64,7 +64,7 @@ void main() {
         ),
       ),
     ));
-    await tester.tap(find.byTooltip('排序'));
+    await tester.tap(find.byIcon(Icons.sort));
     await tester.pumpAndSettle();
     // 「播放时长」行的向下箭头：字符/权重/播放时长/播放次数/时长 → 第 3 个
     final down = find.byIcon(Icons.arrow_downward);
@@ -87,7 +87,7 @@ void main() {
         ),
       ),
     ));
-    await tester.tap(find.byTooltip('排序'));
+    await tester.tap(find.byIcon(Icons.sort));
     await tester.pumpAndSettle();
     // 「字符」行的向上箭头（默认排序无箭头）
     await tester.tap(find.byIcon(Icons.arrow_upward).first);
@@ -108,7 +108,7 @@ void main() {
         ),
       ),
     ));
-    await tester.tap(find.byTooltip('排序'));
+    await tester.tap(find.byIcon(Icons.sort));
     await tester.pumpAndSettle();
     // 当前字段「字符」→ 翻成降序
     await tester.tap(find.text('字符'));
@@ -128,7 +128,7 @@ void main() {
         ),
       ),
     ));
-    await tester.tap(find.byTooltip('排序'));
+    await tester.tap(find.byIcon(Icons.sort));
     await tester.pumpAndSettle();
     await tester.tap(find.text('播放次数'));
     await tester.pumpAndSettle();
@@ -149,7 +149,7 @@ void main() {
         ),
       ),
     ));
-    await tester.tap(find.byTooltip('排序'));
+    await tester.tap(find.byIcon(Icons.sort));
     await tester.pumpAndSettle();
     await tester.tap(find.text('默认排序'));
     await tester.pumpAndSettle();
@@ -168,7 +168,7 @@ void main() {
         ),
       ),
     ));
-    await tester.tap(find.byTooltip('排序'));
+    await tester.tap(find.byIcon(Icons.sort));
     await tester.pumpAndSettle();
     final scheme =
         Theme.of(tester.element(find.text('播放次数'))).colorScheme;

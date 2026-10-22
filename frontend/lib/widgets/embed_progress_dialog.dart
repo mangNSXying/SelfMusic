@@ -6,6 +6,7 @@ import '../data/sources/music_source.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
 import '../services/tag_embed_service.dart';
+import 'app_dialog_actions.dart';
 import 'app_toast.dart';
 
 /// 嵌入确认＋进度对话框（纯手动入口，由“修改信息”弹窗打开）。
@@ -172,26 +173,21 @@ class _EmbedProgressDialogState extends State<EmbedProgressDialog> {
       ),
       actions: [
         if (_loading || _denyReason != null)
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('关闭'),
-          )
+          appDialogCloseAction(context)
         else if (!_started) ...[
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: _start,
-            child: const Text('开始嵌入'),
+          ...appDialogActions(
+            context,
+            confirmLabel: '开始嵌入',
+            onCancel: () => Navigator.of(context).pop(),
+            onConfirm: _start,
           ),
         ] else if (_error.isNotEmpty) ...[
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('关闭'),
-          ),
-          FilledButton(
-            onPressed: () {
+          ...appDialogActions(
+            context,
+            cancelLabel: '关闭',
+            confirmLabel: '重试',
+            onCancel: () => Navigator.of(context).pop(),
+            onConfirm: () {
               setState(() {
                 _started = false;
                 _error = '';
@@ -199,9 +195,8 @@ class _EmbedProgressDialogState extends State<EmbedProgressDialog> {
                 _fraction = null;
               });
             },
-            child: const Text('重试'),
           ),
-        ] else ...[
+        ] else
           TextButton(
             onPressed: _aborted
                 ? null
@@ -210,7 +205,6 @@ class _EmbedProgressDialogState extends State<EmbedProgressDialog> {
                   },
             child: Text(_aborted ? '取消中…' : '取消'),
           ),
-        ],
       ],
     );
   }

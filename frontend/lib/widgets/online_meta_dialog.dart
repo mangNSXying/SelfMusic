@@ -10,6 +10,7 @@ import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
 import '../services/online_meta/online_meta_models.dart';
 import '../services/online_meta/online_meta_service.dart';
+import 'app_dialog_actions.dart';
 import 'app_toast.dart';
 import 'online_meta_detail_dialog.dart';
 
@@ -576,12 +577,7 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
           ],
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('关闭'),
-        ),
-      ],
+      actions: [appDialogCloseAction(context)],
     );
   }
 

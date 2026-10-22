@@ -21,6 +21,7 @@ import '../utils/duration_format.dart';
 import '../utils/perf_log.dart';
 import '../utils/song_title_format.dart';
 import '../widgets/add_to_playlist.dart';
+import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/edit_song_meta_dialog.dart';
 import '../widgets/lyrics_view.dart';
@@ -1990,16 +1991,14 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
           ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => _close(),
-          child: const Text('关闭', style: TextStyle(fontSize: 16)),
-        ),
-        FilledButton(
-          onPressed: _invalid ? null : _apply,
-          child: const Text('确定', style: TextStyle(fontSize: 16)),
-        ),
-      ],
+      actions: appDialogActions(
+        context,
+        cancelLabel: '关闭',
+        confirmLabel: '确定',
+        confirmEnabled: !_invalid,
+        onCancel: _close,
+        onConfirm: _apply,
+      ),
     );
   }
 
@@ -2209,16 +2208,13 @@ class _WheelDialogState extends State<_WheelDialog> {
           ],
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消', style: TextStyle(fontSize: 16)),
-        ),
-        FilledButton(
-          onPressed: ok ? () => Navigator.of(context).pop(value) : null,
-          child: const Text('确定', style: TextStyle(fontSize: 16)),
-        ),
-      ],
+      actions: appDialogActions(
+        context,
+        confirmLabel: '确定',
+        confirmEnabled: ok,
+        onCancel: () => Navigator.of(context).pop(),
+        onConfirm: () => Navigator.of(context).pop(value),
+      ),
     );
   }
 }

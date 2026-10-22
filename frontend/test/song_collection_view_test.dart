@@ -335,7 +335,7 @@ void main() {
       onMode: (_) {},
       folderLabel: '文件夹（逐级）',
     );
-    await tester.tap(find.byTooltip('分类方式'));
+    await tester.tap(find.byIcon(Icons.category_outlined));
     await tester.pumpAndSettle();
     expect(find.text('无'), findsOneWidget);
     expect(find.text('专辑'), findsOneWidget);

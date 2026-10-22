@@ -16,10 +16,12 @@ import '../utils/collection_sort.dart';
 import '../utils/song_groups.dart';
 import '../utils/source_folders.dart';
 import '../widgets/add_to_playlist.dart';
+import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_collection_view.dart';
+import '../widgets/toolbar_icon_button.dart';
 
 /// 源内浏览组件：在 AppContent 内容区原地渲染。
 ///
@@ -201,13 +203,12 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                 decoration: const InputDecoration(hintText: '文件夹名')),
           ],
         ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(controller.text.trim()),
-              child: const Text('确定')),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '确定',
+          onCancel: () => Navigator.of(c).pop(),
+          onConfirm: () => Navigator.of(c).pop(controller.text.trim()),
+        ),
       ),
     );
     controller.dispose();
@@ -348,60 +349,128 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(8, 8, 16, 0),
-            child: Row(
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.arrow_back),
-                  tooltip: inFolder ? '返回上一级' : '返回播放源',
-                  onPressed: inFolder ? _up : nav.exitSource,
-                ),
-                const SizedBox(width: 4),
-                Icon(Icons.folder_outlined,
-                    size: 20, color: Theme.of(context).colorScheme.primary),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    titleText,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                ),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                // 窄屏：上传/新建文件夹收进三点菜单，把宽度留给标题与
+                // 「播放 / 扫描」两个主操作；宽屏直接平铺工具图标。
+                final compact = constraints.maxWidth < 520;
+                final playable = !searching && songs.isNotEmpty;
+                // 源里还没有歌时，扫描才是这一页唯一的主操作。
+                final scanPrimary = songs.isEmpty && !searching;
+                final scanIcon = _scanning
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.refresh, size: 18);
+
+                final scanButton = scanPrimary
+                    ? FilledButton.icon(
+                        onPressed: _scanning ? null : _scan,
+                        icon: scanIcon,
+                        label: const Text('扫描'),
+                      )
+                    : OutlinedButton.icon(
+                        onPressed: _scanning ? null : _scan,
+                        icon: scanIcon,
+                        label: const Text('扫描'),
+                      );
+
+                final writeActions = !source.supportsWrite
+                    ? const <Widget>[]
+                    : compact
+                        ? <Widget>[
+                            ToolbarPopupMenuButton<String>(
+                              tooltip: '更多操作',
+                              icon: Icons.more_vert,
+                              onSelected: (v) {
+                                if (_scanning) return;
+                                if (v == 'upload') {
+                                  unawaited(_upload(source));
+                                } else if (v == 'mkdir') {
+                                  unawaited(_mkdir(source));
+                                }
+                              },
+                              itemBuilder: (_) => const [
+                                PopupMenuItem(
+                                  value: 'upload',
+                                  child: Row(
+                                    children: [
+                                      Icon(Icons.upload_file_outlined),
+                                      SizedBox(width: 12),
+                                      Text('上传音频到当前文件夹'),
+                                    ],
+                                  ),
+                                ),
+                                PopupMenuItem(
+                                  value: 'mkdir',
+                                  child: Row(
+                                    children: [
+                                      Icon(Icons.create_new_folder_outlined),
+                                      SizedBox(width: 12),
+                                      Text('在当前文件夹新建'),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ]
+                        : <Widget>[
+                            ToolbarIconButton(
+                              icon: Icons.upload_file_outlined,
+                              tooltip: '上传音频到当前文件夹',
+                              onPressed:
+                                  _scanning ? null : () => _upload(source),
+                            ),
+                            ToolbarIconButton(
+                              icon: Icons.create_new_folder_outlined,
+                              tooltip: '在当前文件夹新建',
+                              onPressed:
+                                  _scanning ? null : () => _mkdir(source),
+                            ),
+                          ];
+
+                return Row(
                   children: [
-                    if (source.supportsWrite)
-                      IconButton(
-                        icon: const Icon(Icons.upload_file_outlined),
-                        tooltip: '上传音频到当前文件夹',
-                        onPressed: _scanning ? null : () => _upload(source),
-                      ),
-                    if (source.supportsWrite)
-                      IconButton(
-                        icon: const Icon(Icons.create_new_folder_outlined),
-                        tooltip: '在当前文件夹新建',
-                        onPressed: _scanning ? null : () => _mkdir(source),
-                      ),
-                    FilledButton.icon(
-                      onPressed: _scanning ? null : _scan,
-                      icon: _scanning
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.refresh, size: 18),
-                      label: const Text('扫描'),
+                    IconButton(
+                      icon: const Icon(Icons.arrow_back),
+                      tooltip: inFolder ? '返回上一级' : '返回播放源',
+                      onPressed: inFolder ? _up : nav.exitSource,
                     ),
+                    const SizedBox(width: 4),
+                    Icon(Icons.folder_outlined,
+                        size: 20,
+                        color: Theme.of(context).colorScheme.primary),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        titleText,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                    ),
+                    if (playable) ...[
+                      FilledButton.icon(
+                        onPressed: () => _playAll(context, source, songs),
+                        icon: const Icon(Icons.play_arrow),
+                        label: const Text('播放'),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
+                    scanButton,
+                    const SizedBox(width: 4),
+                    ...writeActions,
                     if (_scanning)
-                      IconButton(
-                        icon: const Icon(Icons.close),
+                      ToolbarIconButton(
+                        icon: Icons.close,
                         tooltip: '取消扫描',
                         onPressed: _cancel,
                       ),
                   ],
-                ),
-              ],
+                );
+              },
             ),
           ),
           // 扫描进度：枚举阶段为不确定进度条；探测阶段显示比例与数字。
@@ -529,17 +598,6 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                 }
                 return '已索引 $total 首 · ${source.name}';
               },
-              countTrailing: !searching && songs.isNotEmpty
-                  ? TextButton.icon(
-                      icon: const Icon(Icons.play_arrow, size: 18),
-                      label: const Text('播全部'),
-                      style: TextButton.styleFrom(
-                        visualDensity: VisualDensity.compact,
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                      ),
-                      onPressed: () => _playAll(context, source, songs),
-                    )
-                  : null,
               onRefresh: _scan,
               onPlay: (list, i) => _play(context, source, list, i),
               onPlayGroup: (list) => _play(context, source, list, 0),

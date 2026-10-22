@@ -12,6 +12,7 @@ import '../utils/cover_thumb.dart';
 import '../utils/duration_format.dart';
 import '../utils/song_title_format.dart';
 import 'add_to_playlist.dart';
+import 'app_dialog_actions.dart';
 import 'app_toast.dart';
 import 'edit_song_meta_dialog.dart';
 import 'selection_badge.dart';
@@ -113,14 +114,13 @@ class SongTile extends StatelessWidget {
         title: const Text('删除歌曲文件？'),
         content: Text('将从「${src.name}」永久删除「${song.title}」，\n'
             '并清除本地索引、收藏权重、歌词、歌单条目与离线缓存。\n此操作不可恢复。'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(false),
-              child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(true),
-              child: const Text('继续删除', style: TextStyle(color: Colors.red))),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '继续删除',
+          destructive: true,
+          onCancel: () => Navigator.of(c).pop(false),
+          onConfirm: () => Navigator.of(c).pop(true),
+        ),
       ),
     );
     if (ok1 != true || !context.mounted) return;
@@ -130,14 +130,13 @@ class SongTile extends StatelessWidget {
       builder: (c) => AlertDialog(
         title: const Text('再次确认删除'),
         content: Text('确认永久删除「${song.title}」？'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(false),
-              child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(true),
-              child: const Text('确认删除', style: TextStyle(color: Colors.red))),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '确认删除',
+          destructive: true,
+          onCancel: () => Navigator.of(c).pop(false),
+          onConfirm: () => Navigator.of(c).pop(true),
+        ),
       ),
     );
     if (ok2 != true || !context.mounted) return;

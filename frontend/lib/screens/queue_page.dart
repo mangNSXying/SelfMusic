@@ -8,12 +8,14 @@ import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
 import '../utils/collection_sort.dart';
 import '../utils/song_title_format.dart';
+import '../widgets/app_dialog_actions.dart';
 import '../widgets/list_selection.dart';
 import '../widgets/row_list.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_list.dart';
 import '../widgets/song_row_view.dart';
 import '../widgets/sort_menu_button.dart';
+import '../widgets/toolbar_icon_button.dart';
 
 /// 当前播放队列页（改进.txt UI6）：无绑定歌单（全部歌曲/喜欢/专辑/歌手/播放源
 /// 点播等）时右滑进入的兜底页，展示运行时播放队列。
@@ -149,20 +151,20 @@ class _QueuePageState extends State<QueuePage> {
     ];
   }
 
-  Future<bool> _confirm(String title, String content, String okLabel) async {
+  Future<bool> _confirm(String title, String content, String okLabel,
+      {bool destructive = false}) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
         title: Text(title),
         content: Text(content),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(false),
-              child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(true),
-              child: Text(okLabel)),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: okLabel,
+          destructive: destructive,
+          onCancel: () => Navigator.of(c).pop(false),
+          onConfirm: () => Navigator.of(c).pop(true),
+        ),
       ),
     );
     return ok == true && mounted;
@@ -174,7 +176,10 @@ class _QueuePageState extends State<QueuePage> {
   }
 
   Future<void> _clearQueue(PlayerProvider player) async {
-    if (!await _confirm('清空队列', '确定清空整个播放队列并停止播放？', '清空')) return;
+    if (!await _confirm('清空队列', '确定清空整个播放队列并停止播放？', '清空',
+        destructive: true)) {
+      return;
+    }
     player.clearQueue();
   }
 
@@ -236,7 +241,8 @@ class _QueuePageState extends State<QueuePage> {
               },
             ),
             IconButton(
-              icon: const Icon(Icons.delete_outline),
+              icon: Icon(Icons.delete_outline,
+                  color: Theme.of(context).colorScheme.error),
               tooltip: '清空队列',
               onPressed: () => _clearQueue(player),
             ),
@@ -331,9 +337,10 @@ class _QueuePageState extends State<QueuePage> {
                     direct.settings.sortQueue = v;
                   },
                 ),
-                IconButton(
-                  icon: const Icon(Icons.delete_outline),
+                ToolbarIconButton(
+                  icon: Icons.delete_outline,
                   tooltip: '清空队列',
+                  color: Theme.of(context).colorScheme.error,
                   onPressed: () => _clearQueue(player),
                 ),
               ],

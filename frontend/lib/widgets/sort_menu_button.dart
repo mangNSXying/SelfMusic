@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../utils/collection_sort.dart';
+import 'toolbar_icon_button.dart';
 
 /// 内容页排序入口（挂在 CountHeader 右侧）。
 ///
@@ -103,11 +104,12 @@ class SortMenuButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final active = value != CollectionSort.defaultOrder;
     return Builder(
-      builder: (ctx) => IconButton(
-        tooltip: '排序',
-        icon: const Icon(Icons.sort, size: 20),
-        visualDensity: VisualDensity.compact,
+      builder: (ctx) => ToolbarIconButton(
+        tooltip: active ? '排序：${value.lineLabel}' : '排序',
+        icon: Icons.sort,
+        color: active ? Theme.of(ctx).colorScheme.primary : null,
         onPressed: () => _open(ctx),
       ),
     );

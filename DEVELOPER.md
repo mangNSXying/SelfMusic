@@ -115,7 +115,9 @@ selfmusic/
 │       │   └── domain/
 │       │       ├── entity/           # JPA 实体（纯手写 getter/setter，不用 Lombok）
 │       │       └── repository/       # Spring Data JPA 接口
-│       └── resources/application.yml
+│       └── resources/
+│           ├── application.yml
+│           └── db/migration/        # ★ Flyway V1/V2/V3（服务端 schema 唯一事实源）
 ├── frontend/                         # Flutter 前端
 │   ├── lib/
 │   │   ├── main.dart                 # 入口 + Provider 装配 / Root
@@ -139,10 +141,6 @@ selfmusic/
 │   ├── android/ linux/ windows/ ohos/   # 各平台壳工程（ohos 的 build-profile.json5 含本机签名材料不入库，模板 build-profile.json5.example）
 │   ├── third_party/               # vendored fork：audio_service（通知栏 5 键自定义按钮）、dart_smb2、smb_connect
 │   └── pubspec.yaml
-├── scripts/init.sql                  # 数据库初始化脚本（v2 schema + 阶段5 sync_events / playlists.client_uuid+deleted+last_event_at / play_states.last_event_at）
-├── scripts/migration_003_sync.sql    # 存量库补表/补列（阶段5；新部署只需 init.sql）
-├── scripts/migration_009_sync_payload_mediumtext.sql # sync_events.payload / play_states.deep_list_json TEXT→MEDIUMTEXT（断点 deep_list 超 64 KiB 修复）
-├── scripts/migration_010_breakpoint_head_v2.sql # 断点协议 v2：play_states 增加 head_*/history_rev（head/history 分离）+ 旧行回填
 ├── nginx/selfmusic.conf              # Nginx 反代模板（部署到宿主机）
 ├── docker-compose.yml                # backend（18088）+ backend-dev（18089，profile: dev）
 ├── run-linux.sh                      # Linux 快速运行：cd frontend && flutter run -d linux
@@ -238,7 +236,12 @@ selfmusic/
 
 ### 服务端（MySQL 8）
 
-> `scripts/init.sql` 为**权威库表定义（全量合并到 v3）**，已内含 `scripts/migration_002…009` 的全部结果；应用启动 `ddl-auto: validate` 校验实体与表一致性。**全新部署只执行 init.sql**；存量旧库（仍带曲库的 v2）按 migration_002…009 顺序升级，勿重跑 init.sql。
+> 服务端表结构唯一事实源 = `backend/src/main/resources/db/migration/V*.sql`。后端启动时 Flyway 自动执行版本化 SQL 并记录 `flyway_schema_history`；随后 JPA `ddl-auto: validate` 只校验实体与最终表结构是否一致。全新库只需建库建账号；存量库没有迁移历史时自动 baseline 到 V1，再补 V2/V3（V2 为幂等 MODIFY，V3 按列/索引存在性判断，已手工执行过旧 migration 的库重复执行也安全）。
+>
+> - `V1__baseline.sql`：1e247ab 时的完整基线（含 migration_002…009 的结果）
+> - `V2__sync_payload_mediumtext.sql`：TEXT → MEDIUMTEXT（幂等，兼容尚未执行 009 的存量库）
+> - `V3__breakpoint_head_v2.sql`：断点协议 v2 字段 + 旧行回填 + epoch 初始化
+> - **发布过的 V 文件不要修改**（Flyway 校验 checksum）；后续变更新增 `V4__xxx.sql`。
 
 | 表 | 说明 |
 |----|------|
@@ -252,13 +255,13 @@ selfmusic/
 
 > 原 `albums/songs/covers/scan_tasks` 已随服务端曲库移除（`migration_004`）。
 
-`settings` 实际存量为四键：`pairing_token`（env 镜像）、`cache_max_bytes`（默认 5 GiB）、`cache_song_limit`（默认 200）、`sync.server_epoch`（断点协议 v2 的服务端数据代次，首次使用自动生成，DB 重建后自动换新；客户端据此清空本地 revision）。缓存两键权威来源 = init.sql 预置 + 每次启动被 `CACHE_MAX_MIB` / `CACHE_SONG_LIMIT` env 覆盖写入。
+`settings` 实际存量为四键：`pairing_token`（env 镜像）、`cache_max_bytes`（默认 5 GiB）、`cache_song_limit`（默认 200）、`sync.server_epoch`（断点协议 v2 的服务端数据代次，首次使用自动生成，DB 重建后自动换新；客户端据此清空本地 revision）。缓存两键权威来源 = V1 迁移预置 + 每次启动被 `CACHE_MAX_MIB` / `CACHE_SONG_LIMIT` env 覆盖写入。
 
 服务器端开发规范：
 
-- 表结构变更：**修改 `scripts/init.sql` 并同步提交**，同时更新对应 JPA 实体；`ddl-auto: validate` 不一致启动即报错
+- 表结构变更：**新增 `backend/src/main/resources/db/migration/Vn__xxx.sql`**（不要修改已发布版本），同时更新对应 JPA 实体；`ddl-auto: validate` 不一致启动即报错
 - 字符集统一 `utf8mb4`；所有表带 `id BIGINT AUTO_INCREMENT PRIMARY KEY`、`created_at`、`updated_at`
-- init.sql 中的用户创建语句已注释（管理员手工管理账号），执行前确认账号对 `selfmusic.*` 有权限
+- 库/账号由管理员一次性创建，应用账号只需 `selfmusic.*` 权限，不需要 `CREATE DATABASE`
 
 ### 客户端（SQLite）
 
@@ -405,7 +408,7 @@ mvn dependency:go-offline -f backend/pom.xml     # 预拉全部依赖
 
 ### 新增一个接口的标准流程
 
-1. 在 `domain/entity/` 建 JPA 实体（对应 `scripts/init.sql` 中已存在的表；**手写 getter/setter**，equals/hashCode 基于 id）
+1. 在 `domain/entity/` 建 JPA 实体（对应 Flyway 迁移中已存在的表；**手写 getter/setter**，equals/hashCode 基于 id）
 2. 在 `domain/repository/` 建接口继承 `JpaRepository`
 3. 在 `service/` 写业务逻辑
 4. 在对应功能包（`auth/`、`sync/`、`playlist/`…）暴露 REST 接口，路径以 `/api/v1/` 开头
@@ -433,7 +436,7 @@ meta/        MetaController（GET /meta/server）
 | 用途 | 选型 |
 |------|------|
 | Web 框架 | `spring-boot-starter-web` + `data-jpa` + `security` + `validation`（Java 21 / Spring Boot 3.4） |
-| 数据库驱动 | `mysql-connector-j`（MySQL 8；`ddl-auto: validate`） |
+| 数据库驱动 | `mysql-connector-j`（MySQL 8）；Flyway 启动迁移 + `ddl-auto: validate` |
 | Token 哈希 | JDK `MessageDigest` SHA-256（不引额外依赖） |
 | SSH 回源 | `com.hierynomus:sshj`（0.41.x，Apache 2.0；转码代理的 SFTP 回源取流） |
 | SMB 回源 | `com.hierynomus:smbj`（0.13.0，Apache 2.0；转码代理的 SMB 回源取流） |
@@ -825,7 +828,7 @@ Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 
 构建验证状态（2026-09）：
 - 双 SDK `flutter analyze` 零问题（ohos 3.41.9 与 stable 各自通过；两 SDK 的 pub get 会对 meta/test_api/vector_math 等 4 个 flutter_test 传递依赖来回改写 lock，属已知无害现象）
 - `flutter build hap --debug` 编译链全通：ArkTS（GeneratedPluginRegistrant）+ Dart（kernel_blob JIT）+ `entry/libs` 预编译库（libsqlite3/libsmb2），assembleHap 出 signed hap；release 出包用根目录 `build-ohos.ps1`（`hap` 参数出三架构 arm64/armv7/x86，缺省出 AGC 发布签名 .app）
-- 2026-10-22 鸿蒙 6 文件级源：桥/源测试 35 项通过；`build-ohos.ps1` release arm64 出包成功（`frontend/build/dist/SelfMusic_1.0.3_ohos_arm64_release.hap`，SHA256 `e8ccb042…`）
+- 2026-10-22 鸿蒙 6 文件级源：桥/源测试 35 项通过；`build-ohos.ps1` release arm64 出包成功（`frontend/build/dist/SelfMusic_1.0.3_ohos_arm64_release.hap`，SHA256 `84295ecf…`）
 - 真机部署已走通：`devecocli signature generate`（签名材料落 `~/.ohos/config/`）→ 出包 → `hdc install -r` / `devecocli run`
 - **签名材料不入库**：`devecocli signature generate` 会把本机材料路径写进 `ohos/build-profile.json5`，该文件已 gitignore；仓库只留 `build-profile.json5.example` 模板（新机器复制一份改名即可）
 - 启动白屏已修复（两个应用/生态层根因，见上文）：verify-6 全链路点亮，看门狗 1 次 poke 即解除
@@ -990,7 +993,7 @@ frozen=true                 → 权重锁定 0.1，跳过自动调权与时长�
   - **history 合并**：`history_rev` 只随深层列表变化递增；head 判输时历史合并照常执行，离线两端新增内容都不丢（继续复用「断点深层列表分支合并」的三向合并）：`play_track` 被接受时把当前曲补到历史尾部并递增 `history_rev`；容量溢出只从最旧端裁剪。
   - **客户端状态机**：按歌单持久化 `applied_head_rev`/`applied_history_rev`/`pending_head_op_id`/`session_id`/`server_epoch`。真实操作写 pending head；启动恢复、周期保存、回前台/退后台补写不是真实操作，只发 `progress` 或不发，绝不产生 head（恢复装载也不再借 `pushPlayed` 改写历史）。pending 期间 pull 的远端 head 一律 defer，直到 push 回执裁决（接受 / 判输 / 死信清 pending 后，由 `applyNewerMirrorIfAny` 在空闲时套用；播放中绝不打断）。`server_epoch` 变化时清空本地 revision（镜像内容保留），防 DB 重建后旧高版本挡新快照。
   - **回执与镜像**：`breakpoints` 按 `playlist_uuid` 键控（旧 `merged` 仍按 `event_uuid`），客户端无条件落 `breakpoint_mirror`；镜像写入按 `head_rev`/`history_rev` 分别守卫，旧 head 不回退当前曲/进度，旧 history 不回退深层列表，`force` 只绕墙钟不绕版本。merged/历史-only 快照只更新深层历史与融合队列，**不 seek、不打断播放**；非当前歌单只落镜像并抑制自动套用。
-  - **兼容**：`last_event_at`/`updated_at`/`deep_list` 字段保留；旧协议路径（无 `protocol` 或 `<2`）继续走行级 LWW + 分支合并，服务端对旧行回填 `head_rev=history_rev=1`（`migration_010`），保证首次升级即可比较版本。
+  - **兼容**：`last_event_at`/`updated_at`/`deep_list` 字段保留；旧协议路径（无 `protocol` 或 `<2`）继续走行级 LWW + 分支合并，服务端对旧行回填 `head_rev=history_rev=1`（`V3__breakpoint_head_v2.sql`），保证首次升级即可比较版本。
 - **时钟校准**：`occurred_at` 是各设备墙钟入队时间，偏移会导致 LWW 误判旧赢新。push/pull 回包带 `server_time`，客户端记 `skew = serverTime - now` 并修正后续入队时间戳（`LocalIndex.setClockSkew`，唯一入队口；旧服务端无该字段退化为本地钟）；修正值回跳时本机单调 guard 兜住（新戳不得小于上次 +1ms）。skew 内存态，重启后下次同步重建。
 - **歌曲身份**：服务端无曲库，统一为 `source_id + source_ref`（source_id=客户端源实例 uuid，旧数据为 `legacy:<协议>`）；权重 / 收藏落 `song_states`，歌单条目与断点自持身份及展示快照（pull 不覆盖客户端本地标题）；pull 身份收集恒不建行（已删歌曲不重新建行）。未配对（无后端地址）或 `sync_enabled=0` 时直连事件不进队，避免 outbox 无限积压。
 - **播放源同步**：`source.create/update/delete` + 行级 LWW；身份 `client_uuid`，去重键 `(kind, address)`（地址两端归一化——WebDAV 缺 scheme 补 https、去尾斜杠，SFTP 形态 `host:port/path`；转码强校验按同一归一化匹配）。本地文件夹源不参与；密码与私钥（含 passphrase）不入服务端（新设备显示「待配置密码」）；SFTP 主机密钥钉 `ssh_known_hosts` 亦不参与同步（各设备各自 TOFU）。存量远端源接入时补 uuid 并补发一次 create；旧协议级身份在设备重新上报时由服务端懒迁移。
@@ -1082,7 +1085,7 @@ Docker Hub 网络不通。解决方案任选：
 
 ### 6. JPA 启动报 validate 校验失败
 
-实体字段与表结构不一致。核对 `scripts/init.sql` 与 entity 类的字段名/类型/可空性，或临时用 `ddl-auto: none` 启动排查。
+实体字段与表结构不一致。核对 `backend/src/main/resources/db/migration/V*.sql` 与 entity 类的字段名/类型/可空性；先看 Flyway 是否执行失败，再临时用 `ddl-auto: none` 启动排查。
 
 ---
 

@@ -243,6 +243,7 @@ class _QueuePanelState extends State<QueuePanel> {
                     const Spacer(),
                     IconButton(
                         icon: const Icon(Icons.close),
+                        tooltip: '关闭',
                         onPressed: widget.onClose),
                   ],
                 ),

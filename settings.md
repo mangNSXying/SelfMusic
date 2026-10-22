@@ -193,13 +193,13 @@ mode == follow_server → 有服务端镜像用镜像，无镜像回退本地自
 
 ## 5. 服务端全局设置与同键解析
 
-> 源：`scripts/init.sql` + `application.yml`；服务端表定义见 DEVELOPER.md「数据模型」。
+> 源：`backend/src/main/resources/db/migration/V*.sql` + `application.yml`；服务端表定义见 DEVELOPER.md「数据模型」。
 > 写入口：`PAIRING_TOKEN` 与缓存建议值（`CACHE_MAX_MIB` MiB / `CACHE_SONG_LIMIT` 首）每次启动由 env 镜像覆盖写入（改 `.env` 重启生效）；读取端 `GET /api/v1/admin/pairing-token`（配对密钥）、`GET /api/v1/admin/config`（缓存建议值）与 `GET /api/v1/meta/server`（版本/ffmpeg/水位）均已实现；`PUT /api/v1/admin/settings`（管理端改缓存两键）已实现——注意 env 重启覆盖语义，PUT 值会被带 env 重启覆盖。转码并发 `TRANSCODE_MAX_CONCURRENCY` 只 env（默认 2），不进表。
 
 | 键 | 默认 | 说明 | 与客户端同键？ |
 |----|------|------|--------------|
 | `pairing_token` | env 提供 / 首次随机 | 配对主令牌（明文可展示二维码） | — |
-| `cache_max_bytes` | `5368709120`（5 GiB） | 全局建议值（字节；init.sql 预置 + `CACHE_MAX_MIB` env 覆盖），供客户端 `follow_server` 模式采纳 | ✅ 是 → 客户端解析见 §3.3 |
+| `cache_max_bytes` | `5368709120`（5 GiB） | 全局建议值（字节；V1 迁移预置 + `CACHE_MAX_MIB` env 覆盖），供客户端 `follow_server` 模式采纳 | ✅ 是 → 客户端解析见 §3.3 |
 | `cache_song_limit` | `200` | 同上（`CACHE_SONG_LIMIT` env 覆盖） | ✅ 是 → 客户端解析见 §3.3 |
 | `scan_interval_min` | `0`（关） | ❌ 已移除（服务端不再扫描；歌曲只由 APP 在播放源处扫描） | — |
 | `transcode_max_concurrency` | `2` | ❌ 已移除（后端既不出流也不 ffmpeg 转码） | — |

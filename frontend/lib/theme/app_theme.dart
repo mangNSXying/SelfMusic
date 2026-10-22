@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'app_metrics.dart';
+
 /// 模块化主题核心：基于语义化颜色 token 生成 ThemeData。
 ///
 /// - 默认浅色背景 `#FEFEFE` + teal 强调色 `#00A098`（对应参考图 UI 效果）。
@@ -148,11 +150,51 @@ class AppTheme {
       onSurface: pal.textPrimary,
     );
 
+    // 全 App 按钮统一 12px 圆角矩形（与卡片/输入框一致），不再使用
+    // Material 3 默认的胶囊形；文字按钮也统一高度，避免同一行里
+    // TextButton(40) + IconButton(48) 高低不齐。
+    final buttonShape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(kButtonRadius),
+    );
+    const buttonPadding = EdgeInsets.symmetric(horizontal: 16);
+    const buttonSize = Size(64, kButtonHeight);
+    final outlinedButtonStyle = OutlinedButton.styleFrom(
+      minimumSize: buttonSize,
+      padding: buttonPadding,
+      shape: buttonShape,
+    ).copyWith(
+      side: WidgetStateProperty.resolveWith((states) {
+        final disabled = states.contains(WidgetState.disabled);
+        return BorderSide(
+          color: disabled
+              ? pal.textSecondary.withValues(alpha: 0.24)
+              : pal.accent.withValues(alpha: 0.5),
+        );
+      }),
+    );
+
     final theme = ThemeData(
       useMaterial3: true,
       colorScheme: colorScheme,
       brightness: brightness,
       scaffoldBackgroundColor: pal.background,
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(
+          minimumSize: buttonSize,
+          padding: buttonPadding,
+          shape: buttonShape,
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: outlinedButtonStyle,
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          minimumSize: buttonSize,
+          padding: buttonPadding,
+          shape: buttonShape,
+        ),
+      ),
       appBarTheme: AppBarTheme(
         backgroundColor: pal.surface,
         foregroundColor: pal.textPrimary,

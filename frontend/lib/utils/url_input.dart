@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/direct_source_manager.dart';
+import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
 
 /// 网址输入框共享逻辑：`https://` 可视化自动补全 + `http://` 弹窗引导。
@@ -74,16 +75,12 @@ Future<bool> ensureHttpAllowed(BuildContext context, String url) async {
       title: const Text('检测到明文 HTTP'),
       content: const Text(
           '当前地址使用明文 http://，默认已被关闭。\n\n可前往「设置 → 服务端 → 网络与安全」开启「允许不安全 HTTP」，或改用 https://。\n\n是否现在开启并继续保存？'),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(c).pop(false),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.of(c).pop(true),
-          child: const Text('去开启并继续'),
-        ),
-      ],
+      actions: appDialogActions(
+        c,
+        confirmLabel: '去开启并继续',
+        onCancel: () => Navigator.of(c).pop(false),
+        onConfirm: () => Navigator.of(c).pop(true),
+      ),
     ),
   );
   if (enable != true) return false;

@@ -14,6 +14,7 @@ import '../providers/playlists_provider.dart';
 import '../utils/collection_sort.dart';
 import '../utils/song_groups.dart';
 import '../utils/song_search.dart';
+import 'app_dialog_actions.dart';
 import 'list_selection.dart';
 import 'selection_bar.dart';
 import 'song_collection_view.dart';
@@ -154,14 +155,12 @@ class _SongListState extends State<SongList> {
       builder: (c) => AlertDialog(
         title: const Text('从歌单移除'),
         content: Text('确定从歌单中移除选中的 $count 首歌曲？'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(false),
-              child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(true),
-              child: const Text('移除')),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '移除',
+          onCancel: () => Navigator.of(c).pop(false),
+          onConfirm: () => Navigator.of(c).pop(true),
+        ),
       ),
     );
     if (ok != true || !mounted) return;
@@ -269,14 +268,25 @@ class _SongListState extends State<SongList> {
                 ),
               ),
               if (_songs.isNotEmpty) ...[
-                TextButton.icon(
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    minimumSize: const Size(0, 36),
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                  ),
                   icon: const Icon(Icons.play_arrow),
                   label: const Text('播放'),
                   onPressed: () => _playAll(startWithOrder: true),
                 ),
-                IconButton(
-                  tooltip: '从头播放',
-                  icon: const Icon(Icons.restart_alt),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    minimumSize: const Size(0, 36),
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                  ),
+                  icon: const Icon(Icons.replay),
+                  label: const Text('从头播放'),
                   onPressed: () => _playAll(startWithOrder: false),
                 ),
               ],
