@@ -72,17 +72,19 @@ class _SingleChoiceButton<T> extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final disabled = onTap == null;
     final fg = disabled
-        ? cs.onSurface.withValues(alpha: 0.38)
+        ? selected
+            ? cs.onPrimaryContainer.withValues(alpha: 0.55)
+            : cs.onSurface.withValues(alpha: 0.38)
         : selected
             ? cs.onPrimaryContainer
             : cs.onSurfaceVariant;
     final shape = RoundedRectangleBorder(
       borderRadius: BorderRadius.circular(kButtonRadius),
       side: BorderSide(
-        color: disabled
-            ? cs.outlineVariant.withValues(alpha: 0.5)
-            : selected
-                ? cs.primary
+        color: selected
+            ? cs.primary.withValues(alpha: disabled ? 0.4 : 1)
+            : disabled
+                ? cs.outlineVariant.withValues(alpha: 0.5)
                 : cs.outlineVariant,
       ),
     );
@@ -91,10 +93,10 @@ class _SingleChoiceButton<T> extends StatelessWidget {
       selected: selected,
       inMutuallyExclusiveGroup: true,
       child: Material(
-        color: disabled
-            ? cs.onSurface.withValues(alpha: 0.05)
-            : selected
-                ? cs.primaryContainer
+        color: selected
+            ? cs.primaryContainer.withValues(alpha: disabled ? 0.42 : 1)
+            : disabled
+                ? cs.onSurface.withValues(alpha: 0.05)
                 : cs.surfaceContainerHighest,
         shape: shape,
         clipBehavior: Clip.antiAlias,
