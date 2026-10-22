@@ -42,11 +42,21 @@
 
 ### 1. 初始化数据库
 
-在宿主机 MySQL 中执行初始化脚本：
+MySQL 只需创建数据库和账号；表结构由后端启动时 Flyway 自动创建/升级，不再需要手工执行 SQL：
 
-```bash
-mysql -u root -p < scripts/init.sql
+```sql
+CREATE DATABASE IF NOT EXISTS selfmusic
+  DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS 'selfmusic_user'@'%' IDENTIFIED BY '换成你的密码';
+GRANT ALL PRIVILEGES ON selfmusic.* TO 'selfmusic_user'@'%';
+FLUSH PRIVILEGES;
 ```
+
+> 账号名/密码要与 `.env` 的 `DB_USERNAME` / `DB_PASSWORD` 保持一致。
+>
+> 存量库直接启动新版后端即可：Flyway 会自动以 V1 为基线并补 V2/V3；
+> V2 的 MODIFY 可重复执行，V3 会先检查列/索引是否存在；已手工执行过旧
+> migration 的库也不会重复建列。
 
 ### 2. 配置环境变量
 
@@ -110,7 +120,8 @@ selfmusic/
 │   ├── lib/screens/             # 内容区 / 歌单 / 播放源 / 设置 / 播放页 / 配对
 │   ├── third_party/             # vendored fork：fvp（ohos 平台声明 + 删视频依赖链）、audio_service（通知栏 5 键）
 │   └── ohos/                    # 鸿蒙壳工程（build-profile.json5 含签名材料不入库，模板 .example）
-├── scripts/init.sql             # 服务端 MySQL 建库建表（schema 唯一事实源）
+├── backend/src/main/resources/db/migration/  # Flyway 版本化建表/迁移（服务端 schema 唯一事实源）
+├── scripts/                     # 历史手工 SQL（已归档，新部署由 Flyway 接管）
 ├── nginx/selfmusic.conf         # 反向代理模板
 ├── docker-compose.yml           # backend + backend-dev 编排
 ├── .env                         # 环境变量模板（不入库）

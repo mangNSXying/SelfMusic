@@ -16,8 +16,18 @@ spring:
       idle-timeout: 300000
       connection-timeout: 20000
 
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # 存量库没有 flyway_schema_history 时，自动以 V1 为基线（V1 是 1e247ab 的完整
+    # schema）；V2/V3 会继续补齐 009/010。V2 是幂等 MODIFY，V3 按列/索引
+    # 是否存在判断，已手工执行过旧 migration 的库重复执行也安全。
+    baseline-on-migrate: true
+    baseline-version: 1
+
   jpa:
     hibernate:
+      # Flyway 负责建表/升级，JPA 只校验实体与最终表结构是否一致。
       ddl-auto: validate
     show-sql: false
     open-in-view: false

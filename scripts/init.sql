@@ -1,4 +1,8 @@
 -- =====================================================================
+-- 【历史归档】自 Flyway 接管后，新部署/升级请勿手工执行本文件。
+-- 服务端表结构唯一事实源：backend/src/main/resources/db/migration/V*.sql
+-- =====================================================================
+-- =====================================================================
 -- SelfMusic Schema v3（服务端无曲库 / 阶段5 全量合并）
 -- 设计文档：DEVELOPER.md「数据模型」
 -- 变更摘要（相对 v2）：
@@ -13,8 +17,8 @@
 --   事件日志压缩支撑：devices.last_pull_cursor + sync_events.entity_key（migration_008）
 --   sync_events.payload / play_states.deep_list_json 扩为 MEDIUMTEXT，容纳大歌单的 deep_list 断点载荷（migration_009）
 --   play_states 增加 head_rev/head_clock/head_device/head_op_id/head_session/head_playing/head_updated_at/history_rev（migration_010，断点协议 v2）
--- 注意：本文件已内含 migration_002…010 的全部结果，**全新部署只需执行本文件**；
---   存量库升级请按文末「升级说明」顺序执行各 migration 文件，勿执行本文件。
+-- 注意：本文件是归档快照（已内含 migration_002…010 的结果），新部署/升级请勿执行；
+--   后端启动时由 Flyway 自动建表并补齐版本。
 -- =====================================================================
 
 SET NAMES utf8mb4;
@@ -186,11 +190,9 @@ ON DUPLICATE KEY UPDATE skey = skey;
 -- pairing_token 由应用首次启动生成写入（权威源 env PAIRING_TOKEN），不在此预置
 
 -- =====================================================================
--- 升级说明：
---   全新部署：执行本文件即可（已内含 migration_002…010 的全部结果），
---     随后启动后端（ddl-auto=validate 校验实体与表一致）。
---   存量库升级（旧 v2 + 服务端曲库）：不要执行本文件，按以下顺序执行各迁移，
---     每步之间保持顺序（006/007 断言的列依赖前序迁移）：
+-- 归档说明：
+--   下列手工迁移已全部合并进 Flyway 的 V1/V2/V3，保留仅供追溯：
+--   历史升级顺序（每步之间保持顺序，006/007 断言的列依赖前序迁移）：
 --       migration_002_devices_refresh.sql
 --       migration_003_sync.sql
 --       migration_004_remove_library.sql

@@ -1,12 +1,15 @@
+-- =====================================================================
+-- 【历史归档】自 Flyway 接管后，新部署/升级请勿手工执行本文件。
+-- 服务端表结构唯一事实源：backend/src/main/resources/db/migration/V*.sql
+-- =====================================================================
 -- 断点协议 v2：把「当前播放头」与「深层历史」拆开。
 --
 -- head_rev/head_clock/head_* 由 HLC 操作时钟仲裁（最后一次真实播放操作赢）；
 -- history_rev 只随深层列表变化递增，head 输了历史仍可合并。
 -- last_event_at 仅保留给旧客户端/旧协议兼容与诊断。
 --
--- 新部署直接含在 init.sql；存量库执行本文件即可。
--- 执行：mysql -u <user> -p <db> < scripts/migration_010_breakpoint_head_v2.sql
--- 幂等性：本文件只执行一次；重复执行会因列已存在报错。
+-- 本文件已归档，对应 Flyway V3__breakpoint_head_v2.sql；新部署/升级勿手工执行。
+-- 幂等性说明：本文件只执行一次；重复执行会因列已存在报错。
 ALTER TABLE play_states
     ADD COLUMN head_rev BIGINT NOT NULL DEFAULT 0
         COMMENT '播放头版本：head 被接受时 +1',
