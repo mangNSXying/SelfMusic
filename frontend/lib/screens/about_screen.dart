@@ -13,6 +13,7 @@ import '../utils/app_version.dart';
 import '../utils/build_stamp.dart';
 import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/row_action_button.dart';
 import '../services/log_buffer.dart';
 
 /// 反馈收信人。
@@ -92,8 +93,8 @@ class AboutScreen extends StatelessWidget {
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                IconButton(
-                  icon: const Icon(Icons.copy_outlined, size: 20),
+                RowActionIconButton(
+                  icon: Icons.copy_outlined,
                   tooltip: '复制反馈邮箱',
                   onPressed: () => _copyEmail(context),
                 ),

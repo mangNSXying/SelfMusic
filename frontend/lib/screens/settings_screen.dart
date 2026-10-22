@@ -18,11 +18,13 @@ import '../services/bluetooth_service.dart';
 import '../services/server_settings.dart';
 import '../services/sync_engine.dart';
 import '../utils/url_input.dart';
+import '../theme/app_metrics.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_provider.dart';
 import '../utils/cover_thumb.dart';
 import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/row_action_button.dart';
 import '../widgets/single_choice_group.dart';
 import 'devices_screen.dart';
 import 'pairing_screen.dart';
@@ -460,8 +462,8 @@ class _CacheDirTileState extends State<_CacheDirTile> {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          IconButton(
-            icon: const Icon(Icons.copy_outlined),
+          RowActionIconButton(
+            icon: Icons.copy_outlined,
             tooltip: '复制路径',
             onPressed: () {
               Clipboard.setData(ClipboardData(text: index.cacheDir));
@@ -470,11 +472,18 @@ class _CacheDirTileState extends State<_CacheDirTile> {
           ),
           _moving
               ? const SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(strokeWidth: 2))
-              : IconButton(
-                  icon: const Icon(Icons.edit_outlined),
+                  width: kRowActionButtonSize,
+                  height: kRowActionButtonSize,
+                  child: Center(
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                )
+              : RowActionIconButton(
+                  icon: Icons.edit_outlined,
                   tooltip: '更改目录（迁移已有缓存）',
                   onPressed: _changeDir,
                 ),
@@ -691,9 +700,9 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
               const SizedBox(
                   width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
             else
-              IconButton(
+              RowActionIconButton(
                 tooltip: '同步服务端建议值',
-                icon: const Icon(Icons.sync, size: 20),
+                icon: Icons.sync,
                 onPressed: () => _refreshServerConfig(),
               ),
           ],
@@ -1550,8 +1559,8 @@ class _SongsSettingsState extends State<_SongsSettings> {
             mainAxisSize: MainAxisSize.min,
             children: [
               if (_settings.onlineMetaLyricDir.isNotEmpty)
-                IconButton(
-                  icon: const Icon(Icons.clear, size: 20),
+                RowActionIconButton(
+                  icon: Icons.clear,
                   tooltip: '清除（恢复歌曲同目录）',
                   onPressed: _settings.onlineMetaSaveMode !=
                           OnlineMetaSaveMode.sidecar
@@ -2422,13 +2431,13 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          IconButton(
-            icon: const Icon(Icons.restore),
+          RowActionIconButton(
+            icon: Icons.restore,
             tooltip: '导入此备份',
             onPressed: () => _confirmImport(f, name, kind),
           ),
-          IconButton(
-            icon: const Icon(Icons.delete_outline),
+          RowActionIconButton(
+            icon: Icons.delete_outline,
             tooltip: '删除备份',
             onPressed: () => _doDelete(f),
           ),

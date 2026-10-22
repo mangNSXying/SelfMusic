@@ -9,6 +9,7 @@ import '../utils/platform_info.dart';
 import '../utils/url_input.dart';
 import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/row_action_button.dart';
 
 class PairingScreen extends StatefulWidget {
   const PairingScreen({super.key});
@@ -161,16 +162,16 @@ class _PairingScreenState extends State<PairingScreen> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             if (_pairingToken != null) ...[
-                              IconButton(
-                                icon: Icon(_showKey
+                              RowActionIconButton(
+                                icon: _showKey
                                     ? Icons.visibility_off_outlined
-                                    : Icons.visibility_outlined),
+                                    : Icons.visibility_outlined,
                                 tooltip: _showKey ? '隐藏' : '显示',
                                 onPressed: () =>
                                     setState(() => _showKey = !_showKey),
                               ),
-                              IconButton(
-                                icon: const Icon(Icons.copy_outlined),
+                              RowActionIconButton(
+                                icon: Icons.copy_outlined,
                                 tooltip: '复制',
                                 onPressed: () {
                                   Clipboard.setData(
@@ -179,8 +180,8 @@ class _PairingScreenState extends State<PairingScreen> {
                                 },
                               ),
                             ],
-                            IconButton(
-                              icon: const Icon(Icons.refresh),
+                            RowActionIconButton(
+                              icon: Icons.refresh,
                               tooltip: '重新获取',
                               onPressed: _loading ? null : _fetchToken,
                             ),
@@ -306,9 +307,9 @@ class _ServerAddressCard extends StatelessWidget {
           settings.baseUrl.isEmpty ? '未配置，请设置后端地址后再配对' : settings.baseUrl,
           style: TextStyle(color: scheme.onSurfaceVariant),
         ),
-        trailing: TextButton(
+        trailing: RowActionTextButton(
+          label: '设置',
           onPressed: () => _editServer(context),
-          child: const Text('设置'),
         ),
       ),
     );
