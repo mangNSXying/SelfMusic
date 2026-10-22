@@ -73,6 +73,8 @@ void main() {
     expect(find.text('添加播放源'), findsOneWidget);
     expect(find.byType(SingleChoiceGroup<SourceKind>), findsOneWidget);
     expect(find.byType(SegmentedButton<SourceKind>), findsNothing);
+    // 默认 WebDAV：必须有「测试连接」按钮。
+    expect(find.text('测试连接'), findsOneWidget);
 
     final horizontalScrolls = tester
         .widgetList<SingleChildScrollView>(find.byType(SingleChildScrollView))

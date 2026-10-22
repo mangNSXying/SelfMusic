@@ -54,6 +54,34 @@ class WebdavDirectSource implements MusicSource {
 
   final String _base;
 
+  /// 测试连接：对根目录发 Depth: 0 的 PROPFIND，验证地址可达、鉴权通过且
+  /// 目标目录存在。不读写本地索引；客户端配置与扫描/播放一致（含自签证书开关）。
+  static Future<void> testConnection({
+    required String baseUrl,
+    String username = '',
+    String password = '',
+    bool allowSelfSigned = false,
+  }) async {
+    final base = webdavNormalizeBase(baseUrl);
+    // 目录请求补尾斜杠，避免部分服务器 301 后把重定向当失败。
+    final url = base.endsWith('/') ? base : '$base/';
+    final client = _newClient(allowSelfSigned);
+    try {
+      final req = await client.openUrl('PROPFIND', Uri.parse(url));
+      req.headers.set('Depth', '0');
+      _auth(req, username, password);
+      final resp = await req.close().timeout(_kRequestDeadline);
+      await resp.drain<void>().timeout(_kRequestDeadline);
+      if (resp.statusCode != 207 &&
+          resp.statusCode != 200 &&
+          resp.statusCode != 204) {
+        throw WebdavStatusException(resp.statusCode, url);
+      }
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   @override
   String get key => 'webdav:$name';
 

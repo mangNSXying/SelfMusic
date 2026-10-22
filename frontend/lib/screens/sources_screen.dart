@@ -11,6 +11,7 @@ import '../data/sources/music_source.dart';
 import '../data/sources/sftp_direct_source.dart';
 import '../data/sources/smb_common.dart';
 import '../data/sources/smb_direct_source.dart';
+import '../data/sources/webdav_direct_source.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart';
 import '../platform/harmonyos/ohos_platform_bridge.dart';
 import '../providers/direct_source_manager.dart';
@@ -491,6 +492,80 @@ class _SourceDialogState extends State<_SourceDialog> {
     }
   }
 
+  /// WebDAV 地址校验（保存与测试连接共用）：补 `https://`、校验端点格式，
+  /// 显式 `http://` 走「允许不安全 HTTP」闸门。通过返回 URL，失败置
+  /// [_error]（可按 [label] 加备用源前缀）并返回 null。
+  Future<String?> _readWebdavUrl(TextEditingController ctrl,
+      {String? label, bool notifyPrefix = false}) async {
+    final prefix = label == null ? '' : '$label：';
+    final direct = context.read<DirectSourceManager>();
+    if (applyHttpsPrefixToController(ctrl)) {
+      setState(() {});
+      if (notifyPrefix) {
+        AppToast.show('已自动补全 https:// 前缀', isError: false);
+      }
+    }
+    final url = ctrl.text.trim();
+    if (url.isEmpty) {
+      setState(() => _error = '$prefix请填写 WebDAV 地址');
+      return null;
+    }
+    // 默认 HTTPS：显式 http:// 仅在「允许不安全 HTTP」开启后放行
+    // （settings.md §3.3）；一层校验 + 弹窗一键开启，模型层归一化兜底。
+    var err = ApiClient.validateEndpointUrl(url,
+        allowHttp: direct.settings.allowInsecureHttp);
+    if (err != null) {
+      if (urlIsExplicitHttp(url)) {
+        final ok = await ensureHttpAllowed(context, url);
+        if (!mounted) return null;
+        if (!ok) {
+          setState(() => _error = '$prefix$err');
+          return null;
+        }
+        setState(() => _error = null);
+        err = ApiClient.validateEndpointUrl(url,
+            allowHttp: direct.settings.allowInsecureHttp);
+      }
+      if (err != null) {
+        setState(() => _error = '$prefix$err');
+        return null;
+      }
+    }
+    return url;
+  }
+
+  /// WebDAV 测试连接：PROPFIND 探测根目录，验证地址、鉴权与目录可访问。
+  /// 不保存源（保存走 [_submit]）。
+  Future<void> _testWebdavConnection() async {
+    final url = await _readWebdavUrl(_baseUrl);
+    if (url == null || !mounted) return;
+    final direct = context.read<DirectSourceManager>();
+    setState(() {
+      _testing = true;
+      _error = null;
+    });
+    try {
+      await WebdavDirectSource.testConnection(
+        baseUrl: url,
+        username: _username.text.trim(),
+        password: _password.text,
+        allowSelfSigned: direct.settings.allowSelfSigned,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _testing = false;
+        _error = e
+            .toString()
+            .replaceFirst(RegExp(r'^(Bad state: |StateError: )'), '');
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _testing = false);
+    AppToast.show('连接成功', isError: false);
+  }
+
   /// SFTP 表单校验（弹窗保存与测试连接共用）：通过返回连接参数，
   /// 失败置 [_error] 并返回 null。
   ({String host, int port, String username})? _readSftpForm() {
@@ -883,6 +958,35 @@ class _SourceDialogState extends State<_SourceDialog> {
     AppToast.show('连接成功', isError: false);
   }
 
+  Future<void> _testFbWebdavConnection(int slot, _FallbackData fb) async {
+    final url = await _readWebdavUrl(fb.baseUrl, label: fallbackLabel(slot));
+    if (url == null || !mounted) return;
+    final direct = context.read<DirectSourceManager>();
+    setState(() {
+      _testing = true;
+      _error = null;
+    });
+    try {
+      await WebdavDirectSource.testConnection(
+        baseUrl: url,
+        username: fb.username.text.trim(),
+        password: fb.password.text,
+        allowSelfSigned: direct.settings.allowSelfSigned,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _testing = false;
+        _error =
+            '${fallbackLabel(slot)}：${e.toString().replaceFirst(RegExp(r'^(Bad state: |StateError: )'), '')}';
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _testing = false);
+    AppToast.show('连接成功', isError: false);
+  }
+
   Widget _buildFallbackCard(int i) {
     final fb = _fbs[i];
     final label = fallbackLabel(i);
@@ -930,6 +1034,19 @@ class _SourceDialogState extends State<_SourceDialog> {
                 controller: fb.password,
                 obscureText: true,
                 decoration: const InputDecoration(labelText: '密码（可空）'),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed:
+                    _testing ? null : () => _testFbWebdavConnection(i, fb),
+                icon: _testing
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.verified_outlined, size: 18),
+                label: const Text('测试连接'),
               ),
             ] else if (fb.kind == SourceKind.sftp) ...[
               TextField(
@@ -1246,38 +1363,10 @@ class _SourceDialogState extends State<_SourceDialog> {
               fallbacks: fbMaps);
         }
       } else {
-        // WebDAV 走 HTTP：保存前先把补全写回输入框（可视化），再校验。
+        // WebDAV 走 HTTP：保存前先补全 scheme 并校验（与测试连接同口径）。
         // SFTP/SMB/本地不走 HTTP，不在此补 scheme。
-        if (applyHttpsPrefixToController(_baseUrl)) {
-          AppToast.show('已自动补全 https:// 前缀', isError: false);
-          setState(() {});
-        }
-        final url = _baseUrl.text.trim();
-        if (url.isEmpty) {
-          setState(() => _error = '请填写 WebDAV 地址');
-          return;
-        }
-        // 默认 HTTPS：显式 http:// 仅在「允许不安全 HTTP」开启后放行（settings.md §3.3）。
-        // 一层校验 + 弹窗一键开启（url_input.ensureHttpAllowed），模型层归一化兜底。
-        var err = ApiClient.validateEndpointUrl(url,
-            allowHttp: direct.settings.allowInsecureHttp);
-        if (err != null) {
-          if (urlIsExplicitHttp(url)) {
-            final ok = await ensureHttpAllowed(context, url);
-            if (!mounted) return;
-            if (!ok) {
-              setState(() => _error = err);
-              return;
-            }
-            setState(() => _error = null);
-            err = ApiClient.validateEndpointUrl(url,
-                allowHttp: direct.settings.allowInsecureHttp);
-          }
-          if (err != null) {
-            setState(() => _error = err);
-            return;
-          }
-        }
+        final url = await _readWebdavUrl(_baseUrl, notifyPrefix: true);
+        if (url == null) return;
         if (_isEdit) {
           await direct.updateSource(widget.editKey!,
               name: name,
@@ -1518,6 +1607,18 @@ class _SourceDialogState extends State<_SourceDialog> {
                 controller: _password,
                 obscureText: true,
                 decoration: const InputDecoration(labelText: '密码（可空）'),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: _testing ? null : _testWebdavConnection,
+                icon: _testing
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.verified_outlined, size: 18),
+                label: const Text('测试连接'),
               ),
             ] else if (_kind == SourceKind.sftp) ...[
               TextField(
