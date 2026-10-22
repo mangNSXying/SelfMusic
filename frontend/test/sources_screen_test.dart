@@ -2,9 +2,12 @@ import 'dart:ffi' show DynamicLibrary;
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform.dart';
+import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:provider/provider.dart';
+import 'package:selfmusic/data/sources/local_file_direct_source.dart';
 import 'package:selfmusic/data/sources/music_source.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/screens/sources_screen.dart';
@@ -35,7 +38,12 @@ void main() {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
   });
 
-  testWidgets('窄屏添加播放源：类型选项换行且无横向滚动', (tester) async {
+  setUp(() {
+    FlutterSecureStoragePlatform.instance =
+        TestFlutterSecureStoragePlatform(<String, String>{});
+  });
+
+  testWidgets('窄屏添加播放源：类型选项换行、本地文件夹默认显示目录栏', (tester) async {
     late final Directory dir;
     late final DirectSourceManager direct;
     await tester.runAsync(() async {
@@ -101,5 +109,70 @@ void main() {
         lessThanOrEqualTo(groupRect.right),
       );
     }
+
+    await tester.tap(find.text('本地'));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('选择文件夹'), findsOneWidget);
+    expect(find.textContaining('无法选择文件夹'), findsNothing);
+  });
+
+  testWidgets('编辑本地文件源：已选文件列表限高滚动', (tester) async {
+    late final Directory dir;
+    late final DirectSourceManager direct;
+    await tester.runAsync(() async {
+      dir = await Directory.systemTemp.createTemp('selfmusic_src_');
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      direct = DirectSourceManager();
+      await direct.init();
+      await direct.addLocalFiles(
+        name: '本地文件源',
+        files: [
+          for (var i = 0; i < 30; i++)
+            LocalFileEntry(
+              ref: 'track_${i.toString().padLeft(2, '0')}.mp3',
+              uri: 'file:///music/track_$i.mp3',
+              name: 'track_${i.toString().padLeft(2, '0')}.mp3',
+              size: 1024 * 1024,
+              mtime: 0,
+            ),
+        ],
+      );
+    });
+    addTearDown(() async {
+      await tester.runAsync(() async {
+        direct.dispose();
+        dir.deleteSync(recursive: true);
+      });
+    });
+
+    tester.view.physicalSize = const Size(320, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<DirectSourceManager>.value(
+        value: direct,
+        child: MaterialApp(
+          theme: AppTheme.build().themeData,
+          home: const Scaffold(body: SourcesScreen()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('源设置').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('编辑'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('编辑播放源'), findsOneWidget);
+    expect(find.text('已选择 30 个音频文件'), findsOneWidget);
+    final fileList = find.descendant(
+      of: find.byType(AlertDialog),
+      matching: find.byType(ListView),
+    );
+    expect(fileList, findsOneWidget);
+    expect(tester.getSize(fileList).height, lessThanOrEqualTo(240));
   });
 }

@@ -298,10 +298,6 @@ class _SourceDialogState extends State<_SourceDialog> {
   bool _filesMode = false;
   bool _pickingFiles = false;
 
-  /// 系统文件夹选择能力：null=检测中；非鸿蒙恒 true。
-  bool? _folderSupported;
-  bool _unsupportedNotified = false;
-
   bool get _isEdit => widget.editKey != null;
 
   @override
@@ -340,12 +336,8 @@ class _SourceDialogState extends State<_SourceDialog> {
     _keyPassphrase =
         TextEditingController(text: cfg['sftpPassphrase'] as String? ?? '');
     _route = parseSourceRoute(cfg['route']);
-    _folderSupported = isOhos ? null : true;
     _localFiles = parseLocalFileEntries(cfg);
     _filesMode = cfg['mode'] == 'files' || _localFiles.isNotEmpty;
-    if (_kind == SourceKind.local && isOhos) {
-      unawaited(_loadFolderSupport());
-    }
     // 备用回填（editableConfig 已回填各槽位敏感字段）。
     final rawFbs = parseFallbackConfigs(cfg['fallbacks']);
     for (final fb in rawFbs) {
@@ -397,33 +389,8 @@ class _SourceDialogState extends State<_SourceDialog> {
     });
   }
 
-  /// 检测系统文件夹选择能力；不支持的设备当场 toast 告知（只提示一次）。
-  Future<void> _loadFolderSupport() async {
-    if (!isOhos) {
-      if (mounted) setState(() => _folderSupported = true);
-      return;
-    }
-    if (_folderSupported != null) return;
-    final supported = await OhosPlatformBridge.supportsFolderSelection();
-    if (!mounted) return;
-    setState(() => _folderSupported = supported);
-    if (!supported) _notifyFolderUnsupported();
-  }
-
-  void _notifyFolderUnsupported() {
-    if (_unsupportedNotified) return;
-    _unsupportedNotified = true;
-    AppToast.show('当前系统SDK无法选择文件夹，建议更新鸿蒙7', ms: 4000);
-  }
-
   void _onKindChanged(SourceKind kind) {
     setState(() => _kind = kind);
-    if (kind == SourceKind.local) {
-      _folderSupported ??= isOhos ? null : true;
-      if (isOhos && _folderSupported == null) {
-        unawaited(_loadFolderSupport());
-      }
-    }
   }
 
   Future<void> _pickAudioFiles() async {
@@ -443,6 +410,7 @@ class _SourceDialogState extends State<_SourceDialog> {
       setState(() {
         _localFiles = merged;
         _filesMode = true;
+        _path.clear();
       });
       final unreadable = picked.where((f) => !f.readable).length;
       final unpersisted = picked.where((f) => !f.persisted).length;
@@ -465,10 +433,13 @@ class _SourceDialogState extends State<_SourceDialog> {
 
   Future<void> _pickDirectory() async {
     if (isOhos) {
-      if (_folderSupported == null) await _loadFolderSupport();
+      // 点击时才校验 FOLDER 能力：进入本地类型不再预检/自动降级，
+      // 避免用户刚选“本地文件夹”就被 toast 打断。
+      final supported = await OhosPlatformBridge.supportsFolderSelection();
       if (!mounted) return;
-      if (_folderSupported == false) {
-        _notifyFolderUnsupported();
+      if (!supported) {
+        AppToast.show('当前系统不支持选择文件夹，已改为选择音频文件', ms: 3000);
+        await _pickAudioFiles();
         return;
       }
       // 鸿蒙：系统目录选择器走平台桥（file_selector_ohos 的 getDirectoryPath
@@ -476,7 +447,11 @@ class _SourceDialogState extends State<_SourceDialog> {
       // 结构不变）；用户取消/选择失败不动表单。
       final picked = await OhosPlatformBridge.pickDirectory();
       if (picked != null && mounted) {
-        setState(() => _path.text = picked.uri);
+        setState(() {
+          _path.text = picked.uri;
+          _filesMode = false;
+          _localFiles = [];
+        });
         if (!picked.persisted) {
           // 不阻断本次使用（会话内临时授权仍可用），但必须当场告知：
           // 否则重启后用户只会看到「目录授权已失效」，无从得知原因
@@ -488,7 +463,11 @@ class _SourceDialogState extends State<_SourceDialog> {
     }
     final dir = await getDirectoryPath(confirmButtonText: '选择');
     if (dir != null && mounted) {
-      setState(() => _path.text = dir);
+      setState(() {
+        _path.text = dir;
+        _filesMode = false;
+        _localFiles = [];
+      });
     }
   }
 
@@ -1266,8 +1245,7 @@ class _SourceDialogState extends State<_SourceDialog> {
     }
     try {
       if (_kind == SourceKind.local) {
-        final useFiles = _filesMode || _folderSupported == false;
-        if (useFiles) {
+        if (_filesMode) {
           if (_localFiles.isEmpty) {
             setState(() => _error = '请至少选择一个音频文件');
             return;
@@ -1280,10 +1258,6 @@ class _SourceDialogState extends State<_SourceDialog> {
                 name: name, files: _localFiles, fallbacks: fbMaps);
           }
         } else {
-          if (_folderSupported == null) {
-            setState(() => _error = '正在检测系统能力，请稍候');
-            return;
-          }
           final path = _path.text.trim();
           if (path.isEmpty) {
             setState(() => _error = '请选择或填写本地目录');
@@ -1416,39 +1390,9 @@ class _SourceDialogState extends State<_SourceDialog> {
 
   Widget _buildLocalFilesSection(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final unsupported = _folderSupported == false;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: unsupported
-                ? scheme.errorContainer.withValues(alpha: 0.45)
-                : scheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(
-                unsupported ? Icons.warning_amber_rounded : Icons.info_outline,
-                size: 20,
-                color: unsupported ? scheme.error : scheme.onSurfaceVariant,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  unsupported
-                      ? '当前系统SDK无法选择文件夹，建议更新鸿蒙7。可先多选音频文件导入本地音乐。'
-                      : '文件级本地源：仅导入所选文件，不保留目录层级。',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 8),
         Row(
           children: [
             Expanded(
@@ -1480,30 +1424,49 @@ class _SourceDialogState extends State<_SourceDialog> {
             ),
           )
         else ...[
-          for (final f in _localFiles)
-            ListTile(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.audio_file_outlined, size: 20),
-              title: Text(f.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-              subtitle: Text(
-                f.size > 0 ? _formatBytes(f.size) : '大小未知',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              trailing: RowActionIconButton(
-                tooltip: '移除',
-                icon: Icons.close,
-                onPressed: () => setState(
-                    () => _localFiles.removeWhere((e) => e.ref == f.ref)),
-              ),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 240),
+            child: ListView.builder(
+              shrinkWrap: true,
+              padding: EdgeInsets.zero,
+              itemCount: _localFiles.length,
+              itemBuilder: (context, index) {
+                final f = _localFiles[index];
+                return ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.audio_file_outlined, size: 20),
+                  title: Text(
+                    f.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    f.size > 0 ? _formatBytes(f.size) : '大小未知',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: RowActionIconButton(
+                    tooltip: '移除',
+                    icon: Icons.close,
+                    onPressed: () => setState(() {
+                      _localFiles.removeWhere((e) => e.ref == f.ref);
+                      if (_localFiles.isEmpty) _filesMode = false;
+                    }),
+                  ),
+                );
+              },
             ),
+          ),
           Align(
             alignment: Alignment.centerRight,
             child: TextButton.icon(
               onPressed: _localFiles.isEmpty
                   ? null
-                  : () => setState(() => _localFiles = []),
+                  : () => setState(() {
+                        _localFiles = [];
+                        _filesMode = false;
+                      }),
               icon: const Icon(Icons.clear_all, size: 18),
               label: const Text('清空'),
             ),
@@ -1554,32 +1517,17 @@ class _SourceDialogState extends State<_SourceDialog> {
               decoration: const InputDecoration(labelText: '名称（如 NAS / 本地音乐）'),
             ),
             if (isLocal) ...[
-              if (_folderSupported == null)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 12),
-                  child: Row(
-                    children: [
-                      SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                      SizedBox(width: 12),
-                      Expanded(child: Text('正在检测系统文件夹选择能力…')),
-                    ],
-                  ),
-                )
-              else if (_filesMode || _folderSupported == false)
+              if (_filesMode)
                 _buildLocalFilesSection(context)
               else
                 TextField(
                   controller: _path,
                   decoration: InputDecoration(
-                    labelText: '本地目录',
+                    labelText: '本地文件夹',
                     hintText: '/home/user/Music',
                     suffixIcon: IconButton(
                       icon: const Icon(Icons.folder_open),
-                      tooltip: '选择目录',
+                      tooltip: '选择文件夹',
                       onPressed: _pickDirectory,
                     ),
                   ),
