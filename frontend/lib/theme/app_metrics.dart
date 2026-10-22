@@ -25,6 +25,15 @@ const double kHeaderButtonHorizontalPadding = 12;
 /// 内容页工具条图标尺寸。
 const double kToolbarIconSize = 20;
 
+/// 列表行/设置行右侧操作图标按钮的边长（比工具条再紧凑一档）。
+const double kRowActionButtonSize = 32;
+
+/// 列表行/设置行右侧操作图标尺寸。
+const double kRowActionIconSize = 20;
+
+/// 列表行/设置行右侧文字按钮高度。
+const double kRowActionTextButtonHeight = 28;
+
 /// 页面级导航图标（返回、关闭、AppBar 动作）尺寸。
 const double kPageIconSize = 24;
 

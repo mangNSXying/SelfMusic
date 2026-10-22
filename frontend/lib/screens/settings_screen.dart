@@ -19,11 +19,14 @@ import '../services/bluetooth_service.dart';
 import '../services/server_settings.dart';
 import '../services/sync_engine.dart';
 import '../utils/url_input.dart';
+import '../theme/app_metrics.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_provider.dart';
 import '../utils/cover_thumb.dart';
 import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/row_action_button.dart';
+import '../widgets/single_choice_group.dart';
 import 'devices_screen.dart';
 import 'pairing_screen.dart';
 
@@ -476,8 +479,8 @@ class _CacheDirTileState extends State<_CacheDirTile> {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          IconButton(
-            icon: const Icon(Icons.copy_outlined),
+          RowActionIconButton(
+            icon: Icons.copy_outlined,
             tooltip: '复制路径',
             onPressed: () {
               Clipboard.setData(ClipboardData(text: index.cacheDir));
@@ -486,11 +489,18 @@ class _CacheDirTileState extends State<_CacheDirTile> {
           ),
           _moving
               ? const SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(strokeWidth: 2))
-              : IconButton(
-                  icon: const Icon(Icons.edit_outlined),
+                  width: kRowActionButtonSize,
+                  height: kRowActionButtonSize,
+                  child: Center(
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                )
+              : RowActionIconButton(
+                  icon: Icons.edit_outlined,
                   tooltip: '更改目录（迁移已有缓存）',
                   onPressed: _changeDir,
                 ),
@@ -580,17 +590,17 @@ class _TranscodeSectionState extends State<_TranscodeSection> {
                   _applyTranscodeNow();
                 },
         ),
-        SegmentedButton<int>(
-          segments: const [
-            ButtonSegment(value: 192, label: Text('192k')),
-            ButtonSegment(value: 256, label: Text('256k')),
-            ButtonSegment(value: 320, label: Text('320k')),
+        SingleChoiceGroup<int>(
+          options: const [
+            SingleChoiceOption(value: 192, label: '192k'),
+            SingleChoiceOption(value: 256, label: '256k'),
+            SingleChoiceOption(value: 320, label: '320k'),
           ],
-          selected: {settings.transcodeBitrate},
-          onSelectionChanged: !canUse
+          value: settings.transcodeBitrate,
+          onChanged: !canUse
               ? null
-              : (s) {
-                  setState(() => settings.transcodeBitrate = s.first);
+              : (v) {
+                  setState(() => settings.transcodeBitrate = v);
                   _applyTranscodeNow();
                 },
         ),
@@ -599,18 +609,18 @@ class _TranscodeSectionState extends State<_TranscodeSection> {
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color: cs.onSurface.withValues(alpha: 0.6))),
         const SizedBox(height: 4),
-        SegmentedButton<String>(
-          segments: const [
-            ButtonSegment(value: 'off', label: Text('关')),
-            ButtonSegment(value: '14', label: Text('-14')),
-            ButtonSegment(value: '16', label: Text('-16')),
-            ButtonSegment(value: '23', label: Text('-23')),
+        SingleChoiceGroup<String>(
+          options: const [
+            SingleChoiceOption(value: 'off', label: '关'),
+            SingleChoiceOption(value: '14', label: '-14'),
+            SingleChoiceOption(value: '16', label: '-16'),
+            SingleChoiceOption(value: '23', label: '-23'),
           ],
-          selected: {settings.transcodeLoudnorm},
-          onSelectionChanged: !(canUse && settings.transcodeEnabled)
+          value: settings.transcodeLoudnorm,
+          onChanged: !(canUse && settings.transcodeEnabled)
               ? null
-              : (s) {
-                  setState(() => settings.transcodeLoudnorm = s.first);
+              : (v) {
+                  setState(() => settings.transcodeLoudnorm = v);
                   _applyTranscodeNow();
                 },
         ),
@@ -707,9 +717,9 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
               const SizedBox(
                   width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
             else
-              IconButton(
+              RowActionIconButton(
                 tooltip: '同步服务端建议值',
-                icon: const Icon(Icons.sync, size: 20),
+                icon: Icons.sync,
                 onPressed: () => _refreshServerConfig(),
               ),
           ],
@@ -721,15 +731,14 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
                 .bodySmall
                 ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
         const SizedBox(height: 8),
-        SegmentedButton<String>(
-          segments: const [
-            ButtonSegment(value: 'custom', label: Text('自定义')),
-            ButtonSegment(value: 'follow_server', label: Text('跟随服务端')),
+        SingleChoiceGroup<String>(
+          options: const [
+            SingleChoiceOption(value: 'custom', label: '自定义'),
+            SingleChoiceOption(value: 'follow_server', label: '跟随服务端'),
           ],
-          selected: {follow ? 'follow_server' : 'custom'},
-          onSelectionChanged: (s) async {
-            final want = s.first;
-            if (want == 'follow_server' && !canFollow) {
+          value: follow ? 'follow_server' : 'custom',
+          onChanged: (v) async {
+            if (v == 'follow_server' && !canFollow) {
               // 先拉一次，成功才允许切换。
               await _refreshServerConfig();
               if (!mounted) return;
@@ -738,7 +747,7 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
                 return;
               }
             }
-            setState(() => _settings.cacheConfigMode = want);
+            setState(() => _settings.cacheConfigMode = v);
           },
         ),
         if (follow)
@@ -883,14 +892,23 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
           // 明暗模式：跟随系统 / 浅色 / 深色
           Text('明暗模式', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 12),
-          SegmentedButton<ThemeMode>(
-            segments: const [
-              ButtonSegment(value: ThemeMode.system, label: Text('跟随系统'), icon: Icon(Icons.brightness_auto)),
-              ButtonSegment(value: ThemeMode.light, label: Text('浅色'), icon: Icon(Icons.light_mode_outlined)),
-              ButtonSegment(value: ThemeMode.dark, label: Text('深色'), icon: Icon(Icons.dark_mode_outlined)),
+          SingleChoiceGroup<ThemeMode>(
+            options: const [
+              SingleChoiceOption(
+                  value: ThemeMode.system,
+                  label: '跟随系统',
+                  icon: Icons.brightness_auto),
+              SingleChoiceOption(
+                  value: ThemeMode.light,
+                  label: '浅色',
+                  icon: Icons.light_mode_outlined),
+              SingleChoiceOption(
+                  value: ThemeMode.dark,
+                  label: '深色',
+                  icon: Icons.dark_mode_outlined),
             ],
-            selected: {theme.themeMode},
-            onSelectionChanged: (s) => theme.setThemeMode(s.first),
+            value: theme.themeMode,
+            onChanged: theme.setThemeMode,
           ),
           const SizedBox(height: 8),
           Text(theme.themeMode == ThemeMode.system
@@ -1525,18 +1543,16 @@ class _SongsSettingsState extends State<_SongsSettings> {
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: SegmentedButton<OnlineMetaSaveMode>(
-            segments: const [
-              ButtonSegment(
-                  value: OnlineMetaSaveMode.appCache,
-                  label: Text('仅应用缓存')),
-              ButtonSegment(
-                  value: OnlineMetaSaveMode.sidecar,
-                  label: Text('同时写回源目录')),
+          child: SingleChoiceGroup<OnlineMetaSaveMode>(
+            options: const [
+              SingleChoiceOption(
+                  value: OnlineMetaSaveMode.appCache, label: '仅应用缓存'),
+              SingleChoiceOption(
+                  value: OnlineMetaSaveMode.sidecar, label: '同时写回源目录'),
             ],
-            selected: {_settings.onlineMetaSaveMode},
-            onSelectionChanged: (s) {
-              setState(() => _settings.onlineMetaSaveMode = s.first);
+            value: _settings.onlineMetaSaveMode,
+            onChanged: (v) {
+              setState(() => _settings.onlineMetaSaveMode = v);
               context.read<DirectSourceManager>().refresh();
             },
           ),
@@ -1560,8 +1576,8 @@ class _SongsSettingsState extends State<_SongsSettings> {
             mainAxisSize: MainAxisSize.min,
             children: [
               if (_settings.onlineMetaLyricDir.isNotEmpty)
-                IconButton(
-                  icon: const Icon(Icons.clear, size: 20),
+                RowActionIconButton(
+                  icon: Icons.clear,
                   tooltip: '清除（恢复歌曲同目录）',
                   onPressed: _settings.onlineMetaSaveMode !=
                           OnlineMetaSaveMode.sidecar
@@ -2432,13 +2448,13 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          IconButton(
-            icon: const Icon(Icons.restore),
+          RowActionIconButton(
+            icon: Icons.restore,
             tooltip: '导入此备份',
             onPressed: () => _confirmImport(f, name, kind),
           ),
-          IconButton(
-            icon: const Icon(Icons.delete_outline),
+          RowActionIconButton(
+            icon: Icons.delete_outline,
             tooltip: '删除备份',
             onPressed: () => _doDelete(f),
           ),

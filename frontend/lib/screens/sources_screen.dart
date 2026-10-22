@@ -24,6 +24,7 @@ import '../widgets/app_toast.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
 import '../widgets/sort_menu_button.dart';
+import '../widgets/row_action_button.dart';
 import '../widgets/row_list.dart';
 import '../widgets/single_choice_group.dart';
 import '../widgets/square_card.dart';
@@ -898,8 +899,8 @@ class _SourceDialogState extends State<_SourceDialog> {
                   child: Text(label,
                       style: const TextStyle(fontWeight: FontWeight.w600)),
                 ),
-                IconButton(
-                  icon: const Icon(Icons.close, size: 18),
+                RowActionIconButton(
+                  icon: Icons.close,
                   tooltip: '删除$label',
                   onPressed: () => _removeFallback(i),
                 ),
@@ -974,8 +975,8 @@ class _SourceDialogState extends State<_SourceDialog> {
                       ),
                     ),
                     if (fb.keyPem.text.isNotEmpty)
-                      IconButton(
-                        icon: const Icon(Icons.clear),
+                      RowActionIconButton(
+                        icon: Icons.clear,
                         tooltip: '清除已导入密钥',
                         onPressed: () => setState(() {
                           fb.keyPem.clear();
@@ -1401,9 +1402,9 @@ class _SourceDialogState extends State<_SourceDialog> {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
-              trailing: IconButton(
+              trailing: RowActionIconButton(
                 tooltip: '移除',
-                icon: const Icon(Icons.close, size: 18),
+                icon: Icons.close,
                 onPressed: () => setState(
                     () => _localFiles.removeWhere((e) => e.ref == f.ref)),
               ),
@@ -1562,8 +1563,8 @@ class _SourceDialogState extends State<_SourceDialog> {
                       ),
                     ),
                     if (_keyPem.text.isNotEmpty)
-                      IconButton(
-                        icon: const Icon(Icons.clear),
+                      RowActionIconButton(
+                        icon: Icons.clear,
                         tooltip: '清除已导入密钥',
                         onPressed: () => setState(() {
                           _keyPem.clear();

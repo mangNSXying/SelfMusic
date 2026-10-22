@@ -29,6 +29,7 @@ import '../widgets/marquee_text.dart';
 import '../widgets/online_meta_dialog.dart';
 import '../widgets/pressable.dart';
 import '../widgets/player_sheet_anim.dart';
+import '../widgets/row_action_button.dart';
 import '../widgets/song_info_dialog.dart';
 import '../widgets/song_list.dart';
 
@@ -1917,8 +1918,8 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
                           style: TextStyle(fontSize: 15)),
                       subtitle: _timeSubtitle(),
                       secondary: _mode == SleepTimerKind.time
-                          ? IconButton(
-                              icon: const Icon(Icons.schedule, size: 30),
+                          ? RowActionIconButton(
+                              icon: Icons.schedule,
                               tooltip: '选择时间',
                               onPressed: _pickTime,
                             )
@@ -1933,8 +1934,8 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
                       subtitle: Text('倒计时 ${_fmtMinutes(_minutes)}后自动停止',
                           style: hint),
                       secondary: _mode == SleepTimerKind.duration
-                          ? IconButton(
-                              icon: const Icon(Icons.av_timer, size: 30),
+                          ? RowActionIconButton(
+                              icon: Icons.av_timer,
                               tooltip: '选择时长',
                               onPressed: _pickDurationWheel,
                             )
@@ -1948,9 +1949,8 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
                           style: TextStyle(fontSize: 15)),
                       subtitle: Text('再播放 $_count 首后停止', style: hint),
                       secondary: _mode == SleepTimerKind.count
-                          ? IconButton(
-                              icon:
-                                  const Icon(Icons.format_list_numbered, size: 30),
+                          ? RowActionIconButton(
+                              icon: Icons.format_list_numbered,
                               tooltip: '选择曲数',
                               onPressed: _pickCountWheel,
                             )
@@ -2013,13 +2013,10 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
     return Row(children: [
       Text(_fmtTime(_time!), style: hint),
       const SizedBox(width: 4),
-      TextButton(
-        style: TextButton.styleFrom(
-          visualDensity: VisualDensity.compact,
-          padding: const EdgeInsets.symmetric(horizontal: 6),
-        ),
+      RowActionTextButton(
+        label: '选择',
         onPressed: _pickTime,
-        child: Text('选择', style: hint),
+        color: hintColor,
       ),
     ]);
   }

@@ -29,6 +29,7 @@ import '../widgets/detail_stack.dart';
 import '../widgets/draggable_sheet.dart';
 import '../widgets/row_list.dart';
 import '../widgets/page_transition.dart';
+import '../widgets/row_action_button.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_collection_view.dart';
@@ -1268,8 +1269,8 @@ class _ArtistListTile extends StatelessWidget {
         ],
       ),
       trailing: switch (artist.resolveState) {
-        ArtistResolveState.retry => IconButton(
-            icon: const Icon(Icons.refresh, size: 20),
+        ArtistResolveState.retry => RowActionIconButton(
+            icon: Icons.refresh,
             tooltip: '重试解析',
             onPressed: () =>
                 _openArtist(context, artist, context.read<ArtistResolver>()),

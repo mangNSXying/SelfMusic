@@ -12,6 +12,7 @@ import '../utils/song_groups.dart';
 import '../utils/source_folders.dart';
 import 'count_header.dart';
 import 'list_selection.dart';
+import 'row_action_button.dart';
 import 'row_list.dart';
 import 'selection_bar.dart';
 import 'song_row_view.dart';
@@ -488,8 +489,8 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          IconButton(
-            icon: const Icon(Icons.play_arrow),
+          RowActionIconButton(
+            icon: Icons.play_arrow,
             tooltip: '播放该文件夹',
             onPressed: f.total == 0
                 ? null
@@ -527,8 +528,8 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          IconButton(
-            icon: const Icon(Icons.play_arrow),
+          RowActionIconButton(
+            icon: Icons.play_arrow,
             tooltip: '播放该分组',
             onPressed: () => widget
                 .onPlayGroup([for (final i in g.songIndices) widget.songs[i]]),
