@@ -320,6 +320,58 @@ void main() {
       expect(await OhosPlatformBridge.supportsFolderSelection(), isFalse);
     });
 
+    test('pickDirectory(write:true) 透传写模式并解析 sandbox path', () async {
+      const uri = 'file://docs/storage/Users/currentUser/Music';
+      const path = '/storage/Users/currentUser/Music';
+      mockChannel((call) async {
+        calls.add(call);
+        return <String, Object?>{
+          'uri': uri,
+          'path': path,
+          'persisted': true,
+        };
+      });
+
+      final picked = await OhosPlatformBridge.pickDirectory(write: true);
+      expect(picked, isNotNull);
+      expect(picked!.uri, uri);
+      expect(picked.path, path);
+      expect(picked.persisted, isTrue);
+      expect(calls.single.method, 'pickDirectory');
+      expect(calls.single.arguments, <String, Object?>{'write': true});
+    });
+
+    test('pickDirectory 默认只读不传 write', () async {
+      mockChannel((call) async {
+        calls.add(call);
+        return <String, Object?>{
+          'uri': 'file://docs/Music',
+          'path': '/sandbox/Music',
+          'persisted': true,
+        };
+      });
+
+      await OhosPlatformBridge.pickDirectory();
+      expect(calls.single.arguments, isEmpty);
+    });
+
+    test('ensureDirectoryActivated(write:true) 激活写授权并复用读缓存', () async {
+      mockChannel((call) async {
+        calls.add(call);
+        return null;
+      });
+
+      const uri = 'file://docs/storage/Users/currentUser/MusicWrite';
+      expect(await OhosPlatformBridge.ensureDirectoryActivated(uri, write: true),
+          isTrue);
+      expect(calls.single.method, 'activateDirectory');
+      expect(calls.single.arguments,
+          <String, Object?>{'uri': uri, 'write': true});
+
+      expect(await OhosPlatformBridge.ensureDirectoryActivated(uri), isTrue);
+      expect(calls, hasLength(1));
+    });
+
     test('pickAudioFiles 解析 uri/name/size/mtime/persisted/readable', () async {
       mockChannel((call) async {
         calls.add(call);

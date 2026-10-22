@@ -79,20 +79,22 @@ class OhosPlatformBridge {
     _folderSelectionSupported = null;
     _activatedUris.clear();
     _activatedDirs.clear();
+    _activatedWriteDirs.clear();
     _activatingDirs.clear();
   }
 
   /// 目录选择结果：[uri] 为授权目录 URI（`file://docs/...` 形态，直接
-  /// 存入源配置 path 字段）；[persisted] 为持久化是否成功（false 时本次
-  /// 会话临时授权仍可用，重启后需重选）。
-  static Future<OhosPickedDirectory?> pickDirectory() async {
+  /// 存入源配置 path 字段）；[path] 为可写沙箱路径；[persisted] 为持久化
+  /// 是否成功（false 时本次会话临时授权仍可用，重启后需重选）。
+  static Future<OhosPickedDirectory?> pickDirectory({bool write = false}) async {
     try {
-      final raw =
-          await _channel.invokeMethod<Map<dynamic, dynamic>>('pickDirectory');
+      final raw = await _channel.invokeMethod<Map<dynamic, dynamic>>(
+          'pickDirectory', <String, Object?>{if (write) 'write': true});
       if (raw == null) return null; // 用户取消。
       final uri = raw['uri'] as String?;
       if (uri == null || uri.isEmpty) return null;
-      return OhosPickedDirectory(uri: uri, persisted: raw['persisted'] == true);
+      return OhosPickedDirectory(
+          uri: uri, path: raw['path'] as String?, persisted: raw['persisted'] == true);
     } on PlatformException catch (e) {
       debugPrint('[ohos] pickDirectory 失败: $e');
       return null;
@@ -151,46 +153,61 @@ class OhosPlatformBridge {
   }
 
   /// 重启后激活已持久化的目录授权；失败（授权被撤销/目录删除）抛
-  /// [PlatformException]，由调用方转译为引导文案。
-  static Future<void> activateDirectory(String uri) async {
-    await _channel
-        .invokeMethod<void>('activateDirectory', <String, Object?>{'uri': uri});
+  /// [PlatformException]，由调用方转译为引导文案。[write] 为 true 时申请
+  /// 读写授权，同时覆盖后续读取。
+  static Future<void> activateDirectory(String uri, {bool write = false}) async {
+    await _channel.invokeMethod<void>('activateDirectory', <String, Object?>{
+      'uri': uri,
+      if (write) 'write': true,
+    });
   }
 
   /// 进程内已成功激活的目录 URI（成功才缓存；失败允许下次重试）。
   static final Set<String> _activatedDirs = <String>{};
 
+  /// 进程内已成功激活读写权限的目录 URI。
+  static final Set<String> _activatedWriteDirs = <String>{};
+
   /// 进程内已成功激活的文件 URI（文件级本地源用）。
   static final Set<String> _activatedUris = <String>{};
 
-  /// 同 URI 激活中的单飞 Future（并发访问只发一次桥调用）。
+  /// 同 URI/模式激活中的单飞 Future（并发访问只发一次桥调用）。
   static final Map<String, Future<bool>> _activatingDirs =
       <String, Future<bool>>{};
 
   /// 幂等激活已持久化的目录授权（鸿蒙每次进程启动后都需激活一次）。
   ///
-  /// - 同 URI 单飞：并发/重复调用共享同一个 Future，成功后进程内缓存；
+  /// - 同 URI/模式单飞：并发/重复调用共享同一个 Future，成功后进程内缓存；
+  /// - 写授权成功同时视为读授权成功（[write] 模式本身包含读）；
   /// - 失败只 `debugPrint` 并返回 `false`，不向上抛——调用方按「本次访问
   ///   失败」处理（会话内临时授权仍可能可用，回退路径继续尝试）；
   /// - 失败不缓存，下次访问会重试（用户重新选择目录后无需重启进程）。
-  static Future<bool> ensureDirectoryActivated(String uri) {
+  static Future<bool> ensureDirectoryActivated(String uri,
+      {bool write = false}) {
     if (uri.isEmpty) return Future<bool>.value(false);
-    if (_activatedDirs.contains(uri)) return Future<bool>.value(true);
-    final inflight = _activatingDirs[uri];
+    if (write) {
+      if (_activatedWriteDirs.contains(uri)) return Future<bool>.value(true);
+    } else if (_activatedDirs.contains(uri)) {
+      return Future<bool>.value(true);
+    }
+    final key = write ? 'w:$uri' : 'r:$uri';
+    final inflight = _activatingDirs[key];
     if (inflight != null) return inflight;
-    final future = _activateDirectoryOnce(uri);
-    _activatingDirs[uri] = future;
+    final future = _activateDirectoryOnce(uri, write: write);
+    _activatingDirs[key] = future;
     future.whenComplete(() {
-      if (identical(_activatingDirs[uri], future)) _activatingDirs.remove(uri);
+      if (identical(_activatingDirs[key], future)) _activatingDirs.remove(key);
     });
     return future;
   }
 
-  static Future<bool> _activateDirectoryOnce(String uri) async {
+  static Future<bool> _activateDirectoryOnce(String uri,
+      {required bool write}) async {
     try {
-      await activateDirectory(uri);
+      await activateDirectory(uri, write: write);
       _activatedDirs.add(uri);
-      debugPrint('[ohos] 目录授权已激活: $uri');
+      if (write) _activatedWriteDirs.add(uri);
+      debugPrint('[ohos] 目录授权已激活（write=$write）: $uri');
       return true;
     } on PlatformException catch (e) {
       debugPrint('[ohos] 目录授权激活失败（下次访问重试）: $e');
@@ -332,6 +349,7 @@ class OhosPlatformBridge {
   @visibleForTesting
   static void debugResetDirectoryActivation() {
     _activatedDirs.clear();
+    _activatedWriteDirs.clear();
     _activatingDirs.clear();
   }
 
@@ -614,11 +632,13 @@ class OhosThumbResult {
   }
 }
 
-/// pickDirectory 结果：授权目录 URI + 是否已持久化。
+/// pickDirectory 结果：授权目录 URI + 沙箱路径 + 是否已持久化。
 class OhosPickedDirectory {
   final String uri;
+  final String? path;
   final bool persisted;
-  const OhosPickedDirectory({required this.uri, required this.persisted});
+  const OhosPickedDirectory(
+      {required this.uri, this.path, required this.persisted});
 }
 
 /// pickAudioFiles 单项：文件 URI + 展示名 + stat + 授权状态。

@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/backup_service.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart';
+import '../platform/harmonyos/ohos_platform_bridge.dart';
 import '../providers/auth_provider.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
@@ -422,17 +423,34 @@ class _CacheDirTileState extends State<_CacheDirTile> {
 
   Future<void> _changeDir() async {
     if (isOhos) {
-      // 缓存迁移为 dart:io 直写，URI 授权目录不可写（且 file_selector_ohos
-      // 的 getDirectoryPath 未实现必抛异常）——明确降级提示，不拉起选择器。
-      AppToast.show('鸿蒙端暂不支持自定义缓存目录', isError: false);
+      if (!await OhosPlatformBridge.supportsFolderSelection()) {
+        AppToast.show('当前系统SDK无法选择文件夹，建议更新鸿蒙7', ms: 4000);
+        return;
+      }
+      final picked = await OhosPlatformBridge.pickDirectory(write: true);
+      if (!mounted || picked == null) return;
+      if (!picked.persisted) {
+        AppToast.show('目录写授权持久化失败：应用重启后需重新选择');
+        return;
+      }
+      final path = picked.path;
+      if (path == null || path.isEmpty) {
+        AppToast.show('无法解析所选目录路径');
+        return;
+      }
+      await _migrateTo(path, uri: picked.uri);
       return;
     }
     final dir = await getDirectoryPath(confirmButtonText: '选择');
     if (dir == null || !mounted) return;
+    await _migrateTo(dir);
+  }
+
+  Future<void> _migrateTo(String dir, {String? uri}) async {
     setState(() => _moving = true);
     try {
       final index = context.read<DirectSourceManager>().index;
-      final moved = await index.migrateCacheDir(dir);
+      final moved = await index.migrateCacheDir(dir, uri: uri);
       if (!mounted) return;
       setState(() => _moving = false);
       AppToast.show(moved == 0 ? '缓存目录已是该位置' : '缓存目录已更改，迁移 $moved 首',
@@ -448,13 +466,12 @@ class _CacheDirTileState extends State<_CacheDirTile> {
   Widget build(BuildContext context) {
     final index = context.read<DirectSourceManager>().index;
     final count = index.listCache().length;
-    final custom = index.customCacheDir;
     return ListTile(
       contentPadding: EdgeInsets.zero,
       leading: const Icon(Icons.folder_open),
       title: const Text('缓存目录'),
       subtitle: Text(
-          '${index.cacheDir}${custom == null ? '（默认）' : '（自定义）'}\n已缓存 $count 首 · 占用 ${_CacheDirTile._fmtBytes(index.cacheTotalBytes())}'),
+          '${index.cacheDir}${index.usingDefaultCacheDir ? '（默认）' : '（自定义）'}\n已缓存 $count 首 · 占用 ${_CacheDirTile._fmtBytes(index.cacheTotalBytes())}'),
       isThreeLine: true,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,

@@ -132,9 +132,9 @@ interface FileStat {
  * 通道协议（selfmusic/platform，Dart → ArkTS，12 个方法，契约以 plan.md
  * 「Contracts & Interfaces」为准）：
  * - keepScreenOn {enable:bool} → null（窗口获取失败 error 上抛，Dart 记日志）
- * - pickDirectory {} → {uri,persisted} | null（用户取消 null；persistPermission
- *   失败返回 persisted=false，本次会话临时授权仍可用）
- * - activateDirectory {uri} → null（授权被撤销/目录删除 error 上抛）
+ * - pickDirectory {write?} → {uri,path,persisted} | null（用户取消 null；
+ *   persistPermission 失败返回 persisted=false，本次会话临时授权仍可用）
+ * - activateDirectory {uri,write?} → null（授权被撤销/目录删除 error 上抛）
  * - listDirectory {uri} → [{rel,size,mtime}]（rel 以 / 开头，mtime 秒）
  * - readRange {uri,rel,offset,length} → Uint8List（单次上限 2MiB 防御）
  * - resolvePath {uri,rel} → string（2026-10-07 播放管线修复：URI→沙箱真
@@ -177,7 +177,9 @@ export default class PlatformBridge implements MethodCallHandler {
     const messenger = flutterEngine.getDartExecutor().getBinaryMessenger();
     this.channel = new MethodChannel(messenger, PLATFORM_CHANNEL);
     this.channel.setMethodCallHandler(this);
-    Log.i(TAG, '平台桥就绪');
+    const folderSelection = canIUse(
+      'SystemCapability.FileManagement.UserFileService.FolderSelection');
+    Log.i(TAG, `平台桥就绪（FolderSelection=${folderSelection}）`);
   }
 
   /** EntryAbility.onDestroy 中的资源回收。 */
@@ -198,7 +200,7 @@ export default class PlatformBridge implements MethodCallHandler {
         this.handleSupportsFolderSelection(result);
         break;
       case 'pickDirectory':
-        this.handlePickDirectory(result)
+        this.handlePickDirectory(call, result)
           .catch((): void => {
             // handler 内部全量兜底，此处仅为满足 Promise 必须处理。
           });
@@ -331,7 +333,9 @@ export default class PlatformBridge implements MethodCallHandler {
    * 用户取消返回 null；持久化失败返回 persisted=false（本次会话临时授权
    * 仍可用）；对已持久化的 URI 重复调用按幂等成功处理。
    */
-  private async handlePickDirectory(result: MethodResult): Promise<void> {
+  private async handlePickDirectory(call: MethodCall,
+    result: MethodResult): Promise<void> {
+    const write = PlatformBridge.argBool(call, 'write') ?? false;
     // 防御：鸿蒙 6 手机/平板不支持 FOLDER，直接拉起会弹系统「功能未开放」。
     if (!canIUse('SystemCapability.FileManagement.UserFileService.FolderSelection')) {
       result.error('801', '当前系统SDK无法选择文件夹，建议更新鸿蒙7', null);
@@ -349,12 +353,18 @@ export default class PlatformBridge implements MethodCallHandler {
         return;
       }
       const uri = uris[0];
-      const persisted = await this.persistDirectoryGrant(uri);
+      const path = this.resolveDirectoryPath(uri);
+      if (path == null) {
+        result.error('402', '目录 URI 解析沙箱路径失败（file.path 为空）', null);
+        return;
+      }
+      const persisted = await this.persistDirectoryGrant(uri, write);
       const out: Record<string, Object> = {
         'uri': uri,
+        'path': path,
         'persisted': persisted
       };
-      Log.i(TAG, `pickDirectory：${uri}（persisted=${persisted}）`);
+      Log.i(TAG, `pickDirectory：${uri} path=${path}（persisted=${persisted} write=${write}）`);
       result.success(out);
     } catch (err) {
       const e = err as BusinessError;
@@ -363,14 +373,41 @@ export default class PlatformBridge implements MethodCallHandler {
     }
   }
 
+  private resolveDirectoryPath(uri: string): string | null {
+    let dir: fileIo.File | null = null;
+    try {
+      dir = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.DIR);
+      const path = dir.path;
+      if (path == null || path === '') {
+        Log.e(TAG, '目录 URI 的 file.path 为空');
+        return null;
+      }
+      return path;
+    } catch (err) {
+      const e = err as BusinessError;
+      Log.e(TAG, `目录 URI 解析失败：${e.code} ${e.message}`);
+      return null;
+    } finally {
+      if (dir != null) {
+        fileIo.closeSync(dir);
+      }
+    }
+  }
+
+  private static directoryOperationMode(write: boolean): number {
+    return write
+      ? fileShare.OperationMode.READ_MODE | fileShare.OperationMode.WRITE_MODE
+      : fileShare.OperationMode.READ_MODE;
+  }
+
   /**
    * persistPermission + 幂等处理：失败时用 checkPersistentPermission 复核，
    * 已持久化则按成功对待（重复选择同一目录的场景）。
    */
-  private async persistDirectoryGrant(uri: string): Promise<boolean> {
+  private async persistDirectoryGrant(uri: string, write: boolean): Promise<boolean> {
     const policy: fileShare.PolicyInfo = {
       uri: uri,
-      operationMode: fileShare.OperationMode.READ_MODE
+      operationMode: PlatformBridge.directoryOperationMode(write)
     };
     const policies: Array<fileShare.PolicyInfo> = [policy];
     try {
@@ -779,17 +816,18 @@ export default class PlatformBridge implements MethodCallHandler {
    */
   private async handleActivateDirectory(call: MethodCall, result: MethodResult): Promise<void> {
     const uri = PlatformBridge.argString(call, 'uri');
+    const write = PlatformBridge.argBool(call, 'write') ?? false;
     if (uri == null || uri === '') {
       result.error('401', '缺少 uri 参数', null);
       return;
     }
     const policy: fileShare.PolicyInfo = {
       uri: uri,
-      operationMode: fileShare.OperationMode.READ_MODE
+      operationMode: PlatformBridge.directoryOperationMode(write)
     };
     try {
       await fileShare.activatePermission([policy]);
-      Log.i(TAG, 'activateDirectory：授权已激活');
+      Log.i(TAG, `activateDirectory：授权已激活（write=${write}）`);
       result.success(null);
     } catch (err) {
       const e = err as BusinessError<Array<fileShare.PolicyErrorResult>>;

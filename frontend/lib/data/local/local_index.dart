@@ -895,14 +895,45 @@ class LocalIndex {
   /// 自定义缓存目录（空=默认应用目录下 cache；机器相关，不进导出白名单）。
   static const String kCacheDirCustom = 'cache_dir_custom';
 
+  /// 自定义缓存目录的授权 URI（鸿蒙 FolderSelection；重启后需激活）。
+  static const String kCacheDirUri = 'cache_dir_uri';
+
   String? get customCacheDir {
     final v = settingsGet(kCacheDirCustom);
     return (v == null || v.isEmpty) ? null : v;
   }
 
+  String? get customCacheDirUri {
+    final v = settingsGet(kCacheDirUri);
+    return (v == null || v.isEmpty) ? null : v;
+  }
+
+  bool _cacheDirFallback = false;
+
+  bool get usingDefaultCacheDir => customCacheDir == null || _cacheDirFallback;
+
+  void markCacheDirUnavailable() {
+    _cacheDirFallback = true;
+  }
+
+  bool get customCacheDirWritable {
+    final custom = customCacheDir;
+    if (custom == null) return true;
+    try {
+      final probe = File(p.join(custom, '.writetest'));
+      probe.writeAsStringSync('ok');
+      probe.deleteSync();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   String get _cacheDir {
     final custom = customCacheDir;
-    final d = (custom != null && Directory(custom).existsSync())
+    final d = (custom != null &&
+            !_cacheDirFallback &&
+            Directory(custom).existsSync())
         ? custom
         : p.join(_dir!, 'cache');
     Directory(d).createSync(recursive: true);
@@ -985,26 +1016,30 @@ class LocalIndex {
 
   /// 迁移缓存目录：建新目录（含可写校验）→ 逐个移动 .dat 并更新 path 列 →
   /// 切换设置。返回迁移文件数；失败抛异常（调用方 toast），可重试继续。
-  Future<int> migrateCacheDir(String newDir) async {
+  Future<int> migrateCacheDir(String newDir, {String? uri}) async {
     final target = Directory(newDir);
     target.createSync(recursive: true);
     final probe = File(p.join(target.path, '.writetest'));
     probe.writeAsStringSync('ok');
     probe.deleteSync();
     final oldDir = cacheDir;
-    if (p.normalize(oldDir) == p.normalize(target.path)) return 0;
+    final same = p.normalize(oldDir) == p.normalize(target.path);
     var moved = 0;
-    for (final r in listCache()) {
-      // 源用行里记的路径（权威），目标才是新目录。
-      final src = File(r.path);
-      if (!src.existsSync()) continue;
-      final dstPath = p.join(target.path, '${r.cacheKey}.dat');
-      _moveFile(src.path, dstPath);
-      await _writer!.exec(
-          'UPDATE cache SET path=? WHERE cache_key=?', [dstPath, r.cacheKey]);
-      moved++;
+    if (!same) {
+      for (final r in listCache()) {
+        // 源用行里记的路径（权威），目标才是新目录。
+        final src = File(r.path);
+        if (!src.existsSync()) continue;
+        final dstPath = p.join(target.path, '${r.cacheKey}.dat');
+        _moveFile(src.path, dstPath);
+        await _writer!.exec(
+            'UPDATE cache SET path=? WHERE cache_key=?', [dstPath, r.cacheKey]);
+        moved++;
+      }
     }
     settingsSet(kCacheDirCustom, target.path);
+    settingsSet(kCacheDirUri, uri ?? '');
+    _cacheDirFallback = false;
     return moved;
   }
 
