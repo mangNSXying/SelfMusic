@@ -121,7 +121,6 @@ selfmusic/
 │   ├── third_party/             # vendored fork：fvp（ohos 平台声明 + 删视频依赖链）、audio_service（通知栏 5 键）
 │   └── ohos/                    # 鸿蒙壳工程（build-profile.json5 含签名材料不入库，模板 .example）
 ├── backend/src/main/resources/db/migration/  # Flyway 版本化建表/迁移（服务端 schema 唯一事实源）
-├── scripts/                     # 历史手工 SQL（已归档，新部署由 Flyway 接管）
 ├── nginx/selfmusic.conf         # 反向代理模板
 ├── docker-compose.yml           # backend + backend-dev 编排
 ├── .env                         # 环境变量模板（不入库）

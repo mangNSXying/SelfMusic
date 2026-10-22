@@ -141,7 +141,6 @@ selfmusic/
 │   ├── android/ linux/ windows/ ohos/   # 各平台壳工程（ohos 的 build-profile.json5 含本机签名材料不入库，模板 build-profile.json5.example）
 │   ├── third_party/               # vendored fork：audio_service（通知栏 5 键自定义按钮）、dart_smb2、smb_connect
 │   └── pubspec.yaml
-├── scripts/                          # 历史手工 SQL（已归档；新部署/升级由 Flyway 自动执行，勿手工运行）
 ├── nginx/selfmusic.conf              # Nginx 反代模板（部署到宿主机）
 ├── docker-compose.yml                # backend（18088）+ backend-dev（18089，profile: dev）
 ├── run-linux.sh                      # Linux 快速运行：cd frontend && flutter run -d linux
@@ -263,7 +262,6 @@ selfmusic/
 - 表结构变更：**新增 `backend/src/main/resources/db/migration/Vn__xxx.sql`**（不要修改已发布版本），同时更新对应 JPA 实体；`ddl-auto: validate` 不一致启动即报错
 - 字符集统一 `utf8mb4`；所有表带 `id BIGINT AUTO_INCREMENT PRIMARY KEY`、`created_at`、`updated_at`
 - 库/账号由管理员一次性创建，应用账号只需 `selfmusic.*` 权限，不需要 `CREATE DATABASE`
-- `scripts/` 下是历史手工 SQL，仅作归档，不再参与新部署/升级
 
 ### 客户端（SQLite）
 
