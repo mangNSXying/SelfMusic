@@ -35,6 +35,7 @@ import '../utils/main_thread_probe.dart';
 import '../utils/interaction_gate.dart';
 import '../utils/thumb_gen_stats.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
+import '../platform/harmonyos/ohos_platform_bridge.dart';
 import 'direct_task_queue.dart';
 
 /// 缩略图回填的批间让出间隔：线程下沉后原逐张固定间隔（ohos 50ms）已**放宽为 0**
@@ -606,6 +607,19 @@ class DirectSourceManager extends ChangeNotifier {
     perfLog('boot.directInit indexOpen before');
     await index.open();
     perfLog('boot.directInit indexOpen done');
+    if (isOhos && index.customCacheDir != null) {
+      final uri = index.customCacheDirUri;
+      var activated = true;
+      if (uri != null) {
+        activated = await OhosPlatformBridge.ensureDirectoryActivated(uri,
+                write: true)
+            .timeout(const Duration(seconds: 3), onTimeout: () => false);
+      }
+      if (!activated || !index.customCacheDirWritable) {
+        index.markCacheDirUnavailable();
+        debugPrint('[direct] 自定义缓存目录不可用，本会话回退默认目录');
+      }
+    }
     settings = AppSettings(index);
     // 自签策略只影响 dart:io（扫描/探测/API）；播放器（Media Kit）不校验 TLS。
     // 压缩图像画质开关（默认关）：同步给 cover_thumb 全局闸（显示+生成共用）。
