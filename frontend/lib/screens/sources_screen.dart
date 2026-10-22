@@ -18,6 +18,7 @@ import '../providers/player_provider.dart';
 import '../services/api_client.dart';
 import '../utils/collection_sort.dart';
 import '../utils/url_input.dart';
+import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
@@ -444,14 +445,12 @@ class _SourceDialogState extends State<_SourceDialog> {
           title: const Text('确认主机指纹'),
           content: Text('首次连接该 SSH 主机，请确认指纹是你的服务器：\n\n$fp\n\n'
               '确认后才会钉住并允许连接。'),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.of(c).pop(false),
-                child: const Text('取消')),
-            FilledButton(
-                onPressed: () => Navigator.of(c).pop(true),
-                child: const Text('确认并记住')),
-          ],
+          actions: appDialogActions(
+            c,
+            confirmLabel: '确认并记住',
+            onCancel: () => Navigator.of(c).pop(false),
+            onConfirm: () => Navigator.of(c).pop(true),
+          ),
         ),
       );
       if (ok == true && mounted) {
@@ -467,15 +466,13 @@ class _SourceDialogState extends State<_SourceDialog> {
           title: const Text('主机指纹变更'),
           content: Text('已记住的指纹：\n$pinned\n\n实际指纹：\n$fp\n\n'
               '可能是中间人或服务器重装，核对无误后再更新。'),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.of(c).pop(false),
-                child: const Text('取消')),
-            FilledButton(
-                onPressed: () => Navigator.of(c).pop(true),
-                child: const Text('确认更新',
-                    style: TextStyle(color: Colors.red))),
-          ],
+          actions: appDialogActions(
+            c,
+            confirmLabel: '确认更新',
+            destructive: true,
+            onCancel: () => Navigator.of(c).pop(false),
+            onConfirm: () => Navigator.of(c).pop(true),
+          ),
         ),
       );
       if (update == true && mounted) {
@@ -666,14 +663,12 @@ class _SourceDialogState extends State<_SourceDialog> {
           title: Text('确认主机指纹（${fallbackLabel(slot)}）'),
           content: Text('首次连接该 SSH 主机，请确认指纹是你的服务器：\n\n$fp\n\n'
               '确认后才会钉住并允许连接。'),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.of(c).pop(false),
-                child: const Text('取消')),
-            FilledButton(
-                onPressed: () => Navigator.of(c).pop(true),
-                child: const Text('确认并记住')),
-          ],
+          actions: appDialogActions(
+            c,
+            confirmLabel: '确认并记住',
+            onCancel: () => Navigator.of(c).pop(false),
+            onConfirm: () => Navigator.of(c).pop(true),
+          ),
         ),
       );
       if (ok == true && mounted) {
@@ -689,15 +684,13 @@ class _SourceDialogState extends State<_SourceDialog> {
           title: const Text('主机指纹变更'),
           content: Text('已记住的指纹：\n$pinned\n\n实际指纹：\n$fp\n\n'
               '可能是中间人或服务器重装，核对无误后再更新。'),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.of(c).pop(false),
-                child: const Text('取消')),
-            FilledButton(
-                onPressed: () => Navigator.of(c).pop(true),
-                child: const Text('确认更新',
-                    style: TextStyle(color: Colors.red))),
-          ],
+          actions: appDialogActions(
+            c,
+            confirmLabel: '确认更新',
+            destructive: true,
+            onCancel: () => Navigator.of(c).pop(false),
+            onConfirm: () => Navigator.of(c).pop(true),
+          ),
         ),
       );
       if (update == true && mounted) {
@@ -1198,7 +1191,11 @@ class _SourceDialogState extends State<_SourceDialog> {
           // 先关弹窗再重载，避免 context 释放竞态。
           if (mounted) Navigator.of(context).pop();
           unawaited(player.reloadCurrentForPlaybackRoute().then((ok) {
-            if (ok) AppToast.show('已切换到${_route == SourceRoute.proxy ? '代理' : '直连'}链路', isError: false);
+            if (ok) {
+              AppToast.show(
+                  '已切换到${_route == SourceRoute.proxy ? '代理' : '直连'}链路',
+                  isError: false);
+            }
           }));
           return;
         }
@@ -1506,15 +1503,12 @@ class _SourceDialogState extends State<_SourceDialog> {
           ],
         ),
       ),
-      actions: [
-        TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消')),
-        FilledButton(
-          onPressed: _submit,
-          child: Text(_isEdit ? '保存' : '添加'),
-        ),
-      ],
+      actions: appDialogActions(
+        context,
+        confirmLabel: _isEdit ? '保存' : '添加',
+        onCancel: () => Navigator.of(context).pop(),
+        onConfirm: _submit,
+      ),
     );
   }
 }
@@ -1801,17 +1795,13 @@ Future<void> _confirmDelete(
       builder: (c) => AlertDialog(
         title: const Text('删除源'),
         content: const Text('确定删除该播放源吗？其本地索引也会一并清除。'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(false),
-              child: const Text('取消')),
-          FilledButton(
-            style: FilledButton.styleFrom(
-                backgroundColor: Theme.of(c).colorScheme.error),
-            onPressed: () => Navigator.of(c).pop(true),
-            child: const Text('删除'),
-          ),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '删除',
+          destructive: true,
+          onCancel: () => Navigator.of(c).pop(false),
+          onConfirm: () => Navigator.of(c).pop(true),
+        ),
       ),
     );
     if (ok == true) {

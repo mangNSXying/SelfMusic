@@ -8,7 +8,10 @@ const double kRowHeight = 72;
 
 /// 列表顶栏总高度：计数头（`CountHeader`）与多选栏（`SelectionBar`）共用，
 /// 保证进出多选模式时内容区不跳动。
-const double kListHeaderHeight = 44;
+///
+/// 48 = 上下各 6 内边距 + 36 工具条按钮/文字行，给排序/分类/视图图标留出
+/// 统一命中区（旧值 44 会把 36 图标压成 32）。
+const double kListHeaderHeight = 48;
 
 /// 行间分隔线高度（计入 [kRowExtent]）。
 const double kRowSeparatorHeight = 1;

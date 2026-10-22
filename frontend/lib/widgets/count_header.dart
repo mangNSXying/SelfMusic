@@ -56,6 +56,7 @@ class CountHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final muted = Theme.of(context).colorScheme.onSurfaceVariant;
     // 总高与多选栏一致（[kListHeaderHeight]）：进出多选模式时下方内容不跳动。
+    // 48 - 上下各 6 = 36，正好容纳统一工具条按钮。
     const inner = kListHeaderHeight - 12;
     return Padding(
       padding: EdgeInsets.fromLTRB(16, 6, trailing == null ? 16 : 8, 6),

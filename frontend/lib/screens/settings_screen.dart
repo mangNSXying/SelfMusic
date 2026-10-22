@@ -21,6 +21,7 @@ import '../utils/url_input.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_provider.dart';
 import '../utils/cover_thumb.dart';
+import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
 import 'devices_screen.dart';
 import 'pairing_screen.dart';
@@ -656,7 +657,10 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
       if (mounted) setState(() => _serverReachable = true);
       if (!silent && mounted) AppToast.show('已同步服务端缓存建议', isError: false);
     } catch (e) {
-      if (mounted) setState(() => _serverReachable = _settings.serverCacheMaxBytes != null);
+      if (mounted) {
+        setState(
+            () => _serverReachable = _settings.serverCacheMaxBytes != null);
+      }
       if (!silent) AppToast.error(e, '同步服务端缓存建议失败');
     } finally {
       if (!silent && mounted) setState(() => _syncing = false);
@@ -774,13 +778,13 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
           inputFormatters: [FilteringTextInputFormatter.digitsOnly],
           autofocus: true,
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.of(c)
-                  .pop(int.tryParse(controller.text) ?? current),
-              child: const Text('确定')),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '确定',
+          onCancel: () => Navigator.of(c).pop(),
+          onConfirm: () =>
+              Navigator.of(c).pop(int.tryParse(controller.text) ?? current),
+        ),
       ),
     );
     if (result != null && result > 0 && mounted) {
@@ -801,13 +805,13 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
           inputFormatters: [FilteringTextInputFormatter.digitsOnly],
           autofocus: true,
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.of(c)
-                  .pop(int.tryParse(controller.text) ?? _settings.cacheSongLimit),
-              child: const Text('确定')),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '确定',
+          onCancel: () => Navigator.of(c).pop(),
+          onConfirm: () => Navigator.of(c).pop(
+              int.tryParse(controller.text) ?? _settings.cacheSongLimit),
+        ),
       ),
     );
     if (result != null && result > 0 && mounted) {
@@ -1159,10 +1163,12 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
         title: const Text('清理缩略图缓存？'),
         content: const Text('将删除已生成的封面缩略图文件，列表即回原图显示。\n'
             '压缩开关保持不变：开时后续滚动会重新生成，关时不再生成。'),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(c).pop(false), child: const Text('取消')),
-          TextButton(onPressed: () => Navigator.of(c).pop(true), child: const Text('清理')),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '清理',
+          onCancel: () => Navigator.of(c).pop(false),
+          onConfirm: () => Navigator.of(c).pop(true),
+        ),
       ),
     );
     if (ok != true || !context.mounted) return;
@@ -1315,9 +1321,7 @@ class _ColorPickerDialogState extends State<_ColorPickerDialog> {
           ],
         ),
       ),
-      actions: [
-        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('取消')),
-      ],
+      actions: [appDialogCloseAction(context, label: '取消')],
     );
   }
 }
@@ -1464,15 +1468,14 @@ class _SongsSettingsState extends State<_SongsSettings> {
               context: context,
               builder: (c) => AlertDialog(
                 title: const Text('确认强制解析全部歌手？'),
-                content: const Text('会把所有歌手（含已解析成功的）重新拉取一遍，并重新展开组合成员。请求受 MusicBrainz 限流，需要一定时间。'),
-                actions: [
-                  TextButton(
-                      onPressed: () => Navigator.of(c).pop(false),
-                      child: const Text('取消')),
-                  FilledButton(
-                      onPressed: () => Navigator.of(c).pop(true),
-                      child: const Text('开始')),
-                ],
+                content: const Text(
+                    '会把所有歌手（含已解析成功的）重新拉取一遍，并重新展开组合成员。请求受 MusicBrainz 限流，需要一定时间。'),
+                actions: appDialogActions(
+                  c,
+                  confirmLabel: '开始',
+                  onCancel: () => Navigator.of(c).pop(false),
+                  onConfirm: () => Navigator.of(c).pop(true),
+                ),
               ),
             );
             if (ok != true || !context.mounted) return;
@@ -1690,13 +1693,13 @@ class _SongsSettingsState extends State<_SongsSettings> {
           inputFormatters: [FilteringTextInputFormatter.digitsOnly],
           autofocus: true,
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.of(c)
-                  .pop(int.tryParse(controller.text) ?? 0),
-              child: const Text('确定')),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '确定',
+          onCancel: () => Navigator.of(c).pop(),
+          onConfirm: () =>
+              Navigator.of(c).pop(int.tryParse(controller.text) ?? 0),
+        ),
       ),
     );
     if (result != null && result >= 0 && context.mounted) {
@@ -1719,13 +1722,13 @@ class _SongsSettingsState extends State<_SongsSettings> {
           inputFormatters: [FilteringTextInputFormatter.digitsOnly],
           autofocus: true,
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.of(c)
-                  .pop(int.tryParse(controller.text) ?? 0),
-              child: const Text('确定')),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '确定',
+          onCancel: () => Navigator.of(c).pop(),
+          onConfirm: () =>
+              Navigator.of(c).pop(int.tryParse(controller.text) ?? 0),
+        ),
       ),
     );
     if (result != null && result >= 0 && context.mounted) {
@@ -1779,13 +1782,17 @@ class _SongsSettingsState extends State<_SongsSettings> {
                           leading: IconButton(
                             icon: const Icon(Icons.delete_outline,
                                 color: Colors.redAccent),
-                            onPressed: () => setDialog(() => working.removeAt(i)),
+                            tooltip: '删除区间',
+                            onPressed: () =>
+                                setDialog(() => working.removeAt(i)),
                           ),
                           title: Text(_segmentLabel(working[i])),
                           onTap: () async {
                             final edited =
                                 await _editWeightSegment(c, working[i]);
-                            if (edited != null) setDialog(() => working[i] = edited);
+                            if (edited != null) {
+                              setDialog(() => working[i] = edited);
+                            }
                           },
                         ),
                       ],
@@ -1798,13 +1805,11 @@ class _SongsSettingsState extends State<_SongsSettings> {
                   const {'min_sec': 300.0, 'max_sec': null, 'factor': 0.5})),
               child: const Text('+ 添加区间'),
             ),
-            TextButton(
-              onPressed: () => Navigator.of(c).pop(false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(c).pop(true),
-              child: const Text('保存'),
+            ...appDialogActions(
+              c,
+              confirmLabel: '保存',
+              onCancel: () => Navigator.of(c).pop(false),
+              onConfirm: () => Navigator.of(c).pop(true),
             ),
           ],
         ),
@@ -1847,14 +1852,12 @@ class _SongsSettingsState extends State<_SongsSettings> {
                     const InputDecoration(labelText: '系数（0.5 - 1.5）')),
           ],
         ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(d).pop(false),
-              child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.of(d).pop(true),
-              child: const Text('保存')),
-        ],
+        actions: appDialogActions(
+          d,
+          confirmLabel: '保存',
+          onCancel: () => Navigator.of(d).pop(false),
+          onConfirm: () => Navigator.of(d).pop(true),
+        ),
       ),
     );
     if (result != true) return null;
@@ -1897,13 +1900,13 @@ class _SongsSettingsState extends State<_SongsSettings> {
                 '本地目录变化也会自动触发增量扫描。'),
           ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.of(c)
-                  .pop(int.tryParse(controller.text) ?? 0),
-              child: const Text('确定')),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '确定',
+          onCancel: () => Navigator.of(c).pop(),
+          onConfirm: () =>
+              Navigator.of(c).pop(int.tryParse(controller.text) ?? 0),
+        ),
       ),
     );
     if (result != null && result >= 0 && context.mounted) {
@@ -2222,13 +2225,13 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
             helperText: '播放历史末尾「列表长度 × 比例」内的歌不参与随机；0=关闭',
           ),
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.of(c)
-                  .pop(double.tryParse(controller.text) ?? current),
-              child: const Text('确定')),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '确定',
+          onCancel: () => Navigator.of(c).pop(),
+          onConfirm: () =>
+              Navigator.of(c).pop(double.tryParse(controller.text) ?? current),
+        ),
       ),
     );
     if (result == null || !mounted) return;
@@ -2497,14 +2500,13 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
       builder: (c) => AlertDialog(
         title: const Text('导入备份'),
         content: Text('$scope，是否继续？\n\n$name'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(false),
-              child: const Text('取消')),
-          FilledButton(
-              onPressed: () => Navigator.of(c).pop(true),
-              child: const Text('导入')),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '导入',
+          destructive: true,
+          onCancel: () => Navigator.of(c).pop(false),
+          onConfirm: () => Navigator.of(c).pop(true),
+        ),
       ),
     );
     if (ok != true || !mounted) return;
@@ -2533,14 +2535,13 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
       builder: (c) => AlertDialog(
         title: const Text('删除备份'),
         content: Text('确定删除 ${f.path.split('/').last}？'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(false),
-              child: const Text('取消')),
-          FilledButton(
-              onPressed: () => Navigator.of(c).pop(true),
-              child: const Text('删除')),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '删除',
+          destructive: true,
+          onCancel: () => Navigator.of(c).pop(false),
+          onConfirm: () => Navigator.of(c).pop(true),
+        ),
       ),
     );
     if (ok != true || !mounted) return;
@@ -2680,19 +2681,15 @@ class _KeepAwakeDeviceDialogState extends State<_KeepAwakeDeviceDialog> {
           ],
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.of(context).pop([
-            for (final d in widget.devices)
-              if (_sel.contains(d.address)) d,
-          ]),
-          child: const Text('确定'),
-        ),
-      ],
+      actions: appDialogActions(
+        context,
+        confirmLabel: '确定',
+        onCancel: () => Navigator.of(context).pop(),
+        onConfirm: () => Navigator.of(context).pop([
+          for (final d in widget.devices)
+            if (_sel.contains(d.address)) d,
+        ]),
+      ),
     );
   }
 }

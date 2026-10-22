@@ -296,6 +296,7 @@ class AppSheetTitleBar extends StatelessWidget {
                   if (showClose)
                     IconButton(
                       icon: const Icon(Icons.close),
+                      tooltip: '关闭',
                       onPressed: () => AppSheetScope.closeOf(context),
                     ),
                 ],

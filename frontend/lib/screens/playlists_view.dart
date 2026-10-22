@@ -8,6 +8,7 @@ import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../providers/playlists_provider.dart';
 import '../utils/collection_sort.dart';
+import '../widgets/app_dialog_actions.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
 import '../widgets/row_list.dart';
@@ -74,15 +75,13 @@ class _PlaylistsViewState extends State<PlaylistsView>
         title: const Text('删除歌单'),
         content: Text('确定删除选中的 ${names.length} 个歌单？'
             '（仅移除歌单，其中歌曲不会被删除。）'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(false),
-              child: const Text('取消')),
-          TextButton(
-            onPressed: () => Navigator.of(c).pop(true),
-            child: const Text('删除'),
-          ),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '删除',
+          destructive: true,
+          onCancel: () => Navigator.of(c).pop(false),
+          onConfirm: () => Navigator.of(c).pop(true),
+        ),
       ),
     );
     if (ok != true || !mounted) return;
@@ -274,18 +273,16 @@ class _PlaylistsViewState extends State<PlaylistsView>
           autofocus: true,
           decoration: const InputDecoration(hintText: '名称'),
         ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
-          TextButton(
-            onPressed: () {
-              final t = ctrl.text.trim();
-              if (t.isEmpty) return;
-              Navigator.of(c).pop(t);
-            },
-            child: const Text('创建'),
-          ),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '创建',
+          onCancel: () => Navigator.of(c).pop(),
+          onConfirm: () {
+            final t = ctrl.text.trim();
+            if (t.isEmpty) return;
+            Navigator.of(c).pop(t);
+          },
+        ),
       ),
     );
     if (name != null && name.isNotEmpty && context.mounted) {
@@ -305,18 +302,16 @@ class _PlaylistsViewState extends State<PlaylistsView>
           autofocus: true,
           decoration: const InputDecoration(hintText: '名称'),
         ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(), child: const Text('取消')),
-          TextButton(
-            onPressed: () {
-              final t = ctrl.text.trim();
-              if (t.isEmpty) return;
-              Navigator.of(c).pop(t);
-            },
-            child: const Text('保存'),
-          ),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '保存',
+          onCancel: () => Navigator.of(c).pop(),
+          onConfirm: () {
+            final t = ctrl.text.trim();
+            if (t.isEmpty) return;
+            Navigator.of(c).pop(t);
+          },
+        ),
       ),
     );
     if (name != null && name.isNotEmpty) provider.rename(p.id, name);
@@ -329,15 +324,13 @@ class _PlaylistsViewState extends State<PlaylistsView>
       builder: (c) => AlertDialog(
         title: const Text('删除歌单'),
         content: Text('确定删除「${p.name}」？其中歌曲不会被删除，仅移除歌单。'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(c).pop(false),
-              child: const Text('取消')),
-          TextButton(
-            onPressed: () => Navigator.of(c).pop(true),
-            child: const Text('删除'),
-          ),
-        ],
+        actions: appDialogActions(
+          c,
+          confirmLabel: '删除',
+          destructive: true,
+          onCancel: () => Navigator.of(c).pop(false),
+          onConfirm: () => Navigator.of(c).pop(true),
+        ),
       ),
     );
     if (ok == true && context.mounted) {

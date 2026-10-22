@@ -17,6 +17,7 @@ import 'selection_bar.dart';
 import 'song_row_view.dart';
 import 'song_tile.dart';
 import 'sort_menu_button.dart';
+import 'toolbar_icon_button.dart';
 
 /// 文件夹模式下的导航方式：
 /// - [flat]：按「直接父级文件夹」平铺分组（歌单详情 / 喜欢 / 歌曲）；
@@ -77,9 +78,6 @@ class SongCollectionView extends StatefulWidget {
   /// 计数行文案（参数：展示歌曲数、组/文件夹数）。
   final String Function(int songs, int folders)? countLabel;
 
-  /// 计数行右侧额外控件（播放源页「播全部」）。
-  final Widget? countTrailing;
-
   final Future<void> Function()? onRefresh;
 
   /// 打开时追焦到当前播放歌曲（播放器带的歌单页）。
@@ -122,7 +120,6 @@ class SongCollectionView extends StatefulWidget {
     required this.emptyText,
     this.emptyPlaceholder,
     this.countLabel,
-    this.countTrailing,
     this.onRefresh,
     this.focusCurrent = false,
     this.focusTick,
@@ -403,7 +400,6 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     final trailing = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (widget.countTrailing != null) widget.countTrailing!,
         SongGroupButton(
           value: widget.groupMode,
           onChanged: widget.onGroupModeChanged,
@@ -609,16 +605,15 @@ class SongGroupButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return PopupMenuButton<SongGroupMode>(
-      tooltip: '分类方式',
-      icon: Icon(
-        switch (value) {
-          SongGroupMode.folder => Icons.folder_outlined,
-          SongGroupMode.album => Icons.album_outlined,
-          SongGroupMode.none => Icons.category_outlined,
-        },
-        size: 20,
-      ),
+    final active = value != SongGroupMode.none;
+    return ToolbarPopupMenuButton<SongGroupMode>(
+      tooltip: '分类方式：${value.labelFor(folderLabel: folderLabel)}',
+      icon: switch (value) {
+        SongGroupMode.folder => Icons.folder_outlined,
+        SongGroupMode.album => Icons.album_outlined,
+        SongGroupMode.none => Icons.category_outlined,
+      },
+      color: active ? Theme.of(context).colorScheme.primary : null,
       onSelected: onChanged,
       itemBuilder: (_) => [
         for (final m in SongGroupMode.values)

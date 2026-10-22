@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:selfmusic/data/local/app_settings.dart';
 
+import 'toolbar_icon_button.dart';
+
 /// 集合页「列表/卡片」展示形式的设置槽位：歌单/播放源/专辑/歌手各占一项。
 enum ViewModeSlot { playlists, sources, albums, artists }
 
@@ -71,12 +73,9 @@ class ViewModeToggle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return IconButton(
+    return ToolbarIconButton(
       tooltip: card ? '切换为列表' : '切换为卡片',
-      iconSize: 20,
-      padding: const EdgeInsets.all(4),
-      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-      icon: Icon(card ? Icons.view_list : Icons.grid_view),
+      icon: card ? Icons.view_list : Icons.grid_view,
       onPressed: () => onChanged(!card),
     );
   }

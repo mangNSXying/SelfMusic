@@ -14,6 +14,7 @@ import 'package:flutter/material.dart';
 
 import '../services/online_meta/online_meta_models.dart';
 import '../utils/lrc_parser.dart';
+import 'app_dialog_actions.dart';
 
 class LyricDetailDialog extends StatefulWidget {
   final OnlineLyricCandidate candidate;
@@ -125,14 +126,15 @@ class _LyricDetailDialogState extends State<LyricDetailDialog> {
           ],
         ),
       ),
-      actions: [
-        if (_error.isNotEmpty && !_c.hasContent && !_loading)
-          TextButton(onPressed: _load, child: const Text('重试')),
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('关闭'),
-        ),
-      ],
+      actions: _error.isNotEmpty && !_c.hasContent && !_loading
+          ? appDialogActions(
+              context,
+              cancelLabel: '关闭',
+              confirmLabel: '重试',
+              onCancel: () => Navigator.of(context).pop(),
+              onConfirm: _load,
+            )
+          : [appDialogCloseAction(context)],
     );
   }
 
@@ -296,14 +298,15 @@ class _CoverDetailDialogState extends State<CoverDetailDialog> {
           ],
         ),
       ),
-      actions: [
-        if (_error.isNotEmpty && _bytes == null && !_loading)
-          TextButton(onPressed: _load, child: const Text('重试')),
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('关闭'),
-        ),
-      ],
+      actions: _error.isNotEmpty && _bytes == null && !_loading
+          ? appDialogActions(
+              context,
+              cancelLabel: '关闭',
+              confirmLabel: '重试',
+              onCancel: () => Navigator.of(context).pop(),
+              onConfirm: _load,
+            )
+          : [appDialogCloseAction(context)],
     );
   }
 
