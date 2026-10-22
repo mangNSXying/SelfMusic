@@ -283,7 +283,7 @@ class _SourceDialogState extends State<_SourceDialog> {
   late final TextEditingController _keyPem;
   late final TextEditingController _keyPassphrase;
   late final FocusNode _baseUrlFocus;
-  SourceKind _kind = SourceKind.webdav;
+  SourceKind _kind = SourceKind.local;
   SourceRoute _route = SourceRoute.direct;
   SftpAuthMethod _authMethod = SftpAuthMethod.password;
   String? _error;

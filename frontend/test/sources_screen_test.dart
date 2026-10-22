@@ -81,7 +81,13 @@ void main() {
     expect(find.text('添加播放源'), findsOneWidget);
     expect(find.byType(SingleChoiceGroup<SourceKind>), findsOneWidget);
     expect(find.byType(SegmentedButton<SourceKind>), findsNothing);
-    // 默认 WebDAV：必须有「测试连接」按钮。
+    // 默认选中第一个类型「本地」。
+    expect(find.text('本地文件夹'), findsOneWidget);
+    expect(find.text('测试连接'), findsNothing);
+
+    // 切到 WebDAV 后出现「测试连接」按钮。
+    await tester.tap(find.text('WebDAV'));
+    await tester.pumpAndSettle();
     expect(find.text('测试连接'), findsOneWidget);
 
     final horizontalScrolls = tester
