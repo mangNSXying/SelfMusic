@@ -47,18 +47,52 @@ class OhosPlatformBridge {
 
   OhosPlatformBridge._();
 
+  /// 系统目录选择能力（FOLDER）是否可用；同进程内缓存。
+  static bool? _folderSelectionSupported;
+
+  /// 查询系统目录选择能力：鸿蒙 6 手机/平板为 false，鸿蒙 7/PC 为 true。
+  ///
+  /// 桥未装配/调用异常按 false 处理（走文件多选降级，绝不让系统
+  /// FilePicker 弹「功能未开放」）。
+  static Future<bool> supportsFolderSelection() async {
+    final cached = _folderSelectionSupported;
+    if (cached != null) return cached;
+    try {
+      final supported =
+          await _channel.invokeMethod<bool>('supportsFolderSelection') ?? false;
+      _folderSelectionSupported = supported;
+      return supported;
+    } on PlatformException catch (e) {
+      debugPrint('[ohos] supportsFolderSelection 失败（按不支持处理）: $e');
+      _folderSelectionSupported = false;
+      return false;
+    } on MissingPluginException catch (e) {
+      debugPrint('[ohos] supportsFolderSelection 桥未装配: $e');
+      _folderSelectionSupported = false;
+      return false;
+    }
+  }
+
+  /// 仅供单测：清空能力/授权缓存（静态状态跨用例共享）。
+  @visibleForTesting
+  static void debugResetCapabilityCache() {
+    _folderSelectionSupported = null;
+    _activatedUris.clear();
+    _activatedDirs.clear();
+    _activatingDirs.clear();
+  }
+
   /// 目录选择结果：[uri] 为授权目录 URI（`file://docs/...` 形态，直接
   /// 存入源配置 path 字段）；[persisted] 为持久化是否成功（false 时本次
   /// 会话临时授权仍可用，重启后需重选）。
   static Future<OhosPickedDirectory?> pickDirectory() async {
     try {
-      final raw = await _channel.invokeMethod<Map<dynamic, dynamic>>(
-          'pickDirectory');
+      final raw =
+          await _channel.invokeMethod<Map<dynamic, dynamic>>('pickDirectory');
       if (raw == null) return null; // 用户取消。
       final uri = raw['uri'] as String?;
       if (uri == null || uri.isEmpty) return null;
-      return OhosPickedDirectory(
-          uri: uri, persisted: raw['persisted'] == true);
+      return OhosPickedDirectory(uri: uri, persisted: raw['persisted'] == true);
     } on PlatformException catch (e) {
       debugPrint('[ohos] pickDirectory 失败: $e');
       return null;
@@ -66,6 +100,32 @@ class OhosPlatformBridge {
       debugPrint('[ohos] pickDirectory 桥未装配: $e');
       return null;
     }
+  }
+
+  /// 多选音频文件（鸿蒙 6 手机/平板无 FOLDER 能力时的降级入口）。
+  ///
+  /// 使用 DocumentViewPicker FILE 模式（非 AudioViewPicker）：document URI
+  /// 在 API 20 即可持久化，媒体 URI 要到 API 22。返回 null 表示用户取消；
+  /// 真实失败向上抛 [PlatformException]/[MissingPluginException]，由调用方
+  /// toast——避免把失败误判成取消。
+  static Future<List<OhosPickedFile>?> pickAudioFiles() async {
+    final raw = await _channel.invokeMethod<List<dynamic>>('pickAudioFiles');
+    if (raw == null) return null;
+    final out = <OhosPickedFile>[];
+    for (final e in raw) {
+      if (e is! Map) continue;
+      final uri = e['uri'] as String?;
+      if (uri == null || uri.isEmpty) continue;
+      out.add(OhosPickedFile(
+        uri: uri,
+        name: (e['name'] as String?) ?? '',
+        size: _asInt(e['size']),
+        mtime: _asInt(e['mtime']),
+        persisted: e['persisted'] == true,
+        readable: e['readable'] == true,
+      ));
+    }
+    return out;
   }
 
   /// 拉起系统文件保存界面，把 [sourcePath]（沙箱临时日志）复制到用户选择
@@ -93,12 +153,15 @@ class OhosPlatformBridge {
   /// 重启后激活已持久化的目录授权；失败（授权被撤销/目录删除）抛
   /// [PlatformException]，由调用方转译为引导文案。
   static Future<void> activateDirectory(String uri) async {
-    await _channel.invokeMethod<void>(
-        'activateDirectory', <String, Object?>{'uri': uri});
+    await _channel
+        .invokeMethod<void>('activateDirectory', <String, Object?>{'uri': uri});
   }
 
   /// 进程内已成功激活的目录 URI（成功才缓存；失败允许下次重试）。
   static final Set<String> _activatedDirs = <String>{};
+
+  /// 进程内已成功激活的文件 URI（文件级本地源用）。
+  static final Set<String> _activatedUris = <String>{};
 
   /// 同 URI 激活中的单飞 Future（并发访问只发一次桥调用）。
   static final Map<String, Future<bool>> _activatingDirs =
@@ -142,6 +205,116 @@ class OhosPlatformBridge {
     }
   }
 
+  /// 批量幂等激活文件 URI 授权，返回与入参同序的可用状态。
+  ///
+  /// 已缓存的 URI 直接 true；其余按 100 个一批调用桥，单批失败时该批
+  /// 按 false 返回但不抛出（扫描据此标记文件不可读，待用户重新选择）。
+  static Future<List<bool>> ensureUrisActivated(List<String> uris) async {
+    final out = List<bool>.filled(uris.length, false);
+    if (uris.isEmpty) return out;
+    final pending = <int>[];
+    for (var i = 0; i < uris.length; i++) {
+      final uri = uris[i];
+      if (uri.isEmpty) continue;
+      if (_activatedUris.contains(uri)) {
+        out[i] = true;
+      } else {
+        pending.add(i);
+      }
+    }
+    const chunk = 100;
+    for (var start = 0; start < pending.length; start += chunk) {
+      final end =
+          start + chunk > pending.length ? pending.length : start + chunk;
+      final batch = pending.sublist(start, end);
+      try {
+        final flags = await activateUris([for (final i in batch) uris[i]]);
+        for (var j = 0; j < batch.length; j++) {
+          final ok = j < flags.length && flags[j];
+          final index = batch[j];
+          out[index] = ok;
+          if (ok) _activatedUris.add(uris[index]);
+        }
+      } catch (e) {
+        debugPrint('[ohos] 文件授权激活失败（本批按不可用处理）: $e');
+      }
+    }
+    return out;
+  }
+
+  /// 批量激活已持久化的文件 URI（按 100 个一批）；失败向上抛。
+  static Future<List<bool>> activateUris(List<String> uris) async {
+    if (uris.isEmpty) return const [];
+    final out = List<bool>.filled(uris.length, false);
+    const chunk = 100;
+    for (var start = 0; start < uris.length; start += chunk) {
+      final end = start + chunk > uris.length ? uris.length : start + chunk;
+      final raw = await _channel.invokeMethod<List<dynamic>>(
+          'activateUris', <String, Object?>{'uris': uris.sublist(start, end)});
+      final flags = raw ?? const <dynamic>[];
+      for (var j = 0; j < end - start; j++) {
+        out[start + j] = j < flags.length && flags[j] == true;
+      }
+    }
+    return out;
+  }
+
+  /// 批量 stat 文件 URI（扫描 diff 用）；失败向上抛。
+  static Future<List<OhosFileStat>> statFileUris(List<String> uris) async {
+    if (uris.isEmpty) return const [];
+    final raw = await _channel.invokeMethod<List<dynamic>>(
+        'statFileUris', <String, Object?>{'uris': uris});
+    final out = <OhosFileStat>[];
+    for (final e in raw ?? const <dynamic>[]) {
+      if (e is! Map) continue;
+      final uri = e['uri'] as String?;
+      if (uri == null || uri.isEmpty) continue;
+      out.add(OhosFileStat(
+        uri: uri,
+        ok: e['ok'] == true,
+        size: _asInt(e['size']),
+        mtime: _asInt(e['mtime']),
+        code: (e['code'] as String?) ?? '',
+      ));
+    }
+    return out;
+  }
+
+  /// 文件 URI 范围读（单次上限 2 MiB，由 ArkTS 侧防御）；失败向上抛。
+  static Future<Uint8List> readFileUriRange(
+      String uri, int offset, int length) async {
+    final data = await _channel
+        .invokeMethod<Uint8List>('readFileUriRange', <String, Object?>{
+      'uri': uri,
+      'offset': offset,
+      'length': length,
+    });
+    return data ?? Uint8List(0);
+  }
+
+  /// 解析文件 URI 的沙箱真路径；失败时先激活授权再重试一次。
+  static Future<String?> resolveFileUriWithActivation(String uri) async {
+    final first = await _resolveFileUri(uri, logFailure: false);
+    if (first != null) return first;
+    final flags = await ensureUrisActivated([uri]);
+    if (flags.isEmpty || !flags.first) return null;
+    return _resolveFileUri(uri, logFailure: true);
+  }
+
+  static Future<String?> _resolveFileUri(String uri,
+      {required bool logFailure}) async {
+    try {
+      return await _channel.invokeMethod<String>(
+          'resolveFileUri', <String, Object?>{'uri': uri});
+    } on PlatformException catch (e) {
+      if (logFailure) debugPrint('[ohos] resolveFileUri 失败（回退字节流分支）: $e');
+      return null;
+    } on MissingPluginException catch (e) {
+      if (logFailure) debugPrint('[ohos] resolveFileUri 桥未装配: $e');
+      return null;
+    }
+  }
+
   /// 解析文件沙箱真路径，失败时先幂等激活目录授权再重试一次。
   ///
   /// 重启后首次访问的持久化授权尚未激活，[resolvePath] 会返回 `null`；
@@ -164,8 +337,8 @@ class OhosPlatformBridge {
 
   /// 递归枚举授权目录（快照：rel/size/mtime），供扫描 diff 使用。
   static Future<List<OhosDirEntry>> listDirectory(String uri) async {
-    final raw = await _channel.invokeMethod<List<dynamic>>('listDirectory',
-        <String, Object?>{'uri': uri});
+    final raw = await _channel.invokeMethod<List<dynamic>>(
+        'listDirectory', <String, Object?>{'uri': uri});
     final out = <OhosDirEntry>[];
     for (final e in raw ?? const <dynamic>[]) {
       if (e is! Map) continue;
@@ -185,13 +358,13 @@ class OhosPlatformBridge {
   static Future<Uint8List> readRange(
       String uri, String rel, int offset, int length) async {
     final fullRel = rel.startsWith('/') ? rel : '/$rel';
-    final data = await _channel.invokeMethod<Uint8List>('readRange',
-        <String, Object?>{
-          'uri': uri,
-          'rel': fullRel,
-          'offset': offset,
-          'length': length
-        });
+    final data = await _channel.invokeMethod<Uint8List>(
+        'readRange', <String, Object?>{
+      'uri': uri,
+      'rel': fullRel,
+      'offset': offset,
+      'length': length
+    });
     return data ?? Uint8List(0);
   }
 
@@ -214,8 +387,8 @@ class OhosPlatformBridge {
       {required bool logFailure}) async {
     final fullRel = rel.startsWith('/') ? rel : '/$rel';
     try {
-      return await _channel.invokeMethod<String>('resolvePath',
-          <String, Object?>{'uri': uri, 'rel': fullRel});
+      return await _channel.invokeMethod<String>(
+          'resolvePath', <String, Object?>{'uri': uri, 'rel': fullRel});
     } on PlatformException catch (e) {
       if (logFailure) debugPrint('[ohos] resolvePath 失败（回退字节流分支）: $e');
       return null;
@@ -295,7 +468,8 @@ class OhosPlatformBridge {
   /// 当前已连接蓝牙音频设备地址集合；异常降级空集合（门控按未连接判定）。
   static Future<Set<String>> connectedDevices() async {
     try {
-      final raw = await _channel.invokeMethod<List<dynamic>>('connectedDevices');
+      final raw =
+          await _channel.invokeMethod<List<dynamic>>('connectedDevices');
       return {for (final e in raw ?? const <dynamic>[]) '$e'};
     } on PlatformException catch (e) {
       debugPrint('[ohos] connectedDevices 失败（按空处理）: $e');
@@ -346,13 +520,13 @@ class OhosPlatformBridge {
       int quality = 82,
       Duration timeout = const Duration(seconds: 15)}) async {
     try {
-      final raw = await _channel.invokeMethod<Object?>('makeCoverThumb',
-          <String, Object?>{
-            'srcPath': srcPath,
-            'thumbPath': thumbPath,
-            'maxEdge': maxEdge,
-            'quality': quality
-          }).timeout(timeout);
+      final raw = await _channel
+          .invokeMethod<Object?>('makeCoverThumb', <String, Object?>{
+        'srcPath': srcPath,
+        'thumbPath': thumbPath,
+        'maxEdge': maxEdge,
+        'quality': quality
+      }).timeout(timeout);
       return OhosThumbResult.fromChannel(raw);
     } on TimeoutException catch (e) {
       debugPrint('[ohos] makeCoverThumb 超时（放弃本轮，下次触发重试）: $e');
@@ -447,12 +621,53 @@ class OhosPickedDirectory {
   const OhosPickedDirectory({required this.uri, required this.persisted});
 }
 
+/// pickAudioFiles 单项：文件 URI + 展示名 + stat + 授权状态。
+class OhosPickedFile {
+  final String uri;
+  final String name;
+  final int size;
+  final int mtime;
+  final bool persisted;
+  final bool readable;
+  const OhosPickedFile({
+    required this.uri,
+    required this.name,
+    required this.size,
+    required this.mtime,
+    required this.persisted,
+    required this.readable,
+  });
+}
+
+/// statFileUris 单项：成功状态 + 大小/mtime + 失败错误码。
+class OhosFileStat {
+  final String uri;
+  final bool ok;
+  final int size;
+  final int mtime;
+  final String code;
+  const OhosFileStat({
+    required this.uri,
+    required this.ok,
+    required this.size,
+    required this.mtime,
+    required this.code,
+  });
+}
+
+int _asInt(Object? v) {
+  if (v is int) return v;
+  if (v is num) return v.toInt();
+  return 0;
+}
+
 /// listDirectory 单项：目录内相对路径（`/` 开头）+ 文件大小 + mtime（秒）。
 class OhosDirEntry {
   final String rel;
   final int size;
   final int mtime;
-  const OhosDirEntry({required this.rel, required this.size, required this.mtime});
+  const OhosDirEntry(
+      {required this.rel, required this.size, required this.mtime});
 }
 
 /// `extractAudioMeta` 的结构化结果（原生标签 + 封面落盘路径）。

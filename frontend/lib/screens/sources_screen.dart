@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../data/local/app_settings.dart';
+import '../data/sources/local_file_direct_source.dart';
 import '../data/sources/music_source.dart';
 import '../data/sources/sftp_direct_source.dart';
 import '../data/sources/smb_common.dart';
@@ -117,61 +118,62 @@ class _SourcesScreenState extends State<SourcesScreen>
     final direct = context.watch<DirectSourceManager>();
     final scheme = Theme.of(context).colorScheme;
     final card = isCard;
-    final sources = sortByCollection(direct.sources, direct.settings.sortSources,
-        (s) => s.name, countOf: (s) => direct.countOf(s.key));
+    final sources = sortByCollection(
+        direct.sources, direct.settings.sortSources, (s) => s.name,
+        countOf: (s) => direct.countOf(s.key));
 
     return Stack(
       children: [
         Column(
           children: [
-              CountHeader(
-                count: sources.length,
-                unit: '个播放源',
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SortMenuButton(
-                      value: direct.settings.sortSources,
-                      scope: SortScope.collections,
-                      onChanged: (v) =>
-                          setState(() => direct.settings.sortSources = v),
-                    ),
-                    viewModeToggle(),
-                  ],
-                ),
+            CountHeader(
+              count: sources.length,
+              unit: '个播放源',
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SortMenuButton(
+                    value: direct.settings.sortSources,
+                    scope: SortScope.collections,
+                    onChanged: (v) =>
+                        setState(() => direct.settings.sortSources = v),
+                  ),
+                  viewModeToggle(),
+                ],
               ),
-              Expanded(
-                child: sources.isEmpty
-                    ? Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 24),
-                        child: Text('尚未添加播放源，点右下角「+」添加',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(color: scheme.onSurfaceVariant)),
-                      )
-                    : card
-                        ? SquareCardGrid(
-                            itemCount: sources.length,
-                            itemBuilder: (c, i) => _DirectSourceCard(
-                                sourceKey: sources[i].key),
-                          )
-                        : RowList(
-                            count: sources.length,
-                            itemBuilder: (c, i) => _DirectSourceTile(
-                                sourceKey: sources[i].key),
-                          ),
-              ),
-            ],
-          ),
-          Positioned(
-            right: 16,
-            bottom: 16,
-            child: CornerAddButton(
-              tooltip: '添加播放源',
-              onPressed: () => showDialog<void>(
-                  context: context, builder: (_) => const _SourceDialog()),
             ),
+            Expanded(
+              child: sources.isEmpty
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 24),
+                      child: Text('尚未添加播放源，点右下角「+」添加',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: scheme.onSurfaceVariant)),
+                    )
+                  : card
+                      ? SquareCardGrid(
+                          itemCount: sources.length,
+                          itemBuilder: (c, i) =>
+                              _DirectSourceCard(sourceKey: sources[i].key),
+                        )
+                      : RowList(
+                          count: sources.length,
+                          itemBuilder: (c, i) =>
+                              _DirectSourceTile(sourceKey: sources[i].key),
+                        ),
+            ),
+          ],
+        ),
+        Positioned(
+          right: 16,
+          bottom: 16,
+          child: CornerAddButton(
+            tooltip: '添加播放源',
+            onPressed: () => showDialog<void>(
+                context: context, builder: (_) => const _SourceDialog()),
           ),
-        ],
+        ),
+      ],
     );
   }
 }
@@ -199,8 +201,7 @@ class _FallbackData {
     final m = from ?? const {};
     baseUrl = TextEditingController(text: m['baseUrl'] as String? ?? '');
     host = TextEditingController(text: m['host'] as String? ?? '');
-    port = TextEditingController(
-        text: (m['port'] as num?)?.toString() ?? '');
+    port = TextEditingController(text: (m['port'] as num?)?.toString() ?? '');
     smbPath = TextEditingController(
         text: kind == SourceKind.smb
             ? smbJoinInputPath(
@@ -290,6 +291,15 @@ class _SourceDialogState extends State<_SourceDialog> {
   // 备用源（至多 kMaxFallbacks 个，本地不可做备）。
   final List<_FallbackData> _fbs = [];
 
+  // 文件级本地源（鸿蒙 6 手机/平板降级形态）。
+  List<LocalFileEntry> _localFiles = [];
+  bool _filesMode = false;
+  bool _pickingFiles = false;
+
+  /// 系统文件夹选择能力：null=检测中；非鸿蒙恒 true。
+  bool? _folderSupported;
+  bool _unsupportedNotified = false;
+
   bool get _isEdit => widget.editKey != null;
 
   @override
@@ -311,8 +321,8 @@ class _SourceDialogState extends State<_SourceDialog> {
     _username = TextEditingController(text: cfg['username'] as String? ?? '');
     _password = TextEditingController(text: cfg['password'] as String? ?? '');
     _host = TextEditingController(text: cfg['host'] as String? ?? '');
-    _port = TextEditingController(
-        text: (cfg['port'] as num?)?.toString() ?? '');
+    _port =
+        TextEditingController(text: (cfg['port'] as num?)?.toString() ?? '');
     _smbPath = TextEditingController(
         text: _kind == SourceKind.smb
             ? smbJoinInputPath(
@@ -328,6 +338,12 @@ class _SourceDialogState extends State<_SourceDialog> {
     _keyPassphrase =
         TextEditingController(text: cfg['sftpPassphrase'] as String? ?? '');
     _route = parseSourceRoute(cfg['route']);
+    _folderSupported = isOhos ? null : true;
+    _localFiles = parseLocalFileEntries(cfg);
+    _filesMode = cfg['mode'] == 'files' || _localFiles.isNotEmpty;
+    if (_kind == SourceKind.local && isOhos) {
+      unawaited(_loadFolderSupport());
+    }
     // 备用回填（editableConfig 已回填各槽位敏感字段）。
     final rawFbs = parseFallbackConfigs(cfg['fallbacks']);
     for (final fb in rawFbs) {
@@ -379,8 +395,80 @@ class _SourceDialogState extends State<_SourceDialog> {
     });
   }
 
+  /// 检测系统文件夹选择能力；不支持的设备当场 toast 告知（只提示一次）。
+  Future<void> _loadFolderSupport() async {
+    if (!isOhos) {
+      if (mounted) setState(() => _folderSupported = true);
+      return;
+    }
+    if (_folderSupported != null) return;
+    final supported = await OhosPlatformBridge.supportsFolderSelection();
+    if (!mounted) return;
+    setState(() => _folderSupported = supported);
+    if (!supported) _notifyFolderUnsupported();
+  }
+
+  void _notifyFolderUnsupported() {
+    if (_unsupportedNotified) return;
+    _unsupportedNotified = true;
+    AppToast.show('当前系统SDK无法选择文件夹，建议更新鸿蒙7', ms: 4000);
+  }
+
+  void _onKindChanged(SourceKind kind) {
+    setState(() => _kind = kind);
+    if (kind == SourceKind.local) {
+      _folderSupported ??= isOhos ? null : true;
+      if (isOhos && _folderSupported == null) {
+        unawaited(_loadFolderSupport());
+      }
+    }
+  }
+
+  Future<void> _pickAudioFiles() async {
+    if (_pickingFiles) return;
+    setState(() => _pickingFiles = true);
+    try {
+      final picked = await OhosPlatformBridge.pickAudioFiles();
+      if (!mounted || picked == null) return;
+      if (picked.isEmpty) {
+        AppToast.show('未选择可读取的音频文件');
+        return;
+      }
+      final merged = mergePickedLocalFiles(
+        existing: _localFiles,
+        picked: picked,
+      );
+      setState(() {
+        _localFiles = merged;
+        _filesMode = true;
+      });
+      final unreadable = picked.where((f) => !f.readable).length;
+      final unpersisted = picked.where((f) => !f.persisted).length;
+      if (unpersisted > 0) {
+        AppToast.show('部分文件持久化授权失败：应用重启后需重新选择文件', ms: 4000);
+      } else if (unreadable > 0) {
+        AppToast.show('部分文件当前不可读取，请确认文件仍存在且未移动');
+      } else {
+        AppToast.show('已导入 ${picked.length} 个音频文件', isError: false);
+      }
+    } on PlatformException catch (e) {
+      if (mounted) AppToast.show('选择音频文件失败：${e.message ?? e.code}');
+    } on MissingPluginException catch (e) {
+      debugPrint('[ohos] pickAudioFiles 桥未装配: $e');
+      if (mounted) AppToast.show('当前平台不支持音频文件导入');
+    } finally {
+      if (mounted) setState(() => _pickingFiles = false);
+    }
+  }
+
   Future<void> _pickDirectory() async {
     if (isOhos) {
+      if (_folderSupported == null) await _loadFolderSupport();
+      if (!mounted) return;
+      if (_folderSupported == false) {
+        _notifyFolderUnsupported();
+        return;
+      }
       // 鸿蒙：系统目录选择器走平台桥（file_selector_ohos 的 getDirectoryPath
       // 未实现、调用必抛异常）。选定目录 URI 直接写入 path 字段（源配置
       // 结构不变）；用户取消/选择失败不动表单。
@@ -460,14 +548,15 @@ class _SourceDialogState extends State<_SourceDialog> {
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _error = '读取密钥文件失败：${e.toString().replaceFirst(
-            RegExp(r'^(Bad state: |StateError: )'), '')}');
+      setState(() => _error =
+          '读取密钥文件失败：${e.toString().replaceFirst(RegExp(r'^(Bad state: |StateError: )'), '')}');
     }
   }
 
   /// SFTP 测试连接 + TOFU：取指纹 → 未知则弹窗确认后钉住；失配则展示新旧
   /// 指纹并可更新；匹配直接提示成功。不保存源（保存走 [_submit]）。
-  Future<void> _testSftpConnection() async {    final form = _readSftpForm();
+  Future<void> _testSftpConnection() async {
+    final form = _readSftpForm();
     if (form == null || !mounted) return;
     final direct = context.read<DirectSourceManager>();
     setState(() {
@@ -489,8 +578,9 @@ class _SourceDialogState extends State<_SourceDialog> {
       if (!mounted) return;
       setState(() {
         _testing = false;
-        _error = e.toString().replaceFirst(
-            RegExp(r'^(Bad state: |StateError: )'), '');
+        _error = e
+            .toString()
+            .replaceFirst(RegExp(r'^(Bad state: |StateError: )'), '');
       });
       return;
     }
@@ -589,8 +679,9 @@ class _SourceDialogState extends State<_SourceDialog> {
       if (!mounted) return;
       setState(() {
         _testing = false;
-        _error = e.toString().replaceFirst(
-            RegExp(r'^(Bad state: |StateError: )'), '');
+        _error = e
+            .toString()
+            .replaceFirst(RegExp(r'^(Bad state: |StateError: )'), '');
       });
       return;
     }
@@ -644,8 +735,7 @@ class _SourceDialogState extends State<_SourceDialog> {
     }
     final (:share, :rootPath) = smbParseInputPath(fb.smbPath.text);
     if (share.isEmpty) {
-      setState(() =>
-          _error = '$label：请填写路径（共享名或 共享名/子目录，如 music/flac）');
+      setState(() => _error = '$label：请填写路径（共享名或 共享名/子目录，如 music/flac）');
       return null;
     }
     return (
@@ -679,8 +769,8 @@ class _SourceDialogState extends State<_SourceDialog> {
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _error = '${fallbackLabel(slot)}：读取密钥文件失败：${e.toString().replaceFirst(
-            RegExp(r'^(Bad state: |StateError: )'), '')}');
+      setState(() => _error =
+          '${fallbackLabel(slot)}：读取密钥文件失败：${e.toString().replaceFirst(RegExp(r'^(Bad state: |StateError: )'), '')}');
     }
   }
 
@@ -707,8 +797,8 @@ class _SourceDialogState extends State<_SourceDialog> {
       if (!mounted) return;
       setState(() {
         _testing = false;
-        _error = '${fallbackLabel(slot)}：${e.toString().replaceFirst(
-            RegExp(r'^(Bad state: |StateError: )'), '')}';
+        _error =
+            '${fallbackLabel(slot)}：${e.toString().replaceFirst(RegExp(r'^(Bad state: |StateError: )'), '')}';
       });
       return;
     }
@@ -782,8 +872,8 @@ class _SourceDialogState extends State<_SourceDialog> {
       if (!mounted) return;
       setState(() {
         _testing = false;
-        _error = '${fallbackLabel(slot)}：${e.toString().replaceFirst(
-            RegExp(r'^(Bad state: |StateError: )'), '')}';
+        _error =
+            '${fallbackLabel(slot)}：${e.toString().replaceFirst(RegExp(r'^(Bad state: |StateError: )'), '')}';
       });
       return;
     }
@@ -908,8 +998,7 @@ class _SourceDialogState extends State<_SourceDialog> {
                 TextField(
                   controller: fb.keyPassphrase,
                   obscureText: true,
-                  decoration:
-                      const InputDecoration(labelText: '私钥口令（无则空）'),
+                  decoration: const InputDecoration(labelText: '私钥口令（无则空）'),
                 ),
               ],
               TextField(
@@ -921,8 +1010,7 @@ class _SourceDialogState extends State<_SourceDialog> {
               ),
               const SizedBox(height: 8),
               OutlinedButton.icon(
-                onPressed:
-                    _testing ? null : () => _testFbSftpConnection(i, fb),
+                onPressed: _testing ? null : () => _testFbSftpConnection(i, fb),
                 icon: _testing
                     ? const SizedBox(
                         width: 16,
@@ -950,14 +1038,12 @@ class _SourceDialogState extends State<_SourceDialog> {
               ),
               TextField(
                 controller: fb.username,
-                decoration: const InputDecoration(
-                    labelText: '用户名（可空，空即匿名）'),
+                decoration: const InputDecoration(labelText: '用户名（可空，空即匿名）'),
               ),
               TextField(
                 controller: fb.password,
                 obscureText: true,
-                decoration: const InputDecoration(
-                    labelText: '密码（可空，空即匿名）'),
+                decoration: const InputDecoration(labelText: '密码（可空，空即匿名）'),
               ),
               const SizedBox(height: 8),
               OutlinedButton.icon(
@@ -1040,9 +1126,8 @@ class _SourceDialogState extends State<_SourceDialog> {
     }
     // 编辑前记下旧链路：仅 route 真变化时才重载当前曲，避免改密码/改名等
     // 无关编辑打断正在播放。
-    final oldRoute = _isEdit
-        ? direct.sourceByKey(widget.editKey!)?.route
-        : null;
+    final oldRoute =
+        _isEdit ? direct.sourceByKey(widget.editKey!)?.route : null;
     // 主 + 备用去重（与 manager 同口径，提前报错避免半落库）。
     String? fbErr;
     try {
@@ -1063,16 +1148,35 @@ class _SourceDialogState extends State<_SourceDialog> {
     }
     try {
       if (_kind == SourceKind.local) {
-        final path = _path.text.trim();
-        if (path.isEmpty) {
-          setState(() => _error = '请选择或填写本地目录');
-          return;
-        }
-        if (_isEdit) {
-          await direct.updateSource(widget.editKey!,
-              name: name, path: path, fallbacks: fbMaps);
+        final useFiles = _filesMode || _folderSupported == false;
+        if (useFiles) {
+          if (_localFiles.isEmpty) {
+            setState(() => _error = '请至少选择一个音频文件');
+            return;
+          }
+          if (_isEdit) {
+            await direct.updateSource(widget.editKey!,
+                name: name, localFiles: _localFiles, fallbacks: fbMaps);
+          } else {
+            await direct.addLocalFiles(
+                name: name, files: _localFiles, fallbacks: fbMaps);
+          }
         } else {
-          await direct.addLocal(name: name, path: path, fallbacks: fbMaps);
+          if (_folderSupported == null) {
+            setState(() => _error = '正在检测系统能力，请稍候');
+            return;
+          }
+          final path = _path.text.trim();
+          if (path.isEmpty) {
+            setState(() => _error = '请选择或填写本地目录');
+            return;
+          }
+          if (_isEdit) {
+            await direct.updateSource(widget.editKey!,
+                name: name, path: path, fallbacks: fbMaps);
+          } else {
+            await direct.addLocal(name: name, path: path, fallbacks: fbMaps);
+          }
         }
       } else if (_kind == SourceKind.sftp) {
         final form = _readSftpForm();
@@ -1085,13 +1189,11 @@ class _SourceDialogState extends State<_SourceDialog> {
               port: form.port,
               username: form.username,
               authMethod: _authMethod,
-              password: _authMethod == SftpAuthMethod.password
-                  ? _password.text
-                  : '',
+              password:
+                  _authMethod == SftpAuthMethod.password ? _password.text : '',
               keyPem: _authMethod == SftpAuthMethod.key ? _keyPem.text : '',
-              passphrase: _authMethod == SftpAuthMethod.key
-                  ? _keyPassphrase.text
-                  : '',
+              passphrase:
+                  _authMethod == SftpAuthMethod.key ? _keyPassphrase.text : '',
               path: root,
               route: _route,
               fallbacks: fbMaps);
@@ -1102,13 +1204,11 @@ class _SourceDialogState extends State<_SourceDialog> {
               port: form.port,
               username: form.username,
               authMethod: _authMethod,
-              password: _authMethod == SftpAuthMethod.password
-                  ? _password.text
-                  : '',
+              password:
+                  _authMethod == SftpAuthMethod.password ? _password.text : '',
               keyPem: _authMethod == SftpAuthMethod.key ? _keyPem.text : '',
-              passphrase: _authMethod == SftpAuthMethod.key
-                  ? _keyPassphrase.text
-                  : '',
+              passphrase:
+                  _authMethod == SftpAuthMethod.key ? _keyPassphrase.text : '',
               rootPath: root,
               route: _route,
               fallbacks: fbMaps);
@@ -1118,8 +1218,7 @@ class _SourceDialogState extends State<_SourceDialog> {
         final pinned =
             direct.sshFingerprintOf(sftpHostPort(form.host, form.port));
         if (pinned == null || pinned.isEmpty) {
-          AppToast.show('已保存；首次使用前请点「测试连接」确认主机指纹',
-              isError: false);
+          AppToast.show('已保存；首次使用前请点「测试连接」确认主机指纹', isError: false);
         }
       } else if (_kind == SourceKind.smb) {
         final form = _readSmbForm();
@@ -1203,8 +1302,7 @@ class _SourceDialogState extends State<_SourceDialog> {
         final player = context.read<PlayerProvider>();
         final curKey = player.current?.sourceKey;
         // 同名编辑 key 不变；改名时新 key 为 kind:name，两种都判。
-        final newKey =
-            '${_kind.name}:$name';
+        final newKey = '${_kind.name}:$name';
         if (curKey == widget.editKey || curKey == newKey) {
           // 先关弹窗再重载，避免 context 释放竞态。
           if (mounted) Navigator.of(context).pop();
@@ -1220,9 +1318,126 @@ class _SourceDialogState extends State<_SourceDialog> {
       }
       if (mounted) Navigator.of(context).pop();
     } catch (e) {
-      setState(() => _error = e.toString().replaceFirst(
-          RegExp(r'^(Bad state: |StateError: )'), ''));
+      setState(() => _error = e
+          .toString()
+          .replaceFirst(RegExp(r'^(Bad state: |StateError: )'), ''));
     }
+  }
+
+  Widget _buildLocalFilesSection(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final unsupported = _folderSupported == false;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: unsupported
+                ? scheme.errorContainer.withValues(alpha: 0.45)
+                : scheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                unsupported ? Icons.warning_amber_rounded : Icons.info_outline,
+                size: 20,
+                color: unsupported ? scheme.error : scheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  unsupported
+                      ? '当前系统SDK无法选择文件夹，建议更新鸿蒙7。可先多选音频文件导入本地音乐。'
+                      : '文件级本地源：仅导入所选文件，不保留目录层级。',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: Text('已选择 ${_localFiles.length} 个音频文件',
+                  style: Theme.of(context).textTheme.bodyMedium),
+            ),
+            TextButton.icon(
+              onPressed: _pickingFiles ? null : _pickAudioFiles,
+              icon: _pickingFiles
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.add, size: 18),
+              label: Text(_pickingFiles ? '选择中…' : '选择音频文件'),
+            ),
+          ],
+        ),
+        if (_localFiles.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Text(
+              '还没有选择文件。支持 mp3 / flac / m4a / aac / ogg / wav / aiff，单次最多 500 个。',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+          )
+        else ...[
+          for (final f in _localFiles)
+            ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.audio_file_outlined, size: 20),
+              title: Text(f.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: Text(
+                f.size > 0 ? _formatBytes(f.size) : '大小未知',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: IconButton(
+                tooltip: '移除',
+                icon: const Icon(Icons.close, size: 18),
+                onPressed: () => setState(
+                    () => _localFiles.removeWhere((e) => e.ref == f.ref)),
+              ),
+            ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: _localFiles.isEmpty
+                  ? null
+                  : () => setState(() => _localFiles = []),
+              icon: const Icon(Icons.clear_all, size: 18),
+              label: const Text('清空'),
+            ),
+          ),
+        ],
+        Text(
+          '提示：保存后请点该源「扫描」建立索引；同目录歌词/封面不在授权范围，不会自动关联。',
+          style: Theme.of(context)
+              .textTheme
+              .bodySmall
+              ?.copyWith(color: scheme.onSurfaceVariant),
+        ),
+      ],
+    );
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes <= 0) return '大小未知';
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
 
   @override
@@ -1236,10 +1451,11 @@ class _SourceDialogState extends State<_SourceDialog> {
           children: [
             if (!_isEdit) ...[
               // 四个源类型在窄屏自动换行（2+2），不再横向滚动。
+              // 选择本地源时仍走 _onKindChanged（鸿蒙需探测文件夹选择能力）。
               SingleChoiceGroup<SourceKind>(
                 options: _mainKindOptions,
                 value: _kind,
-                onChanged: (v) => setState(() => _kind = v),
+                onChanged: _onKindChanged,
               ),
               const SizedBox(height: 16),
             ],
@@ -1248,18 +1464,36 @@ class _SourceDialogState extends State<_SourceDialog> {
               decoration: const InputDecoration(labelText: '名称（如 NAS / 本地音乐）'),
             ),
             if (isLocal) ...[
-              TextField(
-                controller: _path,
-                decoration: InputDecoration(
-                  labelText: '本地目录',
-                  hintText: '/home/user/Music',
-                  suffixIcon: IconButton(
-                    icon: const Icon(Icons.folder_open),
-                    tooltip: '选择目录',
-                    onPressed: _pickDirectory,
+              if (_folderSupported == null)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      SizedBox(width: 12),
+                      Expanded(child: Text('正在检测系统文件夹选择能力…')),
+                    ],
+                  ),
+                )
+              else if (_filesMode || _folderSupported == false)
+                _buildLocalFilesSection(context)
+              else
+                TextField(
+                  controller: _path,
+                  decoration: InputDecoration(
+                    labelText: '本地目录',
+                    hintText: '/home/user/Music',
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.folder_open),
+                      tooltip: '选择目录',
+                      onPressed: _pickDirectory,
+                    ),
                   ),
                 ),
-              ),
             ] else if (_kind == SourceKind.webdav) ...[
               TextField(
                 controller: _baseUrl,
@@ -1352,8 +1586,7 @@ class _SourceDialogState extends State<_SourceDialog> {
                 TextField(
                   controller: _keyPassphrase,
                   obscureText: true,
-                  decoration:
-                      const InputDecoration(labelText: '私钥口令（无则空）'),
+                  decoration: const InputDecoration(labelText: '私钥口令（无则空）'),
                 ),
               ],
               TextField(
@@ -1393,14 +1626,12 @@ class _SourceDialogState extends State<_SourceDialog> {
               ),
               TextField(
                 controller: _username,
-                decoration: const InputDecoration(
-                    labelText: '用户名（可空，空即匿名）'),
+                decoration: const InputDecoration(labelText: '用户名（可空，空即匿名）'),
               ),
               TextField(
                 controller: _password,
                 obscureText: true,
-                decoration: const InputDecoration(
-                    labelText: '密码（可空，空即匿名）'),
+                decoration: const InputDecoration(labelText: '密码（可空，空即匿名）'),
               ),
               const SizedBox(height: 8),
               OutlinedButton.icon(
@@ -1568,8 +1799,7 @@ class _DirectSourceCard extends StatelessWidget {
     final linePref = direct.linePrefOf(sourceKey);
     // 非本地源的播放链路（弹窗可配）：直连/代理二选一，互斥替换；
     // 本地源恒直连。代理才走服务端转码，直连恒原生地址。
-    final routeLabel =
-        isLocal || s.route == SourceRoute.direct ? '直连' : '代理';
+    final routeLabel = isLocal || s.route == SourceRoute.direct ? '直连' : '代理';
     final fbLabel = fbCount > 0 ? ' · 备×$fbCount' : '';
     final lineLabel = linePref == SourceLine.auto
         ? ''
@@ -1680,11 +1910,13 @@ class _SourceMenu extends StatelessWidget {
         const PopupMenuItem(value: 'edit', child: Text('编辑')),
         if (fbCount > 0) ...[
           const PopupMenuDivider(),
-          PopupMenuItem(value: 'line_auto', child: Text(lineLabel(SourceLine.auto))),
+          PopupMenuItem(
+              value: 'line_auto', child: Text(lineLabel(SourceLine.auto))),
           PopupMenuItem(
               value: 'line_primary',
               child: Text(lineLabel(SourceLine.primary))),
-          PopupMenuItem(value: 'line_fb0', child: Text(lineLabel(SourceLine.fb0))),
+          PopupMenuItem(
+              value: 'line_fb0', child: Text(lineLabel(SourceLine.fb0))),
           if (fbCount > 1)
             PopupMenuItem(
                 value: 'line_fb1', child: Text(lineLabel(SourceLine.fb1))),
