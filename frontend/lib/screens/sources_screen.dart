@@ -32,6 +32,11 @@ import '../widgets/view_mode_toggle.dart';
 
 const _remoteKindOptions = <SingleChoiceOption<SourceKind>>[
   SingleChoiceOption(
+    value: SourceKind.smb,
+    label: 'SMB',
+    icon: Icons.dns_outlined,
+  ),
+  SingleChoiceOption(
     value: SourceKind.webdav,
     label: 'WebDAV',
     icon: Icons.cloud_outlined,
@@ -40,34 +45,29 @@ const _remoteKindOptions = <SingleChoiceOption<SourceKind>>[
     value: SourceKind.sftp,
     label: 'SFTP',
     icon: Icons.storage_outlined,
-  ),
-  SingleChoiceOption(
-    value: SourceKind.smb,
-    label: 'SMB',
-    icon: Icons.dns_outlined,
   ),
 ];
 
 const _mainKindOptions = <SingleChoiceOption<SourceKind>>[
   SingleChoiceOption(
-    value: SourceKind.webdav,
-    label: 'WebDAV',
-    icon: Icons.cloud_outlined,
-  ),
-  SingleChoiceOption(
     value: SourceKind.local,
-    label: '本地文件夹',
+    label: '本地',
     icon: Icons.folder_outlined,
-  ),
-  SingleChoiceOption(
-    value: SourceKind.sftp,
-    label: 'SFTP',
-    icon: Icons.storage_outlined,
   ),
   SingleChoiceOption(
     value: SourceKind.smb,
     label: 'SMB',
     icon: Icons.dns_outlined,
+  ),
+  SingleChoiceOption(
+    value: SourceKind.webdav,
+    label: 'WebDAV',
+    icon: Icons.cloud_outlined,
+  ),
+  SingleChoiceOption(
+    value: SourceKind.sftp,
+    label: 'SFTP',
+    icon: Icons.storage_outlined,
   ),
 ];
 
@@ -89,7 +89,7 @@ const _routeOptions = <SingleChoiceOption<SourceRoute>>[
   ),
 ];
 
-/// 播放源管理页：直连源（WebDAV / 本地文件夹）列表（支持列表/卡片切换）。
+/// 播放源管理页：直连源（本地 / SMB / WebDAV / SFTP）列表（支持列表/卡片切换）。
 ///
 /// - 点击源卡片直接进入源内浏览（文件夹式导航）。
 /// - 卡片右侧「三点」菜单承载 编辑、删除等设置。
@@ -261,7 +261,7 @@ class _FallbackData {
   }
 }
 
-/// 新增/编辑播放源弹窗：按源类型切换字段（WebDAV / 本地文件夹 / SFTP / SMB）。
+/// 新增/编辑播放源弹窗：按源类型切换字段（本地 / SMB / WebDAV / SFTP）。
 class _SourceDialog extends StatefulWidget {
   final String? editKey;
   const _SourceDialog({this.editKey});

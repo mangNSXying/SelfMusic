@@ -80,12 +80,20 @@ void main() {
     expect(horizontalScrolls, isEmpty);
 
     expect(
-      tester.getTopLeft(find.text('SMB')).dy,
+      tester.getTopLeft(find.text('本地')).dy,
+      moreOrLessEquals(tester.getTopLeft(find.text('SMB')).dy, epsilon: 0.5),
+    );
+    expect(
+      tester.getTopLeft(find.text('WebDAV')).dy,
+      greaterThan(tester.getTopLeft(find.text('SMB')).dy),
+    );
+    expect(
+      tester.getTopLeft(find.text('SFTP')).dy,
       greaterThan(tester.getTopLeft(find.text('WebDAV')).dy),
     );
     final groupRect =
         tester.getRect(find.byType(SingleChoiceGroup<SourceKind>));
-    for (final label in ['WebDAV', '本地文件夹', 'SFTP', 'SMB']) {
+    for (final label in ['本地', 'SMB', 'WebDAV', 'SFTP']) {
       expect(
         tester.getRect(find.text(label)).right,
         lessThanOrEqualTo(groupRect.right),
