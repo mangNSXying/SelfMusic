@@ -14,10 +14,14 @@ import 'app_dialog_actions.dart';
 import 'app_toast.dart';
 import 'online_meta_detail_dialog.dart';
 
+enum _TagSource { lyrics, cover }
+
 /// 单曲在线获取（纯前端）：LRCLIB 歌词 + MB→CAA 封面 + 标签回填。
 ///
 /// 对标 MusicPlayer2 `LyricDownloadDlg / CoverDownloadDlg / GetTagOnlineDlg`
 /// 的手动路径：关键词可改→重搜→最佳匹配高亮→预览→保存/关联。
+/// 三页统一「点选候选 + 行尾查看 + 底部保存」：歌词/封面保存当前候选，
+/// 标签页选回填来源（歌词/封面候选）后由底部保存回填标题/歌手/专辑。
 /// 保存口径遵循设置 `online_meta_save_mode`（默认仅应用缓存）。
 class OnlineMetaDialog extends StatefulWidget {
   final Song song;
@@ -60,7 +64,13 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
   /// 封面字节缓存（详情查看/保存共用；新搜索清空，避免二次下载）。
   final Map<String, ({Uint8List bytes, String label})> _coverCache = {};
 
+  /// 标签回填的来源：歌词候选 / 封面候选（具体候选取对应页当前选中项）。
+  _TagSource _tagSource = _TagSource.lyrics;
+
   bool _tagSaving = false;
+
+  /// 当前页签（与 [_tabs] 同步；底部保存按钮按页签切换）。
+  late int _tabIndex;
 
   OnlineMetaLyricSource get _lyricSource =>
       context.read<DirectSourceManager>().settings.onlineMetaLyricSource;
@@ -68,6 +78,21 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
       context.read<DirectSourceManager>().settings.onlineMetaCoverSource;
   bool get _coverIsMb =>
       _coverSource == OnlineMetaCoverSource.mbCaa;
+
+  bool get _hasLyricCands => _lyrics.isNotEmpty;
+  bool get _hasCoverCands =>
+      _coverIsMb ? _recs.isNotEmpty : _trackCands.isNotEmpty;
+
+  /// 标签页实际生效的来源：所选来源还没有候选时落到另一来源。
+  _TagSource get _activeTagSource {
+    if (_tagSource == _TagSource.lyrics && !_hasLyricCands && _hasCoverCands) {
+      return _TagSource.cover;
+    }
+    if (_tagSource == _TagSource.cover && !_hasCoverCands && _hasLyricCands) {
+      return _TagSource.lyrics;
+    }
+    return _tagSource;
+  }
 
   @override
   void initState() {
@@ -79,6 +104,8 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
         length: 3,
         vsync: this,
         initialIndex: widget.initialTab.clamp(0, 2));
+    _tabIndex = _tabs.index;
+    _tabs.addListener(_onTabChanged);
     final direct = context.read<DirectSourceManager>();
     _svc = OnlineMetaService(
       index: direct.index,
@@ -99,6 +126,13 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
     _album.dispose();
     _tabs.dispose();
     super.dispose();
+  }
+
+  /// 底部保存按钮跟随页签：点按在 onTap 里立即切换，滑动在动画结束后切换。
+  void _onTabChanged() {
+    if (!mounted || _tabs.indexIsChanging) return;
+    if (_tabs.index == _tabIndex) return;
+    setState(() => _tabIndex = _tabs.index);
   }
 
   String get _qTitle => _title.text.trim();
@@ -350,29 +384,28 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
     }
   }
 
-  /// 标签回填（只写标题/歌手/专辑）：用当前选中的歌词/录音候选。
-  Future<void> _applyTagsFromLyric() async {
-    if (_lyrics.isEmpty || _tagSaving) return;
-    final c = _lyrics[_lyricSel.clamp(0, _lyrics.length - 1)];
-    await _applyTags(title: c.trackName, artist: c.artistName, album: c.albumName);
-  }
-
-  Future<void> _applyTagsFromRec() async {
-    if (_recs.isEmpty || _tagSaving) return;
-    final r = _recs[_recSel.clamp(0, _recs.length - 1)];
-    await _applyTags(
-      title: r.title,
-      artist: r.artist,
-      album: r.releaseTitle,
-    );
-  }
-
-  /// 标签回填：用 QQ/网易曲目候选。
-  Future<void> _applyTagsFromTrack() async {
-    if (_trackCands.isEmpty || _tagSaving) return;
-    final c = _trackCands[_trackSel.clamp(0, _trackCands.length - 1)];
-    await _applyTags(
-        title: c.trackName, artist: c.artistName, album: c.albumName);
+  /// 标签页底部保存：按当前选中的回填来源取对应页的选中候选。
+  Future<void> _saveTags() async {
+    if (_tagSaving) return;
+    if (_activeTagSource == _TagSource.lyrics) {
+      if (!_hasLyricCands) return;
+      final c = _lyrics[_lyricSel.clamp(0, _lyrics.length - 1)];
+      await _applyTags(
+          title: c.trackName, artist: c.artistName, album: c.albumName);
+    } else if (_coverIsMb) {
+      if (_recs.isEmpty) return;
+      final r = _recs[_recSel.clamp(0, _recs.length - 1)];
+      await _applyTags(
+        title: r.title,
+        artist: r.artist,
+        album: r.releaseTitle,
+      );
+    } else {
+      if (_trackCands.isEmpty) return;
+      final c = _trackCands[_trackSel.clamp(0, _trackCands.length - 1)];
+      await _applyTags(
+          title: c.trackName, artist: c.artistName, album: c.albumName);
+    }
   }
 
   /// 保存封面（QQ/网易曲目口径）：取字节（缓存/懒取）→ 应用；保存后留窗。
@@ -555,6 +588,7 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
                 Tab(text: '标签'),
               ],
               onTap: (i) {
+                setState(() => _tabIndex = i);
                 if (i == 1 &&
                     _recs.isEmpty &&
                     _trackCands.isEmpty &&
@@ -577,7 +611,47 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
           ],
         ),
       ),
-      actions: [appDialogCloseAction(context)],
+      actions: _bottomActions(),
+    );
+  }
+
+  /// 底部动作条：关闭 + 当前页签的保存按钮（三页同层级）。
+  List<Widget> _bottomActions() {
+    final save = switch (_tabIndex.clamp(0, 2)) {
+      1 => _coverSaveButton(),
+      2 => _tagSaveButton(),
+      _ => _lyricSaveButton(),
+    };
+    return [appDialogCloseAction(context), save];
+  }
+
+  Widget _lyricSaveButton() => FilledButton(
+        onPressed: (_lyrics.isEmpty || _lyricSaving || _lyricLoading)
+            ? null
+            : _saveLyrics,
+        child: Text(
+          _lyricSaving
+              ? '保存中…'
+              : _lyricLoading
+                  ? '加载中…'
+                  : '保存歌词',
+        ),
+      );
+
+  Widget _coverSaveButton() => FilledButton(
+        onPressed:
+            ((_coverIsMb ? _recs.isEmpty : _trackCands.isEmpty) || _coverSaving)
+                ? null
+                : (_coverIsMb ? _saveCover : _saveTrackCover),
+        child: Text(_coverSaving ? '保存中…' : '保存封面'),
+      );
+
+  Widget _tagSaveButton() {
+    final hasCands =
+        _activeTagSource == _TagSource.lyrics ? _hasLyricCands : _hasCoverCands;
+    return FilledButton(
+      onPressed: (hasCands && !_tagSaving) ? _saveTags : null,
+      child: Text(_tagSaving ? '保存中…' : '保存标签'),
     );
   }
 
@@ -684,7 +758,7 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
   }
 
   /// 候选行尾的「查看」按钮（打开独立详情窗）。
-  Widget _detailButton(VoidCallback onPressed, String tooltip) => IconButton(
+  Widget _detailButton(VoidCallback? onPressed, String tooltip) => IconButton(
         icon: const Icon(Icons.open_in_new, size: 18),
         tooltip: tooltip,
         visualDensity: VisualDensity.compact,
@@ -738,28 +812,6 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
           ),
         ),
         _statusLine(_lyricError, cs),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton(
-                onPressed: _tagSaving ? null : _applyTagsFromLyric,
-                child: Text(_tagSaving ? '回填中…' : '回填标题/歌手/专辑'),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: FilledButton(
-                onPressed: (_lyricSaving || _lyricLoading) ? null : _saveLyrics,
-                child: Text(_lyricSaving
-                    ? '保存中…'
-                    : _lyricLoading
-                        ? '加载中…'
-                        : '保存歌词'),
-              ),
-            ),
-          ],
-        ),
       ],
     );
   }
@@ -812,24 +864,6 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
           ),
         ),
         _statusLine(_coverError, cs),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton(
-                onPressed: _tagSaving ? null : _applyTagsFromRec,
-                child: Text(_tagSaving ? '回填中…' : '回填标题/歌手/专辑'),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: FilledButton(
-                onPressed: _coverSaving ? null : _saveCover,
-                child: Text(_coverSaving ? '保存中…' : '保存封面'),
-              ),
-            ),
-          ],
-        ),
       ],
     );
   }
@@ -880,71 +914,73 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
           ),
         ),
         _statusLine(_coverError, cs),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton(
-                onPressed: _tagSaving ? null : _applyTagsFromTrack,
-                child: Text(_tagSaving ? '回填中…' : '回填标题/歌手/专辑'),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: FilledButton(
-                onPressed: _coverSaving ? null : _saveTrackCover,
-                child: Text(_coverSaving ? '保存中…' : '保存封面'),
-              ),
-            ),
-          ],
-        ),
       ],
     );
   }
 
+  /// 标签页：像前两页一样点选「回填来源」，行尾查看对应候选详情，
+  /// 底部「保存标签」执行回填。
   Widget _tagTab() {
-    final hasLyric = _lyrics.isNotEmpty;
-    final hasRec = _recs.isNotEmpty;
-    final hasTrack = _trackCands.isNotEmpty;
-    final trackSel = _trackCands.isEmpty
-        ? null
-        : _trackCands[_trackSel.clamp(0, _trackCands.length - 1)];
-    return ListView(
-      children: [
-        const Text('从在线候选回填标题/歌手/专辑（空值不覆盖本地，扫描不再覆盖已回填行）。'),
-        const SizedBox(height: 12),
-        ListTile(
-          title: const Text('用歌词候选回填'),
-          subtitle: Text(hasLyric
-              ? '${_lyrics[_lyricSel.clamp(0, _lyrics.length - 1)].trackName} — ${_lyrics[_lyricSel.clamp(0, _lyrics.length - 1)].artistName}'
-              : '先在歌词页搜索'),
-          trailing: const Icon(Icons.chevron_right),
-          enabled: hasLyric && !_tagSaving,
-          onTap: hasLyric ? _applyTagsFromLyric : null,
-        ),
-        if (_coverIsMb)
-          ListTile(
-            title: const Text('用封面候选（MB录音）回填'),
-            subtitle: Text(hasRec
-                ? '${_recs[_recSel.clamp(0, _recs.length - 1)].title} — ${_recs[_recSel.clamp(0, _recs.length - 1)].artist}'
-                : '先在封面页搜索'),
-            trailing: const Icon(Icons.chevron_right),
-            enabled: hasRec && !_tagSaving,
-            onTap: hasRec ? _applyTagsFromRec : null,
-          )
-        else
-          ListTile(
-            title: Text('用封面候选（${_coverSource.label}）回填'),
-            subtitle: Text(hasTrack && trackSel != null
-                ? '${trackSel.trackName} — ${trackSel.artistName}'
-                : '先在封面页搜索'),
-            trailing: const Icon(Icons.chevron_right),
-            enabled: hasTrack && !_tagSaving,
-            onTap: hasTrack ? _applyTagsFromTrack : null,
+    final lyricCand =
+        _hasLyricCands ? _lyrics[_lyricSel.clamp(0, _lyrics.length - 1)] : null;
+    final rec = _coverIsMb && _recs.isNotEmpty
+        ? _recs[_recSel.clamp(0, _recs.length - 1)]
+        : null;
+    final track = !_coverIsMb && _trackCands.isNotEmpty
+        ? _trackCands[_trackSel.clamp(0, _trackCands.length - 1)]
+        : null;
+    final coverSubtitle = rec != null
+        ? '${rec.title} — ${rec.artist.isEmpty ? '未知歌手' : rec.artist}'
+        : track != null
+            ? '${track.trackName} — ${track.artistName.isEmpty ? '未知歌手' : track.artistName}'
+            : '先在封面页搜索';
+    return RadioGroup<_TagSource>(
+      groupValue: _activeTagSource,
+      onChanged: (v) => setState(() => _tagSource = v ?? _TagSource.lyrics),
+      child: ListView(
+        children: [
+          const Text('选择回填来源（点选后底部保存；空值不覆盖本地，扫描不再覆盖已回填行）。'),
+          const SizedBox(height: 4),
+          RadioListTile<_TagSource>(
+            dense: true,
+            value: _TagSource.lyrics,
+            controlAffinity: ListTileControlAffinity.leading,
+            enabled: _hasLyricCands,
+            title: const Text('用歌词候选回填'),
+            subtitle: Text(lyricCand != null
+                ? '${lyricCand.trackName} — ${lyricCand.artistName}'
+                : '先在歌词页搜索'),
+            secondary: _detailButton(
+              _hasLyricCands ? () => _openLyricDetail(_lyricSel) : null,
+              '查看歌词详情',
+            ),
           ),
-        const Divider(),
-        const Text('说明：只回填标题/歌手/专辑，不含流派/年份/曲目号；封面/歌词请在前两页单独保存。'),
-      ],
+          RadioListTile<_TagSource>(
+            dense: true,
+            value: _TagSource.cover,
+            controlAffinity: ListTileControlAffinity.leading,
+            enabled: _hasCoverCands,
+            title: Text(_coverIsMb
+                ? '用封面候选（MB录音）回填'
+                : '用封面候选（${_coverSource.label}）回填'),
+            subtitle: Text(coverSubtitle),
+            secondary: _detailButton(
+              _hasCoverCands
+                  ? () {
+                      if (_coverIsMb) {
+                        _openMbCoverDetail(_recSel);
+                      } else {
+                        _openTrackCoverDetail(_trackSel);
+                      }
+                    }
+                  : null,
+              '查看封面详情',
+            ),
+          ),
+          const Divider(),
+          const Text('说明：只回填标题/歌手/专辑，不含流派/年份/曲目号；封面/歌词请在前两页单独保存。'),
+        ],
+      ),
     );
   }
 
