@@ -180,6 +180,9 @@ class AppSettings {
 
   /// 存量补推已执行的配对 client_id（设备本地标记，不进 [knownKeys]）：
   static const String kPlayModeDefault = 'play_mode_default';
+
+  /// 随机播放模式下是否启用加权随机（默认开；关=普通随机/不放回）。
+  static const String kWeightedRandomEnabled = 'weighted_random_enabled';
   static const String kResumeOnStartup = 'resume_on_startup';
   static const String kPlayerShowWeight = 'player_show_weight';
   static const String kPlayerGestureSwipe = 'player_gesture_swipe';
@@ -426,10 +429,19 @@ class AppSettings {
   // ---------- 播放分区（settings.md §3.2） ----------
 
   /// 默认播放模式（sequence / loopList / loopOne / weighted）。
+  /// `weighted` 的显示名为「随机播放」，实际算法由 [weightedRandomEnabled] 决定。
   String get playModeDefault =>
       index.settingsGet(kPlayModeDefault) ?? defaultPlayMode;
   set playModeDefault(String v) =>
       index.settingsSet(kPlayModeDefault, v);
+
+  /// 随机播放模式下是否启用加权随机（默认开）。
+  /// 关闭后为普通随机：按深层列表做不放回抽取（见 PlayerProvider 的
+  /// shuffleCandidateIndices），此时次数/曲数冷却设置不生效。
+  bool get weightedRandomEnabled =>
+      (index.settingsGet(kWeightedRandomEnabled) ?? '1') == '1';
+  set weightedRandomEnabled(bool v) =>
+      index.settingsSet(kWeightedRandomEnabled, v ? '1' : '0');
 
   /// 断点续播开关：启动时是否恢复上次队列与位置（恢复为暂停态）。
   bool get resumeOnStartup =>
@@ -461,7 +473,7 @@ class AppSettings {
       index.settingsSet(kSleepDefaultCount, v.toString());
 
   /// 预载下一首（默认开）：播放某首歌时按播放顺序算法确定下一首并后台缓存
-  /// （加权随机也先抽样确定，切歌时复用同一结果），开关只决定是否预载。
+  /// （随机播放也先抽样确定，切歌时复用同一结果），开关只决定是否预载。
   bool get preloadNext => (index.settingsGet(kPreloadNext) ?? '1') == '1';
   set preloadNext(bool v) => index.settingsSet(kPreloadNext, v ? '1' : '0');
 
@@ -896,6 +908,7 @@ class AppSettings {
     kSyncEnabled,
     kLastSyncAt,
     kPlayModeDefault,
+    kWeightedRandomEnabled,
     kResumeOnStartup,
     kPlayerShowWeight,
     kPlayerGestureSwipe,

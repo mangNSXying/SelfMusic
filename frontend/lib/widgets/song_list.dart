@@ -191,7 +191,7 @@ class _SongListState extends State<SongList> {
   }
 
   /// 「播放 / 从头播放」。[startWithOrder] 为 true 时起始曲按当前播放顺序
-  /// 算法决定（加权=权重抽样、列表循环=接续当前曲、顺序/单曲=首曲），
+  /// 算法决定（随机播放=加权/普通随机抽样、列表循环=接续当前曲、顺序/单曲=首曲），
   /// 否则固定首曲。
   Future<void> _playAll({required bool startWithOrder}) async {
     final provider = context.read<PlaylistsProvider>();

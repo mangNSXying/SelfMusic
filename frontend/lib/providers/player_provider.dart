@@ -77,8 +77,9 @@ extension PlayModeParse on PlayMode {
 /// 全局播放状态：统一持有 AudioPlayer 与播放队列，供播放页与队列面板共享。
 ///
 /// 阶段 2（stage2.md §2/§3/§7）：
-/// - 四种播放模式（顺序/列表循环/单曲循环/加权随机）。
-/// - 加权随机：每步从队列全量（排除上一首）按 factor 权重采样，不连续同一首。
+/// - 四种播放模式（顺序/列表循环/单曲循环/随机播放）。
+/// - 随机播放：加权开启时每步从队列全量（排除上一首）按 factor 权重采样；
+///   加权关闭时按完整基座 - 深层列表已播身份做普通随机（不放回）。
 /// - 事件采集：播放时长 >95% 记完播、<30% 记跳过、30%~95% 不记 → SongWeightStore 调权。
 /// - 断点：节流持久化 play_state，启动恢复为暂停态。
 class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
@@ -125,9 +126,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 上一次 playerStateStream 的 playing：只在「实际播放态变化」时通知 UI。
   bool _lastPlayerStatePlaying = false;
 
-  /// 加权抽样的随机源：种子取构造时刻的时间戳（同其他语言 `Random(seed)` 的
-  /// 因子），整实例复用同一条 PRNG 流；构造参数 [rng] 可注入固定种子的实例，
-  /// 用于确定性单测复现序列。
+  /// 随机抽样（加权 / 普通）的随机源：种子取构造时刻的时间戳（同其他语言
+  /// `Random(seed)` 的因子），整实例复用同一条 PRNG 流；构造参数 [rng] 可注入
+  /// 固定种子的实例，用于确定性单测复现序列。
   final Random _rng;
 
   /// 当前播放器构造时套用的音频焦点开关（供 [_applyAudioConfigIfNeeded] 比对）。
@@ -1679,6 +1680,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
   PlayMode get mode => _mode;
 
+  /// 随机播放模式是否启用加权随机（默认开）。
+  /// 关闭后为普通随机：池 = 完整基座 - 深层列表已播身份 - 当前曲，
+  /// 按深层列表容量自然换轮（不放回抽取）。
+  bool get weightedRandomEnabled =>
+      _appSettings?.weightedRandomEnabled ?? true;
+
   /// 是否为当前播放曲（按 sourceKey + sourceRef，避免多源 id 碰撞）。
   bool isCurrent(Song s) {
     final c = _current;
@@ -1701,6 +1708,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_mode == m) return;
     _mode = m;
     _peekedNext = null; // 模式变了，旧的预取结果作废
+    // 离开加权随机时，未落账的拒绝采样计数与次数冷却计数不再有意义。
+    if (m != PlayMode.weighted) {
+      _pendingWeightedRejections = const <String, int>{};
+      _weightedDrawCounts.clear();
+    }
     final s = _appSettings;
     if (s != null && s.playModeDefault != m.name) {
       s.playModeDefault = m.name;
@@ -1717,6 +1729,19 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     setMode(next);
   }
 
+  /// 设置页切换「加权随机」开关后调用：作废旧算法预取的下一首，
+  /// 关闭加权时丢弃未落账的拒绝采样计数。深层列表保持不变——它本身就是
+  /// 普通随机的轮次状态（池 = 基座 - 深层列表）。
+  void onRandomAlgorithmChanged() {
+    _peekedNext = null;
+    if (!weightedRandomEnabled) {
+      _pendingWeightedRejections = const <String, int>{};
+      _weightedDrawCounts.clear();
+    }
+    notifyListeners();
+    _onNextChanged?.call(nextUpSong);
+  }
+
   // ---------- 队列装载 ----------
 
   /// 载入一个播放队列并从 [index] 开始播放。
@@ -1731,7 +1756,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 锚定语义（深层列表功能）：
   /// - 手动点播一律替换深层末尾（不增长）：首个列表即锚定并建融合队列；
   ///   同锚定键点歌 / 其它列表点歌都不切 base、不重建队列，仅换尾；
-  /// - 自动推进（自然播完 / 失败跳歌 / 加权抽样 / 删当前曲续播 / 断点恢复）
+  /// - 自动推进（自然播完 / 失败跳歌 / 随机抽样 / 删当前曲续播 / 断点恢复）
   ///   才推入深层末尾；
   /// - resetAnchor 清空深层 + 重锚到目标歌单。
   Future<void> playQueue(List<Song> songs,
@@ -1981,7 +2006,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// [fromPlaylist]：true = 自动推进（推入深层末尾）；false = 手动点播
   /// （替换深层末尾，不增长）。调用方约定：playAt / playQueue 手动路径一律
-  /// false；_advance / _playWeighted / 删当前曲续播 / 断点恢复一律 true。
+  /// false；_advance / _playRandom / 删当前曲续播 / 断点恢复一律 true。
   /// [autoAdvanceOnFailure]：自动续播链路（自然播完/失败跳歌）专用——装载彻底失败
   /// 时不逐首弹 toast，直接跳下一首（见 [_autoSkipAfterFailure]）。
   /// [manual]：本曲是否用户手动点播（playAt/playQueue）——自然完播时额外走
@@ -2641,7 +2666,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // ---------- 前进/后退 ----------
 
-  /// 预取的下一首（加权随机用它保证「确定的结果 = 实际播放」；其余模式可随时重算）。
+  /// 预取的下一首（随机播放用它保证「确定的结果 = 实际播放」；其余模式可随时重算）。
   Song? _peekedNext;
 
   // ---------- 加权随机削峰（冷却） ----------
@@ -2706,7 +2731,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 【削峰补丁】加权随机实际播放落账：结算上一次抽样链的抛弃次数，并把本首歌
   /// 的次数计数重置为 0（不清映射——落账即「播放过」，离开曲数窗口后被抽中时
   /// 规则1 生效；规则2 的「近期已播」由深层列表末端自然承担）。
-  /// 必须在歌曲真正起播时调用一次（见 [_playWeighted] 与 [startIndexForPlaylist]）。
+  /// 必须在歌曲真正起播时调用一次（见 [_playRandom] 与 [startIndexForPlaylist]）。
   void _commitWeightedPlay(Song s) {
     _pendingWeightedRejections.forEach((key, times) {
       _weightedDrawCounts[key] = (_weightedDrawCounts[key] ?? 0) + times;
@@ -2716,7 +2741,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 按当前播放顺序算法确定下一首（不播放，只确定；开关与预载无关）：
-  /// 顺序/列表循环/单曲循环可确定；加权随机先按权重抽样并记住，
+  /// 顺序/列表循环/单曲循环可确定；随机播放先抽样并记住，
   /// 切歌时复用同一结果，保证预载命中。
   Song? peekNext() {
     if (_queue.isEmpty || _current == null) return null;
@@ -2741,7 +2766,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       return _peekedNext;
     }
     if (_mode == PlayMode.weighted) {
-      _peekedNext = _pickWeighted();
+      _peekedNext = _pickRandom();
       return _peekedNext;
     }
     // 预取口径与 [_advance] 一致：落到接缝复本上则越过一位，越过队尾即无下一首。
@@ -2767,10 +2792,17 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 取出并校验预取的下一首（队列/当前曲变化后失效则返回 null 重新采样）。
+  /// 普通随机按完整基座 [_randomAll] 校验：基座里存在、但融合队列暂时没有的
+  /// 未播歌同样有效（播放后由深层列表重建融合队列）。
   Song? _takePeeked() {
     final p = _peekedNext;
     _peekedNext = null;
     if (p == null || _current == null || _same(p, _current!)) return null;
+    if (_mode == PlayMode.weighted && !weightedRandomEnabled) {
+      final all = _randomAll;
+      final i = all.indexWhere((s) => _same(s, p));
+      return i < 0 ? null : all[i];
+    }
     final i = _queue.indexWhere((s) => _same(s, p));
     return i < 0 ? null : _queue[i];
   }
@@ -2806,7 +2838,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     if (_mode == PlayMode.weighted) {
-      await _playWeighted(
+      await _playRandom(
           autoAdvanceOnFailure: autoAdvanceOnFailure, play: play);
       return;
     }
@@ -2937,14 +2969,20 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// 加权随机下一首（stage2.md §2.2）：优先采用 peekNext 已抽样的结果
-  /// （保证预载的就是实际要播的），失效则重新从队列全量排除上一首按 factor 采样。
-  Future<void> _playWeighted(
+  /// 随机播放下一首（stage2.md §2.2）：优先采用 peekNext 已抽样的结果
+  /// （保证预载的就是实际要播的），失效则重新抽样。
+  /// 加权开启：从队列全量排除上一首按 factor 采样并落账冷却；
+  /// 加权关闭：普通随机，池 = 完整基座 - 深层列表已播身份 - 当前曲。
+  Future<void> _playRandom(
       {bool autoAdvanceOnFailure = false, bool play = true}) async {
-    final picked = _takePeeked() ?? _pickWeighted();
+    final picked = _takePeeked() ?? _pickRandom();
     if (picked == null) return;
-    // 【削峰补丁】抽样已确定、即将起播 → 落账冷却（结算抛弃次数 + 重置本歌）。
-    _commitWeightedPlay(picked);
+    if (weightedRandomEnabled) {
+      // 【削峰补丁】抽样已确定、即将起播 → 落账冷却（结算抛弃次数 + 重置本歌）。
+      _commitWeightedPlay(picked);
+    }
+    // 普通随机不需要额外落账：实际播放成功后 [_trackDeepList] 会把本曲
+    // 推入深层列表，池 = 基座 - 深层列表自然前移；深层满容量时自动换轮。
     // 定位优先深层尾（同 [_rebuildFusedQueue]；播后重建还会再纠一次）。
     final i = locateCurrentIndex(
         _queue, _deepList?.length ?? 0, picked, _same);
@@ -2955,10 +2993,73 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         play: play);
   }
 
+  /// 按当前随机算法抽一首。
+  Song? _pickRandom() => weightedRandomEnabled ? _pickWeighted() : _pickShuffle();
+
   /// 按权重随机抽一首（排除当前曲；只剩当前曲时允许重播）。
   Song? _pickWeighted() {
     final i = _weightedPickIndex(_queue, _current);
     return i == null ? null : _queue[i];
+  }
+
+  /// 普通随机池的「全量」：锚定上下文用完整基座（融合队列可能因深层历史
+  /// 投影漏掉未播歌），非锚定队列用当前队列（[_fusedBase] 在非锚定时可能
+  /// 只是初始快照，队列增删后不会同步）。
+  List<Song> get _randomAll {
+    final base = _fusedBase;
+    if (_deepList != null && base != null && base.isNotEmpty) return base;
+    return _queue;
+  }
+
+  /// 深层列表已播身份集合（普通随机的“不放回”状态）。
+  /// 深层列表是持久化/同步的历史栈，容量满后由 [DeepListController.pushPlayed]
+  /// 自动清空换轮；因此普通随机不额外维护已抽集合。
+  Set<String> get _deepKeys {
+    final dl = _deepList;
+    if (dl == null) return const <String>{};
+    return {for (final s in dl.entries) weightedKeyOf(s)};
+  }
+
+  /// 普通随机候选下标（纯函数，便于单测）：
+  /// 从 [all] 按身份去重，排除当前曲与 [deepKeys] 中已播的歌。
+  /// 若剩余为空（本轮已播完），返回“除当前曲外的全部唯一曲目”作为新一轮候选；
+  /// 若池里只有当前曲，返回当前曲下标以允许重播。
+  @visibleForTesting
+  static List<int> shuffleCandidateIndices(
+      List<Song> all, Set<String> deepKeys, String? currentKey) {
+    final seen = <String>{};
+    final candidates = <int>[];
+    final restart = <int>[];
+    final firstUnique = <int>[];
+    for (var i = 0; i < all.length; i++) {
+      final key = weightedKeyOf(all[i]);
+      if (!seen.add(key)) continue;
+      firstUnique.add(i);
+      if (currentKey != null && key == currentKey) continue;
+      restart.add(i);
+      if (!deepKeys.contains(key)) candidates.add(i);
+    }
+    if (candidates.isNotEmpty) return candidates;
+    if (restart.isNotEmpty) return restart;
+    return firstUnique.isEmpty ? const [] : [firstUnique.first];
+  }
+
+  /// 普通随机抽一个池内下标；[all] 为空返回 null。
+  int? _shufflePickIndex(List<Song> all, Set<String> deepKeys, Song? exclude) {
+    final candidates = PlayerProvider.shuffleCandidateIndices(
+      all,
+      deepKeys,
+      exclude == null ? null : weightedKeyOf(exclude),
+    );
+    if (candidates.isEmpty) return null;
+    return candidates[_rng.nextInt(candidates.length)];
+  }
+
+  /// 普通随机抽一首（排除当前曲；池空时开新一轮）。
+  Song? _pickShuffle() {
+    final all = _randomAll;
+    final i = _shufflePickIndex(all, _deepKeys, _current);
+    return i == null ? null : all[i];
   }
 
   /// 加权抽样的下标版（队列下一首与歌单起播共用）：
@@ -2981,7 +3082,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (exclude == null || !_same(pool[i], exclude)) i,
     ];
     // 只剩当前曲（或全被排除）时退回全量，允许重播。
-    if (candidates.isEmpty) candidates = [for (var i = 0; i < pool.length; i++) i];
+    if (candidates.isEmpty) {
+      candidates = [for (var i = 0; i < pool.length; i++) i];
+    }
     // 规则2 窗口 = 列表长度 × 设置比例（默认 20%；比例 0=关闭规则2）；
     // 冷却集合 = 深层列表（持久化播放历史）末尾 window 条，直接从候选池剔除
     // （窗口覆盖整表时保留全量，交由规则1 兜底）。
@@ -3090,7 +3193,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 歌单「播放」的起始下标（改进.txt：按当前播放顺序决定，而非固定从头）：
   /// - 顺序 / 单曲循环：首曲；
   /// - 列表循环：当前曲在歌单内则接续其后（末尾回绕到首曲），否则首曲；
-  /// - 加权随机：按权重抽样（[weightedIndex] 由调用方给出，null 时退回首曲）。
+  /// - 随机播放：采用抽样下标（加权或普通随机由调用方决定，null 时退回首曲）。
   ///
   /// 纯函数（不依赖实例状态），便于直接单测；实例入口见 [startIndexForPlaylist]。
   static int startIndexForOrder(PlayMode mode, int length,
@@ -3109,23 +3212,31 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// 实例版起播下标：把「当前曲在歌单内的位置」与「加权抽样结果」喂给
-  /// [startIndexForOrder]（加权模式在此抽样，与队列下一首同一套权重逻辑）。
-  /// 「播放/从头播放」会重锚清空深层列表，故起播抽样不带历史冷却
-  /// （[useHistoryCooldown] = false）。
+  /// 实例版起播下标：把「当前曲在歌单内的位置」与随机抽样结果喂给
+  /// [startIndexForOrder]。
+  /// - 加权开启：按权重抽样（不带历史冷却——「播放/从头播放」会重锚清空深层列表）；
+  /// - 加权关闭：普通随机，新上下文深层列表为空，池 = 歌单 - 当前曲。
   int startIndexForPlaylist(List<Song> songs) {
     if (songs.isEmpty) return 0;
     final cur = _current;
     final currentIndex =
         cur == null ? -1 : songs.indexWhere((s) => _same(s, cur));
-    final weightedIndex = _mode == PlayMode.weighted
-        ? _weightedPickIndex(songs, cur, useHistoryCooldown: false)
-        : null;
+    int? pickedIndex;
+    if (_mode == PlayMode.weighted) {
+      pickedIndex = weightedRandomEnabled
+          ? _weightedPickIndex(songs, cur, useHistoryCooldown: false)
+          : _shufflePickIndex(songs, const <String>{}, cur);
+    }
     final start = startIndexForOrder(_mode, songs.length,
         currentIndex: currentIndex < 0 ? null : currentIndex,
-        weightedIndex: weightedIndex);
+        weightedIndex: pickedIndex);
     // 【削峰补丁】加权起播：抽样已确定起始曲，落账冷却。
-    if (weightedIndex != null && start >= 0 && start < songs.length) {
+    // 普通随机无需落账：playQueue 起播后 [_trackDeepList] 会替换深层末尾，
+    // 下一首自然从“基座 - 深层列表”继续。
+    if (weightedRandomEnabled &&
+        pickedIndex != null &&
+        start >= 0 &&
+        start < songs.length) {
       _commitWeightedPlay(songs[start]);
     }
     return start;

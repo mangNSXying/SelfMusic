@@ -3,7 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../providers/player_provider.dart';
 
-/// 播放模式选择（stage2.md §3）：顺序 / 列表循环 / 单曲循环 / 加权随机。
+/// 播放模式选择（stage2.md §3）：顺序 / 列表循环 / 单曲循环 / 随机播放。
 class PlayModeSelector extends StatelessWidget {
   const PlayModeSelector({super.key});
 
@@ -40,6 +40,6 @@ class PlayModeSelector extends StatelessWidget {
         PlayMode.sequence => '顺序播放',
         PlayMode.loopList => '列表循环',
         PlayMode.loopOne => '单曲循环',
-        PlayMode.weighted => '加权随机',
+        PlayMode.weighted => '随机播放',
       };
 }

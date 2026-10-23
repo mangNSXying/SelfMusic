@@ -1453,7 +1453,7 @@ class _SongsSettingsState extends State<_SongsSettings> {
         ),
         SwitchListTile(
           title: const Text('时长削弱'),
-          subtitle: const Text('开启后加权随机按歌曲时长乘削弱系数（长歌权重降低；抽样即时生效，不落库）'),
+          subtitle: const Text('开启后加权随机按歌曲时长乘削弱系数（长歌权重降低；仅加权随机开启时生效）'),
           value: _settings.weightCurveEnabled,
           onChanged: (v) {
             setState(() => _settings.weightCurveEnabled = v);
@@ -1949,7 +1949,7 @@ class _SongsSettingsState extends State<_SongsSettings> {
   }
 }
 
-/// 播放设置（settings.md §3.2）：默认播放模式 / 加权随机削峰（次数·曲数冷却）/
+/// 播放设置（settings.md §3.2）：默认播放模式 / 加权随机开关与削峰（次数·曲数冷却）/
 /// 断点续播 / 淡入淡出 / 均衡器。
 class _PlaybackSettings extends StatefulWidget {
   const _PlaybackSettings();
@@ -1986,23 +1986,34 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
         ListTile(
           leading: const Icon(Icons.playlist_play),
           title: const Text('默认播放模式'),
-          subtitle: Text(_modeLabel(current)),
+          subtitle: Text(_modeSubtitle(current)),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _pickMode(context, current),
+        ),
+        SwitchListTile(
+          title: const Text('加权随机'),
+          subtitle: const Text('关闭后为普通随机：按深层列表不放回抽取，一轮内不重复，播完自动换轮'),
+          value: _settings.weightedRandomEnabled,
+          onChanged: (v) {
+            setState(() => _settings.weightedRandomEnabled = v);
+            context.read<PlayerProvider>().onRandomAlgorithmChanged();
+          },
         ),
         ListTile(
           leading: const Icon(Icons.waves),
           title: const Text('加权随机·次数冷却'),
           subtitle: Text(_drawCooldownSummary(_settings.weightedDrawCooldown)),
           trailing: const Icon(Icons.chevron_right),
-          onTap: _pickDrawCooldown,
+          enabled: _settings.weightedRandomEnabled,
+          onTap: _settings.weightedRandomEnabled ? _pickDrawCooldown : null,
         ),
         ListTile(
           leading: const Icon(Icons.timeline),
           title: const Text('加权随机·曲数冷却'),
           subtitle: Text(_countCooldownSummary(_settings.weightedCountCooldownRatio)),
           trailing: const Icon(Icons.chevron_right),
-          onTap: _editCountCooldown,
+          enabled: _settings.weightedRandomEnabled,
+          onTap: _settings.weightedRandomEnabled ? _editCountCooldown : null,
         ),
         SwitchListTile(
           title: const Text('断点续播自动恢复'),
@@ -2196,8 +2207,15 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
         PlayMode.sequence => '顺序播放',
         PlayMode.loopList => '列表循环',
         PlayMode.loopOne => '单曲循环',
-        PlayMode.weighted => '加权随机',
+        PlayMode.weighted => '随机播放',
       };
+
+  String _modeSubtitle(PlayMode m) {
+    if (m != PlayMode.weighted) return _modeLabel(m);
+    return _settings.weightedRandomEnabled
+        ? '随机播放 · 加权'
+        : '随机播放 · 普通（不放回）';
+  }
 
   static String _drawCooldownSummary(WeightedDrawCooldown cd) =>
       cd == WeightedDrawCooldown.off

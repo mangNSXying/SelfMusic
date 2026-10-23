@@ -2251,7 +2251,7 @@ class _ModeButton extends StatelessWidget {
         PlayMode.sequence => '顺序播放',
         PlayMode.loopList => '列表循环',
         PlayMode.loopOne => '单曲循环',
-        PlayMode.weighted => '加权随机',
+        PlayMode.weighted => '随机播放',
       };
 }
 
