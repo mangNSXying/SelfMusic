@@ -119,10 +119,18 @@ class _SourcesScreenState extends State<SourcesScreen>
   Widget build(BuildContext context) {
     super.build(context);
     final direct = context.watch<DirectSourceManager>();
+    // 顶栏搜索在播放源列表页按源名称过滤（进入源内后切换为搜索该源歌曲）。
+    final search = context.select<NavigationProvider, String>((n) => n.search);
     final scheme = Theme.of(context).colorScheme;
     final card = isCard;
+    final q = search.trim().toLowerCase();
+    final all = direct.sources;
     final sources = sortByCollection(
-        direct.sources, direct.settings.sortSources, (s) => s.name,
+        q.isEmpty
+            ? all
+            : all.where((s) => s.name.toLowerCase().contains(q)).toList(),
+        direct.settings.sortSources,
+        (s) => s.name,
         countOf: (s) => direct.countOf(s.key));
 
     return Stack(
@@ -149,7 +157,7 @@ class _SourcesScreenState extends State<SourcesScreen>
               child: sources.isEmpty
                   ? Padding(
                       padding: const EdgeInsets.symmetric(vertical: 24),
-                      child: Text('尚未添加播放源，点右下角「+」添加',
+                      child: Text(all.isEmpty ? '尚未添加播放源，点右下角「+」添加' : '无匹配播放源',
                           textAlign: TextAlign.center,
                           style: TextStyle(color: scheme.onSurfaceVariant)),
                     )

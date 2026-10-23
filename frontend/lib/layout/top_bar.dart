@@ -3,7 +3,7 @@ import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
 import '../theme/app_theme.dart';
 
-/// 顶栏：上层 = 汉堡 + 搜索框；下层 = 导航（歌单/喜欢/播放源/歌曲/专辑/歌手）。
+/// 顶栏：上层 = 汉堡 + 搜索框（提示语随当前区域变化）；下层 = 导航（歌单/喜欢/播放源/歌曲/专辑/歌手）。
 class TopBar extends StatelessWidget {
   final VoidCallback onSidebarToggle;
   const TopBar({
@@ -17,8 +17,9 @@ class TopBar extends StatelessWidget {
     // 设置标题需刷新，故用 record 而非单独 inSettings）。
     // 高亮由 [_NavBar] 自行订阅 `section`；搜索框由 [_UpperRow] 自持监听。
     final nav = context.read<NavigationProvider>();
-    final (inSettings, _) = context.select<NavigationProvider, (bool, SettingsItem?)>(
-        (n) => (n.inSettings, n.settings));
+    final (inSettings, _) =
+        context.select<NavigationProvider, (bool, SettingsItem?)>(
+            (n) => (n.inSettings, n.settings));
 
     final Widget bar = inSettings
         ? _SettingsTopBar(nav: nav, onSidebarToggle: onSidebarToggle)
@@ -82,6 +83,10 @@ class _UpperRowState extends State<_UpperRow> {
   @override
   Widget build(BuildContext context) {
     final nav = widget.nav;
+    // 提示语随区域变化（源名/源内歌曲/歌单歌曲……）；输入期间不变，
+    // 故不会因每次按键重建输入行。
+    final hint =
+        context.select<NavigationProvider, String>((n) => n.searchHint);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
       child: Row(
@@ -104,7 +109,7 @@ class _UpperRowState extends State<_UpperRow> {
               onTapOutside: (_) => _searchFocus.unfocus(),
               textInputAction: TextInputAction.search,
               decoration: InputDecoration(
-                hintText: '搜索标题 / 艺术家',
+                hintText: hint,
                 prefixIcon: const Icon(Icons.search),
                 isDense: true,
                 suffixIcon: _searchCtrl.text.isEmpty
@@ -149,7 +154,8 @@ class _NavBarState extends State<_NavBar> {
   Widget build(BuildContext context) {
     // 订阅收窄（T004）：高亮只依赖 `section`；拖拽期跟手条带/高亮由
     // pageOffset（ValueNotifier）独立逐帧驱动，避免每次区段变更牵连整树。
-    final section = context.select<NavigationProvider, NavSection>((n) => n.section);
+    final section =
+        context.select<NavigationProvider, NavSection>((n) => n.section);
     // 窄屏下导航项横排可横向滑动；宽屏下居中分布。
     final colorScheme = Theme.of(context).colorScheme;
     return SizedBox(
@@ -161,8 +167,8 @@ class _NavBarState extends State<_NavBar> {
           if (_scroll.hasClients) {
             final max = _scroll.position.maxScrollExtent;
             if (max > 0) {
-              final target =
-                  max * (page.clamp(0.0, NavSection.values.length - 1.0) /
+              final target = max *
+                  (page.clamp(0.0, NavSection.values.length - 1.0) /
                       (NavSection.values.length - 1));
               if ((_scroll.offset - target).abs() > 0.5) {
                 _scroll.jumpTo(target);
@@ -178,8 +184,7 @@ class _NavBarState extends State<_NavBar> {
             itemBuilder: (c, i) {
               final s = NavSection.values[i];
               // 跟手高亮：按与实时页码的距离在相邻两项间插值。
-              final w =
-                  (1 - (page - i).abs()).clamp(0.0, 1.0);
+              final w = (1 - (page - i).abs()).clamp(0.0, 1.0);
               final selected = section == s && w > 0.5;
               final color = Color.lerp(
                   colorScheme.onSurface.withValues(alpha: 0.75),
@@ -240,11 +245,18 @@ class _SettingsTopBar extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
           child: Row(
             children: [
-              IconButton(icon: const Icon(Icons.menu), tooltip: '伸缩侧边栏', onPressed: onSidebarToggle),
+              IconButton(
+                  icon: const Icon(Icons.menu),
+                  tooltip: '伸缩侧边栏',
+                  onPressed: onSidebarToggle),
               const SizedBox(width: 4),
-              IconButton(icon: const Icon(Icons.arrow_back), tooltip: '返回', onPressed: nav.closeSettings),
+              IconButton(
+                  icon: const Icon(Icons.arrow_back),
+                  tooltip: '返回',
+                  onPressed: nav.closeSettings),
               const SizedBox(width: 8),
-              Text(nav.settings?.label ?? '设置', style: Theme.of(context).textTheme.titleMedium),
+              Text(nav.settings?.label ?? '设置',
+                  style: Theme.of(context).textTheme.titleMedium),
             ],
           ),
         ),

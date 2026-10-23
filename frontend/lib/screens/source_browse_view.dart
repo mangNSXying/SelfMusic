@@ -32,7 +32,8 @@ import '../widgets/toolbar_icon_button.dart';
 ///   本层歌曲；应用内新建的空文件夹也会显示）；
 /// - 专辑：全源按专辑平铺分组；
 /// - 无：全源平铺。
-/// - 有搜索词时回落全源平铺搜索（标题/歌手/专辑）。
+/// - 有搜索词时回落全源平铺搜索（标题/歌手/专辑）；搜索词复用顶栏
+///   （`NavigationProvider.search`，进入/退出源时由导航层清空）。
 /// - 直连源：本地索引（扫描后）检索，提供「扫描」按钮建立/刷新本地索引。
 class SourceBrowseView extends StatefulWidget {
   final String sourceKey;
@@ -43,9 +44,6 @@ class SourceBrowseView extends StatefulWidget {
 }
 
 class _SourceBrowseViewState extends State<SourceBrowseView> {
-  final TextEditingController _searchCtrl = TextEditingController();
-  String _query = '';
-
   /// 当前浏览目录（源内相对路径，`''` = 源根）：逐级模式导航状态。
   String _dir = '';
   bool _scanning = false;
@@ -72,8 +70,6 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
     super.didUpdateWidget(oldWidget);
     if (widget.sourceKey != oldWidget.sourceKey) {
       _dir = '';
-      _query = '';
-      _searchCtrl.clear();
       _songsKey = null;
       _sortedBase = null;
       _relsBase = null;
@@ -247,7 +243,6 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
   @override
   void dispose() {
     _progressSub?.cancel();
-    _searchCtrl.dispose();
     super.dispose();
   }
 
@@ -325,9 +320,11 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
   @override
   Widget build(BuildContext context) {
     // 订阅收窄（T010）：源内浏览的目标 sourceKey 由 widget 参数承载（父级路由
-    // 变更会重建本组件），build 内不读取任何 NavigationProvider 字段；仅方法
-    // （exitSource）经 read 调用，故不订阅导航状态、区段变更零重建。
+    // 变更会重建本组件）；搜索词复用顶栏（NavigationProvider.search），仅以
+    // select 订阅该字段，区段/路由等导航通知不重建。方法（exitSource）经 read 调用。
     final nav = context.read<NavigationProvider>();
+    final query =
+        context.select<NavigationProvider, String>((n) => n.search).trim();
     final direct = context.watch<DirectSourceManager>();
     final source = direct.sourceByKey(widget.sourceKey);
     if (source == null) {
@@ -335,8 +332,8 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
     }
     final settings = direct.settings;
     final mode = settings.groupSource;
-    final searching = _query.trim().isNotEmpty;
-    final songs = _sorted(direct, _songsOf(direct, _query.trim()));
+    final searching = query.isNotEmpty;
+    final songs = _sorted(direct, _songsOf(direct, query));
     final rels = _relsOf(direct, songs, source);
     final total = direct.countOf(widget.sourceKey);
     // 只有「文件夹（逐级）」模式（且非搜索）才是按目录浏览：专辑/无为全源
@@ -437,8 +434,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                     ),
                     const SizedBox(width: 4),
                     Icon(Icons.folder_outlined,
-                        size: 20,
-                        color: Theme.of(context).colorScheme.primary),
+                        size: 20, color: Theme.of(context).colorScheme.primary),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -489,27 +485,8 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                 ],
               ),
             ),
-          const Divider(height: 16),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _searchCtrl,
-                    decoration: const InputDecoration(
-                      hintText: '搜索该源全部曲目（标题/歌手/专辑）',
-                      prefixIcon: Icon(Icons.search),
-                      isDense: true,
-                      border: OutlineInputBorder(),
-                    ),
-                    onChanged: (v) => setState(() => _query = v),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          if (inFolder)
+          if (inFolder) ...[
+            const Divider(height: 16),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
               child: SingleChildScrollView(
@@ -554,6 +531,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                 ),
               ),
             ),
+          ],
           const Divider(height: 16),
           if (direct.error != null)
             Padding(

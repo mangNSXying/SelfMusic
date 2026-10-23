@@ -6,6 +6,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:provider/provider.dart';
 import 'package:selfmusic/data/local/app_settings.dart';
+import 'package:selfmusic/models/album.dart';
+import 'package:selfmusic/models/artist.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/library_provider.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
@@ -190,10 +192,25 @@ void main() {
     counter.reset();
     nav.setSearch('周');
     await tester.pump();
-    for (final l in ['songsView', 'likedView', 'albumsView', 'artistsView', 'playlistsView', 'songList']) {
+    for (final l in [
+      'songsView',
+      'likedView',
+      'albumsView',
+      'artistsView',
+      'playlistsView',
+      'songList'
+    ]) {
       expect(counter.of(l), 1, reason: '$l 应随搜索词重建');
     }
-    for (final l in ['shell', 'sidebar', 'miniBar', 'navBar', 'router', 'root', 'settingsScreen']) {
+    for (final l in [
+      'shell',
+      'sidebar',
+      'miniBar',
+      'navBar',
+      'router',
+      'root',
+      'settingsScreen'
+    ]) {
       expect(counter.of(l), 0, reason: '$l 不应随搜索词重建');
     }
 
@@ -229,9 +246,17 @@ void main() {
 
       // 非必要订阅者：0 次重建（SC-002）。
       for (final l in [
-        'shell', 'sidebar', 'miniBar', 'root',
-        'songsView', 'likedView', 'albumsView', 'artistsView',
-        'playlistsView', 'songList', 'settingsScreen',
+        'shell',
+        'sidebar',
+        'miniBar',
+        'root',
+        'songsView',
+        'likedView',
+        'albumsView',
+        'artistsView',
+        'playlistsView',
+        'songList',
+        'settingsScreen',
       ]) {
         expect(counter.of(l), 0, reason: '$l 不应因区段变更重建');
       }
@@ -265,7 +290,14 @@ void main() {
         nav.select(s);
         await tester.pump();
       }
-      for (final l in ['songsView', 'likedView', 'albumsView', 'artistsView', 'playlistsView', 'songList']) {
+      for (final l in [
+        'songsView',
+        'likedView',
+        'albumsView',
+        'artistsView',
+        'playlistsView',
+        'songList'
+      ]) {
         expect(counter.of(l), 0, reason: '$l 在搜索词未变时不应重算');
       }
       // 路由随区段变化重建（4 次切换）。
@@ -420,5 +452,88 @@ void main() {
           reason: '过渡档 ${mode.label} 应正确路由到喜欢页');
       expect(nav.section, NavSection.liked);
     }
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 搜索作用域：顶级分区保留搜索词；进出源/歌单/宽屏详情页清空。
+  // ───────────────────────────────────────────────────────────────────────────
+  test('搜索词生命周期：顶级分区保留，详情页进出清空', () {
+    final nav = NavigationProvider();
+
+    // 顶级分区切换保留（全局筛选语义）。
+    nav.setSearch('周');
+    nav.select(NavSection.albums);
+    expect(nav.search, '周');
+    nav.select(NavSection.sources);
+    expect(nav.search, '周');
+
+    // 进入源清空；源内输入后退出再清空。
+    nav.enterSource('local:test');
+    expect(nav.search, '');
+    nav.setSearch('夜曲');
+    nav.exitSource();
+    expect(nav.search, '');
+
+    // 从源内直接点顶部导航切区：同样视为离开详情，清空。
+    nav.enterSource('local:test');
+    nav.setSearch('夜曲');
+    nav.select(NavSection.songs);
+    expect(nav.search, '');
+
+    // 返回键离开源内。
+    nav.enterSource('local:test');
+    nav.setSearch('夜曲');
+    expect(nav.backToPrevious(), isTrue);
+    expect(nav.search, '');
+
+    // 歌单详情进出清空（含返回键路径）。
+    nav.enterPlaylist(7);
+    expect(nav.search, '');
+    nav.setSearch('晴天');
+    nav.exitPlaylist();
+    expect(nav.search, '');
+    nav.enterPlaylist(7);
+    nav.setSearch('晴天');
+    expect(nav.backToPrevious(), isTrue);
+    expect(nav.search, '');
+
+    // 宽屏专辑/歌手详情进出清空。
+    const artist = Artist(name: '周杰伦', songCount: 0, albumCount: 0);
+    nav.enterArtist(artist, const []);
+    expect(nav.search, '');
+    nav.setSearch('夜曲');
+    nav.enterAlbum(
+      Album(
+        id: 1,
+        artist: '周杰伦',
+        album: '十一月的萧邦',
+        groupKey: 'album\x00十一月的萧邦',
+        trackCount: 0,
+        totalDuration: 0,
+      ),
+      const [],
+    );
+    expect(nav.search, '');
+    nav.setSearch('晴天');
+    nav.exitDetail();
+    expect(nav.search, '');
+  });
+
+  test('详情页清空搜索不产生重复通知', () {
+    final nav = NavigationProvider();
+    var notified = 0;
+    nav.addListener(() => notified++);
+
+    nav.setSearch('周');
+    notified = 0;
+    nav.enterSource('local:test');
+    expect(notified, 1, reason: '进入源：清空搜索 + 路由变更应合为一次通知');
+    expect(nav.search, '');
+
+    nav.setSearch('夜曲');
+    notified = 0;
+    nav.exitSource();
+    expect(notified, 1, reason: '退出源：清空搜索 + 路由变更应合为一次通知');
+    expect(nav.search, '');
   });
 }

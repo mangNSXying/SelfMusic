@@ -610,7 +610,7 @@ abstract class MusicSource {
 - 自动扫描：本地 `Directory.watch(recursive)` 变化去抖 2s 触发 `scanSource(key)`；周期定时器按 `scan_auto_interval_min` 轮询全部直连源；`_inFlightScan` 全局互斥防重复扫描
 - 播放时懒补全：`PlayerProvider._enrichLazily` 播放后按结构定位精确 Range 读取（`readAudioMeta`），`enrichSong` 回填，失败静默
 - 测试：`test/webdav_scan_test.dart` 用真 `HttpServer`（PROPFIND/GET/Range + 可变 etag）验证跨 isolate 扫描、增量跳过与 etag 变化仅重探目标文件；`test/audio_metadata_test.dart` 覆盖头部越界与大封面边界；
-  另有 `duration_format_test`（时长 mm:ss/h:mm:ss）、`lrc_parser_test`（歌词解析）、`song_title_format_test`（标题格式）、`play_reconcile_test`（播放前最新行纠正）、`top_bar_search_test`（搜索追焦）、`view_mode_settings_test`（集合页视图持久化）、`playlist_membership_test`（歌单归属/切换）与 `playlists_view_test` 等
+  另有 `duration_format_test`（时长 mm:ss/h:mm:ss）、`lrc_parser_test`（歌词解析）、`song_title_format_test`（标题格式）、`play_reconcile_test`（播放前最新行纠正）、`top_bar_search_test`（搜索追焦与区域提示语）、`source_browse_search_test`（源内复用顶栏搜索）、`view_mode_settings_test`（集合页视图持久化）、`playlist_membership_test`（歌单归属/切换）与 `playlists_view_test` 等
 - 历史问题：mp3 enc==3 / flac VORBIS_COMMENT 曾用 `String.fromCharCodes` 逐字节解码导致 CJK 乱码——已改 UTF-8 解码；修复后需对已有源重扫一次覆写旧行（`upsert` 无条件覆盖 title/artist/album，无需删库）
 
 **读头部的多段策略（`data/local/audio_metadata.dart`）**
@@ -714,6 +714,22 @@ abstract class MusicSource {
 - 标题常驻加粗（`w600`），播放中 / 选中只叠主色区分；封面位恒为封面，播放指示 `graphic_eq` 排在标题之后。
 - 多选勾选框叠在封面左上角；多选态隐藏单曲三点菜单；「已选 N」与批量动作口径 = 当前可见项（搜索过滤后不统计也不作用）；队列面板不参与多选。
 - 视图模式：`ViewModeState` mixin + `ViewModeSlot`（`view_mode_toggle.dart`）收口歌单 / 播放源 / 专辑 / 歌手四页切换。
+
+### 顶栏搜索作用域
+
+全局只有一个搜索词：`NavigationProvider.search`，顶栏 `TopBar` 是唯一输入框。各区域不各自保存查询串，而是按当前路由解释同一个词；提示语由 `NavigationProvider.searchHint` 统一给出：
+
+| 区域 | 搜索对象 | 提示语 |
+|------|----------|--------|
+| 播放源列表 | 播放源名称 | 搜索播放源 |
+| 源内浏览 | 当前源全部曲目的标题/歌手/专辑 | 搜索该源全部曲目 |
+| 歌单列表 | 歌单名 / 歌曲 | 搜索歌单 / 歌曲 |
+| 歌单详情 | 歌单内歌曲 | 搜索歌单内歌曲 |
+| 专辑 / 歌手列表 | 专辑名/艺术家、歌手名 | 搜索专辑 / 艺术家、搜索歌手 |
+| 歌曲 / 喜欢 | 标题/艺术家 | 搜索标题 / 艺术家 |
+| 设置 / 队列 / 播放页 | 不参与（顶栏不可见或无列表） | — |
+
+生命周期：六个顶级分区之间切换**保留**搜索词（便于跨页找同一批内容）；进入或离开源内、歌单详情、宽屏专辑/歌手详情栈时**清空**（详情页的搜索对象与分区不同，带着旧词会让目标页看起来被莫名过滤）。清空与路由变更合并在同一次 `notifyListeners()` 中，不得额外通知。源内浏览不得再加本地搜索框；`SongList` 在顶栏可见的页面用 `globalSearch: true`，仅播放器附着的歌单页因顶栏不可见保留 `globalSearch: false` 的本地输入框。
 
 ### 桌面音频后端（media_kit）
 

@@ -10,6 +10,7 @@ import 'package:provider/provider.dart';
 import 'package:selfmusic/data/sources/local_file_direct_source.dart';
 import 'package:selfmusic/data/sources/music_source.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
+import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/screens/sources_screen.dart';
 import 'package:selfmusic/theme/app_theme.dart';
 import 'package:selfmusic/widgets/single_choice_group.dart';
@@ -67,9 +68,12 @@ void main() {
     await tester.pumpWidget(
       ChangeNotifierProvider<DirectSourceManager>.value(
         value: direct,
-        child: MaterialApp(
-          theme: AppTheme.build().themeData,
-          home: const Scaffold(body: SourcesScreen()),
+        child: ChangeNotifierProvider<NavigationProvider>(
+          create: (_) => NavigationProvider(),
+          child: MaterialApp(
+            theme: AppTheme.build().themeData,
+            home: const Scaffold(body: SourcesScreen()),
+          ),
         ),
       ),
     );
@@ -159,9 +163,12 @@ void main() {
     await tester.pumpWidget(
       ChangeNotifierProvider<DirectSourceManager>.value(
         value: direct,
-        child: MaterialApp(
-          theme: AppTheme.build().themeData,
-          home: const Scaffold(body: SourcesScreen()),
+        child: ChangeNotifierProvider<NavigationProvider>(
+          create: (_) => NavigationProvider(),
+          child: MaterialApp(
+            theme: AppTheme.build().themeData,
+            home: const Scaffold(body: SourcesScreen()),
+          ),
         ),
       ),
     );
@@ -180,5 +187,59 @@ void main() {
     );
     expect(fileList, findsOneWidget);
     expect(tester.getSize(fileList).height, lessThanOrEqualTo(240));
+  });
+
+  testWidgets('播放源列表跟随顶栏搜索按源名称过滤', (tester) async {
+    late final Directory root;
+    late final DirectSourceManager direct;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('selfmusic_src_search_');
+      PathProviderPlatform.instance = _FakePathProvider(root.path);
+      direct = DirectSourceManager();
+      await direct.init();
+      final a = Directory('${root.path}/a')..createSync();
+      final b = Directory('${root.path}/b')..createSync();
+      await direct.addLocal(name: '客厅音乐', path: a.path);
+      await direct.addLocal(name: '书房音乐', path: b.path);
+    });
+    final nav = NavigationProvider();
+    addTearDown(() {
+      nav.dispose();
+      direct.dispose();
+      root.deleteSync(recursive: true);
+    });
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<DirectSourceManager>.value(
+        value: direct,
+        child: ChangeNotifierProvider<NavigationProvider>.value(
+          value: nav,
+          child: MaterialApp(
+            theme: AppTheme.build().themeData,
+            home: const Scaffold(body: SourcesScreen()),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('客厅音乐'), findsOneWidget);
+    expect(find.text('书房音乐'), findsOneWidget);
+
+    nav.setSearch('客厅');
+    await tester.pumpAndSettle();
+    expect(find.text('客厅音乐'), findsOneWidget);
+    expect(find.text('书房音乐'), findsNothing);
+    expect(find.text('共 1 个播放源'), findsOneWidget);
+
+    nav.setSearch('不存在的源');
+    await tester.pumpAndSettle();
+    expect(find.text('无匹配播放源'), findsOneWidget);
+
+    nav.clearSearch();
+    await tester.pumpAndSettle();
+    expect(find.text('客厅音乐'), findsOneWidget);
+    expect(find.text('书房音乐'), findsOneWidget);
+    expect(find.text('共 2 个播放源'), findsOneWidget);
   });
 }

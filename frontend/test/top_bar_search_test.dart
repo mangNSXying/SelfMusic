@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:selfmusic/layout/top_bar.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
+import 'package:selfmusic/theme/app_theme.dart';
 
 void main() {
   testWidgets('顶栏搜索输入后保持焦点（controller 不重建）', (tester) async {
@@ -44,8 +45,7 @@ void main() {
     expect(editable.focusNode.hasFocus, isTrue);
   });
 
-  testWidgets('顶栏搜索：点击搜索框外 / 键盘提交后失焦，还原输入法收起',
-      (tester) async {
+  testWidgets('顶栏搜索：点击搜索框外 / 键盘提交后失焦，还原输入法收起', (tester) async {
     final nav = NavigationProvider();
     await tester.pumpWidget(
       ChangeNotifierProvider<NavigationProvider>.value(
@@ -84,5 +84,71 @@ void main() {
     editable = tester.widget<EditableText>(find.byType(EditableText));
     expect(editable.focusNode.hasFocus, isFalse);
     expect(nav.search, 'abc');
+  });
+
+  testWidgets('顶栏搜索提示语随区域变化且输入框控制器不重建', (tester) async {
+    final nav = NavigationProvider();
+    await tester.pumpWidget(
+      ChangeNotifierProvider<NavigationProvider>.value(
+        value: nav,
+        child: MaterialApp(
+          home: Scaffold(body: TopBar(onSidebarToggle: () {})),
+        ),
+      ),
+    );
+
+    String hint() =>
+        tester.widget<TextField>(find.byType(TextField)).decoration!.hintText!;
+    expect(hint(), '搜索标题 / 艺术家');
+    final ctrlBefore =
+        tester.widget<TextField>(find.byType(TextField)).controller;
+
+    nav.select(NavSection.sources);
+    await tester.pump();
+    expect(hint(), '搜索播放源');
+
+    nav.select(NavSection.albums);
+    await tester.pump();
+    expect(hint(), '搜索专辑 / 艺术家');
+
+    nav.select(NavSection.artists);
+    await tester.pump();
+    expect(hint(), '搜索歌手');
+
+    nav.select(NavSection.songs);
+    await tester.pump();
+    expect(hint(), '搜索标题 / 艺术家');
+
+    nav.select(NavSection.liked);
+    await tester.pump();
+    expect(hint(), '搜索标题 / 艺术家');
+
+    nav.select(NavSection.sources);
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), 'abc');
+    await tester.pump();
+    expect(nav.search, 'abc');
+
+    // 进入源内：导航层清空搜索，顶栏输入框同步清空。
+    nav.enterSource('local:test');
+    await tester.pump();
+    expect(hint(), '搜索该源全部曲目');
+    expect(nav.search, '');
+    expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text, '');
+
+    nav.exitSource();
+    await tester.pump();
+    expect(hint(), '搜索播放源');
+
+    nav.select(NavSection.playlists);
+    nav.enterPlaylist(1);
+    await tester.pump();
+    expect(hint(), '搜索歌单内歌曲');
+
+    final ctrlAfter =
+        tester.widget<TextField>(find.byType(TextField)).controller;
+    expect(identical(ctrlBefore, ctrlAfter), isTrue,
+        reason: '提示语变化不应重建 TextEditingController');
   });
 }

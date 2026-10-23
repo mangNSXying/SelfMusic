@@ -120,6 +120,28 @@ class NavigationProvider extends ChangeNotifier {
   NavSection get section => _section;
   String get search => _search;
 
+  /// 顶栏搜索提示语（随当前区域变化；搜索词本身仍是同一个 [search]）。
+  ///
+  /// 各区域对同一搜索词的解释不同（源名/源内歌曲/歌单歌曲/歌曲元数据），
+  /// 提示语让用户明确“这次搜索会作用在什么上”。
+  String get searchHint {
+    if (_settings != null) return '搜索';
+    if (_browsingSourceKey != null) return '搜索该源全部曲目';
+    if (_browsingPlaylistId != null) return '搜索歌单内歌曲';
+    return switch (_section) {
+      NavSection.sources => '搜索播放源',
+      NavSection.playlists => '搜索歌单 / 歌曲',
+      NavSection.albums => '搜索专辑 / 艺术家',
+      NavSection.artists => '搜索歌手',
+      NavSection.songs || NavSection.liked => '搜索标题 / 艺术家',
+    };
+  }
+
+  /// 进出详情页时清空搜索词（不额外通知，由调用方统一 notifyListeners）。
+  void _clearSearchForDetail() {
+    _search = '';
+  }
+
   /// 当前正在浏览的源 key（文件夹式导航）；null 表示位于播放源列表。
   String? get browsingSourceKey => _browsingSourceKey;
 
@@ -139,8 +161,7 @@ class NavigationProvider extends ChangeNotifier {
   ///
   /// 返回不可变**快照**而非活动视图：叠层组件要靠新旧两份列表的差异判定
   /// 进出动画（活动视图会让"旧"列表跟着变化，永远看不出差异）。
-  List<DetailRoute> get details =>
-      List<DetailRoute>.unmodifiable(_details);
+  List<DetailRoute> get details => List<DetailRoute>.unmodifiable(_details);
 
   /// 详情栈版本号（订阅收窄用，见 [AppContent]）。
   int get detailRevision => _detailRevision;
@@ -196,11 +217,13 @@ class NavigationProvider extends ChangeNotifier {
     }
     if (_browsingPlaylistId != null) {
       _browsingPlaylistId = null;
+      _clearSearchForDetail();
       notifyListeners();
       return true;
     }
     if (_browsingSourceKey != null) {
       _browsingSourceKey = null;
+      _clearSearchForDetail();
       notifyListeners();
       return true;
     }
@@ -214,6 +237,14 @@ class NavigationProvider extends ChangeNotifier {
 
   void select(NavSection s, {Offset slideOffset = const Offset(1, 0)}) {
     _slideOffset = slideOffset;
+    // 离开源内/歌单详情/宽屏详情页时清空搜索：这些页面的搜索对象与顶级
+    // 分区不同，继续带着旧词会让新页面看起来“莫名其妙被过滤”。六个顶级
+    // 分区之间切换则保留搜索词（全局筛选语义）。
+    if (_browsingSourceKey != null ||
+        _browsingPlaylistId != null ||
+        _details.isNotEmpty) {
+      _clearSearchForDetail();
+    }
     _section = s;
     _settings = null;
     _playerView = false;
@@ -226,6 +257,7 @@ class NavigationProvider extends ChangeNotifier {
   /// 进入播放源内部（文件夹式导航）。
   void enterSource(String key) {
     _slideOffset = const Offset(1, 0);
+    _clearSearchForDetail();
     _browsingSourceKey = key;
     _clearDetails();
     notifyListeners();
@@ -235,6 +267,7 @@ class NavigationProvider extends ChangeNotifier {
   void exitSource() {
     _slideOffset = const Offset(-1, 0);
     _browsingSourceKey = null;
+    _clearSearchForDetail();
     notifyListeners();
   }
 
@@ -244,6 +277,7 @@ class NavigationProvider extends ChangeNotifier {
   /// 进入歌单详情（原地子视图）：整页从右侧滑入。
   void enterPlaylist(int id) {
     _slideOffset = const Offset(1, 0);
+    _clearSearchForDetail();
     _browsingPlaylistId = id;
     _clearDetails();
     notifyListeners();
@@ -253,18 +287,21 @@ class NavigationProvider extends ChangeNotifier {
   void exitPlaylist() {
     _slideOffset = const Offset(-1, 0);
     _browsingPlaylistId = null;
+    _clearSearchForDetail();
     notifyListeners();
   }
 
   /// 宽屏进入专辑详情页（内容区整页叠层，底层列表保活）。
   void enterAlbum(Album album, List<Song> songs) {
     _slideOffset = const Offset(1, 0);
+    _clearSearchForDetail();
     _pushDetail(AlbumDetailRoute(album, songs));
   }
 
   /// 宽屏进入歌手详情页（内容区整页叠层，底层列表保活）。
   void enterArtist(Artist artist, List<Song> songs) {
     _slideOffset = const Offset(1, 0);
+    _clearSearchForDetail();
     _pushDetail(ArtistDetailRoute(artist, songs));
   }
 
@@ -274,6 +311,7 @@ class NavigationProvider extends ChangeNotifier {
     _slideOffset = const Offset(-1, 0);
     _details.removeLast();
     _detailRevision++;
+    _clearSearchForDetail();
     notifyListeners();
   }
 
@@ -327,6 +365,7 @@ class NavigationProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 更新全局搜索词（各区域按 [searchHint] 的语义解释；进出详情页时自动清空）。
   void setSearch(String q) {
     if (q == _search) return;
     _search = q;
