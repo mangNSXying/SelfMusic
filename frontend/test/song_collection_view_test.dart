@@ -135,12 +135,91 @@ void main() {
     expect(find.text('夜曲'), findsOneWidget);
     expect(direct.settings.groupCollapsed('test'), contains('文件夹A'));
 
-    // 长按组头：有展开组（文件夹B）→ 全部折叠。
+    // 默认 A（设置关闭）：长按组头进入多选并选中整组；折叠组内的歌照样
+    // 计入选择，选择本身不改变折叠状态。
     await tester.longPress(find.text('文件夹B'));
     await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 1'), findsOneWidget);
+    expect(find.text('夜曲'), findsOneWidget);
+    expect(find.byTooltip('播放该分组'), findsNothing);
+
+    // 多选态点击已折叠组头：递归选中组内全部歌曲（晴天 + 稻香）。
+    await tester.tap(find.text('文件夹A'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 3'), findsOneWidget);
+    expect(find.text('已选 2 / 2 首'), findsOneWidget);
+    expect(find.text('晴天'), findsNothing); // 折叠只管展示
+
+    // 再点一次取消整组。
+    await tester.tap(find.text('文件夹A'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 1'), findsOneWidget);
+
+    // A 模式的长按已让位给多选，全部折叠/展开在分类菜单。
+    await tester.tap(find.byTooltip('取消选择'));
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(find.byTooltip('分类方式：文件夹'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('全部折叠'));
+    await tester.pumpAndSettle();
     expect(find.text('夜曲'), findsNothing);
-    expect(
-        direct.settings.groupCollapsed('test'), containsAll({'文件夹A', '文件夹B'}));
+    expect(direct.settings.groupCollapsed('test'),
+        containsAll({'文件夹A', '文件夹B'}));
+
+    await tester.tap(find.byTooltip('分类方式：文件夹'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('全部展开'));
+    await tester.pumpAndSettle();
+    expect(find.text('夜曲'), findsOneWidget);
+    expect(find.text('晴天'), findsOneWidget);
+    expect(direct.settings.groupCollapsed('test'), isEmpty);
+  });
+
+  testWidgets('B 模式：长按组头折叠全部，多选从分类菜单进入', (tester) async {
+    direct.settings.longPressCollapseGroups = true;
+    final songs = [
+      _song(1, '文件夹A/one.mp3', title: '晴天'),
+      _song(2, '文件夹B/two.mp3', title: '夜曲'),
+      _song(3, '文件夹A/three.mp3', title: '稻香'),
+    ];
+    await pumpView(
+      tester,
+      songs: songs,
+      mode: SongGroupMode.folder,
+      searching: false,
+      onMode: (_) {},
+    );
+
+    // 长按组头 = 全部折叠，不进入多选。
+    await tester.longPress(find.text('文件夹B'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 1'), findsNothing);
+    expect(find.text('夜曲'), findsNothing);
+    expect(find.text('晴天'), findsNothing);
+    expect(direct.settings.groupCollapsed('test'),
+        containsAll({'文件夹A', '文件夹B'}));
+
+    // 分类菜单进入多选：初始 0，选中整组不受折叠影响。
+    await tester.tap(find.byTooltip('分类方式：文件夹'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('多选'));
+    await tester.pumpAndSettle();
+    expect(find.text('已选 0'), findsOneWidget);
+
+    await tester.tap(find.text('文件夹A'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 2'), findsOneWidget);
+    expect(find.text('已选 2 / 2 首'), findsOneWidget);
+
+    // 多选态右侧箭头仍只负责展开/折叠，不改变选择。
+    await tester.tap(find.descendant(
+      of: find.widgetWithText(ListTile, '文件夹A'),
+      matching: find.byTooltip('展开分组'),
+    ));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('晴天'), findsOneWidget);
+    expect(find.text('稻香'), findsOneWidget);
+    expect(find.text('已选 2'), findsOneWidget);
   });
 
   testWidgets('逐级文件夹：空文件夹显示、进入目录、文件夹递归播放', (tester) async {
@@ -235,6 +314,135 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
     expect(currentDir, 'FolderC');
     expect(find.text('空'), findsOneWidget);
+  });
+
+  testWidgets('逐级文件夹多选：递归选中子树、跨目录保留、三态勾选', (tester) async {
+    final songs = [
+      _song(1, 'root.mp3', title: '根目录歌'),
+      _song(2, 'FolderA/one.mp3', title: 'A一'),
+      _song(3, 'FolderA/deep/two.mp3', title: 'A二'),
+      _song(4, 'FolderB/three.mp3', title: 'B三'),
+    ];
+    final paths = [
+      'root.mp3',
+      'FolderA/one.mp3',
+      'FolderA/deep/two.mp3',
+      'FolderB/three.mp3',
+    ];
+    var currentDir = '';
+    List<Song>? actionSelected;
+    late StateSetter setOuter;
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+          ChangeNotifierProvider<PlayerProvider>(
+              create: (_) => PlayerProvider()),
+        ],
+        child: MaterialApp(
+          home: Scaffold(
+            body: StatefulBuilder(builder: (c, setState) {
+              setOuter = setState;
+              return SongCollectionView(
+                songs: songs,
+                searching: false,
+                collectionKey: 'source:test',
+                groupMode: SongGroupMode.folder,
+                onGroupModeChanged: (_) {},
+                sort: direct.settings.sortSongs,
+                onSortChanged: (_) {},
+                folderNavigation: FolderNavigation.recursive,
+                folderPaths: paths,
+                extraFolders: const {'FolderC'},
+                dir: currentDir,
+                onDirChanged: (d) => setOuter(() => currentDir = d),
+                onPlay: (_, __) {},
+                onPlayGroup: (_) {},
+                selectionActions: (selected, clear) {
+                  actionSelected = selected;
+                  return const [];
+                },
+                emptyText: '空',
+              );
+            }),
+          ),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 50));
+
+    // 长按文件夹行 = 进入多选并递归选中整个子树（含 deep 层）。
+    await tester.longPress(find.text('FolderA'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 2'), findsOneWidget);
+    expect(find.text('已选 2 / 2 首'), findsOneWidget);
+    expect(currentDir, ''); // 长按选择不进入文件夹
+    // 批量操作拿到的是全集合里的递归选中结果，而不是本层展示列表。
+    expect(actionSelected?.map((s) => s.title), ['A一', 'A二']);
+
+    // 全选只作用于当前展示层（根目录歌曲），不把其余文件夹也算进去。
+    await tester.tap(find.text('全选'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 3'), findsOneWidget);
+    expect(find.text('取消全选'), findsOneWidget);
+    await tester.tap(find.text('取消全选'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 2'), findsOneWidget);
+
+    // 多选态点击整行 = 切选择，右侧箭头才进入目录。
+    await tester.tap(find.text('FolderB'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 3'), findsOneWidget);
+    expect(currentDir, '');
+    expect(actionSelected?.map((s) => s.title), ['A一', 'A二', 'B三']);
+    await tester.tap(find.descendant(
+      of: find.widgetWithText(ListTile, 'FolderA'),
+      matching: find.byTooltip('进入文件夹'),
+    ));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(currentDir, 'FolderA');
+    expect(find.text('已选 3'), findsOneWidget); // 跨目录保留选择
+
+    // A一 已选，反选后只剩 deep 里的 A二；返回根目录看 FolderA 半选。
+    expect(find.text('A一'), findsOneWidget);
+    await tester.tap(find.text('A一'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 2'), findsOneWidget);
+
+    setOuter(() => currentDir = '');
+    await tester.pump(const Duration(milliseconds: 50));
+    final partial = tester.widget<Checkbox>(find.descendant(
+      of: find.widgetWithText(ListTile, 'FolderA'),
+      matching: find.byType(Checkbox),
+    ));
+    expect(partial.tristate, isTrue);
+    expect(partial.value, isNull);
+
+    // 空文件夹不可选：没有勾选框，长按也不改变计数。
+    expect(
+        find.descendant(
+          of: find.widgetWithText(ListTile, 'FolderC'),
+          matching: find.byType(Checkbox),
+        ),
+        findsNothing);
+    await tester.longPress(find.text('FolderC'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 2'), findsOneWidget);
+
+    // 点击半选文件夹 → 补齐整组；再点 → 取消整组。
+    await tester.tap(find.text('FolderA'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 3'), findsOneWidget);
+    final full = tester.widget<Checkbox>(find.descendant(
+      of: find.widgetWithText(ListTile, 'FolderA'),
+      matching: find.byType(Checkbox),
+    ));
+    expect(full.tristate, isFalse);
+    expect(full.value, isTrue);
+
+    await tester.tap(find.text('FolderA'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 1'), findsOneWidget); // 只剩 B三
   });
 
   testWidgets('搜索过滤不丢选择；全选只作用于命中项', (tester) async {

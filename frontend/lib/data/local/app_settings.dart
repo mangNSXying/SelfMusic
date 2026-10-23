@@ -266,6 +266,12 @@ class AppSettings {
   static const String kGroupSongs = 'group_songs';
   static const String kGroupSource = 'group_source';
 
+  /// 列表视图行为（设置→界面→视图行为）：长按组头展开/折叠（默认关）。
+  ///
+  /// 关 = 长按组头进入多选并选中整组，「全部展开/折叠」在分类菜单；
+  /// 开 = 长按组头全部展开/折叠，「多选」在分类菜单。
+  static const String kLongPressCollapseGroups = 'long_press_collapse_groups';
+
   /// 歌词追焦等待秒数（用户拖动歌词后多久恢复自动跟随；播放设置可调）。
   static const String kLyricFocusIdleSec = 'lyric_focus_idle_sec';
 
@@ -774,6 +780,15 @@ class AppSettings {
       index.settingsGet(kGroupSource) ?? SongGroupMode.folder.name);
   set groupSource(SongGroupMode v) => index.settingsSet(kGroupSource, v.name);
 
+  /// 长按组头展开/折叠（设置→界面→视图行为，默认关）。
+  ///
+  /// 关（A）：长按组头进入多选并选中整组；全部展开/折叠在分类菜单。
+  /// 开（B）：长按组头全部展开/折叠；多选入口在分类菜单。
+  bool get longPressCollapseGroups =>
+      (index.settingsGet(kLongPressCollapseGroups) ?? '0') == '1';
+  set longPressCollapseGroups(bool v) =>
+      index.settingsSet(kLongPressCollapseGroups, v ? '1' : '0');
+
   /// 列表分组折叠状态（按集合持久化，[collectionKey] 如 `playlist:12` /
   /// `favorites` / `songs` / `source:webdav:nas`）：存折叠组名集合
   /// （逐项 URI 编码后以 `|` 连接；组名本身可含任意字符）。
@@ -961,5 +976,6 @@ class AppSettings {
     kGroupFavorites,
     kGroupSongs,
     kGroupSource,
+    kLongPressCollapseGroups,
   ];
 }

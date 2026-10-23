@@ -995,6 +995,29 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
           const Divider(),
           const SizedBox(height: 8),
 
+          // 视图行为
+          Text('视图行为', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('长按展开/折叠'),
+            subtitle: Text(_settings.longPressCollapseGroups
+                ? '开：长按组头全部展开/折叠；多选从分类菜单进入'
+                : '关：长按组头进入多选并选中整组；全部展开/折叠在分类菜单'),
+            value: _settings.longPressCollapseGroups,
+            onChanged: (v) {
+              setState(() => _settings.longPressCollapseGroups = v);
+              // AppSettings 非 ChangeNotifier：通知已打开的列表页按新行为重建。
+              context.read<DirectSourceManager>().refresh();
+            },
+          ),
+          const SizedBox(height: 4),
+          Text('播放源逐级文件夹行没有折叠语义，长按始终多选整个子树',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: colorScheme.onSurface.withValues(alpha: 0.6))),
+          const Divider(),
+          const SizedBox(height: 8),
+
           // 播放页设定
           Text('播放页', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),

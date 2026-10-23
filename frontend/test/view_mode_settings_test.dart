@@ -41,12 +41,15 @@ void main() {
     // 网络与安全开关默认关（settings.md §3.3）。
     expect(s.allowInsecureHttp, isFalse);
     expect(s.allowSelfSigned, isFalse);
+    // 视图行为默认 A：长按组头进入多选。
+    expect(s.longPressCollapseGroups, isFalse);
 
     s.viewModePlaylists = CollectionViewMode.card;
     s.viewModeAlbums = CollectionViewMode.list;
     s.songTitleFormat = SongTitleFormat.titleArtist;
     s.allowInsecureHttp = true;
     s.allowSelfSigned = true;
+    s.longPressCollapseGroups = true;
 
     // 重新读取（模拟重启）保持。
     final s2 = AppSettings(index);
@@ -56,6 +59,7 @@ void main() {
     expect(s2.songTitleFormat, SongTitleFormat.titleArtist);
     expect(s2.allowInsecureHttp, isTrue);
     expect(s2.allowSelfSigned, isTrue);
+    expect(s2.longPressCollapseGroups, isTrue);
 
     for (final k in [
       AppSettings.kSongTitleFormat,
@@ -65,6 +69,7 @@ void main() {
       AppSettings.kViewModeArtists,
       AppSettings.kAllowInsecureHttp,
       AppSettings.kAllowSelfSigned,
+      AppSettings.kLongPressCollapseGroups,
     ]) {
       expect(AppSettings.knownKeys, contains(k));
     }

@@ -14,6 +14,7 @@ import 'count_header.dart';
 import 'list_selection.dart';
 import 'row_action_button.dart';
 import 'row_list.dart';
+import 'selection_badge.dart';
 import 'selection_bar.dart';
 import 'song_row_view.dart';
 import 'song_tile.dart';
@@ -174,6 +175,17 @@ class _SongCollectionViewState extends State<SongCollectionView> {
   Object? _groupsByNameRef;
   Map<String, SongGroup> _groupsByName = const {};
 
+  /// 整个集合（`widget.songs`）的 songKey 列表：组/文件夹批量选择不能只取
+  /// 当前展示层（折叠组、子文件夹里的歌也要能被选中）。
+  Object? _collectionKeysRef;
+  List<String> _collectionKeys = const [];
+
+  /// 选择版本号：任何选择变更自增。选择汇总与歌曲行缓存都以它为准，
+  /// 避免每次播放进度 tick 做 O(n) 的已选键哈希/计数。
+  int _selEpoch = 0;
+  Object? _selectionSummaryKey;
+  _SelectionSummary _selectionSummary = _SelectionSummary.empty;
+
   /// 当前播放曲下标缓存（展示列表/当前曲不变时复用）。
   Object? _currentBaseRef;
   String? _currentKey;
@@ -209,16 +221,17 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     if (widget.collectionKey != oldWidget.collectionKey) {
       _focusDone = false;
       _sel.cancel();
+      _selEpoch++;
       final s = context.read<DirectSourceManager>().settings;
       _collapsed = s.groupCollapsed(widget.collectionKey);
       _collapseRev++;
       if (_scroll.hasClients) _scroll.jumpTo(0);
     }
-    if (widget.dir != oldWidget.dir) {
-      _sel.cancel();
-    }
+    // 进入子文件夹 / 面包屑跳转不改变当前选择：递归选中的歌曲可跨目录继续
+    // 累积或反选。切集合、切分类仍清空（歌单详情与源页各自独立）。
     if (widget.groupMode != oldWidget.groupMode) {
       _sel.cancel();
+      _selEpoch++;
     }
   }
 
@@ -243,8 +256,8 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     });
   }
 
-  /// 长按任意组头：当前分类有展开组则全折叠，否则全展开（不影响其他分类
-  /// 已折叠的组名）。
+  /// A 模式分类菜单 / B 模式长按组头：当前分类有展开组则全折叠，否则全
+  /// 展开（不影响其他分类已折叠的组名）。
   void _toggleAllCollapse(AppSettings settings, List<SongGroup> groups) {
     final anyExpanded = groups.any((g) => !_collapsed.contains(g.name));
     setState(() {
@@ -257,6 +270,80 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       _collapseRev++;
       _persistCollapsed(settings);
     });
+  }
+
+  /// 整个集合（按 `widget.songs` 顺序）的 songKey；按列表身份缓存。
+  List<String> _collectionKeysOf(List<Song> songs) {
+    if (!identical(_collectionKeysRef, songs)) {
+      _collectionKeysRef = songs;
+      _collectionKeys = [for (final s in songs) songKey(s)];
+    }
+    return _collectionKeys;
+  }
+
+  List<String> _keysForGroup(SongGroup g) {
+    final all = _collectionKeysOf(widget.songs);
+    return [for (final i in g.songIndices) all[i]];
+  }
+
+  List<String> _keysForFolder(SourceFolder f) {
+    final all = _collectionKeysOf(widget.songs);
+    final paths = widget.folderPaths ?? const <String>[];
+    return [for (final i in indicesUnder(paths, f.path)) all[i]];
+  }
+
+  /// B 模式下从分类菜单进入多选（此时行点击切换选中，组头点击切整组）。
+  void _startSelectionMode() {
+    setState(() {
+      _sel.cancel();
+      _sel.active = true;
+      _selEpoch++;
+    });
+  }
+
+  void _startGroupSelection(SongGroup g) {
+    final keys = _keysForGroup(g);
+    if (keys.isEmpty) return;
+    setState(() {
+      _sel.startWithAll(keys);
+      _selEpoch++;
+    });
+  }
+
+  void _toggleGroupSelection(SongGroup g) {
+    final keys = _keysForGroup(g);
+    if (keys.isEmpty) return;
+    setState(() {
+      _sel.setAll(keys);
+      _selEpoch++;
+    });
+  }
+
+  void _startFolderSelection(SourceFolder f) {
+    if (f.total == 0) return;
+    final keys = _keysForFolder(f);
+    if (keys.isEmpty) return;
+    setState(() {
+      _sel.startWithAll(keys);
+      _selEpoch++;
+    });
+  }
+
+  void _toggleFolderSelection(SourceFolder f) {
+    if (f.total == 0) return;
+    final keys = _keysForFolder(f);
+    if (keys.isEmpty) return;
+    setState(() {
+      _sel.setAll(keys);
+      _selEpoch++;
+    });
+  }
+
+  /// 三态勾选：全选 / 半选 / 未选。
+  static bool? _checkState(int selected, int total) {
+    if (total <= 0 || selected <= 0) return false;
+    if (selected >= total) return true;
+    return null;
   }
 
   void _onFocusTick() {
@@ -288,6 +375,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     List<Song> displaySongs;
     List<SongListRow> rows;
     List<SongGroup> groups = const [];
+    Object? folderData;
     int folderCount = 0;
 
     if (recursive) {
@@ -297,6 +385,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
         dir: widget.dir,
         extraFolders: widget.extraFolders,
       );
+      folderData = data;
       folderCount = data.folders.length;
       if (!identical(_folderDataRef, data) ||
           !identical(_folderSongsRef, widget.songs)) {
@@ -355,6 +444,13 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       _keys = [for (final s in displaySongs) songKey(s)];
     }
     final keys = _keys;
+    final selection = _buildSelectionSummary(
+      displayKeys: keys,
+      groups: groups,
+      folderData: folderData,
+      dir: widget.dir,
+      recursive: recursive,
+    );
     final cur = player.current;
     final curKey = cur == null ? null : songKey(cur);
     if (!identical(_currentBaseRef, displaySongs) || _currentKey != curKey) {
@@ -379,7 +475,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
         wide,
         currentIdx,
         _sel.active,
-        Object.hashAll(_sel.selected),
+        _selEpoch,
       ),
       displaySongs.length,
       onWarm: () => direct.weight.warmMetaOf(displaySongs),
@@ -396,8 +492,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       }
     }
 
-    final selected =
-        _sel.active ? selectedSongs(_sel, displaySongs) : const <Song>[];
+    final selected = selection.songs;
     final trailing = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -405,6 +500,19 @@ class _SongCollectionViewState extends State<SongCollectionView> {
           value: widget.groupMode,
           onChanged: widget.onGroupModeChanged,
           folderLabel: widget.folderLabel,
+          // A（默认）：长按组头多选，全部展开/折叠收进分类菜单。
+          onToggleAllCollapse: !settings.longPressCollapseGroups &&
+                  groups.isNotEmpty
+              ? () => _toggleAllCollapse(settings, groups)
+              : null,
+          allCollapsed: groups.isNotEmpty &&
+              groups.every((g) => _collapsed.contains(g.name)),
+          // B：长按组头展开/折叠，多选入口收进分类菜单（仅当有组/文件夹
+          // 行可点选时；纯歌曲列表长按歌曲即可进入多选）。
+          onStartSelection: settings.longPressCollapseGroups &&
+                  (groups.isNotEmpty || folderCount > 0)
+              ? _startSelectionMode
+              : null,
         ),
         if (widget.showSort)
           SortMenuButton(
@@ -420,15 +528,27 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       children: [
         if (_sel.active)
           SelectionBar(
-            total: displaySongs.length,
-            selectedCount: _sel.of(keys).length,
-            onToggleAll: () => setState(() {
-              _sel.active = true;
-              _sel.setAll(keys);
+            total: keys.length,
+            selectedCount: selection.songs.length,
+            allSelected: selection.allVisibleSelected,
+            onToggleAll: keys.isEmpty
+                ? null
+                : () => setState(() {
+                      _sel.active = true;
+                      _sel.setAll(keys);
+                      _selEpoch++;
+                    }),
+            onCancel: () => setState(() {
+              _sel.cancel();
+              _selEpoch++;
             }),
-            onCancel: () => setState(_sel.cancel),
-            actions:
-                widget.selectionActions(selected, () => setState(_sel.cancel)),
+            actions: widget.selectionActions(
+              selected,
+              () => setState(() {
+                _sel.cancel();
+                _selEpoch++;
+              }),
+            ),
           )
         else
           CountHeader(
@@ -454,13 +574,16 @@ class _SongCollectionViewState extends State<SongCollectionView> {
                   itemBuilder: (c, i) {
                     final row = rows[i];
                     if (row.folder != null) {
-                      return _folderRow(c, row.folder!);
+                      final f = row.folder!;
+                      return _folderRow(
+                          c, f, selection.folderSelected[f.path] ?? 0);
                     }
                     if (row.group != null) {
                       final g = _groupsByName[row.group!];
                       return g == null
                           ? const SizedBox.shrink()
-                          : _groupRow(c, direct, groups, g);
+                          : _groupRow(c, direct, groups, g,
+                              selection.groupSelected[g.name] ?? 0);
                     }
                     final si = row.song!;
                     final s = displaySongs[si];
@@ -474,48 +597,171 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     );
   }
 
-  Widget _folderRow(BuildContext c, SourceFolder f) {
+  /// 选择态汇总：仅选择版本、列表、分组/目录变化时重算。
+  ///
+  /// 批量操作与已选数基于整个集合 [SongCollectionView.songs]（源页递归时为
+  /// 全源歌曲；搜索时为搜索结果），组/文件夹已选数则从组索引与目录前缀派生。
+  _SelectionSummary _buildSelectionSummary({
+    required List<String> displayKeys,
+    required List<SongGroup> groups,
+    required Object? folderData,
+    required String dir,
+    required bool recursive,
+  }) {
+    if (!_sel.active) return _SelectionSummary.empty;
+    final key = (
+      _selEpoch,
+      widget.songs,
+      displayKeys,
+      groups,
+      folderData,
+      widget.folderPaths,
+      dir,
+      recursive,
+    );
+    if (_selectionSummaryKey == key) return _selectionSummary;
+
+    final songs = widget.songs;
+    final allKeys = _collectionKeysOf(songs);
+    final selectedIndices = <int>[];
+    for (var i = 0; i < songs.length; i++) {
+      if (_sel.contains(allKeys[i])) selectedIndices.add(i);
+    }
+    final selectedSet = selectedIndices.toSet();
+    final selected = [for (final i in selectedIndices) songs[i]];
+
+    // 递归目录视图的「本层已选」只算当前展示的歌曲；平铺模式整个列表就是
+    // 集合本身。
+    var visibleSelected = 0;
+    if (recursive) {
+      for (final k in displayKeys) {
+        if (_sel.contains(k)) visibleSelected++;
+      }
+    } else {
+      visibleSelected = selectedIndices.length;
+    }
+
+    var groupSelected = const <String, int>{};
+    if (groups.isNotEmpty) {
+      final counts = <String, int>{};
+      for (final g in groups) {
+        var n = 0;
+        for (final i in g.songIndices) {
+          if (selectedSet.contains(i)) n++;
+        }
+        counts[g.name] = n;
+      }
+      groupSelected = counts;
+    }
+
+    var folderSelected = const <String, int>{};
+    if (recursive && widget.folderPaths != null) {
+      final paths = widget.folderPaths!;
+      final counts = <String, int>{};
+      final current = normalizeDir(dir);
+      final prefix = current.isEmpty ? '' : '$current/';
+      for (final i in selectedIndices) {
+        final rel = normalizeDir(paths[i]);
+        if (prefix.isNotEmpty && !rel.startsWith(prefix)) continue;
+        final rest = prefix.isEmpty ? rel : rel.substring(prefix.length);
+        final slash = rest.indexOf('/');
+        if (slash <= 0) continue;
+        final child = prefix.isEmpty
+            ? rest.substring(0, slash)
+            : '$prefix${rest.substring(0, slash)}';
+        counts[child] = (counts[child] ?? 0) + 1;
+      }
+      folderSelected = counts;
+    }
+
+    final summary = _SelectionSummary(
+      songs: selected,
+      visibleSelected: visibleSelected,
+      allVisibleSelected:
+          displayKeys.isNotEmpty && visibleSelected == displayKeys.length,
+      groupSelected: groupSelected,
+      folderSelected: folderSelected,
+    );
+    _selectionSummaryKey = key;
+    _selectionSummary = summary;
+    return summary;
+  }
+
+  Widget _folderRow(BuildContext c, SourceFolder f, int selected) {
     final scheme = Theme.of(c).colorScheme;
+    final selectable = f.total > 0;
     return ListTile(
-      leading: _leadingIcon(Icons.folder, scheme),
+      leading: _selectableLeading(
+        _leadingIcon(Icons.folder, scheme),
+        enabled: selectable,
+        state: _checkState(selected, f.total),
+        onTap: () => _toggleFolderSelection(f),
+      ),
       title: Text(
         f.name,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: const TextStyle(fontWeight: FontWeight.w600),
       ),
-      subtitle:
-          Text('${f.total} 首', maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        _sel.active && selectable
+            ? '已选 $selected / ${f.total} 首'
+            : '${f.total} 首',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (!_sel.active)
+            RowActionIconButton(
+              icon: Icons.play_arrow,
+              tooltip: '播放该文件夹',
+              onPressed: f.total == 0
+                  ? null
+                  : () {
+                      final paths = widget.folderPaths ?? const <String>[];
+                      final idx = indicesUnder(paths, f.path);
+                      widget.onPlayGroup(
+                          [for (final i in idx) widget.songs[i]]);
+                    },
+            ),
           RowActionIconButton(
-            icon: Icons.play_arrow,
-            tooltip: '播放该文件夹',
-            onPressed: f.total == 0
-                ? null
-                : () {
-                    final paths = widget.folderPaths ?? const <String>[];
-                    final idx = indicesUnder(paths, f.path);
-                    widget.onPlayGroup([for (final i in idx) widget.songs[i]]);
-                  },
+            icon: Icons.chevron_right,
+            tooltip: '进入文件夹',
+            onPressed: () => widget.onDirChanged?.call(f.path),
           ),
-          const Icon(Icons.chevron_right),
         ],
       ),
-      onTap: () => widget.onDirChanged?.call(f.path),
+      // 多选态点击整行 = 选中/取消整个子树；右侧箭头仍可进入文件夹。
+      onTap: _sel.active
+          ? (selectable ? () => _toggleFolderSelection(f) : null)
+          : () => widget.onDirChanged?.call(f.path),
+      // 源页逐级文件夹没有可折叠的组内容，长按始终直接多选整个子树（A/B
+      // 只影响可折叠的组头）。
+      onLongPress: selectable
+          ? (_sel.active
+              ? () => _toggleFolderSelection(f)
+              : () => _startFolderSelection(f))
+          : null,
     );
   }
 
   Widget _groupRow(BuildContext c, DirectSourceManager direct,
-      List<SongGroup> groups, SongGroup g) {
+      List<SongGroup> groups, SongGroup g, int selected) {
     final scheme = Theme.of(c).colorScheme;
     final name = g.name;
     final collapsed = _collapsed.contains(name);
+    final longPressCollapse = direct.settings.longPressCollapseGroups;
     return ListTile(
-      leading: _leadingIcon(
-        widget.groupMode == SongGroupMode.album ? Icons.album : Icons.folder,
-        scheme,
+      leading: _selectableLeading(
+        _leadingIcon(
+          widget.groupMode == SongGroupMode.album ? Icons.album : Icons.folder,
+          scheme,
+        ),
+        enabled: true,
+        state: _checkState(selected, g.count),
+        onTap: () => _toggleGroupSelection(g),
       ),
       title: Text(
         name,
@@ -523,22 +769,62 @@ class _SongCollectionViewState extends State<SongCollectionView> {
         overflow: TextOverflow.ellipsis,
         style: const TextStyle(fontWeight: FontWeight.w600),
       ),
-      subtitle:
-          Text('${g.count} 首', maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        _sel.active ? '已选 $selected / ${g.count} 首' : '${g.count} 首',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (!_sel.active)
+            RowActionIconButton(
+              icon: Icons.play_arrow,
+              tooltip: '播放该分组',
+              onPressed: () => widget.onPlayGroup(
+                  [for (final i in g.songIndices) widget.songs[i]]),
+            ),
           RowActionIconButton(
-            icon: Icons.play_arrow,
-            tooltip: '播放该分组',
-            onPressed: () => widget
-                .onPlayGroup([for (final i in g.songIndices) widget.songs[i]]),
+            icon: collapsed ? Icons.expand_more : Icons.expand_less,
+            tooltip: collapsed ? '展开分组' : '折叠分组',
+            onPressed: () => _toggleCollapse(direct.settings, name),
           ),
-          Icon(collapsed ? Icons.expand_more : Icons.expand_less),
         ],
       ),
-      onTap: () => _toggleCollapse(direct.settings, name),
-      onLongPress: () => _toggleAllCollapse(direct.settings, groups),
+      // 多选态点击组头 = 全选/取消整组；箭头单独负责折叠。
+      onTap: _sel.active
+          ? () => _toggleGroupSelection(g)
+          : () => _toggleCollapse(direct.settings, name),
+      onLongPress: () {
+        if (_sel.active) {
+          _toggleGroupSelection(g);
+        } else if (longPressCollapse) {
+          _toggleAllCollapse(direct.settings, groups);
+        } else {
+          _startGroupSelection(g);
+        }
+      },
+    );
+  }
+
+  /// 多选态在行首图标左上角叠加三态勾选；非选择态/不可选（空文件夹）原样返回。
+  Widget _selectableLeading(
+    Widget leading, {
+    required bool enabled,
+    required bool? state,
+    required VoidCallback onTap,
+  }) {
+    if (!_sel.active || !enabled) return leading;
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        leading,
+        Positioned(
+          left: -4,
+          top: -4,
+          child: SelectionBadge(selected: state, onTap: onTap),
+        ),
+      ],
     );
   }
 
@@ -572,8 +858,14 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       playing: si == currentIdx,
       selectionMode: _sel.active,
       selected: _sel.contains(key),
-      onSelect: () => setState(() => _sel.toggle(key)),
-      onStartSelect: () => setState(() => _sel.startWith(key)),
+      onSelect: () => setState(() {
+        _sel.toggle(key);
+        _selEpoch++;
+      }),
+      onStartSelect: () => setState(() {
+        _sel.startWith(key);
+        _selEpoch++;
+      }),
       onPlay: () => widget.onPlay(displaySongs, si),
       extraMenuItems: widget.extraMenuItems?.call(s, si),
       onExtraMenu: (v) => widget.onExtraMenu?.call(s, v),
@@ -597,11 +889,21 @@ class SongGroupButton extends StatelessWidget {
   final ValueChanged<SongGroupMode> onChanged;
   final String? folderLabel;
 
+  /// A 模式：长按组头改为多选后，「全部展开/折叠」收进本菜单。
+  final VoidCallback? onToggleAllCollapse;
+  final bool allCollapsed;
+
+  /// B 模式：长按组头改为展开/折叠后，「多选」入口收进本菜单。
+  final VoidCallback? onStartSelection;
+
   const SongGroupButton({
     super.key,
     required this.value,
     required this.onChanged,
     this.folderLabel,
+    this.onToggleAllCollapse,
+    this.allCollapsed = false,
+    this.onStartSelection,
   });
 
   @override
@@ -634,7 +936,70 @@ class SongGroupButton extends StatelessWidget {
               ],
             ),
           ),
+        if (onToggleAllCollapse != null) ...[
+          const PopupMenuDivider(),
+          PopupMenuItem<SongGroupMode>(
+            onTap: onToggleAllCollapse,
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 28,
+                  child: Icon(
+                    allCollapsed ? Icons.unfold_more : Icons.unfold_less,
+                    size: 18,
+                  ),
+                ),
+                Text(allCollapsed ? '全部展开' : '全部折叠'),
+              ],
+            ),
+          ),
+        ],
+        if (onStartSelection != null) ...[
+          const PopupMenuDivider(),
+          PopupMenuItem<SongGroupMode>(
+            onTap: onStartSelection,
+            child: const Row(
+              children: [
+                SizedBox(
+                  width: 28,
+                  child: Icon(Icons.checklist, size: 18),
+                ),
+                Text('多选'),
+              ],
+            ),
+          ),
+        ],
       ],
     );
   }
+}
+
+/// 一次多选构建的派生汇总（见 [_SongCollectionViewState._buildSelectionSummary]）。
+class _SelectionSummary {
+  /// 全集合中已选歌曲，按 [SongCollectionView.songs] 原顺序。
+  final List<Song> songs;
+
+  /// 当前展示层已选数（递归目录视图只算本层）。
+  final int visibleSelected;
+  final bool allVisibleSelected;
+
+  /// 组名 / 文件夹路径 → 已选歌曲数（用于三态勾选与组头计数）。
+  final Map<String, int> groupSelected;
+  final Map<String, int> folderSelected;
+
+  const _SelectionSummary({
+    required this.songs,
+    required this.visibleSelected,
+    required this.allVisibleSelected,
+    required this.groupSelected,
+    required this.folderSelected,
+  });
+
+  static const empty = _SelectionSummary(
+    songs: [],
+    visibleSelected: 0,
+    allVisibleSelected: false,
+    groupSelected: {},
+    folderSelected: {},
+  );
 }

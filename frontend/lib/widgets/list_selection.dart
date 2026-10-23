@@ -30,6 +30,14 @@ class Selection<T> {
       ..add(item);
   }
 
+  /// 长按组头/文件夹：进入选择模式并选中整批（组内全部歌曲 / 文件夹子树）。
+  void startWithAll(Iterable<T> items) {
+    active = true;
+    _selected
+      ..clear()
+      ..addAll(items);
+  }
+
   /// 全选/取消全选（按当前列表整体切换）。
   void setAll(Iterable<T> allItems) {
     final list = allItems.toList();

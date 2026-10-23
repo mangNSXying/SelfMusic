@@ -14,7 +14,16 @@ class SelectionAction {
 /// 列表多选模式顶栏：显示已选数量、「全选/取消全选」，批量操作收进右侧三点菜单。
 class SelectionBar extends StatelessWidget {
   final int total;
+
+  /// 已选总数（可包含当前列表之外的歌曲，如源页文件夹递归选中的子目录）。
   final int selectedCount;
+
+  /// 当前列表是否已全选；为空时回退到 [selectedCount] == [total]。
+  ///
+  /// [selectedCount] 可能是整个集合的已选数（大于当前显示条数），因此全选
+  /// 文案不能只靠两者相等判断。
+  final bool? allSelected;
+
   final VoidCallback? onToggleAll;
   final VoidCallback? onCancel;
   final List<SelectionAction> actions;
@@ -22,12 +31,14 @@ class SelectionBar extends StatelessWidget {
     super.key,
     required this.total,
     required this.selectedCount,
+    this.allSelected,
     this.onToggleAll,
     this.onCancel,
     this.actions = const [],
   });
 
-  bool get _allSelected => total > 0 && selectedCount == total;
+  bool get _allSelected =>
+      allSelected ?? (total > 0 && selectedCount == total);
 
   @override
   Widget build(BuildContext context) {
