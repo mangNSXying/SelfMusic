@@ -744,6 +744,63 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
   static String _trackCoverKey(OnlineLyricCandidate c) =>
       't:${c.source}:${c.onlineId}';
 
+  /// 标签页「查看」：歌词候选将回填的标签。
+  void _openLyricTagDetail() {
+    if (!_hasLyricCands) return;
+    final idx = _lyricSel.clamp(0, _lyrics.length - 1);
+    final c = _lyrics[idx];
+    showDialog<void>(
+      context: context,
+      builder: (_) => TagDetailDialog(
+        source: c.source,
+        title: c.trackName,
+        artist: c.artistName,
+        album: c.albumName,
+        metaLines: [
+          if (c.durationSec != null) '时长 ${_fmtDur(c.durationSec!)}',
+          '匹配 ${c.matchWeight.toStringAsFixed(2)}${idx == 0 ? ' · 最佳匹配' : ''}',
+        ],
+      ),
+    );
+  }
+
+  /// 标签页「查看」：封面候选（MB 录音 / QQ·网易曲目）将回填的标签。
+  void _openCoverTagDetail() {
+    if (!_hasCoverCands) return;
+    if (_coverIsMb) {
+      final idx = _recSel.clamp(0, _recs.length - 1);
+      final r = _recs[idx];
+      showDialog<void>(
+        context: context,
+        builder: (_) => TagDetailDialog(
+          source: OnlineMetaSource.mbCaa,
+          title: r.title,
+          artist: r.artist,
+          album: r.releaseTitle ?? '',
+          metaLines: [
+            '匹配 ${r.matchWeight.toStringAsFixed(2)}${idx == 0 ? ' · 最佳匹配' : ''}',
+          ],
+        ),
+      );
+    } else {
+      final idx = _trackSel.clamp(0, _trackCands.length - 1);
+      final c = _trackCands[idx];
+      showDialog<void>(
+        context: context,
+        builder: (_) => TagDetailDialog(
+          source: c.source,
+          title: c.trackName,
+          artist: c.artistName,
+          album: c.albumName,
+          metaLines: [
+            if (c.durationSec != null) '时长 ${_fmtDur(c.durationSec!)}',
+            '匹配 ${c.matchWeight.toStringAsFixed(2)}${idx == 0 ? ' · 最佳匹配' : ''}',
+          ],
+        ),
+      );
+    }
+  }
+
   /// 列表下方的细字状态（列表非空时的取数/无图提示）。
   Widget _statusLine(String text, ColorScheme cs) {
     if (text.isEmpty) return const SizedBox.shrink();
@@ -951,8 +1008,8 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
                 ? '${lyricCand.trackName} — ${lyricCand.artistName}'
                 : '先在歌词页搜索'),
             secondary: _detailButton(
-              _hasLyricCands ? () => _openLyricDetail(_lyricSel) : null,
-              '查看歌词详情',
+              _hasLyricCands ? _openLyricTagDetail : null,
+              '查看标签详情',
             ),
           ),
           RadioListTile<_TagSource>(
@@ -965,16 +1022,8 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
                 : '用封面候选（${_coverSource.label}）回填'),
             subtitle: Text(coverSubtitle),
             secondary: _detailButton(
-              _hasCoverCands
-                  ? () {
-                      if (_coverIsMb) {
-                        _openMbCoverDetail(_recSel);
-                      } else {
-                        _openTrackCoverDetail(_trackSel);
-                      }
-                    }
-                  : null,
-              '查看封面详情',
+              _hasCoverCands ? _openCoverTagDetail : null,
+              '查看标签详情',
             ),
           ),
           const Divider(),

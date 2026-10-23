@@ -1,10 +1,11 @@
-/// 歌词/封面候选详情窗（独立弹窗，纯查看；保存/回填仍在主窗底部执行）。
+/// 歌词/封面/标签候选详情窗（独立弹窗，纯查看；保存/回填仍在主窗底部执行）。
 ///
 /// 主窗列表不再内嵌预览，候选行尾「查看」打开本窗：
 /// - [LyricDetailDialog]：完整歌词（解析后逐行）+ 候选元数据；QQ/网易候选
 ///   在窗内懒取正文，取到后经 [LyricDetailDialog.onLoaded] 回填主窗列表。
 /// - [CoverDetailDialog]：大图 + 标签 + 元数据；懒取字节，取到后经
 ///   [CoverDetailDialog.onLoaded] 回主窗缓存（保存免二次下载）。
+/// - [TagDetailDialog]：标签回填来源将写入的标题/歌手/专辑（纯查看）。
 library;
 
 import 'dart:typed_data';
@@ -324,6 +325,94 @@ class _CoverDetailDialogState extends State<CoverDetailDialog> {
     return Center(
       child: Text(_error.isEmpty ? '无预览' : _error,
           textAlign: TextAlign.center),
+    );
+  }
+}
+
+/// 标签详情窗：查看某个在线候选将回填的标题/歌手/专辑（纯查看）。
+///
+/// 空值按回填口径提示「不覆盖本地」；实际写入仍由主窗底部「保存标签」执行。
+class TagDetailDialog extends StatelessWidget {
+  final String source;
+  final String title;
+  final String artist;
+  final String album;
+
+  /// 附加元数据（时长/匹配度等），逐行小字展示。
+  final List<String> metaLines;
+
+  const TagDetailDialog({
+    super.key,
+    required this.source,
+    required this.title,
+    required this.artist,
+    required this.album,
+    this.metaLines = const [],
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.colorScheme.onSurface.withValues(alpha: 0.65);
+    return AlertDialog(
+      title: const Text('标签详情'),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '来源 $source · 以下标签将由底部「保存标签」回填',
+              style: theme.textTheme.bodySmall?.copyWith(color: muted),
+            ),
+            const Divider(height: 20),
+            _tagRow(context, '标题', title),
+            const SizedBox(height: 8),
+            _tagRow(context, '歌手', artist),
+            const SizedBox(height: 8),
+            _tagRow(context, '专辑', album),
+            if (metaLines.isNotEmpty) ...[
+              const Divider(height: 20),
+              for (final line in metaLines)
+                Text(line,
+                    style: theme.textTheme.bodySmall?.copyWith(color: muted),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+            ],
+          ],
+        ),
+      ),
+      actions: [appDialogCloseAction(context)],
+    );
+  }
+
+  Widget _tagRow(BuildContext context, String label, String value) {
+    final theme = Theme.of(context);
+    final empty = value.trim().isEmpty;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 44,
+          child: Text(
+            label,
+            style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.6)),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            empty ? '（在线为空，不覆盖本地）' : value,
+            style: empty
+                ? theme.textTheme.bodyMedium?.copyWith(
+                    color:
+                        theme.colorScheme.onSurface.withValues(alpha: 0.5),
+                    fontStyle: FontStyle.italic)
+                : theme.textTheme.bodyMedium,
+          ),
+        ),
+      ],
     );
   }
 }

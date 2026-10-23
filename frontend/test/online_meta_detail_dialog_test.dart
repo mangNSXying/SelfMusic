@@ -147,4 +147,35 @@ void main() {
     expect(find.textContaining('无封面'), findsOneWidget);
     expect(find.byType(Image), findsNothing);
   });
+
+  testWidgets('标签详情：展示来源与标题/歌手/专辑', (tester) async {
+    await tester.pumpWidget(_host(const TagDetailDialog(
+      source: OnlineMetaSource.qq,
+      title: '发如雪',
+      artist: '周杰伦',
+      album: '十一月的萧邦',
+      metaLines: ['匹配 0.93 · 最佳匹配'],
+    )));
+    await tester.pumpAndSettle();
+
+    expect(find.text('标签详情'), findsOneWidget);
+    expect(find.textContaining('来源 QQ音乐'), findsOneWidget);
+    expect(find.text('发如雪'), findsOneWidget);
+    expect(find.text('周杰伦'), findsOneWidget);
+    expect(find.text('十一月的萧邦'), findsOneWidget);
+    expect(find.text('匹配 0.93 · 最佳匹配'), findsOneWidget);
+    expect(find.byType(SelectableText), findsNothing);
+  });
+
+  testWidgets('标签详情：在线空值提示不覆盖本地', (tester) async {
+    await tester.pumpWidget(_host(const TagDetailDialog(
+      source: OnlineMetaSource.mbCaa,
+      title: '只有标题',
+      artist: '',
+      album: '',
+    )));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('（在线为空，不覆盖本地）'), findsNWidgets(2));
+  });
 }
