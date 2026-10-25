@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/library_provider.dart';
@@ -34,6 +32,7 @@ import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_collection_view.dart';
 import '../widgets/song_list.dart';
+import '../widgets/song_selection_actions.dart';
 import '../widgets/sort_menu_button.dart';
 import '../widgets/square_card.dart';
 import '../widgets/view_mode_toggle.dart';
@@ -418,16 +417,10 @@ class _LikedViewState extends State<_LikedView>
     context.read<NavigationProvider>().openPlayer();
   }
 
-  void _unlikeSelected(List<Song> selected, VoidCallback clear) {
+  void _addToPlaylistSelected(List<Song> selected, VoidCallback clear) {
     if (selected.isEmpty) return;
     clear();
-    final direct = context.read<DirectSourceManager>();
-    final player = context.read<PlayerProvider>();
-    for (final s in selected) {
-      direct.setFavorite(s, false);
-      unawaited(player.onAnchorSongRemoved(PlayerProvider.anchorForLiked(), s));
-    }
-    AppToast.show('已取消喜欢 ${selected.length} 首', isError: false);
+    showAddToPlaylistSheetForSongs(context, selected);
   }
 
   @override
@@ -473,11 +466,17 @@ class _LikedViewState extends State<_LikedView>
                     : () => _playSelected(selected, clear),
               ),
               SelectionAction(
-                icon: Icons.favorite_border,
-                label: '取消喜欢',
+                icon: Icons.playlist_add,
+                label: '加入歌单',
                 onPressed: selected.isEmpty
                     ? null
-                    : () => _unlikeSelected(selected, clear),
+                    : () => _addToPlaylistSelected(selected, clear),
+              ),
+              ...songSelectionActions(
+                context,
+                selected,
+                clear,
+                favorite: FavoriteAction.unlike,
               ),
             ],
           ),
@@ -619,6 +618,7 @@ class _SongsViewState extends State<_SongsView>
                     ? null
                     : () => _addToPlaylistSelected(selected, clear),
               ),
+              ...songSelectionActions(context, selected, clear),
             ],
           ),
         ),

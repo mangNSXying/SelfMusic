@@ -544,7 +544,19 @@ void main() {
     expect(find.text('已选 1'), findsOneWidget);
     await tester.tap(find.byTooltip('更多操作'));
     await tester.pumpAndSettle();
+    expect(find.text('播放选中'), findsOneWidget);
+    expect(find.text('加入歌单'), findsOneWidget);
     expect(find.text('从歌单移除'), findsOneWidget);
+    expect(find.text('喜欢'), findsOneWidget);
+    expect(find.text('不喜欢'), findsOneWidget);
+    expect(find.text('缓存'), findsOneWidget);
+    expect(find.text('删除'), findsOneWidget);
+    bool enabled(String label) => tester
+        .widget<PopupMenuItem<int>>(find.ancestor(
+            of: find.text(label), matching: find.byType(PopupMenuItem<int>)))
+        .enabled;
+    expect(enabled('缓存'), isFalse);
+    expect(enabled('删除'), isFalse);
     await tester.tap(find.text('从歌单移除'));
     await tester.pumpAndSettle();
     expect(find.text('确定从歌单中移除选中的 1 首歌曲？'), findsOneWidget);

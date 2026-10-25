@@ -14,11 +14,13 @@ import '../providers/playlists_provider.dart';
 import '../utils/collection_sort.dart';
 import '../utils/song_groups.dart';
 import '../utils/song_search.dart';
+import 'add_to_playlist.dart';
 import 'app_dialog_actions.dart';
 import 'header_action_button.dart';
 import 'list_selection.dart';
 import 'selection_bar.dart';
 import 'song_collection_view.dart';
+import 'song_selection_actions.dart';
 import 'song_tile.dart';
 
 export 'song_tile.dart';
@@ -391,11 +393,49 @@ class _SongListState extends State<SongList> {
             },
             selectionActions: (selected, clear) => [
               SelectionAction(
+                icon: Icons.play_arrow,
+                label: '播放选中',
+                onPressed: selected.isEmpty
+                    ? null
+                    : () {
+                        clear();
+                        _playGroup(context, selected);
+                      },
+              ),
+              SelectionAction(
+                icon: Icons.playlist_add,
+                label: '加入歌单',
+                onPressed: selected.isEmpty
+                    ? null
+                    : () {
+                        clear();
+                        showAddToPlaylistSheetForSongs(context, selected);
+                      },
+              ),
+              SelectionAction(
                 icon: Icons.playlist_remove,
                 label: '从歌单移除',
                 onPressed: selected.isEmpty
                     ? null
                     : () => _removeSelected(provider, selected, clear),
+              ),
+              ...songSelectionActions(
+                context,
+                selected,
+                clear,
+                onDeleted: (deleted) {
+                  provider.refresh();
+                  if (!mounted) return;
+                  final uuid =
+                      provider.store.index.playlistUuidOf(widget.playlistId);
+                  if (uuid == null || deleted.isEmpty) return;
+                  final player = context.read<PlayerProvider>();
+                  final count = provider.countOf(widget.playlistId);
+                  for (final s in deleted) {
+                    unawaited(player.onPlaylistSongRemoved(uuid, s,
+                        newPlaylistCount: count));
+                  }
+                },
               ),
             ],
           ),

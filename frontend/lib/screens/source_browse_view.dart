@@ -22,6 +22,7 @@ import '../widgets/header_action_button.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_collection_view.dart';
+import '../widgets/song_selection_actions.dart';
 import '../widgets/toolbar_icon_button.dart';
 
 /// 源内浏览组件：在 AppContent 内容区原地渲染。
@@ -595,6 +596,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                       ? null
                       : () => _addToPlaylistSelected(selected, clear),
                 ),
+                ...songSelectionActions(context, selected, clear),
               ],
             ),
           ),
