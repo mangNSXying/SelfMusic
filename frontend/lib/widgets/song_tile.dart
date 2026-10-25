@@ -89,6 +89,19 @@ class SongTile extends StatelessWidget {
   /// 副标题：歌手 · 专辑（· 专辑歌手，仅当与歌手不同时展示，避免冗余）。
   String get _subtitle => SongRowView.subtitleOf(song);
 
+  List<Widget> _stateIcons(bool favorite, bool disliked) => [
+        if (favorite)
+          const Padding(
+            padding: EdgeInsets.only(right: 6),
+            child: Icon(Icons.favorite, size: 15, color: Colors.pink),
+          ),
+        if (disliked)
+          const Padding(
+            padding: EdgeInsets.only(right: 6),
+            child: Icon(Icons.thumb_down, size: 15, color: Colors.orange),
+          ),
+      ];
+
   Future<void> _cacheSong(
       BuildContext context, DirectSourceManager direct) async {
     final src = source;
@@ -385,6 +398,7 @@ class SongTile extends StatelessWidget {
             ),
             const SizedBox(width: 12),
           ],
+          ..._stateIcons(view.favorite, view.disliked),
           Text(formatDuration(song.duration)),
           if (!selectionMode)
             _menu(context, direct, view.favorite, view.disliked),
@@ -446,6 +460,7 @@ class SongTile extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (info != null) ...[info, const SizedBox(width: 12)],
+            ..._stateIcons(favorite, disliked),
             Text(formatDuration(song.duration)),
             if (!selectionMode) _menu(context, direct, favorite, disliked),
           ],

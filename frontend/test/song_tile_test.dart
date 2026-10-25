@@ -308,15 +308,33 @@ void main() {
     await tester.tap(find.text('喜欢'));
     await settleWriter(tester);
 
+    expect(find.byIcon(Icons.favorite), findsOneWidget);
+
     await openMenu();
     expect(find.text('取消喜欢'), findsOneWidget);
-    expect(find.byIcon(Icons.favorite), findsOneWidget);
+    expect(find.byIcon(Icons.favorite), findsNWidgets(2));
 
     await tester.tap(find.text('取消喜欢'));
     await settleWriter(tester);
 
+    expect(find.byIcon(Icons.favorite), findsNothing);
+
     await openMenu();
     expect(find.text('喜欢'), findsOneWidget);
+
+    await tester.tap(find.text('不喜欢'));
+    await settleWriter(tester);
+
+    expect(find.byIcon(Icons.thumb_down), findsOneWidget);
+
+    await openMenu();
+    expect(find.text('取消不喜欢'), findsOneWidget);
+    expect(find.byIcon(Icons.thumb_down), findsNWidgets(2));
+
+    await tester.tap(find.text('取消不喜欢'));
+    await settleWriter(tester);
+
+    expect(find.byIcon(Icons.thumb_down), findsNothing);
 
     await tester.runAsync(() async {
       direct.dispose();
