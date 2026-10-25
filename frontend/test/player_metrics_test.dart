@@ -3,7 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:selfmusic/layout/player_metrics.dart';
 
 void main() {
-  test('桌面 1080p/1440p/4K 内容占屏比例保持一致', () {
+  test('桌面 1080p 铺满、1440p/4K 按 85% 留白', () {
     final fhd = PlayerMetrics.desktop(const Size(1920, 1080));
     final qhd = PlayerMetrics.desktop(const Size(2560, 1440));
     final uhd = PlayerMetrics.desktop(const Size(3840, 2160));
@@ -13,13 +13,13 @@ void main() {
     expect(uhd.uiScale, closeTo(2.0, 0.001));
 
     for (final entry in [
-      (fhd, const Size(1920, 1080)),
-      (qhd, const Size(2560, 1440)),
-      (uhd, const Size(3840, 2160)),
+      (fhd, const Size(1920, 1080), 1.0),
+      (qhd, const Size(2560, 1440), 0.85),
+      (uhd, const Size(3840, 2160), 0.85),
     ]) {
       final m = entry.$1;
       final size = entry.$2;
-      expect(m.contentMaxWidth / size.width, closeTo(0.85, 0.005));
+      expect(m.contentMaxWidth / size.width, closeTo(entry.$3, 0.005));
       expect(
         (m.targetCover + m.fixedContentHeight) / size.height,
         closeTo(0.757, 0.005),
@@ -34,7 +34,8 @@ void main() {
       expect(m.lyricsMaxWidth, greaterThan(1000 * m.uiScale));
     }
 
-    expect(fhd.lyricsMaxWidth, closeTo(1068.8, 0.01));
+    expect(fhd.contentMaxWidth, 1920);
+    expect(fhd.lyricsMaxWidth, closeTo(1356.8, 0.01));
     expect(qhd.lyricsMaxWidth, closeTo(1425.07, 0.01));
     expect(uhd.lyricsMaxWidth, closeTo(2137.6, 0.01));
     expect(uhd.targetCover, closeTo(950.4, 0.01));
@@ -50,14 +51,29 @@ void main() {
     expect(scaled.targetCover, native.targetCover);
   });
 
+  test('窄桌面铺满，超过 1920 才收窄，并平滑过渡', () {
+    final laptop = PlayerMetrics.desktop(const Size(1440, 900));
+    expect(laptop.contentMaxWidth, 1440);
+    expect(laptop.lyricsMaxWidth, closeTo(956, 0.01));
+
+    final fhd = PlayerMetrics.desktop(const Size(1920, 1080));
+    expect(fhd.contentMaxWidth, 1920);
+
+    final mid = PlayerMetrics.desktop(const Size(2000, 1100));
+    expect(mid.contentMaxWidth, 1920);
+
+    final qhd = PlayerMetrics.desktop(const Size(2560, 1440));
+    expect(qhd.contentMaxWidth, closeTo(2176, 0.01));
+  });
+
   test('小桌面窗口不缩字号，内容仍放得下', () {
     final m = PlayerMetrics.desktop(const Size(800, 360));
 
     expect(m.uiScale, 1.0);
     expect(m.leftColumnWidth, 320.0);
     expect(m.targetCover, closeTo(158.4, 0.01));
-    expect(m.contentMaxWidth, closeTo(680, 0.01));
-    expect(m.lyricsMaxWidth, closeTo(312, 0.01));
+    expect(m.contentMaxWidth, 800);
+    expect(m.lyricsMaxWidth, closeTo(432, 0.01));
     expect(m.contentMaxWidth, lessThanOrEqualTo(800));
     expect(m.rightPaneWidth(800), 336);
   });

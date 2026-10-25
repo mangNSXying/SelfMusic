@@ -5,9 +5,10 @@ import 'package:flutter/widgets.dart';
 /// 播放页自适应尺寸：按视口算出封面/栏宽/歌词区/字号缩放。
 ///
 /// 目标不是整体等比放大（留白占比不会变），而是让播放内容随屏幕一起
-/// 占据更多面积：1080p 起封面约占屏高 44%，内容块约占屏宽 85%，
-/// 歌词列吃掉左栏之外的剩余宽度；4K 保持同一观感比例。小窗口 uiScale
-/// 下限锁 1，避免字号/控件缩到不可读，同时保留原有可滚动兜底。
+/// 占据更多面积：窄屏（≤1920）内容铺满，更宽的屏幕才按 85% 留白，
+/// 并在 1920 附近平滑过渡。1080p 起封面约占屏高 44%，4K 保持同一
+/// 观感比例。小窗口 uiScale 下限锁 1，避免字号/控件缩到不可读，同时
+/// 保留原有可滚动兜底。
 @immutable
 class PlayerMetrics {
   /// 字号、图标、间距、进度条等的统一缩放系数（1.0 起）。
@@ -64,7 +65,8 @@ class PlayerMetrics {
     );
     final columnPadding = 20.0 * uiScale;
     final targetCover = h * 0.44;
-    final contentMaxWidth = w * 0.85;
+    // 窄屏不设上限直接铺满；更宽的屏幕最多占 85%，1920 处平滑过渡。
+    final contentMaxWidth = math.min(w, math.max(1920.0, w * 0.85));
     final leftColumnWidth = math.min(
       math.max(targetCover + columnPadding * 2, 320.0 * uiScale),
       contentMaxWidth * 0.55,

@@ -60,36 +60,54 @@ void main() {
   });
 
   group('SongRowView.wideInfoOf', () {
-    test('格式 · 码率 · 大小（码率 = size*8/duration）', () {
+    test('播放源 · 格式 · 码率 · 大小（码率 = size*8/duration）', () {
       // 25 MiB / 240s = 853 kbps；大小 25.0 MB。
-      final info = SongRowView.wideInfoOf(_song(
-        format: 'flac',
-        duration: 240,
-        fileSize: 25 * 1024 * 1024,
-      ));
-      expect(info, 'FLAC · 853 kbps · 25.0 MB');
+      final info = SongRowView.wideInfoOf(
+        _song(
+          format: 'flac',
+          duration: 240,
+          fileSize: 25 * 1024 * 1024,
+        ),
+        sourceName: 'NAS',
+      );
+      expect(info, 'NAS · FLAC · 853 kbps · 25.0 MB');
+    });
+
+    test('无友好源名时回退到 Song.source', () {
+      final info = SongRowView.wideInfoOf(_song(format: 'flac'));
+      expect(info, 'local · FLAC');
     });
 
     test('缺时长跳过码率；不足 1MB 降为 KB', () {
-      final info = SongRowView.wideInfoOf(_song(
-        format: 'mp3',
-        duration: null,
-        fileSize: 512 * 1024,
-      ));
-      expect(info, 'MP3 · 512 KB');
+      final info = SongRowView.wideInfoOf(
+        _song(
+          format: 'mp3',
+          duration: null,
+          fileSize: 512 * 1024,
+        ),
+        sourceName: 'NAS',
+      );
+      expect(info, 'NAS · MP3 · 512 KB');
     });
 
-    test('全缺返回 null', () {
-      expect(SongRowView.wideInfoOf(_song()), isNull);
+    test('无格式/码率/大小时仍保留播放源', () {
+      expect(SongRowView.wideInfoOf(_song(), sourceName: 'NAS'), 'NAS');
     });
   });
 
   group('SongRowView.of', () {
-    test('宽行带上 wideInfoText，窄行不带', () {
+    test('宽行带上 wideInfoText（含播放源），窄行不带', () {
       final s = _song(format: 'flac', duration: 240, fileSize: 1024 * 1024);
-      expect(SongRowView.of(song: s, titleFormat: SongTitleFormat.titleOnly, wide: true)
-          .wideInfoText, isNotNull);
-      expect(SongRowView.of(song: s, titleFormat: SongTitleFormat.titleOnly).wideInfoText,
+      final wide = SongRowView.of(
+        song: s,
+        titleFormat: SongTitleFormat.titleOnly,
+        sourceName: 'NAS',
+        wide: true,
+      );
+      expect(wide.wideInfoText, startsWith('NAS · FLAC'));
+      expect(
+          SongRowView.of(song: s, titleFormat: SongTitleFormat.titleOnly)
+              .wideInfoText,
           isNull);
     });
 

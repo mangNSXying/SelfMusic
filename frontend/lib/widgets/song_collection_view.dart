@@ -473,6 +473,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
         direct.favoriteVersion,
         direct.metaVersion,
         direct.settingsVersion,
+        direct.sourcesRevision,
         settings.songTitleFormat,
         wide,
         currentIdx,
@@ -860,6 +861,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
         return SongRowView.of(
           song: s,
           titleFormat: direct.settings.songTitleFormat,
+          sourceName: src?.name ?? direct.sourceByKey(s.sourceKey)?.name,
           playing: si == currentIdx,
           selected: _sel.contains(key),
           favorite: meta.favorite,

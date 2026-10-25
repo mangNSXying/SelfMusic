@@ -347,6 +347,51 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('1280 桌面播放页：内容铺满，不受 85% 上限约束', (tester) async {
+    late final DirectSourceManager direct;
+    late final PlayerProvider player;
+    await tester.runAsync(() async {
+      direct = await _openDirect();
+      player = await _playerWithCurrent();
+    });
+    addTearDown(() {
+      player.dispose();
+      direct.dispose();
+    });
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MultiProvider(
+          providers: [
+            ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+            ChangeNotifierProvider<NavigationProvider>(
+                create: (_) => NavigationProvider()),
+            ChangeNotifierProvider<PlayerProvider>.value(value: player),
+            ChangeNotifierProvider<PlaylistsProvider>(
+                create: (_) => PlaylistsProvider(direct.playlists)),
+          ],
+          child: const PlayerScreen(),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull, reason: '1280 播放页不得溢出');
+    final cover = find.byKey(const Key('player-cover'));
+    expect(cover, findsOneWidget);
+    expect(tester.getSize(cover).width, closeTo(352, 1));
+    expect(tester.getTopLeft(cover).dx, closeTo(20, 1));
+    expect(
+      tester.getSize(find.byType(LyricsView)).width,
+      closeTo(840, 1),
+    );
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('4K 桌面分栏：右窗播放列同步放大、不溢出', (tester) async {
     late final DirectSourceManager direct;
     late final PlayerProvider player;
