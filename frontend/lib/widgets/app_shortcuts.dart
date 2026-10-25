@@ -8,6 +8,7 @@ import 'package:hotkey_manager/hotkey_manager.dart';
 import 'package:provider/provider.dart';
 
 import '../layout/queue_panel.dart';
+import '../platform/harmonyos/ohos_global_hotkeys.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
@@ -40,6 +41,7 @@ class AppShortcuts extends StatefulWidget {
 
 class _AppShortcutsState extends State<AppShortcuts> {
   final FocusNode _rootFocus = FocusNode(debugLabel: 'appShortcuts');
+  final OhosGlobalHotkeys _ohosHotkeys = OhosGlobalHotkeys();
   ShortcutSettings? _settings;
   Future<void> _registrationQueue = Future<void>.value();
   int _registrationGeneration = 0;
@@ -47,6 +49,18 @@ class _AppShortcutsState extends State<AppShortcuts> {
 
   bool get _isDesktop =>
       !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+
+  bool get _isOhos => !kIsWeb && Platform.operatingSystem == 'ohos';
+
+  bool get _supportsGlobalHotkeys => !kIsWeb && (_isDesktop || _isOhos);
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.enableGlobalHotkeys && _isOhos) {
+      _ohosHotkeys.attach(_runGlobal);
+    }
+  }
 
   @override
   void didChangeDependencies() {
@@ -64,18 +78,26 @@ class _AppShortcutsState extends State<AppShortcuts> {
     _disposed = true;
     _rootFocus.dispose();
     _settings?.removeListener(_onSettingsChanged);
-    if (widget.enableGlobalHotkeys && _isDesktop) {
+    if (widget.enableGlobalHotkeys && _supportsGlobalHotkeys) {
       unawaited(
         _registrationQueue.catchError((Object e) {
           debugPrint('global hotkeys queue failed: $e');
         }).then((_) async {
           try {
-            await hotKeyManager.unregisterAll();
+            if (_isOhos) {
+              await _ohosHotkeys.unregisterAll();
+            } else {
+              await hotKeyManager.unregisterAll();
+            }
           } catch (e) {
             debugPrint('global hotkeys unregister failed: $e');
+          } finally {
+            _ohosHotkeys.dispose();
           }
         }),
       );
+    } else {
+      _ohosHotkeys.dispose();
     }
     super.dispose();
   }
@@ -85,15 +107,21 @@ class _AppShortcutsState extends State<AppShortcuts> {
   }
 
   void _scheduleGlobalRegistration() {
-    if (_disposed || !widget.enableGlobalHotkeys || !_isDesktop) return;
+    if (_disposed || !widget.enableGlobalHotkeys || !_supportsGlobalHotkeys) {
+      return;
+    }
     _registrationQueue = _registrationQueue.catchError((Object e) {
       debugPrint('global hotkeys queue failed: $e');
     }).then((_) => _applyGlobalHotkeys());
   }
 
   Future<void> _applyGlobalHotkeys() async {
-    if (_disposed || !_isDesktop) return;
+    if (_disposed || !_supportsGlobalHotkeys) return;
     final generation = ++_registrationGeneration;
+    if (_isOhos) {
+      await _applyOhosGlobalHotkeys(generation);
+      return;
+    }
     try {
       await hotKeyManager.unregisterAll();
     } catch (e) {
@@ -119,6 +147,33 @@ class _AppShortcutsState extends State<AppShortcuts> {
         );
       } catch (e) {
         debugPrint('global hotkey register failed ${entry.key.name}: $e');
+      }
+    }
+  }
+
+  Future<void> _applyOhosGlobalHotkeys(int generation) async {
+    try {
+      await _ohosHotkeys.unregisterAll();
+    } catch (e) {
+      debugPrint('ohos global hotkeys unregister failed: $e');
+    }
+    if (_disposed || generation != _registrationGeneration) return;
+    final settings = _settings;
+    if (settings == null) return;
+    for (final entry in settings.globalBindings.entries) {
+      final binding = entry.value;
+      if (binding == null) continue;
+      if (_disposed || generation != _registrationGeneration) return;
+      final spec = ohosHotkeySpecFor(binding);
+      if (spec == null) {
+        debugPrint('ohos global hotkey unsupported ${entry.key.name}: '
+            '${binding.describe()}');
+        continue;
+      }
+      try {
+        await _ohosHotkeys.register(entry.key, spec);
+      } catch (e) {
+        debugPrint('ohos global hotkey register failed ${entry.key.name}: $e');
       }
     }
   }

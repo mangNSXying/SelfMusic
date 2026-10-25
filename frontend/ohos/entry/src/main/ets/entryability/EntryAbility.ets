@@ -14,6 +14,7 @@ import AudioGuardBridge from '../media/AudioGuardBridge';
 import AvPlayerBridge from '../media/AvPlayerBridge';
 import AvSessionBridge from '../media/AvSessionBridge';
 import EmailShareBridge from '../platform/EmailShareBridge';
+import GlobalHotkeyBridge from '../platform/GlobalHotkeyBridge';
 import PlatformBridge from '../platform/PlatformBridge';
 
 const TAG = 'SelfMusicBoot';
@@ -107,6 +108,7 @@ export default class EntryAbility extends FlutterAbility {
   private avSessionBridge: AvSessionBridge | null = null;
   private avPlayerBridge: AvPlayerBridge | null = null;
   private platformBridge: PlatformBridge | null = null;
+  private globalHotkeyBridge: GlobalHotkeyBridge | null = null;
   private audioGuardBridge: AudioGuardBridge | null = null;
   private emailShareBridge: EmailShareBridge | null = null;
 
@@ -119,6 +121,9 @@ export default class EntryAbility extends FlutterAbility {
     // 系统能力平台桥（常亮/本地文件/蓝牙，selfmusic/platform）。
     this.platformBridge = new PlatformBridge(this.context);
     this.platformBridge.setup(flutterEngine)
+    // 系统级全局快捷键（inputConsumer，selfmusic/global_hotkeys）。
+    this.globalHotkeyBridge = new GlobalHotkeyBridge();
+    this.globalHotkeyBridge.setup(flutterEngine)
     // 反馈附件桥（反馈携带日志：systemShare 分享面板，selfmusic/email）。
     this.emailShareBridge = new EmailShareBridge(this.context);
     this.emailShareBridge.setup(flutterEngine)
@@ -156,6 +161,10 @@ export default class EntryAbility extends FlutterAbility {
     if (this.platformBridge) {
       this.platformBridge.shutdown();
       this.platformBridge = null;
+    }
+    if (this.globalHotkeyBridge) {
+      this.globalHotkeyBridge.shutdown();
+      this.globalHotkeyBridge = null;
     }
     if (this.audioGuardBridge) {
       this.audioGuardBridge.shutdown();

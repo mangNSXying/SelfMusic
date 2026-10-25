@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -17,6 +19,7 @@ class ShortcutScopeScreen extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final settings = context.watch<ShortcutSettings>();
     final isMac = settings.primaryIsMeta;
+    final isOhos = Platform.operatingSystem == 'ohos';
     final actions = scope == ShortcutScope.global
         ? ShortcutAction.values.where((a) => a.supportsGlobal)
         : ShortcutAction.values;
@@ -76,8 +79,12 @@ class ShortcutScopeScreen extends StatelessWidget {
                   child: Padding(
                     padding: const EdgeInsets.all(12),
                     child: Text(
-                      '全局键至少需要 Ctrl、Alt 或 Meta 修饰键；'
-                      '若与其他软件冲突，系统可能拒绝注册，请更换组合。',
+                      isOhos
+                          ? '鸿蒙端全局键至少需要 Ctrl 或 Alt 修饰键，不支持 '
+                              'Meta/Command；若与其他软件冲突，系统可能拒绝注册，'
+                              '请更换组合。'
+                          : '全局键至少需要 Ctrl、Alt 或 Meta 修饰键；'
+                              '若与其他软件冲突，系统可能拒绝注册，请更换组合。',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ),

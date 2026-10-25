@@ -1,7 +1,10 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../platform/harmonyos/ohos_global_hotkeys.dart';
 import '../shortcuts/shortcut_models.dart';
 import '../shortcuts/shortcut_settings.dart';
 import 'app_dialog_actions.dart';
@@ -67,19 +70,28 @@ class _ShortcutRecorderDialogState extends State<ShortcutRecorderDialog> {
       meta: meta,
     );
     final settings = context.read<ShortcutSettings>();
-    final error = ShortcutSettings.findConflict(
+    var error = ShortcutSettings.findConflict(
       action: widget.action,
       scope: widget.scope,
       binding: binding,
       window: settings.windowBindings,
       global: settings.globalBindings,
+      metaSupported: !_isOhos,
     );
+    if (error == null &&
+        widget.scope == ShortcutScope.global &&
+        _isOhos &&
+        ohosHotkeySpecFor(binding) == null) {
+      error = '鸿蒙端不支持该按键作为全局快捷键';
+    }
     setState(() {
       _binding = binding;
       _error = error;
     });
     return KeyEventResult.handled;
   }
+
+  bool get _isOhos => Platform.operatingSystem == 'ohos';
 
   static bool _isModifierKey(LogicalKeyboardKey key) =>
       key == LogicalKeyboardKey.control ||
@@ -142,7 +154,10 @@ class _ShortcutRecorderDialogState extends State<ShortcutRecorderDialog> {
               const SizedBox(height: 8),
               Text(
                 widget.scope == ShortcutScope.global
-                    ? '全局快捷键在应用后台也会生效，至少需要一个 Ctrl/Alt/Meta 修饰键。'
+                    ? _isOhos
+                        ? '全局快捷键在应用后台也会生效，至少需要一个 Ctrl 或 Alt 修饰键；'
+                            '鸿蒙端不支持 Meta/Command。'
+                        : '全局快捷键在应用后台也会生效，至少需要一个 Ctrl/Alt/Meta 修饰键。'
                     : '按下组合键即可录制；Esc 取消。',
                 style: Theme.of(context).textTheme.bodySmall,
               ),

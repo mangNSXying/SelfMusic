@@ -120,10 +120,18 @@ class ShortcutSettings extends ChangeNotifier {
     required ShortcutBinding? binding,
     required Map<ShortcutAction, ShortcutBinding?> window,
     required Map<ShortcutAction, ShortcutBinding?> global,
+    bool metaSupported = true,
   }) {
     if (binding == null) return null;
-    if (scope == ShortcutScope.global && !binding.hasAnyModifier) {
-      return '全局快捷键至少需要 Ctrl、Alt 或 Meta 修饰键';
+    if (scope == ShortcutScope.global) {
+      if (!metaSupported && binding.meta) {
+        return '鸿蒙全局快捷键不支持 Meta/Command 修饰键';
+      }
+      if (!binding.hasAnyModifier) {
+        return metaSupported
+            ? '全局快捷键至少需要 Ctrl、Alt 或 Meta 修饰键'
+            : '鸿蒙全局快捷键至少需要 Ctrl 或 Alt 修饰键';
+      }
     }
     final sameScope = scope == ShortcutScope.window ? window : global;
     for (final entry in sameScope.entries) {

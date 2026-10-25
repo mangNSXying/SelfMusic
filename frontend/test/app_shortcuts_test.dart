@@ -109,6 +109,33 @@ void main() {
       expect(error, contains('修饰键'));
     });
 
+    test('鸿蒙全局快捷键拒绝 Meta 且提示 Ctrl/Alt', () {
+      final window = defaultWindowBindings(primaryIsMeta: false);
+      final global = defaultGlobalBindings(primaryIsMeta: false);
+      final metaError = ShortcutSettings.findConflict(
+        action: ShortcutAction.playPause,
+        scope: ShortcutScope.global,
+        binding: ShortcutBinding(
+          keyId: LogicalKeyboardKey.keyL.keyId,
+          meta: true,
+        ),
+        window: window,
+        global: global,
+        metaSupported: false,
+      );
+      expect(metaError, contains('Meta'));
+
+      final noModifierError = ShortcutSettings.findConflict(
+        action: ShortcutAction.playPause,
+        scope: ShortcutScope.global,
+        binding: ShortcutBinding(keyId: LogicalKeyboardKey.keyL.keyId),
+        window: window,
+        global: global,
+        metaSupported: false,
+      );
+      expect(noModifierError, contains('Ctrl 或 Alt'));
+    });
+
     test('清除绑定不触发冲突', () {
       expect(
         ShortcutSettings.findConflict(
