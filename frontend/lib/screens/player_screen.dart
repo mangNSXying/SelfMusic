@@ -96,6 +96,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// 重进不重挂载，只靠挂载追焦（initialScrollOffset）不够。
   final ValueNotifier<int> _bandFocusTick = ValueNotifier<int>(0);
 
+  List<Widget>? _closingPages;
+
   /// 是否停在播放页（播放器带的第 1 页，竖屏分页/横屏整页同位置）——
   /// 只在播放页上计时隐藏。
   bool get _onPlayerPage =>
@@ -487,91 +489,104 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     // （首歌单页可能已保活挂载，换歌后再进不会重挂载）。
                     if (i == 0) _bandFocusTick.value++;
                   },
-                  children: [
-                    // 首帧避让（C）：邻页首帧占位，空闲预热后再装配——歌单页整单
-                    // 装配（1310 首曾测 ~150ms）移出首帧；页数恒定（横屏 2 / 竖屏 3），
-                    // PageController initialPage=1 不受影响。
-                    if (_warmNeighbors)
-                      if (landscape)
-                        // 横屏歌单页为「左歌单右播放」分栏：滑动 settle 后左右同显，
-                        // 与横屏整页「左播放右歌词」同理；竖屏仍为整页歌单。
-                        // 左上角返回箭头悬浮于分栏之上（与横屏播放页一致）。
-                        Stack(
-                          children: [
-                            Positioned.fill(
-                              child: desktopLandscape
-                                  ? DesktopPlaylistSplit(
-                                      player: player,
-                                      direct:
-                                          context.watch<DirectSourceManager>(),
-                                      cs: Theme.of(context).colorScheme,
-                                      focusTick: _bandFocusTick)
-                                  : LandscapePlaylistSplit(
-                                      player: player,
-                                      direct:
-                                          context.watch<DirectSourceManager>(),
-                                      cs: Theme.of(context).colorScheme,
-                                      focusTick: _bandFocusTick),
-                            ),
-                            const Positioned(
-                                top: 6, left: 6, child: _BackToContentButton()),
-                          ],
-                        )
-                      else
-                        _BandSongPage(focusTick: _bandFocusTick)
-                    else
-                      const SizedBox.shrink(),
-                    if (landscape)
-                      // 横屏无歌词分页（歌词内嵌）：「左歌单右播放」分栏与整幅播放
-                      // 布局两页滑动；左上角返回箭头悬浮于两套横屏布局之上。
-                      // 下滑返回内容页仅手机三列的播放列接（桌面左列自身可滚动，
-                      // 包 detector 会吃掉矮窗口滚动，故不接，桌面用 ESC/按钮返回）。
-                      Stack(
-                        children: [
-                          desktopLandscape
-                              ? _DesktopLandscapePlayer(
-                                  player: player,
-                                  direct: context.watch<DirectSourceManager>(),
-                                  cs: Theme.of(context).colorScheme)
-                              : LandscapePlayer(
-                                  player: player,
-                                  direct: context.watch<DirectSourceManager>(),
-                                  cs: Theme.of(context).colorScheme,
-                                  onVerticalDragStart:
-                                      gestureOn ? _onPlayerDragStart : null,
-                                  onVerticalDragUpdate:
-                                      gestureOn ? _onPlayerDragUpdate : null,
-                                  onVerticalDragEnd:
-                                      gestureOn ? _onPlayerDragEnd : null),
-                          const Positioned(
-                              top: 6, left: 6, child: _BackToContentButton()),
-                        ],
-                      )
-                    else
-                      Stack(
-                        // 箭头悬浮在播放页内容之上（不占布局空间，不压缩封面）；
-                        // 歌词页（第 2 页）按先前要求不再放箭头。
-                        children: [
-                          GestureDetector(
-                            behavior: HitTestBehavior.translucent,
-                            onVerticalDragStart:
-                                gestureOn ? _onPlayerDragStart : null,
-                            onVerticalDragUpdate:
-                                gestureOn ? _onPlayerDragUpdate : null,
-                            onVerticalDragEnd:
-                                gestureOn ? _onPlayerDragEnd : null,
-                            child: _buildPlayerBody(context),
-                          ),
-                          const Positioned(
-                              top: 6, left: 6, child: _BackToContentButton()),
-                        ],
-                      ),
-                    if (!landscape)
-                      if (_warmNeighbors)
-                        const _LyricsPage()
-                      else
-                        const SizedBox.shrink(),
-                  ],
+                  children: _pagesFor(
+                      playerView,
+                      () => [
+                            // 首帧避让（C）：邻页首帧占位，空闲预热后再装配——歌单页整单
+                            // 装配（1310 首曾测 ~150ms）移出首帧；页数恒定（横屏 2 / 竖屏 3），
+                            // PageController initialPage=1 不受影响。
+                            if (_warmNeighbors)
+                              if (landscape)
+                                // 横屏歌单页为「左歌单右播放」分栏：滑动 settle 后左右同显，
+                                // 与横屏整页「左播放右歌词」同理；竖屏仍为整页歌单。
+                                // 左上角返回箭头悬浮于分栏之上（与横屏播放页一致）。
+                                Stack(
+                                  children: [
+                                    Positioned.fill(
+                                      child: desktopLandscape
+                                          ? DesktopPlaylistSplit(
+                                              player: player,
+                                              direct: context
+                                                  .watch<DirectSourceManager>(),
+                                              cs: Theme.of(context).colorScheme,
+                                              focusTick: _bandFocusTick)
+                                          : LandscapePlaylistSplit(
+                                              player: player,
+                                              direct: context
+                                                  .watch<DirectSourceManager>(),
+                                              cs: Theme.of(context).colorScheme,
+                                              focusTick: _bandFocusTick),
+                                    ),
+                                    const Positioned(
+                                        top: 6,
+                                        left: 6,
+                                        child: _BackToContentButton()),
+                                  ],
+                                )
+                              else
+                                _BandSongPage(focusTick: _bandFocusTick)
+                            else
+                              const SizedBox.shrink(),
+                            if (landscape)
+                              // 横屏无歌词分页（歌词内嵌）：「左歌单右播放」分栏与整幅播放
+                              // 布局两页滑动；左上角返回箭头悬浮于两套横屏布局之上。
+                              // 下滑返回内容页仅手机三列的播放列接（桌面左列自身可滚动，
+                              // 包 detector 会吃掉矮窗口滚动，故不接，桌面用 ESC/按钮返回）。
+                              Stack(
+                                children: [
+                                  desktopLandscape
+                                      ? _DesktopLandscapePlayer(
+                                          player: player,
+                                          direct: context
+                                              .watch<DirectSourceManager>(),
+                                          cs: Theme.of(context).colorScheme)
+                                      : LandscapePlayer(
+                                          player: player,
+                                          direct: context
+                                              .watch<DirectSourceManager>(),
+                                          cs: Theme.of(context).colorScheme,
+                                          onVerticalDragStart: gestureOn
+                                              ? _onPlayerDragStart
+                                              : null,
+                                          onVerticalDragUpdate: gestureOn
+                                              ? _onPlayerDragUpdate
+                                              : null,
+                                          onVerticalDragEnd: gestureOn
+                                              ? _onPlayerDragEnd
+                                              : null),
+                                  const Positioned(
+                                      top: 6,
+                                      left: 6,
+                                      child: _BackToContentButton()),
+                                ],
+                              )
+                            else
+                              Stack(
+                                // 箭头悬浮在播放页内容之上（不占布局空间，不压缩封面）；
+                                // 歌词页（第 2 页）按先前要求不再放箭头。
+                                children: [
+                                  GestureDetector(
+                                    behavior: HitTestBehavior.translucent,
+                                    onVerticalDragStart:
+                                        gestureOn ? _onPlayerDragStart : null,
+                                    onVerticalDragUpdate:
+                                        gestureOn ? _onPlayerDragUpdate : null,
+                                    onVerticalDragEnd:
+                                        gestureOn ? _onPlayerDragEnd : null,
+                                    child: _buildPlayerBody(context),
+                                  ),
+                                  const Positioned(
+                                      top: 6,
+                                      left: 6,
+                                      child: _BackToContentButton()),
+                                ],
+                              ),
+                            if (!landscape)
+                              if (_warmNeighbors)
+                                const _LyricsPage()
+                              else
+                                const SizedBox.shrink(),
+                          ]),
                 ),
               ),
             ),
@@ -579,6 +594,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
         ),
       ),
     );
+  }
+
+  List<Widget> _pagesFor(bool playerView, List<Widget> Function() build) {
+    if (!playerView && _closingPages != null) return _closingPages!;
+    return _closingPages = build();
   }
 
   /// 自适应播放页：整页不滚动，封面尺寸按可用空间计算以恰好放满一屏。

@@ -513,9 +513,18 @@ void main() {
     await tester.pump(const Duration(milliseconds: 900));
 
     expect(nav.playerView, isTrue);
+    final split = tester.widget<DesktopPlaylistSplit>(
+        find.byType(DesktopPlaylistSplit, skipOffstage: false));
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pump();
     expect(nav.playerView, isFalse);
+    expect(
+      identical(
+          tester.widget<DesktopPlaylistSplit>(
+              find.byType(DesktopPlaylistSplit, skipOffstage: false)),
+          split),
+      isTrue,
+    );
 
     await tester.pumpWidget(const SizedBox());
   });
