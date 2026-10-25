@@ -9,6 +9,7 @@ import 'package:selfmusic/data/local/app_settings.dart';
 import 'package:selfmusic/models/album.dart';
 import 'package:selfmusic/models/artist.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
+import 'package:selfmusic/layout/top_bar.dart';
 import 'package:selfmusic/providers/library_provider.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
@@ -112,6 +113,26 @@ Widget _probeApp(NavRebuildCounter c) => MaterialApp(
         body: Column(children: _probes(c)),
       ),
     );
+
+/// 最小内容壳：设置页与分组页互斥，模拟设置关闭时 TopBar 与 SectionPager
+/// 在同一帧重建的路径。
+class _NavSettingsHarness extends StatelessWidget {
+  const _NavSettingsHarness();
+
+  @override
+  Widget build(BuildContext context) {
+    final inSettings =
+        context.select<NavigationProvider, bool>((n) => n.inSettings);
+    return Column(
+      children: [
+        TopBar(onSidebarToggle: () {}),
+        Expanded(
+          child: inSettings ? const SizedBox.shrink() : const SectionPager(),
+        ),
+      ],
+    );
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 真机/DB 依赖工具（过渡档回归用；本机 sqlite 不可用时优雅跳过）
@@ -452,6 +473,47 @@ void main() {
           reason: '过渡档 ${mode.label} 应正确路由到喜欢页');
       expect(nav.section, NavSection.liked);
     }
+  });
+
+  testWidgets('设置页按 Ctrl+1 回内容页：目标分组高亮立即同步', (tester) async {
+    final direct = await _tryOpenDirect(tester);
+    if (direct == null) return;
+
+    addTearDown(() => direct.dispose());
+    final lib = LibraryProvider()..attachDirectManager(direct);
+    final nav = NavigationProvider()..select(NavSection.liked);
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+          ChangeNotifierProvider<LibraryProvider>.value(value: lib),
+          ChangeNotifierProvider<PlaylistsProvider>.value(
+              value: PlaylistsProvider(direct.playlists)),
+          ChangeNotifierProvider<PlayerProvider>(
+              create: (_) => PlayerProvider()),
+          ChangeNotifierProvider<NavigationProvider>.value(value: nav),
+        ],
+        child: const MaterialApp(
+          home: Scaffold(body: _NavSettingsHarness()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(nav.pageOffset.value, NavSection.values.indexOf(NavSection.liked));
+
+    nav.openSettings(SettingsItem.general);
+    await tester.pumpAndSettle();
+
+    // 设置页内按 Ctrl+1：关闭设置并切到歌单。SectionPager 与 TopBar 会在
+    // 同一帧重建，pageOffset 必须等帧后再写，不能触发 build 期 setState。
+    nav.select(NavSection.playlists);
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(nav.section, NavSection.playlists);
+    expect(nav.pageOffset.value,
+        NavSection.values.indexOf(NavSection.playlists).toDouble());
   });
 
   // ───────────────────────────────────────────────────────────────────────────

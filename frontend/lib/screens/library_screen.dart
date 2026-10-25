@@ -185,7 +185,6 @@ class _SectionPagerState extends State<SectionPager>
     final nav = context.read<NavigationProvider>();
     final initial = _indexOf(nav.section);
     _applied = initial;
-    nav.pageOffset.value = initial.toDouble();
     _ctrl = PageController(initialPage: initial);
     _ctrl.addListener(_syncOffset);
     _enterCtrl = AnimationController(
@@ -204,8 +203,14 @@ class _SectionPagerState extends State<SectionPager>
       }
     });
     // 首帧空闲后再预构建左右邻页（内存/启动成本的折中，见字段注释）。
+    // pageOffset 也必须等帧后再写：Pager 可能在 TopBar 的
+    // ValueListenableBuilder 构建期间挂载，同步写会触发
+    // “setState() called during build”，导致顶栏高亮停在旧分组。
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) setState(() => _warmNeighbors = true);
+      if (!mounted) return;
+      final target = _indexOf(nav.section).toDouble();
+      if (nav.pageOffset.value != target) nav.pageOffset.value = target;
+      setState(() => _warmNeighbors = true);
     });
   }
 
