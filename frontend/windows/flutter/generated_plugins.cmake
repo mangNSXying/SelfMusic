@@ -5,6 +5,7 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   file_selector_windows
   flutter_secure_storage_windows
+  hotkey_manager_windows
   media_kit_libs_windows_audio
   permission_handler_windows
   sqlite3_flutter_libs

@@ -59,6 +59,7 @@ dependencies:
   # 补丁清单见 third_party/smb_connect/PATCHES.md。
   smb_connect:
     path: third_party/smb_connect
+  hotkey_manager: 0.2.3
 dev_dependencies:
   flutter_test:
     sdk: flutter
