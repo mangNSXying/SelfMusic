@@ -20,6 +20,7 @@ import '../utils/focus_utils.dart';
 import 'app_dialog_actions.dart';
 import 'app_toast.dart';
 import 'draggable_sheet.dart';
+import 'root_focus_keeper.dart';
 import 'shortcut_help_dialog.dart';
 import 'sleep_timer_dialog.dart';
 
@@ -353,13 +354,16 @@ class _AppShortcutsState extends State<AppShortcuts> {
 
   @override
   Widget build(BuildContext context) {
-    return Focus(
+    return RootFocusKeeper(
       focusNode: _rootFocus,
-      autofocus: true,
-      canRequestFocus: true,
-      skipTraversal: true,
-      onKeyEvent: _handleKeyEvent,
-      child: widget.child,
+      child: Focus(
+        focusNode: _rootFocus,
+        autofocus: true,
+        canRequestFocus: true,
+        skipTraversal: true,
+        onKeyEvent: _handleKeyEvent,
+        child: widget.child,
+      ),
     );
   }
 }
