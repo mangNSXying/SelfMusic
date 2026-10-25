@@ -55,15 +55,44 @@ try {
         throw "flutter pub get 失败（exit $LASTEXITCODE）"
     }
 
+    # 构建前清空 Release 目录：Flutter 的 INSTALL 只覆盖/新增文件，不会删除旧产物。
+    # 不清理时，历史 debug 构建残留的 kernel_blob.bin（约 90MB）、isolate/vm_snapshot_*
+    # 会被原样打进 zip，实测多出 100MB+。
+    $ReleaseDir = Join-Path $Frontend 'build\windows\x64\runner\Release'
+    if (Test-Path $ReleaseDir) {
+        try {
+            Remove-Item $ReleaseDir -Recurse -Force
+        }
+        catch {
+            throw "清不掉旧的 Release 目录（可能 selfmusic.exe 正在运行）：$ReleaseDir。关掉程序后重试。"
+        }
+    }
+
     & $Flutter build windows --release "--dart-define=BUILD_STAMP=$Stamp" @FlutterArgs
     if ($LASTEXITCODE -ne 0) {
         throw "flutter build windows 失败（exit $LASTEXITCODE）"
     }
 
-    $ReleaseDir = Join-Path $Frontend 'build\windows\x64\runner\Release'
     $Exe = Join-Path $ReleaseDir 'selfmusic.exe'
     if (-not (Test-Path $Exe)) {
         throw "构建产物缺失：$Exe"
+    }
+
+    # 兜底：release bundle 用 AOT（app.so），不需要任何 JIT 快照；个别 Flutter 版本
+    # 或手工把 debug 产物拷回来时仍可能残留，打包前再剔除一次。
+    $JitFiles = @(
+        'kernel_blob.bin',
+        'isolate_snapshot_data',
+        'isolate_snapshot_instr',
+        'vm_snapshot_data',
+        'vm_snapshot_instr',
+        '.last_build_id'
+    ) |
+        ForEach-Object { Join-Path $ReleaseDir "data\flutter_assets\$_" } |
+        Where-Object { Test-Path $_ }
+    if ($JitFiles) {
+        $JitFiles | Remove-Item -Force
+        Write-Host "已剔除调试/JIT 残留：$(@($JitFiles).Count) 个文件"
     }
 
     $OutDir = Join-Path $Frontend 'build\dist'
