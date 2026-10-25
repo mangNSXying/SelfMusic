@@ -33,6 +33,8 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   bool _sidebarVisible = true;
+  NavigationProvider? _nav;
+  int _seenSidebarToggle = 0;
 
   /// 交互门控（可能为 null：未接入门控的旧测试/调用方，走原路径）。
   InteractionGate? _gate;
@@ -41,11 +43,39 @@ class _AppShellState extends State<AppShell> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     _gate = InteractionGate.maybeOf(context);
+    final nav = context.read<NavigationProvider>();
+    if (!identical(_nav, nav)) {
+      _nav?.removeListener(_onNavChanged);
+      _nav = nav;
+      _seenSidebarToggle = nav.sidebarToggleTick;
+      nav.addListener(_onNavChanged);
+    }
+  }
+
+  @override
+  void dispose() {
+    _nav?.removeListener(_onNavChanged);
+    super.dispose();
+  }
+
+  void _onNavChanged() {
+    final nav = _nav;
+    if (nav == null || !mounted) return;
+    final tick = nav.sidebarToggleTick;
+    if (tick == _seenSidebarToggle) return;
+    _seenSidebarToggle = tick;
+    _toggleSidebar();
   }
 
   void _toggleSidebar() {
     if (!AppShell.isWide(context)) {
-      _scaffoldKey.currentState?.openDrawer();
+      final scaffold = _scaffoldKey.currentState;
+      if (scaffold == null) return;
+      if (scaffold.isDrawerOpen) {
+        scaffold.closeDrawer();
+      } else {
+        scaffold.openDrawer();
+      }
     } else {
       setState(() => _sidebarVisible = !_sidebarVisible);
     }
@@ -73,7 +103,8 @@ class _AppShellState extends State<AppShell> {
     // 订阅收窄（T005）：布局壳只关注队列面板开合；区段/搜索/播放页等变更
     // 不再牵连整壳重建。
     final nav = context.read<NavigationProvider>();
-    final queueOpen = context.select<NavigationProvider, bool>((n) => n.queueOpen);
+    final queueOpen =
+        context.select<NavigationProvider, bool>((n) => n.queueOpen);
     // 队列面板开合 → 门控：面板打开/关闭期间被视为「交互中」。
     if (_gate != null && _gate!.queuePanelOpen != queueOpen) {
       final open = queueOpen;

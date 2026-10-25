@@ -18,6 +18,7 @@ import '../services/artist_resolver.dart';
 import '../services/bluetooth_service.dart';
 import '../services/server_settings.dart';
 import '../services/sync_engine.dart';
+import '../shortcuts/shortcut_settings.dart';
 import '../utils/url_input.dart';
 import '../theme/app_metrics.dart';
 import '../theme/app_theme.dart';
@@ -26,6 +27,7 @@ import '../utils/cover_thumb.dart';
 import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/row_action_button.dart';
+import '../widgets/shortcut_settings_panel.dart';
 import '../widgets/single_choice_group.dart';
 import 'devices_screen.dart';
 import 'pairing_screen.dart';
@@ -52,6 +54,8 @@ class SettingsScreen extends StatelessWidget {
         return const _SongsSettings();
       case SettingsItem.general:
         return const _GeneralSettings();
+      case SettingsItem.backup:
+        return const _BackupSettings();
       case SettingsItem.playback:
         return const _PlaybackSettings();
       case SettingsItem.notifications:
@@ -167,8 +171,7 @@ class _ServerSettingsState extends State<_ServerSettings> {
       // 归一化结果（二重保险：去尾斜杠等）写回输入框，保证所见即所得。
       if (_controller.text.trim() != _saved) {
         _controller.text = _saved;
-        _controller.selection =
-            TextSelection.collapsed(offset: _saved.length);
+        _controller.selection = TextSelection.collapsed(offset: _saved.length);
       }
     });
     // 地址变化后刷新配对密钥展示。
@@ -253,8 +256,7 @@ class _ServerSettingsState extends State<_ServerSettings> {
           const Divider(),
           const Align(
             alignment: Alignment.centerLeft,
-            child: Text('多设备同步',
-                style: TextStyle(fontWeight: FontWeight.w600)),
+            child: Text('多设备同步', style: TextStyle(fontWeight: FontWeight.w600)),
           ),
           const SizedBox(height: 4),
           const _SyncSection(),
@@ -270,34 +272,29 @@ class _ServerSettingsState extends State<_ServerSettings> {
           const Divider(),
           const Align(
             alignment: Alignment.centerLeft,
-            child: Text('网络与安全',
-                style: TextStyle(fontWeight: FontWeight.w600)),
+            child: Text('网络与安全', style: TextStyle(fontWeight: FontWeight.w600)),
           ),
           const SizedBox(height: 4),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('允许不安全 HTTP'),
             subtitle: const Text('默认关闭，屏蔽 http:// 地址'),
-            value: context
-                .read<DirectSourceManager>()
-                .settings
-                .allowInsecureHttp,
+            value:
+                context.read<DirectSourceManager>().settings.allowInsecureHttp,
             onChanged: (v) {
-              context.read<DirectSourceManager>().settings.allowInsecureHttp = v;
+              context.read<DirectSourceManager>().settings.allowInsecureHttp =
+                  v;
               setState(() {});
             },
           ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('信任自签名证书'),
-            subtitle: const Text('默认关闭；开启后 API 与直连 WebDAV 的扫描/探测跳过证书校验（鸿蒙播放器不校验证书，自签可直接播放）'),
-            value: context
-                .read<DirectSourceManager>()
-                .settings
-                .allowSelfSigned,
+            subtitle: const Text(
+                '默认关闭；开启后 API 与直连 WebDAV 的扫描/探测跳过证书校验（鸿蒙播放器不校验证书，自签可直接播放）'),
+            value: context.read<DirectSourceManager>().settings.allowSelfSigned,
             onChanged: (v) {
-              final settings =
-                  context.read<DirectSourceManager>().settings;
+              final settings = context.read<DirectSourceManager>().settings;
               settings.allowSelfSigned = v;
               context.read<DirectSourceManager>().applySecuritySettings();
               context.read<ApiClient>().setSelfSignedPolicy(v);
@@ -331,7 +328,8 @@ class _SyncSectionState extends State<_SyncSection> {
   }
 
   Future<void> _refreshPending() async {
-    final n = await context.read<DirectSourceManager>().index.pendingOutboxCount();
+    final n =
+        await context.read<DirectSourceManager>().index.pendingOutboxCount();
     if (!mounted) return;
     setState(() => _pending = n);
   }
@@ -360,8 +358,7 @@ class _SyncSectionState extends State<_SyncSection> {
     await _refreshPending();
     if (!mounted) return;
     final err = context.read<SyncEngine>().lastError;
-    AppToast.show(err.isEmpty ? '同步完成' : '同步失败：$err',
-        isError: err.isNotEmpty);
+    AppToast.show(err.isEmpty ? '同步完成' : '同步失败：$err', isError: err.isNotEmpty);
   }
 
   @override
@@ -606,8 +603,10 @@ class _TranscodeSectionState extends State<_TranscodeSection> {
         ),
         const SizedBox(height: 8),
         Text('响度均衡（需开启转码）',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: cs.onSurface.withValues(alpha: 0.6))),
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
         const SizedBox(height: 4),
         SingleChoiceGroup<String>(
           options: const [
@@ -715,7 +714,9 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
             ),
             if (_syncing)
               const SizedBox(
-                  width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2))
             else
               RowActionIconButton(
                 tooltip: '同步服务端建议值',
@@ -742,7 +743,8 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
               // 先拉一次，成功才允许切换。
               await _refreshServerConfig();
               if (!mounted) return;
-              if (!(_serverReachable || _settings.serverCacheMaxBytes != null)) {
+              if (!(_serverReachable ||
+                  _settings.serverCacheMaxBytes != null)) {
                 AppToast.show('服务端不可达，请检查后端连接', isError: true);
                 return;
               }
@@ -758,15 +760,20 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
                   ? '尚未同步到服务端建议值（点右上同步）'
                   : '服务端建议：${_labelBytes(_settings.serverCacheMaxBytes!)} · ${_settings.serverCacheSongLimit ?? _settings.cacheSongLimit} 首'
                       '${_serverReachable ? '' : '（离线，回退显示上次镜像）'}',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: cs.onSurface.withValues(alpha: 0.6)),
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6)),
             ),
           ),
         Padding(
           padding: const EdgeInsets.only(top: 4),
-          child: Text('当前生效：${_labelBytes(_settings.effectiveCacheMaxBytes)} · ${_settings.effectiveCacheSongLimit} 首',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: cs.primary, fontWeight: FontWeight.w600)),
+          child: Text(
+              '当前生效：${_labelBytes(_settings.effectiveCacheMaxBytes)} · ${_settings.effectiveCacheSongLimit} 首',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: cs.primary, fontWeight: FontWeight.w600)),
         ),
         const SizedBox(height: 8),
         ListTile(
@@ -835,8 +842,8 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
           c,
           confirmLabel: '确定',
           onCancel: () => Navigator.of(c).pop(),
-          onConfirm: () => Navigator.of(c).pop(
-              int.tryParse(controller.text) ?? _settings.cacheSongLimit),
+          onConfirm: () => Navigator.of(c)
+              .pop(int.tryParse(controller.text) ?? _settings.cacheSongLimit),
         ),
       ),
     );
@@ -883,14 +890,23 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('界面', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
+          Text('界面',
+              style: Theme.of(context)
+                  .textTheme
+                  .headlineSmall
+                  ?.copyWith(fontWeight: FontWeight.bold)),
           const SizedBox(height: 4),
           Text('自定义背景色与强调色，实时生效并保存到本机',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: colorScheme.onSurface.withValues(alpha: 0.6))),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: colorScheme.onSurface.withValues(alpha: 0.6))),
           const SizedBox(height: 24),
 
           // 明暗模式：跟随系统 / 浅色 / 深色
-          Text('明暗模式', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          Text('明暗模式',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 12),
           SingleChoiceGroup<ThemeMode>(
             options: const [
@@ -911,15 +927,18 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
             onChanged: theme.setThemeMode,
           ),
           const SizedBox(height: 8),
-          Text(theme.themeMode == ThemeMode.system
-              ? '随系统自动切换明暗'
-              : '不跟随系统',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: colorScheme.onSurface.withValues(alpha: 0.6))),
+          Text(theme.themeMode == ThemeMode.system ? '随系统自动切换明暗' : '不跟随系统',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: colorScheme.onSurface.withValues(alpha: 0.6))),
           const Divider(),
           const SizedBox(height: 8),
 
           // 强调色
-          Text('强调色', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          Text('强调色',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 12),
           Wrap(
             spacing: 12,
@@ -933,7 +952,8 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
                 ),
               _ColorDot(
                 color: theme.accent,
-                selected: !AppTheme.accentPalette.any((c) => c.toARGB32() == theme.accent.toARGB32()),
+                selected: !AppTheme.accentPalette
+                    .any((c) => c.toARGB32() == theme.accent.toARGB32()),
                 icon: Icons.add,
                 onTap: () => _pickAccent(context, theme),
                 isCustom: true,
@@ -944,7 +964,11 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
           const SizedBox(height: 8),
 
           // 背景色
-          Text('背景色', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          Text('背景色',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
           Wrap(
             spacing: 12,
@@ -982,7 +1006,11 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
           const SizedBox(height: 8),
 
           // 切换动画
-          Text('动画', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          Text('动画',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
           ListTile(
             contentPadding: EdgeInsets.zero,
@@ -996,7 +1024,11 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
           const SizedBox(height: 8),
 
           // 视图行为
-          Text('视图行为', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          Text('视图行为',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
@@ -1019,7 +1051,11 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
           const SizedBox(height: 8),
 
           // 播放页设定
-          Text('播放页', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          Text('播放页',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
@@ -1058,7 +1094,11 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
           const SizedBox(height: 8),
 
           // 封面画质：压缩开关 + 手动清理（默认关=原图优先）。
-          Text('封面画质', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          Text('封面画质',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
@@ -1069,7 +1109,9 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
             value: _settings.compressCoverImage,
             onChanged: (v) async {
               setState(() => _settings.compressCoverImage = v);
-              await context.read<DirectSourceManager>().applyCoverThumbSetting();
+              await context
+                  .read<DirectSourceManager>()
+                  .applyCoverThumbSetting();
               if (context.mounted) setState(() {});
             },
           ),
@@ -1077,7 +1119,8 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.cleaning_services_outlined),
             title: const Text('清理缩略图缓存'),
-            subtitle: const Text('删除已生成的缩略图文件（*.thumb.jpg），显示即回原图；开关关闭时也可清理省磁盘'),
+            subtitle:
+                const Text('删除已生成的缩略图文件（*.thumb.jpg），显示即回原图；开关关闭时也可清理省磁盘'),
             trailing: _clearingThumbs
                 ? const SizedBox(
                     width: 24,
@@ -1105,19 +1148,24 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
   Future<void> _pickAccent(BuildContext context, ThemeProvider theme) async {
     final picked = await showDialog<Color>(
       context: context,
-      builder: (c) => _ColorPickerDialog(title: '选择强调色', onPicked: (col) {
-        Navigator.of(c).pop(col);
-      }),
+      builder: (c) => _ColorPickerDialog(
+          title: '选择强调色',
+          onPicked: (col) {
+            Navigator.of(c).pop(col);
+          }),
     );
     if (picked != null) await theme.setAccent(picked);
   }
 
-  Future<void> _pickBackground(BuildContext context, ThemeProvider theme) async {
+  Future<void> _pickBackground(
+      BuildContext context, ThemeProvider theme) async {
     final picked = await showDialog<Color>(
       context: context,
-      builder: (c) => _ColorPickerDialog(title: '选择背景色', onPicked: (col) {
-        Navigator.of(c).pop(col);
-      }),
+      builder: (c) => _ColorPickerDialog(
+          title: '选择背景色',
+          onPicked: (col) {
+            Navigator.of(c).pop(col);
+          }),
     );
     if (picked != null) await theme.setBackground(picked);
   }
@@ -1237,8 +1285,7 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
       if (!context.mounted) return;
       setState(() => _clearingThumbs = false);
       mgr.refresh();
-      AppToast.show(
-          removed == 0 ? '没有可清理的缩略图' : '已清理 $removed 张缩略图',
+      AppToast.show(removed == 0 ? '没有可清理的缩略图' : '已清理 $removed 张缩略图',
           isError: false);
     } catch (e) {
       if (!context.mounted) return;
@@ -1247,8 +1294,7 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
     }
   }
 
-  String _rgb(Color c) =>
-      'rgb(${c.r}, ${c.g}, ${c.b})'.replaceAll('.0', '');
+  String _rgb(Color c) => 'rgb(${c.r}, ${c.g}, ${c.b})'.replaceAll('.0', '');
 }
 
 class _ColorDot extends StatelessWidget {
@@ -1257,7 +1303,12 @@ class _ColorDot extends StatelessWidget {
   final VoidCallback onTap;
   final IconData? icon;
   final bool isCustom;
-  const _ColorDot({required this.color, required this.selected, required this.onTap, this.icon, this.isCustom = false});
+  const _ColorDot(
+      {required this.color,
+      required this.selected,
+      required this.onTap,
+      this.icon,
+      this.isCustom = false});
 
   @override
   Widget build(BuildContext context) {
@@ -1272,13 +1323,17 @@ class _ColorDot extends StatelessWidget {
           color: isCustom ? Colors.transparent : color,
           shape: BoxShape.circle,
           border: Border.all(
-            color: selected ? colorScheme.primary : colorScheme.onSurface.withValues(alpha: 0.2),
+            color: selected
+                ? colorScheme.primary
+                : colorScheme.onSurface.withValues(alpha: 0.2),
             width: selected ? 3 : 1,
           ),
         ),
         child: isCustom
             ? Center(child: Icon(icon, color: color))
-            : (selected ? const Icon(Icons.check, color: Colors.white, size: 20) : null),
+            : (selected
+                ? const Icon(Icons.check, color: Colors.white, size: 20)
+                : null),
       ),
     );
   }
@@ -1293,7 +1348,9 @@ class _SwatchPreview extends StatelessWidget {
     return Container(
       width: 32,
       height: 32,
-      decoration: BoxDecoration(color: color, shape: BoxShape.circle,
+      decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
           border: Border.all(color: Theme.of(context).colorScheme.outline)),
     );
   }
@@ -1312,38 +1369,92 @@ class _ColorPickerDialog extends StatefulWidget {
 class _ColorPickerDialogState extends State<_ColorPickerDialog> {
   static const List<List<Color>> _grid = [
     [
-      Color(0xFF000000), Color(0xFF434343), Color(0xFF7B7B7B), Color(0xFFBFBFBF),
-      Color(0xFFF2F2F2), Color(0xFFFFFFFF),
+      Color(0xFF000000),
+      Color(0xFF434343),
+      Color(0xFF7B7B7B),
+      Color(0xFFBFBFBF),
+      Color(0xFFF2F2F2),
+      Color(0xFFFFFFFF),
     ],
     [
-      Color(0xFFB71C1C), Color(0xFFC62828), Color(0xFFE53935), Color(0xFFF44336), Color(0xFFEF9A9A), Color(0xFFFFCDD2),
+      Color(0xFFB71C1C),
+      Color(0xFFC62828),
+      Color(0xFFE53935),
+      Color(0xFFF44336),
+      Color(0xFFEF9A9A),
+      Color(0xFFFFCDD2),
     ],
     [
-      Color(0xFF880E4F), Color(0xFFAD1457), Color(0xFFD81B60), Color(0xFFE91E63), Color(0xFFF48FB1), Color(0xFFF8BBD0),
+      Color(0xFF880E4F),
+      Color(0xFFAD1457),
+      Color(0xFFD81B60),
+      Color(0xFFE91E63),
+      Color(0xFFF48FB1),
+      Color(0xFFF8BBD0),
     ],
     [
-      Color(0xFF4A148C), Color(0xFF6A1B9A), Color(0xFF8E24AA), Color(0xFF9C27B0), Color(0xFFCE93D8), Color(0xFFE1BEE7),
+      Color(0xFF4A148C),
+      Color(0xFF6A1B9A),
+      Color(0xFF8E24AA),
+      Color(0xFF9C27B0),
+      Color(0xFFCE93D8),
+      Color(0xFFE1BEE7),
     ],
     [
-      Color(0xFF1A237E), Color(0xFF283593), Color(0xFF3949AB), Color(0xFF3F51B5), Color(0xFF9FA8DA), Color(0xFFC5CAE9),
+      Color(0xFF1A237E),
+      Color(0xFF283593),
+      Color(0xFF3949AB),
+      Color(0xFF3F51B5),
+      Color(0xFF9FA8DA),
+      Color(0xFFC5CAE9),
     ],
     [
-      Color(0xFF0D47A1), Color(0xFF1565C0), Color(0xFF1E88E5), Color(0xFF2196F3), Color(0xFF90CAF9), Color(0xFFBBDEFB),
+      Color(0xFF0D47A1),
+      Color(0xFF1565C0),
+      Color(0xFF1E88E5),
+      Color(0xFF2196F3),
+      Color(0xFF90CAF9),
+      Color(0xFFBBDEFB),
     ],
     [
-      Color(0xFF006064), Color(0xFF00838F), Color(0xFF00ACC1), Color(0xFF00BCD4), Color(0xFF80DEEA), Color(0xFFB2EBF2),
+      Color(0xFF006064),
+      Color(0xFF00838F),
+      Color(0xFF00ACC1),
+      Color(0xFF00BCD4),
+      Color(0xFF80DEEA),
+      Color(0xFFB2EBF2),
     ],
     [
-      Color(0xFF004D40), Color(0xFF00695C), Color(0xFF00897B), Color(0xFF009688), Color(0xFF80CBC4), Color(0xFFB2DFDB),
+      Color(0xFF004D40),
+      Color(0xFF00695C),
+      Color(0xFF00897B),
+      Color(0xFF009688),
+      Color(0xFF80CBC4),
+      Color(0xFFB2DFDB),
     ],
     [
-      Color(0xFF1B5E20), Color(0xFF2E7D32), Color(0xFF43A047), Color(0xFF4CAF50), Color(0xFFA5D6A7), Color(0xFFC8E6C9),
+      Color(0xFF1B5E20),
+      Color(0xFF2E7D32),
+      Color(0xFF43A047),
+      Color(0xFF4CAF50),
+      Color(0xFFA5D6A7),
+      Color(0xFFC8E6C9),
     ],
     [
-      Color(0xFFE65100), Color(0xFFEF6C00), Color(0xFFF57C00), Color(0xFFFF9800), Color(0xFFFFCC80), Color(0xFFFFE0B2),
+      Color(0xFFE65100),
+      Color(0xFFEF6C00),
+      Color(0xFFF57C00),
+      Color(0xFFFF9800),
+      Color(0xFFFFCC80),
+      Color(0xFFFFE0B2),
     ],
     [
-      Color(0xFF263238), Color(0xFF37474F), Color(0xFF546E7A), Color(0xFF607D8B), Color(0xFFB0BEC5), Color(0xFFCFD8DC),
+      Color(0xFF263238),
+      Color(0xFF37474F),
+      Color(0xFF546E7A),
+      Color(0xFF607D8B),
+      Color(0xFFB0BEC5),
+      Color(0xFFCFD8DC),
     ],
   ];
 
@@ -1370,7 +1481,8 @@ class _ColorPickerDialogState extends State<_ColorPickerDialog> {
                         decoration: BoxDecoration(
                           color: col,
                           borderRadius: BorderRadius.circular(4),
-                          border: Border.all(color: Theme.of(context).colorScheme.outline),
+                          border: Border.all(
+                              color: Theme.of(context).colorScheme.outline),
                         ),
                       ),
                     ),
@@ -1410,8 +1522,7 @@ class _SongsSettingsState extends State<_SongsSettings> {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Text('缓存与离线',
-              style: TextStyle(
-                  color: cs.primary, fontWeight: FontWeight.w600)),
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
         ),
         SwitchListTile(
           title: const Text('收藏自动缓存'),
@@ -1425,8 +1536,7 @@ class _SongsSettingsState extends State<_SongsSettings> {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Text('歌曲显示与扫描',
-              style: TextStyle(
-                  color: cs.primary, fontWeight: FontWeight.w600)),
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
         ),
         ListTile(
           title: const Text('时长过滤'),
@@ -1471,8 +1581,7 @@ class _SongsSettingsState extends State<_SongsSettings> {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Text('权重·时长削弱',
-              style: TextStyle(
-                  color: cs.primary, fontWeight: FontWeight.w600)),
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
         ),
         SwitchListTile(
           title: const Text('时长削弱'),
@@ -1492,8 +1601,7 @@ class _SongsSettingsState extends State<_SongsSettings> {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Text('歌手解析',
-              style: TextStyle(
-                  color: cs.primary, fontWeight: FontWeight.w600)),
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
         ),
         SwitchListTile(
           title: const Text('自动后台解析'),
@@ -1547,20 +1655,19 @@ class _SongsSettingsState extends State<_SongsSettings> {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Text('在线元数据',
-              style: TextStyle(
-                  color: cs.primary, fontWeight: FontWeight.w600)),
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
         ),
         ListTile(
           title: const Text('歌词来源'),
-          subtitle: Text(
-              '${_settings.onlineMetaLyricSource.label}（无结果时手动换源，无自动串源）'),
+          subtitle:
+              Text('${_settings.onlineMetaLyricSource.label}（无结果时手动换源，无自动串源）'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _pickLyricSource(context),
         ),
         ListTile(
           title: const Text('封面来源'),
-          subtitle: Text(
-              '${_settings.onlineMetaCoverSource.label}（无结果时手动换源，无自动串源）'),
+          subtitle:
+              Text('${_settings.onlineMetaCoverSource.label}（无结果时手动换源，无自动串源）'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _pickCoverSource(context),
         ),
@@ -1586,8 +1693,10 @@ class _SongsSettingsState extends State<_SongsSettings> {
             _settings.onlineMetaSaveMode == OnlineMetaSaveMode.sidecar
                 ? '歌词/封面必写应用缓存，并覆盖写回源目录（歌词 <stem>.lrc，封面 cover.jpg 专辑级：同目录共享，杂烩目录后写盖先写）。远端经上传口直写、不经代理；服务端歌/鸿蒙本地自动跳过。封面应用缓存 covers/ 恒保留。内嵌回写暂不支持。'
                 : '歌词写应用内 song_lyrics，封面写 covers/（全源安全，不动用户文件）。内嵌回写暂不支持。',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: cs.onSurface.withValues(alpha: 0.6)),
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6)),
           ),
         ),
         ListTile(
@@ -1602,13 +1711,13 @@ class _SongsSettingsState extends State<_SongsSettings> {
                 RowActionIconButton(
                   icon: Icons.clear,
                   tooltip: '清除（恢复歌曲同目录）',
-                  onPressed: _settings.onlineMetaSaveMode !=
-                          OnlineMetaSaveMode.sidecar
-                      ? null
-                      : () {
-                          setState(() => _settings.onlineMetaLyricDir = '');
-                          context.read<DirectSourceManager>().refresh();
-                        },
+                  onPressed:
+                      _settings.onlineMetaSaveMode != OnlineMetaSaveMode.sidecar
+                          ? null
+                          : () {
+                              setState(() => _settings.onlineMetaLyricDir = '');
+                              context.read<DirectSourceManager>().refresh();
+                            },
                 ),
               const Icon(Icons.chevron_right),
             ],
@@ -1659,20 +1768,16 @@ class _SongsSettingsState extends State<_SongsSettings> {
                         children: [
                           Text(s.label),
                           Text(notes[s]!,
-                              style: Theme.of(c)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(
-                                      color: Theme.of(c)
-                                          .colorScheme
-                                          .onSurface
-                                          .withValues(alpha: 0.6))),
+                              style: Theme.of(c).textTheme.bodySmall?.copyWith(
+                                  color: Theme.of(c)
+                                      .colorScheme
+                                      .onSurface
+                                      .withValues(alpha: 0.6))),
                         ],
                       ),
                     ),
                     if (s == _settings.onlineMetaLyricSource)
-                      Icon(Icons.check,
-                          color: Theme.of(c).colorScheme.primary),
+                      Icon(Icons.check, color: Theme.of(c).colorScheme.primary),
                   ],
                 ),
               ),
@@ -1710,20 +1815,16 @@ class _SongsSettingsState extends State<_SongsSettings> {
                         children: [
                           Text(s.label),
                           Text(notes[s]!,
-                              style: Theme.of(c)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(
-                                      color: Theme.of(c)
-                                          .colorScheme
-                                          .onSurface
-                                          .withValues(alpha: 0.6))),
+                              style: Theme.of(c).textTheme.bodySmall?.copyWith(
+                                  color: Theme.of(c)
+                                      .colorScheme
+                                      .onSurface
+                                      .withValues(alpha: 0.6))),
                         ],
                       ),
                     ),
                     if (s == _settings.onlineMetaCoverSource)
-                      Icon(Icons.check,
-                          color: Theme.of(c).colorScheme.primary),
+                      Icon(Icons.check, color: Theme.of(c).colorScheme.primary),
                   ],
                 ),
               ),
@@ -1737,8 +1838,8 @@ class _SongsSettingsState extends State<_SongsSettings> {
   }
 
   Future<void> _editIgnoreDuration(BuildContext context) async {
-    final controller =
-        TextEditingController(text: _settings.scanIgnoreMinDurationSec.toString());
+    final controller = TextEditingController(
+        text: _settings.scanIgnoreMinDurationSec.toString());
     final result = await showDialog<int>(
       context: context,
       builder: (c) => AlertDialog(
@@ -1767,7 +1868,8 @@ class _SongsSettingsState extends State<_SongsSettings> {
 
   Future<void> _editIgnoreBytes(BuildContext context) async {
     final mb = _settings.scanIgnoreMinSizeBytes ~/ (1024 * 1024);
-    final controller = TextEditingController(text: (mb > 0 ? mb : 0).toString());
+    final controller =
+        TextEditingController(text: (mb > 0 ? mb : 0).toString());
     final result = await showDialog<int>(
       context: context,
       builder: (c) => AlertDialog(
@@ -1816,7 +1918,8 @@ class _SongsSettingsState extends State<_SongsSettings> {
   }
 
   Future<void> _editWeightCurve(BuildContext context) async {
-    final working = List<Map<String, Object?>>.from(_settings.weightCurveSegments);
+    final working =
+        List<Map<String, Object?>>.from(_settings.weightCurveSegments);
     final saved = await showDialog<bool>(
       context: context,
       builder: (c) => StatefulBuilder(
@@ -1878,12 +1981,12 @@ class _SongsSettingsState extends State<_SongsSettings> {
 
   Future<Map<String, Object?>?> _editWeightSegment(
       BuildContext c, Map<String, Object?> current) async {
-    final minC =
-        TextEditingController(text: _segNum(current['min_sec'])?.toStringAsFixed(0) ?? '');
-    final maxC =
-        TextEditingController(text: _segNum(current['max_sec'])?.toStringAsFixed(0) ?? '');
-    final fC =
-        TextEditingController(text: _segNum(current['factor'])?.toStringAsFixed(2) ?? '');
+    final minC = TextEditingController(
+        text: _segNum(current['min_sec'])?.toStringAsFixed(0) ?? '');
+    final maxC = TextEditingController(
+        text: _segNum(current['max_sec'])?.toStringAsFixed(0) ?? '');
+    final fC = TextEditingController(
+        text: _segNum(current['factor'])?.toStringAsFixed(2) ?? '');
     const kt = TextInputType.numberWithOptions(decimal: true);
     final result = await showDialog<bool>(
       context: c,
@@ -1899,13 +2002,11 @@ class _SongsSettingsState extends State<_SongsSettings> {
             TextField(
                 controller: maxC,
                 keyboardType: kt,
-                decoration:
-                    const InputDecoration(labelText: '结束时长（秒，留空=无上限）')),
+                decoration: const InputDecoration(labelText: '结束时长（秒，留空=无上限）')),
             TextField(
                 controller: fC,
                 keyboardType: kt,
-                decoration:
-                    const InputDecoration(labelText: '系数（0.5 - 1.5）')),
+                decoration: const InputDecoration(labelText: '系数（0.5 - 1.5）')),
           ],
         ),
         actions: appDialogActions(
@@ -1918,9 +2019,8 @@ class _SongsSettingsState extends State<_SongsSettings> {
     );
     if (result != true) return null;
     final min = double.tryParse(minC.text.trim());
-    final max = maxC.text.trim().isEmpty
-        ? null
-        : double.tryParse(maxC.text.trim());
+    final max =
+        maxC.text.trim().isEmpty ? null : double.tryParse(maxC.text.trim());
     final f = double.tryParse(fC.text.trim());
     if (min == null || min <= 0 || f == null || f <= 0) return current;
     if (max != null && max <= min) return current;
@@ -1982,7 +2082,11 @@ class _PlaybackSettings extends StatefulWidget {
 
 class _PlaybackSettingsState extends State<_PlaybackSettings> {
   static const List<String> _eqLabels = [
-    '低音 60Hz', '中低 230Hz', '中音 910Hz', '中高 3.6kHz', '高音 14kHz',
+    '低音 60Hz',
+    '中低 230Hz',
+    '中音 910Hz',
+    '中高 3.6kHz',
+    '高音 14kHz',
   ];
 
   late AppSettings _settings;
@@ -2004,7 +2108,8 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
       children: [
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text('播放', style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+          child: Text('播放',
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
         ),
         ListTile(
           leading: const Icon(Icons.playlist_play),
@@ -2033,7 +2138,8 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
         ListTile(
           leading: const Icon(Icons.timeline),
           title: const Text('加权随机·曲数冷却'),
-          subtitle: Text(_countCooldownSummary(_settings.weightedCountCooldownRatio)),
+          subtitle:
+              Text(_countCooldownSummary(_settings.weightedCountCooldownRatio)),
           trailing: const Icon(Icons.chevron_right),
           enabled: _settings.weightedRandomEnabled,
           onTap: _settings.weightedRandomEnabled ? _editCountCooldown : null,
@@ -2060,13 +2166,14 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
           title: const Text('睡眠定时默认播完最后曲目'),
           subtitle: const Text('到点不中断当前歌曲，放完这曲再暂停（弹窗内可单独调整）'),
           value: _settings.sleepPlayThroughDefault,
-          onChanged: (v) => setState(() => _settings.sleepPlayThroughDefault = v),
+          onChanged: (v) =>
+              setState(() => _settings.sleepPlayThroughDefault = v),
         ),
         ListTile(
           leading: const Icon(Icons.lyrics_outlined),
           title: const Text('歌词追焦等待'),
-          subtitle: Text(
-              '拖动歌词后 ${_settings.lyricFocusIdleSec} 秒无操作恢复自动追焦并回中当前行'),
+          subtitle:
+              Text('拖动歌词后 ${_settings.lyricFocusIdleSec} 秒无操作恢复自动追焦并回中当前行'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _pickLyricIdle(context),
         ),
@@ -2087,11 +2194,13 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
         const Divider(height: 32),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text('音效', style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+          child: Text('音效',
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
         ),
         SwitchListTile(
           title: const Text('淡入淡出'),
-          subtitle: Text('播放淡入、暂停淡出${_settings.fadeEnabled ? '，时长 ${(_settings.fadeDurationMs / 1000).toStringAsFixed(1)}s' : ''}'),
+          subtitle: Text(
+              '播放淡入、暂停淡出${_settings.fadeEnabled ? '，时长 ${(_settings.fadeDurationMs / 1000).toStringAsFixed(1)}s' : ''}'),
           value: _settings.fadeEnabled,
           onChanged: (v) => setState(() => _settings.fadeEnabled = v),
         ),
@@ -2132,7 +2241,8 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
                 children: [
                   SizedBox(
                     width: 92,
-                    child: Text(_eqLabels[i], style: const TextStyle(fontSize: 13)),
+                    child: Text(_eqLabels[i],
+                        style: const TextStyle(fontSize: 13)),
                   ),
                   Expanded(
                     child: Slider(
@@ -2235,15 +2345,13 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
 
   String _modeSubtitle(PlayMode m) {
     if (m != PlayMode.weighted) return _modeLabel(m);
-    return _settings.weightedRandomEnabled
-        ? '随机播放 · 加权'
-        : '随机播放 · 普通（不放回）';
+    return _settings.weightedRandomEnabled ? '随机播放 · 加权' : '随机播放 · 普通（不放回）';
   }
 
-  static String _drawCooldownSummary(WeightedDrawCooldown cd) =>
-      cd == WeightedDrawCooldown.off
-          ? '关（不启用次数冷却）'
-          : '${cd.label}（factor>1.0 抛弃 ${cd.highLimit} 次 / 其余抛弃 ${cd.lowLimit} 次）';
+  static String _drawCooldownSummary(WeightedDrawCooldown cd) => cd ==
+          WeightedDrawCooldown.off
+      ? '关（不启用次数冷却）'
+      : '${cd.label}（factor>1.0 抛弃 ${cd.highLimit} 次 / 其余抛弃 ${cd.lowLimit} 次）';
 
   static String _countCooldownSummary(double ratio) => ratio <= 0
       ? '关（不启用曲数冷却）'
@@ -2328,7 +2436,9 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
       // ohos 两次拒绝后系统弹窗不再出现，只能去系统设置手动开启
       // （ArkTS 三段式已含设置弹框兜底，仍被拒即引导）。
       AppToast.show(
-          isOhos ? '未授予蓝牙权限，可在 设置 > 应用和元服务 > SelfMusic 中开启' : '未授予蓝牙权限，无法读取已配对设备',
+          isOhos
+              ? '未授予蓝牙权限，可在 设置 > 应用和元服务 > SelfMusic 中开启'
+              : '未授予蓝牙权限，无法读取已配对设备',
           isError: true);
       return;
     }
@@ -2346,7 +2456,8 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
       if (!mounted) return;
     }
     final selected = {
-      for (final d in btDevicesFromSetting(_settings.keepScreenOnDevice)) d.address
+      for (final d in btDevicesFromSetting(_settings.keepScreenOnDevice))
+        d.address
     };
     final picked = await showDialog<List<BtDevice>>(
       context: context,
@@ -2354,8 +2465,7 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
           _KeepAwakeDeviceDialog(devices: devices, selected: selected),
     );
     if (picked == null || !mounted) return;
-    setState(() =>
-        _settings.keepScreenOnDevice = btDevicesToSetting(picked));
+    setState(() => _settings.keepScreenOnDevice = btDevicesToSetting(picked));
   }
 
   Future<void> _pickLyricIdle(BuildContext context) async {
@@ -2386,14 +2496,21 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
   }
 }
 
-/// 常规设置（settings.md §3.5）：设置/歌单导出导入（不含令牌与源凭据）。
-class _GeneralSettings extends StatefulWidget {
+class _GeneralSettings extends StatelessWidget {
   const _GeneralSettings();
+
   @override
-  State<_GeneralSettings> createState() => _GeneralSettingsState();
+  Widget build(BuildContext context) => const ShortcutSettingsPanel();
 }
 
-class _GeneralSettingsState extends State<_GeneralSettings> {
+/// 备份设置（settings.md §3.5）：设置/歌单导出导入（不含令牌与源凭据）。
+class _BackupSettings extends StatefulWidget {
+  const _BackupSettings();
+  @override
+  State<_BackupSettings> createState() => _BackupSettingsState();
+}
+
+class _BackupSettingsState extends State<_BackupSettings> {
   List<File> _backups = [];
 
   @override
@@ -2509,8 +2626,7 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
     final file = await _service(direct).exportSettings();
     _refresh();
     if (!mounted) return;
-    AppToast.show('已导出：${file.path.split('/').last}（不含令牌与源凭据）',
-        isError: false);
+    AppToast.show('已导出：${file.path.split('/').last}（不含令牌与源凭据）', isError: false);
   }
 
   Future<void> _doExportPlaylists() async {
@@ -2524,7 +2640,10 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
   /// 文件选择器导入设置/歌单。
   Future<void> _pickAndImport(BackupKind kind) async {
     const groups = [
-      XTypeGroup(label: 'JSON 备份', extensions: ['json'], mimeTypes: ['application/json']),
+      XTypeGroup(
+          label: 'JSON 备份',
+          extensions: ['json'],
+          mimeTypes: ['application/json']),
       XTypeGroup(label: '所有文件', mimeTypes: ['*/*']),
     ];
     final XFile? picked;
@@ -2550,6 +2669,10 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
       if (kind == BackupKind.playlists) {
         if (!mounted) return;
         context.read<PlaylistsProvider>().refresh();
+      }
+      if (kind == BackupKind.settings) {
+        if (!mounted) return;
+        context.read<ShortcutSettings>().reload();
       }
       if (!mounted) return;
       _toast(summary);
@@ -2595,6 +2718,9 @@ class _GeneralSettingsState extends State<_GeneralSettings> {
         summaries.add(await service.importPlaylists(f));
       }
       if (!mounted) return;
+      if (kind != BackupKind.playlists) {
+        context.read<ShortcutSettings>().reload();
+      }
       context.read<PlaylistsProvider>().refresh();
       AppToast.show(summaries.join('；'), isError: false);
     } catch (e) {
@@ -2665,15 +2791,14 @@ class _NotificationsSettingsState extends State<_NotificationsSettings> {
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Text(
-              '通知栏播放控制 / 后台播放基于 just_audio_background，'
-              '仅 Android 生效；Linux 桌面忽略这些开关。',
-              style: Theme.of(context).textTheme.bodySmall),
+                '通知栏播放控制 / 后台播放基于 just_audio_background，'
+                '仅 Android 生效；Linux 桌面忽略这些开关。',
+                style: Theme.of(context).textTheme.bodySmall),
           ),
         ),
         SwitchListTile(
           title: const Text('通知栏播放控制'),
-          subtitle: const Text(
-              '在通知栏/播控中心显示播放控制按钮（修改后重启生效）。关闭只隐藏'
+          subtitle: const Text('在通知栏/播控中心显示播放控制按钮（修改后重启生效）。关闭只隐藏'
               '按钮——后台播放所需的保活（前台服务/长时任务）始终保持，不受影响。'),
           value: _settings.notificationControls,
           onChanged: (v) {
@@ -2689,8 +2814,7 @@ class _NotificationsSettingsState extends State<_NotificationsSettings> {
 /// 常亮限定蓝牙设备多选弹窗：复选框支持选多个设备；
 /// 所选设备任一处于连接状态即保持常亮；一个都不勾 = 不限定。
 class _KeepAwakeDeviceDialog extends StatefulWidget {
-  const _KeepAwakeDeviceDialog(
-      {required this.devices, required this.selected});
+  const _KeepAwakeDeviceDialog({required this.devices, required this.selected});
 
   final List<BtDevice> devices;
   final Set<String> selected;
@@ -2737,8 +2861,8 @@ class _KeepAwakeDeviceDialogState extends State<_KeepAwakeDeviceDialog> {
                         dense: true,
                         title: Text(d.name,
                             maxLines: 1, overflow: TextOverflow.ellipsis),
-                        subtitle:
-                            Text(d.address, style: const TextStyle(fontSize: 11)),
+                        subtitle: Text(d.address,
+                            style: const TextStyle(fontSize: 11)),
                         value: _sel.contains(d.address),
                         onChanged: (v) => setState(() {
                           if (v ?? false) {

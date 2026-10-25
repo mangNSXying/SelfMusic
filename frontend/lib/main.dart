@@ -25,12 +25,14 @@ import 'providers/direct_source_manager.dart';
 import 'providers/playlists_provider.dart';
 import 'providers/player_provider.dart';
 import 'providers/navigation_provider.dart';
+import 'shortcuts/shortcut_settings.dart';
 import 'theme/theme_provider.dart';
 import 'theme/app_theme.dart';
 import 'screens/library_screen.dart';
 import 'screens/player_screen.dart';
 import 'layout/app_shell.dart';
 import 'widgets/app_dialog_actions.dart';
+import 'widgets/app_shortcuts.dart';
 import 'widgets/app_toast.dart';
 import 'widgets/draggable_sheet.dart';
 import 'utils/perf_log.dart';
@@ -61,181 +63,184 @@ Future<void> main() async {
     perfLog('boot.entry');
     WidgetsFlutterBinding.ensureInitialized();
     perfLog('boot.ensureInitialized');
-  // 图片解码缓存扩容：默认 100MB/1000 张。播放页用的是全尺寸封面（单张解码
-  // 内存可达十余 MB），连播几十首就会把列表缩略图全部挤出缓存，此后每次切页
-  // 都要重新解码 → 长会话「越用越卡」。512MB 是上限而非预分配，LRU 照常淘汰；
-  // 六个分区的缩略图工作集约百 MB，余量足够。上限取值与复核见 [kImageCacheMaxBytes]。
-  PaintingBinding.instance.imageCache.maximumSizeBytes = kImageCacheMaxBytes;
-  PaintingBinding.instance.imageCache.maximumSize = kImageCacheMaxCount;
-  // 鸿蒙引导（sqlite3 系统库 / secure storage 文件实现 / just_audio→AVPlayer 适配）：
-  // 必须先于任何存储访问与播放器创建；其它平台内部直接返回。
-  await setupOhos();
-  perfLog('boot.setupOhos done');
-  // 桌面端（Windows/Linux）音频后端统一 media_kit（底层 libmpv）：默认参数即
-  // Windows/Linux 启用、Android 关闭（Android 继续走 ExoPlayer），无需平台判断。
-  // ohos 上其内部 UniversalPlatform 判断为 no-op，由上面的 AvPlayerJustAudio 接管。
-  JustAudioMediaKit.ensureInitialized();
-  perfLog('boot.mediaKit done');
-  // 系统音量混合器 / 进程列表里显示的名字（默认 'JustAudioMediaKit'）。
-  JustAudioMediaKit.title = 'SelfMusic';
-  // 先加载「服务端」设置（后端地址）与本地索引（含直连源配置恢复），
-  // 避免 UI 首次访问时的初始化竞态。
-  //
-  // 安全存储顶格预热（B）：首个 EncryptedSharedPreferences 读含通道预热
-  // （实测首读 1~1.7s）。`loadFast` 已不碰安全存储，此处预热与后续
-  // `direct.init()`（源密码读）/ 首帧后 `loadSlowSecrets` 重叠；
-  // `_readToken` 自带单飞去重，AuthProvider / SyncEngine 后续读命中缓存。
-  final api = ApiClient();
-  unawaited(api.getClientId());
-  unawaited(api.getAccessToken());
-  final serverSettings = ServerSettings();
-  await serverSettings.loadFast();
-  perfLog('boot.serverSettings fast done');
-  if (serverSettings.baseUrl.isNotEmpty) {
-    api.setBaseUrl(serverSettings.baseUrl);
-  }
-  debugPrint('[boot] 服务端设置加载完成');
-
-  final direct = DirectSourceManager();
-  await direct.init();
-  perfLog('boot.directInit done');
-  debugPrint('[boot] 直连源管理器就绪');
-  // 源补推（attachApi 内部 _bootstrapSourceSync）不参与首帧：见文末首帧后启动块。
-  // 信任自签名证书开关（settings.md §3.3）：按 AppSettings 配置 dio 一次。
-  api.setSelfSignedPolicy(direct.settings.allowSelfSigned);
-
-  // 歌手身份解析（歌手处理.txt）：后台循环向 MusicBrainz 解析歌手身份；
-  // 与 direct 互绑（扫描/补读后校准映射并唤醒），随应用生命周期运行。
-  // 启动时机同同步引擎：首帧后（启动即解析会挤占启动帧且与首帧无关）。
-  final artistResolver = ArtistResolver(direct.index)
-    ..attachSettings(direct.settings);
-  direct.attachArtistResolver(artistResolver);
-
-  // 通知栏播放控制 / 后台播放（settings.md §3.6）：Android 恒注册。
-  //
-  // Android 走 audio_service 自研处理器 [SelfMusicAudioHandler]（改进.txt UI5：
-  // 通知栏重写为 5 键——上一首/播放·暂停/下一首/播放模式/退出软件，收起视图取
-  // 前三个，图标全部为品牌色矢量 ic_np_*）。它不劫持 just_audio 平台实例，播放
-  // 命令经 PlayerProvider 转发，状态变化由 sync() 回推通知栏与系统媒体控件。
-  //
-  // 「通知栏播放控制」开关只控制通知里渲不渲染那 5 个按钮，**不再决定要不要注册**
-  // （先前一并 gate 掉，用户一关开关就同时失去前台服务与播放期 wake lock——而
-  // just_audio 的 ExoPlayer 不设 setWakeMode，息屏/Doze 下必然被系统回收，
-  // 表现为「后台放一会儿就没声了」）。开关语义是「按钮」，不是「后台播放」。
-  //
-  // 其余平台：桌面 / Web 保持原样（此前也没有通知栏）；鸿蒙走
-  // OhosMediaSessionBridge，同款恒注册语义（开关只控制播控卡，长时任务保活
-  // 恒在，见下方鸿蒙段）。自研 handler 与 media_kit / 鸿蒙 FVP 的
-  // 自定义平台互不干扰，哪天要给这些平台开通知栏直接接上。
-  //
-  // 失败时降级为无通知栏（audioHandler=null），不允许任何通知服务异常拖垮启动（曾致白屏）。
-  SelfMusicAudioHandler? audioHandler;
-  if (!kIsWeb && Platform.isAndroid) {
-    try {
-      audioHandler =
-          SelfMusicAudioHandler(showControls: direct.settings.notificationControls);
-      perfLog('boot.audioService before');
-      await AudioService.init(
-        builder: () => audioHandler!,
-        config: const AudioServiceConfig(
-          androidNotificationChannelId: 'com.shamiko.selfmusic.channel.audio',
-          androidNotificationChannelName: 'SelfMusic 播放',
-          androidNotificationChannelDescription: '播放控制与后台播放',
-          // 暂停不退出前台服务：回到桌面/锁屏后系统不会回收服务，再次恢复
-          // 播放也不会受 Android 12+ 后台启动前台服务限制。（audio_service 中
-          // 与 androidNotificationOngoing 互斥——ongoing 通知并不阻止进程
-          // 回收，前台服务才是保活根基，故不用 ongoing。）
-          androidStopForegroundOnPause: false,
-          // 状态栏小图标：白色剪影矢量（通知图标仅取 alpha 通道染色），
-          // 默认 mipmap 应用图标在浅色状态栏上会糊成灰色方块。
-          androidNotificationIcon: 'drawable/ic_stat_selfmusic',
-          // 通知强调色：品牌 teal（与 App 主题 defaultAccent 一致）。
-          notificationColor: Color(0xFF00A098),
-        ),
-      );
-      // 开关按设置页既定语义「重启生效」（见 settings_screen 的提示文案），
-      // 不做运行时热切——按钮的增删还要走 MediaSession 通知重建，重启更稳。
-      perfLog('boot.audioService done');
-    } catch (e) {
-      audioHandler = null;
-      perfLog('boot.audioService failed');
-      debugPrint('audio_service 初始化失败，通知栏控制降级关闭：$e');
+    // 图片解码缓存扩容：默认 100MB/1000 张。播放页用的是全尺寸封面（单张解码
+    // 内存可达十余 MB），连播几十首就会把列表缩略图全部挤出缓存，此后每次切页
+    // 都要重新解码 → 长会话「越用越卡」。512MB 是上限而非预分配，LRU 照常淘汰；
+    // 六个分区的缩略图工作集约百 MB，余量足够。上限取值与复核见 [kImageCacheMaxBytes]。
+    PaintingBinding.instance.imageCache.maximumSizeBytes = kImageCacheMaxBytes;
+    PaintingBinding.instance.imageCache.maximumSize = kImageCacheMaxCount;
+    // 鸿蒙引导（sqlite3 系统库 / secure storage 文件实现 / just_audio→AVPlayer 适配）：
+    // 必须先于任何存储访问与播放器创建；其它平台内部直接返回。
+    await setupOhos();
+    perfLog('boot.setupOhos done');
+    // 桌面端（Windows/Linux）音频后端统一 media_kit（底层 libmpv）：默认参数即
+    // Windows/Linux 启用、Android 关闭（Android 继续走 ExoPlayer），无需平台判断。
+    // ohos 上其内部 UniversalPlatform 判断为 no-op，由上面的 AvPlayerJustAudio 接管。
+    JustAudioMediaKit.ensureInitialized();
+    perfLog('boot.mediaKit done');
+    // 系统音量混合器 / 进程列表里显示的名字（默认 'JustAudioMediaKit'）。
+    JustAudioMediaKit.title = 'SelfMusic';
+    // 先加载「服务端」设置（后端地址）与本地索引（含直连源配置恢复），
+    // 避免 UI 首次访问时的初始化竞态。
+    //
+    // 安全存储顶格预热（B）：首个 EncryptedSharedPreferences 读含通道预热
+    // （实测首读 1~1.7s）。`loadFast` 已不碰安全存储，此处预热与后续
+    // `direct.init()`（源密码读）/ 首帧后 `loadSlowSecrets` 重叠；
+    // `_readToken` 自带单飞去重，AuthProvider / SyncEngine 后续读命中缓存。
+    final api = ApiClient();
+    unawaited(api.getClientId());
+    unawaited(api.getAccessToken());
+    final serverSettings = ServerSettings();
+    await serverSettings.loadFast();
+    perfLog('boot.serverSettings fast done');
+    if (serverSettings.baseUrl.isNotEmpty) {
+      api.setBaseUrl(serverSettings.baseUrl);
     }
-    // Android 13+（API 33）不授予 POST_NOTIFICATIONS 就不显示任何通知，
-    // 前台服务照跑但通知栏里空空如也——播放控制、锁屏播控全部消失，只剩任务管理
-    // 里一行灰字。随播放能力一起申请最自然（用户此刻正要听歌），而不是冷启动
-    // 就弹权限框。33 以下 Permission.notification 直接 granted，不会打扰。
-    unawaited(_ensureNotificationPermission());
-  }
+    debugPrint('[boot] 服务端设置加载完成');
 
-  // 鸿蒙 AVSession 媒体播控（通知栏/锁屏/播控中心 + 后台长时任务）：
-  // 桥与自研 handler 同模式不劫持播放器；ArkTS 侧 AvSessionBridge 挂系统
-  // 会话。构造仅注册通道回调，通道调用异常由桥内部兜底，不影响播放主流程。
-  //
-  // 与 Android 同语义（恒注册）：**不再按 notificationControls gate 整个桥**——
-  // 桥还承担 AUDIO_PLAYBACK 长时任务（息屏保活的根基），一并 gate 掉后关开关
-  // = 无长时任务，息屏即被系统挂起、播放自动终止（与安卓修复前的旧 bug 同型，
-  // 设置文案「关闭只隐藏按钮」在鸿蒙侧曾不成立）。开关现在只经 [showControls]
-  // 控制建不建 AVSession（播控卡渲不渲染），长时任务恒随播放申请；重启生效。
-  OhosMediaSessionBridge? ohosMediaSession;
-  if (!kIsWeb && isOhos) {
-    ohosMediaSession = OhosMediaSessionBridge(direct,
-        showControls: direct.settings.notificationControls);
-    // 退出收口钩子：exit(0) 前先销毁播控卡/停长时任务（await 封顶 300ms，
-    // 见 app_background.exitAppGracefully / 桥 destroy）。
-    beforeExitHook = () => ohosMediaSession!.destroy();
-  }
+    final direct = DirectSourceManager();
+    await direct.init();
+    final shortcutSettings = ShortcutSettings(direct.settings);
+    perfLog('boot.directInit done');
+    debugPrint('[boot] 直连源管理器就绪');
+    // 源补推（attachApi 内部 _bootstrapSourceSync）不参与首帧：见文末首帧后启动块。
+    // 信任自签名证书开关（settings.md §3.3）：按 AppSettings 配置 dio 一次。
+    api.setSelfSignedPolicy(direct.settings.allowSelfSigned);
 
-  // 阶段5 多设备同步引擎：首帧后启动（见下方首帧后启动块），回前台追一次。
-  // 落库回调一律经 [scheduleAfterFrame] 推迟到帧末：拉取完成当帧不做整库
-  // 重建/源重载，避免同步与渲染抢同一轮事件循环（同步后台化）。
-  final sync = SyncEngine(api: api, index: direct.index, settings: direct.settings);
-  sync.onSourcesApplied = () {
-    scheduleAfterFrame(() {
-      unawaited(direct.reloadSourcesFromIndex());
+    // 歌手身份解析（歌手处理.txt）：后台循环向 MusicBrainz 解析歌手身份；
+    // 与 direct 互绑（扫描/补读后校准映射并唤醒），随应用生命周期运行。
+    // 启动时机同同步引擎：首帧后（启动即解析会挤占启动帧且与首帧无关）。
+    final artistResolver = ArtistResolver(direct.index)
+      ..attachSettings(direct.settings);
+    direct.attachArtistResolver(artistResolver);
+
+    // 通知栏播放控制 / 后台播放（settings.md §3.6）：Android 恒注册。
+    //
+    // Android 走 audio_service 自研处理器 [SelfMusicAudioHandler]（改进.txt UI5：
+    // 通知栏重写为 5 键——上一首/播放·暂停/下一首/播放模式/退出软件，收起视图取
+    // 前三个，图标全部为品牌色矢量 ic_np_*）。它不劫持 just_audio 平台实例，播放
+    // 命令经 PlayerProvider 转发，状态变化由 sync() 回推通知栏与系统媒体控件。
+    //
+    // 「通知栏播放控制」开关只控制通知里渲不渲染那 5 个按钮，**不再决定要不要注册**
+    // （先前一并 gate 掉，用户一关开关就同时失去前台服务与播放期 wake lock——而
+    // just_audio 的 ExoPlayer 不设 setWakeMode，息屏/Doze 下必然被系统回收，
+    // 表现为「后台放一会儿就没声了」）。开关语义是「按钮」，不是「后台播放」。
+    //
+    // 其余平台：桌面 / Web 保持原样（此前也没有通知栏）；鸿蒙走
+    // OhosMediaSessionBridge，同款恒注册语义（开关只控制播控卡，长时任务保活
+    // 恒在，见下方鸿蒙段）。自研 handler 与 media_kit / 鸿蒙 FVP 的
+    // 自定义平台互不干扰，哪天要给这些平台开通知栏直接接上。
+    //
+    // 失败时降级为无通知栏（audioHandler=null），不允许任何通知服务异常拖垮启动（曾致白屏）。
+    SelfMusicAudioHandler? audioHandler;
+    if (!kIsWeb && Platform.isAndroid) {
+      try {
+        audioHandler = SelfMusicAudioHandler(
+            showControls: direct.settings.notificationControls);
+        perfLog('boot.audioService before');
+        await AudioService.init(
+          builder: () => audioHandler!,
+          config: const AudioServiceConfig(
+            androidNotificationChannelId: 'com.shamiko.selfmusic.channel.audio',
+            androidNotificationChannelName: 'SelfMusic 播放',
+            androidNotificationChannelDescription: '播放控制与后台播放',
+            // 暂停不退出前台服务：回到桌面/锁屏后系统不会回收服务，再次恢复
+            // 播放也不会受 Android 12+ 后台启动前台服务限制。（audio_service 中
+            // 与 androidNotificationOngoing 互斥——ongoing 通知并不阻止进程
+            // 回收，前台服务才是保活根基，故不用 ongoing。）
+            androidStopForegroundOnPause: false,
+            // 状态栏小图标：白色剪影矢量（通知图标仅取 alpha 通道染色），
+            // 默认 mipmap 应用图标在浅色状态栏上会糊成灰色方块。
+            androidNotificationIcon: 'drawable/ic_stat_selfmusic',
+            // 通知强调色：品牌 teal（与 App 主题 defaultAccent 一致）。
+            notificationColor: Color(0xFF00A098),
+          ),
+        );
+        // 开关按设置页既定语义「重启生效」（见 settings_screen 的提示文案），
+        // 不做运行时热切——按钮的增删还要走 MediaSession 通知重建，重启更稳。
+        perfLog('boot.audioService done');
+      } catch (e) {
+        audioHandler = null;
+        perfLog('boot.audioService failed');
+        debugPrint('audio_service 初始化失败，通知栏控制降级关闭：$e');
+      }
+      // Android 13+（API 33）不授予 POST_NOTIFICATIONS 就不显示任何通知，
+      // 前台服务照跑但通知栏里空空如也——播放控制、锁屏播控全部消失，只剩任务管理
+      // 里一行灰字。随播放能力一起申请最自然（用户此刻正要听歌），而不是冷启动
+      // 就弹权限框。33 以下 Permission.notification 直接 granted，不会打扰。
+      unawaited(_ensureNotificationPermission());
+    }
+
+    // 鸿蒙 AVSession 媒体播控（通知栏/锁屏/播控中心 + 后台长时任务）：
+    // 桥与自研 handler 同模式不劫持播放器；ArkTS 侧 AvSessionBridge 挂系统
+    // 会话。构造仅注册通道回调，通道调用异常由桥内部兜底，不影响播放主流程。
+    //
+    // 与 Android 同语义（恒注册）：**不再按 notificationControls gate 整个桥**——
+    // 桥还承担 AUDIO_PLAYBACK 长时任务（息屏保活的根基），一并 gate 掉后关开关
+    // = 无长时任务，息屏即被系统挂起、播放自动终止（与安卓修复前的旧 bug 同型，
+    // 设置文案「关闭只隐藏按钮」在鸿蒙侧曾不成立）。开关现在只经 [showControls]
+    // 控制建不建 AVSession（播控卡渲不渲染），长时任务恒随播放申请；重启生效。
+    OhosMediaSessionBridge? ohosMediaSession;
+    if (!kIsWeb && isOhos) {
+      ohosMediaSession = OhosMediaSessionBridge(direct,
+          showControls: direct.settings.notificationControls);
+      // 退出收口钩子：exit(0) 前先销毁播控卡/停长时任务（await 封顶 300ms，
+      // 见 app_background.exitAppGracefully / 桥 destroy）。
+      beforeExitHook = () => ohosMediaSession!.destroy();
+    }
+
+    // 阶段5 多设备同步引擎：首帧后启动（见下方首帧后启动块），回前台追一次。
+    // 落库回调一律经 [scheduleAfterFrame] 推迟到帧末：拉取完成当帧不做整库
+    // 重建/源重载，避免同步与渲染抢同一轮事件循环（同步后台化）。
+    final sync =
+        SyncEngine(api: api, index: direct.index, settings: direct.settings);
+    sync.onSourcesApplied = () {
+      scheduleAfterFrame(() {
+        unawaited(direct.reloadSourcesFromIndex());
+      });
+    };
+    // 远端拉回的收藏/权重落库后刷新行缓存与版本，否则喜欢页与列表行仍显示旧态。
+    sync.onSongStatesApplied = () {
+      scheduleAfterFrame(direct.notifyPlayMetaChanged);
+    };
+    WidgetsBinding.instance.addObserver(_SyncLifecycleObserver(sync));
+
+    debugPrint('[boot] 进入 runApp');
+    perfLog('boot.preRunApp');
+    // 交互门控（R-2）：聚合滚动/过渡/浮层/队列状态，交互期合帧投递数据通知；
+    // 在 runApp 前创建并注入 DirectSourceManager，保证后续所有通知都经门控。
+    final interactionGate = InteractionGate();
+    direct.attachInteractionGate(interactionGate);
+    runApp(SelfMusicApp(
+        direct: direct,
+        settings: serverSettings,
+        api: api,
+        audioHandler: audioHandler,
+        ohosMediaSession: ohosMediaSession,
+        artistResolver: artistResolver,
+        sync: sync,
+        interactionGate: interactionGate,
+        shortcutSettings: shortcutSettings));
+    perfLog('boot.runApp dispatched');
+    // 首帧轻量化：源补推 / 歌手解析 / 同步引擎都不参与首帧渲染，统一推迟到
+    // 首帧渲染完成后启动——此前它们在 runApp 前就发起网络请求与同步 DB 读，
+    // 与首帧渲染抢事件循环（启动期掉帧的根因之一）。Root 只 `awaitFirstPull`
+    // 等在飞行的首轮收尾，不会重复发起新一轮。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      perfLog('boot.postFrame start');
+      direct.attachApi(api); // 内部补发存量 source.create（有服务器才发）
+      artistResolver.start();
+      sync.start();
+      // 服务端设置慢阶段（A）：配对密钥安全存储读 + 明文迁移。此时插件已预热，
+      // 且首帧已出，不再阻塞启动链；配对页/设置页是深层页，读不到密钥不受影响。
+      unawaited(serverSettings
+          .loadSlowSecrets()
+          .then((_) => perfLog('boot.serverSettings slow done')));
+      perfLog('boot.postFrame done');
     });
-  };
-  // 远端拉回的收藏/权重落库后刷新行缓存与版本，否则喜欢页与列表行仍显示旧态。
-  sync.onSongStatesApplied = () {
-    scheduleAfterFrame(direct.notifyPlayMetaChanged);
-  };
-  WidgetsBinding.instance.addObserver(_SyncLifecycleObserver(sync));
-
-  debugPrint('[boot] 进入 runApp');
-  perfLog('boot.preRunApp');
-  // 交互门控（R-2）：聚合滚动/过渡/浮层/队列状态，交互期合帧投递数据通知；
-  // 在 runApp 前创建并注入 DirectSourceManager，保证后续所有通知都经门控。
-  final interactionGate = InteractionGate();
-  direct.attachInteractionGate(interactionGate);
-  runApp(SelfMusicApp(
-      direct: direct,
-      settings: serverSettings,
-      api: api,
-      audioHandler: audioHandler,
-      ohosMediaSession: ohosMediaSession,
-      artistResolver: artistResolver,
-      sync: sync,
-      interactionGate: interactionGate));
-  perfLog('boot.runApp dispatched');
-  // 首帧轻量化：源补推 / 歌手解析 / 同步引擎都不参与首帧渲染，统一推迟到
-  // 首帧渲染完成后启动——此前它们在 runApp 前就发起网络请求与同步 DB 读，
-  // 与首帧渲染抢事件循环（启动期掉帧的根因之一）。Root 只 `awaitFirstPull`
-  // 等在飞行的首轮收尾，不会重复发起新一轮。
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    perfLog('boot.postFrame start');
-    direct.attachApi(api); // 内部补发存量 source.create（有服务器才发）
-    artistResolver.start();
-    sync.start();
-    // 服务端设置慢阶段（A）：配对密钥安全存储读 + 明文迁移。此时插件已预热，
-    // 且首帧已出，不再阻塞启动链；配对页/设置页是深层页，读不到密钥不受影响。
-    unawaited(serverSettings
-        .loadSlowSecrets()
-        .then((_) => perfLog('boot.serverSettings slow done')));
-    perfLog('boot.postFrame done');
-  });
-  // main() 全链（含所有 await）走完的最终信号：ArkTS 启动看门狗据此解除
-  // （超时未收到则向 Dart 发消息唤醒可能停滞的事件循环，见 ohos_bootstrap）。
-  markBootReady();
+    // main() 全链（含所有 await）走完的最终信号：ArkTS 启动看门狗据此解除
+    // （超时未收到则向 Dart 发消息唤醒可能停滞的事件循环，见 ohos_bootstrap）。
+    markBootReady();
   }, (Object error, StackTrace stack) {
     LogBuffer.instance.recordError(error, stack);
     debugPrint('Uncaught zone error: $error\n$stack');
@@ -291,6 +296,7 @@ class SelfMusicApp extends StatelessWidget {
   final SyncEngine sync;
   final ArtistResolver artistResolver;
   final InteractionGate interactionGate;
+  final ShortcutSettings shortcutSettings;
   const SelfMusicApp({
     super.key,
     required this.direct,
@@ -301,18 +307,19 @@ class SelfMusicApp extends StatelessWidget {
     required this.sync,
     required this.artistResolver,
     required this.interactionGate,
+    required this.shortcutSettings,
   });
 
   @override
   Widget build(BuildContext context) {
     perfLog('boot.firstBuild SelfMusicApp');
     final auth = AuthProvider(api);
-  // 播放流式取 token 依赖 Auth（懒读）。
-  final lib = LibraryProvider()
-    ..attachDirectManager(direct)
-    // 歌手解析/成员展开落库后就地重算歌手列表（停在旧计数的问题，见 library_provider）。
-    ..attachArtistResolver(artistResolver);
-  final nav = NavigationProvider();
+    // 播放流式取 token 依赖 Auth（懒读）。
+    final lib = LibraryProvider()
+      ..attachDirectManager(direct)
+      // 歌手解析/成员展开落库后就地重算歌手列表（停在旧计数的问题，见 library_provider）。
+      ..attachArtistResolver(artistResolver);
+    final nav = NavigationProvider();
     final player = PlayerProvider()
       ..attachSourceResolver((key) => direct.sourceByKey(key))
       ..attachLineCandidates((key) => direct.lineCandidates(key))
@@ -363,6 +370,7 @@ class SelfMusicApp extends StatelessWidget {
         ),
         ChangeNotifierProvider<PlayerProvider>.value(value: player),
         ChangeNotifierProvider<NavigationProvider>.value(value: nav),
+        ChangeNotifierProvider<ShortcutSettings>.value(value: shortcutSettings),
       ],
       child: const _ThemedApp(),
     );
@@ -405,6 +413,7 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
 
   /// 播放页悬浮层动画唯一控制器（壳常驻 + 播放页悬浮层跟手共用）。
   late final PlayerSheetAnimator _sheetAnim;
+
   /// 统一拖拽式窗口宿主启动器（队列滑动启动的跟手过渡 + 各窗口点击启动共用）。
   late final AppSheetLauncher _sheetLauncher;
   late final NavigationProvider _nav;
@@ -441,9 +450,8 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
     // PlayerProvider.applyNewerMirrorIfAny 内部守卫）。
     _syncEngine.onBreakpointsApplied = () {
       if (!mounted) return;
-      unawaited(context
-          .read<PlayerProvider>()
-          .applyNewerMirrorIfAny(viaSync: true));
+      unawaited(
+          context.read<PlayerProvider>().applyNewerMirrorIfAny(viaSync: true));
     };
     // push 深层列表合并回执：只并入历史/融合队列，不 seek、不打断当前播放。
     _syncEngine.onBreakpointMerged = (snapshot, sentDeepList) async {
@@ -468,9 +476,7 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
     };
     _syncEngine.onBreakpointRejected = (uuids) {
       if (!mounted) return;
-      unawaited(context
-          .read<PlayerProvider>()
-          .clearPendingHeadFor(uuids));
+      unawaited(context.read<PlayerProvider>().clearPendingHeadFor(uuids));
     };
     _syncEngine.onBreakpointAcked = (ops) async {
       if (!mounted) return;
@@ -511,7 +517,8 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
       // 回调与恢复进行中的装载竞争。
       final swRestore = Stopwatch()..start();
       await restoreFuture;
-      perfLog('root.boot localRestoreDone', '${swRestore.elapsedMilliseconds}ms');
+      perfLog(
+          'root.boot localRestoreDone', '${swRestore.elapsedMilliseconds}ms');
       if (!mounted) return;
       // 等启动首轮 pull 收尾（在飞行则只等待，不额外发起新一轮）：拉到更新的
       // 远端断点且用户尚未接管播放时，applyNewerMirrorIfAny 再切过去（不打断
@@ -680,39 +687,41 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
         Provider<PlayerSheetAnimator>.value(value: _sheetAnim),
         Provider<AppSheetLauncher>.value(value: _sheetLauncher),
       ],
-      child: PopScope<void>(
-        canPop: false,
-        onPopInvokedWithResult: _onPopInvoked,
-        child: Stack(
-          children: [
-            ValueListenableBuilder<double>(
-              valueListenable: _nav.playerProgress,
-              builder: (c, p, _) {
-                // 播放页全覆盖（首页初态）且首帧未过：底层不可见，跳过挂载。
-                // 首帧后（_contentReady）或播放页收起/跟手中一律正常挂载。
-                if (!_contentReady && playerView && p <= 0.001) {
-                  return const SizedBox.shrink();
-                }
-                return const AppShell(content: AppContent());
-              },
-            ),
-            // 窄屏队列窗口由 [AppSheetLauncher] 的悬浮层承载（宿主 AppSheetHost
-            // 挂在 AppShell 内，不 push 路由，见 openQueueSheet /
-            // beginQueueSheetSwipe），不在本 Stack 内。
-            ValueListenableBuilder<double>(
-              valueListenable: _nav.playerProgress,
-              builder: (c, p, _) {
-                if (!playerView && p >= 1) {
-                  return const SizedBox.shrink();
-                }
-                final h = MediaQuery.of(c).size.height;
-                return Transform.translate(
-                  offset: Offset(0, p * h),
-                  child: const PlayerScreen(),
-                );
-              },
-            ),
-          ],
+      child: AppShortcuts(
+        child: PopScope<void>(
+          canPop: false,
+          onPopInvokedWithResult: _onPopInvoked,
+          child: Stack(
+            children: [
+              ValueListenableBuilder<double>(
+                valueListenable: _nav.playerProgress,
+                builder: (c, p, _) {
+                  // 播放页全覆盖（首页初态）且首帧未过：底层不可见，跳过挂载。
+                  // 首帧后（_contentReady）或播放页收起/跟手中一律正常挂载。
+                  if (!_contentReady && playerView && p <= 0.001) {
+                    return const SizedBox.shrink();
+                  }
+                  return const AppShell(content: AppContent());
+                },
+              ),
+              // 窄屏队列窗口由 [AppSheetLauncher] 的悬浮层承载（宿主 AppSheetHost
+              // 挂在 AppShell 内，不 push 路由，见 openQueueSheet /
+              // beginQueueSheetSwipe），不在本 Stack 内。
+              ValueListenableBuilder<double>(
+                valueListenable: _nav.playerProgress,
+                builder: (c, p, _) {
+                  if (!playerView && p >= 1) {
+                    return const SizedBox.shrink();
+                  }
+                  final h = MediaQuery.of(c).size.height;
+                  return Transform.translate(
+                    offset: Offset(0, p * h),
+                    child: const PlayerScreen(),
+                  );
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -738,9 +747,11 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
             auth.acceptSessionExpired();
             setState(() => _expiryDialogShown = false);
             Navigator.of(ctx).pop();
-            context.read<NavigationProvider>().openSettings(SettingsItem.server);
+            context
+                .read<NavigationProvider>()
+                .openSettings(SettingsItem.server);
           },
-          ),
+        ),
       ),
     );
   }

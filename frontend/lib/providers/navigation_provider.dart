@@ -82,6 +82,9 @@ class NavigationProvider extends ChangeNotifier {
   /// 窄屏由窗口收起时同步回关闭）。
   bool _queueOpen = false;
 
+  bool _searchFocusPending = false;
+  int _sidebarToggleTick = 0;
+
   /// 滑动过渡新页面的进入方向（(1,0) 右进 / (-1,0) 左进 / (0,±1) 竖向），
   /// 供全局切换器使用。
   Offset _slideOffset = const Offset(1, 0);
@@ -190,6 +193,26 @@ class NavigationProvider extends ChangeNotifier {
 
   void toggleQueue() {
     _queueOpen = !_queueOpen;
+    notifyListeners();
+  }
+
+  bool get searchFocusPending => _searchFocusPending;
+
+  void requestSearchFocus() {
+    _searchFocusPending = true;
+    notifyListeners();
+  }
+
+  bool consumeSearchFocusRequest() {
+    if (!_searchFocusPending) return false;
+    _searchFocusPending = false;
+    return true;
+  }
+
+  int get sidebarToggleTick => _sidebarToggleTick;
+
+  void requestSidebarToggle() {
+    _sidebarToggleTick++;
     notifyListeners();
   }
 

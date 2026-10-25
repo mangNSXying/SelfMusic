@@ -373,8 +373,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
       expect(tester.takeException(), isNull);
       // 退场中：页面仍在树上并向右滑出。
-      expect(tester.getTopLeft(find.byTooltip('返回')).dx,
-          greaterThan(settledX));
+      expect(tester.getTopLeft(find.byTooltip('返回')).dx, greaterThan(settledX));
       await tester.pumpAndSettle();
       expect(h.nav.details, isEmpty);
       expect(find.byTooltip('返回'), findsNothing);
@@ -419,7 +418,7 @@ void main() {
       expect(nav.details, isEmpty);
 
       nav.enterArtist(artist, const []);
-      nav.openSettings(SettingsItem.general);
+      nav.openSettings(SettingsItem.backup);
       expect(nav.details, isEmpty);
 
       nav.enterAlbum(album(3), const []);

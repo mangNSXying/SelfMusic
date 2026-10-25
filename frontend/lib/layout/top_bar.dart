@@ -57,6 +57,7 @@ class _UpperRowState extends State<_UpperRow> {
     _searchFocus = FocusNode();
     widget.nav.addListener(_syncFromNav);
     _searchCtrl.addListener(_onTextChanged);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _maybeFocusSearch());
   }
 
   @override
@@ -70,11 +71,19 @@ class _UpperRowState extends State<_UpperRow> {
 
   /// 外部清空（clearSearch）时同步文本；只改文本、给合法光标位，保留焦点。
   void _syncFromNav() {
+    _maybeFocusSearch();
     if (widget.nav.search == _searchCtrl.text) return;
     _searchCtrl.value = TextEditingValue(
       text: widget.nav.search,
       selection: TextSelection.collapsed(offset: widget.nav.search.length),
     );
+  }
+
+  void _maybeFocusSearch() {
+    if (!mounted || !widget.nav.consumeSearchFocusRequest()) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _searchFocus.requestFocus();
+    });
   }
 
   /// clear 图标随文本自更新（不再依赖整树重建）。

@@ -28,8 +28,9 @@ enum SongTitleFormat {
   const SongTitleFormat(this.label);
   final String label;
 
-  static SongTitleFormat parse(String? v) => SongTitleFormat.values
-      .firstWhere((e) => e.name == v, orElse: () => SongTitleFormat.artistTitle);
+  static SongTitleFormat parse(String? v) =>
+      SongTitleFormat.values.firstWhere((e) => e.name == v,
+          orElse: () => SongTitleFormat.artistTitle);
 }
 
 /// 在线元数据保存位置（设置→歌曲）。
@@ -194,7 +195,8 @@ class AppSettings {
   /// 播放页控件静置自动隐藏（改进.txt：无操作 N 秒后隐藏返回/更多按钮）。
   static const String kPlayerAutoHideIdleSec = 'player_auto_hide_idle_sec';
   static const String kPreloadNext = 'preload_next';
-  static const String kScanIgnoreMinDurationSec = 'scan_ignore_min_duration_sec';
+  static const String kScanIgnoreMinDurationSec =
+      'scan_ignore_min_duration_sec';
   static const String kScanIgnoreMinSizeBytes = 'scan_ignore_min_size_bytes';
   static const String kScanWifiOnly = 'scan_wifi_only';
   static const String kScanAutoIntervalMin = 'scan_auto_interval_min';
@@ -320,10 +322,8 @@ class AppSettings {
   // ---------- 缓存来源模式（阶段6 follow_server，settings.md §3.3） ----------
 
   /// custom=用本地自定义值；follow_server=用服务端建议值。
-  String get cacheConfigMode =>
-      index.settingsGet(kCacheConfigMode) ?? 'custom';
-  set cacheConfigMode(String v) =>
-      index.settingsSet(kCacheConfigMode, v);
+  String get cacheConfigMode => index.settingsGet(kCacheConfigMode) ?? 'custom';
+  set cacheConfigMode(String v) => index.settingsSet(kCacheConfigMode, v);
 
   bool get followServer => cacheConfigMode == 'follow_server';
 
@@ -376,7 +376,8 @@ class AppSettings {
   // ---------- 多设备状态同步（阶段5，DEVELOPER.md「播放算法与同步协议」） ----------
 
   /// 服务端 cursor：pull 增量基准，SyncEngine 每次成功后推进。
-  int get syncCursor => int.tryParse(index.settingsGet(kSyncCursor) ?? '0') ?? 0;
+  int get syncCursor =>
+      int.tryParse(index.settingsGet(kSyncCursor) ?? '0') ?? 0;
   set syncCursor(int v) => index.settingsSet(kSyncCursor, v.toString());
 
   /// 同步总开关（默认开；关=仅本地，不上推也不拉取）。
@@ -438,8 +439,7 @@ class AppSettings {
   /// `weighted` 的显示名为「随机播放」，实际算法由 [weightedRandomEnabled] 决定。
   String get playModeDefault =>
       index.settingsGet(kPlayModeDefault) ?? defaultPlayMode;
-  set playModeDefault(String v) =>
-      index.settingsSet(kPlayModeDefault, v);
+  set playModeDefault(String v) => index.settingsSet(kPlayModeDefault, v);
 
   /// 随机播放模式下是否启用加权随机（默认开）。
   /// 关闭后为普通随机：按深层列表做不放回抽取（见 PlayerProvider 的
@@ -503,10 +503,8 @@ class AppSettings {
       index.settingsSet(kPlayerAutoHideIdleSec, v.toString());
 
   /// 常亮限定的蓝牙设备 JSON（空=不限定）。
-  String get keepScreenOnDevice =>
-      index.settingsGet(kKeepScreenOnDevice) ?? '';
-  set keepScreenOnDevice(String v) =>
-      index.settingsSet(kKeepScreenOnDevice, v);
+  String get keepScreenOnDevice => index.settingsGet(kKeepScreenOnDevice) ?? '';
+  set keepScreenOnDevice(String v) => index.settingsSet(kKeepScreenOnDevice, v);
 
   // ---------- 无状态转码（阶段6，服务端代理，不建库） ----------
 
@@ -541,8 +539,7 @@ class AppSettings {
     return 'off';
   }
 
-  set transcodeLoudnorm(String v) =>
-      index.settingsSet(kTranscodeLoudnorm, v);
+  set transcodeLoudnorm(String v) => index.settingsSet(kTranscodeLoudnorm, v);
 
   // ---------- 歌手身份解析（歌手处理.txt） ----------
 
@@ -572,8 +569,7 @@ class AppSettings {
 
   /// 仅 Wi-Fi 扫描（移动端生效，桌面忽略）。（settings.md §3.4）
   bool get scanWifiOnly => (index.settingsGet(kScanWifiOnly) ?? '1') == '1';
-  set scanWifiOnly(bool v) =>
-      index.settingsSet(kScanWifiOnly, v ? '1' : '0');
+  set scanWifiOnly(bool v) => index.settingsSet(kScanWifiOnly, v ? '1' : '0');
 
   /// 周期自动扫描间隔（分钟）。0=关。增量指纹使其成本极低（无变化的文件零下载），
   /// 相当于「目录变化检测」；本地源另有 FileSystem watcher 即时触发。
@@ -593,8 +589,7 @@ class AppSettings {
   int get fadeDurationMs =>
       (int.tryParse(index.settingsGet(kFadeDurationMs) ?? '') ?? 2000)
           .clamp(500, 2000);
-  set fadeDurationMs(int v) =>
-      index.settingsSet(kFadeDurationMs, v.toString());
+  set fadeDurationMs(int v) => index.settingsSet(kFadeDurationMs, v.toString());
 
   // ---------- 播放分区·均衡器（settings.md §3.2，仅 Android） ----------
 
@@ -675,8 +670,8 @@ class AppSettings {
     return v.clamp(0.0, 1.0);
   }
 
-  set weightedCountCooldownRatio(double v) => index
-      .settingsSet(kWeightedCountCooldownRatio, v.clamp(0.0, 1.0).toString());
+  set weightedCountCooldownRatio(double v) => index.settingsSet(
+      kWeightedCountCooldownRatio, v.clamp(0.0, 1.0).toString());
 
   // ---------- 界面分区（settings.md §3.7） ----------
 
@@ -730,8 +725,7 @@ class AppSettings {
 
   CollectionSort _sort(String key) =>
       CollectionSortX.parse(index.settingsGet(key));
-  void _setSort(String key, CollectionSort v) =>
-      index.settingsSet(key, v.name);
+  void _setSort(String key, CollectionSort v) => index.settingsSet(key, v.name);
 
   CollectionSort get sortSongs => _sort(kSortSongs);
   set sortSongs(CollectionSort v) => _setSort(kSortSongs, v);
@@ -740,8 +734,7 @@ class AppSettings {
   set sortFavorites(CollectionSort v) => _setSort(kSortFavorites, v);
 
   CollectionSort get sortPlaylistDetail => _sort(kSortPlaylistDetail);
-  set sortPlaylistDetail(CollectionSort v) =>
-      _setSort(kSortPlaylistDetail, v);
+  set sortPlaylistDetail(CollectionSort v) => _setSort(kSortPlaylistDetail, v);
 
   CollectionSort get sortQueue => _sort(kSortQueue);
   set sortQueue(CollectionSort v) => _setSort(kSortQueue, v);
@@ -893,10 +886,8 @@ class AppSettings {
   set onlineMetaSaveMode(OnlineMetaSaveMode v) =>
       index.settingsSet(kOnlineMetaSaveMode, v.name);
 
-  String get onlineMetaLyricDir =>
-      index.settingsGet(kOnlineMetaLyricDir) ?? '';
-  set onlineMetaLyricDir(String v) =>
-      index.settingsSet(kOnlineMetaLyricDir, v);
+  String get onlineMetaLyricDir => index.settingsGet(kOnlineMetaLyricDir) ?? '';
+  set onlineMetaLyricDir(String v) => index.settingsSet(kOnlineMetaLyricDir, v);
 
   OnlineMetaLyricSource get onlineMetaLyricSource =>
       OnlineMetaLyricSource.parse(index.settingsGet(kOnlineMetaLyricSource));
@@ -907,6 +898,19 @@ class AppSettings {
       OnlineMetaCoverSource.parse(index.settingsGet(kOnlineMetaCoverSource));
   set onlineMetaCoverSource(OnlineMetaCoverSource v) =>
       index.settingsSet(kOnlineMetaCoverSource, v.name);
+
+  static const String kShortcutWindowBindings = 'shortcut_window_bindings';
+  static const String kShortcutGlobalBindings = 'shortcut_global_bindings';
+
+  String get shortcutWindowBindings =>
+      index.settingsGet(kShortcutWindowBindings) ?? '';
+  set shortcutWindowBindings(String v) =>
+      index.settingsSet(kShortcutWindowBindings, v);
+
+  String get shortcutGlobalBindings =>
+      index.settingsGet(kShortcutGlobalBindings) ?? '';
+  set shortcutGlobalBindings(String v) =>
+      index.settingsSet(kShortcutGlobalBindings, v);
 
   /// 全部已知键（供设置导入导出筛选，settings.md §3.5）。
   static const List<String> knownKeys = [
@@ -977,5 +981,7 @@ class AppSettings {
     kGroupSongs,
     kGroupSource,
     kLongPressCollapseGroups,
+    kShortcutWindowBindings,
+    kShortcutGlobalBindings,
   ];
 }

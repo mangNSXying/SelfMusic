@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart' show ValueListenable, ValueNotifier;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -18,10 +17,10 @@ import '../providers/playlists_provider.dart';
 import 'queue_page.dart';
 import '../services/bluetooth_service.dart';
 import '../utils/duration_format.dart';
+import '../utils/focus_utils.dart';
 import '../utils/perf_log.dart';
 import '../utils/song_title_format.dart';
 import '../widgets/add_to_playlist.dart';
-import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/edit_song_meta_dialog.dart';
 import '../widgets/lyrics_view.dart';
@@ -29,7 +28,7 @@ import '../widgets/marquee_text.dart';
 import '../widgets/online_meta_dialog.dart';
 import '../widgets/pressable.dart';
 import '../widgets/player_sheet_anim.dart';
-import '../widgets/row_action_button.dart';
+import '../widgets/sleep_timer_dialog.dart';
 import '../widgets/song_info_dialog.dart';
 import '../widgets/song_list.dart';
 
@@ -273,23 +272,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// 弹窗/菜单打开时焦点在 dialog 路由内，事件到不了本页 shortcut，由路由
   /// 原生 ESC 关闭；输入框聚焦时第一次只失焦（防输入中误关，焦点交回本页后
   /// 第二次再关闭）；歌单/歌词页不拦截（避免与横滑带手势语义混乱）。
-  /// 当前焦点是否落在输入框内：TextField 把焦点挂在内部外层 Focus 上
-  /// （`primaryFocus.context.widget` 是 Focus 而非 EditableText），故沿祖先链
-  /// 找输入框。
-  bool _primaryFocusIsTextInput() {
-    final ctx = FocusManager.instance.primaryFocus?.context;
-    if (ctx == null) return false;
-    if (ctx.widget is EditableText) return true;
-    if (ctx.findAncestorWidgetOfExactType<EditableText>() != null) return true;
-    return ctx.findAncestorWidgetOfExactType<TextField>() != null;
-  }
-
   void _onEscape() {
     if (!mounted) return;
     final primary = FocusManager.instance.primaryFocus;
-    if (primary != null &&
-        primary != _escFocus &&
-        _primaryFocusIsTextInput()) {
+    if (primary != null && primary != _escFocus && primaryFocusIsTextInput()) {
       primary.unfocus();
       // 焦点交回本页 ESC 节点：下一次 ESC 直接关闭（两次 ESC 关页）。
       _escFocus.requestFocus();
@@ -355,8 +341,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// 按门控应用屏幕常亮：限定了蓝牙设备时，仅其处于连接状态才保持常亮。
   void _flushWakeLock() {
     if (!mounted) return;
-    final wake =
-        _wantWake && (_wakeDevices.isEmpty || _btDeviceConnected);
+    final wake = _wantWake && (_wakeDevices.isEmpty || _btDeviceConnected);
     if (wake != _wakeApplied) {
       // ohos 经 ohos_bootstrap 注册的平台实现走平台桥 keepScreenOn。
       unawaited(wake ? WakelockPlus.enable() : WakelockPlus.disable());
@@ -506,21 +491,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
                               child: desktopLandscape
                                   ? DesktopPlaylistSplit(
                                       player: player,
-                                      direct: context
-                                          .watch<DirectSourceManager>(),
+                                      direct:
+                                          context.watch<DirectSourceManager>(),
                                       cs: Theme.of(context).colorScheme,
                                       focusTick: _bandFocusTick)
                                   : LandscapePlaylistSplit(
                                       player: player,
-                                      direct: context
-                                          .watch<DirectSourceManager>(),
+                                      direct:
+                                          context.watch<DirectSourceManager>(),
                                       cs: Theme.of(context).colorScheme,
                                       focusTick: _bandFocusTick),
                             ),
                             const Positioned(
-                                top: 6,
-                                left: 6,
-                                child: _BackToContentButton()),
+                                top: 6, left: 6, child: _BackToContentButton()),
                           ],
                         )
                       else
@@ -537,13 +520,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           desktopLandscape
                               ? _DesktopLandscapePlayer(
                                   player: player,
-                                  direct:
-                                      context.watch<DirectSourceManager>(),
+                                  direct: context.watch<DirectSourceManager>(),
                                   cs: Theme.of(context).colorScheme)
                               : LandscapePlayer(
                                   player: player,
-                                  direct:
-                                      context.watch<DirectSourceManager>(),
+                                  direct: context.watch<DirectSourceManager>(),
                                   cs: Theme.of(context).colorScheme,
                                   onVerticalDragStart:
                                       gestureOn ? _onPlayerDragStart : null,
@@ -566,9 +547,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                 gestureOn ? _onPlayerDragStart : null,
                             onVerticalDragUpdate:
                                 gestureOn ? _onPlayerDragUpdate : null,
-                            onVerticalDragEnd: gestureOn
-                                ? _onPlayerDragEnd
-                                : null,
+                            onVerticalDragEnd:
+                                gestureOn ? _onPlayerDragEnd : null,
                             child: _buildPlayerBody(context),
                           ),
                           const Positioned(
@@ -735,8 +715,7 @@ class _LyricsPage extends StatelessWidget {
         if (s != null)
           Padding(
             padding: const EdgeInsets.fromLTRB(24, 28, 24, 0),
-            child: _TitleBlock(
-                player: player, direct: direct, compact: true),
+            child: _TitleBlock(player: player, direct: direct, compact: true),
           ),
         const SizedBox(height: 6),
         Expanded(
@@ -773,7 +752,8 @@ class _EmptyState extends StatelessWidget {
             color: cs.primary.withValues(alpha: 0.10),
             borderRadius: BorderRadius.circular(24),
           ),
-          child: Icon(Icons.music_note, size: coverSize * 0.5, color: cs.primary.withValues(alpha: 0.55)),
+          child: Icon(Icons.music_note,
+              size: coverSize * 0.5, color: cs.primary.withValues(alpha: 0.55)),
         ),
         const SizedBox(height: 32),
         Text('未在播放', style: Theme.of(context).textTheme.headlineMedium),
@@ -976,57 +956,53 @@ class _ToolRow extends StatelessWidget {
     final favorite = direct.weight.isFavorite(s);
     final disliked = direct.weight.isDisliked(s);
     final row = Row(
-        mainAxisSize: center ? MainAxisSize.min : MainAxisSize.max,
-        mainAxisAlignment: center
-            ? MainAxisAlignment.center
-            : MainAxisAlignment.spaceEvenly,
-        children: [
-          IconButton(
-            iconSize: 22,
-            tooltip: favorite ? '取消喜欢' : '喜欢',
-            color: favorite ? Colors.pink : cs.onSurface.withValues(alpha: 0.55),
-            icon: Icon(favorite ? Icons.favorite : Icons.favorite_border),
-            onPressed: () {
-              direct.setFavorite(s, !favorite);
-              if (favorite) {
-                context.read<PlayerProvider>().onAnchorSongRemoved(
-                    PlayerProvider.anchorForLiked(), s);
-              }
-              AppToast.show(!favorite ? '已加入喜欢' : '已取消喜欢',
-                  isError: false);
-            },
-          ),
-          IconButton(
-            iconSize: 22,
-            tooltip: disliked ? '取消不喜欢' : '不喜欢（权重降到 0.1）',
-            color: disliked
-                ? Colors.orange
-                : cs.onSurface.withValues(alpha: 0.55),
-            icon: Icon(
-                disliked ? Icons.thumb_down : Icons.thumb_down_outlined),
-            onPressed: () {
-              direct.setDisliked(s, !disliked);
-              AppToast.show(
-                  !disliked ? '已标记不喜欢，权重降到 0.1' : '已取消不喜欢',
-                  isError: false);
-            },
-          ),
-          IconButton(
-            iconSize: 22,
-            tooltip: '编辑歌单',
-            color: cs.onSurface.withValues(alpha: 0.55),
-            icon: const Icon(Icons.playlist_add_check),
-            onPressed: () => showEditPlaylistsSheet(context, s),
-          ),
-          IconButton(
-            iconSize: 22,
-            tooltip: '缓存歌曲',
-            color: cs.onSurface.withValues(alpha: 0.55),
-            icon: const Icon(Icons.download),
-            onPressed: () => _cache(context, s),
-          ),
-        ],
-      );
+      mainAxisSize: center ? MainAxisSize.min : MainAxisSize.max,
+      mainAxisAlignment:
+          center ? MainAxisAlignment.center : MainAxisAlignment.spaceEvenly,
+      children: [
+        IconButton(
+          iconSize: 22,
+          tooltip: favorite ? '取消喜欢' : '喜欢',
+          color: favorite ? Colors.pink : cs.onSurface.withValues(alpha: 0.55),
+          icon: Icon(favorite ? Icons.favorite : Icons.favorite_border),
+          onPressed: () {
+            direct.setFavorite(s, !favorite);
+            if (favorite) {
+              context
+                  .read<PlayerProvider>()
+                  .onAnchorSongRemoved(PlayerProvider.anchorForLiked(), s);
+            }
+            AppToast.show(!favorite ? '已加入喜欢' : '已取消喜欢', isError: false);
+          },
+        ),
+        IconButton(
+          iconSize: 22,
+          tooltip: disliked ? '取消不喜欢' : '不喜欢（权重降到 0.1）',
+          color:
+              disliked ? Colors.orange : cs.onSurface.withValues(alpha: 0.55),
+          icon: Icon(disliked ? Icons.thumb_down : Icons.thumb_down_outlined),
+          onPressed: () {
+            direct.setDisliked(s, !disliked);
+            AppToast.show(!disliked ? '已标记不喜欢，权重降到 0.1' : '已取消不喜欢',
+                isError: false);
+          },
+        ),
+        IconButton(
+          iconSize: 22,
+          tooltip: '编辑歌单',
+          color: cs.onSurface.withValues(alpha: 0.55),
+          icon: const Icon(Icons.playlist_add_check),
+          onPressed: () => showEditPlaylistsSheet(context, s),
+        ),
+        IconButton(
+          iconSize: 22,
+          tooltip: '缓存歌曲',
+          color: cs.onSurface.withValues(alpha: 0.55),
+          icon: const Icon(Icons.download),
+          onPressed: () => _cache(context, s),
+        ),
+      ],
+    );
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 12),
       child: center ? Center(child: row) : row,
@@ -1137,7 +1113,8 @@ class LandscapePlayer extends StatelessWidget {
     final size = MediaQuery.sizeOf(context);
     if (!player.hasCurrent) {
       return Center(
-          child: _EmptyState(coverSize: (size.height * 0.3).clamp(96.0, 150.0)));
+          child:
+              _EmptyState(coverSize: (size.height * 0.3).clamp(96.0, 150.0)));
     }
     final s = player.current!;
     final leftW = (size.width * 0.42).clamp(220.0, 420.0);
@@ -1243,8 +1220,7 @@ class _LandscapePlayerMain extends StatelessWidget {
                     coverPath: s.coverPath,
                     song: s,
                     cs: cs,
-                    size: math.max(
-                        0, math.min(c.maxWidth - 24, c.maxHeight)),
+                    size: math.max(0, math.min(c.maxWidth - 24, c.maxHeight)),
                   ),
                 ),
               ),
@@ -1254,11 +1230,7 @@ class _LandscapePlayerMain extends StatelessWidget {
                 player: player, direct: direct, compact: true, dense: true),
             const SizedBox(height: 4),
             _ToolRow(
-                player: player,
-                direct: direct,
-                cs: cs,
-                song: s,
-                center: true),
+                player: player, direct: direct, cs: cs, song: s, center: true),
             _PlayerSeek(player: player, cs: cs, showTime: false),
           ],
         ),
@@ -1334,8 +1306,8 @@ class LandscapePlaylistSplit extends StatelessWidget {
             width: 300,
             child: Center(
                 child: _EmptyState(
-                    coverSize:
-                        (MediaQuery.sizeOf(context).height * 0.3).clamp(96.0, 150.0))),
+                    coverSize: (MediaQuery.sizeOf(context).height * 0.3)
+                        .clamp(96.0, 150.0))),
           ),
         ],
       );
@@ -1476,10 +1448,7 @@ class _DesktopPlayerColumn extends StatelessWidget {
               children: [
                 Center(
                   child: _Cover(
-                      coverPath: s.coverPath,
-                      song: s,
-                      cs: cs,
-                      size: cover),
+                      coverPath: s.coverPath, song: s, cs: cs, size: cover),
                 ),
                 const SizedBox(height: 16),
                 _TitleBlock(player: player, direct: direct, compact: true),
@@ -1536,8 +1505,7 @@ class DesktopPlaylistSplit extends StatelessWidget {
             width: 320,
             child: Center(
                 child: _EmptyState(
-                    coverSize:
-                        (size.height * 0.32).clamp(120.0, 200.0))),
+                    coverSize: (size.height * 0.32).clamp(120.0, 200.0))),
           ),
         ],
       );
@@ -1685,8 +1653,7 @@ class _Cover extends StatelessWidget {
                       List<PopupMenuEntry<String>> lineItems = const [];
                       try {
                         final direct = c.read<DirectSourceManager>();
-                        final fbCount =
-                            direct.fallbackCountOf(song.sourceKey);
+                        final fbCount = direct.fallbackCountOf(song.sourceKey);
                         if (fbCount > 0) {
                           final pref = parseSourceLine(
                               direct.settings.getSourceLine(song.sourceKey));
@@ -1723,8 +1690,7 @@ class _Cover extends StatelessWidget {
                           const PopupMenuItem(
                               value: 'songs', child: Text('歌单')),
                         const PopupMenuItem(value: 'info', child: Text('歌曲信息')),
-                        const PopupMenuItem(
-                            value: 'edit', child: Text('修改信息')),
+                        const PopupMenuItem(value: 'edit', child: Text('修改信息')),
                         const PopupMenuItem(
                             value: 'online', child: Text('在线获取元数据')),
                         ...lineItems,
@@ -1840,378 +1806,7 @@ class _SleepButton extends StatelessWidget {
       color: active ? cs.primary : cs.onSurface.withValues(alpha: 0.7),
       tooltip: '睡眠定时${active && summary != null ? '：$summary' : ''}',
       icon: Icon(active ? Icons.bedtime : Icons.bedtime_outlined),
-      onPressed: () => showDialog<void>(
-        context: context,
-        builder: (_) => _SleepTimerDialog(
-          playThroughDefault:
-              context.read<DirectSourceManager>().settings.sleepPlayThroughDefault,
-        ),
-      ),
-    );
-  }
-}
-
-/// 睡眠定时弹窗：指定时间 / 指定时长 / 指定曲数 / 列表结尾 + 「播放完最后的曲目」。
-class _SleepTimerDialog extends StatefulWidget {
-  final bool playThroughDefault;
-
-  const _SleepTimerDialog({required this.playThroughDefault});
-
-  @override
-  State<_SleepTimerDialog> createState() => _SleepTimerDialogState();
-}
-
-class _SleepTimerDialogState extends State<_SleepTimerDialog> {
-  late SleepTimerKind? _mode;
-  TimeOfDay? _time;
-  late int _minutes;
-  late int _count;
-  late bool _playThrough;
-  late bool _exitApp;
-
-  @override
-  void initState() {
-    super.initState();
-    final p = context.read<PlayerProvider>();
-    _mode = p.sleepMode;
-    if (_mode == SleepTimerKind.time && p.sleepUntilTime != null) {
-      final t = p.sleepUntilTime!;
-      _time = TimeOfDay(hour: t.hour, minute: t.minute);
-    }
-    // 指定时长/曲数：活动定时沿用剩余值；新建时回退到上次选择（改进.txt UI2）。
-    final s = context.read<DirectSourceManager>().settings;
-    _minutes = p.sleepMinutes > 0 ? p.sleepMinutes : s.sleepDefaultDurationMinutes;
-    _count = p.sleepCountLeft > 0 ? p.sleepCountLeft : s.sleepDefaultCount;
-    _playThrough = p.sleepTimerActive
-        ? p.sleepPlayThrough
-        : widget.playThroughDefault;
-    _exitApp = p.sleepTimerActive ? p.sleepExitApp : false;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // 提示文字统一灰、13 号（改进.txt UI1）；选项标题缩小。
-    final cs = Theme.of(context).colorScheme;
-    final hintColor = cs.onSurface.withValues(alpha: 0.6);
-    final hint = TextStyle(fontSize: 13, color: hintColor);
-    return AlertDialog(
-      title: const Text('睡眠定时', style: TextStyle(fontSize: 21)),
-      content: SizedBox(
-        width: 360,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              RadioGroup<SleepTimerKind>(
-                groupValue: _mode,
-                onChanged: (v) {
-                  if (v != null) setState(() => _mode = v);
-                },
-                child: Column(
-                  children: [
-                    RadioListTile<SleepTimerKind>(
-                      value: SleepTimerKind.time,
-                      controlAffinity: ListTileControlAffinity.leading,
-                      dense: true,
-                      title: const Text('指定时间',
-                          style: TextStyle(fontSize: 15)),
-                      subtitle: _timeSubtitle(),
-                      secondary: _mode == SleepTimerKind.time
-                          ? RowActionIconButton(
-                              icon: Icons.schedule,
-                              tooltip: '选择时间',
-                              onPressed: _pickTime,
-                            )
-                          : null,
-                    ),
-                    RadioListTile<SleepTimerKind>(
-                      value: SleepTimerKind.duration,
-                      controlAffinity: ListTileControlAffinity.leading,
-                      dense: true,
-                      title: const Text('指定时长',
-                          style: TextStyle(fontSize: 15)),
-                      subtitle: Text('倒计时 ${_fmtMinutes(_minutes)}后自动停止',
-                          style: hint),
-                      secondary: _mode == SleepTimerKind.duration
-                          ? RowActionIconButton(
-                              icon: Icons.av_timer,
-                              tooltip: '选择时长',
-                              onPressed: _pickDurationWheel,
-                            )
-                          : null,
-                    ),
-                    RadioListTile<SleepTimerKind>(
-                      value: SleepTimerKind.count,
-                      controlAffinity: ListTileControlAffinity.leading,
-                      dense: true,
-                      title: const Text('指定曲数',
-                          style: TextStyle(fontSize: 15)),
-                      subtitle: Text('再播放 $_count 首后停止', style: hint),
-                      secondary: _mode == SleepTimerKind.count
-                          ? RowActionIconButton(
-                              icon: Icons.format_list_numbered,
-                              tooltip: '选择曲数',
-                              onPressed: _pickCountWheel,
-                            )
-                          : null,
-                    ),
-                    RadioListTile<SleepTimerKind>(
-                      value: SleepTimerKind.endOfList,
-                      controlAffinity: ListTileControlAffinity.leading,
-                      dense: true,
-                      title: const Text('列表结尾',
-                          style: TextStyle(fontSize: 15)),
-                      subtitle: Text('播完队列最后一首即停止', style: hint),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 8),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('播放完最后的曲目',
-                    style: TextStyle(fontSize: 15)),
-                subtitle: Text('到点不中断当前歌曲，放完这曲再暂停', style: hint),
-                value: _playThrough || _mode == SleepTimerKind.endOfList,
-                onChanged: _mode == SleepTimerKind.endOfList
-                    ? null
-                    : (v) => setState(() => _playThrough = v),
-              ),
-              const SizedBox(height: 4),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('播放结束退出软件',
-                    style: TextStyle(fontSize: 15)),
-                subtitle: Text('定时结束后自动退出 App，不再驻留后台', style: hint),
-                value: _exitApp,
-                onChanged: (v) => setState(() => _exitApp = v),
-              ),
-            ],
-          ),
-        ),
-      ),
-      actions: appDialogActions(
-        context,
-        cancelLabel: '关闭',
-        confirmLabel: '确定',
-        confirmEnabled: !_invalid,
-        onCancel: _close,
-        onConfirm: _apply,
-      ),
-    );
-  }
-
-  /// 指定时间副标题（时刻 + 选择按钮）。
-  Widget _timeSubtitle() {
-    final hintColor =
-        Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6);
-    final hint = TextStyle(fontSize: 13, color: hintColor);
-    if (_time == null) {
-      return Text('选择停止时刻', style: hint);
-    }
-    return Row(children: [
-      Text(_fmtTime(_time!), style: hint),
-      const SizedBox(width: 4),
-      RowActionTextButton(
-        label: '选择',
-        onPressed: _pickTime,
-        color: hintColor,
-      ),
-    ]);
-  }
-
-  /// 当前选择不完整（未选模式 / 指定时间未选时刻）时不可确定。
-  bool get _invalid =>
-      _mode == null ||
-      (_mode == SleepTimerKind.time && _time == null) ||
-      (_mode == SleepTimerKind.duration && _minutes <= 0) ||
-      (_mode == SleepTimerKind.count && _count <= 0);
-  Future<void> _pickTime() async {
-    final t = await showTimePicker(
-      context: context,
-      initialTime: _time ?? const TimeOfDay(hour: 22, minute: 0),
-    );
-    if (t == null || !mounted) return;
-    setState(() {
-      _time = t;
-      _mode = SleepTimerKind.time;
-    });
-  }
-
-  /// 时长滚轮：时（0~12）+ 分（0~59）双轮，结果至少 1 分钟。
-  Future<void> _pickDurationWheel() async {
-    final picked = await showDialog<int>(
-      context: context,
-      builder: (c) => _WheelDialog(
-        title: '选择时长',
-        columns: [
-          [for (var h = 0; h <= 12; h++) '$h 小时'],
-          [for (var m = 0; m <= 59; m++) '$m 分'],
-        ],
-        initial: [_minutes ~/ 60, _minutes % 60],
-        resultOf: (idx) => idx[0] * 60 + idx[1],
-        valid: (v) => v > 0,
-      ),
-    );
-    if (picked != null && picked > 0 && mounted) {
-      setState(() => _minutes = picked);
-    }
-  }
-
-  /// 曲数滚轮：1~200 首单轮。
-  Future<void> _pickCountWheel() async {
-    final picked = await showDialog<int>(
-      context: context,
-      builder: (c) => _WheelDialog(
-        title: '选择曲数',
-        columns: [
-          [for (var n = 1; n <= 200; n++) '$n 首'],
-        ],
-        initial: [(_count - 1).clamp(0, 199)],
-        resultOf: (idx) => idx[0] + 1,
-        valid: (v) => v > 0,
-      ),
-    );
-    if (picked != null && picked > 0 && mounted) {
-      setState(() => _count = picked);
-    }
-  }
-
-  static String _fmtMinutes(int total) {
-    if (total < 60) return '$total 分钟';
-    final h = total ~/ 60;
-    final m = total % 60;
-    return m == 0 ? '$h 小时' : '$h 小时 $m 分钟';
-  }
-
-  void _apply() {
-    final p = context.read<PlayerProvider>();
-    final now = DateTime.now();
-    switch (_mode) {
-      case SleepTimerKind.time:
-        final t = _time;
-        if (t == null) return;
-        p.setSleepTime(
-          DateTime(now.year, now.month, now.day, t.hour, t.minute),
-          playThrough: _playThrough,
-          exitApp: _exitApp,
-        );
-      case SleepTimerKind.duration:
-        p.setSleepDuration(Duration(minutes: _minutes),
-            playThrough: _playThrough, exitApp: _exitApp);
-      case SleepTimerKind.count:
-        p.setSleepCount(_count, playThrough: _playThrough, exitApp: _exitApp);
-      case SleepTimerKind.endOfList:
-        p.setSleepEndOfList(exitApp: _exitApp);
-      case null:
-        return;
-    }
-    // 记忆时长/曲数选择（改进.txt UI2）：下次打开睡眠定时就近预选。
-    final s = context.read<DirectSourceManager>().settings;
-    if (_mode == SleepTimerKind.duration) {
-      s.sleepDefaultDurationMinutes = _minutes;
-    } else if (_mode == SleepTimerKind.count) {
-      s.sleepDefaultCount = _count;
-    }
-    final summary = '睡眠定时：${p.sleepSummaryText ?? '已设置'}';
-    Navigator.of(context).pop();
-    AppToast.show(summary, isError: false);
-  }
-
-  void _close() {
-    context.read<PlayerProvider>().cancelSleepTimer();
-    Navigator.of(context).pop();
-  }
-
-  static String _fmtTime(TimeOfDay t) {
-    final h = t.hour.toString().padLeft(2, '0');
-    final m = t.minute.toString().padLeft(2, '0');
-    return '$h:$m';
-  }
-}
-
-/// 通用滚轮选择弹窗（CupertinoPicker，无键盘输入）。
-///
-/// [columns] 为每轮的文本列，[initial] 为每轮初始选中下标；
-/// [resultOf] 把各轮下标换算为结果值，[valid] 决定「确定」是否可用。
-class _WheelDialog extends StatefulWidget {
-  final String title;
-  final List<List<String>> columns;
-  final List<int> initial;
-  final int Function(List<int>) resultOf;
-  final bool Function(int) valid;
-  const _WheelDialog({
-    required this.title,
-    required this.columns,
-    required this.initial,
-    required this.resultOf,
-    required this.valid,
-  });
-
-  @override
-  State<_WheelDialog> createState() => _WheelDialogState();
-}
-
-class _WheelDialogState extends State<_WheelDialog> {
-  late List<int> _idx;
-  late List<FixedExtentScrollController> _ctrls;
-
-  @override
-  void initState() {
-    super.initState();
-    _idx = List.of(widget.initial);
-    _ctrls = [
-      for (var c = 0; c < widget.columns.length; c++)
-        FixedExtentScrollController(initialItem: widget.initial[c]),
-    ];
-  }
-
-  @override
-  void dispose() {
-    for (final c in _ctrls) {
-      c.dispose();
-    }
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final value = widget.resultOf(_idx);
-    final ok = widget.valid(value);
-    return AlertDialog(
-      title: Text(widget.title, style: const TextStyle(fontSize: 20)),
-      content: SizedBox(
-        width: 320,
-        height: 200,
-        child: Row(
-          children: [
-            for (var c = 0; c < widget.columns.length; c++)
-              Expanded(
-                child: CupertinoPicker(
-                  scrollController: _ctrls[c],
-                  itemExtent: 40,
-                  magnification: 1.15,
-                  onSelectedItemChanged: (i) => setState(() => _idx[c] = i),
-                  children: [
-                    for (final label in widget.columns[c])
-                      Center(
-                        child: Text(label,
-                            style: const TextStyle(fontSize: 17)),
-                      ),
-                  ],
-                ),
-              ),
-          ],
-        ),
-      ),
-      actions: appDialogActions(
-        context,
-        confirmLabel: '确定',
-        confirmEnabled: ok,
-        onCancel: () => Navigator.of(context).pop(),
-        onConfirm: () => Navigator.of(context).pop(value),
-      ),
+      onPressed: () => showSleepTimerDialog(context),
     );
   }
 }
@@ -2284,8 +1879,12 @@ class _PlayerSeekState extends State<_PlayerSeek> {
         final pos = widget.player.position;
         final dur = widget.player.duration ?? Duration.zero;
         final max = dur.inMilliseconds.toDouble();
-        final cur = pos.inMilliseconds.toDouble().clamp(0, max == 0 ? 1 : max).toDouble();
-        final shown = _dragValue?.clamp(0, max == 0 ? 1 : max).toDouble() ?? cur;
+        final cur = pos.inMilliseconds
+            .toDouble()
+            .clamp(0, max == 0 ? 1 : max)
+            .toDouble();
+        final shown =
+            _dragValue?.clamp(0, max == 0 ? 1 : max).toDouble() ?? cur;
         return Column(
           children: [
             SliderTheme(

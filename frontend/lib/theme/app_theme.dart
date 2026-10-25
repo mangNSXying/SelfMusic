@@ -40,15 +40,17 @@ class AppColorPalette {
             ? HSLColor.fromAHSL(1, hsl.hue, 0.30, 0.985).toColor()
             : HSLColor.fromAHSL(1, hsl.hue, 0.25, 0.08).toColor());
 
-    final surface =
-        isLight
-            ? Color.alphaBlend(Color.alphaBlend(accent.withValues(alpha: 0.05), Colors.white), bg)
-            : Color.alphaBlend(accent.withValues(alpha: 0.08), bg);
+    final surface = isLight
+        ? Color.alphaBlend(
+            Color.alphaBlend(accent.withValues(alpha: 0.05), Colors.white), bg)
+        : Color.alphaBlend(accent.withValues(alpha: 0.08), bg);
 
     final onAccent = isLight ? Colors.white : const Color(0xFF00190F);
 
-    final textPrimary = isLight ? const Color(0xFF1A1C1B) : const Color(0xFFF2F5F4);
-    final textSecondary = isLight ? const Color(0xFF6B7270) : const Color(0xFF9BA5A1);
+    final textPrimary =
+        isLight ? const Color(0xFF1A1C1B) : const Color(0xFFF2F5F4);
+    final textSecondary =
+        isLight ? const Color(0xFF6B7270) : const Color(0xFF9BA5A1);
     final divider = isLight ? const Color(0xFFE4E9E7) : const Color(0xFF2A3330);
 
     return AppColorPalette(
@@ -79,7 +81,8 @@ enum NavSection {
 
 /// 侧边栏设置分区条目。
 enum SettingsItem {
-  general('备份', Icons.backup_outlined),
+  general('常规', Icons.keyboard_outlined),
+  backup('备份', Icons.backup_outlined),
   songs('歌曲', Icons.library_music_outlined),
   playback('播放', Icons.play_circle_outline),
   appearance('界面', Icons.palette_outlined),

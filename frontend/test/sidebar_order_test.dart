@@ -11,10 +11,14 @@ void main() {
   test('SettingsItem 顺序：歌曲在播放前', () {
     final labels = SettingsItem.values.map((e) => e.label).toList();
     expect(labels.indexOf('歌曲'), lessThan(labels.indexOf('播放')));
-    expect(labels, ['备份', '歌曲', '播放', '界面', '通知', '服务端']);
+    expect(labels, ['常规', '备份', '歌曲', '播放', '界面', '通知', '服务端']);
   });
 
   testWidgets('侧边栏按该顺序渲染分区', (tester) async {
+    tester.view.physicalSize = const Size(800, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
       MultiProvider(
         providers: [
@@ -38,7 +42,8 @@ void main() {
     final order = SettingsItem.values.map((e) => ys[e.label]!).toList();
     for (var i = 1; i < order.length; i++) {
       expect(order[i], greaterThan(order[i - 1]),
-          reason: '${SettingsItem.values[i].label} 应排在 ${SettingsItem.values[i - 1].label} 之后');
+          reason:
+              '${SettingsItem.values[i].label} 应排在 ${SettingsItem.values[i - 1].label} 之后');
     }
   });
 }

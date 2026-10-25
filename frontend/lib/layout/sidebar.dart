@@ -1,13 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../platform/app_background.dart';
 import '../providers/navigation_provider.dart';
-import '../providers/player_provider.dart';
 import '../screens/about_screen.dart';
 import '../screens/library_info_screen.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_provider.dart';
-import '../widgets/app_dialog_actions.dart';
+import '../utils/app_exit.dart';
 
 /// 侧边导航栏：主要承载设置分区 + 底部明暗切换/退出。
 class Sidebar extends StatelessWidget {
@@ -53,7 +51,10 @@ class _Header extends StatelessWidget {
       'SelfMusic',
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
-      style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+      style: Theme.of(context)
+          .textTheme
+          .titleLarge
+          ?.copyWith(fontWeight: FontWeight.bold),
     );
     // 浅色背景用 selfmusic.png，深色背景用 selfmusic-black.png。
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -93,7 +94,10 @@ class _SettingsList extends StatelessWidget {
             '设置',
             style: TextStyle(
               fontSize: 12,
-              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+              color: Theme.of(context)
+                  .colorScheme
+                  .onSurface
+                  .withValues(alpha: 0.6),
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -104,7 +108,8 @@ class _SettingsList extends StatelessWidget {
             leading: Icon(item.icon),
             title: Text(item.label),
             selected: selected == item,
-            selectedTileColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
+            selectedTileColor:
+                Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
             onTap: () {
               nav.openSettings(item);
               // 移动端选中后收起抽屉。
@@ -131,8 +136,7 @@ class _BottomBar extends StatelessWidget {
           dense: true,
           leading: const Icon(Icons.bar_chart_outlined),
           title: const Text('歌曲信息'),
-          subtitle: const Text('歌曲信息统计与分布',
-              style: TextStyle(fontSize: 11)),
+          subtitle: const Text('歌曲信息统计与分布', style: TextStyle(fontSize: 11)),
           onTap: () {
             // 移动端先收起抽屉，再压入信息页。
             if (NavigationProviderHelper.isNarrow(context)) {
@@ -152,8 +156,8 @@ class _BottomBar extends StatelessWidget {
             if (NavigationProviderHelper.isNarrow(context)) {
               Scaffold.of(context).closeDrawer();
             }
-            Navigator.of(context).push(MaterialPageRoute<void>(
-                builder: (_) => const AboutScreen()));
+            Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => const AboutScreen()));
           },
         ),
         ListTile(
@@ -166,32 +170,10 @@ class _BottomBar extends StatelessWidget {
           dense: true,
           leading: const Icon(Icons.logout),
           title: const Text('退出'),
-          onTap: () => _exitApp(context),
+          onTap: () => confirmExitApp(context),
         ),
       ],
     );
-  }
-
-  /// 退出软件：二次确认后先停止播放并释放播放器（避免 mpv 等子进程残留），再终止进程。
-  Future<void> _exitApp(BuildContext context) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('退出软件'),
-        content: const Text('确定要退出吗？退出后播放队列会保留，下次启动可继续。'),
-        actions: appDialogActions(
-          c,
-          confirmLabel: '退出',
-          destructive: true,
-          onCancel: () => Navigator.of(c).pop(false),
-          onConfirm: () => Navigator.of(c).pop(true),
-        ),
-      ),
-    );
-    if (ok != true || !context.mounted) return;
-    await context.read<PlayerProvider>().shutdown();
-    // 退出收口：鸿蒙侧先销毁播控卡/停长时任务（beforeExitHook），再退进程。
-    await exitAppGracefully();
   }
 }
 
