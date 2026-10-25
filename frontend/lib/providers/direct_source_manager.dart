@@ -1802,7 +1802,7 @@ class DirectSourceManager extends ChangeNotifier {
       await weight.setUnliked(s);
     }
     _favoriteVersion++;
-    notifyListeners();
+    _emit();
     // 自动缓存喜欢的直连歌（LRU 淘汰见 CacheManager，stage2.md §6）。
     if (fav && s.isDirect) {
       unawaited(cache.autoCacheIfNeeded(sourceByKey(s.sourceKey), s,
@@ -1825,7 +1825,7 @@ class DirectSourceManager extends ChangeNotifier {
   Future<void> setDisliked(Song s, bool disliked) async {
     await weight.setDisliked(s, disliked);
     _favoriteVersion++;
-    notifyListeners();
+    _emit();
   }
 
   /// 用户手动修改歌曲元数据（标题/歌手/专辑/专辑歌手/年份）。
