@@ -179,4 +179,39 @@ void main() {
 
     index.close();
   });
+
+  test('ensureMetaOf 批量填满可见窗口：无记录行也缓存默认值，失效后清空', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir = await Directory.systemTemp.createTemp('selfmusic_ensure_');
+    addTearDown(() {
+      try {
+        dir.deleteSync(recursive: true);
+      } catch (_) {}
+    });
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+    final weight = SongWeightStore(index);
+
+    final songs = [
+      for (var i = 0; i < 12; i++)
+        _song('webdav:${i % 2 == 0 ? 'a' : 'b'}', 'e$i'),
+    ];
+    await weight.setLiked(songs[0]);
+    await weight.setDisliked(songs[3], true);
+
+    weight.ensureMetaOf(songs);
+    for (final s in songs) {
+      expect(weight.hasMetaCached(s), isTrue, reason: s.sourceRef);
+    }
+    expect(weight.metaOf(songs[0]).favorite, isTrue);
+    expect(weight.metaOf(songs[3]).frozen, isTrue);
+    expect(weight.metaOf(songs[7]).factor, 1.0);
+    expect(weight.metaOf(songs[7]).favorite, isFalse);
+
+    weight.notifyExternalWrite();
+    expect(weight.hasMetaCached(songs[0]), isFalse);
+
+    index.close();
+  });
 }

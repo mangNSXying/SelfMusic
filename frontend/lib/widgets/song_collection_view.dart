@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -828,6 +830,15 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     );
   }
 
+  void _ensureMetaWindow(
+      DirectSourceManager direct, List<Song> songs, int displayIndex) {
+    final from = math.max(0, displayIndex - 24);
+    final to = math.min(songs.length, displayIndex + 96);
+    direct.weight.ensureMetaOf([
+      for (var i = from; i < to; i++) songs[i],
+    ]);
+  }
+
   Widget _songRow(
     DirectSourceManager direct,
     List<Song> displaySongs,
@@ -842,6 +853,9 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       song: s,
       source: src,
       row: _rowCache.rowAt(si, () {
+        if (!direct.weight.hasMetaCached(s)) {
+          _ensureMetaWindow(direct, displaySongs, si);
+        }
         final meta = direct.weight.metaOf(s);
         return SongRowView.of(
           song: s,

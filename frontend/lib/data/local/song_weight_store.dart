@@ -42,8 +42,13 @@ class SongWeightStore {
   /// 缓存上限：快速滑过长列表时防止无界堆积（超限整体清空重新暖）。
   static const int _metaCacheCap = 20000;
 
+  String _metaKey(String sourceKey, String ref) => '$sourceKey\u0000$ref';
+
+  bool hasMetaCached(Song s) =>
+      _metaCache.containsKey(_metaKey(s.sourceKey, s.sourceRef));
+
   PlayMetaRow metaOf(Song s) {
-    final key = '${s.sourceKey}\u0000${s.sourceRef}';
+    final key = _metaKey(s.sourceKey, s.sourceRef);
     final cached = _metaCache[key];
     if (cached != null) return cached;
     perfPhase('weight.metaOf.select'); // TEMP-PROBE
@@ -51,6 +56,38 @@ class SongWeightStore {
     if (_metaCache.length >= _metaCacheCap) _metaCache.clear();
     _metaCache[key] = row;
     return row;
+  }
+
+  void ensureMetaOf(Iterable<Song> songs) {
+    final missing = <String, Set<String>>{};
+    for (final s in songs) {
+      if (s.sourceRef.isEmpty) continue;
+      if (hasMetaCached(s)) continue;
+      missing.putIfAbsent(s.sourceKey, () => <String>{}).add(s.sourceRef);
+    }
+    if (missing.isEmpty) return;
+    for (final entry in missing.entries) {
+      final refs = entry.value.toList(growable: false);
+      if (_metaCache.length + refs.length > _metaCacheCap) _metaCache.clear();
+      Map<String, PlayMetaRow> rows = const {};
+      try {
+        rows = index.playMetasOf(entry.key, refs);
+      } catch (_) {
+        continue;
+      }
+      for (final ref in refs) {
+        _metaCache[_metaKey(entry.key, ref)] = rows[ref] ??
+            PlayMetaRow(
+              sourceKey: entry.key,
+              songRef: ref,
+              likeStreak: 0,
+              dislikeStreak: 0,
+              factor: defaultFactor,
+              frozen: false,
+              favorite: false,
+            );
+      }
+    }
   }
 
   /// 外部路径（同步引擎 pull 落库等）写 play_meta 后调用：失效行缓存。
@@ -76,6 +113,7 @@ class SongWeightStore {
     final bySource = <String, List<String>>{};
     for (final s in songs) {
       if (s.sourceRef.isEmpty) continue;
+      if (hasMetaCached(s)) continue;
       bySource.putIfAbsent(s.sourceKey, () => []).add(s.sourceRef);
     }
     for (final entry in bySource.entries) {

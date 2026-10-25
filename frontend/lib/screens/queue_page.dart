@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -101,6 +103,15 @@ class _QueuePageState extends State<QueuePage> {
   /// 超出列表范围的值交由滚动位置钳位。
   double _focusOffset(int pos) =>
       (pos * kRowExtent - 96).clamp(0.0, double.infinity);
+
+  void _ensureMetaWindow(
+      DirectSourceManager direct, List<Song> queue, int displayIndex) {
+    final from = math.max(0, displayIndex - 24);
+    final to = math.min(_visible.length, displayIndex + 96);
+    direct.weight.ensureMetaOf([
+      for (var i = from; i < to; i++) queue[_visible[i]],
+    ]);
+  }
 
   /// 重定位到当前播放歌曲（展示序可能有搜索/排序差异，按展示行位置映射）。
   void _jumpToCurrent() {
@@ -374,6 +385,9 @@ class _QueuePageState extends State<QueuePage> {
                   song: s,
                   source: null,
                   row: _rowCache.rowAt(i, () {
+                    if (!direct.weight.hasMetaCached(s)) {
+                      _ensureMetaWindow(direct, queue, i);
+                    }
                     final meta = direct.weight.metaOf(s);
                     return SongRowView.of(
                       song: s,
