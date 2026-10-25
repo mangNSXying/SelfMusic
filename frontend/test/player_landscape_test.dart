@@ -13,6 +13,7 @@ import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/providers/playlists_provider.dart';
 import 'package:selfmusic/screens/player_screen.dart';
+import 'package:selfmusic/widgets/lyrics_view.dart';
 import 'package:sqlite3/open.dart';
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 
@@ -108,19 +109,19 @@ void main() {
 
   test('横屏布局分流：桌面平台恒双栏；手机窄横屏三列；超宽屏双栏', () {
     // 手机横屏（窄屏）：三列紧凑。
-    expect(useDesktopLandscape(const Size(800, 480),
-        isDesktopPlatform: false), isFalse);
+    expect(useDesktopLandscape(const Size(800, 480), isDesktopPlatform: false),
+        isFalse);
     // 桌面平台即使窗口不长：双栏居中。
-    expect(useDesktopLandscape(const Size(800, 480),
-        isDesktopPlatform: true), isTrue);
+    expect(useDesktopLandscape(const Size(800, 480), isDesktopPlatform: true),
+        isTrue);
     // 超宽屏（大平板横屏，Android）：双栏。
-    expect(useDesktopLandscape(const Size(1440, 900),
-        isDesktopPlatform: false), isTrue);
+    expect(useDesktopLandscape(const Size(1440, 900), isDesktopPlatform: false),
+        isTrue);
     // 临界值 1000。
-    expect(useDesktopLandscape(const Size(999, 600),
-        isDesktopPlatform: false), isFalse);
-    expect(useDesktopLandscape(const Size(1000, 600),
-        isDesktopPlatform: false), isTrue);
+    expect(useDesktopLandscape(const Size(999, 600), isDesktopPlatform: false),
+        isFalse);
+    expect(useDesktopLandscape(const Size(1000, 600), isDesktopPlatform: false),
+        isTrue);
   });
 
   testWidgets('手机横屏三列：封面自适应收缩，底部不溢出', (tester) async {
@@ -158,7 +159,8 @@ void main() {
     await tester.pump();
 
     // 修复前：写死的固定高度预算（150 < 实际 ~154）让左栏必溢 4px+。
-    expect(tester.takeException(), isNull, reason: '手机横屏左栏不得 RenderFlex overflow');
+    expect(tester.takeException(), isNull,
+        reason: '手机横屏左栏不得 RenderFlex overflow');
 
     final slider = find.byType(Slider);
     expect(slider, findsOneWidget);
@@ -253,8 +255,8 @@ void main() {
     expect(find.textContaining('播放队列'), findsOneWidget);
     expect(find.byType(Slider), findsOneWidget);
     // 右窗进度条贴着底边，说明分栏恰好放满一屏。
-    expect(tester.getBottomLeft(find.byType(Slider)).dy,
-        lessThanOrEqualTo(360));
+    expect(
+        tester.getBottomLeft(find.byType(Slider)).dy, lessThanOrEqualTo(360));
   });
 
   testWidgets('桌面横屏分栏：左歌单右播放同显，不溢出', (tester) async {
@@ -294,6 +296,137 @@ void main() {
     expect(tester.takeException(), isNull, reason: '桌面横屏分栏不得溢出');
     expect(find.textContaining('播放队列'), findsOneWidget);
     expect(find.byType(Slider), findsOneWidget);
+  });
+
+  testWidgets('4K 桌面播放页：封面与内容随视口放大、不溢出', (tester) async {
+    late final DirectSourceManager direct;
+    late final PlayerProvider player;
+    await tester.runAsync(() async {
+      direct = await _openDirect();
+      player = await _playerWithCurrent();
+    });
+    addTearDown(() {
+      player.dispose();
+      direct.dispose();
+    });
+    tester.view.physicalSize = const Size(3840, 2160);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MultiProvider(
+          providers: [
+            ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+            ChangeNotifierProvider<NavigationProvider>(
+                create: (_) => NavigationProvider()),
+            ChangeNotifierProvider<PlayerProvider>.value(value: player),
+            ChangeNotifierProvider<PlaylistsProvider>(
+                create: (_) => PlaylistsProvider(direct.playlists)),
+          ],
+          child: const PlayerScreen(),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull, reason: '4K 播放页不得溢出');
+    final cover = find.byKey(const Key('player-cover'));
+    expect(cover, findsOneWidget);
+    final coverSize = tester.getSize(cover);
+    expect(coverSize.width, closeTo(950.4, 1));
+    expect(coverSize.width / 3840, greaterThan(0.24));
+    // 内容区占 85% 宽：封面靠左、歌词列吃满右侧，不再缩在中间。
+    expect(tester.getTopLeft(cover).dx, closeTo(328, 1));
+    expect(
+      tester.getSize(find.byType(LyricsView)).width,
+      closeTo(2137.6, 1),
+    );
+    expect(tester.getSize(find.byType(PageView)).height, 2160);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('4K 桌面分栏：右窗播放列同步放大、不溢出', (tester) async {
+    late final DirectSourceManager direct;
+    late final PlayerProvider player;
+    await tester.runAsync(() async {
+      direct = await _openDirect();
+      player = await _playerWithCurrent();
+    });
+    addTearDown(() {
+      player.dispose();
+      direct.dispose();
+    });
+    tester.view.physicalSize = const Size(3840, 2160);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MultiProvider(
+          providers: [
+            ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+            ChangeNotifierProvider<PlayerProvider>.value(value: player),
+          ],
+          child: Scaffold(
+            body: DesktopPlaylistSplit(
+              player: player,
+              direct: direct,
+              cs: ColorScheme.fromSeed(seedColor: Colors.teal),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull, reason: '4K 桌面分栏不得溢出');
+    final cover = find.byKey(const Key('player-cover'));
+    expect(cover, findsOneWidget);
+    expect(tester.getSize(cover).width, closeTo(800, 1));
+    expect(find.textContaining('播放队列'), findsOneWidget);
+  });
+
+  testWidgets('竖屏平板播放页：封面突破 480 上限、不溢出', (tester) async {
+    late final DirectSourceManager direct;
+    late final PlayerProvider player;
+    await tester.runAsync(() async {
+      direct = await _openDirect();
+      player = await _playerWithCurrent();
+    });
+    addTearDown(() {
+      player.dispose();
+      direct.dispose();
+    });
+    tester.view.physicalSize = const Size(800, 1280);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MultiProvider(
+          providers: [
+            ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+            ChangeNotifierProvider<NavigationProvider>(
+                create: (_) => NavigationProvider()),
+            ChangeNotifierProvider<PlayerProvider>.value(value: player),
+            ChangeNotifierProvider<PlaylistsProvider>(
+                create: (_) => PlaylistsProvider(direct.playlists)),
+          ],
+          child: const PlayerScreen(desktopPlatformOverride: false),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull, reason: '竖屏平板播放页不得溢出');
+    final cover = find.byKey(const Key('player-cover'));
+    expect(cover, findsOneWidget);
+    expect(tester.getSize(cover).width, closeTo(640, 1));
+    expect(tester.getSize(cover).width, greaterThan(480));
+
+    await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('横屏滑到歌单页后：左歌单右播放分栏 settle', (tester) async {

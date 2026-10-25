@@ -96,16 +96,30 @@ void main() {
   ScrollController scrollOf(WidgetTester tester) =>
       tester.widget<ListView>(find.byType(ListView)).controller!;
 
-  Future<void> pumpLyrics(WidgetTester tester, PlayerProvider player) async {
+  Future<void> pumpLyrics(WidgetTester tester, PlayerProvider player,
+      {double scale = 1.0}) async {
     await tester.pumpWidget(MultiProvider(
       providers: [
         ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
         ChangeNotifierProvider<PlayerProvider>.value(value: player),
       ],
-      child: MaterialApp(home: Scaffold(body: LyricsView(player: player))),
+      child: MaterialApp(
+          home: Scaffold(body: LyricsView(player: player, scale: scale))),
     ));
     await tester.pump();
   }
+
+  testWidgets('歌词 scale 同步放大字号', (tester) async {
+    final pos = StreamController<Duration>();
+    final player = playerWithLyrics(pos.stream);
+    await pumpLyrics(tester, player, scale: 2);
+
+    final text = tester.widget<Text>(find.text(_line(1)));
+    expect(text.style?.fontSize, 32);
+
+    await pos.close();
+    player.dispose();
+  });
 
   testWidgets('列表未挂载时位置事件不得访问 ScrollPosition', (tester) async {
     // 切到无歌词/纯文本/加载态时 ListView 会被移除，ScrollController 随之
@@ -172,7 +186,8 @@ void main() {
     player.dispose();
   });
 
-  testWidgets('拖动期间不回中，空闲超时后自动回中', (tester) async {    final pos = StreamController<Duration>();
+  testWidgets('拖动期间不回中，空闲超时后自动回中', (tester) async {
+    final pos = StreamController<Duration>();
     final player = playerWithLyrics(pos.stream);
     await pumpLyrics(tester, player);
 
@@ -204,8 +219,7 @@ void main() {
     player.dispose();
   });
 
-  testWidgets('位置事件比帧频还快时不得反复打断跟焦动画（真机 60+Hz 定时器回归）',
-      (tester) async {
+  testWidgets('位置事件比帧频还快时不得反复打断跟焦动画（真机 60+Hz 定时器回归）', (tester) async {
     final pos = StreamController<Duration>();
     final player = playerWithLyrics(pos.stream);
     await pumpLyrics(tester, player);
@@ -238,8 +252,7 @@ void main() {
         break;
       }
     }
-    expect(converged, isTrue,
-        reason: '跟焦动画被高频位置事件反复打断：${frames * 16}ms 仍未到位');
+    expect(converged, isTrue, reason: '跟焦动画被高频位置事件反复打断：${frames * 16}ms 仍未到位');
 
     await pos.close();
     player.dispose();
@@ -321,8 +334,7 @@ void main() {
     await tester.pump();
     await tester.pump();
     final atChange = rowOf(long).height;
-    expect(atChange, greaterThan(110),
-        reason: '长行（含长译文）激活后应按折行后的行高定稿');
+    expect(atChange, greaterThan(110), reason: '长行（含长译文）激活后应按折行后的行高定稿');
     await tester.pump(const Duration(milliseconds: 200));
     expect(rowOf(long).height, atChange,
         reason: '折行后的行高在 200ms 内仍在变（折行随字号补间中途发生）');
@@ -339,8 +351,8 @@ void main() {
     }
     final view = tester.getRect(find.byType(LyricsView));
     final r = rowOf(long);
-    expect((r.top - view.top - (view.height - r.height) * 0.42).abs(),
-        lessThan(8),
+    expect(
+        (r.top - view.top - (view.height - r.height) * 0.42).abs(), lessThan(8),
         reason: '折行后的长行未回到对齐位');
 
     await pos.close();

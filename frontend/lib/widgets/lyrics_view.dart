@@ -12,7 +12,11 @@ import '../utils/lrc_parser.dart';
 /// 纯文本歌词居中滚动展示；无歌词时显示空态。
 class LyricsView extends StatefulWidget {
   final PlayerProvider player;
-  const LyricsView({super.key, required this.player});
+
+  /// 字号/行距/内边距缩放：默认 1.0，供 4K 等大屏播放页按视口放大。
+  final double scale;
+
+  const LyricsView({super.key, required this.player, this.scale = 1.0});
 
   @override
   State<LyricsView> createState() => _LyricsViewState();
@@ -117,18 +121,16 @@ class _LyricsViewState extends State<LyricsView> {
   Widget build(BuildContext context) {
     final p = widget.player;
     final cs = Theme.of(context).colorScheme;
+    final scale = widget.scale;
     // 歌词追焦等待时长（用户拖动后多久恢复自动跟随），设置改动即时生效。
-    _idleSec = context
-        .watch<DirectSourceManager>()
-        .settings
-        .lyricFocusIdleSec;
+    _idleSec = context.watch<DirectSourceManager>().settings.lyricFocusIdleSec;
 
     if (p.lyricsLoading) {
-      return const Center(
+      return Center(
         child: SizedBox(
-          width: 26,
-          height: 26,
-          child: CircularProgressIndicator(strokeWidth: 2.5),
+          width: 26 * scale,
+          height: 26 * scale,
+          child: CircularProgressIndicator(strokeWidth: 2.5 * scale),
         ),
       );
     }
@@ -138,12 +140,13 @@ class _LyricsViewState extends State<LyricsView> {
       final plain = p.plainLyrics;
       if (plain != null) {
         return SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 8, 24, 32),
+          padding: EdgeInsets.fromLTRB(
+              24 * scale, 8 * scale, 24 * scale, 32 * scale),
           child: Text(
             plain,
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontSize: 16,
+              fontSize: 16 * scale,
               height: 1.7,
               color: cs.onSurface.withValues(alpha: 0.85),
             ),
@@ -155,13 +158,22 @@ class _LyricsViewState extends State<LyricsView> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(Icons.lyrics_outlined,
-                size: 56, color: cs.primary.withValues(alpha: 0.5)),
-            const SizedBox(height: 14),
-            Text('暂无歌词', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 6),
+                size: 56 * scale, color: cs.primary.withValues(alpha: 0.5)),
+            SizedBox(height: 14 * scale),
+            Text('暂无歌词',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontSize:
+                          (Theme.of(context).textTheme.titleMedium?.fontSize ??
+                                  16) *
+                              scale,
+                    )),
+            SizedBox(height: 6 * scale),
             Text(
               '歌曲内嵌歌词或同目录 .lrc 会自动同步显示',
-              style: TextStyle(color: cs.onSurface.withValues(alpha: 0.5)),
+              style: TextStyle(
+                fontSize: 14 * scale,
+                color: cs.onSurface.withValues(alpha: 0.5),
+              ),
             ),
           ],
         ),
@@ -215,33 +227,33 @@ class _LyricsViewState extends State<LyricsView> {
               final near = (i - _current).abs() <= 1;
               return InkWell(
                 key: _keys[i],
-                borderRadius: BorderRadius.circular(10),
+                borderRadius: BorderRadius.circular(10 * scale),
                 onTap: () => p.seek(lines[i].time),
                 child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 24, vertical: 9),
+                  padding: EdgeInsets.symmetric(
+                      horizontal: 24 * scale, vertical: 9 * scale),
                   child: _LyricRowText(
                     text: lines[i].text,
                     translation: lines[i].translation,
+                    scale: scale,
                     mainStyle: TextStyle(
-                      fontSize: active ? 19 : 16,
+                      fontSize: (active ? 19 : 16) * scale,
                       height: 1.5,
                       fontWeight: active ? FontWeight.w700 : FontWeight.w400,
                       color: active
                           ? cs.primary
-                          : cs.onSurface
-                              .withValues(alpha: near ? 0.72 : 0.38),
+                          : cs.onSurface.withValues(alpha: near ? 0.72 : 0.38),
                     ),
                     subStyle: lines[i].translation == null
                         ? null
                         : TextStyle(
-                            fontSize: active ? 16 : 14,
+                            fontSize: (active ? 16 : 14) * scale,
                             height: 1.4,
                             fontWeight: FontWeight.w400,
                             color: active
                                 ? cs.primary.withValues(alpha: 0.85)
-                                : cs.onSurface.withValues(
-                                    alpha: near ? 0.62 : 0.32),
+                                : cs.onSurface
+                                    .withValues(alpha: near ? 0.62 : 0.32),
                           ),
                   ),
                 ),
@@ -312,7 +324,8 @@ class _LyricsViewState extends State<LyricsView> {
       // 动画进行中：同一行且目标基本一致 → 交给动画自己走完（**不重开**）。
       // 换行（含折行数变化）或布局大幅变化才打断旧动画、按新目标重开：
       // 折行/译文行高度变化是一整行的量级，超出容忍值必须重定目标。
-      if (_flightIdx == idx && (_flying! - target).abs() <= _retargetTolerance) {
+      if (_flightIdx == idx &&
+          (_flying! - target).abs() <= _retargetTolerance) {
         return;
       }
     } else if ((target - pos.pixels).abs() <= 0.5) {
@@ -339,12 +352,12 @@ class _LyricsViewState extends State<LyricsView> {
     _flightIdx = idx;
     unawaited(pos
         .animateTo(
-          target,
-          duration: shortHop
-              ? const Duration(milliseconds: 140)
-              : const Duration(milliseconds: 320),
-          curve: shortHop ? Curves.easeOut : Curves.easeOutCubic,
-        )
+      target,
+      duration: shortHop
+          ? const Duration(milliseconds: 140)
+          : const Duration(milliseconds: 320),
+      curve: shortHop ? Curves.easeOut : Curves.easeOutCubic,
+    )
         .then<void>((_) {
       // 只有「当前这一段」动画的完成才能改写飞行状态：被换行/跳转取代的旧动画
       // 完成回调不能把新动画的 _flying 清成 null（否则下一次复核会误判为
@@ -420,11 +433,15 @@ class _LyricRowText extends StatelessWidget {
   /// 译文样式（无译文为 null）。
   final TextStyle? subStyle;
 
+  /// 行间距缩放（与 [LyricsView.scale] 一致）。
+  final double scale;
+
   const _LyricRowText({
     required this.text,
     required this.translation,
     required this.mainStyle,
     required this.subStyle,
+    this.scale = 1.0,
   });
 
   static const Duration _fade = Duration(milliseconds: 200);
@@ -438,7 +455,7 @@ class _LyricRowText extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         main,
-        const SizedBox(height: 2),
+        SizedBox(height: 2 * scale),
         _FadingText(text: translation!, style: sub),
       ],
     );

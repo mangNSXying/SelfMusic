@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import '../layout/player_metrics.dart';
 import '../models/song.dart';
 import '../data/sources/music_source.dart' show SourceLine, parseSourceLine;
 import '../providers/player_provider.dart';
@@ -39,6 +40,12 @@ import '../widgets/song_list.dart';
 bool useDesktopLandscape(Size size, {required bool isDesktopPlatform}) =>
     isDesktopPlatform || size.width >= 1000;
 
+TextStyle? _scaleTextStyle(TextStyle? style, double scale) {
+  final size = style?.fontSize;
+  if (style == null || size == null) return style;
+  return style.copyWith(fontSize: size * scale);
+}
+
 /// 全屏播放页（ui-playpage.html v5）：作为「首页」整屏展示，替换整个壳层。
 ///
 /// 手势交互（可在设置中关闭）：
@@ -52,7 +59,11 @@ bool useDesktopLandscape(Size size, {required bool isDesktopPlatform}) =>
 /// 第一次只失焦，歌单/歌词页不拦截。悬浮层常驻挂载（非路由），系统返回管不到
 /// 桌面 ESC，故经 CallbackShortcuts 自行处理。
 class PlayerScreen extends StatefulWidget {
-  const PlayerScreen({super.key});
+  const PlayerScreen({super.key, this.desktopPlatformOverride});
+
+  /// 布局回归测试用：固定平台判定，避免测试宿主（Linux）恒走桌面分支。
+  @visibleForTesting
+  final bool? desktopPlatformOverride;
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
@@ -435,8 +446,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     // - 手机横屏：三列紧凑布局，贴合 ui-playpage-wide.html 稿。
     final landscape = size.width > size.height;
     final desktopLandscape = useDesktopLandscape(size,
-        isDesktopPlatform:
-            Platform.isLinux || Platform.isWindows || Platform.isMacOS);
+        isDesktopPlatform: widget.desktopPlatformOverride ??
+            (Platform.isLinux || Platform.isWindows || Platform.isMacOS));
 
     // 播放页控件静置隐藏（改进.txt UI3）：任何触摸都视为交互并重新计时。
     // 歌单页/播放页/歌词页同一页横滑带，进入歌单页由 PageView 原生右滑接管。
@@ -585,39 +596,43 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 curve: Curves.easeOut);
           };
 
+    final m = PlayerMetrics.portrait(MediaQuery.sizeOf(context));
+
     return Center(
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 480),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final coverSize = _fitCover(
-              constraints.maxWidth - 48,
-              constraints.maxHeight - 48,
-            );
-            return Padding(
-              padding: const EdgeInsets.all(24),
-              child: player.hasCurrent
+        constraints: BoxConstraints(
+          maxWidth: m.contentMaxWidth + m.edgePadding * 2,
+        ),
+        child: Padding(
+          padding: EdgeInsets.all(m.edgePadding),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final byHeight = constraints.maxHeight - m.fixedContentHeight;
+              final coverSize = math.min(
+                m.targetCover,
+                math.min(
+                  constraints.maxWidth,
+                  math.max(0.0, byHeight),
+                ),
+              );
+              return player.hasCurrent
                   ? _NowPlaying(
                       player: player,
                       direct: direct,
                       cs: Theme.of(context).colorScheme,
                       coverSize: coverSize,
+                      scale: m.uiScale,
                       onOpenSongs: onOpenSongs,
                     )
-                  : _EmptyState(coverSize: coverSize),
-            );
-          },
+                  : _EmptyState(
+                      coverSize: coverSize,
+                      scale: m.uiScale,
+                    );
+            },
+          ),
         ),
       ),
     );
-  }
-
-  /// 计算封面边长：横向受宽度限制，纵向受「高度 - 其余控件固定高度」限制。
-  double _fitCover(double availW, double availH) {
-    // 封面以外部分的近似固定高度（标题/歌手/元信息 + 工具行 + 进度 + 控制行 + 间距）。
-    const fixed = 342.0;
-    final byH = (availH - fixed).clamp(0.0, 360.0);
-    return math.min(availW, byH);
   }
 }
 
@@ -709,26 +724,41 @@ class _LyricsPage extends StatelessWidget {
     final direct = context.watch<DirectSourceManager>();
     final cs = Theme.of(context).colorScheme;
     final s = player.current;
+    final size = MediaQuery.sizeOf(context);
+    final m = PlayerMetrics.portrait(size);
+    final scale = m.uiScale;
+    final maxWidth = math.min(size.width, math.max(480.0, 720.0 * scale));
 
-    return Column(
-      children: [
-        if (s != null)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(24, 28, 24, 0),
-            child: _TitleBlock(player: player, direct: direct, compact: true),
-          ),
-        const SizedBox(height: 6),
-        Expanded(
-          child: s == null
-              ? Center(
-                  child: Text('暂无歌曲',
-                      style: TextStyle(
-                          color: cs.onSurface.withValues(alpha: 0.5))),
-                )
-              : LyricsView(player: player),
+    return Center(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: maxWidth),
+        child: Column(
+          children: [
+            if (s != null)
+              Padding(
+                padding:
+                    EdgeInsets.fromLTRB(24 * scale, 28 * scale, 24 * scale, 0),
+                child: _TitleBlock(
+                    player: player,
+                    direct: direct,
+                    compact: true,
+                    scale: scale),
+              ),
+            SizedBox(height: 6 * scale),
+            Expanded(
+              child: s == null
+                  ? Center(
+                      child: Text('暂无歌曲',
+                          style: TextStyle(
+                              fontSize: 14 * scale,
+                              color: cs.onSurface.withValues(alpha: 0.5))),
+                    )
+                  : LyricsView(player: player, scale: scale),
+            ),
+            SizedBox(height: 8 * scale),
+          ],
         ),
-        const SizedBox(height: 8),
-      ],
+      ),
     );
   }
 }
@@ -736,8 +766,9 @@ class _LyricsPage extends StatelessWidget {
 /// 未在播放时的首页空态。
 class _EmptyState extends StatelessWidget {
   final double coverSize;
+  final double scale;
 
-  const _EmptyState({required this.coverSize});
+  const _EmptyState({required this.coverSize, this.scale = 1.0});
 
   @override
   Widget build(BuildContext context) {
@@ -750,17 +781,22 @@ class _EmptyState extends StatelessWidget {
           height: coverSize,
           decoration: BoxDecoration(
             color: cs.primary.withValues(alpha: 0.10),
-            borderRadius: BorderRadius.circular(24),
+            borderRadius: BorderRadius.circular(24 * scale),
           ),
           child: Icon(Icons.music_note,
               size: coverSize * 0.5, color: cs.primary.withValues(alpha: 0.55)),
         ),
-        const SizedBox(height: 32),
-        Text('未在播放', style: Theme.of(context).textTheme.headlineMedium),
-        const SizedBox(height: 8),
+        SizedBox(height: 32 * scale),
+        Text('未在播放',
+            style: _scaleTextStyle(
+                Theme.of(context).textTheme.headlineMedium, scale)),
+        SizedBox(height: 8 * scale),
         Text(
           '从左侧导航选择歌曲开始播放',
-          style: TextStyle(color: cs.onSurface.withValues(alpha: 0.6)),
+          style: TextStyle(
+            fontSize: 14 * scale,
+            color: cs.onSurface.withValues(alpha: 0.6),
+          ),
         ),
       ],
     );
@@ -773,6 +809,7 @@ class _NowPlaying extends StatelessWidget {
   final DirectSourceManager direct;
   final ColorScheme cs;
   final double coverSize;
+  final double scale;
   final VoidCallback? onOpenSongs;
 
   const _NowPlaying({
@@ -780,6 +817,7 @@ class _NowPlaying extends StatelessWidget {
     required this.direct,
     required this.cs,
     required this.coverSize,
+    this.scale = 1.0,
     this.onOpenSongs,
   });
 
@@ -796,17 +834,19 @@ class _NowPlaying extends StatelessWidget {
               song: s,
               cs: cs,
               size: coverSize,
+              scale: scale,
               showSongsEntry: onOpenSongs != null,
               onOpenSongs: onOpenSongs),
         ),
-        const SizedBox(height: 20),
-        _TitleBlock(player: player, direct: direct),
-        const SizedBox(height: 8),
-        _MetaLine(player: player, direct: direct, cs: cs, song: s),
-        _ToolRow(player: player, direct: direct, cs: cs, song: s),
-        _PlayerSeek(player: player, cs: cs),
-        const SizedBox(height: 6),
-        _ControlRow(player: player, cs: cs),
+        SizedBox(height: 20 * scale),
+        _TitleBlock(player: player, direct: direct, scale: scale),
+        SizedBox(height: 8 * scale),
+        _MetaLine(
+            player: player, direct: direct, cs: cs, song: s, scale: scale),
+        _ToolRow(player: player, direct: direct, cs: cs, song: s, scale: scale),
+        _PlayerSeek(player: player, cs: cs, scale: scale),
+        SizedBox(height: 6 * scale),
+        _ControlRow(player: player, cs: cs, scale: scale),
       ],
     );
   }
@@ -819,22 +859,27 @@ class _TitleBlock extends StatelessWidget {
   final DirectSourceManager direct;
   final bool compact;
   final bool dense;
+  final double scale;
   const _TitleBlock(
       {required this.player,
       required this.direct,
       this.compact = false,
-      this.dense = false});
+      this.dense = false,
+      this.scale = 1.0});
 
   @override
   Widget build(BuildContext context) {
     final s = player.current!;
     final tt = Theme.of(context).textTheme;
-    final titleStyle = dense
-        ? tt.titleMedium?.copyWith(fontWeight: FontWeight.w700)
-        : (compact ? tt.titleLarge : tt.headlineSmall)
-            ?.copyWith(fontWeight: FontWeight.w700);
-    final artistStyle =
-        dense ? tt.bodySmall : (compact ? tt.titleSmall : tt.titleMedium);
+    final titleStyle = _scaleTextStyle(
+        dense
+            ? tt.titleMedium?.copyWith(fontWeight: FontWeight.w700)
+            : (compact ? tt.titleLarge : tt.headlineSmall)
+                ?.copyWith(fontWeight: FontWeight.w700),
+        scale);
+    final artistStyle = _scaleTextStyle(
+        dense ? tt.bodySmall : (compact ? tt.titleSmall : tt.titleMedium),
+        scale);
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -842,7 +887,7 @@ class _TitleBlock extends StatelessWidget {
           formatSongTitle(s, direct.settings.songTitleFormat),
           style: titleStyle,
         ),
-        SizedBox(height: dense ? 2 : (compact ? 4 : 6)),
+        SizedBox(height: (dense ? 2 : (compact ? 4 : 6)) * scale),
         MarqueeText(
           // 未读取的元数据标注「待读取」，避免与「读取后发现没有」的留白混淆。
           s.metaDisplay(s.artist) ?? '',
@@ -859,11 +904,13 @@ class _MetaLine extends StatelessWidget {
   final DirectSourceManager direct;
   final ColorScheme cs;
   final Song song;
+  final double scale;
   const _MetaLine(
       {required this.player,
       required this.direct,
       required this.cs,
-      required this.song});
+      required this.song,
+      this.scale = 1.0});
 
   @override
   Widget build(BuildContext context) {
@@ -871,8 +918,8 @@ class _MetaLine extends StatelessWidget {
     return Wrap(
       alignment: WrapAlignment.center,
       crossAxisAlignment: WrapCrossAlignment.center,
-      spacing: 10,
-      runSpacing: 6,
+      spacing: 10 * scale,
+      runSpacing: 6 * scale,
       children: [
         Text(
           [
@@ -881,32 +928,38 @@ class _MetaLine extends StatelessWidget {
             if (formatDuration(s.duration).isNotEmpty)
               formatDuration(s.duration),
           ].join(' · '),
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                fontFamily: 'monospace',
-                color: cs.onSurface.withValues(alpha: 0.6),
-              ),
+          style: _scaleTextStyle(
+              Theme.of(context).textTheme.bodySmall?.copyWith(
+                    fontFamily: 'monospace',
+                    color: cs.onSurface.withValues(alpha: 0.6),
+                  ),
+              scale),
         ),
         if (direct.settings.playerShowWeight)
           InkWell(
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(8 * scale),
             onTap: () => AppToast.show('当前曲目的播放权重', isError: false),
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              padding: EdgeInsets.symmetric(
+                  horizontal: 8 * scale, vertical: 2 * scale),
               decoration: BoxDecoration(
                 color: cs.surfaceContainerHighest.withValues(alpha: 0.7),
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(8 * scale),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(Icons.speed,
-                      size: 12, color: cs.onSurface.withValues(alpha: 0.6)),
-                  const SizedBox(width: 4),
+                      size: 12 * scale,
+                      color: cs.onSurface.withValues(alpha: 0.6)),
+                  SizedBox(width: 4 * scale),
                   Text(
                     '权重 ${player.currentWeightFactor?.toStringAsFixed(1) ?? '—'}',
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: cs.onSurface.withValues(alpha: 0.6),
-                        ),
+                    style: _scaleTextStyle(
+                        Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: cs.onSurface.withValues(alpha: 0.6),
+                            ),
+                        scale),
                   ),
                 ],
               ),
@@ -927,12 +980,14 @@ class _ToolRow extends StatelessWidget {
   /// 横屏用：按钮紧凑成组居中（列宽较大时 spaceEvenly 会把按钮摊到列两缘，
   /// 与封面/标题的居中感不齐）；竖屏保持铺满一行均分。
   final bool center;
+  final double scale;
   const _ToolRow(
       {required this.player,
       required this.direct,
       required this.cs,
       required this.song,
-      this.center = false});
+      this.center = false,
+      this.scale = 1.0});
 
   Future<void> _cache(BuildContext context, Song s) async {
     final src = direct.sourceByKey(s.sourceKey);
@@ -961,7 +1016,7 @@ class _ToolRow extends StatelessWidget {
           center ? MainAxisAlignment.center : MainAxisAlignment.spaceEvenly,
       children: [
         IconButton(
-          iconSize: 22,
+          iconSize: 22 * scale,
           tooltip: favorite ? '取消喜欢' : '喜欢',
           color: favorite ? Colors.pink : cs.onSurface.withValues(alpha: 0.55),
           icon: Icon(favorite ? Icons.favorite : Icons.favorite_border),
@@ -976,7 +1031,7 @@ class _ToolRow extends StatelessWidget {
           },
         ),
         IconButton(
-          iconSize: 22,
+          iconSize: 22 * scale,
           tooltip: disliked ? '取消不喜欢' : '不喜欢（权重降到 0.1）',
           color:
               disliked ? Colors.orange : cs.onSurface.withValues(alpha: 0.55),
@@ -988,14 +1043,14 @@ class _ToolRow extends StatelessWidget {
           },
         ),
         IconButton(
-          iconSize: 22,
+          iconSize: 22 * scale,
           tooltip: '编辑歌单',
           color: cs.onSurface.withValues(alpha: 0.55),
           icon: const Icon(Icons.playlist_add_check),
           onPressed: () => showEditPlaylistsSheet(context, s),
         ),
         IconButton(
-          iconSize: 22,
+          iconSize: 22 * scale,
           tooltip: '缓存歌曲',
           color: cs.onSurface.withValues(alpha: 0.55),
           icon: const Icon(Icons.download),
@@ -1004,7 +1059,7 @@ class _ToolRow extends StatelessWidget {
       ],
     );
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12),
+      padding: EdgeInsets.symmetric(vertical: 12 * scale),
       child: center ? Center(child: row) : row,
     );
   }
@@ -1014,19 +1069,20 @@ class _ToolRow extends StatelessWidget {
 class _ControlRow extends StatelessWidget {
   final PlayerProvider player;
   final ColorScheme cs;
-  const _ControlRow({required this.player, required this.cs});
+  final double scale;
+  const _ControlRow({required this.player, required this.cs, this.scale = 1.0});
 
   @override
   Widget build(BuildContext context) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        _SleepButton(player: player, cs: cs),
-        const SizedBox(width: 8),
+        _SleepButton(player: player, cs: cs, scale: scale),
+        SizedBox(width: 8 * scale),
         Pressable(
           onPressed: player.prev,
           tooltip: '上一首',
-          child: const Icon(Icons.skip_previous, size: 34),
+          child: Icon(Icons.skip_previous, size: 34 * scale),
         ),
         ListenableBuilder(
           listenable: player,
@@ -1041,7 +1097,7 @@ class _ControlRow extends StatelessWidget {
                   playing
                       ? Icons.pause_circle_filled
                       : Icons.play_circle_filled,
-                  size: 74,
+                  size: 74 * scale,
                   color: cs.primary),
             );
           },
@@ -1049,10 +1105,10 @@ class _ControlRow extends StatelessWidget {
         Pressable(
           onPressed: player.next,
           tooltip: '下一首',
-          child: const Icon(Icons.skip_next, size: 34),
+          child: Icon(Icons.skip_next, size: 34 * scale),
         ),
-        const SizedBox(width: 8),
-        _ModeButton(player: player, cs: cs),
+        SizedBox(width: 8 * scale),
+        _ModeButton(player: player, cs: cs, scale: scale),
       ],
     );
   }
@@ -1359,17 +1415,15 @@ class _DesktopLandscapePlayer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
+    final m = PlayerMetrics.desktop(size);
     if (!player.hasCurrent) {
       return Center(
-          child:
-              _EmptyState(coverSize: (size.height * 0.32).clamp(120.0, 200.0)));
+          child: _EmptyState(coverSize: m.emptyCoverSize, scale: m.uiScale));
     }
     final s = player.current!;
-    final leftW = (size.width * 0.30).clamp(320.0, 440.0);
-    final cover = (size.height * 0.40).clamp(160.0, 280.0);
     return Center(
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 1240),
+        constraints: BoxConstraints(maxWidth: m.contentMaxWidth),
         child: Row(
           children: [
             // 左栏：与分栏右窗共用 _DesktopPlayerColumn（不定自身宽度，由调用方给宽）。
@@ -1378,13 +1432,14 @@ class _DesktopLandscapePlayer extends StatelessWidget {
                 direct: direct,
                 cs: cs,
                 song: s,
-                width: leftW,
-                cover: cover),
+                width: m.leftColumnWidth,
+                metrics: m),
             // 右栏：歌词限宽居中 + 上下边缘渐隐（改进.txt：去掉两栏中间分割线）。
             Expanded(
               child: Center(
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 680),
+                  constraints: BoxConstraints(
+                      maxWidth: m.lyricsMaxWidth + m.lyricsPadding * 2),
                   child: ShaderMask(
                     shaderCallback: (r) => const LinearGradient(
                       begin: Alignment.topCenter,
@@ -1399,9 +1454,10 @@ class _DesktopLandscapePlayer extends StatelessWidget {
                     ).createShader(r),
                     blendMode: BlendMode.dstIn,
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 24, vertical: 12),
-                      child: LyricsView(player: player),
+                      padding: EdgeInsets.symmetric(
+                          horizontal: m.lyricsPadding,
+                          vertical: 12 * m.uiScale),
+                      child: LyricsView(player: player, scale: m.uiScale),
                     ),
                   ),
                 ),
@@ -1415,63 +1471,94 @@ class _DesktopLandscapePlayer extends StatelessWidget {
 }
 
 /// 桌面横屏左播放列（封面/信息/工具/进度/横排控制）：双栏整页左栏与「左歌单
-/// 右播放」分栏右窗共用。宽度与封面尺寸由调用方按上下文给定（整页按全屏算，
-/// 分栏按栏内约束算）；矮窗口可滚动，内容不足一屏高时垂直居中。
+/// 右播放」分栏右窗共用。宽度由调用方按上下文给定（整页按全屏算，分栏按栏内
+/// 约束算）；矮窗口可滚动，内容不足一屏高时垂直居中。
 class _DesktopPlayerColumn extends StatelessWidget {
   final PlayerProvider player;
   final DirectSourceManager direct;
   final ColorScheme cs;
   final Song song;
   final double width;
-  final double cover;
+  final PlayerMetrics metrics;
   const _DesktopPlayerColumn(
       {required this.player,
       required this.direct,
       required this.cs,
       required this.song,
       required this.width,
-      required this.cover});
+      required this.metrics});
 
   @override
   Widget build(BuildContext context) {
     final s = song;
+    final scale = metrics.uiScale;
+    final horizontal = metrics.columnPadding;
+    final vertical = 16 * scale;
     return SizedBox(
       width: width,
       child: LayoutBuilder(
-        builder: (context, c) => SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(minHeight: c.maxHeight - 32),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Center(
-                  child: _Cover(
-                      coverPath: s.coverPath, song: s, cs: cs, size: cover),
-                ),
-                const SizedBox(height: 16),
-                _TitleBlock(player: player, direct: direct, compact: true),
-                const SizedBox(height: 6),
-                _MetaLine(player: player, direct: direct, cs: cs, song: s),
-                _ToolRow(
-                    player: player,
-                    direct: direct,
-                    cs: cs,
-                    song: s,
-                    center: true),
-                _PlayerSeek(player: player, cs: cs),
-                // 左栏宽会被 clamp 到最小 320（内容区 280），控制行固定
-                // 内容 ~302，窄桌面窗口（约 800~1140 宽）会横向溢出；
-                // scaleDown 只在放不下时整体等比收缩，宽窗口零影响。
-                FittedBox(
-                  fit: BoxFit.scaleDown,
-                  child: _ControlRow(player: player, cs: cs),
-                ),
-              ],
+        builder: (context, c) {
+          final innerWidth = math.max(0.0, width - horizontal * 2);
+          final byHeight =
+              c.maxHeight - vertical * 2 - metrics.fixedContentHeight;
+          final cover = math.min(
+            metrics.targetCover,
+            math.min(
+              innerWidth,
+              math.max(160 * scale, byHeight),
             ),
-          ),
-        ),
+          );
+          return SingleChildScrollView(
+            padding: EdgeInsets.symmetric(
+                horizontal: horizontal, vertical: vertical),
+            child: ConstrainedBox(
+              constraints:
+                  BoxConstraints(minHeight: c.maxHeight - vertical * 2),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Center(
+                    child: _Cover(
+                        coverPath: s.coverPath,
+                        song: s,
+                        cs: cs,
+                        size: cover,
+                        scale: scale),
+                  ),
+                  SizedBox(height: 16 * scale),
+                  _TitleBlock(
+                      player: player,
+                      direct: direct,
+                      compact: true,
+                      scale: scale),
+                  SizedBox(height: 6 * scale),
+                  _MetaLine(
+                      player: player,
+                      direct: direct,
+                      cs: cs,
+                      song: s,
+                      scale: scale),
+                  _ToolRow(
+                      player: player,
+                      direct: direct,
+                      cs: cs,
+                      song: s,
+                      center: true,
+                      scale: scale),
+                  _PlayerSeek(player: player, cs: cs, scale: scale),
+                  // 左栏宽会被钳到最小 320×uiScale（内容区随比例缩放），
+                  // 控制行约 302×uiScale；窄桌面窗口会横向溢出，scaleDown
+                  // 只在放不下时整体等比收缩，宽窗口零影响。
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: _ControlRow(player: player, cs: cs, scale: scale),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -1497,15 +1584,16 @@ class DesktopPlaylistSplit extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
+    final m = PlayerMetrics.desktop(size);
     if (!player.hasCurrent) {
       return Row(
         children: [
           Expanded(child: _BandSongPage(embedded: true, focusTick: focusTick)),
           SizedBox(
-            width: 320,
+            width: m.rightPaneWidth(size.width),
             child: Center(
-                child: _EmptyState(
-                    coverSize: (size.height * 0.32).clamp(120.0, 200.0))),
+                child:
+                    _EmptyState(coverSize: m.emptyCoverSize, scale: m.uiScale)),
           ),
         ],
       );
@@ -1514,8 +1602,7 @@ class DesktopPlaylistSplit extends StatelessWidget {
     // 右窗按栏内约束定宽（不用全屏宽直算）；封面仍按全屏高算（栏与页同高）。
     return LayoutBuilder(
       builder: (context, c) {
-        final rightW = (c.maxWidth * 0.42).clamp(280.0, 440.0);
-        final cover = (size.height * 0.40).clamp(120.0, 280.0);
+        final rightW = m.rightPaneWidth(c.maxWidth);
         return Row(
           children: [
             Expanded(
@@ -1526,7 +1613,7 @@ class DesktopPlaylistSplit extends StatelessWidget {
                 cs: cs,
                 song: s,
                 width: rightW,
-                cover: cover),
+                metrics: m),
           ],
         );
       },
@@ -1586,6 +1673,7 @@ class _Cover extends StatelessWidget {
   final Song song;
   final ColorScheme cs;
   final double size;
+  final double scale;
   final bool showSongsEntry;
   final VoidCallback? onOpenSongs;
 
@@ -1594,6 +1682,7 @@ class _Cover extends StatelessWidget {
     required this.song,
     required this.cs,
     required this.size,
+    this.scale = 1.0,
     this.showSongsEntry = false,
     this.onOpenSongs,
   });
@@ -1603,13 +1692,14 @@ class _Cover extends StatelessWidget {
     // 更多入口随封面缩放：圆框直径与图标按封面边长比例取，限制在可点范围。
     final moreSize = (size * 0.13).clamp(28.0, 44.0);
     return SizedBox(
+      key: const Key('player-cover'),
       width: size,
       height: size,
       child: Stack(
         fit: StackFit.expand,
         children: [
           ClipRRect(
-            borderRadius: BorderRadius.circular(24),
+            borderRadius: BorderRadius.circular(24 * scale),
             child: Container(
               color: cs.primary.withValues(alpha: 0.10),
               child: coverPath != null
@@ -1794,15 +1884,17 @@ class _UnreadCoverPlaceholder extends StatelessWidget {
 class _SleepButton extends StatelessWidget {
   final PlayerProvider player;
   final ColorScheme cs;
+  final double scale;
 
-  const _SleepButton({required this.player, required this.cs});
+  const _SleepButton(
+      {required this.player, required this.cs, this.scale = 1.0});
 
   @override
   Widget build(BuildContext context) {
     final active = player.sleepTimerActive;
     final summary = player.sleepSummaryText;
     return IconButton(
-      iconSize: 22,
+      iconSize: 22 * scale,
       color: active ? cs.primary : cs.onSurface.withValues(alpha: 0.7),
       tooltip: '睡眠定时${active && summary != null ? '：$summary' : ''}',
       icon: Icon(active ? Icons.bedtime : Icons.bedtime_outlined),
@@ -1815,15 +1907,16 @@ class _SleepButton extends StatelessWidget {
 class _ModeButton extends StatelessWidget {
   final PlayerProvider player;
   final ColorScheme cs;
+  final double scale;
 
-  const _ModeButton({required this.player, required this.cs});
+  const _ModeButton({required this.player, required this.cs, this.scale = 1.0});
 
   @override
   Widget build(BuildContext context) {
     final m = player.mode;
     final active = m != PlayMode.sequence;
     return IconButton(
-      iconSize: 22,
+      iconSize: 22 * scale,
       color: active ? cs.primary : cs.onSurface.withValues(alpha: 0.7),
       tooltip: '播放模式：${_label(m)}（点击切换）',
       icon: Icon(_icon(m)),
@@ -1857,8 +1950,14 @@ class _PlayerSeek extends StatefulWidget {
 
   /// 横屏三列页隐藏进度条下方时间，把空间留给封面。
   final bool showTime;
+
+  /// 进度条/时间字号缩放。
+  final double scale;
   const _PlayerSeek(
-      {required this.player, required this.cs, this.showTime = true});
+      {required this.player,
+      required this.cs,
+      this.showTime = true,
+      this.scale = 1.0});
 
   @override
   State<_PlayerSeek> createState() => _PlayerSeekState();
@@ -1889,9 +1988,11 @@ class _PlayerSeekState extends State<_PlayerSeek> {
           children: [
             SliderTheme(
               data: SliderTheme.of(context).copyWith(
-                trackHeight: 4,
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+                trackHeight: 4 * widget.scale,
+                thumbShape:
+                    RoundSliderThumbShape(enabledThumbRadius: 6 * widget.scale),
+                overlayShape:
+                    RoundSliderOverlayShape(overlayRadius: 14 * widget.scale),
                 activeTrackColor: widget.cs.primary,
                 inactiveTrackColor: widget.cs.onSurface.withValues(alpha: 0.12),
                 thumbColor: widget.cs.primary,
@@ -1909,14 +2010,18 @@ class _PlayerSeekState extends State<_PlayerSeek> {
             ),
             if (widget.showTime)
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8),
+                padding: EdgeInsets.symmetric(horizontal: 8 * widget.scale),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(formatClock(Duration(milliseconds: shown.toInt())),
-                        style: const TextStyle(fontFamily: 'monospace')),
+                        style: TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 14 * widget.scale)),
                     Text(formatClock(dur),
-                        style: const TextStyle(fontFamily: 'monospace')),
+                        style: TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 14 * widget.scale)),
                   ],
                 ),
               ),
