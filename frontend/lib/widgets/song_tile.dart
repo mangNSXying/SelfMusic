@@ -19,7 +19,7 @@ import 'selection_badge.dart';
 import 'song_info_dialog.dart';
 import 'song_row_view.dart';
 
-/// SongTile 行宽达到该值时，在时长左侧补充技术信息（格式 · 码率 · 大小）。
+/// SongTile 行宽达到该值时，在时长左侧补充技术信息（播放源 · 格式 · 码率 · 大小）。
 ///
 /// 阈值按行实际宽度判定（LayoutBuilder）：桌面/平板整宽列表满足；队列面板
 /// （固定 360）等窄容器自动不显示。
@@ -29,7 +29,7 @@ const double kSongTileWideInfoWidth = 800;
 ///
 /// 收藏/不喜欢/缓存等操作统一收进右侧三点菜单（列表保持清爽，方便多选）。
 /// 收藏（喜欢）对所有歌曲生效（统一收口到 play_meta）；缓存仅直连歌曲。
-/// 宽行（≥ [kSongTileWideInfoWidth]）额外在时长左侧显示格式/码率/大小。
+/// 宽行（≥ [kSongTileWideInfoWidth]）额外在时长左侧显示播放源/格式/码率/大小。
 ///
 /// 多选模式：当 [selectionMode] 为 true 时，leading 变为选择框，
 /// 点击列表切换勾选，[onSelect] 负责切换 [selected]。
@@ -330,11 +330,11 @@ class SongTile extends StatelessWidget {
     );
   }
 
-  /// 宽行技术信息：`格式 · 码率 · 大小`，置于时长左侧。
+  /// 宽行技术信息：`播放源 · 格式 · 码率 · 大小`，置于时长左侧。
   ///
   /// 计算口径收敛到 [SongRowView.wideInfoOf]，避免与行级数据两处漂移。
-  Widget? _wideInfo(BuildContext context) {
-    final text = SongRowView.wideInfoOf(song);
+  Widget? _wideInfo(BuildContext context, {String? sourceName}) {
+    final text = SongRowView.wideInfoOf(song, sourceName: sourceName);
     if (text == null) return null;
     return Text(
       text,
@@ -416,10 +416,12 @@ class SongTile extends StatelessWidget {
     final meta = direct.weight.metaOf(song);
     final favorite = meta.favorite;
     final disliked = meta.frozen;
+    // 播放源友好名：优先调用方传入的源，其次按 sourceKey 解析。
+    final sourceName = source?.name ?? direct.sourceByKey(song.sourceKey)?.name;
     // 行宽按实际约束判定：宽行在时长左侧补充技术信息。
     return LayoutBuilder(builder: (context, constraints) {
       final info = constraints.maxWidth >= kSongTileWideInfoWidth
-          ? _wideInfo(context)
+          ? _wideInfo(context, sourceName: sourceName)
           : null;
       return ListTile(
         selected: selectionMode && selected,

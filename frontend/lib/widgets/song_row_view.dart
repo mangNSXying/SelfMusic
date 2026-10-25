@@ -36,7 +36,7 @@ class SongRowView {
   /// 副标题（歌手 · 专辑 · 专辑歌手）。
   final String subtitleText;
 
-  /// 宽行技术信息（格式 · 码率 · 大小）；窄行 / 全缺时为 null。
+  /// 宽行技术信息（播放源 · 格式 · 码率 · 大小）；窄行 / 全缺时为 null。
   final String? wideInfoText;
 
   /// 封面显示路径（本机缩略图或原图）。
@@ -53,6 +53,7 @@ class SongRowView {
   factory SongRowView.of({
     required Song song,
     required SongTitleFormat titleFormat,
+    String? sourceName,
     bool playing = false,
     bool selected = false,
     bool favorite = false,
@@ -65,7 +66,7 @@ class SongRowView {
         songKey: songRowKey(song),
         titleText: formatSongTitle(song, titleFormat),
         subtitleText: subtitleOf(song),
-        wideInfoText: wide ? wideInfoOf(song) : null,
+        wideInfoText: wide ? wideInfoOf(song, sourceName: sourceName) : null,
         coverPath: song.coverPath,
         playing: playing,
         selected: selected,
@@ -90,13 +91,18 @@ class SongRowView {
     return parts.join(' · ');
   }
 
-  /// 宽行技术信息：`格式 · 码率 · 大小`。
+  /// 宽行技术信息：`播放源 · 格式 · 码率 · 大小`。
   ///
-  /// 全部由 [Song] 现有字段计算：格式为扫描存下的扩展名（大写）；码率 =
-  /// fileSize×8 / 时长（无时长则省略）；大小按 MB（不足 1 MB 降为 KB）。
+  /// 播放源优先用调用方解析出的友好名称（如「NAS」），取不到时回退到
+  /// [Song.source]（webdav/server/local…）。格式为扫描存下的扩展名（大写）；
+  /// 码率 = fileSize×8 / 时长（无时长则省略）；大小按 MB（不足 1 MB 降为 KB）。
   /// 缺失项跳过，全缺返回 null（只显示时长）。
-  static String? wideInfoOf(Song song) {
+  static String? wideInfoOf(Song song, {String? sourceName}) {
     final parts = <String>[];
+    final src = (sourceName == null || sourceName.trim().isEmpty)
+        ? song.source.trim()
+        : sourceName.trim();
+    if (src.isNotEmpty) parts.add(src);
     final fmt = song.format;
     if (fmt != null && fmt.isNotEmpty) parts.add(fmt.toUpperCase());
     final size = song.fileSize;

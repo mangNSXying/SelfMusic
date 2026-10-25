@@ -33,7 +33,7 @@ class _FakeSource extends MusicSource {
   @override
   String get key => 'webdav:t';
   @override
-  String get name => 't';
+  String get name => 'NAS';
   @override
   SourceKind get kind => SourceKind.webdav;
 }
@@ -52,7 +52,7 @@ Future<DirectSourceManager> openDirect(String prefix) async {
 }
 
 void main() {
-  testWidgets('宽行（≥800px）：时长左侧显示「格式 · 码率 · 大小」', (tester) async {
+  testWidgets('宽行（≥800px）：时长左侧显示「播放源 · 格式 · 码率 · 大小」', (tester) async {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
     late final DirectSourceManager direct;
     await tester.runAsync(() async {
@@ -91,8 +91,8 @@ void main() {
     );
     await tester.pump();
 
-    // 25 MiB / 240s = 853 kbps；格式大写、大小保留 1 位小数。
-    final info = find.text('FLAC · 853 kbps · 25.0 MB');
+    // 25 MiB / 240s = 853 kbps；播放源用友好名、格式大写、大小保留 1 位小数。
+    final info = find.text('NAS · FLAC · 853 kbps · 25.0 MB');
     expect(info, findsOneWidget);
     final duration = find.text('04:00');
     expect(duration, findsOneWidget);
@@ -159,7 +159,7 @@ void main() {
     });
   });
 
-  testWidgets('宽行缺时长：跳过码率，仅「格式 · 大小」', (tester) async {
+  testWidgets('宽行缺时长：跳过码率，仅「播放源 · 格式 · 大小」', (tester) async {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
     late final DirectSourceManager direct;
     await tester.runAsync(() async {
@@ -197,7 +197,7 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('MP3 · 512 KB'), findsOneWidget);
+    expect(find.text('NAS · MP3 · 512 KB'), findsOneWidget);
     expect(find.textContaining('kbps'), findsNothing);
 
     await tester.runAsync(() async {

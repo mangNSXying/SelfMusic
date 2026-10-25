@@ -219,6 +219,7 @@ class _QueuePageState extends State<QueuePage> {
         direct.metaVersion,
         direct.favoriteVersion,
         direct.settingsVersion,
+        direct.sourcesRevision,
         direct.settings.songTitleFormat,
         wide,
       ),
@@ -378,6 +379,7 @@ class _QueuePageState extends State<QueuePage> {
                     return SongRowView.of(
                       song: s,
                       titleFormat: direct.settings.songTitleFormat,
+                      sourceName: direct.sourceByKey(s.sourceKey)?.name,
                       favorite: meta.favorite,
                       disliked: meta.frozen,
                       wide: wide,
