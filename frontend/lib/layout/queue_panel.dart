@@ -176,7 +176,14 @@ class QueuePanel extends StatefulWidget {
 
   /// 面板宽度（宽屏侧板传入 [kQueuePanelWidth]，见文件头历史坑）。
   final double? width;
-  const QueuePanel({super.key, required this.onClose, this.width});
+
+  /// 是否处于展开态。宽屏侧板**常驻挂载**（[AnimatedContainer] 0↔360），
+  /// State 只创建一次：必须靠这个字段识别 0→1 翻转，才能每次展开都定位当前曲
+  ///（否则 initState 只在启动空面板时跑一次，展开恒停在队首）。
+  final bool open;
+
+  const QueuePanel(
+      {super.key, required this.onClose, this.width, this.open = true});
 
   @override
   State<QueuePanel> createState() => _QueuePanelState();
@@ -188,22 +195,34 @@ class _QueuePanelState extends State<QueuePanel> {
   @override
   void initState() {
     super.initState();
-    // 打开即定位到当前播放歌曲（首帧布局完成后再滚动）。
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_scroll.hasClients) return;
-      final player = context.read<PlayerProvider>();
-      final idx = _currentIndex(player);
-      if (idx <= 0) return;
-      final target =
-          (idx * kRowExtent - 96).clamp(0.0, _scroll.position.maxScrollExtent);
-      _scroll.jumpTo(target);
-    });
+    if (widget.open) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToCurrent());
+    }
+  }
+
+  @override
+  void didUpdateWidget(QueuePanel old) {
+    super.didUpdateWidget(old);
+    // 常驻挂载：展开这一刻补定位（首帧布局完成后再滚动）。
+    if (widget.open && !old.open) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToCurrent());
+    }
   }
 
   @override
   void dispose() {
     _scroll.dispose();
     super.dispose();
+  }
+
+  void _jumpToCurrent() {
+    if (!mounted || !_scroll.hasClients) return;
+    final player = context.read<PlayerProvider>();
+    final idx = _currentIndex(player);
+    if (idx <= 0) return;
+    final target =
+        (idx * kRowExtent - 96).clamp(0.0, _scroll.position.maxScrollExtent);
+    _scroll.jumpTo(target);
   }
 
   int _currentIndex(PlayerProvider player) {

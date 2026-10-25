@@ -177,7 +177,9 @@ class _AppShellState extends State<AppShell> {
                       child: SizedBox(
                         width: kQueuePanelWidth,
                         child: QueuePanel(
-                            onClose: nav.closeQueue, width: kQueuePanelWidth),
+                            onClose: nav.closeQueue,
+                            width: kQueuePanelWidth,
+                            open: queueOpen),
                       ),
                     ),
                   ),

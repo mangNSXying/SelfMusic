@@ -116,6 +116,60 @@ void main() {
     // 面板顶部内容必须让开状态栏（2026-09-30 真机：顶部留白不足）。
     expect(tester.getTopLeft(find.text('播放队列')).dy, greaterThanOrEqualTo(60));
   });
+
+  testWidgets('宽屏队列面板：常驻挂载下每次展开都定位当前曲', (tester) async {
+    late final DirectSourceManager direct;
+    late final PlayerProvider player;
+    await tester.runAsync(() async {
+      open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+      final dir = await Directory.systemTemp.createTemp('selfmusic_queue2_');
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      direct = DirectSourceManager();
+      await direct.init();
+      player = PlayerProvider();
+      player.loadOverride = (s, src) async {};
+      // 40 首、从第 31 首起播：首屏（约 9 行）看不到当前曲，必须靠展开定位。
+      await player.playQueue(
+          [for (var i = 1; i <= 40; i++) _song(i)],
+          index: 30,
+          source: _FakeSource());
+    });
+    addTearDown(() {
+      player.dispose();
+      direct.dispose();
+    });
+    expect(player.currentIndex, 30);
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final nav = NavigationProvider();
+    await tester.pumpWidget(
+      MaterialApp(home: _Host(nav: nav, direct: direct, player: player)),
+    );
+
+    // 面板常驻挂载（宽度 0），State 的 initState 早在启动时跑过。
+    nav.toggleQueue();
+    await tester.pump();
+    await tester.pump();
+
+    final scrollable = find.descendant(
+        of: find.byType(QueuePanel), matching: find.byType(Scrollable));
+    expect(scrollable, findsOneWidget);
+    final pos = tester.state<ScrollableState>(scrollable).position;
+    expect(pos.pixels, greaterThan(0),
+        reason: '修复前展开恒停在队首（initState 只在启动空面板时定位过一次）');
+
+    // 收起再展开：当前曲不变则仍应定位（证明每次开合都会跳，而非只首开一次）。
+    nav.toggleQueue();
+    await tester.pump();
+    await tester.pump();
+    nav.toggleQueue();
+    await tester.pump();
+    await tester.pump();
+    expect(tester.state<ScrollableState>(scrollable).position.pixels,
+        greaterThan(0));
+  });
 }
 
 /// 照 main.dart Root 的装配：PlayerSheetAnimator 需要 TickerProvider，
