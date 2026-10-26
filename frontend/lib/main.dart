@@ -13,6 +13,7 @@ import 'platform/harmonyos/ohos_bootstrap.dart';
 import 'platform/harmonyos/ohos_media_session.dart';
 import 'services/api_client.dart';
 import 'services/audio_focus_monitor.dart';
+import 'services/custom_font_service.dart';
 import 'services/log_buffer.dart';
 import 'services/server_settings.dart';
 import 'services/selfmusic_audio_handler.dart';
@@ -103,6 +104,13 @@ Future<void> main() async {
     final shortcutSettings = ShortcutSettings(direct.settings);
     perfLog('boot.directInit done');
     debugPrint('[boot] 直连源管理器就绪');
+    // 自定义界面字体（设置 → 界面 → 文字）：必须在 runApp 前注册，否则首帧
+    // 先按系统字体排版、加载完成后再跳字，歌名/歌词会有明显闪动。未配置时
+    // 仅两次内存设置读取，不触发文件 IO。
+    final customFont = CustomFontService(direct.settings);
+    final initialFontFamily = await customFont.loadSaved();
+    perfLog('boot.customFont done',
+        initialFontFamily == null ? 'system' : 'custom');
     // 源补推（attachApi 内部 _bootstrapSourceSync）不参与首帧：见文末首帧后启动块。
     // 信任自签名证书开关（settings.md §3.3）：按 AppSettings 配置 dio 一次。
     api.setSelfSignedPolicy(direct.settings.allowSelfSigned);
@@ -220,7 +228,8 @@ Future<void> main() async {
         artistResolver: artistResolver,
         sync: sync,
         interactionGate: interactionGate,
-        shortcutSettings: shortcutSettings));
+        shortcutSettings: shortcutSettings,
+        initialFontFamily: initialFontFamily));
     perfLog('boot.runApp dispatched');
     // 首帧轻量化：源补推 / 歌手解析 / 同步引擎都不参与首帧渲染，统一推迟到
     // 首帧渲染完成后启动——此前它们在 runApp 前就发起网络请求与同步 DB 读，
@@ -297,6 +306,7 @@ class SelfMusicApp extends StatelessWidget {
   final ArtistResolver artistResolver;
   final InteractionGate interactionGate;
   final ShortcutSettings shortcutSettings;
+  final String? initialFontFamily;
   const SelfMusicApp({
     super.key,
     required this.direct,
@@ -308,6 +318,7 @@ class SelfMusicApp extends StatelessWidget {
     required this.artistResolver,
     required this.interactionGate,
     required this.shortcutSettings,
+    this.initialFontFamily,
   });
 
   @override
@@ -359,7 +370,8 @@ class SelfMusicApp extends StatelessWidget {
         Provider<ApiClient>.value(value: api),
         Provider<SyncEngine>.value(value: sync),
         ChangeNotifierProvider<ServerSettings>.value(value: settings),
-        ChangeNotifierProvider<ThemeProvider>.value(value: ThemeProvider()),
+        ChangeNotifierProvider<ThemeProvider>.value(
+            value: ThemeProvider(initialFontFamily: initialFontFamily)),
         ChangeNotifierProvider<AuthProvider>.value(value: auth),
         ChangeNotifierProvider<LibraryProvider>.value(value: lib),
         ChangeNotifierProvider<DirectSourceManager>.value(value: direct),

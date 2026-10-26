@@ -229,6 +229,13 @@ class AppSettings {
   /// 关（默认）=直接显示封面原图，画质无损。播放页恒用原图，不受此开关影响。
   static const String kCoverThumbCompress = 'cover_thumb_compress';
 
+  /// 自定义界面字体（设置 → 界面 → 文字）：字体家族名 / 应用字体目录内文件名 /
+  /// 显示名。**设备本地**——字体文件复制到应用支持目录，不随设置导出/同步，
+  /// 故不进 [knownKeys]；文件缺失或加载失败时回退系统字体。
+  static const String kCustomFontFamily = 'custom_font_family';
+  static const String kCustomFontFile = 'custom_font_file';
+  static const String kCustomFontLabel = 'custom_font_label';
+
   /// 歌曲标题显示格式（settings.md §3.4 歌曲）：默认 song.artist - song.title。
   static const String kSongTitleFormat = 'song_title_format';
 
@@ -681,6 +688,19 @@ class AppSettings {
       (index.settingsGet(kCoverThumbCompress) ?? '0') == '1';
   set compressCoverImage(bool v) =>
       index.settingsSet(kCoverThumbCompress, v ? '1' : '0');
+
+  /// 自定义字体家族名（空=系统默认）。与 [kCustomFontFile]、[kCustomFontLabel]
+  /// 由 CustomFontService 统一维护，不要单独写。
+  String get customFontFamily => index.settingsGet(kCustomFontFamily) ?? '';
+  set customFontFamily(String v) => index.settingsSet(kCustomFontFamily, v);
+
+  /// 自定义字体在应用字体目录内的文件名（空=未导入）。
+  String get customFontFile => index.settingsGet(kCustomFontFile) ?? '';
+  set customFontFile(String v) => index.settingsSet(kCustomFontFile, v);
+
+  /// 自定义字体显示名（导入时的原文件名，不含扩展名）。
+  String get customFontLabel => index.settingsGet(kCustomFontLabel) ?? '';
+  set customFontLabel(String v) => index.settingsSet(kCustomFontLabel, v);
 
   /// 播放页（播放/歌词）切换过渡动画（默认淡入）。
   PlayerTransition get playerTransition =>

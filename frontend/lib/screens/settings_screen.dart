@@ -16,6 +16,7 @@ import '../providers/playlists_provider.dart';
 import '../services/api_client.dart';
 import '../services/artist_resolver.dart';
 import '../services/bluetooth_service.dart';
+import '../services/custom_font_service.dart';
 import '../services/server_settings.dart';
 import '../services/sync_engine.dart';
 import '../shortcuts/shortcut_settings.dart';
@@ -869,6 +870,7 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
   late PlayerTransition _transition;
   late AppSettings _settings;
   bool _clearingThumbs = false;
+  bool _fontBusy = false;
 
   @override
   void didChangeDependencies() {
@@ -882,6 +884,8 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
   Widget build(BuildContext context) {
     final theme = context.watch<ThemeProvider>();
     final colorScheme = Theme.of(context).colorScheme;
+    final hasCustomFont = _settings.customFontFamily.isNotEmpty;
+    final customFontLabel = _settings.customFontLabel;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
@@ -894,7 +898,7 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
                   .headlineSmall
                   ?.copyWith(fontWeight: FontWeight.bold)),
           const SizedBox(height: 4),
-          Text('自定义背景色与强调色，实时生效并保存到本机',
+          Text('自定义配色与字体，实时生效并保存到本机',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: colorScheme.onSurface.withValues(alpha: 0.6))),
           const SizedBox(height: 24),
@@ -1000,6 +1004,60 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
               ],
             ),
           ],
+          const Divider(),
+          const SizedBox(height: 8),
+
+          // 文字：自定义字体（导入文件、仅本机生效）
+          Text('文字',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.font_download_outlined),
+            title: const Text('界面字体'),
+            subtitle: Text(customFontLabel.isEmpty
+                ? (hasCustomFont ? '自定义字体' : '系统默认')
+                : '当前：$customFontLabel'),
+            trailing: _fontBusy
+                ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : null,
+          ),
+          Wrap(
+            spacing: 12,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                icon: const Icon(Icons.upload_file, size: 18),
+                label: Text(hasCustomFont ? '更换字体' : '导入字体文件'),
+                onPressed: _fontBusy ? null : _importFont,
+              ),
+              if (hasCustomFont)
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.restart_alt, size: 18),
+                  label: const Text('恢复系统字体'),
+                  onPressed: _fontBusy ? null : _resetFont,
+                ),
+            ],
+          ),
+          if (hasCustomFont) ...[
+            const SizedBox(height: 12),
+            Text(
+              '预览：音乐让生活更美好 SelfMusic 0123456789',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ],
+          const SizedBox(height: 6),
+          Text('支持 TTF / OTF，仅本机生效；字体缺字时由系统字体回退',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: colorScheme.onSurface.withValues(alpha: 0.6))),
           const Divider(),
           const SizedBox(height: 8),
 
@@ -1166,6 +1224,71 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
           }),
     );
     if (picked != null) await theme.setBackground(picked);
+  }
+
+  /// 导入本地字体（设置 → 界面 → 文字）。文件复制到应用支持目录并注册后，
+  /// 立即把新家族应用到全局主题；设置持久化由 CustomFontService 负责。
+  Future<void> _importFont() async {
+    if (_fontBusy) return;
+    XFile? picked;
+    // 安卓文件管理器常把字体标成 application/octet-stream，严格 MIME 过滤会
+    // 把可用的 TTF/OTF 藏起来；安卓端放开选择，仍由服务层校验扩展名与文件头。
+    // 桌面/鸿蒙保留字体过滤（鸿蒙原生按后缀过滤；大小写各列一份，GTK 区分大小写）。
+    final loosePicker = Platform.isAndroid;
+    try {
+      picked = await openFile(
+        acceptedTypeGroups: loosePicker
+            ? const []
+            : const [
+                XTypeGroup(
+                    label: '字体文件', extensions: ['ttf', 'otf', 'TTF', 'OTF'])
+              ],
+      );
+    } catch (e) {
+      debugPrint('打开字体文件选择器失败：$e');
+      if (mounted) AppToast.show('无法打开文件选择器', isError: true);
+      return;
+    }
+    if (picked == null || !mounted) return;
+    // 先取根级主题 Provider：导入期间即使设置页被关闭，字体也应立即全局生效，
+    // 而不是等到下次启动（设置本身已落库）。
+    final theme = context.read<ThemeProvider>();
+    setState(() => _fontBusy = true);
+    try {
+      final service = CustomFontService(_settings);
+      final label = await service.importFont(
+          sourcePath: picked.path, sourceName: picked.name);
+      await theme.setFontFamily(service.family);
+      if (!mounted) return;
+      setState(() {});
+      AppToast.show('已应用字体：$label', isError: false);
+    } on CustomFontException catch (e) {
+      if (mounted) AppToast.show(e.message, isError: true);
+    } catch (e) {
+      debugPrint('字体导入失败：$e');
+      if (mounted) AppToast.show('字体导入失败，请确认文件可读取', isError: true);
+    } finally {
+      if (mounted) setState(() => _fontBusy = false);
+    }
+  }
+
+  /// 删除已导入字体并恢复系统默认（文件与设置一并清理）。
+  Future<void> _resetFont() async {
+    if (_fontBusy) return;
+    final theme = context.read<ThemeProvider>();
+    setState(() => _fontBusy = true);
+    try {
+      await CustomFontService(_settings).clear();
+      await theme.setFontFamily(null);
+      if (!mounted) return;
+      setState(() {});
+      AppToast.show('已恢复系统字体', isError: false);
+    } catch (e) {
+      debugPrint('恢复系统字体失败：$e');
+      if (mounted) AppToast.show('恢复系统字体失败', isError: true);
+    } finally {
+      if (mounted) setState(() => _fontBusy = false);
+    }
   }
 
   Future<void> _pickTransition(BuildContext context) async {

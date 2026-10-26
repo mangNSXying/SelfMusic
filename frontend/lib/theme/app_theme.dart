@@ -124,18 +124,26 @@ class AppTheme {
   /// 是否自动派生背景（未手动指定 background）。
   final bool customBackground;
 
+  /// 全局字体家族（null=平台默认）；用于主题缓存失效判断。
+  final String? fontFamily;
+
   AppTheme._({
     required this.palette,
     required this.themeData,
     required this.accentValue,
     required this.customBackground,
+    required this.fontFamily,
   });
 
   /// 构建完整主题。
+  ///
+  /// [fontFamily] 为自定义字体时统一应用到 Material 文本主题；null 保持平台默认。
+  /// 缺字由引擎按系统字体回退，不需要额外 fallback 列表。
   factory AppTheme.build({
     Color accent = defaultAccent,
     Color? background,
     Brightness brightness = Brightness.light,
+    String? fontFamily,
   }) {
     final pal = AppColorPalette.derive(
       accent: accent,
@@ -179,6 +187,7 @@ class AppTheme {
       useMaterial3: true,
       colorScheme: colorScheme,
       brightness: brightness,
+      fontFamily: fontFamily,
       scaffoldBackgroundColor: pal.background,
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
@@ -235,6 +244,7 @@ class AppTheme {
       themeData: theme,
       accentValue: accent.toARGB32(),
       customBackground: background != null,
+      fontFamily: fontFamily,
     );
   }
 }

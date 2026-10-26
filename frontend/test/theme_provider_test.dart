@@ -36,7 +36,8 @@ void main() {
     });
 
     test('load 兼容旧值 light/dark，缺失时默认 system', () async {
-      ThemeProvider fresh() => ThemeProvider(storage: const FlutterSecureStorage());
+      ThemeProvider fresh() =>
+          ThemeProvider(storage: const FlutterSecureStorage());
 
       data['theme_mode'] = 'dark';
       final dark = fresh();
@@ -84,9 +85,8 @@ void main() {
 
     test('isDark 在 system 下跟随 platformBrightness', () async {
       await provider.setThemeMode(ThemeMode.system);
-      final dispatcher =
-          TestWidgetsFlutterBinding.instance.platformDispatcher
-              ..platformBrightnessTestValue = Brightness.light;
+      final dispatcher = TestWidgetsFlutterBinding.instance.platformDispatcher
+        ..platformBrightnessTestValue = Brightness.light;
       expect(provider.isDark, isFalse);
 
       dispatcher.platformBrightnessTestValue = Brightness.dark;
@@ -100,6 +100,45 @@ void main() {
       expect(provider.darkThemeData, isNot(same(darkBefore)));
       expect(provider.themeData.colorScheme.primary.toARGB32(),
           const Color(0xFF7C4DFF).toARGB32());
+    });
+  });
+
+  group('字体', () {
+    test('默认使用平台字体（fontFamily 为空）', () {
+      expect(provider.fontFamily, isNull);
+      expect(provider.themeData.textTheme.bodyMedium?.fontFamily,
+          isNot('SelfMusicTestFont'));
+    });
+
+    test('setFontFamily 即时重建双主题并应用字体', () async {
+      final lightBefore = provider.themeData;
+      final darkBefore = provider.darkThemeData;
+      await provider.setFontFamily('SelfMusicTestFont');
+
+      expect(provider.fontFamily, 'SelfMusicTestFont');
+      expect(provider.themeData, isNot(same(lightBefore)),
+          reason: '字体变化必须让亮色主题缓存失效');
+      expect(provider.darkThemeData, isNot(same(darkBefore)),
+          reason: '字体变化必须让暗色主题缓存失效');
+      expect(provider.themeData.textTheme.bodyMedium?.fontFamily,
+          'SelfMusicTestFont');
+      expect(provider.darkThemeData.textTheme.bodyMedium?.fontFamily,
+          'SelfMusicTestFont');
+    });
+
+    test('initialFontFamily 构造即生效，切回 null 恢复默认', () async {
+      final themed = ThemeProvider(
+        storage: const FlutterSecureStorage(),
+        autoLoad: false,
+        initialFontFamily: 'SelfMusicTestFont',
+      );
+      expect(themed.themeData.textTheme.bodyMedium?.fontFamily,
+          'SelfMusicTestFont');
+
+      await themed.setFontFamily(null);
+      expect(themed.fontFamily, isNull);
+      expect(themed.themeData.textTheme.bodyMedium?.fontFamily,
+          isNot('SelfMusicTestFont'));
     });
   });
 }
