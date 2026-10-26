@@ -20,8 +20,8 @@ import 'online_meta_dialog.dart';
 ///
 /// 直连歌落库并标记扫描保护；服务端歌（后端只读）写入本地覆盖层，刷新即生效。
 /// 纯手动入口：本弹窗只由用户点开（播放页封面菜单/歌曲列表三点菜单），
-/// 不做任何自动搜刮。在线保存后用索引最新行回填本窗输入框（用户已改的
-/// 字段保留，不覆盖）。
+/// 不做任何自动搜刮。窗口存活期间监听元数据版本，在线回填/子窗编辑/
+/// 后台补读落库后自动用索引最新行回填输入框（用户已改的字段保留，不覆盖）。
 class EditSongMetaDialog extends StatefulWidget {
   final Song song;
   const EditSongMetaDialog({super.key, required this.song});
@@ -37,12 +37,22 @@ class _EditSongMetaDialogState extends State<EditSongMetaDialog> {
   late final TextEditingController _album;
   late final TextEditingController _year;
 
+  late final DirectSourceManager _direct;
+  late int _seenMetaVersion;
+
   String? _coverPath;
   String _lyricSummary = '无';
+
+  /// 本窗自动回填写入过的值（每个输入框最近一次）：连续多次在线回填时，
+  /// 字段仍可视为「未手改」继续跟随，而手改过的字段不再被覆盖。
+  final Map<TextEditingController, String> _autoFilled = {};
 
   @override
   void initState() {
     super.initState();
+    _direct = context.read<DirectSourceManager>();
+    _seenMetaVersion = _direct.metaVersion;
+    _direct.addListener(_onDirectChanged);
     _title = TextEditingController(text: widget.song.title);
     _artist = TextEditingController(text: widget.song.artist ?? '');
     _albumArtist = TextEditingController(text: widget.song.albumArtist ?? '');
@@ -51,18 +61,28 @@ class _EditSongMetaDialogState extends State<EditSongMetaDialog> {
         text: widget.song.year == null ? '' : '${widget.song.year}');
     _coverPath = widget.song.coverPath;
     _lyricSummary = _summarize(
-        context.read<DirectSourceManager>().index.lyricsOf(
-            widget.song.sourceKey, widget.song.sourceRef));
+        _direct.index.lyricsOf(widget.song.sourceKey, widget.song.sourceRef));
   }
 
   @override
   void dispose() {
+    _direct.removeListener(_onDirectChanged);
     _title.dispose();
     _artist.dispose();
     _albumArtist.dispose();
     _album.dispose();
     _year.dispose();
     super.dispose();
+  }
+
+  /// 元数据版本变化（在线回填/嵌入/子窗口编辑/后台补读）→ 自动回填本窗。
+  /// 不再依赖关闭在线窗的返回值：保存后立即关窗、写库晚于关窗也不会漏刷新。
+  void _onDirectChanged() {
+    if (!mounted) return;
+    final v = _direct.metaVersion;
+    if (v == _seenMetaVersion) return;
+    _seenMetaVersion = v;
+    _refreshFromIndex();
   }
 
   static String _summarize(String? lyrics) {
@@ -73,14 +93,33 @@ class _EditSongMetaDialogState extends State<EditSongMetaDialog> {
     return '${lines.length} 行';
   }
 
-  void _refreshMediaState() {
-    final direct = context.read<DirectSourceManager>();
-    final fresh = direct.index.songByRef(
-        widget.song.sourceKey, widget.song.sourceRef);
+  /// 用索引最新行回填输入框与封面/歌词摘要。
+  /// 用户手改过的字段保留；未手改字段（含此前自动回填的值）跟随最新行。
+  void _refreshFromIndex() {
+    final fresh =
+        _direct.index.songByRef(widget.song.sourceKey, widget.song.sourceRef);
+    // 服务端歌无 idx_songs 行时 songByRef 为空：保留本窗现状。
+    final f = fresh ?? widget.song;
+    void refill(TextEditingController c, String? orig, String? now) {
+      final v = now ?? '';
+      final baseline = _autoFilled[c] ?? (orig ?? '');
+      if (c.text == baseline && c.text != v) {
+        c.text = v;
+        _autoFilled[c] = v;
+      }
+    }
+
+    refill(_title, widget.song.title, f.title);
+    refill(_artist, widget.song.artist, f.artist);
+    refill(_albumArtist, widget.song.albumArtist, f.albumArtist);
+    refill(_album, widget.song.albumName, f.albumName);
+    final yOrig = widget.song.year == null ? '' : '${widget.song.year}';
+    final yNow = f.year == null ? '' : '${f.year}';
+    refill(_year, yOrig, yNow);
     setState(() {
-      _coverPath = (fresh ?? widget.song).coverPath;
-      _lyricSummary = _summarize(direct.index
-          .lyricsOf(widget.song.sourceKey, widget.song.sourceRef));
+      _coverPath = f.coverPath;
+      _lyricSummary = _summarize(
+          _direct.index.lyricsOf(widget.song.sourceKey, widget.song.sourceRef));
     });
   }
 
@@ -130,35 +169,15 @@ class _EditSongMetaDialogState extends State<EditSongMetaDialog> {
         isError: false);
   }
 
-  /// 打开在线获取（手动）：保存后用索引最新行回填本窗（用户已改字段保留）。
+  /// 打开在线获取（手动）：保存后经 metaVersion 监听自动回填本窗。
   Future<void> _openOnline() async {
     await showDialog<void>(
       context: context,
       builder: (_) => OnlineMetaDialog(song: widget.song),
     );
     if (!mounted) return;
-    final direct = context.read<DirectSourceManager>();
-    final fresh =
-        direct.index.songByRef(widget.song.sourceKey, widget.song.sourceRef);
-    // 服务端歌无 idx_songs 行时 songByRef 为空：保留本窗现状。
-    final f = fresh ?? widget.song;
-    void refill(TextEditingController c, String? orig, String? now) {
-      // 仅当用户没动该字段（仍等于打开时的旧值）才用在线新值覆盖。
-      if (c.text == (orig ?? '') && c.text != (now ?? '')) {
-        c.text = now ?? '';
-      }
-    }
-
-    setState(() {
-      refill(_title, widget.song.title, f.title);
-      refill(_artist, widget.song.artist, f.artist);
-      refill(_albumArtist, widget.song.albumArtist, f.albumArtist);
-      refill(_album, widget.song.albumName, f.albumName);
-      final yOrig = widget.song.year == null ? '' : '${widget.song.year}';
-      final yNow = f.year == null ? '' : '${f.year}';
-      refill(_year, yOrig, yNow);
-      _refreshMediaState();
-    });
+    // 兜底同步一次（幂等）：覆盖在线窗未走 notifySongMetaChanged 的旧路径。
+    _refreshFromIndex();
   }
 
   Future<void> _openEmbed() async {
@@ -169,7 +188,7 @@ class _EditSongMetaDialogState extends State<EditSongMetaDialog> {
       builder: (_) => EmbedProgressDialog(song: widget.song),
     );
     if (!mounted || ok != true) return;
-    _refreshMediaState();
+    _refreshFromIndex();
   }
 
   Future<void> _openCover() async {
@@ -178,7 +197,7 @@ class _EditSongMetaDialogState extends State<EditSongMetaDialog> {
       builder: (_) => _CoverEditWindow(song: widget.song),
     );
     if (!mounted) return;
-    _refreshMediaState();
+    _refreshFromIndex();
   }
 
   Future<void> _openLyrics() async {
@@ -187,7 +206,7 @@ class _EditSongMetaDialogState extends State<EditSongMetaDialog> {
       builder: (_) => _LyricsEditWindow(song: widget.song),
     );
     if (!mounted) return;
-    _refreshMediaState();
+    _refreshFromIndex();
   }
 
   @override
@@ -342,17 +361,19 @@ class _CoverEditWindowState extends State<_CoverEditWindow> {
       }
       if (!mounted) return;
       final direct = context.read<DirectSourceManager>();
+      final player = context.read<PlayerProvider>();
       final svc = OnlineMetaService(
           index: direct.index, settings: direct.settings);
       final r = await svc.applyCover(widget.song, bytes,
           src: direct.sourceByKey(widget.song.sourceKey));
-      if (!mounted) return;
       final updated = direct.index
           .songByRef(widget.song.sourceKey, widget.song.sourceRef);
       if (updated != null) {
-        direct.refresh();
-        context.read<PlayerProvider>().refreshSongMeta(updated);
+        // 先通知再判 mounted：选图后立刻关窗也不能丢掉全局刷新信号。
+        direct.notifySongMetaChanged();
+        player.refreshSongMeta(updated);
       }
+      if (!mounted) return;
       setState(() {
         _mem = Uint8List.fromList(bytes);
         _path = r.coverPath;
@@ -577,12 +598,15 @@ class _LyricsEditWindowState extends State<_LyricsEditWindow> {
     setState(() => _busy = true);
     try {
       final direct = context.read<DirectSourceManager>();
+      final player = context.read<PlayerProvider>();
       final svc = OnlineMetaService(
           index: direct.index, settings: direct.settings);
       final r = await svc.applyLyrics(widget.song, text,
           src: direct.sourceByKey(widget.song.sourceKey));
+      // 先通知再判 mounted：保存后立刻关窗也不能丢掉全局刷新信号。
+      direct.notifySongMetaChanged();
+      player.reloadLyricsIfCurrent(widget.song);
       if (!mounted) return;
-      context.read<PlayerProvider>().reloadLyricsIfCurrent(widget.song);
       setState(() => _dirty = false);
       Navigator.of(context).pop(true);
       AppToast.show(
