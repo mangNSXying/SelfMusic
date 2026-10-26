@@ -13,6 +13,11 @@ public final class SyncEventTypes {
     public static final String SONG_UNFAVORITE = "song.unfavorite";
     public static final String SONG_DISLIKED = "song.disliked";
     public static final String SONG_RESET = "song.reset";
+    /**
+     * 播放进度样本（不改权重/streak）：普通样本带 progress_pct；
+     * 补推基线带 baseline:true + progress_hist 全数组（服务端按桶 max，不累加）。
+     */
+    public static final String SONG_PROGRESS = "song.progress";
     // 权重绝对态（补推/纠偏用）：行级 LWW，载荷含 like/dislike streak、
     // weight、frozen、is_favorite 全量字段（缺键保持行上原值）
     public static final String SONG_STATE = "song.state";

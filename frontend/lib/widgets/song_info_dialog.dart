@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
 import '../utils/duration_format.dart';
+import '../utils/play_progress.dart';
 import '../utils/play_stats.dart';
 import '../utils/url_display.dart';
 import 'app_dialog_actions.dart';
@@ -58,6 +59,10 @@ class SongInfoDialog extends StatelessWidget {
       if (bitrate != null) ['码率', bitrate],
       ['播放时长', playSecLabel(playSec)],
       ['播放次数', playCountLabel(playSec, song.duration)],
+      [
+        '中位进度',
+        formatMedianProgress(direct.weight.medianProgressPercentOf(song)),
+      ],
       ['来源', '${song.source}（${song.sourceKey}）'],
       ['路径', displayPath],
       if (song.isDirect)

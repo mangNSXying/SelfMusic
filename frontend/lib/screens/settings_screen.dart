@@ -54,8 +54,6 @@ class SettingsScreen extends StatelessWidget {
         return const _SongsSettings();
       case SettingsItem.general:
         return const _GeneralSettings();
-      case SettingsItem.backup:
-        return const _BackupSettings();
       case SettingsItem.playback:
         return const _PlaybackSettings();
       case SettingsItem.notifications:
@@ -2496,28 +2494,49 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
   }
 }
 
+/// 常规：快捷键 + 备份与迁移入口（原「备份」分区并入此处）。
 class _GeneralSettings extends StatelessWidget {
   const _GeneralSettings();
 
   @override
-  Widget build(BuildContext context) => const ShortcutSettingsPanel();
+  Widget build(BuildContext context) =>
+      const ShortcutSettingsPanel(footer: _BackupMigrationTile());
 }
 
-/// 备份设置（settings.md §3.5）：设置/歌单导出导入（不含令牌与源凭据）。
-class _BackupSettings extends StatefulWidget {
-  const _BackupSettings();
+/// 「备份与迁移」入口：文件导出/导入与本机备份合并为一个弹窗。
+class _BackupMigrationTile extends StatelessWidget {
+  const _BackupMigrationTile();
+
   @override
-  State<_BackupSettings> createState() => _BackupSettingsState();
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: const Icon(Icons.backup_outlined),
+      title: const Text('备份与迁移'),
+      subtitle: const Text('导出 / 导入设置与歌单 · 选择本机备份恢复'),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => showDialog<void>(
+        context: context,
+        builder: (_) => const _BackupMigrationDialog(),
+      ),
+    );
+  }
 }
 
-class _BackupSettingsState extends State<_BackupSettings> {
+/// 备份与迁移弹窗（settings.md §3.5）：设置/歌单导出导入（不含令牌与源凭据），
+/// 并可直接点选本机备份恢复。
+class _BackupMigrationDialog extends StatefulWidget {
+  const _BackupMigrationDialog();
+  @override
+  State<_BackupMigrationDialog> createState() => _BackupMigrationDialogState();
+}
+
+class _BackupMigrationDialogState extends State<_BackupMigrationDialog> {
   List<File> _backups = [];
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final direct = context.read<DirectSourceManager>();
-    _backups = _service(direct).listBackups();
+  void initState() {
+    super.initState();
+    _backups = _service(context.read<DirectSourceManager>()).listBackups();
   }
 
   BackupService _service(DirectSourceManager direct) => BackupService(
@@ -2537,60 +2556,72 @@ class _BackupSettingsState extends State<_BackupSettings> {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    return ListView(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text('备份与迁移',
-              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+    return AlertDialog(
+      title: const Text('备份与迁移'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.file_download_outlined, size: 18),
+                  label: const Text('导出设置'),
+                  onPressed: _doExportSettings,
+                ),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.file_upload_outlined, size: 18),
+                  label: const Text('导入设置'),
+                  onPressed: () => _pickAndImport(BackupKind.settings),
+                ),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.queue_music, size: 18),
+                  label: const Text('导出歌单'),
+                  onPressed: _doExportPlaylists,
+                ),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.playlist_add, size: 18),
+                  label: const Text('导入歌单'),
+                  onPressed: () => _pickAndImport(BackupKind.playlists),
+                ),
+              ],
+            ),
+            const Divider(height: 24),
+            Text('本机备份',
+                style:
+                    TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            Text('点选备份恢复对应的设置或歌单',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
+            const SizedBox(height: 4),
+            Flexible(
+              child: _backups.isEmpty
+                  ? const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 16),
+                      child: Text('暂无备份。点击上方「导出」创建。'),
+                    )
+                  : SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [for (final f in _backups) _backupTile(f)],
+                      ),
+                    ),
+            ),
+          ],
         ),
-        ListTile(
-          leading: const Icon(Icons.tune),
-          title: const Text('导出设置'),
-          subtitle: const Text('含 本机设置 + 服务端地址 + 主题'),
-          trailing: const Icon(Icons.arrow_downward),
-          onTap: () => _doExportSettings(),
-        ),
-        ListTile(
-          leading: const Icon(Icons.upload_file),
-          title: const Text('导入设置'),
-          subtitle: const Text('选择备份文件恢复设置'),
-          trailing: const Icon(Icons.folder_open),
-          onTap: () => _pickAndImport(BackupKind.settings),
-        ),
-        ListTile(
-          leading: const Icon(Icons.queue_music),
-          title: const Text('导出歌单'),
-          subtitle: const Text('全部歌单'),
-          trailing: const Icon(Icons.arrow_downward),
-          onTap: () => _doExportPlaylists(),
-        ),
-        ListTile(
-          leading: const Icon(Icons.playlist_add),
-          title: const Text('导入歌单'),
-          subtitle: const Text('选择备份文件恢复歌单'),
-          trailing: const Icon(Icons.folder_open),
-          onTap: () => _pickAndImport(BackupKind.playlists),
-        ),
-        const Divider(height: 32),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text('本机备份',
-              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
-        ),
-        if (_backups.isEmpty)
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Text('暂无备份。点击上方「导出」创建。',
-                style: Theme.of(context).textTheme.bodySmall),
-          ),
-        for (final f in _backups) _backupTile(context, f),
-      ],
+      ),
+      actions: [appDialogCloseAction(context, label: '关闭')],
     );
   }
 
-  Widget _backupTile(BuildContext context, File f) {
+  Widget _backupTile(File f) {
     final name = f.path.split('/').last;
     final kind = BackupService.kindOf(f);
     final kindLabel = switch (kind) {
@@ -2599,8 +2630,10 @@ class _BackupSettingsState extends State<_BackupSettings> {
       BackupKind.full => '设置 + 歌单',
     };
     return ListTile(
+      dense: true,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 4),
       leading: const Icon(Icons.description_outlined),
-      title: Text(name),
+      title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: Text('$kindLabel · ${_sizeLabel(f.lengthSync())}'),
       onTap: () => _confirmImport(f, name, kind),
       trailing: Row(
@@ -2624,16 +2657,16 @@ class _BackupSettingsState extends State<_BackupSettings> {
   Future<void> _doExportSettings() async {
     final direct = context.read<DirectSourceManager>();
     final file = await _service(direct).exportSettings();
-    _refresh();
     if (!mounted) return;
+    _refresh();
     AppToast.show('已导出：${file.path.split('/').last}（不含令牌与源凭据）', isError: false);
   }
 
   Future<void> _doExportPlaylists() async {
     final direct = context.read<DirectSourceManager>();
     final file = await _service(direct).exportPlaylists();
-    _refresh();
     if (!mounted) return;
+    _refresh();
     AppToast.show('已导出：${file.path.split('/').last}', isError: false);
   }
 

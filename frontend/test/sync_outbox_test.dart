@@ -9,6 +9,7 @@ import 'package:selfmusic/data/local/playlist_store.dart';
 import 'package:selfmusic/data/local/song_weight_store.dart';
 import 'package:selfmusic/data/local/sync_event_types.dart';
 import 'package:selfmusic/models/song.dart';
+import 'package:selfmusic/utils/play_progress.dart';
 import 'package:sqlite3/open.dart';
 
 DynamicLibrary _openOnLinux() {
@@ -470,6 +471,89 @@ void main() {
     final formats = index.formatStats();
     expect(formats['mp3'], 1);
     expect(formats['未知'], 1); // bare 行 format 为空
+
+    index.close();
+  });
+
+  test('进度事件载荷：complete/skip 带 pct，独立样本走 song.progress', () async {
+    final index = await _openIndex();
+    final weight = SongWeightStore(index, serverAvailable: () => true);
+
+    await weight.onCompleted(directSong(), progressPct: 100);
+    var pending = await index.pendingOutbox();
+    expect(pending.last.type, SyncEventTypes.songComplete);
+    expect(pending.last.payload['progress_pct'], 100);
+
+    await weight.onSkipped(directSong(), progressPct: 20);
+    pending = await index.pendingOutbox();
+    expect(pending.last.type, SyncEventTypes.songSkipped);
+    expect(pending.last.payload['progress_pct'], 20);
+
+    await weight.recordProgress(directSong(), 42);
+    pending = await index.pendingOutbox();
+    expect(pending.last.type, SyncEventTypes.songProgress);
+    expect(pending.last.payload['progress_pct'], 42);
+
+    await weight.onCompletedManual(directSong(), tracked: true);
+    pending = await index.pendingOutbox();
+    expect(pending.last.type, SyncEventTypes.songCompleteManual);
+    expect(pending.last.payload['tracked'], true);
+    expect(pending.last.payload.containsKey('progress_pct'), isFalse);
+
+    index.close();
+  });
+
+  test('补推基线；快照直方图按桶 max 合并且缺字段不覆盖', () async {
+    final index = await _openIndex();
+    await index.upsertSource('webdav:NAS', 'webdav', 'NAS', '{}');
+    await index.recordProgress('webdav:NAS', '/music/z.mp3', 80);
+    expect(await index.pendingOutboxCount(), 0);
+
+    final weight = SongWeightStore(index, serverAvailable: () => true);
+    expect(await weight.backfill(), 1);
+    final pending = await index.pendingOutbox();
+    final baseline = pending
+        .firstWhere((e) => e.type == SyncEventTypes.songProgress);
+    expect(baseline.payload['baseline'], true);
+    final baselineHist = baseline.payload['progress_hist'] as List;
+    expect(baselineHist.length, 101);
+    expect(baselineHist[80], 1);
+
+    List<int> histWith(Map<int, int> buckets) {
+      final out = List<int>.filled(101, 0);
+      buckets.forEach((k, v) => out[k] = v);
+      return out;
+    }
+
+    Future<void> snapshot(List<int>? hist) => index.applySongSnapshotRaw({
+          'source_ref': '/music/snap.mp3',
+          'source': 'webdav',
+          'like_streak': 0,
+          'dislike_streak': 0,
+          'weight': 1.0,
+          'frozen': false,
+          'is_favorite': false,
+          'play_sec': 0,
+          if (hist != null) 'progress_hist': hist,
+        });
+
+    await snapshot(histWith({80: 1, 100: 1}));
+    var merged = PlayProgressHistogram.fromJson(
+        index.playMetaOf('server', '/music/snap.mp3').progressHist);
+    expect(merged.total, 2);
+
+    await snapshot(histWith({80: 3, 100: 1}));
+    merged = PlayProgressHistogram.fromJson(
+        index.playMetaOf('server', '/music/snap.mp3').progressHist);
+    expect(merged.total, 4);
+    expect(merged.toList()[80], 3);
+    expect(merged.toList()[100], 1);
+
+    // 老服务端/空字段不覆盖本地直方图
+    await snapshot(null);
+    merged = PlayProgressHistogram.fromJson(
+        index.playMetaOf('server', '/music/snap.mp3').progressHist);
+    expect(merged.total, 4);
 
     index.close();
   });

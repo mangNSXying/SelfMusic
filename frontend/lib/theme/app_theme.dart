@@ -82,7 +82,6 @@ enum NavSection {
 /// 侧边栏设置分区条目。
 enum SettingsItem {
   general('常规', Icons.keyboard_outlined),
-  backup('备份', Icons.backup_outlined),
   songs('歌曲', Icons.library_music_outlined),
   playback('播放', Icons.play_circle_outline),
   appearance('界面', Icons.palette_outlined),

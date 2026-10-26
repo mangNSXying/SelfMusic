@@ -5,6 +5,7 @@ import '../local/local_index.dart';
 import '../../models/song.dart';
 import '../../utils/chunked_scheduler.dart' show yieldToEventLoop;
 import '../../utils/main_thread_probe.dart';
+import '../../utils/play_progress.dart';
 import 'sync_event_types.dart';
 
 /// 歌曲权重与收藏的统一点（stage2.md §1.5 / §2.1）。
@@ -212,28 +213,53 @@ class SongWeightStore {
 
   bool isFavorite(Song s) => metaOf(s).favorite;
 
+  /// 全历史播放进度中位数；无样本返回 null。
+  double? medianProgressPercentOf(Song s) =>
+      PlayProgressHistogram.fromJson(metaOf(s).progressHist).medianPercent;
+
+  /// 记录一次播放进度样本（30%~95% 等无权重事件的离开）：只进直方图，
+  /// 不改权重/streak/收藏/播放时长。与推送给服务端的 `song.progress` 同值。
+  Future<void> recordProgress(Song s, int progressPct) async {
+    if (s.sourceRef.isEmpty) return;
+    final pct = clampProgressPercent(progressPct);
+    await index.recordProgress(s.sourceKey, s.sourceRef, pct);
+    _metaCache.clear();
+    await _emit(s, SyncEventTypes.songProgress, {'progress_pct': pct});
+  }
+
   /// 完播（播放时长 >95%，通常为自然结束）：like_streak++，dislike 清零（覆盖先前跳过）；
-  /// streak≥3 → factor+0.1（≤1.5）并清零。
+  /// streak≥3 且中位进度闸门通过 → factor+0.1（≤1.5）并清零；闸门未过保留 streak。
   /// 「不喜欢」（frozen）态只记 streak，不自动调权（权重锁定 [dislikedFactor]）。
-  Future<void> onCompleted(Song s) async {
-    await _apply(s, 'complete');
-    await _emit(s, SyncEventTypes.songComplete);
+  ///
+  /// [progressPct] 为本次离开时的最终进度；有值时视为 tracked：同一写事务内先记样本
+  /// 再评比，事件载荷带 `progress_pct`。旧调用不传则沿用单线规则。
+  Future<void> onCompleted(Song s, {int? progressPct}) async {
+    await _apply(s, 'complete',
+        progressPct: progressPct, tracked: progressPct != null);
+    await _emit(s, SyncEventTypes.songComplete,
+        progressPct == null ? null : {'progress_pct': progressPct});
   }
 
   /// 中途跳过（播放时长 <30% 被打断）：dislike_streak++，like 清零（覆盖先前完播）；
-  /// streak≥3 → factor−0.1（≥0.5）并清零。
+  /// streak≥3 → factor−0.1（≥0.5）并清零。降权不看中位进度。
   /// 「不喜欢」（frozen）态只记 streak，不自动调权。
-  Future<void> onSkipped(Song s) async {
-    await _apply(s, 'skip');
-    await _emit(s, SyncEventTypes.songSkipped);
+  Future<void> onSkipped(Song s, {int? progressPct}) async {
+    await _apply(s, 'skip', progressPct: progressPct, tracked: progressPct != null);
+    await _emit(s, SyncEventTypes.songSkipped,
+        progressPct == null ? null : {'progress_pct': progressPct});
   }
 
   /// 手动点播后自然完播（改进.txt 功能7）：与 [onCompleted] 的 streak 门槛制不同，
   /// 权重直接提高一档（f=clamp(f+0.1)）并清零累计的完播/切歌次数——用户主动
-  /// 点选并听完一首，本身就是强正面信号。「不喜欢」锁定态不动权重。
-  Future<void> onCompletedManual(Song s) async {
-    await _apply(s, 'complete_manual');
-    await _emit(s, SyncEventTypes.songCompleteManual);
+  /// 点选并听完一首，本身就是强正面信号。
+  ///
+  /// [tracked] 为 true 时同样要过中位进度闸门（升权）；失败保留权重与 streak。
+  /// 本次播放的进度样本已由前一条 complete 记录，本事件不重复采样。
+  /// 「不喜欢」锁定态不动权重。
+  Future<void> onCompletedManual(Song s, {bool tracked = false}) async {
+    await _apply(s, 'complete_manual', tracked: tracked);
+    await _emit(s, SyncEventTypes.songCompleteManual,
+        tracked ? {'tracked': true} : null);
   }
 
   /// 主动喜欢 / 收藏：factor 直接拉到 1.5，同时解除「不喜欢」锁定。
@@ -336,10 +362,15 @@ class SongWeightStore {
   /// source=='server' 占位（归属源未知）仍跳过，避免跨源误归属。
   /// 权重事件落库：读改写整段在写连接内完成（见 LocalIndex.applyWeightEvent）。
   Future<void> _apply(Song s, String event,
-      {bool? enabled, String? songJson}) async {
+      {bool? enabled,
+      String? songJson,
+      int? progressPct,
+      bool tracked = false}) async {
     await index.applyWeightEvent(s.sourceKey, s.sourceRef, event,
         enabled: enabled,
         songJson: songJson,
+        progressPct: progressPct,
+        tracked: tracked,
         minFactor: minFactor,
         maxFactor: maxFactor,
         step: step,
@@ -391,6 +422,18 @@ class SongWeightStore {
         'is_favorite': m.favorite,
         'play_sec': m.playSec,
       });
+      // 配对前的进度样本没有逐条事件：补一条基线直方图（服务端按桶 max，
+      // 与普通样本事件共存也不会重复计数）。
+      final hist = PlayProgressHistogram.fromJson(m.progressHist);
+      if (!hist.isEmpty) {
+        await index.enqueueOutbox(SyncEventTypes.songProgress, {
+          'baseline': true,
+          'source': protocol,
+          'source_ref': m.songRef,
+          if (sourceId != null) 'source_id': sourceId,
+          'progress_hist': hist.toList(),
+        });
+      }
       n++;
     }
     return n;

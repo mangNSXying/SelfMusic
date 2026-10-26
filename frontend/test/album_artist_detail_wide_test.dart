@@ -418,7 +418,7 @@ void main() {
       expect(nav.details, isEmpty);
 
       nav.enterArtist(artist, const []);
-      nav.openSettings(SettingsItem.backup);
+      nav.openSettings(SettingsItem.general);
       expect(nav.details, isEmpty);
 
       nav.enterAlbum(album(3), const []);

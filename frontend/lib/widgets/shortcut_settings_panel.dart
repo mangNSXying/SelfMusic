@@ -6,7 +6,10 @@ import '../shortcuts/shortcut_models.dart';
 import '../shortcuts/shortcut_settings.dart';
 
 class ShortcutSettingsPanel extends StatelessWidget {
-  const ShortcutSettingsPanel({super.key});
+  const ShortcutSettingsPanel({super.key, this.footer});
+
+  /// 追加在快捷键列表后的内容（常规页用于承载「备份与迁移」入口）。
+  final Widget? footer;
 
   @override
   Widget build(BuildContext context) {
@@ -45,6 +48,10 @@ class ShortcutSettingsPanel extends StatelessWidget {
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _openScope(context, ShortcutScope.global),
         ),
+        if (footer != null) ...[
+          const Divider(height: 32),
+          footer!,
+        ],
       ],
     );
   }

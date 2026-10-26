@@ -194,4 +194,105 @@ void main() {
       expect(m.dislikeStreak, 0);
     });
   });
+
+  group('中位播放进度闸门', () {
+    test('3 次完播带 100% 样本 → 1.1，中位数 100', () async {
+      final (_, w) = await _openWeightStore();
+      final s = _song('p1.mp3');
+      for (var i = 0; i < 3; i++) {
+        await w.onCompleted(s, progressPct: 100);
+      }
+      final m = w.metaOf(s);
+      expect(m.factor, closeTo(1.1, 1e-9));
+      expect(m.likeStreak, 0);
+      expect(m.progressHist, isNotNull);
+      expect(w.medianProgressPercentOf(s), 100);
+    });
+
+    test('中位不达标：保留 like_streak，补高进度后立即升权', () async {
+      final (_, w) = await _openWeightStore();
+      final s = _song('p2.mp3');
+      for (var i = 0; i < 10; i++) {
+        await w.recordProgress(s, 40);
+      }
+      for (var i = 0; i < 3; i++) {
+        await w.onCompleted(s, progressPct: 100);
+      }
+      var m = w.metaOf(s);
+      expect(m.factor, SongWeightStore.defaultFactor);
+      expect(m.likeStreak, 3); // 闸门失败保留，等后续完播继续评比
+
+      // 10×40 + 3×100 中位 40；补 8 条 100 后中位跨过 50。
+      for (var i = 0; i < 8; i++) {
+        await w.recordProgress(s, 100);
+      }
+      await w.onCompleted(s, progressPct: 100);
+      m = w.metaOf(s);
+      expect(m.factor, closeTo(1.1, 1e-9));
+      expect(m.likeStreak, 0);
+      expect(w.medianProgressPercentOf(s), 100);
+    });
+
+    test('目标 <=1.0 不设防：0.9 三次完播回 1.0', () async {
+      final (_, w) = await _openWeightStore();
+      final s = _song('p3.mp3');
+      for (var i = 0; i < 3; i++) {
+        await w.onSkipped(s, progressPct: 10);
+      }
+      expect(w.metaOf(s).factor, closeTo(0.9, 1e-9));
+      for (var i = 0; i < 3; i++) {
+        await w.onCompleted(s, progressPct: 100);
+      }
+      expect(w.metaOf(s).factor, closeTo(1.0, 1e-9));
+    });
+
+    test('样本 <3 条阻止 1.0→1.1；补足后放行', () async {
+      final (_, w) = await _openWeightStore();
+      final s = _song('p4.mp3');
+      // 旧式未跟踪事件先攒 2 次 streak（不产生样本）。
+      await w.onCompleted(s);
+      await w.onCompleted(s);
+      await w.onCompleted(s, progressPct: 100); // 样本 1，streak=3
+      var m = w.metaOf(s);
+      expect(m.factor, SongWeightStore.defaultFactor);
+      expect(m.likeStreak, 3);
+      await w.onCompleted(s, progressPct: 100); // 样本 2
+      expect(w.metaOf(s).factor, SongWeightStore.defaultFactor);
+      await w.onCompleted(s, progressPct: 100); // 样本 3，闸门放行
+      m = w.metaOf(s);
+      expect(m.factor, closeTo(1.1, 1e-9));
+      expect(m.likeStreak, 0);
+    });
+
+    test('降权不受中位进度影响', () async {
+      final (_, w) = await _openWeightStore();
+      final s = _song('p5.mp3');
+      for (var i = 0; i < 3; i++) {
+        await w.recordProgress(s, 100);
+      }
+      for (var i = 0; i < 3; i++) {
+        await w.onSkipped(s, progressPct: 10);
+      }
+      expect(w.metaOf(s).factor, closeTo(0.9, 1e-9));
+    });
+
+    test('手动完播 tracked：闸门失败保留 streak，补样本后 +0.1 并清零', () async {
+      final (_, w) = await _openWeightStore();
+      final s = _song('p6.mp3');
+      await w.onCompleted(s);
+      await w.onCompleted(s); // 旧式 streak=2
+      await w.onCompletedManual(s, tracked: true); // 无样本，闸门失败
+      var m = w.metaOf(s);
+      expect(m.factor, SongWeightStore.defaultFactor);
+      expect(m.likeStreak, 2);
+      for (var i = 0; i < 3; i++) {
+        await w.recordProgress(s, 100);
+      }
+      await w.onCompletedManual(s, tracked: true);
+      m = w.metaOf(s);
+      expect(m.factor, closeTo(1.1, 1e-9));
+      expect(m.likeStreak, 0);
+      expect(m.dislikeStreak, 0);
+    });
+  });
 }

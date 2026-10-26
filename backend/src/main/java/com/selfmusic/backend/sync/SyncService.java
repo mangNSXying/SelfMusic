@@ -125,14 +125,34 @@ public class SyncService {
 
     /** 对服务端权重行应用一个权重事件（§7.1 事件表翻版）。未知类型抛 400。 */
     public static void applySongEvent(SongState song, String type, JsonNode payload) {
+        if (SyncEventTypes.SONG_PROGRESS.equals(type)) {
+            applyProgressEvent(song, payload);
+            return;
+        }
+        // tracked：本事件来自带进度采样的新客户端。complete/skip 由 progress_pct
+        // 判定；complete_manual 不采样，用显式 tracked 标记（前一条 complete 已记样本）。
+        boolean tracked = PlayProgress.hasSample(payload);
+        if (SyncEventTypes.SONG_COMPLETE.equals(type)
+                || SyncEventTypes.SONG_SKIP.equals(type)) {
+            PlayProgress.recordSample(song, payload);
+        } else if (SyncEventTypes.SONG_COMPLETE_MANUAL.equals(type)) {
+            tracked = payload != null && payload.path("tracked").asBoolean(false);
+        }
         switch (type) {
             case SyncEventTypes.SONG_COMPLETE -> {
                 song.setLikeStreak(nvl(song.getLikeStreak()) + 1);
                 song.setDislikeStreak(0);
                 if (!song.isFrozen() && song.getLikeStreak() >= 3) {
-                    song.setWeight(factor(song).add(FACTOR_STEP).min(FACTOR_MAX));
-                    song.setLikeStreak(0);
-                    song.setDislikeStreak(0);
+                    BigDecimal current = factor(song);
+                    BigDecimal target = current.add(FACTOR_STEP).min(FACTOR_MAX);
+                    boolean canRaise = target.compareTo(current) > 0;
+                    // 中位闸门未过：保留 streak，后续完播继续评比。
+                    if (!tracked || !canRaise
+                            || PlayProgress.allowsUpgrade(song.getProgressHist(), target.doubleValue())) {
+                        song.setWeight(target);
+                        song.setLikeStreak(0);
+                        song.setDislikeStreak(0);
+                    }
                 }
             }
             case SyncEventTypes.SONG_SKIP -> {
@@ -145,12 +165,17 @@ public class SyncService {
                 }
             }
             case SyncEventTypes.SONG_COMPLETE_MANUAL -> {
-                // 手动点播自然完播：直接提高一档权重 + 清空双 streak。
-                // 「不喜欢」锁定态不动权重（与 complete/skip 一致，锁定最低优先级最高）。
-                song.setLikeStreak(0);
-                song.setDislikeStreak(0);
-                if (!song.isFrozen()) {
-                    song.setWeight(factor(song).add(FACTOR_STEP).min(FACTOR_MAX));
+                // 手动点播自然完播：阶梯升权 + 清空双 streak；tracked 时同样过中位闸门。
+                // 闸门失败保持权重与刚累计的 streak；「不喜欢」锁定态不动权重。
+                BigDecimal current = factor(song);
+                BigDecimal target = current.add(FACTOR_STEP).min(FACTOR_MAX);
+                boolean canRaise = target.compareTo(current) > 0;
+                boolean gateOk = !tracked || song.isFrozen() || !canRaise
+                        || PlayProgress.allowsUpgrade(song.getProgressHist(), target.doubleValue());
+                if (gateOk) {
+                    song.setLikeStreak(0);
+                    song.setDislikeStreak(0);
+                    if (!song.isFrozen()) song.setWeight(target);
                 }
             }
             case SyncEventTypes.SONG_LIKED -> {
@@ -180,6 +205,17 @@ public class SyncService {
                 song.setFrozen(false);
             }
             default -> throw new BizException(40001, "unknown song event: " + type);
+        }
+    }
+
+    /** song.progress：普通样本 +1 桶；baseline 基线按桶 max。不改权重/streak。 */
+    private static void applyProgressEvent(SongState song, JsonNode payload) {
+        if (payload == null) return;
+        if (payload.path("baseline").asBoolean(false)) {
+            song.setProgressHist(
+                    PlayProgress.mergeMax(song.getProgressHist(), payload.get("progress_hist")));
+        } else {
+            PlayProgress.recordSample(song, payload);
         }
     }
 
@@ -1272,6 +1308,10 @@ public class SyncService {
         m.put("frozen", s.isFrozen());
         m.put("is_favorite", s.isFavorite());
         m.put("play_sec", nvl(s.getPlaySec()));
+        // 直方图只由样本事件累加，song.state 不携带；空直方图省略以减小 pull 载荷。
+        if (PlayProgress.total(s.getProgressHist()) > 0) {
+            m.put("progress_hist", PlayProgress.toList(s.getProgressHist()));
+        }
         return m;
     }
 

@@ -12,6 +12,9 @@ abstract final class SyncEventTypes {
   static const songUnfavorite = 'song.unfavorite';
   static const songDisliked = 'song.disliked';
   static const songReset = 'song.reset';
+  // 播放进度样本（不改权重/streak）：普通样本 progress_pct，或补推基线
+  // baseline:true + progress_hist 全数组（服务端按桶 max，不累加）
+  static const songProgress = 'song.progress';
   // 权重绝对态（补推/纠偏用）：服务端行级 LWW 全量覆盖，
   // pull 回来仍是普通 songSnapshot，走 _applySong 落地
   static const songState = 'song.state';

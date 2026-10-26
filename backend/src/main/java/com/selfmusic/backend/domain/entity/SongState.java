@@ -51,6 +51,13 @@ public class SongState {
     @Column(name = "play_sec")
     private Integer playSec = 0;
 
+    /**
+     * 播放进度直方图（101 桶 JSON，0..100%）。只由 complete/skip/progress 样本事件
+     * 累加，baseline 基线按桶 max；song.state 绝对态不携带，避免重复计数。
+     */
+    @Column(name = "progress_hist", columnDefinition = "TEXT")
+    private String progressHist;
+
     @Column(name = "last_event_at")
     private LocalDateTime lastEventAt;
 
@@ -99,6 +106,9 @@ public class SongState {
 
     public Integer getPlaySec() { return playSec; }
     public void setPlaySec(Integer playSec) { this.playSec = playSec; }
+
+    public String getProgressHist() { return progressHist; }
+    public void setProgressHist(String progressHist) { this.progressHist = progressHist; }
 
     public LocalDateTime getLastEventAt() { return lastEventAt; }
     public void setLastEventAt(LocalDateTime lastEventAt) { this.lastEventAt = lastEventAt; }

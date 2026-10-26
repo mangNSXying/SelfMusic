@@ -413,7 +413,7 @@ void main() {
       expect(nav.slideOffset, const Offset(0, -1));
 
       // backToPrevious 层级（底 → 顶）：播放页 < 内容页 < 源内/歌单详情 < 队列 < 设置
-      nav.openSettings(SettingsItem.backup);
+      nav.openSettings(SettingsItem.general);
       expect(nav.backToPrevious(), isTrue);
       expect(nav.settings, isNull);
       nav.openQueue();

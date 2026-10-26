@@ -17,6 +17,7 @@ import '../../utils/chunked_scheduler.dart' show ChunkYield, yieldToEventLoop;
 import '../../utils/off_thread.dart';
 import '../../utils/main_thread_probe.dart';
 import '../../utils/perf_log.dart';
+import '../../utils/play_progress.dart';
 import '../sources/webdav_url.dart';
 import 'audio_metadata.dart';
 import 'db_writer.dart';
@@ -708,6 +709,8 @@ class LocalIndex {
     String event, {
     bool? enabled,
     String? songJson,
+    int? progressPct,
+    bool tracked = false,
     required double minFactor,
     required double maxFactor,
     required double step,
@@ -720,6 +723,8 @@ class LocalIndex {
       'event': event,
       'enabled': enabled,
       'songJson': songJson,
+      'progressPct': progressPct,
+      'tracked': tracked,
       'minFactor': minFactor,
       'maxFactor': maxFactor,
       'step': step,
@@ -728,14 +733,23 @@ class LocalIndex {
     });
   }
 
-  /// 非默认权重行（补推用）：streak 非零 / factor 非 1.0 / 锁定 / 收藏。
+  /// 只记录一次播放进度样本（不改权重/streak/收藏/播放时长）。
+  Future<void> recordProgress(String sourceKey, String songRef, int percent) {
+    return _writer!.op<void>('recordProgress', {
+      'sourceKey': sourceKey,
+      'songRef': songRef,
+      'progressPct': percent,
+    });
+  }
+
+  /// 非默认权重行（补推用）：streak 非零 / factor 非 1.0 / 锁定 / 收藏 / 有进度样本。
   /// 默认态服务端本就是初值，无需补推。
   List<PlayMetaRow> listDirtyPlayMeta() {
     final rs = _db!.select(
         'SELECT source_key, song_ref, like_streak, dislike_streak, factor, '
-        'frozen, is_favorite, song_json, play_sec FROM play_meta '
+        'frozen, is_favorite, song_json, play_sec, progress_hist FROM play_meta '
         'WHERE like_streak<>0 OR dislike_streak<>0 OR factor<>1.0 '
-        'OR frozen<>0 OR is_favorite<>0 OR play_sec<>0');
+        'OR frozen<>0 OR is_favorite<>0 OR play_sec<>0 OR progress_hist IS NOT NULL');
     return [
       for (final r in rs)
         PlayMetaRow(
@@ -748,6 +762,7 @@ class LocalIndex {
           favorite: (r['is_favorite'] as int) != 0,
           songJson: r['song_json'] as String?,
           playSec: (r['play_sec'] as int?) ?? 0,
+          progressHist: r['progress_hist'] as String?,
         ),
     ];
   }
@@ -1099,7 +1114,7 @@ class LocalIndex {
   /// 读 play_meta（纯读；历史 ENCODE 旧行迁移见 open() 的 migrateMetaRefs）。
   PlayMetaRow playMetaOf(String sourceKey, String songRef) {
     final rs = _db!.select(
-        'SELECT source_key, song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json, play_sec '
+        'SELECT source_key, song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json, play_sec, progress_hist '
         'FROM play_meta WHERE source_key=? AND song_ref=?',
         [sourceKey, songRef]);
     if (rs.isEmpty) {
@@ -1124,6 +1139,7 @@ class LocalIndex {
       favorite: (r['is_favorite'] as int) == 1,
       songJson: r['song_json'] as String?,
       playSec: (r['play_sec'] as int?) ?? 0,
+      progressHist: r['progress_hist'] as String?,
     );
   }
 
@@ -1143,7 +1159,7 @@ class LocalIndex {
       final chunk = refsList.sublist(start, end);
       final placeholders = List.filled(chunk.length, '?').join(',');
       final rs = _db!.select(
-          'SELECT source_key, song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json, play_sec '
+          'SELECT source_key, song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json, play_sec, progress_hist '
           'FROM play_meta WHERE source_key=? AND song_ref IN ($placeholders)',
           [sourceKey, ...chunk]);
       for (final r in rs) {
@@ -1157,6 +1173,7 @@ class LocalIndex {
           favorite: (r['is_favorite'] as int) == 1,
           songJson: r['song_json'] as String?,
           playSec: (r['play_sec'] as int?) ?? 0,
+          progressHist: r['progress_hist'] as String?,
         );
       }
     }
@@ -2812,6 +2829,9 @@ class PlayMetaRow {
 
   /// 累计播放时长（秒，整数）。播放次数由它派生：playSec / 歌曲时长（1 位小数）。
   final int playSec;
+
+  /// 播放进度直方图原始 JSON（0..100 共 101 桶）；无样本为 null。
+  final String? progressHist;
   const PlayMetaRow({
     required this.sourceKey,
     required this.songRef,
@@ -2822,6 +2842,7 @@ class PlayMetaRow {
     required this.favorite,
     this.songJson,
     this.playSec = 0,
+    this.progressHist,
   });
 }
 
@@ -2863,6 +2884,9 @@ class PlayDetailRow {
   final String? artist;
   final int? duration;
   final int playSec;
+
+  /// 全历史播放进度中位数；无进度样本为 null。
+  final double? medianPercent;
   const PlayDetailRow({
     required this.sourceKey,
     required this.ref,
@@ -2870,6 +2894,7 @@ class PlayDetailRow {
     this.artist,
     this.duration,
     required this.playSec,
+    this.medianPercent,
   });
 }
 
@@ -3360,7 +3385,8 @@ List<PlayDetailRow> playDetailRowsOf(Database db) {
   final rs = db.select('''
     SELECT i.source_key AS source_key, i.ref AS ref, i.title AS title,
            i.artist AS artist, i.duration AS duration,
-           COALESCE(p.play_sec,0) AS play_sec
+           COALESCE(p.play_sec,0) AS play_sec,
+           p.progress_hist AS progress_hist
     FROM idx_songs i
     LEFT JOIN play_meta p ON p.source_key=i.source_key AND p.song_ref=i.ref
     WHERE i.missing=0
@@ -3375,6 +3401,8 @@ List<PlayDetailRow> playDetailRowsOf(Database db) {
         artist: r['artist'] as String?,
         duration: (r['duration'] as num?)?.toInt(),
         playSec: (r['play_sec'] as num?)?.toInt() ?? 0,
+        medianPercent:
+            PlayProgressHistogram.fromJson(r['progress_hist']).medianPercent,
       ),
   ];
 }

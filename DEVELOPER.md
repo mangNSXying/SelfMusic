@@ -236,16 +236,17 @@ selfmusic/
 
 ### 服务端（MySQL 8）
 
-> 服务端表结构唯一事实源 = `backend/src/main/resources/db/migration/V*.sql`。后端启动时 Flyway 自动执行版本化 SQL 并记录 `flyway_schema_history`；随后 JPA `ddl-auto: validate` 只校验实体与最终表结构是否一致。全新库只需建库建账号；存量库没有迁移历史时自动 baseline 到 V1，再补 V2/V3（V2 为幂等 MODIFY，V3 按列/索引存在性判断，已手工执行过旧 migration 的库重复执行也安全）。
+> 服务端表结构唯一事实源 = `backend/src/main/resources/db/migration/V*.sql`。后端启动时 Flyway 自动执行版本化 SQL 并记录 `flyway_schema_history`；随后 JPA `ddl-auto: validate` 只校验实体与最终表结构是否一致。全新库只需建库建账号；存量库没有迁移历史时自动 baseline 到 V1，再补 V2/V3/V4（V2 为幂等 MODIFY，V3/V4 按列/索引存在性判断，已手工执行过旧 migration 的库重复执行也安全）。
 >
 > - `V1__baseline.sql`：1e247ab 时的完整基线（含 migration_002…009 的结果）
 > - `V2__sync_payload_mediumtext.sql`：TEXT → MEDIUMTEXT（幂等，兼容尚未执行 009 的存量库）
 > - `V3__breakpoint_head_v2.sql`：断点协议 v2 字段 + 旧行回填 + epoch 初始化
-> - **发布过的 V 文件不要修改**（Flyway 校验 checksum）；后续变更新增 `V4__xxx.sql`。
+> - `V4__song_progress_hist.sql`：`song_states.progress_hist` 播放进度直方图（101 桶 JSON，幂等）
+> - **发布过的 V 文件不要修改**（Flyway 校验 checksum）；后续变更新增 `V5__xxx.sql`。
 
 | 表 | 说明 |
 |----|------|
-| `song_states` | 直连歌权重 / 收藏状态（`source_id`+`source_ref` 唯一，无曲库字段；含 `play_sec`） |
+| `song_states` | 直连歌权重 / 收藏状态（`source_id`+`source_ref` 唯一，无曲库字段；含 `play_sec`、`progress_hist`） |
 | `sync_sources` | 播放源同步（`client_uuid` 唯一；`kind+address` 去重；config 不含密码） |
 | `playlists` / `playlist_items` | 歌单与条目（条目自持 `source_id/source_ref` + 标题/歌手/专辑/时长快照） |
 | `play_states` | 每列表断点（自持歌曲身份 + `device_client_id`；`deep_list_json` MEDIUMTEXT；v2 另有 `head_rev/head_clock/head_device/head_op_id/head_session/head_playing/head_updated_at` 与 `history_rev`，head/history 分离仲裁） |
@@ -273,7 +274,7 @@ selfmusic/
 | `ssh_known_hosts` | SFTP 主机密钥 TOFU 钉：`(host_port PK, fingerprint, updated_at)`；**不参与跨设备同步** |
 | `idx_songs` | 直连模式本地索引（增量指纹含 `mtime,size,etag`）；ALTER 列 `album_artist / url / user_edited / meta_read` |
 | `cache` | 已缓存歌曲：`cache_key` PK、`path,size` + `cached_at,last_accessed_at`（LRU 用） |
-| `play_meta` | 播放元数据：`(source_key,song_ref)` PK + `like_streak/dislike_streak/factor/frozen/is_favorite`（收藏统一收口）+ `play_sec` + `song_json` |
+| `play_meta` | 播放元数据：`(source_key,song_ref)` PK + `like_streak/dislike_streak/factor/frozen/is_favorite`（收藏统一收口）+ `play_sec` + `progress_hist` + `song_json` |
 | `playlists` / `playlist_items` | 歌单与条目（含快照字段 + `sort_order`、`source`、`client_uuid`、`deleted` 墓碑） |
 | `app_settings` | 客户端设置键值表（缓存配置 + 7 个排序持久化键等） |
 | `song_lyrics` | 歌词：`(source_key,ref)` PK + `content`（LRC）+ 三态收录 |
@@ -958,13 +959,24 @@ PoC 验收口径（`win10开发机准备.md` §2.4）：空壳 + 直连 WebDAV �
 设列表 n 首（n≥2）：`基础权重 w₀ = 1/n`，`weight = w₀ × factor`，`factor ∈ [0.5, 1.5]`、连续取值、步长 0.1、初始 1.0；唯一例外是「不喜欢」锁定态——固定 `0.1`（`dislikedFactor`，低于下限、只由手动开关写入）。
 
 ```
-连续完整播放（like_streak≥3）→ factor 提高 0.1（上限 1.5）
-连续中断（dislike_streak≥3）→ factor 降低 0.1（下限 0.5）
+连续完整播放（like_streak≥3）且中位播放进度达门槛 → factor 提高 0.1（上限 1.5）
+连续中断（dislike_streak≥3）→ factor 降低 0.1（下限 0.5；不看中位进度）
 liked / 手动喜欢            → factor 直接 1.5（并解除「不喜欢」锁定）
 手动不喜欢（开关）          → factor 直接 0.1 并锁定（frozen=true）
 frozen=true                 → 权重锁定 0.1，跳过自动调权与时长削弱
 选中概率 p_i = factor_i / Σfactor_j（对候选集合归一化；锁定态按 0.1 代入）
 ```
+
+**中位播放进度（升权第二条线）**：每次离开曲目时按 `position / duration` 记一个最终进度样本（自然结束固定 100%；30%~95% 的离开也采样；时长未知且非自然结束不采样；暂停不采样；同一曲目一次占用只采一次）。每首歌维护 101 桶直方图（0..100%，1% 粒度），全历史中位数即「中位播放进度」。升权时两条线必须同时满足：
+
+| 目标 factor | 中位进度门槛 |
+|---|---|
+| ≤ 1.0（从低位回升到 1.0） | 不设闸门 |
+| 1.1 | ≥ 50% |
+| 1.2 | ≥ 55% |
+| 1.3 / 1.4 / 1.5 | ≥ 60% / 65% / 70% |
+
+门槛公式 `50 + (目标 factor − 1.1) × 50`（离群档位线性外推）。tracked 事件（complete/skip 带 `progress_pct`、manual 带 `tracked:true`）在样本 <3 条时视为闸门不满足；旧客户端事件没有进度字段 → 不启用闸门，沿用旧单线规则。闸门未过时**保留 streak 不清零**，后续每次完播继续评比，中位达标时立即 +0.1 并清零；`complete_manual` 同样过闸门，失败保留权重与刚累计的 streak（通过才清零）。降权完全不看中位进度。
 
 选歌（加权随机模式）：**并非无放回抽取**——每步从队列**全量**（排除上一首，n≥2 时对剩余归一化）按 factor 采样，喜欢的歌可在一轮中多次、不喜欢的歌可能要若干轮才播一次，无固定「单轮」长度，每步独立随机采样。
 
@@ -976,9 +988,10 @@ frozen=true                 → 权重锁定 0.1，跳过自动调权与时长�
 
 | 事件 | 触发 | 效果 |
 |------|------|------|
-| complete | 自然结束且播放比例 >95% | like_streak++，dislike_streak=0；非锁定态 like_streak≥3 → factor=min(1.5, +0.1)、streak 清零；锁定态只记 streak 不调权 |
-| complete_manual | **用户手动点播**（`_play(manual:true)` 起始）且自然完播 | like_streak=0、dislike_streak=0、factor=min(1.5, +0.1)（不依赖 3 次门槛——主动点选并听完即强正面信号）；锁定态不动权重 |
-| skip | 被 next/prev/换歌打断且比例 <30% | dislike_streak++，like_streak=0；非锁定态 dislike_streak≥3 → factor=max(0.5, −0.1)、streak 清零；锁定态只记 streak |
+| complete | 自然结束且播放比例 >95% | 先记一条进度样本；like_streak++，dislike_streak=0；非锁定态 like_streak≥3 且中位闸门通过 → factor=min(1.5, +0.1)、streak 清零；闸门未过保留 streak（后续完播继续评比）；锁定态只记 streak 不调权 |
+| complete_manual | **用户手动点播**（`_play(manual:true)` 起始）且自然完播 | 不重复采样（前一条 complete 已记）；tracked 时同样过中位闸门；通过 → like_streak=0、dislike_streak=0、factor=min(1.5, +0.1)；失败保留权重与 streak；锁定态不动权重 |
+| skip | 被 next/prev/换歌打断且比例 <30% | 先记一条进度样本；dislike_streak++，like_streak=0；非锁定态 dislike_streak≥3 → factor=max(0.5, −0.1)、streak 清零；锁定态只记 streak；降权不看中位进度 |
+| progress | 30%~95% 离开 / 补推基线 | `song.progress`：普通样本 progress_pct 只 +1 桶；`baseline:true` 的 progress_hist 按桶 max；不改权重/streak |
 | liked | 手动喜欢 / 收藏 | favorite=true，factor=1.5，解除「不喜欢」锁定（frozen=false） |
 | unfavorite | 取消喜欢 / 收藏 | favorite=false；非锁定态 factor 回 1.0；锁定态保持 0.1 |
 | disliked | 手动不喜欢（开关式） | favorite 不变；开 → factor=0.1 且 frozen=true；关 → 解锁回 1.0 |
@@ -1002,8 +1015,9 @@ frozen=true                 → 权重锁定 0.1，跳过自动调权与时长�
 - **Pull**：每 30s `GET /sync/pull?since_cursor=`；cursor 为服务端 `sync_events.seq` 单调递增变更号。快照按实体去重（服务端单页内 + 客户端跨页）：每页只回该页事件涉及实体的**当前快照**；**`breakpoint.set` 只回断点（playstate），不携带歌单条目快照**（稳态流量放大器修复）。断点回调整轮 pull 结束后统一触发一次。
 - **断点快路径**：启动 / 回前台先打 `GET /playstates/latest`（1 RTT 直取全局最新断点快照；旧服务端 404 客户端静默回退，全量 pull 仍是兜底）。启动首轮只拉不推（`pullOnly`：先掌握远端再上报积压，推由后续全量轮先推后拉带走；`awaitFirstPull` 等首轮收尾）；套用 single-flight、与首次恢复的异步尾串行。
 - **事件日志压缩**：`sync_events` 只追加，服务端按「所有未吊销设备的最小 pull 水位」（`devices.last_pull_cursor`）定期回收旧事件，且**每实体保留最新一条**（`sync_events.entity_key` 锚点）；事件表不随使用时长无限增长，新设备首拉成本从 O(历史事件数) 收敛到 O(实体数)；`entity_key` 为空的旧行不参与压缩。
-- **Push**：本地权重事件 / 断点 / 歌单改动 → 写 `weight_outbox`（带 `event_uuid`）→ 2s 防抖批量上推；服务端按 uuid 幂等去重。事件类型（`SyncEventTypes`，前后端同名）：`song.complete / song.skip / song.complete_manual / song.liked / song.unfavorite / song.disliked / song.reset / song.state`（权重）、`playlist.create|update|delete` 与 `playlist.item_add|item_remove|item_move`、`source.create|update|delete`、`breakpoint.set`（载荷含 `deep_list`；纯追加另带 `deep_added`，位置-only 用空 `deep_added`，非追加带 `base_deep_list`；v2 另带 `protocol:2 + op_id + op_clock + intent + head{session_id,playing,...}`，见「断点协议 v2」）。同一歌单的离线断点事件在 push 前只保留最新一条，旧事件随 ack 清理，避免同一后缀重复追加。歌手身份**不参与同步**。配对前存量补推（权重 `backfill()` / 歌单 `backfill()` / 源自举）带 `backfill:true` 标记：服务端“只建行、不赢现行行”（`create` 已存在判输、`item_add` 已存在条目不覆快照；首配空库照常建）。push/pull 回包带 `server_time`（见下「时钟校准」）。
+- **Push**：本地权重事件 / 断点 / 歌单改动 → 写 `weight_outbox`（带 `event_uuid`）→ 2s 防抖批量上推；服务端按 uuid 幂等去重。事件类型（`SyncEventTypes`，前后端同名）：`song.complete / song.skip / song.complete_manual / song.liked / song.unfavorite / song.disliked / song.reset / song.state`（权重）、`song.progress`（进度样本/基线）、`playlist.create|update|delete` 与 `playlist.item_add|item_remove|item_move`、`source.create|update|delete`、`breakpoint.set`（载荷含 `deep_list`；纯追加另带 `deep_added`，位置-only 用空 `deep_added`，非追加带 `base_deep_list`；v2 另带 `protocol:2 + op_id + op_clock + intent + head{session_id,playing,...}`，见「断点协议 v2」）。同一歌单的离线断点事件在 push 前只保留最新一条，旧事件随 ack 清理，避免同一后缀重复追加。歌手身份**不参与同步**。配对前存量补推（权重 `backfill()` / 歌单 `backfill()` / 源自举）带 `backfill:true` 标记：服务端“只建行、不赢现行行”（`create` 已存在判输、`item_add` 已存在条目不覆快照；首配空库照常建）。push/pull 回包带 `server_time`（见下「时钟校准」）。
 - **累计播放时长**：`play_sec` 随 `song.state` 上下推，两端一律取 `max(行值, 快照值)` 单调合并（服务端 `mergePlaySec` + 客户端落库同口径），不因乱序 / 旧快照倒退。
+- **中位播放进度**：`progress_hist`（101 桶 JSON）只由样本事件累加——complete/skip 载荷的 `progress_pct`、`song.progress` 的普通样本各 +1 桶；配对前存量由 `song.progress` 的 `baseline:true + progress_hist` 补推，按桶 max 合并（不累加）。`song.state` 不携带直方图，避免与样本事件重复计数。pull 歌曲快照带非空 `progress_hist`，客户端按桶 max 合并；本地有该曲未推 `song.*` 事件时既有 pull guard 跳过该曲快照。旧数据无直方图 / 旧客户端无进度字段 → 不启用中位闸门，沿用旧单线规则。
 - **冲突（字段级合并）**：权重走**事件重算**（两设备并发点赞按到达序重放，不互抹）；收藏 / 歌单元数据 / 删除墓碑走**行级 LWW**（事件 `occurred_at` vs 行 `last_event_at`，输方收 correction 回执自纠；仲裁时钟为服务端 `arrived_at`）；歌单条目按 seq 到达序重放（后到达胜出）。直接 REST 变更（歌单 CRUD / 断点 PUT / 调权 POST）同样先记事件再生效。**断点当前曲/进度例外**：v2 客户端改由 `head_*` HLC 仲裁（见下条「断点协议 v2」），`last_event_at` 行级 LWW 仅保留给旧客户端 / 旧协议 / `PUT /playstates/{id}`。
 - **断点深层列表分支合并**：客户端本地 `breakpoint_sync_base` 记录每个歌单**本机已采用且与服务端确认过**的深层列表；拉取镜像但播放器未采用时不得推进 base，否则本机旧列表会被误判成非追加分支。本地若只是 base 的尾部追加，合并只消费 `deep_added` 后缀，服务端执行 `server + deep_added`；若发生上一首/替换末尾/清空等非追加操作，push 带 `base_deep_list` 走三向列表合并 `C + server[C:] + device[C:]`（`C`=最长公共前缀，身份按 `source_ref`，去重保留最后，超容量只裁最旧端）。`deep_list` 仍随载荷携带：服务端首写/旧行无历史时用全量兜底，无合并回执时客户端用它确认 base。服务端在结果与来件不同时于 push 回包 `merged`（按 event_uuid 键控）返回完整快照；位置-only 事件在服务端历史与来件不同时也回 `merged`。客户端即使 `device_client_id` 是自己也强制落镜像，非当前歌单只落镜像并抑制自动套用；当前歌单只更新历史/融合队列、不 seek、不打断播放，base 按本机实际采用结果推进。合并时钟取 `max(现行 last_event_at, 来件 occurred_at, 服务端 now)` 且严格大于两边，避免对端镜像时钟拒收；历史未变但接受了当前曲/进度时时钟只前进不回退。
 - **断点协议 v2（head/history 分离，最后一次真实操作赢）**：服务端先升级，客户端从 pull/push/latest 回包看到 `breakpoint_protocol: 2` 后切 v2（旧服务端无该字段继续走 legacy，旧客户端忽略新字段）。v2 把断点拆成「当前播放头 head」与「深层历史 history」：

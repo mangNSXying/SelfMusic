@@ -53,6 +53,7 @@ Future<DirectSourceManager> _seed() async {
   for (var i = 1; i < 250; i++) {
     await mgr.index.upsertPlayMeta('local:test', 'song_$i', playSec: i * 10);
   }
+  await mgr.index.recordProgress('local:test', 'song_249', 100);
   return mgr;
 }
 
@@ -88,6 +89,9 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('播放时长'), findsOneWidget);
     expect(find.text('歌曲时长'), findsOneWidget);
+    // 排序按钮 + 展开卡片明细行。
+    expect(find.text('中位进度'), findsNWidgets(2));
+    expect(find.text('100%'), findsOneWidget);
   });
 
   testWidgets('播放数据·宽屏分页表格：只渲染当前页 25 行', (tester) async {
@@ -101,6 +105,8 @@ void main() {
     expect(find.byType(PaginatedDataTable), findsOneWidget);
     expect(find.text('歌曲 249'), findsOneWidget);
     expect(find.textContaining('of 250'), findsOneWidget);
+    expect(find.text('中位进度'), findsOneWidget);
+    expect(find.text('100%'), findsOneWidget);
     // 第 26 名不在当前页，未被构建。
     expect(find.text('歌曲 224'), findsNothing);
   });

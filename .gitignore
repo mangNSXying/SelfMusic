@@ -30,6 +30,12 @@ tools/
 .DS_Store
 .idea/
 *.iml
+# 本地工具配置与备份/临时文件（如 Qoder 权限列表、docker-compose.yml.bak.<date>）
+.qoder/
+*.bak
+*.bak.*
+*.orig
+*~
 **/doc/api/
 *.htm*
 **temp**

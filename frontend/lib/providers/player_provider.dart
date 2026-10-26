@@ -26,6 +26,7 @@ import '../services/playback_guard.dart';
 import '../services/selfmusic_audio_handler.dart';
 import '../utils/lrc_parser.dart';
 import '../utils/perf_log.dart';
+import '../utils/play_progress.dart';
 import '../utils/play_stats.dart';
 import '../utils/song_title_format.dart';
 import '../utils/weight_curve.dart';
@@ -887,6 +888,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 当前曲是否用户手动点播（playAt/playQueue；next/prev/自动/失败重试=非手动）。
   /// 自然完播（>95%）时在此基础上额外累计 `complete_manual` 权重 +0.1 一档。
   bool _startedManual = false;
+
+  /// 本次曲目占用是否已记录离开样本/权重事件：自然结束与 next/prev 竞态下
+  /// 只允许结算一次。换曲（[_play]）时重置。
+  bool _departureSampled = false;
 
   // ---------- 装载失败与播放错误（改进.txt：后台有概率停止播放） ----------
 
@@ -2065,6 +2070,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _transcodeStartSec = 0;
       // 记录本次起始是否用户手动点播（改进.txt 功能7 完播判定用；任何新起始都会覆盖）。
       _startedManual = manual;
+      _departureSampled = false;
       // 用户主动起播 → 首轮同步晚到的远端断点不再回切。
       if (manual) {
         _userTookOver = true;
@@ -2961,6 +2967,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 单曲循环：同一首重播。[play] 为 false 时只回到开头并暂停（睡眠定时曲末预切）。
   Future<void> _replay({bool play = true}) async {
     _completedKey = null;
+    // 单曲循环的新一轮占用：允许再次记录离开样本/权重事件。
+    _departureSampled = false;
     await player.seek(Duration.zero);
     if (play) {
       await player.play();
@@ -3244,24 +3252,39 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // ---------- 事件采集（stage2.md §2.3） ----------
 
-  void _emitWeight(Song s, {required bool completed, required Duration position}) {
+  void _emitWeight(Song s,
+      {required bool completed, required Duration position}) {
     final w = _weight;
-    if (w == null) return;
+    if (w == null || _departureSampled) return;
     final j = judgeWeightRatio(player.duration, position);
-    // 用户手动点播并自然完播（>95%）：额外记一次 complete_manual——权重直接 +0.1
+    // 离开时的最终进度（自然结束固定 100%，与 judgeWeightRatio 同用播放器时长）。
+    final pct = progressPercentOf(player.duration, position, completed: completed);
+    // 用户手动点播并自然完播（>95%）：额外记一次 complete_manual——权重 +0.1
     // 一档并清空双 streak（改进.txt 功能7）。非手动起点（next/prev/自动/失败重试）不触发。
     final manual = _startedManual;
-    if (j == WeightJudgement.complete) {
-      w.onCompleted(s);
-      if (manual) w.onCompletedManual(s);
-    } else if (j == WeightJudgement.skip) {
-      w.onSkipped(s);
-    } else if (j == WeightJudgement.none && completed) {
-      // 时长不可判定但自然结束：补偿记一次完播。
-      w.onCompleted(s);
-      if (manual) w.onCompletedManual(s);
-    }
     _startedManual = false;
+    if (j == WeightJudgement.complete) {
+      _departureSampled = true;
+      unawaited(_emitCompleted(w, s, pct, manual));
+    } else if (j == WeightJudgement.skip) {
+      _departureSampled = true;
+      unawaited(w.onSkipped(s, progressPct: pct));
+    } else if (j == WeightJudgement.none && completed) {
+      // 时长不可判定但自然结束：补偿记一次完播（进度固定 100%）。
+      _departureSampled = true;
+      unawaited(_emitCompleted(w, s, pct, manual));
+    } else if (pct != null) {
+      // 30%~95% 等无权重事件的离开：只记进度样本，不动 streak/权重。
+      _departureSampled = true;
+      unawaited(w.recordProgress(s, pct));
+    }
+  }
+
+  /// complete 必须先落库/入队，manual 再沿用同一批直方图评比，避免 outbox 乱序。
+  Future<void> _emitCompleted(
+      SongWeightStore w, Song s, int? pct, bool manual) async {
+    await w.onCompleted(s, progressPct: pct);
+    if (manual) await w.onCompletedManual(s, tracked: true);
   }
 
   /// 手动离开当前歌前调用（避免对同一首重复判定）。

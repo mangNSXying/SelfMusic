@@ -70,6 +70,7 @@ void applySchema(Database db) {
       is_favorite   INTEGER NOT NULL DEFAULT 0,
       song_json     TEXT,
       play_sec      INTEGER NOT NULL DEFAULT 0,
+      progress_hist TEXT,
       PRIMARY KEY (source_key, song_ref)
     );
   ''');
@@ -331,6 +332,10 @@ void applySchema(Database db) {
   if (!metaCols.contains('play_sec')) {
     db.execute(
         'ALTER TABLE play_meta ADD COLUMN play_sec INTEGER NOT NULL DEFAULT 0');
+  }
+  // 播放进度直方图（0..100 共 101 桶，JSON 数组）。空直方图留 NULL。
+  if (!metaCols.contains('progress_hist')) {
+    db.execute('ALTER TABLE play_meta ADD COLUMN progress_hist TEXT');
   }
   // 「不喜欢」锁定行权重刷新（一次性、幂等）：历史语义写的是自动调权下限 0.5，
   // 现改为固定最低档 0.1（SongWeightStore.dislikedFactor）。只降不升，重跑无匹配行。

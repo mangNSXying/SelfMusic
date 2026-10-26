@@ -11,6 +11,7 @@ import 'package:sqlite3/sqlite3.dart';
 import '../sources/music_source.dart';
 import '../sources/webdav_url.dart';
 import '../../utils/perf_log.dart';
+import '../../utils/play_progress.dart';
 import 'artist_names.dart';
 import 'schema.dart';
 
@@ -682,6 +683,9 @@ Object? _runOp(Database db, String name, Map<String, dynamic> a) {
     case 'addPlaySec':
       _opAddPlaySec(db, a);
       return null;
+    case 'recordProgress':
+      _opRecordProgress(db, a);
+      return null;
     case 'applySongSnapshot':
       _opApplySongSnapshot(db, a);
       return null;
@@ -827,14 +831,23 @@ String? _sourceKeyOfUuid(Database db, String uuid) {
 }
 
 /// 读当前 play_meta 行（写前合并用；空行返回默认权重）。
-({int ls, int ds, double f, bool frozen, bool fav, String? sj, int ps})
+({int ls, int ds, double f, bool frozen, bool fav, String? sj, int ps, String? ph})
     _curMeta(Database db, String sourceKey, String songRef) {
   final rs = db.select(
-      'SELECT like_streak, dislike_streak, factor, frozen, is_favorite, song_json, play_sec '
+      'SELECT like_streak, dislike_streak, factor, frozen, is_favorite, song_json, play_sec, progress_hist '
       'FROM play_meta WHERE source_key=? AND song_ref=?',
       [sourceKey, songRef]);
   if (rs.isEmpty) {
-    return (ls: 0, ds: 0, f: 1.0, frozen: false, fav: false, sj: null, ps: 0);
+    return (
+      ls: 0,
+      ds: 0,
+      f: 1.0,
+      frozen: false,
+      fav: false,
+      sj: null,
+      ps: 0,
+      ph: null,
+    );
   }
   final r = rs.first;
   return (
@@ -845,6 +858,7 @@ String? _sourceKeyOfUuid(Database db, String uuid) {
     fav: (r['is_favorite'] as int) != 0,
     sj: r['song_json'] as String?,
     ps: (r['play_sec'] as int?) ?? 0,
+    ph: r['progress_hist'] as String?,
   );
 }
 
@@ -854,7 +868,7 @@ void _migrateRef(Database db, String sourceKey, String songRef) {
   if (alts.isEmpty) return;
   final ph = alts.map((_) => '?').join(',');
   final rows = db.select(
-      'SELECT song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json, play_sec '
+      'SELECT song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json, play_sec, progress_hist '
       'FROM play_meta WHERE source_key=? AND song_ref IN ($ph)',
       [sourceKey, ...alts]);
   if (rows.isEmpty) return;
@@ -863,14 +877,17 @@ void _migrateRef(Database db, String sourceKey, String songRef) {
       ((r['is_favorite'] as int) == 1 ? 4 : 0) +
       (((r['song_json'] as String?)?.isNotEmpty ?? false) ? 2 : 0) +
       (((r['factor'] as num).toDouble() - 1.0).abs() > 0.01 ? 1 : 0);
-  for (final r in rows.skip(1)) {
+  var hist = PlayProgressHistogram.empty();
+  for (final r in rows) {
+    hist = hist.mergeMax(PlayProgressHistogram.fromJson(r['progress_hist']));
     if (score(r) > score(best)) best = r;
   }
   db.execute('DELETE FROM play_meta WHERE source_key=? AND song_ref IN ($ph)',
       [sourceKey, ...alts]);
   db.execute(
       'INSERT OR IGNORE INTO play_meta(source_key, song_ref, like_streak, dislike_streak, '
-      'factor, frozen, is_favorite, song_json, play_sec) VALUES(?,?,?,?,?,?,?,?,?)',
+      'factor, frozen, is_favorite, song_json, play_sec, progress_hist) '
+      'VALUES(?,?,?,?,?,?,?,?,?,?)',
       [
         sourceKey,
         songRef,
@@ -881,6 +898,7 @@ void _migrateRef(Database db, String sourceKey, String songRef) {
         best['is_favorite'],
         best['song_json'],
         (best['play_sec'] as int?) ?? 0,
+        hist.toJsonOrNull(),
       ]);
 }
 
@@ -896,12 +914,13 @@ void _opUpsertPlayMeta(Database db, Map<String, dynamic> a) {
   final fav = a['favorite'] as bool?;
   final sj = a['songJson'] as String?;
   final ps = a['playSec'] as int?;
+  final ph = a['progressHist'] as String?;
   _migrateRef(db, sourceKey, songRef);
   final cur = _curMeta(db, sourceKey, songRef);
   db.execute('''
     INSERT INTO play_meta(source_key, song_ref, like_streak, dislike_streak,
-      factor, frozen, is_favorite, song_json, play_sec)
-    VALUES(?,?,?,?,?,?,?,?,?)
+      factor, frozen, is_favorite, song_json, play_sec, progress_hist)
+    VALUES(?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(source_key, song_ref) DO UPDATE SET
       like_streak = excluded.like_streak,
       dislike_streak = excluded.dislike_streak,
@@ -909,7 +928,8 @@ void _opUpsertPlayMeta(Database db, Map<String, dynamic> a) {
       frozen = excluded.frozen,
       is_favorite = excluded.is_favorite,
       song_json = COALESCE(excluded.song_json, play_meta.song_json),
-      play_sec = excluded.play_sec
+      play_sec = excluded.play_sec,
+      progress_hist = excluded.progress_hist
   ''', [
     sourceKey,
     songRef,
@@ -920,6 +940,7 @@ void _opUpsertPlayMeta(Database db, Map<String, dynamic> a) {
     (fav ?? cur.fav) ? 1 : 0,
     sj ?? cur.sj,
     ps ?? cur.ps,
+    ph ?? cur.ph,
   ]);
 }
 
@@ -999,6 +1020,10 @@ void _opApplyWeightEvent(Database db, Map<String, dynamic> a) {
   final songJson = a['songJson'] as String?;
   _migrateRef(db, sourceKey, songRef);
   final cur = _curMeta(db, sourceKey, songRef);
+  var hist = PlayProgressHistogram.fromJson(cur.ph);
+  final progressPct = a['progressPct'] as int?;
+  if (progressPct != null) hist = hist.record(progressPct);
+  final tracked = (a['tracked'] as bool?) ?? false;
   var ls = cur.ls;
   var ds = cur.ds;
   var f = cur.f;
@@ -1009,8 +1034,15 @@ void _opApplyWeightEvent(Database db, Map<String, dynamic> a) {
       ls = cur.ls + 1;
       ds = 0;
       if (!cur.frozen && ls >= 3) {
-        ls = 0;
-        f = _clampDb(cur.f + step, minF, maxF);
+        final target = _clampDb(cur.f + step, minF, maxF);
+        final canRaise = target > cur.f + 1e-9;
+        // tracked 事件的样本已含本次；闸门未过时保留 streak，后续完播继续评比。
+        final gateOk = !tracked || !canRaise || allowsUpgrade(hist, target);
+        if (gateOk) {
+          ls = 0;
+          ds = 0;
+          f = target;
+        }
       }
       break;
     case 'skip':
@@ -1022,11 +1054,17 @@ void _opApplyWeightEvent(Database db, Map<String, dynamic> a) {
       }
       break;
     case 'complete_manual':
-      // 手动点播自然完播：直接提高一档权重 + 清空双 streak（不依赖门槛）。
-      // 「不喜欢」锁定态不动权重（与 complete/skip 一致，锁定最低优先级最高）。
-      ls = 0;
-      ds = 0;
-      if (!cur.frozen) f = _clampDb(cur.f + step, minF, maxF);
+      // 手动点播自然完播：阶梯升权 + 清空双 streak；tracked 时同样要过中位闸门。
+      // 闸门失败保持权重与刚累计的 streak；「不喜欢」锁定态不动权重。
+      final target = _clampDb(cur.f + step, minF, maxF);
+      final canRaise = target > cur.f + 1e-9;
+      final gateOk =
+          !tracked || cur.frozen || !canRaise || allowsUpgrade(hist, target);
+      if (gateOk) {
+        ls = 0;
+        ds = 0;
+        if (!cur.frozen) f = target;
+      }
       break;
     case 'liked':
       ls = 0;
@@ -1061,15 +1099,16 @@ void _opApplyWeightEvent(Database db, Map<String, dynamic> a) {
   }
   db.execute('''
     INSERT INTO play_meta(source_key, song_ref, like_streak, dislike_streak,
-      factor, frozen, is_favorite, song_json)
-    VALUES(?,?,?,?,?,?,?,?)
+      factor, frozen, is_favorite, song_json, progress_hist)
+    VALUES(?,?,?,?,?,?,?,?,?)
     ON CONFLICT(source_key, song_ref) DO UPDATE SET
       like_streak = excluded.like_streak,
       dislike_streak = excluded.dislike_streak,
       factor = excluded.factor,
       frozen = excluded.frozen,
       is_favorite = excluded.is_favorite,
-      song_json = COALESCE(excluded.song_json, play_meta.song_json)
+      song_json = COALESCE(excluded.song_json, play_meta.song_json),
+      progress_hist = excluded.progress_hist
   ''', [
     sourceKey,
     songRef,
@@ -1079,6 +1118,35 @@ void _opApplyWeightEvent(Database db, Map<String, dynamic> a) {
     frozen ? 1 : 0,
     fav ? 1 : 0,
     songJson ?? cur.sj,
+    hist.toJsonOrNull(),
+  ]);
+}
+
+/// 只记录一次播放进度样本（30%~95% 等无权重事件的离开）：保留其余列不变。
+void _opRecordProgress(Database db, Map<String, dynamic> a) {
+  final sourceKey = a['sourceKey'] as String;
+  final songRef = a['songRef'] as String;
+  final pct = clampProgressPercent(a['progressPct'] as int);
+  _migrateRef(db, sourceKey, songRef);
+  final cur = _curMeta(db, sourceKey, songRef);
+  final hist = PlayProgressHistogram.fromJson(cur.ph).record(pct);
+  db.execute('''
+    INSERT INTO play_meta(source_key, song_ref, like_streak, dislike_streak,
+      factor, frozen, is_favorite, song_json, play_sec, progress_hist)
+    VALUES(?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(source_key, song_ref) DO UPDATE SET
+      progress_hist = excluded.progress_hist
+  ''', [
+    sourceKey,
+    songRef,
+    cur.ls,
+    cur.ds,
+    cur.f,
+    cur.frozen ? 1 : 0,
+    cur.fav ? 1 : 0,
+    cur.sj,
+    cur.ps,
+    hist.toJsonOrNull(),
   ]);
 }
 
@@ -1092,10 +1160,16 @@ void _opApplySongSnapshot(Database db, Map<String, dynamic> a) {
   final frozen = a['frozen'] as bool;
   final favorite = a['favorite'] as bool;
   final playSec = a['playSec'] as int?;
+  final progressHist = a['progressHist'];
 
   void write(String key, String ref) {
-    // 累计播放时长是单调量：快照值只增不减（服务端行级 LWW 可能比本地小）。
+    // 累计播放时长/进度直方图是单调量：快照值只增不减（服务端行级 LWW 可能比本地小）。
     final cur = _curMeta(db, key, ref);
+    final current = PlayProgressHistogram.fromJson(cur.ph);
+    final incoming = progressHist == null
+        ? null
+        : PlayProgressHistogram.fromJson(progressHist);
+    final merged = incoming == null ? current : current.mergeMax(incoming);
     _opUpsertPlayMeta(db, {
       'sourceKey': key,
       'songRef': ref,
@@ -1105,6 +1179,7 @@ void _opApplySongSnapshot(Database db, Map<String, dynamic> a) {
       'frozen': frozen,
       'favorite': favorite,
       'playSec': playSec == null ? null : (playSec > cur.ps ? playSec : cur.ps),
+      'progressHist': merged.toJsonOrNull(),
     });
   }
 
@@ -1142,8 +1217,9 @@ void _opApplySongSnapshotRaw(Database db, Map<String, dynamic> a) {
     'factor': (a['weight'] as num?)?.toDouble() ?? 1.0,
     'frozen': a['frozen'] == true,
     'favorite': a['is_favorite'] == true,
-    // 老服务端快照没有 play_sec（null = 不参与覆盖，本地累计值保留）
+    // 老服务端快照没有 play_sec/progress_hist（null = 不参与覆盖，本地累计值保留）
     'playSec': (a['play_sec'] as num?)?.toInt(),
+    'progressHist': a['progress_hist'],
   });
 }
 

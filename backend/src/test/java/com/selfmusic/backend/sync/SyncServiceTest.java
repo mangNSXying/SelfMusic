@@ -34,6 +34,12 @@ class SyncServiceTest {
         return s;
     }
 
+    private static String hist(int... samples) {
+        String h = null;
+        for (int s : samples) h = PlayProgress.record(h, s);
+        return h;
+    }
+
     @Test
     void completeThreeTimesRaisesFactor() {
         SongState s = freshState();
@@ -302,6 +308,111 @@ class SyncServiceTest {
         SyncService.applySongEvent(s, SyncEventTypes.SONG_RESET, empty);
         SyncService.applySongEvent(s, SyncEventTypes.SONG_LIKED, empty);
         assertEquals(3600, s.getPlaySec());
+    }
+
+    @Test
+    void completeGateKeepsStreakUntilMedianPasses() {
+        SongState s = freshState();
+        // 10 条 40% 历史 + 每次 100% 完播，中位仍低于 50%。
+        s.setProgressHist(hist(40, 40, 40, 40, 40, 40, 40, 40, 40, 40));
+        ObjectNode p = mapper.createObjectNode();
+        p.put("progress_pct", 100);
+        for (int i = 0; i < 3; i++) {
+            SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE, p);
+        }
+        assertEquals(0, BigDecimal.ONE.compareTo(s.getWeight()));
+        assertEquals(3, s.getLikeStreak(), "闸门失败应保留 streak");
+
+        String raised = s.getProgressHist();
+        for (int i = 0; i < 8; i++) raised = PlayProgress.record(raised, 100);
+        s.setProgressHist(raised);
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE, p);
+        assertEquals(0, new BigDecimal("1.1").compareTo(s.getWeight()));
+        assertEquals(0, s.getLikeStreak());
+    }
+
+    @Test
+    void completeGateThresholdScalesWithTargetWeight() {
+        SongState s = freshState();
+        s.setWeight(new BigDecimal("1.1"));
+        s.setProgressHist(hist(52, 52, 52));
+        ObjectNode p = mapper.createObjectNode();
+        p.put("progress_pct", 52);
+        for (int i = 0; i < 3; i++) {
+            SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE, p);
+        }
+        // 目标 1.2 需 55%，中位 52% → 不升、保留 streak。
+        assertEquals(0, new BigDecimal("1.1").compareTo(s.getWeight()));
+        assertEquals(3, s.getLikeStreak());
+
+        s.setProgressHist(hist(55, 55, 55));
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE, p);
+        assertEquals(0, new BigDecimal("1.2").compareTo(s.getWeight()));
+        assertEquals(0, s.getLikeStreak());
+    }
+
+    @Test
+    void completeManualTrackedGateFailureKeepsStreak() {
+        SongState s = freshState();
+        s.setLikeStreak(2);
+        ObjectNode tracked = mapper.createObjectNode();
+        tracked.put("tracked", true);
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE_MANUAL, tracked);
+        assertEquals(0, BigDecimal.ONE.compareTo(s.getWeight()));
+        assertEquals(2, s.getLikeStreak());
+
+        s.setProgressHist(hist(100, 100, 100));
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE_MANUAL, tracked);
+        assertEquals(0, new BigDecimal("1.1").compareTo(s.getWeight()));
+        assertEquals(0, s.getLikeStreak());
+    }
+
+    @Test
+    void skipDowngradeIgnoresMedian() {
+        SongState s = freshState();
+        s.setProgressHist(hist(100, 100, 100));
+        ObjectNode p = mapper.createObjectNode();
+        p.put("progress_pct", 10);
+        for (int i = 0; i < 3; i++) {
+            SyncService.applySongEvent(s, SyncEventTypes.SONG_SKIP, p);
+        }
+        assertEquals(0, new BigDecimal("0.9").compareTo(s.getWeight()));
+    }
+
+    @Test
+    void songProgressEventRecordsSampleWithoutWeightChange() {
+        SongState s = freshState();
+        ObjectNode p = mapper.createObjectNode();
+        p.put("progress_pct", 42);
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_PROGRESS, p);
+        assertEquals(0, BigDecimal.ONE.compareTo(s.getWeight()));
+        assertEquals(0, s.getLikeStreak());
+        assertEquals(1, PlayProgress.total(s.getProgressHist()));
+        assertEquals(1, PlayProgress.parse(s.getProgressHist())[42]);
+
+        ObjectNode baseline = mapper.createObjectNode();
+        baseline.put("baseline", true);
+        baseline.set("progress_hist",
+                mapper.valueToTree(PlayProgress.toList(hist(42, 42))));
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_PROGRESS, baseline);
+        // max 合并：已有 1 桶，基线 2 桶 → 2（不累加成 3）。
+        assertEquals(2, PlayProgress.total(s.getProgressHist()));
+        assertEquals(0, BigDecimal.ONE.compareTo(s.getWeight()));
+    }
+
+    @Test
+    void songSnapshotCarriesNonEmptyHistogram() {
+        SongState s = freshState();
+        s.setProgressHist(hist(80, 100));
+        Map<String, Object> m = SyncService.songSnapshot(s);
+        @SuppressWarnings("unchecked")
+        List<Integer> h = (List<Integer>) m.get("progress_hist");
+        assertNotNull(h);
+        assertEquals(PlayProgress.BUCKET_COUNT, h.size());
+        assertEquals(1, h.get(80));
+
+        s.setProgressHist(null);
+        assertFalse(SyncService.songSnapshot(s).containsKey("progress_hist"));
     }
 
     // ------------------------------------------------------------------
