@@ -18,12 +18,12 @@ import 'package:sqlite3/open.dart';
 /// 需求：冷启动首帧即渲染上次断点（歌曲/封面/进度），而非「未在播放」占位。
 /// 实现：`restorePreferRemote()` 在启动 initState 内同步发起，其同步前缀
 /// （取断点→重建队列→置当前曲→置乐观位置）在首帧 build 前完成；音频装载/
-/// seek 在后台继续，完成后乐观值退场切真实值。
+/// seek 延迟到用户首次播放或 seek，完成后乐观值退场切真实值。
 ///
 /// 本测试不断言 UI，只断言 provider 的同步前缀语义：
 /// - 未 await 恢复 Future 时，当前曲/乐观位置/回退时长已就绪；
-/// - 恢复完成后真实值接管且无缝一致；
-/// - 恢复装载期用户切歌时，旧断点不拽回新歌。
+/// - 恢复完成后状态一致，真实播放器值在首次播放/seek 后接管；
+/// - 首次播放前用户切歌时，旧断点不拽回新歌。
 
 DynamicLibrary _openOnLinux() {
   try {
@@ -261,7 +261,7 @@ void main() {
         reason: '装载完成前总时长应回退到歌曲元数据时长');
 
     await f;
-    // 恢复完成：真实装载 + seek 接管，值无缝一致。
+    // 恢复完成：仅恢复状态，媒体仍延迟到首次播放。
     expect(player.current?.sourceRef, '/x/a.flac');
     expect(player.position, const Duration(milliseconds: 10000));
     // 放干平台事件投递（fake 播放器广播事件的异步链），避免收尾投递撞上
@@ -303,7 +303,7 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 100));
   });
 
-  test('恢复装载期用户切歌：旧断点不拽回新歌', () async {
+  test('恢复后用户切歌：旧断点不拽回新歌', () async {
     final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
     addTearDown(index.close);
     addTearDown(player.dispose);
@@ -319,7 +319,7 @@ void main() {
     final f = player.restorePreferRemote();
     expect(player.current?.sourceRef, '/x/a.flac');
 
-    // 装载完成前用户下一首：新歌位置不得再被旧断点 seek 覆盖。
+    // 首次播放前用户下一首：新歌位置不得再被旧断点 seek 覆盖。
     // 注：next() 即起播，真值按挂钟插值有毫秒级漂移，只断言远离旧断点。
     await player.next();
     expect(player.current?.sourceRef, '/x/b.flac');
@@ -333,7 +333,7 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 100));
   });
 
-  test('恢复装载期点播放：等恢复完成后再下发 play，恢复尾不再 pause', () async {
+  test('恢复后点播放：首次播放才装载，装载完成前不下发 play', () async {
     final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
     addTearDown(index.close);
     addTearDown(player.dispose);
@@ -346,35 +346,33 @@ void main() {
       anchorKey: 'playlist:$uuid',
     );
 
+    await player.restorePreferRemote();
     final fake = JustAudioPlatform.instance as _FakeJustAudio;
+    expect(fake.players, isEmpty, reason: '恢复本身不得触发媒体装载');
+
     final gate = Completer<void>();
     fake.loadGate = gate;
 
-    final restore = player.restorePreferRemote();
+    final resume = player.resumeFromNotifier();
     await fake.loadStarted.future;
     final fakePlayer = fake.players.values.single;
     expect(fakePlayer.playCalls, 0);
 
-    // 首帧已显示当前曲/断点，用户此刻点播放；恢复装载仍挂起。
-    final resume = player.resumeFromNotifier();
-    await Future<void>.delayed(Duration.zero);
-    expect(fakePlayer.playCalls, 0,
-        reason: '恢复装载/prepared 完成前不得下发 play');
-
     gate.complete();
-    await Future.wait([restore, resume]);
+    await resume;
     // play() 内部先 await AudioSession.instance，再下发平台 play；放干这条异步链。
     await Future<void>.delayed(const Duration(milliseconds: 50));
 
-    expect(fakePlayer.playCalls, 1, reason: '恢复完成后应下发一次 play');
-    expect(fakePlayer.pauseCalls, 0, reason: '恢复尾不得把用户的播放请求 pause 掉');
+    expect(fakePlayer.playCalls, 1, reason: '装载完成后应下发一次 play');
+    expect(fakePlayer.pauseCalls, 0, reason: '装载尾不得把播放请求 pause 掉');
     expect(player.playing, isTrue);
+    expect(player.position.inMilliseconds, closeTo(10000, 200));
 
     // 放干平台事件投递（见上）。
     await Future<void>.delayed(const Duration(milliseconds: 100));
   });
 
-  test('恢复装载期连点两次播放：恢复完成后保持暂停，不补发 play', () async {
+  test('恢复后拖进度条：只更新乐观位置，不触发装载；播放时从新位置装载', () async {
     final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
     addTearDown(index.close);
     addTearDown(player.dispose);
@@ -387,26 +385,60 @@ void main() {
       anchorKey: 'playlist:$uuid',
     );
 
+    await player.restorePreferRemote();
+    final fake = JustAudioPlatform.instance as _FakeJustAudio;
+    expect(fake.players, isEmpty, reason: '恢复本身不得触发媒体装载');
+
+    await player.seek(const Duration(milliseconds: 20000));
+    expect(fake.players, isEmpty, reason: '暂停态 seek 只更新乐观位置');
+    expect(player.position, const Duration(milliseconds: 20000));
+    expect(player.playing, isFalse);
+
+    final gate = Completer<void>();
+    fake.loadGate = gate;
+    final resume = player.resumeFromNotifier();
+    await fake.loadStarted.future;
+    gate.complete();
+    await resume;
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(player.position.inMilliseconds, closeTo(20000, 200));
+    expect(player.playing, isTrue);
+
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
+
+  test('恢复后连点两次播放：装载完成后保持暂停，不补发 play', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+
+    await player.restorePreferRemote();
     final fake = JustAudioPlatform.instance as _FakeJustAudio;
     final gate = Completer<void>();
     fake.loadGate = gate;
 
-    final restore = player.restorePreferRemote();
+    // 第一次点播放：目标态立即翻真，首次装载开始但未完成。
+    final first = player.toggle();
     await fake.loadStarted.future;
     final fakePlayer = fake.players.values.single;
-
-    // 第一次点播放：目标态立即翻真，但装载未完成不下发平台 play。
-    final first = player.toggle();
-    await Future<void>.delayed(Duration.zero);
     expect(player.playing, isTrue, reason: '等待期按钮目标态应先响应');
     expect(fakePlayer.playCalls, 0);
 
-    // 第二次点播放：目标态翻回暂停，恢复尾不应再补发 play。
+    // 第二次点播放：目标态翻回暂停，装载尾不应再补发 play。
     await player.toggle();
     expect(player.playing, isFalse);
 
     gate.complete();
-    await Future.wait([restore, first]);
+    await first;
     await Future<void>.delayed(const Duration(milliseconds: 50));
 
     expect(fakePlayer.playCalls, 0, reason: '偶数次连点最终应保持暂停');
@@ -417,7 +449,7 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 100));
   });
 
-  test('恢复装载期连点两次播控播放：只下发一次 play', () async {
+  test('恢复后连点两次播控播放：只装载/播放一次', () async {
     final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
     addTearDown(index.close);
     addTearDown(player.dispose);
@@ -430,21 +462,21 @@ void main() {
       anchorKey: 'playlist:$uuid',
     );
 
+    await player.restorePreferRemote();
     final fake = JustAudioPlatform.instance as _FakeJustAudio;
     final gate = Completer<void>();
     fake.loadGate = gate;
 
-    final restore = player.restorePreferRemote();
+    final first = player.resumeFromNotifier();
     await fake.loadStarted.future;
     final fakePlayer = fake.players.values.single;
 
-    final first = player.resumeFromNotifier();
     final second = player.resumeFromNotifier();
     await Future<void>.delayed(Duration.zero);
     expect(fakePlayer.playCalls, 0);
 
     gate.complete();
-    await Future.wait([restore, first, second]);
+    await Future.wait([first, second]);
     await Future<void>.delayed(const Duration(milliseconds: 50));
 
     expect(fakePlayer.playCalls, 1, reason: '连点应合并为一次 play');

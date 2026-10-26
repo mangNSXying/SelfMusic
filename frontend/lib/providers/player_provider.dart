@@ -464,10 +464,28 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 用户在恢复装载完成前切歌时，[position] 不再返回旧曲的乐观值。
   String? _restorePositionKey;
 
+  bool _deferredRestoreLoad = false;
+  String? _deferredRestoreKey;
+
+  bool get _hasDeferredRestore =>
+      _deferredRestoreLoad &&
+      _current != null &&
+      _deferredRestoreKey == _positionKeyOf(_current!) &&
+      _restorePositionMs != null;
+
+  void _deferRestoreLoad(Song s, int posMs) {
+    _deferredRestoreLoad = true;
+    _deferredRestoreKey = _positionKeyOf(s);
+    _restorePositionMs = posMs;
+    _restorePositionKey = _deferredRestoreKey;
+  }
+
   /// 恢复装载完成/接管/失败时收口乐观位置。
   void _clearRestorePosition() {
     _restorePositionMs = null;
     _restorePositionKey = null;
+    _deferredRestoreLoad = false;
+    _deferredRestoreKey = null;
   }
 
   /// 音量梯度引擎：16ms 周期单定时器（淡入/淡出共用一条梯度，cancel 即打断）。
@@ -2084,18 +2102,20 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 时不逐首弹 toast，直接跳下一首（见 [_autoSkipAfterFailure]）。
   /// [manual]：本曲是否用户手动点播（playAt/playQueue）——自然完播时额外走
   /// `complete_manual` 权重 +0.1 一档（改进.txt 功能7）；next/prev/自动/失败重试均非手动。
-  Future<void> _play(Song s,
+  Future<bool> _play(Song s,
       {MusicSource? source,
       bool play = true,
       bool fromPlaylist = true,
       bool autoAdvanceOnFailure = false,
       bool manual = false,
-      bool emitBreakpoint = true}) async {
+      bool emitBreakpoint = true,
+      Duration? startAt}) async {
     // 连按切歌 guard：每次 _play 领一个单调令牌，后续 await 间隙若令牌过期
     //（更新的切歌已接管），静默丢弃，不报错、不覆盖、不触发副作用。
     // 解决了快速 next/prev 时旧 setUrl 的 connection abort / source error  toast 刷屏。
     final token = ++_playToken;
     bool alive() => token == _playToken;
+    if (startAt == null) _clearRestorePosition();
     // 用户手动起播新曲：恢复期等待中的播放/暂停目标态作废，避免旧意图
     // 在恢复收尾后又对新曲补一次 play。恢复自身的 `_play(play:false)` 不能
     // 取消——用户可能在恢复的异步前缀期间已经点过播放。
@@ -2162,8 +2182,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           await player.pause();
         } catch (_) {}
       }
-      final (used, line) = await _playDirect(cur, src, alive: alive);
-      if (!alive()) return; // 已被更新的切歌接管
+      final (used, line) = await _playDirect(cur, src,
+          alive: alive, startSec: (startAt?.inMilliseconds ?? 0) / 1000.0);
+      if (!alive()) return false; // 已被更新的切歌接管
       // Failover 成功：后续缓存/补读/歌词/预热一律走实际线路。
       _curSource = used;
       _curLine = line;
@@ -2171,6 +2192,16 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         AppToast.show('主源不可用，已切换到备用$line', isError: false);
       }
       _loadFailStreak = 0;
+      var targetPos = startAt;
+      if (targetPos != null && _hasDeferredRestore) {
+        targetPos = Duration(milliseconds: _restorePositionMs!);
+      }
+      if (targetPos != null) {
+        if (!_liveTranscode && targetPos > Duration.zero) {
+          await player.seek(targetPos);
+        }
+        _clearRestorePosition();
+      }
       if (play) {
         // just_audio 的 play() 在内部 playing==true 时空转。上一首自然播完
         // 时 playing 不会自动复位，直接 play() 会静默跳过：平台层（ohos 的
@@ -2200,7 +2231,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         // play=false 兜底：装载完成后若仍在发声（平台差异）立即暂停。
         await player.pause();
       }
-      if (!alive()) return;
+      if (!alive()) return false;
       unawaited(_applyEqualizerBands());
       // 切歌即时同步：断点先落 outbox 再 poke（自动续播/手动点播同一路径）。
       // 恢复装载不产生 head 事件：启动恢复只是应用状态，不是用户操作。
@@ -2229,14 +2260,23 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(_loadLyrics(cur, enrichSrc));
       notifyListeners();
       _syncSystemMedia();
+      return true;
     } catch (e) {
-      if (!alive()) return; // 旧切歌被接管后的 abort：静默丢弃
+      if (!alive()) return false; // 旧切歌被接管后的 abort：静默丢弃
+      if (startAt != null) {
+        final cur = _current;
+        final pos = _restorePositionMs;
+        if (cur != null && pos != null && _same(cur, s)) {
+          _deferRestoreLoad(cur, pos);
+        }
+      }
       debugPrint('[play] 装载失败《${s.title}》: $e');
       // 自动续播链路：后台切歌失败不逐首弹 toast（人不在屏幕前），跳下一首；
       // 连败到上限才提示。手动点播仍逐次提示。
       if (!autoAdvanceOnFailure) AppToast.error(e, '播放失败');
       notifyListeners();
       if (autoAdvanceOnFailure) unawaited(_autoSkipAfterFailure(e, play));
+      return false;
     }
   }
 
@@ -3002,10 +3042,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _advance(autoAdvanceOnFailure: true, play: play);
   }
 
-  Future<void> prev() {
+  Future<void> prev() async {
     _userTookOver = true;
     _leaveFor(null);
-    if (_queue.isEmpty || _current == null) return Future.value();
+    if (_queue.isEmpty || _current == null) return;
     // 深层列表（改进.txt 1.4）：上一首 = 弹出深层末尾（当前曲），新末尾从头播放。
     // 融合队列下同样弹栈——历史在深层中；深层空时退队列线性上一首。
     final dl = _deepList;
@@ -3016,20 +3056,22 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       final target = dl.tail;
       if (target != null) {
         if (_fusedBase != null) _rebuildFusedQueue(target: target);
-        return _play(target, source: _curSource, fromPlaylist: false);
+        await _play(target, source: _curSource, fromPlaylist: false);
+        return;
       }
     }
     // 无深层列表/仅一首：沿用队列上一首逻辑。
     if (_mode == PlayMode.loopOne) return _replay();
     if (_mode == PlayMode.loopList) {
       _idx = (_idx - 1 + _queue.length) % _queue.length;
-      return _play(_queue[_idx], source: _curSource);
+      await _play(_queue[_idx], source: _curSource);
+      return;
     }
     if (_idx > 0) {
       _idx--;
-      return _play(_queue[_idx], source: _curSource);
+      await _play(_queue[_idx], source: _curSource);
+      return;
     }
-    return Future.value();
   }
 
   /// 单曲循环：同一首重播。[play] 为 false 时只回到开头并暂停（睡眠定时曲末预切）。
@@ -3037,6 +3079,18 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _completedKey = null;
     // 单曲循环的新一轮占用：允许再次记录离开样本/权重事件。
     _departureSampled = false;
+    if (_hasDeferredRestore) {
+      final cur = _current;
+      if (cur != null) {
+        _clearRestorePosition();
+        await _play(cur,
+            fromPlaylist: false,
+            emitBreakpoint: false,
+            play: play,
+            startAt: Duration.zero);
+        return;
+      }
+    }
     await player.seek(Duration.zero);
     if (play) {
       await player.play();
@@ -3484,6 +3538,32 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _resumePlaybackNow() async {
+    if (_hasDeferredRestore) {
+      if (_restoreResumeTarget == false) {
+        _restoreResumeTarget = null;
+        return;
+      }
+      final ok = await _play(
+        _current!,
+        play: false,
+        fromPlaylist: false,
+        emitBreakpoint: false,
+        startAt: Duration(milliseconds: _restorePositionMs!),
+      );
+      if (!ok || _restoreResumeTarget == false) {
+        _restoreResumeTarget = null;
+        notifyListeners();
+        _syncSystemMedia();
+        return;
+      }
+      _restoreResumeTarget = null;
+      unawaited(player.play().catchError((Object e) {
+        debugPrint('[play] play 调用异常（忽略）：$e');
+      }));
+      _fadeIn();
+      _saveForcedAndPoke(intent: 'resume');
+      return;
+    }
     if (player.processingState == ProcessingState.completed) {
       try {
         await player.seek(Duration.zero);
@@ -3556,6 +3636,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 停掉，与丢弃队列一致），划掉任务路径传 `clearResume: false` 保留断点/队列。
   /// 处理器的 `super.stop()` 随后把状态置 idle，前台服务/通知随之结束。
   Future<void> stopFromNotifier({bool clearResume = true}) async {
+    ++_playToken;
     // 启动恢复期已有待播放目标时，停止直接取消它。
     if (_restoreResumeTarget != null) _restoreResumeTarget = false;
     // 清理路径：取消渐变 + 收口挂起的淡出 Future（不暂停）+ 复位意图位。
@@ -3577,6 +3658,19 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> seek(Duration d) async {
     _userTookOver = true;
+    if (_hasDeferredRestore) {
+      var ms = d.inMilliseconds;
+      if (ms < 0) ms = 0;
+      final dur = duration;
+      if (dur != null && ms > dur.inMilliseconds) ms = dur.inMilliseconds;
+      _restorePositionMs = ms;
+      _restorePositionKey = _positionKeyOf(_current!);
+      _lastBpPosMs = ms;
+      _saveForcedAndPoke(intent: 'seek');
+      notifyListeners();
+      _syncSystemMedia();
+      return;
+    }
     // 用户手动 seek 接管：恢复期的乐观位置失效，之后走真实位置。
     _clearRestorePosition();
     // 直播转码流不可原生 seek：带偏移重开流（服务端输出端 -ss）。
@@ -4411,26 +4505,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         final atBreakpoint = resume == _idx;
         _idx = resume;
         _current = _queue[resume];
-        // 乐观位置（同步前缀即设）：首帧进度条即停在断点，未在断点曲上则为 0。
-        _restorePositionMs =
+        final posMs =
             (atBreakpoint && st.positionMs > 0) ? st.positionMs : 0;
-        _restorePositionKey = _positionKeyOf(_current!);
-        final restoredSong = _current!;
-        await _play(_current!, play: false, emitBreakpoint: false);
-        // 装载期间用户可能已切歌：只对仍是恢复目标的当前曲 seek，不把新歌
-        // 拽回旧断点（用户接管优先）。
-        final cur = _current;
-        if (cur != null &&
-            _same(cur, restoredSong) &&
-            atBreakpoint &&
-            st.positionMs > 0) {
-          await player.seek(Duration(milliseconds: st.positionMs));
-        }
-        // 真实 seek 完成（装载失败/no-op 同样经过这里）：乐观值退场。
-        _clearRestorePosition();
-        // 记录恢复后的真实位置：暂停态原样补写不再回推（无变化不刷 occurred_at）。
-        _lastBpPosMs = position.inMilliseconds;
+        _deferRestoreLoad(_current!, posMs);
+        _lastBpPosMs = posMs;
+        perfLog('restoreLocal deferred', 'pos=$posMs');
       }
+      await Future<void>.value();
+      _curSource = _resolver?.call(_current!.sourceKey) ?? _curSource;
+      unawaited(_loadLyrics(_current!, _curSource));
       notifyListeners();
       _syncSystemMedia();
     } catch (e) {
@@ -4547,8 +4630,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final pos = (found >= 0 && start == found) ? m.positionMs : 0;
     perfLog('restoreMirror adopt',
         'uuid=${m.playlistUuid} device=${m.deviceId} ref=${m.sourceRef} pos=${pos}ms base=${m.compareClock} lastEvent=${m.lastEventAt} updated=${m.updatedAt} found=$found');
-    _restorePositionMs = pos;
-    _restorePositionKey = _positionKeyOf(_current!);
+    _deferRestoreLoad(adopted, pos);
     // base 写库放在同步前缀（当前曲/乐观位置就绪）之后：启动恢复首帧不能被
     // 写隔离阻塞，否则会先闪占位再跳曲。base 仍只跟本机实际采用的列表对齐。
     if (adoptedBaseJson != null) {
@@ -4561,30 +4643,17 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         // 前缀重新收敛。
       }
     }
-    final swPlay = Stopwatch()..start();
-    try {
-      await _play(_current!, play: false, emitBreakpoint: false);
-      perfLog('restoreMirror playLoad', '${swPlay.elapsedMilliseconds}ms');
-      // 装载期间用户可能已切歌：只对仍是恢复目标的当前曲 seek（见 _restoreLocal）。
-      final cur = _current;
-      if (cur != null && _same(cur, adopted) && pos > 0) {
-        await player.seek(Duration(milliseconds: pos));
-      }
-      // 真实 seek 完成：乐观值退场。
-      _clearRestorePosition();
-      // 记录采用后的真实位置：暂停态原样补写不再回推（无变化不刷 occurred_at）。
-      _lastBpPosMs = position.inMilliseconds;
-      notifyListeners();
-      _syncSystemMedia();
-      AppToast.show('已从其他设备继续播放（${_fmtMs(pos)}）', isError: false);
-      perfLog('restoreMirror total',
-          '${swAll.elapsedMilliseconds}ms uuid=${m.playlistUuid} pos=$pos');
-      return true;
-    } catch (_) {
-      perfLog('restoreMirror FAILED', '${swAll.elapsedMilliseconds}ms');
-      _clearRestorePosition();
-      return false;
-    }
+    _lastBpPosMs = pos;
+    perfLog('restoreMirror deferred', 'pos=$pos');
+    await Future<void>.value();
+    _curSource = _resolver?.call(adopted.sourceKey) ?? _curSource;
+    unawaited(_loadLyrics(adopted, _curSource));
+    notifyListeners();
+    _syncSystemMedia();
+    AppToast.show('已从其他设备继续播放（${_fmtMs(pos)}）', isError: false);
+    perfLog('restoreMirror total',
+        '${swAll.elapsedMilliseconds}ms uuid=${m.playlistUuid} pos=$pos');
+    return true;
   }
 
   /// 镜像身份列表 → 本机歌单匹配后的深层条目（坏行/无匹配跳过，保持顺序）。
@@ -4644,7 +4713,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     return d.inHours > 0 ? '${d.inHours}:$mm:$ss' : '$mm:$ss';
   }
 
-  void clearResumeState() => _index?.clearPlayState();
+  void clearResumeState() {
+    _clearRestorePosition();
+    _index?.clearPlayState();
+  }
 
   // ---------- 深层列表（隐藏历史栈，任意列表锚定上下文） ----------
 
@@ -4820,6 +4892,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 退出软件前清理：保存断点、停止并释放播放器（确保 mpv 等外部子进程退出）。
   Future<void> shutdown() async {
     _shuttingDown = true;
+    ++_playToken;
     unawaited(_audioFocusSub?.cancel());
     _audioFocusSub = null;
     // 清理路径：取消渐变 + 收口挂起的淡出 Future（不暂停）+ 复位意图位。
@@ -4833,7 +4906,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final p = _player;
     if (p == null) {
       // 从未播放过：没有实例可停，但断点/写队列仍要落库。
-      await _saveState(Duration.zero);
+      final pos = _hasDeferredRestore
+          ? Duration(milliseconds: _restorePositionMs!)
+          : Duration.zero;
+      await _saveState(pos);
       try {
         await _index?.flushWrites();
       } catch (_) {}
@@ -4857,6 +4933,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   void dispose() {
     if (!kIsWeb) WidgetsBinding.instance.removeObserver(this);
     _disposed = true;
+    ++_playToken;
     _restoreResumeTarget = null;
     // 清理路径：取消渐变 + 收口挂起的淡出 Future（不暂停）+ 复位意图位。
     _cancelFadeAndComplete();
