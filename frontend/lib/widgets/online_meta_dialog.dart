@@ -343,11 +343,14 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
     setState(() => _lyricSaving = true);
     try {
       final direct = context.read<DirectSourceManager>();
+      final player = context.read<PlayerProvider>();
       final src = direct.sourceByKey(widget.song.sourceKey);
       final content = _withLyricTags(c.saveContent);
       final r = await _svc.applyLyrics(widget.song, content, src: src);
+      // 先通知再判 mounted：保存后立刻关窗也不能丢掉全局刷新信号。
+      direct.notifySongMetaChanged();
+      player.reloadLyricsIfCurrent(widget.song);
       if (!mounted) return;
-      context.read<PlayerProvider>().reloadLyricsIfCurrent(widget.song);
       AppToast.show(
         r.sidecarPath != null
             ? '歌词已保存并覆盖 ${r.sidecarPath}（应用缓存同步）'
@@ -431,15 +434,17 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
   /// 应用封面字节（应用缓存 + sidecar）；成功 toast，失败上抛（留窗）。
   Future<void> _applyCoverBytes(Uint8List bytes) async {
     final direct = context.read<DirectSourceManager>();
+    final player = context.read<PlayerProvider>();
     final src = direct.sourceByKey(widget.song.sourceKey);
     final r = await _svc.applyCover(widget.song, bytes, src: src);
-    if (!mounted) return;
     final updated =
         direct.index.songByRef(widget.song.sourceKey, widget.song.sourceRef);
     if (updated != null) {
-      direct.refresh();
-      context.read<PlayerProvider>().refreshSongMeta(updated);
+      // 先通知再判 mounted：保存后立刻关窗也不能丢掉全局刷新信号。
+      direct.notifySongMetaChanged();
+      player.refreshSongMeta(updated);
     }
+    if (!mounted) return;
     AppToast.show(
       r.sidecarPath != null
           ? '封面已保存并覆盖 ${r.sidecarPath}（应用缓存同步）'
@@ -452,6 +457,8 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
 
   Future<void> _applyTags({String? title, String? artist, String? album}) async {
     setState(() => _tagSaving = true);
+    final direct = context.read<DirectSourceManager>();
+    final player = context.read<PlayerProvider>();
     try {
       String? delta(String? input, String? current) {
         if (input == null) return null;
@@ -467,10 +474,13 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
         artist: delta(artist, widget.song.artist),
         album: delta(album, widget.song.albumName),
       );
+      if (updated != null) {
+        // 先通知再判 mounted：保存后立刻关窗也不能丢掉全局刷新信号。
+        direct.notifySongMetaChanged();
+        player.refreshSongMeta(updated);
+      }
       if (!mounted) return;
       if (updated != null) {
-        context.read<DirectSourceManager>().refresh();
-        context.read<PlayerProvider>().refreshSongMeta(updated);
         AppToast.show('已回填标题/歌手/专辑（扫描不再覆盖）', isError: false);
       } else {
         AppToast.show('在线值与本地一致，无需回填', isError: false);
