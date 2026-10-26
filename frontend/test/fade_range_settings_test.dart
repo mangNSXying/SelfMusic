@@ -105,8 +105,9 @@ void main() {
       ),
     ));
 
-    // 均衡器默认关：页面只有淡入淡出一个滑条。
-    final slider = tester.widget<Slider>(find.byType(Slider));
+    // 均衡器默认关：按 key 精确定位淡入淡出滑条（页面另有应用内音量滑条）。
+    final slider = tester
+        .widget<Slider>(find.byKey(const ValueKey('fade-duration-slider')));
     expect(slider.min, 0.5, reason: '范围下界 0.5s');
     expect(slider.max, 2.0, reason: '范围上界 2.0s');
     expect(slider.divisions, 15, reason: '0.1s 步进（16 档）');
@@ -114,16 +115,32 @@ void main() {
     expect(slider.label, '2.0 秒', reason: '标签一位小数');
 
     // 拖到下界：写入 500ms，标签跟随。
-    tester.widget<Slider>(find.byType(Slider)).onChanged!(0.5);
+    tester
+        .widget<Slider>(find.byKey(const ValueKey('fade-duration-slider')))
+        .onChanged!(0.5);
     await tester.pump();
     expect(settings.fadeDurationMs, 500, reason: '写入 (v*1000).round()');
-    expect(tester.widget<Slider>(find.byType(Slider)).value, 0.5);
-    expect(tester.widget<Slider>(find.byType(Slider)).label, '0.5 秒');
+    expect(
+        tester
+            .widget<Slider>(find.byKey(const ValueKey('fade-duration-slider')))
+            .value,
+        0.5);
+    expect(
+        tester
+            .widget<Slider>(find.byKey(const ValueKey('fade-duration-slider')))
+            .label,
+        '0.5 秒');
 
     // 0.1s 步进中段档位：1.2 → 1200ms。
-    tester.widget<Slider>(find.byType(Slider)).onChanged!(1.2);
+    tester
+        .widget<Slider>(find.byKey(const ValueKey('fade-duration-slider')))
+        .onChanged!(1.2);
     await tester.pump();
     expect(settings.fadeDurationMs, 1200);
-    expect(tester.widget<Slider>(find.byType(Slider)).label, '1.2 秒');
+    expect(
+        tester
+            .widget<Slider>(find.byKey(const ValueKey('fade-duration-slider')))
+            .label,
+        '1.2 秒');
   });
 }

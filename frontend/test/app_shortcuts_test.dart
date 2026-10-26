@@ -13,6 +13,8 @@ void main() {
       expect(window[ShortcutAction.next]!.describe(), 'Ctrl + →');
       expect(window[ShortcutAction.seekBackward5]!.describe(), '←');
       expect(window[ShortcutAction.seekForward30]!.describe(), 'Shift + →');
+      expect(window[ShortcutAction.volumeUp]!.describe(), 'Ctrl + ↑');
+      expect(window[ShortcutAction.volumeDown]!.describe(), 'Ctrl + ↓');
       expect(window[ShortcutAction.search]!.describe(), 'Ctrl + F');
       expect(window[ShortcutAction.sectionArtists]!.describe(), 'Ctrl + 6');
       expect(window[ShortcutAction.openSettings]!.describe(), 'Ctrl + ,');
@@ -28,7 +30,7 @@ void main() {
       expect(window[ShortcutAction.search]!.describe(isMac: true), '⌘ + F');
     });
 
-    test('全局默认只包含四个播放控制动作', () {
+    test('全局默认只包含播放控制动作', () {
       final global = defaultGlobalBindings(primaryIsMeta: false);
       expect(global.keys.toSet(),
           ShortcutAction.values.where((e) => e.supportsGlobal).toSet());
@@ -36,6 +38,8 @@ void main() {
           global[ShortcutAction.playPause]!.describe(), 'Ctrl + Alt + Space');
       expect(global[ShortcutAction.previous]!.describe(), 'Ctrl + Alt + ←');
       expect(global[ShortcutAction.next]!.describe(), 'Ctrl + Alt + →');
+      expect(global[ShortcutAction.volumeUp]!.describe(), 'Ctrl + Alt + ↑');
+      expect(global[ShortcutAction.volumeDown]!.describe(), 'Ctrl + Alt + ↓');
       expect(
           global[ShortcutAction.toggleFavorite]!.describe(), 'Ctrl + Alt + L');
     });

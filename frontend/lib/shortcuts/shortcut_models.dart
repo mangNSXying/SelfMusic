@@ -17,6 +17,8 @@ enum ShortcutAction {
   seekForward5('快进 5 秒'),
   seekBackward30('快退 30 秒'),
   seekForward30('快进 30 秒'),
+  volumeUp('音量 +'),
+  volumeDown('音量 -'),
   back('返回/关闭'),
   search('聚焦搜索'),
   sectionPlaylists('歌单'),
@@ -41,7 +43,13 @@ enum ShortcutAction {
   final String label;
 
   bool get supportsGlobal => switch (this) {
-        playPause || previous || next || toggleFavorite => true,
+        playPause ||
+        previous ||
+        next ||
+        toggleFavorite ||
+        volumeUp ||
+        volumeDown =>
+          true,
         _ => false,
       };
 
@@ -53,6 +61,8 @@ enum ShortcutAction {
         seekForward5 ||
         seekBackward30 ||
         seekForward30 ||
+        volumeUp ||
+        volumeDown ||
         cyclePlayMode ||
         toggleFavorite ||
         sleepTimer =>
@@ -218,6 +228,8 @@ Map<ShortcutAction, ShortcutBinding?> defaultWindowBindings({
         _binding(LogicalKeyboardKey.arrowLeft, shift: true),
     ShortcutAction.seekForward30:
         _binding(LogicalKeyboardKey.arrowRight, shift: true),
+    ShortcutAction.volumeUp: p(LogicalKeyboardKey.arrowUp),
+    ShortcutAction.volumeDown: p(LogicalKeyboardKey.arrowDown),
     ShortcutAction.back: _binding(LogicalKeyboardKey.escape),
     ShortcutAction.search: p(LogicalKeyboardKey.keyF),
     ShortcutAction.sectionPlaylists: p(LogicalKeyboardKey.digit1),
@@ -259,6 +271,8 @@ Map<ShortcutAction, ShortcutBinding?> defaultGlobalBindings({
     ShortcutAction.playPause: p(LogicalKeyboardKey.space),
     ShortcutAction.previous: p(LogicalKeyboardKey.arrowLeft),
     ShortcutAction.next: p(LogicalKeyboardKey.arrowRight),
+    ShortcutAction.volumeUp: p(LogicalKeyboardKey.arrowUp),
+    ShortcutAction.volumeDown: p(LogicalKeyboardKey.arrowDown),
     ShortcutAction.toggleFavorite: p(LogicalKeyboardKey.keyL),
   };
 }

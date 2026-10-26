@@ -24,6 +24,7 @@ import '../utils/perf_log.dart';
 import '../utils/song_title_format.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/app_volume_control.dart';
 import '../widgets/edit_song_meta_dialog.dart';
 import '../widgets/lyrics_view.dart';
 import '../widgets/marquee_text.dart';
@@ -1157,11 +1158,17 @@ class _ToolRow extends StatelessWidget {
           icon: const Icon(Icons.download),
           onPressed: () => _cache(context, s),
         ),
+        AppVolumeButton(player: player, scale: scale),
       ],
     );
     return Padding(
       padding: EdgeInsets.symmetric(vertical: 12 * scale),
-      child: center ? Center(child: row) : row,
+      // 窄横屏左列放不下 5 个工具按钮时整体等比缩小，避免溢出。
+      child: center
+          ? Center(
+              child: FittedBox(fit: BoxFit.scaleDown, child: row),
+            )
+          : row,
     );
   }
 }

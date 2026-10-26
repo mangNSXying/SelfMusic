@@ -224,7 +224,9 @@ class _AppShortcutsState extends State<AppShortcuts> {
         ShortcutAction.seekBackward5 ||
         ShortcutAction.seekForward5 ||
         ShortcutAction.seekBackward30 ||
-        ShortcutAction.seekForward30 =>
+        ShortcutAction.seekForward30 ||
+        ShortcutAction.volumeUp ||
+        ShortcutAction.volumeDown =>
           true,
         _ => false,
       };
@@ -271,6 +273,10 @@ class _AppShortcutsState extends State<AppShortcuts> {
         unawaited(_seekBy(player, const Duration(seconds: -30)));
       case ShortcutAction.seekForward30:
         unawaited(_seekBy(player, const Duration(seconds: 30)));
+      case ShortcutAction.volumeUp:
+        player.nudgeAppVolume(5);
+      case ShortcutAction.volumeDown:
+        player.nudgeAppVolume(-5);
       case ShortcutAction.back:
         _handleBack(nav);
       case ShortcutAction.search:

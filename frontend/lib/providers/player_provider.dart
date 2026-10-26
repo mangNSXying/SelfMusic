@@ -473,6 +473,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 音量梯度引擎：16ms 周期单定时器（淡入/淡出共用一条梯度，cancel 即打断）。
   Timer? _fadeTimer;
 
+  /// 应用内音量（0~100）：独立于系统音量的软件增益。初始值在
+  /// [attachAppSettings] 时从设置同步，默认 100（与系统音量一致）。
+  int _appVolume = 100;
+
+  /// 最近一次非零音量：静音切换恢复用（内存记忆，不落库）。
+  int _lastNonZeroVolume = 100;
+
   /// pending-pause 意图位：true = 已请求暂停、实际 pause() 尚未执行（淡出进行中）。
   /// 对外经 [playing] getter 表达为目标态「已暂停」；provider 内部对**实际**播放
   /// 状态的判断（睡眠定时/断点保存/切歌复位/toggle 分支等）一律直引
@@ -1171,6 +1178,49 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) {}
   }
 
+  // ---------- 应用内音量（settings.md §3.2） ----------
+
+  /// 当前应用内音量（0~100）。独立于系统音量：最终响度 = 系统音量 × 本值。
+  int get appVolume => _appVolume;
+
+  /// 调整应用内音量：钳制到 [0, 100]、持久化并立即应用。
+  ///
+  /// 淡出暂停进行中只更新基准值（不打断暂停语义），淡出完成回调会按新值
+  /// 复位；其余情况（含淡入中）以用户拖动为准，取消剩余渐变直接落到新值。
+  void setAppVolume(int value) {
+    final v = value.clamp(0, 100);
+    if (v == _appVolume) return;
+    _appVolume = v;
+    if (v > 0) _lastNonZeroVolume = v;
+    _appSettings?.appVolume = v;
+    _applyVolume();
+    notifyListeners();
+  }
+
+  /// 快捷键/步进调节：每次 ±[delta]（默认 5）。
+  void nudgeAppVolume(int delta) => setAppVolume(_appVolume + delta);
+
+  /// 静音/恢复：静音记 0，恢复回到上次非零值（无记忆时回 100）。
+  void toggleAppVolumeMute() {
+    if (_appVolume > 0) {
+      _lastNonZeroVolume = _appVolume;
+      setAppVolume(0);
+    } else {
+      setAppVolume(_lastNonZeroVolume > 0 ? _lastNonZeroVolume : 100);
+    }
+  }
+
+  /// 应用音量对应的播放器增益（0.0~1.0）。
+  double get _baseVolume => _appVolume / 100.0;
+
+  /// 把当前基准音量落到播放器；淡出暂停中不抢占渐变。
+  void _applyVolume() {
+    if (_player == null) return;
+    if (_fadingPause) return;
+    if (_fadeTimer != null) _cancelFade();
+    _setVolumeSafe(_baseVolume);
+  }
+
   // ---------- 淡入淡出（settings.md §3.2） ----------
 
   bool get _fadeOn => _appSettings?.fadeEnabled ?? false;
@@ -1180,9 +1230,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 平台音量调用：异常一律静默（headless 测试环境的 MissingPluginException、
   /// 播放器重建后的迟到写等），渐变状态机不因平台侧失败而中断。
-  void _setVolumeSafe(double v) {
+  void _setVolumeSafe(double v) => _setVolumeOn(player, v);
+
+  /// 指定播放器实例的音量写入（播放器构造期间不能走 [player] getter，避免递归）。
+  void _setVolumeOn(AudioPlayer p, double v) {
     try {
-      unawaited(player.setVolume(v).catchError((Object e) {
+      unawaited(p.setVolume(v.clamp(0.0, 1.0)).catchError((Object e) {
         // 静默：见上。
       }));
     } catch (_) {
@@ -1216,10 +1269,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 统一音量梯度引擎：16ms 周期单定时器，把音量从 `player.volume` **当前值**
-  /// 线性推到 [to]（淡入=1.0 / 淡出=0.0），走完触发 [onDone]。
+  /// 线性推到 [to]（淡入=应用基准音量 / 淡出=0.0），走完触发 [onDone]。
   ///
   /// - 一律从当前音量出发：反向打断时自然形成「从当前音量平滑过渡」，
-  ///   不出现音量跳变（淡出若预设 setVolume(1.0)，打断回播瞬间会爆音）；
+  ///   不出现音量跳变（淡出若预设基准音量，打断回播瞬间会爆音）；
   /// - 进度按 tick 步进（每 16ms 走 16/duration），单定时器天然可 cancel；
   /// - 新梯度启动前先取消旧梯度（同一时刻至多一条活跃渐变）。
   void _startFade({
@@ -1234,6 +1287,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     final from = player.volume;
+    if ((from - to).abs() < 1e-9) {
+      _setVolumeSafe(to);
+      onDone?.call();
+      return;
+    }
     final step = 16 / duration.inMilliseconds; // 每 tick（16ms）的进度增量
     var p = 0.0;
     _fadeTimer = Timer.periodic(const Duration(milliseconds: 16), (t) {
@@ -1248,19 +1306,24 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     });
   }
 
-  /// 淡入：音量渐变回升到 1.0（关闭时直接置 1）。
+  /// 淡入：音量渐变回升到应用基准音量（关闭时直接置基准音量）。
   ///
   /// [fromZero] 为 true（默认）：从真实暂停恢复——先归零再渐升，维持既有听感；
   /// false：淡出中被反向打断回播——从当前音量平滑回升（引擎还在播，无需重调
   /// play()）。
   void _fadeIn({bool fromZero = true}) {
     _cancelFade();
+    final target = _baseVolume;
     if (!_fadeOn) {
-      _setVolumeSafe(1.0);
+      _setVolumeSafe(target);
       return;
     }
     if (fromZero) _setVolumeSafe(0.0);
-    _startFade(to: 1.0, duration: _fadeDuration);
+    if (target <= 0) {
+      _setVolumeSafe(0.0);
+      return;
+    }
+    _startFade(to: target, duration: _fadeDuration);
   }
 
   /// 淡出后真正暂停（关闭淡入淡出时直接暂停）。
@@ -1296,7 +1359,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         // 恢复/重入淡出接管时（[_fadeOutCompleter] 已被收口或替换），
         // 迟到的音量/意图位复位会破坏接管的渐变（跳变、目标态错乱）。
         if (identical(_fadeOutCompleter, completer)) {
-          if (_fadeTimer == null) _setVolumeSafe(1.0);
+          if (_fadeTimer == null) _setVolumeSafe(_baseVolume);
           _fadingPause = false;
         }
         _completeFadeOut(completer);
@@ -1391,6 +1454,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final p = _buildPlayer();
     _lastPlayerStatePlaying = p.playing;
     _setupPlayerStreams(p);
+    // 新实例音量默认 1.0：立即落到应用基准音量，避免暂停态重建后突然变响。
+    _setVolumeOn(p, _baseVolume);
     return p;
   }
 
@@ -1465,9 +1530,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 之后每次切模式写回。顺带校正播放器构造时读到的音频配置（冷启动）。
   void attachAppSettings(AppSettings settings) {
     _appSettings = settings;
+    _appVolume = settings.appVolume;
+    if (_appVolume > 0) _lastNonZeroVolume = _appVolume;
     final m = PlayModeParse.fromStored(settings.playModeDefault);
     if (_mode != m) _mode = m;
     _applyAudioConfigIfNeeded();
+    _applyVolume();
     refreshPlaybackGuard();
   }
 

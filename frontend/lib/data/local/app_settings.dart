@@ -205,6 +205,10 @@ class AppSettings {
   static const String kFadeEnabled = 'fade_enabled';
   static const String kFadeDurationMs = 'fade_duration_ms';
 
+  /// 应用内音量（settings.md §3.2）：0~100，独立于系统音量的软件增益。
+  /// 设备本地偏好，不进 [knownKeys]，不随设置导出/导入。
+  static const String kAppVolume = 'app_volume';
+
   /// 均衡器（settings.md §3.2）：仅 Android（just_audio 原生 AndroidEqualizer）。
   static const String kEqualizerEnabled = 'equalizer_enabled';
   static const String kEqBands = 'eq_bands';
@@ -597,6 +601,13 @@ class AppSettings {
       (int.tryParse(index.settingsGet(kFadeDurationMs) ?? '') ?? 2000)
           .clamp(500, 2000);
   set fadeDurationMs(int v) => index.settingsSet(kFadeDurationMs, v.toString());
+
+  /// 应用内音量（0~100，默认 100）：独立于系统音量的软件增益。
+  /// 非法/缺省回退 100，越界读取钳制到 [0, 100]。
+  int get appVolume =>
+      (int.tryParse(index.settingsGet(kAppVolume) ?? '') ?? 100).clamp(0, 100);
+  set appVolume(int v) =>
+      index.settingsSet(kAppVolume, v.clamp(0, 100).toString());
 
   // ---------- 播放分区·均衡器（settings.md §3.2，仅 Android） ----------
 

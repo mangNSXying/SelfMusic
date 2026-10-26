@@ -27,6 +27,7 @@ import '../theme/theme_provider.dart';
 import '../utils/cover_thumb.dart';
 import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/app_volume_control.dart';
 import '../widgets/row_action_button.dart';
 import '../widgets/shortcut_settings_panel.dart';
 import '../widgets/single_choice_group.dart';
@@ -2332,6 +2333,7 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
               const Text('时长', style: TextStyle(fontSize: 13)),
               Expanded(
                 child: Slider(
+                  key: const ValueKey('fade-duration-slider'),
                   // 有效域 [500, 2000]ms（读取已钳制）：0.5~2.0s、0.1s 步进
                   //（divisions 15，16 档），标签一位小数实时预览。
                   value: (_settings.fadeDurationMs / 1000).clamp(0.5, 2.0),
@@ -2342,6 +2344,50 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
                       '${(_settings.fadeDurationMs / 1000).toStringAsFixed(1)} 秒',
                   onChanged: (v) => setState(
                       () => _settings.fadeDurationMs = (v * 1000).round()),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 24),
+        const ListTile(
+          leading: Icon(Icons.volume_up),
+          title: Text('应用内音量'),
+          subtitle: Text('独立于系统音量的软件增益；0% 静音但播放继续'),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(left: 16, right: 16),
+          child: Row(
+            children: [
+              IconButton(
+                tooltip: _settings.appVolume == 0 ? '取消静音' : '静音',
+                icon: Icon(appVolumeIcon(_settings.appVolume)),
+                onPressed: () {
+                  setState(() =>
+                      context.read<PlayerProvider>().toggleAppVolumeMute());
+                },
+              ),
+              Expanded(
+                child: Slider(
+                  key: const ValueKey('app-volume-slider'),
+                  value: _settings.appVolume.toDouble(),
+                  min: 0,
+                  max: 100,
+                  divisions: 100,
+                  label: '${_settings.appVolume}%',
+                  onChanged: (v) {
+                    setState(() {
+                      context.read<PlayerProvider>().setAppVolume(v.round());
+                    });
+                  },
+                ),
+              ),
+              SizedBox(
+                width: 44,
+                child: Text(
+                  '${_settings.appVolume}%',
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(fontSize: 13),
                 ),
               ),
             ],
