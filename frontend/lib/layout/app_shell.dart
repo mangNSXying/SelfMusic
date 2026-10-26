@@ -33,6 +33,7 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   bool _sidebarVisible = true;
+  bool? _lastWide;
   NavigationProvider? _nav;
   int _seenSidebarToggle = 0;
 
@@ -100,6 +101,11 @@ class _AppShellState extends State<AppShell> {
   @override
   Widget build(BuildContext context) {
     final wide = AppShell.isWide(context);
+    // 横竖屏跨断点时侧栏宽度直接归位，不走 260↔0 的挤压动画：
+    // 中间宽度会把 contentColumn 挤到不足最小宽度（迷你条横向溢出）。
+    final crossingWide = _lastWide != null && _lastWide != wide;
+    _lastWide = wide;
+    final slotMotion = crossingWide ? Duration.zero : kPageMotion;
     // 订阅收窄（T005）：布局壳只关注队列面板开合；区段/搜索/播放页等变更
     // 不再牵连整壳重建。
     final nav = context.read<NavigationProvider>();
@@ -138,71 +144,66 @@ class _AppShellState extends State<AppShell> {
       ],
     );
 
-    final shell = wide
-        ? Row(
-            children: [
-              // 宽屏侧边栏伸缩：宽 260↔0，300ms 与播放页/内容页统一。
-              // 常驻挂载 + Clip 裁剪（收起后 IgnorePointer），避免 if 直挂的瞬时显隐。
-              AnimatedContainer(
-                duration: kPageMotion,
-                curve: kPageMotionCurve,
-                width: _sidebarVisible ? 260 : 0,
-                child: ClipRect(
-                  child: OverflowBox(
-                    maxWidth: 260,
-                    alignment: Alignment.centerLeft,
-                    child: IgnorePointer(
-                      ignoring: !_sidebarVisible,
-                      child: const SizedBox(width: 260, child: Sidebar()),
-                    ),
-                  ),
-                ),
+    // 窄/宽共用同一棵 Row 骨架：仅侧栏/队列槽的宽度与子项切换，
+    // Expanded(contentColumn) 的位置不变。这样手机横竖屏切换时
+    // AppContent 不会被整棵重挂载（此前窄屏 Stack ↔ 宽屏 Row 会重建内容页）。
+    final shell = Row(
+      children: [
+        AnimatedContainer(
+          duration: slotMotion,
+          curve: kPageMotionCurve,
+          width: wide && _sidebarVisible ? 260 : 0,
+          child: ClipRect(
+            child: OverflowBox(
+              maxWidth: 260,
+              alignment: Alignment.centerLeft,
+              child: IgnorePointer(
+                ignoring: !wide || !_sidebarVisible,
+                child: wide
+                    ? const SizedBox(width: 260, child: Sidebar())
+                    : const SizedBox.shrink(),
               ),
-              Expanded(child: contentColumn),
-              // 宽屏右队列伸缩：宽 360↔0，同 300ms。
-              // 宽屏必须有界宽度：Row 非 flex 子项是无界宽度，width=null
-              // 会让面板内部 Spacer/Expanded 抛 unbounded 布局异常（整面板
-              // 空白）。窄屏底部弹层不受影响（Sheet 有界）。内层固定
-              // kQueuePanelWidth 满足有界要求，外层负责伸缩。
-              AnimatedContainer(
-                duration: kPageMotion,
-                curve: kPageMotionCurve,
-                width: queueOpen ? kQueuePanelWidth : 0,
-                child: ClipRect(
-                  child: OverflowBox(
-                    maxWidth: kQueuePanelWidth,
-                    alignment: Alignment.centerRight,
-                    child: IgnorePointer(
-                      ignoring: !queueOpen,
-                      child: SizedBox(
+            ),
+          ),
+        ),
+        Expanded(child: contentColumn),
+        // 宽屏右队列伸缩：宽 360↔0，同 300ms。
+        // 宽屏必须有界宽度：Row 非 flex 子项是无界宽度，width=null
+        // 会让面板内部 Spacer/Expanded 抛 unbounded 布局异常（整面板
+        // 空白）。窄屏底部弹层不受影响（Sheet 有界）。内层固定
+        // kQueuePanelWidth 满足有界要求，外层负责伸缩。
+        AnimatedContainer(
+          duration: slotMotion,
+          curve: kPageMotionCurve,
+          width: wide && queueOpen ? kQueuePanelWidth : 0,
+          child: ClipRect(
+            child: OverflowBox(
+              maxWidth: kQueuePanelWidth,
+              alignment: Alignment.centerRight,
+              child: IgnorePointer(
+                ignoring: !wide || !queueOpen,
+                child: wide
+                    ? SizedBox(
                         width: kQueuePanelWidth,
                         child: QueuePanel(
                             onClose: nav.closeQueue,
                             width: kQueuePanelWidth,
                             open: queueOpen),
-                      ),
-                    ),
-                  ),
-                ),
+                      )
+                    : const SizedBox.shrink(),
               ),
-            ],
-          )
-        : Stack(
-            children: [
-              contentColumn,
-            ],
-          );
+            ),
+          ),
+        ),
+      ],
+    );
 
-    if (!wide) {
-      // 窄屏：顶部抽屉由 Drawer 承载；队列入口在顶栏与迷你播放条。
-      return _withSheetHost(Scaffold(
-        key: _scaffoldKey,
-        drawer: const Sidebar(),
-        body: shell,
-      ));
-    }
-
-    return _withSheetHost(Scaffold(body: shell));
+    // 窄屏抽屉仍由 Drawer 承载；切到宽屏只摘掉 drawer 属性，不动 body 结构。
+    return _withSheetHost(Scaffold(
+      key: _scaffoldKey,
+      drawer: wide ? null : const Sidebar(),
+      body: shell,
+    ));
   }
 
   /// 叠加统一拖拽式窗口宿主（[AppSheetHost]）。
