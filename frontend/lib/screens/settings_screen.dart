@@ -611,6 +611,8 @@ class _TranscodeSectionState extends State<_TranscodeSection> {
         SingleChoiceGroup<String>(
           options: const [
             SingleChoiceOption(value: 'off', label: '关'),
+            SingleChoiceOption(value: '8', label: '-8'),
+            SingleChoiceOption(value: '10', label: '-10'),
             SingleChoiceOption(value: '14', label: '-14'),
             SingleChoiceOption(value: '16', label: '-16'),
             SingleChoiceOption(value: '23', label: '-23'),

@@ -193,6 +193,10 @@ class TranscodeControllerTest {
 
     @Test
     void ffmpegArgsMapsLoudnessTiers() {
+        assertTrue(TranscodeController.ffmpegArgs("192", "8")
+                .contains("loudnorm=I=-8:TP=-1.5:LRA=11"));
+        assertTrue(TranscodeController.ffmpegArgs("192", "10")
+                .contains("loudnorm=I=-10:TP=-1.5:LRA=11"));
         assertTrue(TranscodeController.ffmpegArgs("192", "14")
                 .contains("loudnorm=I=-14:TP=-1.5:LRA=11"));
         assertTrue(TranscodeController.ffmpegArgs("256", "16")

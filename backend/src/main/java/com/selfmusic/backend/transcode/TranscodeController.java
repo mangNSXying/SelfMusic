@@ -47,7 +47,7 @@ import java.util.Set;
  *   <li>在 servlet 线程内**同步直写**响应，不用 {@code StreamingResponseBody}：
  *       后者的异步二次派发会重入安全过滤链（TokenFilter 默认跳过 async
  *       dispatch），导致流式响应阶段 401；并发上限仅 2，占用两个工作线程无碍。</li>
- *   <li>可选响度均衡（`loudnorm=off|14|16|23`，默认 off）：开时在编码前插入单遍
+ *   <li>可选响度均衡（`loudnorm=off|8|10|14|16|23`，默认 off）：开时在编码前插入单遍
  *       动态 loudnorm（I=目标/TP=-1.5/LRA=11），统一各曲响度；只在代理转码
  *       链路生效（直连/缓存不经过服务端）。双遍线性需整曲预读，与流式低延迟
  *       冲突，暂不做。</li>
@@ -62,7 +62,8 @@ public class TranscodeController {
     private static final Set<String> ALLOWED_BITRATES = Set.of("192", "256", "320");
 
     /** 响度均衡目标（LUFS）：off=关；其余统一到该集成响度（单遍动态）。 */
-    private static final Set<String> ALLOWED_LOUDNORM = Set.of("off", "14", "16", "23");
+    private static final Set<String> ALLOWED_LOUDNORM =
+            Set.of("off", "8", "10", "14", "16", "23");
 
     /** 云元数据/链路本地：一律拒绝（SSRF 纵深，强校验之外再加一道）。 */
     private static final Set<String> BLOCKED_HOSTS = Set.of(
@@ -94,7 +95,7 @@ public class TranscodeController {
         }
         String loud = loudnorm == null ? "off" : loudnorm.trim().toLowerCase();
         if (!ALLOWED_LOUDNORM.contains(loud)) {
-            throw new BizException(40001, "loudnorm 仅支持 off/14/16/23");
+            throw new BizException(40001, "loudnorm 仅支持 off/8/10/14/16/23");
         }
         double start = parseStartSec(startSec);
         URI uri = parseOrigin(origin);
@@ -434,6 +435,8 @@ public class TranscodeController {
     static String loudFilter(String loudnorm) {
         if (loudnorm == null) return null;
         return switch (loudnorm.trim().toLowerCase()) {
+            case "8" -> "loudnorm=I=-8:TP=-1.5:LRA=11";
+            case "10" -> "loudnorm=I=-10:TP=-1.5:LRA=11";
             case "14" -> "loudnorm=I=-14:TP=-1.5:LRA=11";
             case "16" -> "loudnorm=I=-16:TP=-1.5:LRA=11";
             case "23" -> "loudnorm=I=-23:TP=-1.5:LRA=11";

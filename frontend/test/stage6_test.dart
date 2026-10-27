@@ -145,6 +145,10 @@ void main() {
       expect(s.transcodeLoudnorm, 'off');
       s.transcodeLoudnorm = '16';
       expect(AppSettings(index).transcodeLoudnorm, '16');
+      s.transcodeLoudnorm = '8';
+      expect(AppSettings(index).transcodeLoudnorm, '8');
+      s.transcodeLoudnorm = '10';
+      expect(AppSettings(index).transcodeLoudnorm, '10');
       index.settingsSet(AppSettings.kTranscodeLoudnorm, '99');
       expect(AppSettings(index).transcodeLoudnorm, 'off');
       index.close();

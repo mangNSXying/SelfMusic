@@ -45,8 +45,8 @@ class CacheManager {
   }
 
   /// 删歌时清缓存：原文件行 + 所有转码变体行。变体 key 由原 key 确定派生
-  /// （码率 {192,256,320} × 响度 {off,14,16,23}，与设置页选项/服务端允许集
-  /// 同步），无需额外索引列；不存在的行删除即空操作。
+  /// （码率 {192,256,320} × 响度 {off,8,10,14,16,23}，与设置页选项/服务端
+  /// 允许集同步），无需额外索引列；不存在的行删除即空操作。
   Future<void> deleteSongCache(MusicSource src, Song s) async {
     final base = cacheKeyOf(src, s);
     if (base == null) return;
@@ -54,7 +54,7 @@ class CacheManager {
       await index.deleteCache(base);
     } catch (_) {}
     for (final b in [192, 256, 320]) {
-      for (final n in ['off', '14', '16', '23']) {
+      for (final n in ['off', '8', '10', '14', '16', '23']) {
         try {
           await index.deleteCache(transcodeVariantKey(base, b, n));
         } catch (_) {}

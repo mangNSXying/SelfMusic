@@ -318,7 +318,7 @@ selfmusic/
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/transcode/stream?origin=&bitrate=&loudnorm=` | 回源拉流 → ffmpeg 管道转 MP3 CBR（192/256/320，默认 192）流式回客户端；`loudnorm=off\|14\|16\|23`。鉴权透传：http(s) 源 `X-Origin-Auth: Basic`、SFTP 源 `X-Origin-Ssh: base64url(JSON{u,p?,k?,pp?,hk})`、SMB 源 `X-Origin-Smb: base64url(JSON{u?,p?})`。强校验 origin 落在未删除**同类**源地址之下 + 黑名单主机拒绝。并发只 `TRANSCODE_MAX_CONCURRENCY`（默认 2），超限 429 + `Retry-After`（客户端回落直连）；无 ffmpeg 503；整曲转码不支持 Range |
+| GET | `/transcode/stream?origin=&bitrate=&loudnorm=` | 回源拉流 → ffmpeg 管道转 MP3 CBR（192/256/320，默认 192）流式回客户端；`loudnorm=off\|8\|10\|14\|16\|23`。鉴权透传：http(s) 源 `X-Origin-Auth: Basic`、SFTP 源 `X-Origin-Ssh: base64url(JSON{u,p?,k?,pp?,hk})`、SMB 源 `X-Origin-Smb: base64url(JSON{u?,p?})`。强校验 origin 落在未删除**同类**源地址之下 + 黑名单主机拒绝。并发只 `TRANSCODE_MAX_CONCURRENCY`（默认 2），超限 429 + `Retry-After`（客户端回落直连）；无 ffmpeg 503；整曲转码不支持 Range |
 
 ### 状态同步
 
