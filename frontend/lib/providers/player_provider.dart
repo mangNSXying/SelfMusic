@@ -493,6 +493,68 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _deferredRestoreKey = null;
   }
 
+  /// 测试用：覆盖启动预载判定（null = 按平台/源类型自动判定）。
+  @visibleForTesting
+  static bool? debugForceRestorePreload;
+
+  /// 冷启动恢复是否可以立即预载媒体。
+  ///
+  /// Android/鸿蒙：与旧行为一致，始终预载（原生请求头，不经 Dart 代理）。
+  /// Windows/Linux：只预载直连 URL/本地文件；SMB/SFTP 走自建字节流
+  /// （just_audio StreamAudioSource 恒经 Dart 回环代理），启动时 mpv 会
+  /// 高速灌缓冲把 UI isolate 压死（Windows 卡死根因），继续延迟到首次播放。
+  bool _canPreloadRestore(Song s, MusicSource? src) {
+    final forced = debugForceRestorePreload;
+    if (forced != null) return forced;
+    if (kIsWeb || src == null) return false;
+    final desktop = Platform.isWindows || Platform.isLinux;
+    if (!desktop) return true;
+    return src.directStream(s) != null;
+  }
+
+  /// 暂停态预载当前恢复曲到断点：成功后续上真实位置，失败静默保留乐观断点
+  /// （用户点播放时按正常链路重试并提示）。
+  Future<void> _preloadRestored(Song s, int posMs) async {
+    final src = _curSource;
+    if (!_canPreloadRestore(s, src)) {
+      perfLog('restorePreload skip', 'ref=${s.sourceRef} kind=${src?.kind}');
+      unawaited(_loadLyrics(s, src));
+      return;
+    }
+    final before = _current;
+    if (before == null || !_same(before, s)) return;
+    final ok = await _play(
+      s,
+      source: src,
+      play: false,
+      fromPlaylist: false,
+      emitBreakpoint: false,
+      silentErrorToast: true,
+      startAt: Duration(milliseconds: posMs),
+    );
+    final cur = _current;
+    if (cur == null || !_same(cur, s)) return;
+    if (!ok) {
+      // 预载失败：_play 的 catch 已重新置回延迟装载态，这里只补歌词。
+      perfLog('restorePreload failed', 'ref=${s.sourceRef} pos=$posMs');
+      unawaited(_loadLyrics(s, _curSource));
+      return;
+    }
+    _lastBpPosMs = position.inMilliseconds;
+    perfLog('restorePreload done',
+        'ref=${s.sourceRef} pos=${position.inMilliseconds}ms');
+  }
+
+  /// 退出/释放时用于落库的位置：延迟装载态优先乐观断点，绝不为了取值构造播放器。
+  Duration get _positionForPersist {
+    final r = _restorePositionMs;
+    final c = _current;
+    if (r != null && c != null && _restorePositionKey == _positionKeyOf(c)) {
+      return Duration(milliseconds: r);
+    }
+    return _player?.position ?? Duration.zero;
+  }
+
   /// 音量梯度引擎：16ms 周期单定时器（淡入/淡出共用一条梯度，cancel 即打断）。
   Timer? _fadeTimer;
 
@@ -783,15 +845,16 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _builtEq = eqEnabled;
     return AudioPlayer(
       handleInterruptions: _builtAudioFocus,
-      // Android 上让 ExoPlayer 自带请求头（setDefaultRequestProperties），
-      // 绕开 just_audio 的 Dart 回环代理。该代理用自己的 HttpClient，不认
-      // 我们的「允许自签」开关，故自签 NAS（https + 权威 CA 不认的证书）
-      // 走代理必然 TLS 失败——扫描/探测都好好的，一到播放就报错。
-      // 顺带好处：原生 Range/seek 比代理转发的自建字节流更稳。
-      // Android（ExoPlayer）与鸿蒙（AVPlayer）都能原生发请求头：前者走
-      // setDefaultRequestProperties，后者走 setMediaSource(headers)
-      // （见 just_audio_avplayer.dart）。
-      // 其余平台（桌面 mpv）仍依赖代理转发，不能一起关。
+      // 让各平台原生播放器自己发请求头，绕开 just_audio 的 Dart 回环代理。
+      // 该代理用自己的 HttpClient，不认我们的「允许自签」开关，且会把整首
+      // 音频逐块经 UI isolate 转发——桌面 mpv 启动预载高速灌缓冲时，这条
+      // 代理正是 Windows 与移动端的平台差异点（e202168 因此改为延迟装载）。
+      // 原生 Range/seek 也更稳。
+      // Android=ExoPlayer setDefaultRequestProperties；鸿蒙=AVPlayer
+      // setMediaSource(headers)；Windows/Linux=just_audio_media_kit 的
+      // Media(httpHeaders) → mpv http-header-fields（Linux 已实测带鉴权头到达源）。
+      // 自建字节流（SMB/SFTP 的 StreamAudioSource）仍由 just_audio 代理转发，
+      // 不受本开关控制；启动预载会按源类型继续规避（见 [_preloadRestored]）。
       useProxyForRequestHeaders: !_nativeRequestHeadersSupported,
       audioPipeline: _eq != null
           ? AudioPipeline(androidAudioEffects: [_eq!])
@@ -800,10 +863,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 当前平台能否由原生播放器直接发送请求头（不经过 just_audio 的 Dart 代理）。
-  /// Android=ExoPlayer；鸿蒙=AVPlayer（`setMediaSource(url, headers)`）。鸿蒙上那个回环代理
-  /// 会在 fork 引擎主 isolate 死锁/空转（2026-10-12 播放卡死根因），必须绕开。
+  /// 本仓库支持的全部平台（Android/鸿蒙/Windows/Linux）都支持。
   static bool get _nativeRequestHeadersSupported =>
-      !kIsWeb && (Platform.isAndroid || isOhos);
+      !kIsWeb &&
+      (Platform.isAndroid ||
+          isOhos ||
+          Platform.isWindows ||
+          Platform.isLinux);
 
   /// 播放器已存在、但构造时读到的音频配置与当前设置不一致时重建。
   /// 正常路径下 [player] 延迟构造已保证一致，这里兜住「设置晚于首次使用注入」
@@ -1782,6 +1848,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 展示用总时长：播放器未装载出真实时长时，回退到当前歌曲元数据时长
   /// （[Song.duration] 为秒）——首帧即有正确的总时长，不再显示 0:00/0:00。
   Duration? get duration {
+    // 延迟装载态播放器里可能还留着上一首的时长（镜像 adopt/回退到延迟路径），
+    // 不能拿它显示当前曲：一律回退到当前歌曲元数据时长。
+    if (_hasDeferredRestore) {
+      final sec = _current?.duration;
+      return sec == null ? null : Duration(seconds: sec);
+    }
     final loaded = _player?.duration;
     if (loaded != null) return loaded;
     final sec = _current?.duration;
@@ -2140,6 +2212,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       bool autoAdvanceOnFailure = false,
       bool manual = false,
       bool emitBreakpoint = true,
+      bool silentErrorToast = false,
       Duration? startAt}) async {
     // 连按切歌 guard：每次 _play 领一个单调令牌，后续 await 间隙若令牌过期
     //（更新的切歌已接管），静默丢弃，不报错、不覆盖、不触发副作用。
@@ -2305,8 +2378,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
       debugPrint('[play] 装载失败《${s.title}》: $e');
       // 自动续播链路：后台切歌失败不逐首弹 toast（人不在屏幕前），跳下一首；
-      // 连败到上限才提示。手动点播仍逐次提示。
-      if (!autoAdvanceOnFailure) AppToast.error(e, '播放失败');
+      // 连败到上限才提示。手动点播仍逐次提示；启动预载失败保持静默（停在
+      // 断点等待用户点播放，届时按正常链路重试并提示）。
+      if (!autoAdvanceOnFailure && !silentErrorToast) {
+        AppToast.error(e, '播放失败');
+      }
       notifyListeners();
       if (autoAdvanceOnFailure) unawaited(_autoSkipAfterFailure(e, play));
       return false;
@@ -3847,6 +3923,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   // ---------- 断点（stage2.md §7） ----------
 
   void _maybeSaveState(Duration pos) {
+    // 退出/释放中：播放器 stop/dispose 会补发 position=0 事件，不能让它
+    // 覆盖 shutdown 刚落库的最终断点（延迟装载态尤其明显）。
+    if (_shuttingDown || _disposed) return;
     final now = DateTime.now();
     final key = _current == null ? null : _positionKeyOf(_current!);
     // 切歌：立即落一次（否则崩溃后回到上一首）；其余按 [_stateSaveInterval] 节流。
@@ -4601,6 +4680,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           !_playable(_resolver?.call(_queue[resume].sourceKey))) {
         resume++;
       }
+      int? preloadPosMs;
       if (resume < _queue.length) {
         final atBreakpoint = resume == _idx;
         _idx = resume;
@@ -4609,13 +4689,23 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
             (atBreakpoint && st.positionMs > 0) ? st.positionMs : 0;
         _deferRestoreLoad(_current!, posMs);
         _lastBpPosMs = posMs;
+        preloadPosMs = posMs;
         perfLog('restoreLocal deferred', 'pos=$posMs');
       }
       await Future<void>.value();
-      _curSource = _resolver?.call(_current!.sourceKey) ?? _curSource;
-      unawaited(_loadLyrics(_current!, _curSource));
+      final restored = _current!;
+      _curSource = _resolver?.call(restored.sourceKey) ?? _curSource;
+      // 先让首帧拿到乐观断点，再在后台做暂停态预载（预载完成前用户操作
+      // 由 _playToken / _restorePositionKey 守卫接管）。
       notifyListeners();
       _syncSystemMedia();
+      if (preloadPosMs != null) {
+        await _preloadRestored(restored, preloadPosMs);
+        notifyListeners();
+        _syncSystemMedia();
+      } else {
+        unawaited(_loadLyrics(restored, _curSource));
+      }
     } catch (e) {
       _clearRestorePosition();
       AppToast.error(e, '断点恢复失败');
@@ -4726,6 +4816,16 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         );
       } catch (_) {}
     }
+    // 旧实现这里会 _play(play:false) 换源并停下旧音频；延迟装载分支不再
+    // 经过 _play，必须显式压住旧音频，避免界面/通知栏已切新曲而声音还是旧曲。
+    final oldPlayer = _player;
+    if (oldPlayer != null && oldPlayer.playing) {
+      _cancelFadeAndComplete();
+      _fadingPause = false;
+      try {
+        await oldPlayer.pause();
+      } catch (_) {}
+    }
     // 乐观位置（同步前缀即设）：退到断点曲之后的首曲时为 0。
     final pos = (found >= 0 && start == found) ? m.positionMs : 0;
     perfLog('restoreMirror adopt',
@@ -4747,10 +4847,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     perfLog('restoreMirror deferred', 'pos=$pos');
     await Future<void>.value();
     _curSource = _resolver?.call(adopted.sourceKey) ?? _curSource;
-    unawaited(_loadLyrics(adopted, _curSource));
     notifyListeners();
     _syncSystemMedia();
-    AppToast.show('已从其他设备继续播放（${_fmtMs(pos)}）', isError: false);
+    await _preloadRestored(adopted, pos);
+    if (_same(_current ?? adopted, adopted)) {
+      AppToast.show('已从其他设备继续播放（${_fmtMs(pos)}）', isError: false);
+    }
+    notifyListeners();
+    _syncSystemMedia();
     perfLog('restoreMirror total',
         '${swAll.elapsedMilliseconds}ms uuid=${m.playlistUuid} pos=$pos');
     return true;
@@ -5004,22 +5108,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       await _playSecStop();
     } catch (_) {}
     final p = _player;
-    if (p == null) {
-      // 从未播放过：没有实例可停，但断点/写队列仍要落库。
-      final pos = _hasDeferredRestore
-          ? Duration(milliseconds: _restorePositionMs!)
-          : Duration.zero;
-      await _saveState(pos);
-      try {
-        await _index?.flushWrites();
-      } catch (_) {}
-      return;
-    }
-    await _saveState(p.position);
+    // 延迟装载态没有真实播放器位置（idle=0）：用乐观断点落库，否则
+    // 冷启动后未播放就退出会把断点清零。播放页进度条会构造播放器，故
+    // 不能只在 p == null 分支兜底。
+    await _saveState(_positionForPersist);
     // 退出前等写隔离队列落库（否则最后断点/设置随进程一起消失）。
     try {
       await _index?.flushWrites();
     } catch (_) {}
+    if (p == null) return;
     try {
       await p.stop();
     } catch (_) {}
@@ -5050,7 +5147,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final p = _player;
     _player = null;
     if (p != null) {
-      unawaited(_saveState(p.position));
+      unawaited(_saveState(_positionForPersist));
       unawaited(p.dispose());
     }
     super.dispose();

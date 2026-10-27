@@ -17,13 +17,15 @@ import 'package:sqlite3/open.dart';
 ///
 /// 需求：冷启动首帧即渲染上次断点（歌曲/封面/进度），而非「未在播放」占位。
 /// 实现：`restorePreferRemote()` 在启动 initState 内同步发起，其同步前缀
-/// （取断点→重建队列→置当前曲→置乐观位置）在首帧 build 前完成；音频装载/
-/// seek 延迟到用户首次播放或 seek，完成后乐观值退场切真实值。
+/// （取断点→重建队列→置当前曲→置乐观位置）在首帧 build 前完成；之后分两条路径：
+/// - 可预载源：暂停态装载 + seek 到断点（旧行为，测试用 debugForceRestorePreload 打开）；
+/// - 桌面自建字节流源（SMB/SFTP，经 just_audio 回环代理）或预载失败：延迟到首次播放。
 ///
-/// 本测试不断言 UI，只断言 provider 的同步前缀语义：
+/// 本测试不断言 UI，只断言 provider 的同步前缀与两条装载路径：
 /// - 未 await 恢复 Future 时，当前曲/乐观位置/回退时长已就绪；
-/// - 恢复完成后状态一致，真实播放器值在首次播放/seek 后接管；
-/// - 首次播放前用户切歌时，旧断点不拽回新歌。
+/// - 预载路径恢复完成即真实位置/时长接管；
+/// - 延迟路径在首次播放/seek 后才接管，且退出不会把断点清零；
+/// - 切换/采用镜像时旧断点不拽回新歌、旧音频不继续响。
 
 DynamicLibrary _openOnLinux() {
   try {
@@ -54,6 +56,12 @@ class _FakeSource extends MusicSource {
   @override
   DirectStream? directStream(Song song) =>
       const DirectStream('https://example.com/a.mp3');
+}
+
+/// 无原生 URL 的源（模拟桌面 SMB/SFTP）：只能走自建字节流/回环代理。
+class _FakeStreamSource extends _FakeSource {
+  @override
+  DirectStream? directStream(Song song) => null;
 }
 
 class _FakePlatformPlayer extends AudioPlayerPlatform {
@@ -190,15 +198,19 @@ void main() {
   setUp(() {
     saved = JustAudioPlatform.instance;
     JustAudioPlatform.instance = _FakeJustAudio();
+    // 既有用例覆盖「延迟到首次播放」回退路径；预载用例在用例内显式打开。
+    PlayerProvider.debugForceRestorePreload = false;
   });
 
   tearDown(() {
     JustAudioPlatform.instance = saved;
+    PlayerProvider.debugForceRestorePreload = null;
   });
 
   /// 建歌单（全部 refs）+ 索引 + provider；返回真实 playlist uuid。
   Future<(LocalIndex, PlayerProvider, String)> setup(
-      List<String> playlistRefs) async {
+      List<String> playlistRefs,
+      {MusicSource? source}) async {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
     final dir = await Directory.systemTemp.createTemp('selfmusic_bpprime_');
     PathProviderPlatform.instance = _FakePathProvider(dir.path);
@@ -227,7 +239,8 @@ void main() {
         ),
     ]);
     final player = PlayerProvider()
-      ..attachSourceResolver((key) => key == 'webdav:test' ? _FakeSource() : null)
+      ..attachSourceResolver(
+          (key) => key == 'webdav:test' ? (source ?? _FakeSource()) : null)
       ..attachPersistence(
         index: index,
         weight: SongWeightStore(index),
@@ -495,5 +508,126 @@ void main() {
     await player.resumeFromNotifier();
     expect(player.debugPlayerBuilt, isFalse,
         reason: '无当前曲时 play 不应为了读 processingState 白建播放器');
+  });
+
+  test('冷启动预载：可直连源恢复时暂停态装载并 seek 到断点', () async {
+    PlayerProvider.debugForceRestorePreload = true;
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+
+    await player.restorePreferRemote();
+    final fake = JustAudioPlatform.instance as _FakeJustAudio;
+    expect(fake.players, isNotEmpty, reason: '恢复应完成暂停态媒体装载');
+    expect(fake.players.values.single.playCalls, 0, reason: '预载不得起播');
+    expect(player.playing, isFalse);
+    expect(player.position.inMilliseconds, closeTo(10000, 200));
+    expect(player.duration, const Duration(minutes: 3),
+        reason: '装载完成后应由真实播放器时长接管');
+
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
+
+  test('桌面字节流源（SMB/SFTP 形态）：恢复仍延迟到首次播放', () async {
+    PlayerProvider.debugForceRestorePreload = null;
+    final (index, player, uuid) = await setup(
+      ['/x/a.flac', '/x/b.flac'],
+      source: _FakeStreamSource(),
+    );
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+
+    await player.restorePreferRemote();
+    final fake = JustAudioPlatform.instance as _FakeJustAudio;
+    expect(fake.players, isEmpty,
+        reason: '自建字节流会经 just_audio 回环代理，启动时不得预载');
+    expect(player.position, const Duration(milliseconds: 10000));
+  });
+
+  test('延迟态退出：播放器已构造时仍保存乐观断点', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+
+    await player.restorePreferRemote();
+    expect(player.debugPlayerBuilt, isFalse);
+    // 播放页进度条首帧会访问 player.player，实际运行时播放器一定已构造。
+    player.player;
+    expect(player.debugPlayerBuilt, isTrue);
+    expect(player.player.position, Duration.zero,
+        reason: '延迟装载态播放器无音源，position 恒为 0');
+
+    await player.shutdown();
+    final st = index.getPlayState();
+    expect(st?.positionMs, 10000, reason: '退出不得把恢复断点写成 0');
+
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
+
+  test('播放中采用更新镜像：先停旧音频，不出现界面/声音脱节', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    await player.playQueue(
+      [_song('/x/a.flac'), _song('/x/b.flac')],
+      playlistUuid: uuid,
+      contextKey: PlayerProvider.anchorForPlaylist(uuid),
+      resetAnchor: true,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(player.current?.sourceRef, '/x/a.flac');
+    expect(player.playing, isTrue);
+
+    await index.upsertBreakpointMirror(
+      playlistUuid: uuid,
+      source: 'webdav',
+      sourceRef: '/x/b.flac',
+      positionMs: 30000,
+      deepListJson: _deepListJson(['/x/a.flac', '/x/b.flac']),
+      updatedAt:
+          DateTime.now().add(const Duration(seconds: 5)).toIso8601String(),
+      deviceId: 'other',
+    );
+
+    await player.playQueue(
+      [_song('/x/a.flac'), _song('/x/b.flac')],
+      playlistUuid: uuid,
+      contextKey: PlayerProvider.anchorForPlaylist(uuid),
+      resetAnchor: true,
+      resumeFromBreakpoint: true,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(player.current?.sourceRef, '/x/b.flac');
+    expect(player.playing, isFalse,
+        reason: '采用镜像断点后旧音频必须已暂停，不能界面切新曲但声音还是旧曲');
+    expect(player.position, const Duration(milliseconds: 30000));
+
+    await Future<void>.delayed(const Duration(milliseconds: 100));
   });
 }
