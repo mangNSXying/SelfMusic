@@ -33,7 +33,7 @@
 
 ## 2. 设置入口结构（侧边栏分区）
 
-`SettingsItem` 枚举（`lib/theme/app_theme.dart`）定义 6 个分区，`SettingsScreen` 按分区渲染面板。
+`SettingsItem` 枚举（`lib/theme/app_theme.dart`）定义 7 个分区，`SettingsScreen` 按分区渲染面板。
 
 | 分区 | 键 | 当前状态 | 内容与规划 |
 |------|----|---------|-----------|
@@ -43,6 +43,7 @@
 | 界面 | `appearance` | ✅ 已实现 | 明暗主题 / 强调色 / 背景色 / 文字（自定义字体导入，§3.7）/ 播放页切换动画 / 播放页滑动手势 / 播放页权重信息 / 标题显示格式 / 播放页控件自动隐藏 / 长按展开/折叠 / 压缩图像画质 + 清理缩略图缓存（§3.7） |
 | 通知 | `notifications` | ✅ 已实现 | 通知栏播放控制（自研 5 键：上一首/播放·暂停/下一首/播放模式/退出软件）+ 返回桌面后台续播（真正停止需通知栏「退出软件」或侧边栏「退出」）（§3.6） |
 | 服务端 | `server` | ✅ 已实现 | 后端地址 + 配对服务器（副标题遮显同一份配对密钥，配对页明文可复制）；预载下一首（§3.2）；缓存配置「跟随服务端 / 自定义」双模式（§3.3）+ 缓存目录展示；「网络与安全」（§3.3.1）：允许不安全 HTTP / 信任自签名证书；「多设备同步」（§3.3.2）：总开关 / 立即同步 / 已配对设备管理。首次启动不强制配对——未配对可正常使用直连模式，服务端 / 代理功能需配对 |
+| 在线音乐 | `online` | ✅ 已实现（L1） | 独立 sidecar（musicdl）地址/token、音乐源、优先无损、单曲大小上限、目标播放源/目录；顶栏云朵进入搜索，下载校验后上传到曲库并扫描（§3.8） |
 
 ---
 
@@ -103,7 +104,7 @@ mode == follow_server → 有服务端镜像用镜像，无镜像回退本地自
 | 设置项 | 键 | 默认 | 说明 |
 |--------|----|------|------|
 | 允许不安全 HTTP | `allow_insecure_http` | `false`（关） | 关时显式 `http://` 地址一律拒绝并提示（后端地址 / WebDAV 地址 / 配对弹窗均受约束）；缺省协议恒补默认 `https://`，与开关无关。运行时 URL 归一化见 `ApiClient.normalizeBaseUrl` / `webdavNormalizeBase` |
-| 信任自签名证书 | `allow_self_signed` | `false`（关） | 开时 dio API 与直连 WebDAV（dart:io `badCertificateCallback`）接受自签名/自建 TLS 证书，配置即生效（重建 WebDAV 源 + 替换 dio adapter）；**播放器层**（Android ExoPlayer / 桌面 mpv 原生起流）不受此开关影响，仍需 CA 有效证书 |
+| 信任自签名证书 | `allow_self_signed` | `false`（关） | 开时 dio API、在线音乐 sidecar 与直连 WebDAV（dart:io `badCertificateCallback`）接受自签名/自建 TLS 证书，配置即生效（重建 WebDAV 源 + 替换 dio adapter）；**播放器层**（Android ExoPlayer / 桌面 mpv 原生起流）不受此开关影响，仍需 CA 有效证书 |
 
 > 明文凭据收敛（历史安全整改项）：WebDAV 密码（`SecretStore` 键 `webdav_pwd:<sourceKey>`）与配对密钥（键 `pairing_key`）均改存 `flutter_secure_storage`；`sources.config` 与 `server_settings.json` 不再落地明文，旧数据启动时自动迁移并回写清理。
 > Android 清单保留 `usesCleartextTraffic=true`：这是运行期「允许不安全 HTTP」可用的平台前提（network_security_config 无法运行期切换）。
@@ -183,6 +184,29 @@ mode == follow_server → 有服务端镜像用镜像，无镜像回退本地自
 | 自定义字体（「文字」） | `custom_font_family` / `custom_font_file` / `custom_font_label` | 空（系统默认） | 设置 → 界面 → 文字：导入 TTF/OTF 后复制到应用支持目录 `selfmusic/fonts/`，`FontLoader` 运行时注册并写入 `ThemeData.fontFamily`，**全局界面与歌词生效**；恢复系统字体会删除字体文件并清空三键。**设备本地**：三键不进 `knownKeys`，不随设置导出/同步；文件缺失/损坏自动回退系统字体。TTC 集合不支持，缺字由系统字体回退；播放页时间与来源/格式/时长的等宽显示仍保留 `monospace` |
 
 > 明暗主题 / 强调色 / 背景色存主题偏好（`flutter_secure_storage`，见 §4），不进 `app_settings`；自定义字体是设备本地资源，走 `app_settings` 三键 + 应用支持目录字体文件，同样不随备份导出。
+
+### 3.8 在线音乐分区 · 已实现（L1，独立 sidecar）
+
+> 入口：侧边栏「设置 → 在线音乐」+ 顶栏云朵图标（在线搜索）。
+> 服务端：独立 `online-music/` Python sidecar（musicdl），**不在 Spring Boot 内**。
+> 客户端只做搜索、下载、上传、扫描；后端仍不持有曲库。
+
+| 设置项 | 键 | 默认 | 说明 |
+|--------|----|------|------|
+| 启用在线音乐 | `online_music_enabled` | `false` | 关闭时在线搜索页显示未启用引导；顶栏入口仍可打开设置 |
+| Sidecar 地址 | `online_music_base_url` | 空 | 如 `http://192.168.1.20:18090` 或 `https://host/online`；保存时补 `http://`、去尾斜杠 |
+| 音乐源 | `online_music_sources` | `QQMusicClient,KuwoMusicClient,MiguMusicClient` | 逗号分隔；搜索页可临时切换并写回该键 |
+| 优先无损 | `online_music_prefer_lossless` | `true` | 只影响结果排序，不隐藏有损结果 |
+| 单曲大小上限 | `online_music_max_size_mb` | `300` | `0`=不限；超过上限的搜索结果隐藏（按 sidecar 返回的搜索期大小） |
+| 目标播放源 | `online_music_target_source` | 空 | 必须是 `supportsWrite` 的源；空/失效时自动回退第一个可写源 |
+| 目标目录 | `online_music_target_folder` | `在线下载` | 源内相对目录；留空=源根；入库前逐级创建，已存在视为成功 |
+
+> Token 存 `SecretStore`（`online_music_token`），**不进 app_settings、不导出/同步**。
+> 上述 `online_music_*` 均为设备本地偏好（sidecar 地址/源 key 只对当前设备有意义），同样不进 `knownKeys`。
+>
+> L1 流程：搜索（SSE 逐源返回）→ 选择结果 → sidecar 下载 + `ffprobe`/`ffmpeg` 校验 + 写标签/歌词/封面 → App 取回文件 → `uploadFile` 到目标源 → `uploadSidecar` 同名 `.lrc` → `scanSource` 增量扫描 → `LibraryProvider.loadSongs()` 刷新。
+> 远端源（WebDAV/SMB/SFTP）没有目录监听，入库后依赖本次 `scanSource`；在线下载不会改变 `scan_auto_interval_min` 的现有语义。
+> 移动端开启「仅 Wi-Fi 扫描」且当前在移动数据时，文件仍会上传成功，但扫描会被门控；App 显示“已上传，待扫描”，连 Wi-Fi 后手动/自动扫描即可。
 
 ## 4. 客户端运行配置（独立持久化）
 

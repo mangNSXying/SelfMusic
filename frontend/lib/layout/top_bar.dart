@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
+import '../screens/online_music_screen.dart';
 import '../theme/app_theme.dart';
 
 /// 顶栏：上层 = 汉堡 + 搜索框（提示语随当前区域变化）；下层 = 导航（歌单/喜欢/播放源/歌曲/专辑/歌手）。
@@ -135,6 +136,14 @@ class _UpperRowState extends State<_UpperRow> {
                       ),
               ),
             ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.cloud_download_outlined),
+            tooltip: '在线搜索',
+            onPressed: () {
+              Navigator.of(context).push(MaterialPageRoute<void>(
+                  builder: (_) => const OnlineMusicScreen()));
+            },
           ),
         ],
       ),

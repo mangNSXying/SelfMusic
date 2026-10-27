@@ -14,6 +14,7 @@ import '../platform/harmonyos/secure_storage_ohos.dart'
 /// [createSecureStorage]（ohos 上绕过包前端，见 secure_storage_ohos.dart）。
 class SecretStore {
   static const String pairingKeyId = 'pairing_key';
+  static const String onlineMusicTokenId = 'online_music_token';
   static const String _webdavPwdPrefix = 'webdav_pwd:';
   static const String _sftpPwdPrefix = 'sftp_pwd:';
   static const String _sftpKeyPrefix = 'sftp_key:';
@@ -176,6 +177,13 @@ class SecretStore {
       deleteSmb(_slotKey(sourceKey, slot));
 
   Future<String?> pairingKey() => storage.read(key: pairingKeyId);
+
+  /// 在线音乐 sidecar 的 Bearer token（设备本地，不随设置同步）。
+  Future<String?> onlineMusicToken() =>
+      storage.read(key: onlineMusicTokenId);
+
+  Future<void> setOnlineMusicToken(String? token) =>
+      _setOrDelete(onlineMusicTokenId, token?.trim());
 
   Future<void> setPairingKey(String? key) async {
     final v = (key ?? '').trim();

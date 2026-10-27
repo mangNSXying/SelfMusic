@@ -23,6 +23,7 @@
 - **歌单**：播放页「编辑歌单」（列出全部播放列表，点按加入/移出），列表页长按多选批量管理；设置 / 歌单导出导入
 - **歌词**：内嵌标签 / 同名 `.lrc` 读取，歌词页同步滚动高亮、点词跳转
 - **后台播放**：返回桌面继续播放（Android 通知栏 5 键常驻；鸿蒙走系统 AVSession 媒体卡——通知栏/锁屏/播控中心；通知栏「停止/退出」或退出软件才真正停止）
+- **在线音乐（可选，L1）**：独立 Python sidecar（musicdl）提供在线搜索；sidecar 下载并校验音频、写标签/歌词/封面，App 取回后上传到目标播放源并增量扫描。后端仍不持有曲库，详见 [online-music/README.md](online-music/README.md)
 
 ## 技术栈
 
@@ -99,6 +100,22 @@ sudo ln -s /etc/nginx/sites-available/selfmusic.conf /etc/nginx/sites-enabled/
 sudo nginx -s reload
 ```
 
+### 6. 在线音乐 sidecar（可选）
+
+```bash
+cd online-music
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+cp .env.example .env        # 设置 ONLINE_MUSIC_TOKEN
+set -a; . ./.env; set +a
+python app.py                # 默认 18090
+```
+
+然后在 App 的「设置 → 在线音乐」填写 sidecar 地址/token，选择目标播放源与目录；顶栏云朵图标进入搜索。Docker、nginx、API 与已知限制见 [online-music/README.md](online-music/README.md)。
+
+> 仅建议自建局域网/内网使用；不要将 sidecar 暴露到公网。musicdl 为
+> PolyForm Noncommercial 1.0.0，sidecar 不随客户端发布包分发。
+
 ## 服务与端口
 
 | 服务 | 宿主机端口 | 说明 |
@@ -114,6 +131,7 @@ sudo nginx -s reload
 ```
 selfmusic/
 ├── backend/                     # Spring Boot 后端（认证/配对 + 状态同步）
+├── online-music/                # 可选 Python sidecar（musicdl）：在线搜索/下载/校验/写标签
 ├── frontend/                    # Flutter 客户端（Linux/Android/Windows/ohos 壳工程 + 跨平台 lib/）
 │   ├── lib/data/                # 播放源抽象 + SQLite 本地库 + 元数据解析
 │   ├── lib/providers/           # 播放/曲库/歌单/导航/源管理状态

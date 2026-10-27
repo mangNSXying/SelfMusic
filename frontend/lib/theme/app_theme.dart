@@ -86,7 +86,8 @@ enum SettingsItem {
   playback('播放', Icons.play_circle_outline),
   appearance('界面', Icons.palette_outlined),
   notifications('通知', Icons.notifications_outlined),
-  server('服务端', Icons.dns_outlined);
+  server('服务端', Icons.dns_outlined),
+  online('在线音乐', Icons.cloud_download_outlined);
 
   const SettingsItem(this.label, this.icon);
   final String label;

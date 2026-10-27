@@ -897,6 +897,56 @@ class AppSettings {
   /// 在线封面来源（`mbCaa/qq/netease`，默认 MB→CAA；无自动串源）。
   static const String kOnlineMetaCoverSource = 'online_meta_cover_source';
 
+  // ---------- 在线音乐 sidecar（设置→在线音乐） ----------
+  //
+  // 设备本地偏好：sidecar 地址通常是局域网地址，目标播放源 key 也只对当前
+  // 设备有意义，故不进 [knownKeys]、不随设置导出/同步。Token 存 SecretStore。
+  static const String kOnlineMusicEnabled = 'online_music_enabled';
+  static const String kOnlineMusicBaseUrl = 'online_music_base_url';
+  static const String kOnlineMusicSources = 'online_music_sources';
+  static const String kOnlineMusicTargetSource = 'online_music_target_source';
+  static const String kOnlineMusicTargetFolder = 'online_music_target_folder';
+  static const String kOnlineMusicMaxSizeMb = 'online_music_max_size_mb';
+  static const String kOnlineMusicPreferLossless =
+      'online_music_prefer_lossless';
+
+  bool get onlineMusicEnabled =>
+      (index.settingsGet(kOnlineMusicEnabled) ?? '0') == '1';
+  set onlineMusicEnabled(bool v) =>
+      index.settingsSet(kOnlineMusicEnabled, v ? '1' : '0');
+
+  String get onlineMusicBaseUrl =>
+      index.settingsGet(kOnlineMusicBaseUrl) ?? '';
+  set onlineMusicBaseUrl(String v) =>
+      index.settingsSet(kOnlineMusicBaseUrl, v.trim());
+
+  String get onlineMusicSources =>
+      index.settingsGet(kOnlineMusicSources) ??
+      'QQMusicClient,KuwoMusicClient,MiguMusicClient';
+  set onlineMusicSources(String v) =>
+      index.settingsSet(kOnlineMusicSources, v.trim());
+
+  String get onlineMusicTargetSource =>
+      index.settingsGet(kOnlineMusicTargetSource) ?? '';
+  set onlineMusicTargetSource(String v) =>
+      index.settingsSet(kOnlineMusicTargetSource, v.trim());
+
+  String get onlineMusicTargetFolder =>
+      index.settingsGet(kOnlineMusicTargetFolder) ?? '在线下载';
+  set onlineMusicTargetFolder(String v) =>
+      index.settingsSet(kOnlineMusicTargetFolder, v.trim());
+
+  /// 单曲大小上限（MB）；0=不限。仅用于搜索结果过滤。
+  int get onlineMusicMaxSizeMb =>
+      int.tryParse(index.settingsGet(kOnlineMusicMaxSizeMb) ?? '') ?? 300;
+  set onlineMusicMaxSizeMb(int v) =>
+      index.settingsSet(kOnlineMusicMaxSizeMb, v.clamp(0, 10240).toString());
+
+  bool get onlineMusicPreferLossless =>
+      (index.settingsGet(kOnlineMusicPreferLossless) ?? '1') == '1';
+  set onlineMusicPreferLossless(bool v) =>
+      index.settingsSet(kOnlineMusicPreferLossless, v ? '1' : '0');
+
   bool get fallbackAutoRepair =>
       (index.settingsGet(kFallbackAutoRepair) ?? '0') == '1';
   set fallbackAutoRepair(bool v) =>

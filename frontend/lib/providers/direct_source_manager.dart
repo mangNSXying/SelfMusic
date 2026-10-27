@@ -611,9 +611,9 @@ class DirectSourceManager extends ChangeNotifier {
       final uri = index.customCacheDirUri;
       var activated = true;
       if (uri != null) {
-        activated = await OhosPlatformBridge.ensureDirectoryActivated(uri,
-                write: true)
-            .timeout(const Duration(seconds: 3), onTimeout: () => false);
+        activated =
+            await OhosPlatformBridge.ensureDirectoryActivated(uri, write: true)
+                .timeout(const Duration(seconds: 3), onTimeout: () => false);
       }
       if (!activated || !index.customCacheDirWritable) {
         index.markCacheDirUnavailable();
@@ -1599,13 +1599,14 @@ class DirectSourceManager extends ChangeNotifier {
   /// 并增量刷新索引。返回后调用方 toast + 局部刷新；大文件流式上传不驻留内存。
   Future<void> uploadAudio(
       String sourceKey, String filename, Stream<List<int>> bytes, int length,
-      {String parentRef = ''}) async {
+      {String parentRef = '', bool scan = true}) async {
     final src = sourceByKey(sourceKey);
     if (src == null) throw StateError('源不存在：$sourceKey');
     if (!src.supportsWrite) throw StateError('该源不支持上传');
     await src.uploadFile(parentRef, filename, bytes, length);
     // 上传后增量扫描该源（新文件指纹为 added，自动落库）。
-    await scanSource(sourceKey);
+    // 在线下载会等同名 .lrc 也上传完再统一扫描一次。
+    if (scan) await scanSource(sourceKey);
   }
 
   Future<void> createFolder(String sourceKey, String name,
@@ -1618,6 +1619,44 @@ class DirectSourceManager extends ChangeNotifier {
     final path = normalizeDir(parentRef.isEmpty ? name : '$parentRef/$name');
     if (path.isNotEmpty) settings.addSourceCreatedFolder(sourceKey, path);
     notifyListeners();
+  }
+
+  /// 确保源内目录存在（逐级创建，已存在视为成功）。
+  ///
+  /// 在线下载入库用：目标目录可能尚未被扫描/创建。创建失败不在这里中断，
+  /// 让随后的上传返回更具体的权限/网络错误。
+  Future<void> ensureFolder(String sourceKey, String folder) async {
+    final src = sourceByKey(sourceKey);
+    if (src == null) throw StateError('源不存在：$sourceKey');
+    if (!src.supportsWrite) throw StateError('该源不支持写入');
+    final normalized = normalizeDir(folder);
+    if (normalized.isEmpty) return;
+    var parent = '';
+    for (final part in normalized.split('/')) {
+      if (part.isEmpty) continue;
+      try {
+        await src.createFolder(parent, part);
+      } catch (_) {
+        // 已存在/服务端返回冲突：继续，上传时会暴露真正的错误。
+      }
+      parent = parent.isEmpty ? part : '$parent/$part';
+    }
+    settings.addSourceCreatedFolder(sourceKey, normalized);
+    notifyListeners();
+  }
+
+  /// 上传歌词/封面 sidecar；不触发扫描（歌词由播放时按同名读取）。
+  Future<void> uploadSidecar(
+    String sourceKey,
+    String filename,
+    Stream<List<int>> bytes,
+    int length, {
+    String parentRef = '',
+  }) async {
+    final src = sourceByKey(sourceKey);
+    if (src == null) throw StateError('源不存在：$sourceKey');
+    if (!src.supportsWrite) throw StateError('该源不支持上传');
+    await src.uploadSidecar(parentRef, filename, bytes, length);
   }
 
   Future<ScanSummary>? _inFlightScan;

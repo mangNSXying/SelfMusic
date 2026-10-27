@@ -16,6 +16,7 @@ import 'services/audio_focus_monitor.dart';
 import 'services/custom_font_service.dart';
 import 'services/log_buffer.dart';
 import 'services/server_settings.dart';
+import 'services/online_music/online_music_service.dart';
 import 'services/selfmusic_audio_handler.dart';
 import 'services/playback_guard.dart';
 import 'services/sync_engine.dart';
@@ -368,6 +369,8 @@ class SelfMusicApp extends StatelessWidget {
     return MultiProvider(
       providers: [
         Provider<ApiClient>.value(value: api),
+        Provider<OnlineMusicService>.value(
+            value: OnlineMusicService(settings: direct.settings)),
         Provider<SyncEngine>.value(value: sync),
         ChangeNotifierProvider<ServerSettings>.value(value: settings),
         ChangeNotifierProvider<ThemeProvider>.value(

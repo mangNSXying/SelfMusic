@@ -11,7 +11,7 @@ void main() {
   test('SettingsItem 顺序：歌曲在播放前', () {
     final labels = SettingsItem.values.map((e) => e.label).toList();
     expect(labels.indexOf('歌曲'), lessThan(labels.indexOf('播放')));
-    expect(labels, ['常规', '歌曲', '播放', '界面', '通知', '服务端']);
+    expect(labels, ['常规', '歌曲', '播放', '界面', '通知', '服务端', '在线音乐']);
   });
 
   testWidgets('侧边栏按该顺序渲染分区', (tester) async {

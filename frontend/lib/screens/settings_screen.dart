@@ -17,6 +17,9 @@ import '../services/api_client.dart';
 import '../services/artist_resolver.dart';
 import '../services/bluetooth_service.dart';
 import '../services/custom_font_service.dart';
+import '../services/online_music/online_music_models.dart';
+import '../services/online_music/online_music_service.dart';
+import '../services/secret_store.dart';
 import '../services/server_settings.dart';
 import '../services/sync_engine.dart';
 import '../shortcuts/shortcut_settings.dart';
@@ -32,6 +35,7 @@ import '../widgets/row_action_button.dart';
 import '../widgets/shortcut_settings_panel.dart';
 import '../widgets/single_choice_group.dart';
 import 'devices_screen.dart';
+import 'online_music_screen.dart';
 import 'pairing_screen.dart';
 
 /// 设置页：根据侧边栏选中的分区渲染对应设置面板。
@@ -60,6 +64,8 @@ class SettingsScreen extends StatelessWidget {
         return const _PlaybackSettings();
       case SettingsItem.notifications:
         return const _NotificationsSettings();
+      case SettingsItem.online:
+        return const _OnlineMusicSettings();
     }
   }
 }
@@ -291,7 +297,7 @@ class _ServerSettingsState extends State<_ServerSettings> {
             contentPadding: EdgeInsets.zero,
             title: const Text('信任自签名证书'),
             subtitle: const Text(
-                '默认关闭；开启后 API 与直连 WebDAV 的扫描/探测跳过证书校验（鸿蒙播放器不校验证书，自签可直接播放）'),
+                '默认关闭；开启后 API、在线音乐 sidecar 与直连 WebDAV 的扫描/探测跳过证书校验（鸿蒙播放器不校验证书，自签可直接播放）'),
             value: context.read<DirectSourceManager>().settings.allowSelfSigned,
             onChanged: (v) {
               final settings = context.read<DirectSourceManager>().settings;
@@ -3090,6 +3096,412 @@ class _KeepAwakeDeviceDialogState extends State<_KeepAwakeDeviceDialog> {
             if (_sel.contains(d.address)) d,
         ]),
       ),
+    );
+  }
+}
+
+/// 在线音乐（sidecar）设置：搜索/下载/入库（L1）。
+class _OnlineMusicSettings extends StatefulWidget {
+  const _OnlineMusicSettings();
+
+  @override
+  State<_OnlineMusicSettings> createState() => _OnlineMusicSettingsState();
+}
+
+class _OnlineMusicSettingsState extends State<_OnlineMusicSettings> {
+  static const List<OnlineSourceInfo> _fallbackSources = [
+    OnlineSourceInfo(id: 'QQMusicClient', label: 'QQ音乐', isDefault: true),
+    OnlineSourceInfo(id: 'KuwoMusicClient', label: '酷我音乐', isDefault: true),
+    OnlineSourceInfo(id: 'MiguMusicClient', label: '咪咕音乐', isDefault: true),
+    OnlineSourceInfo(id: 'KugouMusicClient', label: '酷狗音乐'),
+    OnlineSourceInfo(id: 'NeteaseMusicClient', label: '网易云音乐'),
+    OnlineSourceInfo(id: 'JamendoMusicClient', label: 'Jamendo'),
+  ];
+
+  late final SecretStore _secrets;
+  late AppSettings _settings;
+  late OnlineMusicService _service;
+  late final TextEditingController _urlCtrl;
+  late final TextEditingController _tokenCtrl;
+  late final TextEditingController _folderCtrl;
+  final Set<String> _selectedSources = {};
+  List<OnlineSourceInfo> _sources = _fallbackSources;
+  bool _initialized = false;
+  bool _busy = false;
+  bool _tokenLoaded = false;
+  String _testResult = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _secrets = SecretStore();
+    _urlCtrl = TextEditingController();
+    _tokenCtrl = TextEditingController();
+    _folderCtrl = TextEditingController();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_initialized) return;
+    _initialized = true;
+    _settings = context.read<DirectSourceManager>().settings;
+    _service = context.read<OnlineMusicService>();
+    _urlCtrl.text = _settings.onlineMusicBaseUrl;
+    _folderCtrl.text = _settings.onlineMusicTargetFolder;
+    _selectedSources
+      ..clear()
+      ..addAll(_parseSources(_settings.onlineMusicSources));
+    _loadInitial();
+  }
+
+  Future<void> _loadInitial() async {
+    final token = await _secrets.onlineMusicToken();
+    if (!mounted) return;
+    setState(() {
+      _tokenCtrl.text = token ?? '';
+      _tokenLoaded = true;
+    });
+    if (_urlCtrl.text.trim().isEmpty) return;
+    await _refreshSources(silent: true);
+  }
+
+  Set<String> _parseSources(String raw) => raw
+      .split(',')
+      .map((s) => s.trim())
+      .where((s) => s.isNotEmpty)
+      .toSet();
+
+  Future<void> _refreshSources({required bool silent}) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final sources = await _service.fetchSources();
+      if (!mounted) return;
+      setState(() {
+        if (sources.isNotEmpty) {
+          _sources = sources;
+          final available = sources.map((s) => s.id).toSet();
+          _selectedSources.retainWhere(available.contains);
+          if (_selectedSources.isEmpty) {
+            _selectedSources.addAll(
+              sources.where((s) => s.isDefault).map((s) => s.id),
+            );
+          }
+          _settings.onlineMusicSources = _selectedSources.join(',');
+        }
+        _testResult = '连接成功（${sources.length} 个源）';
+      });
+      if (!silent) {
+        AppToast.show('sidecar 连接成功', isError: false);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _testResult = '连接失败：$e');
+      if (!silent) AppToast.error(e, 'sidecar 连接失败');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<bool> _persist({bool test = false, bool showToast = true}) async {
+    if (!_tokenLoaded) {
+      final token = await _secrets.onlineMusicToken();
+      if (!mounted) return false;
+      _tokenCtrl.text = token ?? '';
+      _tokenLoaded = true;
+    }
+    final normalized = OnlineMusicService.normalizeBaseUrl(_urlCtrl.text);
+    if (normalized.isNotEmpty) {
+      final uri = Uri.tryParse(normalized);
+      if (uri == null ||
+          (uri.scheme != 'http' && uri.scheme != 'https') ||
+          uri.host.isEmpty) {
+        AppToast.show('sidecar 地址格式不正确', isError: true);
+        return false;
+      }
+    }
+    _settings.onlineMusicBaseUrl = normalized;
+    _settings.onlineMusicTargetFolder = _folderCtrl.text.trim();
+    _settings.onlineMusicSources = _selectedSources.join(',');
+    await _secrets.setOnlineMusicToken(_tokenCtrl.text);
+    if (!mounted) return false;
+    setState(() {
+      _urlCtrl.text = normalized;
+      if (normalized.isEmpty) _testResult = '';
+    });
+    if (showToast) AppToast.show('在线音乐设置已保存', isError: false);
+    if (test) {
+      if (normalized.isEmpty) {
+        AppToast.show('请先填写 sidecar 地址', isError: true);
+        return false;
+      }
+      await _refreshSources(silent: false);
+    }
+    return true;
+  }
+
+  Future<void> _editMaxSize() async {
+    final controller =
+        TextEditingController(text: '${_settings.onlineMusicMaxSizeMb}');
+    final value = await showDialog<int>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('单曲大小上限'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: controller,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                suffixText: 'MB',
+                hintText: '0 = 不限',
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text('超过上限的搜索结果会被隐藏',
+                style: Theme.of(c).textTheme.bodySmall),
+          ],
+        ),
+        actions: appDialogActions(
+          c,
+          confirmLabel: '确定',
+          onCancel: () => Navigator.of(c).pop(),
+          onConfirm: () {
+            final n = int.tryParse(controller.text.trim());
+            Navigator.of(c).pop(n);
+          },
+        ),
+      ),
+    );
+    controller.dispose();
+    if (value == null || !mounted) return;
+    setState(() => _settings.onlineMusicMaxSizeMb = value);
+  }
+
+  Future<void> _openSearch() async {
+    final saved = await _persist(showToast: false);
+    if (!saved || !mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const OnlineMusicScreen()),
+    );
+  }
+
+  @override
+  void dispose() {
+    _urlCtrl.dispose();
+    _tokenCtrl.dispose();
+    _folderCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final direct = context.watch<DirectSourceManager>();
+    final writable = direct.sources.where((s) => s.supportsWrite).toList();
+    final selectedKey = _settings.onlineMusicTargetSource;
+    final selectedValid = writable.any((s) => s.key == selectedKey);
+    final selectedName = selectedValid
+        ? writable.firstWhere((s) => s.key == selectedKey).name
+        : '未选择';
+
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('Sidecar 服务',
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        SwitchListTile(
+          title: const Text('启用在线音乐'),
+          subtitle: const Text('顶部搜索栏旁的云朵图标进入在线搜索'),
+          value: _settings.onlineMusicEnabled,
+          onChanged: (v) {
+            setState(() => _settings.onlineMusicEnabled = v);
+          },
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+          child: TextField(
+            controller: _urlCtrl,
+            keyboardType: TextInputType.url,
+            textInputAction: TextInputAction.next,
+            decoration: const InputDecoration(
+              labelText: 'Sidecar 地址',
+              hintText: 'http://192.168.1.20:18090',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: TextField(
+            controller: _tokenCtrl,
+            obscureText: true,
+            textInputAction: TextInputAction.done,
+            decoration: const InputDecoration(
+              labelText: 'Token',
+              hintText: '与 sidecar 的 ONLINE_MUSIC_TOKEN 一致',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              FilledButton.tonalIcon(
+                onPressed: _busy ? null : () => _persist(test: false),
+                icon: const Icon(Icons.save_outlined),
+                label: const Text('保存'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _busy ? null : () => _persist(test: true),
+                icon: _busy
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.wifi_tethering),
+                label: const Text('测试连接'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _settings.onlineMusicEnabled ? _openSearch : null,
+                icon: const Icon(Icons.search),
+                label: const Text('打开在线搜索'),
+              ),
+            ],
+          ),
+        ),
+        if (_testResult.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: Text(
+              _testResult,
+              style: TextStyle(
+                fontSize: 12,
+                color: _testResult.startsWith('连接失败')
+                    ? Colors.red
+                    : cs.primary,
+              ),
+            ),
+          ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: Text(
+            '仅建议在自建局域网/内网使用；不要把 sidecar 直接暴露到公网。',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
+        const Divider(height: 32),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('搜索与入库',
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Text('音乐源', style: Theme.of(context).textTheme.bodyMedium),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final source in _sources)
+                FilterChip(
+                  label: Text(source.label),
+                  selected: _selectedSources.contains(source.id),
+                  onSelected: (selected) {
+                    setState(() {
+                      if (selected) {
+                        _selectedSources.add(source.id);
+                      } else {
+                        _selectedSources.remove(source.id);
+                      }
+                      _settings.onlineMusicSources =
+                          _selectedSources.join(',');
+                    });
+                  },
+                ),
+            ],
+          ),
+        ),
+        SwitchListTile(
+          title: const Text('优先显示无损'),
+          subtitle: const Text('搜索结果中无损格式排在前面（不隐藏其他格式）'),
+          value: _settings.onlineMusicPreferLossless,
+          onChanged: (v) {
+            setState(() => _settings.onlineMusicPreferLossless = v);
+          },
+        ),
+        ListTile(
+          title: const Text('单曲大小上限'),
+          subtitle: Text(_settings.onlineMusicMaxSizeMb > 0
+              ? '超过 ${_settings.onlineMusicMaxSizeMb} MB 的搜索结果会隐藏'
+              : '不限制'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _editMaxSize,
+        ),
+        ListTile(
+          title: const Text('目标播放源'),
+          subtitle: Text(
+            writable.isEmpty
+                ? '请先在「播放源」中添加支持写入的 WebDAV/SMB/本地源'
+                : '入库到：$selectedName',
+          ),
+          trailing: DropdownButton<String>(
+            value: selectedValid ? selectedKey : null,
+            hint: const Text('选择'),
+            items: [
+              for (final source in writable)
+                DropdownMenuItem(
+                  value: source.key,
+                  child: Text(source.name,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 13)),
+                ),
+            ],
+            onChanged: writable.isEmpty
+                ? null
+                : (v) {
+                    setState(() => _settings.onlineMusicTargetSource = v ?? '');
+                  },
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+          child: TextField(
+            controller: _folderCtrl,
+            textInputAction: TextInputAction.done,
+            decoration: const InputDecoration(
+              labelText: '目标目录',
+              hintText: '在线下载（留空 = 源根目录）',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          child: Text(
+            '下载完成并校验后，App 会把音频与同名 .lrc 上传到该目录，然后增量扫描；'
+            '若目录不存在会自动创建。',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
+      ],
     );
   }
 }
