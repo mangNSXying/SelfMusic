@@ -91,6 +91,16 @@ const _routeOptions = <SingleChoiceOption<SourceRoute>>[
   ),
 ];
 
+/// 密码框的键盘类型。
+///
+/// 鸿蒙 Flutter 引擎不会根据 `obscureText` 推断密码输入类型：它只把
+/// `keyboardType` 透传给系统 IME，默认的 text 会被当作普通文本框，系统
+/// 「安全键盘」不会拉起（安卓引擎会自动折算成密码类型）。显式指定
+/// visiblePassword 后引擎映射为系统的 VISIBLE_PASSWORD，才会按密码框处理；
+/// 其他平台返回 null 保持默认，避免 VISIBLE_PASSWORD 变体改变既有键盘行为。
+TextInputType? get _passwordKeyboardType =>
+    isOhos ? TextInputType.visiblePassword : null;
+
 /// 播放源管理页：直连源（本地 / SMB / WebDAV / SFTP）列表（支持列表/卡片切换）。
 ///
 /// - 点击源卡片直接进入源内浏览（文件夹式导航）。
@@ -1020,6 +1030,7 @@ class _SourceDialogState extends State<_SourceDialog> {
               ),
               TextField(
                 controller: fb.password,
+                keyboardType: _passwordKeyboardType,
                 obscureText: true,
                 decoration: const InputDecoration(labelText: '密码（可空）'),
               ),
@@ -1066,6 +1077,7 @@ class _SourceDialogState extends State<_SourceDialog> {
               if (fb.authMethod == SftpAuthMethod.password)
                 TextField(
                   controller: fb.password,
+                  keyboardType: _passwordKeyboardType,
                   obscureText: true,
                   decoration: const InputDecoration(labelText: '密码'),
                 )
@@ -1103,6 +1115,7 @@ class _SourceDialogState extends State<_SourceDialog> {
                 ),
                 TextField(
                   controller: fb.keyPassphrase,
+                  keyboardType: _passwordKeyboardType,
                   obscureText: true,
                   decoration: const InputDecoration(labelText: '私钥口令（无则空）'),
                 ),
@@ -1148,6 +1161,7 @@ class _SourceDialogState extends State<_SourceDialog> {
               ),
               TextField(
                 controller: fb.password,
+                keyboardType: _passwordKeyboardType,
                 obscureText: true,
                 decoration: const InputDecoration(labelText: '密码（可空，空即匿名）'),
               ),
@@ -1562,6 +1576,7 @@ class _SourceDialogState extends State<_SourceDialog> {
               ),
               TextField(
                 controller: _password,
+                keyboardType: _passwordKeyboardType,
                 obscureText: true,
                 decoration: const InputDecoration(labelText: '密码（可空）'),
               ),
@@ -1607,6 +1622,7 @@ class _SourceDialogState extends State<_SourceDialog> {
               if (_authMethod == SftpAuthMethod.password)
                 TextField(
                   controller: _password,
+                  keyboardType: _passwordKeyboardType,
                   obscureText: true,
                   decoration: const InputDecoration(labelText: '密码'),
                 )
@@ -1644,6 +1660,7 @@ class _SourceDialogState extends State<_SourceDialog> {
                 ),
                 TextField(
                   controller: _keyPassphrase,
+                  keyboardType: _passwordKeyboardType,
                   obscureText: true,
                   decoration: const InputDecoration(labelText: '私钥口令（无则空）'),
                 ),
@@ -1689,6 +1706,7 @@ class _SourceDialogState extends State<_SourceDialog> {
               ),
               TextField(
                 controller: _password,
+                keyboardType: _passwordKeyboardType,
                 obscureText: true,
                 decoration: const InputDecoration(labelText: '密码（可空，空即匿名）'),
               ),
