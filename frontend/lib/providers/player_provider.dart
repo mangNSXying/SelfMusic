@@ -352,6 +352,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 切歌令牌（P0 连按 guard）：每次 [_play] 递增，过期者静默丢弃。
   int _playToken = 0;
 
+  /// 正在装载的音源令牌（[_playDirect] 执行期间非空）：播放错误/完成事件
+  /// 到达时若仍在装载，说明是旧音源的迟到事件，不得再触发恢复或推进——
+  /// 否则两次装载并发，旧缓存文件可能在最后落地，出现「UI 新歌、声音旧歌」。
+  int? _loadingToken;
+
   /// 关联 audio_service 通知栏处理器（settings.md §3.6）：状态变化时回推媒体信息。
   void attachAudioHandler(SelfMusicAudioHandler handler) {
     _audioHandler = handler;
@@ -853,6 +858,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 到点暂停会把 playing 置 false 并再发一次 completed：
       // 这种「已暂停」的完成事件不再处理，否则暂停后又被自动切歌。
       if (!st.playing) return;
+      // 正在切换音源：旧音源的迟到 completed 不能当成本曲播完去推进下一首，
+      // 否则会在新曲装载期间又起一次 _play，两次装载并发。
+      if (_loadingToken != null) {
+        debugPrint('[play] 装载中，忽略迟到的 completed');
+        return;
+      }
       final finished = _current;
       if (finished == null) return;
       // 同一首歌的 completed 事件兜底去重。
@@ -887,17 +898,37 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_shuttingDown) return;
     final cur = _current;
     if (cur == null) return;
+    // 音源正在切换：这是旧音源的迟到错误，不能在这里再发起一次恢复装载，
+    // 否则恢复链与新切歌链都会调用播放器，最后落地的可能是旧曲缓存。
+    if (_loadingToken != null) {
+      debugPrint('[play] 装载中，忽略迟到的播放错误');
+      return;
+    }
     final now = DateTime.now();
     final last = _lastRecoverAt;
     if (last != null && now.difference(last) < _recoverCooldown) return;
     _lastRecoverAt = now;
     _loadFailStreak = 0;
-    unawaited(_recoverPlayback(cur));
+    final token = _playToken;
+    final key = _positionKeyOf(cur);
+    unawaited(_recoverPlayback(cur, token: token, key: key));
   }
 
   /// 重新装载当前曲（外部点歌语义，不重复推深层历史）；
   /// 仍装载失败则由 [_autoSkipAfterFailure] 继续跳下一首。
-  Future<void> _recoverPlayback(Song s) async {
+  Future<void> _recoverPlayback(Song s,
+      {required int token, required String key}) async {
+    // 错误事件到真正恢复之间用户可能已经切歌/恢复已被接管：令牌或当前曲
+    // 任一变化都放弃，避免旧错误把新曲重新装载一遍（或抢走新曲的音源）。
+    if (token != _playToken) {
+      debugPrint('[play] 恢复跳过：错误后已切歌《${s.title}》');
+      return;
+    }
+    final cur = _current;
+    if (cur == null || _positionKeyOf(cur) != key) {
+      debugPrint('[play] 恢复跳过：当前曲已变化《${s.title}》');
+      return;
+    }
     final src = _curSource;
     if (src == null || _shuttingDown) return;
     await _play(s,
@@ -1144,8 +1175,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       // 保位置：把绝对位置当作转码偏移透给装载（命中变体则本地 seek，
       // 命中转码流则服务端 start_sec；直连/字节流装载后仍需原生 seek）。
-      final (used, line) = await _playDirect(cur, fresh,
-          alive: alive, startSec: pos.inMilliseconds / 1000.0);
+      final (used, line) = await _playDirectTracked(cur, fresh,
+          alive: alive, token: token, startSec: pos.inMilliseconds / 1000.0);
       if (!alive()) return false;
       _curSource = used;
       _curLine = line;
@@ -2182,8 +2213,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           await player.pause();
         } catch (_) {}
       }
-      final (used, line) = await _playDirect(cur, src,
-          alive: alive, startSec: (startAt?.inMilliseconds ?? 0) / 1000.0);
+      final (used, line) = await _playDirectTracked(cur, src,
+          alive: alive,
+          token: token,
+          startSec: (startAt?.inMilliseconds ?? 0) / 1000.0);
       if (!alive()) return false; // 已被更新的切歌接管
       // Failover 成功：后续缓存/补读/歌词/预热一律走实际线路。
       _curSource = used;
@@ -2280,6 +2313,28 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// 过期装载立即中止：抛与 just_audio 切歌打断同类的异常，供 [_playDirect]
+  /// 直接 rethrow，避免旧链路继续走缓存/直连兜底把新曲覆盖掉。
+  void _ensureLoadAlive(bool Function() alive) {
+    if (_shuttingDown || !alive()) {
+      throw PlayerInterruptedException('装载已被更新的切歌接管');
+    }
+  }
+
+  /// [_playDirect] 的令牌包装：装载期间置 [_loadingToken]，让播放错误/完成
+  /// 事件知道当前有音源正在切换，不得在此时发起恢复或自动切歌。
+  Future<(MusicSource, int)> _playDirectTracked(Song s, MusicSource src,
+      {required bool Function() alive,
+      required int token,
+      double startSec = 0}) async {
+    _loadingToken = token;
+    try {
+      return await _playDirect(s, src, alive: alive, startSec: startSec);
+    } finally {
+      if (_loadingToken == token) _loadingToken = null;
+    }
+  }
+
   /// 直连源装载（带退避重试 + 备用 Failover）：「切后台后还能播一两首、
   /// 播完静默停住」的主因是后台网络被回收/连接超时，失败后没有重试也没有
   /// 下一首兜底。重试会重建连接；主源耗尽后按线路候选自动试备用（同
@@ -2317,10 +2372,16 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           final injected = loadOverride;
           if (injected != null) {
             await injected(s, cand);
+            if (!alive() || _shuttingDown) {
+              throw PlayerInterruptedException('装载已被更新的切歌接管');
+            }
           } else {
             // 重试轮跳过转码（首轮已试过，见 _loadOnce.skipTranscode）。
             await _loadOnce(s, cand,
-                probe: probeUsable, skipTranscode: i > 0, startSec: startSec);
+                alive: alive,
+                probe: probeUsable,
+                skipTranscode: i > 0,
+                startSec: startSec);
           }
           if (c > 0) {
             final label = line == 0 ? '主源' : '备用$line';
@@ -2372,8 +2433,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 成功时记 [_liveTranscode]/[_transcodeStartSec]（供 [position]/[seek]）。
   Future<bool> _tryTranscodeLoad(
       Song s, MusicSource src, String originUrl, dynamic tag,
-      {double startSec = 0}) async {
+      {required bool Function() alive, double startSec = 0}) async {
     try {
+      _ensureLoadAlive(alive);
       final settings = _appSettings;
       final api = _transcodeApi;
       if (settings == null || api == null) return false;
@@ -2398,7 +2460,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       } catch (_) {}
       // 回源鉴权随请求转发（不落地）：各源经 proxyAuthHeaders 自备
       // （WebDAV Basic / SFTP 信封），默认空。
+      _ensureLoadAlive(alive);
       headers.addAll(await src.proxyAuthHeaders(s));
+      // 取 token / 回源鉴权的异步期间可能已被用户切歌：此刻才调 setUrl 会把
+      // 旧曲重新推上播放器，覆盖新曲。必须在下发装载前再校验一次令牌。
+      _ensureLoadAlive(alive);
       debugPrint('[play] 转码代理 ${bitrate}k loudnorm=$loudnorm'
           '${startSec > 0 ? ' start_sec=$startSec' : ''}: $turl');
       final load = player.setUrl(turl, headers: headers, tag: tag);
@@ -2406,13 +2472,18 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         await load.timeout(_loadUrlTimeout);
       } on TimeoutException {
         load.ignore();
+        _ensureLoadAlive(alive);
         debugPrint('[play] 转码装载超时，回落直连');
         return false;
       }
+      _ensureLoadAlive(alive);
       _liveTranscode = true;
       _transcodeStartSec = startSec;
       return true;
     } catch (e) {
+      if (!alive() || _shuttingDown || e is PlayerInterruptedException) {
+        throw PlayerInterruptedException('装载已被更新的切歌接管');
+      }
       // 429 并发满 / 503 无 ffmpeg / 502 源失败：一律静默回落直连原文件。
       debugPrint('[play] 转码失败回落直连: $e');
       return false;
@@ -2431,7 +2502,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// [startSec] > 0 时转码分支带偏移重开流（seek/保位置重载用；变体命中则
   /// 本地原生 seek，不走流式）。
   Future<void> _loadOnce(Song s, MusicSource src,
-      {bool probe = true, bool skipTranscode = false, double startSec = 0}) async {
+      {required bool Function() alive,
+      bool probe = true,
+      bool skipTranscode = false,
+      double startSec = 0}) async {
+    _ensureLoadAlive(alive);
     final tag = mediaItemOf(s, title: displayTitle(s));
     final settings = _appSettings;
     final api = _transcodeApi;
@@ -2449,9 +2524,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 与当前设置一致的预载转码产物：本地文件，原生 seek、无需重建请求。
       try {
         final variant = await _resolveTranscodeCache?.call(src, s);
+        _ensureLoadAlive(alive);
         if (variant != null) {
           debugPrint('[play] ${src.kind} 转码变体缓存: $variant');
           await player.setFilePath(variant, tag: tag);
+          _ensureLoadAlive(alive);
           if (startSec > 0) {
             // 保位置重载命中变体：本地文件直接 seek，无需流式。
             try {
@@ -2465,13 +2542,18 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         // 与 [preload] 侧的 key 日志对照（接线缺失 vs 缓存行缺失）。
         debugPrint('[play] ${src.kind} 无变体缓存'
             '${_resolveTranscodeCache == null ? '（未接线）' : ''}《${s.title}》');
-      } catch (_) {
+      } catch (e) {
+        // 过期装载：立即中止，绝不能继续走后面的兜底覆盖新曲。
+        if (!alive() || _shuttingDown || e is PlayerInterruptedException) {
+          throw PlayerInterruptedException('装载已被更新的切歌接管');
+        }
         // 变体损坏等：继续走流式，下面原文件缓存仍可兜底。
       }
     }
     final cached = await src.cachedFilePath(s);
+    _ensureLoadAlive(alive);
     if (cached != null && !transcodeOn) {
-      if (await _playCachedFile(cached, src, tag)) return;
+      if (await _playCachedFile(cached, src, tag, alive: alive)) return;
     }
     final direct = src.directStream(s);
     // 代理转码：开关开 + 后端可达 + 该源选了代理链路时优先走服务端；
@@ -2481,14 +2563,17 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final proxyUrl = src.proxyOrigin(s);
     if (!skipTranscode &&
         proxyUrl != null &&
-        await _tryTranscodeLoad(s, src, proxyUrl, tag, startSec: startSec)) {
+        await _tryTranscodeLoad(s, src, proxyUrl, tag,
+            alive: alive, startSec: startSec)) {
       return;
     }
+    _ensureLoadAlive(alive);
     // 转码开但流失败（429 并发满 / 503 / 断网）：原文件缓存兜底，
     // 不行再走直连（旧行为里原缓存恒首位，转码开时不再让它抢跑）。
     if (transcodeOn && cached != null) {
-      if (await _playCachedFile(cached, src, tag)) return;
+      if (await _playCachedFile(cached, src, tag, alive: alive)) return;
     }
+    _ensureLoadAlive(alive);
     if (direct != null) {
       debugPrint('[play] ${src.kind} URL: ${direct.url}'
           '${direct.headers != null && direct.headers!.isNotEmpty ? ' (headers: ${direct.headers!.keys.join(",")})' : ' (无 headers)'}');
@@ -2515,6 +2600,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           debugPrint('[play] 装载前探针失败（忽略，继续装载）: $e');
         }
       }
+      _ensureLoadAlive(alive);
       // 装载看门狗（_loadUrlTimeout）：超时按装载失败进入退避重试；迟到
       // 的完成/错误 ignore() 吞掉——若期间用户切了歌，旧 future 会被
       // just_audio 以 PlayerInterruptedException 打断，也不能变 unhandled。
@@ -2523,25 +2609,36 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         await load.timeout(_loadUrlTimeout);
       } on TimeoutException {
         load.ignore();
+        _ensureLoadAlive(alive);
         throw TimeoutException(
             '装载超时（${_loadUrlTimeout.inSeconds}s）：服务器无响应或网络不可达');
       }
+      _ensureLoadAlive(alive);
       return;
     }
     debugPrint('[play] ${src.kind} 自建字节流: ${s.title}');
+    _ensureLoadAlive(alive);
     await player.setAudioSource(
         DirectAudioSource(source: src, song: s, tag: tag));
+    _ensureLoadAlive(alive);
   }
 
   /// 播本地缓存文件（原文件缓存 / 转码变体缓存共用）：成功 true；
   /// 失败 false（调用方继续走流式，不让可播歌曲卡死）。
-  Future<bool> _playCachedFile(
-      String path, MusicSource src, dynamic tag) async {
+  Future<bool> _playCachedFile(String path, MusicSource src, dynamic tag,
+      {required bool Function() alive}) async {
+    _ensureLoadAlive(alive);
     debugPrint('[play] ${src.kind} 缓存文件: $path');
     try {
       await player.setFilePath(path, tag: tag);
+      _ensureLoadAlive(alive);
       return true;
     } catch (e) {
+      // 装载已被更新的切歌接管：不能把这次失败当“缓存坏了”继续走网络兜底，
+      // 否则旧曲的直连/字节流仍可能在最后覆盖新曲。
+      if (!alive() || _shuttingDown || e is PlayerInterruptedException) {
+        throw PlayerInterruptedException('装载已被更新的切歌接管');
+      }
       // 缓存文件装载失败（如 ohos 沙箱真路径 mdk 打不开、缓存文件损坏）：
       // 回落自建字节流，不让可播歌曲卡死在直连失败上（2026-10-07 ohos
       // 直连改造的配套兜底；直连失败时字节流分支仍可用）。
@@ -3699,18 +3796,19 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final wasPlaying = player.playing && !_fadingPause;
     final token = ++_playToken;
     bool alive() => token == _playToken;
+    _loadingToken = token;
     try {
       final proxyUrl = src.proxyOrigin(cur);
       final tag = mediaItemOf(cur, title: displayTitle(cur));
       if (proxyUrl == null) return;
       var ok = await _tryTranscodeLoad(cur, src, proxyUrl, tag,
-          startSec: ms / 1000.0);
+          alive: alive, startSec: ms / 1000.0);
       if (!alive()) return;
       if (!ok) {
         // 新偏移起不来：回退原偏移保住不断流。
         debugPrint('[play] 转码 seek 回退原偏移《${cur.title}》');
         ok = await _tryTranscodeLoad(cur, src, proxyUrl, tag,
-            startSec: prevSec);
+            alive: alive, startSec: prevSec);
         if (!alive()) return;
         if (!ok) {
           AppToast.show('转码 seek 失败，已保持原进度', isError: true);
@@ -3741,6 +3839,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     } catch (e) {
       if (!alive()) return;
       debugPrint('[play] 转码 seek 失败《${cur.title}》: $e');
+    } finally {
+      if (_loadingToken == token) _loadingToken = null;
     }
   }
 
