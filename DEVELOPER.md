@@ -736,7 +736,9 @@ abstract class MusicSource {
 
 Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 由 `media_kit_libs_linux` / `media_kit_libs_windows_audio` **随包分发，无需系统安装 mpv**。`main()` 顶部 `JustAudioMediaKit.ensureInitialized()` 完成注册（默认参数 Windows/Linux 启用、Android 关闭走 ExoPlayer）。
 
-**请求头不再走 just_audio 的 Dart 回环代理**：`AudioPlayer(useProxyForRequestHeaders:false)` 在所有支持平台生效——桌面由 just_audio_media_kit 的 `Media(httpHeaders)` 落到 mpv `http-header-fields`（Linux 已实测 Basic 鉴权头、百分号编码 URL 均到达源），Android/鸿蒙分别走 ExoPlayer/AVPlayer 原生请求头。该 Dart 代理会把音频逐块经 UI isolate 转发，是桌面 mpv 启动预载与移动端之间唯一的网络链路差异（e202168 因此改为延迟装载）。SMB/SFTP 的自建字节流（`StreamAudioSource`）不受该开关控制、仍走 just_audio 代理，故**桌面启动预载只对直连 URL/本地文件启用，字节流源继续延迟到首次播放**（`PlayerProvider._canPreloadRestore`）。
+**请求头不再走 just_audio 的 Dart 回环代理**：`AudioPlayer(useProxyForRequestHeaders:false)` 在所有支持平台生效——桌面由 just_audio_media_kit 的 `Media(httpHeaders)` 落到 mpv `http-header-fields`（Linux 已实测 Basic 鉴权头、百分号编码 URL 均到达源），Android/鸿蒙分别走 ExoPlayer/AVPlayer 原生请求头。该 Dart 代理会把音频逐块经 UI isolate 转发，是桌面 mpv 启动预载与移动端之间唯一的网络链路差异（e202168 因此改为延迟装载）。SMB/SFTP 的自建字节流（`StreamAudioSource`）不受该开关控制、仍走 just_audio 代理。
+
+启动预载门控（`PlayerProvider._canPreloadRestore`）在桌面按「最终链路是否安全」判定：直连 URL/本地文件、本地原文件缓存、转码变体缓存、后端代理/转码 HTTP 都会预载；只有最终只能落到 `DirectAudioSource` 的未缓存 SMB/SFTP 继续延迟。所有桌面预载都带 `preloadOnly` 安全边界：缓存索引失效或后端转码失败时直接中止并保持延迟，绝不回落 Dart 字节流。桌面预载在首帧后启动、不阻塞 `restoreFuture`；`applyNewerMirrorIfAny` 会等预载收尾，并跳过用户装载中的窗口。
 
 > 注：`just_audio_mpv`（0.1.7）从未接线（无 import、无初始化），已从 pubspec 移除；Linux 桌面播放由 media_kit 接通。
 

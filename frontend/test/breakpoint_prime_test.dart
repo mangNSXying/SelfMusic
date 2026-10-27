@@ -64,6 +64,16 @@ class _FakeStreamSource extends _FakeSource {
   DirectStream? directStream(Song song) => null;
 }
 
+/// 自建字节流但已有本地缓存：桌面应允许预载（走 setFilePath）。
+class _FakeCachedStreamSource extends _FakeStreamSource {
+  _FakeCachedStreamSource(this.path);
+
+  final String path;
+
+  @override
+  Future<String?> cachedFilePath(Song song) async => path;
+}
+
 class _FakePlatformPlayer extends AudioPlayerPlatform {
   _FakePlatformPlayer(super.id, this._owner);
 
@@ -200,11 +210,14 @@ void main() {
     JustAudioPlatform.instance = _FakeJustAudio();
     // 既有用例覆盖「延迟到首次播放」回退路径；预载用例在用例内显式打开。
     PlayerProvider.debugForceRestorePreload = false;
+    // 测试环境没有真实帧：桌面预载直接启动，用例用 debugAwaitRestorePreload 等收尾。
+    PlayerProvider.debugRunRestorePreloadImmediately = true;
   });
 
   tearDown(() {
     JustAudioPlatform.instance = saved;
     PlayerProvider.debugForceRestorePreload = null;
+    PlayerProvider.debugRunRestorePreloadImmediately = false;
   });
 
   /// 建歌单（全部 refs）+ 索引 + provider；返回真实 playlist uuid。
@@ -525,6 +538,7 @@ void main() {
     );
 
     await player.restorePreferRemote();
+    await player.debugAwaitRestorePreload();
     final fake = JustAudioPlatform.instance as _FakeJustAudio;
     expect(fake.players, isNotEmpty, reason: '恢复应完成暂停态媒体装载');
     expect(fake.players.values.single.playCalls, 0, reason: '预载不得起播');
@@ -554,6 +568,7 @@ void main() {
     );
 
     await player.restorePreferRemote();
+    await player.debugAwaitRestorePreload();
     final fake = JustAudioPlatform.instance as _FakeJustAudio;
     expect(fake.players, isEmpty,
         reason: '自建字节流会经 just_audio 回环代理，启动时不得预载');
@@ -627,6 +642,69 @@ void main() {
     expect(player.playing, isFalse,
         reason: '采用镜像断点后旧音频必须已暂停，不能界面切新曲但声音还是旧曲');
     expect(player.position, const Duration(milliseconds: 30000));
+
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
+
+  test('已缓存的 SMB/SFTP：桌面允许预载本地缓存文件', () async {
+    final dir = await Directory.systemTemp.createTemp('selfmusic_cache_');
+    addTearDown(() async {
+      if (await dir.exists()) await dir.delete(recursive: true);
+    });
+    final cached = File('${dir.path}/a.flac');
+    await cached.writeAsBytes(List<int>.filled(4096, 0));
+
+    PlayerProvider.debugForceRestorePreload = null;
+    final (index, player, uuid) = await setup(
+      ['/x/a.flac'],
+      source: _FakeCachedStreamSource(cached.path),
+    );
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+
+    await player.restorePreferRemote();
+    await player.debugAwaitRestorePreload();
+    final fake = JustAudioPlatform.instance as _FakeJustAudio;
+    expect(fake.players, isNotEmpty, reason: '本地缓存可直接预载');
+    expect(fake.players.values.single.playCalls, 0);
+    expect(player.position.inMilliseconds, closeTo(10000, 200));
+
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
+
+  test('预载安全边界：只剩自建字节流时中止，不构造播放器', () async {
+    PlayerProvider.debugForceRestorePreload = true;
+    final (index, player, uuid) = await setup(
+      ['/x/a.flac'],
+      source: _FakeStreamSource(),
+    );
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+
+    await player.restorePreferRemote();
+    await player.debugAwaitRestorePreload();
+    final fake = JustAudioPlatform.instance as _FakeJustAudio;
+    expect(fake.players, isEmpty,
+        reason: '门控被强制打开时，预载仍必须拒绝回落到 DirectAudioSource');
+    expect(player.playing, isFalse);
+    expect(player.position, const Duration(milliseconds: 10000),
+        reason: '预载中止后保持乐观断点，等待首次播放');
 
     await Future<void>.delayed(const Duration(milliseconds: 100));
   });

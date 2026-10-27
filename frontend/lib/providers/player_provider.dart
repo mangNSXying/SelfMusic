@@ -53,6 +53,17 @@ WeightJudgement judgeWeightRatio(Duration? duration, Duration position) {
   return WeightJudgement.none;
 }
 
+/// 启动预载专用：该源最终只能落到 just_audio 的回环字节流（桌面 SMB/SFTP），
+/// 预载必须中止而不是装载——否则整首音频会经 UI isolate 转发，重新引入卡死。
+class PreloadUnsafeSourceException implements Exception {
+  const PreloadUnsafeSourceException([this.message = '预载禁止回落到自建字节流']);
+
+  final String message;
+
+  @override
+  String toString() => 'PreloadUnsafeSourceException: $message';
+}
+
 /// 按源 key 解析播放源的函数：`server` → 服务器代理源；`webdav:<name>` → 对应直连源。
 typedef SourceResolver = MusicSource? Function(String sourceKey);
 
@@ -438,6 +449,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// （main.dart 的「先恢复、后拉取、再补切」约束）。
   Future<void>? _restoreFuture;
 
+  /// 桌面启动预载的飞行中 Future（首帧后启动，不阻塞 [_restoreFuture]；
+  /// 镜像套用前先等它收尾）。
+  Future<void>? _restorePreloadFuture;
+
   /// 启动恢复期间用户连点播放/暂停的待应用目标态。
   ///
   /// 非 null 时表示恢复尚未收尾：true=恢复完播放，false=恢复完保持暂停。
@@ -497,26 +512,60 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   @visibleForTesting
   static bool? debugForceRestorePreload;
 
-  /// 冷启动恢复是否可以立即预载媒体。
+  /// 测试用：跳过「首帧后再启动桌面预载」的等待（测试环境无真实帧）。
+  @visibleForTesting
+  static bool debugRunRestorePreloadImmediately = false;
+
+  static bool get _isDesktop =>
+      !kIsWeb && (Platform.isWindows || Platform.isLinux);
+
+  /// 冷启动恢复是否可以预载媒体。
   ///
-  /// Android/鸿蒙：与旧行为一致，始终预载（原生请求头，不经 Dart 代理）。
-  /// Windows/Linux：只预载直连 URL/本地文件；SMB/SFTP 走自建字节流
-  /// （just_audio StreamAudioSource 恒经 Dart 回环代理），启动时 mpv 会
-  /// 高速灌缓冲把 UI isolate 压死（Windows 卡死根因），继续延迟到首次播放。
-  bool _canPreloadRestore(Song s, MusicSource? src) {
+  /// 移动端保持历史行为：全源预载。
+  /// 桌面只预载「播放器能原生打开」的源：直连 URL/本地文件、本地原文件缓存、
+  /// 已缓存的转码变体、以及后端代理/转码 HTTP（mpv 原生请求头）。SMB/SFTP
+  /// 最终只能落到 StreamAudioSource/Dart 回环代理的，返回 false 继续延迟。
+  Future<bool> _canPreloadRestore(Song s, MusicSource? src) async {
     final forced = debugForceRestorePreload;
     if (forced != null) return forced;
     if (kIsWeb || src == null) return false;
-    final desktop = Platform.isWindows || Platform.isLinux;
-    if (!desktop) return true;
-    return src.directStream(s) != null;
+    if (!_isDesktop) return true;
+    if (src.directStream(s) != null) return true;
+
+    try {
+      final cached = await src.cachedFilePath(s);
+      if (cached != null && await File(cached).exists()) return true;
+    } catch (_) {}
+
+    // 转码开时：变体缓存是本地的；没有变体则 _loadOnce 会先试后端 HTTP，
+    // 失败也只会走到 preloadOnly 的安全中止，不会回落 Dart 字节流。
+    if (!_transcodeUsableFor(src)) return false;
+    try {
+      final variant = await _resolveTranscodeCache?.call(src, s);
+      if (variant != null && await File(variant).exists()) return true;
+    } catch (_) {}
+    return true;
+  }
+
+  /// 后端代理/转码链路是否可用：实际媒体地址是 HTTP，走 mpv 原生请求头。
+  bool _transcodeUsableFor(MusicSource src) {
+    final settings = _appSettings;
+    final api = _transcodeApi;
+    return settings != null &&
+        api != null &&
+        shouldUseTranscode(
+          enabled: settings.transcodeEnabled,
+          apiBaseUrl: (api.baseUrl as String?) ?? '',
+          src: src,
+        );
   }
 
   /// 暂停态预载当前恢复曲到断点：成功后续上真实位置，失败静默保留乐观断点
   /// （用户点播放时按正常链路重试并提示）。
   Future<void> _preloadRestored(Song s, int posMs) async {
+    if (_shuttingDown || _disposed) return;
     final src = _curSource;
-    if (!_canPreloadRestore(s, src)) {
+    if (!await _canPreloadRestore(s, src)) {
       perfLog('restorePreload skip', 'ref=${s.sourceRef} kind=${src?.kind}');
       unawaited(_loadLyrics(s, src));
       return;
@@ -530,6 +579,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       fromPlaylist: false,
       emitBreakpoint: false,
       silentErrorToast: true,
+      // 桌面禁止回落到 just_audio 的 Dart 字节流：缓存索引脏了或后端转码
+      // 失败时，宁可预载失败保持延迟，也不能重新引入 UI 卡死。
+      preloadOnly: _isDesktop,
       startAt: Duration(milliseconds: posMs),
     );
     final cur = _current;
@@ -544,6 +596,59 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     perfLog('restorePreload done',
         'ref=${s.sourceRef} pos=${position.inMilliseconds}ms');
   }
+
+  /// 桌面启动预载：首帧后再开始，且不阻塞 restoreFuture（后端 HTTP 预载在
+  /// 坏网下可能等超时，不能拖住首轮同步）。[applyNewerMirrorIfAny] 会等它收尾。
+  void _scheduleRestorePreload(Song s, int posMs) {
+    final f = _afterFirstFrame().then((_) async {
+      if (_shuttingDown || _disposed) return;
+      // 等待首帧期间用户已接管（播放/切歌/seek）：让用户操作优先，不能再补
+      // 一次预载把用户的 _play 令牌顶掉。
+      if (_userTookOver ||
+          _loadingToken != null ||
+          _restoreResumeTarget != null) {
+        perfLog('restorePreload abandon', 'userTookOver=$_userTookOver');
+        return;
+      }
+      final cur = _current;
+      if (cur == null || !_same(cur, s)) return;
+      await _preloadRestored(s, posMs);
+    }).catchError((Object e) {
+      debugPrint('[play] 启动预载异常（忽略）: $e');
+    });
+    _restorePreloadFuture = f;
+    unawaited(f.whenComplete(() {
+      if (identical(_restorePreloadFuture, f)) _restorePreloadFuture = null;
+    }));
+  }
+
+  Future<void> _afterFirstFrame() async {
+    if (debugRunRestorePreloadImmediately) return;
+    try {
+      final waits = <Future<void>>[
+        WidgetsBinding.instance.waitUntilFirstFrameRasterized,
+      ];
+      // 测试/调试环境可能永远没有帧：加短兜底，避免镜像套用永久等待。
+      // release 严格等首帧完成后再启动预载。
+      if (kDebugMode) {
+        waits.add(Future<void>.delayed(const Duration(milliseconds: 250)));
+      }
+      await Future.any<void>(waits);
+    } catch (_) {}
+  }
+
+  /// 等排队/进行中的启动预载收尾（镜像套用前避免并发装载）。
+  Future<void> _awaitRestorePreload() async {
+    while (true) {
+      final f = _restorePreloadFuture;
+      if (f == null) return;
+      await f;
+      if (identical(f, _restorePreloadFuture)) return;
+    }
+  }
+
+  @visibleForTesting
+  Future<void> debugAwaitRestorePreload() => _awaitRestorePreload();
 
   /// 退出/释放时用于落库的位置：延迟装载态优先乐观断点，绝不为了取值构造播放器。
   Duration get _positionForPersist {
@@ -2213,6 +2318,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       bool manual = false,
       bool emitBreakpoint = true,
       bool silentErrorToast = false,
+      bool preloadOnly = false,
       Duration? startAt}) async {
     // 连按切歌 guard：每次 _play 领一个单调令牌，后续 await 间隙若令牌过期
     //（更新的切歌已接管），静默丢弃，不报错、不覆盖、不触发副作用。
@@ -2289,7 +2395,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       final (used, line) = await _playDirectTracked(cur, src,
           alive: alive,
           token: token,
-          startSec: (startAt?.inMilliseconds ?? 0) / 1000.0);
+          startSec: (startAt?.inMilliseconds ?? 0) / 1000.0,
+          preloadOnly: preloadOnly);
       if (!alive()) return false; // 已被更新的切歌接管
       // Failover 成功：后续缓存/补读/歌词/预热一律走实际线路。
       _curSource = used;
@@ -2402,10 +2509,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<(MusicSource, int)> _playDirectTracked(Song s, MusicSource src,
       {required bool Function() alive,
       required int token,
-      double startSec = 0}) async {
+      double startSec = 0,
+      bool preloadOnly = false}) async {
     _loadingToken = token;
     try {
-      return await _playDirect(s, src, alive: alive, startSec: startSec);
+      return await _playDirect(s, src,
+          alive: alive, startSec: startSec, preloadOnly: preloadOnly);
     } finally {
       if (_loadingToken == token) _loadingToken = null;
     }
@@ -2419,7 +2528,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 成功返回实际使用的 `(source, line)`，调用方据此更新 [_curSource]/[_curLine]。
   /// [startSec] 透传 [_loadOnce]（保位置重载用；首播/重试为 0）。
   Future<(MusicSource, int)> _playDirect(Song s, MusicSource src,
-      {required bool Function() alive, double startSec = 0}) async {
+      {required bool Function() alive,
+      double startSec = 0,
+      bool preloadOnly = false}) async {
     List<(MusicSource, int)> cands;
     try {
       cands = _candidates?.call(s.sourceKey) ?? [(src, 0)];
@@ -2457,7 +2568,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
                 alive: alive,
                 probe: probeUsable,
                 skipTranscode: i > 0,
-                startSec: startSec);
+                startSec: startSec,
+                preloadOnly: preloadOnly);
           }
           if (c > 0) {
             final label = line == 0 ? '主源' : '备用$line';
@@ -2468,6 +2580,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           return (cand, line);
         } catch (e) {
           if (e is PlayerInterruptedException) rethrow;
+          // 预载只能走原生链路：本候选只剩自建字节流时不再重试，换下一线路；
+          // 全部候选都不安全则 _play 静默失败，保持延迟装载。
+          if (e is PreloadUnsafeSourceException) {
+            last = e;
+            break;
+          }
           // 鉴权被拒重试也不会好：单线路立即失败；多线路则继续试下一备。
           if (e is SourceAuthException && isLast) rethrow;
           if (e is SourceAuthException) {
@@ -2581,7 +2699,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       {required bool Function() alive,
       bool probe = true,
       bool skipTranscode = false,
-      double startSec = 0}) async {
+      double startSec = 0,
+      bool preloadOnly = false}) async {
     _ensureLoadAlive(alive);
     final tag = mediaItemOf(s, title: displayTitle(s));
     final settings = _appSettings;
@@ -2691,6 +2810,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
       _ensureLoadAlive(alive);
       return;
+    }
+    if (preloadOnly) {
+      // 启动预载只允许原生/本地链路；此处只剩自建字节流（桌面 SMB/SFTP），
+      // 会经 just_audio 回环代理把整首音频压到 UI isolate，必须中止。
+      throw const PreloadUnsafeSourceException();
     }
     debugPrint('[play] ${src.kind} 自建字节流: ${s.title}');
     _ensureLoadAlive(alive);
@@ -4205,7 +4329,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
     if (preferMirror && best != null) {
-      if (await _restoreFromMirror(idx, best)) return;
+      if (await _restoreFromMirror(idx, best, startup: true)) return;
     }
     await _restoreLocal(idx, local);
   }
@@ -4470,7 +4594,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// （冷启动断点快路径 + 多页 pull 回调解锁后的卡顿根因）。
   Future<void> applyNewerMirrorIfAny({bool viaSync = false}) async {
     final idx = _index;
-    if (idx == null || !_restored || _shuttingDown) return;
+    if (idx == null || !_restored || _shuttingDown || _disposed) return;
     if (_applyingMirror) {
       _mirrorApplyQueued = true;
       if (viaSync) _mirrorApplyViaSync = true;
@@ -4499,8 +4623,16 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (restoring != null) await restoring;
         perfLog('mirror.apply waitRestore',
             '${swWait.elapsedMilliseconds}ms viaSync=$sync');
-        if (_shuttingDown) {
+        if (_shuttingDown || _disposed) {
           perfLog('mirror.apply skip', '应用退出中');
+          return;
+        }
+        final swPreload = Stopwatch()..start();
+        await _awaitRestorePreload();
+        perfLog('mirror.apply waitPreload',
+            '${swPreload.elapsedMilliseconds}ms viaSync=$sync');
+        if (_shuttingDown || _disposed) {
+          perfLog('mirror.apply skip', '应用退出中（预载后）');
           return;
         }
         if (_hasPlayScene && playing) {
@@ -4509,6 +4641,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
         if (!sync && _userTookOver) {
           perfLog('mirror.apply skip', '用户已接管（恢复尾后）');
+          return;
+        }
+        if (_loadingToken != null) {
+          // 启动预载已收尾，但用户点播放触发的装载可能正在进行：套用镜像会
+          // 抢走 token/音源，等本轮装载结束后的下一轮同步再处理。
+          perfLog('mirror.apply skip', '用户装载中');
           return;
         }
         final swLookup = Stopwatch()..start();
@@ -4700,9 +4838,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
       _syncSystemMedia();
       if (preloadPosMs != null) {
-        await _preloadRestored(restored, preloadPosMs);
-        notifyListeners();
-        _syncSystemMedia();
+        if (_isDesktop && debugForceRestorePreload != false) {
+          // 桌面：首帧后再预载，不阻塞 restoreFuture；镜像套用会等它收尾。
+          _scheduleRestorePreload(restored, preloadPosMs);
+        } else {
+          await _preloadRestored(restored, preloadPosMs);
+          notifyListeners();
+          _syncSystemMedia();
+        }
       } else {
         unawaited(_loadLyrics(restored, _curSource));
       }
@@ -4715,7 +4858,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 用远端断点重建歌单队列并恢复进度；目标歌本机无源时退到其后第一首可播条目。
   /// 镜像携带深层列表时，按身份重建该歌单的深层历史，并重建融合队列。
-  Future<bool> _restoreFromMirror(LocalIndex idx, BreakpointMirrorRow m) async {
+  Future<bool> _restoreFromMirror(LocalIndex idx, BreakpointMirrorRow m,
+      {bool startup = false}) async {
     final swAll = Stopwatch()..start();
     final pid = idx.playlistIdOfUuid(m.playlistUuid);
     if (pid == null) {
@@ -4849,7 +4993,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _curSource = _resolver?.call(adopted.sourceKey) ?? _curSource;
     notifyListeners();
     _syncSystemMedia();
-    await _preloadRestored(adopted, pos);
+    if (startup && _isDesktop && debugForceRestorePreload != false) {
+      // 桌面启动：首帧后再预载，不阻塞 restoreFuture；镜像套用会等它收尾。
+      _scheduleRestorePreload(adopted, pos);
+    } else {
+      await _preloadRestored(adopted, pos);
+    }
     if (_same(_current ?? adopted, adopted)) {
       AppToast.show('已从其他设备继续播放（${_fmtMs(pos)}）', isError: false);
     }
