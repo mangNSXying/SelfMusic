@@ -818,11 +818,54 @@ class LocalIndex {
     final out = List<Song>.of(songs);
     for (final entry in bySource.entries) {
       final sourceKey = entry.key;
+      final resolved = <int>{};
+      void applyRows(List<String> refs, Map<String, List<int>> positionsByRef) {
+        for (var start = 0; start < refs.length; start += 400) {
+          final end = start + 400 < refs.length ? start + 400 : refs.length;
+          final chunk = refs.sublist(start, end);
+          final placeholders = List.filled(chunk.length, '?').join(',');
+          final rows = _db!.select('''
+            SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
+                   i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
+                   i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
+            FROM idx_songs i
+            LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
+            WHERE i.source_key=? AND i.ref IN ($placeholders)
+          ''', [sourceKey, ...chunk]);
+          for (final r in rows) {
+            final positions = positionsByRef[r['ref'] as String];
+            if (positions == null) continue;
+            final live = _rowToSong(r);
+            for (final pos in positions) {
+              if (resolved.add(pos)) out[pos] = live;
+            }
+          }
+        }
+      }
+
+      // 当前扫描/入库的 ref 已经是规范形态，先按精确值查；只有查不到的历史
+      // ref 才展开百分号编码/解码变体重查。避免启动恢复队列时为每条 ref
+      // 计算多份变体，1417 首约 0.5s 卡在 UI isolate。
+      final exactToPos = <String, List<int>>{};
+      for (final pos in entry.value) {
+        final ref = songs[pos].sourceRef;
+        if (ref.isEmpty) continue;
+        exactToPos.putIfAbsent(ref, () => []).add(pos);
+      }
+      applyRows(exactToPos.keys.toList(growable: false), exactToPos);
+
+      final missing = <int>[
+        for (final pos in entry.value)
+          if (!resolved.contains(pos)) pos
+      ];
+      if (missing.isEmpty) continue;
       // variant → 引用它的全部位置（重复条目共享同一实时行）。
       final variantToPos = <String, List<int>>{};
       final refs = <String>[];
-      for (final pos in entry.value) {
-        for (final v in webdavRefVariants(songs[pos].sourceRef)) {
+      for (final pos in missing) {
+        final exact = songs[pos].sourceRef;
+        for (final v in webdavRefVariants(exact)) {
+          if (v == exact) continue;
           final positions = variantToPos[v];
           if (positions == null) {
             variantToPos[v] = [pos];
@@ -832,28 +875,7 @@ class LocalIndex {
           }
         }
       }
-      final resolved = <int>{};
-      for (var start = 0; start < refs.length; start += 400) {
-        final end = start + 400 < refs.length ? start + 400 : refs.length;
-        final chunk = refs.sublist(start, end);
-        final placeholders = List.filled(chunk.length, '?').join(',');
-        final rows = _db!.select('''
-          SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
-                 i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
-                 i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
-          FROM idx_songs i
-          LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
-          WHERE i.source_key=? AND i.ref IN ($placeholders)
-        ''', [sourceKey, ...chunk]);
-        for (final r in rows) {
-          final positions = variantToPos[r['ref'] as String];
-          if (positions == null) continue;
-          final live = _rowToSong(r);
-          for (final pos in positions) {
-            if (resolved.add(pos)) out[pos] = live;
-          }
-        }
-      }
+      applyRows(refs, variantToPos);
     }
     return out;
   }
