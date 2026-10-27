@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../data/local/app_settings.dart';
 import '../models/song.dart';
 import '../data/sources/music_source.dart';
 import '../providers/direct_source_manager.dart';
@@ -9,13 +12,36 @@ import '../services/tag_embed_service.dart';
 import 'app_dialog_actions.dart';
 import 'app_toast.dart';
 
-/// 嵌入确认＋进度对话框（纯手动入口，由“修改信息”弹窗打开）。
+/// 嵌入流程结果（对话框返回值；[detail] 为失败/跳过原因）。
+enum EmbedOutcomeStatus { embedded, cancelled, failed, skipped }
+
+class EmbedOutcome {
+  final EmbedOutcomeStatus status;
+  final String? detail;
+  const EmbedOutcome(this.status, [this.detail]);
+}
+
+/// 嵌入确认＋进度对话框。
 ///
-/// 确认页：目标文件、可嵌入内容（歌词/封面）、流量提示；
-/// 执行页：阶段 + 进度条 + 取消；成功返回 true（调用方刷新），失败留窗显错。
+/// 手动入口（“修改信息”弹窗）：确认页展示目标/内容/流量提示，执行页显示
+/// 阶段与进度；成功返回 [EmbedOutcomeStatus.embedded]。
+/// 自动入口（保存口径＝内嵌到歌曲）：[autoStart] 跳过确认页直接执行，
+/// 不可嵌入/取消/失败直接以结果返回，由调用方合并提示。
 class EmbedProgressDialog extends StatefulWidget {
   final Song song;
-  const EmbedProgressDialog({super.key, required this.song});
+
+  /// 跳过确认页，加载完成后立即开始（自动内嵌）。
+  final bool autoStart;
+
+  /// 成功后是否自行 toast（自动内嵌由调用方统一提示，避免双 toast）。
+  final bool toastOnSuccess;
+
+  const EmbedProgressDialog({
+    super.key,
+    required this.song,
+    this.autoStart = false,
+    this.toastOnSuccess = true,
+  });
 
   @override
   State<EmbedProgressDialog> createState() => _EmbedProgressDialogState();
@@ -50,43 +76,48 @@ class _EmbedProgressDialogState extends State<EmbedProgressDialog> {
   Future<void> _load() async {
     final direct = context.read<DirectSourceManager>();
     final src = direct.sourceByKey(widget.song.sourceKey);
+    String? deny;
     if (!widget.song.isDirect) {
-      if (mounted) {
+      deny = '服务端歌曲没有文件，无法嵌入';
+    } else if (src == null || !src.supportsWrite) {
+      deny = '该源不支持写入，无法嵌入';
+    } else {
+      try {
+        final svc =
+            TagEmbedService(index: direct.index, settings: direct.settings);
+        final content = await svc.embeddableContent(widget.song);
+        if (!mounted) return;
         setState(() {
           _loading = false;
-          _denyReason = '服务端歌曲没有文件，无法嵌入';
+          _target = src.displayPath(widget.song);
+          _hasLyrics = content?.lyrics != null;
+          _hasCover = content?.coverBytes != null;
+          _fileSize = widget.song.fileSize;
+          _isLocal = src.kind == SourceKind.local;
+          if (content == null) _denyReason = '没有可嵌入的内容（歌词与封面均无）';
         });
+        if (_denyReason != null) {
+          if (widget.autoStart) {
+            Navigator.of(context).pop(
+                EmbedOutcome(EmbedOutcomeStatus.skipped, _denyReason));
+          }
+          return; // 手动入口停在确认页（不可嵌入时显示原因）
+        }
+        if (widget.autoStart) unawaited(_start());
+        return;
+      } catch (e) {
+        deny = '检查可嵌入内容失败：$e';
       }
-      return;
     }
-    if (src == null || !src.supportsWrite) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _denyReason = '该源不支持写入，无法嵌入';
-        });
-      }
-      return;
-    }
-    try {
-      final svc = TagEmbedService(index: direct.index, settings: direct.settings);
-      final content = await svc.embeddableContent(widget.song);
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _target = src.displayPath(widget.song);
-        _hasLyrics = content?.lyrics != null;
-        _hasCover = content?.coverBytes != null;
-        _fileSize = widget.song.fileSize;
-        _isLocal = src.kind == SourceKind.local;
-        if (content == null) _denyReason = '没有可嵌入的内容（歌词与封面均无）';
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _denyReason = '检查可嵌入内容失败：$e';
-      });
+    if (!mounted) return;
+    setState(() {
+      _loading = false;
+      _denyReason = deny;
+    });
+    if (widget.autoStart) {
+      // 自动入口没有“确认页”可留：直接返回原因，由保存流程提示。
+      Navigator.of(context)
+          .pop(EmbedOutcome(EmbedOutcomeStatus.skipped, deny));
     }
   }
 
@@ -127,16 +158,29 @@ class _EmbedProgressDialogState extends State<EmbedProgressDialog> {
         },
       );
       if (!mounted) return;
-      Navigator.of(context).pop(true);
-      AppToast.show('已嵌入到文件并清理 sidecar', isError: false);
+      Navigator.of(context)
+          .pop(const EmbedOutcome(EmbedOutcomeStatus.embedded));
+      if (widget.toastOnSuccess) {
+        AppToast.show('已嵌入到文件并清理 sidecar', isError: false);
+      }
     } on PreloadAbortedException {
       if (!mounted) return;
+      if (widget.autoStart) {
+        Navigator.of(context)
+            .pop(const EmbedOutcome(EmbedOutcomeStatus.cancelled));
+        return;
+      }
       setState(() {
         _started = false;
         _error = '已取消（源文件未动）';
       });
     } catch (e) {
       if (!mounted) return;
+      if (widget.autoStart) {
+        Navigator.of(context)
+            .pop(EmbedOutcome(EmbedOutcomeStatus.failed, '$e'));
+        return;
+      }
       setState(() => _error = '$e');
     } finally {
       // 恢复播放与窗口是否还在无关（用捕获的 provider，不依赖 context）。
@@ -289,4 +333,40 @@ class _EmbedProgressDialogState extends State<EmbedProgressDialog> {
       ],
     );
   }
+}
+
+/// 保存后按设置自动内嵌（设置→歌曲→在线元数据＝内嵌到歌曲）。
+///
+/// 返回 null 表示当前不是内嵌模式（调用方沿用缓存/sidecar 口径提示）；
+/// 否则返回执行结果——[EmbedOutcomeStatus.skipped] 为条件不满足未执行
+/// （服务端歌/源不可写/格式不支持），由调用方合并进保存提示。
+Future<EmbedOutcome?> embedAfterSaveIfEnabled(
+    BuildContext context, Song song) async {
+  final direct = context.read<DirectSourceManager>();
+  if (direct.settings.onlineMetaSaveMode != OnlineMetaSaveMode.embed) {
+    return null;
+  }
+  if (!song.isDirect) {
+    return const EmbedOutcome(EmbedOutcomeStatus.skipped, '服务端歌曲没有文件');
+  }
+  final src = direct.sourceByKey(song.sourceKey);
+  if (src == null || !src.supportsWrite) {
+    return const EmbedOutcome(EmbedOutcomeStatus.skipped, '该源不支持写入');
+  }
+  if (!TagEmbedService.supportsFormat(song)) {
+    final fmt = TagEmbedService.formatOf(song);
+    return EmbedOutcome(EmbedOutcomeStatus.skipped,
+        '${fmt.isEmpty ? '该格式' : fmt.toUpperCase()} 暂不支持内嵌');
+  }
+  final r = await showDialog<EmbedOutcome>(
+    context: context,
+    // 执行中含“整传后还原”等收尾逻辑，禁止点外部误关（取消走弹窗按钮）。
+    barrierDismissible: false,
+    builder: (_) => EmbedProgressDialog(
+      song: song,
+      autoStart: true,
+      toastOnSuccess: false,
+    ),
+  );
+  return r ?? const EmbedOutcome(EmbedOutcomeStatus.cancelled);
 }

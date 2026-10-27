@@ -41,7 +41,12 @@ enum OnlineMetaSaveMode {
   /// 同时写回源目录：DB 必写，额外覆盖写同目录 `<stem>.lrc`（自定义歌词
   /// 目录仅本地有效）与 `cover.jpg`（专辑级，同目录共享）；远端源经上传口
   /// 直写（不经服务端代理），不可写（服务端歌/鸿蒙本地/无路径）自动跳过。
-  sidecar('同时写回源目录');
+  sidecar('同时写回源目录'),
+
+  /// 内嵌到歌曲：DB 必写，保存后把歌词/封面自动写入音频文件标签
+  /// （mp3/flac/wav/aiff/m4a），验签通过后删同名 sidecar；远端源需整首
+  /// 下载＋上传。服务端歌/源不可写/格式不支持时自动退化为仅应用缓存。
+  embed('内嵌到歌曲');
 
   const OnlineMetaSaveMode(this.label);
   final String label;

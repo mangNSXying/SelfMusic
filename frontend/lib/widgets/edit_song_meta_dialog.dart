@@ -181,13 +181,13 @@ class _EditSongMetaDialogState extends State<EditSongMetaDialog> {
   }
 
   Future<void> _openEmbed() async {
-    final ok = await showDialog<bool>(
+    final result = await showDialog<EmbedOutcome>(
       context: context,
       // 执行中含“整传后还原”等收尾逻辑，禁止点外部误关（取消走弹窗按钮）。
       barrierDismissible: false,
       builder: (_) => EmbedProgressDialog(song: widget.song),
     );
-    if (!mounted || ok != true) return;
+    if (!mounted || result?.status != EmbedOutcomeStatus.embedded) return;
     _refreshFromIndex();
   }
 
@@ -374,13 +374,26 @@ class _CoverEditWindowState extends State<_CoverEditWindow> {
         player.refreshSongMeta(updated);
       }
       if (!mounted) return;
+      final embed = await embedAfterSaveIfEnabled(context, widget.song);
+      if (!mounted) return;
       setState(() {
         _mem = Uint8List.fromList(bytes);
         _path = r.coverPath;
       });
       AppToast.show(
-          r.sidecarPath != null ? '封面已更换并覆盖 ${r.sidecarPath}' : '封面已更换',
-          isError: false);
+        switch (embed?.status) {
+          EmbedOutcomeStatus.embedded => '封面已更换并内嵌到歌曲文件',
+          EmbedOutcomeStatus.cancelled => '封面已更换到应用缓存（嵌入已取消）',
+          EmbedOutcomeStatus.failed =>
+            '封面已更换到应用缓存（嵌入失败：${embed?.detail}）',
+          EmbedOutcomeStatus.skipped =>
+            '封面已更换到应用缓存（未嵌入：${embed?.detail}）',
+          null => r.sidecarPath != null
+              ? '封面已更换并覆盖 ${r.sidecarPath}'
+              : '封面已更换',
+        },
+        isError: false,
+      );
     } catch (e) {
       if (mounted) AppToast.error(e, '选择封面失败');
     } finally {
@@ -607,15 +620,26 @@ class _LyricsEditWindowState extends State<_LyricsEditWindow> {
       direct.notifySongMetaChanged();
       player.reloadLyricsIfCurrent(widget.song);
       if (!mounted) return;
+      final embed = await embedAfterSaveIfEnabled(context, widget.song);
+      if (!mounted) return;
       setState(() => _dirty = false);
       Navigator.of(context).pop(true);
       AppToast.show(
-          r.sidecarPath != null
+        switch (embed?.status) {
+          EmbedOutcomeStatus.embedded => '歌词已保存并内嵌到歌曲文件',
+          EmbedOutcomeStatus.cancelled => '歌词已保存到应用缓存（嵌入已取消）',
+          EmbedOutcomeStatus.failed =>
+            '歌词已保存到应用缓存（嵌入失败：${embed?.detail}）',
+          EmbedOutcomeStatus.skipped =>
+            '歌词已保存到应用缓存（未嵌入：${embed?.detail}）',
+          null => r.sidecarPath != null
               ? '歌词已保存并覆盖 ${r.sidecarPath}'
               : r.sidecarSkipped
                   ? '歌词已保存（该源不支持写回，已跳过 sidecar）'
                   : '歌词已保存',
-          isError: false);
+        },
+        isError: false,
+      );
     } catch (e) {
       if (mounted) AppToast.error(e, '保存歌词失败');
     } finally {

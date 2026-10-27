@@ -146,7 +146,7 @@ class TagEmbedService {
       final r = await embedAudioTags(
         srcPath: tmpIn,
         dstPath: tmpOut,
-        format: _formatOf(song),
+        format: formatOf(song),
         lyrics: content.lyrics,
         coverBytes: content.coverBytes,
       );
@@ -235,7 +235,7 @@ class TagEmbedService {
   /// 验签：读侧全路径重读嵌入产物（标题/时长 sanity + 歌词/封面 presence）。
   Future<void> _verifyEmbedded(String path, Song song,
       {required bool wantLyrics, required bool wantCover}) async {
-    final fmt = _formatOf(song);
+    final fmt = formatOf(song);
     final f = File(path);
     final size = await f.length();
     Future<Uint8List> readRange(int start, int length) async {
@@ -286,7 +286,7 @@ class TagEmbedService {
       }
 
       final meta = await readAudioMeta(
-          readRange: readRange, format: _formatOf(song), fileSize: fileSize);
+          readRange: readRange, format: formatOf(song), fileSize: fileSize);
       if (meta == null) return false;
       if (wantLyrics && (meta.lyrics == null || meta.lyrics!.trim().isEmpty)) {
         return false;
@@ -316,11 +316,20 @@ class TagEmbedService {
     } catch (_) {}
   }
 
-  static String _formatOf(Song song) {
+  /// 嵌入引擎支持的容器（与 [embedAudioTags] 的 switch 对齐）。
+  static const Set<String> kEmbedFormats = {
+    'mp3', 'flac', 'wav', 'aiff', 'aif', 'aifc', 'm4a', 'mp4',
+  };
+
+  static String formatOf(Song song) {
     final ref = song.sourceRef;
     final dot = ref.lastIndexOf('.');
     final fromRef = dot >= 0 ? ref.substring(dot + 1).toLowerCase() : '';
     final f = (song.format ?? '').toLowerCase();
     return f.isNotEmpty ? f : fromRef;
   }
+
+  /// 该歌容器是否支持标签内嵌（保存前预检；不支持的退化为仅应用缓存）。
+  static bool supportsFormat(Song song) =>
+      kEmbedFormats.contains(formatOf(song));
 }

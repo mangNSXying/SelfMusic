@@ -1803,6 +1803,8 @@ class _SongsSettingsState extends State<_SongsSettings> {
                   value: OnlineMetaSaveMode.appCache, label: '仅应用缓存'),
               SingleChoiceOption(
                   value: OnlineMetaSaveMode.sidecar, label: '同时写回源目录'),
+              SingleChoiceOption(
+                  value: OnlineMetaSaveMode.embed, label: '内嵌到歌曲'),
             ],
             value: _settings.onlineMetaSaveMode,
             onChanged: (v) {
@@ -1814,9 +1816,14 @@ class _SongsSettingsState extends State<_SongsSettings> {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Text(
-            _settings.onlineMetaSaveMode == OnlineMetaSaveMode.sidecar
-                ? '歌词/封面必写应用缓存，并覆盖写回源目录（歌词 <stem>.lrc，封面 cover.jpg 专辑级：同目录共享，杂烩目录后写盖先写）。远端经上传口直写、不经代理；服务端歌/鸿蒙本地自动跳过。封面应用缓存 covers/ 恒保留。内嵌回写暂不支持。'
-                : '歌词写应用内 song_lyrics，封面写 covers/（全源安全，不动用户文件）。内嵌回写暂不支持。',
+            switch (_settings.onlineMetaSaveMode) {
+              OnlineMetaSaveMode.sidecar =>
+                '歌词/封面必写应用缓存，并覆盖写回源目录（歌词 <stem>.lrc，封面 cover.jpg 专辑级：同目录共享，杂烩目录后写盖先写）。远端经上传口直写、不经代理；服务端歌/鸿蒙本地自动跳过。封面应用缓存 covers/ 恒保留。',
+              OnlineMetaSaveMode.embed =>
+                '歌词/封面必写应用缓存，保存后自动写入歌曲文件标签（mp3/flac/wav/aiff/m4a），验签通过后删同名 sidecar。远端源需整首下载＋上传（流量较大，建议 Wi-Fi）；服务端歌/鸿蒙本地/源不可写/格式不支持时自动仅存应用缓存。同曲在播会在写盘前自动暂停，完成后恢复；嵌入过程中请勿退出应用。',
+              OnlineMetaSaveMode.appCache =>
+                '歌词写应用内 song_lyrics，封面写 covers/（全源安全，不动用户文件）。',
+            },
             style: Theme.of(context)
                 .textTheme
                 .bodySmall

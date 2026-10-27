@@ -436,4 +436,28 @@ void main() {
     expect(await File('${root.path}/$ref').readAsBytes(), origBytes);
     index.close();
   });
+
+  test('内嵌格式预检：支持的容器与回退口径', () {
+    Song song(String ref, [String? format]) => Song(
+          id: 0,
+          sourceKey: 'local:t',
+          title: 't',
+          source: 'local',
+          sourceRef: ref,
+          fileSize: 0,
+          format: format,
+          isDirect: true,
+        );
+    for (final ext in ['mp3', 'flac', 'wav', 'aiff', 'aif', 'aifc', 'm4a', 'mp4']) {
+      expect(TagEmbedService.supportsFormat(song('a.$ext')), isTrue,
+          reason: ext);
+    }
+    for (final ext in ['ogg', 'opus', 'ape']) {
+      expect(TagEmbedService.supportsFormat(song('a.$ext')), isFalse,
+          reason: ext);
+    }
+    // song.format 优先于 ref 后缀；均无则判不支持。
+    expect(TagEmbedService.supportsFormat(song('a.ogg', 'flac')), isTrue);
+    expect(TagEmbedService.supportsFormat(song('noext')), isFalse);
+  });
 }
