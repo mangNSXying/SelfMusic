@@ -1085,33 +1085,6 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
           const Divider(),
           const SizedBox(height: 8),
 
-          // 视图行为
-          Text('视图行为',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w600)),
-          const SizedBox(height: 4),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('长按展开/折叠'),
-            subtitle: Text(_settings.longPressCollapseGroups
-                ? '开：长按组头全部展开/折叠；多选从分类菜单进入'
-                : '关：长按组头进入多选并选中整组；全部展开/折叠在分类菜单'),
-            value: _settings.longPressCollapseGroups,
-            onChanged: (v) {
-              setState(() => _settings.longPressCollapseGroups = v);
-              // AppSettings 非 ChangeNotifier：通知已打开的列表页按新行为重建。
-              context.read<DirectSourceManager>().refresh();
-            },
-          ),
-          const SizedBox(height: 4),
-          Text('播放源逐级文件夹行没有折叠语义，长按始终多选整个子树',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: colorScheme.onSurface.withValues(alpha: 0.6))),
-          const Divider(),
-          const SizedBox(height: 8),
-
           // 播放页设定
           Text('播放页',
               style: Theme.of(context)
@@ -1119,13 +1092,6 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
                   .titleMedium
                   ?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('播放页滑动手势'),
-            subtitle: const Text('横滑切换播放页与歌词页、下滑返回列表（关闭后仅用按钮操作）'),
-            value: _settings.playerGestureSwipe,
-            onChanged: (v) => setState(() => _settings.playerGestureSwipe = v),
-          ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('播放页显示权重信息'),
@@ -2844,13 +2810,67 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
   }
 }
 
-/// 常规：快捷键 + 备份与迁移入口（原「备份」分区并入此处）。
+/// 常规：快捷键 + 视图行为 + 备份与迁移入口。
 class _GeneralSettings extends StatelessWidget {
   const _GeneralSettings();
 
   @override
-  Widget build(BuildContext context) =>
-      const ShortcutSettingsPanel(footer: _BackupMigrationTile());
+  Widget build(BuildContext context) => const ShortcutSettingsPanel(
+        footer: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _ViewBehaviorSection(),
+            Divider(height: 32),
+            _BackupMigrationTile(),
+          ],
+        ),
+      );
+}
+
+/// 常规 → 视图行为（自「界面」迁入）：长按组头展开/折叠。
+class _ViewBehaviorSection extends StatefulWidget {
+  const _ViewBehaviorSection();
+
+  @override
+  State<_ViewBehaviorSection> createState() => _ViewBehaviorSectionState();
+}
+
+class _ViewBehaviorSectionState extends State<_ViewBehaviorSection> {
+  @override
+  Widget build(BuildContext context) {
+    final settings = context.read<DirectSourceManager>().settings;
+    final cs = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('视图行为',
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        SwitchListTile(
+          title: const Text('长按展开/折叠'),
+          subtitle: Text(settings.longPressCollapseGroups
+              ? '开：长按组头全部展开/折叠；多选从分类菜单进入'
+              : '关：长按组头进入多选并选中整组；全部展开/折叠在分类菜单'),
+          value: settings.longPressCollapseGroups,
+          onChanged: (v) {
+            setState(() => settings.longPressCollapseGroups = v);
+            // AppSettings 非 ChangeNotifier：通知已打开的列表页按新行为重建。
+            context.read<DirectSourceManager>().refresh();
+          },
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: Text('播放源逐级文件夹行没有折叠语义，长按始终多选整个子树',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
+        ),
+      ],
+    );
+  }
 }
 
 /// 「备份与迁移」入口：文件导出/导入与本机备份合并为一个弹窗。

@@ -192,7 +192,6 @@ class AppSettings {
   static const String kWeightedRandomEnabled = 'weighted_random_enabled';
   static const String kResumeOnStartup = 'resume_on_startup';
   static const String kPlayerShowWeight = 'player_show_weight';
-  static const String kPlayerGestureSwipe = 'player_gesture_swipe';
   static const String kSleepPlayThroughDefault = 'sleep_play_through_default';
   static const String kSleepDefaultDurationMinutes =
       'sleep_default_duration_minutes';
@@ -291,7 +290,7 @@ class AppSettings {
   static const String kGroupSongs = 'group_songs';
   static const String kGroupSource = 'group_source';
 
-  /// 列表视图行为（设置→界面→视图行为）：长按组头展开/折叠（默认关）。
+  /// 列表视图行为（设置→常规→视图行为）：长按组头展开/折叠（默认关）。
   ///
   /// 关 = 长按组头进入多选并选中整组，「全部展开/折叠」在分类菜单；
   /// 开 = 长按组头全部展开/折叠，「多选」在分类菜单。
@@ -502,12 +501,6 @@ class AppSettings {
       (index.settingsGet(kResumeOnStartup) ?? '1') == '1';
   set resumeOnStartup(bool v) =>
       index.settingsSet(kResumeOnStartup, v ? '1' : '0');
-
-  /// 播放页左右滑动手势：左滑返回列表、右滑查看歌词（默认开）。
-  bool get playerGestureSwipe =>
-      (index.settingsGet(kPlayerGestureSwipe) ?? '1') == '1';
-  set playerGestureSwipe(bool v) =>
-      index.settingsSet(kPlayerGestureSwipe, v ? '1' : '0');
 
   /// 睡眠定时弹窗中「播放完最后的曲目」开关的默认值（默认开）。
   bool get sleepPlayThroughDefault =>
@@ -857,7 +850,7 @@ class AppSettings {
       index.settingsGet(kGroupSource) ?? SongGroupMode.folder.name);
   set groupSource(SongGroupMode v) => index.settingsSet(kGroupSource, v.name);
 
-  /// 长按组头展开/折叠（设置→界面→视图行为，默认关）。
+  /// 长按组头展开/折叠（设置→常规→视图行为，默认关）。
   ///
   /// 关（A）：长按组头进入多选并选中整组；全部展开/折叠在分类菜单。
   /// 开（B）：长按组头全部展开/折叠；多选入口在分类菜单。
@@ -1014,7 +1007,6 @@ class AppSettings {
     kWeightedRandomEnabled,
     kResumeOnStartup,
     kPlayerShowWeight,
-    kPlayerGestureSwipe,
     kSleepPlayThroughDefault,
     kSleepDefaultDurationMinutes,
     kSleepDefaultCount,
