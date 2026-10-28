@@ -1,6 +1,7 @@
 import 'dart:ffi' show DynamicLibrary;
 import 'dart:io';
 
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -675,6 +676,134 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pump();
     expect(nav.playerView, isFalse);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('边缘悬停箭头：双向切换歌单页与播放页', (tester) async {
+    late final DirectSourceManager direct;
+    late final PlayerProvider player;
+    await tester.runAsync(() async {
+      direct = await _openDirect();
+      player = await _playerWithCurrent();
+    });
+    final nav = NavigationProvider();
+    addTearDown(() {
+      player.dispose();
+      direct.dispose();
+      nav.dispose();
+    });
+    tester.view.physicalSize = const Size(800, 360);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MultiProvider(
+          providers: [
+            ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+            ChangeNotifierProvider<NavigationProvider>.value(value: nav),
+            ChangeNotifierProvider<PlayerProvider>.value(value: player),
+            ChangeNotifierProvider<PlaylistsProvider>(
+                create: (_) => PlaylistsProvider(direct.playlists)),
+          ],
+          child: const PlayerScreen(),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 900));
+
+    PageController controller() =>
+        tester.widget<PageView>(find.byType(PageView)).controller!;
+    expect(controller().page, closeTo(1, 0.01));
+
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: const Offset(400, 180));
+    addTearDown(mouse.removePointer);
+
+    // 左边缘悬停 → 左箭头淡入，点击进入歌单页。
+    await mouse.moveTo(const Offset(20, 180));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.tap(find.byKey(const Key('player-edge-previous')));
+    await tester.pumpAndSettle();
+    expect(controller().page, closeTo(0, 0.01));
+    expect(find.byType(DesktopPlaylistSplit), findsOneWidget);
+
+    // 右边缘悬停 → 右箭头淡入，点击回到播放页。
+    await mouse.moveTo(const Offset(780, 180));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.tap(find.byKey(const Key('player-edge-next')));
+    await tester.pumpAndSettle();
+    expect(controller().page, closeTo(1, 0.01));
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Alt+←/→ 切换歌单页与播放页（输入框聚焦时忽略）', (tester) async {
+    late final DirectSourceManager direct;
+    late final PlayerProvider player;
+    await tester.runAsync(() async {
+      direct = await _openDirect();
+      player = await _playerWithCurrent();
+    });
+    final nav = NavigationProvider();
+    addTearDown(() {
+      player.dispose();
+      direct.dispose();
+      nav.dispose();
+    });
+    tester.view.physicalSize = const Size(800, 360);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MultiProvider(
+          providers: [
+            ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+            ChangeNotifierProvider<NavigationProvider>.value(value: nav),
+            ChangeNotifierProvider<PlayerProvider>.value(value: player),
+            ChangeNotifierProvider<PlaylistsProvider>(
+                create: (_) => PlaylistsProvider(direct.playlists)),
+          ],
+          child: const PlayerScreen(),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 900));
+
+    PageController controller() =>
+        tester.widget<PageView>(find.byType(PageView)).controller!;
+
+    Future<void> altArrow(LogicalKeyboardKey key) async {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+      await tester.sendKeyEvent(key);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+      await tester.pumpAndSettle();
+    }
+
+    await altArrow(LogicalKeyboardKey.arrowLeft);
+    expect(controller().page, closeTo(0, 0.01));
+
+    // 输入框聚焦时不抢方向键。
+    await tester.tap(find.byType(TextField).first);
+    await tester.pump();
+    expect(_focusIsTextInput(), isTrue);
+    await altArrow(LogicalKeyboardKey.arrowRight);
+    expect(controller().page, closeTo(0, 0.01));
+
+    // ESC 先失焦并把焦点交还播放页（与既有“第一次 ESC 只失焦”一致）。
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(nav.playerView, isTrue);
+    expect(_focusIsTextInput(), isFalse);
+
+    await altArrow(LogicalKeyboardKey.arrowRight);
+    expect(controller().page, closeTo(1, 0.01));
 
     await tester.pumpWidget(const SizedBox());
   });

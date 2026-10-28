@@ -100,6 +100,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   List<Widget>? _closingPages;
 
+  /// 当前停留的横滑带页（0=歌单 / 1=播放 / 2=歌词，横屏无第 2 页）。
+  int _bandPage = 1;
+
   /// 是否停在播放页（播放器带的第 1 页，竖屏分页/横屏整页同位置）——
   /// 只在播放页上计时隐藏。
   bool get _onPlayerPage =>
@@ -109,6 +112,31 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// 由原生翻页接管（与播放↔歌词一致），不再需要被动右滑追踪。
   void _onBandPointerDown(PointerDownEvent _) {
     _rearmAutoHide();
+  }
+
+  /// 横滑带翻页（边缘箭头与快捷键共用）。
+  void _goToBandPage(int page) {
+    if (!_pageCtrl.hasClients) return;
+    if ((_pageCtrl.page ?? 1).round() == page) return;
+    _rearmAutoHide();
+    _pageCtrl.animateToPage(
+      page,
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+    );
+  }
+
+  /// 按方向翻一页；窗口朝向决定页数（横屏两页、竖屏三页）。
+  void _stepBandPage(int delta) {
+    if (!mounted) return;
+    if (!context.read<NavigationProvider>().playerView) return;
+    if (primaryFocusIsTextInput()) return;
+    final size = MediaQuery.sizeOf(context);
+    final pageCount = size.width > size.height ? 2 : 3;
+    final current = _bandPage.clamp(0, pageCount - 1);
+    final target = (current + delta).clamp(0, pageCount - 1);
+    if (target == current) return;
+    _goToBandPage(target);
   }
 
   /// 屏幕常亮目标值与已应用值；合并调度标记。
@@ -458,6 +486,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.escape): _onEscape,
+        const SingleActivator(LogicalKeyboardKey.arrowLeft, alt: true): () =>
+            _stepBandPage(-1),
+        const SingleActivator(LogicalKeyboardKey.arrowRight, alt: true): () =>
+            _stepBandPage(1),
       },
       // 祖先焦点：子孙（按钮/滑杆/列表）聚焦时快捷键仍冒泡到此；弹窗路由内
       // 的焦点不在本子树，不会误触发（ESC 先关弹窗）。
@@ -490,6 +522,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           : const NeverScrollableScrollPhysics(),
                       // 预热前滑向邻页：即时补建，避免白板（空闲仍是主触发，见 C）。
                       onPageChanged: (i) {
+                        _bandPage = i;
                         if (i != 1 && mounted) _scheduleWarmNeighbors();
                         // 进入歌单页（左邻页）：要求页内列表重新追焦当前播放歌曲
                         // （首歌单页可能已保活挂载，换歌后再进不会重挂载）。
@@ -501,92 +534,110 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                 // 首帧避让（C）：邻页首帧占位，空闲预热后再装配——歌单页整单
                                 // 装配（1310 首曾测 ~150ms）移出首帧；页数恒定（横屏 2 / 竖屏 3），
                                 // PageController initialPage=1 不受影响。
-                                KeyedSubtree(
-                                  key: const ValueKey('player-page-songs'),
-                                  child: _warmNeighbors
-                                      ? (landscape
-                                          // 横屏歌单页为「左歌单右播放」分栏：滑动 settle 后左右同显，
-                                          // 与横屏整页「左播放右歌词」同理；竖屏仍为整页歌单。
-                                          // 左上角返回箭头悬浮于分栏之上（与横屏播放页一致）。
-                                          ? Stack(
-                                              children: [
-                                                Positioned.fill(
-                                                  child: desktopLandscape
-                                                      ? DesktopPlaylistSplit(
-                                                          player: player,
-                                                          direct: context.watch<
-                                                              DirectSourceManager>(),
-                                                          cs: Theme.of(context)
-                                                              .colorScheme,
-                                                          focusTick:
-                                                              _bandFocusTick)
-                                                      : LandscapePlaylistSplit(
-                                                          player: player,
-                                                          direct: context.watch<
-                                                              DirectSourceManager>(),
-                                                          cs: Theme.of(context)
-                                                              .colorScheme,
-                                                          focusTick:
-                                                              _bandFocusTick),
-                                                ),
-                                                const Positioned(
-                                                    top: 6,
-                                                    left: 6,
-                                                    child:
-                                                        _BackToContentButton()),
-                                              ],
-                                            )
-                                          : _BandSongPage(
-                                              focusTick: _bandFocusTick))
-                                      : const SizedBox.shrink(),
-                                ),
-                                AnimatedSwitcher(
-                                  key: const ValueKey('player-page-main'),
-                                  duration: kPageMotion,
-                                  switchInCurve: kPageMotionCurve,
-                                  switchOutCurve: Curves.easeInCubic,
-                                  layoutBuilder:
-                                      (currentChild, previousChildren) => Stack(
-                                    fit: StackFit.expand,
-                                    children: [
-                                      for (final child in previousChildren)
-                                        IgnorePointer(child: child),
-                                      if (currentChild != null) currentChild,
-                                    ],
+                                _BandEdgeNav(
+                                  nextTooltip: '播放页',
+                                  onNext: () => _goToBandPage(1),
+                                  child: KeyedSubtree(
+                                    key: const ValueKey('player-page-songs'),
+                                    child: _warmNeighbors
+                                        ? (landscape
+                                            // 横屏歌单页为「左歌单右播放」分栏：滑动 settle 后左右同显，
+                                            // 与横屏整页「左播放右歌词」同理；竖屏仍为整页歌单。
+                                            // 左上角返回箭头悬浮于分栏之上（与横屏播放页一致）。
+                                            ? Stack(
+                                                children: [
+                                                  Positioned.fill(
+                                                    child: desktopLandscape
+                                                        ? DesktopPlaylistSplit(
+                                                            player: player,
+                                                            direct: context.watch<
+                                                                DirectSourceManager>(),
+                                                            cs: Theme.of(
+                                                                    context)
+                                                                .colorScheme,
+                                                            focusTick:
+                                                                _bandFocusTick)
+                                                        : LandscapePlaylistSplit(
+                                                            player: player,
+                                                            direct: context.watch<
+                                                                DirectSourceManager>(),
+                                                            cs: Theme.of(
+                                                                    context)
+                                                                .colorScheme,
+                                                            focusTick:
+                                                                _bandFocusTick),
+                                                  ),
+                                                  const Positioned(
+                                                      top: 6,
+                                                      left: 6,
+                                                      child:
+                                                          _BackToContentButton()),
+                                                ],
+                                              )
+                                            : _BandSongPage(
+                                                focusTick: _bandFocusTick))
+                                        : const SizedBox.shrink(),
                                   ),
-                                  transitionBuilder: (child, animation) {
-                                    final scale =
-                                        Tween<double>(begin: 0.985, end: 1.0)
-                                            .animate(CurvedAnimation(
-                                                parent: animation,
-                                                curve: kPageMotionCurve));
-                                    return FadeTransition(
-                                      opacity: animation,
-                                      child: ScaleTransition(
-                                          scale: scale, child: child),
-                                    );
-                                  },
-                                  child: _OrientationFrame(
-                                    key: ValueKey(
-                                        'player-main-${landscape ? 'land' : 'port'}-${desktopLandscape ? 'desk' : 'touch'}'),
-                                    frameSize: pageSize,
-                                    mediaSize: mediaSize,
-                                    child: _buildPlayerPage(
-                                      player: player,
-                                      direct: direct,
-                                      cs: Theme.of(context).colorScheme,
-                                      landscape: landscape,
-                                      desktopLandscape: desktopLandscape,
-                                      gestureOn: gestureOn,
+                                ),
+                                _BandEdgeNav(
+                                  previousTooltip: '歌单',
+                                  onPrevious: () => _goToBandPage(0),
+                                  nextTooltip: landscape ? null : '歌词',
+                                  onNext:
+                                      landscape ? null : () => _goToBandPage(2),
+                                  child: AnimatedSwitcher(
+                                    key: const ValueKey('player-page-main'),
+                                    duration: kPageMotion,
+                                    switchInCurve: kPageMotionCurve,
+                                    switchOutCurve: Curves.easeInCubic,
+                                    layoutBuilder:
+                                        (currentChild, previousChildren) =>
+                                            Stack(
+                                      fit: StackFit.expand,
+                                      children: [
+                                        for (final child in previousChildren)
+                                          IgnorePointer(child: child),
+                                        if (currentChild != null) currentChild,
+                                      ],
+                                    ),
+                                    transitionBuilder: (child, animation) {
+                                      final scale =
+                                          Tween<double>(begin: 0.985, end: 1.0)
+                                              .animate(CurvedAnimation(
+                                                  parent: animation,
+                                                  curve: kPageMotionCurve));
+                                      return FadeTransition(
+                                        opacity: animation,
+                                        child: ScaleTransition(
+                                            scale: scale, child: child),
+                                      );
+                                    },
+                                    child: _OrientationFrame(
+                                      key: ValueKey(
+                                          'player-main-${landscape ? 'land' : 'port'}-${desktopLandscape ? 'desk' : 'touch'}'),
+                                      frameSize: pageSize,
+                                      mediaSize: mediaSize,
+                                      child: _buildPlayerPage(
+                                        player: player,
+                                        direct: direct,
+                                        cs: Theme.of(context).colorScheme,
+                                        landscape: landscape,
+                                        desktopLandscape: desktopLandscape,
+                                        gestureOn: gestureOn,
+                                      ),
                                     ),
                                   ),
                                 ),
                                 if (!landscape)
-                                  KeyedSubtree(
-                                    key: const ValueKey('player-page-lyrics'),
-                                    child: _warmNeighbors
-                                        ? const _LyricsPage()
-                                        : const SizedBox.shrink(),
+                                  _BandEdgeNav(
+                                    previousTooltip: '播放页',
+                                    onPrevious: () => _goToBandPage(1),
+                                    child: KeyedSubtree(
+                                      key: const ValueKey('player-page-lyrics'),
+                                      child: _warmNeighbors
+                                          ? const _LyricsPage()
+                                          : const SizedBox.shrink(),
+                                    ),
                                   ),
                               ]),
                     );
@@ -810,6 +861,160 @@ class _BackToContentButton extends StatelessWidget {
           visualDensity: VisualDensity.compact,
           icon: const Icon(Icons.keyboard_arrow_down_rounded),
           onPressed: () => context.read<NavigationProvider>().closePlayer(),
+        ),
+      ),
+    );
+  }
+}
+
+/// 播放器横滑带的边缘翻页箭头（照片浏览器式）：鼠标进入页面左右边缘
+/// 约 96px 区域时淡入，移开即淡出。仅鼠标悬停触发，触摸端仍走原生横滑。
+class _BandEdgeNav extends StatefulWidget {
+  final Widget child;
+  final VoidCallback? onPrevious;
+  final VoidCallback? onNext;
+  final String? previousTooltip;
+  final String? nextTooltip;
+
+  const _BandEdgeNav({
+    required this.child,
+    this.onPrevious,
+    this.onNext,
+    this.previousTooltip,
+    this.nextTooltip,
+  });
+
+  @override
+  State<_BandEdgeNav> createState() => _BandEdgeNavState();
+}
+
+class _BandEdgeNavState extends State<_BandEdgeNav> {
+  static const double _edgeZone = 96;
+
+  bool _showPrevious = false;
+  bool _showNext = false;
+
+  void _onHover(PointerHoverEvent event) {
+    final width = context.size?.width ?? 0;
+    if (width <= 0) return;
+    final x = event.localPosition.dx;
+    final showPrevious = widget.onPrevious != null && x <= _edgeZone;
+    final showNext = widget.onNext != null && x >= width - _edgeZone;
+    if (showPrevious == _showPrevious && showNext == _showNext) return;
+    setState(() {
+      _showPrevious = showPrevious;
+      _showNext = showNext;
+    });
+  }
+
+  void _clearHover() {
+    if (!_showPrevious && !_showNext) return;
+    setState(() {
+      _showPrevious = false;
+      _showNext = false;
+    });
+  }
+
+  void _tap(VoidCallback callback) {
+    _clearHover();
+    callback();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hasPrevious = widget.onPrevious != null;
+    final hasNext = widget.onNext != null;
+    if (!hasPrevious && !hasNext) return widget.child;
+    final cs = Theme.of(context).colorScheme;
+    return MouseRegion(
+      onHover: _onHover,
+      onExit: (_) => _clearHover(),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          widget.child,
+          if (hasPrevious)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: _EdgeArrow(
+                key: const Key('player-edge-previous'),
+                visible: _showPrevious,
+                tooltip: widget.previousTooltip ?? '上一页',
+                icon: Icons.chevron_left_rounded,
+                slideFrom: const Offset(-0.25, 0),
+                colorScheme: cs,
+                onPressed: () => _tap(widget.onPrevious!),
+              ),
+            ),
+          if (hasNext)
+            Align(
+              alignment: Alignment.centerRight,
+              child: _EdgeArrow(
+                key: const Key('player-edge-next'),
+                visible: _showNext,
+                tooltip: widget.nextTooltip ?? '下一页',
+                icon: Icons.chevron_right_rounded,
+                slideFrom: const Offset(0.25, 0),
+                colorScheme: cs,
+                onPressed: () => _tap(widget.onNext!),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EdgeArrow extends StatelessWidget {
+  final bool visible;
+  final String tooltip;
+  final IconData icon;
+  final Offset slideFrom;
+  final ColorScheme colorScheme;
+  final VoidCallback onPressed;
+
+  const _EdgeArrow({
+    super.key,
+    required this.visible,
+    required this.tooltip,
+    required this.icon,
+    required this.slideFrom,
+    required this.colorScheme,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      ignoring: !visible,
+      child: ExcludeFocus(
+        excluding: !visible,
+        child: AnimatedSlide(
+          offset: visible ? Offset.zero : slideFrom,
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOut,
+          child: AnimatedOpacity(
+            opacity: visible ? 1 : 0,
+            duration: const Duration(milliseconds: 150),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              child: Material(
+                color: colorScheme.surface.withValues(alpha: 0.82),
+                elevation: 2,
+                shape: const CircleBorder(),
+                clipBehavior: Clip.antiAlias,
+                child: IconButton(
+                  tooltip: tooltip,
+                  iconSize: 30,
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints.tightFor(width: 44, height: 44),
+                  icon: Icon(icon),
+                  onPressed: onPressed,
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );
