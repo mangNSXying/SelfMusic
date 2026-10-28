@@ -97,10 +97,15 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
 
   /** EntryAbility.onDestroy 中调用：释放所有播放器。 */
   shutdown(): void {
-    for (const entry of this.players.values()) {
-      this.releaseEntry(entry);
-    }
+    const entries: PlayerEntry[] = [];
+    this.players.forEach((entry: PlayerEntry): void => {
+      entries.push(entry);
+    });
     this.players.clear();
+    for (let i = 0; i < entries.length; i++) {
+      entries[i].pendingPlay = false;
+      this.releaseEntry(entries[i]);
+    }
     this.sink = null;
   }
 
@@ -167,7 +172,11 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
       result.error('400', '缺少 playerId', null);
       return;
     }
-    const old = this.players.get(id);
+    // 先同步摘表再异步释放：释放（AVPlayer.release）期间晚到的 dispose 按 id
+    // 找不到旧实例，不会把随后新建的同 id 播放器误删。真机 2026-10-28：原生
+    // 错误触发 just_audio 自动降级 dispose，与回退重建交错，新实例被迟到
+    // 的 delete 清掉，之后所有 load/play/setVolume 全是 404 播放器不存在。
+    const old = this.detachEntry(id);
     if (old !== undefined) {
       await this.releaseEntry(old);
     }
@@ -361,11 +370,15 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
 
   private async handleDispose(call: MethodCall, result: MethodResult, all: boolean): Promise<void> {
     if (all) {
-      for (const entry of this.players.values()) {
-        entry.pendingPlay = false;
-        await this.releaseEntry(entry);
-      }
+      const entries: PlayerEntry[] = [];
+      this.players.forEach((entry: PlayerEntry): void => {
+        entries.push(entry);
+      });
       this.players.clear();
+      for (let i = 0; i < entries.length; i++) {
+        entries[i].pendingPlay = false;
+        await this.releaseEntry(entries[i]);
+      }
       result.success(null);
       return;
     }
@@ -374,13 +387,23 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
       result.error('400', '缺少 playerId', null);
       return;
     }
-    const entry = this.players.get(id);
+    // 同步摘表后再 await 释放：与 handleCreate 同一竞态防线（见该处注释）。
+    const entry = this.detachEntry(id);
     if (entry !== undefined) {
       entry.pendingPlay = false;
       await this.releaseEntry(entry);
-      this.players.delete(id);
     }
     result.success(null);
+  }
+
+  /**
+   * 同步摘除 id 对应实例：其后按 id 到达的消息（play/seek/setVolume/load）
+   * 立即按“不存在”处理，释放过程不再影响同名新实例。
+   */
+  private detachEntry(id: string): PlayerEntry | undefined {
+    const entry = this.players.get(id);
+    this.players.delete(id);
+    return entry;
   }
 
   // ---------- 原生实现 ----------

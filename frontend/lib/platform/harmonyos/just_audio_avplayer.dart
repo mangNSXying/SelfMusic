@@ -158,14 +158,26 @@ class AvPlayerHandle extends AudioPlayerPlatform {
       filePath = Uri.parse(uri).toFilePath();
       playUrl = '';
     }
+    final args = <String, dynamic>{
+      'playerId': id,
+      if (filePath != null) 'filePath': filePath else 'url': playUrl,
+      'headersJson': jsonEncode(source.headers ?? const <String, String>{}),
+      'initialPositionMs': request.initialPosition?.inMilliseconds ?? 0,
+    };
     try {
-      final result =
-          await _channel.invokeMethod<Map<dynamic, dynamic>>('load', {
-        'playerId': id,
-        if (filePath != null) 'filePath': filePath else 'url': playUrl,
-        'headersJson': jsonEncode(source.headers ?? const <String, String>{}),
-        'initialPositionMs': request.initialPosition?.inMilliseconds ?? 0,
-      });
+      Map<dynamic, dynamic>? result;
+      try {
+        result =
+            await _channel.invokeMethod<Map<dynamic, dynamic>>('load', args);
+      } on PlatformException catch (e) {
+        if (_released || !_isNativeMissing(e)) rethrow;
+        // 原生实例已不在，而 just_audio 仍认为平台处于激活态、不会自行重建
+        // （见 AvPlayerBridge.detachEntry 注释的竞态）。不在这里兜底就只能
+        // 重启应用：重建一次原生实例后重试本次装载。
+        await _channel.invokeMethod<void>('createPlayer', {'playerId': id});
+        result =
+            await _channel.invokeMethod<Map<dynamic, dynamic>>('load', args);
+      }
       final ms = result?['durationMs'];
       _duration = (!_transcodeStream && ms is num && ms > 0)
           ? Duration(milliseconds: ms.toInt())
@@ -178,20 +190,27 @@ class AvPlayerHandle extends AudioPlayerPlatform {
     }
   }
 
+  /// 原生按 playerId 找不到实例（load 之外的错误消息不带 id）。
+  static bool _isNativeMissing(PlatformException e) =>
+      e.code == '404' && (e.message?.contains('播放器不存在') ?? false);
+
   @override
   Future<PlayResponse> play(PlayRequest request) async {
+    if (_released) return PlayResponse();
     await _channel.invokeMethod<void>('play', {'playerId': id});
     return PlayResponse();
   }
 
   @override
   Future<PauseResponse> pause(PauseRequest request) async {
+    if (_released) return PauseResponse();
     await _channel.invokeMethod<void>('pause', {'playerId': id});
     return PauseResponse();
   }
 
   @override
   Future<SeekResponse> seek(SeekRequest request) async {
+    if (_released) return SeekResponse();
     final pos = request.position ?? Duration.zero;
     _position = pos;
     _emit();
@@ -204,6 +223,7 @@ class AvPlayerHandle extends AudioPlayerPlatform {
 
   @override
   Future<SetVolumeResponse> setVolume(SetVolumeRequest request) async {
+    if (_released) return SetVolumeResponse();
     try {
       await _channel.invokeMethod<void>('setVolume', {
         'playerId': id,
