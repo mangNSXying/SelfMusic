@@ -30,9 +30,14 @@ class MainActivity : AudioServiceActivity() {
     // 静音/断连暂停的原生信号源（settings.md §3.2，selfmusic/audio_guard 通道）。
     private val audioGuard: AudioGuard by lazy { AudioGuard(this) }
 
+    // 应用级均衡器（settings.md §3.2，selfmusic/equalizer 通道）。
+    // 进程级单例：Activity 重建时不丢 AudioEffect。
+    private val equalizer: EqualizerController by lazy { EqualizerController.shared() }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         audioGuard.register(flutterEngine.dartExecutor.binaryMessenger)
+        equalizer.register(flutterEngine.dartExecutor.binaryMessenger)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {

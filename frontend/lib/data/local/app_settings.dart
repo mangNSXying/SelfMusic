@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import '../../services/equalizer/equalizer_types.dart';
 import '../../utils/collection_sort.dart';
 import '../../utils/song_groups.dart';
 import 'local_index.dart';
@@ -214,9 +215,15 @@ class AppSettings {
   /// 设备本地偏好，不进 [knownKeys]，不随设置导出/导入。
   static const String kAppVolume = 'app_volume';
 
-  /// 均衡器（settings.md §3.2）：仅 Android（just_audio 原生 AndroidEqualizer）。
+  /// 均衡器（settings.md §3.2）：10 段统一参数；Android/Windows/Linux 生效。
   static const String kEqualizerEnabled = 'equalizer_enabled';
   static const String kEqBands = 'eq_bands';
+
+  /// 均衡器参数版本：旧数据无此键；写入 v2 后为 `2`。
+  static const String kEqSchema = 'eq_schema';
+
+  /// 均衡器前级衰减（dB，[-12, 0]），用于抵消正增益削波。
+  static const String kEqPreamp = 'eq_preamp';
 
   /// 音频焦点（settings.md §3.6）：Android 走 just_audio handleInterruptions，
   /// 鸿蒙走 AVPlayer audioInterrupt；来电/他应用抢占时自动暂停-恢复。
@@ -314,14 +321,39 @@ class AppSettings {
   /// 播放页控件静置自动隐藏可选秒数（0=不隐藏）。
   static const List<int> playerAutoHideIdleOptions = [0, 3, 5, 10, 15, 30];
 
-  /// 均衡器默认频段增益（5 段，dB）。
-  static const List<double> defaultEqBands = [0, 0, 0, 0, 0];
+  /// 均衡器默认频段增益（10 段，dB）。
+  static const List<double> defaultEqBands = kDefaultEqBands;
 
   /// 曲数冷却默认比例（列表长度的 20%）。
   static const double defaultWeightedCountCooldownRatio = 0.2;
 
   final LocalIndex index;
-  AppSettings(this.index);
+  AppSettings(this.index) {
+    _migrateEqBands();
+  }
+
+  /// 旧 5 段数据一次性迁移到 10 段；重复调用无副作用。
+  void _migrateEqBands() {
+    if ((index.settingsGet(kEqSchema) ?? '') == '2') return;
+    final raw = index.settingsGet(kEqBands);
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final list = jsonDecode(raw) as List;
+      if (list.length == kEqBandCount) {
+        index.settingsSet(kEqSchema, '2');
+        return;
+      }
+      if (list.length == kEqV1Frequencies.length) {
+        final migrated = migrateEqBandsV1ToV2(list);
+        index.settingsSet(kEqBands, jsonEncode(migrated.map(_round1).toList()));
+        index.settingsSet(kEqSchema, '2');
+      }
+    } catch (_) {
+      // 损坏数据保持原样，读取侧回退全 0。
+    }
+  }
+
+  static double _round1(double v) => (v * 10).round() / 10;
 
   // ---------- 缓存（settings.md §3.3） ----------
 
@@ -616,31 +648,45 @@ class AppSettings {
   set appVolume(int v) =>
       index.settingsSet(kAppVolume, v.clamp(0, 100).toString());
 
-  // ---------- 播放分区·均衡器（settings.md §3.2，仅 Android） ----------
+  // ---------- 播放分区·均衡器（settings.md §3.2，Android/Windows/Linux） ----------
 
   bool get equalizerEnabled =>
       (index.settingsGet(kEqualizerEnabled) ?? '0') == '1';
   set equalizerEnabled(bool v) =>
       index.settingsSet(kEqualizerEnabled, v ? '1' : '0');
 
-  /// 5 段频段增益（dB）。非法/缺省回退全 0。
+  /// 10 段标准频率增益（dB）。旧 5 段数据按对数频率插值迁移；非法/缺省回退全 0。
   List<double> get eqBands {
     final raw = index.settingsGet(kEqBands);
-    if (raw == null || raw.isEmpty) return List.of(defaultEqBands);
+    if (raw == null || raw.isEmpty) return List.of(kDefaultEqBands);
     try {
       final l = jsonDecode(raw) as List;
-      if (l.length != 5) return List.of(defaultEqBands);
-      return l.map((e) => (e as num).toDouble()).toList();
+      if (l.length == kEqBandCount) return normalizeEqBands(l);
+      if (l.length == kEqV1Frequencies.length) {
+        return migrateEqBandsV1ToV2(l);
+      }
+      return List.of(kDefaultEqBands);
     } catch (_) {
-      return List.of(defaultEqBands);
+      return List.of(kDefaultEqBands);
     }
   }
 
   set eqBands(List<double> v) {
-    final norm = (v.length == 5)
-        ? v.map((e) => e.toDouble()).toList()
-        : List.of(defaultEqBands);
-    index.settingsSet(kEqBands, jsonEncode(norm.map((e) => e.round())));
+    final norm = normalizeEqBands(v);
+    index.settingsSet(kEqBands, jsonEncode(norm.map(_round1).toList()));
+    index.settingsSet(kEqSchema, '2');
+  }
+
+  /// 前级衰减（dB，[-12, 0]）：正增益叠加前先留 headroom，默认 0。
+  double get eqPreampDb {
+    final raw = double.tryParse(index.settingsGet(kEqPreamp) ?? '');
+    if (raw == null) return 0;
+    return raw.clamp(kEqPreampMinDb, kEqPreampMaxDb).toDouble();
+  }
+
+  set eqPreampDb(double v) {
+    final norm = v.clamp(kEqPreampMinDb, kEqPreampMaxDb).toDouble();
+    index.settingsSet(kEqPreamp, _round1(norm).toString());
   }
 
   // ---------- 播放分区·时长削弱（改进.txt 功能8） ----------
@@ -986,6 +1032,8 @@ class AppSettings {
     kFadeDurationMs,
     kEqualizerEnabled,
     kEqBands,
+    kEqSchema,
+    kEqPreamp,
     kCurveWeightEnabled,
     kCurveWeightSegments,
     kWeightedDrawCooldown,

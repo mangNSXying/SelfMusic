@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 均衡器：挂载 AudioEffect/DynamicsProcessing 到播放器 audio session -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <!-- 播放页常亮：查询已配对/已连接蓝牙音频设备（12+ 用 BLUETOOTH_CONNECT） -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission

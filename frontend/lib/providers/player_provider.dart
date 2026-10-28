@@ -23,6 +23,8 @@ import '../data/deep_list_sync.dart';
 import '../platform/app_background.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
 import '../services/audio_focus_monitor.dart';
+import '../services/equalizer/equalizer_service.dart';
+import '../services/equalizer/equalizer_types.dart';
 import '../services/playback_guard.dart';
 import '../services/selfmusic_audio_handler.dart';
 import '../utils/lrc_parser.dart';
@@ -146,7 +148,6 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 当前播放器构造时套用的音频焦点开关（供 [_applyAudioConfigIfNeeded] 比对）。
   bool _builtAudioFocus = true;
-  bool _builtEq = false;
 
   /// 阶段5：当前队列归属的已同步歌单 uuid（播歌单时由调用方传入，其它队列为 null）。
   /// 断点事件仅在此非空且当前歌曲有身份时进 outbox。
@@ -722,7 +723,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 挂起中的 [_fadeOutThenPause] 的收口器：实际暂停完成**或渐变被取消**
   /// （切歌/停止/重建/反向打断）时 complete，保证 await 方不悬挂。
   Completer<void>? _fadeOutCompleter;
-  AndroidEqualizer? _eq;
+
+  /// 均衡器服务（跟播放器实例同生命周期；设置变化不再重建播放器）。
+  EqualizerService? _equalizer;
+
+  /// 平台能力/回退状态，供设置页展示。稳定实例，播放器重建时只更新值。
+  final ValueNotifier<EqualizerCapabilities?> equalizerCapabilities =
+      ValueNotifier(null);
 
   // ---------- 睡眠定时（播放页「睡眠」） ----------
 
@@ -982,15 +989,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (!kIsWeb) WidgetsBinding.instance.addObserver(this);
   }
 
-  /// 按用户设置构造播放器：均衡器（Android 原生 AndroidEqualizer）与音频焦点开关
-  /// 均需在构造时注入（settings.md §3.2/§3.6），设置变动时经 [applyAudioConfig] 重建。
+  /// 按用户设置构造播放器：音频焦点在构造时注入（settings.md §3.6），
+  /// 设置变动时经 [applyAudioConfig] 重建；均衡器由 [EqualizerService]
+  /// 挂在 audio session/播放器上，不再触发播放器重建。
   AudioPlayer _buildPlayer() {
     final s = _appSettings;
-    final eqEnabled = !kIsWeb && Platform.isAndroid && (s?.equalizerEnabled ?? false);
-    _eq = eqEnabled ? AndroidEqualizer() : null;
     // 记录本次构造实际套用的配置：供 [_applyAudioConfigIfNeeded] 判断是否过期。
     _builtAudioFocus = s?.audioFocusEnabled ?? true;
-    _builtEq = eqEnabled;
     return AudioPlayer(
       handleInterruptions: _builtAudioFocus,
       // 让各平台原生播放器自己发请求头，绕开 just_audio 的 Dart 回环代理。
@@ -1004,9 +1009,6 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 自建字节流（SMB/SFTP 的 StreamAudioSource）仍由 just_audio 代理转发，
       // 不受本开关控制；启动预载会按源类型继续规避（见 [_preloadRestored]）。
       useProxyForRequestHeaders: !_nativeRequestHeadersSupported,
-      audioPipeline: _eq != null
-          ? AudioPipeline(androidAudioEffects: [_eq!])
-          : null,
     );
   }
 
@@ -1019,22 +1021,25 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           Platform.isWindows ||
           Platform.isLinux);
 
-  /// 播放器已存在、但构造时读到的音频配置与当前设置不一致时重建。
+  /// 播放器已存在、但构造时读到的音频焦点与当前设置不一致时重建。
   /// 正常路径下 [player] 延迟构造已保证一致，这里兜住「设置晚于首次使用注入」
   /// 与热重排等边界；无当前曲目时只换实例，不打断播放。
+  ///
+  /// 均衡器不参与此判断：开关/频段由 [EqualizerService] 实时下发，不再
+  /// 为了 EQ 重建播放器。
   void _applyAudioConfigIfNeeded() {
     if (_player == null || _shuttingDown) return;
     final s = _appSettings;
     if (s == null) return;
     final focus = s.audioFocusEnabled;
-    final eq = !kIsWeb && Platform.isAndroid && s.equalizerEnabled;
-    if (focus == _builtAudioFocus && eq == _builtEq) return;
+    if (focus == _builtAudioFocus) return;
     if (_current == null) {
       // 清理路径：取消渐变的同时收口挂起的淡出 Future（不暂停）+ 复位意图位。
       _cancelFadeAndComplete();
       _fadingPause = false;
       final old = _player;
       _player = null;
+      unawaited(_disposeEqualizer());
       unawaited(old?.dispose());
       _buildAndWire();
       notifyListeners();
@@ -1321,7 +1326,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool? get debugBuiltAudioFocus =>
       _player == null ? null : _builtAudioFocus;
 
-  /// 应用音频相关设置（均衡器/音频焦点/淡入淡出开关变化）：重建播放器并恢复当前曲目。
+  /// 应用音频焦点设置（通话等抢占时是否暂停/恢复）：重建播放器并恢复当前曲目。
+  /// 均衡器/淡入淡出不走这里。
   Future<void> applyAudioConfig() async {
     // 还没建播放器：不必重建，首次构造会直接读到新设置。
     if (_player == null) return;
@@ -1434,6 +1440,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 丢弃当前播放器实例（不自动重建；下次访问 [player] 时按最新设置重建）。
   Future<void> _disposePlayer() async {
+    await _disposeEqualizer();
     final old = _player;
     _player = null;
     try {
@@ -1637,43 +1644,54 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (identical(_fadeOutCompleter, completer)) _fadeOutCompleter = null;
   }
 
-  // ---------- 均衡器（settings.md §3.2，仅 Android） ----------
+  // ---------- 均衡器（settings.md §3.2，Android/Windows/Linux） ----------
 
-  /// 应用存储的频段增益（播放器装载完成、效果激活后调用）。
-  Future<void> _applyEqualizerBands() async {
-    final eq = _eq;
-    final s = _appSettings;
-    if (eq == null || s == null || !s.equalizerEnabled) return;
-    try {
-      final params = await eq.parameters;
-      final bands = s.eqBands;
-      for (var i = 0; i < bands.length && i < params.bands.length; i++) {
-        final gain = bands[i]
-            .clamp(params.minDecibels.toDouble(), params.maxDecibels.toDouble());
-        await params.bands[i].setGain(gain);
-      }
-      await eq.setEnabled(true);
-    } catch (_) {
-      // 平台不支持 / 尚未激活时静默跳过。
-    }
-  }
+  /// 当前构建是否具备应用级均衡器能力（鸿蒙 AVPlayer/Web 为 false）。
+  bool get equalizerSupported => EqualizerService.supportedOnThisPlatform;
 
-  /// 单个频段增益写入（UI 拖动即时生效）；同时持久化。
+  /// 单段增益写入（UI 拖动中调用）。设置先落内存，随后由后端实时下发；
+  /// 桌面走 af-command，Android 原生侧做 40ms 合并。
   Future<void> setEqBand(int index, double db) async {
     final s = _appSettings;
-    if (s == null) return;
+    if (s == null || index < 0 || index >= kEqBandCount) return;
     final bands = s.eqBands;
-    bands[index] = db;
+    bands[index] = db.clamp(kEqMinDb, kEqMaxDb).toDouble();
     s.eqBands = bands;
-    final params = _eq == null ? null : await _eq!.parameters;
-    if (params != null && index < params.bands.length) {
-      try {
-        var gain = db;
-        if (gain < params.minDecibels) gain = params.minDecibels;
-        if (gain > params.maxDecibels) gain = params.maxDecibels;
-        await params.bands[index].setGain(gain);
-      } catch (_) {}
-    }
+    await _equalizer?.apply(commit: false);
+  }
+
+  /// 应用预设/重置：整组写入并立即落成可跨 seek 的完整参数。
+  Future<void> setEqPreset(List<double> gains) async {
+    final s = _appSettings;
+    if (s == null) return;
+    s.eqBands = gains;
+    await _equalizer?.apply(commit: true);
+  }
+
+  /// 前级衰减（dB，[-12, 0]）：需要重建整条链，直接 commit。
+  Future<void> setEqPreamp(double db) async {
+    final s = _appSettings;
+    if (s == null) return;
+    s.eqPreampDb = db;
+    await _equalizer?.apply(commit: true);
+  }
+
+  /// 开/关均衡器：不再重建播放器；后端立即启用/旁路。
+  Future<void> setEqualizerEnabled(bool enabled) async {
+    final s = _appSettings;
+    if (s == null) return;
+    s.equalizerEnabled = enabled;
+    await _equalizer?.apply(commit: true);
+  }
+
+  /// 拖动结束：把本次实时参数写回后端存储（mpv af set / Android 完整更新）。
+  Future<void> flushEqualizer() async {
+    await _equalizer?.flush();
+  }
+
+  /// 备份导入等外部改动后，重新读取设置并下发。
+  Future<void> reloadEqualizerSettings() async {
+    await _equalizer?.apply(commit: true);
   }
 
   /// 关联源解析器（混合队列时按歌曲 sourceKey 逐首选择播放源）。
@@ -1706,8 +1724,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 播放器实例，**首次使用时才构造**。
   ///
   /// 构造 PlayerProvider 时 [attachAppSettings] 还没调用，若此时建播放器，
-  /// 音频焦点/均衡器只能读到默认值——「忽略音频焦点」冷启动永远失效，必须进
-  /// 设置页手动切一次开关才生效。延迟构造保证第一次建时就拿到真实设置。
+  /// 音频焦点只能读到默认值——「忽略音频焦点」冷启动永远失效，必须进
+  /// 设置页手动切一次开关才生效。延迟构造保证第一次建时就拿到真实设置；
+  /// 均衡器服务也在设置注入后才挂到播放器上。
   AudioPlayer get player => _player ??= _buildAndWire();
 
   AudioPlayer _buildAndWire() {
@@ -1719,7 +1738,39 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _setupPlayerStreams(p);
     // 新实例音量默认 1.0：立即落到应用基准音量，避免暂停态重建后突然变响。
     _setVolumeOn(p, _baseVolume);
+    _ensureEqualizer(p);
     return p;
+  }
+
+  /// 播放器就绪后挂载均衡器后端（设置尚未注入时留到 attachAppSettings）。
+  ///
+  /// 先 dispose 旧服务再由 [_buildAndWire] 新建；这里只兜底异常路径。
+  void _ensureEqualizer(AudioPlayer p) {
+    final s = _appSettings;
+    if (s == null || _shuttingDown || _disposed) return;
+    if (_equalizer != null) return;
+    late final EqualizerService svc;
+    svc = EqualizerService(
+      player: p,
+      settings: s,
+      onCapabilities: (caps) {
+        // 旧服务在重建/销毁后仍可能回调，按当前实例身份过滤。
+        if (_disposed || !identical(_equalizer, svc)) return;
+        equalizerCapabilities.value = caps;
+      },
+    );
+    _equalizer = svc;
+    unawaited(svc.init());
+  }
+
+  Future<void> _disposeEqualizer() async {
+    final eq = _equalizer;
+    _equalizer = null;
+    equalizerCapabilities.value = null;
+    if (eq == null) return;
+    try {
+      await eq.dispose();
+    } catch (_) {}
   }
 
   // ---------- 播放时长采集（改进.txt：播放时长精确到秒） ----------
@@ -1800,6 +1851,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _applyAudioConfigIfNeeded();
     _applyVolume();
     refreshPlaybackGuard();
+    final p = _player;
+    if (p != null) {
+      _ensureEqualizer(p);
+      unawaited(_equalizer?.apply(commit: true) ?? Future<void>.value());
+    }
   }
 
   /// 装配静音/断连暂停守卫（main 注入 `AudioGuardPlatform.forCurrentPlatform()`；
@@ -2492,7 +2548,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         await player.pause();
       }
       if (!alive()) return false;
-      unawaited(_applyEqualizerBands());
+      unawaited(_equalizer?.apply(commit: true) ?? Future<void>.value());
       // 切歌即时同步：断点先落 outbox 再 poke（自动续播/手动点播同一路径）。
       // 恢复装载不产生 head 事件：启动恢复只是应用状态，不是用户操作。
       if (emitBreakpoint) {
@@ -5384,6 +5440,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _playbackGuard = null;
     unawaited(_audioFocusSub?.cancel());
     _audioFocusSub = null;
+    unawaited(_disposeEqualizer());
+    equalizerCapabilities.dispose();
     // 退出前把最后一段播放时长结清（与 _saveState 同样不等待）。
     unawaited(_playSecStop());
     final proxy = _mediaProxyClient;

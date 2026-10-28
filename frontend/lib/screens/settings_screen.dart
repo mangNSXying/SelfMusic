@@ -17,6 +17,8 @@ import '../services/api_client.dart';
 import '../services/artist_resolver.dart';
 import '../services/bluetooth_service.dart';
 import '../services/custom_font_service.dart';
+import '../services/equalizer/equalizer_service.dart';
+import '../services/equalizer/equalizer_types.dart';
 import '../services/server_settings.dart';
 import '../services/sync_engine.dart';
 import '../shortcuts/shortcut_settings.dart';
@@ -28,6 +30,7 @@ import '../utils/cover_thumb.dart';
 import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/app_volume_control.dart';
+import '../widgets/eq_curve_editor.dart';
 import '../widgets/row_action_button.dart';
 import '../widgets/shortcut_settings_panel.dart';
 import '../widgets/single_choice_group.dart';
@@ -2212,14 +2215,6 @@ class _PlaybackSettings extends StatefulWidget {
 }
 
 class _PlaybackSettingsState extends State<_PlaybackSettings> {
-  static const List<String> _eqLabels = [
-    '低音 60Hz',
-    '中低 230Hz',
-    '中音 910Hz',
-    '中高 3.6kHz',
-    '高音 14kHz',
-  ];
-
   late AppSettings _settings;
 
   @override
@@ -2233,6 +2228,7 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
     final cs = Theme.of(context).colorScheme;
     final current = PlayModeParse.fromStored(_settings.playModeDefault);
     final eqBands = _settings.eqBands;
+    final eqPreampDb = _settings.eqPreampDb;
 
     return ListView(
       padding: const EdgeInsets.symmetric(vertical: 12),
@@ -2403,48 +2399,7 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
           ),
         ),
         const Divider(height: 24),
-        SwitchListTile(
-          title: const Text('均衡器'),
-          subtitle: const Text('5 段频段增益（目前仅安卓生效）'),
-          value: _settings.equalizerEnabled,
-          onChanged: _toggleEqualizer,
-        ),
-        if (_settings.equalizerEnabled) ...[
-          for (var i = 0; i < 5; i++)
-            Padding(
-              padding: const EdgeInsets.only(left: 16, right: 16),
-              child: Row(
-                children: [
-                  SizedBox(
-                    width: 92,
-                    child: Text(_eqLabels[i],
-                        style: const TextStyle(fontSize: 13)),
-                  ),
-                  Expanded(
-                    child: Slider(
-                      value: eqBands[i].clamp(-12.0, 12.0),
-                      min: -12,
-                      max: 12,
-                      divisions: 48,
-                      label: '${eqBands[i].toStringAsFixed(1)} dB',
-                      onChanged: (v) {
-                        setState(() {});
-                        context.read<PlayerProvider>().setEqBand(i, v);
-                      },
-                    ),
-                  ),
-                  SizedBox(
-                    width: 40,
-                    child: Text(
-                      '${eqBands[i] >= 0 ? '+' : ''}${eqBands[i].toStringAsFixed(1)}',
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(fontSize: 13),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-        ],
+        _buildEqualizer(context, eqBands, eqPreampDb),
         const Divider(height: 24),
         SwitchListTile(
           title: const Text('自动暂停/恢复'),
@@ -2477,9 +2432,226 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
     );
   }
 
-  void _toggleEqualizer(bool v) {
-    setState(() => _settings.equalizerEnabled = v);
-    context.read<PlayerProvider>().applyAudioConfig();
+  Widget _buildEqualizer(
+    BuildContext context,
+    List<double> eqBands,
+    double eqPreampDb,
+  ) {
+    final supported = EqualizerService.supportedOnThisPlatform;
+    final enabled = supported && _settings.equalizerEnabled;
+    if (!supported) {
+      return SwitchListTile(
+        title: const Text('均衡器'),
+        subtitle: Text(EqualizerService.unsupportedNote),
+        value: false,
+        onChanged: null,
+      );
+    }
+    final switchTile = SwitchListTile(
+      title: const Text('均衡器'),
+      subtitle: Text(enabled
+          ? '10 段频段增益（Android / Windows / Linux）'
+          : '10 段频段增益；开启后按平台生效'),
+      value: enabled,
+      onChanged: (v) {
+        context.read<PlayerProvider>().setEqualizerEnabled(v);
+        setState(() {});
+      },
+    );
+    if (!enabled) return switchTile;
+    final player = context.read<PlayerProvider>();
+    return Column(
+      children: [
+        switchTile,
+        ValueListenableBuilder<EqualizerCapabilities?>(
+          valueListenable: player.equalizerCapabilities,
+          builder: (context, caps, _) {
+            return Column(
+              children: [
+                if (caps?.note != null) _eqNote(caps!.note!),
+                _buildEqControls(context, eqBands, eqPreampDb),
+              ],
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _eqNote(String text) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline, size: 16, color: cs.primary),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEqControls(
+    BuildContext context,
+    List<double> eqBands,
+    double eqPreampDb,
+  ) {
+    final cs = Theme.of(context).colorScheme;
+    final preset = matchingEqPreset(eqBands);
+    final player = context.read<PlayerProvider>();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 2),
+          child: Row(
+            children: [
+              Text('预设',
+                  style: TextStyle(
+                      fontSize: 13,
+                      color: cs.onSurfaceVariant,
+                      fontWeight: FontWeight.w600)),
+              const SizedBox(width: 10),
+              if (preset == null)
+                Text('自定义', style: TextStyle(fontSize: 12, color: cs.primary)),
+              const Spacer(),
+              TextButton(
+                onPressed: () {
+                  player.setEqPreset(kDefaultEqBands);
+                  player.setEqPreamp(0);
+                  setState(() {});
+                },
+                child: const Text('重置'),
+              ),
+            ],
+          ),
+        ),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              for (final p in kEqPresets)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ChoiceChip(
+                    label: Text(p.name),
+                    selected: preset?.name == p.name,
+                    onSelected: (_) {
+                      player.setEqPreset(p.gains);
+                      setState(() {});
+                    },
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          child: EqCurveEditor(
+            key: const ValueKey('eq-curve'),
+            gains: eqBands,
+            onChanged: (i, db) {
+              player.setEqBand(i, db);
+              setState(() {});
+            },
+            onCommit: player.flushEqualizer,
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+          child: Row(
+            children: [
+              const Icon(Icons.tune, size: 18),
+              const SizedBox(width: 8),
+              const Text('前级', style: TextStyle(fontSize: 13)),
+              Expanded(
+                child: Slider(
+                  key: const ValueKey('eq-preamp-slider'),
+                  value: eqPreampDb.clamp(kEqPreampMinDb, kEqPreampMaxDb),
+                  min: kEqPreampMinDb,
+                  max: kEqPreampMaxDb,
+                  divisions: 24,
+                  label: '${eqPreampDb.toStringAsFixed(1)} dB',
+                  onChanged: (v) {
+                    player.setEqPreamp(v);
+                    setState(() {});
+                  },
+                  onChangeEnd: (_) => player.flushEqualizer(),
+                ),
+              ),
+              SizedBox(
+                width: 60,
+                child: Text(
+                  '${eqPreampDb.toStringAsFixed(1)} dB',
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+          child: Text(
+            '前级衰减用于抵消正增益叠加造成的削波，默认 0 dB',
+            style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+          ),
+        ),
+        ExpansionTile(
+          key: const ValueKey('eq-band-sliders'),
+          title: const Text('逐段微调', style: TextStyle(fontSize: 14)),
+          tilePadding: const EdgeInsets.symmetric(horizontal: 16),
+          childrenPadding: const EdgeInsets.only(bottom: 8),
+          children: [
+            for (var i = 0; i < kEqBandCount; i++)
+              Padding(
+                padding: const EdgeInsets.only(left: 16, right: 16),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 48,
+                      child: Text(kEqFrequencyLabels[i],
+                          style: const TextStyle(fontSize: 12)),
+                    ),
+                    Expanded(
+                      child: Slider(
+                        key: ValueKey('eq-band-$i'),
+                        value: eqBands[i].clamp(kEqMinDb, kEqMaxDb),
+                        min: kEqMinDb,
+                        max: kEqMaxDb,
+                        divisions: 240,
+                        label: '${eqBands[i].toStringAsFixed(1)} dB',
+                        onChanged: (v) {
+                          player.setEqBand(i, v);
+                          setState(() {});
+                        },
+                        onChangeEnd: (_) => player.flushEqualizer(),
+                      ),
+                    ),
+                    SizedBox(
+                      width: 48,
+                      child: Text(
+                        '${eqBands[i] >= 0 ? '+' : ''}${eqBands[i].toStringAsFixed(1)}',
+                        textAlign: TextAlign.right,
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ],
+    );
   }
 
   Future<void> _pickMode(BuildContext context, PlayMode current) async {
@@ -2877,13 +3049,14 @@ class _BackupMigrationDialogState extends State<_BackupMigrationDialog> {
       final summary = kind == BackupKind.settings
           ? await service.importSettings(f)
           : await service.importPlaylists(f);
-      if (kind == BackupKind.playlists) {
-        if (!mounted) return;
-        context.read<PlaylistsProvider>().refresh();
-      }
       if (kind == BackupKind.settings) {
         if (!mounted) return;
         context.read<ShortcutSettings>().reload();
+        context.read<PlayerProvider>().reloadEqualizerSettings();
+      }
+      if (kind == BackupKind.playlists) {
+        if (!mounted) return;
+        context.read<PlaylistsProvider>().refresh();
       }
       if (!mounted) return;
       _toast(summary);
@@ -2931,6 +3104,7 @@ class _BackupMigrationDialogState extends State<_BackupMigrationDialog> {
       if (!mounted) return;
       if (kind != BackupKind.playlists) {
         context.read<ShortcutSettings>().reload();
+        context.read<PlayerProvider>().reloadEqualizerSettings();
       }
       context.read<PlaylistsProvider>().refresh();
       AppToast.show(summaries.join('；'), isError: false);

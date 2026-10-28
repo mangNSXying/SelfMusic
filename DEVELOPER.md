@@ -513,7 +513,7 @@ flutter run --dart-define=API_BASE_URL=http://<宿主机IP>:18088
 | dio | HTTP 客户端（含懒刷新拦截器） |
 | provider | 状态管理 |
 | just_audio | 音频播放抽象 |
-| just_audio_media_kit（+ media_kit_libs_linux / media_kit_libs_windows_audio） | 桌面音频后端（Linux/Windows 统一 libmpv，库随包分发，`main()` 中 `ensureInitialized()` 注册） |
+| just_audio_media_kit（vendored，+ media_kit_libs_linux / media_kit_libs_windows_audio） | 桌面音频后端（Linux/Windows 统一 libmpv，库随包分发，`main()` 中 `ensureInitialized()` 注册）；本地 fork 暴露内部 mpv Player 供均衡器 `af` 链使用，见 `third_party/just_audio_media_kit/PATCHES.md` |
 | cached_network_image | 图片缓存 |
 | flutter_secure_storage | 敏感数据安全存储（token、主题偏好、WebDAV 密码、配对密钥；统一经 `SecretStore` 收口，见 `frontend/lib/services/secret_store.dart`） |
 | audio_service（vendored fork，`third_party/audio_service`） | Android 通知栏 / 后台播放（前台服务 + 媒体通知，`SelfMusicAudioHandler` 5 键自定义处理器）；鸿蒙不适用——走自建 AVSession 桥（见「鸿蒙适配」） |
@@ -737,6 +737,8 @@ abstract class MusicSource {
 Linux / Windows 桌面统一 `just_audio_media_kit`（底层 libmpv）：libmpv 由 `media_kit_libs_linux` / `media_kit_libs_windows_audio` **随包分发，无需系统安装 mpv**。`main()` 顶部 `JustAudioMediaKit.ensureInitialized()` 完成注册（默认参数 Windows/Linux 启用、Android 关闭走 ExoPlayer）。
 
 **请求头不再走 just_audio 的 Dart 回环代理**：`AudioPlayer(useProxyForRequestHeaders:false)` 在所有支持平台生效——桌面由 just_audio_media_kit 的 `Media(httpHeaders)` 落到 mpv `http-header-fields`（Linux 已实测 Basic 鉴权头、百分号编码 URL 均到达源），Android/鸿蒙分别走 ExoPlayer/AVPlayer 原生请求头。该 Dart 代理会把音频逐块经 UI isolate 转发，是桌面 mpv 启动预载与移动端之间唯一的网络链路差异（e202168 因此改为延迟装载）。SMB/SFTP 的自建字节流（`StreamAudioSource`）不受该开关控制、仍走 just_audio 代理。
+
+**桌面均衡器（10 段）**：`frontend/lib/services/equalizer/` 统一 10 段标准频率、preamp 与各平台后端。桌面 `MpvEqualizerBackend` 通过 vendored `just_audio_media_kit` 暴露的 mpv Player 设置 `af` 链：10 个命名 `lavfi-equalizer` + 可选 `lavfi-volume` 前级；拖动时用 `af-command eqN gain ...` 平滑更新（30ms 合并），300ms 后用 `af set` 写回完整链（mpv 的 af-command 不更新存储参数，seek/切歌会按旧参数重建）。`main()` 中必须保持 `JustAudioMediaKit.pitch = false`：否则 just_audio 每次装载的 `setSpeed/setPitch(1.0)` 会写 `af=scaletempo` 覆盖 EQ 链。Android 侧由 `EqualizerController.kt` 挂到 just_audio 的 audioSessionId，优先 `DynamicsProcessing`、失败回退系统 `Equalizer`；鸿蒙 AVPlayer 无自定义 EQ，UI 明确置灰。
 
 启动预载门控（`PlayerProvider._canPreloadRestore`）在桌面按「最终链路是否安全」判定：直连 URL/本地文件、本地原文件缓存、转码变体缓存、后端代理/转码 HTTP、以及 MediaProxy 可用的 SMB/SFTP 都会预载；只有 MediaProxy 不可用且最终只能落到 `DirectAudioSource` 的源继续延迟。所有桌面预载都带 `preloadOnly` 安全边界：缓存索引失效、后端转码失败或 MediaProxy 启动失败时直接中止并保持延迟，绝不回落 Dart 字节流。桌面预载在首帧后启动、不阻塞 `restoreFuture`；`applyNewerMirrorIfAny` 会等预载收尾，并跳过用户装载中的窗口。
 

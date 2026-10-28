@@ -77,6 +77,11 @@ Future<void> main() async {
     // 桌面端（Windows/Linux）音频后端统一 media_kit（底层 libmpv）：默认参数即
     // Windows/Linux 启用、Android 关闭（Android 继续走 ExoPlayer），无需平台判断。
     // ohos 上其内部 UniversalPlatform 判断为 no-op，由上面的 AvPlayerJustAudio 接管。
+    //
+    // pitch 关闭：just_audio 每次装载都会 setSpeed/setPitch(1.0)，media_kit 的
+    // pitch 模式会写 `af=scaletempo`，把桌面均衡器的 af 链覆盖掉；本应用无变调
+    // 需求，关闭后 setRate 走 mpv `speed` 属性，不碰 af。
+    JustAudioMediaKit.pitch = false;
     JustAudioMediaKit.ensureInitialized();
     perfLog('boot.mediaKit done');
     // 系统音量混合器 / 进程列表里显示的名字（默认 'JustAudioMediaKit'）。
