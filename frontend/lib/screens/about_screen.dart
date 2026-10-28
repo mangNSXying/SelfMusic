@@ -4,11 +4,13 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../platform/email_share.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
 import '../platform/harmonyos/ohos_platform_bridge.dart';
+import '../providers/direct_source_manager.dart';
 import '../utils/app_version.dart';
 import '../utils/build_stamp.dart';
 import '../widgets/app_dialog_actions.dart';
@@ -27,6 +29,8 @@ class AboutScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final logMinutes = context.select<DirectSourceManager, int>(
+        (direct) => direct.settings.logExportMinutes);
     return Scaffold(
       appBar: AppBar(title: const Text('关于软件')),
       body: ListView(
@@ -79,7 +83,8 @@ class AboutScreen extends StatelessWidget {
             dense: true,
             leading: const Icon(Icons.description_outlined),
             title: const Text('收集日志'),
-            subtitle: const Text('导出最近一分钟内的应用日志', style: TextStyle(fontSize: 11)),
+            subtitle: Text('导出最近 $logMinutes 分钟内的应用日志',
+                style: const TextStyle(fontSize: 11)),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _collectLogs(context),
           ),
@@ -117,11 +122,13 @@ class AboutScreen extends StatelessWidget {
   /// 跳转系统默认邮件软件；无可用客户端时复制邮箱并弹窗明示地址。
   Future<void> _sendFeedback(BuildContext context) async {
     if (!context.mounted) return;
+    final logMinutes =
+        context.read<DirectSourceManager>().settings.logExportMinutes;
     final includeLogs = await showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
         title: const Text('反馈'),
-        content: const Text('是否携带最近一分钟的应用日志？（有助于定位 Bug）'),
+        content: Text('是否携带最近 $logMinutes 分钟的应用日志？（有助于定位 Bug）'),
         actions: appDialogActions(
           c,
           cancelLabel: '不携带',
@@ -139,7 +146,7 @@ class AboutScreen extends StatelessWidget {
 
     String extraBody = '';
     if (includeLogs == true) {
-      final logPath = await _exportLogsToTemp();
+      final logPath = await _exportLogsToTemp(logMinutes);
       if (logPath != null) {
         // 优先走「自动带附件」的原生发送（Android 直达邮件应用 /
         // 鸿蒙分享面板 / Linux xdg-email / Windows Thunderbird·Outlook）。
@@ -163,8 +170,7 @@ class AboutScreen extends StatelessWidget {
     );
     try {
       if (await canLaunchUrl(uri)) {
-        final ok =
-            await launchUrl(uri, mode: LaunchMode.externalApplication);
+        final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
         if (ok) return;
       }
     } catch (e) {
@@ -191,11 +197,14 @@ class AboutScreen extends StatelessWidget {
 
   Future<void> _collectLogs(BuildContext context) async {
     if (!context.mounted) return;
+    final logMinutes =
+        context.read<DirectSourceManager>().settings.logExportMinutes;
     final proceed = await showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
         title: const Text('收集日志'),
-        content: const Text('将收集应用最近一分钟内的日志。如有 Bug 请先复现问题，再点击“收集”。'),
+        content: Text('将收集应用最近 $logMinutes 分钟内的日志。'
+            '如有 Bug 请先复现问题，再点击“收集”。'),
         actions: appDialogActions(
           c,
           cancelLabel: '返回',
@@ -216,7 +225,7 @@ class AboutScreen extends StatelessWidget {
     // 通道无处理器，必抛 channel-error），改走平台桥的保存选择器。
     try {
       if (isOhos) {
-        final tempPath = await _exportLogsToTemp();
+        final tempPath = await _exportLogsToTemp(logMinutes);
         if (tempPath == null) {
           throw StateError('临时日志写入失败');
         }
@@ -242,7 +251,8 @@ class AboutScreen extends StatelessWidget {
         if (dir == null) return;
         targetPath = '$dir/$fileName';
       }
-      await LogBuffer.instance.exportToPath(targetPath, since: const Duration(minutes: 1));
+      await LogBuffer.instance
+          .exportToPath(targetPath, since: Duration(minutes: logMinutes));
       if (!context.mounted) return;
       AppToast.show('日志已导出：$targetPath', isError: false);
     } catch (e) {
@@ -253,7 +263,7 @@ class AboutScreen extends StatelessWidget {
 
   /// 导出日志到缓存子目录 `selfmusic_logs/`（Android FileProvider 按此目录
   /// 授权给邮件应用读取；顺带清理 7 天前的旧日志防堆积）。
-  Future<String?> _exportLogsToTemp() async {
+  Future<String?> _exportLogsToTemp(int minutes) async {
     try {
       final base = await getTemporaryDirectory();
       final dir = Directory('${base.path}/selfmusic_logs');
@@ -262,7 +272,8 @@ class AboutScreen extends StatelessWidget {
       final fileName =
           'selfmusic_logs_${now.year}${_pad2(now.month)}${_pad2(now.day)}_${_pad2(now.hour)}${_pad2(now.minute)}${_pad2(now.second)}.txt';
       final path = '${dir.path}/$fileName';
-      await LogBuffer.instance.exportToPath(path, since: const Duration(minutes: 1));
+      await LogBuffer.instance
+          .exportToPath(path, since: Duration(minutes: minutes));
       await _pruneOldLogs(dir);
       return path;
     } catch (e) {

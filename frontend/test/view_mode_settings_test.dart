@@ -77,4 +77,29 @@ void main() {
     index.close();
     dir.deleteSync(recursive: true);
   });
+
+  test('日志导出时长：默认 1、钳制 1~30、持久化并随设置导出', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir =
+        await Directory.systemTemp.createTemp('selfmusic_log_settings_');
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+
+    final s = AppSettings(index);
+    expect(s.logExportMinutes, 1);
+
+    s.logExportMinutes = 30;
+    expect(AppSettings(index).logExportMinutes, 30);
+
+    s.logExportMinutes = 0;
+    expect(s.logExportMinutes, AppSettings.logExportMinutesMin);
+    s.logExportMinutes = 99;
+    expect(s.logExportMinutes, AppSettings.logExportMinutesMax);
+
+    expect(AppSettings.knownKeys, contains(AppSettings.kLogExportMinutes));
+
+    index.close();
+    dir.deleteSync(recursive: true);
+  });
 }

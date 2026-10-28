@@ -8,7 +8,7 @@ import '../utils/perf_log.dart';
 
 /// 简易应用内日志缓冲区：捕获 [debugPrint] 输出与 [perfLog] 埋点
 /// （经 [perfLogSink] 注入，dart:core 的 print 无法被劫持），按时间保留
-/// 最近的日志条目，用于「收集日志」功能导出最近一分钟的日志。
+/// 最近的日志条目，用于「收集日志」功能按设置时长（默认 1 分钟）导出日志。
 class LogEntry {
   final DateTime time;
   final String level;
@@ -118,9 +118,7 @@ class LogBuffer {
 
   /// 获取最近一段时间内的日志，按时间升序返回纯文本。
   String recentLogs({Duration? since}) {
-    final cutoff = since == null
-        ? null
-        : DateTime.now().subtract(since);
+    final cutoff = since == null ? null : DateTime.now().subtract(since);
     final buf = StringBuffer();
     for (final e in _entries) {
       if (cutoff != null && e.time.isBefore(cutoff)) {

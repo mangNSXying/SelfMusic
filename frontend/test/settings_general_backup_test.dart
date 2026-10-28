@@ -83,6 +83,19 @@ void main() {
     ));
     await tester.pump();
 
+    expect(find.text('视图行为'), findsOneWidget);
+    expect(find.text('长按展开/折叠'), findsOneWidget);
+    expect(find.text('日志'), findsOneWidget);
+    expect(find.text('日志时长'), findsOneWidget);
+
+    await tester.tap(find.text('日志时长'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('导出最近 1 分钟的日志'), findsOneWidget);
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect(settings.logExportMinutes, 1);
+
     expect(find.text('备份与迁移'), findsOneWidget);
 
     await tester.tap(find.text('备份与迁移'));

@@ -296,6 +296,12 @@ class AppSettings {
   /// 开 = 长按组头全部展开/折叠，「多选」在分类菜单。
   static const String kLongPressCollapseGroups = 'long_press_collapse_groups';
 
+  /// 日志导出时长（设置→常规→日志，单位分钟，1~30，默认 1）。
+  /// 作用于「关于软件」的收集日志与反馈附件。
+  static const String kLogExportMinutes = 'log_export_minutes';
+  static const int logExportMinutesMin = 1;
+  static const int logExportMinutesMax = 30;
+
   /// 歌词追焦等待秒数（用户拖动歌词后多久恢复自动跟随；播放设置可调）。
   static const String kLyricFocusIdleSec = 'lyric_focus_idle_sec';
 
@@ -859,6 +865,14 @@ class AppSettings {
   set longPressCollapseGroups(bool v) =>
       index.settingsSet(kLongPressCollapseGroups, v ? '1' : '0');
 
+  /// 日志导出时长（分钟，1~30，默认 1）：收集日志与反馈附件的导出范围。
+  int get logExportMinutes =>
+      (int.tryParse(index.settingsGet(kLogExportMinutes) ?? '') ??
+              logExportMinutesMin)
+          .clamp(logExportMinutesMin, logExportMinutesMax);
+  set logExportMinutes(int v) => index.settingsSet(kLogExportMinutes,
+      v.clamp(logExportMinutesMin, logExportMinutesMax).toString());
+
   /// 列表分组折叠状态（按集合持久化，[collectionKey] 如 `playlist:12` /
   /// `favorites` / `songs` / `source:webdav:nas`）：存折叠组名集合
   /// （逐项 URI 编码后以 `|` 连接；组名本身可含任意字符）。
@@ -1059,6 +1073,7 @@ class AppSettings {
     kGroupSongs,
     kGroupSource,
     kLongPressCollapseGroups,
+    kLogExportMinutes,
     kShortcutWindowBindings,
     kShortcutGlobalBindings,
   ];

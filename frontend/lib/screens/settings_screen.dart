@@ -2810,7 +2810,7 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
   }
 }
 
-/// 常规：快捷键 + 视图行为 + 备份与迁移入口。
+/// 常规：快捷键 + 视图行为 + 日志 + 备份与迁移入口。
 class _GeneralSettings extends StatelessWidget {
   const _GeneralSettings();
 
@@ -2820,6 +2820,8 @@ class _GeneralSettings extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _ViewBehaviorSection(),
+            Divider(height: 32),
+            _LogSection(),
             Divider(height: 32),
             _BackupMigrationTile(),
           ],
@@ -2869,6 +2871,103 @@ class _ViewBehaviorSectionState extends State<_ViewBehaviorSection> {
                   ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
         ),
       ],
+    );
+  }
+}
+
+/// 常规 → 日志：收集日志 / 反馈附件的导出时长。
+class _LogSection extends StatefulWidget {
+  const _LogSection();
+
+  @override
+  State<_LogSection> createState() => _LogSectionState();
+}
+
+class _LogSectionState extends State<_LogSection> {
+  Future<void> _pickDuration() async {
+    final settings = context.read<DirectSourceManager>().settings;
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (c) => _LogDurationDialog(current: settings.logExportMinutes),
+    );
+    if (picked == null || !mounted) return;
+    setState(() => settings.logExportMinutes = picked);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = context.read<DirectSourceManager>().settings;
+    final cs = Theme.of(context).colorScheme;
+    final minutes = settings.logExportMinutes;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('日志',
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        ListTile(
+          leading: const Icon(Icons.schedule),
+          title: const Text('日志时长'),
+          subtitle: Text('收集日志与反馈附件导出最近 $minutes 分钟的内容'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _pickDuration,
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: Text('可设置 1~30 分钟，作用于「关于软件」的收集日志与反馈附件',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
+        ),
+      ],
+    );
+  }
+}
+
+/// 日志时长选择弹窗：1~30 分钟整数（步进 1 分钟）。
+class _LogDurationDialog extends StatefulWidget {
+  const _LogDurationDialog({required this.current});
+
+  final int current;
+
+  @override
+  State<_LogDurationDialog> createState() => _LogDurationDialogState();
+}
+
+class _LogDurationDialogState extends State<_LogDurationDialog> {
+  late int _minutes = widget.current;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('日志时长'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('导出最近 $_minutes 分钟的日志'),
+          Slider(
+            value: _minutes.toDouble(),
+            min: AppSettings.logExportMinutesMin.toDouble(),
+            max: AppSettings.logExportMinutesMax.toDouble(),
+            divisions: AppSettings.logExportMinutesMax -
+                AppSettings.logExportMinutesMin,
+            label: '$_minutes 分钟',
+            onChanged: (v) => setState(() => _minutes = v.round()),
+          ),
+          Text('范围 1~30 分钟；设置越大，导出的日志文件越大。',
+              style: Theme.of(context).textTheme.bodySmall),
+        ],
+      ),
+      actions: appDialogActions(
+        context,
+        onCancel: () => Navigator.of(context).pop(),
+        onConfirm: () => Navigator.of(context).pop(_minutes),
+        confirmLabel: '保存',
+      ),
     );
   }
 }
