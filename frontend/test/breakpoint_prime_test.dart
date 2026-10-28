@@ -64,6 +64,25 @@ class _FakeStreamSource extends _FakeSource {
   DirectStream? directStream(Song song) => null;
 }
 
+/// 测试用 MediaProxy 源：file 适配器，验证播放层拿到的 loopback URL。
+class _FakeProxySource extends _FakeSource implements MediaProxySource {
+  _FakeProxySource(this.path);
+
+  final String path;
+
+  @override
+  DirectStream? directStream(Song song) => null;
+
+  @override
+  Map<String, Object?>? mediaProxyConfigFor(Song song) => {
+        'kind': 'file',
+        'sourceKey': key,
+        'path': path,
+        'size': 0,
+        'mime': 'application/octet-stream',
+      };
+}
+
 /// 自建字节流但已有本地缓存：桌面应允许预载（走 setFilePath）。
 class _FakeCachedStreamSource extends _FakeStreamSource {
   _FakeCachedStreamSource(this.path);
@@ -84,6 +103,9 @@ class _FakePlatformPlayer extends AudioPlayerPlatform {
   int playCalls = 0;
   int pauseCalls = 0;
 
+  /// 最近一次 load 的 URI（验证 MediaProxy loopback URL）。
+  String? lastUri;
+
   @override
   Stream<PlaybackEventMessage> get playbackEventMessageStream => _events.stream;
 
@@ -102,6 +124,8 @@ class _FakePlatformPlayer extends AudioPlayerPlatform {
 
   @override
   Future<LoadResponse> load(LoadRequest request) async {
+    final msg = request.audioSourceMessage;
+    lastUri = msg is UriAudioSourceMessage ? msg.uri : null;
     if (!_owner.loadStarted.isCompleted) _owner.loadStarted.complete();
     final gate = _owner.loadGate;
     if (gate != null) await gate.future;
@@ -678,6 +702,44 @@ void main() {
     expect(player.position.inMilliseconds, closeTo(10000, 200));
 
     await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
+
+  test('SMB/SFTP 原始流：走 MediaProxy loopback URL，不再进自建字节流', () async {
+    final dir = await Directory.systemTemp.createTemp('selfmusic_proxy_');
+    addTearDown(() async {
+      if (await dir.exists()) await dir.delete(recursive: true);
+    });
+    final file = File('${dir.path}/a.bin');
+    await file.writeAsBytes(List<int>.filled(4096, 0));
+
+    PlayerProvider.debugForceRestorePreload = true;
+    final (index, player, uuid) = await setup(
+      ['/x/a.flac'],
+      source: _FakeProxySource(file.path),
+    );
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+
+    await player.restorePreferRemote();
+    await player.debugAwaitRestorePreload();
+    final fake = JustAudioPlatform.instance as _FakeJustAudio;
+    expect(fake.players, isNotEmpty);
+    final fakePlayer = fake.players.values.single;
+    expect(fakePlayer.lastUri, startsWith('http://127.0.0.1:'),
+        reason: 'SMB/SFTP 应由 MediaProxy 提供 loopback URL');
+    expect(fakePlayer.playCalls, 0);
+    expect(player.playing, isFalse);
+    expect(player.position.inMilliseconds, closeTo(10000, 200));
+
+    await Future<void>.delayed(const Duration(milliseconds: 150));
   });
 
   test('预载安全边界：只剩自建字节流时中止，不构造播放器', () async {

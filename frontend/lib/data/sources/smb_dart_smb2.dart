@@ -9,12 +9,14 @@
 library;
 
 import 'dart:async';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:dart_smb2/dart_smb2.dart';
 
 import 'music_source.dart';
 import 'smb_common.dart';
+import 'smb_init_broker.dart';
 
 /// dart_smb2 错误 → 本工程异常（toString 面向用户，无 `Smb2Exception` 前缀）。
 /// [forWrite] 为真时 `accessDenied` 是文件系统权限（鉴权已过），转中文
@@ -43,6 +45,10 @@ class Smb2PoolBackend {
   final String username;
   final String password;
 
+  /// 代理/扫描 isolate 传入的共享 broker 端口；UI isolate 为 null 时走本
+  /// isolate 的 [SmbInitBroker]。
+  final SendPort? initBrokerPort;
+
   Smb2Pool? _pool;
 
   Smb2PoolBackend({
@@ -50,6 +56,7 @@ class Smb2PoolBackend {
     required this.share,
     required this.username,
     required this.password,
+    this.initBrokerPort,
   });
 
   String get _where => '$host/$share';
@@ -58,14 +65,18 @@ class Smb2PoolBackend {
     final cur = _pool;
     if (cur != null) return cur;
     try {
-      final p = await Smb2Pool.connect(
-        host: host,
-        share: share,
-        user: username.isEmpty ? null : username,
-        password: password.isEmpty ? null : password,
-        workers: 2,
-        timeoutSeconds: 30,
-      );
+      Future<Smb2Pool> connect() => Smb2Pool.connect(
+            host: host,
+            share: share,
+            user: username.isEmpty ? null : username,
+            password: password.isEmpty ? null : password,
+            workers: 2,
+            timeoutSeconds: 30,
+          );
+      final broker = initBrokerPort;
+      final p = broker != null
+          ? await SmbInitBroker.runWithPort(broker, connect)
+          : await SmbInitBroker.run(connect);
       _pool = p;
       return p;
     } catch (e) {
@@ -201,18 +212,28 @@ Future<List<SmbScanEntry>> smb2Walk({
   required int minSizeBytes,
   void Function(int done, int total)? onFile,
   bool Function()? isCancelled,
+  SendPort? initBrokerPort,
 }) async {
-  final client = Smb2Client.open();
-  try {
-    client.connect(
-      host: host,
-      share: share,
-      user: username.isEmpty ? null : username,
-      password: password.isEmpty ? null : password,
-      timeoutSeconds: 30,
-    );
-  } catch (e) {
-    throw _mapSmb2Error(e, 'SMB 连接失败（$host/$share）');
+  late final Smb2Client client;
+  Future<void> connect() async {
+    client = Smb2Client.open();
+    try {
+      client.connect(
+        host: host,
+        share: share,
+        user: username.isEmpty ? null : username,
+        password: password.isEmpty ? null : password,
+        timeoutSeconds: 30,
+      );
+    } catch (e) {
+      throw _mapSmb2Error(e, 'SMB 连接失败（$host/$share）');
+    }
+  }
+  final broker = initBrokerPort;
+  if (broker != null) {
+    await SmbInitBroker.runWithPort(broker, connect);
+  } else {
+    await SmbInitBroker.run(connect);
   }
   try {
     final files = <_RawFile>[];

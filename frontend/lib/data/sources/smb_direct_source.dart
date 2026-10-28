@@ -14,6 +14,7 @@ import 'music_source.dart';
 import 'scan_worker.dart';
 import 'smb_common.dart';
 import 'smb_connect_backend.dart';
+import 'smb_init_broker.dart';
 import 'smb_dart_smb2.dart';
 
 /// SMB 直连源完整实现（阶段 4，DEVELOPER.md「客户端播放源」）。
@@ -30,7 +31,7 @@ import 'smb_dart_smb2.dart';
 /// - 用户名与密码双空即匿名；读写全支持（`supportsWrite=true`，上传/删除/
 ///   建目录走双后端写通路，口径与 WebDAV 对齐：根目录、静默覆盖、同名目录
 ///   视为成功）。
-class SmbDirectSource implements MusicSource {
+class SmbDirectSource implements MusicSource, MediaProxySource {
   @override
   final String name;
   final String host;
@@ -221,6 +222,7 @@ class SmbDirectSource implements MusicSource {
       ScanToken? token,
       void Function(ScanProgress)? onProgress}) async {
     final known = index.scanFingerprint(key);
+    if (!useSmbConnect) await SmbInitBroker.ensureStarted();
     final out = await runScan<List<_SmbWalkOut>>(
       entry: _smbWalkEntry,
       params: <String, Object?>{
@@ -233,6 +235,7 @@ class SmbDirectSource implements MusicSource {
         'minSizeBytes': options.minSizeBytes,
         'known': known,
         'useSmbConnect': useSmbConnect,
+        'initBrokerPort': SmbInitBroker.port,
       },
       token: token,
       onProgress: onProgress,
@@ -299,6 +302,24 @@ class SmbDirectSource implements MusicSource {
   /// 无原生 URL 可交播放器，恒回 null 走自建字节流（与 SFTP 同）。
   @override
   DirectStream? directStream(Song song) => null;
+
+  /// MediaProxy：dart_smb2 在代理 isolate 内建连/读，UI 只拿 loopback URL。
+  /// `useSmbConnect`（旧后端）暂不支持代理，回落到自建字节流。
+  @override
+  Map<String, Object?>? mediaProxyConfigFor(Song song) {
+    if (useSmbConnect) return null;
+    return {
+      'kind': 'smb',
+      'sourceKey': key,
+      'host': host,
+      'share': share,
+      'username': username,
+      'password': password,
+      'path': smbRemotePath(rootPath, song.sourceRef),
+      'size': song.fileSize,
+      'mime': smbMimeOf(smbExtOf(song.sourceRef)),
+    };
+  }
 
   /// 代理 origin（`smb://host/share/逐段编码路径`，无 userinfo；凭据走信封）。
   @override
@@ -457,6 +478,7 @@ void _smbWalkEntry(Map<String, Object?> msg) async {
     final known = (params['known']! as Map<Object?, Object?>)
         .map((k, v) => MapEntry(k as String, v as ScanFingerprint));
     final useSmbConnect = params['useSmbConnect']! as bool;
+    final initBrokerPort = params['initBrokerPort'] as SendPort?;
     final key = params['key']! as String;
 
     progress.send(const ScanProgress(listing: true, done: 0, total: 0));
@@ -489,6 +511,7 @@ void _smbWalkEntry(Map<String, Object?> msg) async {
         onFile: (done, total) => progress.send(
             ScanProgress(listing: false, done: done, total: total)),
         isCancelled: () => cancelled,
+        initBrokerPort: initBrokerPort,
       );
     }
     final out = <_SmbWalkOut>[];

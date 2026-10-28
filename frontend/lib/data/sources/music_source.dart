@@ -263,6 +263,12 @@ class DirectStream {
 ///
 /// 实现 `supportsDirect` 并实现 `scan`/`open`，由 PlayerProvider 包装成
 /// `StreamAudioSource` 喂给 just_audio（支持 Range seek / 断点）。
+/// 支持把原始字节流交给 MediaProxy（独立 isolate 回环 HTTP）的源。
+/// 由 SMB/SFTP 实现；播放层据此判断是否需要启动代理。
+abstract class MediaProxySource {
+  Map<String, Object?>? mediaProxyConfigFor(Song song);
+}
+
 abstract class MusicSource {
   /// 稳定标识（DEVELOPER.md「客户端播放源」 key）：`webdav:<name>` / `smb:<name>` / `local:<name>`。
   String get key;

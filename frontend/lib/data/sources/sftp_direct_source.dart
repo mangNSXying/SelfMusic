@@ -56,7 +56,7 @@ String buildSshEnvelope({
 /// - 凭据（密码/私钥/passphrase）只活在内存字段里，持久化收敛到 SecretStore；
 /// - 主机指纹走 `ssh_known_hosts` TOFU 钉（[LocalIndex]），未知/失配直接抛错，
 ///   由弹窗测试连接流程处理（扫描 isolate 内同样校验）。
-class SftpDirectSource implements MusicSource {
+class SftpDirectSource implements MusicSource, MediaProxySource {
   @override
   final String name;
   final String host;
@@ -378,6 +378,29 @@ class SftpDirectSource implements MusicSource {
   /// just_audio 播不了 `sftp://`，恒回 null 走自建字节流。
   @override
   DirectStream? directStream(Song song) => null;
+
+  /// MediaProxy：SftpWorker 在代理 isolate 内建连/解密/读，UI 只拿 loopback URL。
+  /// 未确认主机指纹（TOFU）时不走代理，保持旧路径的显式报错。
+  @override
+  Map<String, Object?>? mediaProxyConfigFor(Song song) {
+    final fp = index.sshFingerprint(hostPort);
+    if (fp == null || fp.isEmpty) return null;
+    return {
+      'kind': 'sftp',
+      'sourceKey': key,
+      'host': host,
+      'port': port,
+      'username': username,
+      'auth': authMethod.name,
+      'password': authMethod == SftpAuthMethod.password ? password : '',
+      'keyPem': authMethod == SftpAuthMethod.key ? keyPem : '',
+      'keyPassphrase': authMethod == SftpAuthMethod.key ? keyPassphrase : '',
+      'pinnedFp': fp,
+      'path': _absPath(song.sourceRef),
+      'size': song.fileSize,
+      'mime': _mimeOf(_extOf(song.sourceRef)),
+    };
+  }
 
   /// 代理 origin（`sftp://host:port/逐段编码路径`，无 userinfo；凭据走信封）。
   @override

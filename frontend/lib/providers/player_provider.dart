@@ -11,6 +11,7 @@ import '../models/song.dart';
 import '../data/sources/music_source.dart';
 import '../data/sources/transcode_variant.dart';
 import '../data/sources/direct_audio_source.dart';
+import '../data/sources/media_proxy.dart';
 import '../data/sources/meta_enrich.dart';
 import '../data/sources/webdav_url.dart';
 import '../data/local/local_index.dart';
@@ -453,6 +454,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 镜像套用前先等它收尾）。
   Future<void>? _restorePreloadFuture;
 
+  /// SMB/SFTP 的 MediaProxy 控制端（独立 isolate 回环 HTTP）；懒启动。
+  MediaProxyClient? _mediaProxyClient;
+
   /// 启动恢复期间用户连点播放/暂停的待应用目标态。
   ///
   /// 非 null 时表示恢复尚未收尾：true=恢复完播放，false=恢复完保持暂停。
@@ -537,6 +541,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (cached != null && await File(cached).exists()) return true;
     } catch (_) {}
 
+    // MediaProxy 可用时，SMB/SFTP 原始流也能安全预载（字节在代理 isolate）。
+    if (kMediaProxyEnabled) {
+      try {
+        if (_mediaProxyConfigFor(src, s) != null) return true;
+      } catch (_) {}
+    }
+
     // 转码开时：变体缓存是本地的；没有变体则 _loadOnce 会先试后端 HTTP，
     // 失败也只会走到 preloadOnly 的安全中止，不会回落 Dart 字节流。
     if (!_transcodeUsableFor(src)) return false;
@@ -545,6 +556,38 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (variant != null && await File(variant).exists()) return true;
     } catch (_) {}
     return true;
+  }
+
+  /// 只有真实的 SMB/SFTP 源走 MediaProxy；其它源保持原路径。
+  Map<String, Object?>? _mediaProxyConfigFor(MusicSource src, Song s) {
+    if (src is MediaProxySource) {
+      return (src as MediaProxySource).mediaProxyConfigFor(s);
+    }
+    return null;
+  }
+
+  /// 启动 MediaProxy 并拿 loopback URL；失败重启 isolate 重试一次，仍失败
+  /// 返回 null（调用方决定回退 DirectAudioSource 还是保持延迟）。
+  Future<Uri?> _startMediaProxy(
+      Map<String, Object?> cfg, Song s, bool Function() alive) async {
+    final client = _mediaProxyClient ??= MediaProxyClient();
+    final base = s.sourceRef
+        .split('/')
+        .lastWhere((e) => e.isNotEmpty, orElse: () => 'audio.bin');
+    var url = await client.start(cfg, basename: base);
+    if (url == null) {
+      // 旧 token 已被新切歌/退出接管时不要再重启共享 isolate——
+      // 新 token 的 stop/start 已经在队列里，乱停会误杀新 session。
+      if (!alive() || _shuttingDown || _disposed) return null;
+      perfLog('mediaProxy.retry',
+          'kind=${cfg['kind']} key=${cfg['sourceKey']}');
+      await client.restart();
+      if (!alive() || _shuttingDown || _disposed) return null;
+      url = await client.start(cfg, basename: base);
+    }
+    if (url == null) return null;
+    if (!alive() || _shuttingDown) return null;
+    return url;
   }
 
   /// 后端代理/转码链路是否可用：实际媒体地址是 HTTP，走 mpv 原生请求头。
@@ -2241,6 +2284,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _curSource = null;
     _clearRestorePosition();
     clearResumeState();
+    unawaited(_mediaProxyClient?.stop());
     try {
       await player.stop();
     } catch (_) {}
@@ -2325,6 +2369,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 解决了快速 next/prev 时旧 setUrl 的 connection abort / source error  toast 刷屏。
     final token = ++_playToken;
     bool alive() => token == _playToken;
+    // 新起播/切歌：先停旧 MediaProxy session；消息有序，_loadOnce 里的 start
+    // 会排在 stop 之后。失败回退路径不会误用旧 session。
+    if (_mediaProxyClient != null) unawaited(_mediaProxyClient!.stop());
     if (startAt == null) _clearRestorePosition();
     // 用户手动起播新曲：恢复期等待中的播放/暂停目标态作废，避免旧意图
     // 在恢复收尾后又对新曲补一次 play。恢复自身的 `_play(play:false)` 不能
@@ -2811,9 +2858,50 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _ensureLoadAlive(alive);
       return;
     }
+    if (kMediaProxyEnabled) {
+      Map<String, Object?>? cfg;
+      try {
+        cfg = _mediaProxyConfigFor(src, s);
+      } catch (e) {
+        perfLog('mediaProxy.configFail', 'kind=${src.kind} e=$e');
+      }
+      if (cfg == null && src is MediaProxySource) {
+        perfLog('mediaProxy.configUnavailable',
+            'kind=${src.kind} key=${src.key}');
+      }
+      if (cfg != null) {
+        perfLog('mediaProxy.pick',
+            'kind=${cfg['kind']} key=${cfg['sourceKey']} preload=$preloadOnly');
+        final proxyUrl = await _startMediaProxy(cfg, s, alive);
+        if (proxyUrl != null) {
+          try {
+            debugPrint(
+                '[play] ${src.kind} MediaProxy: 127.0.0.1:${proxyUrl.port}/${proxyUrl.pathSegments.last}');
+            await player.setUrl(proxyUrl.toString(), tag: tag);
+            _ensureLoadAlive(alive);
+            return;
+          } catch (e) {
+            if (!alive() ||
+                _shuttingDown ||
+                e is PlayerInterruptedException) {
+              rethrow;
+            }
+            perfLog('mediaProxy.loadFail',
+                'kind=${src.kind} key=${cfg['sourceKey']} e=$e');
+            await _mediaProxyClient?.stop();
+            if (preloadOnly) throw const PreloadUnsafeSourceException();
+          }
+        } else {
+          perfLog('mediaProxy.fallback',
+              'kind=${src.kind} key=${cfg['sourceKey']} preload=$preloadOnly');
+          if (preloadOnly) throw const PreloadUnsafeSourceException();
+        }
+      }
+    }
+    _ensureLoadAlive(alive);
     if (preloadOnly) {
-      // 启动预载只允许原生/本地链路；此处只剩自建字节流（桌面 SMB/SFTP），
-      // 会经 just_audio 回环代理把整首音频压到 UI isolate，必须中止。
+      // 启动预载只允许原生/本地/代理链路；此处只剩自建字节流（桌面
+      // SMB/SFTP），会经 just_audio 回环代理把整首音频压到 UI isolate，必须中止。
       throw const PreloadUnsafeSourceException();
     }
     debugPrint('[play] ${src.kind} 自建字节流: ${s.title}');
@@ -3943,6 +4031,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _audioFocusSavePending = false;
     // 显式停止：恢复期的乐观位置一并失效（停后位置恒为 0）。
     _clearRestorePosition();
+    unawaited(_mediaProxyClient?.stop());
     try {
       await player.stop();
     } catch (_) {
@@ -5265,6 +5354,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       await _index?.flushWrites();
     } catch (_) {}
+    try {
+      await _mediaProxyClient?.close();
+    } catch (_) {}
+    _mediaProxyClient = null;
     if (p == null) return;
     try {
       await p.stop();
@@ -5293,6 +5386,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _audioFocusSub = null;
     // 退出前把最后一段播放时长结清（与 _saveState 同样不等待）。
     unawaited(_playSecStop());
+    final proxy = _mediaProxyClient;
+    _mediaProxyClient = null;
+    unawaited(proxy?.close());
     final p = _player;
     _player = null;
     if (p != null) {
