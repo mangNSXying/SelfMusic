@@ -466,7 +466,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
         context.select<NavigationProvider, bool>((n) => n.playerView);
     _applyVisibility(playerView, inBuild: true);
     final direct = context.watch<DirectSourceManager>();
-    final gestureOn = direct.settings.playerGestureSwipe;
     // 屏幕常亮设置：停留播放页期间应用（变化时下一帧生效）。
     _scheduleWakeSync(
         direct.settings.playerKeepScreenOn, direct.settings.keepScreenOnDevice);
@@ -513,13 +512,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     return PageView(
                       // 横向由内层 PageView 原生跟手（右滑回播放页/进歌单页）；
                       // 竖向仅播放页（第 1 页）跟手下拉，歌词页纵向留给滚动。
-                      // 关闭手势后 PageView 禁滑、下拉停用。
                       controller: _pageCtrl,
                       // 完全打开后置 true：预构建/保活左右邻页（见 _warmNeighbors 注释）。
                       allowImplicitScrolling: _warmNeighbors,
-                      physics: gestureOn
-                          ? const PageScrollPhysics()
-                          : const NeverScrollableScrollPhysics(),
+                      physics: const PageScrollPhysics(),
                       // 预热前滑向邻页：即时补建，避免白板（空闲仍是主触发，见 C）。
                       onPageChanged: (i) {
                         _bandPage = i;
@@ -623,7 +619,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                         cs: Theme.of(context).colorScheme,
                                         landscape: landscape,
                                         desktopLandscape: desktopLandscape,
-                                        gestureOn: gestureOn,
                                       ),
                                     ),
                                   ),
@@ -657,7 +652,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
     required ColorScheme cs,
     required bool landscape,
     required bool desktopLandscape,
-    required bool gestureOn,
   }) {
     if (landscape) {
       // 横屏无歌词分页（歌词内嵌）：「左歌单右播放」分栏与整幅播放
@@ -672,9 +666,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   player: player,
                   direct: direct,
                   cs: cs,
-                  onVerticalDragStart: gestureOn ? _onPlayerDragStart : null,
-                  onVerticalDragUpdate: gestureOn ? _onPlayerDragUpdate : null,
-                  onVerticalDragEnd: gestureOn ? _onPlayerDragEnd : null,
+                  onVerticalDragStart: _onPlayerDragStart,
+                  onVerticalDragUpdate: _onPlayerDragUpdate,
+                  onVerticalDragEnd: _onPlayerDragEnd,
                 ),
           const Positioned(top: 6, left: 6, child: _BackToContentButton()),
         ],
@@ -686,9 +680,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       children: [
         GestureDetector(
           behavior: HitTestBehavior.translucent,
-          onVerticalDragStart: gestureOn ? _onPlayerDragStart : null,
-          onVerticalDragUpdate: gestureOn ? _onPlayerDragUpdate : null,
-          onVerticalDragEnd: gestureOn ? _onPlayerDragEnd : null,
+          onVerticalDragStart: _onPlayerDragStart,
+          onVerticalDragUpdate: _onPlayerDragUpdate,
+          onVerticalDragEnd: _onPlayerDragEnd,
           child: _buildPlayerBody(context),
         ),
         const Positioned(top: 6, left: 6, child: _BackToContentButton()),
@@ -705,16 +699,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Widget _buildPlayerBody(BuildContext context) {
     final player = context.watch<PlayerProvider>();
     final direct = context.watch<DirectSourceManager>();
-    // 手势关闭时 PageView 禁滑，歌单页无法右滑进入：封面「更多」菜单补
-    // 「歌单」入口，点按跳转第 0 页。
-    final onOpenSongs = direct.settings.playerGestureSwipe
-        ? null
-        : () {
-            _rearmAutoHide();
-            _pageCtrl.animateToPage(0,
-                duration: const Duration(milliseconds: 250),
-                curve: Curves.easeOut);
-          };
 
     final m = PlayerMetrics.portrait(MediaQuery.sizeOf(context));
 
@@ -742,7 +726,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       cs: Theme.of(context).colorScheme,
                       coverSize: coverSize,
                       scale: m.uiScale,
-                      onOpenSongs: onOpenSongs,
                     )
                   : _EmptyState(
                       coverSize: coverSize,
@@ -1117,7 +1100,6 @@ class _NowPlaying extends StatelessWidget {
   final ColorScheme cs;
   final double coverSize;
   final double scale;
-  final VoidCallback? onOpenSongs;
 
   const _NowPlaying({
     required this.player,
@@ -1125,7 +1107,6 @@ class _NowPlaying extends StatelessWidget {
     required this.cs,
     required this.coverSize,
     this.scale = 1.0,
-    this.onOpenSongs,
   });
 
   @override
@@ -1141,9 +1122,7 @@ class _NowPlaying extends StatelessWidget {
               song: s,
               cs: cs,
               size: coverSize,
-              scale: scale,
-              showSongsEntry: onOpenSongs != null,
-              onOpenSongs: onOpenSongs),
+              scale: scale),
         ),
         SizedBox(height: 20 * scale),
         _TitleBlock(player: player, direct: direct, scale: scale),
@@ -1987,8 +1966,6 @@ class _Cover extends StatelessWidget {
   final ColorScheme cs;
   final double size;
   final double scale;
-  final bool showSongsEntry;
-  final VoidCallback? onOpenSongs;
 
   const _Cover({
     required this.coverPath,
@@ -1996,8 +1973,6 @@ class _Cover extends StatelessWidget {
     required this.cs,
     required this.size,
     this.scale = 1.0,
-    this.showSongsEntry = false,
-    this.onOpenSongs,
   });
 
   @override
@@ -2089,9 +2064,6 @@ class _Cover extends StatelessWidget {
                         }
                       } catch (_) {}
                       return [
-                        if (showSongsEntry)
-                          const PopupMenuItem(
-                              value: 'songs', child: Text('歌单')),
                         const PopupMenuItem(value: 'info', child: Text('歌曲信息')),
                         const PopupMenuItem(value: 'edit', child: Text('修改信息')),
                         const PopupMenuItem(
@@ -2119,9 +2091,7 @@ class _Cover extends StatelessWidget {
   }
 
   void _onSelected(BuildContext context, String v) {
-    if (v == 'songs') {
-      onOpenSongs?.call();
-    } else if (v == 'info') {
+    if (v == 'info') {
       showDialog<void>(
         context: context,
         builder: (_) => SongInfoDialog(song: song),

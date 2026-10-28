@@ -126,7 +126,6 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
     final queueOpen =
         context.select<NavigationProvider, bool>((n) => n.queueOpen);
     final settings = context.watch<DirectSourceManager>().settings;
-    final gestureOn = settings.playerGestureSwipe;
     final cs = Theme.of(context).colorScheme;
 
     // 队列为空（初次进入）时显示占位条：点按进入播放源页添加歌曲，
@@ -181,10 +180,10 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
 
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
-      // 上滑跟手进入播放页（点按同样进入）；受「播放页滑动手势」开关控制。
-      onVerticalDragStart: gestureOn ? _onDragStart : null,
-      onVerticalDragUpdate: gestureOn ? _onDragUpdate : null,
-      onVerticalDragEnd: gestureOn ? _onDragEnd : null,
+      // 上滑跟手进入播放页（点按同样进入）。
+      onVerticalDragStart: _onDragStart,
+      onVerticalDragUpdate: _onDragUpdate,
+      onVerticalDragEnd: _onDragEnd,
       child: Material(
         color: cs.surface,
         child: InkWell(
