@@ -34,15 +34,15 @@ void main() {
   });
 
   Future<Uri> start() async {
-    final url = await client.start({
+    final res = await client.start({
       'kind': 'file',
       'sourceKey': 'test:file',
       'path': file.path,
       'size': data.length,
       'mime': 'application/octet-stream',
     }, basename: 'a.bin');
-    expect(url, isNotNull, reason: 'file 适配器应启动成功');
-    return url!;
+    expect(res.url, isNotNull, reason: 'file 适配器应启动成功');
+    return res.url!;
   }
 
   Future<List<int>> getBytes(Uri url, {String? range}) async {
@@ -133,17 +133,17 @@ void main() {
     perfLogSink = logs.add;
     addTearDown(() => perfLogSink = prevSink);
 
-    final url = await client.start({
+    final res = await client.start({
       'kind': 'file',
       'sourceKey': 'test:file',
       'path': big.path,
       'size': bigData.length,
       'mime': 'application/octet-stream',
     }, basename: 'big.bin');
-    expect(url, isNotNull);
+    expect(res.url, isNotNull);
 
     final http = HttpClient();
-    final resp = await (await http.getUrl(url!)).close();
+    final resp = await (await http.getUrl(res.url!)).close();
     late StreamSubscription<List<int>> sub;
     // 暂停消费制造背压，让 worker 停在 flush；随后 stop + 断开模拟切歌。
     sub = resp.listen((_) => sub.pause());
@@ -158,5 +158,18 @@ void main() {
     expect(logs.where((l) => l.contains('http.error')), isEmpty,
         reason: '切歌/停止导致的提前断开是正常中止');
     expect(logs.where((l) => l.contains('http.abort')), isNotEmpty);
+  });
+
+  test('源不可读时标记 permanent', () async {
+    final res = await client.start({
+      'kind': 'file',
+      'sourceKey': 'test:missing',
+      'path': '${dir.path}/missing.bin',
+      'size': 0,
+      'mime': 'application/octet-stream',
+    }, basename: 'missing.bin');
+    expect(res.url, isNull);
+    expect(res.permanent, isTrue);
+    expect(res.error, contains('无法确定媒体大小'));
   });
 }

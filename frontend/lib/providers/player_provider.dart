@@ -567,28 +567,34 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     return null;
   }
 
-  /// 启动 MediaProxy 并拿 loopback URL；失败重启 isolate 重试一次，仍失败
-  /// 返回 null（调用方决定回退 DirectAudioSource 还是保持延迟）。
-  Future<Uri?> _startMediaProxy(
+  /// 启动 MediaProxy 并拿 loopback URL；瞬时失败重启 isolate 重试一次。
+  /// [permanent] 为 true 表示源侧永久不可用（文件不存在/鉴权失败），调用方
+  /// 不得再回退 DirectAudioSource 或退避重试。
+  Future<({Uri? url, bool permanent, String? error})> _startMediaProxy(
       Map<String, Object?> cfg, Song s, bool Function() alive) async {
     final client = _mediaProxyClient ??= MediaProxyClient();
     final base = s.sourceRef
         .split('/')
         .lastWhere((e) => e.isNotEmpty, orElse: () => 'audio.bin');
-    var url = await client.start(cfg, basename: base);
-    if (url == null) {
+    var res = await client.start(cfg, basename: base);
+    if (res.url == null && !res.permanent) {
       // 旧 token 已被新切歌/退出接管时不要再重启共享 isolate——
       // 新 token 的 stop/start 已经在队列里，乱停会误杀新 session。
-      if (!alive() || _shuttingDown || _disposed) return null;
+      if (!alive() || _shuttingDown || _disposed) {
+        return (url: null, permanent: false, error: res.error);
+      }
       perfLog('mediaProxy.retry',
           'kind=${cfg['kind']} key=${cfg['sourceKey']}');
       await client.restart();
-      if (!alive() || _shuttingDown || _disposed) return null;
-      url = await client.start(cfg, basename: base);
+      if (!alive() || _shuttingDown || _disposed) {
+        return (url: null, permanent: false, error: res.error);
+      }
+      res = await client.start(cfg, basename: base);
     }
-    if (url == null) return null;
-    if (!alive() || _shuttingDown) return null;
-    return url;
+    if (res.url != null && (!alive() || _shuttingDown || _disposed)) {
+      return (url: null, permanent: false, error: '启动后已被更新的切歌接管');
+    }
+    return (url: res.url, permanent: res.permanent, error: res.error);
   }
 
   /// 后端代理/转码链路是否可用：实际媒体地址是 HTTP，走 mpv 原生请求头。
@@ -2695,6 +2701,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
             last = e;
             break;
           }
+          // MediaProxy 判定源永久不可用（文件不存在/无权限）：重试和回退
+          // 字节流都不会成功，直接试下一线路或失败。
+          if (e is MediaProxyUnavailableException) {
+            last = e;
+            if (isLast) rethrow;
+            break;
+          }
           last = e;
           if (probeTimedOut) {
             probeUsable = false;
@@ -2928,7 +2941,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (cfg != null) {
         perfLog('mediaProxy.pick',
             'kind=${cfg['kind']} key=${cfg['sourceKey']} preload=$preloadOnly');
-        final proxyUrl = await _startMediaProxy(cfg, s, alive);
+        final started = await _startMediaProxy(cfg, s, alive);
+        if (!alive() || _shuttingDown || _disposed) {
+          throw PlayerInterruptedException('装载已被更新的切歌接管');
+        }
+        final proxyUrl = started.url;
         if (proxyUrl != null) {
           try {
             debugPrint(
@@ -2947,9 +2964,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
             await _mediaProxyClient?.stop();
             if (preloadOnly) throw const PreloadUnsafeSourceException();
           }
+        } else if (started.permanent) {
+          perfLog('mediaProxy.unavailable',
+              'kind=${src.kind} key=${cfg['sourceKey']} err=${started.error}');
+          if (preloadOnly) throw const PreloadUnsafeSourceException();
+          throw MediaProxyUnavailableException(
+              '音频源不可用：${started.error ?? '文件不存在或无权限'}');
         } else {
           perfLog('mediaProxy.fallback',
-              'kind=${src.kind} key=${cfg['sourceKey']} preload=$preloadOnly');
+              'kind=${src.kind} key=${cfg['sourceKey']} preload=$preloadOnly err=${started.error}');
           if (preloadOnly) throw const PreloadUnsafeSourceException();
         }
       }

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:math';
 
+import 'music_source.dart';
 import 'smb_dart_smb2.dart';
 import 'sftp_common.dart';
 import 'sftp_worker.dart';
@@ -126,8 +127,13 @@ class _MediaProxyEngine {
         await adapter?.close();
       } catch (_) {}
       _session = null;
-      _log('session.startFail', '$e');
-      _reply(id, {'ok': false, 'error': '$e'});
+      final permanent = _isPermanentSourceError(e);
+      _log('session.startFail', '$e${permanent ? ' permanent=true' : ''}');
+      _reply(id, {
+        'ok': false,
+        'error': '$e',
+        'permanent': permanent,
+      });
     }
   }
 
@@ -534,4 +540,20 @@ class _SftpProxyAdapter implements _ProxyAdapter {
       } catch (_) {}
     }
   }
+}
+
+/// 启动阶段的永久错误：重连/重试不会改变结果，应直接失败而不是回退字节流。
+bool _isPermanentSourceError(Object e) {
+  if (e is SourceAuthException || e is SshHostKeyMismatch) return true;
+  if (e is SftpStatusException) {
+    // 2=no such file, 3=permission denied。
+    return e.code == 2 || e.code == 3;
+  }
+  if (e is StateError) {
+    final m = '$e';
+    return m.contains('文件或目录不存在') ||
+        m.contains('无法确定媒体大小') ||
+        m.contains('不支持的源类型');
+  }
+  return false;
 }

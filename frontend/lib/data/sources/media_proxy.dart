@@ -10,6 +10,27 @@ import 'smb_init_broker.dart';
 const bool kMediaProxyEnabled =
     bool.fromEnvironment('MEDIA_PROXY', defaultValue: true);
 
+/// 一次 MediaProxy session 的启动结果。
+///
+/// [permanent] 表示源侧永久不可用（文件不存在/无权限/鉴权失败/指纹失配），
+/// 调用方不应重启 isolate 或回退 DirectAudioSource。
+class MediaProxyStartResult {
+  final Uri? url;
+  final bool permanent;
+  final String? error;
+
+  const MediaProxyStartResult({this.url, this.permanent = false, this.error});
+}
+
+/// 源侧永久不可用（文件已删除、无权限等），重试和字节流回退都不会成功。
+class MediaProxyUnavailableException implements Exception {
+  final String message;
+  const MediaProxyUnavailableException(this.message);
+
+  @override
+  String toString() => message;
+}
+
 /// UI 侧的 MediaProxy 控制端：管理独立 isolate、session URL 与生命周期。
 ///
 /// 音频字节完全不经过本 isolate；这里只收 worker 日志和 start/stop 回执。
@@ -26,12 +47,16 @@ class MediaProxyClient {
   bool get hasSession => _activeToken != null;
 
   /// 启动一个 session，返回 native player 可直接打开的 loopback URL。
-  /// 失败返回 null；调用方决定是回退还是保持延迟。
-  Future<Uri?> start(Map<String, Object?> config,
+  /// [MediaProxyStartResult.permanent] 为 true 时调用方不应重试或回退。
+  Future<MediaProxyStartResult> start(Map<String, Object?> config,
       {required String basename}) async {
-    if (_closed || !kMediaProxyEnabled) return null;
+    if (_closed || !kMediaProxyEnabled) {
+      return const MediaProxyStartResult(error: 'MediaProxy 已关闭');
+    }
     final cmd = await _ensureStarted();
-    if (cmd == null) return null;
+    if (cmd == null) {
+      return const MediaProxyStartResult(error: 'MediaProxy isolate 不可用');
+    }
     final cfg = Map<String, Object?>.from(config);
     if (cfg['kind'] == 'smb') {
       await SmbInitBroker.ensureStarted();
@@ -55,34 +80,38 @@ class MediaProxyClient {
     try {
       final resp = await completer.future.timeout(const Duration(seconds: 40));
       if (resp['ok'] != true) {
+        final permanent = resp['permanent'] == true;
+        final error = resp['error'] as String?;
         perfLog('mediaProxy.startFail',
-            'kind=${cfg['kind']} key=${cfg['sourceKey']} ms=${sw.elapsedMilliseconds} err=${resp['error']}');
-        return null;
+            'kind=${cfg['kind']} key=${cfg['sourceKey']} ms=${sw.elapsedMilliseconds} permanent=$permanent err=$error');
+        return MediaProxyStartResult(permanent: permanent, error: error);
       }
       final token = resp['token'] as String?;
       final port = resp['port'];
       if (token == null || port is! int) {
         perfLog('mediaProxy.startBadReply', '$resp');
-        return null;
+        return const MediaProxyStartResult(error: 'MediaProxy 回执缺少 URL');
       }
       _activeToken = token;
       perfLog('mediaProxy.startOk',
           'kind=${cfg['kind']} key=${cfg['sourceKey']} port=$port total=${resp['total']} ms=${sw.elapsedMilliseconds}');
-      return Uri(
-        scheme: 'http',
-        host: '127.0.0.1',
-        port: port,
-        pathSegments: ['media', token, basename],
+      return MediaProxyStartResult(
+        url: Uri(
+          scheme: 'http',
+          host: '127.0.0.1',
+          port: port,
+          pathSegments: ['media', token, basename],
+        ),
       );
     } on TimeoutException {
       perfLog('mediaProxy.startTimeout',
           'kind=${cfg['kind']} key=${cfg['sourceKey']} ms=${sw.elapsedMilliseconds}');
       // 让 worker 放弃在途 start（消息顺序保证 start 收尾后处理 stop）。
       _cmd?.send({'op': 'stop'});
-      return null;
+      return const MediaProxyStartResult(error: 'MediaProxy 启动超时');
     } catch (e) {
       perfLog('mediaProxy.startError', e);
-      return null;
+      return MediaProxyStartResult(error: '$e');
     } finally {
       _pending.remove(id);
     }
