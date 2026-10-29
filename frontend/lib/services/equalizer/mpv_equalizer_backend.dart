@@ -39,12 +39,15 @@ class MpvEqualizerBackend extends EqualizerBackend {
   }
 
   /// just_audio 的平台实例初始化是异步的；首次 init 时拿不到 Player 不阻塞，
-  /// 后续 apply（切歌/开关/拖动）会继续尝试挂载。
+  /// 后续 apply 会继续尝试挂载。播放器重建后 `activePlayer` 指向新的 mpv，
+  /// 必须每次重新取——缓存的旧 Player 已 dispose，命令会直接失败。
   Future<void> _attachIfNeeded() async {
-    if (_mpv != null || _disposed) return;
+    if (_disposed) return;
     final mediaKitPlayer = JustAudioMediaKit.instance?.activePlayer;
     if (mediaKitPlayer == null) return;
-    _mpv = mediaKitPlayer.player;
+    final player = mediaKitPlayer.player;
+    if (identical(_mpv, player)) return;
+    _mpv = player;
   }
 
   @override
