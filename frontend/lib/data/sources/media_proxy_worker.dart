@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'music_source.dart';
 import 'smb_dart_smb2.dart';
@@ -97,7 +98,8 @@ class _MediaProxyEngine {
       adapter = _createAdapter(config);
       final swProbe = Stopwatch()..start();
       _log('adapter.probe.start', 'kind=${config['kind']} key=${config['sourceKey']}');
-      final total = await adapter.probe();
+      final probe = await adapter.probe();
+      final total = probe.total;
       _log('adapter.probe.done',
           'kind=${config['kind']} key=${config['sourceKey']} total=$total ms=${swProbe.elapsedMilliseconds}');
       if (total <= 0) {
@@ -113,6 +115,12 @@ class _MediaProxyEngine {
         sourceKey: (config['sourceKey'] as String?) ?? '',
         kind: (config['kind'] as String?) ?? '',
       );
+      final tail = probe.tail;
+      if (tail != null && tail.isNotEmpty) {
+        session.setTailCache(probe.tailStart, tail);
+        _log('adapter.tailCache',
+            'kind=${config['kind']} key=${config['sourceKey']} start=${probe.tailStart} bytes=${tail.length}');
+      }
       _session = session;
       _log('session.start',
           'kind=${session.kind} key=${session.sourceKey} total=$total basename=${session.basename}');
@@ -208,6 +216,29 @@ class _MediaProxyEngine {
       _log('http.head',
           'key=${session.sourceKey} range=$start-$endExclusive total=${session.total}');
       return;
+    }
+
+    if (session.coversTail(start, endExclusive)) {
+      final bytes = session.tailSlice(start, endExclusive);
+      if (bytes != null) {
+        _log('http.request',
+            'key=${session.sourceKey} range=$start-$endExclusive total=${session.total} cache=tail');
+        try {
+          _setHeaders(request.response, session, start, endExclusive, partial);
+          request.response.bufferOutput = false;
+          request.response.add(bytes);
+          await request.response.close();
+          _log('http.done',
+              'key=${session.sourceKey} range=$start-$endExclusive bytes=${bytes.length} ms=0 cache=tail');
+        } catch (e) {
+          _log('http.abort',
+              'key=${session.sourceKey} range=$start-$endExclusive bytes=${bytes.length} cache=tail e=$e');
+          try {
+            await request.response.close();
+          } catch (_) {}
+        }
+        return;
+      }
     }
 
     session.active++;
@@ -364,7 +395,31 @@ class _ProxySession {
   bool closed = false;
   int active = 0;
   int streamSeq = 0;
+  int _tailStart = 0;
+  Uint8List? _tailCache;
   Completer<void>? _idle;
+
+  void setTailCache(int start, Uint8List bytes) {
+    _tailStart = start;
+    _tailCache = bytes;
+  }
+
+  bool coversTail(int start, int endExclusive) {
+    final cache = _tailCache;
+    if (cache == null) return false;
+    final s = start - _tailStart;
+    final e = endExclusive - _tailStart;
+    return s >= 0 && e <= cache.length && s <= e;
+  }
+
+  Uint8List? tailSlice(int start, int endExclusive) {
+    final cache = _tailCache;
+    if (cache == null) return null;
+    final s = start - _tailStart;
+    final e = endExclusive - _tailStart;
+    if (s < 0 || e > cache.length || s > e) return null;
+    return Uint8List.sublistView(cache, s, e);
+  }
 
   void requestDone() {
     if (active > 0) active--;
@@ -382,8 +437,17 @@ class _ProxySession {
   }
 }
 
+/// 文件大小 + 可选的尾部缓存（session 启动时预读，服务播放器尾 probe）。
+class _ProbeResult {
+  final int total;
+  final int tailStart;
+  final Uint8List? tail;
+
+  const _ProbeResult(this.total, {this.tailStart = 0, this.tail});
+}
+
 abstract class _ProxyAdapter {
-  Future<int> probe();
+  Future<_ProbeResult> probe();
   Future<Stream<List<int>>> open(int start, int endExclusive,
       {int priority = 0, int tie = 0});
   Future<void> close();
@@ -398,12 +462,26 @@ class _FileProxyAdapter implements _ProxyAdapter {
   final int _known;
 
   @override
-  Future<int> probe() async {
+  Future<_ProbeResult> probe() async {
+    int total;
     try {
       final n = await _file.length();
-      return n > 0 ? n : _known;
+      total = n > 0 ? n : _known;
     } catch (_) {
-      return _known;
+      total = _known;
+    }
+    if (total <= 0) return _ProbeResult(total);
+    // 测试用：文件适配器也预读尾部，覆盖 HTTP 尾缓存路径。
+    const tailBytes = 64 * 1024;
+    final tailStart = total > tailBytes ? total - tailBytes : 0;
+    try {
+      final bytes = await _file
+          .openRead(tailStart, total)
+          .fold<BytesBuilder>(BytesBuilder(copy: false), (b, c) => b..add(c));
+      return _ProbeResult(total,
+          tailStart: tailStart, tail: bytes.takeBytes());
+    } catch (_) {
+      return _ProbeResult(total);
     }
   }
 
@@ -433,9 +511,9 @@ class _SmbProxyAdapter implements _ProxyAdapter {
   final Smb2PoolBackend _backend;
 
   @override
-  Future<int> probe() async {
+  Future<_ProbeResult> probe() async {
     final n = await _backend.fileSize(_path);
-    return n > 0 ? n : _known;
+    return _ProbeResult(n > 0 ? n : _known);
   }
 
   @override
@@ -504,7 +582,7 @@ class _SftpProxyAdapter implements _ProxyAdapter {
   }
 
   @override
-  Future<int> probe() async {
+  Future<_ProbeResult> probe() async {
     await _ensure();
     // 探针只读 1 字节，给最高优先级，避免排在播放流的读后面。
     final r = await _worker!.open(_path,
@@ -514,7 +592,28 @@ class _SftpProxyAdapter implements _ProxyAdapter {
       final sub = r.stream.listen(null);
       await sub.cancel();
     } catch (_) {}
-    return total;
+    if (total <= 0) return _ProbeResult(total);
+    // 启动时预读尾部：播放器的尾 probe（FLAC seektable）若在播放流建立后
+    // 才 open，会排在 4 个在途读之后（真机约 5.8s）。这里趁空闲先读好，
+    // HTTP 尾部 Range 直接命中内存。
+    const tailBytes = 64 * 1024;
+    final tailStart = total > tailBytes ? total - tailBytes : 0;
+    try {
+      final tr = await _worker!.open(_path,
+          start: tailStart,
+          length: total - tailStart,
+          fallbackTotal: total,
+          priority: 1 << 40);
+      final builder = BytesBuilder(copy: false);
+      await for (final chunk in tr.stream) {
+        builder.add(chunk);
+        if (builder.length >= total - tailStart) break;
+      }
+      return _ProbeResult(total,
+          tailStart: tailStart, tail: builder.takeBytes());
+    } catch (_) {
+      return _ProbeResult(total);
+    }
   }
 
   @override

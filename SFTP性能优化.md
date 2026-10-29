@@ -75,7 +75,7 @@ SftpIsolateTransport                _sftpWorkerEntry
 
 流控：主 isolate 每次发一条 `read`（`maxBytes` 256KB），收到 `batchDone` 且未暂停才发下一条；暂停/取消立即停止拉取。打开时已知文件总长（索引大小，`handleOpen` 会跳过 `stat`）时，一条 `read` 命令内 worker 会按 64KB 流水线把剩余区间持续传完，不再逐批往返；未知总长时才按 256KB 一批往返。主 isolate 收到的数据进入流的 `StreamController`，内存上界为当前打开的单个区间（单曲量级）。
 
-读调度（`_WorkerReadGate`）：`open`/`probe`/`isDir` 等控制请求优先——控制请求在飞期间不再下发新读；全 worker 在飞读请求上限 4（原先每流各 4、多流叠加无上限）。读槽按 `open` 的 `priority` 从高到低分配，同优先级按 `tie`（越大越新）再 FIFO；MediaProxy 用「Range 越短优先级越高」的规则，播放器 seek 时新开的短 Range 优先于旧的全文件流，同长度 Range（AVPlayer 重复请求）由新流优先，避免旧流占满读槽把 seek 饿死（Windows 真机曾出现 seek 流 31s 只拿到 131KB）。真机口径：seek 的 `open` 从 3.5s 降到毫秒级。
+读调度（`_WorkerReadGate`）：`open`/`probe`/`isDir` 等控制请求优先——控制请求在飞期间不再下发新读；全 worker 在飞读请求上限 4（原先每流各 4、多流叠加无上限）。读槽按 `open` 的 `priority` 从高到低分配，同优先级按 `tie`（越大越新）再 FIFO；MediaProxy 用「Range 越短优先级越高」的规则，播放器 seek 时新开的短 Range 优先于旧的全文件流，同长度 Range（AVPlayer 重复请求）由新流优先，避免旧流占满读槽把 seek 饿死（Windows 真机曾出现 seek 流 31s 只拿到 131KB）。MediaProxy 还会在 session 启动 probe 时预读尾部 64KB，播放器的尾部 Range（FLAC seektable）直接命中缓存，不再受控制 `open` 排队影响（真机约 5.8s）。真机口径：seek 的 `open` 从 3.5s 降到毫秒级。
 
 错误跨 isolate 用结构化载荷传递（`kind` + `message` + `code`），在主 isolate 还原为：
 

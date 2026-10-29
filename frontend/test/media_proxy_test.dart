@@ -124,6 +124,22 @@ void main() {
     expect(await getBytes(second), data.sublist(0));
   });
 
+  test('尾部 Range 命中预读缓存', () async {
+    final logs = <String>[];
+    final prevSink = perfLogSink;
+    perfLogSink = logs.add;
+    addTearDown(() => perfLogSink = prevSink);
+
+    final url = await start();
+    final from = data.length - 100;
+    final tail = await getBytes(url, range: 'bytes=$from-${data.length - 1}');
+    expect(tail, data.sublist(from));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+
+    expect(logs.where((l) => l.contains('cache=tail')), isNotEmpty,
+        reason: '尾部 Range 应直接命中启动预读缓存');
+  });
+
   test('中止在途请求记 http.abort，不记 http.error', () async {
     final big = File('${dir.path}/big.bin');
     final bigData = Uint8List(16 * 1024 * 1024);

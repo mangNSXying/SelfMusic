@@ -751,6 +751,7 @@ SMB/SFTP 原始流默认不再走 just_audio 的 `StreamAudioSource`/Dart 回环
 - 总开关：`kMediaProxyEnabled`（默认 true；应急 `--dart-define=MEDIA_PROXY=false` 关闭，整体回落旧路径）。
 - session：进程内一个 MediaProxy isolate、同一时间一个活动 session；换曲/停止作废旧 token，旧请求 404/410。
 - SFTP 读槽优先级：每个 HTTP Range 按「越短优先级越高」分配 `priority`，同长度按新流优先（日志 `http.request ... prio=N tie=M`），worker 的 4 个读槽优先服务 seek/探测流。播放器 seek 时会新开 Range、旧的全文件流不关闭；没有优先级时旧流会把 seek 流饿死（真机曾 31s 只拿到 131KB）。SMB 走独立连接池，不受此调度影响。
+- 尾部预读：SFTP session 启动时在 probe 内预读最后 64KB 存入 session 缓存（日志 `adapter.tailCache`），播放器的尾部 Range（FLAC seektable，通常 1–3KB）直接命中（日志 `cache=tail`），不再排在全文件流的 4 个在途读之后 open（真机曾 5.8s）。未命中的 Range 仍走正常链路。
 - SMB 初始化：`SmbInitBroker` 用独立 broker isolate 串行化所有 `Smb2Pool.connect`/`smb2Walk`（libsmb2 的全局 `active_contexts` 无内部锁）；UI/扫描/代理共用同一 broker 端口。
 - 失败策略：MediaProxy 启动失败先重启 isolate 重试一次；用户主动播放仍失败则回落 `DirectAudioSource`（UI 字节）；桌面启动预载失败保持延迟，绝不回落。文件不存在/无权限/鉴权失败/主机指纹失配属于永久错误，不重启、不回退，直接抛 `MediaProxyUnavailableException`（多线路时只再试下一线路）。运行中播放错误由 `_onPlaybackError` 走 `_recoverPlayback` 重建 session。
 - 埋点（App 内收集日志可 grep）：`mediaProxy.isolate.*`、`mediaProxy.smbBroker`、`mediaProxy.start*`、`mediaProxy.retry/fallback/unavailable/configUnavailable/loadFail`、`mediaProxy.worker isolate.ready/adapter.probe.*/session.*/http.*`、`smbInitBroker.*`。其中 `http.done` 是完整传完，`http.cancel/http.abort` 是切歌/停止/客户端断开导致的正常中止（不记错误），只有 `http.error` 才是真实传输失败。
