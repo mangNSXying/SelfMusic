@@ -205,6 +205,10 @@ class _MediaProxyEngine {
     }
 
     session.active++;
+    // 越短的 Range 越像 seek/探测，优先于整首缓存流；同长度由新流优先。
+    final rangeLen = endExclusive - start;
+    final priority = session.total - rangeLen;
+    final tie = ++session.streamSeq;
     final sw = Stopwatch()..start();
     var wrote = false;
     var sent = 0;
@@ -212,7 +216,8 @@ class _MediaProxyEngine {
     var clientGone = false;
     var transferError = false;
     try {
-      final stream = await session.adapter.open(start, endExclusive);
+      final stream = await session.adapter.open(start, endExclusive,
+          priority: priority, tie: tie);
       _setHeaders(request.response, session, start, endExclusive, partial);
       request.response.bufferOutput = false;
       unawaited(request.response.done.then(
@@ -220,7 +225,7 @@ class _MediaProxyEngine {
         onError: (Object e, StackTrace st) => clientGone = true,
       ));
       _log('http.request',
-          'key=${session.sourceKey} range=$start-$endExclusive total=${session.total}');
+          'key=${session.sourceKey} prio=$priority tie=$tie range=$start-$endExclusive total=${session.total}');
       await for (final chunk in stream) {
         if (clientGone || session.closed) {
           aborted = true;
@@ -352,6 +357,7 @@ class _ProxySession {
   final String kind;
   bool closed = false;
   int active = 0;
+  int streamSeq = 0;
   Completer<void>? _idle;
 
   void requestDone() {
@@ -372,7 +378,8 @@ class _ProxySession {
 
 abstract class _ProxyAdapter {
   Future<int> probe();
-  Future<Stream<List<int>>> open(int start, int endExclusive);
+  Future<Stream<List<int>>> open(int start, int endExclusive,
+      {int priority = 0, int tie = 0});
   Future<void> close();
 }
 
@@ -395,7 +402,8 @@ class _FileProxyAdapter implements _ProxyAdapter {
   }
 
   @override
-  Future<Stream<List<int>>> open(int start, int endExclusive) async =>
+  Future<Stream<List<int>>> open(int start, int endExclusive,
+          {int priority = 0, int tie = 0}) async =>
       _file.openRead(start, endExclusive);
 
   @override
@@ -425,7 +433,8 @@ class _SmbProxyAdapter implements _ProxyAdapter {
   }
 
   @override
-  Future<Stream<List<int>>> open(int start, int endExclusive) async =>
+  Future<Stream<List<int>>> open(int start, int endExclusive,
+          {int priority = 0, int tie = 0}) async =>
       _backend.readStream(_path, start, endExclusive);
 
   @override
@@ -491,8 +500,9 @@ class _SftpProxyAdapter implements _ProxyAdapter {
   @override
   Future<int> probe() async {
     await _ensure();
+    // 探针只读 1 字节，给最高优先级，避免排在播放流的读后面。
     final r = await _worker!.open(_path,
-        start: 0, length: 1, fallbackTotal: _known);
+        start: 0, length: 1, fallbackTotal: _known, priority: 1 << 40);
     final total = r.totalLength ?? _known;
     try {
       final sub = r.stream.listen(null);
@@ -502,12 +512,15 @@ class _SftpProxyAdapter implements _ProxyAdapter {
   }
 
   @override
-  Future<Stream<List<int>>> open(int start, int endExclusive) async {
+  Future<Stream<List<int>>> open(int start, int endExclusive,
+      {int priority = 0, int tie = 0}) async {
     await _ensure();
     final r = await _worker!.open(_path,
         start: start,
         length: endExclusive - start,
-        fallbackTotal: _known);
+        fallbackTotal: _known,
+        priority: priority,
+        tie: tie);
     return r.stream;
   }
 

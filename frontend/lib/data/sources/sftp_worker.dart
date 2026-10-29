@@ -286,13 +286,17 @@ class SftpWorker {
     int? start,
     int? length,
     int fallbackTotal = 0,
+    int priority = 0,
+    int tie = 0,
   }) async {
-    _trace('open $path start=$start length=$length');
+    _trace('open $path start=$start length=$length priority=$priority tie=$tie');
     final m = await _send('open', <String, Object?>{
       'path': path,
       'start': start,
       'length': length,
       'fallbackTotal': fallbackTotal,
+      'priority': priority,
+      'tie': tie,
     });
     final id = m['id'] as int;
     final contentLength = (m['contentLength'] as num?)?.toInt() ?? 0;
@@ -929,11 +933,18 @@ class SftpIsolateTransport implements SftpTransport {
 /// 只能约束“新下发”的请求，已在途的无法撤回；因此上限设小，让控制请求
 /// 最多排队短于一两个 RTT 窗口。真机日志里 seek 时 `open ok` 曾拖到
 /// 3.5s（排在十几路 64KB 读之后），就是缺这道闸门。
+///
+/// 读槽按 [priority] 从高到低分配，同优先级按 [tie]（越大越新）再 FIFO。
+/// MediaProxy 用「Range 越短优先级越高」的规则：播放器 seek 时新开的短
+/// Range 优先于旧的全文件流，避免旧流把读槽占满把 seek 饿死（Windows 真机
+/// 曾出现 seek 流 31s 只拿到 131KB）；同长度 Range（AVPlayer 重复请求）
+/// 由新流优先，让播放用的那条先完成。
 class _WorkerReadGate {
   int _controlOps = 0;
   Completer<void> _controlIdle = Completer<void>()..complete();
   int _inFlight = 0;
-  final List<Completer<void>> _waiters = [];
+  final List<_ReadWaiter> _waiters = [];
+  int _waiterSeq = 0;
 
   void enterControl() {
     if (_controlOps == 0) _controlIdle = Completer<void>();
@@ -948,7 +959,7 @@ class _WorkerReadGate {
     }
   }
 
-  Future<void> acquireReadSlot() async {
+  Future<void> acquireReadSlot([int priority = 0, int tie = 0]) async {
     while (true) {
       // 控制请求（尤其 seek 的 open/stat）优先：在飞期间不下发新读。
       await _controlIdle.future;
@@ -956,23 +967,39 @@ class _WorkerReadGate {
         _inFlight++;
         return;
       }
-      final waiter = Completer<void>();
+      final waiter = _ReadWaiter(priority, tie, _waiterSeq++);
       _waiters.add(waiter);
-      await waiter.future;
+      await waiter.completer.future;
     }
   }
 
   void releaseReadSlot() {
     if (_inFlight == 0) return;
     _inFlight--;
-    while (_waiters.isNotEmpty) {
-      final next = _waiters.removeAt(0);
-      if (!next.isCompleted) {
-        next.complete();
-        return;
-      }
+    _waiters.removeWhere((w) => w.completer.isCompleted);
+    if (_waiters.isEmpty) return;
+    var best = _waiters.first;
+    for (final w in _waiters) {
+      if (_precedes(w, best)) best = w;
     }
+    _waiters.remove(best);
+    best.completer.complete();
   }
+
+  bool _precedes(_ReadWaiter a, _ReadWaiter b) {
+    if (a.priority != b.priority) return a.priority > b.priority;
+    if (a.tie != b.tie) return a.tie > b.tie;
+    return a.seq < b.seq;
+  }
+}
+
+class _ReadWaiter {
+  _ReadWaiter(this.priority, this.tie, this.seq);
+
+  final int priority;
+  final int tie;
+  final int seq;
+  final Completer<void> completer = Completer<void>();
 }
 
 class _WorkerFile {
@@ -983,6 +1010,8 @@ class _WorkerFile {
     required this.end,
     required this.reply,
     required this.gate,
+    required this.priority,
+    required this.tie,
   });
 
   final int id;
@@ -990,6 +1019,8 @@ class _WorkerFile {
   final int? end;
   final SendPort reply;
   final _WorkerReadGate gate;
+  final int priority;
+  final int tie;
   int offset;
   bool reading = false;
   bool cancelled = false;
@@ -1023,7 +1054,7 @@ class _WorkerFile {
           final want = requested - reserved > _kReadChunkBytes
               ? _kReadChunkBytes
               : requested - reserved;
-          final future = _readChunk(base + reserved, want);
+          final future = _readChunk(base + reserved, want, priority, tie);
           // 取消时这个 future 可能不再被 await；先吞掉错误防 unhandled。
           future.ignore();
           queue.add(future);
@@ -1062,8 +1093,8 @@ class _WorkerFile {
   /// 读一个不超过 [want] 字节的块；并发上限交给 [gate] 统一调度。
   /// 短读（OpenSSH 会把请求裁剪到较小回复）由 dartssh2 在同一流内补齐
   /// 到 [want]；流自然结束=EOF。
-  Future<Uint8List?> _readChunk(int at, int want) async {
-    await gate.acquireReadSlot();
+  Future<Uint8List?> _readChunk(int at, int want, int priority, int tie) async {
+    await gate.acquireReadSlot(priority, tie);
     try {
       if (cancelled || closed) return null;
       final buf = BytesBuilder(copy: false);
@@ -1195,6 +1226,8 @@ Future<void> _sftpWorkerEntry(Map<String, Object?> params) async {
         end: end,
         reply: reply,
         gate: gate,
+        priority: (m['priority'] as num?)?.toInt() ?? 0,
+        tie: (m['tie'] as num?)?.toInt() ?? 0,
       );
       file = null; // 句柄所有权已交给 _WorkerFile
       replyOk(id, <String, Object?>{
