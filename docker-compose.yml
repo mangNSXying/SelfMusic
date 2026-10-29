@@ -10,7 +10,7 @@ services:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT:-3306}
       DB_NAME: ${DB_NAME:-selfmusic}
-      DB_USERNAME: ${DB_USERNAME:-shamiko}
+      DB_USERNAME: ${DB_USERNAME}
       DB_PASSWORD: ${DB_PASSWORD}
       PAIRING_TOKEN: ${PAIRING_TOKEN:-}
       CACHE_MAX_MIB: ${CACHE_MAX_MIB:-5120}
@@ -19,8 +19,6 @@ services:
       TZ: Asia/Shanghai
     volumes:
       - backend-maven-repo:/root/.m2
-      - /home/shamiko/ServerConfig/Docker/selfmusic/cacerts-patched:/opt/java/openjdk/lib/security/cacerts:ro
-      - /home/shamiko/ServerConfig/Docker/ca-clean:/etc/ssl/certs:ro
     restart: unless-stopped
     # 转码代理需回源拉流：源域名常只有 IPv6（AAAA），默认桥接无 IPv6 会
     # Network is unreachable；独立网络启用 IPv6（Docker 27+ 按网络生效）。
@@ -39,8 +37,8 @@ services:
     environment:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT:-3306}
-      DB_NAME: ${DB_NAME:-selfmusic}
-      DB_USERNAME: ${DB_USERNAME:-shamiko}
+      DB_NAME: selfmusic_dev
+      DB_USERNAME: ${DB_USERNAME}
       DB_PASSWORD: ${DB_PASSWORD}
       PAIRING_TOKEN: ${PAIRING_TOKEN:-}
       CACHE_MAX_MIB: ${CACHE_MAX_MIB:-5120}
@@ -55,8 +53,6 @@ services:
       - ./backend/pom.xml:/home/ubuntu/app/pom.xml
       - ./backend/src:/home/ubuntu/app/src
       - ${HOME}/.m2:/home/ubuntu/.m2
-      - /home/shamiko/ServerConfig/Docker/selfmusic/cacerts-patched:/opt/java/openjdk/lib/security/cacerts:ro
-      - /home/shamiko/ServerConfig/Docker/ca-clean:/etc/ssl/certs:ro
     restart: unless-stopped
     networks:
       - ipv6net
