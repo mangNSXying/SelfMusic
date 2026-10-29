@@ -191,7 +191,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('已选 1'), findsOneWidget);
-    expect(find.text('全选'), findsOneWidget);
+    expect(find.byTooltip('全选'), findsOneWidget);
+    expect(find.byTooltip('全不选'), findsOneWidget);
     // 批量操作已收进右侧三点菜单。
     expect(find.byTooltip('更多操作'), findsOneWidget);
     await tester.tap(find.byTooltip('更多操作'));
@@ -200,20 +201,25 @@ void main() {
     await tester.tapAt(const Offset(2, 2));
     await tester.pumpAndSettle();
 
-    // 点击另一项累计选中 → 全部选中后按钮变为「取消全选」
+    // 点击另一项累计选中 → 全部选中后「全选」禁用、「全不选」可用。
     await tester.tap(find.text('另一个歌单'));
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('已选 2'), findsOneWidget);
-    expect(find.text('取消全选'), findsOneWidget);
+    expect(
+        tester
+            .widget<IconButton>(
+                find.widgetWithIcon(IconButton, Icons.select_all))
+            .onPressed,
+        isNull);
 
-    // 取消全选清空勾选
-    await tester.tap(find.text('取消全选'));
+    // 全不选清空勾选
+    await tester.tap(find.byTooltip('全不选'));
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('已选 0'), findsOneWidget);
-    expect(find.text('全选'), findsOneWidget);
+    expect(find.byTooltip('全选'), findsOneWidget);
 
     // 全选勾满
-    await tester.tap(find.text('全选'));
+    await tester.tap(find.byTooltip('全选'));
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('已选 2'), findsOneWidget);
 
@@ -611,19 +617,19 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('已选 1'), findsOneWidget);
     expect(find.text('已选 0'), findsNothing);
-    expect(find.text('全选'), findsOneWidget);
+    expect(find.byTooltip('全选'), findsOneWidget);
 
-    // 搜索范围内尚无选中 → 按钮为「全选」（选中的是被过滤掉的晴天）。
+    // 搜索范围内尚无选中 → 全选图标可用（选中的是被过滤掉的晴天）。
     nav.setSearch('夜曲');
     await tester.pump();
     expect(find.text('已选 0'), findsOneWidget);
-    expect(find.text('全选'), findsOneWidget);
+    expect(find.byTooltip('全选'), findsOneWidget);
 
     // 全选只作用于搜索命中项：计数 = 命中数 1（不是整单 2）。
-    await tester.tap(find.text('全选'));
+    await tester.tap(find.byTooltip('全选'));
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('已选 1'), findsOneWidget);
-    expect(find.text('取消全选'), findsOneWidget);
+    expect(find.byTooltip('全不选'), findsOneWidget);
 
     // 清搜索后选择集仍是两首（晴天 + 夜曲）；多选期间计数栏不显示。
     nav.setSearch('');

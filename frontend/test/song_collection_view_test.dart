@@ -1,5 +1,6 @@
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -155,27 +156,32 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('已选 1'), findsOneWidget);
 
-    // A 模式的长按已让位给多选，全部折叠/展开在分类菜单。
+    // A 模式的长按已让位给多选，全部展开/折叠是计数栏工具条图标。
     await tester.tap(find.byTooltip('取消选择'));
     await tester.pump(const Duration(milliseconds: 50));
-    await tester.tap(find.byTooltip('分类方式：文件夹'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('全部折叠'));
-    await tester.pumpAndSettle();
+    expect(find.byTooltip('多选'), findsOneWidget);
+    await tester.tap(find.byTooltip('全部折叠'));
+    await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('夜曲'), findsNothing);
     expect(direct.settings.groupCollapsed('test'),
         containsAll({'文件夹A', '文件夹B'}));
 
+    // 分类菜单只剩分类方式，展开/折叠/多选已移出。
     await tester.tap(find.byTooltip('分类方式：文件夹'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('全部展开'));
+    expect(find.text('全部折叠'), findsNothing);
+    expect(find.text('全部展开'), findsNothing);
+    await tester.tapAt(const Offset(2, 2));
     await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('全部展开'));
+    await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('夜曲'), findsOneWidget);
     expect(find.text('晴天'), findsOneWidget);
     expect(direct.settings.groupCollapsed('test'), isEmpty);
   });
 
-  testWidgets('B 模式：长按组头折叠全部，多选从分类菜单进入', (tester) async {
+  testWidgets('B 模式：长按组头折叠全部，多选从工具条进入', (tester) async {
     direct.settings.longPressCollapseGroups = true;
     final songs = [
       _song(1, '文件夹A/one.mp3', title: '晴天'),
@@ -199,11 +205,9 @@ void main() {
     expect(direct.settings.groupCollapsed('test'),
         containsAll({'文件夹A', '文件夹B'}));
 
-    // 分类菜单进入多选：初始 0，选中整组不受折叠影响。
-    await tester.tap(find.byTooltip('分类方式：文件夹'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('多选'));
-    await tester.pumpAndSettle();
+    // 工具条多选图标进入：初始 0，选中整组不受折叠影响。
+    await tester.tap(find.byTooltip('多选'));
+    await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('已选 0'), findsOneWidget);
 
     await tester.tap(find.text('文件夹A'));
@@ -381,29 +385,31 @@ void main() {
     expect(actionSelected?.map((s) => s.title), ['A一', 'A二']);
 
     // 全选只作用于当前展示层（根目录歌曲），不把其余文件夹也算进去。
-    await tester.tap(find.text('全选'));
+    await tester.tap(find.byTooltip('全选'));
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('已选 3'), findsOneWidget);
-    expect(find.text('取消全选'), findsOneWidget);
-    await tester.tap(find.text('取消全选'));
+    expect(find.byTooltip('全不选'), findsOneWidget);
+
+    // 全不选清空整个选择集（含其他目录里已选的歌），仍停留在多选态。
+    await tester.tap(find.byTooltip('全不选'));
     await tester.pump(const Duration(milliseconds: 50));
-    expect(find.text('已选 2'), findsOneWidget);
+    expect(find.text('已选 0'), findsOneWidget);
 
     // 多选态点击整行 = 切选择，右侧箭头才进入目录。
     await tester.tap(find.text('FolderB'));
     await tester.pump(const Duration(milliseconds: 50));
-    expect(find.text('已选 3'), findsOneWidget);
+    expect(find.text('已选 1'), findsOneWidget);
     expect(currentDir, '');
-    expect(actionSelected?.map((s) => s.title), ['A一', 'A二', 'B三']);
+    expect(actionSelected?.map((s) => s.title), ['B三']);
     await tester.tap(find.descendant(
       of: find.widgetWithText(ListTile, 'FolderA'),
       matching: find.byTooltip('进入文件夹'),
     ));
     await tester.pump(const Duration(milliseconds: 50));
     expect(currentDir, 'FolderA');
-    expect(find.text('已选 3'), findsOneWidget); // 跨目录保留选择
+    expect(find.text('已选 1'), findsOneWidget); // 跨目录保留选择
 
-    // A一 已选，反选后只剩 deep 里的 A二；返回根目录看 FolderA 半选。
+    // A一 未选，点选后返回根目录看 FolderA 半选。
     expect(find.text('A一'), findsOneWidget);
     await tester.tap(find.text('A一'));
     await tester.pump(const Duration(milliseconds: 50));
@@ -496,9 +502,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
     // 选中项被搜索过滤掉，但多选态与选择集保留（计数按当前范围显示 0）。
     expect(find.text('已选 0'), findsOneWidget);
-    expect(find.text('全选'), findsOneWidget);
+    expect(find.byTooltip('全选'), findsOneWidget);
 
-    await tester.tap(find.text('全选'));
+    await tester.tap(find.byTooltip('全选'));
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('已选 1'), findsOneWidget);
 
@@ -548,5 +554,48 @@ void main() {
     expect(find.text('无'), findsOneWidget);
     expect(find.text('专辑'), findsOneWidget);
     expect(find.text('文件夹（逐级）'), findsOneWidget);
+  });
+
+  testWidgets('工具条图标：多选/展开/折叠与多选态全选/全不选（窄屏不溢出）',
+      (tester) async {
+    tester.view.physicalSize = const ui.Size(360, 640);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await pumpView(
+      tester,
+      songs: [
+        _song(1, '文件夹A/one.mp3', title: '晴天'),
+        _song(2, '文件夹B/two.mp3', title: '夜曲'),
+      ],
+      mode: SongGroupMode.folder,
+      searching: false,
+      onMode: (_) {},
+    );
+
+    expect(find.byTooltip('多选'), findsOneWidget);
+    expect(find.byTooltip('全部展开'), findsOneWidget);
+    expect(find.byTooltip('全部折叠'), findsOneWidget);
+    // 全展开时「全部展开」禁用、「全部折叠」可用。
+    expect(
+        tester
+            .widget<IconButton>(
+                find.widgetWithIcon(IconButton, Icons.unfold_more))
+            .onPressed,
+        isNull);
+    expect(
+        tester
+            .widget<IconButton>(
+                find.widgetWithIcon(IconButton, Icons.unfold_less))
+            .onPressed,
+        isNotNull);
+    expect(tester.takeException(), isNull);
+
+    // 多选态：工具条换成全选/全不选图标。
+    await tester.tap(find.byTooltip('多选'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.byTooltip('全选'), findsOneWidget);
+    expect(find.byTooltip('全不选'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 }

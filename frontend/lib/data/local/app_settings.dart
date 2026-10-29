@@ -292,8 +292,9 @@ class AppSettings {
 
   /// 列表视图行为（设置→常规→视图行为）：长按组头展开/折叠（默认关）。
   ///
-  /// 关 = 长按组头进入多选并选中整组，「全部展开/折叠」在分类菜单；
-  /// 开 = 长按组头全部展开/折叠，「多选」在分类菜单。
+  /// 关 = 长按组头进入多选并选中整组；
+  /// 开 = 长按组头全部展开/折叠。
+  /// 多选 / 全部展开 / 全部折叠始终可用列表工具条图标。
   static const String kLongPressCollapseGroups = 'long_press_collapse_groups';
 
   /// 日志导出时长（设置→常规→日志，单位分钟，1~30，默认 1）。
@@ -858,8 +859,9 @@ class AppSettings {
 
   /// 长按组头展开/折叠（设置→常规→视图行为，默认关）。
   ///
-  /// 关（A）：长按组头进入多选并选中整组；全部展开/折叠在分类菜单。
-  /// 开（B）：长按组头全部展开/折叠；多选入口在分类菜单。
+  /// 关（A）：长按组头进入多选并选中整组。
+  /// 开（B）：长按组头全部展开/折叠。
+  /// 两种模式的多选/展开/折叠都可用工具条图标。
   bool get longPressCollapseGroups =>
       (index.settingsGet(kLongPressCollapseGroups) ?? '0') == '1';
   set longPressCollapseGroups(bool v) =>

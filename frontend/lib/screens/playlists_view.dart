@@ -132,8 +132,9 @@ class _PlaylistsViewState extends State<PlaylistsView>
                   total: playlists.length,
                   // 「已选 N」只数可见项；批量动作也只作用于可见项。
                   selectedCount: _sel.of(playlists.map((p) => p.id)).length,
-                  onToggleAll: () =>
-                      setState(() => _sel.setAll(playlists.map((p) => p.id))),
+                  onSelectAll: () => setState(
+                      () => _sel.addAll(playlists.map((p) => p.id))),
+                  onSelectNone: () => setState(_sel.clearAll),
                   onCancel: () => setState(_sel.cancel),
                   actions: [
                     SelectionAction(

@@ -258,13 +258,12 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     });
   }
 
-  /// A 模式分类菜单 / B 模式长按组头：当前分类有展开组则全折叠，否则全
-  /// 展开（不影响其他分类已折叠的组名）。
-  void _toggleAllCollapse(AppSettings settings, List<SongGroup> groups) {
-    final anyExpanded = groups.any((g) => !_collapsed.contains(g.name));
+  /// 全部展开/折叠（工具条图标）：只改当前分类的组名，不影响其他分类。
+  void _setAllCollapsed(
+      AppSettings settings, List<SongGroup> groups, bool collapsed) {
     setState(() {
       final names = {for (final g in groups) g.name};
-      if (anyExpanded) {
+      if (collapsed) {
         _collapsed = {..._collapsed, ...names};
       } else {
         _collapsed = {..._collapsed}..removeAll(names);
@@ -272,6 +271,12 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       _collapseRev++;
       _persistCollapsed(settings);
     });
+  }
+
+  /// B 模式长按组头：当前分类有展开组则全折叠，否则全展开。
+  void _toggleAllCollapse(AppSettings settings, List<SongGroup> groups) {
+    final anyExpanded = groups.any((g) => !_collapsed.contains(g.name));
+    _setAllCollapsed(settings, groups, anyExpanded);
   }
 
   /// 整个集合（按 `widget.songs` 顺序）的 songKey；按列表身份缓存。
@@ -294,7 +299,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     return [for (final i in indicesUnder(paths, f.path)) all[i]];
   }
 
-  /// B 模式下从分类菜单进入多选（此时行点击切换选中，组头点击切整组）。
+  /// 工具条多选图标：进入多选但不预选（行点击切换选中，组头点击切整组）。
   void _startSelectionMode() {
     setState(() {
       _sel.cancel();
@@ -496,26 +501,41 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     }
 
     final selected = selection.songs;
+    final allCollapsed =
+        groups.isNotEmpty && groups.every((g) => _collapsed.contains(g.name));
+    final allExpanded =
+        groups.isNotEmpty && groups.every((g) => !_collapsed.contains(g.name));
+    // 多选 / 全部展开 / 全部折叠与分类、排序平级；[AppSettings.longPressCollapseGroups]
+    // 只决定长按组头的行为，不再影响工具条可见性。
     final trailing = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        if (keys.isNotEmpty || folderCount > 0)
+          ToolbarIconButton(
+            icon: Icons.checklist,
+            tooltip: '多选',
+            onPressed: _startSelectionMode,
+          ),
+        if (groups.isNotEmpty) ...[
+          ToolbarIconButton(
+            icon: Icons.unfold_more,
+            tooltip: '全部展开',
+            onPressed: allExpanded
+                ? null
+                : () => _setAllCollapsed(settings, groups, false),
+          ),
+          ToolbarIconButton(
+            icon: Icons.unfold_less,
+            tooltip: '全部折叠',
+            onPressed: allCollapsed
+                ? null
+                : () => _setAllCollapsed(settings, groups, true),
+          ),
+        ],
         SongGroupButton(
           value: widget.groupMode,
           onChanged: widget.onGroupModeChanged,
           folderLabel: widget.folderLabel,
-          // A（默认）：长按组头多选，全部展开/折叠收进分类菜单。
-          onToggleAllCollapse: !settings.longPressCollapseGroups &&
-                  groups.isNotEmpty
-              ? () => _toggleAllCollapse(settings, groups)
-              : null,
-          allCollapsed: groups.isNotEmpty &&
-              groups.every((g) => _collapsed.contains(g.name)),
-          // B：长按组头展开/折叠，多选入口收进分类菜单（仅当有组/文件夹
-          // 行可点选时；纯歌曲列表长按歌曲即可进入多选）。
-          onStartSelection: settings.longPressCollapseGroups &&
-                  (groups.isNotEmpty || folderCount > 0)
-              ? _startSelectionMode
-              : null,
         ),
         if (widget.showSort)
           SortMenuButton(
@@ -534,13 +554,14 @@ class _SongCollectionViewState extends State<SongCollectionView> {
             total: keys.length,
             selectedCount: selection.songs.length,
             allSelected: selection.allVisibleSelected,
-            onToggleAll: keys.isEmpty
-                ? null
-                : () => setState(() {
-                      _sel.active = true;
-                      _sel.setAll(keys);
-                      _selEpoch++;
-                    }),
+            onSelectAll: () => setState(() {
+              _sel.addAll(keys);
+              _selEpoch++;
+            }),
+            onSelectNone: () => setState(() {
+              _sel.clearAll();
+              _selEpoch++;
+            }),
             onCancel: () => setState(() {
               _sel.cancel();
               _selEpoch++;
@@ -899,27 +920,17 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       );
 }
 
-/// 分类方式按钮（挂在计数栏右侧、排列按钮左边）：无 / 文件夹 / 专辑。
+/// 分类方式按钮（挂在计数栏右侧、排序按钮左边）：无 / 文件夹 / 专辑。
 class SongGroupButton extends StatelessWidget {
   final SongGroupMode value;
   final ValueChanged<SongGroupMode> onChanged;
   final String? folderLabel;
-
-  /// A 模式：长按组头改为多选后，「全部展开/折叠」收进本菜单。
-  final VoidCallback? onToggleAllCollapse;
-  final bool allCollapsed;
-
-  /// B 模式：长按组头改为展开/折叠后，「多选」入口收进本菜单。
-  final VoidCallback? onStartSelection;
 
   const SongGroupButton({
     super.key,
     required this.value,
     required this.onChanged,
     this.folderLabel,
-    this.onToggleAllCollapse,
-    this.allCollapsed = false,
-    this.onStartSelection,
   });
 
   @override
@@ -952,39 +963,6 @@ class SongGroupButton extends StatelessWidget {
               ],
             ),
           ),
-        if (onToggleAllCollapse != null) ...[
-          const PopupMenuDivider(),
-          PopupMenuItem<SongGroupMode>(
-            onTap: onToggleAllCollapse,
-            child: Row(
-              children: [
-                SizedBox(
-                  width: 28,
-                  child: Icon(
-                    allCollapsed ? Icons.unfold_more : Icons.unfold_less,
-                    size: 18,
-                  ),
-                ),
-                Text(allCollapsed ? '全部展开' : '全部折叠'),
-              ],
-            ),
-          ),
-        ],
-        if (onStartSelection != null) ...[
-          const PopupMenuDivider(),
-          PopupMenuItem<SongGroupMode>(
-            onTap: onStartSelection,
-            child: const Row(
-              children: [
-                SizedBox(
-                  width: 28,
-                  child: Icon(Icons.checklist, size: 18),
-                ),
-                Text('多选'),
-              ],
-            ),
-          ),
-        ],
       ],
     );
   }

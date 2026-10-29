@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'row_list.dart';
+import 'toolbar_icon_button.dart';
 
 /// 批量操作项：统一收进多选栏右侧的纵向三点菜单。
 class SelectionAction {
@@ -11,7 +12,8 @@ class SelectionAction {
       {required this.icon, required this.label, this.onPressed});
 }
 
-/// 列表多选模式顶栏：显示已选数量、「全选/取消全选」，批量操作收进右侧三点菜单。
+/// 列表多选模式顶栏：显示已选数量，右侧为「全选 / 全不选」图标，
+/// 批量操作收进三点菜单。
 class SelectionBar extends StatelessWidget {
   final int total;
 
@@ -21,10 +23,15 @@ class SelectionBar extends StatelessWidget {
   /// 当前列表是否已全选；为空时回退到 [selectedCount] == [total]。
   ///
   /// [selectedCount] 可能是整个集合的已选数（大于当前显示条数），因此全选
-  /// 文案不能只靠两者相等判断。
+  /// 禁用态不能只靠两者相等判断。
   final bool? allSelected;
 
-  final VoidCallback? onToggleAll;
+  /// 全选：把当前可见项加入选择集；为空时不显示该按钮。
+  final VoidCallback? onSelectAll;
+
+  /// 全不选：清空整个选择集（保持多选模式）；为空时不显示该按钮。
+  final VoidCallback? onSelectNone;
+
   final VoidCallback? onCancel;
   final List<SelectionAction> actions;
   const SelectionBar({
@@ -32,13 +39,13 @@ class SelectionBar extends StatelessWidget {
     required this.total,
     required this.selectedCount,
     this.allSelected,
-    this.onToggleAll,
+    this.onSelectAll,
+    this.onSelectNone,
     this.onCancel,
     this.actions = const [],
   });
 
-  bool get _allSelected =>
-      allSelected ?? (total > 0 && selectedCount == total);
+  bool get _allSelected => allSelected ?? (total > 0 && selectedCount == total);
 
   @override
   Widget build(BuildContext context) {
@@ -62,10 +69,17 @@ class SelectionBar extends StatelessWidget {
                   ?.copyWith(fontWeight: FontWeight.w600),
             ),
             const Spacer(),
-            if (onToggleAll != null)
-              TextButton(
-                onPressed: onToggleAll,
-                child: Text(_allSelected ? '取消全选' : '全选'),
+            if (onSelectAll != null)
+              ToolbarIconButton(
+                icon: Icons.select_all,
+                tooltip: '全选',
+                onPressed: (_allSelected || total <= 0) ? null : onSelectAll,
+              ),
+            if (onSelectNone != null)
+              ToolbarIconButton(
+                icon: Icons.deselect,
+                tooltip: '全不选',
+                onPressed: selectedCount <= 0 ? null : onSelectNone,
               ),
             if (actions.isNotEmpty)
               PopupMenuButton<int>(

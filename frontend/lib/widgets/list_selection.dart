@@ -50,6 +50,12 @@ class Selection<T> {
     }
   }
 
+  /// 全选：把给定条目全部加入选择集（保留其他已选条目）。
+  void addAll(Iterable<T> items) => _selected.addAll(items);
+
+  /// 全不选：清空选择集，仍停留在多选模式。
+  void clearAll() => _selected.clear();
+
   int get count => _selected.length;
 
   List<T> of(Iterable<T> allItems) =>

@@ -2924,8 +2924,8 @@ class _ViewBehaviorSectionState extends State<_ViewBehaviorSection> {
         SwitchListTile(
           title: const Text('长按展开/折叠'),
           subtitle: Text(settings.longPressCollapseGroups
-              ? '开：长按组头全部展开/折叠；多选从分类菜单进入'
-              : '关：长按组头进入多选并选中整组；全部展开/折叠在分类菜单'),
+              ? '开：长按组头全部展开/折叠；多选使用工具条图标'
+              : '关：长按组头进入多选并选中整组；展开/折叠使用工具条图标'),
           value: settings.longPressCollapseGroups,
           onChanged: (v) {
             setState(() => settings.longPressCollapseGroups = v);

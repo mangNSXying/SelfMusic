@@ -275,10 +275,8 @@ class _QueuePageState extends State<QueuePage> {
       return SelectionBar(
         total: _visible.length,
         selectedCount: _sel.of(_visible).length,
-        onToggleAll: () => setState(() {
-          _sel.active = true;
-          _sel.setAll(_visible);
-        }),
+        onSelectAll: () => setState(() => _sel.addAll(_visible)),
+        onSelectNone: () => setState(_sel.clearAll),
         onCancel: () => setState(_sel.cancel),
         actions: [
           SelectionAction(
