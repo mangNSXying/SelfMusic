@@ -556,6 +556,202 @@ void main() {
     expect(find.text('文件夹（逐级）'), findsOneWidget);
   });
 
+  testWidgets('源页树形展开：箭头展开/折叠与全部展开/折叠', (tester) async {
+    final songs = [
+      _song(1, 'FolderA/one.mp3', title: 'A一'),
+      _song(2, 'FolderA/deep/two.mp3', title: 'A二'),
+      _song(3, 'FolderB/three.mp3', title: 'B三'),
+      _song(4, 'root.mp3', title: '根目录歌'),
+    ];
+    final paths = [
+      'FolderA/one.mp3',
+      'FolderA/deep/two.mp3',
+      'FolderB/three.mp3',
+      'root.mp3',
+    ];
+    await pumpView(
+      tester,
+      songs: songs,
+      mode: SongGroupMode.folder,
+      searching: false,
+      onMode: (_) {},
+      navigation: FolderNavigation.recursive,
+      folderPaths: paths,
+      extraFolders: const {'FolderC', 'FolderA/空子目录'},
+    );
+
+    // 默认全折叠：只有当前层文件夹与本层歌曲。
+    expect(find.text('FolderA'), findsOneWidget);
+    expect(find.text('FolderC'), findsOneWidget);
+    expect(find.text('A一'), findsNothing);
+    expect(find.text('A二'), findsNothing);
+    expect(find.byTooltip('全部展开'), findsOneWidget);
+
+    // 展开 FolderA：出现直属歌曲与子文件夹；空文件夹没有展开箭头。
+    await tester.tap(find.descendant(
+      of: find.widgetWithText(ListTile, 'FolderA'),
+      matching: find.byTooltip('展开文件夹'),
+    ));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('A一'), findsOneWidget);
+    expect(find.text('deep'), findsOneWidget);
+    expect(find.text('空子目录'), findsOneWidget);
+    expect(find.text('A二'), findsNothing);
+    expect(direct.settings.folderExpanded('test'), contains('FolderA'));
+    expect(
+        find.descendant(
+          of: find.widgetWithText(ListTile, 'FolderC'),
+          matching: find.byTooltip('展开文件夹'),
+        ),
+        findsNothing);
+
+    // 折叠恢复。
+    await tester.tap(find.descendant(
+      of: find.widgetWithText(ListTile, 'FolderA'),
+      matching: find.byTooltip('折叠文件夹'),
+    ));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('A一'), findsNothing);
+    expect(direct.settings.folderExpanded('test'), isNot(contains('FolderA')));
+
+    // 工具条全部展开：深层歌曲可见；全部折叠恢复。
+    await tester.tap(find.byTooltip('全部展开'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('A二'), findsOneWidget);
+    expect(find.text('B三'), findsOneWidget);
+    await tester.tap(find.byTooltip('全部折叠'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('A一'), findsNothing);
+    expect(find.text('B三'), findsNothing);
+    expect(find.text('根目录歌'), findsOneWidget);
+  });
+
+  testWidgets('源页 B 模式：长按文件夹行切换展开，不进入多选', (tester) async {
+    direct.settings.longPressCollapseGroups = true;
+    final songs = [
+      _song(1, 'FolderA/one.mp3', title: 'A一'),
+      _song(2, 'FolderA/deep/two.mp3', title: 'A二'),
+      _song(3, 'root.mp3', title: '根目录歌'),
+    ];
+    final paths = [
+      'FolderA/one.mp3',
+      'FolderA/deep/two.mp3',
+      'root.mp3',
+    ];
+    await pumpView(
+      tester,
+      songs: songs,
+      mode: SongGroupMode.folder,
+      searching: false,
+      onMode: (_) {},
+      navigation: FolderNavigation.recursive,
+      folderPaths: paths,
+    );
+
+    expect(find.text('A一'), findsNothing);
+    await tester.longPress(find.text('FolderA'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('A一'), findsOneWidget);
+    expect(find.byTooltip('取消选择'), findsNothing);
+
+    await tester.longPress(find.text('FolderA'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('A一'), findsNothing);
+
+    // 工具条仍可进入多选。
+    await tester.tap(find.byTooltip('多选'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 0'), findsOneWidget);
+  });
+
+  testWidgets('源页树形多选：嵌套文件夹三态勾选按子树计数', (tester) async {
+    final songs = [
+      _song(1, 'FolderA/one.mp3', title: 'A一'),
+      _song(2, 'FolderA/deep/two.mp3', title: 'A二'),
+      _song(3, 'FolderB/three.mp3', title: 'B三'),
+    ];
+    final paths = [
+      'FolderA/one.mp3',
+      'FolderA/deep/two.mp3',
+      'FolderB/three.mp3',
+    ];
+    await pumpView(
+      tester,
+      songs: songs,
+      mode: SongGroupMode.folder,
+      searching: false,
+      onMode: (_) {},
+      navigation: FolderNavigation.recursive,
+      folderPaths: paths,
+    );
+
+    // 展开到 deep 层后进入多选。
+    await tester.tap(find.descendant(
+      of: find.widgetWithText(ListTile, 'FolderA'),
+      matching: find.byTooltip('展开文件夹'),
+    ));
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(find.descendant(
+      of: find.widgetWithText(ListTile, 'deep'),
+      matching: find.byTooltip('展开文件夹'),
+    ));
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(find.byTooltip('多选'));
+    await tester.pump(const Duration(milliseconds: 50));
+
+    await tester.tap(find.text('A二'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 1'), findsOneWidget);
+
+    // 祖先 FolderA 半选（1/2），deep 全选（1/1）。
+    final folderA = tester.widget<Checkbox>(find.descendant(
+      of: find.widgetWithText(ListTile, 'FolderA'),
+      matching: find.byType(Checkbox),
+    ));
+    expect(folderA.tristate, isTrue);
+    expect(folderA.value, isNull);
+    final deep = tester.widget<Checkbox>(find.descendant(
+      of: find.widgetWithText(ListTile, 'deep'),
+      matching: find.byType(Checkbox),
+    ));
+    expect(deep.value, isTrue);
+
+    // 多选态点 FolderA 行补齐整组。
+    await tester.tap(find.text('FolderA'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('已选 2'), findsOneWidget);
+  });
+
+  testWidgets('源页树形：窄屏深层缩进与行内三动作不溢出', (tester) async {
+    tester.view.physicalSize = const ui.Size(360, 640);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    const refs = ['A/b/c/d/e.mp3', 'A/b/c/f.mp3'];
+    await pumpView(
+      tester,
+      songs: [
+        _song(1, refs[0], title: '尾巴'),
+        _song(2, refs[1], title: '兄弟'),
+      ],
+      mode: SongGroupMode.folder,
+      searching: false,
+      onMode: (_) {},
+      navigation: FolderNavigation.recursive,
+      folderPaths: refs,
+    );
+
+    await tester.tap(find.byTooltip('全部展开'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('尾巴'), findsOneWidget);
+    expect(find.text('兄弟'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.byTooltip('多选'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('工具条图标：多选/展开/折叠与多选态全选/全不选（窄屏不溢出）',
       (tester) async {
     tester.view.physicalSize = const ui.Size(360, 640);

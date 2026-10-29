@@ -1,9 +1,9 @@
-/// 播放源内文件夹分组（纯函数，可单测）：
+/// 播放源内目录树（纯函数，可单测）：
 ///
 /// 各直连源的 `Song.sourceRef` 形态不一（本地/SFTP/SMB 已是源内相对路径，
 /// WebDAV 是服务端全路径），调用方先经 [displayRelRef] 折成「源内相对路径」
 /// （`/` 分隔、无前导斜杠，`''` 不会出现——歌曲必有文件名），再用
-/// [groupSourceSongs] 按当前目录切出「直属子文件夹 + 本层歌曲」。
+/// [SourceFolderTree] 建立目录树，供源页逐级/树形展开与递归选择使用。
 library;
 
 import '../data/sources/music_source.dart';
@@ -75,104 +75,150 @@ bool _startsWith(List<String> parts, List<String> prefix) {
   return true;
 }
 
-/// 直属子文件夹：[name] 为单段名，[path] 为源内相对全路径，[total] 为其下
-/// 递归歌曲总数（含深层，umpulled 空文件夹不出现——只从有歌的 ref 推导）。
+/// 文件夹行数据：[name] 为单段名，[path] 为源内相对全路径，[total] 为其下
+/// 递归歌曲总数（含深层，未拉取的空文件夹不出现——只从有歌的 ref 推导）。
 class SourceFolder {
   final String name;
   final String path;
   final int total;
+
+  /// 有可展开的子目录或直属歌曲；false 时源页不显示展开箭头。
+  final bool hasChildren;
   const SourceFolder({
     required this.name,
     required this.path,
     required this.total,
+    this.hasChildren = false,
   });
 }
 
-/// 按当前目录分组：[relRefs] 为已折叠的源内相对路径（与歌曲列表等长），
-/// [dir] 为当前目录（`''` = 源根）。
-///
-/// [extraFolders] 为「已存在但没有歌曲」的文件夹路径（如应用内刚新建的空
-/// 文件夹）：只要位于当前目录下，就按直属子文件夹显示（计数 0）。
-///
-/// 返回直属子文件夹（按名排序）与直属歌曲在原列表中的下标（保原顺序，
-/// 即 `songsOf` 的歌手/专辑/曲目序）。
-({List<SourceFolder> folders, List<int> songIndices}) groupSourceSongs(
-  List<String> relRefs,
-  String dir, {
-  Iterable<String> extraFolders = const [],
-}) {
-  final current = normalizeDir(dir);
-  final prefix = current.isEmpty ? '' : '$current/';
-  final counts = <String, int>{};
-  final indices = <int>[];
-  for (var i = 0; i < relRefs.length; i++) {
-    final rel = normalizeDir(relRefs[i]);
-    if (rel.isEmpty || rel == current) continue;
-    if (prefix.isNotEmpty && !rel.startsWith(prefix)) continue;
-    final rest = prefix.isEmpty ? rel : rel.substring(prefix.length);
-    if (rest.isEmpty) continue;
-    final slash = rest.indexOf('/');
-    if (slash < 0) {
-      indices.add(i);
-    } else {
-      final child = prefix.isEmpty
-          ? rest.substring(0, slash)
-          : '$current/${rest.substring(0, slash)}';
-      counts[child] = (counts[child] ?? 0) + 1;
-    }
-  }
-  // 空文件夹：只补「直属子文件夹」，深层由下一次进入该层时再补。
-  for (final raw in extraFolders) {
-    final path = normalizeDir(raw);
-    if (path.isEmpty || path == current) continue;
-    if (prefix.isNotEmpty && !path.startsWith(prefix)) continue;
-    final rest = prefix.isEmpty ? path : path.substring(prefix.length);
-    if (rest.isEmpty) continue;
-    final slash = rest.indexOf('/');
-    final child = prefix.isEmpty
-        ? (slash < 0 ? rest : rest.substring(0, slash))
-        : '$current/${slash < 0 ? rest : rest.substring(0, slash)}';
-    counts.putIfAbsent(child, () => 0);
-  }
-  final folders = counts.entries
-      .map((e) => SourceFolder(
-            name: baseNameOf(e.key),
-            path: e.key,
-            total: e.value,
-          ))
-      .toList()
-    ..sort((a, b) => a.name.compareTo(b.name));
-  return (folders: folders, songIndices: indices);
+/// 源内目录树节点：children 为直属子目录（构建后按名排序），
+/// directSongIndices 为直属歌曲下标，total 为子树歌曲总数（含直属）。
+class SourceFolderNode {
+  final String name;
+  final String path;
+  final Map<String, SourceFolderNode> children = {};
+  final List<int> directSongIndices = [];
+  int total = 0;
+
+  SourceFolderNode({required this.name, required this.path});
+
+  bool get hasChildren => children.isNotEmpty || directSongIndices.isNotEmpty;
+
+  SourceFolder get folder => SourceFolder(
+        name: name,
+        path: path,
+        total: total,
+        hasChildren: hasChildren,
+      );
 }
 
-/// 逐级文件夹结果的缓存：目录、路径列表身份或空文件夹集合变化时才重算。
-class SourceFolderCache {
-  Object? _refs;
-  String _dir = '';
-  Object? _extra;
-  ({List<SourceFolder> folders, List<int> songIndices}) _data =
-      (folders: const [], songIndices: const []);
+/// 一次构建的源内目录树（根目录 path 为 `''`）：
+/// 从 [relRefs] 插入每首歌的全部祖先目录，再补 [extraFolders] 的空文件夹。
+class SourceFolderTree {
+  final SourceFolderNode root;
+  final Map<String, SourceFolderNode> _nodes;
 
-  ({List<SourceFolder> folders, List<int> songIndices}) resolve({
+  SourceFolderTree._(this.root, this._nodes);
+
+  factory SourceFolderTree.build({
     required List<String> relRefs,
-    required String dir,
-    required Iterable<String> extraFolders,
+    Iterable<String> extraFolders = const [],
   }) {
-    final key = extraFolders.toList();
-    if (identical(_refs, relRefs) &&
-        _dir == dir &&
-        _sameList(_extra as List<String>?, key)) {
-      return _data;
+    final root = SourceFolderNode(name: '', path: '');
+    final nodes = <String, SourceFolderNode>{'': root};
+
+    SourceFolderNode ensureDir(String path) {
+      final existing = nodes[path];
+      if (existing != null) return existing;
+      final parent = ensureDir(parentDirOf(path));
+      final node = SourceFolderNode(name: baseNameOf(path), path: path);
+      parent.children[node.name] = node;
+      nodes[path] = node;
+      return node;
     }
-    _refs = relRefs;
-    _dir = dir;
-    _extra = key;
-    _data = groupSourceSongs(relRefs, dir, extraFolders: key);
-    return _data;
+
+    for (var i = 0; i < relRefs.length; i++) {
+      final parts = splitSourceRef(relRefs[i]);
+      if (parts.isEmpty) continue;
+      var node = root;
+      node.total++;
+      var path = '';
+      for (var p = 0; p < parts.length - 1; p++) {
+        path = path.isEmpty ? parts[p] : '$path/${parts[p]}';
+        node = ensureDir(path);
+        node.total++;
+      }
+      node.directSongIndices.add(i);
+    }
+    for (final raw in extraFolders) {
+      var path = '';
+      for (final seg in splitSourceRef(raw)) {
+        path = path.isEmpty ? seg : '$path/$seg';
+        ensureDir(path);
+      }
+    }
+
+    void sortChildren(SourceFolderNode node) {
+      final sorted = node.children.values.toList()
+        ..sort((a, b) => a.name.compareTo(b.name));
+      node.children
+        ..clear()
+        ..addEntries(sorted.map((c) => MapEntry(c.name, c)));
+      for (final child in sorted) {
+        sortChildren(child);
+      }
+    }
+
+    sortChildren(root);
+    return SourceFolderTree._(root, nodes);
   }
 
-  static bool _sameList(List<String>? a, List<String> b) {
-    if (a == null || a.length != b.length) return false;
+  /// 目录节点；不存在（扫描后目录消失）返回 null。
+  SourceFolderNode? nodeOf(String dir) => _nodes[normalizeDir(dir)];
+
+  /// 当前目录下所有后代文件夹路径（先序、同级按名排序），供全部展开/折叠。
+  List<String> descendantFolders(String dir) {
+    final start = nodeOf(dir);
+    if (start == null) return const [];
+    final out = <String>[];
+    void walk(SourceFolderNode node) {
+      for (final child in node.children.values) {
+        out.add(child.path);
+        walk(child);
+      }
+    }
+
+    walk(start);
+    return out;
+  }
+}
+
+/// 目录树缓存：路径列表身份或空文件夹集合变化时才重建。
+class SourceFolderTreeCache {
+  Object? _refs;
+  List<String> _extra = const [];
+  SourceFolderTree? _tree;
+
+  SourceFolderTree resolve({
+    required List<String> relRefs,
+    Iterable<String> extraFolders = const [],
+  }) {
+    final extra = extraFolders.toList();
+    final cached = _tree;
+    if (cached != null &&
+        identical(_refs, relRefs) &&
+        _sameList(_extra, extra)) {
+      return cached;
+    }
+    _refs = relRefs;
+    _extra = extra;
+    return _tree =
+        SourceFolderTree.build(relRefs: relRefs, extraFolders: extra);
+  }
+
+  static bool _sameList(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
     for (var i = 0; i < a.length; i++) {
       if (a[i] != b[i]) return false;
     }

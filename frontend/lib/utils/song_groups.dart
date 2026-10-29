@@ -9,8 +9,8 @@
 /// [stripPrefixForSource] 前缀（跨源列表可来自多个源），经 [displayRelRef]
 /// 折成源内相对路径后再取父级。
 ///
-/// 本文件只做「平铺分组」（组头 + 组内歌曲）；播放源页的逐级文件夹导航
-/// 走 `source_folders.groupSourceSongs`，两者共用同一套行模型 [SongListRow]。
+/// 本文件做「平铺分组」（组头 + 组内歌曲）与源页「目录树行」两种行构建，
+/// 两者共用同一套行模型 [SongListRow]。
 library;
 
 import '../models/song.dart';
@@ -126,33 +126,63 @@ class SongGroupCache {
   }
 }
 
-/// 列表展示行（平铺组头 / 逐级文件夹行 / 歌曲行三选一）。
+/// 列表展示行（平铺组头 / 源页文件夹行 / 歌曲行三选一）。
 ///
 /// - [group]：平铺分组头（折叠/组播）；
-/// - [folder]：逐级文件夹行（进入/递归播）；
-/// - [song]：歌曲在输入 `songs` 中的下标。
-typedef SongListRow = ({String? group, SourceFolder? folder, int? song});
+/// - [folder]：源页文件夹行（进入/展开/递归播）；
+/// - [song]：歌曲在输入 `songs` 中的下标；
+/// - [depth]：源页树形缩进层级（平铺行为 0）。
+typedef SongListRow = ({
+  String? group,
+  SourceFolder? folder,
+  int? song,
+  int depth,
+});
 
 /// 平铺行：分组头 + 未折叠组的歌曲；分组为空时退化为纯歌曲行。
 List<SongListRow> buildFlatRows(List<SongGroup> groups, Set<String> collapsed) {
   if (groups.isEmpty) return const [];
   final rows = <SongListRow>[];
   for (final g in groups) {
-    rows.add((group: g.name, folder: null, song: null));
+    rows.add((group: g.name, folder: null, song: null, depth: 0));
     if (collapsed.contains(g.name)) continue;
     for (final i in g.songIndices) {
-      rows.add((group: null, folder: null, song: i));
+      rows.add((group: null, folder: null, song: i, depth: 0));
     }
   }
   return rows;
 }
 
-/// 逐级行：当前目录的子文件夹行 + 本层歌曲行。
-List<SongListRow> buildFolderRows({
-  required List<SourceFolder> folders,
-  required List<int> songIndices,
-}) =>
-    [
-      for (final f in folders) (group: null, folder: f, song: null),
-      for (final i in songIndices) (group: null, folder: null, song: i),
-    ];
+/// 源页树形行构建结果：[rows] 为展示行，[visibleSongIndices] 为行序对应的
+/// 歌曲在输入列表中的全局下标（用于生成紧凑的展示歌曲列表）。
+typedef SourceTreeRows = ({
+  List<SongListRow> rows,
+  List<int> visibleSongIndices,
+});
+
+/// 源页树形行：从 [dir] 开始先序展开，文件夹在前、直属歌曲在后；
+/// [expanded] 为已展开目录路径，未展开的目录只显示自身行。
+SourceTreeRows buildSourceTreeRows({
+  required SourceFolderTree tree,
+  required String dir,
+  required Set<String> expanded,
+}) {
+  final start = tree.nodeOf(dir);
+  final rows = <SongListRow>[];
+  final visible = <int>[];
+  if (start == null) return (rows: rows, visibleSongIndices: visible);
+
+  void visit(SourceFolderNode node, int depth) {
+    for (final child in node.children.values) {
+      rows.add((group: null, folder: child.folder, song: null, depth: depth));
+      if (expanded.contains(child.path)) visit(child, depth + 1);
+    }
+    for (final i in node.directSongIndices) {
+      rows.add((group: null, folder: null, song: visible.length, depth: depth));
+      visible.add(i);
+    }
+  }
+
+  visit(start, 0);
+  return (rows: rows, visibleSongIndices: visible);
+}

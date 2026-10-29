@@ -25,13 +25,14 @@ import 'toolbar_icon_button.dart';
 
 /// 文件夹模式下的导航方式：
 /// - [flat]：按「直接父级文件夹」平铺分组（歌单详情 / 喜欢 / 歌曲）；
-/// - [recursive]：逐级钻取（播放源页，保留旧深目录导航与面包屑）。
+/// - [recursive]：逐级钻取 + 就地树形展开（播放源页，保留面包屑与写操作目标）。
 enum FolderNavigation { flat, recursive }
 
 /// 四个歌曲列表页（歌单详情 / 喜欢 / 歌曲 / 播放源详情）的统一实现。
 ///
-/// 负责：分类方式（无 / 文件夹 / 专辑）、折叠持久化、分组缓存、多选、
-/// 计数/排序栏、行渲染；分页语义（播放队列/锚点/菜单项）由调用方以回调注入。
+/// 负责：分类方式（无 / 文件夹 / 专辑）、折叠与源页树形展开持久化、
+/// 分组缓存、多选、计数/排序栏、行渲染；分页语义（播放队列/锚点/菜单项）
+/// 由调用方以回调注入。
 class SongCollectionView extends StatefulWidget {
   /// 展示/选择/播放的歌曲列表（已按排列方式排序、已按搜索词过滤）。
   final List<Song> songs;
@@ -143,34 +144,43 @@ class _SongCollectionViewState extends State<SongCollectionView> {
   final Selection<String> _sel = Selection<String>();
   final SongRowCache _rowCache = SongRowCache();
   final SongGroupCache _groupCache = SongGroupCache();
-  final SourceFolderCache _folderCache = SourceFolderCache();
+  final SourceFolderTreeCache _folderTreeCache = SourceFolderTreeCache();
   final ScrollController _scroll = ScrollController();
 
   String _collectionKey = '';
   Set<String> _collapsed = {};
 
+  /// 源页目录树已展开的路径（按 collectionKey 持久化；默认全部折叠）。
+  Set<String> _expandedFolders = {};
+  int _expandRev = 0;
+
   /// 最近一次 build 的展示行/追焦位置（供 [focusTick] 在 build 外复用）。
   List<SongListRow> _rows = const [];
   int _focusDisplay = -1;
 
-  /// 逐级模式的展示列表缓存：文件夹结果与源歌曲列表不变时复用，避免每次
+  /// 逐级模式的展示列表缓存：树、根目录与展开版本不变时复用，避免每次
   /// build 新建列表导致行缓存整表失效。
-  Object? _folderDataRef;
+  Object? _folderRowsKey;
+  List<SongListRow> _folderRows = const [];
+  List<int> _folderVisibleIndices = const [];
+  Object? _folderDisplayRows;
   Object? _folderSongsRef;
   List<Song> _folderDisplay = const [];
+
+  /// 当前根目录下所有后代文件夹路径（树/根目录不变时复用，供工具条判断）。
+  Object? _treeFoldersKey;
+  List<String> _treeFolders = const [];
 
   /// songKey 列表缓存（按展示列表身份）。
   Object? _keysRef;
   List<String> _keys = const [];
 
-  /// 平铺/逐级行列表缓存：分组结果与折叠版本不变时复用，避免每帧重建 O(n) 行。
+  /// 平铺行列表缓存：分组结果与折叠版本不变时复用，避免每帧重建 O(n) 行。
   List<SongGroup>? _flatRowsGroups;
   int _flatRowsRev = -1;
   List<SongListRow> _flatRows = const [];
   Object? _noneRowsBase;
   List<SongListRow> _noneRows = const [];
-  Object? _folderRowsData;
-  List<SongListRow> _folderRows = const [];
   int _collapseRev = 0;
 
   /// 组名 → 组数据（组头行 O(1) 取计数，避免每个组头 firstWhere 扫全组）。
@@ -207,9 +217,10 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     super.didChangeDependencies();
     if (_collectionKey != widget.collectionKey) {
       _collectionKey = widget.collectionKey;
-      _collapsed = context.read<DirectSourceManager>().settings.groupCollapsed(
-            widget.collectionKey,
-          );
+      final settings = context.read<DirectSourceManager>().settings;
+      _collapsed = settings.groupCollapsed(widget.collectionKey);
+      _expandedFolders = settings.folderExpanded(widget.collectionKey);
+      _expandRev++;
     }
   }
 
@@ -226,7 +237,9 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       _selEpoch++;
       final s = context.read<DirectSourceManager>().settings;
       _collapsed = s.groupCollapsed(widget.collectionKey);
+      _expandedFolders = s.folderExpanded(widget.collectionKey);
       _collapseRev++;
+      _expandRev++;
       if (_scroll.hasClients) _scroll.jumpTo(0);
     }
     // 进入子文件夹 / 面包屑跳转不改变当前选择：递归选中的歌曲可跨目录继续
@@ -277,6 +290,31 @@ class _SongCollectionViewState extends State<SongCollectionView> {
   void _toggleAllCollapse(AppSettings settings, List<SongGroup> groups) {
     final anyExpanded = groups.any((g) => !_collapsed.contains(g.name));
     _setAllCollapsed(settings, groups, anyExpanded);
+  }
+
+  /// 单个文件夹就地展开/折叠（箭头或 B 模式长按）。
+  void _toggleFolderExpanded(AppSettings settings, String path) {
+    setState(() {
+      if (!_expandedFolders.remove(path)) _expandedFolders.add(path);
+      _expandRev++;
+      settings.setFolderExpanded(widget.collectionKey, _expandedFolders);
+    });
+  }
+
+  /// 全部展开/折叠当前根目录下的所有后代文件夹。
+  void _setAllFoldersExpanded(
+      AppSettings settings, SourceFolderTree tree, bool expanded) {
+    final paths = tree.descendantFolders(widget.dir);
+    if (paths.isEmpty) return;
+    setState(() {
+      if (expanded) {
+        _expandedFolders = {..._expandedFolders, ...paths};
+      } else {
+        _expandedFolders = {..._expandedFolders}..removeAll(paths);
+      }
+      _expandRev++;
+      settings.setFolderExpanded(widget.collectionKey, _expandedFolders);
+    });
   }
 
   /// 整个集合（按 `widget.songs` 顺序）的 songKey；按列表身份缓存。
@@ -382,33 +420,38 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     List<Song> displaySongs;
     List<SongListRow> rows;
     List<SongGroup> groups = const [];
-    Object? folderData;
+    SourceFolderTree? folderTree;
     int folderCount = 0;
 
     if (recursive) {
       final paths = widget.folderPaths ?? const <String>[];
-      final data = _folderCache.resolve(
+      final tree = _folderTreeCache.resolve(
         relRefs: paths,
-        dir: widget.dir,
         extraFolders: widget.extraFolders,
       );
-      folderData = data;
-      folderCount = data.folders.length;
-      if (!identical(_folderDataRef, data) ||
-          !identical(_folderSongsRef, widget.songs)) {
-        _folderDataRef = data;
-        _folderSongsRef = widget.songs;
-        _folderDisplay = [for (final i in data.songIndices) widget.songs[i]];
-      }
-      displaySongs = _folderDisplay;
-      if (!identical(_folderRowsData, data)) {
-        _folderRowsData = data;
-        _folderRows = buildFolderRows(
-          folders: data.folders,
-          songIndices: [for (var i = 0; i < displaySongs.length; i++) i],
+      folderTree = tree;
+      folderCount = tree.nodeOf(widget.dir)?.children.length ?? 0;
+      final rowsKey = (tree, widget.dir, _expandRev);
+      if (_folderRowsKey != rowsKey) {
+        _folderRowsKey = rowsKey;
+        final built = buildSourceTreeRows(
+          tree: tree,
+          dir: widget.dir,
+          expanded: _expandedFolders,
         );
+        _folderRows = built.rows;
+        _folderVisibleIndices = built.visibleSongIndices;
       }
       rows = _folderRows;
+      if (!identical(_folderDisplayRows, _folderRows) ||
+          !identical(_folderSongsRef, widget.songs)) {
+        _folderDisplayRows = _folderRows;
+        _folderSongsRef = widget.songs;
+        _folderDisplay = [
+          for (final i in _folderVisibleIndices) widget.songs[i],
+        ];
+      }
+      displaySongs = _folderDisplay;
     } else {
       groups = _groupCache.resolve(
         songs: widget.songs,
@@ -430,7 +473,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
           _noneRowsBase = displaySongs;
           _noneRows = [
             for (var i = 0; i < displaySongs.length; i++)
-              (group: null, folder: null, song: i),
+              (group: null, folder: null, song: i, depth: 0),
           ];
         }
         rows = _noneRows;
@@ -454,7 +497,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     final selection = _buildSelectionSummary(
       displayKeys: keys,
       groups: groups,
-      folderData: folderData,
+      folderTree: folderTree,
       dir: widget.dir,
       recursive: recursive,
     );
@@ -501,12 +544,28 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     }
 
     final selected = selection.songs;
-    final allCollapsed =
-        groups.isNotEmpty && groups.every((g) => _collapsed.contains(g.name));
-    final allExpanded =
-        groups.isNotEmpty && groups.every((g) => !_collapsed.contains(g.name));
+    // 源页树形模式的展开/折叠口径：当前根目录下所有后代文件夹。
+    if (recursive && folderTree != null) {
+      final key = (folderTree, widget.dir);
+      if (_treeFoldersKey != key) {
+        _treeFoldersKey = key;
+        _treeFolders = folderTree.descendantFolders(widget.dir);
+      }
+    } else {
+      _treeFoldersKey = null;
+      _treeFolders = const [];
+    }
+    final treeFolders = _treeFolders;
+    final allCollapsed = groups.isNotEmpty
+        ? groups.every((g) => _collapsed.contains(g.name))
+        : treeFolders.isNotEmpty &&
+            treeFolders.every((p) => !_expandedFolders.contains(p));
+    final allExpanded = groups.isNotEmpty
+        ? groups.every((g) => !_collapsed.contains(g.name))
+        : treeFolders.isNotEmpty &&
+            treeFolders.every((p) => _expandedFolders.contains(p));
     // 多选 / 全部展开 / 全部折叠与分类、排序平级；[AppSettings.longPressCollapseGroups]
-    // 只决定长按组头的行为，不再影响工具条可见性。
+    // 只决定长按组头/文件夹行的行为，不再影响工具条可见性。
     final trailing = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -516,20 +575,32 @@ class _SongCollectionViewState extends State<SongCollectionView> {
             tooltip: '多选',
             onPressed: _startSelectionMode,
           ),
-        if (groups.isNotEmpty) ...[
+        if (groups.isNotEmpty || treeFolders.isNotEmpty) ...[
           ToolbarIconButton(
             icon: Icons.unfold_more,
             tooltip: '全部展开',
             onPressed: allExpanded
                 ? null
-                : () => _setAllCollapsed(settings, groups, false),
+                : () {
+                    if (groups.isNotEmpty) {
+                      _setAllCollapsed(settings, groups, false);
+                    } else {
+                      _setAllFoldersExpanded(settings, folderTree!, true);
+                    }
+                  },
           ),
           ToolbarIconButton(
             icon: Icons.unfold_less,
             tooltip: '全部折叠',
             onPressed: allCollapsed
                 ? null
-                : () => _setAllCollapsed(settings, groups, true),
+                : () {
+                    if (groups.isNotEmpty) {
+                      _setAllCollapsed(settings, groups, true);
+                    } else {
+                      _setAllFoldersExpanded(settings, folderTree!, false);
+                    }
+                  },
           ),
         ],
         SongGroupButton(
@@ -599,8 +670,8 @@ class _SongCollectionViewState extends State<SongCollectionView> {
                     final row = rows[i];
                     if (row.folder != null) {
                       final f = row.folder!;
-                      return _folderRow(
-                          c, f, selection.folderSelected[f.path] ?? 0);
+                      return _folderRow(c, direct, f, row.depth,
+                          selection.folderSelected[f.path] ?? 0);
                     }
                     if (row.group != null) {
                       final g = _groupsByName[row.group!];
@@ -612,8 +683,8 @@ class _SongCollectionViewState extends State<SongCollectionView> {
                     final si = row.song!;
                     final s = displaySongs[si];
                     final key = keys[si];
-                    return _songRow(
-                        direct, displaySongs, si, s, key, currentIdx, wide);
+                    return _songRow(direct, displaySongs, si, s, key,
+                        currentIdx, wide, row.depth);
                   },
                 ),
         ),
@@ -628,7 +699,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
   _SelectionSummary _buildSelectionSummary({
     required List<String> displayKeys,
     required List<SongGroup> groups,
-    required Object? folderData,
+    required SourceFolderTree? folderTree,
     required String dir,
     required bool recursive,
   }) {
@@ -638,7 +709,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       widget.songs,
       displayKeys,
       groups,
-      folderData,
+      folderTree,
       widget.folderPaths,
       dir,
       recursive,
@@ -678,6 +749,8 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       groupSelected = counts;
     }
 
+    // 每个已选歌曲向其所有祖先目录累加，树形视图任意层的文件夹行都能
+    // 显示三态勾选与「已选 N / 总数」。
     var folderSelected = const <String, int>{};
     if (recursive && widget.folderPaths != null) {
       final paths = widget.folderPaths!;
@@ -688,12 +761,13 @@ class _SongCollectionViewState extends State<SongCollectionView> {
         final rel = normalizeDir(paths[i]);
         if (prefix.isNotEmpty && !rel.startsWith(prefix)) continue;
         final rest = prefix.isEmpty ? rel : rel.substring(prefix.length);
-        final slash = rest.indexOf('/');
-        if (slash <= 0) continue;
-        final child = prefix.isEmpty
-            ? rest.substring(0, slash)
-            : '$prefix${rest.substring(0, slash)}';
-        counts[child] = (counts[child] ?? 0) + 1;
+        if (rest.isEmpty) continue;
+        final segments = rest.split('/');
+        var acc = prefix;
+        for (var s = 0; s < segments.length - 1; s++) {
+          acc = acc.isEmpty ? segments[s] : '$acc/${segments[s]}';
+          counts[acc] = (counts[acc] ?? 0) + 1;
+        }
       }
       folderSelected = counts;
     }
@@ -711,10 +785,17 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     return summary;
   }
 
-  Widget _folderRow(BuildContext c, SourceFolder f, int selected) {
+  /// 树形缩进：每层 18px，最多 4 层（窄屏保证标题仍有空间）。
+  static double _treeIndent(int depth) => 18.0 * math.min(depth, 4);
+
+  Widget _folderRow(BuildContext c, DirectSourceManager direct, SourceFolder f,
+      int depth, int selected) {
     final scheme = Theme.of(c).colorScheme;
     final selectable = f.total > 0;
+    final expanded = _expandedFolders.contains(f.path);
     return ListTile(
+      contentPadding:
+          EdgeInsets.only(left: 16 + _treeIndent(depth), right: 16),
       leading: _selectableLeading(
         _leadingIcon(Icons.folder, scheme),
         enabled: selectable,
@@ -750,6 +831,12 @@ class _SongCollectionViewState extends State<SongCollectionView> {
                           [for (final i in idx) widget.songs[i]]);
                     },
             ),
+          if (f.hasChildren)
+            RowActionIconButton(
+              icon: expanded ? Icons.expand_less : Icons.expand_more,
+              tooltip: expanded ? '折叠文件夹' : '展开文件夹',
+              onPressed: () => _toggleFolderExpanded(direct.settings, f.path),
+            ),
           RowActionIconButton(
             icon: Icons.chevron_right,
             tooltip: '进入文件夹',
@@ -757,16 +844,23 @@ class _SongCollectionViewState extends State<SongCollectionView> {
           ),
         ],
       ),
-      // 多选态点击整行 = 选中/取消整个子树；右侧箭头仍可进入文件夹。
+      // 多选态点击整行 = 选中/取消整个子树；右侧箭头仍可进入/展开。
       onTap: _sel.active
           ? (selectable ? () => _toggleFolderSelection(f) : null)
           : () => widget.onDirChanged?.call(f.path),
-      // 源页逐级文件夹没有可折叠的组内容，长按始终直接多选整个子树（A/B
-      // 只影响可折叠的组头）。
-      onLongPress: selectable
-          ? (_sel.active
-              ? () => _toggleFolderSelection(f)
-              : () => _startFolderSelection(f))
+      // A（默认）长按选中整个子树；B 长按切换该文件夹展开。
+      onLongPress: selectable || f.hasChildren
+          ? () {
+              if (_sel.active) {
+                if (selectable) _toggleFolderSelection(f);
+              } else if (direct.settings.longPressCollapseGroups) {
+                if (f.hasChildren) {
+                  _toggleFolderExpanded(direct.settings, f.path);
+                }
+              } else if (selectable) {
+                _startFolderSelection(f);
+              }
+            }
           : null,
     );
   }
@@ -869,9 +963,10 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     String key,
     int currentIdx,
     bool wide,
+    int depth,
   ) {
     final src = widget.sourceOf?.call(s);
-    return SongTile(
+    final tile = SongTile(
       song: s,
       source: src,
       row: _rowCache.rowAt(si, () {
@@ -906,6 +1001,11 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       onPlay: () => widget.onPlay(displaySongs, si),
       extraMenuItems: widget.extraMenuItems?.call(s, si),
       onExtraMenu: (v) => widget.onExtraMenu?.call(s, v),
+    );
+    if (depth <= 0) return tile;
+    return Padding(
+      padding: EdgeInsets.only(left: _treeIndent(depth)),
+      child: tile,
     );
   }
 
@@ -973,7 +1073,7 @@ class _SelectionSummary {
   /// 全集合中已选歌曲，按 [SongCollectionView.songs] 原顺序。
   final List<Song> songs;
 
-  /// 当前展示层已选数（递归目录视图只算本层）。
+  /// 当前展示层已选数（递归目录视图只算当前树中可见的歌曲）。
   final int visibleSelected;
   final bool allVisibleSelected;
 

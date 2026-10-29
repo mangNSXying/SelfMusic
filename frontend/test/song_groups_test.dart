@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:selfmusic/utils/song_groups.dart';
+import 'package:selfmusic/utils/source_folders.dart';
 
 Song _song(String ref,
     {String sourceKey = 'local:test', String? album, int id = 0}) {
@@ -160,6 +161,78 @@ void main() {
 
     test('空分组返回空行', () {
       expect(buildFlatRows(const [], {}), isEmpty);
+    });
+  });
+
+  group('buildSourceTreeRows', () {
+    const refs = [
+      'root.mp3',
+      'rock/a.mp3',
+      'rock/deep/c.mp3',
+      'pop/b.mp3',
+    ];
+    String label(SongListRow r) => r.folder?.name ?? 's${r.song}';
+
+    test('默认折叠：当前层文件夹 + 本层歌曲', () {
+      final tree = SourceFolderTree.build(relRefs: refs);
+      final built = buildSourceTreeRows(tree: tree, dir: '', expanded: {});
+      expect(built.rows.map(label), ['pop', 'rock', 's0']);
+      expect(built.rows.map((r) => r.depth), [0, 0, 0]);
+      expect(built.visibleSongIndices, [0]);
+    });
+
+    test('展开目录：先序插入子目录与本层歌曲（带缩进）', () {
+      final tree = SourceFolderTree.build(relRefs: refs);
+      final built = buildSourceTreeRows(
+        tree: tree,
+        dir: '',
+        expanded: {'rock'},
+      );
+      expect(built.rows.map(label), ['pop', 'rock', 'deep', 's0', 's1']);
+      expect(built.rows.map((r) => r.depth), [0, 0, 1, 1, 0]);
+      expect(built.visibleSongIndices, [1, 0]);
+    });
+
+    test('从子目录作为根构建', () {
+      final tree = SourceFolderTree.build(relRefs: refs);
+      final collapsed =
+          buildSourceTreeRows(tree: tree, dir: 'rock', expanded: {});
+      expect(collapsed.rows.map(label), ['deep', 's0']);
+      expect(collapsed.visibleSongIndices, [1]);
+
+      final expanded = buildSourceTreeRows(
+        tree: tree,
+        dir: 'rock',
+        expanded: {'rock/deep'},
+      );
+      expect(expanded.rows.map(label), ['deep', 's0', 's1']);
+      expect(expanded.rows.map((r) => r.depth), [0, 1, 0]);
+      expect(expanded.visibleSongIndices, [2, 1]);
+    });
+
+    test('空文件夹展开后显示子文件夹', () {
+      final tree = SourceFolderTree.build(
+        relRefs: const [],
+        extraFolders: const ['空/深层'],
+      );
+      final collapsed =
+          buildSourceTreeRows(tree: tree, dir: '', expanded: {});
+      expect(collapsed.rows.map(label), ['空']);
+      final expanded = buildSourceTreeRows(
+        tree: tree,
+        dir: '',
+        expanded: {'空'},
+      );
+      expect(expanded.rows.map(label), ['空', '深层']);
+      expect(expanded.visibleSongIndices, isEmpty);
+    });
+
+    test('目录不存在返回空行', () {
+      final tree = SourceFolderTree.build(relRefs: refs);
+      final built =
+          buildSourceTreeRows(tree: tree, dir: 'gone', expanded: {});
+      expect(built.rows, isEmpty);
+      expect(built.visibleSongIndices, isEmpty);
     });
   });
 

@@ -78,6 +78,28 @@ void main() {
     dir.deleteSync(recursive: true);
   });
 
+  test('源页目录树展开状态：默认空、按集合持久化并 URI 编码', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir = await Directory.systemTemp.createTemp('selfmusic_folder_exp_');
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+
+    final s = AppSettings(index);
+    expect(s.folderExpanded('source:test'), isEmpty);
+
+    s.setFolderExpanded('source:test', {'rock/deep', '空 文件夹'});
+    expect(AppSettings(index).folderExpanded('source:test'),
+        {'rock/deep', '空 文件夹'});
+    expect(AppSettings(index).folderExpanded('source:other'), isEmpty);
+
+    s.setFolderExpanded('source:test', {});
+    expect(AppSettings(index).folderExpanded('source:test'), isEmpty);
+
+    index.close();
+    dir.deleteSync(recursive: true);
+  });
+
   test('日志导出时长：默认 1、钳制 1~30、持久化并随设置导出', () async {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
     final dir =

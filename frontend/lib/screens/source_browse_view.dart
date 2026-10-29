@@ -568,7 +568,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                 if (searching) return '搜索到 $n 首';
                 if (mode == SongGroupMode.folder) {
                   if (_dir.isEmpty) return '已索引 $total 首 · ${source.name}';
-                  return '本层 $n 首 · $folders 个文件夹 · 共 $total 首';
+                  return '$folders 个文件夹 · 已显示 $n 首 · 共 $total 首';
                 }
                 if (mode == SongGroupMode.album) {
                   return '共 $total 首 · $folders 个专辑';

@@ -2924,8 +2924,8 @@ class _ViewBehaviorSectionState extends State<_ViewBehaviorSection> {
         SwitchListTile(
           title: const Text('长按展开/折叠'),
           subtitle: Text(settings.longPressCollapseGroups
-              ? '开：长按组头全部展开/折叠；多选使用工具条图标'
-              : '关：长按组头进入多选并选中整组；展开/折叠使用工具条图标'),
+              ? '开：长按组头/文件夹行展开/折叠；多选使用工具条图标'
+              : '关：长按组头/文件夹行进入多选；展开/折叠使用工具条图标'),
           value: settings.longPressCollapseGroups,
           onChanged: (v) {
             setState(() => settings.longPressCollapseGroups = v);
@@ -2935,7 +2935,7 @@ class _ViewBehaviorSectionState extends State<_ViewBehaviorSection> {
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-          child: Text('播放源逐级文件夹行没有折叠语义，长按始终多选整个子树',
+          child: Text('播放源逐级文件夹行支持就地展开：B 模式长按切换展开，A 模式长按选中整个子树',
               style: Theme.of(context)
                   .textTheme
                   .bodySmall

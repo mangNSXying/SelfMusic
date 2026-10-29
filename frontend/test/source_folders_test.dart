@@ -44,7 +44,7 @@ void main() {
     });
   });
 
-  group('groupSourceSongs', () {
+  group('SourceFolderTree', () {
     const refs = [
       'root.mp3',
       'rock/a.mp3',
@@ -53,68 +53,78 @@ void main() {
       'pop/d.mp3',
     ];
 
-    test('根目录：直属文件夹 + 根歌曲', () {
-      final g = groupSourceSongs(refs, '');
-      expect(g.folders.map((f) => f.name), ['pop', 'rock']);
-      expect(g.folders.firstWhere((f) => f.name == 'rock').total, 3);
-      expect(g.folders.firstWhere((f) => f.name == 'pop').total, 1);
-      expect(g.songIndices, [0]);
+    test('根目录：子文件夹、直属歌曲与递归计数', () {
+      final tree = SourceFolderTree.build(relRefs: refs);
+      final root = tree.nodeOf('')!;
+      expect(root.children.keys, ['pop', 'rock']);
+      expect(root.children['rock']!.total, 3);
+      expect(root.children['pop']!.total, 1);
+      expect(root.directSongIndices, [0]);
+      expect(root.total, 5);
     });
 
-    test('钻取一层：本层歌曲 + 直属子文件夹', () {
-      final g = groupSourceSongs(refs, 'rock');
-      expect(g.folders.map((f) => f.name), ['deep']);
-      expect(g.folders.single.total, 1);
-      expect(g.songIndices, [1, 2]);
+    test('任意层节点与直属歌曲（路径写法容错）', () {
+      final tree = SourceFolderTree.build(relRefs: refs);
+      final rock = tree.nodeOf('/rock/')!;
+      expect(rock.directSongIndices, [1, 2]);
+      expect(rock.children.keys, ['deep']);
+      final deep = tree.nodeOf('rock/deep')!;
+      expect(deep.directSongIndices, [3]);
+      expect(deep.children, isEmpty);
+      expect(deep.total, 1);
     });
 
-    test('深层目录', () {
-      final g = groupSourceSongs(refs, 'rock/deep');
-      expect(g.folders, isEmpty);
-      expect(g.songIndices, [3]);
+    test('不存在的目录返回 null（扫描后文件夹消失的兜底）', () {
+      final tree = SourceFolderTree.build(relRefs: refs);
+      expect(tree.nodeOf('gone'), isNull);
     });
 
-    test('目录写法容错（首尾斜杠）', () {
-      final g = groupSourceSongs(refs, '/rock/');
-      expect(g.songIndices, [1, 2]);
-    });
-
-    test('空源', () {
-      final g = groupSourceSongs(const [], '');
-      expect(g.folders, isEmpty);
-      expect(g.songIndices, isEmpty);
-    });
-
-    test('不存在的目录为空（扫描后文件夹消失的兜底）', () {
-      final g = groupSourceSongs(refs, 'gone');
-      expect(g.folders, isEmpty);
-      expect(g.songIndices, isEmpty);
-    });
-
-    test('空文件夹：按直属子文件夹显示且计数 0', () {
-      final g = groupSourceSongs(const [], '');
-      expect(g.folders.map((f) => f.name), isEmpty);
-      final g2 = groupSourceSongs(const [], '', extraFolders: ['新建/深层', '空']);
-      expect(g2.folders.map((f) => f.name), ['新建', '空']);
-      expect(g2.folders.every((f) => f.total == 0), isTrue);
-      // 进入新建后显示深层（仍为空）。
-      final g3 = groupSourceSongs(const [], '新建', extraFolders: ['新建/深层', '空']);
-      expect(g3.folders.map((f) => f.name), ['深层']);
+    test('空文件夹：任意层都由 extraFolders 建出', () {
+      final tree = SourceFolderTree.build(
+        relRefs: const [],
+        extraFolders: const ['新建/深层', '空'],
+      );
+      final root = tree.nodeOf('')!;
+      expect(root.children.keys, ['新建', '空']);
+      expect(root.children.values.every((n) => n.total == 0), isTrue);
+      expect(tree.nodeOf('新建/深层')!.hasChildren, isFalse);
+      expect(tree.nodeOf('新建')!.hasChildren, isTrue);
       // 文件夹已有歌时不重复，计数以歌曲为准。
-      final g4 =
-          groupSourceSongs(const ['rock/a.mp3'], '', extraFolders: ['rock']);
-      expect(g4.folders.single.total, 1);
+      final withSongs = SourceFolderTree.build(
+        relRefs: const ['rock/a.mp3'],
+        extraFolders: const ['rock'],
+      );
+      expect(withSongs.nodeOf('rock')!.total, 1);
     });
 
-    test('SourceFolderCache 命中与失效', () {
-      final cache = SourceFolderCache();
+    test('同名目录在不同父级不合并', () {
+      final tree = SourceFolderTree.build(
+        relRefs: const ['live/a.mp3', 'rock/live/b.mp3'],
+      );
+      expect(tree.nodeOf('live')!.directSongIndices, [0]);
+      expect(tree.nodeOf('rock/live')!.directSongIndices, [1]);
+    });
+
+    test('后代目录枚举（先序、同级按名排序）', () {
+      final tree = SourceFolderTree.build(
+        relRefs: const ['a/1.mp3', 'a/b/2.mp3', 'a/b/c/3.mp3', 'z/4.mp3'],
+      );
+      expect(tree.descendantFolders(''), ['a', 'a/b', 'a/b/c', 'z']);
+      expect(tree.descendantFolders('a'), ['a/b', 'a/b/c']);
+      expect(tree.descendantFolders('missing'), isEmpty);
+    });
+  });
+
+  group('SourceFolderTreeCache', () {
+    test('命中与失效', () {
+      final cache = SourceFolderTreeCache();
       const refs2 = ['a/x.mp3'];
-      final a = cache.resolve(relRefs: refs2, dir: '', extraFolders: const []);
-      final b = cache.resolve(relRefs: refs2, dir: '', extraFolders: const []);
+      final a = cache.resolve(relRefs: refs2);
+      final b = cache.resolve(relRefs: refs2);
       expect(identical(a, b), isTrue);
-      final c = cache.resolve(relRefs: refs2, dir: 'a', extraFolders: const []);
+      final c = cache.resolve(relRefs: refs2, extraFolders: const ['空']);
       expect(identical(a, c), isFalse);
-      expect(c.songIndices, [0]);
+      expect(c.nodeOf('空'), isNotNull);
     });
   });
 

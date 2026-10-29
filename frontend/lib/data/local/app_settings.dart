@@ -292,10 +292,10 @@ class AppSettings {
   static const String kGroupSongs = 'group_songs';
   static const String kGroupSource = 'group_source';
 
-  /// 列表视图行为（设置→常规→视图行为）：长按组头展开/折叠（默认关）。
+  /// 列表视图行为（设置→常规→视图行为）：长按组头/文件夹行展开/折叠（默认关）。
   ///
-  /// 关 = 长按组头进入多选并选中整组；
-  /// 开 = 长按组头全部展开/折叠。
+  /// 关 = 长按组头进入多选并选中整组、长按源页文件夹行选中整个子树；
+  /// 开 = 长按组头全部展开/折叠、长按源页文件夹行切换该文件夹展开。
   /// 多选 / 全部展开 / 全部折叠始终可用列表工具条图标。
   static const String kLongPressCollapseGroups = 'long_press_collapse_groups';
 
@@ -859,10 +859,10 @@ class AppSettings {
       index.settingsGet(kGroupSource) ?? SongGroupMode.folder.name);
   set groupSource(SongGroupMode v) => index.settingsSet(kGroupSource, v.name);
 
-  /// 长按组头展开/折叠（设置→常规→视图行为，默认关）。
+  /// 长按组头/文件夹行展开/折叠（设置→常规→视图行为，默认关）。
   ///
-  /// 关（A）：长按组头进入多选并选中整组。
-  /// 开（B）：长按组头全部展开/折叠。
+  /// 关（A）：长按组头进入多选并选中整组；源页文件夹行选中整个子树。
+  /// 开（B）：长按组头全部展开/折叠；源页文件夹行切换该文件夹展开。
   /// 两种模式的多选/展开/折叠都可用工具条图标。
   bool get longPressCollapseGroups =>
       (index.settingsGet(kLongPressCollapseGroups) ?? '0') == '1';
@@ -901,6 +901,19 @@ class AppSettings {
   void setGroupCollapsed(String collectionKey, Set<String> collapsed) {
     final v = collapsed.map(Uri.encodeComponent).join('|');
     index.settingsSet('group_collapsed_$collectionKey', v);
+  }
+
+  /// 源页目录树展开状态（按集合持久化）：存已展开目录路径
+  /// （逐项 URI 编码后以 `|` 连接；默认全部折叠）。
+  Set<String> folderExpanded(String collectionKey) {
+    final raw = index.settingsGet('folder_expanded_$collectionKey');
+    if (raw == null || raw.isEmpty) return {};
+    return raw.split('|').map(Uri.decodeComponent).toSet();
+  }
+
+  void setFolderExpanded(String collectionKey, Set<String> expanded) {
+    final v = expanded.map(Uri.encodeComponent).join('|');
+    index.settingsSet('folder_expanded_$collectionKey', v);
   }
 
   /// 源内「应用内新建过、可能还没有歌曲」的文件夹（逐级模式用于显示空文件夹）。
