@@ -87,13 +87,16 @@ void main() {
     expect(find.textContaining('TTC'), findsOneWidget);
     expect(find.text('更换字体'), findsNothing);
     expect(find.text('恢复系统字体'), findsNothing);
+    expect(find.text('歌词最大行数'), findsOneWidget);
+    expect(find.text('不限制（沿用当前字号）'), findsOneWidget);
   });
 
   testWidgets('已导入字体时显示当前字体、更换与恢复入口', (tester) async {
     final settings = AppSettings(index)
       ..customFontFamily = 'SelfMusicCustomFont_test'
       ..customFontFile = 'font_test.otf'
-      ..customFontLabel = '测试字体';
+      ..customFontLabel = '测试字体'
+      ..lyricMaxLines = 10;
 
     await pumpAppearance(
       tester,
@@ -108,5 +111,6 @@ void main() {
     expect(find.text('更换字体'), findsOneWidget);
     expect(find.text('恢复系统字体'), findsOneWidget);
     expect(find.textContaining('预览：'), findsOneWidget);
+    expect(find.textContaining('屏幕最多约 10 行'), findsOneWidget);
   });
 }

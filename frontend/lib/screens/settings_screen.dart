@@ -1065,6 +1065,17 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
           Text('支持 TTF / OTF / TTC；TTC 可选择字面，仅本机生效；缺字时由系统字体回退',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: colorScheme.onSurface.withValues(alpha: 0.6))),
+          const SizedBox(height: 4),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.format_line_spacing),
+            title: const Text('歌词最大行数'),
+            subtitle: Text(_settings.lyricMaxLines == 0
+                ? '不限制（沿用当前字号）'
+                : '自动放大字号，屏幕最多约 ${_settings.lyricMaxLines} 行（译文/长句更少）'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _pickLyricMaxLines(context),
+          ),
           const Divider(),
           const SizedBox(height: 8),
 
@@ -1393,6 +1404,53 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
     if (chosen == null || !context.mounted) return;
     setState(() => _settings.songTitleFormat = chosen);
     // 设置写入后通知全局重建（AppSettings 非 ChangeNotifier）。
+    context.read<DirectSourceManager>().refresh();
+  }
+
+  /// 歌词最大行数：0=不限制；大屏按上限放大字号（只放大不缩小）。
+  Future<void> _pickLyricMaxLines(BuildContext context) async {
+    final current = _settings.lyricMaxLines;
+    final maxHeight = (MediaQuery.sizeOf(context).height * 0.6)
+        .clamp(200.0, 420.0)
+        .toDouble();
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('歌词最大行数'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 360),
+          child: SizedBox(
+            width: double.maxFinite,
+            height: maxHeight,
+            child: RadioGroup<int>(
+              groupValue: current,
+              onChanged: (v) {
+                if (v != null) Navigator.of(c).pop(v);
+              },
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final n in AppSettings.lyricMaxLinesOptions)
+                    RadioListTile<int>(
+                      title: Text(n == 0 ? '不限制（沿用当前字号）' : '$n 行'),
+                      value: n,
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(),
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    );
+    if (picked == null || picked == current || !context.mounted) return;
+    setState(() => _settings.lyricMaxLines = picked);
+    // AppSettings 非 ChangeNotifier：通知歌词页/全局监听者即时重建。
     context.read<DirectSourceManager>().refresh();
   }
 

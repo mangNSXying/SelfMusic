@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:ffi';
+import 'dart:ffi' hide Size;
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -112,6 +112,50 @@ void main() {
   testWidgets('歌词 scale 同步放大字号', (tester) async {
     final pos = StreamController<Duration>();
     final player = playerWithLyrics(pos.stream);
+    await pumpLyrics(tester, player, scale: 2);
+
+    final text = tester.widget<Text>(find.text(_line(1)));
+    expect(text.style?.fontSize, 32);
+
+    await pos.close();
+    player.dispose();
+  });
+
+  testWidgets('歌词最大行数：大屏按上限放大字号且可见行数不超限', (tester) async {
+    tester.view.physicalSize = const Size(1000, 1050);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    direct.settings.lyricMaxLines = 10;
+
+    final pos = StreamController<Duration>();
+    final player = playerWithLyrics(pos.stream);
+    await pumpLyrics(tester, player);
+
+    final text = tester.widget<Text>(find.text(_line(1)));
+    expect(text.style?.fontSize, closeTo(40, 0.01),
+        reason: '1050 高、10 行上限 → 缩放 2.5，非当前行 16×2.5');
+
+    final view = tester.getRect(find.byType(LyricsView));
+    final rows = find.byType(InkWell);
+    var fullyVisible = 0;
+    for (var i = 0; i < rows.evaluate().length; i++) {
+      final r = tester.getRect(rows.at(i));
+      if (r.top >= view.top - 0.5 && r.bottom <= view.bottom + 0.5) {
+        fullyVisible++;
+      }
+    }
+    expect(fullyVisible, lessThanOrEqualTo(10));
+
+    await pos.close();
+    player.dispose();
+  });
+
+  testWidgets('歌词最大行数只放大不缩小：目标字号更小时保留基础缩放', (tester) async {
+    direct.settings.lyricMaxLines = 10;
+
+    final pos = StreamController<Duration>();
+    final player = playerWithLyrics(pos.stream);
+    // 默认 800×600 视口：600/(42×10)≈1.43 < 基础 2，不应缩小。
     await pumpLyrics(tester, player, scale: 2);
 
     final text = tester.widget<Text>(find.text(_line(1)));

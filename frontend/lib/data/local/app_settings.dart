@@ -308,6 +308,10 @@ class AppSettings {
   /// 歌词追焦等待秒数（用户拖动歌词后多久恢复自动跟随；播放设置可调）。
   static const String kLyricFocusIdleSec = 'lyric_focus_idle_sec';
 
+  /// 歌词最大行数（设置 → 界面 → 文字）：0=不限制；>0 时按歌词区可用高度
+  /// 只放大字号，使屏幕最多约显示 N 行。
+  static const String kLyricMaxLines = 'lyric_max_lines';
+
   /// 播放页屏幕常亮（打开播放页期间不熄屏）。
   static const String kPlayerKeepScreenOn = 'player_keep_screen_on';
 
@@ -538,6 +542,18 @@ class AppSettings {
       int.tryParse(index.settingsGet(kLyricFocusIdleSec) ?? '') ?? 5;
   set lyricFocusIdleSec(int v) =>
       index.settingsSet(kLyricFocusIdleSec, v.toString());
+
+  /// 歌词最大行数可选档位（0=不限制）。
+  static const List<int> lyricMaxLinesOptions = [0, 6, 8, 10, 12, 14, 16, 20];
+
+  /// 歌词最大行数（默认 0=不限制）：>0 时按歌词区可用高度自动放大字号，
+  /// 保证屏幕最多约显示该行数（译文/长句只会更少）。非法历史值按不限制处理。
+  int get lyricMaxLines {
+    final v = int.tryParse(index.settingsGet(kLyricMaxLines) ?? '') ?? 0;
+    return lyricMaxLinesOptions.contains(v) ? v : 0;
+  }
+
+  set lyricMaxLines(int v) => index.settingsSet(kLyricMaxLines, v.toString());
 
   /// 播放页屏幕常亮：打开播放页期间不熄屏（默认关）。
   bool get playerKeepScreenOn =>
@@ -1044,6 +1060,7 @@ class AppSettings {
     kPlayerAutoHideIdleSec,
     kPreloadNext,
     kLyricFocusIdleSec,
+    kLyricMaxLines,
     kPlayerKeepScreenOn,
     kKeepScreenOnDevice,
     kArtistResolveAuto,

@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
 import '../utils/lrc_parser.dart';
+import '../utils/lyric_scale.dart';
 
 /// 歌词视图：LRC 时间轴同步滚动 + 当前行高亮（点击行跳转播放位置）；
 /// 纯文本歌词居中滚动展示；无歌词时显示空态。
@@ -121,16 +122,18 @@ class _LyricsViewState extends State<LyricsView> {
   Widget build(BuildContext context) {
     final p = widget.player;
     final cs = Theme.of(context).colorScheme;
-    final scale = widget.scale;
+    final baseScale = widget.scale;
+    final direct = context.watch<DirectSourceManager>();
     // 歌词追焦等待时长（用户拖动后多久恢复自动跟随），设置改动即时生效。
-    _idleSec = context.watch<DirectSourceManager>().settings.lyricFocusIdleSec;
+    _idleSec = direct.settings.lyricFocusIdleSec;
+    final maxLines = direct.settings.lyricMaxLines;
 
     if (p.lyricsLoading) {
       return Center(
         child: SizedBox(
-          width: 26 * scale,
-          height: 26 * scale,
-          child: CircularProgressIndicator(strokeWidth: 2.5 * scale),
+          width: 26 * baseScale,
+          height: 26 * baseScale,
+          child: CircularProgressIndicator(strokeWidth: 2.5 * baseScale),
         ),
       );
     }
@@ -141,12 +144,12 @@ class _LyricsViewState extends State<LyricsView> {
       if (plain != null) {
         return SingleChildScrollView(
           padding: EdgeInsets.fromLTRB(
-              24 * scale, 8 * scale, 24 * scale, 32 * scale),
+              24 * baseScale, 8 * baseScale, 24 * baseScale, 32 * baseScale),
           child: Text(
             plain,
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontSize: 16 * scale,
+              fontSize: 16 * baseScale,
               height: 1.7,
               color: cs.onSurface.withValues(alpha: 0.85),
             ),
@@ -158,20 +161,20 @@ class _LyricsViewState extends State<LyricsView> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(Icons.lyrics_outlined,
-                size: 56 * scale, color: cs.primary.withValues(alpha: 0.5)),
-            SizedBox(height: 14 * scale),
+                size: 56 * baseScale, color: cs.primary.withValues(alpha: 0.5)),
+            SizedBox(height: 14 * baseScale),
             Text('暂无歌词',
                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
                       fontSize:
                           (Theme.of(context).textTheme.titleMedium?.fontSize ??
                                   16) *
-                              scale,
+                              baseScale,
                     )),
-            SizedBox(height: 6 * scale),
+            SizedBox(height: 6 * baseScale),
             Text(
               '歌曲内嵌歌词或同目录 .lrc 会自动同步显示',
               style: TextStyle(
-                fontSize: 14 * scale,
+                fontSize: 14 * baseScale,
                 color: cs.onSurface.withValues(alpha: 0.5),
               ),
             ),
@@ -215,6 +218,12 @@ class _LyricsViewState extends State<LyricsView> {
       // setState 重建（避免每个位置事件整表重建），此处直接渲染当前行状态。
       child: LayoutBuilder(
         builder: (context, c) {
+          // 大屏可按设置放大字号（只放大不缩小），使可见行数不超过上限。
+          final scale = lyricScaleForMaxLines(
+            baseScale: baseScale,
+            maxLines: maxLines,
+            viewportHeight: c.maxHeight,
+          );
           // 上下留出近半屏空白，使当前行始终居中。
           final pad = c.maxHeight * _align;
           return ListView.builder(
@@ -231,14 +240,18 @@ class _LyricsViewState extends State<LyricsView> {
                 onTap: () => p.seek(lines[i].time),
                 child: Padding(
                   padding: EdgeInsets.symmetric(
-                      horizontal: 24 * scale, vertical: 9 * scale),
+                      horizontal: 24 * scale,
+                      vertical: kLyricRowVerticalPadding * scale),
                   child: _LyricRowText(
                     text: lines[i].text,
                     translation: lines[i].translation,
                     scale: scale,
                     mainStyle: TextStyle(
-                      fontSize: (active ? 19 : 16) * scale,
-                      height: 1.5,
+                      fontSize: (active
+                              ? kLyricActiveFontSize
+                              : kLyricInactiveFontSize) *
+                          scale,
+                      height: kLyricLineHeight,
                       fontWeight: active ? FontWeight.w700 : FontWeight.w400,
                       color: active
                           ? cs.primary
