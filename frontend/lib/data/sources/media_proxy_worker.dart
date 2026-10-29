@@ -208,11 +208,13 @@ class _MediaProxyEngine {
     final sw = Stopwatch()..start();
     var wrote = false;
     var sent = 0;
+    var aborted = false;
+    var clientGone = false;
+    var transferError = false;
     try {
       final stream = await session.adapter.open(start, endExclusive);
       _setHeaders(request.response, session, start, endExclusive, partial);
       request.response.bufferOutput = false;
-      var clientGone = false;
       unawaited(request.response.done.then(
         (_) => clientGone = true,
         onError: (Object e, StackTrace st) => clientGone = true,
@@ -221,6 +223,7 @@ class _MediaProxyEngine {
           'key=${session.sourceKey} range=$start-$endExclusive total=${session.total}');
       await for (final chunk in stream) {
         if (clientGone || session.closed) {
+          aborted = true;
           _log('http.cancel',
               'key=${session.sourceKey} range=$start-$endExclusive bytes=$sent');
           break;
@@ -230,14 +233,29 @@ class _MediaProxyEngine {
         sent += chunk.length;
         await request.response.flush();
       }
-      await request.response.close();
-      _log('http.done',
+      final shortRead = !aborted && sent < endExclusive - start;
+      final goneBeforeClose = aborted || clientGone || session.closed;
+      if (shortRead) aborted = true;
+      try {
+        await request.response.close();
+      } catch (_) {
+        // 提前中止时已按完整区间声明 contentLength，写入不足会让 close()
+        // 抛 HttpException；这是切歌/停止的正常收尾，不是传输失败。
+        // 客户端仍在却写不满，才是适配器提前收流，必须保留错误日志。
+        if (!goneBeforeClose) {
+          transferError = true;
+          rethrow;
+        }
+        aborted = true;
+      }
+      _log(aborted ? 'http.abort' : 'http.done',
           'key=${session.sourceKey} range=$start-$endExclusive bytes=$sent ms=${sw.elapsedMilliseconds}');
     } catch (e) {
-      _log('http.error',
+      final expected = !transferError && (aborted || clientGone || session.closed);
+      _log(expected ? 'http.abort' : 'http.error',
           'key=${session.sourceKey} range=$start-$endExclusive bytes=$sent ms=${sw.elapsedMilliseconds} e=$e');
       try {
-        if (!wrote) {
+        if (!expected && !wrote) {
           request.response.statusCode = HttpStatus.internalServerError;
           request.response.headers.contentLength = 0;
         }

@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:selfmusic/data/sources/media_proxy.dart';
+import 'package:selfmusic/utils/perf_log.dart';
 
 /// MediaProxy 的 loopback HTTP/Range/生命周期回归。
 ///
@@ -120,5 +122,41 @@ void main() {
 
     final second = await start();
     expect(await getBytes(second), data.sublist(0));
+  });
+
+  test('中止在途请求记 http.abort，不记 http.error', () async {
+    final big = File('${dir.path}/big.bin');
+    final bigData = Uint8List(16 * 1024 * 1024);
+    await big.writeAsBytes(bigData);
+    final logs = <String>[];
+    final prevSink = perfLogSink;
+    perfLogSink = logs.add;
+    addTearDown(() => perfLogSink = prevSink);
+
+    final url = await client.start({
+      'kind': 'file',
+      'sourceKey': 'test:file',
+      'path': big.path,
+      'size': bigData.length,
+      'mime': 'application/octet-stream',
+    }, basename: 'big.bin');
+    expect(url, isNotNull);
+
+    final http = HttpClient();
+    final resp = await (await http.getUrl(url!)).close();
+    late StreamSubscription<List<int>> sub;
+    // 暂停消费制造背压，让 worker 停在 flush；随后 stop + 断开模拟切歌。
+    sub = resp.listen((_) => sub.pause());
+
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    await client.stop();
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    await sub.cancel();
+    http.close(force: true);
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+
+    expect(logs.where((l) => l.contains('http.error')), isEmpty,
+        reason: '切歌/停止导致的提前断开是正常中止');
+    expect(logs.where((l) => l.contains('http.abort')), isNotEmpty);
   });
 }

@@ -752,7 +752,7 @@ SMB/SFTP 原始流默认不再走 just_audio 的 `StreamAudioSource`/Dart 回环
 - session：进程内一个 MediaProxy isolate、同一时间一个活动 session；换曲/停止作废旧 token，旧请求 404/410。
 - SMB 初始化：`SmbInitBroker` 用独立 broker isolate 串行化所有 `Smb2Pool.connect`/`smb2Walk`（libsmb2 的全局 `active_contexts` 无内部锁）；UI/扫描/代理共用同一 broker 端口。
 - 失败策略：MediaProxy 启动失败先重启 isolate 重试一次；用户主动播放仍失败则回落 `DirectAudioSource`（UI 字节）；桌面启动预载失败保持延迟，绝不回落。运行中播放错误由 `_onPlaybackError` 走 `_recoverPlayback` 重建 session。
-- 埋点（App 内收集日志可 grep）：`mediaProxy.isolate.*`、`mediaProxy.smbBroker`、`mediaProxy.start*`、`mediaProxy.retry/fallback/configUnavailable/loadFail`、`mediaProxy.worker isolate.ready/adapter.probe.*/session.*/http.*`、`smbInitBroker.*`。
+- 埋点（App 内收集日志可 grep）：`mediaProxy.isolate.*`、`mediaProxy.smbBroker`、`mediaProxy.start*`、`mediaProxy.retry/fallback/configUnavailable/loadFail`、`mediaProxy.worker isolate.ready/adapter.probe.*/session.*/http.*`、`smbInitBroker.*`。其中 `http.done` 是完整传完，`http.cancel/http.abort` 是切歌/停止/客户端断开导致的正常中止（不记错误），只有 `http.error` 才是真实传输失败。
 - worker 的 `file` 适配器仅测试用；真实 SMB/SFTP 需按日志在 Windows/Android/鸿蒙真机验证。
 
 > 注：`just_audio_mpv`（0.1.7）从未接线（无 import、无初始化），已从 pubspec 移除；Linux 桌面播放由 media_kit 接通。
