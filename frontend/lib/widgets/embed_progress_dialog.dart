@@ -335,7 +335,8 @@ class _EmbedProgressDialogState extends State<EmbedProgressDialog> {
   }
 }
 
-/// 保存后按设置自动内嵌（设置→歌曲→在线元数据＝内嵌到歌曲）。
+/// “修改信息”窗口点击保存后按设置自动内嵌（设置→歌曲→在线元数据＝内嵌到
+/// 歌曲）；其它保存入口（在线获取/封面/歌词子窗）不调用，只存缓存。
 ///
 /// 返回 null 表示当前不是内嵌模式（调用方沿用缓存/sidecar 口径提示）；
 /// 否则返回执行结果——[EmbedOutcomeStatus.skipped] 为条件不满足未执行

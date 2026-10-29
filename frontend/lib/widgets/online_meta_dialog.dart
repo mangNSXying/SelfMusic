@@ -12,7 +12,6 @@ import '../services/online_meta/online_meta_models.dart';
 import '../services/online_meta/online_meta_service.dart';
 import 'app_dialog_actions.dart';
 import 'app_toast.dart';
-import 'embed_progress_dialog.dart';
 import 'online_meta_detail_dialog.dart';
 
 enum _TagSource { lyrics, cover }
@@ -23,7 +22,8 @@ enum _TagSource { lyrics, cover }
 /// 的手动路径：关键词可改→重搜→最佳匹配高亮→预览→保存/关联。
 /// 三页统一「点选候选 + 行尾查看 + 底部保存」：歌词/封面保存当前候选，
 /// 标签页选回填来源（歌词/封面候选）后由底部保存回填标题/歌手/专辑。
-/// 保存口径遵循设置 `online_meta_save_mode`（仅应用缓存/写回源目录/内嵌到歌曲）。
+/// 本窗保存口径遵循设置 `online_meta_save_mode`：内嵌模式下暂只写应用缓存，
+/// 内嵌由“修改信息”窗口点击保存时统一执行。
 class OnlineMetaDialog extends StatefulWidget {
   final Song song;
 
@@ -352,22 +352,12 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
       direct.notifySongMetaChanged();
       player.reloadLyricsIfCurrent(widget.song);
       if (!mounted) return;
-      final embed = await embedAfterSaveIfEnabled(context, widget.song);
-      if (!mounted) return;
       AppToast.show(
-        switch (embed?.status) {
-          EmbedOutcomeStatus.embedded => '歌词已保存并内嵌到歌曲文件（应用缓存同步）',
-          EmbedOutcomeStatus.cancelled => '歌词已保存到应用缓存（嵌入已取消）',
-          EmbedOutcomeStatus.failed =>
-            '歌词已保存到应用缓存（嵌入失败：${embed?.detail}）',
-          EmbedOutcomeStatus.skipped =>
-            '歌词已保存到应用缓存（未嵌入：${embed?.detail}）',
-          null => r.sidecarPath != null
-              ? '歌词已保存并覆盖 ${r.sidecarPath}（应用缓存同步）'
-              : r.sidecarSkipped
-                  ? '歌词已保存到应用缓存（该源不支持写回，已跳过 sidecar）'
-                  : '歌词已保存到应用缓存',
-        },
+        r.sidecarPath != null
+            ? '歌词已保存并覆盖 ${r.sidecarPath}（应用缓存同步）'
+            : r.sidecarSkipped
+                ? '歌词已保存到应用缓存（该源不支持写回，已跳过 sidecar）'
+                : '歌词已保存到应用缓存',
         isError: false,
       );
     } catch (e) {
@@ -456,22 +446,12 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
       player.refreshSongMeta(updated);
     }
     if (!mounted) return;
-    final embed = await embedAfterSaveIfEnabled(context, widget.song);
-    if (!mounted) return;
     AppToast.show(
-      switch (embed?.status) {
-        EmbedOutcomeStatus.embedded => '封面已保存并内嵌到歌曲文件（应用缓存同步）',
-        EmbedOutcomeStatus.cancelled => '封面已保存到应用缓存（嵌入已取消）',
-        EmbedOutcomeStatus.failed =>
-          '封面已保存到应用缓存（嵌入失败：${embed?.detail}）',
-        EmbedOutcomeStatus.skipped =>
-          '封面已保存到应用缓存（未嵌入：${embed?.detail}）',
-        null => r.sidecarPath != null
-            ? '封面已保存并覆盖 ${r.sidecarPath}（应用缓存同步）'
-            : r.sidecarSkipped
-                ? '封面已保存到应用缓存（该源不支持写回，已跳过 cover.jpg）'
-                : '封面已保存到应用缓存',
-      },
+      r.sidecarPath != null
+          ? '封面已保存并覆盖 ${r.sidecarPath}（应用缓存同步）'
+          : r.sidecarSkipped
+              ? '封面已保存到应用缓存（该源不支持写回，已跳过 cover.jpg）'
+              : '封面已保存到应用缓存',
       isError: false,
     );
   }
@@ -606,7 +586,7 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
             Text(
               '歌词：${lyricSource.label} · 封面：${coverSource.label}（设置可换源，无自动串源） · 保存：${switch (saveMode) {
                 OnlineMetaSaveMode.sidecar => '应用缓存＋写回源目录（同名覆盖）',
-                OnlineMetaSaveMode.embed => '应用缓存＋内嵌到歌曲文件',
+                OnlineMetaSaveMode.embed => '应用缓存（需在“修改信息”窗口保存时内嵌）',
                 OnlineMetaSaveMode.appCache => '仅应用缓存',
               }}',
               style: Theme.of(context)

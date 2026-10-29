@@ -1860,7 +1860,7 @@ class _SongsSettingsState extends State<_SongsSettings> {
               OnlineMetaSaveMode.sidecar =>
                 '歌词/封面必写应用缓存，并覆盖写回源目录（歌词 <stem>.lrc，封面 cover.jpg 专辑级：同目录共享，杂烩目录后写盖先写）。远端经上传口直写、不经代理；服务端歌/鸿蒙本地自动跳过。封面应用缓存 covers/ 恒保留。',
               OnlineMetaSaveMode.embed =>
-                '歌词/封面必写应用缓存，保存后自动写入歌曲文件标签（mp3/flac/wav/aiff/m4a），验签通过后删同名 sidecar。远端源需整首下载＋上传（流量较大，建议 Wi-Fi）；服务端歌/鸿蒙本地/源不可写/格式不支持时自动仅存应用缓存。同曲在播会在写盘前自动暂停，完成后恢复；嵌入过程中请勿退出应用。',
+                '歌词/封面必写应用缓存；仅在“修改信息”窗口点击保存时，才把缓存中的歌词/封面写入歌曲文件标签（mp3/flac/wav/aiff/m4a），验签通过后删同名 sidecar；其它入口（在线获取/封面/歌词子窗）暂只存缓存。远端源需整首下载＋上传（流量较大，建议 Wi-Fi）；服务端歌/鸿蒙本地/源不可写/格式不支持时自动仅存应用缓存。同曲在播会在写盘前自动暂停，完成后恢复；嵌入过程中请勿退出应用。',
               OnlineMetaSaveMode.appCache =>
                 '歌词写应用内 song_lyrics，封面写 covers/（全源安全，不动用户文件）。',
             },

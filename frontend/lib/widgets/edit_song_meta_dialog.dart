@@ -43,6 +43,9 @@ class _EditSongMetaDialogState extends State<EditSongMetaDialog> {
   String? _coverPath;
   String _lyricSummary = '无';
 
+  /// 保存进行中（含内嵌）：阻止连点导致重复写盘/重复嵌入。
+  bool _saving = false;
+
   /// 本窗自动回填写入过的值（每个输入框最近一次）：连续多次在线回填时，
   /// 字段仍可视为「未手改」继续跟随，而手改过的字段不再被覆盖。
   final Map<TextEditingController, String> _autoFilled = {};
@@ -124,6 +127,7 @@ class _EditSongMetaDialogState extends State<EditSongMetaDialog> {
   }
 
   Future<void> _save() async {
+    if (_saving) return;
     final title = _title.text.trim();
     if (title.isEmpty) {
       AppToast.error(StateError('标题不能为空'));
@@ -149,24 +153,42 @@ class _EditSongMetaDialogState extends State<EditSongMetaDialog> {
       }
     }
 
-    final direct = context.read<DirectSourceManager>();
-    final updated = await direct.updateSongMeta(
-      widget.song,
-      title: delta(title, widget.song.title),
-      artist: delta(_artist.text, widget.song.artist),
-      albumArtist: delta(_albumArtist.text, widget.song.albumArtist),
-      album: delta(_album.text, widget.song.albumName),
-      year: year,
-      clearYear: clearYear,
-    );
-    if (!mounted) return;
-    if (updated != null) {
-      context.read<PlayerProvider>().refreshSongMeta(updated);
+    _saving = true;
+    try {
+      final direct = context.read<DirectSourceManager>();
+      final updated = await direct.updateSongMeta(
+        widget.song,
+        title: delta(title, widget.song.title),
+        artist: delta(_artist.text, widget.song.artist),
+        albumArtist: delta(_albumArtist.text, widget.song.albumArtist),
+        album: delta(_album.text, widget.song.albumName),
+        year: year,
+        clearYear: clearYear,
+      );
+      if (!mounted) return;
+      if (updated != null) {
+        context.read<PlayerProvider>().refreshSongMeta(updated);
+      }
+      // 内嵌口径：仅本窗“保存”按钮触发；在线获取/封面/歌词子窗只存缓存。
+      final embed = await embedAfterSaveIfEnabled(context, widget.song);
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      final base = widget.song.isDirect
+          ? '已保存歌曲信息（扫描不再覆盖）'
+          : '已保存歌曲信息（本地覆盖）';
+      AppToast.show(
+        switch (embed?.status) {
+          EmbedOutcomeStatus.embedded => '$base，并已将歌词/封面内嵌到歌曲文件',
+          EmbedOutcomeStatus.cancelled => '$base，嵌入已取消（仅应用缓存）',
+          EmbedOutcomeStatus.failed => '$base，未嵌入：${embed?.detail}',
+          EmbedOutcomeStatus.skipped => '$base，未嵌入：${embed?.detail}',
+          null => base,
+        },
+        isError: false,
+      );
+    } finally {
+      _saving = false;
     }
-    Navigator.of(context).pop();
-    AppToast.show(
-        widget.song.isDirect ? '已保存歌曲信息（扫描不再覆盖）' : '已保存歌曲信息（本地覆盖）',
-        isError: false);
   }
 
   /// 打开在线获取（手动）：保存后经 metaVersion 监听自动回填本窗。
@@ -374,26 +396,13 @@ class _CoverEditWindowState extends State<_CoverEditWindow> {
         player.refreshSongMeta(updated);
       }
       if (!mounted) return;
-      final embed = await embedAfterSaveIfEnabled(context, widget.song);
-      if (!mounted) return;
       setState(() {
         _mem = Uint8List.fromList(bytes);
         _path = r.coverPath;
       });
       AppToast.show(
-        switch (embed?.status) {
-          EmbedOutcomeStatus.embedded => '封面已更换并内嵌到歌曲文件',
-          EmbedOutcomeStatus.cancelled => '封面已更换到应用缓存（嵌入已取消）',
-          EmbedOutcomeStatus.failed =>
-            '封面已更换到应用缓存（嵌入失败：${embed?.detail}）',
-          EmbedOutcomeStatus.skipped =>
-            '封面已更换到应用缓存（未嵌入：${embed?.detail}）',
-          null => r.sidecarPath != null
-              ? '封面已更换并覆盖 ${r.sidecarPath}'
-              : '封面已更换',
-        },
-        isError: false,
-      );
+          r.sidecarPath != null ? '封面已更换并覆盖 ${r.sidecarPath}' : '封面已更换',
+          isError: false);
     } catch (e) {
       if (mounted) AppToast.error(e, '选择封面失败');
     } finally {
@@ -620,26 +629,15 @@ class _LyricsEditWindowState extends State<_LyricsEditWindow> {
       direct.notifySongMetaChanged();
       player.reloadLyricsIfCurrent(widget.song);
       if (!mounted) return;
-      final embed = await embedAfterSaveIfEnabled(context, widget.song);
-      if (!mounted) return;
       setState(() => _dirty = false);
       Navigator.of(context).pop(true);
       AppToast.show(
-        switch (embed?.status) {
-          EmbedOutcomeStatus.embedded => '歌词已保存并内嵌到歌曲文件',
-          EmbedOutcomeStatus.cancelled => '歌词已保存到应用缓存（嵌入已取消）',
-          EmbedOutcomeStatus.failed =>
-            '歌词已保存到应用缓存（嵌入失败：${embed?.detail}）',
-          EmbedOutcomeStatus.skipped =>
-            '歌词已保存到应用缓存（未嵌入：${embed?.detail}）',
-          null => r.sidecarPath != null
+          r.sidecarPath != null
               ? '歌词已保存并覆盖 ${r.sidecarPath}'
               : r.sidecarSkipped
                   ? '歌词已保存（该源不支持写回，已跳过 sidecar）'
                   : '歌词已保存',
-        },
-        isError: false,
-      );
+          isError: false);
     } catch (e) {
       if (mounted) AppToast.error(e, '保存歌词失败');
     } finally {
