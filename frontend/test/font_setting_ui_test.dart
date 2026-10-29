@@ -84,6 +84,7 @@ void main() {
     expect(find.text('界面字体'), findsOneWidget);
     expect(find.text('系统默认'), findsOneWidget);
     expect(find.text('导入字体文件'), findsOneWidget);
+    expect(find.textContaining('TTC'), findsOneWidget);
     expect(find.text('更换字体'), findsNothing);
     expect(find.text('恢复系统字体'), findsNothing);
   });

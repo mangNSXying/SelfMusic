@@ -21,6 +21,7 @@ import '../services/equalizer/equalizer_service.dart';
 import '../services/equalizer/equalizer_types.dart';
 import '../services/server_settings.dart';
 import '../services/sync_engine.dart';
+import '../services/ttc_font.dart';
 import '../shortcuts/shortcut_settings.dart';
 import '../utils/url_input.dart';
 import '../theme/app_metrics.dart';
@@ -1061,7 +1062,7 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
             ),
           ],
           const SizedBox(height: 6),
-          Text('支持 TTF / OTF，仅本机生效；字体缺字时由系统字体回退',
+          Text('支持 TTF / OTF / TTC；TTC 可选择字面，仅本机生效；缺字时由系统字体回退',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: colorScheme.onSurface.withValues(alpha: 0.6))),
           const Divider(),
@@ -1204,7 +1205,7 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
     if (_fontBusy) return;
     XFile? picked;
     // 安卓文件管理器常把字体标成 application/octet-stream，严格 MIME 过滤会
-    // 把可用的 TTF/OTF 藏起来；安卓端放开选择，仍由服务层校验扩展名与文件头。
+    // 把可用的 TTF/OTF/TTC 藏起来；安卓端放开选择，仍由服务层校验扩展名与文件头。
     // 桌面/鸿蒙保留字体过滤（鸿蒙原生按后缀过滤；大小写各列一份，GTK 区分大小写）。
     final loosePicker = Platform.isAndroid;
     try {
@@ -1213,7 +1214,8 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
             ? const []
             : const [
                 XTypeGroup(
-                    label: '字体文件', extensions: ['ttf', 'otf', 'TTF', 'OTF'])
+                    label: '字体文件',
+                    extensions: ['ttf', 'otf', 'ttc', 'TTF', 'OTF', 'TTC'])
               ],
       );
     } catch (e) {
@@ -1228,8 +1230,26 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
     setState(() => _fontBusy = true);
     try {
       final service = CustomFontService(_settings);
+      int? faceIndex;
+      if (await service.isTtcFile(picked.path)) {
+        final faces = await service.listTtcFaces(sourcePath: picked.path);
+        if (faces.isEmpty) {
+          throw const CustomFontException('TTC 字体集合为空');
+        }
+        if (faces.length == 1) {
+          faceIndex = faces.first.index;
+        } else {
+          if (!mounted) return;
+          final chosen = await _pickTtcFace(picked.name, faces);
+          if (chosen == null) return;
+          faceIndex = chosen.index;
+        }
+      }
       final label = await service.importFont(
-          sourcePath: picked.path, sourceName: picked.name);
+        sourcePath: picked.path,
+        sourceName: picked.name,
+        faceIndex: faceIndex,
+      );
       await theme.setFontFamily(service.family);
       if (!mounted) return;
       setState(() {});
@@ -1242,6 +1262,57 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
     } finally {
       if (mounted) setState(() => _fontBusy = false);
     }
+  }
+
+  /// TTC 字面选择：集合内可能是不同语言/字重，不能默认取首字面
+  /// （Noto CJK 首字面是 JP，中文用户通常需要 SC）。
+  Future<TtcFaceInfo?> _pickTtcFace(String fileName, List<TtcFaceInfo> faces) {
+    final counts = <String, int>{};
+    for (final face in faces) {
+      counts[face.label] = (counts[face.label] ?? 0) + 1;
+    }
+    final maxHeight = (MediaQuery.sizeOf(context).height * 0.5)
+        .clamp(120.0, 420.0)
+        .toDouble();
+    final height = (faces.length * 56.0).clamp(120.0, maxHeight).toDouble();
+    return showDialog<TtcFaceInfo>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: Text('选择字体字面（${faces.length}）'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: SizedBox(
+            width: double.maxFinite,
+            height: height,
+            child: ListView.builder(
+              itemCount: faces.length,
+              itemBuilder: (c, i) {
+                final face = faces[i];
+                final base = face.label.isEmpty
+                    ? '$fileName #${face.index + 1}'
+                    : face.label;
+                final label = (counts[face.label] ?? 0) > 1
+                    ? '$base（#${face.index + 1}）'
+                    : base;
+                return ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  title:
+                      Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  onTap: () => Navigator.of(c).pop(face),
+                );
+              },
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(),
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    );
   }
 
   /// 删除已导入字体并恢复系统默认（文件与设置一并清理）。

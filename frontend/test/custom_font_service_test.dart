@@ -10,6 +10,8 @@ import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/services/custom_font_service.dart';
 import 'package:sqlite3/open.dart';
 
+import 'ttc_test_util.dart';
+
 DynamicLibrary _openOnLinux() {
   try {
     return DynamicLibrary.open('libsqlite3.so');
@@ -62,21 +64,21 @@ void main() {
   }
 
   group('导入校验', () {
-    test('拒绝非 TTF / OTF 扩展名', () async {
+    test('拒绝非 TTF / OTF / TTC 扩展名', () async {
       final f = await writeFile('bad.txt', [0, 1, 0, 0]);
       await expectLater(
         service.importFont(sourcePath: f.path, sourceName: 'bad.txt'),
-        _fontError('仅支持 TTF / OTF 字体文件'),
+        _fontError('仅支持 TTF / OTF / TTC 字体文件'),
       );
       expect(settings.customFontFamily, isEmpty);
     });
 
-    test('拒绝 TTC 字体集合', () async {
+    test('TTC 头但文件过短时拒绝', () async {
       final f =
           await writeFile('bad.ttf', [0x74, 0x74, 0x63, 0x66, 0, 0, 0, 0]);
       await expectLater(
         service.importFont(sourcePath: f.path, sourceName: 'bad.ttf'),
-        _fontError('暂不支持 TTC 字体集合，请选择 TTF / OTF'),
+        _fontError('TTC 文件过短'),
       );
       expect(settings.customFontFamily, isEmpty);
     });
@@ -116,6 +118,54 @@ void main() {
       await service.clear();
       expect(settings.customFontFamily, isEmpty);
       expect(settings.customFontLabel, isEmpty);
+    });
+  });
+
+  group('TTC 集合导入', () {
+    test('列出字面后提取为单字体并持久化', () async {
+      final sfnt = await loadMaterialIconsOtf();
+      final ttc = buildTtcFromSfnt(sfnt, faceCount: 2);
+      final source = await writeFile('icons.ttc', ttc);
+
+      expect(await service.isTtcFile(source.path), isTrue);
+      final faces = await service.listTtcFaces(sourcePath: source.path);
+      expect(faces, hasLength(2));
+      expect(faces.first.label.toLowerCase(), contains('material'));
+
+      final label = await service.importFont(
+        sourcePath: source.path,
+        sourceName: 'icons.ttc',
+        faceIndex: 1,
+      );
+      expect(label.toLowerCase(), contains('material'));
+      expect(settings.customFontFile, endsWith('.otf'));
+      expect(settings.customFontFile, isNot(endsWith('.ttc')));
+
+      final stored =
+          File(p.join(dir.path, 'selfmusic', 'fonts', settings.customFontFile));
+      expect(await stored.exists(), isTrue);
+      final header = await stored.openRead(0, 4).first;
+      expect(String.fromCharCodes(header), 'OTTO');
+      expect(await CustomFontService(settings).loadSaved(), service.family);
+    });
+
+    test('伪 TTC 与越界字面索引被拒绝', () async {
+      final sfnt = await loadMaterialIconsOtf();
+      final plain = await writeFile('plain.ttc', sfnt);
+      expect(await service.isTtcFile(plain.path), isFalse);
+      await expectLater(
+        service.importFont(sourcePath: plain.path, sourceName: 'plain.ttc'),
+        throwsA(isA<CustomFontException>()),
+      );
+
+      final ttc = buildTtcFromSfnt(sfnt);
+      final source = await writeFile('icons.ttc', ttc);
+      await service.listTtcFaces(sourcePath: source.path);
+      await expectLater(
+        service.importFont(
+            sourcePath: source.path, sourceName: 'icons.ttc', faceIndex: 9),
+        throwsA(isA<CustomFontException>()),
+      );
     });
   });
 
