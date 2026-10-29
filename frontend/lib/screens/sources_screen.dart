@@ -23,6 +23,7 @@ import '../utils/collection_sort.dart';
 import '../utils/url_input.dart';
 import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/context_menu.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
 import '../widgets/sort_menu_button.dart';
@@ -1886,22 +1887,27 @@ class _DirectSourceCard extends StatelessWidget {
                 ? ' · 线路:备用1'
                 : ' · 线路:备用2';
 
-    final tile = ListTile(
-      leading: _SourceKindIcon(kind: s.kind),
-      title: Text(s.name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: Theme.of(context)
-              .textTheme
-              .titleMedium
-              ?.copyWith(fontWeight: FontWeight.w600)),
-      subtitle: Text(needsSecrets
-          ? '待配置凭据 · 点击「编辑」补输后可用'
-          : fbNeeds
-              ? '$routeLabel$fbLabel$lineLabel · 备用待配凭据 · 已索引 $count 首'
-              : '$routeLabel$fbLabel$lineLabel · 已索引 $count 首'),
-      trailing: _SourceMenu(sourceKey: sourceKey, direct: direct),
-      onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
+    final tile = GestureDetector(
+      // 桌面右键：在指针处弹出与三点按钮相同的源设置菜单。
+      onSecondaryTapDown: (d) =>
+          _openSourceMenuAt(context, sourceKey, direct, d.globalPosition),
+      child: ListTile(
+        leading: _SourceKindIcon(kind: s.kind),
+        title: Text(s.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context)
+                .textTheme
+                .titleMedium
+                ?.copyWith(fontWeight: FontWeight.w600)),
+        subtitle: Text(needsSecrets
+            ? '待配置凭据 · 点击「编辑」补输后可用'
+            : fbNeeds
+                ? '$routeLabel$fbLabel$lineLabel · 备用待配凭据 · 已索引 $count 首'
+                : '$routeLabel$fbLabel$lineLabel · 已索引 $count 首'),
+        trailing: _SourceMenu(sourceKey: sourceKey, direct: direct),
+        onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
+      ),
     );
     if (plain) return tile;
     // 卡片形态：与专辑/歌手共用方形卡片（SquareCard），菜单叠右上角。
@@ -1915,6 +1921,8 @@ class _DirectSourceCard extends StatelessWidget {
       fallback: _SourceKindIcon(kind: s.kind, size: 44, framed: false),
       onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
       cornerAction: _SourceMenu(sourceKey: sourceKey, direct: direct),
+      onSecondaryTapDown: (d) =>
+          _openSourceMenuAt(context, sourceKey, direct, d.globalPosition),
     );
   }
 }
@@ -1928,83 +1936,82 @@ class _SourceMenu extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final fbCount = direct.fallbackCountOf(sourceKey);
-    final linePref = direct.linePrefOf(sourceKey);
-    String lineLabel(SourceLine l) {
-      final cur = linePref == l ? ' ✓' : '';
-      return switch (l) {
-        SourceLine.auto => '线路：自动$cur',
-        SourceLine.primary => '线路：主用$cur',
-        SourceLine.fb0 => '线路：备用1$cur',
-        SourceLine.fb1 => '线路：备用2$cur',
-      };
-    }
-
     return PopupMenuButton<String>(
       tooltip: '源设置',
       iconSize: 20,
       padding: EdgeInsets.zero,
-      onSelected: (v) async {
-        switch (v) {
-          case 'edit':
-            showDialog<void>(
-                context: context,
-                builder: (_) => _SourceDialog(editKey: sourceKey));
-          case 'delete':
-            _confirmDelete(context, sourceKey, direct);
-          case 'line_auto':
-          case 'line_primary':
-          case 'line_fb0':
-          case 'line_fb1':
-            final line = switch (v) {
-              'line_primary' => SourceLine.primary,
-              'line_fb0' => SourceLine.fb0,
-              'line_fb1' => SourceLine.fb1,
-              _ => SourceLine.auto,
-            };
-            await direct.setLinePref(sourceKey, line);
-            if (context.mounted) {
-              AppToast.show(
-                  line == SourceLine.auto
-                      ? '已切到自动线路（主→备 Failover）'
-                      : line == SourceLine.primary
-                          ? '已锁定主用线路'
-                          : line == SourceLine.fb0
-                              ? '已锁定备用1线路'
-                              : '已锁定备用2线路',
-                  isError: false);
-              // 若正在播该源，重载当前曲使线路即时生效。
-              try {
-                final player = context.read<PlayerProvider>();
-                if (player.current?.sourceKey == sourceKey) {
-                  unawaited(player.reloadCurrentForPlaybackRoute());
-                }
-              } catch (_) {}
-            }
-        }
-      },
-      itemBuilder: (c) => [
-        const PopupMenuItem(value: 'edit', child: Text('编辑')),
-        if (fbCount > 0) ...[
-          const PopupMenuDivider(),
-          PopupMenuItem(
-              value: 'line_auto', child: Text(lineLabel(SourceLine.auto))),
-          PopupMenuItem(
-              value: 'line_primary',
-              child: Text(lineLabel(SourceLine.primary))),
-          PopupMenuItem(
-              value: 'line_fb0', child: Text(lineLabel(SourceLine.fb0))),
-          if (fbCount > 1)
-            PopupMenuItem(
-                value: 'line_fb1', child: Text(lineLabel(SourceLine.fb1))),
-        ],
-        const PopupMenuDivider(),
-        const PopupMenuItem(
-          value: 'delete',
-          child: Text('删除源', style: TextStyle(color: Colors.redAccent)),
-        ),
-      ],
+      onSelected: (v) =>
+          _handleSourceMenuValue(context, sourceKey, direct, v),
+      itemBuilder: (c) => _sourceMenuItems(sourceKey, direct),
     );
+  }
+}
+
+/// 播放源菜单项（三点按钮与右键菜单共用）。
+List<PopupMenuEntry<String>> _sourceMenuItems(
+    String sourceKey, DirectSourceManager direct) {
+  return [
+    const PopupMenuItem(value: 'edit', child: Text('编辑')),
+    ...buildLineMenuItems(direct, sourceKey),
+    const PopupMenuDivider(),
+    const PopupMenuItem(
+      value: 'delete',
+      child: Text('删除源', style: TextStyle(color: Colors.redAccent)),
+    ),
+  ];
+}
+
+/// 播放源菜单选中回调（三点按钮与右键菜单共用）。
+Future<void> _handleSourceMenuValue(BuildContext context, String sourceKey,
+    DirectSourceManager direct, String v) async {
+  switch (v) {
+    case 'edit':
+      showDialog<void>(
+          context: context, builder: (_) => _SourceDialog(editKey: sourceKey));
+    case 'delete':
+      _confirmDelete(context, sourceKey, direct);
+    case 'line_auto':
+    case 'line_primary':
+    case 'line_fb0':
+    case 'line_fb1':
+      final line = switch (v) {
+        'line_primary' => SourceLine.primary,
+        'line_fb0' => SourceLine.fb0,
+        'line_fb1' => SourceLine.fb1,
+        _ => SourceLine.auto,
+      };
+      await direct.setLinePref(sourceKey, line);
+      if (context.mounted) {
+        AppToast.show(
+            line == SourceLine.auto
+                ? '已切到自动线路（主→备 Failover）'
+                : line == SourceLine.primary
+                    ? '已锁定主用线路'
+                    : line == SourceLine.fb0
+                        ? '已锁定备用1线路'
+                        : '已锁定备用2线路',
+            isError: false);
+        // 若正在播该源，重载当前曲使线路即时生效。
+        try {
+          final player = context.read<PlayerProvider>();
+          if (player.current?.sourceKey == sourceKey) {
+            unawaited(player.reloadCurrentForPlaybackRoute());
+          }
+        } catch (_) {}
+      }
+  }
+}
+
+/// 右键：在指针位置弹出与三点按钮相同的源设置菜单。
+Future<void> _openSourceMenuAt(BuildContext context, String sourceKey,
+    DirectSourceManager direct, Offset globalPosition) async {
+  final picked = await showContextMenuAt<String>(
+    context,
+    globalPosition,
+    items: _sourceMenuItems(sourceKey, direct),
+  );
+  if (picked != null && context.mounted) {
+    await _handleSourceMenuValue(context, sourceKey, direct, picked);
   }
 }
 

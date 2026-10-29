@@ -9,6 +9,7 @@ import '../providers/player_provider.dart';
 import '../providers/playlists_provider.dart';
 import '../utils/collection_sort.dart';
 import '../widgets/app_dialog_actions.dart';
+import '../widgets/context_menu.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
 import '../widgets/row_list.dart';
@@ -196,31 +197,37 @@ class _PlaylistsViewState extends State<PlaylistsView>
   }
 
   Widget _playlistTile(PlaylistsProvider provider, PlaylistRow p) {
-    return ListTile(
-      selected: _sel.active && _sel.contains(p.id),
-      // 歌单行无封面，勾选框顶替图标行首；有封面的行改为叠在封面左上角
-      // （见 SongTile / SquareCard）。
-      leading: _sel.active
-          ? SelectionBadge(
-              selected: _sel.contains(p.id),
-              onTap: () => _toggleSelect(p.id),
-            )
-          : const Icon(Icons.queue_music),
-      title: Text(p.name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: Theme.of(context)
-              .textTheme
-              .bodyLarge
-              ?.copyWith(fontWeight: FontWeight.w600)),
-      subtitle: Text('${provider.countOf(p.id)} 首'),
-      trailing: _sel.active ? null : _playlistMenu(provider, p),
-      onTap: _sel.active
-          ? () => _toggleSelect(p.id)
-          : () => context.read<NavigationProvider>().enterPlaylist(p.id),
-      onLongPress: _sel.active
-          ? () => _toggleSelect(p.id)
-          : () => setState(() => _sel.startWith(p.id)),
+    return GestureDetector(
+      // 桌面右键：在指针处弹出与三点按钮相同的菜单；多选态不响应（与隐藏按钮一致）。
+      onSecondaryTapDown: _sel.active
+          ? null
+          : (d) => _openPlaylistMenuAt(provider, p, d.globalPosition),
+      child: ListTile(
+        selected: _sel.active && _sel.contains(p.id),
+        // 歌单行无封面，勾选框顶替图标行首；有封面的行改为叠在封面左上角
+        // （见 SongTile / SquareCard）。
+        leading: _sel.active
+            ? SelectionBadge(
+                selected: _sel.contains(p.id),
+                onTap: () => _toggleSelect(p.id),
+              )
+            : const Icon(Icons.queue_music),
+        title: Text(p.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context)
+                .textTheme
+                .bodyLarge
+                ?.copyWith(fontWeight: FontWeight.w600)),
+        subtitle: Text('${provider.countOf(p.id)} 首'),
+        trailing: _sel.active ? null : _playlistMenu(provider, p),
+        onTap: _sel.active
+            ? () => _toggleSelect(p.id)
+            : () => context.read<NavigationProvider>().enterPlaylist(p.id),
+        onLongPress: _sel.active
+            ? () => _toggleSelect(p.id)
+            : () => setState(() => _sel.startWith(p.id)),
+      ),
     );
   }
 
@@ -240,25 +247,46 @@ class _PlaylistsViewState extends State<PlaylistsView>
       selectionMode: _sel.active,
       selected: _sel.contains(p.id),
       onToggleSelect: () => _toggleSelect(p.id),
+      onSecondaryTapDown: _sel.active
+          ? null
+          : (d) => _openPlaylistMenuAt(provider, p, d.globalPosition),
     );
   }
+
+  /// 歌单菜单项（三点按钮与右键菜单共用）。
+  static const List<PopupMenuEntry<String>> _playlistMenuItems = [
+    PopupMenuItem(value: 'rename', child: Text('重命名')),
+    PopupMenuItem(value: 'delete', child: Text('删除')),
+  ];
 
   Widget _playlistMenu(PlaylistsProvider provider, PlaylistRow p) {
     return PopupMenuButton<String>(
       tooltip: '更多',
-      onSelected: (v) {
-        switch (v) {
-          case 'rename':
-            _renameDialog(context, provider, p);
-          case 'delete':
-            _confirmDelete(context, provider, p);
-        }
-      },
-      itemBuilder: (_) => const [
-        PopupMenuItem(value: 'rename', child: Text('重命名')),
-        PopupMenuItem(value: 'delete', child: Text('删除')),
-      ],
+      onSelected: (v) => _handlePlaylistMenu(provider, p, v),
+      itemBuilder: (_) => _playlistMenuItems,
     );
+  }
+
+  /// 歌单菜单选中回调（三点按钮与右键菜单共用）。
+  void _handlePlaylistMenu(
+      PlaylistsProvider provider, PlaylistRow p, String v) {
+    switch (v) {
+      case 'rename':
+        _renameDialog(context, provider, p);
+      case 'delete':
+        _confirmDelete(context, provider, p);
+    }
+  }
+
+  /// 右键：在指针位置弹出与三点按钮相同的菜单。
+  Future<void> _openPlaylistMenuAt(
+      PlaylistsProvider provider, PlaylistRow p, Offset globalPosition) async {
+    final picked = await showContextMenuAt<String>(
+      context,
+      globalPosition,
+      items: _playlistMenuItems,
+    );
+    if (picked != null && mounted) _handlePlaylistMenu(provider, p, picked);
   }
 
   static Future<void> _createDialog(

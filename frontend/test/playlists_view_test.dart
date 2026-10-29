@@ -2,10 +2,12 @@ import 'dart:ffi';
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:flutter/gestures.dart' show PointerDeviceKind, kSecondaryButton;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:provider/provider.dart';
+import 'package:selfmusic/data/local/app_settings.dart';
 import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
@@ -219,6 +221,103 @@ void main() {
     await tester.tap(find.byTooltip('取消选择'));
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('已选 2'), findsNothing);
+
+    await tester.runAsync(() async {
+      direct.dispose();
+      dir.deleteSync(recursive: true);
+    });
+  });
+
+  testWidgets('右键歌单行：在指针处弹出重命名/删除菜单；多选态不响应', (tester) async {
+    late final Directory dir;
+    late final DirectSourceManager direct;
+    await tester.runAsync(() async {
+      dir = await Directory.systemTemp.createTemp('selfmusic_plrc_');
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      direct = DirectSourceManager();
+      await direct.init();
+      await direct.playlists.create('右键歌单');
+    });
+
+    final provider = PlaylistsProvider(direct.playlists);
+    final nav = NavigationProvider();
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+          ChangeNotifierProvider<PlaylistsProvider>.value(value: provider),
+          ChangeNotifierProvider<NavigationProvider>.value(value: nav),
+        ],
+        child: const MaterialApp(
+          home: Scaffold(body: PlaylistsView()),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 50));
+
+    final row = tester.getCenter(find.text('右键歌单'));
+    await tester.tapAt(row,
+        buttons: kSecondaryButton, kind: PointerDeviceKind.mouse);
+    await tester.pumpAndSettle();
+    expect(find.text('重命名'), findsOneWidget);
+    expect(find.text('删除'), findsOneWidget);
+
+    // 空白处点击关闭菜单。
+    await tester.tapAt(const Offset(2, 2));
+    await tester.pumpAndSettle();
+    expect(find.text('重命名'), findsNothing);
+
+    // 多选态：右键不弹菜单（与隐藏三点按钮一致）。
+    await tester.longPress(find.text('右键歌单'));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.text('已选 1'), findsOneWidget);
+    await tester.tapAt(row,
+        buttons: kSecondaryButton, kind: PointerDeviceKind.mouse);
+    await tester.pumpAndSettle();
+    expect(find.text('重命名'), findsNothing);
+
+    await tester.runAsync(() async {
+      direct.dispose();
+      dir.deleteSync(recursive: true);
+    });
+  });
+
+  testWidgets('右键歌单卡片：在指针处弹出同款菜单（SquareCard 通道）',
+      (tester) async {
+    late final Directory dir;
+    late final DirectSourceManager direct;
+    await tester.runAsync(() async {
+      dir = await Directory.systemTemp.createTemp('selfmusic_plrcard_');
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      direct = DirectSourceManager();
+      await direct.init();
+      await direct.playlists.create('卡片歌单');
+      direct.settings.viewModePlaylists = CollectionViewMode.card;
+    });
+
+    final provider = PlaylistsProvider(direct.playlists);
+    final nav = NavigationProvider();
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+          ChangeNotifierProvider<PlaylistsProvider>.value(value: provider),
+          ChangeNotifierProvider<NavigationProvider>.value(value: nav),
+        ],
+        child: const MaterialApp(
+          home: Scaffold(body: PlaylistsView()),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 50));
+
+    await tester.tapAt(tester.getCenter(find.text('卡片歌单')),
+        buttons: kSecondaryButton, kind: PointerDeviceKind.mouse);
+    await tester.pumpAndSettle();
+    expect(find.text('重命名'), findsOneWidget);
+    expect(find.text('删除'), findsOneWidget);
 
     await tester.runAsync(() async {
       direct.dispose();

@@ -1,6 +1,7 @@
 import 'dart:ffi';
 import 'dart:io';
 
+import 'package:flutter/gestures.dart' show PointerDeviceKind, kSecondaryButton;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
@@ -394,6 +395,101 @@ void main() {
     expect(find.text('已加入下一首播放'), findsOneWidget);
     // toast 自带消失计时器：推到过期，避免测试结束时仍有 pending timer。
     await tester.pump(const Duration(milliseconds: 3000));
+
+    await tester.runAsync(() async {
+      direct.dispose();
+      dir.deleteSync(recursive: true);
+    });
+  });
+
+  testWidgets('右键在指针位置弹出同款菜单；多选态不响应', (tester) async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    late final Directory dir;
+    late final DirectSourceManager direct;
+    await tester.runAsync(() async {
+      dir = await Directory.systemTemp.createTemp('selfmusic_tilert_');
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      direct = DirectSourceManager();
+      await direct.init();
+    });
+
+    final song = Song(
+      id: 1,
+      sourceKey: 'webdav:t',
+      title: '测试歌',
+      artist: '歌手',
+      duration: 200,
+      source: 'webdav',
+      sourceRef: '/dav/right.mp3',
+      fileSize: 1024,
+    );
+
+    var plays = 0;
+    var extra = '';
+    Future<void> pumpTile({bool selectionMode = false}) async {
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+            ChangeNotifierProvider<PlayerProvider>(
+                create: (_) => PlayerProvider()),
+          ],
+          child: MaterialApp(
+            navigatorKey: appNavigatorKey,
+            home: Scaffold(
+              body: SongTile(
+                song: song,
+                source: _FakeSource(),
+                playing: false,
+                onPlay: () => plays++,
+                selectionMode: selectionMode,
+                selected: false,
+                onSelect: () {},
+                extraMenuItems: const [
+                  PopupMenuItem(value: 'row:extra', child: Text('自定义项')),
+                ],
+                onExtraMenu: (v) => extra = v,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    await pumpTile();
+
+    // 右键标题处：在指针位置弹出与三点按钮相同的菜单（含自定义项）。
+    final tapPoint = tester.getCenter(find.textContaining('测试歌'));
+    await tester.tapAt(tapPoint,
+        buttons: kSecondaryButton, kind: PointerDeviceKind.mouse);
+    await tester.pumpAndSettle();
+    expect(find.text('下一首播放'), findsOneWidget);
+    expect(find.text('自定义项'), findsOneWidget);
+    expect(plays, 0, reason: '右键不触发播放');
+
+    // 菜单从指针处展开（允许菜单内边距）。
+    final menuRect = tester.getRect(find.byType(PopupMenuItem<String>).first);
+    expect((menuRect.topLeft.dx - tapPoint.dx).abs(), lessThan(48));
+    expect((menuRect.topLeft.dy - tapPoint.dy).abs(), lessThan(48));
+
+    // 点菜单项：走与三点按钮相同的回调。
+    await tester.tap(find.text('自定义项'));
+    await tester.pumpAndSettle();
+    expect(extra, 'row:extra');
+
+    // 左键仍只触发播放，不弹菜单。
+    await tester.tap(find.textContaining('测试歌'));
+    await tester.pump();
+    expect(plays, 1);
+    expect(find.text('下一首播放'), findsNothing);
+
+    // 多选态：菜单按钮隐藏，右键同样不响应。
+    await pumpTile(selectionMode: true);
+    await tester.tapAt(tapPoint,
+        buttons: kSecondaryButton, kind: PointerDeviceKind.mouse);
+    await tester.pumpAndSettle();
+    expect(find.text('下一首播放'), findsNothing);
 
     await tester.runAsync(() async {
       direct.dispose();

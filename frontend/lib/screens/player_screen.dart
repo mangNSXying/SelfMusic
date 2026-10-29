@@ -25,6 +25,7 @@ import '../utils/song_title_format.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/app_volume_control.dart';
+import '../widgets/context_menu.dart';
 import '../widgets/edit_song_meta_dialog.dart';
 import '../widgets/lyrics_view.dart';
 import '../widgets/marquee_text.dart';
@@ -1979,7 +1980,7 @@ class _Cover extends StatelessWidget {
   Widget build(BuildContext context) {
     // 更多入口随封面缩放：圆框直径与图标按封面边长比例取，限制在可点范围。
     final moreSize = (size * 0.13).clamp(28.0, 44.0);
-    return SizedBox(
+    final cover = SizedBox(
       key: const Key('player-cover'),
       width: size,
       height: size,
@@ -2026,51 +2027,7 @@ class _Cover extends StatelessWidget {
                     tooltip: '更多',
                     padding: EdgeInsets.zero,
                     onSelected: (v) => _onSelected(context, v),
-                    itemBuilder: (c) {
-                      // 线路切换（与源卡片同功能）：仅当该源配了备用时出现。
-                      List<PopupMenuEntry<String>> lineItems = const [];
-                      try {
-                        final direct = c.read<DirectSourceManager>();
-                        final fbCount = direct.fallbackCountOf(song.sourceKey);
-                        if (fbCount > 0) {
-                          final pref = parseSourceLine(
-                              direct.settings.getSourceLine(song.sourceKey));
-                          String label(SourceLine l) {
-                            final cur = pref == l ? ' ✓' : '';
-                            return switch (l) {
-                              SourceLine.auto => '线路：自动$cur',
-                              SourceLine.primary => '线路：主用$cur',
-                              SourceLine.fb0 => '线路：备用1$cur',
-                              SourceLine.fb1 => '线路：备用2$cur',
-                            };
-                          }
-
-                          lineItems = [
-                            const PopupMenuDivider(),
-                            PopupMenuItem(
-                                value: 'line_auto',
-                                child: Text(label(SourceLine.auto))),
-                            PopupMenuItem(
-                                value: 'line_primary',
-                                child: Text(label(SourceLine.primary))),
-                            PopupMenuItem(
-                                value: 'line_fb0',
-                                child: Text(label(SourceLine.fb0))),
-                            if (fbCount > 1)
-                              PopupMenuItem(
-                                  value: 'line_fb1',
-                                  child: Text(label(SourceLine.fb1))),
-                          ];
-                        }
-                      } catch (_) {}
-                      return [
-                        const PopupMenuItem(value: 'info', child: Text('歌曲信息')),
-                        const PopupMenuItem(value: 'edit', child: Text('修改信息')),
-                        const PopupMenuItem(
-                            value: 'online', child: Text('在线获取元数据')),
-                        ...lineItems,
-                      ];
-                    },
+                    itemBuilder: (c) => _menuItems(c),
                     child: SizedBox(
                       width: moreSize,
                       height: moreSize,
@@ -2088,6 +2045,67 @@ class _Cover extends StatelessWidget {
         ],
       ),
     );
+    return GestureDetector(
+      // 桌面右键：在指针处弹出与右上「更多」相同的菜单；
+      // 控件自动隐藏时与按钮一致不可用。
+      onSecondaryTapDown: _PlayerControlsHidden.isHidden(context)
+          ? null
+          : (d) => _openContextMenuAt(context, d.globalPosition),
+      child: cover,
+    );
+  }
+
+  /// 菜单项（三点按钮与右键菜单共用）。
+  List<PopupMenuEntry<String>> _menuItems(BuildContext context) {
+    // 线路切换（与源卡片同功能）：仅当该源配了备用时出现。
+    List<PopupMenuEntry<String>> lineItems = const [];
+    try {
+      final direct = context.read<DirectSourceManager>();
+      final fbCount = direct.fallbackCountOf(song.sourceKey);
+      if (fbCount > 0) {
+        final pref =
+            parseSourceLine(direct.settings.getSourceLine(song.sourceKey));
+        String label(SourceLine l) {
+          final cur = pref == l ? ' ✓' : '';
+          return switch (l) {
+            SourceLine.auto => '线路：自动$cur',
+            SourceLine.primary => '线路：主用$cur',
+            SourceLine.fb0 => '线路：备用1$cur',
+            SourceLine.fb1 => '线路：备用2$cur',
+          };
+        }
+
+        lineItems = [
+          const PopupMenuDivider(),
+          PopupMenuItem(
+              value: 'line_auto', child: Text(label(SourceLine.auto))),
+          PopupMenuItem(
+              value: 'line_primary', child: Text(label(SourceLine.primary))),
+          PopupMenuItem(
+              value: 'line_fb0', child: Text(label(SourceLine.fb0))),
+          if (fbCount > 1)
+            PopupMenuItem(
+                value: 'line_fb1', child: Text(label(SourceLine.fb1))),
+        ];
+      }
+    } catch (_) {}
+    return [
+      const PopupMenuItem(value: 'info', child: Text('歌曲信息')),
+      const PopupMenuItem(value: 'edit', child: Text('修改信息')),
+      const PopupMenuItem(value: 'online', child: Text('在线获取元数据')),
+      ...lineItems,
+    ];
+  }
+
+  /// 右键：在指针位置弹出与右上「更多」相同的菜单。
+  Future<void> _openContextMenuAt(
+      BuildContext context, Offset globalPosition) async {
+    final picked = await showContextMenuAt<String>(
+      context,
+      globalPosition,
+      items: _menuItems(context),
+    );
+    if (picked != null && context.mounted) _onSelected(context, picked);
   }
 
   void _onSelected(BuildContext context, String v) {

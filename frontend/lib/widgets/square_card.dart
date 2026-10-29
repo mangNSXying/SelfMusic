@@ -31,6 +31,10 @@ class SquareCard extends StatelessWidget {
   /// 叠加在封面右上角的小控件（如播放源的设置菜单），无则不叠加。
   final Widget? cornerAction;
 
+  /// 桌面鼠标右键回调（在指针处弹出与右上角菜单相同的菜单）；
+  /// 多选态或无可弹菜单时由调用方传 null。
+  final GestureTapDownCallback? onSecondaryTapDown;
+
   /// 多选模式：隐藏右上角菜单、左上角固定勾选框（与列表行同一形态）。
   final bool selectionMode;
 
@@ -52,6 +56,7 @@ class SquareCard extends StatelessWidget {
     required this.onTap,
     this.onLongPress,
     this.cornerAction,
+    this.onSecondaryTapDown,
     this.selectionMode = false,
     this.selected = false,
     this.onToggleSelect,
@@ -74,6 +79,7 @@ class SquareCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(12),
       onTap: onTap,
       onLongPress: onLongPress,
+      onSecondaryTapDown: onSecondaryTapDown,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,

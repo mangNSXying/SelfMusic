@@ -14,6 +14,7 @@ import '../utils/song_title_format.dart';
 import 'add_to_playlist.dart';
 import 'app_dialog_actions.dart';
 import 'app_toast.dart';
+import 'context_menu.dart';
 import 'edit_song_meta_dialog.dart';
 import 'selection_badge.dart';
 import 'song_info_dialog.dart';
@@ -172,142 +173,166 @@ class SongTile extends StatelessWidget {
   /// 歌单详情等需要「追加」自定义项时传 [extraMenuItems]，其回调走 [onExtraMenu]。
   Widget _menu(BuildContext context, DirectSourceManager direct, bool favorite,
       bool disliked) {
-    final extra = extraMenuItems;
     return PopupMenuButton<String>(
       tooltip: '更多',
       icon: const Icon(Icons.more_vert),
-      onSelected: (v) {
-        switch (v) {
-          case 'play_next':
-            final added = context.read<PlayerProvider>().playNext(song);
-            AppToast.show(added ? '已加入下一首播放' : '已在下一首播放队列中', isError: false);
-          case 'favorite':
-            direct.setFavorite(song, !favorite);
-            if (favorite && context.mounted) {
-              unawaited(context
-                  .read<PlayerProvider>()
-                  .onAnchorSongRemoved(PlayerProvider.anchorForLiked(), song));
-            }
-            AppToast.show(!favorite ? '已加入喜欢' : '已取消喜欢', isError: false);
-          case 'dislike':
-            direct.setDisliked(song, !disliked);
-            AppToast.show(!disliked ? '已标记不喜欢，权重降到 0.1' : '已取消不喜欢',
-                isError: false);
-          case 'cache':
-            unawaited(_cacheSong(context, direct));
-          case 'delete':
-            unawaited(_deleteSong(context, direct));
-          case 'playlist':
-            showAddToPlaylistSheet(context, song);
-          case 'info':
-            showDialog<void>(
-              context: context,
-              builder: (_) => SongInfoDialog(song: song),
-            );
-          case 'edit':
-            showDialog<void>(
-              context: context,
-              builder: (_) => EditSongMetaDialog(song: song),
-            );
-          default:
-            onExtraMenu?.call(v);
-        }
-      },
-      itemBuilder: (_) => [
-        const PopupMenuItem(
-          value: 'play_next',
-          child: Row(
-            children: [
-              Icon(Icons.playlist_play),
-              SizedBox(width: 12),
-              Text('下一首播放'),
-            ],
-          ),
-        ),
-        PopupMenuItem(
-          value: 'favorite',
-          child: Row(
-            children: [
-              Icon(
-                favorite ? Icons.favorite : Icons.favorite_border,
-                color: favorite ? Colors.pink : null,
-              ),
-              const SizedBox(width: 12),
-              Text(favorite ? '取消喜欢' : '喜欢'),
-            ],
-          ),
-        ),
-        PopupMenuItem(
-          value: 'dislike',
-          child: Row(
-            children: [
-              Icon(
-                disliked ? Icons.thumb_down : Icons.thumb_down_outlined,
-                color: disliked ? Colors.orange : null,
-              ),
-              const SizedBox(width: 12),
-              Text(disliked ? '取消不喜欢' : '不喜欢'),
-            ],
-          ),
-        ),
-        if (song.isDirect && source != null)
-          const PopupMenuItem(
-            value: 'cache',
-            child: Row(
-              children: [
-                Icon(Icons.download),
-                SizedBox(width: 12),
-                Text('缓存'),
-              ],
-            ),
-          ),
-        if (song.isDirect && source != null && source!.supportsWrite)
-          const PopupMenuItem(
-            value: 'delete',
-            child: Row(
-              children: [
-                Icon(Icons.delete_outline, color: Colors.red),
-                SizedBox(width: 12),
-                Text('删除', style: TextStyle(color: Colors.red)),
-              ],
-            ),
-          ),
-        const PopupMenuItem(
-          value: 'playlist',
-          child: Row(
-            children: [
-              Icon(Icons.playlist_add),
-              SizedBox(width: 12),
-              Text('加入歌单'),
-            ],
-          ),
-        ),
-        const PopupMenuItem(
-          value: 'info',
-          child: Row(
-            children: [
-              Icon(Icons.info_outline),
-              SizedBox(width: 12),
-              Text('歌曲信息'),
-            ],
-          ),
-        ),
-        const PopupMenuItem(
-          value: 'edit',
-          child: Row(
-            children: [
-              Icon(Icons.edit_outlined),
-              SizedBox(width: 12),
-              Text('修改信息'),
-            ],
-          ),
-        ),
-        if (extra != null && extra.isNotEmpty) ...[
-          const PopupMenuDivider(),
-          ...extra,
-        ],
-      ],
+      onSelected: (v) =>
+          _handleMenuValue(context, direct, favorite, disliked, v),
+      itemBuilder: (_) => _menuItems(favorite, disliked),
     );
+  }
+
+  /// 菜单项（三点按钮与右键菜单共用）。
+  List<PopupMenuEntry<String>> _menuItems(bool favorite, bool disliked) {
+    final extra = extraMenuItems;
+    return [
+      const PopupMenuItem(
+        value: 'play_next',
+        child: Row(
+          children: [
+            Icon(Icons.playlist_play),
+            SizedBox(width: 12),
+            Text('下一首播放'),
+          ],
+        ),
+      ),
+      PopupMenuItem(
+        value: 'favorite',
+        child: Row(
+          children: [
+            Icon(
+              favorite ? Icons.favorite : Icons.favorite_border,
+              color: favorite ? Colors.pink : null,
+            ),
+            const SizedBox(width: 12),
+            Text(favorite ? '取消喜欢' : '喜欢'),
+          ],
+        ),
+      ),
+      PopupMenuItem(
+        value: 'dislike',
+        child: Row(
+          children: [
+            Icon(
+              disliked ? Icons.thumb_down : Icons.thumb_down_outlined,
+              color: disliked ? Colors.orange : null,
+            ),
+            const SizedBox(width: 12),
+            Text(disliked ? '取消不喜欢' : '不喜欢'),
+          ],
+        ),
+      ),
+      if (song.isDirect && source != null)
+        const PopupMenuItem(
+          value: 'cache',
+          child: Row(
+            children: [
+              Icon(Icons.download),
+              SizedBox(width: 12),
+              Text('缓存'),
+            ],
+          ),
+        ),
+      if (song.isDirect && source != null && source!.supportsWrite)
+        const PopupMenuItem(
+          value: 'delete',
+          child: Row(
+            children: [
+              Icon(Icons.delete_outline, color: Colors.red),
+              SizedBox(width: 12),
+              Text('删除', style: TextStyle(color: Colors.red)),
+            ],
+          ),
+        ),
+      const PopupMenuItem(
+        value: 'playlist',
+        child: Row(
+          children: [
+            Icon(Icons.playlist_add),
+            SizedBox(width: 12),
+            Text('加入歌单'),
+          ],
+        ),
+      ),
+      const PopupMenuItem(
+        value: 'info',
+        child: Row(
+          children: [
+            Icon(Icons.info_outline),
+            SizedBox(width: 12),
+            Text('歌曲信息'),
+          ],
+        ),
+      ),
+      const PopupMenuItem(
+        value: 'edit',
+        child: Row(
+          children: [
+            Icon(Icons.edit_outlined),
+            SizedBox(width: 12),
+            Text('修改信息'),
+          ],
+        ),
+      ),
+      if (extra != null && extra.isNotEmpty) ...[
+        const PopupMenuDivider(),
+        ...extra,
+      ],
+    ];
+  }
+
+  /// 菜单选中回调（三点按钮与右键菜单共用）。
+  void _handleMenuValue(BuildContext context, DirectSourceManager direct,
+      bool favorite, bool disliked, String v) {
+    switch (v) {
+      case 'play_next':
+        final added = context.read<PlayerProvider>().playNext(song);
+        AppToast.show(added ? '已加入下一首播放' : '已在下一首播放队列中', isError: false);
+      case 'favorite':
+        direct.setFavorite(song, !favorite);
+        if (favorite && context.mounted) {
+          unawaited(context
+              .read<PlayerProvider>()
+              .onAnchorSongRemoved(PlayerProvider.anchorForLiked(), song));
+        }
+        AppToast.show(!favorite ? '已加入喜欢' : '已取消喜欢', isError: false);
+      case 'dislike':
+        direct.setDisliked(song, !disliked);
+        AppToast.show(!disliked ? '已标记不喜欢，权重降到 0.1' : '已取消不喜欢',
+            isError: false);
+      case 'cache':
+        unawaited(_cacheSong(context, direct));
+      case 'delete':
+        unawaited(_deleteSong(context, direct));
+      case 'playlist':
+        showAddToPlaylistSheet(context, song);
+      case 'info':
+        showDialog<void>(
+          context: context,
+          builder: (_) => SongInfoDialog(song: song),
+        );
+      case 'edit':
+        showDialog<void>(
+          context: context,
+          builder: (_) => EditSongMetaDialog(song: song),
+        );
+      default:
+        onExtraMenu?.call(v);
+    }
+  }
+
+  /// 右键：在指针位置弹出与三点按钮相同的菜单（多选态由调用方禁用）。
+  Future<void> _openContextMenu(BuildContext context,
+      DirectSourceManager direct, bool favorite, bool disliked,
+      TapDownDetails details) async {
+    final picked = await showContextMenuAt<String>(
+      context,
+      details.globalPosition,
+      items: _menuItems(favorite, disliked),
+    );
+    if (picked != null && context.mounted) {
+      _handleMenuValue(context, direct, favorite, disliked, picked);
+    }
   }
 
   /// 行首：普通态/紧凑态是封面或图标，多选态把勾选框**叠在封面左上角**。
@@ -357,7 +382,7 @@ class SongTile extends StatelessWidget {
   Widget _buildFromRow(BuildContext context, SongRowView view) {
     final direct = context.read<DirectSourceManager>();
     final cs = Theme.of(context).colorScheme;
-    return ListTile(
+    final tile = ListTile(
       selected: selectionMode && selected,
       leading: _leading(view.coverPath),
       title: Row(
@@ -407,6 +432,14 @@ class SongTile extends StatelessWidget {
       onTap: selectionMode ? onSelect : onPlay,
       onLongPress: selectionMode ? onSelect : onStartSelect,
     );
+    return GestureDetector(
+      // 桌面右键：在指针处弹出与三点按钮相同的菜单；多选态不响应（与隐藏按钮一致）。
+      onSecondaryTapDown: selectionMode
+          ? null
+          : (d) => unawaited(_openContextMenu(
+              context, direct, view.favorite, view.disliked, d)),
+      child: tile,
+    );
   }
 
   /// 兼容路径：未提供行级数据时保留旧行为（订阅管理器 + 逐行 LayoutBuilder）。
@@ -423,7 +456,7 @@ class SongTile extends StatelessWidget {
       final info = constraints.maxWidth >= kSongTileWideInfoWidth
           ? _wideInfo(context, sourceName: sourceName)
           : null;
-      return ListTile(
+      final tile = ListTile(
         selected: selectionMode && selected,
         // 封面恒为封面（改进.txt）：多选态勾选框叠在封面左上角。
         leading: _leading(song.coverPath),
@@ -469,6 +502,14 @@ class SongTile extends StatelessWidget {
         ),
         onTap: selectionMode ? onSelect : onPlay,
         onLongPress: selectionMode ? onSelect : onStartSelect,
+      );
+      return GestureDetector(
+        // 桌面右键：在指针处弹出与三点按钮相同的菜单；多选态不响应（与隐藏按钮一致）。
+        onSecondaryTapDown: selectionMode
+            ? null
+            : (d) => unawaited(_openContextMenu(
+                context, direct, favorite, disliked, d)),
+        child: tile,
       );
     });
   }

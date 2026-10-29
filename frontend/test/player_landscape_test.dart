@@ -1,7 +1,8 @@
 import 'dart:ffi' show DynamicLibrary;
 import 'dart:io';
 
-import 'package:flutter/gestures.dart' show PointerDeviceKind;
+import 'package:flutter/gestures.dart'
+    show PointerDeviceKind, kSecondaryButton;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -389,6 +390,50 @@ void main() {
       tester.getSize(find.byType(LyricsView)).width,
       closeTo(840, 1),
     );
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('播放页封面右键：弹出与右上「更多」相同的菜单', (tester) async {
+    late final DirectSourceManager direct;
+    late final PlayerProvider player;
+    await tester.runAsync(() async {
+      direct = await _openDirect();
+      player = await _playerWithCurrent();
+    });
+    addTearDown(() {
+      player.dispose();
+      direct.dispose();
+    });
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MultiProvider(
+          providers: [
+            ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+            ChangeNotifierProvider<NavigationProvider>(
+                create: (_) => NavigationProvider()),
+            ChangeNotifierProvider<PlayerProvider>.value(value: player),
+            ChangeNotifierProvider<PlaylistsProvider>(
+                create: (_) => PlaylistsProvider(direct.playlists)),
+          ],
+          child: const PlayerScreen(),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final cover = find.byKey(const Key('player-cover'));
+    expect(cover, findsOneWidget);
+    await tester.tapAt(tester.getCenter(cover),
+        buttons: kSecondaryButton, kind: PointerDeviceKind.mouse);
+    await tester.pumpAndSettle();
+    expect(find.text('歌曲信息'), findsOneWidget);
+    expect(find.text('修改信息'), findsOneWidget);
+    expect(find.text('在线获取元数据'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
   });

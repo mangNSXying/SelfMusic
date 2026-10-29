@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../services/api_client.dart';
 import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/context_menu.dart';
 
 /// 已配对设备管理（阶段5）：列表 / 改名 / 吊销（调 `DeviceAdminController`）。
 /// 当前设备按配对时下发的 client_id 高亮。
@@ -127,6 +128,32 @@ class _DevicesScreenState extends State<DevicesScreen> {
     return s.length > 16 ? s.substring(0, 16) : s;
   }
 
+  /// 设备菜单项（三点按钮与右键菜单共用）。
+  static const List<PopupMenuEntry<String>> _menuItems = [
+    PopupMenuItem(value: 'rename', child: Text('改名')),
+    PopupMenuItem(value: 'revoke', child: Text('吊销')),
+  ];
+
+  /// 设备菜单选中回调（三点按钮与右键菜单共用）。
+  void _handleMenu(Map<String, dynamic> d, String v) {
+    if (v == 'rename') {
+      _rename(d);
+    } else if (v == 'revoke') {
+      _revoke(d);
+    }
+  }
+
+  /// 右键：在指针位置弹出与三点按钮相同的菜单。
+  Future<void> _openMenuAt(
+      Map<String, dynamic> d, Offset globalPosition) async {
+    final picked = await showContextMenuAt<String>(
+      context,
+      globalPosition,
+      items: _menuItems,
+    );
+    if (picked != null && mounted) _handleMenu(d, picked);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -154,32 +181,27 @@ class _DevicesScreenState extends State<DevicesScreen> {
                         final isSelf =
                             (d['clientId'] as String?) == _selfClientId;
                         final revoked = d['revoked'] == true;
-                        return ListTile(
-                          leading: Icon(revoked
-                              ? Icons.block
-                              : _iconFor(d['platform'] as String?)),
-                          title: Text(
-                              '${(d['name'] as String?) ?? '未知设备'}${isSelf ? '（本机）' : ''}'),
-                          subtitle: Text(_subtitle(d)),
-                          trailing: revoked
+                        return GestureDetector(
+                          // 桌面右键：在指针处弹出与三点按钮相同的菜单
+                          //（已吊销设备无菜单，右键同样不响应）。
+                          onSecondaryTapDown: revoked
                               ? null
-                              : PopupMenuButton<String>(
-                                  onSelected: (v) {
-                                    if (v == 'rename') {
-                                      _rename(d);
-                                    } else if (v == 'revoke') {
-                                      _revoke(d);
-                                    }
-                                  },
-                                  itemBuilder: (_) => const [
-                                    PopupMenuItem(
-                                        value: 'rename',
-                                        child: Text('改名')),
-                                    PopupMenuItem(
-                                        value: 'revoke',
-                                        child: Text('吊销')),
-                                  ],
-                                ),
+                              : (details) =>
+                                  _openMenuAt(d, details.globalPosition),
+                          child: ListTile(
+                            leading: Icon(revoked
+                                ? Icons.block
+                                : _iconFor(d['platform'] as String?)),
+                            title: Text(
+                                '${(d['name'] as String?) ?? '未知设备'}${isSelf ? '（本机）' : ''}'),
+                            subtitle: Text(_subtitle(d)),
+                            trailing: revoked
+                                ? null
+                                : PopupMenuButton<String>(
+                                    onSelected: (v) => _handleMenu(d, v),
+                                    itemBuilder: (_) => _menuItems,
+                                  ),
+                          ),
                         );
                       },
                     ),
