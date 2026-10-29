@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/data/local/playlist_store.dart';
+import 'package:selfmusic/data/local/sync_event_types.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:sqlite3/open.dart';
 
@@ -76,6 +77,55 @@ void main() {
     await store.removeSong(idC, song);
     expect(store.contains(idC, song), isFalse);
     expect(index.playlistItems(idC), isEmpty);
+
+    index.close();
+    dir.deleteSync(recursive: true);
+  });
+
+  test('批量加入歌单：追加顺序、重复跳过、item_add 顺序一致', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir = await Directory.systemTemp.createTemp('selfmusic_plbatch_');
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+    final store = PlaylistStore(index, serverAvailable: () => true);
+
+    final id = await store.create('批量');
+    Song song(String ref, String title) => Song.direct(
+          id: 1,
+          sourceKey: 'local:test',
+          title: title,
+          artist: '歌手',
+          source: 'local',
+          sourceRef: ref,
+          fileSize: 0,
+        );
+    final a = song('a', 'A');
+    final b = song('b', 'B');
+    final c = song('c', 'C');
+
+    // 先放一首 B，批量里再带一次 B：冲突行跳过、不产生事件。
+    await store.addSong(id, b);
+    final before = await index.pendingOutbox();
+    final addsBefore =
+        before.where((e) => e.type == SyncEventTypes.playlistItemAdd).length;
+
+    expect(await store.addSongs(id, [a, b, c]), 2);
+    final rows = index.playlistItems(id);
+    expect([for (final r in rows) r.title], ['B', 'A', 'C']);
+    expect([for (final r in rows) r.sortOrder], [1, 2, 3]);
+
+    final adds = (await index.pendingOutbox())
+        .where((e) => e.type == SyncEventTypes.playlistItemAdd)
+        .toList();
+    expect(adds.length, addsBefore + 2);
+    expect(adds[adds.length - 2].payload['sort_order'], 2);
+    expect(adds.last.payload['sort_order'], 3);
+
+    // 再整批加一次：全部已在歌单 → 0 条新增、无新事件。
+    final outboxSize = (await index.pendingOutbox()).length;
+    expect(await store.addSongs(id, [a, c]), 0);
+    expect((await index.pendingOutbox()).length, outboxSize);
 
     index.close();
     dir.deleteSync(recursive: true);

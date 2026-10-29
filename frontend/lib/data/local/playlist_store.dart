@@ -72,6 +72,43 @@ class PlaylistStore {
         uuid, s, _sortOrderOf(playlistId, s), index.sourceUuidOf(s.sourceKey));
   }
 
+  /// 批量加入歌曲：单事务本地插入（冲突行跳过），uuid 只解析一次，
+  /// 仅实际插入且可同步的条目入 outbox。返回实际新增条数。
+  Future<int> addSongs(int playlistId, List<Song> songs) async {
+    if (songs.isEmpty) return 0;
+    final orders = await index.addPlaylistItems(playlistId, [
+      for (final s in songs)
+        {
+          'sourceKey': s.sourceKey,
+          'songRef': s.sourceRef,
+          'title': s.title,
+          'artist': s.artist,
+          'album': s.albumName,
+          'coverPath': s.coverPath,
+          'source': s.source,
+        },
+    ]);
+    final inserted = <int>[
+      for (var i = 0; i < orders.length; i++)
+        if (orders[i] != null) i,
+    ];
+    if (inserted.isEmpty) return 0;
+    final syncable = <int>[
+      for (final i in inserted)
+        if (_syncable(songs[i])) i,
+    ];
+    if (syncable.isEmpty) return inserted.length;
+    final uuid = await index.ensurePlaylistUuid(playlistId);
+    final sourceIds = <String, String?>{};
+    for (final i in syncable) {
+      final s = songs[i];
+      final sourceId = sourceIds.putIfAbsent(
+          s.sourceKey, () => index.sourceUuidOf(s.sourceKey));
+      await _enqueueItemAdd(uuid, s, orders[i]!, sourceId);
+    }
+    return inserted.length;
+  }
+
   Future<void> _enqueueItemAdd(String playlistUuid, Song s, int sortOrder,
       String? sourceId, {bool backfill = false}) async {
     await index.enqueueOutbox(SyncEventTypes.playlistItemAdd, {

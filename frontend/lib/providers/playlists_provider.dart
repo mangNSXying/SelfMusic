@@ -98,6 +98,13 @@ class PlaylistsProvider extends ChangeNotifier {
     _recount(playlistId);
   }
 
+  /// 批量加入歌单：落库后只重查一次计数、只通知一次，返回实际新增条数。
+  Future<int> addSongs(int playlistId, List<Song> songs) async {
+    final added = await store.addSongs(playlistId, songs);
+    if (added > 0) _recount(playlistId);
+    return added;
+  }
+
   Future<void> removeSong(int playlistId, Song s) async {
     await store.removeSong(playlistId, s);
     _recount(playlistId);

@@ -32,6 +32,7 @@ import '../widgets/marquee_text.dart';
 import '../widgets/online_meta_dialog.dart';
 import '../widgets/pressable.dart';
 import '../widgets/player_sheet_anim.dart';
+import '../widgets/playlist_song_picker.dart';
 import '../widgets/sleep_timer_dialog.dart';
 import '../widgets/song_info_dialog.dart';
 import '../widgets/song_list.dart';
@@ -820,7 +821,17 @@ class _BandSongPage extends StatelessWidget {
     if (pid == null) {
       return QueuePage(embedded: embedded, focusTick: focusTick);
     }
-    return SongList(playlistId: pid, focusTick: focusTick);
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        SongList(playlistId: pid, focusTick: focusTick),
+        Positioned(
+          right: 16,
+          bottom: 16,
+          child: PlaylistAddSongsButton(playlistId: pid),
+        ),
+      ],
+    );
   }
 }
 

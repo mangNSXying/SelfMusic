@@ -190,6 +190,8 @@ void main() {
 
     final queue = find.byType(QueuePage);
     expect(queue, findsOneWidget);
+    // 兜底队列没有绑定歌单：不提供「添加歌曲」。
+    expect(find.byTooltip('添加歌曲'), findsNothing);
     // 修复前：无追焦逻辑，列表停在队首，「队列歌曲 26」不在构建范围内。
     final cur = _songRow(queue, '队列歌曲 26');
     expect(cur, findsOneWidget);
@@ -244,6 +246,8 @@ void main() {
     expect(list, findsOneWidget);
     expect(find.descendant(of: list, matching: find.text('追焦测试歌单')),
         findsOneWidget);
+    // 绑定歌单页同样有添加歌曲入口（与内容区歌单详情共用）。
+    expect(find.byTooltip('添加歌曲'), findsOneWidget);
     final cur = _songRow(list, '队列歌曲 26');
     expect(cur, findsOneWidget);
     expect(_offsetFromListTop(tester, list, cur), closeTo(96, 2));

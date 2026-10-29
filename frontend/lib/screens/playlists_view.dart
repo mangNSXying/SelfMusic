@@ -16,6 +16,7 @@ import '../widgets/row_list.dart';
 import '../widgets/selection_badge.dart';
 import '../widgets/square_card.dart';
 import '../widgets/list_selection.dart';
+import '../widgets/playlist_song_picker.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_list.dart';
@@ -383,12 +384,22 @@ class PlaylistDetailView extends StatelessWidget {
     // 变更会重建本组件），build 内不读取 NavigationProvider 字段；全局搜索由内层
     // [SongList] 自行订阅，故此处不订阅导航状态、区段变更零重建。
     final nav = context.read<NavigationProvider>();
-    return SectionSwipe(
-      child: SongList(
-        playlistId: playlistId,
-        onBack: () => nav.exitPlaylist(),
-        globalSearch: true,
-      ),
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        SectionSwipe(
+          child: SongList(
+            playlistId: playlistId,
+            onBack: () => nav.exitPlaylist(),
+            globalSearch: true,
+          ),
+        ),
+        Positioned(
+          right: 16,
+          bottom: 16,
+          child: PlaylistAddSongsButton(playlistId: playlistId),
+        ),
+      ],
     );
   }
 }

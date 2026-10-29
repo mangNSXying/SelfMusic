@@ -707,6 +707,8 @@ Object? _runOp(Database db, String name, Map<String, dynamic> a) {
     case 'addPlaylistItem':
       _opAddPlaylistItem(db, a);
       return null;
+    case 'addPlaylistItems':
+      return _opAddPlaylistItems(db, a);
     case 'updateSongUserMeta':
       _opUpdateSongUserMeta(db, a);
       return null;
@@ -1608,6 +1610,48 @@ String _opEnsurePlaylistUuid(Database db, Map<String, dynamic> a) {
     db.execute('UPDATE playlists SET client_uuid=? WHERE id=?', [uuid, id]);
   }
   return uuid;
+}
+
+/// 批量追加歌单条目：单事务内只取一次 MAX(sort_order)，按行序逐条 +1，
+/// 冲突（歌曲已在歌单）的行不占序号。返回每行实际分配的 sort_order
+/// （冲突行为 null），供 item_add 事件携带正确顺序。
+List<int?> _opAddPlaylistItems(Database db, Map<String, dynamic> a) {
+  final playlistId = a['playlistId'] as int;
+  final rows = (a['rows'] as List).cast<Map<String, dynamic>>();
+  final out = <int?>[];
+  _inTx(db, () {
+    var max = db.select(
+        'SELECT COALESCE(MAX(sort_order),0) m FROM playlist_items WHERE playlist_id=?',
+        [playlistId]).first['m'] as int;
+    final addedAt = DateTime.now().toIso8601String();
+    for (final r in rows) {
+      final order = max + 1;
+      db.execute('''
+        INSERT INTO playlist_items(playlist_id, source_key, song_ref, title, artist,
+          album, cover_path, sort_order, added_at, source)
+        VALUES(?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(playlist_id, source_key, song_ref) DO NOTHING
+      ''', [
+        playlistId,
+        r['sourceKey'],
+        r['songRef'],
+        r['title'],
+        r['artist'],
+        r['album'],
+        r['coverPath'],
+        order,
+        addedAt,
+        r['source'],
+      ]);
+      if (db.updatedRows > 0) {
+        max = order;
+        out.add(order);
+      } else {
+        out.add(null);
+      }
+    }
+  });
+  return out;
 }
 
 void _opAddPlaylistItem(Database db, Map<String, dynamic> a) {

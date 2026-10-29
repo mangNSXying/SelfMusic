@@ -1378,6 +1378,18 @@ class LocalIndex {
     });
   }
 
+  /// 批量追加歌单条目（一次写隔离往返 + 单事务）：返回每行实际分配的
+  /// sort_order，冲突行（已在歌单）为 null。
+  Future<List<int?>> addPlaylistItems(
+      int playlistId, List<Map<String, Object?>> rows) async {
+    if (rows.isEmpty) return const [];
+    final res = await _writer!.op<List<dynamic>>('addPlaylistItems', {
+      'playlistId': playlistId,
+      'rows': rows,
+    });
+    return [for (final v in res) v as int?];
+  }
+
   Future<void> removePlaylistItem(
       int playlistId, String sourceKey, String songRef) async {
     // 兼容历史 ENCODE/Unicode ref 形态：逐一删除（单事务整体提交）。
