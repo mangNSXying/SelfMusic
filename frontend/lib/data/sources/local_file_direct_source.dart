@@ -281,6 +281,9 @@ class LocalFileDirectSource implements MusicSource {
   Future<String?> cachedFilePath(Song song) => _sandboxPath(song);
 
   @override
+  Future<String?> userCachedFilePath(Song song) => cachedFilePath(song);
+
+  @override
   Future<String?> localSandboxPath(Song song) => _sandboxPath(song);
 
   Future<String?> _sandboxPath(Song song) async {
@@ -327,7 +330,9 @@ class LocalFileDirectSource implements MusicSource {
   }
 
   @override
-  Future<void> cacheSong(Song song, {bool Function()? shouldAbort}) async {}
+  Future<void> cacheSong(Song song,
+      {bool Function()? shouldAbort,
+      CacheEntryKind kind = CacheEntryKind.user}) async {}
 
   @override
   bool get supportsWrite => false;

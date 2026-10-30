@@ -462,12 +462,19 @@ class SftpDirectSource implements MusicSource, MediaProxySource {
   Future<String?> cachedFilePath(Song song) async =>
       index.cachedPath(cacheKeyFor(song));
 
+  @override
+  Future<String?> userCachedFilePath(Song song) async => index.cachedPath(
+      cacheKeyFor(song),
+      kind: CacheEntryKind.user);
+
   /// 远端源原生解析仅对已缓存文件可用（R-2）；未缓存走 Dart 切片兜底。
   @override
   Future<String?> localSandboxPath(Song song) => cachedFilePath(song);
 
   @override
-  Future<void> cacheSong(Song song, {bool Function()? shouldAbort}) async {
+  Future<void> cacheSong(Song song,
+      {bool Function()? shouldAbort,
+      CacheEntryKind kind = CacheEntryKind.user}) async {
     final cacheKey = cacheKeyFor(song);
     if (index.isCached(cacheKey)) return;
     final tmp = File(p.join(index.cacheDir, '.tmp-$cacheKey'));
@@ -498,7 +505,8 @@ class SftpDirectSource implements MusicSource, MediaProxySource {
       } finally {
         sink.closeSync();
       }
-      await index.cacheCommit(cacheKey, tmp.path, total);
+      await index.cacheCommit(cacheKey, tmp.path, total,
+          sourceKey: key, songRef: song.sourceRef, kind: kind);
       committed = true;
     } finally {
       if (!committed && tmp.existsSync()) {

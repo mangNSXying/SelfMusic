@@ -221,6 +221,9 @@ class LocalDirectSource implements MusicSource {
     return File(path).existsSync() ? path : null;
   }
 
+  @override
+  Future<String?> userCachedFilePath(Song song) => cachedFilePath(song);
+
   /// 本地源的**原生解析可用路径**（R-2）：本体即本地文件，只要沙箱内可打开就
   /// 返回其真路径——**与离线缓存无关**（本地源本就无需「缓存登记」，旧判定把
   /// 「无缓存」误当「不可用」而错失原生解析）。语义与 [cachedFilePath] 在当前
@@ -300,7 +303,9 @@ class LocalDirectSource implements MusicSource {
   }
 
   @override
-  Future<void> cacheSong(Song song, {bool Function()? shouldAbort}) async {
+  Future<void> cacheSong(Song song,
+      {bool Function()? shouldAbort,
+      CacheEntryKind kind = CacheEntryKind.user}) async {
     // 本地文件本身即可离线播放，无需缓存。
   }
 

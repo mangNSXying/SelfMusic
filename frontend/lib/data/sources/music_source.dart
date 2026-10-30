@@ -10,6 +10,29 @@ enum SourceKind { local, webdav, smb, sftp }
 /// - proxy：经服务端代理，代理总开关开时走转码（响度均衡同时生效）、关时回落直连。
 enum SourceRoute { direct, proxy }
 
+/// 缓存条目类型（`cache.kind`）：区分用户缓存与预载产物。
+///
+/// - [user]：手动缓存 / 收藏自动缓存，算“已缓存”，播放时无条件优先；
+/// - [preloadOrigin]：转码关闭时预载的原文件，不算“已缓存”，只在直连设置下
+///   作为本地副本使用，或转码失败时兜底；
+/// - [preloadVariant]：转码预载产物，与码率/响度设置绑定，仅在转码链路使用；
+/// - [legacy]：迁移前无法归属到歌曲的旧行（历史变体），淘汰时按最弱处理。
+enum CacheEntryKind {
+  user('user'),
+  preloadOrigin('preload_origin'),
+  preloadVariant('preload_variant'),
+  legacy('legacy');
+
+  const CacheEntryKind(this.dbValue);
+
+  final String dbValue;
+
+  static CacheEntryKind parse(Object? v) => CacheEntryKind.values.firstWhere(
+        (e) => e.dbValue == v,
+        orElse: () => CacheEntryKind.legacy,
+      );
+}
+
 /// 解析持久化/同步来的 route 取值；缺失或非法一律回落直连（旧配置兼容）。
 SourceRoute parseSourceRoute(Object? v) => SourceRoute.values.firstWhere(
       (e) => e.name == v,
@@ -326,8 +349,12 @@ abstract class MusicSource {
   Future<List<Song>> search({String? query, int page = 1, int size = 100}) async =>
       const [];
 
-  /// 若该歌已离线缓存，返回本地文件路径（供断网播缓存，DEVELOPER.md「客户端同步与缓存批处理」）；否则 null。
+  /// 若该歌已有本地原文件（用户缓存或预载原文件），返回路径；否则 null。
   Future<String?> cachedFilePath(Song song) async => null;
+
+  /// 用户缓存（[CacheEntryKind.user]）路径：播放的“缓存优先”只认它。
+  /// 默认与 [cachedFilePath] 同义（本地源文件即本体）；远端源覆盖为按 kind 查询。
+  Future<String?> userCachedFilePath(Song song) => cachedFilePath(song);
 
   /// 可交给原生解析（ohos `extractAudioMeta`）的**本地沙箱真路径**；无则 null。
   ///
@@ -343,7 +370,10 @@ abstract class MusicSource {
   /// 不是会播的那首），但串行队列里它还占着连接，整曲几十 MB 的下载能把当前曲
   /// 的元数据/封面拖到几分钟后。实现应按传输块轮询它，返回 true 即放弃
   /// （并清理半截临时文件），抛 [PreloadAbortedException]。
-  Future<void> cacheSong(Song song, {bool Function()? shouldAbort}) async =>
+  /// [kind] 区分用户缓存与预载产物；源实现需随行写入 cache 表。
+  Future<void> cacheSong(Song song,
+          {bool Function()? shouldAbort,
+          CacheEntryKind kind = CacheEntryKind.user}) async =>
       throw UnimplementedError('$key 不支持直连缓存');
 
   // ---------- 直写管理（阶段6 起 WebDAV/本地直写；SFTP/SMB 已看齐） ----------

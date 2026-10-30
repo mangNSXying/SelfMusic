@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 /// 建表与迁移（幂等）：主线程读连接与后台写隔离共用同一份，
@@ -140,6 +143,47 @@ void applySchema(Database db) {
   if (!cacheCols.contains('last_accessed_at')) {
     db.execute('ALTER TABLE cache ADD COLUMN last_accessed_at TEXT');
   }
+  // 缓存归属与类型（缓存/预载分离）：source_key/song_ref 用于按歌曲统计淘汰；
+  // kind 见 CacheEntryKind；variant_of 记录变体对应的原缓存 key。
+  final cacheKindAdded = !cacheCols.contains('kind');
+  if (!cacheCols.contains('source_key')) {
+    db.execute('ALTER TABLE cache ADD COLUMN source_key TEXT');
+  }
+  if (!cacheCols.contains('song_ref')) {
+    db.execute('ALTER TABLE cache ADD COLUMN song_ref TEXT');
+  }
+  if (cacheKindAdded) {
+    db.execute(
+        "ALTER TABLE cache ADD COLUMN kind TEXT NOT NULL DEFAULT 'legacy'");
+  }
+  if (!cacheCols.contains('variant_of')) {
+    db.execute('ALTER TABLE cache ADD COLUMN variant_of TEXT');
+  }
+  if (cacheKindAdded) {
+    // 一次性回填：旧表的原文件 key = md5('<sourceKey>|<ref>')，能匹配到索引
+    // 歌曲的行按用户缓存处理（历史上手动缓存与预载回退无法区分，保守保留）；
+    // 匹配不上的行（历史转码变体）保持 legacy，淘汰时按最弱处理。
+    final byKey = <String, (String, String)>{};
+    for (final r in db.select('SELECT source_key, ref FROM idx_songs')) {
+      final sk = r['source_key'] as String? ?? '';
+      final ref = r['ref'] as String? ?? '';
+      if (sk.isEmpty || ref.isEmpty) continue;
+      byKey[md5.convert(utf8.encode('$sk|$ref')).toString()] = (sk, ref);
+    }
+    final updates = <(String, String, String)>[];
+    for (final r in db.select('SELECT cache_key FROM cache')) {
+      final ck = r['cache_key'] as String? ?? '';
+      final hit = byKey[ck];
+      if (hit != null) updates.add((hit.$1, hit.$2, ck));
+    }
+    for (final (sk, ref, ck) in updates) {
+      db.execute(
+          "UPDATE cache SET source_key=?, song_ref=?, kind='user' WHERE cache_key=?",
+          [sk, ref, ck]);
+    }
+  }
+  db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_cache_song ON cache(source_key, song_ref)');
   // idx_songs 增量指纹：getetag（WebDAV）列，mtime/size 已在建表时定义。
   final songCols = db
       .select('PRAGMA table_info(idx_songs)')

@@ -18,6 +18,7 @@ import '../../utils/off_thread.dart';
 import '../../utils/main_thread_probe.dart';
 import '../../utils/perf_log.dart';
 import '../../utils/play_progress.dart';
+import '../sources/music_source.dart';
 import '../sources/webdav_url.dart';
 import 'audio_metadata.dart';
 import 'db_writer.dart';
@@ -999,26 +1000,58 @@ class LocalIndex {
     return File(stored).existsSync();
   }
 
-  Future<void> cacheSave(String cacheKey, List<int> bytes) {
+  Future<void> cacheSave(String cacheKey, List<int> bytes,
+      {String? sourceKey,
+      String? songRef,
+      CacheEntryKind kind = CacheEntryKind.user,
+      String? variantOf}) {
     final now = DateTime.now().toIso8601String();
     File(cachePathForKey(cacheKey)).writeAsBytesSync(bytes, flush: true);
     return _writer!.exec(
-        'INSERT INTO cache(cache_key, path, size, cached_at, last_accessed_at) '
-        'VALUES(?,?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET size=excluded.size, cached_at=COALESCE(excluded.cached_at, cache.cached_at)',
-        [cacheKey, cachePathForKey(cacheKey), bytes.length, now, now]);
+        'INSERT INTO cache(cache_key, path, size, cached_at, last_accessed_at, '
+        'source_key, song_ref, kind, variant_of) VALUES(?,?,?,?,?,?,?,?,?) '
+        'ON CONFLICT(cache_key) DO UPDATE SET size=excluded.size, '
+        'cached_at=COALESCE(excluded.cached_at, cache.cached_at), '
+        'source_key=excluded.source_key, song_ref=excluded.song_ref, '
+        'kind=excluded.kind, variant_of=excluded.variant_of', [
+      cacheKey,
+      cachePathForKey(cacheKey),
+      bytes.length,
+      now,
+      now,
+      sourceKey,
+      songRef,
+      kind.dbValue,
+      variantOf,
+    ]);
   }
 
   /// 把下载好的临时文件移入缓存目录并登记（流式缓存，避免整文件常驻内存）。
-  Future<void> cacheCommit(
-      String cacheKey, String tmpFilePath, int size) async {
+  Future<void> cacheCommit(String cacheKey, String tmpFilePath, int size,
+      {String? sourceKey,
+      String? songRef,
+      CacheEntryKind kind = CacheEntryKind.user,
+      String? variantOf}) async {
     final dst = cachePathForKey(cacheKey);
     if (File(dst).existsSync()) File(dst).deleteSync();
     _moveFile(tmpFilePath, dst);
     final now = DateTime.now().toIso8601String();
     return _writer!.exec(
-        'INSERT INTO cache(cache_key, path, size, cached_at, last_accessed_at) '
-        'VALUES(?,?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET size=excluded.size',
-        [cacheKey, dst, size, now, now]);
+        'INSERT INTO cache(cache_key, path, size, cached_at, last_accessed_at, '
+        'source_key, song_ref, kind, variant_of) VALUES(?,?,?,?,?,?,?,?,?) '
+        'ON CONFLICT(cache_key) DO UPDATE SET size=excluded.size, '
+        'source_key=excluded.source_key, song_ref=excluded.song_ref, '
+        'kind=excluded.kind, variant_of=excluded.variant_of', [
+      cacheKey,
+      dst,
+      size,
+      now,
+      now,
+      sourceKey,
+      songRef,
+      kind.dbValue,
+      variantOf,
+    ]);
   }
 
   /// 移动文件，跨文件系统时回退到「复制 + 删除」。
@@ -1046,9 +1079,34 @@ class LocalIndex {
 
   static const int _exdev = 18; // POSIX EXDEV（Linux）
 
-  String? cachedPath(String cacheKey) {
-    final stored = cachePathOfKey(cacheKey) ?? cachePathForKey(cacheKey);
-    return File(stored).existsSync() ? stored : null;
+  /// 已登记缓存的可用路径；[kind] 非空时要求行类型匹配（用户缓存判定用）。
+  /// 行不存在但有派生文件：无 kind 过滤时兼容旧行为，有过滤时不认。
+  String? cachedPath(String cacheKey, {CacheEntryKind? kind}) {
+    final rs =
+        _db!.select('SELECT path, kind FROM cache WHERE cache_key=?', [cacheKey]);
+    if (rs.isEmpty) {
+      if (kind != null) return null;
+      final stored = cachePathForKey(cacheKey);
+      return File(stored).existsSync() ? stored : null;
+    }
+    final row = rs.first;
+    if (kind != null && CacheEntryKind.parse(row['kind']) != kind) return null;
+    final stored = (row['path'] as String?)?.trim();
+    final path =
+        (stored == null || stored.isEmpty) ? cachePathForKey(cacheKey) : stored;
+    return File(path).existsSync() ? path : null;
+  }
+
+  /// 升级/改写缓存行类型（如预载原文件被用户手动缓存）。
+  Future<void> setCacheKind(String cacheKey, CacheEntryKind kind) =>
+      _writer!.exec('UPDATE cache SET kind=? WHERE cache_key=?',
+          [kind.dbValue, cacheKey]);
+
+  /// 用户缓存歌曲数（设置页展示 / 歌曲上限口径；预载产物不计）。
+  int countUserCachedSongs() {
+    final rs = _db!.select('SELECT COUNT(*) AS c FROM cache WHERE kind=?',
+        [CacheEntryKind.user.dbValue]);
+    return (rs.first['c'] as num?)?.toInt() ?? 0;
   }
 
   /// 迁移缓存目录：建新目录（含可写校验）→ 逐个移动 .dat 并更新 path 列 →
@@ -1086,10 +1144,10 @@ class LocalIndex {
         [DateTime.now().toIso8601String(), cacheKey]);
   }
 
-  /// 全部缓存行（供 LRU 淘汰与统计）。
+  /// 全部缓存行（供按歌曲统计淘汰与统计）。
   List<CachedRow> listCache() {
-    final rs = _db!.select(
-        'SELECT cache_key, path, size, cached_at, last_accessed_at FROM cache');
+    final rs = _db!.select('SELECT cache_key, path, size, cached_at, '
+        'last_accessed_at, source_key, song_ref, kind, variant_of FROM cache');
     return rs
         .map((r) => CachedRow(
               cacheKey: r['cache_key'] as String,
@@ -1097,9 +1155,52 @@ class LocalIndex {
               size: r['size'] as int,
               cachedAt: r['cached_at'] as String?,
               lastAccessedAt: r['last_accessed_at'] as String?,
+              sourceKey: r['source_key'] as String?,
+              songRef: r['song_ref'] as String?,
+              kind: CacheEntryKind.parse(r['kind']),
+              variantOf: r['variant_of'] as String?,
             ))
         .toList();
   }
+
+  /// 缓存歌曲的播放统计（淘汰排序用）：按 (source_key, song_ref) 聚合，
+  /// 中位进度由 progress_hist 直方图计算；无统计/无样本为 null。
+  Map<String, CacheSongStats> cacheSongStats() {
+    final rs = _db!.select('''
+      SELECT DISTINCT c.source_key AS source_key, c.song_ref AS song_ref,
+             COALESCE(p.play_sec, 0) AS play_sec,
+             p.progress_hist AS progress_hist,
+             COALESCE(p.is_favorite, 0) AS is_favorite,
+             i.duration AS duration
+      FROM cache c
+      LEFT JOIN play_meta p
+        ON p.source_key = c.source_key AND p.song_ref = c.song_ref
+      LEFT JOIN idx_songs i
+        ON i.source_key = c.source_key AND i.ref = c.song_ref
+      WHERE c.source_key IS NOT NULL AND c.song_ref IS NOT NULL
+    ''');
+    return {
+      for (final r in rs)
+        cacheSongKey(r['source_key'] as String, r['song_ref'] as String):
+            _cacheSongStatsOf(r),
+    };
+  }
+
+  static CacheSongStats _cacheSongStatsOf(Row r) {
+    final hist = PlayProgressHistogram.fromJson(r['progress_hist']);
+    return CacheSongStats(
+      playSec: (r['play_sec'] as num?)?.toInt() ?? 0,
+      // 淘汰排序与升权闸门同口径：样本不足 3 条视为没有可靠中位（最弱）。
+      medianPercent: hist.total < PlayProgressHistogram.minSamples
+          ? null
+          : hist.medianPercent,
+      isFavorite: ((r['is_favorite'] as num?)?.toInt() ?? 0) != 0,
+      durationSec: (r['duration'] as num?)?.toInt(),
+    );
+  }
+
+  static String cacheSongKey(String sourceKey, String songRef) =>
+      '$sourceKey\u0000$songRef';
 
   /// 已登记缓存的权威路径（以库里的 path 列为准）。
   ///
@@ -3063,12 +3164,39 @@ class CachedRow {
   final int size;
   final String? cachedAt;
   final String? lastAccessedAt;
+
+  /// 归属歌曲（迁移前的行/历史变体可能为空，淘汰时按最弱处理）。
+  final String? sourceKey;
+  final String? songRef;
+  final CacheEntryKind kind;
+
+  /// 变体对应的原缓存 key（仅 preload_variant 行）。
+  final String? variantOf;
+
   const CachedRow({
     required this.cacheKey,
     required this.path,
     required this.size,
     this.cachedAt,
     this.lastAccessedAt,
+    this.sourceKey,
+    this.songRef,
+    this.kind = CacheEntryKind.legacy,
+    this.variantOf,
+  });
+}
+
+/// 缓存歌曲的播放统计快照（淘汰排序用）。
+class CacheSongStats {
+  final int playSec;
+  final double? medianPercent;
+  final bool isFavorite;
+  final int? durationSec;
+  const CacheSongStats({
+    required this.playSec,
+    required this.medianPercent,
+    required this.isFavorite,
+    required this.durationSec,
   });
 }
 
