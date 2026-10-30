@@ -469,13 +469,13 @@ class _CacheDirTileState extends State<_CacheDirTile> {
   @override
   Widget build(BuildContext context) {
     final index = context.read<DirectSourceManager>().index;
-    final count = index.listCache().length;
+    final count = index.countUserCachedSongs();
     return ListTile(
       contentPadding: EdgeInsets.zero,
       leading: const Icon(Icons.folder_open),
       title: const Text('缓存目录'),
       subtitle: Text(
-          '${index.cacheDir}${index.usingDefaultCacheDir ? '（默认）' : '（自定义）'}\n已缓存 $count 首 · 占用 ${_CacheDirTile._fmtBytes(index.cacheTotalBytes())}'),
+          '${index.cacheDir}${index.usingDefaultCacheDir ? '（默认）' : '（自定义）'}\n已缓存 $count 首 · 占用 ${_CacheDirTile._fmtBytes(index.cacheTotalBytes())}（含预载）'),
       isThreeLine: true,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -732,7 +732,7 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
           ],
         ),
         const SizedBox(height: 4),
-        Text('离线缓存与预载共用',
+        Text('字节上限与预载共用；歌曲上限只算离线缓存',
             style: Theme.of(context)
                 .textTheme
                 .bodySmall
@@ -775,7 +775,7 @@ class _CacheConfigSectionState extends State<_CacheConfigSection> {
         Padding(
           padding: const EdgeInsets.only(top: 4),
           child: Text(
-              '当前生效：${_labelBytes(_settings.effectiveCacheMaxBytes)} · ${_settings.effectiveCacheSongLimit} 首',
+              '当前生效：${_labelBytes(_settings.effectiveCacheMaxBytes)} · 离线缓存 ${_settings.effectiveCacheSongLimit} 首',
               style: Theme.of(context)
                   .textTheme
                   .bodySmall

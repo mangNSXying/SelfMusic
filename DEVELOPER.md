@@ -273,7 +273,7 @@ selfmusic/
 | `sources` | 源配置：`key`（唯一）、`kind(local/webdav/smb/sftp)`、名称、凭据引用键、enabled、`last_scan_at`、`client_uuid`；SFTP 另含 host/port/user/认证方式/根路径（密码与私钥只存 SecretStore） |
 | `ssh_known_hosts` | SFTP 主机密钥 TOFU 钉：`(host_port PK, fingerprint, updated_at)`；**不参与跨设备同步** |
 | `idx_songs` | 直连模式本地索引（增量指纹含 `mtime,size,etag`）；ALTER 列 `album_artist / url / user_edited / meta_read` |
-| `cache` | 已缓存歌曲：`cache_key` PK、`path,size` + `cached_at,last_accessed_at`（LRU 用） |
+| `cache` | 缓存/预载文件：`cache_key` PK、`path,size` + `cached_at,last_accessed_at`（LRU 用）+ `source_key/song_ref`（按歌曲统计淘汰）+ `kind`（user/preload_origin/preload_variant/legacy）+ `variant_of`（变体对应原 key） |
 | `play_meta` | 播放元数据：`(source_key,song_ref)` PK + `like_streak/dislike_streak/factor/frozen/is_favorite`（收藏统一收口）+ `play_sec` + `progress_hist` + `song_json` |
 | `playlists` / `playlist_items` | 歌单与条目（含快照字段 + `sort_order`、`source`、`client_uuid`、`deleted` 墓碑） |
 | `app_settings` | 客户端设置键值表（缓存配置 + 7 个排序持久化键等） |
@@ -558,13 +558,15 @@ abstract class MusicSource {
 }
 ```
 
-- 播放器只认 `MusicSource`；**直连播放优先级**：离线缓存文件 → `directStream()`（原生 URL，WebDAV 用）→ 自建 `StreamAudioSource`（`open()`）回落。
+- 播放器只认 `MusicSource`；**直连播放优先级**：用户缓存文件（`cache.kind=user`，不受转码设置影响）→ 转码开时当前设置一致的变体缓存 → 转码流 → 预载原文件（`preload_origin`）兜底 → `directStream()`（原生 URL，WebDAV 用）→ 自建 `StreamAudioSource`（`open()`）回落。
 - **SFTP**：无 `directStream`（just_audio 播不了 `sftp://`），恒走 `open()` 字节流（协议原生支持偏移读，seek 精度优于 HTTP Range）；选型 `dartssh2`（纯 Dart，三端同代码）。密码 / 私钥 / 主机密钥 TOFU 见 `ssh_known_hosts`。**直写**（与 WebDAV 同口径：根目录、静默覆盖）：上传经 `open(write|create|truncate)` + `SftpFile.write` 流式分块（16KB/64 并发），删文件经 `remove`，建目录经 `mkdir`（已存在先 stat 确认是目录才视为成功）；写走同一 `_withSftp`（共享连接、掉线重建、TOFU 门槛不变），`permissionDenied` 转中文权限文案（鉴权已过，不报账密错误）。
 - **SMB**：**全平台统一走 `dart_smb2`**（FFI libsmb2，SMB 2.0.2→3.1.1，含 SMB3 加密；主 isolate 用异步 `Smb2Pool`、扫描 isolate 用同步 `Smb2Client`）。Android/Windows/Linux/iOS/macOS 由包的 ffiPlugin 打包预编译库；ohos 由 vendored `third_party/dart_smb2` + 手工打包的 `ohos/entry/libs/arm64-v8a/libsmb2.so`（DevEco NDK 交叉编译，见 `third_party/dart_smb2/PATCHES.md`）加载，行为与安卓同栈。`smb_connect` 纯 Dart 后端保留在代码中仅作历史/调试备用（`useSmbConnect` 恒为 false），主流程不再使用。范围读按 256KB 分块（stateless，取消即停）；弹窗只填一个「路径」（首个 `/` 前为共享名，其余为共享内目录，落库仍拆 `share`/`path` 两键）；扫描枚举的 `ref` 恒为源内相对（walk 内按 `rootPath` 折前缀，播放/展示由 `smbRemotePath(rootPath, ref)` 拼回，不出现双重前缀）；凭据存 `SecretStore`（`smb_pwd:<sourceKey>`）；**直写**（与 WebDAV 同口径）：经 `truncate(0)` + `writeFileRange` 256KB 分块顺序写（覆盖）、`deleteFile`、`mkdir`（已存在先列目录确认才视为成功）。`accessDenied` 在写链路转"无写入权限"中文 StateError（鉴权已过）。代理 origin 为 `smb://host/share/逐段编码路径`（无 userinfo），凭据走 `X-Origin-Smb` 信封。**方言/加密**：libsmb2 默认广告 SMB3 加密能力，并在 tree connect 发现共享要求加密时自动启用（`server smb encrypt = required` 可连）。
 - WebDAV `ref` 存**解码后**路径，请求时按路径段重新编码；扫描头部元数据解析对大内嵌封面做边界保护（超采样即停止解析，不抛 `RangeError`）。
 - 源列表 = `sources` 表里启用的源；配置后端地址后解锁多设备同步（与曲库无关）。
 
 **离线缓存**：远端源（WebDAV/SMB/SFTP）缓存走整曲下载，`cacheSong` 按 1MiB 攒批落临时文件后原子换入（见「[客户端同步与缓存批处理](#客户端同步与缓存批处理)」）；本地源文件本体即缓存，`cachedFilePath` 直接返回绝对路径走 `setFilePath`。
+
+**缓存与预载分离**：`cache` 表新增 `source_key/song_ref/kind/variant_of`。`kind=user` 才是“已缓存”（手动/收藏自动缓存，播放无条件优先、计入歌曲上限）；`preload_origin` 是转码关闭时预载的原文件，`preload_variant` 是转码预载产物，二者都不算已缓存、不占歌曲上限（只占字节上限）。手动/自动缓存成功后会清掉该歌全部变体。淘汰按歌曲分组：中位进度升序（样本 <3 条/无样本最弱）→ 播放次数升序 → LRU；收藏歌曲豁免；组内先删变体再删原文件。预载变体失败不回退原文件，只对 429/502/网络类瞬态错误做有界延迟重试（429 遵从 `Retry-After`）。
 
 ### 客户端本地数据层（SQLite 写隔离）
 
