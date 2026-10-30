@@ -52,7 +52,7 @@ Duration _posOf(int line) => Duration(seconds: (line - 1) * 4);
 
 /// 目标行行顶相对对齐位的偏差（px）。
 ///
-/// [LyricsView] 用 `alignment: 0.42` 回中，对齐的是**行顶**（不是行中），
+/// 按对齐位 `align: 0.42` 回中（竖屏歌词页口径），对齐的是**行顶**（不是行中），
 /// 其基准为 `0.42 ×（视口高 − 行高）`，与列表上下留白 `0.42 × 视口高` 差一个行高比例。
 double _alignDelta(WidgetTester tester, int line) {
   final row = find.ancestor(
@@ -97,14 +97,16 @@ void main() {
       tester.widget<ListView>(find.byType(ListView)).controller!;
 
   Future<void> pumpLyrics(WidgetTester tester, PlayerProvider player,
-      {double scale = 1.0}) async {
+      {double scale = 1.0, double align = 0.42}) async {
     await tester.pumpWidget(MultiProvider(
       providers: [
         ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
         ChangeNotifierProvider<PlayerProvider>.value(value: player),
       ],
       child: MaterialApp(
-          home: Scaffold(body: LyricsView(player: player, scale: scale))),
+          home: Scaffold(
+              body: LyricsView(
+                  player: player, scale: scale, align: align))),
     ));
     await tester.pump();
   }
@@ -116,6 +118,28 @@ void main() {
 
     final text = tester.widget<Text>(find.text(_line(1)));
     expect(text.style?.fontSize, 32);
+
+    await pos.close();
+    player.dispose();
+  });
+
+  testWidgets('align 0.5（横屏两页布局的内嵌歌词列）：高亮行垂直居中', (tester) async {
+    final pos = StreamController<Duration>();
+    final player = playerWithLyrics(pos.stream);
+    await pumpLyrics(tester, player, align: 0.5);
+
+    pos.add(_posOf(10));
+    await tester.pump();
+    await tester.pump();
+    await tester.pumpAndSettle();
+
+    final row = tester.getRect(find.ancestor(
+      of: find.text(_line(10)),
+      matching: find.byType(InkWell),
+    ));
+    final view = tester.getRect(find.byType(LyricsView));
+    expect((row.center.dy - view.center.dy).abs(), lessThan(2),
+        reason: '高亮行未垂直居中');
 
     await pos.close();
     player.dispose();

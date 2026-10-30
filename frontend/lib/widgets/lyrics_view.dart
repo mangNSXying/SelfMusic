@@ -17,7 +17,17 @@ class LyricsView extends StatefulWidget {
   /// 字号/行距/内边距缩放：默认 1.0，供 4K 等大屏播放页按视口放大。
   final double scale;
 
-  const LyricsView({super.key, required this.player, this.scale = 1.0});
+  /// 高亮行在视口中的垂直对齐位（0~1，与列表上下留白一致）：
+  /// 0.5 = 居中（横屏两页布局的内嵌歌词列）；小于 0.5 = 偏上
+  /// （竖屏三页布局的整页歌词页，给下方未唱行留更多空间）。
+  final double align;
+
+  const LyricsView({
+    super.key,
+    required this.player,
+    this.scale = 1.0,
+    this.align = 0.5,
+  });
 
   @override
   State<LyricsView> createState() => _LyricsViewState();
@@ -99,9 +109,6 @@ class _LyricsViewState extends State<LyricsView> {
     }
     _scheduleFollow();
   }
-
-  /// 当前行在视口中的对齐位（与列表上下留白一致）。
-  static const double _align = 0.42;
 
   /// 目标行未构建时临时把 cacheExtent 提到这个值（约 300 行歌词），
   /// 正常状态用 ListView 默认的 250。
@@ -224,8 +231,8 @@ class _LyricsViewState extends State<LyricsView> {
             maxLines: maxLines,
             viewportHeight: c.maxHeight,
           );
-          // 上下留出近半屏空白，使当前行始终居中。
-          final pad = c.maxHeight * _align;
+          // 上下留白按对齐位对称分配，首/末句也能滚到对齐位。
+          final pad = c.maxHeight * widget.align;
           return ListView.builder(
             controller: _scroll,
             padding: EdgeInsets.symmetric(vertical: pad),
@@ -288,7 +295,7 @@ class _LyricsViewState extends State<LyricsView> {
     });
   }
 
-  /// 自愈式跟焦：核对当前行是否已在 [_align] 对齐位，不在就滚过去。
+  /// 自愈式跟焦：核对当前行是否已在 [LyricsView.align] 对齐位，不在就滚过去。
   ///
   /// 不再以「行号是否变化」为触发条件——行号已经记住但滚动失败时（如 ListView
   /// 懒构建导致目标行尚未构建、从播放页滑入时该页才刚创建）会永久卡住，
@@ -328,7 +335,7 @@ class _LyricsViewState extends State<LyricsView> {
     final vp = RenderAbstractViewport.maybeOf(ro);
     if (vp == null) return;
     final target = vp
-        .getOffsetToReveal(ro, _align)
+        .getOffsetToReveal(ro, widget.align)
         .offset
         .clamp(pos.minScrollExtent, pos.maxScrollExtent);
     _retry = 0;

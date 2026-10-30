@@ -1016,7 +1016,8 @@ class _EdgeArrow extends StatelessWidget {
   }
 }
 
-/// 歌词页：LRC 同步滚动歌词（右滑/按钮返回播放页）。
+/// 歌词页（竖屏三页布局的整页歌词）：LRC 同步滚动歌词（右滑/按钮返回
+/// 播放页）。高亮行略偏上（0.42），与横屏两页布局的内嵌歌词列（居中）区分。
 class _LyricsPage extends StatelessWidget {
   const _LyricsPage();
 
@@ -1055,7 +1056,7 @@ class _LyricsPage extends StatelessWidget {
                               fontSize: 14 * scale,
                               color: cs.onSurface.withValues(alpha: 0.5))),
                     )
-                  : LyricsView(player: player, scale: scale),
+                  : LyricsView(player: player, scale: scale, align: 0.42),
             ),
             SizedBox(height: 8 * scale),
           ],
@@ -1498,7 +1499,8 @@ class LandscapePlayer extends StatelessWidget {
                   onVerticalDragUpdate: onVerticalDragUpdate,
                   onVerticalDragEnd: onVerticalDragEnd),
             ),
-            // 第二列：歌词区，上下边缘渐隐（参照稿 mask-image）。
+            // 第二列：歌词区，上下边缘渐隐（参照稿 mask-image）；横屏两页
+            // 布局里歌词内嵌在播放页，高亮行居中。
             Expanded(
               child: ShaderMask(
                 shaderCallback: (r) => const LinearGradient(
@@ -1516,7 +1518,7 @@ class LandscapePlayer extends StatelessWidget {
                 child: Padding(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                  child: LyricsView(player: player),
+                  child: LyricsView(player: player, align: 0.5),
                 ),
               ),
             ),
@@ -1761,7 +1763,8 @@ class _DesktopLandscapePlayer extends StatelessWidget {
                       padding: EdgeInsets.symmetric(
                           horizontal: m.lyricsPadding,
                           vertical: 12 * m.uiScale),
-                      child: LyricsView(player: player, scale: m.uiScale),
+                      child:
+                          LyricsView(player: player, scale: m.uiScale, align: 0.5),
                     ),
                   ),
                 ),
