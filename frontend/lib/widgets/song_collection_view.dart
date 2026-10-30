@@ -837,14 +837,9 @@ class _SongCollectionViewState extends State<SongCollectionView> {
               tooltip: expanded ? '折叠文件夹' : '展开文件夹',
               onPressed: () => _toggleFolderExpanded(direct.settings, f.path),
             ),
-          RowActionIconButton(
-            icon: Icons.chevron_right,
-            tooltip: '进入文件夹',
-            onPressed: () => widget.onDirChanged?.call(f.path),
-          ),
         ],
       ),
-      // 多选态点击整行 = 选中/取消整个子树；右侧箭头仍可进入/展开。
+      // 多选态点击整行 = 选中/取消整个子树；右侧只保留展开/折叠箭头。
       onTap: _sel.active
           ? (selectable ? () => _toggleFolderSelection(f) : null)
           : () => widget.onDirChanged?.call(f.path),

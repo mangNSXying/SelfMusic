@@ -395,19 +395,18 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('已选 0'), findsOneWidget);
 
-    // 多选态点击整行 = 切选择，右侧箭头才进入目录。
+    // 多选态点击整行 = 切选择，右侧只保留展开箭头（进入目录靠行点击）。
     await tester.tap(find.text('FolderB'));
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('已选 1'), findsOneWidget);
     expect(currentDir, '');
     expect(actionSelected?.map((s) => s.title), ['B三']);
-    await tester.tap(find.descendant(
-      of: find.widgetWithText(ListTile, 'FolderA'),
-      matching: find.byTooltip('进入文件夹'),
-    ));
+    expect(find.byTooltip('进入文件夹'), findsNothing);
+
+    // 源页头部的面包屑可在多选态切换目录：选择集跨目录保留。
+    setOuter(() => currentDir = 'FolderA');
     await tester.pump(const Duration(milliseconds: 50));
-    expect(currentDir, 'FolderA');
-    expect(find.text('已选 1'), findsOneWidget); // 跨目录保留选择
+    expect(find.text('已选 1'), findsOneWidget);
 
     // A一 未选，点选后返回根目录看 FolderA 半选。
     expect(find.text('A一'), findsOneWidget);
@@ -586,6 +585,8 @@ void main() {
     expect(find.text('A一'), findsNothing);
     expect(find.text('A二'), findsNothing);
     expect(find.byTooltip('全部展开'), findsOneWidget);
+    // 文件夹行右侧只保留展开箭头，不再有进入下一级的箭头。
+    expect(find.byTooltip('进入文件夹'), findsNothing);
 
     // 展开 FolderA：出现直属歌曲与子文件夹；空文件夹没有展开箭头。
     await tester.tap(find.descendant(
@@ -722,7 +723,7 @@ void main() {
     expect(find.text('已选 2'), findsOneWidget);
   });
 
-  testWidgets('源页树形：窄屏深层缩进与行内三动作不溢出', (tester) async {
+  testWidgets('源页树形：窄屏深层缩进与行内动作不溢出', (tester) async {
     tester.view.physicalSize = const ui.Size(360, 640);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
