@@ -5414,6 +5414,102 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_syncPlaylistUuid == playlistUuid) _syncPlaylistUuid = null;
   }
 
+  /// 播放源被删除（本机删除与「其它设备同步删除」共用出口）。
+  ///
+  /// 源已不可播放：队列、融合基座、深层历史、「下一首播放」槽里属于该源的歌
+  /// 一律移除——否则播到就抛「找不到该歌曲的播放源」，播放中断点快照还会把
+  /// 死引用反复写回库。库侧同一事实由 `LocalIndex.deleteSource` 收口
+  /// （play_state 队列 / deep_lists 历史），这里只负责运行时与 UI 的一致。
+  ///
+  /// 当前曲正是该源的歌时按「删当前曲」口径续播其后存活的歌（锚定上下文取基座
+  /// 里被删位置上的第一首存活曲，同 [onAnchorSongRemoved]）；队列里已无存活曲
+  /// 则收尾停止（同 [removeAt] 删光队列）。
+  Future<void> onSourceRemoved(String sourceKey) async {
+    bool dead(Song s) => s.sourceKey == sourceKey;
+    final cur = _current;
+    final currentRemoved = cur != null && dead(cur);
+    // 该源自身的浏览列表锚定随源消失（库里的锚定行已一并删除）。
+    final anchorDead = _anchorKey == PlayerProvider.anchorForSource(sourceKey);
+    final nextUpDead = _nextUp != null && dead(_nextUp!);
+    if (nextUpDead) _nextUp = null;
+    final dl = _deepList;
+    final dlChanged = dl != null && dl.removeIf(dead);
+    final base = _fusedBase;
+    int? deadBaseIndex;
+    if (base != null) {
+      for (var i = 0; i < base.length; i++) {
+        if (dead(base[i])) {
+          deadBaseIndex = i;
+          break;
+        }
+      }
+    }
+    final baseChanged = deadBaseIndex != null;
+    // 基座（锚定列表快照）里的死引用同步剔除：续播段与后续重建都按新基座算。
+    if (baseChanged) base!.removeWhere(dead);
+    final queueChanged = _queue.any(dead);
+
+    if (anchorDead) {
+      _deepList = null;
+      _anchorKey = null;
+      _fusedBase = null;
+      _pruneQueueIf(dead);
+    } else if (dl != null && base != null) {
+      // 锚定上下文：队列是「深层 ‖ 预载槽 ‖ 基座续播段」的融合投影，整段重算。
+      if (dlChanged || baseChanged || nextUpDead) {
+        _persistDeepList();
+        _rebuildFusedQueue(target: currentRemoved ? null : cur);
+      }
+    } else {
+      if (dlChanged) _persistDeepList();
+      if (queueChanged) _pruneQueueIf(dead);
+    }
+
+    if (currentRemoved) {
+      if (_queue.isEmpty) {
+        await _clearStoppedState();
+        return;
+      }
+      // 续播目标：锚定上下文取基座里被删位置上的第一首存活曲（批量删整源时
+      // 连续多首同时失效，这里天然落到源外的第一首）；否则退到当前下标。
+      final resume = (!anchorDead &&
+              base != null &&
+              deadBaseIndex != null &&
+              deadBaseIndex < base.length)
+          ? base[deadBaseIndex]
+          : null;
+      final target = resume ?? _queue[_idx.clamp(0, _queue.length - 1).toInt()];
+      final i = _queue.indexWhere((x) => _same(x, target));
+      if (i >= 0) _idx = i;
+      await _play(_queue[_idx], autoAdvanceOnFailure: true);
+      return;
+    }
+    if (dlChanged || baseChanged || queueChanged || nextUpDead || anchorDead) {
+      notifyListeners();
+      _syncSystemMedia();
+    }
+  }
+
+  /// 运行时队列去掉 [dead] 的歌（深层/基座由调用方先行处理）。
+  /// 下标按「移除位在当前位置之前 → 左移一位」修正（同 [nextIndexAfterRemove]）。
+  void _pruneQueueIf(bool Function(Song s) dead) {
+    var idx = _idx;
+    var removed = false;
+    final kept = <Song>[];
+    for (var i = 0; i < _queue.length; i++) {
+      final s = _queue[i];
+      if (dead(s)) {
+        removed = true;
+        if (i < idx) idx--;
+        continue;
+      }
+      kept.add(s);
+    }
+    if (!removed) return;
+    _queue = kept;
+    _idx = _queue.isEmpty ? 0 : idx.clamp(0, _queue.length - 1).toInt();
+  }
+
   /// 退出软件前清理：保存断点、停止并释放播放器（确保 mpv 等外部子进程退出）。
   Future<void> shutdown() async {
     _shuttingDown = true;

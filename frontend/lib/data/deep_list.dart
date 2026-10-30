@@ -50,6 +50,14 @@ class DeepListController {
     _entries.removeWhere((e) => same(e, s));
   }
 
+  /// 移除满足 [dead] 的全部条目（播放源被删除时整源清理）。
+  /// 返回是否真的移除了条目（调用方据此决定是否重存/重建队列）。
+  bool removeIf(bool Function(Song s) dead) {
+    final before = _entries.length;
+    _entries.removeWhere(dead);
+    return _entries.length != before;
+  }
+
   void clear() => _entries.clear();
 
   List<Map<String, dynamic>> toJson() => [for (final s in _entries) s.toJson()];

@@ -366,6 +366,10 @@ class SelfMusicApp extends StatelessWidget {
         resolveTranscodeCache: direct.cachedTranscodePath,
       )
       ..attachAudioHandlerIfAny(audioHandler);
+    // 删源（本机删除 / 其它设备同步删除）统一出口：播放器清掉队列、融合基座、
+    // 深层历史里属于该源的死引用——否则播到即抛「找不到该歌曲的播放源」，
+    // 断点快照还会把死引用写回库。库侧清理由 LocalIndex.deleteSource 收口。
+    direct.onSourceRemoved = player.onSourceRemoved;
     // 鸿蒙 AVSession 桥接线：attach 注册回推钩子与 direct 监听，
     // 此后播放/暂停/切歌/seek/模式/收藏变化自动同步系统播控卡。
     ohosMediaSession?.attach(player);

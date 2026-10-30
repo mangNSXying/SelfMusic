@@ -228,6 +228,18 @@ class DirectSourceManager extends ChangeNotifier {
   int _sourcesRevision = 0;
   int get sourcesRevision => _sourcesRevision;
 
+  /// 播放源被删除的统一出口（本机删除与「其它设备同步删除」共用）：
+  /// 播放器据此清掉队列/深层历史里属于该源的死引用（见
+  /// [PlayerProvider.onSourceRemoved]）。main 装配期注入；未注入（单测/无播放器）
+  /// 时静默跳过。
+  void Function(String key)? onSourceRemoved;
+
+  /// 上次与库对账时存在的源 key（**含未启用的行**）。
+  ///
+  /// 识别「其它设备同步删除」只能靠它：未启用的源本就不在 [_sources] 里，
+  /// 拿内存列表和库比会漏掉「禁用期间被别机删掉」的源。
+  Set<String> _knownSourceKeys = {};
+
   /// 设置变更后调用：通知列表类页面重查（歌曲/专辑/歌手/喜欢/源浏览 + 计数）。
   void settingsChanged() {
     _settingsVersion++;
@@ -434,8 +446,14 @@ class DirectSourceManager extends ChangeNotifier {
     // 重建」留下的空窗被并发读取（如启动断点恢复的 sourceByKey）命中，误报
     // 「找不到该歌曲的播放源」。webdav 源重建含 SecretStore 异步读，空隙真实存在。
     final oldSig = _watcherSignature(_sources);
+    final rows = index.listSources();
+    // 与上次对账：库里已消失的源 = 其它设备同步删除的源（含禁用状态下被删的），
+    // 通知播放器清队列/深层历史里的死引用。
+    final alive = {for (final r in rows) r.key};
+    final removedKeys = _knownSourceKeys.difference(alive).toList();
+    _knownSourceKeys = alive;
     final rebuilt = <MusicSource>[];
-    for (final r in index.listSources()) {
+    for (final r in rows) {
       if (!r.enabled) continue;
       final src = await _buildRowFromRow(r);
       if (src != null) rebuilt.add(src);
@@ -452,6 +470,12 @@ class DirectSourceManager extends ChangeNotifier {
     // 取消+重挂目录监听是纯浪费，还会丢掉去抖状态与新事件窗口。
     if (_watcherSignature(_sources) != oldSig) restartAutoScan();
     notifyListeners();
+    final notify = onSourceRemoved;
+    for (final k in removedKeys) {
+      // 同步删除：凭据与队列/深层历史一并清（与本机 removeSource 同口径）。
+      await _purgeSourceSecrets(k);
+      notify?.call(k);
+    }
   }
 
   /// 目录监听的关注面：本地源的 key + rootPath（其余源不挂 watcher）。
@@ -634,6 +658,7 @@ class DirectSourceManager extends ChangeNotifier {
       final src = await _buildRowFromRow(r);
       if (src != null) _sources.add(src);
     }
+    _knownSourceKeys = {for (final r in rows) r.key};
     perfLog('boot.directInit buildRows done', 'sources=${_sources.length}');
     _ready = true;
     restartAutoScan();
@@ -1556,6 +1581,24 @@ class DirectSourceManager extends ChangeNotifier {
       unawaited(src.close());
     }
     _dropFallbackCache(key, close: true);
+    await _purgeSourceSecrets(key);
+    // 源已不可播放：歌单里属于它的条目一并移除（在线时补发 item_remove，
+    // 由 PlaylistStore.removeItemsOfSource 收口）。
+    await playlists.removeItemsOfSource(key);
+    await index.deleteSource(key);
+    // 已删的源不该再出现在对账基准里（否则下次 reload 会重复通知一次）。
+    _knownSourceKeys.remove(key);
+    // 队列/深层历史里的死引用由播放器收口（与「其它设备同步删除」同一出口）。
+    onSourceRemoved?.call(key);
+    notifyListeners();
+  }
+
+  /// 清掉某源在 SecretStore 的全部凭据（主源 + 每个备用槽）。
+  ///
+  /// 本机删除与「其它设备同步删除」共用：源行都没了，凭据留着只会变成谁也
+  /// 读不到、谁也不会清的孤儿明文（WebDAV 密码 / SFTP 私钥与 passphrase /
+  /// SMB 密码）。
+  Future<void> _purgeSourceSecrets(String key) async {
     _webdavPwds.remove(key);
     await secrets.deleteWebdav(key);
     _sftpSecrets.remove(key);
@@ -1570,11 +1613,6 @@ class DirectSourceManager extends ChangeNotifier {
     _webdavFbPwds.remove(key);
     _sftpFbSecrets.remove(key);
     _smbFbPwds.remove(key);
-    // 源已不可播放：歌单里属于它的条目一并移除（在线时补发 item_remove，
-    // 由 PlaylistStore.removeItemsOfSource 收口）。
-    await playlists.removeItemsOfSource(key);
-    await index.deleteSource(key);
-    notifyListeners();
   }
 
   /// 硬删一首歌曲（阶段6：删除全删 + 二次确认由 UI 完成）：
