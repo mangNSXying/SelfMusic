@@ -1518,7 +1518,7 @@ class LandscapePlayer extends StatelessWidget {
                 child: Padding(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                  child: LyricsView(player: player, align: 0.5),
+                  child: LyricsView(player: player, align: 0.47),
                 ),
               ),
             ),
@@ -1764,7 +1764,7 @@ class _DesktopLandscapePlayer extends StatelessWidget {
                           horizontal: m.lyricsPadding,
                           vertical: 12 * m.uiScale),
                       child:
-                          LyricsView(player: player, scale: m.uiScale, align: 0.5),
+                          LyricsView(player: player, scale: m.uiScale, align: 0.47),
                     ),
                   ),
                 ),

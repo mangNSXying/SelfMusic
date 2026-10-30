@@ -27,7 +27,7 @@ class LyricsView extends StatefulWidget {
     super.key,
     required this.player,
     this.scale = 1.0,
-    this.align = 0.5,
+    this.align = 0.47,
   });
 
   @override
