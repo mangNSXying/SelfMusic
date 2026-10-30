@@ -371,6 +371,154 @@ void main() {
     index.close();
   });
 
+  test('删源连带清理权重/歌词/缓存/设置项/深层列表/播放队列（其它源不受影响）', () async {
+    final index = await _openIndex();
+    const key = 'webdav:NAS';
+    const other = 'local:Other';
+    await index.upsertSource(
+        key, 'webdav', 'NAS', jsonEncode({'name': 'NAS', 'baseUrl': _addr}));
+    await index.upsertSongs([
+      DirectSongRow(
+          sourceKey: key, ref: '/music/a.flac', title: 'A', size: 8, mtime: 1),
+      DirectSongRow(
+          sourceKey: other, ref: '/music/b.flac', title: 'B', size: 8, mtime: 1),
+    ]);
+    // 权重/收藏 + 歌词：源删除后不可播，不能留成「查不到归属」的孤儿行。
+    await index.upsertPlayMeta(key, '/music/a.flac',
+        likeStreak: 3, favorite: true);
+    await index.setLyrics(key, '/music/a.flac', '[00:01]hi');
+    expect(index.playMetaOf(key, '/music/a.flac').favorite, isTrue);
+    expect(index.lyricsOf(key, '/music/a.flac'), '[00:01]hi');
+    // 离线缓存：原文件 + 转码变体各一行（都带 source_key），另一源一行做对照。
+    await index.cacheSave('cacheA', List<int>.filled(4, 1),
+        sourceKey: key, songRef: '/music/a.flac');
+    await index.cacheSave('cacheA_v1', List<int>.filled(4, 1),
+        sourceKey: key, songRef: '/music/a.flac', variantOf: 'cacheA');
+    await index.cacheSave('cacheB', List<int>.filled(4, 1),
+        sourceKey: other, songRef: '/music/b.flac');
+    final cacheAFile = File(index.cachePathForKey('cacheA'));
+    final cacheBFile = File(index.cachePathForKey('cacheB'));
+    expect(cacheAFile.existsSync(), isTrue);
+    // 按源 key 存的两类设置项（线路锁定 / 应用内建过的文件夹）。
+    index.settingsSet(sourceLineSettingKey(key), 'fb0');
+    index.settingsSet(sourceCreatedFoldersSettingKey(key), 'Inbox');
+    index.settingsSet('unrelated_setting', 'keep');
+    // 深层列表：混源栈（本源 + 其它源）与该源自身的浏览列表锚定。
+    Song song(String sourceKey, String ref) => Song.direct(
+          id: 1,
+          sourceKey: sourceKey,
+          title: ref,
+          source: sourceKey.split(':').first,
+          sourceRef: ref,
+          fileSize: 8,
+        );
+    final a = song(key, '/music/a.flac');
+    final a2 = song(key, '/music/a2.flac');
+    final b = song(other, '/music/b.flac');
+    await index.saveDeepList(
+        'playlist:p-1', jsonEncode([a.toJson(), b.toJson()]));
+    await index.saveDeepList('source:$key', jsonEncode([a.toJson()]));
+    // 播放队列：A(本源) / B(其它源) / A2(本源)，当前停在第 0 位（本源歌）。
+    await index.savePlayState(
+        jsonEncode([a.toJson(), b.toJson(), a2.toJson()]), 0, 1000,
+        anchorKey: 'source:$key');
+
+    await index.deleteSource(key);
+
+    expect(index.getSource(key), isNull);
+    expect(index.songByRef(key, '/music/a.flac'), isNull);
+    expect(index.scanFingerprint(key), isEmpty);
+    expect(index.playMetaOf(key, '/music/a.flac').favorite, isFalse,
+        reason: '权重/收藏行应随源删除');
+    expect(index.playMetaOf(key, '/music/a.flac').likeStreak, 0);
+    expect(index.lyricsOf(key, '/music/a.flac'), isNull, reason: '歌词行应随源删除');
+    // 缓存：本源两行（含变体）一起清，文件也真删掉；其它源原样保留。
+    final leftCache = index.listCache();
+    expect(leftCache.where((c) => c.sourceKey == key), isEmpty);
+    expect(cacheAFile.existsSync(), isFalse);
+    expect(leftCache.where((c) => c.sourceKey == other).length, 1);
+    expect(cacheBFile.existsSync(), isTrue);
+    // 设置项：本源两项清掉，无关设置保留。
+    expect(index.settingsGet(sourceLineSettingKey(key)), isNull);
+    expect(index.settingsGet(sourceCreatedFoldersSettingKey(key)), isNull);
+    await index.flushWrites();
+    expect(index.settingsAll().containsKey(sourceLineSettingKey(key)), isFalse);
+    expect(index.settingsGet('unrelated_setting'), 'keep');
+    // 深层列表：混源栈只剩其它源那首；本源浏览列表锚定整行删除。
+    final playlistStack = index.loadDeepList('playlist:p-1');
+    expect(playlistStack, isNotNull);
+    final entries = jsonDecode(playlistStack!) as List;
+    expect(entries.length, 1);
+    expect((entries.single as Map)['sourceKey'], other);
+    expect(index.loadDeepList('source:$key'), isNull);
+    // 播放队列：本源两首剔除，下标落到还活着的 B，锚定（本源浏览列表）作废。
+    final state = index.getPlayState();
+    expect(state, isNotNull);
+    final queue = jsonDecode(state!.queueJson) as List;
+    expect(queue.length, 1);
+    expect((queue.single as Map)['sourceKey'], other);
+    expect(state.idx, 0);
+    expect(state.anchorKey, isNull);
+
+    index.close();
+  });
+
+  test('删源把队列/深层列表剔空时整行删除（无断点、无空历史）', () async {
+    final index = await _openIndex();
+    const key = 'webdav:NAS';
+    await index.upsertSource(
+        key, 'webdav', 'NAS', jsonEncode({'name': 'NAS', 'baseUrl': _addr}));
+    final a = Song.direct(
+      id: 1,
+      sourceKey: key,
+      title: 'A',
+      source: 'webdav',
+      sourceRef: '/music/a.flac',
+      fileSize: 8,
+    );
+    await index.saveDeepList('liked', jsonEncode([a.toJson()]));
+    await index.savePlayState(jsonEncode([a.toJson()]), 0, 500);
+
+    await index.deleteSource(key);
+
+    expect(index.loadDeepList('liked'), isNull, reason: '剔空的深层历史无意义');
+    expect(index.getPlayState(), isNull, reason: '队列剔空等价于无断点');
+
+    index.close();
+  });
+
+  test('同步墓碑删源同样清缓存与按源设置项（其它设备删源的路径）', () async {
+    final index = await _openIndex();
+    const key = 'webdav:NAS';
+    await index.upsertSource(
+        key, 'webdav', 'NAS', jsonEncode({'name': 'NAS', 'baseUrl': _addr}));
+    final uuid = await index.ensureSourceUuid(key);
+    await index.cacheSave('cacheA', List<int>.filled(4, 1),
+        sourceKey: key, songRef: '/music/a.flac');
+    index.settingsSet(sourceLineSettingKey(key), 'primary');
+    final file = File(index.cachePathForKey('cacheA'));
+    expect(file.existsSync(), isTrue);
+
+    expect(
+        await index.applySourceSnapshot(
+          uuid: uuid,
+          kind: 'webdav',
+          name: null,
+          address: _addr,
+          config: null,
+          enabled: true,
+          deleted: true,
+        ),
+        isTrue);
+
+    expect(index.getSource(key), isNull);
+    expect(index.listCache().where((c) => c.sourceKey == key), isEmpty);
+    expect(file.existsSync(), isFalse);
+    expect(index.settingsGet(sourceLineSettingKey(key)), isNull);
+
+    index.close();
+  });
+
   test('源去重地址工具：WebDAV=baseUrl，本地源不参与同步', () {
     expect(isSyncableKind('local'), isFalse);
     expect(isSyncableKind('webdav'), isTrue);

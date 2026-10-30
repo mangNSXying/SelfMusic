@@ -23,6 +23,13 @@ import '../sources/webdav_url.dart';
 import 'audio_metadata.dart';
 import 'db_writer.dart';
 
+/// 手动线路偏好设置项键名（`auto/primary/fb0/fb1`，按源 key 存）。
+String sourceLineSettingKey(String sourceKey) => 'source_line:$sourceKey';
+
+/// 「应用内新建过的文件夹」设置项键名（按源 key 存，逐级浏览用于显示空目录）。
+String sourceCreatedFoldersSettingKey(String sourceKey) =>
+    'source_created_folders_$sourceKey';
+
 /// 直连模式本地轻量索引（DEVELOPER.md「客户端扫描与元数据」）。///
 /// SQLite 存放：已配置的直连源（[DirectSourceRow]）、索引歌曲（[Song]）、
 /// 离线缓存（[CachedFile]）。扫描时按 `(sourceKey, ref)` 的 mtime/size 三元组做增量。
@@ -128,8 +135,59 @@ class LocalIndex {
         [status, DateTime.now().toIso8601String(), key]);
   }
 
-  Future<void> deleteSource(String key) =>
-      _writer!.op<void>('deleteSource', {'key': key});
+  /// 删源（本机删除与「其它设备同步删除」共用）：
+  ///
+  /// 1) 离线缓存：先删真实文件再删登记行（见 [deleteCachesOfSource]）；
+  /// 2) 按源 key 存的应用设置（线路锁定 / 应用内建过的文件夹）一并失效；
+  /// 3) 索引/歌单条目/权重/歌词/歌手映射 + 队列与深层历史的死引用，交给
+  ///    写隔离单事务的 `deleteSource` 收口（见 `_opDeleteSource`）。
+  ///
+  /// 1)、2) 只能在本 isolate 做：缓存行必须「文件先删、删不掉就留着」，
+  /// 设置要同步失效内存缓存，都不能塞进写连接的事务里。
+  Future<void> deleteSource(String key) async {
+    await _purgeSourceSidecars(key);
+    await _writer!.op<void>('deleteSource', {'key': key});
+  }
+
+  /// 删源旁路数据：缓存文件/登记行、按源 key 的设置项、该源自身的深层列表锚定。
+  ///
+  /// 本机删源与同步墓碑删除两条路径都必须走这里——否则这些行既查不到归属、
+  /// 又不会被任何 GC 命中，成为永久孤儿（缓存白占配额、线路偏好串到同名新源）。
+  Future<void> _purgeSourceSidecars(String key) async {
+    await deleteCachesOfSource(key);
+    await settingsDelete(sourceLineSettingKey(key));
+    await settingsDelete(sourceCreatedFoldersSettingKey(key));
+    await deleteDeepList('source:$key');
+  }
+
+  /// 删除某源的全部离线缓存（文件 + 登记行）。
+  ///
+  /// 顺序与 [deleteCache] 一致：**先删真实文件，删成功才删登记行**。删不掉
+  /// （Windows 文件被占用 / 权限）就保留行，让 LRU 淘汰下次再试——把行抹掉
+  /// 只会让文件留在磁盘上却查不到，彻底变成看不见的孤儿。
+  Future<void> deleteCachesOfSource(String sourceKey) async {
+    final rs = _db!.select(
+        'SELECT cache_key, path FROM cache WHERE source_key=?', [sourceKey]);
+    if (rs.isEmpty) return;
+    final done = <String>[];
+    for (final r in rs) {
+      final cacheKey = r['cache_key'] as String;
+      final stored = (r['path'] as String?)?.trim();
+      final f = File(
+          (stored == null || stored.isEmpty) ? cachePathForKey(cacheKey) : stored);
+      if (f.existsSync()) {
+        try {
+          f.deleteSync();
+        } on FileSystemException {
+          continue; // 文件还在：登记行留着，交给下次淘汰
+        }
+      }
+      done.add(cacheKey);
+    }
+    for (final key in done) {
+      await _writer!.exec('DELETE FROM cache WHERE cache_key=?', [key]);
+    }
+  }
 
   /// 源改名：源 key 由名称派生，改名时同步迁移所有引用该 key 的数据，
   /// 保证已索引歌曲、收藏、歌单条目在改名后仍然有效。
@@ -156,8 +214,11 @@ class LocalIndex {
     Map<String, dynamic>? config,
     required bool enabled,
     required bool deleted,
-  }) {
-    return _writer!.op<bool>('applySourceSnapshot', {
+  }) async {
+    // 墓碑删除会连源行一起删，本地 key 只能删前反查；旁路数据（缓存文件/
+    // 按源 key 的设置/该源的深层列表锚定）与 [deleteSource] 同口径清理。
+    final hitKey = deleted ? sourceKeyOfUuid(uuid) : null;
+    final changed = await _writer!.op<bool>('applySourceSnapshot', {
       'uuid': uuid,
       'kind': kind,
       'name': name,
@@ -166,6 +227,8 @@ class LocalIndex {
       'enabled': enabled,
       'deleted': deleted,
     });
+    if (changed && hitKey != null) await _purgeSourceSidecars(hitKey);
+    return changed;
   }
 
   DirectSourceRow _rowToSource(Row r) => DirectSourceRow(
@@ -2224,6 +2287,15 @@ class LocalIndex {
         'INSERT INTO app_settings(key, value) VALUES(?,?) '
         'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
         [key, value]);
+  }
+
+  /// 删除一条设置项（内存缓存同步失效 + 落库）。
+  ///
+  /// 供「按源 key 存」的项在源删除时清残留（线路锁定、应用内建过的文件夹）——
+  /// 只删库不清缓存的话，同名源再加回来会继承上一份源的偏好。
+  Future<void> settingsDelete(String key) async {
+    _settingsCache[key] = _settingsNull;
+    await _writer!.exec('DELETE FROM app_settings WHERE key=?', [key]);
   }
 
   /// 全部已存设置键值（供设置导入导出，settings.md §3.5）。

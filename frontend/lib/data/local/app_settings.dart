@@ -934,14 +934,14 @@ class AppSettings {
 
   /// 源内「应用内新建过、可能还没有歌曲」的文件夹（逐级模式用于显示空文件夹）。
   Set<String> sourceCreatedFolders(String sourceKey) {
-    final raw = index.settingsGet('source_created_folders_$sourceKey');
+    final raw = index.settingsGet(sourceCreatedFoldersSettingKey(sourceKey));
     if (raw == null || raw.isEmpty) return {};
     return raw.split('|').map(Uri.decodeComponent).toSet();
   }
 
   void addSourceCreatedFolder(String sourceKey, String path) {
     final set = sourceCreatedFolders(sourceKey)..add(path);
-    index.settingsSet('source_created_folders_$sourceKey',
+    index.settingsSet(sourceCreatedFoldersSettingKey(sourceKey),
         set.map(Uri.encodeComponent).join('|'));
   }
 
@@ -996,12 +996,10 @@ class AppSettings {
       index.settingsSet(kFallbackAutoRepair, v ? '1' : '0');
 
   /// 手动线路偏好（auto/primary/fb0/fb1，默认 auto）：按源 key 存。
-  static String _lineKey(String sourceKey) => 'source_line:$sourceKey';
-
   String getSourceLine(String sourceKey) =>
-      index.settingsGet(_lineKey(sourceKey)) ?? 'auto';
+      index.settingsGet(sourceLineSettingKey(sourceKey)) ?? 'auto';
   setSourceLine(String sourceKey, String line) =>
-      index.settingsSet(_lineKey(sourceKey), line);
+      index.settingsSet(sourceLineSettingKey(sourceKey), line);
 
   // ---------- 在线元数据（设置→歌曲，纯前端 LRCLIB/MB-CAA） ----------
 

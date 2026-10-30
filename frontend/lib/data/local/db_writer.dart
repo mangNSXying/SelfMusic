@@ -1833,15 +1833,121 @@ void _opDeletePlaylist(Database db, int id) {
   }
 }
 
+/// 删源（本机删除与其它设备同步删除两条路径共用本函数）。
+///
+/// 源一旦删掉，它的歌既播不了也不会再被扫描回来，于是所有「按
+/// (source_key, ref) 挂着」的旁路行都成了永久孤儿——权重/收藏/播放进度
+/// （play_meta）、歌词（song_lyrics）、歌手身份映射（artist_song_map）都
+/// 必须一起清；否则重扫同源会把旧权重当「已存在」继承，歌单页也仍显示
+/// 这些歌的收藏态。
+///
+/// 队列（play_state）与深层历史（deep_lists）里对该源歌曲的引用同样是死
+/// 引用：源不可播放后播到就抛「找不到该歌曲的播放源」，所以按 sourceKey
+/// 过滤后写回（当前曲被删时落到其后第一首存活曲）。
+///
+/// 离线缓存行不在这里删：它必须「先删真实文件、再删登记行」（见
+/// [LocalIndex.deleteSource] 的 deleteCachesOfSource），与 _opDeleteSong 同口径。
 void _opDeleteSource(Database db, String key) {
-  db.execute('DELETE FROM sources WHERE key=?', [key]);
-  db.execute('DELETE FROM idx_songs WHERE source_key=?', [key]);
-  // 歌单条目随源删除清理：源已不可播放，留在歌单里只会变成无法播放的
-  // 悬挂快照（本地删除源与其它设备同步删除源两条路径共用本函数）。
-  db.execute('DELETE FROM playlist_items WHERE source_key=?', [key]);
-  // 歌手身份映射随源删除清理（歌手处理.txt）。
-  db.execute('DELETE FROM artist_song_map WHERE source_key=?', [key]);
+  _inTx(db, () {
+    db.execute('DELETE FROM sources WHERE key=?', [key]);
+    db.execute('DELETE FROM idx_songs WHERE source_key=?', [key]);
+    // 歌单条目随源删除清理：源已不可播放，留在歌单里只会变成无法播放的
+    // 悬挂快照。
+    db.execute('DELETE FROM playlist_items WHERE source_key=?', [key]);
+    // 歌手身份映射随源删除清理（歌手处理.txt）。
+    db.execute('DELETE FROM artist_song_map WHERE source_key=?', [key]);
+    // 权重/收藏/播放进度与歌词：源删除后不可再播，留着只剩脏数据。
+    db.execute('DELETE FROM play_meta WHERE source_key=?', [key]);
+    db.execute('DELETE FROM song_lyrics WHERE source_key=?', [key]);
+    _prunePlayStateOfSource(db, key);
+    _pruneDeepListsOfSource(db, key);
+  });
 }
+
+/// `play_state` 队列里剔除该源的歌（源删除的收尾）。
+///
+/// 下标按「移除位在当前位置之前 → 左移一位」修正；被删的正是当前曲时，
+/// 修正后恰好指向其后的第一首存活曲。队列被剔空则整行删除（等价于
+/// 无断点，与 `clearResumeState` 同口径）。坏行（非 JSON 数组）原样不动，
+/// 由下一次保存覆盖。
+void _prunePlayStateOfSource(Database db, String key) {
+  final rs = db.select(
+      'SELECT queue_json, idx, anchor_key FROM play_state WHERE id=1');
+  if (rs.isEmpty) return;
+  final row = rs.first;
+  final List<dynamic> raw;
+  try {
+    final v = jsonDecode(row['queue_json'] as String);
+    if (v is! List) return;
+    raw = v;
+  } catch (_) {
+    return;
+  }
+  final idx = (row['idx'] as int?) ?? 0;
+  final kept = <dynamic>[];
+  var removedBefore = 0;
+  var removed = 0;
+  for (var i = 0; i < raw.length; i++) {
+    final e = raw[i];
+    if (e is Map && e['sourceKey'] == key) {
+      removed++;
+      if (i < idx) removedBefore++;
+      continue;
+    }
+    kept.add(e);
+  }
+  // 该源在锚定键上时（`source:<key>` 锚定列表随源消失），锚定一并作废。
+  final anchor = row['anchor_key'] as String?;
+  final anchorDead = anchor == _sourceAnchor(key);
+  if (removed == 0 && !anchorDead) return;
+  if (kept.isEmpty) {
+    db.execute('DELETE FROM play_state WHERE id=1');
+    return;
+  }
+  db.execute(
+      'UPDATE play_state SET queue_json=?, idx=?, anchor_key=? WHERE id=1',
+      [
+        jsonEncode(kept),
+        (idx - removedBefore).clamp(0, kept.length - 1),
+        anchorDead ? null : anchor,
+      ]);
+}
+
+/// `deep_lists`（隐藏历史栈）里剔除该源的歌：锚定行剔空即整行删除。
+///
+/// 锚定键覆盖 playlist:/liked/songs/album:/artist:/source:（见
+/// `PlayerProvider.anchorFor*`），任何一栈都可能混入被删源的歌——播放到
+/// 就是死引用，「上一首」还会直接跳失败。
+void _pruneDeepListsOfSource(Database db, String key) {
+  // 该源自身的浏览列表锚定整行作废（`PlayerProvider.anchorForSource`）。
+  db.execute('DELETE FROM deep_lists WHERE playlist_uuid=?', [_sourceAnchor(key)]);
+  final rows = db.select('SELECT playlist_uuid, entries_json FROM deep_lists');
+  for (final r in rows) {
+    final anchor = r['playlist_uuid'] as String;
+    final List<dynamic> raw;
+    try {
+      final v = jsonDecode(r['entries_json'] as String);
+      if (v is! List) continue;
+      raw = v;
+    } catch (_) {
+      continue;
+    }
+    final kept = [
+      for (final e in raw)
+        if (!(e is Map && e['sourceKey'] == key)) e
+    ];
+    if (kept.length == raw.length) continue;
+    if (kept.isEmpty) {
+      db.execute('DELETE FROM deep_lists WHERE playlist_uuid=?', [anchor]);
+    } else {
+      db.execute('UPDATE deep_lists SET entries_json=? WHERE playlist_uuid=?',
+          [jsonEncode(kept), anchor]);
+    }
+  }
+}
+
+/// 播放源浏览列表的深层列表锚定键（与 `PlayerProvider.anchorForSource` 同形）。
+String _sourceAnchor(String key) => 'source:$key';
 
 /// 硬删一首歌的全部本地痕迹（阶段6：删除全删）。
 /// 含索引/权重/歌词/歌单条目/歌手映射；缓存行由调用方另行清理。
