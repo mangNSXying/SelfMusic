@@ -1369,8 +1369,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// - 保位置/保播放态：暂停态重载后仍暂停，播放态重载后从原位置继续；
   /// - 不碰队列/深层历史/睡眠定时/权重手动标记（与 [_play] 全量起播不同，
   ///   这里只换音频源，不视为一次新的播放）；
-  /// - 已缓存歌曲恒播本地原文件（缓存优先，见 [_loadOnce]），链路/转码变化
-  ///   对它无影响，直接返回 false 跳过重载，避免无谓打断；
+  /// - 用户缓存（手动/收藏自动缓存）恒播本地原文件（缓存优先，见 [_loadOnce]），
+  ///   链路/转码变化对它无影响，直接返回 false 跳过重载，避免无谓打断；
   /// - 无当前曲或播放器未建时返回 false。
   ///
   /// 返回 true=已重载，false=跳过（无当前曲/未建播放器/已缓存/无源）。
@@ -1384,9 +1384,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final fresh = _resolver?.call(cur.sourceKey) ?? _curSource;
     if (fresh == null) return false;
     _curSource = fresh;
-    // 缓存优先：已缓存恒播本地原文件，链路/转码变化不影响本次播放，无需重载。
+    // 用户缓存优先：已缓存的歌恒播本地原文件，链路/转码变化不影响本次播放。
     try {
-      final cached = await fresh.cachedFilePath(cur);
+      final cached = await fresh.userCachedFilePath(cur);
       if (cached != null) return false;
     } catch (_) {
       // 查缓存失败按未缓存处理，继续重载。
@@ -2800,11 +2800,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// 单次装载（转码开时）：
-  /// 变体缓存（与当前码率/响度一致的转码产物，本地秒开）→ 转码流 →
-  /// 原文件缓存（转码失败/断网兜底）→ 原生 URL（Range/seek 更稳）→
-  /// 自建字节流 [DirectAudioSource]。
-  /// （转码关时）原文件缓存 → 原生 URL → 自建字节流（旧行为不变）。
+  /// 单次装载：
+  /// 用户缓存（手动/收藏自动缓存，无条件优先，本地秒开）→
+  /// （转码开时）当前设置匹配的变体缓存 → 转码流 → 预载原文件兜底 →
+  /// 原生 URL（Range/seek 更稳）→ 自建字节流 [DirectAudioSource]。
+  /// （转码关时）预载原文件 → 原生 URL → 自建字节流。
+  /// 预载原文件（preload_origin）不算“已缓存”，只在直连设置或转码失败时使用。
   /// [probe] 为 false 时跳过装载前探针（该源已探明无响应，别再白等）。
   /// [skipTranscode] 为 true 时跳过转码分支（同一 [_playDirect] 内首轮已试过
   /// 转码：429/502/超时几秒后重试大概率还是失败，别再占服务端转码许可
@@ -2831,6 +2832,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 先按非直播态复位：各成功分支按实际链路重记（转码分支记 true）。
     _liveTranscode = false;
     _transcodeStartSec = 0;
+    // 缓存优先：用户缓存（手动/收藏自动缓存）无条件先播，转码设置不改变它。
+    final userCached = await src.userCachedFilePath(s);
+    _ensureLoadAlive(alive);
+    if (userCached != null) {
+      if (await _playCachedFile(userCached, src, tag, alive: alive)) return;
+    }
     if (transcodeOn && !skipTranscode) {
       // 与当前设置一致的预载转码产物：本地文件，原生 seek、无需重建请求。
       try {
@@ -2861,11 +2868,6 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         // 变体损坏等：继续走流式，下面原文件缓存仍可兜底。
       }
     }
-    final cached = await src.cachedFilePath(s);
-    _ensureLoadAlive(alive);
-    if (cached != null && !transcodeOn) {
-      if (await _playCachedFile(cached, src, tag, alive: alive)) return;
-    }
     final direct = src.directStream(s);
     // 代理转码：开关开 + 后端可达 + 该源选了代理链路时优先走服务端；
     // origin 与鉴权头由源自备（WebDAV https URL + Basic / SFTP sftp:// + 信封 /
@@ -2879,10 +2881,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     _ensureLoadAlive(alive);
-    // 转码开但流失败（429 并发满 / 503 / 断网）：原文件缓存兜底，
-    // 不行再走直连（旧行为里原缓存恒首位，转码开时不再让它抢跑）。
-    if (transcodeOn && cached != null) {
-      if (await _playCachedFile(cached, src, tag, alive: alive)) return;
+    // 用户缓存已在最前试过；这里只兜底预载原文件（preload_origin）/旧原文件，
+    // 避免重复播放同一个失败文件。转码失败或直连设置下都能用。
+    final fallbackCached = await src.cachedFilePath(s);
+    _ensureLoadAlive(alive);
+    if (fallbackCached != null && fallbackCached != userCached) {
+      if (await _playCachedFile(fallbackCached, src, tag, alive: alive)) return;
     }
     _ensureLoadAlive(alive);
     if (direct != null) {

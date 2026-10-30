@@ -777,6 +777,8 @@ class DirectSourceManager extends ChangeNotifier {
   @override
   void dispose() {
     _autoScanTimer?.cancel();
+    _preloadRetryTimer?.cancel();
+    _preloadRetryTimer = null;
     for (final w in _watchers) {
       w.dispose();
     }
@@ -1861,34 +1863,53 @@ class DirectSourceManager extends ChangeNotifier {
   /// 变体——变体是预载路径按当前设置取用的行为（见 [preloadSong]），两条路
   /// 有意分开。失败抛给调用方（UI 提示），与其他两条路静默的语义不同。
   Future<void> cacheSong(MusicSource src, Song s) async {
-    await src.cacheSong(s);
+    await src.cacheSong(s, kind: CacheEntryKind.user);
+    final key = cache.cacheKeyOf(src, s);
+    if (key != null) {
+      // 已有预载原文件时源侧 isCached 会短路：把它升级为真正的用户缓存。
+      await index.setCacheKind(key, CacheEntryKind.user);
+    }
     // 已缓存的歌（源侧 isCached 短路）在此刷新访问时间；新下载的 commit 已写
-    // now——两条都保证它排 LRU 队尾，本轮的 [CacheManager.evictIfNeeded] 不会
-    // 先删它。**不要动 currentCacheKey**：那是「正在播放」的豁免槽，手动缓存
-    // 不是当前播放，顶掉它会让真正在播的歌失去保护（预载同理，见 preloadSong）。
+    // now——两条都保证它排 LRU 队尾。**不要动 currentCacheKey**：那是「正在
+    // 播放」的豁免槽，手动缓存不是当前播放，顶掉它会让真正在播的歌失去保护
+    //（预载同理，见 preloadSong）。本轮淘汰保护这份刚缓存的歌：按歌曲数据
+    // 排序时它可能很弱，不能被用户操作刚写完就删掉。
     cache.touch(src, s);
-    await cache.evictIfNeeded();
+    await cache.deleteVariantsOf(src, s);
+    await cache.evictIfNeeded(protectKey: key);
     notifyListeners();
   }
 
   /// 预载指定歌曲（完整下载整曲）：
-  /// 开关关闭/非直连歌/已缓存直接返回；下载后走 LRU 淘汰（预载条目受保护），失败静默。
+  /// 开关关闭/非直连歌/已缓存直接返回；下载后按歌曲数据淘汰（预载条目受保护）。
   /// 由 [_scheduleNextTrack] 以 [DirectTaskPriority.nextAudio] 排队调用
   /// （原先是切歌时直接并发开跑，会跟当前曲的补读抢同一条链路）。
   ///
-  /// 转码开时优先预载与**当前设置一致的转码变体**（码率/响度 honoring 预载，
-  /// 与实际播放一致，本地秒开）；变体失败（429 并发满/503/断网）回退原文件
-  /// 预载（不断网兜底），再失败则静默。
-  Future<void> preloadSong(Song s, {bool Function()? shouldAbort}) async {
+  /// 已经用户缓存的下一首无需预载：只刷新访问时间并登记 LRU 保护。
+  /// 转码开时预载与**当前设置一致的转码变体**；失败不回退原文件，只对
+  /// 429/502/网络类瞬态错误做有界延迟重试（见 [_schedulePreloadRetry]）。
+  /// 转码关时预载原文件（标记 [CacheEntryKind.preloadOrigin]，不算“已缓存”）。
+  Future<void> preloadSong(Song s,
+      {bool Function()? shouldAbort, int attempt = 0}) async {
     if (!settings.preloadNext) return;
     if (!s.isDirect) return;
     final src = sourceByKey(s.sourceKey);
     if (src == null) return;
+    final baseKey = cache.cacheKeyOf(src, s);
+
+    // 缓存是缓存，预载是预载：用户缓存命中即视为预载完成，不再下载。
+    final userCached = await src.userCachedFilePath(s);
+    if (userCached != null) {
+      if (baseKey != null) {
+        index.touchCache(baseKey);
+        cache.preloadCacheKey = baseKey;
+      }
+      return;
+    }
+
     if (_shouldPreloadTranscode(src)) {
       final vkey = _transcodeKeyOf(src, s);
-      if (vkey == null) {
-        // 条件不满足（开关/后端/链路任一变化）：走下面原文件路径。
-      } else {
+      if (vkey != null) {
         try {
           final existing = index.cachedPath(vkey);
           if (existing != null) {
@@ -1900,36 +1921,53 @@ class DirectSourceManager extends ChangeNotifier {
             cache.preloadCacheKey = vkey;
             return;
           }
-          await _downloadTranscodeVariant(s, src, vkey,
+          final stored = await _downloadTranscodeVariant(s, src, vkey,
               bitrate: settings.transcodeBitrate,
               loudnorm: settings.transcodeLoudnorm,
               shouldAbort: shouldAbort);
+          if (!stored) {
+            // 下载期间用户缓存了同一首：变体已丢弃，改保护用户缓存。
+            final nowUser = await src.userCachedFilePath(s);
+            if (nowUser != null && baseKey != null) {
+              index.touchCache(baseKey);
+              cache.preloadCacheKey = baseKey;
+            }
+            return;
+          }
           index.touchCache(vkey);
           cache.preloadCacheKey = vkey;
-          await cache.evictIfNeeded();
+          await cache.evictIfNeeded(protectKey: vkey);
           return;
         } on PreloadAbortedException {
-          rethrow;
+          // 下一首变了，这份预载作废：不提示、不重试。
+          debugPrint('[preload] 放弃预载《${s.title}》（下一首已变）');
+          return;
         } catch (e) {
-          // 变体预载失败：回退原文件预载（不断网兜底），下面继续。
+          // 变体预载失败不回退原文件（避免偷偷把歌变成原文件缓存）。
           // 原因必须带上（状态码/网络错，否则 429/502/401 全一个样没法查）。
-          debugPrint('[preload] 变体预载失败，回退原文件《${s.title}》: $e');
+          debugPrint('[preload] 变体预载失败《${s.title}》'
+              '（第 ${attempt + 1} 次）: $e');
+          if (attempt < _kPreloadMaxRetries && _isRetryablePreloadError(e)) {
+            _schedulePreloadRetry(s, attempt + 1, _retryDelayFor(e, attempt));
+          }
+          return;
         }
       }
     }
+
+    // 转码关（或条件不满足）：预载原文件；它是预载产物，不计入用户缓存。
     try {
       final existing = await src.cachedFilePath(s);
       if (existing != null) {
-        // 已缓存：只刷新访问时间并登记保护，不再下载。
         cache.touch(src, s);
-        cache.preloadCacheKey = cache.cacheKeyOf(src, s);
+        cache.preloadCacheKey = baseKey;
         return;
       }
-      await src.cacheSong(s, shouldAbort: shouldAbort);
-      final k = cache.cacheKeyOf(src, s);
-      if (k != null) index.touchCache(k);
-      cache.preloadCacheKey = k;
-      await cache.evictIfNeeded();
+      await src.cacheSong(s,
+          shouldAbort: shouldAbort, kind: CacheEntryKind.preloadOrigin);
+      if (baseKey != null) index.touchCache(baseKey);
+      cache.preloadCacheKey = baseKey;
+      await cache.evictIfNeeded(protectKey: baseKey);
     } on PreloadAbortedException {
       // 下一首变了，这份预载作废：不提示、不重试（缓存目录里的半截临时文件
       // 已由 cacheSong 自己清掉）。
@@ -1937,6 +1975,60 @@ class DirectSourceManager extends ChangeNotifier {
     } catch (_) {
       // 预载失败静默，不影响当前播放。
     }
+  }
+
+  /// 变体预载最大重试次数（不含首轮）。
+  static const int _kPreloadMaxRetries = 2;
+
+  Timer? _preloadRetryTimer;
+
+  /// 只重试瞬态失败：429 并发满、502 回源失败、客户端网络错误。
+  /// 503 无 ffmpeg、401/403/400 配置/权限问题重试没有意义。
+  bool _isRetryablePreloadError(Object e) {
+    if (e is TranscodePreloadException) {
+      return e.statusCode == 429 ||
+          (e.statusCode >= 500 && e.statusCode != 503);
+    }
+    return e is SocketException || e is HttpException || e is TimeoutException;
+  }
+
+  /// 429 优先用服务端的 Retry-After；其余按 5s/10s 退避。
+  Duration _retryDelayFor(Object e, int attempt) {
+    if (e is TranscodePreloadException &&
+        e.statusCode == 429 &&
+        e.retryAfter != null) {
+      final d = e.retryAfter!;
+      if (d < const Duration(seconds: 1)) return const Duration(seconds: 1);
+      if (d > const Duration(seconds: 30)) return const Duration(seconds: 30);
+      return d;
+    }
+    return attempt <= 0
+        ? const Duration(seconds: 5)
+        : const Duration(seconds: 10);
+  }
+
+  /// 延迟重投，不在串行队列任务里 sleep（否则会堵住下一首元数据/全库补读）。
+  /// 到点后按票据校验：换歌或重新调度的预载会让本次重试自动失效。
+  void _schedulePreloadRetry(Song s, int attempt, Duration delay) {
+    if (_preloadAborted) return;
+    final ticket = _preloadTicket;
+    _preloadRetryTimer?.cancel();
+    _preloadRetryTimer = Timer(delay, () {
+      _preloadRetryTimer = null;
+      if (_preloadAborted || ticket != _preloadTicket) return;
+      if (!settings.preloadNext) return;
+      final key = '${s.sourceKey}\u0000${s.sourceRef}';
+      tasks.submit(DirectTaskPriority.nextAudio,
+          key: 'nextAudio/$key',
+          body: () => _runPreloadRetry(s, ticket, attempt));
+    });
+  }
+
+  Future<void> _runPreloadRetry(Song s, int ticket, int attempt) async {
+    if (_preloadAborted || ticket != _preloadTicket) return;
+    await preloadSong(s,
+        shouldAbort: () => _preloadAborted || ticket != _preloadTicket,
+        attempt: attempt);
   }
 
   /// 该源当前是否应走转码变体预载（与播放侧 [shouldUseTranscode] 同口径）。
@@ -1966,9 +2058,10 @@ class DirectSourceManager extends ChangeNotifier {
   }
 
   /// 后台下载转码变体（Bearer + 回源鉴权头直调转码端点，流式落盘）：
-  /// 块粒度轮询 [shouldAbort]（换歌作废，半截文件自清）；非 200（429 并发满 /
-  /// 503 无 ffmpeg / 502 源失败）抛错由调用方回退原文件预载。
-  Future<void> _downloadTranscodeVariant(
+  /// 块粒度轮询 [shouldAbort]（换歌作废，半截文件自清）；非 200 抛
+  /// [TranscodePreloadException]（带状态码与 Retry-After 供有界重试）。
+  /// 返回 false 表示下载期间用户已缓存同一首，变体被丢弃。
+  Future<bool> _downloadTranscodeVariant(
       Song s, MusicSource src, String variantKey,
       {required int bitrate,
       required String loudnorm,
@@ -1981,7 +2074,7 @@ class DirectSourceManager extends ChangeNotifier {
     if (origin == null) throw StateError('该源无代理 origin');
     final turl = api.transcodeStreamUrl(origin, bitrate, loudnorm: loudnorm);
     if (turl == null) throw StateError('转码 URL 构造失败');
-    if (index.isCached(variantKey)) return;
+    if (index.isCached(variantKey)) return true;
     final headers = <String, String>{};
     try {
       final token = await api.getAccessToken();
@@ -1999,8 +2092,12 @@ class DirectSourceManager extends ChangeNotifier {
       headers.forEach(req.headers.set);
       final resp = await req.close();
       if (resp.statusCode != 200) {
-        await resp.drain<void>();
-        throw StateError('转码变体下载失败: ${resp.statusCode}');
+        final retryAfter = _parseRetryAfter(resp.headers.value('retry-after'));
+        try {
+          await resp.drain<void>();
+        } catch (_) {}
+        throw TranscodePreloadException(resp.statusCode,
+            retryAfter: retryAfter);
       }
       // 大缓冲顺序写（同 WebDAV cacheSong 口径：攒够 1MB 再落盘）。
       final sink = tmp.openSync(mode: FileMode.write);
@@ -2021,10 +2118,21 @@ class DirectSourceManager extends ChangeNotifier {
       } finally {
         sink.closeSync();
       }
-      await index.cacheCommit(variantKey, tmp.path, total);
+      final baseKey = cache.cacheKeyOf(src, s);
+      // 下载期间用户手动缓存了同一首：用户缓存优先，变体不再需要。
+      if (baseKey != null &&
+          index.cachedPath(baseKey, kind: CacheEntryKind.user) != null) {
+        return false;
+      }
+      await index.cacheCommit(variantKey, tmp.path, total,
+          sourceKey: src.key,
+          songRef: s.sourceRef,
+          kind: CacheEntryKind.preloadVariant,
+          variantOf: baseKey);
       committed = true;
       debugPrint('[preload] 变体已缓存《${s.title}》${bitrate}k/$loudnorm'
           ' key=…${variantKey.substring(variantKey.length - 8)}');
+      return true;
     } finally {
       client.close(force: true);
       if (!committed && tmp.existsSync()) {
@@ -2033,6 +2141,12 @@ class DirectSourceManager extends ChangeNotifier {
         } catch (_) {}
       }
     }
+  }
+
+  static Duration? _parseRetryAfter(String? raw) {
+    final sec = int.tryParse((raw ?? '').trim());
+    if (sec == null || sec < 0) return null;
+    return Duration(seconds: sec);
   }
 
   /// 预载票据：换歌时作废在途的那一份（见 [_scheduleNextTrack]）。
@@ -2059,16 +2173,28 @@ class DirectSourceManager extends ChangeNotifier {
   /// [next] 是当前模式下接下来会播的那首（单曲循环为 null）：它要排在当前曲
   /// 元数据之后、全库后台补读之前。接线见 main.dart，由播放器算出后传入。
   void onTrackPlaying(MusicSource src, Song s, {Song? next}) {
-    cache.currentCacheKey = cache.cacheKeyOf(src, s);
-    // 预载曲开始播放：解除预载保护（它现在由 currentCacheKey 保护）。
-    final k = cache.cacheKeyOf(src, s);
-    if (k != null && cache.preloadCacheKey == k) cache.preloadCacheKey = null;
-    cache.touch(src, s);
-    // 转码开且当前设置下的变体已缓存：装载实际用的就是这份变体（PlayerProvider
-    // 的 _resolveTranscodeCache → [cachedTranscodePath]），LRU 访问时间必须同步
-    // 刷新，否则它停在预载时刻、重播也不会变新，会比原文件先被淘汰。
+    // 按播放装载顺序确定实际在用的缓存 key：用户缓存 → 当前设置变体 →
+    // 预载原文件/无缓存（base）。正在播放的变体也必须由 currentCacheKey 保护，
+    // 否则下一首预载完成、preloadCacheKey 移走后它会被 LRU 清掉。
+    final baseKey = cache.cacheKeyOf(src, s);
+    final userPath = baseKey == null
+        ? null
+        : index.cachedPath(baseKey, kind: CacheEntryKind.user);
     final vk = _transcodeKeyOf(src, s);
-    if (vk != null && index.cachedPath(vk) != null) index.touchCache(vk);
+    final variantPath = vk == null ? null : index.cachedPath(vk);
+    final playingKey = userPath != null
+        ? baseKey
+        : (_shouldPreloadTranscode(src) && variantPath != null ? vk : baseKey);
+    cache.currentCacheKey = playingKey;
+    // 预载曲开始播放：解除预载保护（它现在由 currentCacheKey 保护）。
+    final pk = cache.preloadCacheKey;
+    if (pk != null && (pk == playingKey || pk == baseKey || pk == vk)) {
+      cache.preloadCacheKey = null;
+    }
+    cache.touch(src, s);
+    // 实际用变体时同步刷新它的访问时间；用户缓存命中时变体不再参与播放，
+    // 不再 touch（避免无用变体保持年轻挤占 LRU）。
+    if (vk != null && playingKey == vk) index.touchCache(vk);
     _playingSourceKey = s.sourceKey;
     _playingRef = s.sourceRef;
     _scheduleNextTrack(next);
@@ -2087,6 +2213,9 @@ class DirectSourceManager extends ChangeNotifier {
 
   void _scheduleNextTrack(Song? next) {
     // 换歌后旧任务已无意义（预载到不再会播的那首、给它补的封面也用不上）。
+    _preloadRetryTimer?.cancel();
+    _preloadRetryTimer = null;
+    cache.preloadCacheKey = null;
     tasks.dropPending((p, _) =>
         p == DirectTaskPriority.nextAudio || p == DirectTaskPriority.nextMeta);
     // 队列只能作废「还没开始」的任务；在途的整曲下载还在占连接，让它跑完会把
@@ -2226,6 +2355,17 @@ class DirectSourceManager extends ChangeNotifier {
       onEnriched();
     });
   }
+}
+
+/// 转码变体预载的 HTTP 失败：保留状态码与 Retry-After 供有界重试判断。
+class TranscodePreloadException implements Exception {
+  final int statusCode;
+  final Duration? retryAfter;
+  const TranscodePreloadException(this.statusCode, {this.retryAfter});
+
+  @override
+  String toString() => '转码变体下载失败: $statusCode'
+      '${retryAfter == null ? '' : '（Retry-After ${retryAfter!.inSeconds}s）'}';
 }
 
 /// SFTP 三件套内存镜像（密码/私钥文本/passphrase；持久化在 [SecretStore]）。
