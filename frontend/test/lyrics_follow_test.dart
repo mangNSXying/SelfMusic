@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ffi' hide Size;
 import 'dart:io';
 
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
@@ -105,8 +106,7 @@ void main() {
       ],
       child: MaterialApp(
           home: Scaffold(
-              body: LyricsView(
-                  player: player, scale: scale, align: align))),
+              body: LyricsView(player: player, scale: scale, align: align))),
     ));
     await tester.pump();
   }
@@ -279,6 +279,37 @@ void main() {
     // 松手后按「歌词追焦等待」（默认 5s）超时恢复跟焦。
     await g.up();
     await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 6));
+    await tester.pumpAndSettle();
+    _expectCentered(tester, 30);
+
+    await pos.close();
+    player.dispose();
+  });
+
+  testWidgets('鼠标滚轮滚动同样解除跟焦，空闲超时后才回中（桌面端回归）', (tester) async {
+    final pos = StreamController<Duration>();
+    final player = playerWithLyrics(pos.stream);
+    await pumpLyrics(tester, player);
+
+    pos.add(_posOf(30));
+    await tester.pump();
+    await tester.pump();
+    await tester.pumpAndSettle();
+    _expectCentered(tester, 30);
+
+    // 滚轮不是拖拽（ScrollStartNotification.dragDetails 为 null）：旧实现
+    // 在 ScrollEnd 后立刻把当前行拽回对齐位，桌面端无法滚动浏览歌词。
+    final mouse = TestPointer(1, PointerDeviceKind.mouse);
+    mouse.hover(tester.getCenter(find.byType(LyricsView)));
+    await tester.sendEventToBinding(mouse.scroll(const Offset(0, 120)));
+    await tester.pump(); // 投递滚轮事件，帧末安排跟焦
+    await tester.pump(const Duration(milliseconds: 16)); // 跟焦动画首个 tick（仅建基准）
+    await tester.pump(const Duration(milliseconds: 400)); // 旧实现回中动画在此完成
+    expect(_alignDelta(tester, 30).abs(), greaterThan(10),
+        reason: '滚轮滑动后歌词被立即拉回对齐位（未解除跟焦）');
+
+    // 空闲「追焦等待」超时后恢复跟焦并回中。
     await tester.pump(const Duration(seconds: 6));
     await tester.pumpAndSettle();
     _expectCentered(tester, 30);
