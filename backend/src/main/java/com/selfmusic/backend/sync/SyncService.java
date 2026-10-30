@@ -653,6 +653,11 @@ public class SyncService {
                 // 补录只建行：同址行已存在即判输，不碰现行 name/config。
                 if (backfill || !eventWins(ev.occurred_at(), same.getLastEventAt())) return sourceSnapshot(same);
                 applySourceFields(same, p);
+                // 墓碑复用必须复活：客户端「删源 → 再加回同一地址」时新 uuid 会撞上
+                // 旧行的 (kind, address)，若不清 deleted，该行在服务端永远不可见，
+                // 其它设备也就收不到这个源回来（本机因 uuid 不匹配 + deleted 分支
+                // no-op 而侥幸保留，表现为「只有删源的那台设备有源」）。
+                same.setDeleted(false);
                 same.setLastEventAt(ev.occurred_at());
                 same.setSyncVer(nvlLong(same.getSyncVer()) + 1);
                 syncSourceRepository.save(same);
