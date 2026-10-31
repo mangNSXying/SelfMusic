@@ -163,8 +163,8 @@ void main() {
     await tester.tap(find.byTooltip('全部折叠'));
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('夜曲'), findsNothing);
-    expect(direct.settings.groupCollapsed('test'),
-        containsAll({'文件夹A', '文件夹B'}));
+    expect(
+        direct.settings.groupCollapsed('test'), containsAll({'文件夹A', '文件夹B'}));
 
     // 分类菜单只剩分类方式，展开/折叠/多选已移出。
     await tester.tap(find.byTooltip('分类方式：文件夹'));
@@ -202,8 +202,8 @@ void main() {
     expect(find.text('已选 1'), findsNothing);
     expect(find.text('夜曲'), findsNothing);
     expect(find.text('晴天'), findsNothing);
-    expect(direct.settings.groupCollapsed('test'),
-        containsAll({'文件夹A', '文件夹B'}));
+    expect(
+        direct.settings.groupCollapsed('test'), containsAll({'文件夹A', '文件夹B'}));
 
     // 工具条多选图标进入：初始 0，选中整组不受折叠影响。
     await tester.tap(find.byTooltip('多选'));
@@ -534,8 +534,9 @@ void main() {
       searching: false,
       onMode: (_) {},
     );
-    expect(find.text('叶惠美'), findsOneWidget);
-    expect(find.text('魔杰座'), findsOneWidget);
+    // 表格模式下专辑名同时出现在组头和行内「专辑」列；未知专辑行内为「—」。
+    expect(find.text('叶惠美'), findsNWidgets(2));
+    expect(find.text('魔杰座'), findsNWidgets(2));
     expect(find.text(kUnknownAlbumGroupName), findsOneWidget);
   });
 
@@ -551,7 +552,14 @@ void main() {
     await tester.tap(find.byIcon(Icons.category_outlined));
     await tester.pumpAndSettle();
     expect(find.text('无'), findsOneWidget);
-    expect(find.text('专辑'), findsOneWidget);
+    // 表格模式下表头也有「专辑」，这里限定在弹出菜单项内。
+    expect(
+      find.descendant(
+        of: find.byType(PopupMenuItem<SongGroupMode>),
+        matching: find.text('专辑'),
+      ),
+      findsOneWidget,
+    );
     expect(find.text('文件夹（逐级）'), findsOneWidget);
   });
 
@@ -753,8 +761,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('工具条图标：多选/展开/折叠与多选态全选/全不选（窄屏不溢出）',
-      (tester) async {
+  testWidgets('工具条图标：多选/展开/折叠与多选态全选/全不选（窄屏不溢出）', (tester) async {
     tester.view.physicalSize = const ui.Size(360, 640);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);

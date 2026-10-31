@@ -251,15 +251,16 @@ void main() {
       expect(find.text('源甲'), findsOneWidget);
       final rowX = tester.getTopLeft(find.text('源甲')).dx;
 
-      await tester.tap(find.text('源甲'));
+      await tester.tap(find.text('源甲').first);
       await tester.pumpAndSettle();
 
       expect(h.nav.browsingSourceKey, h.keyA);
       // 右栏头部（返回 / 标题 / 扫描）+ 歌曲；左栏行与计数头仍在原位。
       expect(find.byTooltip('返回播放源'), findsOneWidget);
-      expect(find.text('源甲'), findsNWidgets(2));
+      // 左栏行 + 右栏标题；表格行的「播放源」列还会重复源名。
+      expect(find.text('源甲'), findsAtLeastNWidgets(2));
       expect(find.text('扫描'), findsOneWidget);
-      expect(find.textContaining('甲曲'), findsOneWidget);
+      expect(find.textContaining('甲曲'), findsWidgets);
       expect(find.text('共 2 个播放源'), findsOneWidget);
       expect(tester.getTopLeft(find.text('源甲').first).dx, rowX);
 
@@ -269,10 +270,10 @@ void main() {
           .first);
       expect(tile.tileColor, isNotNull);
 
-      await tester.tap(find.text('源乙'));
+      await tester.tap(find.text('源乙').first);
       await tester.pumpAndSettle();
       expect(h.nav.browsingSourceKey, h.keyB);
-      expect(find.text('源乙'), findsNWidgets(2));
+      expect(find.text('源乙'), findsAtLeastNWidgets(2));
       expect(find.text('源甲'), findsOneWidget, reason: '右栏应已换成新源');
       expect(find.textContaining('甲曲'), findsNothing);
       expect(find.textContaining('乙曲'), findsOneWidget);
@@ -291,7 +292,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('共 2 个播放源'), findsOneWidget);
 
-      await tester.tap(find.text('源甲'));
+      await tester.tap(find.text('源甲').first);
       await tester.pumpAndSettle();
       expect(h.nav.search, '源', reason: '分栏时搜索框就是左栏过滤器');
       expect(h.nav.browsingSourceKey, h.keyA);
@@ -310,17 +311,18 @@ void main() {
       final h = await _pump(tester);
       addTearDown(() => _dispose(h));
 
-      await tester.tap(find.text('源甲'));
+      await tester.tap(find.text('源甲').first);
       await tester.pumpAndSettle();
-      expect(find.text('甲歌手 - 甲曲', findRichText: true), findsOneWidget,
-          reason: '根目录直接显示本层歌曲');
+      // 表格模式标题只显示歌名（歌手在独立列），默认的「歌手 - 歌名」不再拼接。
+      expect(find.text('甲曲'), findsOneWidget, reason: '根目录直接显示本层歌曲');
 
-      await tester.tap(find.text('专辑'));
+      // 文件夹行也是 ListTile；表头「专辑」不是 ListTile，避免误点。
+      await tester.tap(find.widgetWithText(ListTile, '专辑'));
       await tester.pumpAndSettle();
       expect(h.nav.sourceDir, '专辑');
       expect(find.byTooltip('返回上一级'), findsOneWidget);
       expect(find.textContaining('甲曲二'), findsOneWidget);
-      expect(find.text('甲歌手 - 甲曲', findRichText: true), findsNothing);
+      expect(find.text('甲曲'), findsNothing);
 
       await tester.tap(find.byTooltip('返回上一级'));
       await tester.pumpAndSettle();
@@ -338,15 +340,15 @@ void main() {
       final h = await _pump(tester);
       addTearDown(() => _dispose(h));
 
-      await tester.tap(find.text('源甲'));
+      await tester.tap(find.text('源甲').first);
       await tester.pumpAndSettle();
       expect(h.direct.scanCalls, 1);
 
-      await tester.tap(find.text('源乙'));
+      await tester.tap(find.text('源乙').first);
       await tester.pumpAndSettle();
       expect(h.direct.scanCalls, 2);
 
-      await tester.tap(find.text('源甲'));
+      await tester.tap(find.text('源甲').first);
       await tester.pumpAndSettle();
       expect(h.direct.scanCalls, 2, reason: '同一源 60s 内不重复自动扫描');
     });
@@ -361,7 +363,7 @@ void main() {
 
       h.nav.setSearch('源');
       await tester.pumpAndSettle();
-      await tester.tap(find.text('源甲'));
+      await tester.tap(find.text('源甲').first);
       await tester.pumpAndSettle();
 
       expect(h.nav.browsingSourceKey, h.keyA);
@@ -377,7 +379,7 @@ void main() {
 
       expect(find.text('从左侧选择播放源浏览'), findsNothing);
 
-      await tester.tap(find.text('源甲'));
+      await tester.tap(find.text('源甲').first);
       await tester.pumpAndSettle();
       expect(h.nav.browsingSourceKey, h.keyA);
       expect(find.text('共 2 个播放源'), findsNothing);

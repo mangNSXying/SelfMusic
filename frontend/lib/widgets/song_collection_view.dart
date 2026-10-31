@@ -19,6 +19,7 @@ import 'row_list.dart';
 import 'selection_badge.dart';
 import 'selection_bar.dart';
 import 'song_row_view.dart';
+import 'song_table.dart';
 import 'song_tile.dart';
 import 'sort_menu_button.dart';
 import 'toolbar_icon_button.dart';
@@ -408,10 +409,10 @@ class _SongCollectionViewState extends State<SongCollectionView> {
 
   @override
   Widget build(BuildContext context) {
-    // "宽行技术信息"按**本列表实际可用宽度**判定，而不是窗口宽：大横屏分栏时
-    // 右栏比窗口窄得多（例如窗口 900 / 分栏后右栏 360），按窗口宽（≥800）判定
-    // 会把 `播放源 · 格式 · 码率 · 大小` 塞进窄行，尾部撑爆 ListTile
-    //（Trailing widget consumes the entire tile width 断言）。
+    // 表格模式按**本列表实际可用宽度**判定，而不是窗口宽：大横屏分栏时
+    // 右栏比窗口窄得多（例如窗口 900 / 分栏后右栏 360），按窗口宽判定会
+    // 把多列塞进窄行，尾部撑爆 ListTile（Trailing widget consumes the entire
+    // tile width 断言）。
     //
     // 只在本层做一次 LayoutBuilder：行级判定仍由 [SongRowView] 预计算，
     // 不回到"每行一个 LayoutBuilder"的老路（R-1 性能口径）。
@@ -528,7 +529,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     _rows = rows;
     _focusDisplay = focusDisplay;
 
-    final wide = availableWidth >= kSongTileWideInfoWidth;
+    final table = SongTableLayout.fit(availableWidth);
 
     _rowCache.begin(
       (
@@ -538,7 +539,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
         direct.settingsVersion,
         direct.sourcesRevision,
         settings.songTitleFormat,
-        wide,
+        table != null,
         currentIdx,
         _sel.active,
         _selEpoch,
@@ -677,7 +678,8 @@ class _SongCollectionViewState extends State<SongCollectionView> {
                           Text(widget.emptyText, textAlign: TextAlign.center),
                     ),
                   ))
-              : RowList(
+              : SongTableList(
+                  table: table,
                   controller: _scroll,
                   count: rows.length,
                   onRefresh: widget.onRefresh,
@@ -699,7 +701,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
                     final s = displaySongs[si];
                     final key = keys[si];
                     return _songRow(direct, displaySongs, si, s, key,
-                        currentIdx, wide, row.depth);
+                        currentIdx, table, row.depth);
                   },
                 ),
         ),
@@ -965,6 +967,9 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     ]);
   }
 
+  /// 表格模式行缩进：每层 10px、最多 3 层，只作用于标题格，列与表头保持对齐。
+  static double _tableTitleIndent(int depth) => 10.0 * math.min(depth, 3);
+
   Widget _songRow(
     DirectSourceManager direct,
     List<Song> displaySongs,
@@ -972,7 +977,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     Song s,
     String key,
     int currentIdx,
-    bool wide,
+    SongTableLayout? table,
     int depth,
   ) {
     final src = widget.sourceOf?.call(s);
@@ -994,9 +999,11 @@ class _SongCollectionViewState extends State<SongCollectionView> {
           disliked: meta.frozen,
           isFirst: si == 0,
           isLast: si == displaySongs.length - 1,
-          wide: wide,
+          table: table != null,
         );
       }),
+      table: table,
+      titleIndent: table == null ? 0 : _tableTitleIndent(depth),
       playing: si == currentIdx,
       selectionMode: _sel.active,
       selected: _sel.contains(key),
@@ -1012,7 +1019,8 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       extraMenuItems: widget.extraMenuItems?.call(s, si),
       onExtraMenu: (v) => widget.onExtraMenu?.call(s, v),
     );
-    if (depth <= 0) return tile;
+    // 表格模式的层级缩进在标题格内处理；普通行仍整行右移（树形层级）。
+    if (depth <= 0 || table != null) return tile;
     return Padding(
       padding: EdgeInsets.only(left: _treeIndent(depth)),
       child: tile,
