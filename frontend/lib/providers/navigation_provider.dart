@@ -4,6 +4,7 @@ import '../models/artist.dart';
 import '../models/song.dart';
 import '../theme/app_theme.dart';
 import '../utils/perf_log.dart';
+import '../utils/source_folders.dart';
 
 /// 内容区路由的「最小关注字段」稳定组合（订阅契约，R-4 / T003 / T008）。
 ///
@@ -69,6 +70,13 @@ class NavigationProvider extends ChangeNotifier {
   /// 播放页为首页（ui-playpage.html 理念）：启动即全屏展示播放页。
   bool _playerView = true;
   String? _browsingSourceKey;
+
+  /// 源内浏览的当前目录（源内相对路径，`''` = 源根）。
+  ///
+  /// 由 [SourceBrowseView] 读写下发给目录面包屑与逐级列表；放在导航层是为了
+  /// 返回链保持单点：系统返回 / Esc 经 [backToPrevious] 先退一层目录，
+  /// 而不是把整段源内浏览直接弹掉。
+  String _sourceDir = '';
   int? _browsingPlaylistId;
 
   /// 宽屏详情栈（底 → 顶）：专辑/歌手整页叠在分组列表之上，最多两层。
@@ -147,6 +155,17 @@ class NavigationProvider extends ChangeNotifier {
 
   /// 当前正在浏览的源 key（文件夹式导航）；null 表示位于播放源列表。
   String? get browsingSourceKey => _browsingSourceKey;
+
+  /// 源内浏览的当前目录（`''` = 源根）。
+  String get sourceDir => _sourceDir;
+
+  /// 更新源内当前目录（归一化后写入；同值不通知）。
+  void setSourceDir(String dir) {
+    final next = normalizeDir(dir);
+    if (next == _sourceDir) return;
+    _sourceDir = next;
+    notifyListeners();
+  }
 
   /// 当前打开的设置分区，null 表示非设置页。
   SettingsItem? get settings => _settings;
@@ -247,9 +266,18 @@ class NavigationProvider extends ChangeNotifier {
       notifyListeners();
       return true;
     }
+    // 源内子目录先退一层（搜索态下目录不可见，返回语义仍是退出源内）。
+    if (_browsingSourceKey != null &&
+        _sourceDir.isNotEmpty &&
+        _search.trim().isEmpty) {
+      _sourceDir = parentDirOf(_sourceDir);
+      notifyListeners();
+      return true;
+    }
     if (_browsingSourceKey != null) {
       _browsingSourceKey = null;
-      _clearSearchForDetail();
+      _sourceDir = '';
+      if (!keepSearch) _clearSearchForDetail();
       notifyListeners();
       return true;
     }
@@ -275,25 +303,33 @@ class NavigationProvider extends ChangeNotifier {
     _settings = null;
     _playerView = false;
     _browsingSourceKey = null;
+    _sourceDir = '';
     _browsingPlaylistId = null;
     _clearDetails();
     notifyListeners();
   }
 
   /// 进入播放源内部（文件夹式导航）。
-  void enterSource(String key) {
+  ///
+  /// [keepSearch]：大横屏分栏时搜索框就是左栏（源列表）的过滤器，右栏只换
+  /// 内容，不能把搜索词清掉；整页/卡片呈现仍按旧口径清空。
+  void enterSource(String key, {bool keepSearch = false}) {
     _slideOffset = const Offset(1, 0);
-    _clearSearchForDetail();
+    if (!keepSearch) _clearSearchForDetail();
     _browsingSourceKey = key;
+    _sourceDir = '';
     _clearDetails();
     notifyListeners();
   }
 
   /// 返回播放源列表（文件夹返回上一级）。
-  void exitSource() {
+  ///
+  /// [keepSearch] 语义同 [enterSource]。
+  void exitSource({bool keepSearch = false}) {
     _slideOffset = const Offset(-1, 0);
     _browsingSourceKey = null;
-    _clearSearchForDetail();
+    _sourceDir = '';
+    if (!keepSearch) _clearSearchForDetail();
     notifyListeners();
   }
 

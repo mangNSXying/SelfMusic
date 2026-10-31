@@ -270,6 +270,27 @@ class DirectSourceManager extends ChangeNotifier {
   /// 取消指定源的扫描（worker 收到后尽快停止并返回已完成的增量）。
   void cancelScan(String key) => _scanTokens[key]?.cancel();
 
+  /// 打开源时触发的自动扫描时间（毫秒，sourceKey → 上次触发时刻）。
+  ///
+  /// 分栏里来回点源会反复重建 `SourceBrowseView`（每次 initState 都想扫一遍），
+  /// 这里按源节流；手动「扫描」按钮不经过 [claimAutoScan]，不受影响。
+  final Map<String, int> _autoScannedAt = {};
+
+  /// 自动扫描冷却窗口。
+  static const Duration autoScanMinInterval = Duration(seconds: 60);
+
+  /// 领取一次自动扫描名额：距上次自动扫描不足 [autoScanMinInterval] 时返回
+  /// false（调用方跳过自动扫描）。
+  bool claimAutoScan(String sourceKey) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final last = _autoScannedAt[sourceKey];
+    if (last != null && now - last < autoScanMinInterval.inMilliseconds) {
+      return false;
+    }
+    _autoScannedAt[sourceKey] = now;
+    return true;
+  }
+
   // ---------- 自动扫描 ----------
 
   Timer? _autoScanTimer;

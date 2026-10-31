@@ -723,24 +723,26 @@ abstract class MusicSource {
 
 ### 内容页分栏（大横屏 · 列表模式）
 
-大横屏下内容页拆「左列表 / 右详情」两栏：左栏是当前分组的列表（歌单 / 专辑 / 歌手），右栏是选中项的详情。窄屏、卡片模式、内容区不够宽仍走原形态（拖拽弹层 / 整页叠层）。
+大横屏下内容页拆「左列表 / 右详情」两栏：左栏是当前分组的列表（歌单 / 播放源 / 专辑 / 歌手），右栏是选中项的详情（播放源的右栏是源内浏览）。窄屏、卡片模式、内容区不够宽仍走原形态（拖拽弹层 / 整页叠层 / 整页替换）。
 
 | 关注点 | 落点 | 约定 |
 |--------|------|------|
 | 判屏口径 | `layout/screen_metrics.dart` 的 `ScreenMetrics` | **唯一出口**：`isWide`（宽 ≥900 或任意横屏）、`isLandscape`、`isLargeLandscape`（内容区 ≥ `kSplitMinContentWidth=640`）、`listPaneWidth`（内容区 34%，钳 280~360） |
-| 是否分栏 | `splitDetailActive(context)` | 判屏 + 该分组有"列表→详情"语义（歌单/专辑/歌手）+ 该分组**展示形式为列表**；卡片在窄左栏放不下一列，不分栏 |
+| 是否分栏 | `splitDetailActive(context)` | 判屏 + 该分组有"列表→详情"语义（歌单/播放源/专辑/歌手）+ 该分组**展示形式为列表**；卡片在窄左栏放不下一列，不分栏 |
 | 容器 | `widgets/list_detail_split.dart` 的 `ListDetailSplit` | `enabled=false` 时原样返回列表（零额外图层）；两栏各自 `RepaintBoundary` + 1px `outlineVariant` 竖分隔线 |
 | 右栏 | 同文件 `DetailPane` | 空态占位 + 栏内轻量过渡（`kDetailPaneMotion=180ms`，全局「关闭」档为零）；比整页 300ms 短，因为只有一栏在动 |
-| 详情本体 | `library_screen.dart` 的 `detailPageOf` | 窄屏弹层 / 宽屏整页叠层 / 分栏右栏**共用同一份**详情实现（`_AlbumDetailPage` / `_ArtistDetailPage` / `PlaylistDetailView(inline: true)`） |
-| 状态 | `NavigationProvider.details` / `browsingPlaylistId` | 分栏不新增"选中态"：右栏直接消费既有路由状态，跨断点切换不丢"当前在看什么" |
+| 详情本体 | `library_screen.dart` 的 `detailPageOf` | 窄屏弹层 / 宽屏整页叠层 / 分栏右栏**共用同一份**详情实现（`_AlbumDetailPage` / `_ArtistDetailPage` / `PlaylistDetailView(inline: true)` / `SourceBrowseView(inline: true)`） |
+| 状态 | `NavigationProvider.details` / `browsingPlaylistId` / `browsingSourceKey` | 分栏不新增"选中态"：右栏直接消费既有路由状态，跨断点切换不丢"当前在看什么" |
 
 - **内容区宽度必须用目标值**：`AppShell` 按 `窗口宽 − 侧栏 260 − 队列 360`（都是**目标**宽度，不是 300ms 伸缩动画中的实时值）算好经 `ScreenMetrics` 下发，否则分栏会在阈值附近来回抖。手机横屏（800−260=540）因此不会误分栏。
-- **区域切换动画与分栏互斥**：分栏时 `AppContent` 把区域键固定成 `split:<分组>`，进/出歌单、专辑、歌手详情只换右栏（`AppContent` 注释）；设置页与源内浏览仍走原区域键与滑动动画。
-- **搜索词保留**：分栏时搜索框就是左栏的过滤器，`enterPlaylist / enterAlbum / enterArtist / exitDetail / exitPlaylist / backToPrevious` 都带 `keepSearch`，由调用点按 `splitDetailActive` 传值；非分栏沿用"进/出详情清空搜索"的旧口径。
+- **区域切换动画与分栏互斥**：分栏时 `AppContent` 把区域键固定成 `split:<分组>`，进/出歌单、专辑、歌手详情、源内浏览都只换右栏（`AppContent` 注释）；设置页仍走原区域键与滑动动画。
+- **搜索词保留**：分栏时搜索框就是左栏的过滤器，`enterPlaylist / enterAlbum / enterArtist / enterSource / exitDetail / exitPlaylist / exitSource / backToPrevious` 都带 `keepSearch`，由调用点按 `splitDetailActive` 传值；非分栏沿用"进/出详情清空搜索"的旧口径。
+- **源内返回链**：目录状态放在 `NavigationProvider.sourceDir`（由 `SourceBrowseView` 读写，不再是页面私有 State），`backToPrevious` 先退一层目录、到源根才退出源内，系统返回 / Esc 与头部返回箭头语义一致；搜索态下目录不可见，返回直接退出源内。非逐级分类模式会清空目录，避免"退一层看不见的目录"。
+- **自动扫描节流**：打开源触发的增量扫描经 `DirectSourceManager.claimAutoScan`（同一源 60s 一次），分栏里来回点源不会反复扫描；手动「扫描」不经过该节流。
 - **左栏换选中项不叠加层**：左栏（分组列表）点选用 `root: true` 把详情栈重置为这一层；只有详情内部的嵌套入口（歌手专辑横条、成员/组合作品行）才压在上一层之上（`fromDetail`）。
 - **行内"宽行技术信息"按列表实际宽度判定**：`SongCollectionView` 在外层做一次 `LayoutBuilder`（不再用窗口宽），否则分栏右栏（如 360 宽）会塞进 `播放源 · 格式 · 码率 · 大小` 撑爆 `ListTile` 尾部断言。
 - 左栏选中行用 `ListTile.tileColor`（主色 10%）提示，不用 `selected`（避免文字/图标整体变主色）；列表带 `PageStorageKey`，分栏↔整页切换后滚动位置仍在。
-- 回归：`test/album_artist_detail_wide_test.dart`（分栏/整页两条路径 + 换选中项 + 搜索保留）、`test/content_split_layout_test.dart`（阈值、容器、右栏过渡、歌单分栏与搜索语义）。
+- 回归：`test/album_artist_detail_wide_test.dart`（分栏/整页两条路径 + 换选中项 + 搜索保留）、`test/content_split_layout_test.dart`（阈值、容器、右栏过渡、歌单分栏与搜索语义）、`test/source_split_test.dart`（播放源分栏 / 返回链 / 自动扫描节流）。
 
 ### 顶栏搜索作用域
 
@@ -749,7 +751,7 @@ abstract class MusicSource {
 | 区域 | 搜索对象 | 提示语 |
 |------|----------|--------|
 | 播放源列表 | 播放源名称 | 搜索播放源 |
-| 源内浏览 | 当前源全部曲目的标题/歌手/专辑 | 搜索该源全部曲目 |
+| 源内浏览 | 当前源全部曲目的标题/歌手/专辑（大横屏分栏时左栏源列表同时按源名过滤） | 搜索该源全部曲目 |
 | 歌单列表 | 歌单名 / 歌曲 | 搜索歌单 / 歌曲 |
 | 歌单详情 | 歌单内歌曲 | 搜索歌单内歌曲 |
 | 专辑 / 歌手列表 | 专辑名/艺术家、歌手名 | 搜索专辑 / 艺术家、搜索歌手 |

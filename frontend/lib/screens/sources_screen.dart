@@ -12,6 +12,7 @@ import '../data/sources/sftp_direct_source.dart';
 import '../data/sources/smb_common.dart';
 import '../data/sources/smb_direct_source.dart';
 import '../data/sources/webdav_direct_source.dart';
+import '../layout/screen_metrics.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart';
 import '../platform/harmonyos/ohos_platform_bridge.dart';
 import '../providers/direct_source_manager.dart';
@@ -26,12 +27,14 @@ import '../widgets/app_toast.dart';
 import '../widgets/context_menu.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
+import '../widgets/list_detail_split.dart';
 import '../widgets/sort_menu_button.dart';
 import '../widgets/row_action_button.dart';
 import '../widgets/row_list.dart';
 import '../widgets/single_choice_group.dart';
 import '../widgets/square_card.dart';
 import '../widgets/view_mode_toggle.dart';
+import 'source_browse_view.dart';
 
 const _remoteKindOptions = <SingleChoiceOption<SourceKind>>[
   SingleChoiceOption(
@@ -144,7 +147,12 @@ class _SourcesScreenState extends State<SourcesScreen>
         (s) => s.name,
         countOf: (s) => direct.countOf(s.key));
 
-    return Stack(
+    // 大横屏 + 列表模式：左源列表 / 右源内浏览（源内不再整页替换）。
+    final split = splitDetailActive(context);
+    final selectedKey = context.select<NavigationProvider, String?>(
+        (n) => split ? n.browsingSourceKey : null);
+
+    final listPane = Stack(
       children: [
         Column(
           children: [
@@ -179,9 +187,13 @@ class _SourcesScreenState extends State<SourcesScreen>
                               _DirectSourceCard(sourceKey: sources[i].key),
                         )
                       : RowList(
+                          // 分栏↔整页切换会重建列表：靠 PageStorage 记住滚动位置。
+                          key: const PageStorageKey<String>('sources-list'),
                           count: sources.length,
-                          itemBuilder: (c, i) =>
-                              _DirectSourceTile(sourceKey: sources[i].key),
+                          itemBuilder: (c, i) => _DirectSourceTile(
+                            sourceKey: sources[i].key,
+                            active: split && selectedKey == sources[i].key,
+                          ),
                         ),
             ),
           ],
@@ -197,7 +209,35 @@ class _SourcesScreenState extends State<SourcesScreen>
         ),
       ],
     );
+
+    return ListDetailSplit(
+      enabled: split,
+      listWidth: ScreenMetrics.of(context).listPaneWidth,
+      list: listPane,
+      detail: DetailPane(
+        // 源内浏览复用同一份实现（inline：栏内不包 SectionSwipe——横滑属于
+        // 外层分组 Pager，栏内再套一层会抢手势）。
+        detail: selectedKey == null
+            ? null
+            : SourceBrowseView(sourceKey: selectedKey, inline: true),
+        detailKey: selectedKey,
+        emptyIcon: Icons.storage,
+        emptyText: '从左侧选择播放源浏览',
+        duration: direct.settings.playerTransition == PlayerTransition.none
+            ? Duration.zero
+            : kDetailPaneMotion,
+      ),
+    );
   }
+}
+
+/// 打开播放源（列表行/卡片共用入口）。
+///
+/// 分栏时进右栏、整页呈现时沿用原区域切换；重复点同一源不再触发切换。
+void _openSource(BuildContext context, String sourceKey) {
+  final nav = context.read<NavigationProvider>();
+  if (nav.browsingSourceKey == sourceKey) return;
+  nav.enterSource(sourceKey, keepSearch: splitDetailActive(context));
 }
 
 /// 备用源表单数据（本地不可做备用，故 kind 仅 webdav/sftp/smb）。
@@ -1793,11 +1833,14 @@ class _SourceDialogState extends State<_SourceDialog> {
 
 class _DirectSourceTile extends StatelessWidget {
   final String sourceKey;
-  const _DirectSourceTile({required this.sourceKey});
+
+  /// 分栏时是否为「右栏当前源」对应的左栏行（只做底色提示）。
+  final bool active;
+  const _DirectSourceTile({required this.sourceKey, this.active = false});
 
   @override
   Widget build(BuildContext context) =>
-      _DirectSourceCard(sourceKey: sourceKey, plain: true);
+      _DirectSourceCard(sourceKey: sourceKey, plain: true, active: active);
 }
 
 /// 播放源类型图标（一类一图标）：本地=存储图标，远端=协议文字徽标。
@@ -1862,7 +1905,11 @@ class _DirectSourceCard extends StatelessWidget {
 
   /// true 时渲染为不走卡片的紧凑列表行。
   final bool plain;
-  const _DirectSourceCard({required this.sourceKey, this.plain = false});
+
+  /// 分栏时是否为右栏当前源（列表行底色提示；卡片形态不分栏，恒 false）。
+  final bool active;
+  const _DirectSourceCard(
+      {required this.sourceKey, this.plain = false, this.active = false});
 
   @override
   Widget build(BuildContext context) {
@@ -1892,6 +1939,10 @@ class _DirectSourceCard extends StatelessWidget {
       onSecondaryTapDown: (d) =>
           _openSourceMenuAt(context, sourceKey, direct, d.globalPosition),
       child: ListTile(
+        // 分栏时高亮右栏当前源（与歌单/专辑/歌手左栏同一配色）。
+        tileColor: plain && active
+            ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.10)
+            : null,
         leading: _SourceKindIcon(kind: s.kind),
         title: Text(s.name,
             maxLines: 1,
@@ -1906,7 +1957,7 @@ class _DirectSourceCard extends StatelessWidget {
                 ? '$routeLabel$fbLabel$lineLabel · 备用待配凭据 · 已索引 $count 首'
                 : '$routeLabel$fbLabel$lineLabel · 已索引 $count 首'),
         trailing: _SourceMenu(sourceKey: sourceKey, direct: direct),
-        onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
+        onTap: () => _openSource(context, sourceKey),
       ),
     );
     if (plain) return tile;
@@ -1919,7 +1970,7 @@ class _DirectSourceCard extends StatelessWidget {
               ? '$routeLabel$fbLabel$lineLabel · 备用待配凭据 · 已索引 $count 首'
               : '$routeLabel$fbLabel$lineLabel · 已索引 $count 首',
       fallback: _SourceKindIcon(kind: s.kind, size: 44, framed: false),
-      onTap: () => context.read<NavigationProvider>().enterSource(sourceKey),
+      onTap: () => _openSource(context, sourceKey),
       cornerAction: _SourceMenu(sourceKey: sourceKey, direct: direct),
       onSecondaryTapDown: (d) =>
           _openSourceMenuAt(context, sourceKey, direct, d.globalPosition),
@@ -2092,6 +2143,11 @@ Future<void> _confirmDelete(
   if (ok == true) {
     await direct.removeSource(key);
     if (context.mounted) {
+      // 正在浏览的源被删：左栏行已消失，右栏不能停在旧源上。
+      final nav = context.read<NavigationProvider>();
+      if (nav.browsingSourceKey == key) {
+        nav.exitSource(keepSearch: splitDetailActive(context));
+      }
       // 删源同时清理了歌单条目：刷新计数与详情缓存。
       context.read<PlaylistsProvider>().refresh();
     }

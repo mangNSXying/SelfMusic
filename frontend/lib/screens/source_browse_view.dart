@@ -38,15 +38,19 @@ import '../widgets/toolbar_icon_button.dart';
 /// - 直连源：本地索引（扫描后）检索，提供「扫描」按钮建立/刷新本地索引。
 class SourceBrowseView extends StatefulWidget {
   final String sourceKey;
-  const SourceBrowseView({super.key, required this.sourceKey});
+
+  /// true = 大横屏分栏右栏内嵌：不包 [SectionSwipe]（横滑属于外层分组
+  /// Pager，栏内再套一层会抢手势），并自带不透明底以支持栏内过渡。
+  final bool inline;
+
+  const SourceBrowseView(
+      {super.key, required this.sourceKey, this.inline = false});
 
   @override
   State<SourceBrowseView> createState() => _SourceBrowseViewState();
 }
 
 class _SourceBrowseViewState extends State<SourceBrowseView> {
-  /// 当前浏览目录（源内相对路径，`''` = 源根）：逐级模式导航状态。
-  String _dir = '';
   bool _scanning = false;
   ScanProgress? _progress;
   StreamSubscription<ScanProgress>? _progressSub;
@@ -70,7 +74,6 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
   void didUpdateWidget(covariant SourceBrowseView oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.sourceKey != oldWidget.sourceKey) {
-      _dir = '';
       _songsKey = null;
       _sortedBase = null;
       _relsBase = null;
@@ -81,12 +84,15 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
   void initState() {
     super.initState();
     // 打开直连源即自动触发扫描（增量式，mtime/size 未变则快速跳过），
-    // 建立/刷新该源本地索引。
+    // 建立/刷新该源本地索引。分栏来回点源会反复挂载本组件：按源节流，
+    // 手动「扫描」按钮不受影响。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      final source =
-          context.read<DirectSourceManager>().sourceByKey(widget.sourceKey);
-      if (source != null && !_scanning) _scan();
+      final manager = context.read<DirectSourceManager>();
+      final source = manager.sourceByKey(widget.sourceKey);
+      if (source == null || _scanning) return;
+      if (!manager.claimAutoScan(widget.sourceKey)) return;
+      _scan();
     });
   }
 
@@ -148,6 +154,8 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
     if (!_requireFolderMode()) return;
     final manager = context.read<DirectSourceManager>();
     final lib = context.read<LibraryProvider>();
+    // 目标目录在选文件前定下：异步选择期间用户可能已切目录。
+    final parentRef = context.read<NavigationProvider>().sourceDir;
     try {
       final picked = await openFile();
       if (!mounted) return;
@@ -167,7 +175,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
       }
       if (mounted) AppToast.show('正在上传 $name…', isError: false);
       await manager.uploadAudio(widget.sourceKey, name, f.openRead(), len,
-          parentRef: _dir);
+          parentRef: parentRef);
       if (!mounted) return;
       await lib.loadSongs();
       if (mounted) AppToast.show('上传完成：$name', isError: false);
@@ -184,7 +192,8 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
     }
     if (!_requireFolderMode()) return;
     final controller = TextEditingController();
-    final where = _dir.isEmpty ? '源根目录' : '/$_dir';
+    final dir = context.read<NavigationProvider>().sourceDir;
+    final where = dir.isEmpty ? '源根目录' : '/$dir';
     final name = await showDialog<String>(
       context: context,
       builder: (c) => AlertDialog(
@@ -216,7 +225,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
       await context.read<DirectSourceManager>().createFolder(
             widget.sourceKey,
             name,
-            parentRef: _dir,
+            parentRef: dir,
           );
       if (mounted) AppToast.show('已创建文件夹：$name', isError: false);
     } catch (e) {
@@ -224,9 +233,13 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
     }
   }
 
-  void _up() => setState(() => _dir = parentDirOf(_dir));
+  void _up() {
+    final nav = context.read<NavigationProvider>();
+    nav.setSourceDir(parentDirOf(nav.sourceDir));
+  }
 
-  void _go(String path) => setState(() => _dir = normalizeDir(path));
+  void _go(String path) =>
+      context.read<NavigationProvider>().setSourceDir(path);
 
   /// 播放该源全部歌曲（文件夹视图下保留老平铺行为的入口）。
   Future<void> _playAll(
@@ -318,18 +331,30 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
     return _rels;
   }
 
+  /// 页面外壳：整页形态包 [SectionSwipe]（分组横滑）；分栏右栏不包，并自绘
+  /// 不透明底（换源时的栏内过渡不透出上一个源）。
+  Widget _wrap(Widget child) {
+    if (!widget.inline) return SectionSwipe(child: child);
+    return Material(
+      color: Theme.of(context).scaffoldBackgroundColor,
+      child: child,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // 订阅收窄（T010）：源内浏览的目标 sourceKey 由 widget 参数承载（父级路由
-    // 变更会重建本组件）；搜索词复用顶栏（NavigationProvider.search），仅以
-    // select 订阅该字段，区段/路由等导航通知不重建。方法（exitSource）经 read 调用。
+    // 变更会重建本组件）；搜索词复用顶栏（NavigationProvider.search），目录
+    // 状态由导航层持有（系统返回统一经 backToPrevious 先退一层目录）。两者都
+    // 以 select 订阅，区段/播放页等导航通知不重建。
     final nav = context.read<NavigationProvider>();
     final query =
         context.select<NavigationProvider, String>((n) => n.search).trim();
+    final dir = context.select<NavigationProvider, String>((n) => n.sourceDir);
     final direct = context.watch<DirectSourceManager>();
     final source = direct.sourceByKey(widget.sourceKey);
     if (source == null) {
-      return const Center(child: Text('源不存在'));
+      return _wrap(const Center(child: Text('源不存在')));
     }
     final settings = direct.settings;
     final mode = settings.groupSource;
@@ -340,11 +365,11 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
     // 只有「文件夹（逐级）」模式（且非搜索）才是按目录浏览：专辑/无为全源
     // 视图，不显示目录标题/面包屑，返回键直接退出播放源。
     final inFolder =
-        !searching && mode == SongGroupMode.folder && _dir.isNotEmpty;
-    final titleText = inFolder ? baseNameOf(_dir) : source.name;
+        !searching && mode == SongGroupMode.folder && dir.isNotEmpty;
+    final titleText = inFolder ? baseNameOf(dir) : source.name;
 
-    return SectionSwipe(
-      child: Column(
+    return _wrap(
+      Column(
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(8, 8, 16, 0),
@@ -431,7 +456,12 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                     IconButton(
                       icon: const Icon(Icons.arrow_back),
                       tooltip: inFolder ? '返回上一级' : '返回播放源',
-                      onPressed: inFolder ? _up : nav.exitSource,
+                      // 分栏右栏的返回只清右栏：左栏（源列表）的过滤词保留。
+                      onPressed: inFolder
+                          ? _up
+                          : widget.inline
+                              ? () => nav.exitSource(keepSearch: true)
+                              : nav.exitSource,
                     ),
                     const SizedBox(width: 4),
                     Icon(Icons.folder_outlined,
@@ -505,12 +535,12 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                                 color: Theme.of(context).colorScheme.primary)),
                       ),
                     ),
-                    for (var i = 0; i < splitSourceRef(_dir).length; i++) ...[
+                    for (var i = 0; i < splitSourceRef(dir).length; i++) ...[
                       Text(' / ', style: Theme.of(context).textTheme.bodySmall),
                       InkWell(
-                        onTap: i == splitSourceRef(_dir).length - 1
+                        onTap: i == splitSourceRef(dir).length - 1
                             ? null
-                            : () => _go(splitSourceRef(_dir)
+                            : () => _go(splitSourceRef(dir)
                                 .sublist(0, i + 1)
                                 .join('/')),
                         borderRadius: BorderRadius.circular(4),
@@ -518,8 +548,8 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                           padding: const EdgeInsets.symmetric(
                               horizontal: 4, vertical: 2),
                           child: Text(
-                            splitSourceRef(_dir)[i],
-                            style: i == splitSourceRef(_dir).length - 1
+                            splitSourceRef(dir)[i],
+                            style: i == splitSourceRef(dir).length - 1
                                 ? Theme.of(context).textTheme.bodyMedium
                                 : TextStyle(
                                     color:
@@ -547,8 +577,12 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
               searching: searching,
               collectionKey: 'source:${widget.sourceKey}',
               groupMode: mode,
-              onGroupModeChanged: (v) =>
-                  setState(() => settings.groupSource = v),
+              onGroupModeChanged: (v) {
+                // 非逐级模式下目录不可见；清掉，避免系统返回先"退"一个
+                // 看不见的目录层级。
+                if (v != SongGroupMode.folder) nav.setSourceDir('');
+                setState(() => settings.groupSource = v);
+              },
               sort: settings.sortSourceSongs,
               onSortChanged: (v) =>
                   setState(() => settings.sortSourceSongs = v),
@@ -556,18 +590,18 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
               folderNavigation: FolderNavigation.recursive,
               folderPaths: rels,
               extraFolders: settings.sourceCreatedFolders(widget.sourceKey),
-              dir: _dir,
-              onDirChanged: (d) => setState(() => _dir = normalizeDir(d)),
+              dir: dir,
+              onDirChanged: (d) => nav.setSourceDir(d),
               sourceOf: (_) => source,
               emptyText: searching
                   ? '该源内没有匹配的歌曲'
-                  : (mode == SongGroupMode.folder && _dir.isNotEmpty)
+                  : (mode == SongGroupMode.folder && dir.isNotEmpty)
                       ? '该文件夹暂无歌曲'
                       : '暂无索引曲目，点击"扫描"建立本地索引',
               countLabel: (n, folders) {
                 if (searching) return '搜索到 $n 首';
                 if (mode == SongGroupMode.folder) {
-                  if (_dir.isEmpty) return '已索引 $total 首 · ${source.name}';
+                  if (dir.isEmpty) return '已索引 $total 首 · ${source.name}';
                   return '$folders 个文件夹 · 已显示 $n 首 · 共 $total 首';
                 }
                 if (mode == SongGroupMode.album) {

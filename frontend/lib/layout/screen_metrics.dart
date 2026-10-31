@@ -106,7 +106,7 @@ class ScreenMetrics extends InheritedWidget {
 ///
 /// 三个条件同时满足：
 /// 1. 大横屏（判屏口径见 [ScreenMetrics]）；
-/// 2. 该分组有"列表 → 详情"语义（歌单 / 专辑 / 歌手）；
+/// 2. 该分组有"列表 → 详情"语义（歌单 / 播放源 / 专辑 / 歌手）；
 /// 3. 该分组的展示形式是**列表**——卡片在 280~360 的左栏只能放一列，
 ///    分栏毫无意义（卡片模式仍走原来的整页叠层）。
 ///
@@ -122,6 +122,8 @@ bool splitDetailActive(BuildContext context) {
       settings.viewModePlaylists == CollectionViewMode.list,
     NavSection.albums => settings.viewModeAlbums == CollectionViewMode.list,
     NavSection.artists => settings.viewModeArtists == CollectionViewMode.list,
-    NavSection.liked || NavSection.sources || NavSection.songs => false,
+    // 播放源：源列表（左）+ 源内浏览（右）。默认卡片模式仍走整页替换。
+    NavSection.sources => settings.viewModeSources == CollectionViewMode.list,
+    NavSection.liked || NavSection.songs => false,
   };
 }

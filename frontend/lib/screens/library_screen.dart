@@ -73,14 +73,11 @@ class AppContent extends StatelessWidget {
     //（窄屏弹层、卡片模式、内容区不够宽仍走原有呈现）。
     final split = splitDetailActive(context);
     final page = _areaPage(context, routeKey, transition, split: split);
-    // 分栏时歌单/专辑/歌手详情只换右栏：区域键固定到分组，避免整块内容区播
-    // 区域切换动画（右栏内部另有 [kDetailPaneMotion] 的轻量过渡）。设置页与
-    // 源内浏览保持原有区域键与动画。
-    final splitArea = split &&
-        routeKey.settings == null &&
-        routeKey.sourceKey == null;
-    final areaKey =
-        splitArea ? 'split:${routeKey.section.name}' : nav.areaKey;
+    // 分栏时歌单/专辑/歌手/源内浏览的详情只换右栏：区域键固定到分组，避免
+    // 整块内容区播区域切换动画（右栏内部另有 [kDetailPaneMotion] 的轻量过渡）。
+    // 设置页保持原有区域键与动画。
+    final splitArea = split && routeKey.settings == null;
+    final areaKey = splitArea ? 'split:${routeKey.section.name}' : nav.areaKey;
     if (transition == PlayerTransition.none) return page;
     if (transition == PlayerTransition.slide) {
       // 分层切换：底层静止垫底，只有高层移动，不透黑底。
@@ -109,8 +106,11 @@ class AppContent extends StatelessWidget {
     if (routeKey.settings != null) {
       return const SettingsScreen();
     }
-    // 播放源「文件夹」子级：源内浏览（原地切换）。
-    if (routeKey.section == NavSection.sources && routeKey.sourceKey != null) {
+    // 播放源「文件夹」子级：源内浏览（整页原地切换）。分栏时留在
+    // [SectionPager] 内，由 [SourcesScreen] 渲染在右栏。
+    if (!split &&
+        routeKey.section == NavSection.sources &&
+        routeKey.sourceKey != null) {
       return SourceBrowseView(sourceKey: routeKey.sourceKey!);
     }
     // 歌单详情子视图。分栏时留在 [SectionPager] 内（左列表 + 右详情），
