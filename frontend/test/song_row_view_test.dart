@@ -95,6 +95,65 @@ void main() {
     });
   });
 
+  group('SongTableCells', () {
+    test('表格标题去掉歌手前缀；技术列格式化', () {
+      final s = _song(
+        title: '晴天',
+        artist: '周杰伦',
+        album: '叶惠美',
+        duration: 240,
+        fileSize: 25 * 1024 * 1024,
+        format: 'flac',
+      );
+      final cells = SongTableCells.of(
+        s,
+        titleFormat: SongTitleFormat.artistTitle,
+        sourceName: 'NAS',
+      );
+      expect(cells.title, '晴天');
+      expect(cells.artist, '周杰伦');
+      expect(cells.album, '叶惠美');
+      expect(cells.source, 'NAS');
+      expect(cells.format, 'FLAC');
+      expect(cells.bitrate, '853 kbps');
+      expect(cells.size, '25.0 MB');
+      expect(cells.duration, '04:00');
+    });
+
+    test('缺失字段用 — 兜底；文件名设置保留文件名语义', () {
+      final s = _song(
+        title: '',
+        artist: null,
+        album: null,
+        sourceRef: '/m/x.flac',
+      );
+      final cells = SongTableCells.of(
+        s,
+        titleFormat: SongTitleFormat.fileName,
+      );
+      expect(cells.title, 'x');
+      expect(cells.artist, '—');
+      expect(cells.album, '—');
+      expect(cells.source, 'local');
+      expect(cells.format, '—');
+      expect(cells.bitrate, '—');
+      expect(cells.size, '—');
+      expect(cells.duration, '—');
+    });
+
+    test('SongRowView.of(table: true) 同时给出标题与 9 列', () {
+      final s = _song(title: 'T', artist: 'A', album: 'B');
+      final row = SongRowView.of(
+        song: s,
+        titleFormat: SongTitleFormat.artistTitle,
+        table: true,
+      );
+      expect(row.titleText, 'T');
+      expect(row.tableCells, isNotNull);
+      expect(row.wideInfoText, isNull);
+    });
+  });
+
   group('SongRowView.of', () {
     test('宽行带上 wideInfoText（含播放源），窄行不带', () {
       final s = _song(format: 'flac', duration: 240, fileSize: 1024 * 1024);
@@ -128,7 +187,9 @@ void main() {
 
     test('songKey 与列表多选口径一致（sourceKey|sourceRef|id）', () {
       final s = _song(sourceKey: 'webdav:t', sourceRef: '/dav/x.mp3', id: 7);
-      expect(SongRowView.of(song: s, titleFormat: SongTitleFormat.titleOnly).songKey,
+      expect(
+          SongRowView.of(song: s, titleFormat: SongTitleFormat.titleOnly)
+              .songKey,
           'webdav:t|/dav/x.mp3|7');
     });
   });
@@ -195,8 +256,10 @@ void main() {
       // 模拟真实用法：build 里 begin（帧内登记 → 帧末执行一次）。
       Widget probe() {
         cache.begin(sig, 1, onWarm: () => warms++);
-        cache.rowAt(0, () => const SongRowView(
-            songKey: 'k0', titleText: 't', subtitleText: 's'));
+        cache.rowAt(
+            0,
+            () => const SongRowView(
+                songKey: 'k0', titleText: 't', subtitleText: 's'));
         return const SizedBox(width: 10, height: 10);
       }
 

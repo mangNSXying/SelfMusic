@@ -19,12 +19,13 @@ import 'edit_song_meta_dialog.dart';
 import 'selection_badge.dart';
 import 'song_info_dialog.dart';
 import 'song_row_view.dart';
+import 'song_table.dart';
 
 /// SongTile 行宽达到该值时，在时长左侧补充技术信息（播放源 · 格式 · 码率 · 大小）。
 ///
 /// 阈值按行实际宽度判定（LayoutBuilder）：桌面/平板整宽列表满足；队列面板
-/// （固定 360）等窄容器自动不显示。
-const double kSongTileWideInfoWidth = 800;
+/// （固定 360）等窄容器自动不显示。表格模式使用同一阈值。
+const double kSongTileWideInfoWidth = kSongTableMinWidth;
 
 /// 通用歌曲列表：封面缩略图 + 标题 + 歌手/专辑/专辑歌手 + 时长时间器。
 ///
@@ -41,6 +42,12 @@ class SongTile extends StatelessWidget {
   /// [DirectSourceManager]、不做逐行 LayoutBuilder、派生文本已算好；
   /// 为空时为兼容路径（旧调用方/单测），行为与改动前一致。
   final SongRowView? row;
+
+  /// 表格模式；非空时用 9 列布局渲染（需 [row] 带 tableCells）。
+  final SongTableLayout? table;
+
+  /// 表格模式标题缩进像素（源页递归层级；普通行不使用）。
+  final double titleIndent;
 
   /// 该歌对应的本机播放源；null=本机未配置对应源（如同步快照行，仅可查看/收藏）。
   final MusicSource? source;
@@ -78,6 +85,8 @@ class SongTile extends StatelessWidget {
     required this.source,
     required this.onPlay,
     this.row,
+    this.table,
+    this.titleIndent = 0,
     this.selectionMode = false,
     this.selected = false,
     this.onSelect,
@@ -381,8 +390,26 @@ class SongTile extends StatelessWidget {
   /// 无逐行 LayoutBuilder，派生文本/收藏态均为值。
   Widget _buildFromRow(BuildContext context, SongRowView view) {
     final direct = context.read<DirectSourceManager>();
+    final layout = table;
+    final cells = view.tableCells;
+    final tile = layout != null && cells != null
+        ? _buildTableTile(context, direct, view, layout, cells)
+        : _buildNormalTile(context, direct, view);
+    return GestureDetector(
+      // 桌面右键：在指针处弹出与三点按钮相同的菜单；多选态不响应（与隐藏按钮一致）。
+      onSecondaryTapDown: selectionMode
+          ? null
+          : (d) => unawaited(_openContextMenu(
+              context, direct, view.favorite, view.disliked, d)),
+      child: tile,
+    );
+  }
+
+  /// 普通行：封面 + 标题/副标题 + 时长与菜单。
+  Widget _buildNormalTile(
+      BuildContext context, DirectSourceManager direct, SongRowView view) {
     final cs = Theme.of(context).colorScheme;
-    final tile = ListTile(
+    return ListTile(
       selected: selectionMode && selected,
       leading: _leading(view.coverPath),
       title: Row(
@@ -432,13 +459,98 @@ class SongTile extends StatelessWidget {
       onTap: selectionMode ? onSelect : onPlay,
       onLongPress: selectionMode ? onSelect : onStartSelect,
     );
-    return GestureDetector(
-      // 桌面右键：在指针处弹出与三点按钮相同的菜单；多选态不响应（与隐藏按钮一致）。
-      onSecondaryTapDown: selectionMode
-          ? null
-          : (d) => unawaited(_openContextMenu(
-              context, direct, view.favorite, view.disliked, d)),
-      child: tile,
+  }
+
+  /// 表格行：9 列与表头共用 [SongTableLayout.buildCells]。
+  ///
+  /// 多选态用 48px 空占位保留菜单列宽，避免标题区域变宽导致列与表头错位。
+  Widget _buildTableTile(BuildContext context, DirectSourceManager direct,
+      SongRowView view, SongTableLayout layout, SongTableCells cells) {
+    final cs = Theme.of(context).colorScheme;
+    final secondary = Theme.of(context)
+        .textTheme
+        .bodySmall
+        ?.copyWith(color: cs.onSurfaceVariant);
+    final selectedPrimary = (selectionMode && selected) || playing;
+    return ListTile(
+      contentPadding:
+          const EdgeInsets.symmetric(horizontal: kSongTableRowPaddingH),
+      horizontalTitleGap: kSongTableCoverGap,
+      selected: selectionMode && selected,
+      leading: _leading(view.coverPath),
+      title: layout.buildCells(
+        title: Row(
+          children: [
+            if (titleIndent > 0) SizedBox(width: titleIndent),
+            Expanded(
+              child: Text(
+                cells.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  color: selectedPrimary ? cs.primary : null,
+                ),
+              ),
+            ),
+            if (playing) ...[
+              const SizedBox(width: 4),
+              Icon(Icons.graphic_eq, size: 15, color: cs.primary),
+            ],
+          ],
+        ),
+        artist: _tableText(cells.artist, secondary),
+        album: _tableText(cells.album, secondary),
+        source: _tableText(cells.source, secondary),
+        format: _tableText(cells.format, secondary),
+        bitrate: _tableText(cells.bitrate, secondary, align: TextAlign.right),
+        size: _tableText(cells.size, secondary, align: TextAlign.right),
+        state: _tableState(view, secondary),
+        duration: _tableText(cells.duration, secondary, align: TextAlign.right),
+      ),
+      trailing: SizedBox(
+        width: kSongTableMenuWidth,
+        child: selectionMode
+            ? null
+            : _menu(context, direct, view.favorite, view.disliked),
+      ),
+      onTap: selectionMode ? onSelect : onPlay,
+      onLongPress: selectionMode ? onSelect : onStartSelect,
+    );
+  }
+
+  static Widget _tableText(String text, TextStyle? style,
+      {TextAlign align = TextAlign.left}) {
+    return Text(
+      text,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      textAlign: align,
+      style: style?.copyWith(
+        fontFeatures: const [FontFeature.tabularFigures()],
+      ),
+    );
+  }
+
+  static Widget _tableState(SongRowView view, TextStyle? style) {
+    if (!view.favorite && !view.disliked) {
+      return Text(
+        '—',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        textAlign: TextAlign.center,
+        style: style,
+      );
+    }
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        if (view.favorite)
+          const Icon(Icons.favorite, size: 14, color: Colors.pink),
+        if (view.favorite && view.disliked) const SizedBox(width: 4),
+        if (view.disliked)
+          const Icon(Icons.thumb_down, size: 14, color: Colors.orange),
+      ],
     );
   }
 
@@ -451,8 +563,28 @@ class SongTile extends StatelessWidget {
     final disliked = meta.frozen;
     // 播放源友好名：优先调用方传入的源，其次按 sourceKey 解析。
     final sourceName = source?.name ?? direct.sourceByKey(song.sourceKey)?.name;
-    // 行宽按实际约束判定：宽行在时长左侧补充技术信息。
+    final layout = table;
     return LayoutBuilder(builder: (context, constraints) {
+      if (layout != null) {
+        final view = SongRowView.of(
+          song: song,
+          titleFormat: direct.settings.songTitleFormat,
+          sourceName: sourceName,
+          playing: playing,
+          favorite: favorite,
+          disliked: disliked,
+          table: true,
+        );
+        return GestureDetector(
+          onSecondaryTapDown: selectionMode
+              ? null
+              : (d) => unawaited(
+                  _openContextMenu(context, direct, favorite, disliked, d)),
+          child:
+              _buildTableTile(context, direct, view, layout, view.tableCells!),
+        );
+      }
+      // 行宽按实际约束判定：宽行在时长左侧补充技术信息。
       final info = constraints.maxWidth >= kSongTileWideInfoWidth
           ? _wideInfo(context, sourceName: sourceName)
           : null;
@@ -507,8 +639,8 @@ class SongTile extends StatelessWidget {
         // 桌面右键：在指针处弹出与三点按钮相同的菜单；多选态不响应（与隐藏按钮一致）。
         onSecondaryTapDown: selectionMode
             ? null
-            : (d) => unawaited(_openContextMenu(
-                context, direct, favorite, disliked, d)),
+            : (d) => unawaited(
+                _openContextMenu(context, direct, favorite, disliked, d)),
         child: tile,
       );
     });
