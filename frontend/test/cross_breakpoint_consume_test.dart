@@ -553,6 +553,88 @@ void main() {
         reason: '打开歌单也应套用远端深层列表');
   });
 
+  test('采用远端断点：当前曲定位回深层尾而非基座副本', () async {
+    final (index, player, uuid) =
+        await setup(['/x/a.flac', '/x/b.flac', '/x/c.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+    player.setBreakpointProtocolV2(true, serverEpoch: 'epoch-1');
+    player.attachSyncHooks(onSyncPoke: () {});
+    await player.restorePreferRemote();
+
+    final now = DateTime.now().toIso8601String();
+    await index.upsertBreakpointMirror(
+      playlistUuid: uuid,
+      sourceRef: '/x/c.flac',
+      source: 'webdav',
+      positionMs: 30000,
+      deepListJson: _deepListJson(['/x/b.flac', '/x/c.flac']),
+      updatedAt: now,
+      lastEventAt: now,
+      headRev: 5,
+      historyRev: 5,
+      headClock: '9000-0-test',
+      headOpId: 'op-remote-c',
+      headSession: 's-remote',
+      headUpdatedAt: now,
+    );
+    await player.applyNewerMirrorIfAny(viaSync: true);
+
+    expect(player.current?.sourceRef, '/x/c.flac');
+    expect(player.queue.map((s) => s.sourceRef).toList(),
+        ['/x/b.flac', '/x/c.flac', '/x/c.flac'],
+        reason: '融合队列 = 深层 ‖ 基座续播段，c 出现两处');
+    expect(player.currentIndex, 1,
+        reason: '当前曲应落深层尾（下标 1），落到基座副本 2 会把整段基座当成已过去');
+  });
+
+  test('孤儿 pending head 启动时清理，远端 head 仍可被采用', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+    player.setBreakpointProtocolV2(true, serverEpoch: 'epoch-1');
+    player.attachSyncHooks(onSyncPoke: () {});
+
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+    // 旧版本“先落 pending 再入队”/被合并删除后遗留：DB 有 pending，outbox 无事件。
+    await index.saveBreakpointSyncState(
+      playlistUuid: uuid,
+      pendingHeadOpId: 'op-orphan',
+      sessionId: 's-local',
+      serverEpoch: 'epoch-1',
+    );
+    final now = DateTime.now().toIso8601String();
+    await index.upsertBreakpointMirror(
+      playlistUuid: uuid,
+      sourceRef: '/x/b.flac',
+      source: 'webdav',
+      positionMs: 30000,
+      deepListJson: _deepListJson(['/x/a.flac', '/x/b.flac']),
+      updatedAt: now,
+      lastEventAt: now,
+      headRev: 6,
+      historyRev: 6,
+      headClock: '9000-0-test',
+      headOpId: 'op-remote',
+      headSession: 's-remote',
+      headUpdatedAt: now,
+    );
+
+    await player.restorePreferRemote();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(index.breakpointSyncStateOf(uuid)?.pendingHeadOpId, isNull,
+        reason: '没有对应 outbox 事件的 pending 是孤儿，会永久挡住远端 head 采用');
+    expect(player.current?.sourceRef, '/x/b.flac');
+    expect(player.position.inMilliseconds, 30000);
+  });
+
   test('负例：不比基准新的镜像不套用', () async {
     final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
     addTearDown(index.close);

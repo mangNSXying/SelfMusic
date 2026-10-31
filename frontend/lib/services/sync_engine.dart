@@ -362,9 +362,12 @@ class SyncEngine {
     final pending = await index.pendingOutbox();
     if (pending.isEmpty) return;
 
-    // 同一歌单的断点事件只推最新一条：离线期间每次切歌/暂停都入队，
-    // 逐条推会把同一后缀重复追加到服务端分支。旧事件在最新事件 ack 后删除；
-    // 若最新事件被拒，旧事件仍保留，下一轮兜底。
+    // 同歌单断点事件的合并规则：
+    // - 旧协议（无 intent）：只推最新一条（无 head/pending 语义，合并安全）；
+    // - v2：真实操作（play_track/pause/resume/seek）**绝不丢弃**，只合并
+    //   progress 心跳。真实操作被一条更晚的 progress 顶掉时，它的 op_id
+    //   永远不会被服务端 ack，客户端 pending head 会卡死（远端 head 被
+    //   永久 defer，重启也恢复）；progress 本身没有这个约束。
     final bpGroups = <String, List<OutboxRow>>{};
     for (final e in pending) {
       if (e.type != SyncEventTypes.breakpointSet) continue;
@@ -376,11 +379,31 @@ class SyncEngine {
     final coalesced = <String>{};
     for (final group in bpGroups.values) {
       if (group.length <= 1) continue;
-      final keep = group.last.eventUuid;
-      superseded[keep] = [
-        for (final e in group.take(group.length - 1)) e.eventUuid
+      final hasV2 = group.any((e) => e.payload['intent'] != null);
+      if (!hasV2) {
+        final keep = group.last.eventUuid;
+        superseded[keep] = [
+          for (final e in group.take(group.length - 1)) e.eventUuid
+        ];
+        coalesced.addAll(superseded[keep]!);
+        continue;
+      }
+      final kept = <OutboxRow>[
+        for (final e in group)
+          if (e.payload['intent'] != 'progress') e,
       ];
-      coalesced.addAll(superseded[keep]!);
+      // 只保留组末尾的那条 progress；更早的 progress 已被其后的真实操作
+      // （或更新的心跳）覆盖。
+      final tail = group.last;
+      if (tail.payload['intent'] == 'progress') kept.add(tail);
+      final keepIds = {for (final e in kept) e.eventUuid};
+      final dropped = [
+        for (final e in group)
+          if (!keepIds.contains(e.eventUuid)) e.eventUuid,
+      ];
+      if (dropped.isEmpty) continue;
+      superseded.putIfAbsent(kept.last.eventUuid, () => []).addAll(dropped);
+      coalesced.addAll(dropped);
     }
     final sendRows = [
       for (final e in pending)

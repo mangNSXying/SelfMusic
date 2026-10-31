@@ -1714,6 +1714,26 @@ class LocalIndex {
     return uuid;
   }
 
+  /// 同步读取未确认事件（主连接）。只给启动首帧的同步前缀用：恢复决策必须
+  /// 在首帧前完成，不能等写隔离；调用时机早于本轮任何入队，不存在未落盘
+  /// 的脏写。常规同步路径仍用异步 [pendingOutbox]。
+  List<OutboxRow> pendingOutboxSync({int limit = 500}) {
+    final rs = _db!.select(
+        'SELECT event_uuid, type, payload, occurred_at FROM weight_outbox '
+        'WHERE acked=0 ORDER BY rowid LIMIT ?',
+        [limit]);
+    return [
+      for (final r in rs)
+        OutboxRow(
+          eventUuid: r['event_uuid'] as String,
+          type: r['type'] as String,
+          payload: (jsonDecode(r['payload'] as String) as Map)
+              .cast<String, dynamic>(),
+          occurredAt: r['occurred_at'] as String,
+        ),
+    ];
+  }
+
   /// 未确认事件（SyncEngine 上推用，按入队序）。
   /// 读取与 payload 解码都在写隔离完成（同步后台化：UI isolate 不做 SQL/JSON）。
   Future<List<OutboxRow>> pendingOutbox({int limit = 500}) async {

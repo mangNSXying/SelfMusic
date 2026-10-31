@@ -4380,6 +4380,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (appendMode) 'deep_added': deepList.sublist(base.length),
         if (hasBase && !appendMode) 'base_deep_list': base,
       };
+      String? pendingOpId;
+      String? pendingSession;
       if (_breakpointV2 && bpIntent != null) {
         final session = bpIntent == 'play_track'
             ? _newSessionId()
@@ -4407,19 +4409,27 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           },
         });
         if (bpIntent != 'progress') {
-          _pendingHeadOpId = opId;
-          try {
-            await idx.saveBreakpointSyncState(
-              playlistUuid: uuid,
-              pendingHeadOpId: opId,
-              sessionId: session,
-              serverEpoch: _v2ServerEpoch,
-            );
-          } catch (_) {}
+          pendingOpId = opId;
+          pendingSession = session;
         }
       }
       final eventUuid =
           await idx.enqueueOutbox(SyncEventTypes.breakpointSet, payload);
+      // pending head 只在事件确实入队后落库：先落 pending 再入队，若进程在
+      // 两者之间被杀/入队失败，会留下一个没有对应 outbox 事件的 pending，
+      // 远端 head 被永久 defer（重启也从 DB 恢复）。内存值同样在入队后设置，
+      // 避免「事件已入队但 pending 还没落库」的窗口里 ack 到达后被旧 guard 误挡。
+      if (pendingOpId != null) {
+        _pendingHeadOpId = pendingOpId;
+        try {
+          await idx.saveBreakpointSyncState(
+            playlistUuid: uuid,
+            pendingHeadOpId: pendingOpId,
+            sessionId: pendingSession,
+            serverEpoch: _v2ServerEpoch,
+          );
+        } catch (_) {}
+      }
       perfLog('bp.enqueue',
           'uuid=$eventUuid playlist=$uuid ref=${cur.sourceRef} pos=${pos.inMilliseconds}ms force=$force intent=${bpIntent ?? 'legacy'} base=${base.length} append=$appendMode skew=${idx.clockSkew.inMilliseconds}ms');
     } else {
@@ -4472,14 +4482,20 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> _restorePreferRemoteInner(LocalIndex idx) async {
     final local = idx.getPlayState();
+    // 启动先校验 pending head 是否还有对应的 outbox 事件；没有就是历史遗留的
+    // 孤儿（旧版本先落 pending 再入队 / ack 回调前被杀 / 被旧合并规则顶掉），
+    // 不清掉会永久 defer 远端 head（`mirror.apply skip 本机 head 待确认`）。
+    final stalePendingCleared = _dropStalePendingSync(idx, local?.playlistUuid);
     final best = _newestMirror(idx);
     var preferMirror = false;
     if (best != null) {
       final state = idx.breakpointSyncStateOf(best.playlistUuid);
       final localUuid = local?.playlistUuid;
-      final localPending = localUuid == null
+      final localPending = stalePendingCleared
           ? null
-          : idx.breakpointSyncStateOf(localUuid)?.pendingHeadOpId;
+          : (localUuid == null
+              ? null
+              : idx.breakpointSyncStateOf(localUuid)?.pendingHeadOpId);
       final isV2 = best.headRev > 0 || (state?.appliedHeadRev ?? 0) > 0;
       if (localPending != null && localPending != best.headOpId) {
         // 本机还有未确认的真实操作：先保留本机现场，等 push 裁决（即使
@@ -4667,6 +4683,40 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     perfLog('bp.pendingClear', 'acked op=$opId playlist=$uuid');
     await applyNewerMirrorIfAny(viaSync: true);
+  }
+
+  /// 清理孤儿 pending head：outbox 里已没有对应事件（已被 ack/旧合并规则删除，
+  /// 或旧版本“先落 pending 再入队”留下的残留）。这种 pending 永远等不到 ack，
+  /// 会让远端 head 采用被 `本机 head 待确认` 永久挡住（重启也恢复）。
+  ///
+  /// 同步执行（主连接读 outbox）：启动恢复的同步前缀必须在首帧前跑完，不能
+  /// await 写隔离。DB 清理 fire-and-forget；返回值表示「DB 里的 pending 已
+  /// 作废」，调用方本次决策不得再使用它。读失败时保守保留。
+  bool _dropStalePendingSync(LocalIndex idx, String? uuid) {
+    if (uuid == null) return false;
+    final op = idx.breakpointSyncStateOf(uuid)?.pendingHeadOpId;
+    if (op == null) return false;
+    List<OutboxRow> pending;
+    try {
+      pending = idx.pendingOutboxSync();
+    } catch (_) {
+      return false;
+    }
+    for (final e in pending) {
+      if (e.type != SyncEventTypes.breakpointSet) continue;
+      if (e.payload['playlist_uuid'] != uuid) continue;
+      if (e.payload['op_id'] == op) return false;
+    }
+    if (_pendingHeadOpId == op) _pendingHeadOpId = null;
+    unawaited(idx
+        .saveBreakpointSyncState(
+          playlistUuid: uuid,
+          clearPending: true,
+          serverEpoch: _v2ServerEpoch,
+        )
+        .catchError((Object _) {}));
+    perfLog('bp.pendingClear', 'stale(no outbox event) op=$op playlist=$uuid');
+    return true;
   }
 
   /// 断点事件被服务端死信：只清匹配的 pending head（旧事件无 op_id 时才无条件
@@ -4941,6 +4991,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         } else {
           _v2SessionId = st.sessionId;
         }
+        _dropStalePendingSync(idx, _syncPlaylistUuid);
       }
       // 锚定键：新版断点携带 anchorKey；旧行按 playlistUuid 推导。
       final anchorKey = st.anchorKey ??
@@ -5103,7 +5154,16 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           '${swResolve.elapsedMilliseconds}ms n=${songs.length}');
     }
     _queue = _fusedQueue(_fusedBase!);
-    _idx = _fusedIndexOf(start, songs).clamp(0, _queue.length - 1);
+    // 采用远端断点时当前曲应回到「历史尾」而不是基座里的同曲复本：深层列表是
+    // 最近播放栈，队列形态为 深层 ‖ 基座续播段；落到基座副本会把深层历史和
+    // 中间一段基座都当成「已过去」，下一首也会与领播端不一致。
+    final adoptedSong = songs[start];
+    final deepLen = _deepList?.length ?? 0;
+    var adoptedIdx = deepLen > 0
+        ? locateCurrentIndex(_queue, deepLen, adoptedSong, _same)
+        : -1;
+    if (adoptedIdx < 0) adoptedIdx = _fusedIndexOf(start, songs);
+    _idx = adoptedIdx.clamp(0, _queue.length - 1);
     _current = _queue[_idx];
     // 采用远端断点为当前状态：基准=镜像比较时钟（最后操作时间，F4），
     // 并对刚 adopted 的状态做一次回推节流——跟随端不应以更新的 occurred_at
@@ -5181,11 +5241,16 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     return true;
   }
 
-  /// 镜像身份列表 → 本机歌单匹配后的深层条目（坏行/无匹配跳过，保持顺序）。
+  /// 镜像身份列表 → 本机可表示的深层条目（保持顺序）。
   ///
   /// [refIndex] 为 [_refIndexMap] 预建的 ref→下标映射：此前对每条深层条目都
   /// `indexWhere` 全量扫描且每次比较重建 WebDAV 变体集合，O(条目×歌曲) 的
   /// 同步热点（启动恢复 366 条 × 1262 首实测 14.8s 卡死 UI 的根因）。
+  ///
+  /// 歌单内匹配不到时再按协议 kind 在本机索引兜底解析（历史可能来自对端分支、
+  /// 条目已删但曲库仍在、或外部点歌替换过末尾）。只按歌单过滤会让服务端 699
+  /// 条到本机只剩 690 条，base 与 history_rev 对不上，下一次非追加合并会拿
+  /// 错 base 把列表越拼越乱；本机完全无法表示的条目才跳过（记日志）。
   List<Song> _deepListFromMirror(
       String? deepListJson, List<Song> songs, Map<String, int> refIndex) {
     if (deepListJson == null || deepListJson.isEmpty) return const [];
@@ -5194,19 +5259,52 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (raw is! List) return const [];
       final out = <Song>[];
       final seen = <String>{};
+      var dropped = 0;
+      List<DirectSourceRow>? sources;
       for (final e in raw) {
         if (e is! Map) continue;
         final ref = e['source_ref'];
         if (ref is! String || ref.isEmpty) continue;
+        // 服务端身份就是 source_ref（跨源同 ref 视为同一首），去重口径一致。
+        if (!seen.add(ref)) continue;
         final i = _refIndexOf(refIndex, ref);
-        if (i < 0) continue;
-        final s = songs[i];
-        if (seen.add('${s.sourceKey}\u0000${s.sourceRef}')) out.add(s);
+        if (i >= 0) {
+          out.add(songs[i]);
+          continue;
+        }
+        sources ??= _index?.listSources() ?? const [];
+        final kind = e['source'];
+        final ext = _resolveDeepRef(kind is String ? kind : null, ref, sources);
+        if (ext != null) {
+          out.add(ext);
+        } else {
+          dropped++;
+        }
+      }
+      if (dropped > 0) {
+        perfLog('restoreMirror deepUnmatched',
+            'raw=${raw.length} entries=${out.length} dropped=$dropped');
       }
       return out;
     } catch (_) {
       return const [];
     }
+  }
+
+  /// 歌单外的深层条目兜底：按协议 kind 在各启用源里按 ref（含编码变体）找歌。
+  Song? _resolveDeepRef(
+      String? kind, String ref, List<DirectSourceRow> sources) {
+    final idx = _index;
+    if (idx == null) return null;
+    try {
+      for (final src in sources) {
+        if (!src.enabled) continue;
+        if (kind != null && kind.isNotEmpty && src.kind != kind) continue;
+        final s = idx.songByRef(src.key, ref);
+        if (s != null) return s;
+      }
+    } catch (_) {}
+    return null;
   }
 
   /// ref→歌单位（含 WebDAV 编码变体）预建索引；配合 [_refIndexOf] 使用。

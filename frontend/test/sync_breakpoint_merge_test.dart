@@ -204,6 +204,47 @@ void main() {
     expect(index.breakpointBaseDeepList(uuid), contains('/b.mp3'));
   });
 
+  test('v2 真实操作不被 progress 合并掉（防 pending head 卡死）', () async {
+    final id = await index.createPlaylist('v2合并歌单');
+    final uuid = index.playlistUuidOf(id)!;
+    Map<String, dynamic> bp(String intent, String op, int pos) => {
+          'playlist_uuid': uuid,
+          'source': 'webdav',
+          'source_ref': '/a.mp3',
+          'position_ms': pos,
+          'deep_list': [
+            {'source': 'webdav', 'source_ref': '/a.mp3'},
+          ],
+          'protocol': 2,
+          'intent': intent,
+          'op_id': op,
+          'op_clock': '1-0',
+          'head': {
+            'source': 'webdav',
+            'source_ref': '/a.mp3',
+            'position_ms': pos,
+            'playing': true,
+          },
+        };
+    final e1 = await index.enqueueOutbox(
+        'breakpoint.set', bp('play_track', 'op-real', 1000));
+    final e2 = await index.enqueueOutbox(
+        'breakpoint.set', bp('progress', 'op-p1', 2000));
+    final e3 = await index.enqueueOutbox(
+        'breakpoint.set', bp('progress', 'op-p2', 3000));
+
+    await engine.syncNow(force: true);
+
+    expect(api.batches, hasLength(1));
+    expect(
+      [for (final e in api.batches.single) e['event_uuid']],
+      [e1, e3],
+      reason: '真实操作丢了就永远等不到 ack，pending 会卡死；只合并 progress',
+    );
+    expect(await index.pendingOutbox(), isEmpty);
+    expect(e2, isNot(e3));
+  });
+
   test('merged 回执即使设备号是自己也强制落镜像并回调历史合并', () async {
     final id = await index.createPlaylist('合并回执歌单');
     final uuid = index.playlistUuidOf(id)!;
