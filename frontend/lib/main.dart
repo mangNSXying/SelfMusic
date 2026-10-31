@@ -9,6 +9,7 @@ import 'package:just_audio_media_kit/just_audio_media_kit.dart';
 import 'package:provider/provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'platform/app_background.dart';
+import 'platform/desktop_tray.dart';
 import 'platform/harmonyos/ohos_bootstrap.dart';
 import 'platform/harmonyos/ohos_media_session.dart';
 import 'services/api_client.dart';
@@ -65,6 +66,10 @@ Future<void> main() async {
     perfLog('boot.entry');
     WidgetsFlutterBinding.ensureInitialized();
     perfLog('boot.ensureInitialized');
+    // 桌面端窗口关闭拦截：须在首帧前后尽早接管原生关闭事件（托盘图标在
+    // 设置加载后创建，见下方 boot.desktopTray）。非桌面平台内部直接返回。
+    await DesktopTray.instance.initWindow();
+    perfLog('boot.desktopTray window done');
     // 图片解码缓存扩容：默认 100MB/1000 张。播放页用的是全尺寸封面（单张解码
     // 内存可达十余 MB），连播几十首就会把列表缩略图全部挤出缓存，此后每次切页
     // 都要重新解码 → 长会话「越用越卡」。512MB 是上限而非预分配，LRU 照常淘汰；
@@ -108,7 +113,11 @@ Future<void> main() async {
     final direct = DirectSourceManager();
     await direct.init();
     final shortcutSettings = ShortcutSettings(direct.settings);
-    perfLog('boot.directInit done');
+    // 托盘图标/菜单：读「关闭窗口时驻留托盘」开关；创建失败自动退回
+    // 「关闭即退出」，不会出现窗口藏起来却无法找回的死角。
+    await DesktopTray.instance
+        .initTray(closeToTray: direct.settings.closeToTray);
+    perfLog('boot.desktopTray tray done');
     debugPrint('[boot] 直连源管理器就绪');
     // 自定义界面字体（设置 → 界面 → 文字）：必须在 runApp 前注册，否则首帧
     // 先按系统字体排版、加载完成后再跳字，歌名/歌词会有明显闪动。未配置时
@@ -371,6 +380,9 @@ class SelfMusicApp extends StatelessWidget {
     // 深层历史里属于该源的死引用——否则播到即抛「找不到该歌曲的播放源」，
     // 断点快照还会把死引用写回库。库侧清理由 LocalIndex.deleteSource 收口。
     direct.onSourceRemoved = player.onSourceRemoved;
+    // 桌面托盘「退出」与未驻留时的窗口关闭共用同一收口：先停播放器
+    //（落库断点/释放 mpv），再由 DesktopTray 退进程。
+    DesktopTray.instance.setBeforeQuit(player.shutdown);
     // 鸿蒙 AVSession 桥接线：attach 注册回推钩子与 direct 监听，
     // 此后播放/暂停/切歌/seek/模式/收藏变化自动同步系统播控卡。
     ohosMediaSession?.attach(player);

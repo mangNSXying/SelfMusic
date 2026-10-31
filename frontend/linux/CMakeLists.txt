@@ -42,6 +42,12 @@ endif()
 function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_features(${TARGET} PUBLIC cxx_std_14)
   target_compile_options(${TARGET} PRIVATE -Wall -Werror)
+  # 第三方插件在老版本工具链上能过、新版 clang 会新增告警并被 -Werror 拦下：
+  # tray_manager 用了已弃用的 app_indicator_new，hotkey_manager 有未初始化变量
+  # 的保守告警。只把这两类降级为警告，其余告警仍按错误处理。
+  target_compile_options(${TARGET} PRIVATE
+    -Wno-error=deprecated-declarations
+    -Wno-error=sometimes-uninitialized)
   target_compile_options(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:-O3>")
   target_compile_definitions(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:NDEBUG>")
 endfunction()

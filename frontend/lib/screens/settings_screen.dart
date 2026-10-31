@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/backup_service.dart';
+import '../platform/desktop_tray.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart';
 import '../platform/harmonyos/ohos_platform_bridge.dart';
 import '../providers/auth_provider.dart';
@@ -2949,6 +2950,7 @@ class _GeneralSettings extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _ViewBehaviorSection(),
+            _TraySection(),
             Divider(height: 32),
             _LogSection(),
             Divider(height: 32),
@@ -2998,6 +3000,54 @@ class _ViewBehaviorSectionState extends State<_ViewBehaviorSection> {
                   .textTheme
                   .bodySmall
                   ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
+        ),
+      ],
+    );
+  }
+}
+
+/// 常规 → 窗口（仅桌面）：关闭主窗口时驻留系统托盘。
+class _TraySection extends StatefulWidget {
+  const _TraySection();
+
+  @override
+  State<_TraySection> createState() => _TraySectionState();
+}
+
+class _TraySectionState extends State<_TraySection> {
+  @override
+  Widget build(BuildContext context) {
+    if (!DesktopTray.isSupported) return const SizedBox.shrink();
+    final settings = context.read<DirectSourceManager>().settings;
+    final cs = Theme.of(context).colorScheme;
+    final tray = DesktopTray.instance;
+    // 托盘创建失败（如 Linux 桌面没有 StatusNotifier 宿主）时关闭仍会退出，
+    // 开关置灰避免用户误以为窗口藏起来还能从托盘找回。
+    final available = tray.trayReady;
+    final enabled = settings.closeToTray;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Divider(height: 32),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('窗口',
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        SwitchListTile(
+          title: const Text('关闭窗口时驻留托盘'),
+          subtitle: Text(!available
+              ? '当前桌面未提供托盘支持，关闭窗口仍会退出软件'
+              : enabled
+                  ? '关闭主窗口后继续后台播放；托盘菜单可恢复窗口或退出'
+                  : '关闭主窗口即退出软件'),
+          value: enabled,
+          onChanged: available
+              ? (v) {
+                  setState(() => settings.closeToTray = v);
+                  tray.setCloseToTray(v);
+                }
+              : null,
         ),
       ],
     );

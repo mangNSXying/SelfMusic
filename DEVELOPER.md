@@ -68,7 +68,7 @@
 | 目标平台 | 构建环境 | 状态 |
 |---------|---------|------|
 | Android | Ubuntu（Android Studio + SDK） | ✅ 可用；壳工程已重建（`android/app` + Gradle 配置齐全），`flutter build apk` 可出包 |
-| Linux Desktop | Ubuntu（clang + GTK + cmake + ninja） | ✅ 可用：开发平台 |
+| Linux Desktop | Ubuntu（clang + GTK + cmake + ninja + libkeybinder-3.0-dev + libayatana-appindicator3-dev） | ✅ 可用：开发平台；后两者分别用于全局快捷键与系统托盘 |
 | Web | 不做 | ❌ 明确排除 |
 | Windows Desktop | Win10 开发机：Flutter stable + VS2022 Build Tools（C++ 桌面负载 + ATL） | ✅ 可用：`flutter build windows` 可出包；音频后端 media_kit；日常联调用根目录 `run-windows.bat` |
 | HarmonyOS | Win10 开发机：DevEco Studio + HarmonyOS SDK + 真机 + 三方 Flutter 分支（`oh-3.41.9-release`） | ✅ PoC 验收通过（2026-09-30）；详见「鸿蒙适配」 |
@@ -808,6 +808,7 @@ SMB/SFTP 原始流默认不再走 just_audio 的 `StreamAudioSource`/Dart 回环
 - **装载看门狗（2026-09-30）**：原生播放器对「主机不可达/无响应」的 open 可能没有应用层超时——历史实测（mdk）IPv6 路由丢失时 prepare 永久挂起，UI 卡 00:00/00:00、点播放无响应。setUrl 统一裹 15s 超时（`PlayerProvider._loadUrlTimeout`），超时按装载失败进入 `loadBackoff` 退避重试、耗尽后走失败提示/自动跳曲；被放弃的迟到结果用 `Future.ignore()` 吞掉防 unhandled。AVPlayer/ExoPlayer 自带连接超时通常先报错，看门狗仅作兜底
 - **自动切歌 play 空转问题（2026-09-30）**：just_audio 的 `play()` 首行 `if (playing) return`——上一首自然播完 playing 不会自动复位，装载下一首后 `play()` 静默空转、平台层收不到播放指令。ohos 表现为切歌无声 + 进度条靠 Dart 时钟插值假走（暂停时回跳 0）；Android 因 ExoPlayer `playWhenReady` 状态跨装载保持而恰好正常。修复在 `PlayerProvider._play`：装载完成需要播放时先 `pause()` 复位 playing 再 `play()`——**该复位逻辑为必要修复，请勿删除或"优化"**，详见该处注释
 - **返回手势 = 转后台**：移动端侧滑/返回键不退出应用（后台续播），收口在 `platform/app_background.dart`（Android 通道 `com.shamiko.selfmusic/app`、ohos 通道 `selfmusic/app`，均为 `moveToBackground`），`main.dart` 的 `_onPopInvoked` 是唯一调用点、通道失败兜底原行为；桌面端恒 false。调整退出行为只动这两处
+- **桌面端关闭窗口 = 驻留托盘**：`platform/desktop_tray.dart` 用 window_manager 拦截原生关闭事件、tray_manager 提供「显示主窗口 / 退出」菜单；默认开，设置→常规→窗口可关。托盘创建失败时关闭仍直接退出（避免窗口藏起来无法找回）；真正退出统一先 `PlayerProvider.shutdown()` 再 `exitAppGracefully()`。全局快捷键打开弹窗（退出/睡眠定时/帮助）前会先恢复窗口
 
 ### 鸿蒙适配
 

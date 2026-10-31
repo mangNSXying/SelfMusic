@@ -268,12 +268,24 @@ mysqldump -h <DB_HOST> -u <DB_USER> -p selfmusic > selfmusic-$(date +%F).sql
 
 #### Linux
 
+构建机依赖（Ubuntu/Debian）：
+
+```bash
+sudo apt install clang cmake ninja-build pkg-config libgtk-3-dev \
+  libkeybinder-3.0-dev libayatana-appindicator3-dev
+```
+
+- `libkeybinder-3.0-dev`：全局快捷键插件（hotkey_manager）构建依赖
+- `libayatana-appindicator3-dev`：系统托盘插件（tray_manager）构建依赖
+
 ```bash
 cp build-linux.sh.example build-linux.sh
 bash build-linux.sh
 ```
 
-产物为 `SelfMusic_<版本>_linux_<架构>_release.tar.gz`。音频后端 libmpv 随包分发，目标机无需另装 mpv。构建机需 clang / cmake / ninja / pkg-config / libgtk-3-dev。
+产物为 `SelfMusic_<版本>_linux_<架构>_release.tar.gz`。音频后端 libmpv 随包分发，目标机无需另装 mpv。
+
+目标机需有 `libayatana-appindicator3-1`（Ubuntu 桌面通常已装）才能加载托盘插件；GNOME 还需启用 AppIndicator 扩展（Ubuntu 默认启用）。托盘不可用时程序自动退回「关闭窗口即退出」。
 
 #### Android
 

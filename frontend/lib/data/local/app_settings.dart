@@ -303,6 +303,10 @@ class AppSettings {
   /// 日志导出时长（设置→常规→日志，单位分钟，1~30，默认 1）。
   /// 作用于「关于软件」的收集日志与反馈附件。
   static const String kLogExportMinutes = 'log_export_minutes';
+
+  /// 桌面端关闭主窗口时驻留系统托盘（设置→常规→窗口，默认开）。
+  /// 手机/鸿蒙无托盘，读取该键无意义。
+  static const String kCloseToTray = 'close_to_tray';
   static const int logExportMinutesMin = 1;
   static const int logExportMinutesMax = 30;
 
@@ -894,6 +898,11 @@ class AppSettings {
   set logExportMinutes(int v) => index.settingsSet(kLogExportMinutes,
       v.clamp(logExportMinutesMin, logExportMinutesMax).toString());
 
+  /// 桌面端关闭主窗口时驻留托盘（默认开）；关=关闭即退出。
+  bool get closeToTray => (index.settingsGet(kCloseToTray) ?? '1') == '1';
+  set closeToTray(bool v) =>
+      index.settingsSet(kCloseToTray, v ? '1' : '0');
+
   /// 列表分组折叠状态（按集合持久化，[collectionKey] 如 `playlist:12` /
   /// `favorites` / `songs` / `source:webdav:nas`）：存折叠组名集合
   /// （逐项 URI 编码后以 `|` 连接；组名本身可含任意字符）。
@@ -1147,6 +1156,7 @@ class AppSettings {
     kGroupSource,
     kLongPressCollapseGroups,
     kLogExportMinutes,
+    kCloseToTray,
     kShortcutWindowBindings,
     kShortcutGlobalBindings,
     kTableColumnWeights,

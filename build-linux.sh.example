@@ -2,7 +2,9 @@
 # 打 Linux 桌面 release 包（按本机架构自动选 x64 / arm64）。
 # 产物：frontend/build/dist/SelfMusic_<版本>_linux_<架构>_release.tar.gz
 # 音频后端 libmpv 随包分发，目标机无需另装 mpv。
-# 构建机依赖：clang / cmake / ninja / pkg-config / libgtk-3-dev（缺什么 flutter doctor 会提示）。
+# 构建机依赖：clang / cmake / ninja / pkg-config / libgtk-3-dev /
+# libkeybinder-3.0-dev（全局快捷键）/ libayatana-appindicator3-dev（系统托盘）。
+# 目标机需 libayatana-appindicator3-1；GNOME 需 AppIndicator 扩展（Ubuntu 默认启用）。
 # 源文件不入库，模板见本文件；复制为 build-linux.sh 后按需改分发段。
 # 用法：bash build-linux.sh [额外 flutter build 参数]
 set -euo pipefail

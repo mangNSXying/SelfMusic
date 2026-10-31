@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 
 import '../layout/queue_panel.dart';
 import '../layout/screen_metrics.dart';
+import '../platform/desktop_tray.dart';
 import '../platform/harmonyos/ohos_global_hotkeys.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
@@ -315,6 +316,9 @@ class _AppShortcutsState extends State<AppShortcuts> {
       case ShortcutAction.openSettings:
         nav.openSettings(SettingsItem.general);
       case ShortcutAction.sleepTimer:
+        // 窗口可能已隐藏到托盘：先恢复窗口，否则弹窗开在看不见的地方。
+        await DesktopTray.instance.showWindow();
+        if (!mounted) return;
         await showSleepTimerDialog(context);
       case ShortcutAction.cycleTheme:
         final theme = context.read<ThemeProvider>();
@@ -324,8 +328,12 @@ class _AppShortcutsState extends State<AppShortcuts> {
               isError: false);
         }
       case ShortcutAction.quit:
+        await DesktopTray.instance.showWindow();
+        if (!mounted) return;
         await confirmExitApp(context);
       case ShortcutAction.help:
+        await DesktopTray.instance.showWindow();
+        if (!mounted) return;
         await showShortcutHelpDialog(context);
       case ShortcutAction.removeFromQueue:
         await _removeFromQueue(player);
