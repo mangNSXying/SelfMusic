@@ -9,12 +9,6 @@ import 'row_list.dart';
 /// 低于该宽度（分栏右栏、队列面板、窄屏）继续走普通行。
 const double kSongTableMinWidth = 800;
 
-/// 源页递归树启用「每个文件夹块重复表头」的最低列表宽度。
-///
-/// 块整体缩进最多 4 级 × 18px = 72；再留 [kSongTableMinWidth] 才能保证
-/// 最深层的块仍有完整九列。800~871 继续用单一全局表头 + 标题格缩进。
-const double kSongTreeBlockHeaderMinWidth = kSongTableMinWidth + 72;
-
 /// 表头高度（含底部分隔线）。
 const double kSongTableHeaderHeight = 32;
 
@@ -28,18 +22,20 @@ const double kSongTableCoverGap = 12;
 /// 行尾菜单占位宽度（[PopupMenuButton] 的默认点击区）。
 const double kSongTableMenuWidth = 48;
 
-/// 文本列的弹性比例。
-const int kSongTableTitleFlex = 4;
-const int kSongTableArtistFlex = 3;
-const int kSongTableAlbumFlex = 3;
-const int kSongTableSourceFlex = 2;
-
-/// 技术列的固定宽度。
-const double kSongTableFormatWidth = 56;
-const double kSongTableBitrateWidth = 76;
-const double kSongTableSizeWidth = 64;
-const double kSongTableStateWidth = 44;
-const double kSongTableDurationWidth = 48;
+/// 9 列的相对权重（flex），不再写死像素宽度。
+///
+/// 权重按 800 宽下的原视觉比例折算：文本列可伸缩，技术列同样随宽度等比
+/// 收缩/展开。这样源页深层文件夹块即使比根层窄，表头与行仍能完整排下，
+/// 只是文字更早省略。
+const int kSongTableTitleFlex = 123;
+const int kSongTableArtistFlex = 92;
+const int kSongTableAlbumFlex = 92;
+const int kSongTableSourceFlex = 61;
+const int kSongTableFormatFlex = 64;
+const int kSongTableBitrateFlex = 84;
+const int kSongTableSizeFlex = 72;
+const int kSongTableStateFlex = 44;
+const int kSongTableDurationFlex = 48;
 
 /// 表头左侧缩进：与行内 contentPadding + 封面 + 间距一致。
 const double kSongTableHeaderLeftInset =
@@ -53,12 +49,18 @@ const double kSongTableHeaderRightInset =
     kSongTableRowPaddingH + kSongTableMenuWidth + kSongTableCoverGap;
 
 /// 表格列几何：行与表头**必须**共用同一份构建函数，宽度才不会漂移。
+///
+/// 列宽全部按 flex 权重分配，不依赖具体像素宽度；[fit] 只负责判断
+/// 「是否进入表格形态」，进入后同一个 [instance] 可用于任意宽度的行/块。
 class SongTableLayout {
   const SongTableLayout._();
 
+  /// 统一的列几何（无宽度状态）。
+  static const SongTableLayout instance = SongTableLayout._();
+
   /// 当前列表宽度是否适合表格；不够时返回 null（调用方走普通行）。
   static SongTableLayout? fit(double width) =>
-      width >= kSongTableMinWidth ? const SongTableLayout._() : null;
+      width >= kSongTableMinWidth ? instance : null;
 
   /// 9 个数据列（不含封面、菜单）。
   ///
@@ -75,60 +77,27 @@ class SongTableLayout {
     required Widget state,
     required Widget duration,
   }) {
+    Widget cell(int flex, Widget child, {double right = 0}) => Expanded(
+          flex: flex,
+          child: right == 0
+              ? child
+              : Padding(
+                  padding: EdgeInsets.only(right: right),
+                  child: child,
+                ),
+        );
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        Expanded(
-          flex: kSongTableTitleFlex,
-          child: Padding(
-            padding: const EdgeInsets.only(right: 12),
-            child: title,
-          ),
-        ),
-        Expanded(
-          flex: kSongTableArtistFlex,
-          child: Padding(
-            padding: const EdgeInsets.only(right: 12),
-            child: artist,
-          ),
-        ),
-        Expanded(
-          flex: kSongTableAlbumFlex,
-          child: Padding(
-            padding: const EdgeInsets.only(right: 12),
-            child: album,
-          ),
-        ),
-        Expanded(
-          flex: kSongTableSourceFlex,
-          child: Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: source,
-          ),
-        ),
-        SizedBox(
-          width: kSongTableFormatWidth,
-          child: Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: format,
-          ),
-        ),
-        SizedBox(
-          width: kSongTableBitrateWidth,
-          child: Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: bitrate,
-          ),
-        ),
-        SizedBox(
-          width: kSongTableSizeWidth,
-          child: Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: size,
-          ),
-        ),
-        SizedBox(width: kSongTableStateWidth, child: state),
-        SizedBox(width: kSongTableDurationWidth, child: duration),
+        cell(kSongTableTitleFlex, title, right: 12),
+        cell(kSongTableArtistFlex, artist, right: 12),
+        cell(kSongTableAlbumFlex, album, right: 12),
+        cell(kSongTableSourceFlex, source, right: 8),
+        cell(kSongTableFormatFlex, format, right: 8),
+        cell(kSongTableBitrateFlex, bitrate, right: 8),
+        cell(kSongTableSizeFlex, size, right: 8),
+        cell(kSongTableStateFlex, state),
+        cell(kSongTableDurationFlex, duration),
       ],
     );
   }

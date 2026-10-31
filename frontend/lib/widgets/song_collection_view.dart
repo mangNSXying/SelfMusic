@@ -461,10 +461,9 @@ class _SongCollectionViewState extends State<SongCollectionView> {
         mode == SongGroupMode.folder;
     final table = SongTableLayout.fit(availableWidth);
 
-    /// 递归树 + 足够宽：每个文件夹的直属歌曲块重复一份表头（块模型）。
-    /// 800~871 仍走单一全局表头（块整体缩进会把列压到阈值以下）。
-    final useBlockHeaders =
-        recursive && availableWidth >= kSongTreeBlockHeaderMinWidth;
+    /// 递归树 + 表格形态：每个文件夹的直属歌曲块重复一份表头。
+    /// 列宽按 flex 权重自适应，深层块变窄也不会放不下，因此只看 800 阈值。
+    final useBlockHeaders = recursive && table != null;
 
     List<Song> displaySongs;
     List<SongListRow> rows;
@@ -670,12 +669,10 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       final row = rows[i];
       if (row.header) {
         final indent = _treeIndent(row.depth);
-        final layout = SongTableLayout.fit(availableWidth - indent);
-        if (layout == null) return const SizedBox.shrink();
         return Padding(
           padding: EdgeInsets.only(left: indent),
           child: SongTableHeader(
-            layout: layout,
+            layout: SongTableLayout.instance,
             sort: widget.sort,
             onSort: widget.showSort ? widget.onSortChanged : null,
           ),
@@ -697,9 +694,8 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       final s = displaySongs[si];
       final key = keys[si];
       final blockIndent = useBlockHeaders ? _treeIndent(row.depth) : 0.0;
-      final rowTable = useBlockHeaders
-          ? SongTableLayout.fit(availableWidth - blockIndent)
-          : table;
+      final rowTable =
+          useBlockHeaders ? SongTableLayout.instance : table;
       return _songRow(direct, displaySongs, si, s, key, currentIdx, rowTable,
           row.depth, blockIndent: blockIndent);
     }

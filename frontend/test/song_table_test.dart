@@ -254,11 +254,11 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('800~871：退回单一全局表头 + 标题格缩进', (tester) async {
+  testWidgets('800：启用块表头，深层块列按权重自适应', (tester) async {
     const refs = ['root.mp3', 'A/a.mp3'];
     await pumpCollection(
       tester,
-      width: 820,
+      width: 800,
       songs: [
         _song(title: '根曲', sourceRef: 'root.mp3'),
         _song(title: 'A曲', sourceRef: 'A/a.mp3', id: 2),
@@ -270,9 +270,10 @@ void main() {
     await tester.tap(find.byTooltip('全部展开'));
     await tester.pump(const Duration(milliseconds: 50));
 
-    expect(find.text('标题'), findsOneWidget);
-    expect(tester.getTopLeft(find.text('A曲')).dx,
-        greaterThan(tester.getTopLeft(find.text('标题')).dx));
+    // 800 即启用块表头；列全部按 flex 缩放，深层块不溢出。
+    expect(find.text('标题'), findsNWidgets(2));
+    expect(tester.getTopLeft(find.text('标题').first).dx,
+        greaterThan(tester.getTopLeft(find.text('标题').last).dx));
     expect(tester.takeException(), isNull);
   });
 
