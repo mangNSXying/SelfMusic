@@ -170,4 +170,122 @@ void main() {
 
     expect(nav.section, NavSection.artists);
   });
+
+  testWidgets('滑动档：跨多页切换旧页快照退场，与目标页首尾相接同时滑动，落定后释放',
+      (tester) async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    late final Directory dir;
+    late final DirectSourceManager direct;
+    late final NavigationProvider nav;
+    await tester.runAsync(() async {
+      dir = await Directory.systemTemp.createTemp('selfmusic_pager_shot_');
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      direct = DirectSourceManager();
+      await direct.init();
+      direct.settings.playerTransition = PlayerTransition.slide;
+    });
+    addTearDown(() {
+      try {
+        dir.deleteSync(recursive: true);
+      } catch (_) {}
+    });
+    final lib = LibraryProvider()..attachDirectManager(direct);
+    nav = NavigationProvider();
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+          ChangeNotifierProvider<LibraryProvider>.value(value: lib),
+          ChangeNotifierProvider<PlaylistsProvider>.value(
+              value: PlaylistsProvider(direct.playlists)),
+          ChangeNotifierProvider<PlayerProvider>(
+              create: (_) => PlayerProvider()),
+          ChangeNotifierProvider<NavigationProvider>.value(value: nav),
+        ],
+        child: const MaterialApp(home: Scaffold(body: SectionPager())),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final rawFinder = find.descendant(
+        of: find.byType(SectionPager), matching: find.byType(RawImage));
+
+    // 歌曲(3) → 播放列表(0)：跨三页。
+    nav.select(NavSection.playlists);
+    await tester.pump(); // 帧后：截旧页快照 + 跳页 + 入场动画启动
+    await tester.pump(const Duration(milliseconds: 16));
+    await tester.pump(const Duration(milliseconds: 150));
+
+    // 历史 bug：跳页后旧页瞬间下线，只剩目标页从空白里滑入。
+    // 现要求旧页最后一帧作为退场层，与目标页同速反向、首尾相接。
+    expect(rawFinder, findsOneWidget, reason: '退场层必须还在');
+    final RawImage raw = tester.widget<RawImage>(rawFinder);
+    expect(raw.image, isNotNull);
+    final rawRect = tester.getRect(rawFinder);
+    final pvRect = tester.getRect(find.byType(PageView));
+    expect(pvRect.left, lessThan(0), reason: '目标页应从左侧滑入');
+    expect(rawRect.width, moreOrLessEquals(pvRect.width, epsilon: 0.1));
+    expect(rawRect.left, moreOrLessEquals(pvRect.right, epsilon: 0.1),
+        reason: '退场快照与目标页首尾相接，不得露出空白底');
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpAndSettle();
+    expect(rawFinder, findsNothing, reason: '落定后必须释放快照');
+    expect(nav.section, NavSection.playlists);
+  });
+
+  testWidgets('滑动档：跨页飞行中再次切换，落定到最新目标且快照不泄漏',
+      (tester) async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    late final Directory dir;
+    late final DirectSourceManager direct;
+    late final NavigationProvider nav;
+    await tester.runAsync(() async {
+      dir = await Directory.systemTemp.createTemp('selfmusic_pager_retarget_');
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      direct = DirectSourceManager();
+      await direct.init();
+      direct.settings.playerTransition = PlayerTransition.slide;
+    });
+    addTearDown(() {
+      try {
+        dir.deleteSync(recursive: true);
+      } catch (_) {}
+    });
+    final lib = LibraryProvider()..attachDirectManager(direct);
+    nav = NavigationProvider();
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+          ChangeNotifierProvider<LibraryProvider>.value(value: lib),
+          ChangeNotifierProvider<PlaylistsProvider>.value(
+              value: PlaylistsProvider(direct.playlists)),
+          ChangeNotifierProvider<PlayerProvider>(
+              create: (_) => PlayerProvider()),
+          ChangeNotifierProvider<NavigationProvider>.value(value: nav),
+        ],
+        child: const MaterialApp(home: Scaffold(body: SectionPager())),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    nav.select(NavSection.playlists); // 3 → 0
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    nav.select(NavSection.artists); // 飞行中改目标：0 → 5
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpAndSettle();
+    expect(nav.section, NavSection.artists);
+    expect(
+        find.descendant(
+            of: find.byType(SectionPager), matching: find.byType(RawImage)),
+        findsNothing,
+        reason: '新一段落定后旧快照必须释放');
+  });
 }

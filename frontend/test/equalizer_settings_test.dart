@@ -258,7 +258,7 @@ void main() {
         ChangeNotifierProvider<PlayerProvider>.value(value: player),
       ],
       child: const MaterialApp(
-        home: Scaffold(body: SettingsScreen()),
+        home: Scaffold(body: SettingsScreen(item: SettingsItem.playback)),
       ),
     ));
     await tester.pump();

@@ -1,4 +1,7 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
 import '../providers/library_provider.dart';
 import '../providers/player_provider.dart';
@@ -110,7 +113,7 @@ class AppContent extends StatelessWidget {
       BuildContext context, NavRouteKey routeKey, PlayerTransition transition,
       {required bool split}) {
     if (routeKey.settings != null) {
-      return const SettingsScreen();
+      return SettingsScreen(item: routeKey.settings!);
     }
     // 播放源「文件夹」子级：源内浏览（整页原地切换）。分栏时留在
     // [SectionPager] 内，由 [SourcesScreen] 渲染在右栏。
@@ -179,6 +182,14 @@ class _SectionPagerState extends State<SectionPager>
   late final CurvedAnimation _enterCurve;
   int _enterDir = 1;
 
+  /// 跨多页切换的退场快照：PageView 必须立即跳到目标页（不穿中间页），
+  /// 旧页元素随之下线；快照留住旧页最后一帧，让新旧两页同时反向滑动，
+  /// 而不是旧页瞬间消失、新页从空白里滑入。
+  ui.Image? _exitSnapshot;
+
+  /// 退场快照的取景边界（包在进场位移之内，截到的是未位移的页面）。
+  final GlobalKey _viewportKey = GlobalKey();
+
   /// 首帧空闲后开启相邻页预构建（allowImplicitScrolling 给 PageView 一屏
   /// cacheExtent）：不在启动首帧多背两页，又让首次横滑不必现场建目标页。
   /// 页内是固定行高懒列表，预构建只建「可能显示的行」，不会整表构建。
@@ -219,12 +230,15 @@ class _SectionPagerState extends State<SectionPager>
         CurvedAnimation(parent: _enterCtrl, curve: kPageMotionCurve);
     // 跨页入场动画进行中 → 门控视为「过渡中」。
     _enterCtrl.addStatusListener((s) {
-      final gate = _gate;
-      if (gate == null) return;
       if (s == AnimationStatus.forward) {
-        gate.setTransitioning(true);
-      } else if (s == AnimationStatus.completed ||
-          s == AnimationStatus.dismissed) {
+        _gate?.setTransitioning(true);
+      } else if (s == AnimationStatus.completed) {
+        // 退场快照末帧已移出视口，落定即释放。
+        // 注意不能在 dismissed 时清：forward(from: 0) 会先把值归零并同步
+        // 触发一次 dismissed，此时动画才刚要开始。
+        _clearExitSnapshot(notify: true);
+        _refreshTransitionSignal();
+      } else if (s == AnimationStatus.dismissed) {
         _refreshTransitionSignal();
       }
     });
@@ -244,11 +258,39 @@ class _SectionPagerState extends State<SectionPager>
   void dispose() {
     // 组件销毁时若仍在动画中，避免门控停留在「过渡中」。
     _gate?.setTransitioning(false);
+    _exitSnapshot?.dispose();
     _ctrl.removeListener(_syncOffset);
     _ctrl.dispose();
     _enterCurve.dispose();
     _enterCtrl.dispose();
     super.dispose();
+  }
+
+  /// 丢弃退场快照。默认在下一帧后释放：当前帧可能仍在绘制它。
+  void _clearExitSnapshot({bool notify = false}) {
+    final shot = _exitSnapshot;
+    if (shot == null) return;
+    if (notify) {
+      setState(() => _exitSnapshot = null);
+    } else {
+      _exitSnapshot = null;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) => shot.dispose());
+  }
+
+  /// 截取 PageView 当前画面作为退场层；不支持同步取帧的后端返回 null
+  ///（退化为旧行为：只有新页滑入）。
+  ui.Image? _captureViewport() {
+    final boundary = _viewportKey.currentContext?.findRenderObject();
+    if (boundary is! RenderRepaintBoundary || boundary.debugNeedsPaint) {
+      return null;
+    }
+    final dpr = MediaQuery.devicePixelRatioOf(context).clamp(1.0, 2.0);
+    try {
+      return boundary.toImageSync(pixelRatio: dpr.toDouble());
+    } catch (_) {
+      return null;
+    }
   }
 
   /// 依据 PageView 拖拽/吸附与入场动画状态刷新门控的「过渡中」信号。
@@ -291,6 +333,10 @@ class _SectionPagerState extends State<SectionPager>
       _slideActive = false;
       _programmatic = false;
       _applied = target;
+      _enterCtrl.stop();
+      // 先清快照再落值：value=1 会同步触发 completed 监听里的 setState。
+      _clearExitSnapshot();
+      _enterCtrl.value = 1;
       if (nav.pageOffset.value != target.toDouble()) {
         final t = target.toDouble();
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -333,21 +379,32 @@ class _SectionPagerState extends State<SectionPager>
       if (!scrolling || _programmatic) {
         // 上一段入场动画未跑完：先落定，再按新目标重排。
         _enterCtrl.stop();
+        // 先清快照再落值：value=1 会同步触发 completed 监听里的 setState。
+        _clearExitSnapshot();
         _enterCtrl.value = 1;
         final current =
             _ctrl.hasClients ? (_ctrl.page?.round() ?? _applied) : _applied;
         _programmatic = true;
         _applied = target;
         if (_ctrl.hasClients && (target - current).abs() > 1) {
-          // 跨多页：跳页 + 方向滑入，不再高速扫过中间分组。
-          // 方向必须在本次 build 内落位：SlideTransition 的 Tween.begin 在
-          // build 时读取 _enterDir，帧后回调只改字段不会触发重建（section
-          // 未变，select 不标记本组件重建），动画会沿用上一次的方向——
+          // 跨多页：截旧页快照 → 跳页 → 快照与目标页反向同步滑动，
+          // 不再高速扫过中间分组，也不会出现“旧页瞬间消失”的空白帧。
+          // 方向必须在本次 build 内落位：退场/进场 Tween 在 build 时读取
+          // _enterDir，帧后回调只改字段不会触发重建（section 未变，select
+          // 不标记本组件重建），动画会沿用上一次的方向——
           // 历史 bug：反向跨页也从右滑入（方向滞后一跳）。
           // jumpToPage 同步通知会踩 build 期 markNeedsBuild，仍放到帧后执行。
           _enterDir = target > current ? 1 : -1;
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted || _applied != target || !_ctrl.hasClients) return;
+            final shot = _captureViewport();
+            if (shot != null) {
+              if (!mounted) {
+                shot.dispose();
+                return;
+              }
+              setState(() => _exitSnapshot = shot);
+            }
             _enterCtrl.forward(from: 0);
             _ctrl.jumpToPage(target);
           });
@@ -358,17 +415,43 @@ class _SectionPagerState extends State<SectionPager>
       }
     }
 
-    return SlideTransition(
+    final pageView = SlideTransition(
       position: _enterCurve.drive(Tween<Offset>(
           begin: Offset(_enterDir.toDouble(), 0), end: Offset.zero)),
-      child: PageView(
-        controller: _ctrl,
-        onPageChanged: _onPageChanged,
-        // 首次横滑前预构建左右邻页（只建可见范围的行），降低滑动首帧构建开销。
-        allowImplicitScrolling: _warmNeighbors,
-        // 每页独立图层：横滑期间页面平移只重合成、不重栅格化（降低滑动掉帧）。
-        children: [for (final p in _pages) RepaintBoundary(child: p)],
+      child: RepaintBoundary(
+        // 退场快照的取景边界：在进场位移之内，截到的是未位移的整页。
+        key: _viewportKey,
+        child: PageView(
+          controller: _ctrl,
+          onPageChanged: _onPageChanged,
+          // 首次横滑前预构建左右邻页（只建可见范围的行），降低滑动首帧构建开销。
+          allowImplicitScrolling: _warmNeighbors,
+          // 每页独立图层：横滑期间页面平移只重合成、不重栅格化（降低滑动掉帧）。
+          children: [for (final p in _pages) RepaintBoundary(child: p)],
+        ),
       ),
+    );
+    final shot = _exitSnapshot;
+    if (shot == null) return pageView;
+    // 快照 0 → -dir 退出，PageView dir → 0 进入：两页同速反向、首尾相接。
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        pageView,
+        IgnorePointer(
+          child: SlideTransition(
+            position: _enterCurve.drive(Tween<Offset>(
+                begin: Offset.zero, end: Offset(-_enterDir.toDouble(), 0))),
+            child: ExcludeSemantics(
+              child: RawImage(
+                image: shot,
+                fit: BoxFit.fill,
+                filterQuality: FilterQuality.low,
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

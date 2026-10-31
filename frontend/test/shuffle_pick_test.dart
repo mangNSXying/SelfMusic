@@ -223,7 +223,7 @@ void main() {
             ChangeNotifierProvider<NavigationProvider>.value(value: nav),
             ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
             ChangeNotifierProvider<PlayerProvider>.value(value: player),
-          ], child: const SettingsScreen()),
+          ], child: const SettingsScreen(item: SettingsItem.playback)),
         ),
       ));
       await tester.pumpAndSettle();

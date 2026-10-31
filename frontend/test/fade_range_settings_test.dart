@@ -101,7 +101,7 @@ void main() {
         body: MultiProvider(providers: [
           ChangeNotifierProvider<NavigationProvider>.value(value: nav),
           ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
-        ], child: const SettingsScreen()),
+        ], child: const SettingsScreen(item: SettingsItem.playback)),
       ),
     ));
 

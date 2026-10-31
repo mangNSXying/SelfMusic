@@ -78,7 +78,7 @@ void main() {
             value: ShortcutSettings(settings)),
       ],
       child: const MaterialApp(
-        home: Scaffold(body: SettingsScreen()),
+        home: Scaffold(body: SettingsScreen(item: SettingsItem.general)),
       ),
     ));
     await tester.pump();

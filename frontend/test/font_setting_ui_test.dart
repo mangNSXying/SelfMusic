@@ -72,7 +72,9 @@ void main() {
         ChangeNotifierProvider<ThemeProvider>.value(
             value: theme ?? ThemeProvider(autoLoad: false)),
       ],
-      child: const MaterialApp(home: Scaffold(body: SettingsScreen())),
+      child: const MaterialApp(
+          home: Scaffold(
+              body: SettingsScreen(item: SettingsItem.appearance))),
     ));
     await tester.pump();
   }

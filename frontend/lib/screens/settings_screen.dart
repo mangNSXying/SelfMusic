@@ -11,7 +11,6 @@ import '../platform/harmonyos/ohos_bootstrap.dart';
 import '../platform/harmonyos/ohos_platform_bridge.dart';
 import '../providers/auth_provider.dart';
 import '../providers/direct_source_manager.dart';
-import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../providers/playlists_provider.dart';
 import '../services/api_client.dart';
@@ -41,17 +40,15 @@ import 'pairing_screen.dart';
 
 /// 设置页：根据侧边栏选中的分区渲染对应设置面板。
 class SettingsScreen extends StatelessWidget {
-  const SettingsScreen({super.key});
+  const SettingsScreen({super.key, required this.item});
+
+  /// 当前设置分区。必须由路由层显式传入，不能在这里读导航状态：区域切换
+  /// 动画会把旧页作为独立图层重新挂载，读导航会让“旧页”也变成新分区，
+  /// 出现底层新页静止 + 新页再滑入的“双份 B”观感。
+  final SettingsItem item;
 
   @override
   Widget build(BuildContext context) {
-    // 订阅收窄（T010）：设置页只关注当前设置分区；区段/搜索/播放页等变更
-    // 不再重建设置页。
-    final item =
-        context.select<NavigationProvider, SettingsItem?>((n) => n.settings);
-    if (item == null) {
-      return const Center(child: Text('请从左侧选择设置分区'));
-    }
     switch (item) {
       case SettingsItem.appearance:
         return const _AppearanceSettings();

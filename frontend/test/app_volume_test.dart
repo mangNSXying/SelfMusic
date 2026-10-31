@@ -184,7 +184,7 @@ void main() {
             ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
             ChangeNotifierProvider<PlayerProvider>.value(value: player),
           ],
-          child: const SettingsScreen(),
+          child: const SettingsScreen(item: SettingsItem.playback),
         ),
       ),
     ));
