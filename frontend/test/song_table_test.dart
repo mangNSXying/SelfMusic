@@ -16,6 +16,7 @@ import 'package:selfmusic/widgets/draggable_sheet.dart';
 import 'package:selfmusic/widgets/song_collection_view.dart';
 import 'package:selfmusic/widgets/song_table.dart';
 import 'package:selfmusic/widgets/song_table_sliver.dart';
+import 'package:selfmusic/widgets/song_tile.dart';
 import 'package:sqlite3/open.dart';
 
 DynamicLibrary _openOnLinux() {
@@ -161,6 +162,11 @@ void main() {
         closeTo(tester.getTopLeft(find.text('专辑')).dx, 0.5));
     expect(tester.getTopRight(find.text('04:00')).dx,
         closeTo(tester.getTopRight(find.text('时长')).dx, 0.5));
+
+    // 行内容垂直居中：单行 ListTile 必须按 72px 行高居中，而不是按 56px 顶端锚定。
+    final tileRect = tester.getRect(find.byType(ListTile).first);
+    final coverRect = tester.getRect(find.byType(CoverThumb).first);
+    expect(coverRect.center.dy, closeTo(tileRect.center.dy, 0.5));
     expect(tester.takeException(), isNull);
   });
 

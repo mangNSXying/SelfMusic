@@ -16,6 +16,7 @@ import 'app_dialog_actions.dart';
 import 'app_toast.dart';
 import 'context_menu.dart';
 import 'edit_song_meta_dialog.dart';
+import 'row_list.dart';
 import 'selection_badge.dart';
 import 'song_info_dialog.dart';
 import 'song_row_view.dart';
@@ -473,6 +474,9 @@ class SongTile extends StatelessWidget {
         ?.copyWith(color: cs.onSurfaceVariant);
     final selectedPrimary = (selectionMode && selected) || playing;
     return ListTile(
+      // 表格行没有副标题，ListTile 默认按单行 56px 计算内容位置；外层固定
+      // 72px 行高时会被顶端锚定。显式对齐到 kRowHeight 才能上下居中。
+      minTileHeight: kRowHeight,
       contentPadding:
           const EdgeInsets.symmetric(horizontal: kSongTableRowPaddingH),
       horizontalTitleGap: kSongTableCoverGap,
