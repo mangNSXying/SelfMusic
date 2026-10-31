@@ -112,13 +112,27 @@ class DesktopTray with TrayListener, WindowListener {
   Future<void> _handleWindowClose() async {
     if (_closeToTray && _trayReady) {
       try {
-        await windowManager.hide();
+        await _hideWindow();
         return;
       } catch (e) {
         debugPrint('隐藏窗口失败，改为退出：$e');
       }
     }
     await _quit();
+  }
+
+  /// Windows 的 ShowWindow(SW_HIDE) 不会把前台让给其它窗口：隐藏后本进程仍
+  /// 持有前台（隐藏窗口），其它应用窗口点不亮、键盘焦点也回不来。先把前台
+  /// 显式交给 Z 序下一个可见窗口，再隐藏。Linux 的 WM 会自行处理，无需此步。
+  Future<void> _hideWindow() async {
+    if (defaultTargetPlatform == TargetPlatform.windows) {
+      try {
+        await windowManager.blur();
+      } catch (e) {
+        debugPrint('释放窗口焦点失败：$e');
+      }
+    }
+    await windowManager.hide();
   }
 
   @override

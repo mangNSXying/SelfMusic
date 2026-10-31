@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:selfmusic/platform/desktop_tray.dart';
@@ -49,12 +50,29 @@ void main() {
       containsAll(<String>['setIcon', 'setContextMenu']),
     );
 
-    // 模拟原生窗口关闭事件：应隐藏窗口而不是走退出。
+    // Windows：隐藏窗口前必须先释放前台，否则其它应用窗口无法聚焦。
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    // 模拟原生窗口关闭事件：应释放焦点并隐藏窗口，而不是走退出。
     final closeEvent = const StandardMethodCodec()
         .encodeMethodCall(const MethodCall('onEvent', {'eventName': 'close'}));
     await messenger.handlePlatformMessage('window_manager', closeEvent, (_) {});
     await Future<void>.delayed(Duration.zero);
-    expect(windowCalls.map((c) => c.method), contains('hide'));
+    final blurAt = windowCalls.lastIndexWhere((c) => c.method == 'blur');
+    final hideAt = windowCalls.lastIndexWhere((c) => c.method == 'hide');
+    expect(blurAt, greaterThanOrEqualTo(0));
+    expect(hideAt, greaterThan(blurAt));
+
+    // 非 Windows 平台不需要额外 blur，仅隐藏。
+    debugDefaultTargetPlatformOverride = null;
+    final hideCountBefore =
+        windowCalls.where((c) => c.method == 'hide').length;
+    await messenger.handlePlatformMessage('window_manager', closeEvent, (_) {});
+    await Future<void>.delayed(Duration.zero);
+    expect(windowCalls.where((c) => c.method == 'hide').length,
+        hideCountBefore + 1);
+    expect(windowCalls.where((c) => c.method == 'blur').length, 1);
 
     // 托盘菜单「显示主窗口」等价于 show + focus。
     await tray.showWindow();
