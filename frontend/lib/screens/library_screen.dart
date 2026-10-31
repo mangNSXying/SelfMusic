@@ -7,6 +7,7 @@ import '../providers/direct_source_manager.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
 import '../layout/app_shell.dart';
+import '../layout/detail_target.dart';
 import '../layout/screen_metrics.dart';
 import '../models/song.dart';
 import '../models/album.dart';
@@ -24,6 +25,7 @@ import '../widgets/app_toast.dart';
 import '../widgets/area_switcher.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
+import '../widgets/detail_presentation.dart';
 import '../widgets/detail_stack.dart';
 import '../widgets/draggable_sheet.dart';
 import '../widgets/list_detail_split.dart';
@@ -831,14 +833,10 @@ InlineSpan albumSubtitleSpan(BuildContext context, Album album) {
 /// 大横屏分栏时详情进右栏（同一份 [detailPageOf]），左栏列表原地保活。
 Future<void> _openAlbum(BuildContext context, Album album) async {
   final lib = context.read<LibraryProvider>();
-  final nav = context.read<NavigationProvider>();
   final songs = lib.albumSongs(album);
   if (!context.mounted) return;
   if (AppShell.isWide(context)) {
-    // 已在该详情（分栏里重复点同一行）不再压栈。
-    if (_showingAlbum(nav, album)) return;
-    final split = splitDetailActive(context);
-    nav.enterAlbum(album, songs, keepSearch: split, root: split);
+    openDetail(context, AlbumTarget(album, songs));
     return;
   }
   await showAppDraggableSheet<void>(
@@ -846,26 +844,6 @@ Future<void> _openAlbum(BuildContext context, Album album) async {
     builder: (c, scrollCtrl) =>
         _AlbumSongsSheet(album: album, songs: songs, scrollCtrl: scrollCtrl),
   );
-}
-
-/// 该专辑是否已是详情栈顶（分栏/叠层重复点按的去重口径）。
-bool _showingAlbum(NavigationProvider nav, Album album) {
-  final details = nav.details;
-  if (details.isEmpty) return false;
-  final top = details.last;
-  return top is AlbumDetailRoute && top.album.groupKey == album.groupKey;
-}
-
-/// 该歌手是否已在详情栈里（分栏时"歌手 → 专辑"叠了两层也算）。
-bool _showingArtist(NavigationProvider nav, Artist artist) {
-  final key = artist.identityKey ?? artist.name;
-  for (final route in nav.details) {
-    if (route is ArtistDetailRoute &&
-        (route.artist.identityKey ?? route.artist.name) == key) {
-      return true;
-    }
-  }
-  return false;
 }
 
 /// 详情栈里的歌手身份键（歌手页左栏高亮口径）。
@@ -1039,9 +1017,8 @@ class _AlbumDetailPageState extends State<_AlbumDetailPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      // 不透明底：详情层盖住底层分组列表（列表仍挂在树上保活）。
-      color: Theme.of(context).scaffoldBackgroundColor,
+    return DetailPresentationShell(
+      presentation: DetailPresentation.overlay,
       child: _AlbumSongsView(
         album: widget.album,
         songs: widget.songs,
@@ -1249,15 +1226,10 @@ void _openArtist(BuildContext context, Artist artist, ArtistResolver resolver,
       break;
   }
   final lib = context.read<LibraryProvider>();
-  final nav = context.read<NavigationProvider>();
   final songs = lib.artistSongs(artist);
   if (!context.mounted) return;
   if (AppShell.isWide(context)) {
-    // 已在右栏/叠层里（含"歌手 → 专辑"嵌套时点回同一歌手）不再压栈。
-    if (_showingArtist(nav, artist)) return;
-    final split = splitDetailActive(context);
-    nav.enterArtist(artist, songs,
-        keepSearch: split, root: split && !fromDetail);
+    openDetail(context, ArtistTarget(artist, songs, fromDetail: fromDetail));
     return;
   }
   showAppDraggableSheet<void>(
@@ -1699,9 +1671,8 @@ class _ArtistDetailPageState extends State<_ArtistDetailPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      // 不透明底：详情层盖住底层分组列表（列表仍挂在树上保活）。
-      color: Theme.of(context).scaffoldBackgroundColor,
+    return DetailPresentationShell(
+      presentation: DetailPresentation.overlay,
       child: _ArtistSongsView(
         artist: widget.artist,
         songs: widget.songs,
@@ -1785,10 +1756,8 @@ class _ArtistAlbumsStrip extends StatelessWidget {
   void _openAlbumOfArtist(BuildContext context, Album album) {
     final songs = artistSongs.where((s) => album.containsSong(s)).toList();
     if (AppShell.isWide(context)) {
-      final nav = context.read<NavigationProvider>();
-      // 右栏已是这张专辑时不再压栈（点回上一层用标题栏返回箭头）。
-      if (_showingAlbum(nav, album)) return;
-      nav.enterAlbum(album, songs, keepSearch: splitDetailActive(context));
+      // 详情内部进入：压在歌手层之上，不重置详情栈。
+      openDetail(context, AlbumTarget(album, songs, fromDetail: true));
       return;
     }
     showAppDraggableSheet<void>(

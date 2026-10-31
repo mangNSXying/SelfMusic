@@ -18,8 +18,8 @@ import '../utils/source_folders.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/detail_presentation.dart';
 import '../widgets/header_action_button.dart';
-import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_collection_view.dart';
 import '../widgets/song_selection_actions.dart';
@@ -39,12 +39,15 @@ import '../widgets/toolbar_icon_button.dart';
 class SourceBrowseView extends StatefulWidget {
   final String sourceKey;
 
-  /// true = 大横屏分栏右栏内嵌：不包 [SectionSwipe]（横滑属于外层分组
-  /// Pager，栏内再套一层会抢手势），并自带不透明底以支持栏内过渡。
-  final bool inline;
+  /// 呈现形态：整页保留分组横滑；分栏右栏不包 SectionSwipe 且自绘不透明底
+  /// （见 [DetailPresentationShell]）。
+  final DetailPresentation presentation;
 
-  const SourceBrowseView(
-      {super.key, required this.sourceKey, this.inline = false});
+  const SourceBrowseView({
+    super.key,
+    required this.sourceKey,
+    this.presentation = DetailPresentation.page,
+  });
 
   @override
   State<SourceBrowseView> createState() => _SourceBrowseViewState();
@@ -331,15 +334,12 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
     return _rels;
   }
 
-  /// 页面外壳：整页形态包 [SectionSwipe]（分组横滑）；分栏右栏不包，并自绘
-  /// 不透明底（换源时的栏内过渡不透出上一个源）。
-  Widget _wrap(Widget child) {
-    if (!widget.inline) return SectionSwipe(child: child);
-    return Material(
-      color: Theme.of(context).scaffoldBackgroundColor,
-      child: child,
-    );
-  }
+  /// 页面外壳：整页形态保留分组横滑；分栏右栏不包并自绘不透明底
+  /// （换源时的栏内过渡不透出上一个源）。
+  Widget _wrap(Widget child) => DetailPresentationShell(
+        presentation: widget.presentation,
+        child: child,
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -459,7 +459,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                       // 分栏右栏的返回只清右栏：左栏（源列表）的过滤词保留。
                       onPressed: inFolder
                           ? _up
-                          : widget.inline
+                          : widget.presentation == DetailPresentation.pane
                               ? () => nav.exitSource(keepSearch: true)
                               : nav.exitSource,
                     ),

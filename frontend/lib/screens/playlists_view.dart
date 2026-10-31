@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
+import '../layout/detail_target.dart';
 import '../layout/screen_metrics.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
@@ -13,13 +14,13 @@ import '../widgets/app_dialog_actions.dart';
 import '../widgets/context_menu.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
+import '../widgets/detail_presentation.dart';
 import '../widgets/list_detail_split.dart';
 import '../widgets/row_list.dart';
 import '../widgets/selection_badge.dart';
 import '../widgets/square_card.dart';
 import '../widgets/list_selection.dart';
 import '../widgets/playlist_song_picker.dart';
-import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_list.dart';
 import '../widgets/sort_menu_button.dart';
@@ -213,11 +214,14 @@ class _PlaylistsViewState extends State<PlaylistsView>
       listWidth: ScreenMetrics.of(context).listPaneWidth,
       list: listPane,
       detail: DetailPane(
-        // 歌单详情复用同一份实现（inline：栏内不包 SectionSwipe——横滑属于
+        // 歌单详情复用同一份实现（pane：栏内不包 SectionSwipe——横滑属于
         // 外层分组 Pager，栏内再套一层会抢手势）。
         detail: selectedId == null
             ? null
-            : PlaylistDetailView(playlistId: selectedId, inline: true),
+            : PlaylistDetailView(
+                playlistId: selectedId,
+                presentation: DetailPresentation.pane,
+              ),
         detailKey: selectedId,
         emptyIcon: Icons.queue_music,
         emptyText: '从左侧选择歌单查看歌曲',
@@ -231,9 +235,7 @@ class _PlaylistsViewState extends State<PlaylistsView>
 
   /// 打开歌单（宽屏右栏/整页分流；重复点同一行不再触发区域切换）。
   void _openPlaylist(BuildContext context, int id) {
-    final nav = context.read<NavigationProvider>();
-    if (nav.browsingPlaylistId == id) return;
-    nav.enterPlaylist(id, keepSearch: splitDetailActive(context));
+    openDetail(context, PlaylistTarget(id));
   }
 
   Widget _playlistTile(PlaylistsProvider provider, PlaylistRow p,
@@ -421,14 +423,14 @@ class _PlaylistsViewState extends State<PlaylistsView>
 class PlaylistDetailView extends StatelessWidget {
   final int playlistId;
 
-  /// true = 分栏右栏内嵌：不包 [SectionSwipe]（横滑属于外层分组 Pager，
-  /// 栏内再套一层会抢手势），并自带不透明底以支持栏内过渡。
-  final bool inline;
+  /// 呈现形态：整页（非分栏）保留分组横滑；分栏右栏不包 SectionSwipe 且
+  /// 自绘不透明底（见 [DetailPresentationShell]）。
+  final DetailPresentation presentation;
 
   const PlaylistDetailView({
     super.key,
     required this.playlistId,
-    this.inline = false,
+    this.presentation = DetailPresentation.page,
   });
 
   @override
@@ -443,23 +445,16 @@ class PlaylistDetailView extends StatelessWidget {
       onBack: () => nav.exitPlaylist(keepSearch: splitDetailActive(context)),
       globalSearch: true,
     );
-    final content = Stack(
+    return Stack(
       fit: StackFit.expand,
       children: [
-        if (inline) list else SectionSwipe(child: list),
+        DetailPresentationShell(presentation: presentation, child: list),
         Positioned(
           right: 16,
           bottom: 16,
           child: PlaylistAddSongsButton(playlistId: playlistId),
         ),
       ],
-    );
-    if (!inline) return content;
-    // 栏内自绘不透明底（与专辑/歌手详情页的 Material 同口径）：换歌单时的
-    // 交叉淡入不会透出上一个详情。
-    return Material(
-      color: Theme.of(context).scaffoldBackgroundColor,
-      child: content,
     );
   }
 }

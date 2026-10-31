@@ -12,6 +12,7 @@ import '../data/sources/sftp_direct_source.dart';
 import '../data/sources/smb_common.dart';
 import '../data/sources/smb_direct_source.dart';
 import '../data/sources/webdav_direct_source.dart';
+import '../layout/detail_target.dart';
 import '../layout/screen_metrics.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart';
 import '../platform/harmonyos/ohos_platform_bridge.dart';
@@ -27,6 +28,7 @@ import '../widgets/app_toast.dart';
 import '../widgets/context_menu.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
+import '../widgets/detail_presentation.dart';
 import '../widgets/list_detail_split.dart';
 import '../widgets/sort_menu_button.dart';
 import '../widgets/row_action_button.dart';
@@ -215,11 +217,14 @@ class _SourcesScreenState extends State<SourcesScreen>
       listWidth: ScreenMetrics.of(context).listPaneWidth,
       list: listPane,
       detail: DetailPane(
-        // 源内浏览复用同一份实现（inline：栏内不包 SectionSwipe——横滑属于
+        // 源内浏览复用同一份实现（pane：栏内不包 SectionSwipe——横滑属于
         // 外层分组 Pager，栏内再套一层会抢手势）。
         detail: selectedKey == null
             ? null
-            : SourceBrowseView(sourceKey: selectedKey, inline: true),
+            : SourceBrowseView(
+                sourceKey: selectedKey,
+                presentation: DetailPresentation.pane,
+              ),
         detailKey: selectedKey,
         emptyIcon: Icons.storage,
         emptyText: '从左侧选择播放源浏览',
@@ -235,9 +240,7 @@ class _SourcesScreenState extends State<SourcesScreen>
 ///
 /// 分栏时进右栏、整页呈现时沿用原区域切换；重复点同一源不再触发切换。
 void _openSource(BuildContext context, String sourceKey) {
-  final nav = context.read<NavigationProvider>();
-  if (nav.browsingSourceKey == sourceKey) return;
-  nav.enterSource(sourceKey, keepSearch: splitDetailActive(context));
+  openDetail(context, SourceTarget(sourceKey));
 }
 
 /// 备用源表单数据（本地不可做备用，故 kind 仅 webdav/sftp/smb）。
