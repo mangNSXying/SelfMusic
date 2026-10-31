@@ -706,11 +706,12 @@ abstract class MusicSource {
 | 层 | 载体 | 约定 |
 |----|------|------|
 | 外壳 | `widgets/row_list.dart` 的 `RowList` | 唯一固定行高列表外壳：统一 `itemExtent`、分隔线缩进、末行不带线、可选下拉刷新 |
-| 行 | `widgets/song_list.dart` 的 `SongTile` | 唯一歌曲行：封面 + 标题 + 副标题 + 时长/菜单；集合类行（歌单 / 专辑 / 歌手 / 播放源）用 `ListTile` + `CoverThumb` |
+| 表格 | `widgets/song_table.dart` / `song_table_sliver.dart` | 宽列表表头、列几何与两种外壳（普通 `SongTableList` / sliver `SliverSongTable`）；行仍由 `SongTile` 渲染 |
+| 行 | `widgets/song_list.dart` 的 `SongTile` | 唯一歌曲行：封面 + 标题 + 副标题 + 时长/菜单；宽列表走 9 列表格分支；集合类行（歌单 / 专辑 / 歌手 / 播放源）用 `ListTile` + `CoverThumb` |
 | 卡片 | `widgets/square_card.dart` 的 `SquareCard`/`SquareCardGrid` | 唯一方形卡片：封面恒 1:1（列宽按可用宽度算，不写死 `childAspectRatio`）、标题 2 行上限、按「最大宽 × 设备像素比」降采样解码 |
 | 多选 | `widgets/list_selection.dart` 的 `Selection<T>` + `widgets/selection_bar.dart` | 选择状态内核与批量栏；勾选标记统一 `widgets/selection_badge.dart` |
 
-几何常量（`row_list.dart`，改动须同步 `playlists_view_test` 的 `itemExtent` 断言）：`kRowHeight=72`、`kRowSeparatorHeight=1`、`kRowExtent=73`、`kRowDividerIndent=72`、`kListHeaderHeight=44`。
+几何常量（`row_list.dart`，改动须同步 `playlists_view_test` 的 `itemExtent` 断言）：`kRowHeight=72`、`kRowSeparatorHeight=1`、`kRowExtent=73`、`kRowDividerIndent=72`、`kListHeaderHeight=48`。
 
 **为什么 `itemExtent` 不能省**：没有它时 Sliver 为定位深处目标需从第 0 行逐行排到目标行——千首歌单一帧构建 700+ 行与封面，进入必卡（实测 712 项 vs 16 项，`playlists_view_test` 有回归用例）。
 
@@ -720,6 +721,19 @@ abstract class MusicSource {
 - **源页文件夹树**：`source_folders.dart` 的 `SourceFolderTree` 一次构建完整目录树（`SourceFolderTreeCache` 按路径列表身份缓存），`song_groups.dart` 的 `buildSourceTreeRows` 按展开集合先序扁平成带 `depth` 的行；文件夹行右侧只保留「展开/折叠」箭头（进入目录靠行点击/面包屑），展开状态按 collectionKey 持久化；A 模式长按选中子树，B 模式长按切换该文件夹展开；搜索态仍强制平铺。
 - **桌面鼠标右键 = 三点按钮同款菜单**（指针处展开，定位统一走 `widgets/context_menu.dart` 的 `showContextMenuAt`）；菜单项与选中回调必须三点/右键共用一份；多选态、已吊销设备等「按钮不出现」的场景右键同样不响应；触摸端无 secondary tap，行为不变。覆盖：歌曲行（含队列）、歌单行/卡片、播放源行/卡片、设备行、播放页封面。
 - 视图模式：`ViewModeState` mixin + `ViewModeSlot`（`view_mode_toggle.dart`）收口歌单 / 播放源 / 专辑 / 歌手四页切换。
+
+### 宽列表表格模式（横屏 / 桌面）
+
+歌曲列表的可用宽度 ≥ `kSongTableMinWidth=800`（按列表实际宽度，不看窗口方向）时，普通行升级为「表头 + 9 列」；低于阈值、分栏窄右栏、队列面板保持原行。
+
+- **列**：标题（flex 4）/ 歌手（3）/ 专辑（3）/ 播放源（2）/ 格式 56 / 码率 76 / 大小 64 / 赞踩 44 / 时长 48；封面 44 + 间距 12，行尾菜单 48。
+- **几何唯一来源**：`song_table.dart` 的 `SongTableLayout.buildCells`；行与表头必须共用，不能各写一份 Row。
+- **行高不变**：仍是 `kRowHeight=72`、`itemExtent=73`；表头高 32，普通列表固定在列表上方，sliver 页 pinned。
+- **数据**：`SongRowView.of(table: true)` 产出 `SongTableCells`（标题/歌手/专辑/播放源/格式/码率/大小/时长）；表格标题不拼歌手（默认「歌手 - 歌名」会与歌手列重复），「文件名」设置仍保留。
+- **赞踩列**：本机收藏/不喜欢两态图标，无计数；空态 `—`。
+- **源页递归树**：表格模式下行不整行右移，层级缩进只作用于标题格（每级 10px、最多 3 级），保证列与表头对齐；文件夹行/组头仍全宽。
+- **两种外壳**：`SongTableList`（普通 ListView，歌曲/喜欢/歌单详情/播放源详情）与 `SliverSongTable`/`SongTableSliverList`（专辑/歌手详情的 `CustomScrollView`，表头 pinned）。窄宽度时外壳原样返回普通列表。
+- **回归**：`test/song_table_test.dart`（9 列、阈值 800、窄行回退、多选列宽、递归缩进、sliver pinned 表头）；`test/song_tile_wide_info_test.dart` 仍覆盖 legacy 宽行技术信息。
 
 ### 内容页分栏（大横屏 · 列表模式）
 
@@ -741,9 +755,9 @@ abstract class MusicSource {
 - **自动扫描节流**：打开源触发的增量扫描经 `DirectSourceManager.claimAutoScan`（同一源 60s 一次），分栏里来回点源不会反复扫描；手动「扫描」不经过该节流。
 - **详情入口统一**：`layout/detail_target.dart` 的 `DetailTarget`（Playlist / Album / Artist / Source）+ `openDetail` 收口「是否已在显示」的去重、`keepSearch` 与 `root` 语义；入口函数只构造 target。呈现外壳统一走 `widgets/detail_presentation.dart` 的 `DetailPresentationShell`（`page` 保留分组横滑；`pane` / `overlay` 自绘不透明底），页面本体不再各自判断。窄屏专辑/歌手拖拽弹层需要页面私有构建器，仍在 `library_screen.dart` 入口处分流。
 - **左栏换选中项不叠加层**：左栏（分组列表）点选用 `root: true` 把详情栈重置为这一层；只有详情内部的嵌套入口（歌手专辑横条、成员/组合作品行）才压在上一层之上（`fromDetail`）。
-- **行内"宽行技术信息"按列表实际宽度判定**：`SongCollectionView` 在外层做一次 `LayoutBuilder`（不再用窗口宽），否则分栏右栏（如 360 宽）会塞进 `播放源 · 格式 · 码率 · 大小` 撑爆 `ListTile` 尾部断言。
+- **表格模式按列表实际宽度判定**：`SongCollectionView` 在外层做一次 `LayoutBuilder`（不再用窗口宽），达到 `kSongTableMinWidth=800` 时用 `SongTableList` 加表头；分栏右栏（如 360 宽）自动回退普通行，不会撑爆 `ListTile` 尾部断言。
 - 左栏选中行用 `ListTile.tileColor`（主色 10%）提示，不用 `selected`（避免文字/图标整体变主色）；列表带 `PageStorageKey`，分栏↔整页切换后滚动位置仍在。
-- 回归：`test/album_artist_detail_wide_test.dart`（分栏/整页两条路径 + 换选中项 + 搜索保留）、`test/content_split_layout_test.dart`（阈值、容器、右栏过渡、歌单分栏与搜索语义）、`test/source_split_test.dart`（播放源分栏 / 返回链 / 自动扫描节流）、`test/detail_target_test.dart`（统一入口去重口径 + 呈现外壳）。
+- 回归：`test/album_artist_detail_wide_test.dart`（分栏/整页两条路径 + 换选中项 + 搜索保留）、`test/content_split_layout_test.dart`（阈值、容器、右栏过渡、歌单分栏与搜索语义）、`test/source_split_test.dart`（播放源分栏 / 返回链 / 自动扫描节流）、`test/detail_target_test.dart`（统一入口去重口径 + 呈现外壳）、`test/song_table_test.dart`（表格列几何 / 阈值 / 递归缩进 / sliver 表头）。
 
 ### 顶栏搜索作用域
 
