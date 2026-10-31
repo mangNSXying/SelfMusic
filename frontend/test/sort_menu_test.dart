@@ -34,9 +34,9 @@ void main() {
     return picked;
   }
 
-  testWidgets('歌曲页弹窗列出权重/播放时长/播放次数/时长，无曲数', (tester) async {
+  testWidgets('歌曲页弹窗列出字符/歌手/专辑/权重/播放时长/播放次数/时长，无曲数', (tester) async {
     await openMenu(tester, value: CollectionSort.defaultOrder);
-    for (final label in ['默认排序', '字符', '权重', '播放时长', '播放次数', '时长']) {
+    for (final label in ['默认排序', '字符', '歌手', '专辑', '权重', '播放时长', '播放次数', '时长']) {
       expect(find.text(label), findsOneWidget, reason: '缺字段 $label');
     }
     expect(find.text('曲数'), findsNothing);
@@ -66,10 +66,10 @@ void main() {
     ));
     await tester.tap(find.byIcon(Icons.sort));
     await tester.pumpAndSettle();
-    // 「播放时长」行的向下箭头：字符/权重/播放时长/播放次数/时长 → 第 3 个
+    // 「播放时长」行的向下箭头：字符/歌手/专辑/权重/播放时长/播放次数/时长 → 第 5 个
     final down = find.byIcon(Icons.arrow_downward);
-    expect(down, findsNWidgets(5));
-    await tester.tap(down.at(2));
+    expect(down, findsNWidgets(7));
+    await tester.tap(down.at(4));
     await tester.pumpAndSettle();
     expect(picked, CollectionSort.playTimeDesc);
   });
@@ -174,16 +174,16 @@ void main() {
         Theme.of(tester.element(find.text('播放次数'))).colorScheme;
 
     final downs = find.byIcon(Icons.arrow_downward);
-    expect(downs, findsNWidgets(5));
+    expect(downs, findsNWidgets(7));
     Color colorAt(int i) => tester.widget<Icon>(downs.at(i)).color!;
-    // 播放次数（第 4 个）向下 = 生效方向：强调背景 + onPrimaryContainer
-    expect(_bgOf(tester, downs.at(3)), scheme.primaryContainer);
-    expect(colorAt(3), scheme.onPrimaryContainer);
+    // 播放次数（第 6 个）向下 = 生效方向：强调背景 + onPrimaryContainer
+    expect(_bgOf(tester, downs.at(5)), scheme.primaryContainer);
+    expect(colorAt(5), scheme.onPrimaryContainer);
     // 播放次数向上（未生效）：透明背景 + 淡化
-    expect(_bgOf(tester, find.byIcon(Icons.arrow_upward).at(3)),
+    expect(_bgOf(tester, find.byIcon(Icons.arrow_upward).at(5)),
         Colors.transparent);
-    // 其它字段的向下箭头均为未生效态
+    // 其它字段的向下箭头均为未生效态（字符 / 时长）
     expect(_bgOf(tester, downs.at(0)), Colors.transparent);
-    expect(_bgOf(tester, downs.at(4)), Colors.transparent);
+    expect(_bgOf(tester, downs.at(6)), Colors.transparent);
   });
 }

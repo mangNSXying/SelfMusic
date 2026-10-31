@@ -10,6 +10,10 @@ enum CollectionSort {
   defaultOrder,
   charAsc,
   charDesc,
+  artistAsc,
+  artistDesc,
+  albumAsc,
+  albumDesc,
   weightAsc,
   weightDesc,
   playTimeAsc,
@@ -24,7 +28,8 @@ enum CollectionSort {
 
 /// 排序菜单的可用范围（不同内容页能排的字段不同）。
 enum SortScope {
-  /// 歌曲类内容页（喜欢 / 歌曲 / 歌单详情）：字符、权重、播放时长、播放次数、时长。
+  /// 歌曲类内容页（喜欢 / 歌曲 / 歌单详情）：标题/歌手/专辑字符、权重、
+  /// 播放时长、播放次数、时长。
   songs,
 
   /// 集合类内容页（歌单 / 播放源 / 专辑 / 歌手）：字符、曲数。
@@ -38,6 +43,12 @@ extension CollectionSortX on CollectionSort {
         CollectionSort.charAsc ||
         CollectionSort.charDesc =>
           '字符',
+        CollectionSort.artistAsc ||
+        CollectionSort.artistDesc =>
+          '歌手',
+        CollectionSort.albumAsc ||
+        CollectionSort.albumDesc =>
+          '专辑',
         CollectionSort.weightAsc ||
         CollectionSort.weightDesc =>
           '权重',
@@ -61,6 +72,8 @@ extension CollectionSortX on CollectionSort {
   /// 降序（曲数多的/时长长的在前）。
   bool get isDesc => switch (this) {
         CollectionSort.charDesc ||
+        CollectionSort.artistDesc ||
+        CollectionSort.albumDesc ||
         CollectionSort.weightDesc ||
         CollectionSort.playTimeDesc ||
         CollectionSort.playCountDesc ||
@@ -74,6 +87,10 @@ extension CollectionSortX on CollectionSort {
   CollectionSort get flipped => switch (this) {
         CollectionSort.charAsc => CollectionSort.charDesc,
         CollectionSort.charDesc => CollectionSort.charAsc,
+        CollectionSort.artistAsc => CollectionSort.artistDesc,
+        CollectionSort.artistDesc => CollectionSort.artistAsc,
+        CollectionSort.albumAsc => CollectionSort.albumDesc,
+        CollectionSort.albumDesc => CollectionSort.albumAsc,
         CollectionSort.weightAsc => CollectionSort.weightDesc,
         CollectionSort.weightDesc => CollectionSort.weightAsc,
         CollectionSort.playTimeAsc => CollectionSort.playTimeDesc,
@@ -110,7 +127,11 @@ extension CollectionSortX on CollectionSort {
   /// 本排序在 [scope] 页面是否可用。
   bool availableIn(SortScope scope) => switch (scope) {
         SortScope.songs => !isCount,
-        SortScope.collections => !isWeight && !isPlayStat,
+        SortScope.collections =>
+          this == CollectionSort.defaultOrder ||
+              this == CollectionSort.charAsc ||
+              this == CollectionSort.charDesc ||
+              isCount,
       };
 
   static CollectionSort parse(String? v) => v == null
@@ -126,6 +147,16 @@ int _cmpNum(num? a, num? b, bool desc) {
   if (a == null) return 1;
   if (b == null) return -1;
   return desc ? b.compareTo(a) : a.compareTo(b);
+}
+
+/// 文本比较：去空白、小写；空值（未知歌手/专辑）恒排最后，与 [_cmpNum] 同口径。
+int _cmpText(String? a, String? b, bool desc) {
+  final x = a?.trim().toLowerCase() ?? '';
+  final y = b?.trim().toLowerCase() ?? '';
+  if (x.isEmpty && y.isEmpty) return 0;
+  if (x.isEmpty) return 1;
+  if (y.isEmpty) return -1;
+  return desc ? y.compareTo(x) : x.compareTo(y);
 }
 
 /// 按字符排序（名称取小写比较；[desc] 反转）。
@@ -179,7 +210,14 @@ List<int> songSortOrder(List<Song> songs, CollectionSort sort,
 
   // 预取排序键：null 表示该排序缺数据源，退化为标题序。
   List<num?>? keys;
+  List<String?>? textKeys;
   switch (sort) {
+    case CollectionSort.artistAsc:
+    case CollectionSort.artistDesc:
+      textKeys = [for (final s in songs) s.artist];
+    case CollectionSort.albumAsc:
+    case CollectionSort.albumDesc:
+      textKeys = [for (final s in songs) s.albumName];
     case CollectionSort.weightAsc:
     case CollectionSort.weightDesc:
       if (factorOf != null) {
@@ -209,6 +247,10 @@ List<int> songSortOrder(List<Song> songs, CollectionSort sort,
     if (sort == CollectionSort.charAsc || sort == CollectionSort.charDesc) {
       final c = byTitle(a, b);
       return desc ? -c : c;
+    }
+    if (textKeys != null) {
+      final c = _cmpText(textKeys[a], textKeys[b], desc);
+      return c != 0 ? c : byTitle(a, b);
     }
     if (keys == null) {
       // 缺数据源（如未注入权重库）时保持稳定的标题序，不做无意义抖动。

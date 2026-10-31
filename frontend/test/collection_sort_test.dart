@@ -2,10 +2,17 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:selfmusic/utils/collection_sort.dart';
 
-Song _song(String title, {String sourceRef = '', int? duration}) => Song(
+Song _song(String title,
+        {String sourceRef = '',
+        int? duration,
+        String? artist,
+        String? album}) =>
+    Song(
       id: 0,
       sourceKey: 'local:x',
       title: title,
+      artist: artist,
+      albumName: album,
       source: 'local',
       sourceRef: sourceRef.isEmpty ? title : sourceRef,
       fileSize: 0,
@@ -111,6 +118,21 @@ void main() {
       );
     });
 
+    test('歌手/专辑字符升/降序，空值恒排最后', () {
+      final songs = [
+        _song('B', sourceRef: 'b', artist: 'beta', album: 'Z专辑'),
+        _song('A', sourceRef: 'a', artist: 'Alpha', album: 'Y专辑'),
+        _song('C', sourceRef: 'c'),
+      ];
+      List<String> order(CollectionSort sort) =>
+          [for (final i in songSortOrder(songs, sort)) songs[i].sourceRef];
+
+      expect(order(CollectionSort.artistAsc), ['a', 'b', 'c']);
+      expect(order(CollectionSort.artistDesc), ['b', 'a', 'c']);
+      expect(order(CollectionSort.albumAsc), ['a', 'b', 'c']);
+      expect(order(CollectionSort.albumDesc), ['b', 'a', 'c']);
+    });
+
     test('曲数升/降序（同数按名称）', () {
       final items = [
         (name: 'b', count: 3),
@@ -141,12 +163,17 @@ void main() {
       expect(sortByCollection(items, CollectionSort.countDesc, name), items);
     });
 
-    test('scope：曲数只在集合页，权重/播放统计只在歌曲页', () {
+    test('scope：曲数只在集合页，歌手/专辑/权重/播放统计只在歌曲页', () {
       for (final s in CollectionSort.values) {
         if (s.isCount) {
           expect(s.availableIn(SortScope.collections), isTrue);
           expect(s.availableIn(SortScope.songs), isFalse);
-        } else if (s.isWeight || s.isPlayStat) {
+        } else if (s.isWeight ||
+            s.isPlayStat ||
+            s == CollectionSort.artistAsc ||
+            s == CollectionSort.artistDesc ||
+            s == CollectionSort.albumAsc ||
+            s == CollectionSort.albumDesc) {
           expect(s.availableIn(SortScope.songs), isTrue);
           expect(s.availableIn(SortScope.collections), isFalse);
         } else {
@@ -158,6 +185,8 @@ void main() {
 
     test('方向翻转与标签', () {
       expect(CollectionSort.charAsc.flipped, CollectionSort.charDesc);
+      expect(CollectionSort.artistAsc.flipped, CollectionSort.artistDesc);
+      expect(CollectionSort.albumDesc.flipped, CollectionSort.albumAsc);
       expect(CollectionSort.countDesc.flipped, CollectionSort.countAsc);
       expect(CollectionSort.playCountAsc.flipped, CollectionSort.playCountDesc);
       expect(CollectionSort.defaultOrder.flipped, CollectionSort.defaultOrder);

@@ -29,6 +29,8 @@ class SortMenuButton extends StatelessWidget {
         CollectionSort.defaultOrder,
         CollectionSort.charAsc,
         if (scope == SortScope.songs) ...[
+          CollectionSort.artistAsc,
+          CollectionSort.albumAsc,
           CollectionSort.weightAsc,
           CollectionSort.playTimeAsc,
           CollectionSort.playCountAsc,
