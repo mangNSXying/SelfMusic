@@ -5,14 +5,16 @@ import '../data/local/local_index.dart';
 import '../providers/direct_source_manager.dart';
 import '../utils/play_progress.dart';
 import '../utils/play_stats.dart';
+import '../widgets/resizable_paginated_table.dart';
+import '../widgets/table_columns.dart';
 import 'library_info_detail_shared.dart';
 
 /// 歌曲信息 → 播放数据详情：全部有效歌曲的播放次数、播放时长与中位播放进度。
 ///
 /// 口径：次数 = play_sec / 歌曲时长（见 [playCountOf]），未知时长按 0 次；
 /// 中位进度为全历史离开进度直方图的中位数（见 [PlayProgressHistogram]）。
-/// 数据入场走后台 isolate（[DetailDataLoader]），宽屏用分页表格
-/// （[PaginatedDataTable] 只构建当前页行），窄屏用卡片。
+/// 数据入场走后台 isolate（[DetailDataLoader]），宽屏用可拖拽列宽的分页表格
+/// （[ResizablePaginatedTable]），窄屏用卡片。
 class PlayDetailScreen extends StatefulWidget {
   const PlayDetailScreen({super.key});
 
@@ -29,12 +31,57 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
   /// 0=歌曲名，1=歌手，2=播放次数，3=播放时长，4=中位进度，5=播放源。
   int _sortColumn = 2;
   bool _ascending = false;
-  int _rowsPerPage = 25;
-  int _firstRowIndex = 0;
-  int _pageEpoch = 0;
   final _searchCtrl = TextEditingController();
 
   static const _sortLabels = ['歌曲名', '歌手', '次数', '时长', '中位进度', '源'];
+
+  static const List<TableColumnSpec> _columns = [
+    TableColumnSpec(
+        id: 'title',
+        label: '歌曲名',
+        defaultWeight: 220,
+        minWeight: 80,
+        rightPadding: 16,
+        sortable: true),
+    TableColumnSpec(
+        id: 'artist',
+        label: '歌手',
+        defaultWeight: 160,
+        minWeight: 60,
+        rightPadding: 16,
+        sortable: true),
+    TableColumnSpec(
+        id: 'count',
+        label: '播放次数',
+        defaultWeight: 110,
+        minWeight: 50,
+        rightPadding: 16,
+        align: TextAlign.right,
+        sortable: true),
+    TableColumnSpec(
+        id: 'play_time',
+        label: '播放时长',
+        defaultWeight: 110,
+        minWeight: 50,
+        rightPadding: 16,
+        align: TextAlign.right,
+        sortable: true),
+    TableColumnSpec(
+        id: 'median',
+        label: '中位进度',
+        defaultWeight: 120,
+        minWeight: 50,
+        rightPadding: 16,
+        align: TextAlign.right,
+        sortable: true),
+    TableColumnSpec(
+        id: 'source',
+        label: '播放源',
+        defaultWeight: 160,
+        minWeight: 60,
+        rightPadding: 0,
+        sortable: true),
+  ];
 
   @override
   void initState() {
@@ -72,10 +119,15 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
     super.dispose();
   }
 
-  void _onSort(int column, bool ascending) {
+  /// 表头点击：同列切方向；换列时次数/时长/中位进度默认降序，文本列升序。
+  void _onHeaderSort(int column) {
     setState(() {
-      _sortColumn = column;
-      _ascending = ascending;
+      if (_sortColumn == column) {
+        _ascending = !_ascending;
+      } else {
+        _sortColumn = column;
+        _ascending = column != 2 && column != 3 && column != 4;
+      }
     });
   }
 
@@ -280,64 +332,42 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
 
   /// 宽屏分页表格：列序 歌名、歌手、播放次数、播放时长、中位进度、播放源。
   ///
-  /// [PaginatedDataTable] 只构建当前页若干行（[rowsPerPage]），
-  /// 行数多时入场/翻页都不再整表 build。
+  /// 只构建当前页若干行；表头列宽可拖拽（与歌曲表共用同一套表头核心）。
   Widget _wideTable(List<PlayDetailRow> rows) {
-    // 过滤/排序（key）或数据刷新把行数缩到当前页之外时，重建回第 1 页。
-    if (rows.isNotEmpty && _firstRowIndex >= rows.length) {
-      _firstRowIndex = 0;
-      _pageEpoch++;
-    }
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      child: PaginatedDataTable(
-        key: ValueKey(
-            '$_pageEpoch|$_sortColumn|$_ascending|$_onlyWithPlay|$_query'),
-        source: _PlayRowSource(rows),
-        sortColumnIndex: _sortColumn,
-        sortAscending: _ascending,
-        rowsPerPage: _rowsPerPage,
-        availableRowsPerPage: const [15, 25, 50, 100],
-        onRowsPerPageChanged: (v) {
-          if (v != null) setState(() => _rowsPerPage = v);
-        },
-        onPageChanged: (i) => _firstRowIndex = i,
-        dataRowMinHeight: 40,
-        dataRowMaxHeight: 52,
-        headingRowHeight: 44,
-        horizontalMargin: 16,
-        columnSpacing: 28,
-        columns: [
-          DataColumn(
-            label: const Text('歌曲名'),
-            onSort: (i, asc) => _onSort(0, asc),
-          ),
-          DataColumn(
-            label: const Text('歌手'),
-            onSort: (i, asc) => _onSort(1, asc),
-          ),
-          DataColumn(
-            label: const Text('播放次数'),
-            numeric: true,
-            onSort: (i, asc) => _onSort(2, asc),
-          ),
-          DataColumn(
-            label: const Text('播放时长'),
-            numeric: true,
-            onSort: (i, asc) => _onSort(3, asc),
-          ),
-          DataColumn(
-            label: const Text('中位进度'),
-            numeric: true,
-            onSort: (i, asc) => _onSort(4, asc),
-          ),
-          DataColumn(
-            label: const Text('播放源'),
-            onSort: (i, asc) => _onSort(5, asc),
-          ),
-        ],
-      ),
+    return ResizablePaginatedTable<PlayDetailRow>(
+      key: const Key('play-detail-table'),
+      tableId: 'library_play_detail',
+      columns: _columns,
+      rows: rows,
+      resetToken: '$_sortColumn|$_ascending|$_onlyWithPlay|$_query',
+      sortIndex: _sortColumn,
+      sortAscending: _ascending,
+      onSortColumn: _onHeaderSort,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      rowHeight: 48,
+      cellBuilder: _cell,
     );
+  }
+
+  Widget _cell(BuildContext context, PlayDetailRow r, int column) {
+    final base = Theme.of(context).textTheme.bodySmall;
+    Widget text(String s, {TextAlign align = TextAlign.left}) => Text(
+          s,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          textAlign: align,
+          style: base,
+        );
+    return switch (column) {
+      0 => text(r.title),
+      1 => text(r.artist ?? ''),
+      2 => text(playCountLabel(r.playSec, r.duration),
+          align: TextAlign.right),
+      3 => text(playSecLabel(r.playSec), align: TextAlign.right),
+      4 => text(formatMedianProgress(r.medianPercent),
+          align: TextAlign.right),
+      _ => text(r.sourceKey),
+    };
   }
 
   /// 窄屏卡片：复用元数据详情页的 `Card + ExpansionTile` 样式。
@@ -418,34 +448,4 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
       ),
     );
   }
-}
-
-/// 播放明细的行数据源：按需构建当前页各行的单元格。
-class _PlayRowSource extends DataTableSource {
-  _PlayRowSource(this.rows);
-
-  final List<PlayDetailRow> rows;
-
-  @override
-  DataRow? getRow(int index) {
-    if (index < 0 || index >= rows.length) return null;
-    final r = rows[index];
-    return DataRow.byIndex(index: index, cells: [
-      DataCell(cappedCell(r.title, 220)),
-      DataCell(cappedCell(r.artist ?? '', 160)),
-      DataCell(Text(playCountLabel(r.playSec, r.duration))),
-      DataCell(Text(playSecLabel(r.playSec))),
-      DataCell(Text(formatMedianProgress(r.medianPercent))),
-      DataCell(cappedCell(r.sourceKey, 160)),
-    ]);
-  }
-
-  @override
-  int get rowCount => rows.length;
-
-  @override
-  bool get isRowCountApproximate => false;
-
-  @override
-  int get selectedRowCount => 0;
 }

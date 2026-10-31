@@ -1,10 +1,11 @@
 import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/foundation.dart' show ValueListenable, listEquals;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../data/local/app_settings.dart';
+import '../data/local/table_column_weights.dart';
 import '../data/sources/music_source.dart';
 import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
@@ -22,6 +23,7 @@ import 'song_row_view.dart';
 import 'song_table.dart';
 import 'song_tile.dart';
 import 'sort_menu_button.dart';
+import 'table_columns.dart';
 import 'toolbar_icon_button.dart';
 
 /// 文件夹模式下的导航方式：
@@ -165,6 +167,10 @@ class _SongCollectionViewState extends State<SongCollectionView> {
   bool _rowOffsetsBlockHeaders = false;
   List<double> _rowOffsets = const [];
 
+  /// 用户手调的列权重（持久化在 AppSettings）；默认值 = 自适应权重。
+  List<double> _columnWeights = defaultTableWeights(songTableColumns);
+  bool _columnWeightsLoaded = false;
+
   /// 逐级模式的展示列表缓存：树、根目录与展开版本不变时复用，避免每次
   /// build 新建列表导致行缓存整表失效。
   Object? _folderRowsKey;
@@ -217,11 +223,20 @@ class _SongCollectionViewState extends State<SongCollectionView> {
   void initState() {
     super.initState();
     widget.focusTick?.addListener(_onFocusTick);
+    TableColumnWeightsRevision.instance.addListener(_reloadColumnWeights);
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    if (!_columnWeightsLoaded) {
+      _columnWeightsLoaded = true;
+      final stored = context
+          .read<DirectSourceManager>()
+          .settings
+          .tableColumnWeights(kSongTableColumnsId);
+      _columnWeights = sanitizeTableWeights(songTableColumns, stored);
+    }
     if (_collectionKey != widget.collectionKey) {
       _collectionKey = widget.collectionKey;
       final settings = context.read<DirectSourceManager>().settings;
@@ -260,6 +275,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
   @override
   void dispose() {
     widget.focusTick?.removeListener(_onFocusTick);
+    TableColumnWeightsRevision.instance.removeListener(_reloadColumnWeights);
     _scroll.dispose();
     super.dispose();
   }
@@ -268,6 +284,38 @@ class _SongCollectionViewState extends State<SongCollectionView> {
   /// 文件夹时，各分类此前的折叠状态都还在。
   void _persistCollapsed(AppSettings settings) {
     settings.setGroupCollapsed(widget.collectionKey, _collapsed);
+  }
+
+  void _onColumnWeightsChanged(List<double> weights) {
+    setState(() => _columnWeights = weights);
+  }
+
+  /// 其它页手调列宽后同步（页面保活时不会重挂载）。
+  void _reloadColumnWeights() {
+    if (!mounted || !_columnWeightsLoaded) return;
+    final stored = context
+        .read<DirectSourceManager>()
+        .settings
+        .tableColumnWeights(kSongTableColumnsId);
+    final next = sanitizeTableWeights(songTableColumns, stored);
+    if (listEquals(next, _columnWeights)) return;
+    setState(() => _columnWeights = next);
+  }
+
+  void _onColumnWeightsCommitted(List<double> weights) {
+    _columnWeights = weights;
+    context
+        .read<DirectSourceManager>()
+        .settings
+        .setTableColumnWeights(kSongTableColumnsId, weights);
+  }
+
+  void _resetColumnWeights() {
+    context
+        .read<DirectSourceManager>()
+        .settings
+        .setTableColumnWeights(kSongTableColumnsId, null);
+    setState(() => _columnWeights = defaultTableWeights(songTableColumns));
   }
 
   void _toggleCollapse(AppSettings settings, String name) {
@@ -459,7 +507,8 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     final recursive = !widget.searching &&
         widget.folderNavigation == FolderNavigation.recursive &&
         mode == SongGroupMode.folder;
-    final table = SongTableLayout.fit(availableWidth);
+    final table =
+        SongTableLayout.fit(availableWidth, weights: _columnWeights);
 
     /// 递归树 + 表格形态：每个文件夹的直属歌曲块重复一份表头。
     /// 列宽按 flex 权重自适应，深层块变窄也不会放不下，因此只看 800 阈值。
@@ -668,13 +717,18 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     Widget rowAt(BuildContext c, int i) {
       final row = rows[i];
       if (row.header) {
+        final layout = table;
+        if (layout == null) return const SizedBox.shrink();
         final indent = _treeIndent(row.depth);
         return Padding(
           padding: EdgeInsets.only(left: indent),
           child: SongTableHeader(
-            layout: SongTableLayout.instance,
+            layout: layout,
             sort: widget.sort,
             onSort: widget.showSort ? widget.onSortChanged : null,
+            onWeightsChanged: _onColumnWeightsChanged,
+            onWeightsCommitted: _onColumnWeightsCommitted,
+            onResetWeights: _resetColumnWeights,
           ),
         );
       }
@@ -694,9 +748,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       final s = displaySongs[si];
       final key = keys[si];
       final blockIndent = useBlockHeaders ? _treeIndent(row.depth) : 0.0;
-      final rowTable =
-          useBlockHeaders ? SongTableLayout.instance : table;
-      return _songRow(direct, displaySongs, si, s, key, currentIdx, rowTable,
+      return _songRow(direct, displaySongs, si, s, key, currentIdx, table,
           row.depth, blockIndent: blockIndent);
     }
 
@@ -770,6 +822,9 @@ class _SongCollectionViewState extends State<SongCollectionView> {
                       sort: widget.sort,
                       onSort:
                           widget.showSort ? widget.onSortChanged : null,
+                      onWeightsChanged: _onColumnWeightsChanged,
+                      onWeightsCommitted: _onColumnWeightsCommitted,
+                      onResetWeights: _resetColumnWeights,
                       onRefresh: widget.onRefresh,
                       itemBuilder: rowAt,
                     ),

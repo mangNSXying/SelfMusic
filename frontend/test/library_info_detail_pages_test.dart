@@ -34,7 +34,7 @@ Future<DirectSourceManager> _seed() async {
   final dir = await Directory.systemTemp.createTemp('selfmusic_infodetail_');
   PathProviderPlatform.instance = _FakePathProvider(dir.path);
   final mgr = DirectSourceManager();
-  await mgr.index.open();
+  await mgr.init();
   final rows = <DirectSongRow>[
     for (var i = 0; i < 250; i++)
       DirectSongRow(
@@ -81,7 +81,7 @@ void main() {
     // 默认次数降序：song_249（24.9 次）在最前。
     expect(find.text('歌曲 249'), findsOneWidget);
     expect(find.text('24.9 次'), findsOneWidget);
-    expect(find.byType(PaginatedDataTable), findsNothing);
+    expect(find.byKey(const Key('play-detail-table')), findsNothing);
     expect(find.textContaining('共 250 首'), findsOneWidget);
 
     // 展开卡片看明细行。
@@ -102,13 +102,25 @@ void main() {
     await tester.pumpWidget(_wrap(mgr, const PlayDetailScreen()));
     await tester.pumpAndSettle();
 
-    expect(find.byType(PaginatedDataTable), findsOneWidget);
+    expect(find.byKey(const Key('play-detail-table')), findsOneWidget);
     expect(find.text('歌曲 249'), findsOneWidget);
-    expect(find.textContaining('of 250'), findsOneWidget);
+    expect(find.textContaining('/ 250'), findsOneWidget);
     expect(find.text('中位进度'), findsOneWidget);
     expect(find.text('100%'), findsOneWidget);
     // 第 26 名不在当前页，未被构建。
     expect(find.text('歌曲 224'), findsNothing);
+
+    // 表头可排序：点歌曲名 → 升序，第 1 页出现歌曲 0。
+    await tester.tap(find.text('歌曲名'));
+    await tester.pumpAndSettle();
+    expect(find.text('歌曲 0'), findsOneWidget);
+
+    // 表头可拖拽：列宽写入持久化设置。
+    final handle = find.byKey(const ValueKey('table-resize-title'));
+    expect(handle, findsOneWidget);
+    await tester.drag(handle, const Offset(48, 0));
+    await tester.pumpAndSettle();
+    expect(mgr.settings.tableColumnWeights('library_play_detail'), isNotNull);
   });
 
   testWidgets('元数据·窄屏卡片：展开 12 维明细', (tester) async {
@@ -137,8 +149,14 @@ void main() {
     await tester.pumpWidget(_wrap(mgr, const MetaDetailScreen()));
     await tester.pumpAndSettle();
 
-    expect(find.byType(PaginatedDataTable), findsOneWidget);
+    expect(find.byKey(const Key('meta-detail-table')), findsOneWidget);
     expect(find.text('缺失数'), findsOneWidget);
-    expect(find.textContaining('of 250'), findsOneWidget);
+    expect(find.text('1–25 / 250'), findsOneWidget);
+
+    final handle = find.byKey(const ValueKey('table-resize-title'));
+    expect(handle, findsOneWidget);
+    await tester.drag(handle, const Offset(40, 0));
+    await tester.pumpAndSettle();
+    expect(mgr.settings.tableColumnWeights('library_meta_detail'), isNotNull);
   });
 }

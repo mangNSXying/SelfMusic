@@ -419,4 +419,67 @@ void main() {
     expect((box.decoration! as BoxDecoration).color,
         Theme.of(tester.element(find.text('标题'))).scaffoldBackgroundColor);
   });
+
+  testWidgets('歌曲表列宽可拖拽并持久化，双击恢复默认', (tester) async {
+    await pumpCollection(tester, width: 1000, songs: [_song()]);
+
+    final handle = find.byKey(const ValueKey('table-resize-title'));
+    expect(handle, findsOneWidget);
+    final artistBefore = tester.getTopLeft(find.text('歌手')).dx;
+
+    await tester.drag(handle, const Offset(40, 0));
+    await tester.pump();
+    expect(direct.settings.tableColumnWeights('song_table'), isNotNull);
+    expect(tester.getTopLeft(find.text('歌手')).dx, greaterThan(artistBefore));
+
+    // 双击分隔线恢复默认权重。
+    await tester.tap(handle);
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(handle);
+    await tester.pumpAndSettle();
+    expect(direct.settings.tableColumnWeights('song_table'), isNull);
+    expect(tester.getTopLeft(find.text('歌手')).dx,
+        closeTo(artistBefore, 0.5));
+  });
+
+  testWidgets('专辑/歌手 sliver 歌曲表共用列宽并可拖拽', (tester) async {
+    final songs = [
+      for (var i = 0; i < 3; i++)
+        _song(id: i + 1, title: '歌$i', sourceRef: '/dav/$i.flac'),
+    ];
+    tester.view.physicalSize = const ui.Size(1200, 600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+          ChangeNotifierProvider<PlayerProvider>(
+              create: (_) => PlayerProvider()),
+        ],
+        child: MaterialApp(
+          home: Scaffold(
+            body: CustomScrollView(
+              slivers: [
+                SongTableSliverList(
+                  songs: songs,
+                  table: SongTableLayout.fit(1200),
+                  sourceOf: (_) => _FakeSource(),
+                  onPlay: (_) {},
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 50));
+
+    final handle = find.byKey(const ValueKey('table-resize-title'));
+    expect(handle, findsOneWidget);
+    await tester.drag(handle, const Offset(40, 0));
+    await tester.pumpAndSettle();
+    expect(direct.settings.tableColumnWeights('song_table'), isNotNull);
+  });
 }

@@ -1,6 +1,8 @@
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../data/local/table_column_weights.dart';
 import '../data/sources/music_source.dart';
 import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
@@ -9,6 +11,7 @@ import 'row_list.dart';
 import 'song_row_view.dart';
 import 'song_table.dart';
 import 'song_tile.dart';
+import 'table_columns.dart';
 
 /// sliver 列表外壳：宽度足够时在歌曲行上方加 pinned 表头。
 ///
@@ -20,12 +23,20 @@ class SliverSongTable extends StatelessWidget {
   final Widget Function(BuildContext context, int index) itemBuilder;
   final double rowHeight;
 
+  /// 列宽拖拽回调（与歌曲表共用全局权重）；为空时表头只读。
+  final ValueChanged<List<double>>? onWeightsChanged;
+  final ValueChanged<List<double>>? onWeightsCommitted;
+  final VoidCallback? onResetWeights;
+
   const SliverSongTable({
     super.key,
     required this.table,
     required this.count,
     required this.itemBuilder,
     this.rowHeight = kRowHeight,
+    this.onWeightsChanged,
+    this.onWeightsCommitted,
+    this.onResetWeights,
   });
 
   @override
@@ -40,7 +51,12 @@ class SliverSongTable extends StatelessWidget {
       slivers: [
         SliverPersistentHeader(
           pinned: true,
-          delegate: _SongTableHeaderDelegate(table!),
+          delegate: _SongTableHeaderDelegate(
+            table!,
+            onWeightsChanged: onWeightsChanged,
+            onWeightsCommitted: onWeightsCommitted,
+            onResetWeights: onResetWeights,
+          ),
         ),
         rows,
       ],
@@ -50,8 +66,16 @@ class SliverSongTable extends StatelessWidget {
 
 class _SongTableHeaderDelegate extends SliverPersistentHeaderDelegate {
   final SongTableLayout table;
+  final ValueChanged<List<double>>? onWeightsChanged;
+  final ValueChanged<List<double>>? onWeightsCommitted;
+  final VoidCallback? onResetWeights;
 
-  const _SongTableHeaderDelegate(this.table);
+  const _SongTableHeaderDelegate(
+    this.table, {
+    this.onWeightsChanged,
+    this.onWeightsCommitted,
+    this.onResetWeights,
+  });
 
   @override
   double get minExtent => kSongTableHeaderHeight;
@@ -64,7 +88,12 @@ class _SongTableHeaderDelegate extends SliverPersistentHeaderDelegate {
           BuildContext context, double shrinkOffset, bool overlapsContent) =>
       SizedBox(
         height: kSongTableHeaderHeight,
-        child: SongTableHeader(layout: table),
+        child: SongTableHeader(
+          layout: table,
+          onWeightsChanged: onWeightsChanged,
+          onWeightsCommitted: onWeightsCommitted,
+          onResetWeights: onResetWeights,
+        ),
       );
 
   @override
@@ -99,6 +128,44 @@ class SongTableSliverList extends StatefulWidget {
 
 class _SongTableSliverListState extends State<SongTableSliverList> {
   final SongRowCache _rows = SongRowCache();
+  List<double> _weights = defaultTableWeights(songTableColumns);
+  bool _weightsLoaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    TableColumnWeightsRevision.instance.addListener(_reloadWeights);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_weightsLoaded) {
+      _weightsLoaded = true;
+      final stored = context
+          .read<DirectSourceManager>()
+          .settings
+          .tableColumnWeights(kSongTableColumnsId);
+      _weights = sanitizeTableWeights(songTableColumns, stored);
+    }
+  }
+
+  @override
+  void dispose() {
+    TableColumnWeightsRevision.instance.removeListener(_reloadWeights);
+    super.dispose();
+  }
+
+  void _reloadWeights() {
+    if (!mounted || !_weightsLoaded) return;
+    final stored = context
+        .read<DirectSourceManager>()
+        .settings
+        .tableColumnWeights(kSongTableColumnsId);
+    final next = sanitizeTableWeights(songTableColumns, stored);
+    if (listEquals(next, _weights)) return;
+    setState(() => _weights = next);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -106,6 +173,7 @@ class _SongTableSliverListState extends State<SongTableSliverList> {
     final player = context.watch<PlayerProvider>();
     final current = player.current;
     final currentKey = current == null ? null : songRowKey(current);
+    final layout = widget.table == null ? null : SongTableLayout(_weights);
     _rows.begin(
       (
         identityHashCode(widget.songs),
@@ -121,8 +189,17 @@ class _SongTableSliverListState extends State<SongTableSliverList> {
       onWarm: () => direct.weight.warmMetaOf(widget.songs),
     );
     return SliverSongTable(
-      table: widget.table,
+      table: layout,
       count: widget.songs.length,
+      onWeightsChanged: (w) => setState(() => _weights = w),
+      onWeightsCommitted: (w) {
+        _weights = w;
+        direct.settings.setTableColumnWeights(kSongTableColumnsId, w);
+      },
+      onResetWeights: () {
+        direct.settings.setTableColumnWeights(kSongTableColumnsId, null);
+        setState(() => _weights = defaultTableWeights(songTableColumns));
+      },
       itemBuilder: (context, index) {
         final song = widget.songs[index];
         final src = widget.sourceOf(song);
@@ -147,7 +224,7 @@ class _SongTableSliverListState extends State<SongTableSliverList> {
               table: widget.table != null,
             );
           }),
-          table: widget.table,
+          table: layout,
           playing: playing,
           onPlay: () => widget.onPlay(index),
         );

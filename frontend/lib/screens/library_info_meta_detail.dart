@@ -3,13 +3,15 @@ import 'package:provider/provider.dart';
 
 import '../data/local/local_index.dart';
 import '../providers/direct_source_manager.dart';
+import '../widgets/resizable_paginated_table.dart';
+import '../widgets/table_columns.dart';
 import 'library_info_detail_shared.dart';
 
 /// 歌曲信息 → 元数据详情：精确到每一首歌，各维度“有没有 / 是什么”。
 ///
 /// 过滤：搜索（歌名/歌手/专辑）+ 维度缺失过滤；排序：歌曲名 / 歌手 / 缺失数。
-/// 数据入场走后台 isolate（[DetailDataLoader]），宽屏用分页表格
-/// （[PaginatedDataTable] 只构建当前页行），窄屏用卡片。
+/// 数据入场走后台 isolate（[DetailDataLoader]），宽屏用可拖拽列宽的分页表格
+/// （[ResizablePaginatedTable]），窄屏用卡片。
 class MetaDetailScreen extends StatefulWidget {
   const MetaDetailScreen({super.key});
 
@@ -24,9 +26,6 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
   String? _dimFilter; // null=全部，'missing_any'=有缺失，否则为维度 key
   int _sortMode = 0; // 0=歌曲名，1=歌手，2=缺失数
   bool _ascending = true;
-  int _rowsPerPage = 25;
-  int _firstRowIndex = 0;
-  int _pageEpoch = 0;
   final _searchCtrl = TextEditingController();
 
   static const dims = [
@@ -57,6 +56,40 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
     ('lyrics', '歌词'),
     ('format', '格式'),
     ('bitrate', '码率'),
+  ];
+
+  /// 宽屏表格列：前三列可排序，其余维度直接显示值。
+  static final List<TableColumnSpec> _columns = [
+    const TableColumnSpec(
+        id: 'title',
+        label: '歌曲名',
+        defaultWeight: 200,
+        minWeight: 70,
+        rightPadding: 12,
+        sortable: true),
+    const TableColumnSpec(
+        id: 'artist',
+        label: '歌手',
+        defaultWeight: 140,
+        minWeight: 50,
+        rightPadding: 12,
+        sortable: true),
+    const TableColumnSpec(
+        id: 'missing',
+        label: '缺失数',
+        defaultWeight: 80,
+        minWeight: 40,
+        rightPadding: 12,
+        align: TextAlign.right,
+        sortable: true),
+    for (final d in wideDims)
+      TableColumnSpec(
+        id: 'dim_${d.$1}',
+        label: d.$2,
+        defaultWeight: 90,
+        minWeight: 36,
+        rightPadding: 12,
+      ),
   ];
 
   @override
@@ -95,10 +128,15 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
     super.dispose();
   }
 
-  void _onSort(int mode, bool ascending) {
+  /// 表头点击：同列切方向；换列时缺失数默认降序，文本列升序。
+  void _onHeaderSort(int column) {
     setState(() {
-      _sortMode = mode;
-      _ascending = ascending;
+      if (_sortMode == column) {
+        _ascending = !_ascending;
+      } else {
+        _sortMode = column;
+        _ascending = column != 2;
+      }
     });
   }
 
@@ -274,51 +312,50 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
   }
 
   /// 宽屏分页表格：歌曲 / 歌手 / 缺失数（可排序表头）+ 其余 11 维直接显示值。
-  /// 缺失值红色显示，有值显示原文。
+  /// 缺失值红色显示，有值显示原文；表头列宽可拖拽。
   Widget _wideTable(List<MetaDetailRow> rows) {
-    final error = Theme.of(context).colorScheme.error;
-    TextStyle? missingStyle(bool ok) =>
-        ok ? null : TextStyle(color: error, fontWeight: FontWeight.w600);
-    // 过滤/排序（key）或数据刷新把行数缩到当前页之外时，重建回第 1 页。
-    if (rows.isNotEmpty && _firstRowIndex >= rows.length) {
-      _firstRowIndex = 0;
-      _pageEpoch++;
+    return ResizablePaginatedTable<MetaDetailRow>(
+      key: const Key('meta-detail-table'),
+      tableId: 'library_meta_detail',
+      columns: _columns,
+      rows: rows,
+      resetToken: '$_sortMode|$_ascending|$_dimFilter|$_query',
+      sortIndex: _sortMode,
+      sortAscending: _ascending,
+      onSortColumn: _onHeaderSort,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      rowHeight: 48,
+      cellBuilder: _cell,
+    );
+  }
+
+  Widget _cell(BuildContext context, MetaDetailRow r, int column) {
+    final cs = Theme.of(context).colorScheme;
+    final base = Theme.of(context).textTheme.bodySmall;
+    TextStyle? missingStyle(bool ok) => ok
+        ? base
+        : base?.copyWith(color: cs.error, fontWeight: FontWeight.w600);
+    Widget text(String s,
+            {TextStyle? style, TextAlign align = TextAlign.left}) =>
+        Text(
+          s,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          textAlign: align,
+          style: style ?? base,
+        );
+    if (column == 0) return text(r.title);
+    if (column == 1) {
+      return text(metaDimValue(r, 'artist'),
+          style: missingStyle(r.hasArtist));
     }
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      child: PaginatedDataTable(
-        key: ValueKey('$_pageEpoch|$_sortMode|$_ascending|$_dimFilter|$_query'),
-        source: _MetaRowSource(rows, missingStyle),
-        sortColumnIndex: _sortMode,
-        sortAscending: _ascending,
-        rowsPerPage: _rowsPerPage,
-        availableRowsPerPage: const [15, 25, 50, 100],
-        onRowsPerPageChanged: (v) {
-          if (v != null) setState(() => _rowsPerPage = v);
-        },
-        onPageChanged: (i) => _firstRowIndex = i,
-        dataRowMinHeight: 40,
-        dataRowMaxHeight: 52,
-        headingRowHeight: 44,
-        horizontalMargin: 16,
-        columnSpacing: 28,
-        columns: [
-          DataColumn(
-            label: const Text('歌曲名'),
-            onSort: (i, asc) => _onSort(0, asc),
-          ),
-          DataColumn(
-            label: const Text('歌手'),
-            onSort: (i, asc) => _onSort(1, asc),
-          ),
-          DataColumn(
-            label: const Text('缺失数'),
-            numeric: true,
-            onSort: (i, asc) => _onSort(2, asc),
-          ),
-          for (final d in wideDims) DataColumn(label: Text(d.$2)),
-        ],
-      ),
+    if (column == 2) {
+      return text('${r.missingCount}', align: TextAlign.right);
+    }
+    final d = wideDims[column - 3];
+    return text(
+      metaDimValue(r, d.$1),
+      style: missingStyle(r.hasDim(d.$1)),
     );
   }
 
@@ -403,41 +440,6 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
       ),
     );
   }
-}
-
-/// 元数据明细的行数据源：按需构建当前页各行的单元格。
-class _MetaRowSource extends DataTableSource {
-  _MetaRowSource(this.rows, this.missingStyle);
-
-  final List<MetaDetailRow> rows;
-
-  /// 缺失单元格的红色样式（有值传 null）。
-  final TextStyle? Function(bool ok) missingStyle;
-
-  @override
-  DataRow? getRow(int index) {
-    if (index < 0 || index >= rows.length) return null;
-    final r = rows[index];
-    return DataRow.byIndex(index: index, cells: [
-      DataCell(cappedCell(r.title, 200)),
-      DataCell(
-          cappedCell(metaDimValue(r, 'artist'), 140,
-              style: missingStyle(r.hasArtist))),
-      DataCell(Text('${r.missingCount}')),
-      for (final d in _MetaDetailScreenState.wideDims)
-        DataCell(cappedCell(metaDimValue(r, d.$1), 140,
-            style: missingStyle(r.hasDim(d.$1)))),
-    ]);
-  }
-
-  @override
-  int get rowCount => rows.length;
-
-  @override
-  bool get isRowCountApproximate => false;
-
-  @override
-  int get selectedRowCount => 0;
 }
 
 /// 维度展示值：文本空/数字缺 → `缺失`（卡片与宽屏表格共用）。

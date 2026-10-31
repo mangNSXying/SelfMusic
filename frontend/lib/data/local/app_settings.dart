@@ -4,6 +4,7 @@ import '../../services/equalizer/equalizer_types.dart';
 import '../../utils/collection_sort.dart';
 import '../../utils/song_groups.dart';
 import 'local_index.dart';
+import 'table_column_weights.dart';
 
 /// 播放页（播放/歌词）切换过渡动画。
 enum PlayerTransition {
@@ -1024,6 +1025,46 @@ class AppSettings {
   static const String kShortcutWindowBindings = 'shortcut_window_bindings';
   static const String kShortcutGlobalBindings = 'shortcut_global_bindings';
 
+  /// 各表格的用户列宽（tableId → 权重列表，JSON）。
+  static const String kTableColumnWeights = 'table_column_weights';
+
+  Map<String, dynamic> _tableWeightsRaw() {
+    final raw = index.settingsGet(kTableColumnWeights);
+    if (raw == null || raw.isEmpty) return <String, dynamic>{};
+    try {
+      final decoded = jsonDecode(raw);
+      return decoded is Map
+          ? Map<String, dynamic>.from(decoded)
+          : <String, dynamic>{};
+    } catch (_) {
+      return <String, dynamic>{};
+    }
+  }
+
+  /// 某张表持久化的列权重；null = 未手调过（使用默认自适应）。
+  List<double>? tableColumnWeights(String tableId) {
+    final raw = _tableWeightsRaw()[tableId];
+    if (raw is! List) return null;
+    final out = <double>[];
+    for (final v in raw) {
+      if (v is! num) return null;
+      out.add(v.toDouble());
+    }
+    return out;
+  }
+
+  /// 写入手调列权重；传 null 删除该表覆盖（恢复默认自适应）。
+  void setTableColumnWeights(String tableId, List<double>? weights) {
+    final all = _tableWeightsRaw();
+    if (weights == null) {
+      all.remove(tableId);
+    } else {
+      all[tableId] = weights;
+    }
+    index.settingsSet(kTableColumnWeights, jsonEncode(all));
+    TableColumnWeightsRevision.instance.bump();
+  }
+
   String get shortcutWindowBindings =>
       index.settingsGet(kShortcutWindowBindings) ?? '';
   set shortcutWindowBindings(String v) =>
@@ -1108,5 +1149,6 @@ class AppSettings {
     kLogExportMinutes,
     kShortcutWindowBindings,
     kShortcutGlobalBindings,
+    kTableColumnWeights,
   ];
 }

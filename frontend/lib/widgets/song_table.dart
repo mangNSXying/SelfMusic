@@ -1,13 +1,18 @@
 import 'package:flutter/material.dart';
 
 import '../utils/collection_sort.dart';
+import 'resizable_table_header.dart';
 import 'row_list.dart';
+import 'table_columns.dart';
 
 /// 宽列表表格模式的最小列表宽度。
 ///
 /// 与旧的「宽行技术信息」阈值同值：达到该宽度后，歌曲行升级为表头 + 对齐列；
 /// 低于该宽度（分栏右栏、队列面板、窄屏）继续走普通行。
 const double kSongTableMinWidth = 800;
+
+/// 歌曲表的列宽持久化 key（全站歌曲列表共用一套手调权重）。
+const String kSongTableColumnsId = 'song_table';
 
 /// 表头高度（含底部分隔线）。
 const double kSongTableHeaderHeight = 32;
@@ -24,18 +29,60 @@ const double kSongTableMenuWidth = 48;
 
 /// 9 列的相对权重（flex），不再写死像素宽度。
 ///
-/// 权重按 800 宽下的原视觉比例折算：文本列可伸缩，技术列同样随宽度等比
-/// 收缩/展开。这样源页深层文件夹块即使比根层窄，表头与行仍能完整排下，
-/// 只是文字更早省略。
-const int kSongTableTitleFlex = 123;
-const int kSongTableArtistFlex = 92;
-const int kSongTableAlbumFlex = 92;
-const int kSongTableSourceFlex = 61;
-const int kSongTableFormatFlex = 64;
-const int kSongTableBitrateFlex = 84;
-const int kSongTableSizeFlex = 72;
-const int kSongTableStateFlex = 44;
-const int kSongTableDurationFlex = 48;
+/// 用户拖拽后写回的是同一套权重（见 [TableColumnSpec]）；默认权重按 800 宽
+/// 下的原视觉比例折算，拖拽/缩放都只是改权重。
+const List<TableColumnSpec> songTableColumns = [
+  TableColumnSpec(
+      id: 'title',
+      label: '标题',
+      defaultWeight: 123,
+      minWeight: 40,
+      rightPadding: 12,
+      sortable: true),
+  TableColumnSpec(
+      id: 'artist',
+      label: '歌手',
+      defaultWeight: 92,
+      minWeight: 32,
+      rightPadding: 12,
+      sortable: true),
+  TableColumnSpec(
+      id: 'album',
+      label: '专辑',
+      defaultWeight: 92,
+      minWeight: 32,
+      rightPadding: 12,
+      sortable: true),
+  TableColumnSpec(
+      id: 'source', label: '播放源', defaultWeight: 61, minWeight: 24),
+  TableColumnSpec(
+      id: 'format', label: '格式', defaultWeight: 64, minWeight: 24),
+  TableColumnSpec(
+      id: 'bitrate',
+      label: '码率',
+      defaultWeight: 84,
+      minWeight: 24,
+      align: TextAlign.right),
+  TableColumnSpec(
+      id: 'size',
+      label: '大小',
+      defaultWeight: 72,
+      minWeight: 24,
+      align: TextAlign.right),
+  TableColumnSpec(
+      id: 'state',
+      label: '赞踩',
+      defaultWeight: 44,
+      minWeight: 20,
+      align: TextAlign.center),
+  TableColumnSpec(
+      id: 'duration',
+      label: '时长',
+      defaultWeight: 48,
+      minWeight: 24,
+      align: TextAlign.right,
+      sortable: true),
+];
 
 /// 表头左侧缩进：与行内 contentPadding + 封面 + 间距一致。
 const double kSongTableHeaderLeftInset =
@@ -50,22 +97,24 @@ const double kSongTableHeaderRightInset =
 
 /// 表格列几何：行与表头**必须**共用同一份构建函数，宽度才不会漂移。
 ///
-/// 列宽全部按 flex 权重分配，不依赖具体像素宽度；[fit] 只负责判断
-/// 「是否进入表格形态」，进入后同一个 [instance] 可用于任意宽度的行/块。
+/// 列宽全部按权重分配；[fit] 只负责判断「是否进入表格形态」，进入后同一个
+/// 布局实例可用于任意宽度的行/块。
 class SongTableLayout {
-  const SongTableLayout._();
+  SongTableLayout([List<double>? weights])
+      : _layout = TableColumnLayout(
+          songTableColumns,
+          sanitizeTableWeights(songTableColumns, weights),
+        );
 
-  /// 统一的列几何（无宽度状态）。
-  static const SongTableLayout instance = SongTableLayout._();
+  final TableColumnLayout _layout;
+
+  List<double> get weights => _layout.weights;
 
   /// 当前列表宽度是否适合表格；不够时返回 null（调用方走普通行）。
-  static SongTableLayout? fit(double width) =>
-      width >= kSongTableMinWidth ? instance : null;
+  static SongTableLayout? fit(double width, {List<double>? weights}) =>
+      width >= kSongTableMinWidth ? SongTableLayout(weights) : null;
 
   /// 9 个数据列（不含封面、菜单）。
-  ///
-  /// 列内右间距在这里统一附加：标题/歌手/专辑 12，其余 8，赞踩与时长 0。
-  /// [ListTile] 行用 `title` 承载本 Row，表头用 `padding + 本 Row` 对齐。
   Widget buildCells({
     required Widget title,
     required Widget artist,
@@ -76,31 +125,18 @@ class SongTableLayout {
     required Widget size,
     required Widget state,
     required Widget duration,
-  }) {
-    Widget cell(int flex, Widget child, {double right = 0}) => Expanded(
-          flex: flex,
-          child: right == 0
-              ? child
-              : Padding(
-                  padding: EdgeInsets.only(right: right),
-                  child: child,
-                ),
-        );
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        cell(kSongTableTitleFlex, title, right: 12),
-        cell(kSongTableArtistFlex, artist, right: 12),
-        cell(kSongTableAlbumFlex, album, right: 12),
-        cell(kSongTableSourceFlex, source, right: 8),
-        cell(kSongTableFormatFlex, format, right: 8),
-        cell(kSongTableBitrateFlex, bitrate, right: 8),
-        cell(kSongTableSizeFlex, size, right: 8),
-        cell(kSongTableStateFlex, state),
-        cell(kSongTableDurationFlex, duration),
-      ],
-    );
-  }
+  }) =>
+      _layout.buildCells([
+        title,
+        artist,
+        album,
+        source,
+        format,
+        bitrate,
+        size,
+        state,
+        duration,
+      ]);
 }
 
 /// 固定表头：标题 / 歌手 / 专辑 / 播放源 / 格式 / 码率 / 大小 / 赞踩 / 时长。
@@ -120,11 +156,23 @@ class SongTableHeader extends StatelessWidget {
   /// 点击可排序列表头的回调；为空时表头只读。
   final ValueChanged<CollectionSort>? onSort;
 
+  /// 拖拽中的实时列权重（页面 setState 重绘）。
+  final ValueChanged<List<double>>? onWeightsChanged;
+
+  /// 拖拽结束/双击恢复时提交权重（持久化）。
+  final ValueChanged<List<double>>? onWeightsCommitted;
+
+  /// 双击分隔线恢复默认列宽。
+  final VoidCallback? onResetWeights;
+
   const SongTableHeader({
     super.key,
     required this.layout,
     this.sort = CollectionSort.defaultOrder,
     this.onSort,
+    this.onWeightsChanged,
+    this.onWeightsCommitted,
+    this.onResetWeights,
   });
 
   /// 同一列表头的点击循环：升 → 降 → 默认；换列时从升序开始。
@@ -134,58 +182,43 @@ class SongTableHeader extends StatelessWidget {
     return asc;
   }
 
+  /// 排序字段 → 表头列下标（权重/播放统计没有对应列）。
+  static int? columnOf(CollectionSort sort) => switch (sort) {
+        CollectionSort.charAsc || CollectionSort.charDesc => 0,
+        CollectionSort.artistAsc || CollectionSort.artistDesc => 1,
+        CollectionSort.albumAsc || CollectionSort.albumDesc => 2,
+        CollectionSort.durationAsc || CollectionSort.durationDesc => 8,
+        _ => null,
+      };
+
+  static CollectionSort? _ascFor(int column) => switch (column) {
+        0 => CollectionSort.charAsc,
+        1 => CollectionSort.artistAsc,
+        2 => CollectionSort.albumAsc,
+        8 => CollectionSort.durationAsc,
+        _ => null,
+      };
+
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    Widget cell(String text,
-        {TextAlign align = TextAlign.left, CollectionSort? asc}) {
-      final active = asc != null && (sort == asc || sort == asc.flipped);
-      final label = active ? '$text ${sort.isDesc ? '↓' : '↑'}' : text;
-      final content = Text(
-        label,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        textAlign: align,
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              // 与计数头/列表同一套前景色；当前排序列用强调色。
-              color: active ? cs.primary : cs.onSurfaceVariant,
-              fontWeight: FontWeight.w600,
-            ),
-      );
-      if (asc == null || onSort == null) return content;
-      return InkWell(
-        onTap: () => onSort!(nextSort(sort, asc)),
-        borderRadius: BorderRadius.circular(4),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 6),
-          child: content,
-        ),
-      );
-    }
-
-    return Container(
+    return ResizableTableHeader(
+      columns: songTableColumns,
+      weights: layout.weights,
+      sortIndex: columnOf(sort),
+      sortDescending: sort.isDesc,
+      onSortColumn: onSort == null
+          ? null
+          : (i) {
+              final asc = _ascFor(i);
+              if (asc != null) onSort!(nextSort(sort, asc));
+            },
+      onWeightsChanged: onWeightsChanged,
+      onWeightsCommitted: onWeightsCommitted,
+      onResetWeights: onResetWeights,
       height: kSongTableHeaderHeight,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        // 与计数头/歌曲行共用页面底色：不再额外压一条 surfaceContainerLow 色带。
-        color: Theme.of(context).scaffoldBackgroundColor,
-        border: Border(bottom: BorderSide(color: cs.outlineVariant)),
-      ),
       padding: const EdgeInsets.only(
         left: kSongTableHeaderLeftInset,
         right: kSongTableHeaderRightInset,
-      ),
-      child: layout.buildCells(
-        title: cell('标题', asc: CollectionSort.charAsc),
-        artist: cell('歌手', asc: CollectionSort.artistAsc),
-        album: cell('专辑', asc: CollectionSort.albumAsc),
-        source: cell('播放源'),
-        format: cell('格式'),
-        bitrate: cell('码率', align: TextAlign.right),
-        size: cell('大小', align: TextAlign.right),
-        state: cell('赞踩', align: TextAlign.center),
-        duration:
-            cell('时长', align: TextAlign.right, asc: CollectionSort.durationAsc),
       ),
     );
   }
@@ -206,6 +239,11 @@ class SongTableList extends StatelessWidget {
   final CollectionSort sort;
   final ValueChanged<CollectionSort>? onSort;
 
+  /// 列宽拖拽回调（见 [SongTableHeader]）。
+  final ValueChanged<List<double>>? onWeightsChanged;
+  final ValueChanged<List<double>>? onWeightsCommitted;
+  final VoidCallback? onResetWeights;
+
   const SongTableList({
     super.key,
     required this.table,
@@ -216,6 +254,9 @@ class SongTableList extends StatelessWidget {
     this.rowHeight = kRowHeight,
     this.sort = CollectionSort.defaultOrder,
     this.onSort,
+    this.onWeightsChanged,
+    this.onWeightsCommitted,
+    this.onResetWeights,
   });
 
   @override
@@ -230,7 +271,14 @@ class SongTableList extends StatelessWidget {
     if (table == null || count == 0) return list;
     return Column(
       children: [
-        SongTableHeader(layout: table!, sort: sort, onSort: onSort),
+        SongTableHeader(
+          layout: table!,
+          sort: sort,
+          onSort: onSort,
+          onWeightsChanged: onWeightsChanged,
+          onWeightsCommitted: onWeightsCommitted,
+          onResetWeights: onResetWeights,
+        ),
         Expanded(child: list),
       ],
     );
