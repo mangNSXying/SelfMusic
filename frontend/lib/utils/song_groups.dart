@@ -126,17 +126,19 @@ class SongGroupCache {
   }
 }
 
-/// 列表展示行（平铺组头 / 源页文件夹行 / 歌曲行三选一）。
+/// 列表展示行（平铺组头 / 源页文件夹行 / 歌曲行 / 块表头四选一）。
 ///
 /// - [group]：平铺分组头（折叠/组播）；
 /// - [folder]：源页文件夹行（进入/展开/递归播）；
 /// - [song]：歌曲在输入 `songs` 中的下标；
+/// - [header]：源页递归树的「文件夹直属歌曲块」表头（仅块表头模式出现）；
 /// - [depth]：源页树形缩进层级（平铺行为 0）。
 typedef SongListRow = ({
   String? group,
   SourceFolder? folder,
   int? song,
   int depth,
+  bool header,
 });
 
 /// 平铺行：分组头 + 未折叠组的歌曲；分组为空时退化为纯歌曲行。
@@ -144,10 +146,11 @@ List<SongListRow> buildFlatRows(List<SongGroup> groups, Set<String> collapsed) {
   if (groups.isEmpty) return const [];
   final rows = <SongListRow>[];
   for (final g in groups) {
-    rows.add((group: g.name, folder: null, song: null, depth: 0));
+    rows.add((group: g.name, folder: null, song: null, depth: 0, header: false));
     if (collapsed.contains(g.name)) continue;
     for (final i in g.songIndices) {
-      rows.add((group: null, folder: null, song: i, depth: 0));
+      rows.add(
+          (group: null, folder: null, song: i, depth: 0, header: false));
     }
   }
   return rows;
@@ -162,10 +165,15 @@ typedef SourceTreeRows = ({
 
 /// 源页树形行：从 [dir] 开始先序展开，文件夹在前、直属歌曲在后；
 /// [expanded] 为已展开目录路径，未展开的目录只显示自身行。
+///
+/// [includeBlockHeaders] = true 时，在每个文件夹的直属歌曲前插入一行块表头
+/// （`header: true`，depth 与该层歌曲一致）；空块不插表头。搜索态与窄宽度
+/// 不启用，保持原平铺表格/普通行。
 SourceTreeRows buildSourceTreeRows({
   required SourceFolderTree tree,
   required String dir,
   required Set<String> expanded,
+  bool includeBlockHeaders = false,
 }) {
   final start = tree.nodeOf(dir);
   final rows = <SongListRow>[];
@@ -174,11 +182,20 @@ SourceTreeRows buildSourceTreeRows({
 
   void visit(SourceFolderNode node, int depth) {
     for (final child in node.children.values) {
-      rows.add((group: null, folder: child.folder, song: null, depth: depth));
+      rows.add((group: null, folder: child.folder, song: null, depth: depth, header: false));
       if (expanded.contains(child.path)) visit(child, depth + 1);
     }
+    if (node.directSongIndices.isEmpty) return;
+    if (includeBlockHeaders) {
+      rows.add(
+          (group: null, folder: null, song: null, depth: depth, header: true));
+    }
     for (final i in node.directSongIndices) {
-      rows.add((group: null, folder: null, song: visible.length, depth: depth));
+      rows.add((group: null,
+          folder: null,
+          song: visible.length,
+          depth: depth,
+          header: false));
       visible.add(i);
     }
   }

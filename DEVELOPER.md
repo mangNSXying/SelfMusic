@@ -732,9 +732,9 @@ abstract class MusicSource {
 - **行高不变**：仍是 `kRowHeight=72`、`itemExtent=73`；表头高 32，普通列表固定在列表上方，sliver 页 pinned。
 - **数据**：`SongRowView.of(table: true)` 产出 `SongTableCells`（标题/歌手/专辑/播放源/格式/码率/大小/时长）；表格标题不拼歌手（默认「歌手 - 歌名」会与歌手列重复），「文件名」设置仍保留。
 - **赞踩列**：本机收藏/不喜欢两态图标，无计数；空态 `—`。
-- **源页递归树**：表格模式下行不整行右移，层级缩进只作用于标题格（每级 10px、最多 3 级），保证列与表头对齐；文件夹行/组头仍全宽。
+- **源页递归树（块表头）**：列表宽度 ≥ `kSongTreeBlockHeaderMinWidth=872` 时，每个文件夹的**直属歌曲**成为一个 wrap：块表头 + 歌曲整体按 18px/层缩进，表头随块重复、与全局 `sort` 共用状态；此模式不再显示顶部全局表头。800~871 退回单一全局表头 + 标题格缩进（每级 10px、最多 3 级）；<800 保持普通行。块表头行高 32、文件夹/歌曲行 72，列表用 `VariableRowList` 混排，滚动定位按行高前缀和计算；搜索态仍走平铺 + 单一全局表头。
 - **两种外壳**：`SongTableList`（普通 ListView，歌曲/喜欢/歌单详情/播放源详情）与 `SliverSongTable`/`SongTableSliverList`（专辑/歌手详情的 `CustomScrollView`，表头 pinned）。窄宽度时外壳原样返回普通列表。
-- **回归**：`test/song_table_test.dart`（9 列、阈值 800、窄行回退、多选列宽、递归缩进、sliver pinned 表头）；`test/song_tile_wide_info_test.dart` 仍覆盖 legacy 宽行技术信息。
+- **回归**：`test/song_table_test.dart`（9 列、阈值 800、窄行回退、多选列宽、块表头重复/整块缩进、800~871 回退、sliver pinned 表头）、`test/song_groups_test.dart`（块表头行序/深度）、`test/song_tile_wide_info_test.dart` 仍覆盖 legacy 宽行技术信息。
 
 ### 内容页分栏（大横屏 · 列表模式）
 

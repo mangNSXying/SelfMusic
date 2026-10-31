@@ -159,6 +159,12 @@ class _SongCollectionViewState extends State<SongCollectionView> {
   List<SongListRow> _rows = const [];
   int _focusDisplay = -1;
 
+  /// 行高前缀偏移：递归块表头（32）与歌曲/文件夹（73）混排时，滚动定位
+  /// 不能再用 `row * kRowExtent`。
+  Object? _rowOffsetsRows;
+  bool _rowOffsetsBlockHeaders = false;
+  List<double> _rowOffsets = const [];
+
   /// 逐级模式的展示列表缓存：树、根目录与展开版本不变时复用，避免每次
   /// build 新建列表导致行缓存整表失效。
   Object? _folderRowsKey;
@@ -400,10 +406,31 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     });
   }
 
+  /// 每行顶部的滚动偏移（行模型/块表头模式不变时复用）。
+  List<double> _offsetsOf(List<SongListRow> rows, bool blockHeaders) {
+    if (identical(_rowOffsetsRows, rows) &&
+        _rowOffsetsBlockHeaders == blockHeaders) {
+      return _rowOffsets;
+    }
+    _rowOffsetsRows = rows;
+    _rowOffsetsBlockHeaders = blockHeaders;
+    final out = List<double>.filled(rows.length, 0);
+    var y = 0.0;
+    for (var i = 0; i < rows.length; i++) {
+      out[i] = y;
+      y += blockHeaders && rows[i].header
+          ? kSongTableHeaderHeight
+          : kRowExtent;
+    }
+    return _rowOffsets = out;
+  }
+
   void _scrollToRow(int row) {
     if (!mounted || !_scroll.hasClients) return;
     // 目标行置于距顶 96px 处；越界位置由滚动范围钳位。
-    final offset = (row * kRowExtent - 96).clamp(0.0, double.infinity);
+    final base =
+        row < _rowOffsets.length ? _rowOffsets[row] : row * kRowExtent;
+    final offset = (base - 96).clamp(0.0, double.infinity);
     _scroll.jumpTo(offset.clamp(0.0, _scroll.position.maxScrollExtent));
   }
 
@@ -432,6 +459,12 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     final recursive = !widget.searching &&
         widget.folderNavigation == FolderNavigation.recursive &&
         mode == SongGroupMode.folder;
+    final table = SongTableLayout.fit(availableWidth);
+
+    /// 递归树 + 足够宽：每个文件夹的直属歌曲块重复一份表头（块模型）。
+    /// 800~871 仍走单一全局表头（块整体缩进会把列压到阈值以下）。
+    final useBlockHeaders =
+        recursive && availableWidth >= kSongTreeBlockHeaderMinWidth;
 
     List<Song> displaySongs;
     List<SongListRow> rows;
@@ -447,13 +480,14 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       );
       folderTree = tree;
       folderCount = tree.nodeOf(widget.dir)?.children.length ?? 0;
-      final rowsKey = (tree, widget.dir, _expandRev);
+      final rowsKey = (tree, widget.dir, _expandRev, useBlockHeaders);
       if (_folderRowsKey != rowsKey) {
         _folderRowsKey = rowsKey;
         final built = buildSourceTreeRows(
           tree: tree,
           dir: widget.dir,
           expanded: _expandedFolders,
+          includeBlockHeaders: useBlockHeaders,
         );
         _folderRows = built.rows;
         _folderVisibleIndices = built.visibleSongIndices;
@@ -489,7 +523,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
           _noneRowsBase = displaySongs;
           _noneRows = [
             for (var i = 0; i < displaySongs.length; i++)
-              (group: null, folder: null, song: i, depth: 0),
+              (group: null, folder: null, song: i, depth: 0, header: false),
           ];
         }
         rows = _noneRows;
@@ -528,8 +562,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     final focusDisplay = widget.focusCurrent ? currentIdx : -1;
     _rows = rows;
     _focusDisplay = focusDisplay;
-
-    final table = SongTableLayout.fit(availableWidth);
+    _rowOffsets = _offsetsOf(rows, useBlockHeaders);
 
     _rowCache.begin(
       (
@@ -633,6 +666,44 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       ],
     );
 
+    Widget rowAt(BuildContext c, int i) {
+      final row = rows[i];
+      if (row.header) {
+        final indent = _treeIndent(row.depth);
+        final layout = SongTableLayout.fit(availableWidth - indent);
+        if (layout == null) return const SizedBox.shrink();
+        return Padding(
+          padding: EdgeInsets.only(left: indent),
+          child: SongTableHeader(
+            layout: layout,
+            sort: widget.sort,
+            onSort: widget.showSort ? widget.onSortChanged : null,
+          ),
+        );
+      }
+      if (row.folder != null) {
+        final f = row.folder!;
+        return _folderRow(c, direct, f, row.depth,
+            selection.folderSelected[f.path] ?? 0);
+      }
+      if (row.group != null) {
+        final g = _groupsByName[row.group!];
+        return g == null
+            ? const SizedBox.shrink()
+            : _groupRow(c, direct, groups, g,
+                selection.groupSelected[g.name] ?? 0);
+      }
+      final si = row.song!;
+      final s = displaySongs[si];
+      final key = keys[si];
+      final blockIndent = useBlockHeaders ? _treeIndent(row.depth) : 0.0;
+      final rowTable = useBlockHeaders
+          ? SongTableLayout.fit(availableWidth - blockIndent)
+          : table;
+      return _songRow(direct, displaySongs, si, s, key, currentIdx, rowTable,
+          row.depth, blockIndent: blockIndent);
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -678,34 +749,34 @@ class _SongCollectionViewState extends State<SongCollectionView> {
                           Text(widget.emptyText, textAlign: TextAlign.center),
                     ),
                   ))
-              : SongTableList(
-                  table: table,
-                  controller: _scroll,
-                  count: rows.length,
-                  sort: widget.sort,
-                  onSort: widget.showSort ? widget.onSortChanged : null,
-                  onRefresh: widget.onRefresh,
-                  itemBuilder: (c, i) {
-                    final row = rows[i];
-                    if (row.folder != null) {
-                      final f = row.folder!;
-                      return _folderRow(c, direct, f, row.depth,
-                          selection.folderSelected[f.path] ?? 0);
-                    }
-                    if (row.group != null) {
-                      final g = _groupsByName[row.group!];
-                      return g == null
-                          ? const SizedBox.shrink()
-                          : _groupRow(c, direct, groups, g,
-                              selection.groupSelected[g.name] ?? 0);
-                    }
-                    final si = row.song!;
-                    final s = displaySongs[si];
-                    final key = keys[si];
-                    return _songRow(direct, displaySongs, si, s, key,
-                        currentIdx, table, row.depth);
-                  },
-                ),
+              : useBlockHeaders
+                  ? VariableRowList(
+                      controller: _scroll,
+                      count: rows.length,
+                      onRefresh: widget.onRefresh,
+                      rowHeightOf: (i) => rows[i].header
+                          ? kSongTableHeaderHeight
+                          : kRowHeight,
+                      showDividerOf: (i) =>
+                          !rows[i].header && i != rows.length - 1,
+                      dividerIndentOf: (i) => rows[i].header
+                          ? 0
+                          : rows[i].folder != null
+                              ? kRowDividerIndent
+                              : _treeIndent(rows[i].depth) +
+                                  kRowDividerIndent,
+                      itemBuilder: rowAt,
+                    )
+                  : SongTableList(
+                      table: table,
+                      controller: _scroll,
+                      count: rows.length,
+                      sort: widget.sort,
+                      onSort:
+                          widget.showSort ? widget.onSortChanged : null,
+                      onRefresh: widget.onRefresh,
+                      itemBuilder: rowAt,
+                    ),
         ),
       ],
     );
@@ -980,8 +1051,9 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     String key,
     int currentIdx,
     SongTableLayout? table,
-    int depth,
-  ) {
+    int depth, {
+    double blockIndent = 0,
+  }) {
     final src = widget.sourceOf?.call(s);
     final tile = SongTile(
       song: s,
@@ -1005,7 +1077,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
         );
       }),
       table: table,
-      titleIndent: table == null ? 0 : _tableTitleIndent(depth),
+      titleIndent: table == null || blockIndent > 0 ? 0 : _tableTitleIndent(depth),
       playing: si == currentIdx,
       selectionMode: _sel.active,
       selected: _sel.contains(key),
@@ -1021,6 +1093,13 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       extraMenuItems: widget.extraMenuItems?.call(s, si),
       onExtraMenu: (v) => widget.onExtraMenu?.call(s, v),
     );
+    // 块模式：整个 wrap（表头 + 歌曲）共用同一左缩进，列在块内对齐。
+    if (blockIndent > 0) {
+      return Padding(
+        padding: EdgeInsets.only(left: blockIndent),
+        child: tile,
+      );
+    }
     // 表格模式的层级缩进在标题格内处理；普通行仍整行右移（树形层级）。
     if (depth <= 0 || table != null) return tile;
     return Padding(

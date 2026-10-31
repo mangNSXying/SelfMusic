@@ -74,6 +74,63 @@ class RowList extends StatelessWidget {
   }
 }
 
+/// 可变行高列表外壳：行高由 [rowHeightOf] 决定，分隔线可选。
+///
+/// 仅用于「同一列表里混排不同高度」的场景（源页递归树的块表头 32 + 歌曲 72）。
+/// 仍走 `ListView.builder` 懒构建；滚动定位由调用方按同一套行高自行累加，
+/// 不依赖固定 `itemExtent`。
+class VariableRowList extends StatelessWidget {
+  final int count;
+  final Widget Function(BuildContext context, int index) itemBuilder;
+
+  /// 行本体高度（不含分隔线）。
+  final double Function(int index) rowHeightOf;
+
+  /// 该行后是否画分隔线；默认末行不画。
+  final bool Function(int index)? showDividerOf;
+
+  /// 分隔线缩进；默认 [kRowDividerIndent]。
+  final double Function(int index)? dividerIndentOf;
+
+  final ScrollController? controller;
+  final RefreshCallback? onRefresh;
+
+  const VariableRowList({
+    super.key,
+    required this.count,
+    required this.itemBuilder,
+    required this.rowHeightOf,
+    this.showDividerOf,
+    this.dividerIndentOf,
+    this.controller,
+    this.onRefresh,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final last = count - 1;
+    bool divider(int i) => showDividerOf?.call(i) ?? i != last;
+    final list = ListView.builder(
+      controller: controller,
+      itemCount: count,
+      itemExtentBuilder: (i, _) =>
+          rowHeightOf(i) + (divider(i) ? kRowSeparatorHeight : 0),
+      itemBuilder: (c, i) => Column(
+        children: [
+          SizedBox(height: rowHeightOf(i), child: itemBuilder(c, i)),
+          if (divider(i))
+            Divider(
+              height: kRowSeparatorHeight,
+              indent: dividerIndentOf?.call(i) ?? kRowDividerIndent,
+            ),
+        ],
+      ),
+    );
+    if (onRefresh == null) return list;
+    return RefreshIndicator(onRefresh: onRefresh!, child: list);
+  }
+}
+
 /// [RowList] 的 Sliver 版：作为 `CustomScrollView.slivers` 的成员使用，
 /// 行高/分隔线口径与 [RowList] 完全一致。
 ///

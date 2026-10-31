@@ -9,6 +9,12 @@ import 'row_list.dart';
 /// 低于该宽度（分栏右栏、队列面板、窄屏）继续走普通行。
 const double kSongTableMinWidth = 800;
 
+/// 源页递归树启用「每个文件夹块重复表头」的最低列表宽度。
+///
+/// 块整体缩进最多 4 级 × 18px = 72；再留 [kSongTableMinWidth] 才能保证
+/// 最深层的块仍有完整九列。800~871 继续用单一全局表头 + 标题格缩进。
+const double kSongTreeBlockHeaderMinWidth = kSongTableMinWidth + 72;
+
 /// 表头高度（含底部分隔线）。
 const double kSongTableHeaderHeight = 32;
 

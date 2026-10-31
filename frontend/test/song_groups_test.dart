@@ -171,7 +171,8 @@ void main() {
       'rock/deep/c.mp3',
       'pop/b.mp3',
     ];
-    String label(SongListRow r) => r.folder?.name ?? 's${r.song}';
+    String label(SongListRow r) =>
+        r.header ? '[H]' : (r.folder?.name ?? 's${r.song}');
 
     test('默认折叠：当前层文件夹 + 本层歌曲', () {
       final tree = SourceFolderTree.build(relRefs: refs);
@@ -191,6 +192,31 @@ void main() {
       expect(built.rows.map(label), ['pop', 'rock', 'deep', 's0', 's1']);
       expect(built.rows.map((r) => r.depth), [0, 0, 1, 1, 0]);
       expect(built.visibleSongIndices, [1, 0]);
+    });
+
+    test('块表头：每个有直属歌曲的文件夹插一行，顺序/深度与歌曲一致', () {
+      final tree = SourceFolderTree.build(relRefs: refs);
+      final built = buildSourceTreeRows(
+        tree: tree,
+        dir: '',
+        expanded: {'rock'},
+        includeBlockHeaders: true,
+      );
+      expect(built.rows.map(label), ['pop', 'rock', 'deep', '[H]', 's0', '[H]', 's1']);
+      expect(built.rows.map((r) => r.depth), [0, 0, 1, 1, 1, 0, 0]);
+      expect(built.visibleSongIndices, [1, 0]);
+    });
+
+    test('块表头：没有直属歌曲的目录不插表头', () {
+      final tree = SourceFolderTree.build(relRefs: ['rock/a.mp3']);
+      final built = buildSourceTreeRows(
+        tree: tree,
+        dir: '',
+        expanded: {'rock'},
+        includeBlockHeaders: true,
+      );
+      expect(built.rows.map(label), ['rock', '[H]', 's0']);
+      expect(built.visibleSongIndices, [0]);
     });
 
     test('从子目录作为根构建', () {

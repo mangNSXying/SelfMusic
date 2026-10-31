@@ -88,6 +88,7 @@ void main() {
     SongGroupMode mode = SongGroupMode.none,
     FolderNavigation navigation = FolderNavigation.flat,
     List<String>? folderPaths,
+    ValueChanged<CollectionSort>? onSortChanged,
   }) async {
     tester.view.physicalSize = ui.Size(width, 900);
     tester.view.devicePixelRatio = 1.0;
@@ -108,7 +109,7 @@ void main() {
               groupMode: mode,
               onGroupModeChanged: (_) {},
               sort: direct.settings.sortSongs,
-              onSortChanged: (_) {},
+              onSortChanged: onSortChanged ?? (_) {},
               folderNavigation: navigation,
               folderPaths: folderPaths,
               dir: '',
@@ -194,7 +195,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('源页文件夹树：歌曲缩进不移动表格列', (tester) async {
+  testWidgets('源页文件夹树：块表头与歌曲整块缩进，列在块内对齐', (tester) async {
     const refs = ['A/b/c/深处的歌.mp3'];
     await pumpCollection(
       tester,
@@ -209,11 +210,69 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('深处的歌'), findsOneWidget);
 
-    // 标题格按层级缩进（仍可辨认层级），但歌手/专辑等列不随缩进右移。
+    // 递归树 + 足够宽：全局表头移除，只留该文件夹块的重复表头。
+    expect(find.text('标题'), findsOneWidget);
+    // 表头与歌曲整块缩进，标题列在块内对齐。
     expect(tester.getTopLeft(find.text('深处的歌')).dx,
-        greaterThan(tester.getTopLeft(find.text('标题')).dx));
+        closeTo(tester.getTopLeft(find.text('标题')).dx, 0.5));
     expect(tester.getTopLeft(find.text('周杰伦')).dx,
         closeTo(tester.getTopLeft(find.text('歌手')).dx, 0.5));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('块表头：每个文件夹直属歌曲块各一份，按层级整块缩进', (tester) async {
+    const refs = ['root.mp3', 'A/a.mp3'];
+    final picked = <CollectionSort>[];
+    await pumpCollection(
+      tester,
+      width: 1200,
+      songs: [
+        _song(title: '根曲', sourceRef: 'root.mp3'),
+        _song(title: 'A曲', sourceRef: 'A/a.mp3', id: 2),
+      ],
+      mode: SongGroupMode.folder,
+      navigation: FolderNavigation.recursive,
+      folderPaths: refs,
+      onSortChanged: picked.add,
+    );
+    await tester.tap(find.byTooltip('全部展开'));
+    await tester.pump(const Duration(milliseconds: 50));
+
+    // 行序：A 文件夹 → A 块表头/歌曲 → 根块表头/歌曲。
+    expect(find.text('标题'), findsNWidgets(2));
+    final aHeaderX = tester.getTopLeft(find.text('标题').first).dx;
+    final rootHeaderX = tester.getTopLeft(find.text('标题').last).dx;
+    expect(aHeaderX, greaterThan(rootHeaderX));
+    expect(tester.getTopLeft(find.text('A曲')).dx, closeTo(aHeaderX, 0.5));
+    expect(tester.getTopLeft(find.text('根曲')).dx, closeTo(rootHeaderX, 0.5));
+    expect(find.text('歌手'), findsNWidgets(2));
+
+    // 任意块表头点击都写同一份全局排序状态。
+    await tester.tap(find.text('歌手').first);
+    await tester.pump();
+    expect(picked, [CollectionSort.artistAsc]);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('800~871：退回单一全局表头 + 标题格缩进', (tester) async {
+    const refs = ['root.mp3', 'A/a.mp3'];
+    await pumpCollection(
+      tester,
+      width: 820,
+      songs: [
+        _song(title: '根曲', sourceRef: 'root.mp3'),
+        _song(title: 'A曲', sourceRef: 'A/a.mp3', id: 2),
+      ],
+      mode: SongGroupMode.folder,
+      navigation: FolderNavigation.recursive,
+      folderPaths: refs,
+    );
+    await tester.tap(find.byTooltip('全部展开'));
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(find.text('标题'), findsOneWidget);
+    expect(tester.getTopLeft(find.text('A曲')).dx,
+        greaterThan(tester.getTopLeft(find.text('标题')).dx));
     expect(tester.takeException(), isNull);
   });
 
