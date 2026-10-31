@@ -397,6 +397,56 @@ void main() {
       expect(find.text('专辑 0'), findsAtLeastNWidgets(2));
     });
 
+    testWidgets('列表分栏详情中切到卡片：旧详情关闭，点卡片可重新进入', (tester) async {
+      final h = await _pumpWide(tester);
+      addTearDown(() => _dispose(h.direct, h.dir));
+
+      await tester.tap(find.text('A测试歌手'));
+      await tester.pumpAndSettle();
+      expect(h.nav.details, hasLength(1));
+      expect(find.byTooltip('返回'), findsOneWidget);
+      final pagerState = tester.state(find.byType(SectionPager));
+
+      // 直接切到卡片：分栏详情必须关闭，否则 openDetail 会按「已在显示」去重。
+      await tester.tap(find.byTooltip('切换为卡片'));
+      await tester.pumpAndSettle();
+      expect(h.direct.settings.viewModeArtists, CollectionViewMode.card);
+      expect(h.nav.details, isEmpty);
+      expect(find.byTooltip('返回'), findsNothing);
+      // 展示形态切换不是区域切换：分组 Pager 的滚动/页签状态必须保留。
+      expect(identical(tester.state(find.byType(SectionPager)), pagerState),
+          isTrue);
+
+      await tester.tap(find.text('A测试歌手').first);
+      await tester.pumpAndSettle();
+      expect(h.nav.details, hasLength(1));
+      expect(h.nav.details.single, isA<ArtistDetailRoute>());
+      expect(find.byTooltip('返回'), findsOneWidget);
+    });
+
+    testWidgets('专辑列表分栏中切到卡片：旧详情关闭，点卡片可重新进入', (tester) async {
+      final h = await _pumpWide(tester);
+      addTearDown(() => _dispose(h.direct, h.dir));
+
+      h.direct.settings.viewModeAlbums = CollectionViewMode.list;
+      h.nav.select(NavSection.albums);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('专辑 0').first);
+      await tester.pumpAndSettle();
+      expect(h.nav.details, hasLength(1));
+
+      await tester.tap(find.byTooltip('切换为卡片'));
+      await tester.pumpAndSettle();
+      expect(h.direct.settings.viewModeAlbums, CollectionViewMode.card);
+      expect(h.nav.details, isEmpty);
+
+      await tester.tap(find.text('专辑 0').first);
+      await tester.pumpAndSettle();
+      expect(h.nav.details, hasLength(1));
+      expect(h.nav.details.single, isA<AlbumDetailRoute>());
+      expect(find.byTooltip('返回'), findsOneWidget);
+    });
+
     testWidgets('整页「重新解析」：确认后先退出详情、再发起重拉', (tester) async {
       final h = await _pumpWide(tester);
       addTearDown(() => _dispose(h.direct, h.dir));

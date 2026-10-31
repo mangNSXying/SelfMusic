@@ -77,11 +77,13 @@ class AppContent extends StatelessWidget {
     //（窄屏弹层、卡片模式、内容区不够宽仍走原有呈现）。
     final split = splitDetailActive(context);
     final page = _areaPage(context, routeKey, transition, split: split);
-    // 分栏时歌单/专辑/歌手/源内浏览的详情只换右栏：区域键固定到分组，避免
-    // 整块内容区播区域切换动画（右栏内部另有 [kDetailPaneMotion] 的轻量过渡）。
-    // 设置页保持原有区域键与动画。
-    final splitArea = split && routeKey.settings == null;
-    final areaKey = splitArea ? 'split:${routeKey.section.name}' : nav.areaKey;
+    // 集合页（六个分组，含分栏左右栏、列表/卡片与专辑/歌手整页叠层）统一用
+    // 'sections' 区域键：分栏只换右栏、切列表/卡片也只换页内形态，都不应触发
+    // 整块内容区动画或重建 [SectionPager]（分组切换由 Pager 自己处理）。
+    // 歌单/播放源整页详情与设置才是独立区域，保留 nav.areaKey 的层级动画。
+    final fullPageArea = routeKey.settings != null ||
+        (!split && (routeKey.sourceKey != null || routeKey.playlistId != null));
+    final areaKey = fullPageArea ? nav.areaKey : 'sections';
     if (transition == PlayerTransition.none) return page;
     if (transition == PlayerTransition.slide) {
       // 分层切换：底层静止垫底，只有高层移动，不透黑底。

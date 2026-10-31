@@ -380,6 +380,23 @@ class NavigationProvider extends ChangeNotifier {
     _pushDetail(ArtistDetailRoute(artist, songs));
   }
 
+  /// 列表视图切到卡片时关闭当前分栏详情（专辑/歌手叠层、歌单/源内浏览）。
+  ///
+  /// 只清详情，不改变当前分组；[keepSearch] 默认 true，让左栏过滤词保留。
+  void closeSplitDetail({bool keepSearch = true}) {
+    final hasDetail = _details.isNotEmpty ||
+        _browsingPlaylistId != null ||
+        _browsingSourceKey != null;
+    if (!hasDetail) return;
+    _slideOffset = const Offset(-1, 0);
+    _clearDetails();
+    _browsingPlaylistId = null;
+    _browsingSourceKey = null;
+    _sourceDir = '';
+    if (!keepSearch) _clearSearchForDetail();
+    notifyListeners();
+  }
+
   /// 关闭栈顶详情页（回到上一层详情/分组列表）。
   ///
   /// [keepSearch]：分栏时返回只是清空右栏，左栏过滤词要留着。

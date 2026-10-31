@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:selfmusic/data/local/app_settings.dart';
+import 'package:selfmusic/providers/direct_source_manager.dart';
+import 'package:selfmusic/providers/navigation_provider.dart';
 
 import 'toolbar_icon_button.dart';
 
@@ -29,8 +32,9 @@ extension ViewModeSlotX on ViewModeSlot {
 /// 再各自拼 `ViewModeToggle`（12 行 ×4）。本 mixin 收口翻转逻辑与切换按钮，
 /// 页面只需声明 [viewModeSlot]。
 ///
-/// **为什么需要本地覆盖**：切换写的是 SQLite 设置，不触发 provider 通知，
-/// 必须 setState 才会立刻换形态；下次进入页面再回落到设置值。
+/// **为什么需要本地覆盖**：切换写的是 SQLite 设置，不自动触发页面重建；
+/// 页面靠 setState 立即换形态，内容壳靠 [DirectSourceManager.viewModeChanged]
+/// 重算分栏；下次进入页面再回落到设置值。
 mixin ViewModeState<T extends StatefulWidget> on State<T> {
   /// 绑定到哪个设置项。
   ViewModeSlot get viewModeSlot;
@@ -47,8 +51,18 @@ mixin ViewModeState<T extends StatefulWidget> on State<T> {
       _viewMode ?? viewModeSlot.read(appSettings());
 
   /// 切换展示形式：写设置 + 立即重建。
+  ///
+  /// 列表分栏详情打开时切到卡片，先关掉旧详情（保留搜索词），否则
+  /// `openDetail` 会按「已在显示」去重，导致再点卡片没有反应。
+  /// 同时通知内容壳重算分栏——设置写库不会触发 provider 通知。
   void setViewMode(CollectionViewMode mode) {
+    final previous = viewModeOf();
     viewModeSlot.write(appSettings(), mode);
+    if (previous == CollectionViewMode.list &&
+        mode == CollectionViewMode.card) {
+      context.read<NavigationProvider>().closeSplitDetail();
+    }
+    context.read<DirectSourceManager>().viewModeChanged();
     setState(() => _viewMode = mode);
   }
 

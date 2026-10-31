@@ -246,6 +246,12 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 仅 UI 形态（列表/卡片）变更时调用：只通知，不推进设置版本，
+  /// 避免列表被当成「内容过滤规则变化」重查；内容壳靠它重算分栏。
+  void viewModeChanged() {
+    notifyListeners();
+  }
+
   // ---------- 扫描：进度 / 取消 / 自动触发 ----------
 
   final Map<String, ScanToken> _scanTokens = {};

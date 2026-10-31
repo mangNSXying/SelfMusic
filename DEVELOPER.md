@@ -751,13 +751,14 @@ abstract class MusicSource {
 | 状态 | `NavigationProvider.details` / `browsingPlaylistId` / `browsingSourceKey` | 分栏不新增"选中态"：右栏直接消费既有路由状态，跨断点切换不丢"当前在看什么" |
 
 - **内容区宽度必须用目标值**：`AppShell` 按 `窗口宽 − 侧栏 260 − 队列 360`（都是**目标**宽度，不是 300ms 伸缩动画中的实时值）算好经 `ScreenMetrics` 下发，否则分栏会在阈值附近来回抖。手机横屏（800−260=540）因此不会误分栏。
-- **区域切换动画与分栏互斥**：分栏时 `AppContent` 把区域键固定成 `split:<分组>`，进/出歌单、专辑、歌手详情、源内浏览都只换右栏（`AppContent` 注释）；设置页仍走原区域键与滑动动画。
+- **区域切换动画与分栏互斥**：集合页统一使用 `sections` 区域键——分栏只换右栏、列表/卡片只换页内形态，都不触发整块内容区动画或重建 `SectionPager`；歌单/源内整页详情与设置才使用独立区域键。设置页仍走原区域键与滑动动画。
 - **搜索词保留**：分栏时搜索框就是左栏的过滤器，`enterPlaylist / enterAlbum / enterArtist / enterSource / exitDetail / exitPlaylist / exitSource / backToPrevious` 都带 `keepSearch`，由调用点按 `splitDetailActive` 传值；非分栏沿用"进/出详情清空搜索"的旧口径。
 - **源内返回链**：目录状态放在 `NavigationProvider.sourceDir`（由 `SourceBrowseView` 读写，不再是页面私有 State），`backToPrevious` 先退一层目录、到源根才退出源内，系统返回 / Esc 与头部返回箭头语义一致；搜索态下目录不可见，返回直接退出源内。非逐级分类模式会清空目录，避免"退一层看不见的目录"。
 - **自动扫描节流**：打开源触发的增量扫描经 `DirectSourceManager.claimAutoScan`（同一源 60s 一次），分栏里来回点源不会反复扫描；手动「扫描」不经过该节流。
 - **详情入口统一**：`layout/detail_target.dart` 的 `DetailTarget`（Playlist / Album / Artist / Source）+ `openDetail` 收口「是否已在显示」的去重、`keepSearch` 与 `root` 语义；入口函数只构造 target。呈现外壳统一走 `widgets/detail_presentation.dart` 的 `DetailPresentationShell`（`page` 保留分组横滑；`pane` / `overlay` 自绘不透明底），页面本体不再各自判断。窄屏专辑/歌手拖拽弹层需要页面私有构建器，仍在 `library_screen.dart` 入口处分流。
 - **左栏换选中项不叠加层**：左栏（分组列表）点选用 `root: true` 把详情栈重置为这一层；只有详情内部的嵌套入口（歌手专辑横条、成员/组合作品行）才压在上一层之上（`fromDetail`）。
 - **表格模式按列表实际宽度判定**：`SongCollectionView` 在外层做一次 `LayoutBuilder`（不再用窗口宽），达到 `kSongTableMinWidth=800` 时用 `SongTableList` 加表头；分栏右栏（如 360 宽）自动回退普通行，不会撑爆 `ListTile` 尾部断言。
+- **列表→卡片切换**：`ViewModeState.setViewMode` 在离开列表形态时调用 `NavigationProvider.closeSplitDetail` 关掉当前分栏详情（保留左栏搜索词），并经 `DirectSourceManager.viewModeChanged` 通知内容壳重算分栏——否则旧详情仍占着「已在显示」判定，再点卡片会被 `openDetail` 去重挡住。
 - 左栏选中行用 `ListTile.tileColor`（主色 10%）提示，不用 `selected`（避免文字/图标整体变主色）；列表带 `PageStorageKey`，分栏↔整页切换后滚动位置仍在。
 - 回归：`test/album_artist_detail_wide_test.dart`（分栏/整页两条路径 + 换选中项 + 搜索保留）、`test/content_split_layout_test.dart`（阈值、容器、右栏过渡、歌单分栏与搜索语义）、`test/source_split_test.dart`（播放源分栏 / 返回链 / 自动扫描节流）、`test/detail_target_test.dart`（统一入口去重口径 + 呈现外壳）、`test/song_table_test.dart`（表格列几何 / 阈值 / 递归缩进 / sliver 表头）。
 
