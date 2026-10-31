@@ -189,7 +189,6 @@ class _ResizeHandleState extends State<_ResizeHandle> {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     return MouseRegion(
       cursor: SystemMouseCursors.resizeColumn,
       child: GestureDetector(
@@ -197,12 +196,8 @@ class _ResizeHandleState extends State<_ResizeHandle> {
         onHorizontalDragUpdate: _onDrag,
         onHorizontalDragEnd: (_) => widget.onCommitted?.call(_latest),
         onDoubleTap: widget.onReset,
-        child: Center(
-          child: Container(
-            width: 1,
-            color: cs.outlineVariant.withValues(alpha: 0.55),
-          ),
-        ),
+        // 热区不可见：不画列间分割线，只保留 resize 光标与拖拽。
+        child: const SizedBox.expand(),
       ),
     );
   }
