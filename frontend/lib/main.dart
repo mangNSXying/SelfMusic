@@ -32,6 +32,7 @@ import 'theme/app_theme.dart';
 import 'screens/library_screen.dart';
 import 'screens/player_screen.dart';
 import 'layout/app_shell.dart';
+import 'layout/screen_metrics.dart';
 import 'widgets/app_dialog_actions.dart';
 import 'widgets/app_shortcuts.dart';
 import 'widgets/app_toast.dart';
@@ -655,7 +656,11 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
   /// （audio_service 前台服务继续、播放不中断）；桌面端直接退出进程。
   void _onPopInvoked(bool didPop, Object? result) {
     if (didPop) return;
-    if (context.read<NavigationProvider>().backToPrevious()) return;
+    if (context
+        .read<NavigationProvider>()
+        .backToPrevious(keepSearch: splitDetailActive(context))) {
+      return;
+    }
     if (Platform.isAndroid || isOhos) {
       // 移动端返回手势 = 移到后台（与 home 键等效）：音乐后台续播，不销毁
       // 应用。曾直接退出（Android SystemNavigator.pop 销毁 Activity；ohos

@@ -16,6 +16,7 @@ import 'package:selfmusic/providers/library_provider.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/providers/playlists_provider.dart';
+import 'package:selfmusic/layout/screen_metrics.dart';
 import 'package:selfmusic/screens/library_screen.dart';
 import 'package:selfmusic/services/artist_resolver.dart';
 import 'package:selfmusic/theme/app_theme.dart';
@@ -104,9 +105,14 @@ class _Harness {
 ///
 /// 曲库：组合「测试组合」24 首歌（3 张专辑）+ 13 位成员（首位「A测试歌手」），
 /// 与窄屏弹层回归 `artist_sheet_gesture_test` 同一口径，保证两形态内容可比。
+///
+/// [contentWidth] 模拟内容区可用宽度（生产由 AppShell 下发）：默认按
+/// "窗口宽 − 侧栏 260" 估算 → 1280 下 1020，足够两栏 → 走分栏；传 600 等小值
+/// 可验证"内容区不够宽 → 退回整页叠层"的旧形态。
 Future<_Harness> _pumpWide(
   WidgetTester tester, {
   Size size = const Size(1280, 800),
+  double? contentWidth,
   PlayerTransition transition = PlayerTransition.none,
 }) async {
   late final Directory dir;
@@ -200,8 +206,14 @@ Future<_Harness> _pumpWide(
         ChangeNotifierProvider<PlaylistsProvider>.value(
             value: PlaylistsProvider(direct.playlists)),
       ],
-      child: const MaterialApp(
-        home: Scaffold(body: AppContent()),
+      child: MaterialApp(
+        home: Scaffold(
+          body: ScreenMetrics(
+            windowSize: size,
+            contentWidth: contentWidth ?? (size.width - 260),
+            child: const AppContent(),
+          ),
+        ),
       ),
     ),
   );
@@ -219,41 +231,48 @@ Future<_Harness> _pumpWide(
 }
 
 void main() {
-  group('宽屏详情页：歌手 → 专辑', () {
-    testWidgets('打开歌手整页、嵌套专辑、逐级返回（底层列表保活）', (tester) async {
+  group('大横屏分栏：歌手 → 专辑', () {
+    testWidgets('点歌手：左栏常驻、详情进右栏（不整页叠层）', (tester) async {
       final h = await _pumpWide(tester);
       addTearDown(() => _dispose(h.direct, h.dir));
 
-      // 未打开：内容区只有分组列表，没有详情页外壳（懒构建的基线）。
+      // 未选中：左栏列表 + 右栏空态，没有详情外壳。
       expect(find.byType(DetailStack), findsOneWidget);
       expect(find.byTooltip('返回'), findsNothing);
+      expect(find.text('从左侧选择歌手查看作品'), findsOneWidget);
       expect(find.byType(DraggableScrollableSheet), findsNothing);
+      // 左栏某行的位置：详情进右栏不允许整块内容区平移。
+      final rowX = tester.getTopLeft(find.text('成员1')).dx;
 
       await tester.tap(find.text('A测试歌手'));
       await tester.pumpAndSettle();
 
-      // 宽屏 = 内容区整页，不是弹层；页头为返回箭头（无把手/关闭）。
       expect(h.nav.details, hasLength(1));
       expect(find.byType(DraggableScrollableSheet), findsNothing);
+      // 右栏详情：返回箭头（无把手/关闭）+ 计数 + 专辑条 + 详情块 + 重新解析。
       expect(find.byTooltip('返回'), findsOneWidget);
       expect(find.byIcon(Icons.close), findsNothing);
       expect(find.text('共 24 首歌曲'), findsOneWidget);
-      // 与弹层一致：专辑横条 + 详情块 + 右下重新解析都在。
       expect(find.text('专辑 (3)'), findsOneWidget);
       expect(find.text('详情'), findsOneWidget);
       expect(find.text('重新解析'), findsOneWidget);
+      // 左栏没有被盖住：行位置逐像素不变，列表计数头仍在。
+      expect(tester.getTopLeft(find.text('成员1')).dx, rowX);
+      expect(find.text('共 13 位歌手'), findsOneWidget);
+      // 左栏当前行 + 右栏标题：歌手名出现两处。
+      expect(find.text('A测试歌手'), findsNWidgets(2));
 
-      // 点专辑横条 → 叠第二层（只含该歌手的 8 首）。
+      // 嵌套：点专辑横条 → 右栏换成第二层（只含该歌手的 8 首）。
       await tester.tap(find.text('专辑 0'));
       await tester.pumpAndSettle();
       expect(h.nav.details, hasLength(2));
       expect(h.nav.details.last, isA<AlbumDetailRoute>());
       expect(find.text('共 8 首歌曲'), findsOneWidget);
-      // 被盖住的歌手页仍在树上（保活），但不在当前可见层。
-      expect(find.text('A测试歌手'), findsNothing);
-      expect(find.text('共 24 首歌曲', skipOffstage: false), findsOneWidget);
+      expect(find.text('共 24 首歌曲'), findsNothing);
+      // 左栏（含当前行高亮/列表本身）始终在树上。
+      expect(find.text('成员1'), findsOneWidget);
 
-      // 返回：专辑页销毁，歌手页原样回来（不重建、不重新查询）。
+      // 返回：专辑层出栈，歌手层原样回来（不重建、不重新查询）。
       await tester.tap(find.byTooltip('返回'));
       await tester.pumpAndSettle();
       expect(h.nav.details, hasLength(1));
@@ -261,15 +280,37 @@ void main() {
       expect(find.text('共 8 首歌曲'), findsNothing);
       expect(find.text('专辑 0'), findsOneWidget);
 
-      // 再返回：详情栈清空，回到歌手列表。
+      // 再返回：右栏清空 → 空态；左栏列表始终在。
       await tester.tap(find.byTooltip('返回'));
       await tester.pumpAndSettle();
       expect(h.nav.details, isEmpty);
       expect(find.byTooltip('返回'), findsNothing);
+      expect(find.text('从左侧选择歌手查看作品'), findsOneWidget);
+      expect(find.text('成员1'), findsOneWidget);
+      expect(tester.getTopLeft(find.text('成员1')).dx, rowX);
+    });
+
+    testWidgets('左栏换选中项：替换右栏内容，不叠加无关层', (tester) async {
+      final h = await _pumpWide(tester);
+      addTearDown(() => _dispose(h.direct, h.dir));
+
+      await tester.tap(find.text('A测试歌手'));
+      await tester.pumpAndSettle();
+      expect(h.nav.details, hasLength(1));
+
+      // 左栏点另一位歌手：详情栈重置为这一层（不是压在 A 之上）。
+      await tester.tap(find.text('成员1'));
+      await tester.pumpAndSettle();
+      expect(h.nav.details, hasLength(1));
+      final route = h.nav.details.single;
+      expect(route, isA<ArtistDetailRoute>());
+      expect((route as ArtistDetailRoute).artist.name, '成员1');
+      // 右栏标题切到新歌手；左栏两处（行 + 标题）。
+      expect(find.text('成员1'), findsNWidgets(2));
       expect(find.text('A测试歌手'), findsOneWidget);
     });
 
-    testWidgets('打开详情后滚动位置保持（底层分组页常驻）', (tester) async {
+    testWidgets('打开详情后滚动位置保持（左栏始终常驻）', (tester) async {
       final h = await _pumpWide(tester);
       addTearDown(() => _dispose(h.direct, h.dir));
 
@@ -285,8 +326,9 @@ void main() {
       await tester.tap(find.byTooltip('返回'));
       await tester.pumpAndSettle();
 
-      // 底层列表没有因详情进出而重建：滚动位置逐像素保持。
-      expect(tester.getTopLeft(find.text('成员3')).dy, before);
+      // 左栏没有因详情进出而重建：滚动位置逐像素保持（.first = 左栏行，
+      // 打开期间右栏标题会再出现一次同名文本）。
+      expect(tester.getTopLeft(find.text('成员3').first).dy, before);
     });
 
     testWidgets('整页里点歌不关详情：进播放页后返回仍在原页', (tester) async {
@@ -324,6 +366,34 @@ void main() {
       expect(find.text('共 8 首歌曲'), findsOneWidget);
     });
 
+    testWidgets('专辑页列表模式：点专辑也进右栏（卡片模式仍整页）', (tester) async {
+      final h = await _pumpWide(tester);
+      addTearDown(() => _dispose(h.direct, h.dir));
+
+      // 专辑页默认卡片：卡片在窄左栏放不下一列，因此不分栏（见下方断言）。
+      h.nav.select(NavSection.albums);
+      await tester.pumpAndSettle();
+      expect(find.text('从左侧选择专辑查看曲目'), findsNothing);
+
+      // 切到列表模式：分栏生效，右栏为空态。
+      h.direct.settings.viewModeAlbums = CollectionViewMode.list;
+      h.nav.select(NavSection.artists);
+      await tester.pumpAndSettle();
+      h.nav.select(NavSection.albums);
+      await tester.pumpAndSettle();
+      expect(find.text('从左侧选择专辑查看曲目'), findsOneWidget);
+      expect(find.text('共 3 张专辑'), findsOneWidget);
+
+      await tester.tap(find.text('专辑 0').first);
+      await tester.pumpAndSettle();
+      expect(h.nav.details, hasLength(1));
+      expect(h.nav.details.single, isA<AlbumDetailRoute>());
+      expect(find.text('共 8 首歌曲'), findsOneWidget);
+      expect(find.byTooltip('返回'), findsOneWidget);
+      // 左栏仍在：专辑名出现两处（左行 + 右栏标题）。
+      expect(find.text('专辑 0'), findsNWidgets(2));
+    });
+
     testWidgets('整页「重新解析」：确认后先退出详情、再发起重拉', (tester) async {
       final h = await _pumpWide(tester);
       addTearDown(() => _dispose(h.direct, h.dir));
@@ -352,8 +422,26 @@ void main() {
       expect(find.text('A测试歌手'), findsOneWidget);
     });
 
-    testWidgets('滑动过渡档：进出详情页无异常、动画结束后只留顶层', (tester) async {
+    testWidgets('分栏 + 滑动档：换详情只动右栏，左栏不位移', (tester) async {
       final h = await _pumpWide(tester, transition: PlayerTransition.slide);
+      addTearDown(() => _dispose(h.direct, h.dir));
+
+      final rowX = tester.getTopLeft(find.text('成员1')).dx;
+      await tester.tap(find.text('A测试歌手'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(tester.takeException(), isNull);
+      // 分栏下不播整页滑入：左栏行不位移。
+      expect(tester.getTopLeft(find.text('成员1')).dx, rowX);
+      await tester.pumpAndSettle();
+      expect(h.nav.details, hasLength(1));
+      expect(tester.getTopLeft(find.text('成员1')).dx, rowX);
+    });
+
+    testWidgets('内容区不足两栏：退回整页叠层（滑动档进出正常）', (tester) async {
+      // 内容区 600 < 门槛 640：与旧行为一致，详情整页从右侧滑入。
+      final h = await _pumpWide(tester,
+          contentWidth: 600, transition: PlayerTransition.slide);
       addTearDown(() => _dispose(h.direct, h.dir));
 
       await tester.tap(find.text('A测试歌手'));

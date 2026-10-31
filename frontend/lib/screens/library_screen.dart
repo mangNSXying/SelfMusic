@@ -7,6 +7,7 @@ import '../providers/direct_source_manager.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
 import '../layout/app_shell.dart';
+import '../layout/screen_metrics.dart';
 import '../models/song.dart';
 import '../models/album.dart';
 import '../models/artist.dart';
@@ -25,6 +26,7 @@ import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
 import '../widgets/detail_stack.dart';
 import '../widgets/draggable_sheet.dart';
+import '../widgets/list_detail_split.dart';
 import '../widgets/row_list.dart';
 import '../widgets/page_transition.dart';
 import '../widgets/row_action_button.dart';
@@ -61,15 +63,29 @@ class AppContent extends StatelessWidget {
     final nav = context.read<NavigationProvider>();
     context.select<NavigationProvider, (NavRouteKey, int)>(
         (n) => (n.routeKey, n.detailRevision));
+    // 判屏口径（只在此建立依赖）：窗口宽、侧栏/队列槽变化时内容页跟着重建，
+    // 分栏形态随内容区宽度跨阈值即时切换。真值取自 [splitDetailActive]。
+    ScreenMetrics.maybeOf(context);
     final routeKey = nav.routeKey;
     final transition =
         context.watch<DirectSourceManager>().settings.playerTransition;
-    final page = _areaPage(context, routeKey, transition);
+    // 大横屏 + 列表模式：内容页自身拆成「左列表 / 右详情」，详情不再整页叠层
+    //（窄屏弹层、卡片模式、内容区不够宽仍走原有呈现）。
+    final split = splitDetailActive(context);
+    final page = _areaPage(context, routeKey, transition, split: split);
+    // 分栏时歌单/专辑/歌手详情只换右栏：区域键固定到分组，避免整块内容区播
+    // 区域切换动画（右栏内部另有 [kDetailPaneMotion] 的轻量过渡）。设置页与
+    // 源内浏览保持原有区域键与动画。
+    final splitArea = split &&
+        routeKey.settings == null &&
+        routeKey.sourceKey == null;
+    final areaKey =
+        splitArea ? 'split:${routeKey.section.name}' : nav.areaKey;
     if (transition == PlayerTransition.none) return page;
     if (transition == PlayerTransition.slide) {
       // 分层切换：底层静止垫底，只有高层移动，不透黑底。
       return AreaSwitcher(
-        areaKey: nav.areaKey,
+        areaKey: areaKey,
         level: nav.areaLevel,
         slideOffset: nav.slideOffset,
         child: page,
@@ -82,13 +98,14 @@ class AppContent extends StatelessWidget {
       transitionBuilder: (child, anim) => pageTransition(
           transition, child, anim,
           backdrop: Theme.of(context).scaffoldBackgroundColor),
-      child: KeyedSubtree(key: ValueKey(nav.areaKey), child: page),
+      child: KeyedSubtree(key: ValueKey(areaKey), child: page),
     );
   }
 
   /// 当前区域页面（设置 / 源内浏览 / 歌单详情 / 六分组 pager）。
   Widget _areaPage(
-      BuildContext context, NavRouteKey routeKey, PlayerTransition transition) {
+      BuildContext context, NavRouteKey routeKey, PlayerTransition transition,
+      {required bool split}) {
     if (routeKey.settings != null) {
       return const SettingsScreen();
     }
@@ -96,35 +113,38 @@ class AppContent extends StatelessWidget {
     if (routeKey.section == NavSection.sources && routeKey.sourceKey != null) {
       return SourceBrowseView(sourceKey: routeKey.sourceKey!);
     }
-    // 歌单详情子视图。
-    if (routeKey.section == NavSection.playlists &&
+    // 歌单详情子视图。分栏时留在 [SectionPager] 内（左列表 + 右详情），
+    // 不再整页替换——否则左栏滚动位置、多选态、过滤词全部丢失。
+    if (!split &&
+        routeKey.section == NavSection.playlists &&
         routeKey.playlistId != null) {
       return PlaylistDetailView(playlistId: routeKey.playlistId!);
     }
     // 六个顶级分组：滑动模式跟手 PageView，其余模式松手触发区切换。
     // 宽屏专辑/歌手详情页叠在 Pager 之上：底层 Pager 常驻（滚动位置/状态保活），
     // 详情页首次进入才构建、出栈即销毁。窄屏仍走统一拖拽弹层，不经过这里。
+    // 分栏时叠层栈保持空——详情由各分组页渲染在右栏（同一份 [detailPageOf]）。
     final nav = context.read<NavigationProvider>();
     return DetailStack(
       base: const SectionPager(),
-      routes: nav.details,
+      routes: split ? const <DetailRoute>[] : nav.details,
       transition: transition,
       // 分组变化（顶栏/横滑）时详情直接消失，不残留到新分组上。
       baseKey: '${nav.areaKey}/${nav.section.name}',
-      builder: _detailPage,
+      builder: detailPageOf,
     );
   }
+}
 
-  /// 宽屏详情页（按路由类型构建；数据在页面 State 里只取一次）。
-  Widget _detailPage(BuildContext context, DetailRoute route) {
-    if (route is AlbumDetailRoute) {
-      return _AlbumDetailPage(album: route.album, songs: route.songs);
-    }
-    if (route is ArtistDetailRoute) {
-      return _ArtistDetailPage(artist: route.artist, songs: route.songs);
-    }
-    return const SizedBox.shrink();
+/// 按路由构建详情页（宽屏整页叠层 / 大横屏分栏右栏共用同一份实现）。
+Widget detailPageOf(BuildContext context, DetailRoute route) {
+  if (route is AlbumDetailRoute) {
+    return _AlbumDetailPage(album: route.album, songs: route.songs);
   }
+  if (route is ArtistDetailRoute) {
+    return _ArtistDetailPage(artist: route.artist, songs: route.songs);
+  }
+  return const SizedBox.shrink();
 }
 
 /// 六个顶级分组的容器（歌单/喜欢/播放源/歌曲/专辑/歌手）。
@@ -692,15 +712,19 @@ class _AlbumsViewState extends State<_AlbumsView>
     final albums =
         _filteredSorted(lib.albums, search, direct.settings.sortAlbums);
     final card = isCard;
+    // 大横屏 + 列表模式：左列表 / 右详情。判定走统一判屏口径。
+    final split = splitDetailActive(context);
+    final nav = context.read<NavigationProvider>();
+    // 分栏时左栏高亮「当前详情」：只订阅详情栈版本（卡片模式恒为 -1，不订阅）。
+    context.select<NavigationProvider, int>(
+        (n) => split ? n.detailRevision : -1);
+    final topRoute = split && nav.details.isNotEmpty ? nav.details.last : null;
+    final activeKey = topRoute is AlbumDetailRoute
+        ? topRoute.album.groupKey
+        : null;
 
-    return Column(
+    final listPane = Column(
       children: [
-        if (lib.loading) const LinearProgressIndicator(minHeight: 2),
-        if (lib.error != null)
-          Padding(
-              padding: const EdgeInsets.all(8),
-              child:
-                  Text(lib.error!, style: const TextStyle(color: Colors.red))),
         CountHeader(
           count: albums.length,
           unit: '张',
@@ -729,10 +753,44 @@ class _AlbumsViewState extends State<_AlbumsView>
                       ),
                     )
                   : RowList(
+                      // 分栏↔整页切换会重建列表：靠 PageStorage 记住滚动位置。
+                      key: const PageStorageKey<String>('albums-list'),
                       count: albums.length,
                       onRefresh: lib.loadAlbums,
-                      itemBuilder: (c, i) => _AlbumListTile(album: albums[i]),
+                      itemBuilder: (c, i) => _AlbumListTile(
+                        album: albums[i],
+                        active:
+                            activeKey != null && albums[i].groupKey == activeKey,
+                      ),
                     ),
+        ),
+      ],
+    );
+
+    return Column(
+      children: [
+        if (lib.loading) const LinearProgressIndicator(minHeight: 2),
+        if (lib.error != null)
+          Padding(
+              padding: const EdgeInsets.all(8),
+              child:
+                  Text(lib.error!, style: const TextStyle(color: Colors.red))),
+        Expanded(
+          child: ListDetailSplit(
+            enabled: split,
+            listWidth: ScreenMetrics.of(context).listPaneWidth,
+            list: listPane,
+            detail: DetailPane(
+              detail: topRoute == null ? null : detailPageOf(context, topRoute),
+              detailKey: activeKey,
+              emptyIcon: Icons.album_outlined,
+              emptyText: '从左侧选择专辑查看曲目',
+              duration: direct.settings.playerTransition ==
+                      PlayerTransition.none
+                  ? Duration.zero
+                  : kDetailPaneMotion,
+            ),
+          ),
         ),
       ],
     );
@@ -769,12 +827,18 @@ InlineSpan albumSubtitleSpan(BuildContext context, Album album) {
 }
 
 /// 打开专辑歌曲详情：宽屏=内容区整页（叠层，底层列表保活），窄屏=统一拖拽弹层。
+///
+/// 大横屏分栏时详情进右栏（同一份 [detailPageOf]），左栏列表原地保活。
 Future<void> _openAlbum(BuildContext context, Album album) async {
   final lib = context.read<LibraryProvider>();
+  final nav = context.read<NavigationProvider>();
   final songs = lib.albumSongs(album);
   if (!context.mounted) return;
   if (AppShell.isWide(context)) {
-    context.read<NavigationProvider>().enterAlbum(album, songs);
+    // 已在该详情（分栏里重复点同一行）不再压栈。
+    if (_showingAlbum(nav, album)) return;
+    final split = splitDetailActive(context);
+    nav.enterAlbum(album, songs, keepSearch: split, root: split);
     return;
   }
   await showAppDraggableSheet<void>(
@@ -784,13 +848,59 @@ Future<void> _openAlbum(BuildContext context, Album album) async {
   );
 }
 
+/// 该专辑是否已是详情栈顶（分栏/叠层重复点按的去重口径）。
+bool _showingAlbum(NavigationProvider nav, Album album) {
+  final details = nav.details;
+  if (details.isEmpty) return false;
+  final top = details.last;
+  return top is AlbumDetailRoute && top.album.groupKey == album.groupKey;
+}
+
+/// 该歌手是否已在详情栈里（分栏时"歌手 → 专辑"叠了两层也算）。
+bool _showingArtist(NavigationProvider nav, Artist artist) {
+  final key = artist.identityKey ?? artist.name;
+  for (final route in nav.details) {
+    if (route is ArtistDetailRoute &&
+        (route.artist.identityKey ?? route.artist.name) == key) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// 详情栈里的歌手身份键（歌手页左栏高亮口径）。
+///
+/// 优先栈顶（列表里刚换的选中项），栈顶是"歌手 → 专辑"的专辑层时回退找歌手层。
+String? _activeArtistKey(List<DetailRoute> details) {
+  if (details.isEmpty) return null;
+  final top = details.last;
+  if (top is ArtistDetailRoute) {
+    return top.artist.identityKey ?? top.artist.name;
+  }
+  for (final route in details.reversed) {
+    if (route is ArtistDetailRoute) {
+      final artist = route.artist;
+      return artist.identityKey ?? artist.name;
+    }
+  }
+  return null;
+}
+
 class _AlbumListTile extends StatelessWidget {
   final Album album;
-  const _AlbumListTile({required this.album});
+
+  /// 分栏时是否为「当前详情」对应的左栏行（只做底色提示，不改文字色）。
+  final bool active;
+  const _AlbumListTile({required this.album, this.active = false});
 
   @override
   Widget build(BuildContext context) {
     return ListTile(
+      // tileColor 由 ListTile 自己画在 Material 上：不插入额外图层，
+      // 墨迹/涟漪仍落在正确的 Material 上（见 page_transition 的历史坑）。
+      tileColor: active
+          ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.10)
+          : null,
       leading:
           CoverThumb(coverPath: album.coverPath, fallbackIcon: Icons.album),
       title: Text(album.album,
@@ -949,6 +1059,8 @@ class _AlbumDetailPageState extends State<_AlbumDetailPage> {
 }
 
 /// 宽屏详情页标题栏左侧的返回箭头（弹层形态仍用右下/右上关闭）。
+///
+/// 分栏右栏里同样用它：返回只是把右栏退回上一层/空态（左栏过滤词保留）。
 class _DetailBackButton extends StatelessWidget {
   const _DetailBackButton();
 
@@ -957,7 +1069,9 @@ class _DetailBackButton extends StatelessWidget {
     return IconButton(
       icon: const Icon(Icons.arrow_back),
       tooltip: '返回',
-      onPressed: () => context.read<NavigationProvider>().exitDetail(),
+      onPressed: () => context
+          .read<NavigationProvider>()
+          .exitDetail(keepSearch: splitDetailActive(context)),
     );
   }
 }
@@ -1023,15 +1137,16 @@ class _ArtistsViewState extends State<_ArtistsView>
     final artists =
         _filteredSorted(lib.artists, search, direct.settings.sortArtists);
     final card = isCard;
+    // 大横屏 + 列表模式：左列表 / 右详情（歌手 → 专辑两层详情都进右栏）。
+    final split = splitDetailActive(context);
+    final nav = context.read<NavigationProvider>();
+    // 分栏时左栏高亮「当前歌手」（栈里含歌手层即高亮，嵌套专辑时也保持）。
+    context.select<NavigationProvider, int>(
+        (n) => split ? n.detailRevision : -1);
+    final activeArtistKey = split ? _activeArtistKey(nav.details) : null;
 
-    return Column(
+    final listPane = Column(
       children: [
-        if (lib.loading) const LinearProgressIndicator(minHeight: 2),
-        if (lib.error != null)
-          Padding(
-              padding: const EdgeInsets.all(8),
-              child:
-                  Text(lib.error!, style: const TextStyle(color: Colors.red))),
         CountHeader(
           count: artists.length,
           unit: '位',
@@ -1060,11 +1175,46 @@ class _ArtistsViewState extends State<_ArtistsView>
                       ),
                     )
                   : RowList(
+                      // 分栏↔整页切换会重建列表：靠 PageStorage 记住滚动位置。
+                      key: const PageStorageKey<String>('artists-list'),
                       count: artists.length,
                       onRefresh: lib.loadArtists,
-                      itemBuilder: (c, i) =>
-                          _ArtistListTile(artist: artists[i]),
+                      itemBuilder: (c, i) => _ArtistListTile(
+                        artist: artists[i],
+                        active: activeArtistKey != null &&
+                            (artists[i].identityKey ?? artists[i].name) ==
+                                activeArtistKey,
+                      ),
                     ),
+        ),
+      ],
+    );
+
+    final topRoute = split && nav.details.isNotEmpty ? nav.details.last : null;
+    return Column(
+      children: [
+        if (lib.loading) const LinearProgressIndicator(minHeight: 2),
+        if (lib.error != null)
+          Padding(
+              padding: const EdgeInsets.all(8),
+              child:
+                  Text(lib.error!, style: const TextStyle(color: Colors.red))),
+        Expanded(
+          child: ListDetailSplit(
+            enabled: split,
+            listWidth: ScreenMetrics.of(context).listPaneWidth,
+            list: listPane,
+            detail: DetailPane(
+              detail: topRoute == null ? null : detailPageOf(context, topRoute),
+              detailKey: topRoute,
+              emptyIcon: Icons.person_outline,
+              emptyText: '从左侧选择歌手查看作品',
+              duration: direct.settings.playerTransition ==
+                      PlayerTransition.none
+                  ? Duration.zero
+                  : kDetailPaneMotion,
+            ),
+          ),
         ),
       ],
     );
@@ -1083,7 +1233,11 @@ class _ArtistsViewState extends State<_ArtistsView>
 /// - confirm（同名多真人需人工确认）→ 弹候选选择页；
 /// - retry（待解析/未命中）→ 弹「重试解析」确认窗；
 /// - normal（已解析/非 identity 模式）→ 打开歌曲弹层。
-void _openArtist(BuildContext context, Artist artist, ArtistResolver resolver) {
+///
+/// [fromDetail] = true 表示从详情内部（成员/组合身份行）进入：分栏时压在
+/// 上一层之上（可逐级返回），而不是当作左栏换选中项。
+void _openArtist(BuildContext context, Artist artist, ArtistResolver resolver,
+    {bool fromDetail = false}) {
   switch (artist.resolveState) {
     case ArtistResolveState.confirm:
       _showAmbiguousPicker(context, artist, resolver);
@@ -1095,10 +1249,15 @@ void _openArtist(BuildContext context, Artist artist, ArtistResolver resolver) {
       break;
   }
   final lib = context.read<LibraryProvider>();
+  final nav = context.read<NavigationProvider>();
   final songs = lib.artistSongs(artist);
   if (!context.mounted) return;
   if (AppShell.isWide(context)) {
-    context.read<NavigationProvider>().enterArtist(artist, songs);
+    // 已在右栏/叠层里（含"歌手 → 专辑"嵌套时点回同一歌手）不再压栈。
+    if (_showingArtist(nav, artist)) return;
+    final split = splitDetailActive(context);
+    nav.enterArtist(artist, songs,
+        keepSearch: split, root: split && !fromDetail);
     return;
   }
   showAppDraggableSheet<void>(
@@ -1246,11 +1405,17 @@ Future<void> _showRetryConfirm(
 
 class _ArtistListTile extends StatelessWidget {
   final Artist artist;
-  const _ArtistListTile({required this.artist});
+
+  /// 分栏时是否为「当前详情」对应的左栏行（只做底色提示，不改文字色）。
+  final bool active;
+  const _ArtistListTile({required this.artist, this.active = false});
 
   @override
   Widget build(BuildContext context) {
     return ListTile(
+      tileColor: active
+          ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.10)
+          : null,
       // 歌手用圆形头像（其余集合行统一圆角方形）。
       leading: CoverThumb(
         coverPath: artist.coverPath,
@@ -1495,7 +1660,7 @@ class _ArtistSongsView extends StatelessWidget {
     if (fromSheet) {
       Navigator.of(context).pop();
     } else {
-      nav.exitDetail();
+      nav.exitDetail(keepSearch: splitDetailActive(context));
     }
     await resolver.forceRetryOne(
         artistKey: artist.identityKey, canonicalKey: artist.canonicalKey);
@@ -1620,7 +1785,10 @@ class _ArtistAlbumsStrip extends StatelessWidget {
   void _openAlbumOfArtist(BuildContext context, Album album) {
     final songs = artistSongs.where((s) => album.containsSong(s)).toList();
     if (AppShell.isWide(context)) {
-      context.read<NavigationProvider>().enterAlbum(album, songs);
+      final nav = context.read<NavigationProvider>();
+      // 右栏已是这张专辑时不再压栈（点回上一层用标题栏返回箭头）。
+      if (_showingAlbum(nav, album)) return;
+      nav.enterAlbum(album, songs, keepSearch: splitDetailActive(context));
       return;
     }
     showAppDraggableSheet<void>(
@@ -1769,7 +1937,9 @@ class _ArtistDetailBlockState extends State<_ArtistDetailBlock> {
           canonicalKey: key,
           status: 'resolved',
         ),
-        context.read<ArtistResolver>());
+        context.read<ArtistResolver>(),
+        // 从详情里的关联身份进入：压在上一层之上，可逐级返回。
+        fromDetail: true);
   }
 }
 

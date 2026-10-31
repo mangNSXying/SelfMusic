@@ -8,6 +8,7 @@ import 'package:hotkey_manager/hotkey_manager.dart';
 import 'package:provider/provider.dart';
 
 import '../layout/queue_panel.dart';
+import '../layout/screen_metrics.dart';
 import '../platform/harmonyos/ohos_global_hotkeys.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
@@ -343,7 +344,7 @@ class _AppShortcutsState extends State<AppShortcuts> {
       return;
     }
     if (nav.playerView) return;
-    nav.backToPrevious();
+    nav.backToPrevious(keepSearch: splitDetailActive(context));
   }
 
   Future<void> _seekBy(PlayerProvider player, Duration delta) async {

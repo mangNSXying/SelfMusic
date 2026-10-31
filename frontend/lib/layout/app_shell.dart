@@ -4,10 +4,15 @@ import '../providers/navigation_provider.dart';
 import '../utils/interaction_gate.dart';
 import '../utils/motion.dart';
 import '../widgets/draggable_sheet.dart';
+import 'screen_metrics.dart';
 import 'sidebar.dart';
 import 'top_bar.dart';
 import 'queue_panel.dart';
 import 'mini_player_bar.dart';
+
+/// 宽屏侧边栏宽度（展开态；收起为 0）。判屏时按**目标宽度**扣减，见
+/// [ScreenMetrics] 的文件头注释。
+const double kSidebarWidth = 260;
 
 /// 布局壳：桌面 = [侧边栏 | 顶栏+内容 | 队列面板]，窄屏 = 抽屉 + 顶栏。
 ///
@@ -101,6 +106,7 @@ class _AppShellState extends State<AppShell> {
   @override
   Widget build(BuildContext context) {
     final wide = AppShell.isWide(context);
+    final size = MediaQuery.sizeOf(context);
     // 横竖屏跨断点时侧栏宽度直接归位，不走 260↔0 的挤压动画：
     // 中间宽度会把 contentColumn 挤到不足最小宽度（迷你条横向溢出）。
     final crossingWide = _lastWide != null && _lastWide != wide;
@@ -117,6 +123,13 @@ class _AppShellState extends State<AppShell> {
       WidgetsBinding.instance
           .addPostFrameCallback((_) => _gate?.setQueuePanelOpen(open));
     }
+
+    // 判屏口径：内容区宽度按**目标宽度**算（侧栏/队列各有 300ms 伸缩动画，
+    // 用动画中的实时宽度会让分栏在阈值附近来回抖，见 [ScreenMetrics]）。
+    final contentWidth = (size.width -
+            (wide && _sidebarVisible ? kSidebarWidth : 0.0) -
+            (wide && queueOpen ? kQueuePanelWidth : 0.0))
+        .clamp(0.0, double.infinity);
 
     final contentColumn = Column(
       children: [
@@ -135,7 +148,12 @@ class _AppShellState extends State<AppShell> {
             child: RepaintBoundary(
               child: NotificationListener<ScrollNotification>(
                 onNotification: _onScrollNotification,
-                child: widget.content,
+                // 判屏口径下发给内容页：窄屏/横屏/大横屏的唯一出口。
+                child: ScreenMetrics(
+                  windowSize: size,
+                  contentWidth: contentWidth,
+                  child: widget.content,
+                ),
               ),
             ),
           ),
@@ -152,15 +170,15 @@ class _AppShellState extends State<AppShell> {
         AnimatedContainer(
           duration: slotMotion,
           curve: kPageMotionCurve,
-          width: wide && _sidebarVisible ? 260 : 0,
+          width: wide && _sidebarVisible ? kSidebarWidth : 0,
           child: ClipRect(
             child: OverflowBox(
-              maxWidth: 260,
+              maxWidth: kSidebarWidth,
               alignment: Alignment.centerLeft,
               child: IgnorePointer(
                 ignoring: !wide || !_sidebarVisible,
                 child: wide
-                    ? const SizedBox(width: 260, child: Sidebar())
+                    ? const SizedBox(width: kSidebarWidth, child: Sidebar())
                     : const SizedBox.shrink(),
               ),
             ),

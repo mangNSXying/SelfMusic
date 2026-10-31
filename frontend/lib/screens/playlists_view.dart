@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
+import '../layout/screen_metrics.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
@@ -12,6 +13,7 @@ import '../widgets/app_dialog_actions.dart';
 import '../widgets/context_menu.dart';
 import '../widgets/corner_add_button.dart';
 import '../widgets/count_header.dart';
+import '../widgets/list_detail_split.dart';
 import '../widgets/row_list.dart';
 import '../widgets/selection_badge.dart';
 import '../widgets/square_card.dart';
@@ -122,8 +124,12 @@ class _PlaylistsViewState extends State<PlaylistsView>
         (p) => p.name,
         countOf: (p) => provider.countOf(p.id));
     final card = isCard;
+    // 大横屏 + 列表模式：左列表 / 右详情（歌单详情不再整页替换，左栏保活）。
+    final split = splitDetailActive(context);
+    final selectedId = context.select<NavigationProvider, int?>(
+        (n) => split ? n.browsingPlaylistId : null);
 
-    return Stack(
+    final listPane = Stack(
       children: [
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -179,9 +185,14 @@ class _PlaylistsViewState extends State<PlaylistsView>
                                 _playlistCard(provider, playlists[i]),
                           )
                         : RowList(
+                            // 分栏↔整页切换会重建列表：靠 PageStorage 记住滚动位置。
+                            key: const PageStorageKey<String>('playlists-list'),
                             count: playlists.length,
-                            itemBuilder: (c, i) =>
-                                _playlistTile(provider, playlists[i]),
+                            itemBuilder: (c, i) => _playlistTile(
+                              provider,
+                              playlists[i],
+                              active: split && selectedId == playlists[i].id,
+                            ),
                           ),
               ),
             ],
@@ -196,9 +207,37 @@ class _PlaylistsViewState extends State<PlaylistsView>
           ),
         ],
     );
+
+    return ListDetailSplit(
+      enabled: split,
+      listWidth: ScreenMetrics.of(context).listPaneWidth,
+      list: listPane,
+      detail: DetailPane(
+        // 歌单详情复用同一份实现（inline：栏内不包 SectionSwipe——横滑属于
+        // 外层分组 Pager，栏内再套一层会抢手势）。
+        detail: selectedId == null
+            ? null
+            : PlaylistDetailView(playlistId: selectedId, inline: true),
+        detailKey: selectedId,
+        emptyIcon: Icons.queue_music,
+        emptyText: '从左侧选择歌单查看歌曲',
+        duration:
+            direct.settings.playerTransition == PlayerTransition.none
+                ? Duration.zero
+                : kDetailPaneMotion,
+      ),
+    );
   }
 
-  Widget _playlistTile(PlaylistsProvider provider, PlaylistRow p) {
+  /// 打开歌单（宽屏右栏/整页分流；重复点同一行不再触发区域切换）。
+  void _openPlaylist(BuildContext context, int id) {
+    final nav = context.read<NavigationProvider>();
+    if (nav.browsingPlaylistId == id) return;
+    nav.enterPlaylist(id, keepSearch: splitDetailActive(context));
+  }
+
+  Widget _playlistTile(PlaylistsProvider provider, PlaylistRow p,
+      {bool active = false}) {
     return GestureDetector(
       // 桌面右键：在指针处弹出与三点按钮相同的菜单；多选态不响应（与隐藏按钮一致）。
       onSecondaryTapDown: _sel.active
@@ -206,6 +245,10 @@ class _PlaylistsViewState extends State<PlaylistsView>
           : (d) => _openPlaylistMenuAt(provider, p, d.globalPosition),
       child: ListTile(
         selected: _sel.active && _sel.contains(p.id),
+        // 分栏时高亮右栏当前歌单（多选态优先用 selected 的既有配色）。
+        tileColor: active && !_sel.active
+            ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.10)
+            : null,
         // 歌单行无封面，勾选框顶替图标行首；有封面的行改为叠在封面左上角
         // （见 SongTile / SquareCard）。
         leading: _sel.active
@@ -225,7 +268,7 @@ class _PlaylistsViewState extends State<PlaylistsView>
         trailing: _sel.active ? null : _playlistMenu(provider, p),
         onTap: _sel.active
             ? () => _toggleSelect(p.id)
-            : () => context.read<NavigationProvider>().enterPlaylist(p.id),
+            : () => _openPlaylist(context, p.id),
         onLongPress: _sel.active
             ? () => _toggleSelect(p.id)
             : () => setState(() => _sel.startWith(p.id)),
@@ -241,7 +284,7 @@ class _PlaylistsViewState extends State<PlaylistsView>
       fallbackIcon: Icons.queue_music,
       onTap: _sel.active
           ? () => _toggleSelect(p.id)
-          : () => context.read<NavigationProvider>().enterPlaylist(p.id),
+          : () => _openPlaylist(context, p.id),
       onLongPress: _sel.active
           ? () => _toggleSelect(p.id)
           : () => setState(() => _sel.startWith(p.id)),
@@ -371,12 +414,22 @@ class _PlaylistsViewState extends State<PlaylistsView>
   }
 }
 
-/// 歌单详情（内容区原地子视图）：外壳（内容壳 + 跟随手势滑动）内嵌统一的
-/// [SongList]（与播放器带「歌单页」同一份列表实现：同源、同行形态、同写回语义）。
-/// 头部返回按钮返回内容层；搜索跟随全局搜索框。
+/// 歌单详情（内容区原地子视图 / 大横屏分栏右栏共用）。
+///
+/// 外壳内嵌统一的 [SongList]（与播放器带「歌单页」同一份列表实现：同源、
+/// 同行形态、同写回语义）。头部返回按钮返回内容层；搜索跟随全局搜索框。
 class PlaylistDetailView extends StatelessWidget {
   final int playlistId;
-  const PlaylistDetailView({super.key, required this.playlistId});
+
+  /// true = 分栏右栏内嵌：不包 [SectionSwipe]（横滑属于外层分组 Pager，
+  /// 栏内再套一层会抢手势），并自带不透明底以支持栏内过渡。
+  final bool inline;
+
+  const PlaylistDetailView({
+    super.key,
+    required this.playlistId,
+    this.inline = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -384,22 +437,29 @@ class PlaylistDetailView extends StatelessWidget {
     // 变更会重建本组件），build 内不读取 NavigationProvider 字段；全局搜索由内层
     // [SongList] 自行订阅，故此处不订阅导航状态、区段变更零重建。
     final nav = context.read<NavigationProvider>();
-    return Stack(
+    final list = SongList(
+      playlistId: playlistId,
+      // 返回 = 退回歌单列表：分栏时只清右栏（左栏过滤词保留），整页时沿用原口径。
+      onBack: () => nav.exitPlaylist(keepSearch: splitDetailActive(context)),
+      globalSearch: true,
+    );
+    final content = Stack(
       fit: StackFit.expand,
       children: [
-        SectionSwipe(
-          child: SongList(
-            playlistId: playlistId,
-            onBack: () => nav.exitPlaylist(),
-            globalSearch: true,
-          ),
-        ),
+        if (inline) list else SectionSwipe(child: list),
         Positioned(
           right: 16,
           bottom: 16,
           child: PlaylistAddSongsButton(playlistId: playlistId),
         ),
       ],
+    );
+    if (!inline) return content;
+    // 栏内自绘不透明底（与专辑/歌手详情页的 Material 同口径）：换歌单时的
+    // 交叉淡入不会透出上一个详情。
+    return Material(
+      color: Theme.of(context).scaffoldBackgroundColor,
+      child: content,
     );
   }
 }

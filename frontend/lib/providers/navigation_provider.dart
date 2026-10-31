@@ -222,7 +222,10 @@ class NavigationProvider extends ChangeNotifier {
   /// 是根悬浮层（非路由），返回键经此逐级回退关闭。
   /// 返回 true 表示已消费（停留在上一级），false 表示已在最底层（调用方可退出）。
   /// 回退统一从左侧滑入（抽屉关闭感）。
-  bool backToPrevious() {
+  ///
+  /// [keepSearch]：大横屏分栏时（搜索框 = 左栏过滤器）回退只清右栏/回上一级，
+  /// 不把搜索词一起清掉。
+  bool backToPrevious({bool keepSearch = false}) {
     _slideOffset = const Offset(-1, 0);
     if (_settings != null) {
       _settings = null;
@@ -235,12 +238,12 @@ class NavigationProvider extends ChangeNotifier {
       return true;
     }
     if (_details.isNotEmpty) {
-      exitDetail();
+      exitDetail(keepSearch: keepSearch);
       return true;
     }
     if (_browsingPlaylistId != null) {
       _browsingPlaylistId = null;
-      _clearSearchForDetail();
+      if (!keepSearch) _clearSearchForDetail();
       notifyListeners();
       return true;
     }
@@ -298,43 +301,58 @@ class NavigationProvider extends ChangeNotifier {
   int? get browsingPlaylistId => _browsingPlaylistId;
 
   /// 进入歌单详情（原地子视图）：整页从右侧滑入。
-  void enterPlaylist(int id) {
+  ///
+  /// [keepSearch]：大横屏分栏时搜索框就是左栏（歌单列表）的过滤器，详情只换
+  /// 右栏，不能把搜索词清掉；整页/弹层呈现仍按旧口径清空。
+  void enterPlaylist(int id, {bool keepSearch = false}) {
     _slideOffset = const Offset(1, 0);
-    _clearSearchForDetail();
+    if (!keepSearch) _clearSearchForDetail();
     _browsingPlaylistId = id;
     _clearDetails();
     notifyListeners();
   }
 
   /// 返回歌单列表：旧页向左滑出。
-  void exitPlaylist() {
+  void exitPlaylist({bool keepSearch = false}) {
     _slideOffset = const Offset(-1, 0);
     _browsingPlaylistId = null;
-    _clearSearchForDetail();
+    if (!keepSearch) _clearSearchForDetail();
     notifyListeners();
   }
 
   /// 宽屏进入专辑详情页（内容区整页叠层，底层列表保活）。
-  void enterAlbum(Album album, List<Song> songs) {
+  ///
+  /// 大横屏分栏时详情进右栏（[keepSearch] = true 保留左栏过滤词）。
+  /// [root] = true：从分组列表点选（分栏左栏）——详情栈重置为这一层，不保留
+  /// 上一位歌手的嵌套专辑（否则"返回"会退到与本行无关的上一层）。
+  void enterAlbum(Album album, List<Song> songs,
+      {bool keepSearch = false, bool root = false}) {
     _slideOffset = const Offset(1, 0);
-    _clearSearchForDetail();
+    if (!keepSearch) _clearSearchForDetail();
+    if (root) _details.clear();
     _pushDetail(AlbumDetailRoute(album, songs));
   }
 
   /// 宽屏进入歌手详情页（内容区整页叠层，底层列表保活）。
-  void enterArtist(Artist artist, List<Song> songs) {
+  ///
+  /// [root] 语义同 [enterAlbum]。
+  void enterArtist(Artist artist, List<Song> songs,
+      {bool keepSearch = false, bool root = false}) {
     _slideOffset = const Offset(1, 0);
-    _clearSearchForDetail();
+    if (!keepSearch) _clearSearchForDetail();
+    if (root) _details.clear();
     _pushDetail(ArtistDetailRoute(artist, songs));
   }
 
   /// 关闭栈顶详情页（回到上一层详情/分组列表）。
-  void exitDetail() {
+  ///
+  /// [keepSearch]：分栏时返回只是清空右栏，左栏过滤词要留着。
+  void exitDetail({bool keepSearch = false}) {
     if (_details.isEmpty) return;
     _slideOffset = const Offset(-1, 0);
     _details.removeLast();
     _detailRevision++;
-    _clearSearchForDetail();
+    if (!keepSearch) _clearSearchForDetail();
     notifyListeners();
   }
 

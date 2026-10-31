@@ -408,6 +408,21 @@ class _SongCollectionViewState extends State<SongCollectionView> {
 
   @override
   Widget build(BuildContext context) {
+    // "宽行技术信息"按**本列表实际可用宽度**判定，而不是窗口宽：大横屏分栏时
+    // 右栏比窗口窄得多（例如窗口 900 / 分栏后右栏 360），按窗口宽（≥800）判定
+    // 会把 `播放源 · 格式 · 码率 · 大小` 塞进窄行，尾部撑爆 ListTile
+    //（Trailing widget consumes the entire tile width 断言）。
+    //
+    // 只在本层做一次 LayoutBuilder：行级判定仍由 [SongRowView] 预计算，
+    // 不回到"每行一个 LayoutBuilder"的老路（R-1 性能口径）。
+    return LayoutBuilder(
+      builder: (context, constraints) =>
+          _buildBody(context, constraints.maxWidth),
+    );
+  }
+
+  /// 列表本体；[availableWidth] 为本列表实际可用宽度（见 [build]）。
+  Widget _buildBody(BuildContext context, double availableWidth) {
     final direct = context.watch<DirectSourceManager>();
     final player = context.watch<PlayerProvider>();
     final settings = direct.settings;
@@ -513,7 +528,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     _rows = rows;
     _focusDisplay = focusDisplay;
 
-    final wide = MediaQuery.sizeOf(context).width >= kSongTileWideInfoWidth;
+    final wide = availableWidth >= kSongTileWideInfoWidth;
 
     _rowCache.begin(
       (
