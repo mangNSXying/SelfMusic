@@ -72,7 +72,7 @@ SelfMusic 围绕两个原则设计：
 </p>
 <p align="center"><sub>移动端 · Android / HarmonyOS NEXT</sub></p>
 
-> 截图为开发过程中的版本，界面细节以当前代码为准。
+> 图片为预期版本，界面细节以当前代码为准。
 
 ## 亮点
 
