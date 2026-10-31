@@ -35,8 +35,10 @@ import '../widgets/row_action_button.dart';
 import '../widgets/section_swipe.dart';
 import '../widgets/selection_bar.dart';
 import '../widgets/song_collection_view.dart';
-import '../widgets/song_list.dart';
 import '../widgets/song_selection_actions.dart';
+import '../widgets/song_table.dart';
+import '../widgets/song_table_sliver.dart';
+import '../widgets/song_tile.dart';
 import '../widgets/sort_menu_button.dart';
 import '../widgets/square_card.dart';
 import '../widgets/view_mode_toggle.dart';
@@ -965,34 +967,31 @@ class _AlbumSongsView extends StatelessWidget {
     final player = context.read<PlayerProvider>();
     final lib = context.read<LibraryProvider>();
     final nav = context.read<NavigationProvider>();
-    return CustomScrollView(
-      controller: scrollCtrl,
-      slivers: [
-        // 置顶标题行：滚动歌曲时专辑名/歌曲数常驻顶部（与队列/歌手弹层同构）。
-        AppSheetHeader(
-          height: AppSheetTitleBar.heightOf(context),
-          child: header,
-        ),
-        SliverRowList(
-          count: songs.length,
-          itemBuilder: (c, i) {
-            final s = songs[i];
-            return SongTile(
-              song: s,
-              source: lib.sourceFor(s.sourceKey),
-              playing: player.isCurrent(s),
-              onPlay: () {
-                if (fromSheet) Navigator.of(c).pop();
-                player.playQueue(songs,
-                    index: i,
-                    contextKey: PlayerProvider.anchorForAlbum(album.id));
-                nav.openPlayer();
-              },
-            );
-          },
-        ),
-      ],
-    );
+    return LayoutBuilder(builder: (context, constraints) {
+      final table = SongTableLayout.fit(constraints.maxWidth);
+      return CustomScrollView(
+        controller: scrollCtrl,
+        slivers: [
+          // 置顶标题行：滚动歌曲时专辑名/歌曲数常驻顶部（与队列/歌手弹层同构）。
+          AppSheetHeader(
+            height: AppSheetTitleBar.heightOf(context),
+            child: header,
+          ),
+          SongTableSliverList(
+            songs: songs,
+            table: table,
+            sourceOf: (s) => lib.sourceFor(s.sourceKey),
+            onPlay: (i) {
+              if (fromSheet) Navigator.of(context).pop();
+              player.playQueue(songs,
+                  index: i,
+                  contextKey: PlayerProvider.anchorForAlbum(album.id));
+              nav.openPlayer();
+            },
+          ),
+        ],
+      );
+    });
   }
 }
 
@@ -1552,45 +1551,42 @@ class _ArtistSongsView extends StatelessWidget {
         // 都能拖动/滚动弹层，「详情」展开只是滚动内容变长、不挤压列表。
         // 标题行经 [AppSheetHeader] 置顶：滚动时歌手名/歌曲数常驻顶部；专辑横滑条
         // 与详情属滚动内容（不钉，避免占满窗口）。
-        CustomScrollView(
-          controller: scrollCtrl,
-          slivers: [
-            AppSheetHeader(
-              height: AppSheetTitleBar.heightOf(context),
-              child: header,
-            ),
-            if (albums.isNotEmpty || detail != null)
-              SliverToBoxAdapter(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (albums.isNotEmpty)
-                      _ArtistAlbumsStrip(albums: albums, artistSongs: songs),
-                    if (detail != null) _ArtistDetailBlock(detail: detail!),
-                  ],
-                ),
+        LayoutBuilder(builder: (context, constraints) {
+          final table = SongTableLayout.fit(constraints.maxWidth);
+          return CustomScrollView(
+            controller: scrollCtrl,
+            slivers: [
+              AppSheetHeader(
+                height: AppSheetTitleBar.heightOf(context),
+                child: header,
               ),
-            SliverRowList(
-              count: songs.length,
-              itemBuilder: (c, i) {
-                final s = songs[i];
-                return SongTile(
-                  song: s,
-                  source: lib.sourceFor(s.sourceKey),
-                  playing: player.isCurrent(s),
-                  onPlay: () {
-                    if (fromSheet) Navigator.of(c).pop();
-                    player.playQueue(songs,
-                        index: i,
-                        contextKey:
-                            PlayerProvider.anchorForArtist(artist.name));
-                    nav.openPlayer();
-                  },
-                );
-              },
-            ),
-          ],
-        ),
+              if (albums.isNotEmpty || detail != null)
+                SliverToBoxAdapter(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (albums.isNotEmpty)
+                        _ArtistAlbumsStrip(albums: albums, artistSongs: songs),
+                      if (detail != null) _ArtistDetailBlock(detail: detail!),
+                    ],
+                  ),
+                ),
+              SongTableSliverList(
+                songs: songs,
+                table: table,
+                sourceOf: (s) => lib.sourceFor(s.sourceKey),
+                onPlay: (i) {
+                  if (fromSheet) Navigator.of(context).pop();
+                  player.playQueue(songs,
+                      index: i,
+                      contextKey:
+                          PlayerProvider.anchorForArtist(artist.name));
+                  nav.openPlayer();
+                },
+              ),
+            ],
+          );
+        }),
         // 「重新解析」放歌手详情页右下角：只重拉这一位（含成员展开），
         // 已有 mbid 的按该实体重取，不会漂到别的真人。
         Positioned(

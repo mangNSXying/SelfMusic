@@ -263,7 +263,8 @@ void main() {
       expect(find.text('A测试歌手'), findsNWidgets(2));
 
       // 嵌套：点专辑横条 → 右栏换成第二层（只含该歌手的 8 首）。
-      await tester.tap(find.text('专辑 0'));
+      // 表格模式下歌曲行的「专辑」列也会出现同名文本，取第一个（横条）。
+      await tester.tap(find.text('专辑 0').first);
       await tester.pumpAndSettle();
       expect(h.nav.details, hasLength(2));
       expect(h.nav.details.last, isA<AlbumDetailRoute>());
@@ -278,7 +279,9 @@ void main() {
       expect(h.nav.details, hasLength(1));
       expect(find.text('共 24 首歌曲'), findsOneWidget);
       expect(find.text('共 8 首歌曲'), findsNothing);
-      expect(find.text('专辑 0'), findsOneWidget);
+      // 专辑横条与表格行内专辑列都会出现同名文本。
+      expect(find.text('专辑 (3)'), findsOneWidget);
+      expect(find.text('专辑 0'), findsWidgets);
 
       // 再返回：右栏清空 → 空态；左栏列表始终在。
       await tester.tap(find.byTooltip('返回'));
@@ -390,8 +393,8 @@ void main() {
       expect(h.nav.details.single, isA<AlbumDetailRoute>());
       expect(find.text('共 8 首歌曲'), findsOneWidget);
       expect(find.byTooltip('返回'), findsOneWidget);
-      // 左栏仍在：专辑名出现两处（左行 + 右栏标题）。
-      expect(find.text('专辑 0'), findsNWidgets(2));
+      // 左栏仍在：专辑名至少出现两处（左行 + 右栏标题；右栏歌曲行还有专辑列）。
+      expect(find.text('专辑 0'), findsAtLeastNWidgets(2));
     });
 
     testWidgets('整页「重新解析」：确认后先退出详情、再发起重拉', (tester) async {
