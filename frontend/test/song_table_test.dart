@@ -10,6 +10,7 @@ import 'package:selfmusic/data/sources/music_source.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/player_provider.dart';
+import 'package:selfmusic/utils/collection_sort.dart';
 import 'package:selfmusic/utils/song_groups.dart';
 import 'package:selfmusic/widgets/draggable_sheet.dart';
 import 'package:selfmusic/widgets/song_collection_view.dart';
@@ -309,5 +310,53 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.getTopLeft(header).dy, closeTo(56, 0.5));
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('表头点击排序：升 → 降 → 默认，底色与页面一致', (tester) async {
+    tester.view.physicalSize = const ui.Size(1200, 600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    var sort = CollectionSort.defaultOrder;
+    final picked = <CollectionSort>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: StatefulBuilder(
+            builder: (context, setState) => SongTableHeader(
+              layout: SongTableLayout.fit(1200)!,
+              sort: sort,
+              onSort: (v) {
+                picked.add(v);
+                setState(() => sort = v);
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('歌手'), findsOneWidget);
+    await tester.tap(find.text('歌手'));
+    await tester.pump();
+    expect(picked.last, CollectionSort.artistAsc);
+    expect(find.text('歌手 ↑'), findsOneWidget);
+
+    await tester.tap(find.text('歌手 ↑'));
+    await tester.pump();
+    expect(picked.last, CollectionSort.artistDesc);
+    expect(find.text('歌手 ↓'), findsOneWidget);
+
+    await tester.tap(find.text('歌手 ↓'));
+    await tester.pump();
+    expect(picked.last, CollectionSort.defaultOrder);
+    expect(find.text('歌手'), findsOneWidget);
+
+    // 表头不再额外压一条 surfaceContainerLow 色带，与页面/计数头同底色。
+    final box = tester.widget<Container>(
+      find.ancestor(of: find.text('标题'), matching: find.byType(Container)).first,
+    );
+    expect((box.decoration! as BoxDecoration).color,
+        Theme.of(tester.element(find.text('标题'))).scaffoldBackgroundColor);
   });
 }

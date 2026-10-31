@@ -682,6 +682,8 @@ class _SongCollectionViewState extends State<SongCollectionView> {
                   table: table,
                   controller: _scroll,
                   count: rows.length,
+                  sort: widget.sort,
+                  onSort: widget.showSort ? widget.onSortChanged : null,
                   onRefresh: widget.onRefresh,
                   itemBuilder: (c, i) {
                     final row = rows[i];

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../utils/collection_sort.dart';
 import 'row_list.dart';
 
 /// 宽列表表格模式的最小列表宽度。
@@ -131,30 +132,68 @@ class SongTableLayout {
 ///
 /// 普通列表由 [SongTableList] 放在列表上方；sliver 列表放在 pinned
 /// [SliverPersistentHeader] 里（见 `SliverSongTable`）。
+///
+/// 标题/歌手/专辑/时长四个文本列可点击排序，点击循环「升 → 降 → 默认」
+/// 与计数栏右侧的 [SortMenuButton] 写同一份 `sort` 状态；专辑/歌手详情页
+/// 没有排序入口，[onSort] 为空时表头只读。
 class SongTableHeader extends StatelessWidget {
   final SongTableLayout layout;
 
-  const SongTableHeader({super.key, required this.layout});
+  /// 当前排序（与计数栏右侧排序菜单共用）。
+  final CollectionSort sort;
+
+  /// 点击可排序列表头的回调；为空时表头只读。
+  final ValueChanged<CollectionSort>? onSort;
+
+  const SongTableHeader({
+    super.key,
+    required this.layout,
+    this.sort = CollectionSort.defaultOrder,
+    this.onSort,
+  });
+
+  /// 同一列表头的点击循环：升 → 降 → 默认；换列时从升序开始。
+  static CollectionSort nextSort(CollectionSort current, CollectionSort asc) {
+    if (current == asc) return asc.flipped;
+    if (current == asc.flipped) return CollectionSort.defaultOrder;
+    return asc;
+  }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final style = Theme.of(context).textTheme.bodySmall?.copyWith(
-          color: cs.onSurfaceVariant,
-          fontWeight: FontWeight.w600,
-        );
-    Widget cell(String text, {TextAlign align = TextAlign.left}) => Text(
-          text,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          textAlign: align,
-          style: style,
-        );
+    Widget cell(String text,
+        {TextAlign align = TextAlign.left, CollectionSort? asc}) {
+      final active = asc != null && (sort == asc || sort == asc.flipped);
+      final label = active ? '$text ${sort.isDesc ? '↓' : '↑'}' : text;
+      final content = Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        textAlign: align,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              // 与计数头/列表同一套前景色；当前排序列用强调色。
+              color: active ? cs.primary : cs.onSurfaceVariant,
+              fontWeight: FontWeight.w600,
+            ),
+      );
+      if (asc == null || onSort == null) return content;
+      return InkWell(
+        onTap: () => onSort!(nextSort(sort, asc)),
+        borderRadius: BorderRadius.circular(4),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: content,
+        ),
+      );
+    }
+
     return Container(
       height: kSongTableHeaderHeight,
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: cs.surfaceContainerLow,
+        // 与计数头/歌曲行共用页面底色：不再额外压一条 surfaceContainerLow 色带。
+        color: Theme.of(context).scaffoldBackgroundColor,
         border: Border(bottom: BorderSide(color: cs.outlineVariant)),
       ),
       padding: const EdgeInsets.only(
@@ -162,15 +201,16 @@ class SongTableHeader extends StatelessWidget {
         right: kSongTableHeaderRightInset,
       ),
       child: layout.buildCells(
-        title: cell('标题'),
-        artist: cell('歌手'),
-        album: cell('专辑'),
+        title: cell('标题', asc: CollectionSort.charAsc),
+        artist: cell('歌手', asc: CollectionSort.artistAsc),
+        album: cell('专辑', asc: CollectionSort.albumAsc),
         source: cell('播放源'),
         format: cell('格式'),
         bitrate: cell('码率', align: TextAlign.right),
         size: cell('大小', align: TextAlign.right),
         state: cell('赞踩', align: TextAlign.center),
-        duration: cell('时长', align: TextAlign.right),
+        duration:
+            cell('时长', align: TextAlign.right, asc: CollectionSort.durationAsc),
       ),
     );
   }
@@ -187,6 +227,10 @@ class SongTableList extends StatelessWidget {
   final RefreshCallback? onRefresh;
   final double rowHeight;
 
+  /// 表头排序状态与点击回调（与计数栏排序菜单共用）；为空时表头只读。
+  final CollectionSort sort;
+  final ValueChanged<CollectionSort>? onSort;
+
   const SongTableList({
     super.key,
     required this.table,
@@ -195,6 +239,8 @@ class SongTableList extends StatelessWidget {
     this.controller,
     this.onRefresh,
     this.rowHeight = kRowHeight,
+    this.sort = CollectionSort.defaultOrder,
+    this.onSort,
   });
 
   @override
@@ -209,7 +255,7 @@ class SongTableList extends StatelessWidget {
     if (table == null || count == 0) return list;
     return Column(
       children: [
-        SongTableHeader(layout: table!),
+        SongTableHeader(layout: table!, sort: sort, onSort: onSort),
         Expanded(child: list),
       ],
     );
