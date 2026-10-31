@@ -537,6 +537,19 @@ class SyncServiceTest {
                 nodes("a", "b", "c"), nodes("d"), 3)));
     }
 
+    @Test
+    void appendNewOnlyKeepsExistingOrderForStaleOfflineEvents() throws Exception {
+        // 过期补推：已在历史里的 b 不得被挪到尾部，只追加真正的新条目 d。
+        assertEquals(List.of("a", "b", "c", "d"), refs(SyncService.appendNewOnly(
+                nodes("a", "b", "c"), nodes("b", "d"), 10)));
+        // 全部已存在：顺序原样保留。
+        assertEquals(List.of("a", "b", "c"), refs(SyncService.appendNewOnly(
+                nodes("a", "b", "c"), nodes("b"), 10)));
+        // 容量溢出仍只裁最旧端。
+        assertEquals(List.of("b", "c", "d"), refs(SyncService.appendNewOnly(
+                nodes("a", "b", "c"), nodes("d"), 3)));
+    }
+
     private List<JsonNode> nodes(String... refs) throws Exception {
         var arr = mapper.createArrayNode();
         for (String ref : refs) {

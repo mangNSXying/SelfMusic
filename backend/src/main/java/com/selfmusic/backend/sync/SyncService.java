@@ -811,6 +811,7 @@ public class SyncService {
                     playlistItemRepository.deleteByPlaylistIdAndSourceIdAndSourceRef(
                             pl.getId(), LEGACY_PREFIX + protocol, ref);
                 }
+                pruneDeepListRef(pl, ref);
             }
         } else {
             if (sid == null || ref == null || ref.isBlank()) {
@@ -840,6 +841,34 @@ public class SyncService {
         }
         pl.setSyncVer(nvlLong(pl.getSyncVer()) + 1);
         playlistRepository.save(pl);
+    }
+
+    /**
+     * 歌单删条目联动修剪深层列表：深层历史只保留锚定歌单里仍存在的曲目
+     * （客户端本地删歌同口径）。修剪后 history_rev+1，所有设备拉镜像即可收敛；
+     * 否则服务端会一直保留幽灵引用，客户端匹配不到就静默丢条目，base/revision
+     * 与其它设备长期不一致。
+     */
+    private void pruneDeepListRef(Playlist pl, String ref) {
+        PlayState st = playStateRepository.findById(pl.getId()).orElse(null);
+        if (st == null) return;
+        List<JsonNode> list = parseDeepNodes(st.getDeepListJson());
+        if (list.isEmpty()) return;
+        List<JsonNode> out = new ArrayList<>(list.size());
+        boolean changed = false;
+        for (JsonNode e : list) {
+            if (ref.equals(deepRef(e))) {
+                changed = true;
+                continue;
+            }
+            out.add(e);
+        }
+        if (!changed) return;
+        st.setDeepListJson(deepJson(out));
+        st.setHistoryRev(st.getHistoryRev() + 1);
+        playStateRepository.save(st);
+        log.info("sync.deepList 修剪 playlist={} ref={} before={} after={} historyRev={}",
+                pl.getClientUuid(), ref, list.size(), out.size(), st.getHistoryRev());
     }
 
     /** 条目身份与展示快照：载荷缺省字段不覆盖已有快照。 */
@@ -950,10 +979,13 @@ public class SyncService {
             }
 
             // 纯追加：服务端当前分支 + 设备新增后缀。服务端无历史时用设备全量
-            // 兜底（新库/旧行没有可追加的 base）。
+            // 兜底（新库/旧行没有可追加的 base）。过期补推保持既有顺序，
+            // 只追加新条目（见 v2 分支同名注释）。
             List<JsonNode> merged = (serverMissing && incoming != null)
                     ? dedupeDeep(incoming, capacity)
-                    : appendDeepAdded(server, added, capacity);
+                    : (staleEvent(ev, st)
+                            ? appendNewOnly(server, added, capacity)
+                            : appendDeepAdded(server, added, capacity));
             boolean changedFromIncoming = incoming == null
                     || !sameDeepKeys(merged, incoming);
             st.setDeepListJson(deepJson(merged));
@@ -1020,9 +1052,14 @@ public class SyncService {
         } else if (hasAdded) {
             List<JsonNode> added = deepNodes(p.path("deep_added"));
             // 新库/旧行无历史：用本次全量做种子；否则服务端分支 + 设备后缀。
+            // 过期补推（occurred_at 早于现行 lastEventAt，如离线 20 分钟后的
+            // 启动补推）只追加服务端没有的新条目，不把已存在的旧条目挪到
+            // 尾部——否则一条很旧的播放会伪装成「最近播放」，历史顺序错乱。
             mergedHistory = (server.isEmpty() && incoming != null)
                     ? dedupeDeep(incoming, capacity)
-                    : appendDeepAdded(server, added, capacity);
+                    : (staleEvent(ev, st)
+                            ? appendNewOnly(server, added, capacity)
+                            : appendDeepAdded(server, added, capacity));
             historyChanged = !sameDeepKeys(mergedHistory, server);
         } else if (incoming != null) {
             // 没带 base 的 v2 客户端：以服务端为 base 做三向合并，避免整表覆盖；
@@ -1106,9 +1143,11 @@ public class SyncService {
             }
         }
 
-        // 当前曲必须出现在历史里（play_track 被接受时补一次尾部；已有则不动）。
-        if (headChanged && "play_track".equals(intent)
-                && st.getSourceRef() != null && !st.getSourceRef().isBlank()) {
+        // 当前曲必须落在历史尾部（最近播放栈）：任何被接受的 head（play_track /
+        // pause / resume / seek / 当前设备的 progress）都补一次尾部，已有则不动。
+        // 只认 play_track 不够——历史合并/镜像采用后当前曲可能不是尾部，客户端
+        // 融合队列「深层尾 = 当前曲」的前提会被打破（队列位置跳变、下一首错位）。
+        if (headChanged && st.getSourceRef() != null && !st.getSourceRef().isBlank()) {
             List<String> keys = deepKeys(mergedHistory);
             String ref = st.getSourceRef();
             if (keys.isEmpty() || !ref.equals(keys.get(keys.size() - 1))) {
@@ -1468,6 +1507,36 @@ public class SyncService {
         out.addAll(server);
         out.addAll(added);
         return dedupeDeep(out, capacity);
+    }
+
+    /**
+     * 过期补推：occurred_at 早于服务端现行 lastEventAt（离线期间对端已前进）。
+     * 这类事件的 deep_added 只能追加服务端没有的新条目，不能把已存在的旧条目
+     * 挪到末尾——否则很旧的播放会变成「最近播放」，深层历史顺序错乱。
+     */
+    static boolean staleEvent(PushEvent ev, PlayState st) {
+        return ev != null && ev.occurred_at() != null && st != null
+                && st.getLastEventAt() != null
+                && ev.occurred_at().isBefore(st.getLastEventAt());
+    }
+
+    /** 追加服务端没有的新条目并保持既有顺序；容量溢出只裁最旧端。 */
+    static List<JsonNode> appendNewOnly(List<JsonNode> server,
+                                        List<JsonNode> added,
+                                        int capacity) {
+        List<JsonNode> out = new ArrayList<>(server.size() + added.size());
+        out.addAll(server);
+        java.util.Set<String> seen = new java.util.HashSet<>(deepKeys(server));
+        for (JsonNode e : added) {
+            String ref = deepRef(e);
+            if (ref == null || !seen.add(ref)) continue;
+            out.add(e);
+        }
+        int cap = Math.max(0, capacity);
+        if (out.size() > cap) {
+            out = new ArrayList<>(out.subList(out.size() - cap, out.size()));
+        }
+        return out;
     }
 
     /**
