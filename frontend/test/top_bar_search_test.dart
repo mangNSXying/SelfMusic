@@ -151,4 +151,29 @@ void main() {
     expect(identical(ctrlBefore, ctrlAfter), isTrue,
         reason: '提示语变化不应重建 TextEditingController');
   });
+
+  testWidgets('歌曲信息工具页：顶栏换工具变体，返回弹回内容', (tester) async {
+    final nav = NavigationProvider();
+    await tester.pumpWidget(
+      ChangeNotifierProvider<NavigationProvider>.value(
+        value: nav,
+        child: MaterialApp(
+          home: Scaffold(body: TopBar(onSidebarToggle: () {})),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    nav.select(NavSection.songs);
+    nav.openLibraryInfo(LibraryInfoPage.overview);
+    await tester.pump();
+
+    expect(find.byType(TextField), findsNothing, reason: '工具页不显示分组导航与搜索');
+    expect(find.text('歌曲信息'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('返回'));
+    await tester.pump();
+    expect(nav.libraryInfoPage, isNull);
+    expect(find.byType(TextField), findsOneWidget);
+  });
 }

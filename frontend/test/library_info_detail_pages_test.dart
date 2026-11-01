@@ -60,7 +60,7 @@ Future<DirectSourceManager> _seed() async {
 Widget _wrap(DirectSourceManager mgr, Widget child) =>
     ChangeNotifierProvider<DirectSourceManager>.value(
       value: mgr,
-      child: MaterialApp(home: child),
+      child: MaterialApp(home: Scaffold(body: child)),
     );
 
 void main() {

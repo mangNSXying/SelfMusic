@@ -86,9 +86,8 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
   @override
   void initState() {
     super.initState();
-    _loader = DetailDataLoader<List<PlayDetailRow>>(
-        () => context.read<DirectSourceManager>().index
-            .playDetailRowsInBackground());
+    _loader = DetailDataLoader<List<PlayDetailRow>>(() =>
+        context.read<DirectSourceManager>().index.playDetailRowsInBackground());
     _loader.onUpdate = () {
       if (mounted) setState(() {});
     };
@@ -142,23 +141,20 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
   Widget build(BuildContext context) {
     final all = _loader.data;
     if (all == null) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('播放数据')),
-        body: Center(
-          child: _loader.failed
-              ? Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text('加载失败'),
-                    const SizedBox(height: 8),
-                    OutlinedButton(
-                      onPressed: _loader.request,
-                      child: const Text('重试'),
-                    ),
-                  ],
-                )
-              : const CircularProgressIndicator(),
-        ),
+      return Center(
+        child: _loader.failed
+            ? Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('加载失败'),
+                  const SizedBox(height: 8),
+                  OutlinedButton(
+                    onPressed: _loader.request,
+                    child: const Text('重试'),
+                  ),
+                ],
+              )
+            : const CircularProgressIndicator(),
       );
     }
     var totalSec = 0;
@@ -225,87 +221,84 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
     rows.sort(cmp);
     final wide = isWideDetail(context);
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('播放数据')),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-            child: Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        '共 ${all.length} 首 · '
-                        '累计 ${totalCount.toStringAsFixed(1)} 次 · '
-                        '${playSecLabel(totalSec)}',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodyMedium
-                            ?.copyWith(fontWeight: FontWeight.w600),
-                      ),
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          child: Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '共 ${all.length} 首 · '
+                      '累计 ${totalCount.toStringAsFixed(1)} 次 · '
+                      '${playSecLabel(totalSec)}',
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodyMedium
+                          ?.copyWith(fontWeight: FontWeight.w600),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
           ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          child: TextField(
+            controller: _searchCtrl,
+            decoration: const InputDecoration(
+              prefixIcon: Icon(Icons.search),
+              hintText: '按歌曲名 / 歌手过滤',
+              isDense: true,
+              border: OutlineInputBorder(),
+            ),
+            onChanged: (v) => setState(() => _query = v),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+          child: Row(
+            children: [
+              FilterChip(
+                label: const Text('仅看有播放'),
+                selected: _onlyWithPlay,
+                onSelected: (v) => setState(() => _onlyWithPlay = v),
+              ),
+              const SizedBox(width: 8),
+              Text('${rows.length} 首',
+                  style: Theme.of(context).textTheme.bodySmall),
+            ],
+          ),
+        ),
+        // 窄屏表格表头放不下，改用按钮组排序（与元数据详情页同样式）。
+        if (!wide)
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-            child: TextField(
-              controller: _searchCtrl,
-              decoration: const InputDecoration(
-                prefixIcon: Icon(Icons.search),
-                hintText: '按歌曲名 / 歌手过滤',
-                isDense: true,
-                border: OutlineInputBorder(),
-              ),
-              onChanged: (v) => setState(() => _query = v),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
-            child: Row(
-              children: [
-                FilterChip(
-                  label: const Text('仅看有播放'),
-                  selected: _onlyWithPlay,
-                  onSelected: (v) => setState(() => _onlyWithPlay = v),
-                ),
-                const SizedBox(width: 8),
-                Text('${rows.length} 首',
-                    style: Theme.of(context).textTheme.bodySmall),
-              ],
-            ),
-          ),
-          // 窄屏表格表头放不下，改用按钮组排序（与元数据详情页同样式）。
-          if (!wide)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    for (var i = 0; i < _sortLabels.length; i++) ...[
-                      if (i > 0) const SizedBox(width: 6),
-                      _sortBtn(i, _sortLabels[i]),
-                    ],
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  for (var i = 0; i < _sortLabels.length; i++) ...[
+                    if (i > 0) const SizedBox(width: 6),
+                    _sortBtn(i, _sortLabels[i]),
                   ],
-                ),
+                ],
               ),
             ),
-          const SizedBox(height: 4),
-          Expanded(
-            child: rows.isEmpty
-                ? const Center(child: Text('无匹配歌曲'))
-                : wide
-                    ? _wideTable(rows)
-                    : _narrowCards(rows),
           ),
-        ],
-      ),
+        const SizedBox(height: 4),
+        Expanded(
+          child: rows.isEmpty
+              ? const Center(child: Text('无匹配歌曲'))
+              : wide
+                  ? _wideTable(rows)
+                  : _narrowCards(rows),
+        ),
+      ],
     );
   }
 
@@ -361,11 +354,9 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
     return switch (column) {
       0 => text(r.title),
       1 => text(r.artist ?? ''),
-      2 => text(playCountLabel(r.playSec, r.duration),
-          align: TextAlign.right),
+      2 => text(playCountLabel(r.playSec, r.duration), align: TextAlign.right),
       3 => text(playSecLabel(r.playSec), align: TextAlign.right),
-      4 => text(formatMedianProgress(r.medianPercent),
-          align: TextAlign.right),
+      4 => text(formatMedianProgress(r.medianPercent), align: TextAlign.right),
       _ => text(r.sourceKey),
     };
   }
@@ -379,9 +370,8 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
       itemBuilder: (context, i) {
         final r = rows[i];
         final played = r.playSec > 0;
-        final artist = (r.artist == null || r.artist!.isEmpty)
-            ? '未知歌手'
-            : r.artist!;
+        final artist =
+            (r.artist == null || r.artist!.isEmpty) ? '未知歌手' : r.artist!;
         return Card(
           margin: const EdgeInsets.symmetric(vertical: 4),
           child: ExpansionTile(
@@ -389,16 +379,14 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
             // 展开态默认画上下分割线（dividerColor），卡片本身已有边界，去掉。
             shape: const Border(),
             collapsedShape: const Border(),
-            title:
-                Text(r.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+            title: Text(r.title, maxLines: 1, overflow: TextOverflow.ellipsis),
             subtitle: Text('$artist · ${r.sourceKey}',
                 maxLines: 1, overflow: TextOverflow.ellipsis),
             trailing: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
-                color: (played ? cs.primary : cs.outline)
-                    .withValues(alpha: 0.15),
+                color:
+                    (played ? cs.primary : cs.outline).withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Text(
@@ -435,8 +423,10 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
           SizedBox(
             width: 120,
             child: Text(label,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: cs.onSurface.withValues(alpha: 0.7))),
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: cs.onSurface.withValues(alpha: 0.7))),
           ),
           Expanded(
             child: Text(value,

@@ -15,8 +15,7 @@ class ArtistDetailScreen extends StatelessWidget {
     final total = s['total'] ?? 0;
     final mapped = s['mapped'] ?? 0;
     final withArtist = s['withArtist'] ?? 0;
-    final pct =
-        withArtist <= 0 ? 0.0 : (mapped / withArtist).clamp(0.0, 1.0);
+    final pct = withArtist <= 0 ? 0.0 : (mapped / withArtist).clamp(0.0, 1.0);
     final rows = [
       ('已解析', s['resolved'] ?? 0),
       ('待确认', s['ambiguous'] ?? 0),
@@ -26,60 +25,53 @@ class ArtistDetailScreen extends StatelessWidget {
       ('已展开组合', s['expanded'] ?? 0),
       ('回落组合', s['fallback'] ?? 0),
     ];
-    return Scaffold(
-      appBar: AppBar(title: const Text('歌手信息')),
-      body: total <= 0
-          ? const Center(child: Text('暂无歌手数据'))
-          : ListView(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-              children: [
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('共 $total 个歌手身份',
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleMedium
-                                ?.copyWith(fontWeight: FontWeight.w600)),
-                        const SizedBox(height: 8),
-                        LinearProgressIndicator(value: pct),
-                        const SizedBox(height: 4),
-                        Text(
-                          '歌曲映射 $mapped / $withArtist 首 · ${(pct * 100).toStringAsFixed(0)}%',
+    return total <= 0
+        ? const Center(child: Text('暂无歌手数据'))
+        : ListView(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+            children: [
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('共 $total 个歌手身份',
                           style: Theme.of(context)
                               .textTheme
-                              .bodySmall
-                              ?.copyWith(
-                                  color: cs.onSurface
-                                      .withValues(alpha: 0.6)),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Card(
-                  child: Column(
-                    children: [
-                      for (final e in rows)
-                        ListTile(
-                          dense: true,
-                          title: Text(e.$1),
-                          trailing: Text('${e.$2}',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodyMedium
-                                  ?.copyWith(fontWeight: FontWeight.w600)),
-                        ),
+                              .titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 8),
+                      LinearProgressIndicator(value: pct),
+                      const SizedBox(height: 4),
+                      Text(
+                        '歌曲映射 $mapped / $withArtist 首 · ${(pct * 100).toStringAsFixed(0)}%',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: cs.onSurface.withValues(alpha: 0.6)),
+                      ),
                     ],
                   ),
                 ),
-              ],
-            ),
-    );
+              ),
+              const SizedBox(height: 8),
+              Card(
+                child: Column(
+                  children: [
+                    for (final e in rows)
+                      ListTile(
+                        dense: true,
+                        title: Text(e.$1),
+                        trailing: Text('${e.$2}',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyMedium
+                                ?.copyWith(fontWeight: FontWeight.w600)),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          );
   }
 }
 
@@ -107,97 +99,89 @@ class _FormatDetailScreenState extends State<FormatDetailScreen> {
       return _ascending ? c : -c;
     });
     final total = entries.fold<int>(0, (p, e) => p + e.value);
-    return Scaffold(
-      appBar: AppBar(title: const Text('格式分布')),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-            child: Row(
-              children: [
-                OutlinedButton(
-                  style: OutlinedButton.styleFrom(
-                      visualDensity: VisualDensity.compact),
-                  onPressed: () => setState(() {
-                    if (_byCount) {
-                      _ascending = !_ascending;
-                    } else {
-                      _byCount = true;
-                      _ascending = false;
-                    }
-                  }),
-                  child: Text('数量${_byCount ? (_ascending ? ' ↑' : ' ↓') : ''}'),
-                ),
-                const SizedBox(width: 6),
-                OutlinedButton(
-                  style: OutlinedButton.styleFrom(
-                      visualDensity: VisualDensity.compact),
-                  onPressed: () => setState(() {
-                    if (!_byCount) {
-                      _ascending = !_ascending;
-                    } else {
-                      _byCount = false;
-                      _ascending = true;
-                    }
-                  }),
-                  child: Text('格式名${!_byCount ? (_ascending ? ' ↑' : ' ↓') : ''}'),
-                ),
-                const Spacer(),
-                Text('共 $total 首',
-                    style: Theme.of(context).textTheme.bodySmall),
-              ],
-            ),
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          child: Row(
+            children: [
+              OutlinedButton(
+                style: OutlinedButton.styleFrom(
+                    visualDensity: VisualDensity.compact),
+                onPressed: () => setState(() {
+                  if (_byCount) {
+                    _ascending = !_ascending;
+                  } else {
+                    _byCount = true;
+                    _ascending = false;
+                  }
+                }),
+                child: Text('数量${_byCount ? (_ascending ? ' ↑' : ' ↓') : ''}'),
+              ),
+              const SizedBox(width: 6),
+              OutlinedButton(
+                style: OutlinedButton.styleFrom(
+                    visualDensity: VisualDensity.compact),
+                onPressed: () => setState(() {
+                  if (!_byCount) {
+                    _ascending = !_ascending;
+                  } else {
+                    _byCount = false;
+                    _ascending = true;
+                  }
+                }),
+                child:
+                    Text('格式名${!_byCount ? (_ascending ? ' ↑' : ' ↓') : ''}'),
+              ),
+              const Spacer(),
+              Text('共 $total 首', style: Theme.of(context).textTheme.bodySmall),
+            ],
           ),
-          Expanded(
-            child: entries.isEmpty
-                ? const Center(child: Text('暂无格式数据'))
-                : ListView.builder(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-                    itemCount: entries.length,
-                    itemBuilder: (context, i) {
-                      final e = entries[i];
-                      final pct = total <= 0
-                          ? 0.0
-                          : (e.value / total).clamp(0.0, 1.0);
-                      return Padding(
-                        padding:
-                            const EdgeInsets.symmetric(vertical: 5),
-                        child: Row(
-                          children: [
-                            SizedBox(
-                              width: 120,
-                              child: Text(e.key,
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodyMedium),
+        ),
+        Expanded(
+          child: entries.isEmpty
+              ? const Center(child: Text('暂无格式数据'))
+              : ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+                  itemCount: entries.length,
+                  itemBuilder: (context, i) {
+                    final e = entries[i];
+                    final pct =
+                        total <= 0 ? 0.0 : (e.value / total).clamp(0.0, 1.0);
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 5),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 120,
+                            child: Text(e.key,
+                                style: Theme.of(context).textTheme.bodyMedium),
+                          ),
+                          Expanded(
+                            child: LinearProgressIndicator(
+                              value: pct,
+                              backgroundColor: Theme.of(context)
+                                  .colorScheme
+                                  .primary
+                                  .withValues(alpha: 0.15),
                             ),
-                            Expanded(
-                              child: LinearProgressIndicator(
-                                value: pct,
-                                backgroundColor: Theme.of(context)
-                                    .colorScheme
-                                    .primary
-                                    .withValues(alpha: 0.15),
-                              ),
+                          ),
+                          const SizedBox(width: 8),
+                          SizedBox(
+                            width: 110,
+                            child: Text(
+                              '${e.value} 首 · ${(pct * 100).toStringAsFixed(0)}%',
+                              textAlign: TextAlign.right,
+                              style: Theme.of(context).textTheme.bodySmall,
                             ),
-                            const SizedBox(width: 8),
-                            SizedBox(
-                              width: 110,
-                              child: Text(
-                                '${e.value} 首 · ${(pct * 100).toStringAsFixed(0)}%',
-                                textAlign: TextAlign.right,
-                                style:
-                                    Theme.of(context).textTheme.bodySmall,
-                              ),
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
-          ),
-        ],
-      ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
     );
   }
 }

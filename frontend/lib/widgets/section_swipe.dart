@@ -27,8 +27,8 @@ class SectionSwipe extends StatelessWidget {
         if (i < 0) return;
         final next = v < 0 ? i + 1 : i - 1;
         if (next < 0 || next >= _order.length) return;
-        // 滑动方向即新页面进入方向（左滑新页从右进，右滑从左进）。
-        nav.select(_order[next], slideOffset: Offset(v < 0 ? 1 : -1, 0));
+        // 滑动方向即新页面进入方向；分组 Pager/切换器自行决定动画方向。
+        nav.select(_order[next]);
       },
       child: child,
     );

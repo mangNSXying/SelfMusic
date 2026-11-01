@@ -39,7 +39,7 @@ class NavRebuildCounter {
 /// 目标 Widget 的 build 次数探针（T001）。
 ///
 /// 以与生产消费方**完全一致的订阅表达式**（`context.select<NavigationProvider, T>`
-/// 或 `NavRouteKey` record）订阅导航状态，并在每次 build 时登记一次。
+/// 或 `(section, contentRevision)` record）订阅导航状态，并在每次 build 时登记一次。
 ///
 /// `context.select` 仅在所选值按 `==` 变化时触发重建（record 为结构相等），
 /// 因此探针自身的 build 次数即"该订阅契约下的重建次数"：用于断言
@@ -97,9 +97,11 @@ List<Widget> _probes(NavRebuildCounter c) => [
       // 顶栏高亮（_NavBar）→ section
       NavRebuildProbe<NavSection>(
           counter: c, label: 'navBar', selector: (n) => n.section),
-      // 内容路由（AppContent）→ routeKey（section + settings + browsing*）
-      NavRebuildProbe<NavRouteKey>(
-          counter: c, label: 'router', selector: (n) => n.routeKey),
+      // 内容路由（AppContent）→ (section, contentRevision)
+      NavRebuildProbe<(NavSection, int)>(
+          counter: c,
+          label: 'router',
+          selector: (n) => (n.section, n.contentRevision)),
       // 播放页可见性（Root / player_screen）→ playerView
       NavRebuildProbe<bool>(
           counter: c, label: 'root', selector: (n) => n.playerView),
@@ -194,7 +196,7 @@ void main() {
     counter.reset();
 
     // 区段变更：shell/miniBar（queueOpen）、分组视图（search）、root（playerView）
-    // 订阅字段未变 → 0；navBar（section）/router（routeKey）→ 1。
+    // 订阅字段未变 → 0；navBar（section）/router（section + contentRevision）→ 1。
     // 注意初始 playerView=true，select 会置 false，故 root 单独看：此处先隔离。
     nav.select(NavSection.songs); // 先入内容态
     await tester.pump();
@@ -340,22 +342,17 @@ void main() {
       expect(nav.section, NavSection.songs);
       expect(nav.search, '');
       expect(nav.playerView, isTrue);
+      expect(nav.homeBand, 1);
       expect(nav.queueOpen, isFalse);
       expect(nav.settings, isNull);
       expect(nav.browsingSourceKey, isNull);
       expect(nav.browsingPlaylistId, isNull);
-      expect(nav.routeKey, (
-        section: NavSection.songs,
-        settings: null,
-        sourceKey: null,
-        playlistId: null,
-      ));
+      expect(nav.contentRoutes, isEmpty);
 
-      // select：切区段、退出播放页、清空设置/源/歌单详情
-      nav.select(NavSection.albums, slideOffset: const Offset(-1, 0));
+      // select：切区段、退出播放页、清空内容栈
+      nav.select(NavSection.albums);
       expect(nav.section, NavSection.albums);
       expect(nav.playerView, isFalse);
-      expect(nav.slideOffset, const Offset(-1, 0));
       expect(notified, 1);
 
       // 搜索：同值提前返回不通知；不同值通知；清空
@@ -368,18 +365,20 @@ void main() {
       expect(nav.search, '');
       expect(notified, 3);
 
-      // 覆盖区域层级键：source / playlist / settings
+      // 内容栈：源 / 歌单 / 设置都走同一栈
       nav.enterSource('local:1');
       expect(nav.browsingSourceKey, 'local:1');
-      expect(nav.areaKey, 'src:local:1');
-      expect(nav.areaLevel, 2);
+      expect(nav.sourceDir, '');
+      expect(nav.contentTop, isA<SourceBrowseRoute>());
+      nav.setSourceDir('a/b');
+      expect(nav.sourceDir, 'a/b');
+      expect(nav.contentRoutes, hasLength(3));
       nav.exitSource();
       expect(nav.browsingSourceKey, isNull);
-      expect(nav.slideOffset, const Offset(-1, 0));
 
       nav.enterPlaylist(7);
       expect(nav.browsingPlaylistId, 7);
-      expect(nav.areaKey, 'pl:7');
+      expect(nav.contentTop, isA<PlaylistRoute>());
       nav.exitPlaylist();
       expect(nav.browsingPlaylistId, isNull);
 
@@ -387,8 +386,7 @@ void main() {
       expect(nav.settings, SettingsItem.appearance);
       expect(nav.inSettings, isTrue);
       expect(nav.playerView, isFalse);
-      expect(nav.areaKey, 'settings:appearance');
-      expect(nav.areaLevel, 3);
+      expect(nav.contentTop, isA<SettingsRoute>());
       nav.closeSettings();
       expect(nav.settings, isNull);
 
@@ -406,31 +404,42 @@ void main() {
       // 播放页意图
       nav.openPlayer();
       expect(nav.playerView, isTrue);
-      expect(nav.settings, isNull);
-      expect(nav.slideOffset, const Offset(0, 1));
+      expect(nav.homeBand, 1);
       nav.closePlayer();
       expect(nav.playerView, isFalse);
-      expect(nav.slideOffset, const Offset(0, -1));
 
-      // backToPrevious 层级（底 → 顶）：播放页 < 内容页 < 源内/歌单详情 < 队列 < 设置
+      // 返回：内容栈 → 首页；宽屏队列面板不消费返回
       nav.openSettings(SettingsItem.general);
       expect(nav.backToPrevious(), isTrue);
       expect(nav.settings, isNull);
+      expect(nav.playerView, isFalse);
+
       nav.openQueue();
       expect(nav.backToPrevious(), isTrue);
-      expect(nav.queueOpen, isFalse);
+      expect(nav.queueOpen, isTrue, reason: '宽屏队列面板是 chrome，不参与返回');
+      expect(nav.playerView, isTrue);
+      nav.closeQueue();
+      nav.closePlayer();
+
       nav.enterPlaylist(3);
       expect(nav.backToPrevious(), isTrue);
       expect(nav.browsingPlaylistId, isNull);
+      expect(nav.playerView, isFalse);
+
       nav.enterSource('s');
       expect(nav.backToPrevious(), isTrue);
       expect(nav.browsingSourceKey, isNull);
+
       // 内容页 → 返回播放页（首页）
-      nav.closePlayer();
       expect(nav.playerView, isFalse);
       expect(nav.backToPrevious(), isTrue);
       expect(nav.playerView, isTrue);
-      // 已在最底层（播放页）：无更下一级
+
+      // 首页子页 → 播放页；已在播放页：无更下一级
+      nav.reportHomeBand(2);
+      expect(nav.backToPrevious(), isTrue);
+      expect(nav.playerView, isTrue);
+      expect(nav.homeBand, 1);
       expect(nav.backToPrevious(), isFalse);
     });
   });

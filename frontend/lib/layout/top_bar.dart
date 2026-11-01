@@ -13,23 +13,27 @@ class TopBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 订阅收窄（T004）：TopBar 仅关注"是否设置页 + 具体设置分区"（改设置分区时
-    // 设置标题需刷新，故用 record 而非单独 inSettings）。
-    // 高亮由 [_NavBar] 自行订阅 `section`；搜索框由 [_UpperRow] 自持监听。
+    // 订阅收窄（T004）：顶栏只关注"设置分区 / 歌曲信息工具页"与具体分区。
     final nav = context.read<NavigationProvider>();
-    final (inSettings, _) =
-        context.select<NavigationProvider, (bool, SettingsItem?)>(
-            (n) => (n.inSettings, n.settings));
+    final (inSettings, settings, libraryInfo) = context
+        .select<NavigationProvider, (bool, SettingsItem?, LibraryInfoPage?)>(
+            (n) => (n.inSettings, n.settings, n.libraryInfoPage));
 
     final Widget bar = inSettings
         ? _SettingsTopBar(nav: nav, onSidebarToggle: onSidebarToggle)
-        : Column(
-            children: [
-              _UpperRow(nav: nav, onSidebarToggle: onSidebarToggle),
-              _NavBar(nav: nav),
-              const Divider(height: 1),
-            ],
-          );
+        : libraryInfo != null
+            ? _ToolTopBar(
+                nav: nav,
+                title: libraryInfo.label,
+                onSidebarToggle: onSidebarToggle,
+              )
+            : Column(
+                children: [
+                  _UpperRow(nav: nav, onSidebarToggle: onSidebarToggle),
+                  _NavBar(nav: nav),
+                  const Divider(height: 1),
+                ],
+              );
     // 适配手机状态栏：无 AppBar 时顶栏会顶到状态栏，这里让出顶部安全区。
     return SafeArea(bottom: false, child: bar);
   }
@@ -266,6 +270,45 @@ class _SettingsTopBar extends StatelessWidget {
               const SizedBox(width: 8),
               Text(nav.settings?.label ?? '设置',
                   style: Theme.of(context).textTheme.titleMedium),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+      ],
+    );
+  }
+}
+
+/// 歌曲信息等工具页的顶栏：保留侧栏入口 + 返回，不显示分组导航与搜索。
+class _ToolTopBar extends StatelessWidget {
+  final NavigationProvider nav;
+  final String title;
+  final VoidCallback onSidebarToggle;
+  const _ToolTopBar({
+    required this.nav,
+    required this.title,
+    required this.onSidebarToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          child: Row(
+            children: [
+              IconButton(
+                  icon: const Icon(Icons.menu),
+                  tooltip: '伸缩侧边栏',
+                  onPressed: onSidebarToggle),
+              const SizedBox(width: 4),
+              IconButton(
+                  icon: const Icon(Icons.arrow_back),
+                  tooltip: '返回',
+                  onPressed: () => nav.backToPrevious(keepSearch: true)),
+              const SizedBox(width: 8),
+              Text(title, style: Theme.of(context).textTheme.titleMedium),
             ],
           ),
         ),

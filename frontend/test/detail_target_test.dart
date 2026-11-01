@@ -22,7 +22,7 @@ const _artist =
 
 void main() {
   group('DetailTarget 去重口径', () {
-    test('专辑只看栈顶，歌手看整栈；歌单/播放源看既有路由字段', () {
+    test('专辑/歌手都只看栈顶；歌单/播放源看既有路由', () {
       final nav = NavigationProvider();
       final a1 = _album('专辑一');
       final a2 = _album('专辑二');
@@ -37,7 +37,7 @@ void main() {
       expect(AlbumTarget(a1, const []).isShowing(nav), isTrue);
       nav.exitDetail();
       expect(AlbumTarget(a1, const []).isShowing(nav), isFalse);
-      // 歌手在栈里任意一层都算（"歌手 → 专辑"嵌套时点回同一歌手）。
+      // 歌手回到栈顶；点回在栈内下方的歌手由 nav 回退（不重复压栈）。
       expect(const ArtistTarget(_artist, []).isShowing(nav), isTrue);
 
       nav.enterPlaylist(7);

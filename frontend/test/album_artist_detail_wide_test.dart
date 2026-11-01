@@ -20,7 +20,7 @@ import 'package:selfmusic/layout/screen_metrics.dart';
 import 'package:selfmusic/screens/library_screen.dart';
 import 'package:selfmusic/services/artist_resolver.dart';
 import 'package:selfmusic/theme/app_theme.dart';
-import 'package:selfmusic/widgets/detail_stack.dart';
+import 'package:selfmusic/widgets/content_stack.dart';
 import 'package:selfmusic/widgets/song_list.dart';
 import 'package:sqlite3/open.dart';
 
@@ -237,7 +237,7 @@ void main() {
       addTearDown(() => _dispose(h.direct, h.dir));
 
       // 未选中：左栏列表 + 右栏空态，没有详情外壳。
-      expect(find.byType(DetailStack), findsOneWidget);
+      expect(find.byType(ContentStack), findsOneWidget);
       expect(find.byTooltip('返回'), findsNothing);
       expect(find.text('从左侧选择歌手查看作品'), findsOneWidget);
       expect(find.byType(DraggableScrollableSheet), findsNothing);
@@ -533,7 +533,7 @@ void main() {
         );
     const artist = Artist(name: 'A测试歌手', songCount: 24, albumCount: 3);
 
-    test('进退/嵌套/最多两层/离开分组清空', () {
+    test('进退/嵌套/多层/离开分组清空', () {
       final nav = NavigationProvider();
       final rev = nav.detailRevision;
 
@@ -545,23 +545,29 @@ void main() {
       expect(nav.details, hasLength(2));
       expect(nav.details.last, isA<AlbumDetailRoute>());
 
-      // 最多两层：进第三层时丢掉最底层，保留最近的详情。
+      // 不再裁剪到两层：第三层完整保留，返回逐层弹。
       nav.enterAlbum(album(2), const []);
-      expect(nav.details, hasLength(2));
+      expect(nav.details, hasLength(3));
       expect((nav.details.last as AlbumDetailRoute).album.album, '专辑 2');
 
       expect(nav.backToPrevious(), isTrue);
-      expect(nav.details, hasLength(1));
-      expect(nav.details.single, isA<AlbumDetailRoute>());
+      expect(nav.details, hasLength(2));
+      expect((nav.details.last as AlbumDetailRoute).album.album, '专辑 1');
 
-      // 切分组 / 设置页 / 歌单 / 源内：详情栈一律清空。
+      // 切分组：内容栈清空。
       nav.select(NavSection.songs);
       expect(nav.details, isEmpty);
 
+      // 设置压在内容栈上，返回回到原详情（不再清空）。
       nav.enterArtist(artist, const []);
       nav.openSettings(SettingsItem.general);
-      expect(nav.details, isEmpty);
+      expect(nav.details, hasLength(1));
+      expect(nav.contentTop, isA<SettingsRoute>());
+      expect(nav.backToPrevious(), isTrue);
+      expect(nav.settings, isNull);
+      expect(nav.details, hasLength(1));
 
+      // 不同族互斥：歌单/源内进入时清掉专辑/歌手层。
       nav.enterAlbum(album(3), const []);
       nav.enterPlaylist(1);
       expect(nav.details, isEmpty);

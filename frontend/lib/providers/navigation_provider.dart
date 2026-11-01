@@ -6,139 +6,223 @@ import '../theme/app_theme.dart';
 import '../utils/perf_log.dart';
 import '../utils/source_folders.dart';
 
-/// 内容区路由的「最小关注字段」稳定组合（订阅契约，R-4 / T003 / T008）。
-///
-/// 内容路由（[AppContent]）需要一次订阅多个相关字段才能决定渲染哪个区域。
-/// 用 Dart record 承载：record 具备**结构相等**语义，`context.select` 以 `==`
-/// 比较所选值——四个字段都不变时不会误触发重建，任一变化才重建。
-///
-/// 字段：
-/// - `section`：六个顶级分组之一；
-/// - `settings`：当前设置分区（null=非设置页）；
-/// - `sourceKey`：源内浏览 key（null=位于播放源列表）；
-/// - `playlistId`：歌单详情 id（null=位于歌单列表）。
-typedef NavRouteKey = ({
-  NavSection section,
-  SettingsItem? settings,
-  String? sourceKey,
-  int? playlistId,
-});
+/// 「歌曲信息」工具页的子页（内容栈 L2）。
+enum LibraryInfoPage {
+  overview('歌曲信息'),
+  meta('元数据信息'),
+  artists('歌手信息'),
+  formats('格式分布'),
+  play('播放数据');
 
-/// 宽屏内容区详情页的目标（专辑/歌手）。
-///
-/// 只在宽屏进入（窄屏仍走统一拖拽弹层）：内容区整页叠在分组列表之上，底层
-/// 列表常驻保活。歌曲列表随目标一起快照，语义与窄屏弹层一致——打开期间后台
-/// 解析/扫描不就地刷新，重新进入才取新数据。
-sealed class DetailRoute {
-  const DetailRoute();
+  const LibraryInfoPage(this.label);
+  final String label;
 }
 
-class AlbumDetailRoute extends DetailRoute {
+/// 内容栈里的同一族页面：不同族互斥，进新族会清掉旧族；
+/// 全局层（设置 / 歌曲信息）返回 null，可以压在任何族之上。
+enum ContentFamily { playlist, source, albumArtist }
+
+/// 内容区路由（底 → 顶由 [NavigationProvider.contentRoutes] 持有）。
+///
+/// 设置、歌单详情、源内目录、专辑/歌手详情、歌曲信息全部走这一条栈：
+/// 返回就是弹一层，不再按类型分支。
+sealed class ContentRoute {
+  const ContentRoute();
+
+  /// 退出该层时是否清空搜索词（分栏 keepSearch 优先）。
+  bool get clearsSearchOnPop => true;
+
+  /// 同一时刻只保留同族层；null = 全局层。
+  ContentFamily? get family => null;
+}
+
+class SettingsRoute extends ContentRoute {
+  const SettingsRoute(this.item);
+
+  final SettingsItem item;
+
+  @override
+  bool get clearsSearchOnPop => false;
+}
+
+class LibraryInfoRoute extends ContentRoute {
+  const LibraryInfoRoute(this.page);
+
+  final LibraryInfoPage page;
+
+  @override
+  bool get clearsSearchOnPop => false;
+}
+
+class PlaylistRoute extends ContentRoute {
+  const PlaylistRoute(this.id);
+
+  final int id;
+
+  @override
+  ContentFamily get family => ContentFamily.playlist;
+}
+
+class SourceBrowseRoute extends ContentRoute {
+  const SourceBrowseRoute(this.sourceKey, this.dir);
+
+  final String sourceKey;
+
+  /// 源内相对路径；`''` = 源根。
+  final String dir;
+
+  @override
+  ContentFamily get family => ContentFamily.source;
+}
+
+class AlbumDetailRoute extends ContentRoute {
   const AlbumDetailRoute(this.album, this.songs);
 
   final Album album;
   final List<Song> songs;
+
+  @override
+  ContentFamily get family => ContentFamily.albumArtist;
 }
 
-class ArtistDetailRoute extends DetailRoute {
+class ArtistDetailRoute extends ContentRoute {
   const ArtistDetailRoute(this.artist, this.songs);
 
   final Artist artist;
   final List<Song> songs;
+
+  @override
+  ContentFamily get family => ContentFamily.albumArtist;
 }
 
-// 导航状态：驱动首页（全屏播放页）与 AppShell 内容区切换。
-//
-// ── 订阅契约（R-1 / T003）──────────────────────────────────────────────
-// 保留单一 [NavigationProvider]，全局 `notifyListeners()` 继续广播；消费方
-// **MUST** 只订阅其渲染所必需的最小字段：
-//   `context.select<NavigationProvider, X>((n) => n.<field>)`（多字段用 record，
-//   如 [NavRouteKey]，靠结构相等比较）。
-// **MUST NOT** 以整对象 `context.watch<NavigationProvider>()` 订阅（除确需全部
-// 字段外）——否则每一次导航通知（含区段切换）都会牵连无关控件同帧重建。
-// 按值重建：区段变更（[section] 变化）时，[search] / [queueOpen] / [playerView]
-// / [settings] / [browsingSourceKey] / [browsingPlaylistId] 不变，订阅这些字段
-// 的组件不会重建。
-// 跟手高亮：拖拽期逐帧高亮由 [pageOffset]（ValueNotifier）独立驱动。
-// 公共方法与字段语义不变（R-6）。
-// ───────────────────────────────────────────────────────────────────────
+/// 导航状态：驱动首页（全屏播放页）与 AppShell 内容区切换。
+///
+/// ── 层级模型 ─────────────────────────────────────────────────────────
+/// L0 首页：播放页（根）；播放器横滑带里的歌单页/歌词页是首页子页。
+/// L1 内容基座：六分组 SectionPager（常驻保活）。
+/// L2 内容栈：设置 / 歌单详情 / 源内目录 / 专辑·歌手详情 / 歌曲信息。
+/// L3 模态浮层：窄屏队列弹层（宽屏队列面板是常驻 chrome，不参与返回）。
+/// L4 路由：对话框 / 菜单 / 设置子页 / 窄屏歌曲弹层（Navigator 先 pop）。
+///
+/// 返回：路由 → 窄屏浮层 → 内容栈 → 内容基座 → 首页子页 → 首页根。
+/// 首页展开时返回只作用于首页本身（离场），不会弹掉下面看不见的内容栈。
+///
+/// ── 订阅契约（R-1 / T003）──────────────────────────────────────────────
+/// 保留单一 [NavigationProvider]，全局 `notifyListeners()` 继续广播；消费方
+/// **MUST** 只订阅其渲染所必需的最小字段（`context.select`）。内容区路由
+/// 订阅 `(section, contentRevision)`，不要 watch 整个导航对象。
+/// ───────────────────────────────────────────────────────────────────────
 class NavigationProvider extends ChangeNotifier {
   NavSection _section = NavSection.songs;
   String _search = '';
-  SettingsItem? _settings;
 
   /// 播放页为首页（ui-playpage.html 理念）：启动即全屏展示播放页。
   bool _playerView = true;
-  String? _browsingSourceKey;
 
-  /// 源内浏览的当前目录（源内相对路径，`''` = 源根）。
-  ///
-  /// 由 [SourceBrowseView] 读写下发给目录面包屑与逐级列表；放在导航层是为了
-  /// 返回链保持单点：系统返回 / Esc 经 [backToPrevious] 先退一层目录，
-  /// 而不是把整段源内浏览直接弹掉。
-  String _sourceDir = '';
-  int? _browsingPlaylistId;
+  /// 首页当前横滑带页：0=歌单页 / 1=播放页 / 2=歌词页（横屏只有 0/1）。
+  int _homeBand = 1;
 
-  /// 宽屏详情栈（底 → 顶）：专辑/歌手整页叠在分组列表之上，最多两层。
-  final List<DetailRoute> _details = <DetailRoute>[];
+  /// 返回键要求首页横滑带回播放页（PlayerScreen 监听并播放动画）。
+  final ValueNotifier<int> homeBandRequests = ValueNotifier<int>(0);
 
-  /// 详情栈版本号：进/出栈或清空时 +1，供 [AppContent] 以最小字段订阅
-  /// 「详情栈变化」（不 watch 整个导航对象，区段/搜索等通知不牵连重建）。
-  int _detailRevision = 0;
+  /// 内容栈（底 → 顶）：设置 / 歌单 / 源内目录 / 专辑·歌手 / 歌曲信息。
+  final List<ContentRoute> _content = <ContentRoute>[];
 
-  /// 播放队列面板是否展开（宽屏右侧常驻 / 窄屏统一拖拽式窗口的开合镜像，
-  /// 窄屏由窗口收起时同步回关闭）。
+  /// 内容栈版本号：任何进/出栈或同层替换时 +1，供内容区最小字段订阅。
+  int _contentRevision = 0;
+
+  /// 播放队列面板是否展开（宽屏右侧常驻 / 窄屏弹层镜像）。
   bool _queueOpen = false;
 
   bool _searchFocusPending = false;
   int _sidebarToggleTick = 0;
 
-  /// 滑动过渡新页面的进入方向（(1,0) 右进 / (-1,0) 左进 / (0,±1) 竖向），
-  /// 供全局切换器使用。
-  Offset _slideOffset = const Offset(1, 0);
-  Offset get slideOffset => _slideOffset;
-
-  /// 内容 PageView 的实时页码（double，拖拽中连续变化）。
-  ///
-  /// 顶栏导航据此跟手同步高亮与条带滚动；用 ValueNotifier 隔离重建，
-  /// 避免拖拽中整树 notify 掉帧。
+  /// 内容 PageView 的实时页码（double，拖拽中连续变化），顶栏高亮跟随。
   final ValueNotifier<double> pageOffset = ValueNotifier(3);
 
-  /// 播放页悬浮层进度（0=完全展示，1=完全隐藏），播放页下拉/迷你栏上滑跟手共用。
-  ///
-  /// 用 ValueNotifier 逐帧驱动位移，只重建悬浮层；定稿态由 [playerView] 持有。
+  /// 播放页悬浮层进度（0=完全展示，1=完全隐藏）。
   final ValueNotifier<double> playerProgress = ValueNotifier(0);
+
+  static const int homePlayerBand = 1;
 
   void setPlayerProgress(double p) {
     playerProgress.value = p.clamp(0.0, 1.0);
   }
 
-  /// 当前区域 key（播放页悬浮层不计入区域）。
-  String get areaKey {
-    if (_settings != null) return 'settings:${_settings!.name}';
-    if (_browsingSourceKey != null) return 'src:$_browsingSourceKey';
-    if (_browsingPlaylistId != null) return 'pl:$_browsingPlaylistId';
-    return 'sections';
-  }
-
-  /// 区域层级：分组区 1 < 源内/歌单详情 2 < 设置 3（播放页为悬浮层，不参与）。
-  int get areaLevel {
-    if (_settings != null) return 3;
-    if (_browsingSourceKey != null || _browsingPlaylistId != null) return 2;
-    return 1;
-  }
-
   NavSection get section => _section;
   String get search => _search;
 
-  /// 顶栏搜索提示语（随当前区域变化；搜索词本身仍是同一个 [search]）。
-  ///
-  /// 各区域对同一搜索词的解释不同（源名/源内歌曲/歌单歌曲/歌曲元数据），
-  /// 提示语让用户明确“这次搜索会作用在什么上”。
+  /// 内容栈快照（底 → 顶）。
+  List<ContentRoute> get contentRoutes =>
+      List<ContentRoute>.unmodifiable(_content);
+
+  /// 内容栈版本号（订阅收窄用）。
+  int get contentRevision => _contentRevision;
+
+  /// 兼容旧调用：详情栈变化即内容栈变化。
+  int get detailRevision => _contentRevision;
+
+  ContentRoute? get contentTop => _content.isEmpty ? null : _content.last;
+
+  T? _nearest<T extends ContentRoute>() {
+    for (var i = _content.length - 1; i >= 0; i--) {
+      final route = _content[i];
+      if (route is T) return route;
+    }
+    return null;
+  }
+
+  /// 当前设置分区，null 表示设置页不在栈顶。
+  SettingsItem? get settings {
+    final top = contentTop;
+    return top is SettingsRoute ? top.item : null;
+  }
+
+  /// 是否正在设置页（设置必须是栈顶，否则被工具页盖住）。
+  bool get inSettings => settings != null;
+
+  /// 当前歌曲信息子页，null 表示不在歌曲信息页（仅看栈顶）。
+  LibraryInfoPage? get libraryInfoPage {
+    final top = contentTop;
+    return top is LibraryInfoRoute ? top.page : null;
+  }
+
+  /// 当前正在浏览的源 key（取最近一层源内路由）。
+  String? get browsingSourceKey => _nearest<SourceBrowseRoute>()?.sourceKey;
+
+  /// 源内浏览的当前目录（`''` = 源根）。
+  String get sourceDir => _nearest<SourceBrowseRoute>()?.dir ?? '';
+
+  /// 当前歌单详情 id（取最近一层歌单路由）。
+  int? get browsingPlaylistId => _nearest<PlaylistRoute>()?.id;
+
+  /// 专辑/歌手详情层（内容栈里的子集；供分栏右栏/高亮使用）。
+  List<ContentRoute> get details => [
+        for (final route in _content)
+          if (route is AlbumDetailRoute || route is ArtistDetailRoute) route,
+      ];
+
+  bool get playerView => _playerView;
+
+  /// 首页横滑带当前页（0=歌单 / 1=播放 / 2=歌词）。
+  int get homeBand => _homeBand;
+
+  /// PlayerScreen 横滑翻页时上报；只影响返回判定，不广播重建。
+  void reportHomeBand(int band) {
+    final next = band.clamp(0, 2);
+    if (next == _homeBand) return;
+    _homeBand = next;
+  }
+
+  /// 播放队列面板是否展开。
+  bool get queueOpen => _queueOpen;
+
+  /// 顶栏搜索提示语（随当前区域变化）。
   String get searchHint {
-    if (_settings != null) return '搜索';
-    if (_browsingSourceKey != null) return '搜索该源全部曲目';
-    if (_browsingPlaylistId != null) return '搜索歌单内歌曲';
+    final top = contentTop;
+    if (top is SettingsRoute || top is LibraryInfoRoute) return '搜索';
+    if (top is SourceBrowseRoute) return '搜索该源全部曲目';
+    if (top is PlaylistRoute) return '搜索歌单内歌曲';
     return switch (_section) {
       NavSection.sources => '搜索播放源',
       NavSection.playlists => '搜索歌单 / 歌曲',
@@ -148,56 +232,14 @@ class NavigationProvider extends ChangeNotifier {
     };
   }
 
-  /// 进出详情页时清空搜索词（不额外通知，由调用方统一 notifyListeners）。
   void _clearSearchForDetail() {
     _search = '';
   }
 
-  /// 当前正在浏览的源 key（文件夹式导航）；null 表示位于播放源列表。
-  String? get browsingSourceKey => _browsingSourceKey;
-
-  /// 源内浏览的当前目录（`''` = 源根）。
-  String get sourceDir => _sourceDir;
-
-  /// 更新源内当前目录（归一化后写入；同值不通知）。
-  void setSourceDir(String dir) {
-    final next = normalizeDir(dir);
-    if (next == _sourceDir) return;
-    _sourceDir = next;
+  void _notifyContent() {
+    _contentRevision++;
     notifyListeners();
   }
-
-  /// 当前打开的设置分区，null 表示非设置页。
-  SettingsItem? get settings => _settings;
-
-  /// 是否正在设置页。
-  bool get inSettings => _settings != null;
-
-  /// 是否展示播放页。
-  bool get playerView => _playerView;
-
-  /// 播放队列面板是否展开。
-  bool get queueOpen => _queueOpen;
-
-  /// 宽屏详情栈快照（底 → 顶；最多两层；空=位于分组列表）。
-  ///
-  /// 返回不可变**快照**而非活动视图：叠层组件要靠新旧两份列表的差异判定
-  /// 进出动画（活动视图会让"旧"列表跟着变化，永远看不出差异）。
-  List<DetailRoute> get details => List<DetailRoute>.unmodifiable(_details);
-
-  /// 详情栈版本号（订阅收窄用，见 [AppContent]）。
-  int get detailRevision => _detailRevision;
-
-  /// 内容区路由的最小关注字段稳定组合（订阅契约读取入口，R-4 / T003 / T008）。
-  ///
-  /// 供内容路由单次 `context.select` 订阅 [section] + 设置分区 + 源内 key +
-  /// 歌单详情 id；不读整对象，避免区段/搜索等无关通知牵连重建。
-  NavRouteKey get routeKey => (
-        section: _section,
-        settings: _settings,
-        sourceKey: _browsingSourceKey,
-        playlistId: _browsingPlaylistId,
-      );
 
   void openQueue() {
     _queueOpen = true;
@@ -235,231 +277,278 @@ class NavigationProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 层级返回（底 → 顶）：播放页 < 内容页（含源内/歌单/详情页） < 队列面板 < 设置页。
+  /// 统一返回：只作用于「当前呈现的表面」。
   ///
-  /// 窄屏侧边抽屉是系统路由，返回键由框架先关闭，到不了这里；窄屏队列窗口
-  /// 是根悬浮层（非路由），返回键经此逐级回退关闭。
-  /// 返回 true 表示已消费（停留在上一级），false 表示已在最底层（调用方可退出）。
-  /// 回退统一从左侧滑入（抽屉关闭感）。
-  ///
-  /// [keepSearch]：大横屏分栏时（搜索框 = 左栏过滤器）回退只清右栏/回上一级，
-  /// 不把搜索词一起清掉。
+  /// - 首页展开：首页子页 → 播放页；播放页根 → false（调用方转后台/不动作）。
+  /// - 内容区：内容栈弹一层；栈空 → 展开首页。
+  /// - 窄屏队列浮层 / 路由由调用方在此之前处理（见 main.dart / app_shortcuts）。
+  /// - [keepSearch]：分栏时搜索框是左栏过滤器，退右栏不清词。
   bool backToPrevious({bool keepSearch = false}) {
-    _slideOffset = const Offset(-1, 0);
-    if (_settings != null) {
-      _settings = null;
-      notifyListeners();
+    if (_playerView) {
+      if (_homeBand != homePlayerBand) {
+        _homeBand = homePlayerBand;
+        homeBandRequests.value++;
+        notifyListeners();
+        return true;
+      }
+      return false;
+    }
+    if (_content.isNotEmpty) {
+      _popContent(keepSearch: keepSearch);
       return true;
     }
-    if (_queueOpen) {
-      _queueOpen = false;
-      notifyListeners();
-      return true;
-    }
-    if (_details.isNotEmpty) {
-      exitDetail(keepSearch: keepSearch);
-      return true;
-    }
-    if (_browsingPlaylistId != null) {
-      _browsingPlaylistId = null;
-      if (!keepSearch) _clearSearchForDetail();
-      notifyListeners();
-      return true;
-    }
-    // 源内子目录先退一层（搜索态下目录不可见，返回语义仍是退出源内）。
-    if (_browsingSourceKey != null &&
-        _sourceDir.isNotEmpty &&
-        _search.trim().isEmpty) {
-      _sourceDir = parentDirOf(_sourceDir);
-      notifyListeners();
-      return true;
-    }
-    if (_browsingSourceKey != null) {
-      _browsingSourceKey = null;
-      _sourceDir = '';
-      if (!keepSearch) _clearSearchForDetail();
-      notifyListeners();
-      return true;
-    }
-    if (!_playerView) {
-      _playerView = true;
-      notifyListeners();
-      return true;
-    }
-    return false;
+    _showHome();
+    return true;
   }
 
-  void select(NavSection s, {Offset slideOffset = const Offset(1, 0)}) {
-    _slideOffset = slideOffset;
-    // 离开源内/歌单详情/宽屏详情页时清空搜索：这些页面的搜索对象与顶级
-    // 分区不同，继续带着旧词会让新页面看起来“莫名其妙被过滤”。六个顶级
-    // 分区之间切换则保留搜索词（全局筛选语义）。
-    if (_browsingSourceKey != null ||
-        _browsingPlaylistId != null ||
-        _details.isNotEmpty) {
-      _clearSearchForDetail();
+  void _showHome() {
+    _playerView = true;
+    _homeBand = homePlayerBand;
+    homeBandRequests.value++;
+    notifyListeners();
+  }
+
+  void _popContent({bool keepSearch = false}) {
+    final top = _content.last;
+    // 搜索态下目录不可见：返回直接退出整个源内。
+    if (top is SourceBrowseRoute && _search.trim().isNotEmpty) {
+      _content.removeWhere((route) => route is SourceBrowseRoute);
+      if (!keepSearch) _clearSearchForDetail();
+      _notifyContent();
+      return;
     }
+    _content.removeLast();
+    if (!keepSearch && top.clearsSearchOnPop) _clearSearchForDetail();
+    _notifyContent();
+  }
+
+  /// 切换顶级分组：清空内容栈（含设置/工具页），保留分组间搜索词语义。
+  void select(NavSection s) {
+    final hadDetail = _content
+        .any((route) => route is! SettingsRoute && route is! LibraryInfoRoute);
+    if (hadDetail) _clearSearchForDetail();
+    final changed = _content.isNotEmpty || _section != s || _playerView;
+    _content.clear();
     _section = s;
-    _settings = null;
     _playerView = false;
-    _browsingSourceKey = null;
-    _sourceDir = '';
-    _browsingPlaylistId = null;
-    _clearDetails();
-    notifyListeners();
+    if (!changed) return;
+    _notifyContent();
   }
 
-  /// 进入播放源内部（文件夹式导航）。
-  ///
-  /// [keepSearch]：大横屏分栏时搜索框就是左栏（源列表）的过滤器，右栏只换
-  /// 内容，不能把搜索词清掉；整页/卡片呈现仍按旧口径清空。
+  /// 进入播放源内部（文件夹式导航的源根）。
   void enterSource(String key, {bool keepSearch = false}) {
-    _slideOffset = const Offset(1, 0);
+    _playerView = false;
     if (!keepSearch) _clearSearchForDetail();
-    _browsingSourceKey = key;
-    _sourceDir = '';
-    _clearDetails();
-    notifyListeners();
+    _content.removeWhere((route) =>
+        route.family != null && route.family != ContentFamily.source);
+    _content.removeWhere((route) => route is SourceBrowseRoute);
+    _content.add(SourceBrowseRoute(key, ''));
+    _notifyContent();
   }
 
-  /// 返回播放源列表（文件夹返回上一级）。
-  ///
-  /// [keepSearch] 语义同 [enterSource]。
+  /// 返回播放源列表（退出整个源内，含所有目录层）。
   void exitSource({bool keepSearch = false}) {
-    _slideOffset = const Offset(-1, 0);
-    _browsingSourceKey = null;
-    _sourceDir = '';
+    final had = _content.any((route) => route is SourceBrowseRoute);
+    if (!had) return;
+    _content.removeWhere((route) => route is SourceBrowseRoute);
     if (!keepSearch) _clearSearchForDetail();
-    notifyListeners();
+    _notifyContent();
   }
 
-  /// 当前正在浏览的歌单 id（歌单详情子视图）；null 表示位于歌单列表。
-  int? get browsingPlaylistId => _browsingPlaylistId;
-
-  /// 进入歌单详情（原地子视图）：整页从右侧滑入。
+  /// 更新源内当前目录：按路径前缀重建源内路由层（每层一条）。
   ///
-  /// [keepSearch]：大横屏分栏时搜索框就是左栏（歌单列表）的过滤器，详情只换
-  /// 右栏，不能把搜索词清掉；整页/弹层呈现仍按旧口径清空。
+  /// 共同前缀的路由对象保留（State/滚动位置不重建），退回/前进都走这里。
+  void setSourceDir(String dir) {
+    final current = _nearest<SourceBrowseRoute>();
+    if (current == null) return;
+    final next = normalizeDir(dir);
+    if (next == current.dir) return;
+
+    final existing = <SourceBrowseRoute>[
+      for (final route in _content)
+        if (route is SourceBrowseRoute && route.sourceKey == current.sourceKey)
+          route,
+    ];
+    final dirs = <String>[''];
+    var acc = '';
+    for (final seg in next.split('/').where((s) => s.isNotEmpty)) {
+      acc = acc.isEmpty ? seg : '$acc/$seg';
+      dirs.add(acc);
+    }
+    var common = 0;
+    while (common < existing.length &&
+        common < dirs.length &&
+        existing[common].dir == dirs[common]) {
+      common++;
+    }
+    final insertAt = _content.indexWhere((route) => route is SourceBrowseRoute);
+    _content.removeWhere((route) => route is SourceBrowseRoute);
+    _content.insertAll(insertAt < 0 ? _content.length : insertAt, [
+      for (var i = 0; i < common; i++) existing[i],
+      for (var i = common; i < dirs.length; i++)
+        SourceBrowseRoute(current.sourceKey, dirs[i]),
+    ]);
+    _notifyContent();
+  }
+
+  /// 进入歌单详情（整页子视图 / 分栏右栏）。
   void enterPlaylist(int id, {bool keepSearch = false}) {
-    _slideOffset = const Offset(1, 0);
+    _playerView = false;
     if (!keepSearch) _clearSearchForDetail();
-    _browsingPlaylistId = id;
-    _clearDetails();
-    notifyListeners();
+    _content.removeWhere((route) =>
+        route.family != null && route.family != ContentFamily.playlist);
+    _content.removeWhere((route) => route is PlaylistRoute);
+    _content.add(PlaylistRoute(id));
+    _notifyContent();
   }
 
-  /// 返回歌单列表：旧页向左滑出。
+  /// 返回歌单列表。
   void exitPlaylist({bool keepSearch = false}) {
-    _slideOffset = const Offset(-1, 0);
-    _browsingPlaylistId = null;
+    final had = _content.any((route) => route is PlaylistRoute);
+    if (!had) return;
+    _content.removeWhere((route) => route is PlaylistRoute);
     if (!keepSearch) _clearSearchForDetail();
-    notifyListeners();
+    _notifyContent();
   }
 
-  /// 宽屏进入专辑详情页（内容区整页叠层，底层列表保活）。
+  /// 宽屏/分栏进入专辑详情。
   ///
-  /// 大横屏分栏时详情进右栏（[keepSearch] = true 保留左栏过滤词）。
-  /// [root] = true：从分组列表点选（分栏左栏）——详情栈重置为这一层，不保留
-  /// 上一位歌手的嵌套专辑（否则"返回"会退到与本行无关的上一层）。
+  /// [root] = true：从分组列表点选（分栏左栏）——清掉旧详情层再压入这一层。
+  /// 详情内部的嵌套入口用 false，压在上一层之上。
   void enterAlbum(Album album, List<Song> songs,
       {bool keepSearch = false, bool root = false}) {
-    _slideOffset = const Offset(1, 0);
+    _playerView = false;
+    _content.removeWhere((route) =>
+        route.family != null && route.family != ContentFamily.albumArtist);
+    if (root) {
+      _content.removeWhere(
+          (route) => route is AlbumDetailRoute || route is ArtistDetailRoute);
+    }
+    final top = contentTop;
+    if (!root &&
+        top is AlbumDetailRoute &&
+        top.album.groupKey == album.groupKey) {
+      return;
+    }
     if (!keepSearch) _clearSearchForDetail();
-    if (root) _details.clear();
-    _pushDetail(AlbumDetailRoute(album, songs));
+    _content.add(AlbumDetailRoute(album, songs));
+    _notifyContent();
   }
 
-  /// 宽屏进入歌手详情页（内容区整页叠层，底层列表保活）。
+  /// 宽屏/分栏进入歌手详情。
   ///
-  /// [root] 语义同 [enterAlbum]。
+  /// 已存在的同一歌手不再叠层：回退到那一层（成员链成环也不会无限堆栈）。
   void enterArtist(Artist artist, List<Song> songs,
       {bool keepSearch = false, bool root = false}) {
-    _slideOffset = const Offset(1, 0);
-    if (!keepSearch) _clearSearchForDetail();
-    if (root) _details.clear();
-    _pushDetail(ArtistDetailRoute(artist, songs));
-  }
-
-  /// 列表视图切到卡片时关闭当前分栏详情（专辑/歌手叠层、歌单/源内浏览）。
-  ///
-  /// 只清详情，不改变当前分组；[keepSearch] 默认 true，让左栏过滤词保留。
-  void closeSplitDetail({bool keepSearch = true}) {
-    final hasDetail = _details.isNotEmpty ||
-        _browsingPlaylistId != null ||
-        _browsingSourceKey != null;
-    if (!hasDetail) return;
-    _slideOffset = const Offset(-1, 0);
-    _clearDetails();
-    _browsingPlaylistId = null;
-    _browsingSourceKey = null;
-    _sourceDir = '';
-    if (!keepSearch) _clearSearchForDetail();
-    notifyListeners();
-  }
-
-  /// 关闭栈顶详情页（回到上一层详情/分组列表）。
-  ///
-  /// [keepSearch]：分栏时返回只是清空右栏，左栏过滤词要留着。
-  void exitDetail({bool keepSearch = false}) {
-    if (_details.isEmpty) return;
-    _slideOffset = const Offset(-1, 0);
-    _details.removeLast();
-    _detailRevision++;
-    if (!keepSearch) _clearSearchForDetail();
-    notifyListeners();
-  }
-
-  void _pushDetail(DetailRoute route) {
-    // 只保留最近两层：主流程是「歌手 → 专辑」，成员身份链不无限堆叠。
-    if (_details.length >= 2) _details.removeAt(0);
-    _details.add(route);
-    _detailRevision++;
-    notifyListeners();
-  }
-
-  /// 离开分组区时清空详情栈（详情层只属于分组区）。
-  void _clearDetails() {
-    if (_details.isEmpty) return;
-    _details.clear();
-    _detailRevision++;
-  }
-
-  void openSettings(SettingsItem item) {
-    _slideOffset = const Offset(1, 0);
-    _settings = item;
     _playerView = false;
-    _clearDetails();
-    notifyListeners();
+    _content.removeWhere((route) =>
+        route.family != null && route.family != ContentFamily.albumArtist);
+    if (root) {
+      _content.removeWhere(
+          (route) => route is AlbumDetailRoute || route is ArtistDetailRoute);
+    } else {
+      final key = artist.identityKey ?? artist.name;
+      var index = -1;
+      for (var i = _content.length - 1; i >= 0; i--) {
+        final route = _content[i];
+        if (route is ArtistDetailRoute &&
+            (route.artist.identityKey ?? route.artist.name) == key) {
+          index = i;
+          break;
+        }
+      }
+      if (index >= 0) {
+        if (index == _content.length - 1) return;
+        if (!keepSearch) _clearSearchForDetail();
+        _content.removeRange(index + 1, _content.length);
+        _notifyContent();
+        return;
+      }
+    }
+    if (!keepSearch) _clearSearchForDetail();
+    _content.add(ArtistDetailRoute(artist, songs));
+    _notifyContent();
   }
 
-  /// 返回上一级（设置页回到上一个导航 section）。
+  /// 列表视图切到卡片时关闭当前分栏详情（歌单/源内/专辑/歌手），保留全局层。
+  void closeSplitDetail({bool keepSearch = true}) {
+    final hasDetail = _content.any((route) => route.family != null);
+    if (!hasDetail) return;
+    _content.removeWhere((route) => route.family != null);
+    if (!keepSearch) _clearSearchForDetail();
+    _notifyContent();
+  }
+
+  /// 关闭栈顶的专辑/歌手详情（回到上一层详情/分组列表）。
+  void exitDetail({bool keepSearch = false}) {
+    final top = contentTop;
+    if (top is! AlbumDetailRoute && top is! ArtistDetailRoute) return;
+    _content.removeLast();
+    if (!keepSearch) _clearSearchForDetail();
+    _notifyContent();
+  }
+
+  /// 打开设置分区：同分区替换，其他情况压在内容栈顶。
+  void openSettings(SettingsItem item) {
+    _playerView = false;
+    final top = contentTop;
+    if (top is SettingsRoute) {
+      if (top.item == item) return;
+      _content[_content.length - 1] = SettingsRoute(item);
+      _notifyContent();
+      return;
+    }
+    _content.add(SettingsRoute(item));
+    _notifyContent();
+  }
+
+  /// 关闭设置页（仅当设置是栈顶）。
   void closeSettings() {
-    _slideOffset = const Offset(-1, 0);
-    _settings = null;
-    notifyListeners();
+    final top = contentTop;
+    if (top is! SettingsRoute) return;
+    _content.removeLast();
+    _notifyContent();
+  }
+
+  /// 打开歌曲信息工具页（L2 内容栈，保留侧栏）。
+  void openLibraryInfo(LibraryInfoPage page) {
+    _playerView = false;
+    final top = contentTop;
+    if (top is LibraryInfoRoute) {
+      if (top.page == page) return;
+      if (page == LibraryInfoPage.overview) {
+        // 从明细回总览：收掉整个歌曲信息子栈，避免总览叠总览。
+        _content.removeWhere((route) => route is LibraryInfoRoute);
+        _content.add(const LibraryInfoRoute(LibraryInfoPage.overview));
+        _notifyContent();
+        return;
+      }
+      _content.add(LibraryInfoRoute(page));
+      _notifyContent();
+      return;
+    }
+    _content.removeWhere((route) => route is LibraryInfoRoute);
+    _content.add(LibraryInfoRoute(page));
+    _notifyContent();
   }
 
   /// 打开展示播放页（上滑/点按进入：新页从底部升起）。
   ///
-  /// 只置意图位；进度动画由 Root 的 [PlayerSheetAnimator] 统一驱动
-  /// （手势跟手或 300ms 吸附），避免多处抢改进度。
+  /// 首页是根：打开首页不弹内容栈、不关设置；关掉首页后原内容原样还在。
   void openPlayer() {
-    // 临时埋点（播放页打开卡顿定位）：用户意图时刻（点按/上滑松手/选歌播放均走这里）。
     perfLog('player.open intent');
-    _slideOffset = const Offset(0, 1);
     _playerView = true;
-    _settings = null;
+    _homeBand = homePlayerBand;
+    homeBandRequests.value++;
     notifyListeners();
   }
 
-  /// 退出播放页回到上一导航分区（下滑返回：新页从顶部降下）。
+  /// 退出播放页回到内容区（下滑返回）。
   void closePlayer() {
-    _slideOffset = const Offset(0, -1);
     _playerView = false;
     notifyListeners();
   }
 
-  /// 更新全局搜索词（各区域按 [searchHint] 的语义解释；进出详情页时自动清空）。
   void setSearch(String q) {
     if (q == _search) return;
     _search = q;
@@ -469,5 +558,11 @@ class NavigationProvider extends ChangeNotifier {
   void clearSearch() {
     _search = '';
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    homeBandRequests.dispose();
+    super.dispose();
   }
 }

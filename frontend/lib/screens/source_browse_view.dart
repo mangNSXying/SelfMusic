@@ -39,6 +39,12 @@ import '../widgets/toolbar_icon_button.dart';
 class SourceBrowseView extends StatefulWidget {
   final String sourceKey;
 
+  /// 内容栈层携带的目录（每层一条 SourceRoute）。
+  ///
+  /// 非空时本页按该目录渲染，不订阅全局 sourceDir；分栏右栏仍传 null，
+  /// 由导航层当前目录驱动（右栏只有一层）。
+  final String? dirOverride;
+
   /// 呈现形态：整页保留分组横滑；分栏右栏不包 SectionSwipe 且自绘不透明底
   /// （见 [DetailPresentationShell]）。
   final DetailPresentation presentation;
@@ -46,6 +52,7 @@ class SourceBrowseView extends StatefulWidget {
   const SourceBrowseView({
     super.key,
     required this.sourceKey,
+    this.dirOverride,
     this.presentation = DetailPresentation.page,
   });
 
@@ -350,7 +357,8 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
     final nav = context.read<NavigationProvider>();
     final query =
         context.select<NavigationProvider, String>((n) => n.search).trim();
-    final dir = context.select<NavigationProvider, String>((n) => n.sourceDir);
+    final dir = widget.dirOverride ??
+        context.select<NavigationProvider, String>((n) => n.sourceDir);
     final direct = context.watch<DirectSourceManager>();
     final source = direct.sourceByKey(widget.sourceKey);
     if (source == null) {

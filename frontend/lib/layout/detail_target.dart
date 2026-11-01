@@ -11,8 +11,8 @@ import 'screen_metrics.dart';
 ///
 /// 三套既有详情（歌单 id / 专辑·歌手快照 / 源 key）在这里收成一族 target：
 /// 入口函数只构造 target，[openDetail] 负责「是否已在显示」的去重与导航写入。
-/// 导航状态仍由 `NavigationProvider` 的既有字段持有（details /
-/// browsingPlaylistId / browsingSourceKey），不新增"选中态"。
+/// 导航状态由 `NavigationProvider` 的内容栈持有（settings / playlist / source /
+/// album-artist / library-info 同一条栈）。
 ///
 /// 窄屏的专辑/歌手拖拽弹层由 `library_screen.dart` 的入口函数分流，不经过
 /// [openDetail]（弹层需要页面私有构建器）；歌单/播放源的整页子视图在两种屏宽
@@ -60,8 +60,10 @@ class AlbumTarget extends DetailTarget {
   }
 }
 
-/// 歌手详情。[fromDetail] 语义同 [AlbumTarget]；去重覆盖整个详情栈
-/// （"歌手 → 专辑"嵌套时点回同一歌手不再压栈）。
+/// 歌手详情。[fromDetail] 语义同 [AlbumTarget]。
+///
+/// 只看栈顶：同一歌手若已在栈内但在下面，点回它会由 nav 回退到那一层
+///（成员链成环也不会重复压栈）。
 class ArtistTarget extends DetailTarget {
   const ArtistTarget(this.artist, this.songs, {this.fromDetail = false});
 
@@ -72,13 +74,9 @@ class ArtistTarget extends DetailTarget {
   @override
   bool isShowing(NavigationProvider nav) {
     final key = artist.identityKey ?? artist.name;
-    for (final route in nav.details) {
-      if (route is ArtistDetailRoute &&
-          (route.artist.identityKey ?? route.artist.name) == key) {
-        return true;
-      }
-    }
-    return false;
+    final top = nav.contentTop;
+    return top is ArtistDetailRoute &&
+        (top.artist.identityKey ?? top.artist.name) == key;
   }
 }
 

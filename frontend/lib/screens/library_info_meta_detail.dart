@@ -95,9 +95,8 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
   @override
   void initState() {
     super.initState();
-    _loader = DetailDataLoader<List<MetaDetailRow>>(
-        () => context.read<DirectSourceManager>().index
-            .metaDetailRowsInBackground());
+    _loader = DetailDataLoader<List<MetaDetailRow>>(() =>
+        context.read<DirectSourceManager>().index.metaDetailRowsInBackground());
     _loader.onUpdate = () {
       if (mounted) setState(() {});
     };
@@ -144,23 +143,20 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
   Widget build(BuildContext context) {
     final all = _loader.data;
     if (all == null) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('元数据信息')),
-        body: Center(
-          child: _loader.failed
-              ? Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text('加载失败'),
-                    const SizedBox(height: 8),
-                    OutlinedButton(
-                      onPressed: _loader.request,
-                      child: const Text('重试'),
-                    ),
-                  ],
-                )
-              : const CircularProgressIndicator(),
-        ),
+      return Center(
+        child: _loader.failed
+            ? Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('加载失败'),
+                  const SizedBox(height: 8),
+                  OutlinedButton(
+                    onPressed: _loader.request,
+                    child: const Text('重试'),
+                  ),
+                ],
+              )
+            : const CircularProgressIndicator(),
       );
     }
 
@@ -205,89 +201,84 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
     rows.sort(cmp);
     final wide = isWideDetail(context);
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('元数据信息')),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-            child: TextField(
-              controller: _searchCtrl,
-              decoration: const InputDecoration(
-                prefixIcon: Icon(Icons.search),
-                hintText: '按歌曲名 / 歌手 / 专辑过滤',
-                isDense: true,
-                border: OutlineInputBorder(),
-              ),
-              onChanged: (v) => setState(() => _query = v),
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          child: TextField(
+            controller: _searchCtrl,
+            decoration: const InputDecoration(
+              prefixIcon: Icon(Icons.search),
+              hintText: '按歌曲名 / 歌手 / 专辑过滤',
+              isDense: true,
+              border: OutlineInputBorder(),
+            ),
+            onChanged: (v) => setState(() => _query = v),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                ChoiceChip(
+                  label: const Text('全部'),
+                  selected: _dimFilter == null,
+                  onSelected: (_) => setState(() => _dimFilter = null),
+                ),
+                ChoiceChip(
+                  label: const Text('有缺失'),
+                  selected: _dimFilter == 'missing_any',
+                  onSelected: (_) => setState(() => _dimFilter = 'missing_any'),
+                ),
+                for (final d in dims)
+                  ChoiceChip(
+                    label: Text('缺${d.$2}'),
+                    selected: _dimFilter == d.$1,
+                    onSelected: (_) => setState(() => _dimFilter = d.$1),
+                  ),
+              ],
             ),
           ),
+        ),
+        // 窄屏用按钮组排序，宽屏用表格表头排序。
+        if (!wide)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: Row(
+              children: [
+                _sortBtn(context, 0, '歌曲名'),
+                const SizedBox(width: 6),
+                _sortBtn(context, 1, '歌手'),
+                const SizedBox(width: 6),
+                _sortBtn(context, 2, '缺失数'),
+                const Spacer(),
+                Text('${rows.length} / ${all.length} 首',
+                    style: Theme.of(context).textTheme.bodySmall),
+              ],
+            ),
+          ),
+        if (wide)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: Align(
-              alignment: Alignment.centerLeft,
-              child: Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  ChoiceChip(
-                    label: const Text('全部'),
-                    selected: _dimFilter == null,
-                    onSelected: (_) => setState(() => _dimFilter = null),
-                  ),
-                  ChoiceChip(
-                    label: const Text('有缺失'),
-                    selected: _dimFilter == 'missing_any',
-                    onSelected: (_) =>
-                        setState(() => _dimFilter = 'missing_any'),
-                  ),
-                  for (final d in dims)
-                    ChoiceChip(
-                      label: Text('缺${d.$2}'),
-                      selected: _dimFilter == d.$1,
-                      onSelected: (_) =>
-                          setState(() => _dimFilter = d.$1),
-                    ),
-                ],
-              ),
+              alignment: Alignment.centerRight,
+              child: Text('${rows.length} / ${all.length} 首',
+                  style: Theme.of(context).textTheme.bodySmall),
             ),
           ),
-          // 窄屏用按钮组排序，宽屏用表格表头排序。
-          if (!wide)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              child: Row(
-                children: [
-                  _sortBtn(context, 0, '歌曲名'),
-                  const SizedBox(width: 6),
-                  _sortBtn(context, 1, '歌手'),
-                  const SizedBox(width: 6),
-                  _sortBtn(context, 2, '缺失数'),
-                  const Spacer(),
-                  Text('${rows.length} / ${all.length} 首',
-                      style: Theme.of(context).textTheme.bodySmall),
-                ],
-              ),
-            ),
-          if (wide)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              child: Align(
-                alignment: Alignment.centerRight,
-                child: Text('${rows.length} / ${all.length} 首',
-                    style: Theme.of(context).textTheme.bodySmall),
-              ),
-            ),
-          const SizedBox(height: 4),
-          Expanded(
-            child: rows.isEmpty
-                ? const Center(child: Text('无匹配歌曲'))
-                : wide
-                    ? _wideTable(rows)
-                    : _narrowCards(rows),
-          ),
-        ],
-      ),
+        const SizedBox(height: 4),
+        Expanded(
+          child: rows.isEmpty
+              ? const Center(child: Text('无匹配歌曲'))
+              : wide
+                  ? _wideTable(rows)
+                  : _narrowCards(rows),
+        ),
+      ],
     );
   }
 
@@ -346,8 +337,7 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
         );
     if (column == 0) return text(r.title);
     if (column == 1) {
-      return text(metaDimValue(r, 'artist'),
-          style: missingStyle(r.hasArtist));
+      return text(metaDimValue(r, 'artist'), style: missingStyle(r.hasArtist));
     }
     if (column == 2) {
       return text('${r.missingCount}', align: TextAlign.right);
@@ -375,16 +365,14 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
             // 展开态默认画上下分割线（dividerColor），卡片本身已有边界，去掉。
             shape: const Border(),
             collapsedShape: const Border(),
-            title:
-                Text(r.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+            title: Text(r.title, maxLines: 1, overflow: TextOverflow.ellipsis),
             subtitle: Text(
               '${(r.artist == null || r.artist!.isEmpty) ? '未知歌手' : r.artist} · ${(r.album == null || r.album!.isEmpty) ? '未知专辑' : r.album} · ${r.sourceKey}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
             trailing: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
                 color: (missing == 0 ? cs.primary : cs.error)
                     .withValues(alpha: 0.15),
@@ -399,8 +387,7 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
             ),
             children: [
               for (final d in dims)
-                _dimLine(context, d.$2, _dimValue(r, d.$1),
-                    ok: r.hasDim(d.$1)),
+                _dimLine(context, d.$2, _dimValue(r, d.$1), ok: r.hasDim(d.$1)),
             ],
           ),
         );
@@ -420,8 +407,10 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
           SizedBox(
             width: 150,
             child: Text(label,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: cs.onSurface.withValues(alpha: 0.7))),
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: cs.onSurface.withValues(alpha: 0.7))),
           ),
           Expanded(
             child: Text(
