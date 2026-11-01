@@ -13,18 +13,18 @@ class TopBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 订阅收窄（T004）：顶栏只关注"设置分区 / 歌曲信息工具页"与具体分区。
+    // 订阅收窄（T004）：顶栏只关注"设置分区 / 工具页标题"。
     final nav = context.read<NavigationProvider>();
-    final (inSettings, settings, libraryInfo) = context
-        .select<NavigationProvider, (bool, SettingsItem?, LibraryInfoPage?)>(
-            (n) => (n.inSettings, n.settings, n.libraryInfoPage));
+    final (inSettings, _, toolTitle) =
+        context.select<NavigationProvider, (bool, SettingsItem?, String?)>(
+            (n) => (n.inSettings, n.settings, n.toolPageTitle));
 
     final Widget bar = inSettings
         ? _SettingsTopBar(nav: nav, onSidebarToggle: onSidebarToggle)
-        : libraryInfo != null
+        : toolTitle != null
             ? _ToolTopBar(
                 nav: nav,
-                title: libraryInfo.label,
+                title: toolTitle,
                 onSidebarToggle: onSidebarToggle,
               )
             : Column(

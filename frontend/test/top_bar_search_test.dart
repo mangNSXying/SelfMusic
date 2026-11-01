@@ -152,7 +152,7 @@ void main() {
         reason: '提示语变化不应重建 TextEditingController');
   });
 
-  testWidgets('歌曲信息工具页：顶栏换工具变体，返回弹回内容', (tester) async {
+  testWidgets('工具页：顶栏换工具变体，返回弹回内容', (tester) async {
     final nav = NavigationProvider();
     await tester.pumpWidget(
       ChangeNotifierProvider<NavigationProvider>.value(
@@ -174,6 +174,15 @@ void main() {
     await tester.tap(find.byTooltip('返回'));
     await tester.pump();
     expect(nav.libraryInfoPage, isNull);
+    expect(find.byType(TextField), findsOneWidget);
+
+    nav.openAbout();
+    await tester.pump();
+    expect(find.byType(TextField), findsNothing);
+    expect(find.text('关于软件'), findsOneWidget);
+    await tester.tap(find.byTooltip('返回'));
+    await tester.pump();
+    expect(nav.contentTop, isNull);
     expect(find.byType(TextField), findsOneWidget);
   });
 }

@@ -44,6 +44,7 @@ import '../widgets/song_tile.dart';
 import '../widgets/sort_menu_button.dart';
 import '../widgets/square_card.dart';
 import '../widgets/view_mode_toggle.dart';
+import 'about_screen.dart';
 import 'library_info_screen.dart';
 import 'settings_screen.dart';
 import 'sources_screen.dart';
@@ -103,6 +104,7 @@ Widget contentPageOf(BuildContext context, ContentRoute route) {
   return switch (route) {
     SettingsRoute(:final item) => _SettingsContentHost(item: item),
     LibraryInfoRoute(:final page) => LibraryInfoContent(page: page),
+    AboutRoute() => const AboutScreen(),
     PlaylistRoute(:final id) => PlaylistDetailView(playlistId: id),
     SourceBrowseRoute(:final sourceKey, :final dir) =>
       SourceBrowseView(sourceKey: sourceKey, dirOverride: dir),

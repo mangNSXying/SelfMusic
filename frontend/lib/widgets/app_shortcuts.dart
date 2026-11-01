@@ -246,8 +246,8 @@ class _AppShortcutsState extends State<AppShortcuts> {
     }
     return switch (action) {
       ShortcutAction.back => !nav.playerView,
-      // 歌曲信息等工具页没有搜索框：不消费搜索快捷键。
-      ShortcutAction.search => nav.libraryInfoPage == null,
+      // 歌曲信息/关于软件等工具页没有搜索框：不消费搜索快捷键。
+      ShortcutAction.search => nav.toolPageTitle == null,
       ShortcutAction.seekBackward5 ||
       ShortcutAction.seekForward5 ||
       ShortcutAction.seekBackward30 ||
@@ -286,8 +286,8 @@ class _AppShortcutsState extends State<AppShortcuts> {
       case ShortcutAction.search:
         if (nav.inSettings) nav.closeSettings();
         if (nav.playerView) nav.closePlayer();
-        // 关闭设置后若露出的是歌曲信息工具页（无搜索框），不要再挂焦点请求。
-        if (nav.libraryInfoPage != null) return;
+        // 关闭设置后若露出的是工具页（无搜索框），不要再挂焦点请求。
+        if (nav.toolPageTitle != null) return;
         nav.requestSearchFocus();
       case ShortcutAction.sectionPlaylists:
         nav.select(NavSection.playlists);

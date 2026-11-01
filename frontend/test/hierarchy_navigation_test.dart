@@ -125,5 +125,26 @@ void main() {
       expect(nav.queueOpen, isTrue);
       expect(nav.playerView, isTrue);
     });
+
+    test('关于软件是 L2 内容栈：返回回原内容，设置可压在其上', () {
+      final nav = NavigationProvider()..select(NavSection.songs);
+
+      nav.openAbout();
+      expect(nav.contentTop, isA<AboutRoute>());
+      expect(nav.toolPageTitle, '关于软件');
+      expect(nav.playerView, isFalse);
+
+      nav.openSettings(SettingsItem.general);
+      expect(nav.settings, SettingsItem.general);
+      expect(nav.toolPageTitle, isNull);
+
+      expect(nav.backToPrevious(), isTrue);
+      expect(nav.settings, isNull);
+      expect(nav.toolPageTitle, '关于软件');
+
+      expect(nav.backToPrevious(keepSearch: true), isTrue);
+      expect(nav.contentRoutes, isEmpty);
+      expect(nav.toolPageTitle, isNull);
+    });
   });
 }

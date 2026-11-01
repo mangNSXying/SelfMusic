@@ -54,6 +54,14 @@ class LibraryInfoRoute extends ContentRoute {
   bool get clearsSearchOnPop => false;
 }
 
+/// 关于软件（L2 工具页）：保留侧栏、占内容区。
+class AboutRoute extends ContentRoute {
+  const AboutRoute();
+
+  @override
+  bool get clearsSearchOnPop => false;
+}
+
 class PlaylistRoute extends ContentRoute {
   const PlaylistRoute(this.id);
 
@@ -187,6 +195,16 @@ class NavigationProvider extends ChangeNotifier {
     return top is LibraryInfoRoute ? top.page : null;
   }
 
+  /// 当前工具页标题（歌曲信息 / 关于软件）；null = 非工具页。
+  ///
+  /// 顶栏据此切换为「菜单 + 返回 + 标题」变体，不显示分组导航与搜索。
+  String? get toolPageTitle {
+    final top = contentTop;
+    if (top is LibraryInfoRoute) return top.page.label;
+    if (top is AboutRoute) return '关于软件';
+    return null;
+  }
+
   /// 当前正在浏览的源 key（取最近一层源内路由）。
   String? get browsingSourceKey => _nearest<SourceBrowseRoute>()?.sourceKey;
 
@@ -220,7 +238,9 @@ class NavigationProvider extends ChangeNotifier {
   /// 顶栏搜索提示语（随当前区域变化）。
   String get searchHint {
     final top = contentTop;
-    if (top is SettingsRoute || top is LibraryInfoRoute) return '搜索';
+    if (top is SettingsRoute || top is LibraryInfoRoute || top is AboutRoute) {
+      return '搜索';
+    }
     if (top is SourceBrowseRoute) return '搜索该源全部曲目';
     if (top is PlaylistRoute) return '搜索歌单内歌曲';
     return switch (_section) {
@@ -324,8 +344,10 @@ class NavigationProvider extends ChangeNotifier {
 
   /// 切换顶级分组：清空内容栈（含设置/工具页），保留分组间搜索词语义。
   void select(NavSection s) {
-    final hadDetail = _content
-        .any((route) => route is! SettingsRoute && route is! LibraryInfoRoute);
+    final hadDetail = _content.any((route) =>
+        route is! SettingsRoute &&
+        route is! LibraryInfoRoute &&
+        route is! AboutRoute);
     if (hadDetail) _clearSearchForDetail();
     final changed = _content.isNotEmpty || _section != s || _playerView;
     _content.clear();
@@ -529,6 +551,16 @@ class NavigationProvider extends ChangeNotifier {
     }
     _content.removeWhere((route) => route is LibraryInfoRoute);
     _content.add(LibraryInfoRoute(page));
+    _notifyContent();
+  }
+
+  /// 打开关于软件（L2 工具页，保留侧栏）。
+  void openAbout() {
+    _playerView = false;
+    final top = contentTop;
+    if (top is AboutRoute) return;
+    _content.removeWhere((route) => route is AboutRoute);
+    _content.add(const AboutRoute());
     _notifyContent();
   }
 

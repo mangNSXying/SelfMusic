@@ -31,86 +31,85 @@ class AboutScreen extends StatelessWidget {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final logMinutes = context.select<DirectSourceManager, int>(
         (direct) => direct.settings.logExportMinutes);
-    return Scaffold(
-      appBar: AppBar(title: const Text('关于软件')),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 24, 16, 24),
-        children: [
-          Center(
-            child: Column(
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(16),
-                  child: Image.asset(
-                    isDark
-                        ? 'assets/selfmusic-black.png'
-                        : 'assets/selfmusic.png',
-                    width: 72,
-                    height: 72,
-                    fit: BoxFit.cover,
-                  ),
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 24, 16, 24),
+      children: [
+        Center(
+          child: Column(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: Image.asset(
+                  isDark
+                      ? 'assets/selfmusic-black.png'
+                      : 'assets/selfmusic.png',
+                  width: 72,
+                  height: 72,
+                  fit: BoxFit.cover,
                 ),
-                const SizedBox(height: 12),
-                Text(
-                  'SelfMusic',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleLarge
-                      ?.copyWith(fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 4),
-                FutureBuilder<String>(
-                  future: AppVersion.load(),
-                  builder: (context, snapshot) {
-                    final version = snapshot.data ?? '…';
-                    // final versionlabel = '版本 $version';
-                    final versionLabel = kBuildStamp.isNotEmpty
-                        ? '版本 $version（$kBuildStamp）'
-                        : '版本 $version';
-                    return Text(
-                      versionLabel,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: cs.onSurface.withValues(alpha: 0.6)),
-                    );
-                  },
-                ),
-              ],
-            ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'SelfMusic',
+                style: Theme.of(context)
+                    .textTheme
+                    .titleLarge
+                    ?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              FutureBuilder<String>(
+                future: AppVersion.load(),
+                builder: (context, snapshot) {
+                  final version = snapshot.data ?? '…';
+                  // final versionlabel = '版本 $version';
+                  final versionLabel = kBuildStamp.isNotEmpty
+                      ? '版本 $version（$kBuildStamp）'
+                      : '版本 $version';
+                  return Text(
+                    versionLabel,
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodySmall
+                        ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6)),
+                  );
+                },
+              ),
+            ],
           ),
-          const SizedBox(height: 24),
-          const Divider(height: 1),
-          ListTile(
-            dense: true,
-            leading: const Icon(Icons.description_outlined),
-            title: const Text('收集日志'),
-            subtitle: Text('导出最近 $logMinutes 分钟内的应用日志',
-                style: const TextStyle(fontSize: 11)),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => _collectLogs(context),
+        ),
+        const SizedBox(height: 24),
+        const Divider(height: 1),
+        ListTile(
+          dense: true,
+          leading: const Icon(Icons.description_outlined),
+          title: const Text('收集日志'),
+          subtitle: Text('导出最近 $logMinutes 分钟内的应用日志',
+              style: const TextStyle(fontSize: 11)),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _collectLogs(context),
+        ),
+        const Divider(height: 1),
+        ListTile(
+          dense: true,
+          leading: const Icon(Icons.mail_outline),
+          title: const Text('反馈'),
+          subtitle: const Text('$kFeedbackEmail · 调用系统邮件应用',
+              style: TextStyle(fontSize: 11)),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              RowActionIconButton(
+                icon: Icons.copy_outlined,
+                tooltip: '复制反馈邮箱',
+                onPressed: () => _copyEmail(context),
+              ),
+              const Icon(Icons.chevron_right),
+            ],
           ),
-          const Divider(height: 1),
-          ListTile(
-            dense: true,
-            leading: const Icon(Icons.mail_outline),
-            title: const Text('反馈'),
-            subtitle: const Text('$kFeedbackEmail · 调用系统邮件应用',
-                style: TextStyle(fontSize: 11)),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                RowActionIconButton(
-                  icon: Icons.copy_outlined,
-                  tooltip: '复制反馈邮箱',
-                  onPressed: () => _copyEmail(context),
-                ),
-                const Icon(Icons.chevron_right),
-              ],
-            ),
-            onTap: () => _sendFeedback(context),
-          ),
-          const Divider(height: 1),
-        ],
-      ),
+          onTap: () => _sendFeedback(context),
+        ),
+        const Divider(height: 1),
+      ],
     );
   }
 

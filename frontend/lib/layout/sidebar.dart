@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
-import '../screens/about_screen.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_provider.dart';
 import '../utils/app_exit.dart';
@@ -152,12 +151,11 @@ class _BottomBar extends StatelessWidget {
           title: const Text('关于软件'),
           subtitle: const Text('版本与反馈', style: TextStyle(fontSize: 11)),
           onTap: () {
-            // 移动端先收起抽屉，再压入关于页。
+            // 移动端先收起抽屉，再打开内容区工具页。
             if (NavigationProviderHelper.isNarrow(context)) {
               Scaffold.of(context).closeDrawer();
             }
-            Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const AboutScreen()));
+            context.read<NavigationProvider>().openAbout();
           },
         ),
         ListTile(
