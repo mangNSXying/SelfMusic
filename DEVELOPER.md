@@ -770,14 +770,14 @@ abstract class MusicSource {
 |------|------|------|
 | L0 首页 | 播放页根；歌词页 / 歌单页是首页子页 | 子页 → 播放页；播放页根 → 移动端转后台、桌面不动作（桌面 Esc 在根上是「进入内容」的独立动作，不属于返回链） |
 | L1 内容基座 | `SectionPager`（六分组，常驻保活） | 展开首页 |
-| L2 内容栈 | 设置 / 歌单详情 / 源内目录（每层一条）/ 专辑·歌手详情 / 歌曲信息 | 弹一层 |
+| L2 内容栈 | 设置 / 歌单详情 / 源内目录（每层一条）/ 专辑·歌手详情 / 歌曲信息 / 关于软件 | 弹一层 |
 | L3 模态浮层 | 窄屏队列弹层（`AppSheetLauncher`） | 先关浮层 |
 | L4 路由 | 对话框 / 菜单 / 设置子页 / 窄屏歌曲弹层（`Navigator`） | 框架先 pop |
 
-- **单栈事实源**：`NavigationProvider.contentRoutes`（`ContentRoute` sealed：`SettingsRoute / PlaylistRoute / SourceBrowseRoute / AlbumDetailRoute / ArtistDetailRoute / LibraryInfoRoute`）。`backToPrevious` 只做「弹内容栈 / 首页子页 / 离场」，不再按类型分支；`areaKey` / `areaLevel` / `slideOffset` / `DetailStack` / `AreaSwitcher` 已删除，内容层动画由 `widgets/content_stack.dart` 按 push/pop 驱动。
+- **单栈事实源**：`NavigationProvider.contentRoutes`（`ContentRoute` sealed：`SettingsRoute / PlaylistRoute / SourceBrowseRoute / AlbumDetailRoute / ArtistDetailRoute / LibraryInfoRoute / AboutRoute`）。`backToPrevious` 只做「弹内容栈 / 首页子页 / 离场」，不再按类型分支；`areaKey` / `areaLevel` / `slideOffset` / `DetailStack` / `AreaSwitcher` 已删除，内容层动画由 `widgets/content_stack.dart` 按 push/pop 驱动。
 - **首页是根**：`openPlayer` 不弹内容栈、不关设置；首页展开时返回不会弹下面看不见的内容栈（首页子页 → 播放页，再离场）。
 - **队列**：窄屏队列弹层是根悬浮层（非路由），`main.dart` 的系统返回与 `app_shortcuts.dart` 的返回快捷键都先关它；宽屏队列面板是常驻 chrome，不参与返回（关闭用面板按钮 / 队列快捷键）。
-- **歌曲信息**：`LibraryInfoRoute` 进 L2 内容栈（总览 + 元数据 / 歌手 / 格式 / 播放四个明细页），保留侧栏、占内容区；顶栏切换为工具页变体（菜单 + 返回 + 标题）。「关于软件」仍是 L4 全屏路由。
+- **歌曲信息 / 关于软件**：`LibraryInfoRoute` 与 `AboutRoute` 都是 L2 工具页（歌曲信息含总览 + 元数据 / 歌手 / 格式 / 播放四个明细页），保留侧栏、占内容区；顶栏切换为工具页变体（菜单 + 返回 + 标题）。进出走 `ContentStack` 的全局页面切换动画（关闭/淡入/滑动/缩放），与设置/歌单详情一致。
 - **同一个「弹层」不再混层**：队列弹层在播放页之上、路由之下；歌手 / 专辑歌曲弹层是 modal 路由（最顶）。
 - **设置**：`openSettings` 压栈/同分区替换，不再清掉下层详情；从专辑详情进设置，返回回到原详情。
 - **歌手去重**：同一歌手已在栈内但不在栈顶时，点回它会回退到那一层，不再有「最多两层」裁剪。
@@ -795,7 +795,7 @@ abstract class MusicSource {
 | 歌单详情 | 歌单内歌曲 | 搜索歌单内歌曲 |
 | 专辑 / 歌手列表 | 专辑名/艺术家、歌手名 | 搜索专辑 / 艺术家、搜索歌手 |
 | 歌曲 / 喜欢 | 标题/艺术家 | 搜索标题 / 艺术家 |
-| 设置 / 歌曲信息 / 队列 / 播放页 | 不参与（顶栏不可见或无列表） | — |
+| 设置 / 歌曲信息 / 关于软件 / 队列 / 播放页 | 不参与（顶栏不可见或无列表） | — |
 
 生命周期：六个顶级分区之间切换**保留**搜索词（便于跨页找同一批内容）；进入或离开源内、歌单详情、宽屏专辑/歌手详情栈时**清空**（详情页的搜索对象与分区不同，带着旧词会让目标页看起来被莫名过滤）。例外是**大横屏分栏**（见上一节）：左栏就是该分组的列表，搜索框仍是它的过滤器，进出右栏详情保留搜索词。清空与路由变更合并在同一次 `notifyListeners()` 中，不得额外通知。源内浏览不得再加本地搜索框；`SongList` 在顶栏可见的页面用 `globalSearch: true`，仅播放器附着的歌单页因顶栏不可见保留 `globalSearch: false` 的本地输入框。
 
