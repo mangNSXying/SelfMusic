@@ -112,12 +112,16 @@ class ScreenMetrics extends InheritedWidget {
 ///
 /// 详情入口（各页的行点击）与返回（详情页返回箭头 / 系统返回）都读它，
 /// 用来决定"搜索词是否保留"：分栏时搜索框就是左栏的过滤器，不能被详情打断。
-bool splitDetailActive(BuildContext context) {
+///
+/// [section] 供分组页显式传入**自身所属分组**：分组页在 PageView 离屏缓存
+/// 期间仍会因后台通知重建，若按全局当前分组判定，会把自己渲染成单列并丢掉
+/// 右栏订阅，切回来不重建就一直停留在单列（点击也因此无反应）。
+bool splitDetailActive(BuildContext context, {NavSection? section}) {
   // 点击回调也会调它：不建立依赖（依赖由 build 期读 listPaneWidth 建立）。
   if (!ScreenMetrics.of(context, depend: false).supportsSplit) return false;
   final nav = context.read<NavigationProvider>();
   final settings = context.read<DirectSourceManager>().settings;
-  return switch (nav.section) {
+  return switch (section ?? nav.section) {
     NavSection.playlists =>
       settings.viewModePlaylists == CollectionViewMode.list,
     NavSection.albums => settings.viewModeAlbums == CollectionViewMode.list,

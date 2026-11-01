@@ -9,6 +9,7 @@ import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../providers/playlists_provider.dart';
+import '../theme/app_theme.dart';
 import '../utils/collection_sort.dart';
 import '../widgets/app_dialog_actions.dart';
 import '../widgets/context_menu.dart';
@@ -126,7 +127,8 @@ class _PlaylistsViewState extends State<PlaylistsView>
         countOf: (p) => provider.countOf(p.id));
     final card = isCard;
     // 大横屏 + 列表模式：左列表 / 右详情（歌单详情不再整页替换，左栏保活）。
-    final split = splitDetailActive(context);
+    // 按自身分组判定：离屏缓存期间重建时全局分组可能已是别的页。
+    final split = splitDetailActive(context, section: NavSection.playlists);
     final selectedId = context.select<NavigationProvider, int?>(
         (n) => split ? n.browsingPlaylistId : null);
 

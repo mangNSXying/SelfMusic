@@ -277,6 +277,35 @@ void main() {
       });
     });
 
+    testWidgets('切到单列分组再回来：分栏不退化成单列，点击仍能进右栏', (tester) async {
+      final (dir, direct, nav) = await pumpPlaylists(tester, contentWidth: 1020);
+      expect(find.text('从左侧选择歌单查看歌曲'), findsOneWidget);
+
+      // 模拟离屏缓存期间被重建：当前分组已切到喜欢，直连通知触发页面重建。
+      // 历史 bug：此时按全局分组判定 split=false，歌单页把自己渲染成单列，
+      // 并丢掉右栏订阅；切回来不重建，一直停在单列，点击也无反应。
+      nav.select(NavSection.liked);
+      await tester.pump();
+      direct.viewModeChanged();
+      await tester.pumpAndSettle();
+
+      nav.select(NavSection.playlists);
+      await tester.pumpAndSettle();
+      expect(find.text('从左侧选择歌单查看歌曲'), findsOneWidget,
+          reason: '离屏重建不应把分栏页退化成单列');
+
+      await tester.tap(find.text('多选歌单'));
+      await tester.pumpAndSettle();
+      expect(nav.browsingPlaylistId, isNotNull);
+      expect(find.text('多选歌单'), findsNWidgets(2),
+          reason: '点击后详情应出现在右栏');
+
+      await tester.runAsync(() async {
+        direct.dispose();
+        if (dir.existsSync()) dir.deleteSync(recursive: true);
+      });
+    });
+
     testWidgets('内容区不够两栏：保持单栏，进详情清空搜索（旧口径）', (tester) async {
       final (dir, direct, nav) = await pumpPlaylists(tester, contentWidth: 600);
 

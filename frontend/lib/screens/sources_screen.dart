@@ -21,6 +21,7 @@ import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../providers/playlists_provider.dart';
 import '../services/api_client.dart';
+import '../theme/app_theme.dart';
 import '../utils/collection_sort.dart';
 import '../utils/url_input.dart';
 import '../widgets/app_dialog_actions.dart';
@@ -150,7 +151,8 @@ class _SourcesScreenState extends State<SourcesScreen>
         countOf: (s) => direct.countOf(s.key));
 
     // 大横屏 + 列表模式：左源列表 / 右源内浏览（源内不再整页替换）。
-    final split = splitDetailActive(context);
+    // 按自身分组判定：离屏缓存期间重建时全局分组可能已是别的页。
+    final split = splitDetailActive(context, section: NavSection.sources);
     final selectedKey = context.select<NavigationProvider, String?>(
         (n) => split ? n.browsingSourceKey : null);
 

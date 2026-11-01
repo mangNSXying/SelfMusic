@@ -861,7 +861,8 @@ class _AlbumsViewState extends State<_AlbumsView>
         _filteredSorted(lib.albums, search, direct.settings.sortAlbums);
     final card = isCard;
     // 大横屏 + 列表模式：左列表 / 右详情。判定走统一判屏口径。
-    final split = splitDetailActive(context);
+    // 按自身分组判定：离屏缓存期间重建时全局分组可能已是别的页。
+    final split = splitDetailActive(context, section: NavSection.albums);
     final nav = context.read<NavigationProvider>();
     // 分栏时左栏高亮「当前详情」：只订阅内容栈版本（卡片模式恒为 -1，不订阅）。
     context
@@ -1257,7 +1258,8 @@ class _ArtistsViewState extends State<_ArtistsView>
         _filteredSorted(lib.artists, search, direct.settings.sortArtists);
     final card = isCard;
     // 大横屏 + 列表模式：左列表 / 右详情（歌手 → 专辑两层详情都进右栏）。
-    final split = splitDetailActive(context);
+    // 按自身分组判定：离屏缓存期间重建时全局分组可能已是别的页。
+    final split = splitDetailActive(context, section: NavSection.artists);
     final nav = context.read<NavigationProvider>();
     // 分栏时左栏高亮「当前歌手」（栈里含歌手层即高亮，嵌套专辑时也保持）。
     context
