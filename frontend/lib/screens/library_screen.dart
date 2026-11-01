@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -198,6 +199,9 @@ class _SectionPagerState extends State<SectionPager>
   /// 退场快照的取景边界（包在进场位移之内，截到的是未位移的页面）。
   final GlobalKey _viewportKey = GlobalKey();
 
+  /// 跨页切换代次：迟到的退场快照只允许插入自己那一趟动画。
+  int _farGen = 0;
+
   /// 首帧空闲后开启相邻页预构建（allowImplicitScrolling 给 PageView 一屏
   /// cacheExtent）：不在启动首帧多背两页，又让首次横滑不必现场建目标页。
   /// 页内是固定行高懒列表，预构建只建「可能显示的行」，不会整表构建。
@@ -274,7 +278,11 @@ class _SectionPagerState extends State<SectionPager>
   }
 
   /// 丢弃退场快照。默认在下一帧后释放：当前帧可能仍在绘制它。
+  ///
+  /// 同时推进代次：仍在引擎线程栅格化的旧快照到达后会被丢弃，
+  /// 不会串进下一趟动画（切模式/连续点击）。
   void _clearExitSnapshot({bool notify = false}) {
+    _farGen++;
     final shot = _exitSnapshot;
     if (shot == null) return;
     if (notify) {
@@ -285,19 +293,60 @@ class _SectionPagerState extends State<SectionPager>
     WidgetsBinding.instance.addPostFrameCallback((_) => shot.dispose());
   }
 
-  /// 截取 PageView 当前画面作为退场层；不支持同步取帧的后端返回 null
-  ///（退化为旧行为：只有新页滑入）。
-  ui.Image? _captureViewport() {
-    final boundary = _viewportKey.currentContext?.findRenderObject();
-    if (boundary is! RenderRepaintBoundary || boundary.debugNeedsPaint) {
-      return null;
-    }
-    final dpr = MediaQuery.devicePixelRatioOf(context).clamp(1.0, 2.0);
+  /// 发起 PageView 当前画面的退场快照。
+  ///
+  /// 同步部分只克隆当前图层（构建 scene），栅格化在引擎线程完成：调用方
+  /// 不能等待它再跳页，否则慢后端会把换页阻塞到栅格化结束。取帧失败
+  /// 返回 null（退化为旧行为：只有新页滑入）。
+  Future<ui.Image>? _startViewportCapture() {
     try {
-      return boundary.toImageSync(pixelRatio: dpr.toDouble());
+      final boundary = _viewportKey.currentContext?.findRenderObject();
+      if (boundary is! RenderRepaintBoundary || boundary.debugNeedsPaint) {
+        return null;
+      }
+      // 快照只用于 300ms 过渡：DPR 封顶 2、总像素封顶 ~6MP，
+      // 避免大窗口每次切页产生上百 MB 的临时纹理。
+      final size = boundary.size;
+      final byArea = size.isEmpty
+          ? 1.0
+          : math.sqrt(6.0e6 / (size.width * size.height));
+      final ratio = math.min(
+          MediaQuery.devicePixelRatioOf(context),
+          math.min(2.0, byArea));
+      return boundary.toImage(pixelRatio: ratio);
     } catch (_) {
       return null;
     }
+  }
+
+  /// 帧后执行跨页跳转：先发起退场快照（同步只克隆图层），随即跳页并
+  /// 启动动画；栅格化在引擎线程完成，快照就绪后按当前进度插入。
+  ///
+  /// 控制器暂时未挂载（页面树重挂载的瞬间）时下帧重试，绝不让
+  /// `section` 已变而 PageView 停在旧页。
+  void _scheduleFarTransition([int attempt = 0]) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (!_ctrl.hasClients) {
+        if (attempt < 4) _scheduleFarTransition(attempt + 1);
+        return;
+      }
+      // 落点以当前分组的实时值为准：即使期间又有新目标，也先让
+      // PageView 与 section 对齐，避免两者永久错位。
+      final to = _indexOf(context.read<NavigationProvider>().section);
+      final gen = ++_farGen;
+      final pending = _startViewportCapture();
+      _enterCtrl.forward(from: 0);
+      _ctrl.jumpToPage(to);
+      if (pending == null) return;
+      pending.then((shot) {
+        if (!mounted || gen != _farGen || !_enterCtrl.isAnimating) {
+          shot.dispose();
+          return;
+        }
+        setState(() => _exitSnapshot = shot);
+      }, onError: (Object _) {});
+    });
   }
 
   /// 依据 PageView 拖拽/吸附与入场动画状态刷新门控的「过渡中」信号。
@@ -402,24 +451,27 @@ class _SectionPagerState extends State<SectionPager>
           // 历史 bug：反向跨页也从右滑入（方向滞后一跳）。
           // jumpToPage 同步通知会踩 build 期 markNeedsBuild，仍放到帧后执行。
           _enterDir = target > current ? 1 : -1;
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!mounted || _applied != target || !_ctrl.hasClients) return;
-            final shot = _captureViewport();
-            if (shot != null) {
-              if (!mounted) {
-                shot.dispose();
-                return;
-              }
-              setState(() => _exitSnapshot = shot);
-            }
-            _enterCtrl.forward(from: 0);
-            _ctrl.jumpToPage(target);
-          });
-        } else {
+          _scheduleFarTransition();
+        } else if (_ctrl.hasClients) {
           _ctrl.animateToPage(target,
               duration: kPageMotion, curve: kPageMotionCurve);
+        } else {
+          // PageView 暂时未挂载：挂载后直接对齐到当前分组。
+          _scheduleFarTransition();
         }
       }
+    } else if (_slideActive &&
+        !_enterCtrl.isAnimating &&
+        _ctrl.hasClients &&
+        !_ctrl.position.isScrollingNotifier.value &&
+        (_ctrl.page?.round() ?? target) != target) {
+      // 兜底自愈：静止态页码与分组不一致（上一次跳转被重挂载/异常打断），
+      // 帧后补一次对齐，避免“tab 已变、内容停在旧页”的永久错位。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _ctrl.hasClients && _ctrl.page?.round() != target) {
+          _ctrl.jumpToPage(target);
+        }
+      });
     }
 
     final pageView = SlideTransition(

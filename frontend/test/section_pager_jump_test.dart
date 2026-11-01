@@ -213,7 +213,11 @@ void main() {
 
     // 歌曲(3) → 播放列表(0)：跨三页。
     nav.select(NavSection.playlists);
-    await tester.pump(); // 帧后：截旧页快照 + 跳页 + 入场动画启动
+    await tester.pump(); // 帧后：发起异步截帧 + 跳页 + 入场动画启动
+    // 取帧栅格化在引擎线程完成（widget 测试需放行真实异步）。
+    await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 40)));
+    await tester.pump();
     await tester.pump(const Duration(milliseconds: 16));
     await tester.pump(const Duration(milliseconds: 150));
 
