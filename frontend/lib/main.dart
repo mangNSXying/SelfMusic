@@ -663,11 +663,16 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
         'settle=${settleMs}ms frames=${frames.length} maxGap=${maxGap}ms over25=$over25 over50=$over50');
   }
 
-  /// 统一返回：先按层级逐级回退（设置 → 队列 → 源内/歌单详情 → 内容页 → 播放页），
-  /// 已在最底层时不再二次确认：Android 直接 `SystemNavigator.pop()` 回桌面
-  /// （audio_service 前台服务继续、播放不中断）；桌面端直接退出进程。
+  /// 统一返回：模态浮层 → 内容栈 → 首页子页 → 首页根。
+  ///
+  /// 窄屏队列弹层是根悬浮层（非路由），先于导航关闭；宽屏队列面板是常驻
+  /// chrome，不参与返回。已在首页根时移动端转后台、桌面不退出。
   void _onPopInvoked(bool didPop, Object? result) {
     if (didPop) return;
+    if (_sheetLauncher.isShowing) {
+      _sheetLauncher.close();
+      return;
+    }
     if (context
         .read<NavigationProvider>()
         .backToPrevious(keepSearch: splitDetailActive(context))) {
@@ -692,9 +697,7 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
       }));
       return;
     }
-    // 桌面端退出前先释放播放器（mpv 子进程），再终止进程。
-    final player = context.read<PlayerProvider>();
-    player.shutdown().whenComplete(() => exit(0));
+    // 桌面端根上不动作：退出走侧栏「退出」/ 托盘菜单，避免误触返回即杀进程。
   }
 
   @override

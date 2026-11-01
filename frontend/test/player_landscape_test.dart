@@ -1,8 +1,7 @@
 import 'dart:ffi' show DynamicLibrary;
 import 'dart:io';
 
-import 'package:flutter/gestures.dart'
-    show PointerDeviceKind, kSecondaryButton;
+import 'package:flutter/gestures.dart' show PointerDeviceKind, kSecondaryButton;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -620,7 +619,7 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('ESC 在歌单页不拦截（仅播放页）', (tester) async {
+  testWidgets('ESC 在歌单页先回播放页，不关闭播放页', (tester) async {
     late final DirectSourceManager direct;
     late final PlayerProvider player;
     await tester.runAsync(() async {
@@ -661,8 +660,10 @@ void main() {
     expect(find.byType(DesktopPlaylistSplit), findsOneWidget);
 
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(nav.playerView, isTrue);
+    final bandCtrl = tester.widget<PageView>(find.byType(PageView)).controller!;
+    expect(bandCtrl.page?.round(), 1, reason: '首页子页先回播放页');
 
     await tester.pumpWidget(const SizedBox());
   });

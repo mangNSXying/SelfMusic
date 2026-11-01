@@ -102,6 +102,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   List<Widget>? _closingPages;
 
+  /// 首页横滑带返回：监听导航层的「回播放页」请求。
+  NavigationProvider? _nav;
+  VoidCallback? _homeBandListener;
+
   /// 当前停留的横滑带页（0=歌单 / 1=播放 / 2=歌词，横屏无第 2 页）。
   int _bandPage = 1;
 
@@ -200,6 +204,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     // 800ms 是最后兜底（吸附被打断停在半程等边缘情况）。300ms 内滑向邻页
     // 仍按需构建，无回归。
     final nav = context.read<NavigationProvider>();
+    _nav = nav;
+    _homeBandListener = _onHomeBandRequest;
+    nav.homeBandRequests.addListener(_homeBandListener!);
+    nav.reportHomeBand(1);
     _warmProgress = nav.playerProgress;
     if (nav.playerProgress.value <= 0.001) {
       _warmZeroSeen = true;
@@ -257,6 +265,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   void dispose() {
+    final nav = _nav;
+    final bandListener = _homeBandListener;
+    if (nav != null && bandListener != null) {
+      nav.homeBandRequests.removeListener(bandListener);
+    }
+    _nav = null;
+    _homeBandListener = null;
     final listener = _warmProgressListener;
     if (listener != null) _warmProgress?.removeListener(listener);
     _warmProgressListener = null;
@@ -312,11 +327,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _prevPlayerView = visibility;
   }
 
-  /// 桌面 ESC 返回内容页（横竖屏播放页都生效，仅播放页）。
+  /// 导航层要求回到播放页（返回键在歌词/歌单页时的第一跳）。
+  void _onHomeBandRequest() {
+    if (!mounted) return;
+    final nav = _nav;
+    if (nav == null || !nav.playerView) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_pageCtrl.hasClients) return;
+      if ((_pageCtrl.page ?? 1).round() == 1) return;
+      _goToBandPage(1);
+    });
+  }
+
+  /// 桌面 ESC：首页子页先回播放页；播放页再进内容区。
   ///
   /// 弹窗/菜单打开时焦点在 dialog 路由内，事件到不了本页 shortcut，由路由
   /// 原生 ESC 关闭；输入框聚焦时第一次只失焦（防输入中误关，焦点交回本页后
-  /// 第二次再关闭）；歌单/歌词页不拦截（避免与横滑带手势语义混乱）。
+  /// 第二次再关闭）。
   void _onEscape() {
     if (!mounted) return;
     final primary = FocusManager.instance.primaryFocus;
@@ -327,7 +354,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
       return;
     }
     if (!context.read<NavigationProvider>().playerView) return;
-    if (!_onPlayerPage) return;
+    if (!_onPlayerPage) {
+      _goToBandPage(1);
+      return;
+    }
     context.read<NavigationProvider>().closePlayer();
   }
 
@@ -521,6 +551,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       // 预热前滑向邻页：即时补建，避免白板（空闲仍是主触发，见 C）。
                       onPageChanged: (i) {
                         _bandPage = i;
+                        context.read<NavigationProvider>().reportHomeBand(i);
                         if (i != 1 && mounted) _scheduleWarmNeighbors();
                         // 进入歌单页（左邻页）：要求页内列表重新追焦当前播放歌曲
                         // （首歌单页可能已保活挂载，换歌后再进不会重挂载）。
@@ -1763,8 +1794,8 @@ class _DesktopLandscapePlayer extends StatelessWidget {
                       padding: EdgeInsets.symmetric(
                           horizontal: m.lyricsPadding,
                           vertical: 12 * m.uiScale),
-                      child:
-                          LyricsView(player: player, scale: m.uiScale, align: 0.47),
+                      child: LyricsView(
+                          player: player, scale: m.uiScale, align: 0.47),
                     ),
                   ),
                 ),
@@ -2095,8 +2126,7 @@ class _Cover extends StatelessWidget {
               value: 'line_auto', child: Text(label(SourceLine.auto))),
           PopupMenuItem(
               value: 'line_primary', child: Text(label(SourceLine.primary))),
-          PopupMenuItem(
-              value: 'line_fb0', child: Text(label(SourceLine.fb0))),
+          PopupMenuItem(value: 'line_fb0', child: Text(label(SourceLine.fb0))),
           if (fbCount > 1)
             PopupMenuItem(
                 value: 'line_fb1', child: Text(label(SourceLine.fb1))),
