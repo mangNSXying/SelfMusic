@@ -748,12 +748,12 @@ abstract class MusicSource {
 | 容器 | `widgets/list_detail_split.dart` 的 `ListDetailSplit` | `enabled=false` 时原样返回列表（零额外图层）；两栏各自 `RepaintBoundary` + 1px `outlineVariant` 竖分隔线 |
 | 右栏 | 同文件 `DetailPane` | 空态占位 + 栏内轻量过渡（`kDetailPaneMotion=180ms`，全局「关闭」档为零）；比整页 300ms 短，因为只有一栏在动 |
 | 详情本体 | `library_screen.dart` 的 `detailPageOf` | 窄屏弹层 / 宽屏整页叠层 / 分栏右栏**共用同一份**详情实现（`_AlbumDetailPage` / `_ArtistDetailPage` / `PlaylistDetailView(presentation: pane)` / `SourceBrowseView(presentation: pane)`） |
-| 状态 | `NavigationProvider.details` / `browsingPlaylistId` / `browsingSourceKey` | 分栏不新增"选中态"：右栏直接消费既有路由状态，跨断点切换不丢"当前在看什么" |
+| 状态 | `NavigationProvider.contentRoutes`（`details` / `browsingPlaylistId` / `browsingSourceKey` 为最近层派生） | 分栏不新增"选中态"：右栏直接消费内容栈状态，跨断点切换不丢"当前在看什么" |
 
 - **内容区宽度必须用目标值**：`AppShell` 按 `窗口宽 − 侧栏 260 − 队列 360`（都是**目标**宽度，不是 300ms 伸缩动画中的实时值）算好经 `ScreenMetrics` 下发，否则分栏会在阈值附近来回抖。手机横屏（800−260=540）因此不会误分栏。
-- **区域切换动画与分栏互斥**：集合页统一使用 `sections` 区域键——分栏只换右栏、列表/卡片只换页内形态，都不触发整块内容区动画或重建 `SectionPager`；歌单/源内整页详情与设置才使用独立区域键。设置页仍走原区域键与滑动动画。
+- **内容栈与分栏**：`ContentStack` 的基座永远是 `SectionPager`；分栏时歌单/源内/专辑/歌手层由右栏渲染（`_isInlineRoute` 过滤），设置/歌曲信息仍作为整页层压在基座之上。分栏切换只换右栏、列表/卡片只换页内形态，不重建 `SectionPager`。
 - **搜索词保留**：分栏时搜索框就是左栏的过滤器，`enterPlaylist / enterAlbum / enterArtist / enterSource / exitDetail / exitPlaylist / exitSource / backToPrevious` 都带 `keepSearch`，由调用点按 `splitDetailActive` 传值；非分栏沿用"进/出详情清空搜索"的旧口径。
-- **源内返回链**：目录状态放在 `NavigationProvider.sourceDir`（由 `SourceBrowseView` 读写，不再是页面私有 State），`backToPrevious` 先退一层目录、到源根才退出源内，系统返回 / Esc 与头部返回箭头语义一致；搜索态下目录不可见，返回直接退出源内。非逐级分类模式会清空目录，避免"退一层看不见的目录"。
+- **源内返回链**：每层目录一条 `SourceBrowseRoute`（不再是单独 `sourceDir` 字段）；`setSourceDir` 按公共前缀重建，保留共同前缀的路由对象（State/滚动不重建），`backToPrevious` 弹一层目录、到源根再退出源内；搜索态下目录不可见，返回直接退出源内。
 - **自动扫描节流**：打开源触发的增量扫描经 `DirectSourceManager.claimAutoScan`（同一源 60s 一次），分栏里来回点源不会反复扫描；手动「扫描」不经过该节流。
 - **详情入口统一**：`layout/detail_target.dart` 的 `DetailTarget`（Playlist / Album / Artist / Source）+ `openDetail` 收口「是否已在显示」的去重、`keepSearch` 与 `root` 语义；入口函数只构造 target。呈现外壳统一走 `widgets/detail_presentation.dart` 的 `DetailPresentationShell`（`page` 保留分组横滑；`pane` / `overlay` 自绘不透明底），页面本体不再各自判断。窄屏专辑/歌手拖拽弹层需要页面私有构建器，仍在 `library_screen.dart` 入口处分流。
 - **左栏换选中项不叠加层**：左栏（分组列表）点选用 `root: true` 把详情栈重置为这一层；只有详情内部的嵌套入口（歌手专辑横条、成员/组合作品行）才压在上一层之上（`fromDetail`）。
@@ -761,6 +761,27 @@ abstract class MusicSource {
 - **列表→卡片切换**：`ViewModeState.setViewMode` 在离开列表形态时调用 `NavigationProvider.closeSplitDetail` 关掉当前分栏详情（保留左栏搜索词），并经 `DirectSourceManager.viewModeChanged` 通知内容壳重算分栏——否则旧详情仍占着「已在显示」判定，再点卡片会被 `openDetail` 去重挡住。
 - 左栏选中行用 `ListTile.tileColor`（主色 10%）提示，不用 `selected`（避免文字/图标整体变主色）；列表带 `PageStorageKey`，分栏↔整页切换后滚动位置仍在。
 - 回归：`test/album_artist_detail_wide_test.dart`（分栏/整页两条路径 + 换选中项 + 搜索保留）、`test/content_split_layout_test.dart`（阈值、容器、右栏过渡、歌单分栏与搜索语义）、`test/source_split_test.dart`（播放源分栏 / 返回链 / 自动扫描节流）、`test/detail_target_test.dart`（统一入口去重口径 + 呈现外壳）、`test/song_table_test.dart`（表格列几何 / 阈值 / 递归缩进 / sliver 表头）。
+
+### 导航层级与返回（统一内容栈）
+
+首页（播放页）是根；内容区是一条常驻基座 + 内容栈；窄屏队列是模态浮层、宽屏队列是常驻面板；路由永远最顶。返回只作用于**当前呈现的表面**。
+
+| 层级 | 内容 | 返回 |
+|------|------|------|
+| L0 首页 | 播放页根；歌词页 / 歌单页是首页子页 | 子页 → 播放页；播放页根 → 移动端转后台、桌面不动作（桌面 Esc 在根上是「进入内容」的独立动作，不属于返回链） |
+| L1 内容基座 | `SectionPager`（六分组，常驻保活） | 展开首页 |
+| L2 内容栈 | 设置 / 歌单详情 / 源内目录（每层一条）/ 专辑·歌手详情 / 歌曲信息 | 弹一层 |
+| L3 模态浮层 | 窄屏队列弹层（`AppSheetLauncher`） | 先关浮层 |
+| L4 路由 | 对话框 / 菜单 / 设置子页 / 窄屏歌曲弹层（`Navigator`） | 框架先 pop |
+
+- **单栈事实源**：`NavigationProvider.contentRoutes`（`ContentRoute` sealed：`SettingsRoute / PlaylistRoute / SourceBrowseRoute / AlbumDetailRoute / ArtistDetailRoute / LibraryInfoRoute`）。`backToPrevious` 只做「弹内容栈 / 首页子页 / 离场」，不再按类型分支；`areaKey` / `areaLevel` / `slideOffset` / `DetailStack` / `AreaSwitcher` 已删除，内容层动画由 `widgets/content_stack.dart` 按 push/pop 驱动。
+- **首页是根**：`openPlayer` 不弹内容栈、不关设置；首页展开时返回不会弹下面看不见的内容栈（首页子页 → 播放页，再离场）。
+- **队列**：窄屏队列弹层是根悬浮层（非路由），`main.dart` 的系统返回与 `app_shortcuts.dart` 的返回快捷键都先关它；宽屏队列面板是常驻 chrome，不参与返回（关闭用面板按钮 / 队列快捷键）。
+- **歌曲信息**：`LibraryInfoRoute` 进 L2 内容栈（总览 + 元数据 / 歌手 / 格式 / 播放四个明细页），保留侧栏、占内容区；顶栏切换为工具页变体（菜单 + 返回 + 标题）。「关于软件」仍是 L4 全屏路由。
+- **同一个「弹层」不再混层**：队列弹层在播放页之上、路由之下；歌手 / 专辑歌曲弹层是 modal 路由（最顶）。
+- **设置**：`openSettings` 压栈/同分区替换，不再清掉下层详情；从专辑详情进设置，返回回到原详情。
+- **歌手去重**：同一歌手已在栈内但不在栈顶时，点回它会回退到那一层，不再有「最多两层」裁剪。
+- 回归：`test/nav_subscription_test.dart`、`test/hierarchy_navigation_test.dart`、`test/source_split_test.dart`、`test/album_artist_detail_wide_test.dart`、`test/detail_target_test.dart`、`test/settings_switch_slide_test.dart`、`test/library_info_detail_pages_test.dart`。
 
 ### 顶栏搜索作用域
 
@@ -774,7 +795,7 @@ abstract class MusicSource {
 | 歌单详情 | 歌单内歌曲 | 搜索歌单内歌曲 |
 | 专辑 / 歌手列表 | 专辑名/艺术家、歌手名 | 搜索专辑 / 艺术家、搜索歌手 |
 | 歌曲 / 喜欢 | 标题/艺术家 | 搜索标题 / 艺术家 |
-| 设置 / 队列 / 播放页 | 不参与（顶栏不可见或无列表） | — |
+| 设置 / 歌曲信息 / 队列 / 播放页 | 不参与（顶栏不可见或无列表） | — |
 
 生命周期：六个顶级分区之间切换**保留**搜索词（便于跨页找同一批内容）；进入或离开源内、歌单详情、宽屏专辑/歌手详情栈时**清空**（详情页的搜索对象与分区不同，带着旧词会让目标页看起来被莫名过滤）。例外是**大横屏分栏**（见上一节）：左栏就是该分组的列表，搜索框仍是它的过滤器，进出右栏详情保留搜索词。清空与路由变更合并在同一次 `notifyListeners()` 中，不得额外通知。源内浏览不得再加本地搜索框；`SongList` 在顶栏可见的页面用 `globalSearch: true`，仅播放器附着的歌单页因顶栏不可见保留 `globalSearch: false` 的本地输入框。
 
@@ -808,7 +829,7 @@ SMB/SFTP 原始流默认不再走 just_audio 的 `StreamAudioSource`/Dart 回环
 - **装载前置鉴权探针**：原生装载器（AVPlayer/ExoPlayer）对 401/403 错误响应只会无限缓冲，进度停 0:00 且无任何提示（2026-09-29 密码过期真机实测）。`_loadOnce` 在 setUrl 前先发 1 字节 Range 探针（`MusicSource.probe`，与取流路径同口径）：401/403 立即失败提示，其余探针异常忽略后继续装载（网络抖动交给播放器重试）
 - **装载看门狗（2026-09-30）**：原生播放器对「主机不可达/无响应」的 open 可能没有应用层超时——历史实测（mdk）IPv6 路由丢失时 prepare 永久挂起，UI 卡 00:00/00:00、点播放无响应。setUrl 统一裹 15s 超时（`PlayerProvider._loadUrlTimeout`），超时按装载失败进入 `loadBackoff` 退避重试、耗尽后走失败提示/自动跳曲；被放弃的迟到结果用 `Future.ignore()` 吞掉防 unhandled。AVPlayer/ExoPlayer 自带连接超时通常先报错，看门狗仅作兜底
 - **自动切歌 play 空转问题（2026-09-30）**：just_audio 的 `play()` 首行 `if (playing) return`——上一首自然播完 playing 不会自动复位，装载下一首后 `play()` 静默空转、平台层收不到播放指令。ohos 表现为切歌无声 + 进度条靠 Dart 时钟插值假走（暂停时回跳 0）；Android 因 ExoPlayer `playWhenReady` 状态跨装载保持而恰好正常。修复在 `PlayerProvider._play`：装载完成需要播放时先 `pause()` 复位 playing 再 `play()`——**该复位逻辑为必要修复，请勿删除或"优化"**，详见该处注释
-- **返回手势 = 转后台**：移动端侧滑/返回键不退出应用（后台续播），收口在 `platform/app_background.dart`（Android 通道 `com.shamiko.selfmusic/app`、ohos 通道 `selfmusic/app`，均为 `moveToBackground`），`main.dart` 的 `_onPopInvoked` 是唯一调用点、通道失败兜底原行为；桌面端恒 false。调整退出行为只动这两处
+- **返回手势 = 逐级返回，根上转后台**：系统返回 / 返回快捷键先走 `NavigationProvider.backToPrevious`（窄屏队列浮层 → 内容栈 → 首页子页 → 首页根）。只在首页根才调用 `platform/app_background.dart`（Android 通道 `com.shamiko.selfmusic/app`、ohos 通道 `selfmusic/app`，均为 `moveToBackground`，后台续播）；桌面端根上不退出（退出走侧栏/托盘）。`main.dart` 的 `_onPopInvoked` 与 `app_shortcuts.dart` 的返回快捷键共用同一顺序，窄屏队列弹层先于导航关闭。调整退出行为只动这两处
 - **桌面端关闭窗口 = 驻留托盘**：`platform/desktop_tray.dart` 用 window_manager 拦截原生关闭事件、tray_manager 提供「显示主窗口 / 退出」菜单；默认开，设置→常规→窗口可关。托盘创建失败时关闭仍直接退出（避免窗口藏起来无法找回）；真正退出统一先 `PlayerProvider.shutdown()` 再 `exitAppGracefully()`。全局快捷键打开弹窗（退出/睡眠定时/帮助）前会先恢复窗口
 
 ### 鸿蒙适配
