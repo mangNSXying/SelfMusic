@@ -17,7 +17,7 @@ enum PlayerTransition {
   final String label;
 
   static PlayerTransition parse(String? v) => PlayerTransition.values
-      .firstWhere((e) => e.name == v, orElse: () => PlayerTransition.fade);
+      .firstWhere((e) => e.name == v, orElse: () => PlayerTransition.slide);
 }
 
 /// 歌曲标题显示格式（设置→歌曲，默认「歌手 - 歌名」）。
@@ -789,7 +789,7 @@ class AppSettings {
   String get customFontLabel => index.settingsGet(kCustomFontLabel) ?? '';
   set customFontLabel(String v) => index.settingsSet(kCustomFontLabel, v);
 
-  /// 播放页（播放/歌词）切换过渡动画（默认淡入）。
+  /// 播放页（播放/歌词）切换过渡动画（默认滑动）。
   PlayerTransition get playerTransition =>
       PlayerTransition.parse(index.settingsGet(kPlayerTransition));
   set playerTransition(PlayerTransition v) =>
