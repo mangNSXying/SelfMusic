@@ -1129,7 +1129,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // onError 冒出来（playerStateStream 内部 handleError 吞掉，见包的
     // `_processingStateSubject.addStream(...handleError(noop))`）。此前无人监听，
     // ExoPlayer 任何源错误都表现为「playing 仍为 true、界面显示播放中、却没声音」。
-    p.playbackEventStream.listen((_) {}, onError: _onPlaybackError);
+    // 同时记录平台上报的**原生**播放位置（非 just_audio 的墙钟插值）：它只在平台
+    // 真的推进时更新、卡死即冻住，看门狗判据与恢复落点都以它为准。
+    p.playbackEventStream.listen((e) {
+      if (e.updatePosition > Duration.zero) {
+        _lastPlatformPos = e.updatePosition;
+        _stallPosSeen = true;
+      }
+    }, onError: _onPlaybackError);
   }
 
   /// 播放错误（ExoPlayer 源错误/网络中断）统一入口：诊断日志 + 重新装载当前曲。
@@ -1227,11 +1234,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _stallAnchorAt = null;
       return;
     }
-    // 判据用 bufferedPosition 而不是 position：just_audio 的 position 是墙钟
-    // 插值，卡死时仍会“假走”；bufferedPosition 只随平台事件推进，网络断了
-    // 就冻住（Android/桌面/鸿蒙都上报）。
+    // 判据用两个「只随平台事件推进、卡死即冻住」的量：
+    //  - bufferedPosition：断流即停（Android/media_kit 口径）；
+    //  - 平台上报的原生播放位置：非 just_audio 的墙钟插值，卡死即停。
+    // 任一前进即视为未卡死。单看 bufferedPosition 会被「后端缓冲事件稀疏/不连续
+    // 上报」（如鸿蒙 AVPlayer 的 CACHED_DURATION）误判成断流——真机上表现为
+    // 反复重载、进度条归零回退。
     final buffering = p.processingState == ProcessingState.buffering;
     final buffered = p.bufferedPosition;
+    final pos = _lastPlatformPos;
     if (buffered > Duration.zero) _stallBufferedSeen = true;
     final dur = p.duration;
     final fullyBuffered = dur != null &&
@@ -1242,25 +1253,53 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _stallAnchorAt = null;
       return;
     }
-    // 该后端不报缓冲进度（buffered 恒 0）时无从判断，只在显式 buffering 态才查。
-    if (!buffering && !_stallBufferedSeen) {
+    // 两个信号后端都不可用（既不报缓冲也不报原生位置）→ 无从判断。
+    if (!_stallBufferedSeen && !_stallPosSeen) {
       _stallAnchorAt = null;
       return;
     }
-    // 缓冲在推进即视为正常：锚点跟随缓冲位置与当时的播放位置（后者用于恢复落点）。
-    if (_stallAnchorAt == null || buffered > _stallAnchorPos) {
+    // 换曲：连续重载计数归零（恢复重载的是同一首，靠此 key 判断、不清零）。
+    final key = _positionKeyOf(cur);
+    if (_stallStreakKey != key) {
+      _stallStreakKey = key;
+      _stallRecoverStreak = 0;
+      _stallRecoverAtPos = Duration.zero;
+    }
+    // 上次重载后已真实推进超过一个停滞窗口 → 视为重载成功，计数归零。
+    if (_stallRecoverStreak > 0 &&
+        _stallRecoverAtPos > Duration.zero &&
+        pos > _stallRecoverAtPos + stallTimeout) {
+      _stallRecoverStreak = 0;
+    }
+    // 缓冲位置或原生位置任一前进即正常：锚点跟随两者与当时的原生位置（恢复落点）。
+    if (_stallAnchorAt == null ||
+        buffered > _stallAnchorPos ||
+        pos > _stallAnchorPlayPos) {
       _stallAnchorPos = buffered;
-      _stallAnchorPlayPos = p.position;
+      _stallAnchorPlayPos = pos;
       _stallAnchorAt = DateTime.now();
       return;
     }
     final elapsed = DateTime.now().difference(_stallAnchorAt!);
     if (elapsed < stallTimeout) return;
     if (_stallRecoveryInFlight) return;
+    // 冷却：与播放错误恢复共用节流，抑制慢流上的重载风暴。
+    final now = DateTime.now();
+    final last = _lastRecoverAt;
+    if (last != null && now.difference(last) < _recoverCooldown) return;
+    // 上限：同一首连续重载仍不前进（多为服务端持续慢流），停手让播放器自行
+    // 缓冲恢复，别再反复丢弃缓冲。等真实位置前进后计数自动归零。
+    if (_stallRecoverStreak >= _maxStallRecoveries) return;
+    _lastRecoverAt = now;
+    _stallRecoverStreak++;
     // 重置锚点，避免恢复飞行期间反复触发。
-    _stallAnchorAt = DateTime.now();
-    final at =
-        _stallAnchorPlayPos > Duration.zero ? _stallAnchorPlayPos : p.position;
+    _stallAnchorAt = now;
+    // 落点用锚点时刻的原生位置（真实播放点），不是插值的当前值——否则恢复会
+    // 回退到 12s 前，正是「播放几秒又回退」的来源。
+    final at = _stallAnchorPlayPos > Duration.zero
+        ? _stallAnchorPlayPos
+        : (_lastKnownPos > Duration.zero ? _lastKnownPos : p.position);
+    _stallRecoverAtPos = at;
     unawaited(_onStallDetected(cur, at));
   }
 
@@ -1484,6 +1523,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 播放错误自动恢复的最小间隔，抑制错误风暴反复重装同一首。
   static const Duration _recoverCooldown = Duration(seconds: 5);
 
+  /// 同一首「连续停滞重载」的上限：达到后不再重载，交给播放器自行缓冲恢复
+  /// （慢流上反复重载只会不断丢弃已缓冲数据、位置原地打转）。真实推进超过
+  /// 一个 [stallTimeout] 后计数归零，换曲也归零。
+  static const int _maxStallRecoveries = 3;
+
   /// 连续装载失败计数（成功装载即清零）。
   int _loadFailStreak = 0;
 
@@ -1513,6 +1557,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   Duration _stallAnchorPlayPos = Duration.zero;
   bool _stallBufferedSeen = false;
   bool _stallRecoveryInFlight = false;
+
+  /// 平台上报的原生播放位置（`playbackEventStream.updatePosition`，非墙钟插值）。
+  Duration _lastPlatformPos = Duration.zero;
+  bool _stallPosSeen = false;
+
+  /// 连续停滞重载计数、上次重载落点与所属曲目（同一首连续重载不前进即停手）。
+  int _stallRecoverStreak = 0;
+  Duration _stallRecoverAtPos = Duration.zero;
+  String? _stallStreakKey;
 
   /// 最后已知播放位置：装载失败后播放器 position 归零，恢复/重载仍能接回原处。
   Duration _lastKnownPos = Duration.zero;
@@ -2765,7 +2818,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_mediaProxyClient != null) unawaited(_mediaProxyClient!.stop());
     if (startAt == null) _clearRestorePosition();
     _lastKnownPos = startAt ?? Duration.zero;
+    _lastPlatformPos = startAt ?? Duration.zero;
     _stallBufferedSeen = false;
+    _stallPosSeen = false;
     _sourceInvalid = false;
     // 用户手动起播新曲：恢复期等待中的播放/暂停目标态作废，避免旧意图
     // 在恢复收尾后又对新曲补一次 play。恢复自身的 `_play(play:false)` 不能

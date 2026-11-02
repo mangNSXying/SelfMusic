@@ -257,6 +257,48 @@ void main() {
     expect(_seekSeconds(seek), inInclusiveRange(29, 32));
   });
 
+  test('缓冲位置冻结但原生位置在走：不判停滞（鸿蒙 CACHED_DURATION 稀疏）', () async {
+    PlayerProvider.stallTimeout = const Duration(milliseconds: 120);
+    PlayerProvider.stallCheckInterval = const Duration(milliseconds: 20);
+    final fake = JustAudioPlatform.instance as _FakeJustAudio;
+    final p = PlayerProvider();
+    addTearDown(p.dispose);
+
+    await p.playQueue([_song()], source: _FakeSource());
+    final before = fake.allLoads.length;
+    // buffered 冻在 5s（模拟鸿蒙只在起播上报一次 CACHED_DURATION），
+    // 但原生位置持续前进——不得误判为断流重载。
+    for (var i = 1; i <= 30; i++) {
+      fake.current.emitProgress(Duration(seconds: i),
+          buffered: const Duration(seconds: 5));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    expect(fake.allLoads.length, before, reason: '位置在走就不该重载');
+  });
+
+  test('停滞恢复落点用原生位置：不回到缓冲冻结时的旧位置', () async {
+    PlayerProvider.stallTimeout = const Duration(milliseconds: 60);
+    PlayerProvider.stallCheckInterval = const Duration(milliseconds: 20);
+    final fake = JustAudioPlatform.instance as _FakeJustAudio;
+    final p = PlayerProvider();
+    addTearDown(p.dispose);
+
+    await p.playQueue([_song()], source: _FakeSource());
+    // buffered 早早冻在 5s，而原生位置已走到 40s；随后两者都停 → 判停滞。
+    fake.current.emitProgress(const Duration(seconds: 5),
+        buffered: const Duration(seconds: 5));
+    await _settle();
+    fake.current.emitProgress(const Duration(seconds: 40),
+        buffered: const Duration(seconds: 5));
+    await _settle();
+
+    await _waitFor(() => fake.allSeeks.any((s) => _seekSeconds(s) >= 30),
+        timeout: const Duration(seconds: 3));
+    final seek = fake.allSeeks.lastWhere((s) => _seekSeconds(s) >= 30);
+    expect(_seekSeconds(seek), inInclusiveRange(39, 42),
+        reason: '恢复应从真实播放位置继续，而不是缓冲冻结时的 5s');
+  });
+
   test('网络失败进入挂起，探针恢复后自动从原进度续播', () async {
     PlayerProvider.netProbeInterval = const Duration(milliseconds: 30);
     PlayerProvider.netProbeTimeout = const Duration(milliseconds: 200);
