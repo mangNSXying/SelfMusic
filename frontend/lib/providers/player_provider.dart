@@ -707,7 +707,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (r != null && c != null && _restorePositionKey == _positionKeyOf(c)) {
       return Duration(milliseconds: r);
     }
-    return _player?.position ?? Duration.zero;
+    final p = _player;
+    // 播放器停在 idle（装载失败/网络挂起）时 position 恒为 0，会覆盖已有断点：
+    // 回退到最后已知位置，退出后仍能接回原处。
+    if (p != null && p.position > Duration.zero) return p.position;
+    if (_lastKnownPos > Duration.zero) return _lastKnownPos;
+    return p?.position ?? Duration.zero;
   }
 
   /// 音量梯度引擎：16ms 周期单定时器（淡入/淡出共用一条梯度，cancel 即打断）。
@@ -1062,6 +1067,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _lastPlayerStatePlaying = st.playing;
       // 暂停/停止：结清当前挂钟窗口（positionStream 停止跳动，不再有 tick）。
       if (!st.playing) {
+        _disarmStallWatchdog();
         unawaited(_playSecStop());
         // 鸿蒙焦点抢占的最终断点：正常用户暂停由 toggle/notifier 自己落，
         // 这里只收口焦点路径，避免在 _play 换曲时的“先 pause 再 load”
@@ -1072,6 +1078,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
             _saveForcedAndPoke();
           }
         }
+      } else {
+        _armStallWatchdog();
       }
       if (playingChanged && !_disposed) {
         // Android just_audio 因音频焦点自动 pause 时 playing 会变，但此前
@@ -1106,6 +1114,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       final abs = (_liveTranscode && _transcodeStartSec > 0)
           ? pos + Duration(milliseconds: _transcodeOffsetMs)
           : pos;
+      // 只在“确有音源”的态记录：装载失败会切到 idle 平台并上报 position=0，
+      // 若照单全收会把最后真实位置清零，恢复/挂起就接不回原处。
+      if (p.processingState == ProcessingState.ready ||
+          p.processingState == ProcessingState.buffering) {
+        _lastKnownPos = abs;
+      }
+      // 位置在前进即视为未卡死：看门狗幂等，锚点在 [_checkStall] 里推进。
+      if (p.playing) _armStallWatchdog();
       _maybeSaveState(abs);
       _playSecReconcile(playing: p.playing);
     });
@@ -1120,7 +1136,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 这类错误发生在装载成功之后，不会抛回 [_playDirect] 的调用点。
   void _onPlaybackError(dynamic e) {
     debugPrint('[play] 播放错误: $e');
-    if (_shuttingDown) return;
+    if (_shuttingDown || _disposed) return;
     final cur = _current;
     if (cur == null) return;
     // 音源正在切换：这是旧音源的迟到错误，不能在这里再发起一次恢复装载，
@@ -1133,16 +1149,19 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final last = _lastRecoverAt;
     if (last != null && now.difference(last) < _recoverCooldown) return;
     _lastRecoverAt = now;
+    // 播中错误意味着当前音源已失效：点播放要走重新装载，而不是对空源 play()。
+    _sourceInvalid = true;
     _loadFailStreak = 0;
     final token = _playToken;
     final key = _positionKeyOf(cur);
     unawaited(_recoverPlayback(cur, token: token, key: key));
   }
 
-  /// 重新装载当前曲（外部点歌语义，不重复推深层历史）；
-  /// 仍装载失败则由 [_autoSkipAfterFailure] 继续跳下一首。
+  /// 重新装载当前曲，**保留播放进度**（不重复推深层历史）；
+  /// 仍装载失败则由 [_autoSkipAfterFailure] 继续跳下一首（网络类则挂起等待）。
+  /// [at] 为空时用当前播放器位置，播放器位置已归零则回退 [_lastKnownPos]。
   Future<void> _recoverPlayback(Song s,
-      {required int token, required String key}) async {
+      {required int token, required String key, Duration? at}) async {
     // 错误事件到真正恢复之间用户可能已经切歌/恢复已被接管：令牌或当前曲
     // 任一变化都放弃，避免旧错误把新曲重新装载一遍（或抢走新曲的音源）。
     if (token != _playToken) {
@@ -1156,8 +1175,270 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     final src = _curSource;
     if (src == null || _shuttingDown) return;
+    final raw = at ?? position;
+    final pos = raw > Duration.zero ? raw : _lastKnownPos;
+    // 临近结尾：重载会立刻 completed 再跳歌，直接推进下一首更自然。
+    final dur = duration;
+    if (dur != null &&
+        dur > Duration.zero &&
+        pos >= dur - const Duration(seconds: 3)) {
+      await _advance(autoAdvanceOnFailure: true);
+      return;
+    }
     await _play(s,
-        source: src, fromPlaylist: false, autoAdvanceOnFailure: true);
+        source: src,
+        fromPlaylist: false,
+        emitBreakpoint: false,
+        startAt: pos,
+        autoAdvanceOnFailure: true);
+  }
+
+  // ---------- 停滞看门狗（playing 但位置不前进 = 卡死） ----------
+
+  /// 布防（幂等）：仅在有远端播放现场且实际在播时启动周期检查。
+  /// 本地源没有“网络断流”语义，不需要看门狗。
+  void _armStallWatchdog() {
+    if (_stallTimer != null || _disposed || _shuttingDown) return;
+    final src = _curSource;
+    if (_current == null || src == null || src.kind == SourceKind.local) return;
+    _stallTimer = Timer.periodic(stallCheckInterval, (_) => _checkStall());
+  }
+
+  /// 撤防（暂停/停止/释放/挂起时）：清定时器与锚点。
+  void _disarmStallWatchdog() {
+    _stallTimer?.cancel();
+    _stallTimer = null;
+    _stallAnchorAt = null;
+  }
+
+  void _checkStall() {
+    if (_shuttingDown || _disposed) return;
+    final p = _player;
+    final cur = _current;
+    if (p == null || cur == null) {
+      _stallAnchorAt = null;
+      return;
+    }
+    // 装载/恢复/淡出暂停期间本就不动，不算卡死。
+    if (!p.playing ||
+        _fadingPause ||
+        _loadingToken != null ||
+        _hasDeferredRestore) {
+      _stallAnchorAt = null;
+      return;
+    }
+    // 判据用 bufferedPosition 而不是 position：just_audio 的 position 是墙钟
+    // 插值，卡死时仍会“假走”；bufferedPosition 只随平台事件推进，网络断了
+    // 就冻住（Android/桌面/鸿蒙都上报）。
+    final buffering = p.processingState == ProcessingState.buffering;
+    final buffered = p.bufferedPosition;
+    if (buffered > Duration.zero) _stallBufferedSeen = true;
+    final dur = p.duration;
+    final fullyBuffered = dur != null &&
+        dur > Duration.zero &&
+        buffered >= dur - const Duration(seconds: 2);
+    // 整曲已缓冲且不在 buffering 态：不可能因网络卡死（本地/已下完）。
+    if (fullyBuffered && !buffering) {
+      _stallAnchorAt = null;
+      return;
+    }
+    // 该后端不报缓冲进度（buffered 恒 0）时无从判断，只在显式 buffering 态才查。
+    if (!buffering && !_stallBufferedSeen) {
+      _stallAnchorAt = null;
+      return;
+    }
+    // 缓冲在推进即视为正常：锚点跟随缓冲位置与当时的播放位置（后者用于恢复落点）。
+    if (_stallAnchorAt == null || buffered > _stallAnchorPos) {
+      _stallAnchorPos = buffered;
+      _stallAnchorPlayPos = p.position;
+      _stallAnchorAt = DateTime.now();
+      return;
+    }
+    final elapsed = DateTime.now().difference(_stallAnchorAt!);
+    if (elapsed < stallTimeout) return;
+    if (_stallRecoveryInFlight) return;
+    // 重置锚点，避免恢复飞行期间反复触发。
+    _stallAnchorAt = DateTime.now();
+    final at =
+        _stallAnchorPlayPos > Duration.zero ? _stallAnchorPlayPos : p.position;
+    unawaited(_onStallDetected(cur, at));
+  }
+
+  /// 停滞到期：先探针——可达则保位置重载；不可达则进入网络挂起。
+  Future<void> _onStallDetected(Song s, Duration pos) async {
+    if (_shuttingDown || _disposed || _stallRecoveryInFlight) return;
+    final src = _curSource;
+    if (src == null) return;
+    _stallRecoveryInFlight = true;
+    try {
+      final at = pos > Duration.zero ? pos : _lastKnownPos;
+      debugPrint('[play] 检测到播放停滞（${at.inMilliseconds}ms），尝试恢复');
+      final reachable = await _probeReachable(src, s);
+      if (_shuttingDown || _disposed) return;
+      if (!reachable) {
+        await _suspendForNetwork(s, src, at, reason: '播放停滞且音源不可达');
+        return;
+      }
+      final token = _playToken;
+      await _recoverPlayback(s, token: token, key: _positionKeyOf(s), at: at);
+    } finally {
+      _stallRecoveryInFlight = false;
+    }
+  }
+
+  /// 对真实音源发 1 字节 Range 探测可达性（默认实现为空则视为可达）。
+  Future<bool> _probeReachable(MusicSource src, Song s) async {
+    try {
+      await src.probe(s).timeout(netProbeTimeout);
+      return true;
+    } catch (e) {
+      debugPrint('[play] 探针失败: $e');
+      return false;
+    }
+  }
+
+  // ---------- 网络挂起与自动续播 ----------
+
+  /// 断网（探测不可达/网络类装载失败）：暂停在原位置，周期探针等待恢复；
+  /// 恢复后 [_resumeFromNetworkSuspension] 自动从原进度续播。
+  Future<void> _suspendForNetwork(Song s, MusicSource src, Duration pos,
+      {Object? reason, bool probeImmediately = true}) async {
+    if (_shuttingDown || _disposed) return;
+    // 本地源没有“网络中断”语义，交回既有失败路径。
+    if (src.kind == SourceKind.local) return;
+    final song = resolveLiveSong(s);
+    final at = pos > Duration.zero ? pos : _lastKnownPos;
+    // 已经在挂起同一首：只更新进度，不重复 pause/toast。
+    final already = _netSuspended &&
+        _netSuspendSong != null &&
+        _positionKeyOf(_netSuspendSong!) == _positionKeyOf(song);
+    _netSuspended = true;
+    _netSuspendSong = song;
+    _netSuspendSource = src;
+    _netSuspendPos = at;
+    _lastKnownPos = at;
+    _sourceInvalid = true;
+    _disarmStallWatchdog();
+    final p = _player;
+    if (p != null) {
+      try {
+        await p.pause();
+      } catch (_) {}
+    }
+    debugPrint('[play] 网络挂起《${song.title}》'
+        ' pos=${at.inMilliseconds}ms$reason=${reason ?? ''}');
+    if (!already) {
+      AppToast.show('网络已断开，恢复后将自动继续播放');
+    }
+    notifyListeners();
+    _syncSystemMedia();
+    _startNetworkProbe(immediate: probeImmediately);
+  }
+
+  void _startNetworkProbe({bool immediate = true}) {
+    _netProbeTimer?.cancel();
+    _netProbeTimer =
+        Timer.periodic(netProbeInterval, (_) => _probeForRecovery());
+    if (immediate) unawaited(_probeForRecovery());
+  }
+
+  Future<void> _probeForRecovery() async {
+    if (_netProbeInFlight ||
+        !_netSuspended ||
+        _shuttingDown ||
+        _disposed) {
+      return;
+    }
+    final s = _netSuspendSong;
+    final src = _netSuspendSource;
+    if (s == null || src == null) return;
+    _netProbeInFlight = true;
+    var ok = false;
+    try {
+      ok = await _probeReachable(src, s);
+    } finally {
+      _netProbeInFlight = false;
+    }
+    if (!ok || !_netSuspended || _shuttingDown || _disposed) return;
+    await _resumeFromNetworkSuspension();
+  }
+
+  Future<void> _resumeFromNetworkSuspension() async {
+    if (!_netSuspended || _shuttingDown || _disposed) return;
+    final s = _netSuspendSong;
+    final src = _netSuspendSource;
+    final pos = _netSuspendPos;
+    if (s == null || src == null) {
+      _clearNetworkSuspension();
+      return;
+    }
+    final cur = _current;
+    // 挂起期间用户已切歌/接管：安静清除，不抢新曲。
+    if (cur == null || _positionKeyOf(cur) != _positionKeyOf(s)) {
+      _clearNetworkSuspension();
+      notifyListeners();
+      _syncSystemMedia();
+      return;
+    }
+    _netProbeTimer?.cancel();
+    _netProbeTimer = null;
+    _netSuspended = false;
+    final ok = await _play(s,
+        source: src,
+        fromPlaylist: false,
+        emitBreakpoint: false,
+        startAt: pos,
+        autoAdvanceOnFailure: false,
+        silentErrorToast: true);
+    if (_shuttingDown || _disposed) return;
+    if (ok) {
+      _clearNetworkSuspension();
+      AppToast.show('网络已恢复，继续播放');
+      notifyListeners();
+      _syncSystemMedia();
+      return;
+    }
+    // 探测成功但装载仍失败：重新挂起，探针继续（不要立刻再探，避免
+    // “探测成功→装载失败→立即探测成功”空转，交给下个周期）。
+    await _suspendForNetwork(s, src, pos,
+        reason: '续播装载失败', probeImmediately: false);
+  }
+
+  void _clearNetworkSuspension() {
+    _netProbeTimer?.cancel();
+    _netProbeTimer = null;
+    _netSuspended = false;
+    _netProbeInFlight = false;
+    _netSuspendSong = null;
+    _netSuspendSource = null;
+    _netSuspendPos = Duration.zero;
+  }
+
+  /// 网络类失败判定（与鉴权/永久不可用区分开）：用于决定“跳歌”还是“挂起等待”。
+  /// 鉴权被拒、文件不存在等重试无用，绝不能当网络中断处理。
+  @visibleForTesting
+  static bool isNetworkFailure(Object? e) {
+    if (e == null) return false;
+    if (e is SourceAuthException) return false;
+    if (e is MediaProxyUnavailableException) return false;
+    if (e is TimeoutException) return true;
+    if (e is SocketException) return true;
+    final s = e.toString().toLowerCase();
+    const keys = [
+      'socket',
+      'connection',
+      'connectexception',
+      'unknownhost',
+      'unreachable',
+      'network',
+      'timed out',
+      'timeout',
+      'broken pipe',
+      'reset by peer',
+      'failed to connect',
+      'unable to resolve',
+    ];
+    return keys.any(s.contains);
   }
 
   /// 已处理过 completed 的曲目 key（含暂停导致的二次 completed，见监听器注释）。
@@ -1209,12 +1490,57 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 上次播放错误自动恢复的时间。
   DateTime? _lastRecoverAt;
 
+  /// 停滞看门狗：`playing==true` 但位置连续该时长不前进即判为卡死。
+  /// 原生播放器断流后常停在 BUFFERING 且不报错（ExoPlayer/mpv/AVPlayer 都
+  /// 可能如此），只有错误事件监听时永远等不到恢复。仅测试可改。
+  @visibleForTesting
+  static Duration stallTimeout = const Duration(seconds: 12);
+
+  /// 看门狗检查周期（仅测试调小以免真等）。
+  @visibleForTesting
+  static Duration stallCheckInterval = const Duration(seconds: 2);
+
+  /// 网络挂起后的探针间隔与单次超时：对真实音源发 1 字节 Range，
+  /// 成功即从挂起进度自动续播（不引入系统网络监听依赖）。
+  @visibleForTesting
+  static Duration netProbeInterval = const Duration(seconds: 4);
+  @visibleForTesting
+  static Duration netProbeTimeout = const Duration(seconds: 5);
+
+  Timer? _stallTimer;
+  DateTime? _stallAnchorAt;
+  Duration _stallAnchorPos = Duration.zero;
+  Duration _stallAnchorPlayPos = Duration.zero;
+  bool _stallBufferedSeen = false;
+  bool _stallRecoveryInFlight = false;
+
+  /// 最后已知播放位置：装载失败后播放器 position 归零，恢复/重载仍能接回原处。
+  Duration _lastKnownPos = Duration.zero;
+
+  /// 当前曲没有有效音源（装载失败/播放错误/停止后）。此时播放器的 playing
+  /// 可能是残留 true，点播放必须重新装载，不能对空播放器裸 `play()`。
+  bool _sourceInvalid = false;
+
+  Timer? _netProbeTimer;
+  bool _netSuspended = false;
+  bool _netProbeInFlight = false;
+  Song? _netSuspendSong;
+  MusicSource? _netSuspendSource;
+  Duration _netSuspendPos = Duration.zero;
+
+  /// 网络中断挂起中（播放页展示“恢复后自动继续播放”）。
+  bool get reconnecting => _netSuspended;
+
   /// 退出中：不再重试/恢复（避免与 dispose 竞争）。
   bool _shuttingDown = false;
 
   /// 装载动作（测试注入；生产恒走 [_loadOnce]）。
   @visibleForTesting
   Future<void> Function(Song s, MusicSource src)? loadOverride;
+
+  /// 测试入口：模拟平台上报播放错误（生产经 playbackEventStream.onError）。
+  @visibleForTesting
+  void debugPlaybackError(Object e) => _onPlaybackError(e);
 
   /// 测试入口：只跑装载重试（不碰队列/UI）。
   @visibleForTesting
@@ -2431,10 +2757,16 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 解决了快速 next/prev 时旧 setUrl 的 connection abort / source error  toast 刷屏。
     final token = ++_playToken;
     bool alive() => token == _playToken;
+    // 任何新的装载都意味着用户/自动链路已接管：取消网络挂起探针，避免旧挂起
+    // 在装载成功后又把播放器 reload 一次。
+    if (_netSuspended) _clearNetworkSuspension();
     // 新起播/切歌：先停旧 MediaProxy session；消息有序，_loadOnce 里的 start
     // 会排在 stop 之后。失败回退路径不会误用旧 session。
     if (_mediaProxyClient != null) unawaited(_mediaProxyClient!.stop());
     if (startAt == null) _clearRestorePosition();
+    _lastKnownPos = startAt ?? Duration.zero;
+    _stallBufferedSeen = false;
+    _sourceInvalid = false;
     // 用户手动起播新曲：恢复期等待中的播放/暂停目标态作废，避免旧意图
     // 在恢复收尾后又对新曲补一次 play。恢复自身的 `_play(play:false)` 不能
     // 取消——用户可能在恢复的异步前缀期间已经点过播放。
@@ -2580,11 +2912,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         unawaited(enrichCurrent());
       }
       unawaited(_loadLyrics(cur, enrichSrc));
+      _sourceInvalid = false;
+      if (play) _armStallWatchdog();
       notifyListeners();
       _syncSystemMedia();
       return true;
     } catch (e) {
       if (!alive()) return false; // 旧切歌被接管后的 abort：静默丢弃
+      // 装载失败：当前曲没有有效音源，点播放必须重新装载（见 [_sourceInvalid]）。
+      _sourceInvalid = true;
       if (startAt != null) {
         final cur = _current;
         final pos = _restorePositionMs;
@@ -3490,7 +3826,21 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 装载失败后自动跳下一首：连败到 [_loadFailSkipLimit] 首才停，
   /// 既不让个别坏歌卡住整条队列，也避免整队不可播时无限跳歌。
   /// [play] 透传给 [_advance]：睡眠定时曲末预切的跳歌仍保持暂停不发声。
+  ///
+  /// 网络类失败不跳歌：切歌同样会失败且会丢掉用户正在听的曲目；直接挂起
+  /// 在原进度等待网络恢复（[_suspendForNetwork]），恢复后自动续播。
   Future<void> _autoSkipAfterFailure([Object? reason, bool play = true]) async {
+    final cur = _current;
+    final src = _curSource;
+    if (isNetworkFailure(reason) &&
+        cur != null &&
+        src != null &&
+        src.kind != SourceKind.local) {
+      _loadFailStreak = 0;
+      debugPrint('[play] 网络类装载失败，挂起等待恢复: $reason');
+      await _suspendForNetwork(cur, src, _lastKnownPos, reason: reason);
+      return;
+    }
     _loadFailStreak++;
     debugPrint('[play] 装载连续失败 $_loadFailStreak 次: $reason');
     if (_loadFailStreak >= _loadFailSkipLimit) {
@@ -3907,6 +4257,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
       return;
     }
+    // 播放器没有有效音源（上次装载失败/断网）：playing 可能仍是残留的 true，
+    // 此时按按钮若走“暂停”分支等于空转（用户以为点了没反应）。直接按“播放”
+    // 语义重新装载并从最后位置继续。
+    if (_loadingToken == null && _sourceInvalid && _current != null && _curSource != null) {
+      await _resumeOrReplay();
+      notifyListeners();
+      _syncSystemMedia();
+      return;
+    }
     if (player.playing) {
       if (_fadingPause) {
         // 淡出进行中反向打断：取消暂停意图，音量从当前值平滑回升。
@@ -4006,6 +4365,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _resumePlaybackNow() async {
+    // 网络挂起中：用户点播放/通知栏播放 → 立即尝试重连续播（探针仍在后台跑）。
+    if (_netSuspended) {
+      await _resumeFromNetworkSuspension();
+      return;
+    }
     if (_hasDeferredRestore) {
       if (_restoreResumeTarget == false) {
         _restoreResumeTarget = null;
@@ -4029,6 +4393,27 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugPrint('[play] play 调用异常（忽略）：$e');
       }));
       _fadeIn();
+      _saveForcedAndPoke(intent: 'resume');
+      return;
+    }
+    final p = _player;
+    // 上次装载失败/源已失效（[_sourceInvalid]）：播放器停在 idle/loading，裸
+    // play() 是空转（表现为「点了没反应」，只能重启软件）。重新装载当前曲并
+    // 从最后已知位置继续。装载中（_loadingToken 非空）不抢。
+    if (_loadingToken == null &&
+        _current != null &&
+        _curSource != null &&
+        (_sourceInvalid || p == null)) {
+      if (_restoreResumeTarget == false) return;
+      _restoreResumeTarget = null;
+      final ok = await _play(_current!,
+          source: _curSource,
+          play: true,
+          fromPlaylist: false,
+          emitBreakpoint: false,
+          startAt: _lastKnownPos,
+          autoAdvanceOnFailure: true);
+      if (!ok || _shuttingDown || _disposed) return;
       _saveForcedAndPoke(intent: 'resume');
       return;
     }
@@ -4105,6 +4490,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 处理器的 `super.stop()` 随后把状态置 idle，前台服务/通知随之结束。
   Future<void> stopFromNotifier({bool clearResume = true}) async {
     ++_playToken;
+    // 显式停止：取消网络挂起与停滞看门狗，避免恢复探针在停止后又把播放拉起来。
+    _clearNetworkSuspension();
+    _disarmStallWatchdog();
+    // 停止后播放器无有效音源：再次点播放要重新装载。
+    _sourceInvalid = true;
     // 启动恢复期已有待播放目标时，停止直接取消它。
     if (_restoreResumeTarget != null) _restoreResumeTarget = false;
     // 清理路径：取消渐变 + 收口挂起的淡出 Future（不暂停）+ 复位意图位。
@@ -4127,6 +4517,19 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> seek(Duration d) async {
     _userTookOver = true;
+    // 网络挂起中：只用目标位置更新挂起进度，等探针/用户播放时从那续播。
+    if (_netSuspended) {
+      var ms = d.inMilliseconds;
+      if (ms < 0) ms = 0;
+      final dur = duration;
+      if (dur != null && ms > dur.inMilliseconds) ms = dur.inMilliseconds;
+      _netSuspendPos = Duration(milliseconds: ms);
+      _lastKnownPos = _netSuspendPos;
+      _lastBpPosMs = ms;
+      notifyListeners();
+      _syncSystemMedia();
+      return;
+    }
     if (_hasDeferredRestore) {
       var ms = d.inMilliseconds;
       if (ms < 0) ms = 0;
@@ -4136,6 +4539,29 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _restorePositionKey = _positionKeyOf(_current!);
       _lastBpPosMs = ms;
       _saveForcedAndPoke(intent: 'seek');
+      notifyListeners();
+      _syncSystemMedia();
+      return;
+    }
+    // 播放器未装载（上次装载失败停在 idle/loading）：原生 seek 无从落地，改为
+    // 按目标位置重新装载，避免拖动进度条同样“没反应”。
+    final p0 = _player;
+    if (_loadingToken == null &&
+        _current != null &&
+        _curSource != null &&
+        (_sourceInvalid || p0 == null)) {
+      _clearRestorePosition();
+      _lastKnownPos = d;
+      final ok = await _play(_current!,
+          source: _curSource,
+          play: true,
+          fromPlaylist: false,
+          emitBreakpoint: false,
+          startAt: d,
+          autoAdvanceOnFailure: true);
+      if (ok && !_shuttingDown && !_disposed) {
+        _saveForcedAndPoke(intent: 'seek');
+      }
       notifyListeners();
       _syncSystemMedia();
       return;
@@ -5612,6 +6038,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> shutdown() async {
     _shuttingDown = true;
     ++_playToken;
+    _disarmStallWatchdog();
+    _clearNetworkSuspension();
     unawaited(_audioFocusSub?.cancel());
     _audioFocusSub = null;
     // 清理路径：取消渐变 + 收口挂起的淡出 Future（不暂停）+ 复位意图位。
@@ -5650,6 +6078,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (!kIsWeb) WidgetsBinding.instance.removeObserver(this);
     _disposed = true;
     ++_playToken;
+    _disarmStallWatchdog();
+    _clearNetworkSuspension();
     _restoreResumeTarget = null;
     // 清理路径：取消渐变 + 收口挂起的淡出 Future（不暂停）+ 复位意图位。
     _cancelFadeAndComplete();
