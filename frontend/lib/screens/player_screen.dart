@@ -2330,7 +2330,20 @@ class _PlayerSeekState extends State<_PlayerSeek> {
         final shown =
             _dragValue?.clamp(0, max == 0 ? 1 : max).toDouble() ?? cur;
         return Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
+            if (widget.player.reconnecting)
+              Padding(
+                padding: EdgeInsets.only(bottom: 6 * widget.scale),
+                child: Text(
+                  '网络已断开，恢复后自动继续播放…',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 12 * widget.scale,
+                    color: widget.cs.onSurface.withValues(alpha: 0.6),
+                  ),
+                ),
+              ),
             SliderTheme(
               data: SliderTheme.of(context).copyWith(
                 trackHeight: 4 * widget.scale,
