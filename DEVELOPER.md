@@ -832,6 +832,16 @@ SMB/SFTP 原始流默认不再走 just_audio 的 `StreamAudioSource`/Dart 回环
 - **返回手势 = 逐级返回，根上转后台**：系统返回 / 返回快捷键先走 `NavigationProvider.backToPrevious`（窄屏队列浮层 → 内容栈 → 首页子页 → 首页根）。只在首页根才调用 `platform/app_background.dart`（Android 通道 `com.shamiko.selfmusic/app`、ohos 通道 `selfmusic/app`，均为 `moveToBackground`，后台续播）；桌面端根上不退出（退出走侧栏/托盘）。`main.dart` 的 `_onPopInvoked` 与 `app_shortcuts.dart` 的返回快捷键共用同一顺序，窄屏队列弹层先于导航关闭。调整退出行为只动这两处
 - **桌面端关闭窗口 = 驻留托盘**：`platform/desktop_tray.dart` 用 window_manager 拦截原生关闭事件、tray_manager 提供「显示主窗口 / 退出」菜单；默认开，设置→常规→窗口可关。托盘创建失败时关闭仍直接退出（避免窗口藏起来无法找回）；真正退出统一先 `PlayerProvider.shutdown()` 再 `exitAppGracefully()`。全局快捷键打开弹窗（退出/睡眠定时/帮助）前会先恢复窗口
 
+**断网恢复：停滞看门狗 + 探针挂起 + 保位置重载（2026-10）**
+
+断网后恢复连接时要反复暂停/拖进度甚至重启 App——根因是「错误事件来得晚且不保证出现」+「恢复从头重播」+「失败后停在无音源的空播放器」。规则如下（全在 `player_provider.dart`）：
+
+- **恢复保位置**：`_recoverPlayback` 捕获错误时的位置并透传 `_play(startAt:)`，`emitBreakpoint: false`（恢复不是用户操作）。临近结尾（`pos >= duration-3s`）改为 `_advance`，避免重载即 completed 又跳歌。`_lastKnownPos` 只在 `processingState == ready/buffering` 时更新——装载失败会切到 idle 平台并上报 `position=0`，若照单全收会把最后真实位置清零（`_positionForPersist` 同样回退 `_lastKnownPos` 防退出覆盖断点）
+- **停滞看门狗**：判据是 `bufferedPosition` 而不是 `position`——just_audio 的 `position` 是墙钟插值，卡死时仍会“假走”；`bufferedPosition` 只随平台事件推进，断流即冻住。仅在**远端源**（`kind != SourceKind.local`）且有播放现场时布防，周期 `stallTimeout`（默认 12s）不动即：先 `probe`，可达则保位置重载，不可达则进网络挂起。整曲已缓冲（`buffered >= duration-2s`）且不在 `buffering` 态时跳过；后端不报缓冲进度（`buffered` 恒 0）时只在显式 `buffering` 态才查
+- **网络挂起与自动续播**：网络类失败（`isNetworkFailure`：Socket/超时/连接类消息；鉴权/永久不可用不算）**不跳歌**（切歌同样会失败且丢掉用户正在听的曲），`_suspendForNetwork` 暂停在原位置 + `Timer.periodic` 每 4s 对真实音源发 1 字节 Range 探针，成功即 `startAt` 原进度自动续播（toast「网络已恢复，继续播放」）。非网络类失败仍走原有「有限重试 → 有限切歌 → 暂停」
+- **失败后点播放/拖进度要重新装载**：装载失败/播放错误/停止后 `_sourceInvalid=true`，此时播放器的 `playing` 常是残留 true、原生 seek 也无处落地。`toggle` / `_resumePlaybackNow` / `seek` 在此状态下改为重新装载（`startAt: _lastKnownPos`），不再对空播放器裸 `play()`（旧表现为「点了没反应」）
+- **与既有链路的关系**：`loadBackoff`（1s/3s）与装载看门狗不变；看门狗/探针定时器在暂停、停止、切换、`shutdown`、`dispose` 与 `_play` 起始处一律取消。回归：`test/play_network_recovery_test.dart`
+
 ### 鸿蒙适配
 
 工具链：`CPF-Flutter/flutter_flutter` 三方分支 `oh-3.41.9-release`（Dart 3.11，与 stable 并存，独立 wrapper 切换）+ DevEco Studio（ohpm/hvigor/node）+ 真机联调（Windows 上无模拟器）。壳工程 `frontend/ohos/` 已由 `flutter create --platforms ohos .` 生成。
