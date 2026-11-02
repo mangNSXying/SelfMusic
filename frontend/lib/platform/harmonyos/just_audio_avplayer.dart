@@ -299,10 +299,28 @@ class AvPlayerHandle extends AudioPlayerPlatform {
       case 'buffered':
         final infoType = event['infoType'];
         final value = event['value'];
-        // BufferingInfoType.CACHED_DURATION = 4（其余为 start/end/percent）。
-        if (infoType is num && infoType.toInt() == 4 && value is num) {
-          _buffered = Duration(milliseconds: value.toInt());
-          _emit();
+        if (infoType is! num) break;
+        // BufferingInfoType：START=1 / END=2 / PERCENT=3 / CACHED_DURATION=4。
+        switch (infoType.toInt()) {
+          case 1: // BUFFERING_START：原生开始等数据 → buffering 态。
+            if (_processingState == ProcessingStateMessage.ready ||
+                _processingState == ProcessingStateMessage.buffering) {
+              _processingState = ProcessingStateMessage.buffering;
+              _emit();
+            }
+            break;
+          case 2: // BUFFERING_END：数据到位 → 回 ready。
+            if (_processingState == ProcessingStateMessage.buffering) {
+              _processingState = ProcessingStateMessage.ready;
+              _emit();
+            }
+            break;
+          case 4: // CACHED_DURATION：已缓存时长（ms）→ bufferedPosition。
+            if (value is num) {
+              _buffered = Duration(milliseconds: value.toInt());
+              _emit();
+            }
+            break;
         }
         break;
       case 'seekDone':
