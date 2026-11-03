@@ -73,9 +73,9 @@ void main() {
       expect(settings.fadeDurationMs, 500);
     });
 
-    test('未写时默认 2000；写后重读一致（持久化往返）', () {
+    test('未写时默认 1000；写后重读一致（持久化往返）', () {
       final settings = AppSettings(index);
-      expect(settings.fadeDurationMs, 2000, reason: '默认 2000ms');
+      expect(settings.fadeDurationMs, 1000, reason: '默认 1000ms');
       settings.fadeDurationMs = 1200;
       expect(settings.fadeDurationMs, 1200);
       // 新实例重读同一 LocalIndex：持久化往返一致。
