@@ -30,10 +30,10 @@ void main() {
       expect(window[ShortcutAction.search]!.describe(isMac: true), '⌘ + F');
     });
 
-    test('全局默认只包含播放控制动作', () {
+    test('全局默认只给播放控制预置组合，其余动作可自行添加', () {
       final global = defaultGlobalBindings(primaryIsMeta: false);
-      expect(global.keys.toSet(),
-          ShortcutAction.values.where((e) => e.supportsGlobal).toSet());
+      expect(global.keys.toSet(), ShortcutAction.values.toSet());
+      expect(global.values.whereType<ShortcutBinding>().length, 6);
       expect(
           global[ShortcutAction.playPause]!.describe(), 'Ctrl + Alt + Space');
       expect(global[ShortcutAction.previous]!.describe(), 'Ctrl + Alt + ←');
@@ -42,6 +42,8 @@ void main() {
       expect(global[ShortcutAction.volumeDown]!.describe(), 'Ctrl + Alt + ↓');
       expect(
           global[ShortcutAction.toggleFavorite]!.describe(), 'Ctrl + Alt + L');
+      expect(global[ShortcutAction.sectionSongs], isNull);
+      expect(global[ShortcutAction.help], isNull);
     });
 
     test('默认窗口与全局绑定互不冲突', () {
@@ -111,6 +113,72 @@ void main() {
         global: global,
       );
       expect(error, contains('修饰键'));
+    });
+
+    test('F 键与媒体键可单独作为全局快捷键', () {
+      final window = defaultWindowBindings(primaryIsMeta: false);
+      final global = defaultGlobalBindings(primaryIsMeta: false);
+      for (final key in <LogicalKeyboardKey>[
+        LogicalKeyboardKey.f8,
+        LogicalKeyboardKey.f24,
+        LogicalKeyboardKey.mediaPlayPause,
+        LogicalKeyboardKey.audioVolumeUp,
+      ]) {
+        final binding = ShortcutBinding(keyId: key.keyId);
+        expect(
+          ShortcutSettings.findConflict(
+            action: ShortcutAction.playPause,
+            scope: ShortcutScope.global,
+            binding: binding,
+            window: window,
+            global: global,
+          ),
+          isNull,
+          reason: key.debugName,
+        );
+      }
+    });
+
+    test('普通字符键仍不能单独作为全局快捷键', () {
+      final window = defaultWindowBindings(primaryIsMeta: false);
+      final global = defaultGlobalBindings(primaryIsMeta: false);
+      final error = ShortcutSettings.findConflict(
+        action: ShortcutAction.playPause,
+        scope: ShortcutScope.global,
+        binding: ShortcutBinding(keyId: LogicalKeyboardKey.keyL.keyId),
+        window: window,
+        global: global,
+      );
+      expect(error, contains('修饰键'));
+    });
+
+    test('冲突列表定位到可覆盖的旧绑定', () {
+      final window = defaultWindowBindings(primaryIsMeta: false);
+      final global = defaultGlobalBindings(primaryIsMeta: false);
+      final sameScope = ShortcutSettings.findConflicts(
+        action: ShortcutAction.sectionSongs,
+        scope: ShortcutScope.window,
+        binding: window[ShortcutAction.next],
+        window: window,
+        global: global,
+      );
+      expect(sameScope, hasLength(1));
+      expect(sameScope.single.action, ShortcutAction.next);
+      expect(sameScope.single.sameScope, isTrue);
+      expect(sameScope.single.message, contains('下一首'));
+
+      final crossScope = ShortcutSettings.findConflicts(
+        action: ShortcutAction.sectionSongs,
+        scope: ShortcutScope.window,
+        binding: global[ShortcutAction.playPause],
+        window: window,
+        global: global,
+      );
+      expect(crossScope, hasLength(1));
+      expect(crossScope.single.action, ShortcutAction.playPause);
+      expect(crossScope.single.scope, ShortcutScope.global);
+      expect(crossScope.single.sameScope, isFalse);
+      expect(crossScope.single.message, contains('全局快捷键'));
     });
 
     test('鸿蒙全局快捷键拒绝 Meta 且提示 Ctrl/Alt', () {

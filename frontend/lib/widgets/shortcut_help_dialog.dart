@@ -28,7 +28,10 @@ Future<void> showShortcutHelpDialog(BuildContext context) {
               _section(
                 c,
                 '全局',
-                ShortcutAction.values.where((e) => e.supportsGlobal).toList(),
+                ShortcutAction.values
+                    .where((e) =>
+                        settings.bindingFor(e, ShortcutScope.global) != null)
+                    .toList(),
                 settings,
                 ShortcutScope.global,
               ),
@@ -58,6 +61,8 @@ Widget _section(
             fontWeight: FontWeight.w600,
           )),
       const SizedBox(height: 4),
+      if (actions.isEmpty)
+        Text('未设置', style: Theme.of(context).textTheme.bodySmall),
       for (final action in actions)
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
