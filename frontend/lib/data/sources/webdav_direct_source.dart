@@ -472,10 +472,10 @@ class WebdavDirectSource implements MusicSource {
       final resp = await _withDeadline(req.close(), _kCacheDownloadDeadline, 'WebDAV 上传（$url）');
       await resp.drain<void>();
       if (resp.statusCode != 200 && resp.statusCode != 201 && resp.statusCode != 204) {
-        if (resp.statusCode == 401 || resp.statusCode == 403) {
+        if (resp.statusCode == 401) {
           throw SourceAuthException(WebdavStatusException(resp.statusCode, url).toString());
         }
-        throw WebdavStatusException(resp.statusCode, url);
+        throw WebdavStatusException(resp.statusCode, url, write: true);
       }
     } finally {
       client.close(force: true);
@@ -498,10 +498,10 @@ class WebdavDirectSource implements MusicSource {
       final resp = await _withDeadline(req.close(), _kRequestDeadline, 'WebDAV 删除（$url）');
       await resp.drain<void>();
       if (resp.statusCode != 200 && resp.statusCode != 202 && resp.statusCode != 204) {
-        if (resp.statusCode == 401 || resp.statusCode == 403) {
+        if (resp.statusCode == 401) {
           throw SourceAuthException(WebdavStatusException(resp.statusCode, url).toString());
         }
-        throw WebdavStatusException(resp.statusCode, url);
+        throw WebdavStatusException(resp.statusCode, url, write: true);
       }
     } finally {
       client.close(force: true);
@@ -523,10 +523,10 @@ class WebdavDirectSource implements MusicSource {
       // 404=本就没有该文件：嵌入后清理的幂等语义，视为成功。
       if (resp.statusCode == 404) return;
       if (resp.statusCode != 200 && resp.statusCode != 202 && resp.statusCode != 204) {
-        if (resp.statusCode == 401 || resp.statusCode == 403) {
+        if (resp.statusCode == 401) {
           throw SourceAuthException(WebdavStatusException(resp.statusCode, url).toString());
         }
-        throw WebdavStatusException(resp.statusCode, url);
+        throw WebdavStatusException(resp.statusCode, url, write: true);
       }
     } finally {
       client.close(force: true);
@@ -545,10 +545,10 @@ class WebdavDirectSource implements MusicSource {
       // 405/409 常表示已存在：视为成功（幂等），避免重复建目录报错。
       if (resp.statusCode == 405 || resp.statusCode == 409) return;
       if (resp.statusCode != 200 && resp.statusCode != 201) {
-        if (resp.statusCode == 401 || resp.statusCode == 403) {
+        if (resp.statusCode == 401) {
           throw SourceAuthException(WebdavStatusException(resp.statusCode, url).toString());
         }
-        throw WebdavStatusException(resp.statusCode, url);
+        throw WebdavStatusException(resp.statusCode, url, write: true);
       }
     } finally {
       client.close(force: true);
@@ -711,17 +711,27 @@ class _WebdavEntry {
 class WebdavStatusException implements Exception {
   final int status;
   final String url;
-  const WebdavStatusException(this.status, this.url);
+
+  /// 写链路（PUT/DELETE/MKCOL）：401 才是凭据问题，403 表示**鉴权已过但服务器
+  /// 拒绝这次写**（只读挂载 / 账号无写权限 / 文件被锁）。两者文案必须分开——
+  /// 否则用户改完账密仍 403，却被反复引导去改账密（与 SMB 写链路「无写入权限」
+  /// 同口径）。
+  final bool write;
+  const WebdavStatusException(this.status, this.url, {this.write = false});
 
   @override
   String toString() {
     switch (status) {
       case 401:
+        return 'WebDAV 鉴权失败（HTTP 401）：用户名或密码不正确或已失效，'
+            '请在「源管理」编辑该源重新输入（$url）';
       case 403:
-        return 'WebDAV 鉴权失败（HTTP $status）：用户名或密码可能已更改，'
-            '请在「源管理」编辑该源重新输入密码';
+        return write
+            ? 'WebDAV 拒绝写入（HTTP 403）：账号鉴权已通过，但对目标位置没有写权限'
+                '（目录只读 / 账号无写权限 / 文件被锁定），请改用有写权限的账号或目录（$url）'
+            : 'WebDAV 拒绝访问（HTTP 403）：该账号可能没有此路径的访问权限（$url）';
       case 404:
-        return 'WebDAV 路径不存在（HTTP 404）：请检查源地址与服务器目录';
+        return 'WebDAV 路径不存在（HTTP 404）：请检查源地址与服务器目录（$url）';
       default:
         return 'WebDAV 请求失败（HTTP $status，$url）';
     }
