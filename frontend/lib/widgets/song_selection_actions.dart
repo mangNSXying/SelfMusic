@@ -208,13 +208,9 @@ Future<void> _delete(
     try {
       await direct.deleteSong(s);
       deleted.add(s);
-      for (final anchor in [
-        PlayerProvider.anchorForSource(s.sourceKey),
-        PlayerProvider.anchorForSongs(),
-        PlayerProvider.anchorForLiked(),
-      ]) {
-        unawaited(player.onAnchorSongRemoved(anchor, s));
-      }
+      // 删歌不挑上下文：锚定/未锚定都剔除该死引用（歌单路径另有
+      // onDeleted → onPlaylistSongRemoved 收口容量与续播定位）。
+      unawaited(player.onSongDeleted(s));
     } catch (e) {
       firstError ??= e;
     }

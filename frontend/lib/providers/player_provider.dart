@@ -5915,7 +5915,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 歌单/锚定列表删歌联动：深层列表移除该歌引用（始终同步删）；
   /// 若删的是当前曲，则播放下一首（被删曲在基座中的后一首，从头开始）——
   /// [deletedBaseIndex] 为被删曲在旧基座中的下标（歌单路径由调用方传入，
-  /// 定位不到/删的是基座末尾时退回播新深层尾）。[anchorKey] 只作用于当前锚定上下文。
+  /// 定位不到/删的是基座末尾时退回播新深层尾）。[anchorKey] 只作用于当前锚定上下文：
+  /// 不匹配时直接返回（如「取消喜欢」用喜欢锚定调用，不该动别的锚定列表）。
   Future<void> onAnchorSongRemoved(String anchorKey, Song s,
       {int? newCount, int? deletedBaseIndex}) async {
     final dl = _deepList;
@@ -5947,6 +5948,45 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final i = _queue.indexWhere((x) => _same(x, resolved));
     if (i >= 0) _idx = i;
     await _play(resolved, source: _curSource);
+  }
+
+  /// 单曲被硬删（任意上下文）：把该歌从当前队列/深层历史/融合基座里剔掉。
+  ///
+  /// 删歌不挑上下文（可以在源浏览页删掉当前歌单/喜欢里的歌），所以不像
+  /// [onAnchorSongRemoved] 那样要求调用方指明锚定键：锚定上下文内直接复用其
+  /// 容量与续播定位口径；未锚定则只在普通队列里剔除死引用。
+  Future<void> onSongDeleted(Song s) async {
+    final dl = _deepList;
+    final base = _fusedBase;
+    if (dl == null || _anchorKey == null || base == null) {
+      // 未锚定：队列是外部队列，剔掉该死引用即可，不改深层/基座。
+      if (_nextUp != null && _same(_nextUp!, s)) _nextUp = null;
+      final removedCurrent = _current != null && _same(_current!, s);
+      if (_queue.any((e) => _same(e, s))) _pruneQueueIf((e) => _same(e, s));
+      if (!removedCurrent) return;
+      if (_queue.isEmpty) {
+        await _clearStoppedState();
+        return;
+      }
+      final target = _queue[_idx.clamp(0, _queue.length - 1).toInt()];
+      final i = _queue.indexWhere((x) => _same(x, target));
+      if (i >= 0) _idx = i;
+      await _play(_queue[_idx], autoAdvanceOnFailure: true);
+      return;
+    }
+    // 锚定上下文：容量按「被删曲是否属于该锚定列表基座」收缩，
+    // 续播定位交给 onAnchorSongRemoved（deletedBaseIndex 即基座里被删位）。
+    var deletedBaseIndex = -1;
+    for (var i = 0; i < base.length; i++) {
+      if (_same(base[i], s)) {
+        deletedBaseIndex = i;
+        break;
+      }
+    }
+    await onAnchorSongRemoved(_anchorKey!, s,
+        newCount:
+            deletedBaseIndex >= 0 ? (dl.capacity - 1).clamp(0, 1 << 30) : null,
+        deletedBaseIndex: deletedBaseIndex >= 0 ? deletedBaseIndex : null);
   }
 
   /// 歌单删歌联动（转锚定键统一处理）。

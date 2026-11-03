@@ -167,10 +167,10 @@ class SongTile extends StatelessWidget {
     try {
       await direct.deleteSong(song);
       if (!context.mounted) return;
-      // 若当前播放的正是被删歌曲，切下一首避免播放器持有死引用。
+      // 若当前播放的正是被删歌曲，切下一首避免播放器持有死引用；
+      // 未锚定/别的锚定上下文也一并剔除该死引用。
       try {
-        await context.read<PlayerProvider>().onAnchorSongRemoved(
-            PlayerProvider.anchorForSource(song.sourceKey), song);
+        await context.read<PlayerProvider>().onSongDeleted(song);
       } catch (_) {}
       if (context.mounted) AppToast.show('已删除', isError: false);
     } catch (e) {
