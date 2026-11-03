@@ -234,6 +234,10 @@ class DirectSourceManager extends ChangeNotifier {
   /// 时静默跳过。
   void Function(String key)? onSourceRemoved;
 
+  /// 单曲硬删后受影响的歌单 uuid（[deleteSong] 触发）：UI 据此增量刷新歌单计数。
+  /// main 装配期注入；未注入（单测/无歌单 UI）时静默跳过。
+  void Function(Set<String> playlistUuids)? onPlaylistsChanged;
+
   /// 上次与库对账时存在的源 key（**含未启用的行**）。
   ///
   /// 识别「其它设备同步删除」只能靠它：未启用的源本就不在 [_sources] 里，
@@ -1656,9 +1660,12 @@ class DirectSourceManager extends ChangeNotifier {
     } catch (_) {
       // 无缓存或删文件失败不挡主流程（DB 痕迹仍要清）。
     }
+    // 同步收口：为含该歌的歌单补发 item_remove（须在删行前，行还在才能查）。
+    final affected = await playlists.removeSongFromAllPlaylists(song);
     await index.deleteSong(song.sourceKey, song.sourceRef);
     weight.notifyExternalWrite();
     _metaVersion++;
+    if (affected.isNotEmpty) onPlaylistsChanged?.call(affected.toSet());
     notifyListeners();
   }
 

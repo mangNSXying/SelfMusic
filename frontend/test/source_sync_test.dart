@@ -188,6 +188,90 @@ void main() {
     index.close();
   });
 
+  test('单曲硬删：为含该歌的全部歌单补发 item_remove，且 source_id 仍可解析', () async {
+    final index = await _openIndex();
+    await index.upsertSource('webdav:NAS', 'webdav', 'NAS',
+        jsonEncode({'name': 'NAS', 'baseUrl': _addr}));
+    final uuid = await index.ensureSourceUuid('webdav:NAS');
+    final pid1 = await index.createPlaylist('p1');
+    final pid2 = await index.createPlaylist('p2');
+    final pid3 = await index.createPlaylist('p3');
+    for (final pid in [pid1, pid2]) {
+      await index.addPlaylistItem(pid,
+          sourceKey: 'webdav:NAS',
+          songRef: '/music/a.flac',
+          title: 'A',
+          source: 'webdav');
+    }
+    // p3 里的另一首歌不应受影响。
+    await index.addPlaylistItem(pid3,
+        sourceKey: 'webdav:NAS',
+        songRef: '/music/other.flac',
+        title: 'B',
+        source: 'webdav');
+    final store = PlaylistStore(index, serverAvailable: () => true);
+    final song = Song.direct(
+      id: 1,
+      sourceKey: 'webdav:NAS',
+      title: 'A',
+      source: 'webdav',
+      sourceRef: '/music/a.flac',
+      fileSize: 1,
+    );
+
+    final affected = await store.removeSongFromAllPlaylists(song);
+    await index.deleteSong(song.sourceKey, song.sourceRef);
+
+    expect(affected.length, 2, reason: '只有含该歌的歌单算受影响');
+    expect(index.playlistItems(pid1), isEmpty);
+    expect(index.playlistItems(pid2), isEmpty);
+    expect(index.playlistItems(pid3).length, 1);
+    final removals = [
+      for (final e in await index.pendingOutbox())
+        if (e.type == SyncEventTypes.playlistItemRemove) e
+    ];
+    expect(removals.length, 2, reason: '每个受影响歌单补发一条 item_remove');
+    expect(removals.map((e) => e.payload['source_id']), everyElement(uuid));
+    expect(removals.map((e) => e.payload['playlist_uuid']).toSet(), affected.toSet());
+
+    index.close();
+  });
+
+  test('单曲硬删：离线时只返回受影响歌单，不积压同步事件', () async {
+    final index = await _openIndex();
+    await index.upsertSource('webdav:NAS', 'webdav', 'NAS',
+        jsonEncode({'name': 'NAS', 'baseUrl': _addr}));
+    await index.ensureSourceUuid('webdav:NAS');
+    final pid = await index.createPlaylist('p');
+    await index.addPlaylistItem(pid,
+        sourceKey: 'webdav:NAS',
+        songRef: '/music/a.flac',
+        title: 'A',
+        source: 'webdav');
+    final store = PlaylistStore(index, serverAvailable: () => false);
+    final song = Song.direct(
+      id: 1,
+      sourceKey: 'webdav:NAS',
+      title: 'A',
+      source: 'webdav',
+      sourceRef: '/music/a.flac',
+      fileSize: 1,
+    );
+
+    final affected = await store.removeSongFromAllPlaylists(song);
+
+    expect(affected.length, 1);
+    expect(
+        [
+          for (final e in await index.pendingOutbox())
+            if (e.type == SyncEventTypes.playlistItemRemove) e
+        ],
+        isEmpty,
+        reason: '离线不积压事件（与删源收口同口径）');
+
+    index.close();
+  });
+
   test('源实例 uuid：权重 / 歌单条目载荷携带 source_id', () async {
     final index = await _openIndex();
     await index.upsertSource('webdav:NAS', 'webdav', 'NAS',

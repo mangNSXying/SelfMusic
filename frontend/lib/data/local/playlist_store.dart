@@ -170,6 +170,32 @@ class PlaylistStore {
     });
   }
 
+  /// 单曲硬删收口：为所有含该歌的歌单补发 `playlist.item_remove`。
+  ///
+  /// 本地行由 `LocalIndex.deleteSong`（`_opDeleteSong`）统一删，这里只发同步事件。
+  /// 必须在删行**之前**调用（`playlistIdsContaining` / `sourceUuidOf` 依赖行仍在）。
+  /// 不补发的话服务端与其它设备仍保留该条目，下次 pull 会被快照重新插回。
+  /// 返回受影响的歌单 uuid（供 UI 增量刷新计数；离线时也返回）。
+  Future<List<String>> removeSongFromAllPlaylists(Song s) async {
+    final ids = index.playlistIdsContaining(s.sourceKey, s.sourceRef);
+    if (ids.isEmpty) return const [];
+    final syncable = _syncable(s);
+    final sourceId = index.sourceUuidOf(s.sourceKey);
+    final uuids = <String>[];
+    for (final id in ids) {
+      final uuid = await index.ensurePlaylistUuid(id);
+      uuids.add(uuid);
+      if (!syncable) continue;
+      await index.enqueueOutbox(SyncEventTypes.playlistItemRemove, {
+        'playlist_uuid': uuid,
+        'source': s.source,
+        'source_ref': s.sourceRef,
+        if (sourceId != null) 'source_id': sourceId,
+      });
+    }
+    return uuids;
+  }
+
   /// 删除某播放源在全部歌单中的条目（删源收口）。
   ///
   /// 先按歌单分组补发 `playlist.item_remove`（此时 source 行仍在，
