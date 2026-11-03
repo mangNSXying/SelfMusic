@@ -279,4 +279,73 @@ void main() {
         reason: '当前曲不属于被删源，不该被打断');
     expect(_refs(player), ['$_liveKey|b1', '$_liveKey|b2']);
   });
+
+  /// 单曲硬删（`onSongDeleted`）：删歌不挑上下文——在源浏览页删掉当前歌单里的
+  /// 歌、或删未锚定外部队列里的歌，都要把该死引用从队列/基座/深层历史里剔掉，
+  /// 否则播到就是「找不到该歌曲的播放源」。
+  group('单曲硬删联动', () {
+    test('锚定上下文：删的不是当前曲 → 队列剔除该死引用，播放不被打断', () async {
+      final (index, player, uuid) = await setup();
+      addTearDown(index.close);
+      addTearDown(player.dispose);
+
+      await player.playQueue([
+        _song(_liveKey, 'b1'),
+        _song(_liveKey, 'b2'),
+        _song(_liveKey, 'b3'),
+      ], index: 0, contextKey: 'playlist:$uuid', playlistUuid: uuid);
+      expect(player.current?.sourceRef, 'b1');
+
+      await player.onSongDeleted(_song(_liveKey, 'b2'));
+      // 深层历史落库是 fire-and-forget：让写事务先落定再断言（同删源用例）。
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(_refs(player), ['$_liveKey|b1', '$_liveKey|b3'],
+          reason: '删歌后队列不该再引用它（否则播到就失败跳歌）');
+      expect(player.current?.sourceRef, 'b1', reason: '删的不是当前曲，不打断播放');
+    });
+
+    test('锚定上下文：删的是当前曲 → 续播下一首，深层历史同步剔除', () async {
+      final (index, player, uuid) = await setup();
+      addTearDown(index.close);
+      addTearDown(player.dispose);
+
+      await player.playQueue([
+        _song(_liveKey, 'b1'),
+        _song(_liveKey, 'b2'),
+        _song(_liveKey, 'b3'),
+      ], index: 0, contextKey: 'playlist:$uuid', playlistUuid: uuid);
+      expect(player.current?.sourceRef, 'b1');
+
+      await player.onSongDeleted(_song(_liveKey, 'b1'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(player.current?.sourceRef, 'b2',
+          reason: '当前曲被删 → 续播其后第一首存活曲');
+      expect(_refs(player), ['$_liveKey|b2', '$_liveKey|b3']);
+      final raw = index.loadDeepList('playlist:$uuid');
+      expect(raw, isNotNull, reason: '锚定列表的深层历史应有落库行');
+      expect(
+          (jsonDecode(raw!) as List)
+              .where((e) => (e as Map)['sourceRef'] == 'b1'),
+          isEmpty,
+          reason: '深层历史里的死引用同步剔除');
+    });
+
+    test('未锚定外部队列：删歌剔除该死引用，当前曲被删则续播', () async {
+      final (index, player, uuid) = await setup();
+      addTearDown(index.close);
+      addTearDown(player.dispose);
+      // 不带 contextKey → 未锚定（深层列表为空，队列即外部队列）。
+      await player.playQueue([_song(_liveKey, 'b1'), _song(_liveKey, 'b2')],
+          index: 0);
+      expect(_refs(player), ['$_liveKey|b1', '$_liveKey|b2']);
+
+      await player.onSongDeleted(_song(_liveKey, 'b1'));
+
+      expect(_refs(player), ['$_liveKey|b2']);
+      expect(player.current?.sourceRef, 'b2');
+      expect(uuid, isNotEmpty);
+    });
+  });
 }
