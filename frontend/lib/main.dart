@@ -400,7 +400,12 @@ class SelfMusicApp extends StatelessWidget {
         ChangeNotifierProvider<ArtistResolver>.value(value: artistResolver),
         ChangeNotifierProvider<InteractionGate>.value(value: interactionGate),
         ChangeNotifierProvider<PlaylistsProvider>(
-          create: (_) => PlaylistsProvider(direct.playlists),
+          create: (_) {
+            final p = PlaylistsProvider(direct.playlists);
+            // 单曲硬删后增量刷新受影响歌单的计数（与同步回调同一收口）。
+            direct.onPlaylistsChanged = (uuids) => p.refresh(changedUuids: uuids);
+            return p;
+          },
         ),
         ChangeNotifierProvider<PlayerProvider>.value(value: player),
         ChangeNotifierProvider<NavigationProvider>.value(value: nav),
