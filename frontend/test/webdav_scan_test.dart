@@ -396,4 +396,61 @@ void main() {
             (e) => e.toString(), 'message', contains('误清库'))));
     expect(index.countSongs(src.key), 1, reason: '空结果防误清库闸门失效');
   });
+
+  test('扫描减少数：源上删歌后 removed 反映剔除数', () async {
+    var refs = <String>['/a.mp3', '/b.mp3'];
+    final rmServer = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => rmServer.close(force: true));
+    rmServer.listen((req) async {
+      final resp = req.response;
+      if (req.method == 'PROPFIND') {
+        final body = StringBuffer(
+            '<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">'
+            '<d:response><d:href>/</d:href><d:propstat><d:prop>'
+            '<d:resourcetype><d:collection/></d:resourcetype>'
+            '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>');
+        for (final r in refs) {
+          body.write('<d:response><d:href>$r</d:href><d:propstat><d:prop>'
+              '<d:getcontentlength>12345</d:getcontentlength>'
+              '<d:getlastmodified>Wed, 18 Sep 2026 10:00:00 GMT</d:getlastmodified>'
+              '<d:getetag>"$r"</d:getetag>'
+              '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>');
+        }
+        body.write('</d:multistatus>');
+        resp.statusCode = HttpStatus.multiStatus;
+        resp.headers.contentType = ContentType('application', 'xml');
+        resp.write(body.toString());
+        await resp.close();
+        return;
+      }
+      resp.statusCode = HttpStatus.ok;
+      await resp.close();
+    });
+
+    open.overrideFor(OperatingSystem.linux, _openOnLinux);
+    final tmp = Directory.systemTemp.createTempSync('selftest-removed');
+    addTearDown(() => tmp.deleteSync(recursive: true));
+    PathProviderPlatform.instance = _FakePathProvider(tmp.path);
+
+    final index = LocalIndex();
+    final src = WebdavDirectSource(
+      name: 'removed',
+      baseUrl: 'http://127.0.0.1:${rmServer.port}',
+      index: index,
+    );
+    await index.open();
+    addTearDown(index.close);
+
+    final s1 = await src.scan();
+    expect(s1.added, 2);
+    expect(s1.removed, 0);
+    expect(s1.total, 2);
+
+    refs = ['/a.mp3'];
+    final s2 = await src.scan();
+    expect(s2.added, 0);
+    expect(s2.removed, 1, reason: '源上消失的歌应计入减少数');
+    expect(s2.total, 1, reason: '总数是源上实际存活数');
+    expect(index.countSongs(src.key), 1);
+  });
 }

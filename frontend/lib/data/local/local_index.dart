@@ -643,8 +643,9 @@ class LocalIndex {
   }
 
   /// 删除该源下已标记 missing 且未收藏的行（保留收藏中的缺失歌，等源恢复）。
-  Future<void> clearMissing(String sourceKey) {
-    return _writer!.op<void>('clearMissing', {'sourceKey': sourceKey});
+  /// 返回实际删除的行数，供扫描汇总「减少数」。
+  Future<int> clearMissing(String sourceKey) {
+    return _writer!.op<int>('clearMissing', {'sourceKey': sourceKey});
   }
 
   /// 硬删一首歌曲的全部本地痕迹（阶段6 删除全删）：

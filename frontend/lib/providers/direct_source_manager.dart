@@ -1759,13 +1759,15 @@ class DirectSourceManager extends ChangeNotifier {
         },
       );
       await index.updateSourceScan(key, token.cancelled ? 'cancelled' : 'done');
-      // 扫描有增改 → 元数据版本自增（全局库/LibraryProvider 就地刷新）。
-      if (summary.added > 0 || summary.updated > 0) {
+      // 扫描有增/改/删 → 元数据版本自增（全局库/LibraryProvider 就地刷新）。
+      // 只删不增也要刷新：否则被剔除的曲目会留在列表里直到下次整库重载。
+      if (summary.added > 0 || summary.updated > 0 || summary.removed > 0) {
         _metaVersion++;
         _reconcileArtists();
       }
       return ScanSummary(
         added: summary.added,
+        removed: summary.removed,
         updated: summary.updated,
         unchanged: summary.unchanged,
         total: summary.total,
