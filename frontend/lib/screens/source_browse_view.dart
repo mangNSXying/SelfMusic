@@ -125,7 +125,8 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
         AppToast.show(
             summary.cancelled
                 ? '扫描已取消'
-                : '扫描完成：新增 ${summary.added} 首，共 ${summary.total} 首',
+                : '扫描完成：新增 ${summary.added} 首，减少 ${summary.removed} 首，'
+                    '共 ${summary.total} 首',
             isError: false);
       }
     } catch (e) {

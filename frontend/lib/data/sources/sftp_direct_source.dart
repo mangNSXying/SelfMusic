@@ -360,9 +360,10 @@ class SftpDirectSource implements MusicSource, MediaProxySource {
     }
     await index.upsertSongs(toWrite);
     await index.markMissingExcept(key, alive);
-    await index.clearMissing(key);
+    final removed = await index.clearMissing(key);
     return ScanSummary(
         added: added,
+        removed: removed,
         updated: updated,
         unchanged: unchanged,
         total: alive.length);

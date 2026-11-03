@@ -173,9 +173,10 @@ class WebdavDirectSource implements MusicSource {
     await index.upsertSongs(toWrite);
     await index.markMissingExcept(key, alive);
     // 删除不再存在的行（保留收藏）。
-    await index.clearMissing(key);
+    final removed = await index.clearMissing(key);
     return ScanSummary(
         added: added,
+        removed: removed,
         updated: updated,
         unchanged: unchanged,
         total: alive.length);

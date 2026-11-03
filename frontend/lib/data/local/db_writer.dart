@@ -716,8 +716,7 @@ Object? _runOp(Database db, String name, Map<String, dynamic> a) {
       _opMigrateMetaRefs(db);
       return null;
     case 'clearMissing':
-      _opClearMissing(db, a['sourceKey'] as String);
-      return null;
+      return _opClearMissing(db, a['sourceKey'] as String);
     case 'deleteSong':
       _opDeleteSong(db, a['sourceKey'] as String, a['ref'] as String);
       return null;
@@ -1792,13 +1791,15 @@ void _opMigrateMetaRefs(Database db) {
   }
 }
 
-void _opClearMissing(Database db, String sourceKey) {
+/// 删除该源下已标记 missing 且未收藏的行；返回删除行数（扫描「减少数」）。
+int _opClearMissing(Database db, String sourceKey) {
   db.execute('''
     DELETE FROM idx_songs WHERE source_key=? AND missing=1
       AND COALESCE((SELECT p.is_favorite FROM play_meta p
                     WHERE p.source_key = idx_songs.source_key
                       AND p.song_ref = idx_songs.ref), 0) = 0
   ''', [sourceKey]);
+  return db.updatedRows;
 }
 
 void _opMovePlaylistItem(Database db, Map<String, dynamic> a) {

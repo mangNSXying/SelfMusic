@@ -125,9 +125,10 @@ class LocalDirectSource implements MusicSource {
     // 提交（写隔离批量单事务）：await 保证 scan 返回时行已落库可见。
     await index.upsertSongs(toWrite);
     await index.markMissingExcept(key, alive);
-    await index.clearMissing(key);
+    final removed = await index.clearMissing(key);
     return ScanSummary(
         added: added,
+        removed: removed,
         updated: updated,
         unchanged: unchanged,
         total: alive.length);

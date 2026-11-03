@@ -220,6 +220,12 @@ class IntRange {
 /// 一次扫描的汇总（DEVELOPER.md「客户端扫描与元数据」）。
 class ScanSummary {
   final int added;
+
+  /// 本轮扫描从本地库剔除的曲目数（源上已消失）。
+  ///
+  /// 不含「保留收藏」的 missing 行：收藏的缺失歌会留在库里等源恢复，
+  /// 因此不计入减少数，与用户实际看到的曲目变化一致。
+  final int removed;
   final int updated;
   final int unchanged;
   final int total;
@@ -228,6 +234,7 @@ class ScanSummary {
   final bool cancelled;
   const ScanSummary({
     required this.added,
+    this.removed = 0,
     required this.updated,
     this.unchanged = 0,
     required this.total,
