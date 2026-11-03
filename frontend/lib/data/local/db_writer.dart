@@ -1864,13 +1864,15 @@ void _opDeleteSource(Database db, String key) {
   });
 }
 
-/// `play_state` 队列里剔除该源的歌（源删除的收尾）。
+/// `play_state` 队列里剔除满足 [dead] 的条目（删源/删歌的收尾）。
 ///
 /// 下标按「移除位在当前位置之前 → 左移一位」修正；被删的正是当前曲时，
 /// 修正后恰好指向其后的第一首存活曲。队列被剔空则整行删除（等价于
 /// 无断点，与 `clearResumeState` 同口径）。坏行（非 JSON 数组）原样不动，
-/// 由下一次保存覆盖。
-void _prunePlayStateOfSource(Database db, String key) {
+/// 由下一次保存覆盖。[deadAnchor] 命中时锚定一并作废。
+void _prunePlayStateWhere(Database db,
+    bool Function(Map<dynamic, dynamic> e) dead,
+    {String? deadAnchor}) {
   final rs = db.select(
       'SELECT queue_json, idx, anchor_key FROM play_state WHERE id=1');
   if (rs.isEmpty) return;
@@ -1889,16 +1891,16 @@ void _prunePlayStateOfSource(Database db, String key) {
   var removed = 0;
   for (var i = 0; i < raw.length; i++) {
     final e = raw[i];
-    if (e is Map && e['sourceKey'] == key) {
+    if (e is Map && dead(e)) {
       removed++;
       if (i < idx) removedBefore++;
       continue;
     }
     kept.add(e);
   }
-  // 该源在锚定键上时（`source:<key>` 锚定列表随源消失），锚定一并作废。
+  // 锚定键随被删对象消失时（如 `source:<key>` 锚定列表随源消失），锚定一并作废。
   final anchor = row['anchor_key'] as String?;
-  final anchorDead = anchor == _sourceAnchor(key);
+  final anchorDead = deadAnchor != null && anchor == deadAnchor;
   if (removed == 0 && !anchorDead) return;
   if (kept.isEmpty) {
     db.execute('DELETE FROM play_state WHERE id=1');
@@ -1913,14 +1915,25 @@ void _prunePlayStateOfSource(Database db, String key) {
       ]);
 }
 
-/// `deep_lists`（隐藏历史栈）里剔除该源的歌：锚定行剔空即整行删除。
+void _prunePlayStateOfSource(Database db, String key) =>
+    _prunePlayStateWhere(db, (e) => e['sourceKey'] == key,
+        deadAnchor: _sourceAnchor(key));
+
+void _prunePlayStateOfSong(Database db, String key, String ref) =>
+    _prunePlayStateWhere(
+        db, (e) => e['sourceKey'] == key && e['sourceRef'] == ref);
+
+/// `deep_lists`（隐藏历史栈）里剔除满足 [dead] 的条目：锚定行剔空即整行删除。
 ///
 /// 锚定键覆盖 playlist:/liked/songs/album:/artist:/source:（见
-/// `PlayerProvider.anchorFor*`），任何一栈都可能混入被删源的歌——播放到
-/// 就是死引用，「上一首」还会直接跳失败。
-void _pruneDeepListsOfSource(Database db, String key) {
-  // 该源自身的浏览列表锚定整行作废（`PlayerProvider.anchorForSource`）。
-  db.execute('DELETE FROM deep_lists WHERE playlist_uuid=?', [_sourceAnchor(key)]);
+/// `PlayerProvider.anchorFor*`），任何一栈都可能混入被删源/被删歌的引用——播放到
+/// 就是死引用，「上一首」还会直接跳失败。[deadAnchor] 整行作废（源自身锚定）。
+void _pruneDeepListsWhere(Database db,
+    bool Function(Map<dynamic, dynamic> e) dead,
+    {String? deadAnchor}) {
+  if (deadAnchor != null) {
+    db.execute('DELETE FROM deep_lists WHERE playlist_uuid=?', [deadAnchor]);
+  }
   final rows = db.select('SELECT playlist_uuid, entries_json FROM deep_lists');
   for (final r in rows) {
     final anchor = r['playlist_uuid'] as String;
@@ -1934,7 +1947,7 @@ void _pruneDeepListsOfSource(Database db, String key) {
     }
     final kept = [
       for (final e in raw)
-        if (!(e is Map && e['sourceKey'] == key)) e
+        if (!(e is Map && dead(e))) e
     ];
     if (kept.length == raw.length) continue;
     if (kept.isEmpty) {
@@ -1946,17 +1959,36 @@ void _pruneDeepListsOfSource(Database db, String key) {
   }
 }
 
+void _pruneDeepListsOfSource(Database db, String key) => _pruneDeepListsWhere(
+    db, (e) => e['sourceKey'] == key, deadAnchor: _sourceAnchor(key));
+
+void _pruneDeepListsOfSong(Database db, String key, String ref) =>
+    _pruneDeepListsWhere(
+        db, (e) => e['sourceKey'] == key && e['sourceRef'] == ref);
+
 /// 播放源浏览列表的深层列表锚定键（与 `PlayerProvider.anchorForSource` 同形）。
 String _sourceAnchor(String key) => 'source:$key';
 
 /// 硬删一首歌的全部本地痕迹（阶段6：删除全删）。
 /// 含索引/权重/歌词/歌单条目/歌手映射；缓存行由调用方另行清理。
+///
+/// 队列（play_state）与深层历史（deep_lists）里对这首歌的引用同样是死引用，
+/// 一并剔除：否则重启后断点恢复会把已删的歌重新拉回队列，播到就失败。
 void _opDeleteSong(Database db, String sourceKey, String ref) {
-  db.execute('DELETE FROM idx_songs WHERE source_key=? AND ref=?', [sourceKey, ref]);
-  db.execute('DELETE FROM play_meta WHERE source_key=? AND song_ref=?', [sourceKey, ref]);
-  db.execute('DELETE FROM song_lyrics WHERE source_key=? AND ref=?', [sourceKey, ref]);
-  db.execute('DELETE FROM playlist_items WHERE source_key=? AND song_ref=?', [sourceKey, ref]);
-  db.execute('DELETE FROM artist_song_map WHERE source_key=? AND ref=?', [sourceKey, ref]);
+  _inTx(db, () {
+    db.execute(
+        'DELETE FROM idx_songs WHERE source_key=? AND ref=?', [sourceKey, ref]);
+    db.execute('DELETE FROM play_meta WHERE source_key=? AND song_ref=?',
+        [sourceKey, ref]);
+    db.execute('DELETE FROM song_lyrics WHERE source_key=? AND ref=?',
+        [sourceKey, ref]);
+    db.execute('DELETE FROM playlist_items WHERE source_key=? AND song_ref=?',
+        [sourceKey, ref]);
+    db.execute('DELETE FROM artist_song_map WHERE source_key=? AND ref=?',
+        [sourceKey, ref]);
+    _prunePlayStateOfSong(db, sourceKey, ref);
+    _pruneDeepListsOfSong(db, sourceKey, ref);
+  });
 }
 
 void _opRenameSource(Database db, String oldKey, String newKey) {
