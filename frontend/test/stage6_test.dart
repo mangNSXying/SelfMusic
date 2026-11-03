@@ -165,7 +165,7 @@ void main() {
   });
 
   group('阶段6 删除全删', () {
-    test('deleteSong 清索引/权重/歌词/歌单条目', () async {
+    test('deleteSong 清索引/权重/歌词/歌单条目/队列/深层历史', () async {
       open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
       final dir = await Directory.systemTemp.createTemp('selfmusic_stage6_del_');
       addTearDown(() {
@@ -187,6 +187,25 @@ void main() {
       final pid = await index.createPlaylist('p');
       await index.addPlaylistItem(pid,
           sourceKey: sk, songRef: ref, title: 'a');
+      // 队列与深层历史里混入该歌（含一首存活曲）：删歌后这些死引用必须一并
+      // 剔除，否则重启断点恢复会把已删的歌重新拉回队列。
+      const liveRef = '/b.flac';
+      Map<String, dynamic> q(String sourceKey, String songRef) => {
+            'id': 0,
+            'sourceKey': sourceKey,
+            'title': songRef,
+            'source': sourceKey.split(':').first,
+            'sourceRef': songRef,
+            'fileSize': 0,
+            'favorite': false,
+            'hidden': false,
+          };
+      final anchor = 'playlist:${index.playlistUuidOf(pid)!}';
+      await index.savePlayState(
+          jsonEncode([q(sk, ref), q('local:other', liveRef)]), 1, 0,
+          anchorKey: anchor);
+      await index.saveDeepList(
+          anchor, jsonEncode([q(sk, ref), q('local:other', liveRef)]));
 
       expect(index.searchSongs(sourceKey: sk).length, 1);
       await index.deleteSong(sk, ref);
@@ -194,6 +213,14 @@ void main() {
       expect(index.playMetaOf(sk, ref).favorite, isFalse);
       expect(index.lyricsOf(sk, ref), isNull);
       expect(index.playlistItems(pid), isEmpty);
+      final st = index.getPlayState()!;
+      expect(st.queueJson, isNot(contains('"sourceRef":"$ref"')),
+          reason: '删歌后队列不该再引用它');
+      expect(st.queueJson, contains('"sourceRef":"$liveRef"'),
+          reason: '存活曲必须保留');
+      expect(st.idx, 0, reason: '移除位在当前位置之前 → 下标左移到存活曲');
+      expect(index.loadDeepList(anchor), isNot(contains('"sourceRef":"$ref"')),
+          reason: '深层历史里的死引用同样剔除');
       index.close();
     });
   });
