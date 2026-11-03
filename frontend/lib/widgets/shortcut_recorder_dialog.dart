@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -27,20 +28,33 @@ class ShortcutRecorderDialog extends StatefulWidget {
 
 class _ShortcutRecorderDialogState extends State<ShortcutRecorderDialog> {
   final FocusNode _focus = FocusNode(debugLabel: 'shortcutRecorder');
+  late final ShortcutSettings _settings;
   ShortcutBinding? _binding;
+  List<ShortcutConflict> _conflicts = const [];
   String? _error;
+  bool _recordingStarted = false;
 
   @override
   void initState() {
     super.initState();
+    _settings = context.read<ShortcutSettings>();
     _binding = widget.initial;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _focus.requestFocus();
+      if (!mounted) return;
+      _recordingStarted = true;
+      // 暂停系统全局热键，避免录制时旧组合先触发或被系统吞掉。
+      _settings.beginRecording();
+      _focus.requestFocus();
     });
   }
 
   @override
   void dispose() {
+    if (_recordingStarted) {
+      _recordingStarted = false;
+      // dispose 期间同步 notify 可能触发正在拆树的页面重建，延后一拍。
+      scheduleMicrotask(_settings.endRecording);
+    }
     _focus.dispose();
     super.dispose();
   }
@@ -69,24 +83,20 @@ class _ShortcutRecorderDialogState extends State<ShortcutRecorderDialog> {
       alt: alt,
       meta: meta,
     );
-    final settings = context.read<ShortcutSettings>();
-    var error = ShortcutSettings.findConflict(
-      action: widget.action,
-      scope: widget.scope,
-      binding: binding,
-      window: settings.windowBindings,
-      global: settings.globalBindings,
-      metaSupported: !_isOhos,
-    );
+    var error = _settings.validateBinding(widget.scope, binding);
     if (error == null &&
         widget.scope == ShortcutScope.global &&
         _isOhos &&
         ohosHotkeySpecFor(binding) == null) {
       error = '鸿蒙端不支持该按键作为全局快捷键';
     }
+    final conflicts = error == null
+        ? _settings.conflictsFor(widget.action, widget.scope, binding)
+        : const <ShortcutConflict>[];
     setState(() {
       _binding = binding;
       _error = error;
+      _conflicts = conflicts;
     });
     return KeyEventResult.handled;
   }
@@ -109,11 +119,20 @@ class _ShortcutRecorderDialogState extends State<ShortcutRecorderDialog> {
       key == LogicalKeyboardKey.capsLock ||
       key == LogicalKeyboardKey.fn;
 
+  String? get _conflictText {
+    if (_conflicts.isEmpty) return null;
+    final owners = _conflicts
+        .map((c) => '「${c.action.label}」（${c.scope.label}）')
+        .join('、');
+    return '该组合已用于 $owners，保存后会清除原绑定。';
+  }
+
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<ShortcutSettings>();
     final isMac = settings.primaryIsMeta;
     final preview = _binding?.describe(isMac: isMac) ?? '按下新的快捷键';
+    final conflictText = _conflictText;
     return Focus(
       focusNode: _focus,
       autofocus: true,
@@ -151,14 +170,39 @@ class _ShortcutRecorderDialogState extends State<ShortcutRecorderDialog> {
                     ),
                   ),
                 ),
+              if (conflictText != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        Icons.warning_amber_rounded,
+                        size: 16,
+                        color: Theme.of(context).colorScheme.tertiary,
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          conflictText,
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.tertiary,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               const SizedBox(height: 8),
               Text(
                 widget.scope == ShortcutScope.global
                     ? _isOhos
                         ? '全局快捷键在应用后台也会生效，至少需要一个 Ctrl 或 Alt 修饰键；'
                             '鸿蒙端不支持 Meta/Command。'
-                        : '全局快捷键在应用后台也会生效，至少需要一个 Ctrl/Alt/Meta 修饰键。'
-                    : '按下组合键即可录制；Esc 取消。',
+                        : '全局快捷键在应用后台也会生效，至少需要一个 '
+                            'Ctrl/Alt/Meta 修饰键；F1-F24 与媒体键可单独使用。'
+                    : '按下组合键即可录制（F1-F24、媒体键也可用）；Esc 取消。',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
@@ -171,7 +215,7 @@ class _ShortcutRecorderDialogState extends State<ShortcutRecorderDialog> {
               ? () {}
               : () => Navigator.of(context).pop(_binding),
           confirmEnabled: _binding != null && _error == null,
-          confirmLabel: '确定',
+          confirmLabel: _conflicts.isEmpty ? '确定' : '覆盖保存',
         ),
       ),
     );

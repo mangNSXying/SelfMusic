@@ -44,7 +44,7 @@ class ShortcutSettingsPanel extends StatelessWidget {
         ListTile(
           leading: const Icon(Icons.public),
           title: const Text('全局快捷键'),
-          subtitle: Text('应用在后台时也可控制播放 · 已设置 $globalCount 项'),
+          subtitle: Text('应用在后台时也可触发 · 已设置 $globalCount 项'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _openScope(context, ShortcutScope.global),
         ),

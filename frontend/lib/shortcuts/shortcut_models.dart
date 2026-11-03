@@ -42,17 +42,6 @@ enum ShortcutAction {
   const ShortcutAction(this.label);
   final String label;
 
-  bool get supportsGlobal => switch (this) {
-        playPause ||
-        previous ||
-        next ||
-        toggleFavorite ||
-        volumeUp ||
-        volumeDown =>
-          true,
-        _ => false,
-      };
-
   ShortcutGroup get group => switch (this) {
         playPause ||
         previous ||
@@ -110,6 +99,29 @@ class ShortcutBinding {
   final bool meta;
 
   bool get hasAnyModifier => control || alt || meta;
+
+  /// F1~F24：不产生文本，可安全地单独注册为系统全局快捷键。
+  bool get isFunctionKey =>
+      keyId >= LogicalKeyboardKey.f1.keyId &&
+      keyId <= LogicalKeyboardKey.f24.keyId;
+
+  /// 媒体/音量键：同样不产生文本，允许不带修饰键直接触发。
+  bool get isMediaKey =>
+      keyId == LogicalKeyboardKey.mediaPlayPause.keyId ||
+      keyId == LogicalKeyboardKey.mediaStop.keyId ||
+      keyId == LogicalKeyboardKey.mediaPlay.keyId ||
+      keyId == LogicalKeyboardKey.mediaPause.keyId ||
+      keyId == LogicalKeyboardKey.mediaTrackNext.keyId ||
+      keyId == LogicalKeyboardKey.mediaTrackPrevious.keyId ||
+      keyId == LogicalKeyboardKey.mediaRewind.keyId ||
+      keyId == LogicalKeyboardKey.mediaFastForward.keyId ||
+      keyId == LogicalKeyboardKey.audioVolumeUp.keyId ||
+      keyId == LogicalKeyboardKey.audioVolumeDown.keyId ||
+      keyId == LogicalKeyboardKey.audioVolumeMute.keyId;
+
+  /// 全局快捷键允许不按 Ctrl/Alt/Meta 的键：字母、数字、空格等会抢占
+  /// 系统输入，不能单独注册；F 键与媒体键没有这个问题。
+  bool get isStandaloneGlobalKey => isFunctionKey || isMediaKey;
 
   SingleActivator get activator => SingleActivator(
         LogicalKeyboardKey(keyId),
@@ -169,6 +181,17 @@ class ShortcutBinding {
     if (key == LogicalKeyboardKey.arrowUp) return '↑';
     if (key == LogicalKeyboardKey.arrowDown) return '↓';
     if (key == LogicalKeyboardKey.comma) return ',';
+    if (key == LogicalKeyboardKey.mediaPlayPause) return 'Media Play/Pause';
+    if (key == LogicalKeyboardKey.mediaStop) return 'Media Stop';
+    if (key == LogicalKeyboardKey.mediaPlay) return 'Media Play';
+    if (key == LogicalKeyboardKey.mediaPause) return 'Media Pause';
+    if (key == LogicalKeyboardKey.mediaTrackNext) return 'Media Next';
+    if (key == LogicalKeyboardKey.mediaTrackPrevious) return 'Media Prev';
+    if (key == LogicalKeyboardKey.mediaRewind) return 'Media Rewind';
+    if (key == LogicalKeyboardKey.mediaFastForward) return 'Media Forward';
+    if (key == LogicalKeyboardKey.audioVolumeUp) return 'Volume Up';
+    if (key == LogicalKeyboardKey.audioVolumeDown) return 'Volume Down';
+    if (key == LogicalKeyboardKey.audioVolumeMute) return 'Volume Mute';
     final label = key.keyLabel;
     if (label.trim().isNotEmpty) return label;
     return 'Key $keyId';
@@ -267,12 +290,15 @@ Map<ShortcutAction, ShortcutBinding?> defaultGlobalBindings({
         alt: true,
       );
 
-  return {
-    ShortcutAction.playPause: p(LogicalKeyboardKey.space),
-    ShortcutAction.previous: p(LogicalKeyboardKey.arrowLeft),
-    ShortcutAction.next: p(LogicalKeyboardKey.arrowRight),
-    ShortcutAction.volumeUp: p(LogicalKeyboardKey.arrowUp),
-    ShortcutAction.volumeDown: p(LogicalKeyboardKey.arrowDown),
-    ShortcutAction.toggleFavorite: p(LogicalKeyboardKey.keyL),
+  // 其余动作默认未设置，但允许用户在「全局快捷键」里自行添加。
+  final result = <ShortcutAction, ShortcutBinding?>{
+    for (final action in ShortcutAction.values) action: null,
   };
+  result[ShortcutAction.playPause] = p(LogicalKeyboardKey.space);
+  result[ShortcutAction.previous] = p(LogicalKeyboardKey.arrowLeft);
+  result[ShortcutAction.next] = p(LogicalKeyboardKey.arrowRight);
+  result[ShortcutAction.volumeUp] = p(LogicalKeyboardKey.arrowUp);
+  result[ShortcutAction.volumeDown] = p(LogicalKeyboardKey.arrowDown);
+  result[ShortcutAction.toggleFavorite] = p(LogicalKeyboardKey.keyL);
+  return result;
 }

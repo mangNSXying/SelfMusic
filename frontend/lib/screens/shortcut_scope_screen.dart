@@ -20,9 +20,7 @@ class ShortcutScopeScreen extends StatelessWidget {
     final settings = context.watch<ShortcutSettings>();
     final isMac = settings.primaryIsMeta;
     final isOhos = Platform.operatingSystem == 'ohos';
-    final actions = scope == ShortcutScope.global
-        ? ShortcutAction.values.where((a) => a.supportsGlobal)
-        : ShortcutAction.values;
+    const actions = ShortcutAction.values;
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.escape): () {
@@ -52,45 +50,43 @@ class ShortcutScopeScreen extends StatelessWidget {
                 child: Text(
                   scope == ShortcutScope.window
                       ? '应用窗口聚焦时生效；输入框聚焦时仅 Esc 可用。'
-                      : '系统级生效，应用在后台时也可控制播放。',
+                      : '系统级生效，应用在后台时也可触发；'
+                          '打开设置/播放页等界面类动作会自动恢复窗口。',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ),
-              if (scope == ShortcutScope.window) ...[
-                for (final group in ShortcutGroup.values) ...[
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
-                    child: Text(
-                      group.label,
-                      style: TextStyle(
-                        color: cs.primary,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                  for (final action in actions)
-                    if (action.group == group)
-                      _tile(context, settings, action, isMac),
-                ],
-              ] else ...[
+              if (scope == ShortcutScope.global)
                 Card(
                   margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                   child: Padding(
                     padding: const EdgeInsets.all(12),
                     child: Text(
                       isOhos
-                          ? '鸿蒙端全局键至少需要 Ctrl 或 Alt 修饰键，不支持 '
-                              'Meta/Command；若与其他软件冲突，系统可能拒绝注册，'
-                              '请更换组合。'
-                          : '全局键至少需要 Ctrl、Alt 或 Meta 修饰键；'
+                          ? '所有动作都可设置全局键，留空表示不注册。鸿蒙端至少需要 '
+                              'Ctrl 或 Alt 修饰键，不支持 Meta/Command 与单独触发的 '
+                              'F1-F24 / 媒体键；若与其他软件冲突，系统可能拒绝注册。'
+                          : '所有动作都可设置全局键，留空表示不注册。全局键至少需要 '
+                              'Ctrl、Alt 或 Meta 修饰键；F1-F24 与媒体键可单独使用；'
                               '若与其他软件冲突，系统可能拒绝注册，请更换组合。',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ),
                 ),
+              for (final group in ShortcutGroup.values) ...[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+                  child: Text(
+                    group.label,
+                    style: TextStyle(
+                      color: cs.primary,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
                 for (final action in actions)
-                  _tile(context, settings, action, isMac),
+                  if (action.group == group)
+                    _tile(context, settings, action, isMac),
               ],
               const SizedBox(height: 24),
             ],
@@ -163,7 +159,9 @@ class ShortcutScopeScreen extends StatelessWidget {
       ),
     );
     if (binding == null || !context.mounted) return;
-    final error = settings.setBinding(action, scope, binding);
+    // 录制对话框已明确展示冲突并让用户确认「覆盖保存」，这里直接清掉旧绑定。
+    final error =
+        settings.setBinding(action, scope, binding, replaceConflicts: true);
     if (error != null) AppToast.show(error);
   }
 }

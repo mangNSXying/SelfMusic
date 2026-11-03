@@ -132,10 +132,17 @@ class _AppShortcutsState extends State<AppShortcuts> {
     if (_disposed || generation != _registrationGeneration) return;
     final settings = _settings;
     if (settings == null) return;
+    // 录制中先保持全部系统热键注销：否则按到已绑定的组合会触发旧动作，
+    // 部分平台还会由系统吞掉按键，导致录制不到该组合。
+    if (settings.isRecording) return;
     for (final entry in settings.globalBindings.entries) {
       final binding = entry.value;
       if (binding == null) continue;
-      if (_disposed || generation != _registrationGeneration) return;
+      if (_disposed ||
+          generation != _registrationGeneration ||
+          settings.isRecording) {
+        return;
+      }
       final hotKey = HotKey(
         identifier: 'selfmusic.global.${entry.key.name}',
         key: LogicalKeyboardKey(binding.keyId),
@@ -162,10 +169,15 @@ class _AppShortcutsState extends State<AppShortcuts> {
     if (_disposed || generation != _registrationGeneration) return;
     final settings = _settings;
     if (settings == null) return;
+    if (settings.isRecording) return;
     for (final entry in settings.globalBindings.entries) {
       final binding = entry.value;
       if (binding == null) continue;
-      if (_disposed || generation != _registrationGeneration) return;
+      if (_disposed ||
+          generation != _registrationGeneration ||
+          settings.isRecording) {
+        return;
+      }
       final spec = ohosHotkeySpecFor(binding);
       if (spec == null) {
         debugPrint('ohos global hotkey unsupported ${entry.key.name}: '
@@ -188,9 +200,40 @@ class _AppShortcutsState extends State<AppShortcuts> {
       ];
 
   void _runGlobal(ShortcutAction action) {
-    if (!mounted) return;
-    _runSafely(action);
+    // 注销是异步的：录制开始的瞬间仍可能收到旧系统热键回调，直接忽略，
+    // 保证录制期间不会误触播放/切歌等动作。
+    if (!mounted || (_settings?.isRecording ?? false)) return;
+    unawaited(
+      _runGlobalAction(action).catchError((Object e, StackTrace stack) {
+        debugPrint('global shortcut ${action.name} failed: $e\n$stack');
+      }),
+    );
   }
+
+  Future<void> _runGlobalAction(ShortcutAction action) async {
+    // 后台触发导航/弹窗类动作时先把窗口带回前台，否则用户看不到结果。
+    if (_needsWindow(action)) {
+      await DesktopTray.instance.showWindow();
+      if (!mounted) return;
+    }
+    await _runAction(action);
+  }
+
+  static bool _needsWindow(ShortcutAction action) => switch (action) {
+        ShortcutAction.playPause ||
+        ShortcutAction.previous ||
+        ShortcutAction.next ||
+        ShortcutAction.seekBackward5 ||
+        ShortcutAction.seekForward5 ||
+        ShortcutAction.seekBackward30 ||
+        ShortcutAction.seekForward30 ||
+        ShortcutAction.volumeUp ||
+        ShortcutAction.volumeDown ||
+        ShortcutAction.toggleFavorite ||
+        ShortcutAction.cyclePlayMode =>
+          false,
+        _ => true,
+      };
 
   void _runSafely(ShortcutAction action) {
     unawaited(
@@ -205,7 +248,9 @@ class _AppShortcutsState extends State<AppShortcuts> {
       return KeyEventResult.ignored;
     }
     final settings = _settings;
-    if (settings == null) return KeyEventResult.ignored;
+    if (settings == null || settings.isRecording) {
+      return KeyEventResult.ignored;
+    }
     for (final entry in settings.windowBindings.entries) {
       final binding = entry.value;
       if (binding == null) continue;
