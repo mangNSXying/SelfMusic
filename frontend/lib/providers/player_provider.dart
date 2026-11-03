@@ -1881,7 +1881,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get _fadeOn => _appSettings?.fadeEnabled ?? false;
 
   Duration get _fadeDuration => Duration(
-      milliseconds: _appSettings?.fadeDurationMs ?? 2000);
+      milliseconds: _appSettings?.fadeDurationMs ?? 1000);
 
   /// 平台音量调用：异常一律静默（headless 测试环境的 MissingPluginException、
   /// 播放器重建后的迟到写等），渐变状态机不因平台侧失败而中断。
