@@ -41,7 +41,7 @@ class _LyricsViewState extends State<LyricsView> {
   /// 歌词内容标识：变化时重建行 key（切歌/重新加载）。
   String? _contentKey;
 
-  /// 当前高亮行（-1 = 尚无高亮行，如歌还没到第一句歌词）。
+  /// 当前高亮行（-1 = 尚无高亮行，如播放位置早于第一句歌词）。
   int _current = -1;
 
   /// 本段内容的首次归位用瞬时跳转（进歌词页 / 切歌），之后换行才用动画，
@@ -202,7 +202,9 @@ class _LyricsViewState extends State<LyricsView> {
         ..clear()
         ..addEntries(
             List.generate(lines.length, (i) => MapEntry(i, GlobalKey())));
-      // 切歌/重载不预跳顶部：本次内容的第一帧会瞬时归位到当前行。
+      // 切歌/重载不预跳顶部：本次内容的第一帧会瞬时归位到当前行；
+      // 位置早于第一句（LRC 首句不在 0 秒）时没有行可归位，由
+      // [_followCurrent] 强制回到列表开头。
     }
 
     return Listener(
@@ -326,30 +328,40 @@ class _LyricsViewState extends State<LyricsView> {
     final idx = _current;
     // 必须先确认已挂载：切到加载/纯文本/空态时 ListView 已被移除，此时读取
     // `position` 会抛 "ScrollController not attached to any scroll views"。
-    if (idx < 0 || !_scroll.hasClients) return;
+    if (!_scroll.hasClients) return;
     final pos = _scroll.position;
     // 视口/内容尺寸未就绪时算出的目标偏移不可信，等下一次触发。
     if (!pos.hasViewportDimension || !pos.hasContentDimensions) return;
 
-    final ro = _keys[idx]?.currentContext?.findRenderObject();
-    if (ro == null) {
-      // 目标行不在已构建范围内：先加宽 cacheExtent 让它被构建出来再滚。
-      if (!_wideCache) {
-        setState(() => _wideCache = true);
-        _scheduleFollow();
-      } else if (_retry < 3) {
-        _retry++;
-        _scheduleFollow();
+    final double target;
+    if (idx < 0) {
+      // 播放位置早于第一句（LRC 首句不在 0 秒）：没有行可对齐，当前定位就是
+      // 列表开头。切歌后列表还保留着上一首的滚动偏移（内容变短时会被夹到
+      // 末尾），不能因为「无行可追」就放任它停在那里——强制回开头，
+      // 等第一句唱到再自然往下跟。
+      target = pos.minScrollExtent;
+      _retry = 0;
+    } else {
+      final ro = _keys[idx]?.currentContext?.findRenderObject();
+      if (ro == null) {
+        // 目标行不在已构建范围内：先加宽 cacheExtent 让它被构建出来再滚。
+        if (!_wideCache) {
+          setState(() => _wideCache = true);
+          _scheduleFollow();
+        } else if (_retry < 3) {
+          _retry++;
+          _scheduleFollow();
+        }
+        return;
       }
-      return;
+      final vp = RenderAbstractViewport.maybeOf(ro);
+      if (vp == null) return;
+      target = vp
+          .getOffsetToReveal(ro, widget.align)
+          .offset
+          .clamp(pos.minScrollExtent, pos.maxScrollExtent);
+      _retry = 0;
     }
-    final vp = RenderAbstractViewport.maybeOf(ro);
-    if (vp == null) return;
-    final target = vp
-        .getOffsetToReveal(ro, widget.align)
-        .offset
-        .clamp(pos.minScrollExtent, pos.maxScrollExtent);
-    _retry = 0;
 
     if (_animating) {
       // 动画进行中：同一行且目标基本一致 → 交给动画自己走完（**不重开**）。

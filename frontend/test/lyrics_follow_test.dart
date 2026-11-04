@@ -29,9 +29,9 @@ class _FakePathProvider extends PathProviderPlatform {
   Future<String> getApplicationCachePath() async => dir;
 }
 
-/// 每 4 秒一行、共 [n] 行的歌词文本（第 i+1 行时间 = i*4s）。
-String _lrc(int n) => List.generate(n, (i) {
-      final ms = i * 4000;
+/// 每 4 秒一行、共 [n] 行的歌词文本（第 i+1 行时间 = [startSec] + i*4s）。
+String _lrc(int n, {int startSec = 0}) => List.generate(n, (i) {
+      final ms = startSec * 1000 + i * 4000;
       final m = (ms ~/ 60000).toString().padLeft(2, '0');
       final sec = ((ms % 60000) ~/ 1000).toString().padLeft(2, '0');
       final cs = ((ms % 1000) ~/ 10).toString().padLeft(2, '0');
@@ -223,6 +223,39 @@ void main() {
     _expectCentered(tester, 46);
     // 列表确实滚离歌词开头（第 1 行早已滑出构建范围）。
     expect(scrollOf(tester).offset, greaterThan(0));
+
+    await pos.close();
+    player.dispose();
+  });
+
+  testWidgets('切歌后 LRC 首句不在 0 秒：无行可追时列表强制回到开头', (tester) async {
+    final pos = StreamController<Duration>();
+    final player = playerWithLyrics(pos.stream);
+    await pumpLyrics(tester, player);
+
+    // 第一首播到接近末尾：列表随之滚到尾部。
+    pos.add(_posOf(57));
+    await tester.pump();
+    await tester.pump();
+    await tester.pumpAndSettle();
+    final scroll = scrollOf(tester);
+    expect(scroll.offset, greaterThan(0), reason: '前置条件：列表应已滚离开头');
+
+    // 切歌：新曲歌词首句在 12s（LRC 不从 0 开始），播放从 0 重新开始。
+    // 此时没有可对齐的行，旧偏移（末尾）不能被保留下来。
+    player.debugApplyLyrics(_lrc(40, startSec: 12));
+    pos.add(Duration.zero);
+    await tester.pump();
+    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(scroll.offset, 0, reason: '首句之前列表应回到开头，而不是停在上一首的末尾');
+
+    // 第一句唱到后照常跟焦。
+    pos.add(const Duration(seconds: 12));
+    await tester.pump();
+    await tester.pump();
+    await tester.pumpAndSettle();
+    _expectCentered(tester, 1);
 
     await pos.close();
     player.dispose();
