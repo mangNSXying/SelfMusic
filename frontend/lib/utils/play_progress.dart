@@ -114,10 +114,10 @@ int? progressPercentOf(
 
 /// 目标权重对应的升权中位门槛；目标 <= 1.0 不设闸门（返回 null）。
 ///
-/// 1.1 → 50%，1.2 → 55%，…，1.5 → 70%；离群档位按线性公式外推。
+/// 1.1 → 50%，1.2 → 60%，…，1.5 → 90%；离群档位按线性公式外推。
 double? requiredMedianPercent(double targetFactor) {
   if (targetFactor <= 1.0 + 1e-9) return null;
-  final v = (50 + (targetFactor - 1.1) * 50).clamp(0.0, 100.0).toDouble();
+  final v = (50 + (targetFactor - 1.1) * 100).clamp(0.0, 100.0).toDouble();
   return (v * 100).roundToDouble() / 100;
 }
 

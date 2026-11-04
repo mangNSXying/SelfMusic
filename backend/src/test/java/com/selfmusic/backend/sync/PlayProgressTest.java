@@ -62,10 +62,10 @@ class PlayProgressTest {
     @Test
     void thresholdCurveAndNoGateAtOrBelowOne() {
         assertEquals(-1, PlayProgress.requiredMedian(1.0), 1e-9);
-        assertEquals(47.5, PlayProgress.requiredMedian(1.05), 1e-9);
+        assertEquals(45, PlayProgress.requiredMedian(1.05), 1e-9);
         assertEquals(50, PlayProgress.requiredMedian(1.1), 1e-9);
-        assertEquals(55, PlayProgress.requiredMedian(1.2), 1e-9);
-        assertEquals(70, PlayProgress.requiredMedian(1.5), 1e-9);
+        assertEquals(60, PlayProgress.requiredMedian(1.2), 1e-9);
+        assertEquals(90, PlayProgress.requiredMedian(1.5), 1e-9);
     }
 
     @Test
@@ -75,8 +75,8 @@ class PlayProgressTest {
         assertFalse(PlayProgress.allowsUpgrade(hist(100, 100), 1.1));
         assertFalse(PlayProgress.allowsUpgrade(hist(49, 49, 100), 1.1));
         assertTrue(PlayProgress.allowsUpgrade(hist(50, 50, 100), 1.1));
-        assertFalse(PlayProgress.allowsUpgrade(hist(54, 54, 100), 1.2));
-        assertTrue(PlayProgress.allowsUpgrade(hist(55, 55, 100), 1.2));
+        assertFalse(PlayProgress.allowsUpgrade(hist(59, 59, 100), 1.2));
+        assertTrue(PlayProgress.allowsUpgrade(hist(60, 60, 100), 1.2));
     }
 
     @Test
