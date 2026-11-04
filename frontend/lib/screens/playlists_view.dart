@@ -124,7 +124,8 @@ class _PlaylistsViewState extends State<PlaylistsView>
                 .toList(),
         direct.settings.sortPlaylists,
         (p) => p.name,
-        countOf: (p) => provider.countOf(p.id));
+        countOf: (p) => provider.countOf(p.id),
+        zhAware: false);
     final card = isCard;
     // 大横屏 + 列表模式：左列表 / 右详情（歌单详情不再整页替换，左栏保活）。
     // 按自身分组判定：离屏缓存期间重建时全局分组可能已是别的页。

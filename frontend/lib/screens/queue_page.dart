@@ -10,6 +10,7 @@ import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
 import '../utils/collection_sort.dart';
 import '../utils/song_title_format.dart';
+import '../utils/zh_variant.dart';
 import '../widgets/app_dialog_actions.dart';
 import '../widgets/list_selection.dart';
 import '../widgets/row_list.dart';
@@ -51,7 +52,7 @@ class _QueuePageState extends State<QueuePage> {
 
   /// 可见序列缓存守卫：队列长度 / 查询词 / 排序任一变化才重算
   /// （播放事件频繁 notify，避免每次 build 重查权重库）。
-  (CollectionSort, String, int)? _sig;
+  (CollectionSort, String, int, int)? _sig;
   List<int> _visible = const [];
 
   /// 行级视图数据缓存（R-1）。
@@ -73,7 +74,7 @@ class _QueuePageState extends State<QueuePage> {
     var offset = 0.0;
     if (queue.isNotEmpty) {
       _rebuildVisible(queue, '', direct);
-      _sig = (_sort, '', queue.length);
+      _sig = (_sort, '', queue.length, direct.settingsVersion);
       final pos =
           _visible.indexOf(player.currentIndex.clamp(0, queue.length - 1));
       if (pos > 0) offset = _focusOffset(pos);
@@ -134,8 +135,10 @@ class _QueuePageState extends State<QueuePage> {
 
   bool _matches(Song s, String q, SongTitleFormat fmt) {
     if (q.isEmpty) return true;
-    if (formatSongTitle(s, fmt).toLowerCase().contains(q)) return true;
-    final artist = (s.artist ?? '').toLowerCase();
+    if (zhSearchFold(formatSongTitle(s, fmt)).toLowerCase().contains(q)) {
+      return true;
+    }
+    final artist = zhSearchFold(s.artist ?? '').toLowerCase();
     return artist.contains(q);
   }
 
@@ -213,8 +216,9 @@ class _QueuePageState extends State<QueuePage> {
     final player = context.watch<PlayerProvider>();
     final direct = context.watch<DirectSourceManager>();
     final queue = player.queue;
-    final q = _query.trim().toLowerCase();
-    final sig = (_sort, q, queue.length);
+    final q = zhSearchFold(_query.trim()).toLowerCase();
+    // settingsVersion 覆盖简繁显示切换（可见序列按展示文本过滤）。
+    final sig = (_sort, q, queue.length, direct.settingsVersion);
     if (sig != _sig) {
       _sig = sig;
       _rebuildVisible(queue, q, direct);
