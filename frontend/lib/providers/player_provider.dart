@@ -2411,6 +2411,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(save().then((_) => poke()));
   }
 
+  /// 队列长度：读长度不必走 [queue] 的不可变拷贝（通知期 select 用）。
+  int get queueLength => _queue.length;
+
   List<Song> get queue => List.unmodifiable(_queue);
   Song? get current => _current;
 

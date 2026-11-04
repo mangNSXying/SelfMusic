@@ -2,12 +2,14 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../widgets/count_header.dart';
 import '../widgets/draggable_sheet.dart';
 import '../widgets/row_list.dart';
 import '../widgets/song_list.dart';
+import '../widgets/song_row_view.dart';
 
 /// 宽屏右侧常驻面板宽度（[AppShell] 横排传入；窄屏走统一拖拽式窗口，不用宽）。
 ///
@@ -101,6 +103,10 @@ class _QueueSheetContent extends StatefulWidget {
 class _QueueSheetContentState extends State<_QueueSheetContent> {
   bool _jumped = false;
 
+  /// 行级视图缓存（与整页 [QueuePage] 同口径）：行数据只随队列/元数据版本
+  /// 失效，滚动与开合动画不再逐行重算标题/收藏态。
+  final SongRowCache _rows = SongRowCache();
+
   @override
   void initState() {
     super.initState();
@@ -126,8 +132,32 @@ class _QueueSheetContentState extends State<_QueueSheetContent> {
 
   @override
   Widget build(BuildContext context) {
-    final player = context.watch<PlayerProvider>();
+    // 订阅收窄：只在队列长度 / 当前曲变化时重建；播放暂停、音量、睡眠定时
+    // 等 PlayerProvider 通知不再重建整张队列。
+    final queueLength =
+        context.select<PlayerProvider, int>((p) => p.queueLength);
+    final currentIndex =
+        context.select<PlayerProvider, int>((p) => p.currentIndex);
+    final player = context.read<PlayerProvider>();
+    final direct = context.watch<DirectSourceManager>();
     final queue = player.queue;
+    final wide = MediaQuery.sizeOf(context).width >= kSongTileWideInfoWidth;
+    _rows.begin(
+      (
+        queueLength,
+        // 当前曲变化也令缓存失效：融合队列可能整段重算、行内容在同长度下
+        // 换人，单靠长度无法发现（切歌本来就不频繁，清一次成本可接受）。
+        currentIndex,
+        direct.metaVersion,
+        direct.favoriteVersion,
+        direct.settingsVersion,
+        direct.sourcesRevision,
+        direct.settings.songTitleFormat,
+        wide,
+      ),
+      queueLength,
+      onWarm: () => direct.weight.warmMetaOf(queue),
+    );
     // 统一窗口外层已提供 Material 祖先（悬浮层 Material），SongTile 可直接使用。
     return CustomScrollView(
       controller: widget.scrollCtrl,
@@ -145,15 +175,28 @@ class _QueueSheetContentState extends State<_QueueSheetContent> {
           )
         else
           SliverRowList(
-            count: queue.length,
+            count: queueLength,
             itemBuilder: (c, i) {
               final s = queue[i];
-              // 下标判高亮：同首复本仅新播行亮。
-              final isCurrent = i == player.currentIndex;
               return SongTile(
                 song: s,
                 source: null,
-                playing: isCurrent,
+                // 下标判高亮：同首复本仅新播行亮。
+                playing: i == currentIndex,
+                row: _rows.rowAt(i, () {
+                  if (!direct.weight.hasMetaCached(s)) {
+                    direct.weight.ensureMetaOf([s]);
+                  }
+                  final meta = direct.weight.metaOf(s);
+                  return SongRowView.of(
+                    song: s,
+                    titleFormat: direct.settings.songTitleFormat,
+                    sourceName: direct.sourceByKey(s.sourceKey)?.name,
+                    favorite: meta.favorite,
+                    disliked: meta.frozen,
+                    wide: wide,
+                  );
+                }),
                 onPlay: () => player.playAt(i),
               );
             },
