@@ -10,6 +10,7 @@ import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
 import '../services/online_meta/online_meta_models.dart';
 import '../services/online_meta/online_meta_service.dart';
+import '../utils/zh_variant.dart';
 import 'app_dialog_actions.dart';
 import 'app_toast.dart';
 import 'online_meta_detail_dialog.dart';
@@ -701,11 +702,11 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
     showDialog<void>(
       context: context,
       builder: (_) => CoverDetailDialog(
-        header:
-            '${rec.title} — ${rec.artist.isEmpty ? '未知歌手' : rec.artist}',
+        header: '${zhDisplay(rec.title)} — '
+            '${rec.artist.isEmpty ? '未知歌手' : zhDisplay(rec.artist)}',
         metaLines: [
           '来源 ${OnlineMetaSource.mbCaa}',
-          'release ${rec.releaseTitle ?? '无（无图可下）'}',
+          'release ${rec.releaseTitle == null ? '无（无图可下）' : zhDisplay(rec.releaseTitle!)}',
           '匹配 ${rec.matchWeight.toStringAsFixed(2)}${idx == 0 ? ' · 最佳匹配' : ''}',
         ],
         initialBytes: hit?.bytes,
@@ -733,11 +734,11 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
     showDialog<void>(
       context: context,
       builder: (_) => CoverDetailDialog(
-        header:
-            '${cand.trackName} — ${cand.artistName.isEmpty ? '未知歌手' : cand.artistName}',
+        header: '${zhDisplay(cand.trackName)} — '
+            '${cand.artistName.isEmpty ? '未知歌手' : zhDisplay(cand.artistName)}',
         metaLines: [
           '来源 ${cand.source}',
-          '专辑 ${cand.albumName.isEmpty ? '未知' : cand.albumName}'
+          '专辑 ${cand.albumName.isEmpty ? '未知' : zhDisplay(cand.albumName)}'
               '${cand.durationSec != null ? ' · ${_fmtDur(cand.durationSec!)}' : ''}',
           '匹配 ${cand.matchWeight.toStringAsFixed(2)}${idx == 0 ? ' · 最佳匹配' : ''}',
         ],
@@ -864,12 +865,12 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
                   value: i,
                   controlAffinity: ListTileControlAffinity.leading,
                   title: Text(
-                    '${e.trackName} — ${e.artistName}',
+                    '${zhDisplay(e.trackName)} — ${zhDisplay(e.artistName)}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                   subtitle: Text(
-                    '${e.source} · ${e.albumName.isEmpty ? '未知专辑' : e.albumName}'
+                    '${e.source} · ${e.albumName.isEmpty ? '未知专辑' : zhDisplay(e.albumName)}'
                     '${e.durationSec != null ? ' · ${_fmtDur(e.durationSec!)}' : ''}'
                     '${e.hasContent ? (e.syncedLyrics != null && e.syncedLyrics!.contains('[') ? ' · 同步' : ' · 纯文本') : ''}'
                     ' · ${e.matchWeight.toStringAsFixed(2)}${best ? ' · 最佳匹配' : ''}',
@@ -919,12 +920,13 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
                   value: i,
                   controlAffinity: ListTileControlAffinity.leading,
                   title: Text(
-                    '${e.title} — ${e.artist.isEmpty ? '未知歌手' : e.artist}',
+                    '${zhDisplay(e.title)} — '
+                    '${e.artist.isEmpty ? '未知歌手' : zhDisplay(e.artist)}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                   subtitle: Text(
-                    '${e.releaseTitle ?? '无 release'} · ${e.matchWeight.toStringAsFixed(2)}${i == 0 ? ' · 最佳匹配' : ''}',
+                    '${e.releaseTitle == null ? '无 release' : zhDisplay(e.releaseTitle!)} · ${e.matchWeight.toStringAsFixed(2)}${i == 0 ? ' · 最佳匹配' : ''}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -967,12 +969,13 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
                   value: i,
                   controlAffinity: ListTileControlAffinity.leading,
                   title: Text(
-                    '${e.trackName} — ${e.artistName.isEmpty ? '未知歌手' : e.artistName}',
+                    '${zhDisplay(e.trackName)} — '
+                    '${e.artistName.isEmpty ? '未知歌手' : zhDisplay(e.artistName)}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                   subtitle: Text(
-                    '${e.source} · ${e.albumName.isEmpty ? '未知专辑' : e.albumName}'
+                    '${e.source} · ${e.albumName.isEmpty ? '未知专辑' : zhDisplay(e.albumName)}'
                     '${e.durationSec != null ? ' · ${_fmtDur(e.durationSec!)}' : ''}'
                     ' · ${e.matchWeight.toStringAsFixed(2)}${i == 0 ? ' · 最佳匹配' : ''}',
                     maxLines: 2,
@@ -1002,9 +1005,11 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
         ? _trackCands[_trackSel.clamp(0, _trackCands.length - 1)]
         : null;
     final coverSubtitle = rec != null
-        ? '${rec.title} — ${rec.artist.isEmpty ? '未知歌手' : rec.artist}'
+        ? '${zhDisplay(rec.title)} — '
+            '${rec.artist.isEmpty ? '未知歌手' : zhDisplay(rec.artist)}'
         : track != null
-            ? '${track.trackName} — ${track.artistName.isEmpty ? '未知歌手' : track.artistName}'
+            ? '${zhDisplay(track.trackName)} — '
+                '${track.artistName.isEmpty ? '未知歌手' : zhDisplay(track.artistName)}'
             : '先在封面页搜索';
     return RadioGroup<_TagSource>(
       groupValue: _activeTagSource,
@@ -1020,7 +1025,8 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
             enabled: _hasLyricCands,
             title: const Text('用歌词候选回填'),
             subtitle: Text(lyricCand != null
-                ? '${lyricCand.trackName} — ${lyricCand.artistName}'
+                ? '${zhDisplay(lyricCand.trackName)} — '
+                    '${zhDisplay(lyricCand.artistName)}'
                 : '先在歌词页搜索'),
             secondary: _detailButton(
               _hasLyricCands ? _openLyricTagDetail : null,

@@ -23,6 +23,7 @@ import '../utils/perf_log.dart';
 import '../utils/interaction_gate.dart';
 import '../utils/motion.dart';
 import '../utils/song_search.dart';
+import '../utils/zh_variant.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
@@ -946,11 +947,13 @@ class _AlbumsViewState extends State<_AlbumsView>
 
   List<Album> _filter(List<Album> albums, String q) {
     if (q.trim().isEmpty) return albums;
-    final qq = q.trim().toLowerCase();
+    final qq = zhSearchFold(q).trim().toLowerCase();
+    if (qq.isEmpty) return albums;
     return albums
         .where((a) =>
-            a.album.toLowerCase().contains(qq) ||
-            a.artists.any((e) => e.toLowerCase().contains(qq)))
+            zhSearchFold(a.album).toLowerCase().contains(qq) ||
+            a.artists
+                .any((e) => zhSearchFold(e).toLowerCase().contains(qq)))
         .toList();
   }
 }
@@ -968,7 +971,8 @@ InlineSpan albumSubtitleSpan(BuildContext context, Album album) {
       spans.add(TextSpan(text: '、', style: TextStyle(color: faint)));
     }
     spans.add(TextSpan(
-        text: parts[i], style: TextStyle(color: i == 0 ? main : faint)));
+        text: zhDisplay(parts[i]),
+        style: TextStyle(color: i == 0 ? main : faint)));
   }
   spans.add(
       TextSpan(text: ' · ${album.trackCount}首', style: TextStyle(color: main)));
@@ -1028,7 +1032,7 @@ class _AlbumListTile extends StatelessWidget {
           : null,
       leading:
           CoverThumb(coverPath: album.coverPath, fallbackIcon: Icons.album),
-      title: Text(album.album,
+      title: Text(zhDisplay(album.album),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: Theme.of(context)
@@ -1054,8 +1058,9 @@ class _AlbumCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final parts = album.artists.isEmpty ? [album.artist] : album.artists;
     return SquareCard(
-      title: album.album,
-      subtitle: '${parts.join('、')} · ${album.trackCount}首',
+      title: zhDisplay(album.album),
+      subtitle:
+          '${parts.map(zhDisplay).join('、')} · ${album.trackCount}首',
       subtitleSpan: albumSubtitleSpan(context, album),
       coverPath: album.coverPath,
       fallbackIcon: Icons.album,
@@ -1080,7 +1085,8 @@ class _AlbumSongsSheet extends StatelessWidget {
       songs: songs,
       scrollCtrl: scrollCtrl,
       fromSheet: true,
-      header: AppSheetTitleBar(title: album.album, count: songs.length),
+      header: AppSheetTitleBar(
+          title: zhDisplay(album.album), count: songs.length),
     );
   }
 }
@@ -1168,7 +1174,7 @@ class _AlbumDetailPageState extends State<_AlbumDetailPage> {
         scrollCtrl: _scroll,
         fromSheet: false,
         header: AppSheetTitleBar(
-          title: widget.album.album,
+          title: zhDisplay(widget.album.album),
           count: widget.songs.length,
           leading: const _DetailBackButton(),
           showClose: false,
@@ -1343,8 +1349,11 @@ class _ArtistsViewState extends State<_ArtistsView>
 
   List<Artist> _filter(List<Artist> artists, String q) {
     if (q.trim().isEmpty) return artists;
-    final qq = q.trim().toLowerCase();
-    return artists.where((a) => a.name.toLowerCase().contains(qq)).toList();
+    final qq = zhSearchFold(q).trim().toLowerCase();
+    if (qq.isEmpty) return artists;
+    return artists
+        .where((a) => zhSearchFold(a.name).toLowerCase().contains(qq))
+        .toList();
   }
 }
 
@@ -1404,7 +1413,7 @@ Future<void> _showAmbiguousPicker(
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Text('选择「${artist.name}」对应的真人',
+            child: Text('选择「${zhDisplay(artist.name)}」对应的真人',
                 style: Theme.of(c)
                     .textTheme
                     .titleLarge
@@ -1429,14 +1438,15 @@ Future<void> _showAmbiguousPicker(
                       final h = candidates[i];
                       return ListTile(
                         leading: const CircleAvatar(child: Icon(Icons.person)),
-                        title: Text(h.name,
+                        title: Text(zhDisplay(h.name),
                             maxLines: 1, overflow: TextOverflow.ellipsis),
                         subtitle: Text(
                           [
                             if (h.sortName != null && h.sortName != h.name)
-                              h.sortName,
+                              zhDisplay(h.sortName!),
                             if (h.type != null) h.type,
-                            if (h.disambiguation != null) h.disambiguation,
+                            if (h.disambiguation != null)
+                              zhDisplay(h.disambiguation!),
                             if (h.beginYear != null)
                               '${h.beginYear}—${h.endYear ?? '…'}',
                           ].join(' · '),
@@ -1501,7 +1511,7 @@ Future<void> _showRetryConfirm(
   final ok = await showDialog<bool>(
     context: context,
     builder: (c) => AlertDialog(
-      title: Text('重试解析「${artist.name}」？'),
+      title: Text('重试解析「${zhDisplay(artist.name)}」？'),
       content: Text(artist.status == 'local'
           ? '上次解析未找到可靠身份（MusicBrainz 可能未收录），确认后立即重试。'
           : '该歌手尚未解析，确认后立即尝试。'),
@@ -1538,7 +1548,7 @@ class _ArtistListTile extends StatelessWidget {
         fallbackIcon: Icons.person,
         shape: CoverShape.circle,
       ),
-      title: Text(artist.name,
+      title: Text(zhDisplay(artist.name),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: Theme.of(context)
@@ -1590,7 +1600,7 @@ class _ArtistCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SquareCard(
-        title: artist.name,
+        title: zhDisplay(artist.name),
         subtitle: artist.resolveState == ArtistResolveState.confirm
             ? '${artist.songCount}首 · ${artist.albumCount}张专辑 · 需确认'
             : '${artist.songCount}首 · ${artist.albumCount}张专辑',
@@ -1657,7 +1667,8 @@ class _ArtistSongsSheet extends StatelessWidget {
       albums: albums,
       scrollCtrl: scrollCtrl,
       fromSheet: true,
-      header: AppSheetTitleBar(title: artist.name, count: songs.length),
+      header: AppSheetTitleBar(
+          title: zhDisplay(artist.name), count: songs.length),
     );
   }
 }
@@ -1739,7 +1750,7 @@ class _ArtistSongsView extends StatelessWidget {
           child: CornerAddButton(
             icon: Icons.sync_alt,
             label: '重新解析',
-            tooltip: '重新解析 ${artist.name}',
+            tooltip: '重新解析 ${zhDisplay(artist.name)}',
             onPressed: () => _forceReParse(context),
           ),
         ),
@@ -1754,7 +1765,7 @@ class _ArtistSongsView extends StatelessWidget {
     final ok = await showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
-        title: Text('重新解析「${artist.name}」？'),
+        title: Text('重新解析「${zhDisplay(artist.name)}」？'),
         content: const Text('会把这一位歌手（含已解析成功的）按 MusicBrainz 重新拉取一遍，组合成员也会重新展开。'),
         actions: appDialogActions(
           c,
@@ -1776,7 +1787,7 @@ class _ArtistSongsView extends StatelessWidget {
     }
     await resolver.forceRetryOne(
         artistKey: artist.identityKey, canonicalKey: artist.canonicalKey);
-    AppToast.show('已开始重新解析 ${artist.name}', isError: false);
+    AppToast.show('已开始重新解析 ${zhDisplay(artist.name)}', isError: false);
   }
 }
 
@@ -1821,7 +1832,7 @@ class _ArtistDetailPageState extends State<_ArtistDetailPage> {
         scrollCtrl: _scroll,
         fromSheet: false,
         header: AppSheetTitleBar(
-          title: widget.artist.name,
+          title: zhDisplay(widget.artist.name),
           count: widget.songs.length,
           leading: const _DetailBackButton(),
           showClose: false,
@@ -1874,7 +1885,7 @@ class _ArtistAlbumsStrip extends StatelessWidget {
                           coverPath: album.coverPath,
                           fallbackIcon: Icons.album),
                       const SizedBox(height: 4),
-                      Text(album.album,
+                      Text(zhDisplay(album.album),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(fontSize: 12)),
@@ -2002,7 +2013,7 @@ class _ArtistDetailBlockState extends State<_ArtistDetailBlock> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(r.name,
+                  Text(zhDisplay(r.name),
                       style: const TextStyle(fontSize: 13),
                       overflow: TextOverflow.ellipsis),
                   if (sub != null)
@@ -2023,7 +2034,7 @@ class _ArtistDetailBlockState extends State<_ArtistDetailBlock> {
   /// 第二行：作品名/副标题 + 曲目数。本地没身份就没有曲目数。
   String? _subtitle(ArtistRef r) {
     final parts = <String>[];
-    if (r.disambiguation != null) parts.add(r.disambiguation!);
+    if (r.disambiguation != null) parts.add(zhDisplay(r.disambiguation!));
     if (r.songCount != null) {
       parts.add('${r.songCount} 首');
     } else {

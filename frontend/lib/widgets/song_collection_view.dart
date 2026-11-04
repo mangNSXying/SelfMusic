@@ -13,6 +13,7 @@ import '../providers/player_provider.dart';
 import '../utils/collection_sort.dart';
 import '../utils/song_groups.dart';
 import '../utils/source_folders.dart';
+import '../utils/zh_variant.dart';
 import 'count_header.dart';
 import 'list_selection.dart';
 import 'row_action_button.dart';
@@ -1018,7 +1019,9 @@ class _SongCollectionViewState extends State<SongCollectionView> {
         onTap: () => _toggleGroupSelection(g),
       ),
       title: Text(
-        name,
+        // 专辑分组的组头是专辑名（元数据，跟随简繁显示）；文件夹组头是
+        // 文件系统路径（用户内容），保持原文。
+        widget.groupMode == SongGroupMode.album ? zhDisplay(name) : name,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: const TextStyle(fontWeight: FontWeight.w600),

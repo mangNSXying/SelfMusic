@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 
 import '../services/online_meta/online_meta_models.dart';
 import '../utils/lrc_parser.dart';
+import '../utils/zh_variant.dart';
 import 'app_dialog_actions.dart';
 
 class LyricDetailDialog extends StatefulWidget {
@@ -109,13 +110,13 @@ class _LyricDetailDialogState extends State<LyricDetailDialog> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('${c.trackName} — ${c.artistName}',
+            Text('${zhDisplay(c.trackName)} — ${zhDisplay(c.artistName)}',
                 style: theme.textTheme.titleMedium,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis),
             const SizedBox(height: 4),
             Text(
-              '${c.source} · ${c.albumName.isEmpty ? '未知专辑' : c.albumName}'
+              '${c.source} · ${c.albumName.isEmpty ? '未知专辑' : zhDisplay(c.albumName)}'
               '${c.durationSec != null ? ' · ${_fmtDur(c.durationSec!)}' : ''}'
               ' · 匹配 ${c.matchWeight.toStringAsFixed(2)}'
               '${widget.isBest ? ' · 最佳匹配' : ''} · $badge',
@@ -367,11 +368,11 @@ class TagDetailDialog extends StatelessWidget {
               style: theme.textTheme.bodySmall?.copyWith(color: muted),
             ),
             const Divider(height: 20),
-            _tagRow(context, '标题', title),
+            _tagRow(context, '标题', zhDisplay(title)),
             const SizedBox(height: 8),
-            _tagRow(context, '歌手', artist),
+            _tagRow(context, '歌手', zhDisplay(artist)),
             const SizedBox(height: 8),
-            _tagRow(context, '专辑', album),
+            _tagRow(context, '专辑', zhDisplay(album)),
             if (metaLines.isNotEmpty) ...[
               const Divider(height: 20),
               for (final line in metaLines)
