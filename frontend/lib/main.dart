@@ -345,7 +345,12 @@ class SelfMusicApp extends StatelessWidget {
       ..attachDirectManager(direct)
       // 歌手解析/成员展开落库后就地重算歌手列表（停在旧计数的问题，见 library_provider）。
       ..attachArtistResolver(artistResolver);
-    final nav = NavigationProvider();
+    // 内容页状态记忆（设备本地）：冷启动仍从播放页首屏进入，下滑后露出的
+    // 分组 / 歌单 / 源内目录按上次退出时的状态恢复。
+    final nav = NavigationProvider(
+      readState: () => direct.settings.navigationState,
+      writeState: (state) => direct.settings.navigationState = state,
+    );
     final player = PlayerProvider()
       ..attachSourceResolver((key) => direct.sourceByKey(key))
       ..attachLineCandidates((key) => direct.lineCandidates(key))
