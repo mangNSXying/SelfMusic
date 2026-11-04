@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../data/local/local_index.dart';
 import '../providers/direct_source_manager.dart';
+import '../utils/zh_variant.dart';
 import '../widgets/resizable_paginated_table.dart';
 import '../widgets/table_columns.dart';
 import 'library_info_detail_shared.dart';
@@ -160,12 +161,12 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
       );
     }
 
-    final q = _query.trim().toLowerCase();
+    final q = zhSearchFold(_query.trim()).toLowerCase();
     var rows = all.where((r) {
       if (q.isNotEmpty) {
-        final hit = r.title.toLowerCase().contains(q) ||
-            (r.artist ?? '').toLowerCase().contains(q) ||
-            (r.album ?? '').toLowerCase().contains(q);
+        final hit = zhSearchFold(r.title).toLowerCase().contains(q) ||
+            zhSearchFold(r.artist).toLowerCase().contains(q) ||
+            zhSearchFold(r.album).toLowerCase().contains(q);
         if (!hit) return false;
       }
       if (_dimFilter == null) return true;
@@ -177,22 +178,22 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
       int c;
       switch (_sortMode) {
         case 1:
-          c = (a.artist ?? '')
+          c = zhDisplay(a.artist ?? '')
               .toLowerCase()
-              .compareTo((b.artist ?? '').toLowerCase());
+              .compareTo(zhDisplay(b.artist ?? '').toLowerCase());
           if (c == 0) {
-            c = a.title.toLowerCase().compareTo(b.title.toLowerCase());
+            c = _cmpTitle(a, b);
           }
           break;
         case 2:
           c = a.missingCount.compareTo(b.missingCount);
           if (c == 0) {
-            c = a.title.toLowerCase().compareTo(b.title.toLowerCase());
+            c = _cmpTitle(a, b);
           }
           break;
         case 0:
         default:
-          c = a.title.toLowerCase().compareTo(b.title.toLowerCase());
+          c = _cmpTitle(a, b);
           break;
       }
       return _ascending ? c : -c;
@@ -335,7 +336,7 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
           textAlign: align,
           style: style ?? base,
         );
-    if (column == 0) return text(r.title);
+    if (column == 0) return text(zhDisplay(r.title));
     if (column == 1) {
       return text(metaDimValue(r, 'artist'), style: missingStyle(r.hasArtist));
     }
@@ -365,9 +366,10 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
             // 展开态默认画上下分割线（dividerColor），卡片本身已有边界，去掉。
             shape: const Border(),
             collapsedShape: const Border(),
-            title: Text(r.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+            title: Text(zhDisplay(r.title),
+                maxLines: 1, overflow: TextOverflow.ellipsis),
             subtitle: Text(
-              '${(r.artist == null || r.artist!.isEmpty) ? '未知歌手' : r.artist} · ${(r.album == null || r.album!.isEmpty) ? '未知专辑' : r.album} · ${r.sourceKey}',
+              '${(r.artist == null || r.artist!.isEmpty) ? '未知歌手' : zhDisplay(r.artist!)} · ${(r.album == null || r.album!.isEmpty) ? '未知专辑' : zhDisplay(r.album!)} · ${r.sourceKey}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
@@ -449,4 +451,8 @@ String metaDimValue(MetaDetailRow r, String dim) => switch (dim) {
       _ => '',
     };
 
-String metaText(String? s) => (s == null || s.isEmpty) ? '缺失' : s;
+String metaText(String? s) =>
+    (s == null || s.isEmpty) ? '缺失' : zhDisplay(s);
+
+int _cmpTitle(MetaDetailRow a, MetaDetailRow b) =>
+    zhDisplay(a.title).toLowerCase().compareTo(zhDisplay(b.title).toLowerCase());
