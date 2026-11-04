@@ -18,6 +18,7 @@ import '../../utils/off_thread.dart';
 import '../../utils/main_thread_probe.dart';
 import '../../utils/perf_log.dart';
 import '../../utils/play_progress.dart';
+import '../../utils/zh_variant.dart';
 import '../sources/music_source.dart';
 import '../sources/webdav_url.dart';
 import 'audio_metadata.dart';
@@ -735,6 +736,10 @@ class LocalIndex {
       querySongs(_db!,
           sourceKey: sourceKey,
           query: query,
+          // 简繁显示开启时把查询词展开成简/繁两种字形，命中不同字形的存储。
+          queryVariants: (query == null || query.trim().isEmpty)
+              ? null
+              : zhQueryVariants(query),
           page: page,
           size: size,
           minDurationSec: minDurationSec,
@@ -3599,21 +3604,41 @@ Song songFromRow(Row r) => Song.direct(
     );
 
 /// 按源查询歌曲（主连接与后台快照共用）。
+///
+/// [queryVariants] 为简繁展开后的查询变体（主 isolate 用
+/// `zhQueryVariants` 预先算好再传入）；后台 isolate 不加载词库，通常传 null，
+/// 此时退回 [query] 原字面匹配。
 List<Song> querySongs(
   Database db, {
   required String sourceKey,
   String? query,
+  List<String>? queryVariants,
   int page = 1,
   int? size,
   int minDurationSec = 0,
   int minSizeBytes = 0,
 }) {
-  final q = query?.trim().toLowerCase() ?? '';
-  final like = q.isEmpty ? '%' : '%$q%';
+  final variants = <String>{};
+  if (queryVariants != null) {
+    for (final v in queryVariants) {
+      final t = v.trim().toLowerCase();
+      if (t.isNotEmpty) variants.add(t);
+    }
+  } else {
+    final q = query?.trim().toLowerCase() ?? '';
+    if (q.isNotEmpty) variants.add(q);
+  }
+  final likeTerms = [for (final v in variants) '%$v%'];
+  final searchSql = variants.isEmpty
+      ? ''
+      : 'AND (${likeTerms.map((_) => "(i.title LIKE ? OR COALESCE(i.artist,'') LIKE ? OR COALESCE(i.album,'') LIKE ?)").join(' OR ')})';
   // size==null 时不设 LIMIT（返回全部，供列表无限滚动 / 全选）。
   final limitSql = size == null ? '' : 'LIMIT ? OFFSET ?';
   final ignore = ignoreFilterSql(minDurationSec, minSizeBytes);
-  final args = <Object?>[sourceKey, like, like, like];
+  final args = <Object?>[sourceKey];
+  for (final like in likeTerms) {
+    args.addAll([like, like, like]);
+  }
   args.addAll(ignore.args);
   if (size != null) {
     args.add(size);
@@ -3626,7 +3651,7 @@ List<Song> querySongs(
       FROM idx_songs i
       LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
       WHERE i.source_key=? AND i.missing=0
-        AND (i.title LIKE ? OR COALESCE(i.artist,'') LIKE ? OR COALESCE(i.album,'') LIKE ?)
+        $searchSql
         ${ignore.sql}
       ORDER BY i.artist, i.album, i.track_no, i.title
       $limitSql

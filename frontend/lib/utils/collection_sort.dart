@@ -1,5 +1,6 @@
 import '../models/song.dart';
 import 'play_stats.dart';
+import 'zh_variant.dart';
 
 /// 内容页排序方式。
 ///
@@ -149,21 +150,30 @@ int _cmpNum(num? a, num? b, bool desc) {
   return desc ? b.compareTo(a) : a.compareTo(b);
 }
 
-/// 文本比较：去空白、小写；空值（未知歌手/专辑）恒排最后，与 [_cmpNum] 同口径。
+/// 文本比较：先按简繁显示口径转换，再去空白、小写；空值（未知歌手/专辑）
+/// 恒排最后，与 [_cmpNum] 同口径。
 int _cmpText(String? a, String? b, bool desc) {
-  final x = a?.trim().toLowerCase() ?? '';
-  final y = b?.trim().toLowerCase() ?? '';
+  final x = a == null ? '' : zhDisplay(a).trim().toLowerCase();
+  final y = b == null ? '' : zhDisplay(b).trim().toLowerCase();
   if (x.isEmpty && y.isEmpty) return 0;
   if (x.isEmpty) return 1;
   if (y.isEmpty) return -1;
   return desc ? y.compareTo(x) : x.compareTo(y);
 }
 
-/// 按字符排序（名称取小写比较；[desc] 反转）。
-List<T> sortByChars<T>(List<T> items, String Function(T) nameOf, bool desc) {
+/// 按字符排序（名称先按简繁显示口径转换，再取小写比较；[desc] 反转）。
+///
+/// [zhAware] 为 false 时按原文比较（歌单名/播放源名等不转换显示的用户内容）。
+List<T> sortByChars<T>(List<T> items, String Function(T) nameOf, bool desc,
+    {bool zhAware = true}) {
   final list = List<T>.of(items);
+  String keyOf(T e) {
+    final raw = nameOf(e);
+    return (zhAware ? zhDisplay(raw) : raw).toLowerCase();
+  }
+
   list.sort((a, b) {
-    final c = nameOf(a).toLowerCase().compareTo(nameOf(b).toLowerCase());
+    final c = keyOf(a).compareTo(keyOf(b));
     return desc ? -c : c;
   });
   return list;
@@ -172,24 +182,32 @@ List<T> sortByChars<T>(List<T> items, String Function(T) nameOf, bool desc) {
 /// 非歌曲列表的排序入口（歌单/播放源/专辑/歌手：字符或曲数；默认排序保持原序）。
 ///
 /// [countOf] 提供曲数（界面显示的曲数口径）；未提供时曲数排序退化为原序。
+/// [zhAware] 同 [sortByChars]：元数据集合（专辑/歌手）按显示字形排序，
+/// 用户内容（歌单/播放源）保持原文。
 List<T> sortByCollection<T>(List<T> items, CollectionSort sort,
-    String Function(T) nameOf, {int Function(T)? countOf}) {
+    String Function(T) nameOf,
+    {int Function(T)? countOf, bool zhAware = true}) {
   switch (sort) {
     case CollectionSort.charAsc:
-      return sortByChars(items, nameOf, false);
+      return sortByChars(items, nameOf, false, zhAware: zhAware);
     case CollectionSort.charDesc:
-      return sortByChars(items, nameOf, true);
+      return sortByChars(items, nameOf, true, zhAware: zhAware);
     case CollectionSort.countAsc:
     case CollectionSort.countDesc:
       if (countOf == null) return items;
       final desc = sort.isDesc;
       final list = List<T>.of(items);
+      String keyOf(T e) {
+        final raw = nameOf(e);
+        return (zhAware ? zhDisplay(raw) : raw).toLowerCase();
+      }
+
       list.sort((a, b) {
         final c = desc
             ? countOf(b).compareTo(countOf(a))
             : countOf(a).compareTo(countOf(b));
         if (c != 0) return c;
-        return nameOf(a).toLowerCase().compareTo(nameOf(b).toLowerCase());
+        return keyOf(a).compareTo(keyOf(b));
       });
       return list;
     default:
@@ -205,8 +223,9 @@ List<int> songSortOrder(List<Song> songs, CollectionSort sort,
     {double Function(Song)? factorOf, int Function(Song)? playSecOf}) {
   final order = List<int>.generate(songs.length, (i) => i);
   if (songs.length < 2 || sort == CollectionSort.defaultOrder) return order;
-  int byTitle(int a, int b) =>
-      songs[a].title.toLowerCase().compareTo(songs[b].title.toLowerCase());
+  int byTitle(int a, int b) => zhDisplay(songs[a].title)
+      .toLowerCase()
+      .compareTo(zhDisplay(songs[b].title).toLowerCase());
 
   // 预取排序键：null 表示该排序缺数据源，退化为标题序。
   List<num?>? keys;

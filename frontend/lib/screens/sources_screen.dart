@@ -148,7 +148,8 @@ class _SourcesScreenState extends State<SourcesScreen>
             : all.where((s) => s.name.toLowerCase().contains(q)).toList(),
         direct.settings.sortSources,
         (s) => s.name,
-        countOf: (s) => direct.countOf(s.key));
+        countOf: (s) => direct.countOf(s.key),
+        zhAware: false);
 
     // 大横屏 + 列表模式：左源列表 / 右源内浏览（源内不再整页替换）。
     // 按自身分组判定：离屏缓存期间重建时全局分组可能已是别的页。
