@@ -2939,10 +2939,19 @@ class LocalIndex {
 
   /// 强制解析：连 resolved 一起打回 pending，并清 expanded_at 让成员重新展开。
   /// 三选一传参：[all]=true 全部、[artistKey] 单个身份、[canonicalKey] 单个归一化键。
+  /// [clearMbid]=true 时一并清掉已有 mbid 与匹配分，解析会重新走 MB 搜索
+  /// （歌手页「重新解析」用它实现“完全重新解析”；批量强制解析保持按原实体重取）。
   Future<void> artistForceRetry(
-      {bool all = false, String? artistKey, String? canonicalKey}) {
-    return _writer!.op<void>('artistForceRetry',
-        {'all': all, 'artistKey': artistKey, 'canonicalKey': canonicalKey});
+      {bool all = false,
+      String? artistKey,
+      String? canonicalKey,
+      bool clearMbid = false}) {
+    return _writer!.op<void>('artistForceRetry', {
+      'all': all,
+      'artistKey': artistKey,
+      'canonicalKey': canonicalKey,
+      'clearMbid': clearMbid,
+    });
   }
 
   /// 记某一轮失败待重试；不动 mbid/names/groups/type（见 writer 侧 _opArtistMarkError）。

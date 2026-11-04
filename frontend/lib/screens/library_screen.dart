@@ -1748,7 +1748,7 @@ class _ArtistSongsView extends StatelessWidget {
           );
         }),
         // 「重新解析」放歌手详情页右下角：只重拉这一位（含成员展开），
-        // 已有 mbid 的按该实体重取，不会漂到别的真人。
+        // 完全重新解析——清掉旧 mbid 重新搜索，可能改判到另一个同名实体。
         Positioned(
           right: 16,
           bottom: 16,
@@ -1771,7 +1771,9 @@ class _ArtistSongsView extends StatelessWidget {
       context: context,
       builder: (c) => AlertDialog(
         title: Text('重新解析「${zhDisplay(artist.name)}」？'),
-        content: const Text('会把这一位歌手（含已解析成功的）按 MusicBrainz 重新拉取一遍，组合成员也会重新展开。'),
+        content: const Text(
+            '会清掉这一位歌手已有的 MusicBrainz 绑定，重新搜索并拉取关系；'
+            '可能改判到另一个同名实体，组合成员也会重新展开。'),
         actions: appDialogActions(
           c,
           confirmLabel: '开始',

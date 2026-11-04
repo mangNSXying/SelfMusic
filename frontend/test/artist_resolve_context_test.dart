@@ -273,6 +273,118 @@ void main() {
     }
   });
 
+  test('完全重新解析：清掉 mbid 与旧身份元数据', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([_song('a', 'メグ', album: '某专辑')]);
+      await index.reconcileArtists();
+      final row = index.artistRowByCanonical('メグ')!;
+      await index.artistUpsert(
+        artistKey: row.artistKey,
+        canonicalKey: 'メグ',
+        mbid: _megPerson,
+        displayName: 'メグ',
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'person',
+        disambiguation: 'さよならポニーテール',
+        names: const [
+          {'name': 'メグ', 'name_type': 'primary', 'is_primary': 1},
+        ],
+        groups: const [
+          {'name': 'さよならポニーテール', 'type': 'member of band'},
+        ],
+        resolvedAt: '2026-01-01T00:00:00.000Z',
+        matchScore: 100,
+      );
+
+      await index.artistForceRetry(artistKey: row.artistKey, clearMbid: true);
+
+      final after = index.artistRowByKey(row.artistKey)!;
+      expect(after.status, 'pending');
+      expect(after.mbid, isNull);
+      expect(after.matchScore, isNull);
+      expect(after.resolvedAt, isNull);
+      expect(after.names, isEmpty);
+      expect(after.groups, isEmpty);
+      expect(after.type, 'person');
+      expect(after.disambiguation, isNull);
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
+
+  test('完全重新解析：旧错误绑定被清掉，按专辑上下文改判角色', () async {
+    final (index, dir) = await _openIndex();
+    try {
+      await index.upsertSongs([
+        _song('a', 'メグ',
+            album: 'TVアニメ「ご注文はうさぎですか？」キャラクターソングアルバム'),
+        _song('b', '村川梨衣', album: 'Rie Murakawa Best'),
+      ]);
+      await index.reconcileArtists();
+
+      // 模拟旧版本留下的错误绑定：同名 Person。声优已解析，避免它再进工作集。
+      final megRow = index.artistRowByCanonical('メグ')!;
+      await index.artistUpsert(
+        artistKey: megRow.artistKey,
+        canonicalKey: 'メグ',
+        mbid: _megPerson,
+        displayName: 'メグ',
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'person',
+        disambiguation: 'さよならポニーテール',
+        names: const [
+          {'name': 'メグ', 'name_type': 'primary', 'is_primary': 1},
+        ],
+        groups: const [],
+        resolvedAt: '2026-01-01T00:00:00.000Z',
+        matchScore: 100,
+      );
+      final vaRow = index.artistRowByCanonical('村川梨衣')!;
+      await index.artistUpsert(
+        artistKey: vaRow.artistKey,
+        canonicalKey: '村川梨衣',
+        mbid: _murakawa,
+        displayName: '村川梨衣',
+        status: 'resolved',
+        errorCount: 0,
+        nextAt: 0,
+        type: 'person',
+        names: const [
+          {'name': '村川梨衣', 'name_type': 'primary', 'is_primary': 1},
+        ],
+        groups: const [],
+        resolvedAt: '2026-01-01T00:00:00.000Z',
+        matchScore: 100,
+      );
+
+      final adapter = _MegAdapter();
+      final resolver = ArtistResolver(index, dio: _dioOf(adapter));
+      try {
+        await resolver.forceRetryOne(artistKey: megRow.artistKey);
+      } finally {
+        resolver.dispose();
+      }
+
+      // 不再按旧 mbid 直取：先搜索，再取新命中实体。
+      expect(adapter.calls.map((u) => u.path),
+          ['/ws/2/artist/', '/ws/2/artist/$_megCharacter']);
+
+      final meg = index.artistRowByCanonical('メグ')!;
+      expect(meg.mbid, _megCharacter);
+      expect(meg.type, 'character');
+      final names = index.identityArtistGroups().map((a) => a.name).toList();
+      expect(names, isNot(contains('メグ')));
+      expect(names, contains('村川梨衣'));
+    } finally {
+      await _dispose(index, dir);
+    }
+  });
+
   group('同名候选的专辑上下文匹配', () {
     const person = MbArtistHit(
         mbid: 'p',
