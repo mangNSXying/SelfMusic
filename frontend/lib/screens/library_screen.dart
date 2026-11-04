@@ -1166,16 +1166,21 @@ class _AlbumDetailPageState extends State<_AlbumDetailPage> {
 
   @override
   Widget build(BuildContext context) {
+    // 冷启动恢复的详情路由只带专辑元信息（不持久化歌曲快照）：曲库加载
+    // 完成后按 groupKey 从这里补出歌曲；正常进入仍用打开时的快照。
+    final lib = context.watch<LibraryProvider>();
+    final songs =
+        widget.songs.isEmpty ? lib.albumSongs(widget.album) : widget.songs;
     return DetailPresentationShell(
       presentation: DetailPresentation.overlay,
       child: _AlbumSongsView(
         album: widget.album,
-        songs: widget.songs,
+        songs: songs,
         scrollCtrl: _scroll,
         fromSheet: false,
         header: AppSheetTitleBar(
           title: zhDisplay(widget.album.album),
-          count: widget.songs.length,
+          count: songs.length,
           leading: const _DetailBackButton(),
           showClose: false,
         ),
@@ -1803,15 +1808,21 @@ class _ArtistDetailPage extends StatefulWidget {
 
 class _ArtistDetailPageState extends State<_ArtistDetailPage> {
   final ScrollController _scroll = ScrollController();
-  late final ArtistDetail? _detail;
-  late final List<Album> _albums;
+
+  /// 正常进入时的打开时刻快照（与弹层一致）：只取一次，不随播放/后台通知重算。
+  /// 冷启动恢复的路由没有歌曲快照，此时为 null / 空，改由曲库解析。
+  ArtistDetail? _detail;
+  List<Album> _albums = const [];
+  List<Song>? _albumsBase;
 
   @override
   void initState() {
     super.initState();
-    // 打开时刻的快照（与弹层一致）：只取一次，不随播放/后台通知重算。
-    _detail = context.read<LibraryProvider>().artistDetail(widget.artist);
-    _albums = Album.fromSongs(widget.songs);
+    if (widget.songs.isNotEmpty) {
+      _detail = context.read<LibraryProvider>().artistDetail(widget.artist);
+      _albums = Album.fromSongs(widget.songs);
+      _albumsBase = widget.songs;
+    }
   }
 
   @override
@@ -1820,20 +1831,31 @@ class _ArtistDetailPageState extends State<_ArtistDetailPage> {
     super.dispose();
   }
 
+  List<Album> _albumsFor(List<Song> songs) {
+    if (identical(songs, _albumsBase)) return _albums;
+    _albumsBase = songs;
+    return _albums = Album.fromSongs(songs);
+  }
+
   @override
   Widget build(BuildContext context) {
+    // 同专辑详情：冷启动恢复时 songs 为空，等曲库就绪后按身份键补出歌曲，
+    // 让页面在加载完成的通知里自然重建。
+    final lib = context.watch<LibraryProvider>();
+    final songs =
+        widget.songs.isEmpty ? lib.artistSongs(widget.artist) : widget.songs;
     return DetailPresentationShell(
       presentation: DetailPresentation.overlay,
       child: _ArtistSongsView(
         artist: widget.artist,
-        songs: widget.songs,
-        detail: _detail,
-        albums: _albums,
+        songs: songs,
+        detail: _detail ?? lib.artistDetail(widget.artist),
+        albums: _albumsFor(songs),
         scrollCtrl: _scroll,
         fromSheet: false,
         header: AppSheetTitleBar(
           title: zhDisplay(widget.artist.name),
-          count: widget.songs.length,
+          count: songs.length,
           leading: const _DetailBackButton(),
           showClose: false,
         ),
