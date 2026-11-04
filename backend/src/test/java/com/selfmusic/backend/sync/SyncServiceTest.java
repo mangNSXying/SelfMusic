@@ -341,11 +341,11 @@ class SyncServiceTest {
         for (int i = 0; i < 3; i++) {
             SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE, p);
         }
-        // 目标 1.2 需 55%，中位 52% → 不升、保留 streak。
+        // 目标 1.2 需 60%，中位 52% → 不升、保留 streak。
         assertEquals(0, new BigDecimal("1.1").compareTo(s.getWeight()));
         assertEquals(3, s.getLikeStreak());
 
-        s.setProgressHist(hist(55, 55, 55));
+        s.setProgressHist(hist(60, 60, 60));
         SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE, p);
         assertEquals(0, new BigDecimal("1.2").compareTo(s.getWeight()));
         assertEquals(0, s.getLikeStreak());

@@ -84,10 +84,10 @@ void main() {
   group('中位升权闸门', () {
     test('门槛随目标档位递增，目标 <=1.0 不设闸门', () {
       expect(requiredMedianPercent(1.0), isNull);
-      expect(requiredMedianPercent(1.05), 47.5);
+      expect(requiredMedianPercent(1.05), 45);
       expect(requiredMedianPercent(1.1), 50);
-      expect(requiredMedianPercent(1.2), 55);
-      expect(requiredMedianPercent(1.5), 70);
+      expect(requiredMedianPercent(1.2), 60);
+      expect(requiredMedianPercent(1.5), 90);
     });
 
     test('目标 <=1.0 无样本也放行', () {
@@ -102,9 +102,9 @@ void main() {
       expect(allowsUpgrade(_hist([50, 50, 100]), 1.1), isTrue);
     });
 
-    test('1.2 需中位 >=55%', () {
-      expect(allowsUpgrade(_hist([54, 54, 100]), 1.2), isFalse);
-      expect(allowsUpgrade(_hist([55, 55, 100]), 1.2), isTrue);
+    test('1.2 需中位 >=60%', () {
+      expect(allowsUpgrade(_hist([59, 59, 100]), 1.2), isFalse);
+      expect(allowsUpgrade(_hist([60, 60, 100]), 1.2), isTrue);
     });
 
     test('展示格式', () {

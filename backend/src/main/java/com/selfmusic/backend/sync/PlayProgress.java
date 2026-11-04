@@ -83,7 +83,7 @@ public final class PlayProgress {
     /** 目标权重的升权中位门槛；目标 <= 1.0 返回 -1（不设闸门）。 */
     public static double requiredMedian(double targetFactor) {
         if (targetFactor <= 1.0 + 1e-9) return -1;
-        double v = 50.0 + (targetFactor - 1.1) * 50.0;
+        double v = 50.0 + (targetFactor - 1.1) * 100.0;
         v = Math.max(0.0, Math.min(100.0, v));
         return Math.round(v * 100.0) / 100.0;
     }
