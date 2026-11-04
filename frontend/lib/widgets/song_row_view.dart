@@ -3,6 +3,7 @@ import '../data/local/app_settings.dart';
 import '../models/song.dart';
 import '../utils/duration_format.dart';
 import '../utils/song_title_format.dart';
+import '../utils/zh_variant.dart';
 
 /// 表格模式下一行的 9 个单元格文本（已格式化，行组件只负责摆放）。
 class SongTableCells {
@@ -136,14 +137,14 @@ class SongRowView {
   /// 副标题：歌手 · 专辑（· 专辑歌手，仅当与歌手不同时展示，避免冗余）。
   static String subtitleOf(Song song) {
     final artist = song.artist ?? 'Unknown';
-    final parts = <String>[artist];
+    final parts = <String>[zhDisplay(artist)];
     final album = song.albumName;
-    if (album != null && album.isNotEmpty) parts.add(album);
+    if (album != null && album.isNotEmpty) parts.add(zhDisplay(album));
     final albumArtist = song.albumArtist;
     if (albumArtist != null &&
         albumArtist.isNotEmpty &&
         albumArtist != artist) {
-      parts.add('专辑歌手：$albumArtist');
+      parts.add('专辑歌手：${zhDisplay(albumArtist)}');
     }
     return parts.join(' · ');
   }
@@ -160,12 +161,12 @@ class SongRowView {
 
   static String artistTextOf(Song song) {
     final artist = song.artist?.trim();
-    return artist == null || artist.isEmpty ? '—' : artist;
+    return artist == null || artist.isEmpty ? '—' : zhDisplay(artist);
   }
 
   static String albumTextOf(Song song) {
     final album = song.albumName?.trim();
-    return album == null || album.isEmpty ? '—' : album;
+    return album == null || album.isEmpty ? '—' : zhDisplay(album);
   }
 
   /// 播放源友好名；调用方取不到时回退到 [Song.source]（可能为空）。

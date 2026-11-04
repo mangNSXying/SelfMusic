@@ -33,6 +33,7 @@ import '../utils/play_progress.dart';
 import '../utils/play_stats.dart';
 import '../utils/song_title_format.dart';
 import '../utils/weight_curve.dart';
+import '../utils/zh_variant.dart';
 import '../widgets/app_toast.dart';
 
 // 转码门控定义见 `data/sources/transcode_variant.dart`（播放装载与预载变体
@@ -393,6 +394,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _audioHandler?.sync();
     _systemMediaSync?.call();
   }
+
+  /// 影响媒体文案的设置变更后调用（如简繁显示）：立即回推通知栏/鸿蒙播控卡，
+  /// 不必等下一次播放状态变化。
+  void refreshSystemMedia() => _syncSystemMedia();
 
   PlayMode _mode = PlayMode.sequence;
   DateTime? _lastStateSave;
@@ -3502,7 +3507,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// `id` 必须唯一且非空（包依赖它标识曲目）。
   static MediaItem mediaItemOf(Song s, {String? title, Duration? duration}) {
     // 未给格式化标题时退回歌曲自身标题：通知栏宁可显示原名，也不要空行。
-    final t = (title == null || title.isEmpty) ? s.title : title;
+    final t = (title == null || title.isEmpty) ? zhDisplay(s.title) : title;
     // 问题2修复：悬空路径（文件被删/半图被清理/尚未落盘）不得发 file://，
     // 否则原生解码失败后部分系统 Controller 不清旧图，残留上一首封面。
     // 校验失败一律发 null，原生侧走清图分支。
@@ -3517,8 +3522,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     return MediaItem(
       id: '${s.sourceKey}:${s.sourceRef}',
-      album: s.albumName,
-      artist: s.artist,
+      album: s.albumName == null ? null : zhDisplay(s.albumName!),
+      artist: s.artist == null ? null : zhDisplay(s.artist!),
       title: t.isEmpty ? '未知曲目' : t,
       duration: duration,
       artUri: art,

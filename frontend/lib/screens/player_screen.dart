@@ -22,6 +22,7 @@ import '../utils/focus_utils.dart';
 import '../utils/motion.dart';
 import '../utils/perf_log.dart';
 import '../utils/song_title_format.dart';
+import '../utils/zh_variant.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/app_volume_control.dart';
@@ -1220,7 +1221,7 @@ class _TitleBlock extends StatelessWidget {
         SizedBox(height: (dense ? 2 : (compact ? 4 : 6)) * scale),
         MarqueeText(
           // 未读取的元数据标注「待读取」，避免与「读取后发现没有」的留白混淆。
-          s.metaDisplay(s.artist) ?? '',
+          zhDisplay(s.metaDisplay(s.artist) ?? ''),
           style: artistStyle,
         ),
       ],

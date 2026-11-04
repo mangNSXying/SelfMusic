@@ -11,6 +11,7 @@ import '../providers/player_provider.dart';
 import '../utils/cover_thumb.dart';
 import '../utils/duration_format.dart';
 import '../utils/song_title_format.dart';
+import '../utils/zh_variant.dart';
 import 'add_to_playlist.dart';
 import 'app_dialog_actions.dart';
 import 'app_toast.dart';
@@ -136,7 +137,7 @@ class SongTile extends StatelessWidget {
       context: context,
       builder: (c) => AlertDialog(
         title: const Text('删除歌曲文件？'),
-        content: Text('将从「${src.name}」永久删除「${song.title}」，\n'
+        content: Text('将从「${src.name}」永久删除「${zhDisplay(song.title)}」，\n'
             '并清除本地索引、收藏权重、歌词、歌单条目与离线缓存。\n此操作不可恢复。'),
         actions: appDialogActions(
           c,
@@ -153,7 +154,7 @@ class SongTile extends StatelessWidget {
       context: context,
       builder: (c) => AlertDialog(
         title: const Text('再次确认删除'),
-        content: Text('确认永久删除「${song.title}」？'),
+        content: Text('确认永久删除「${zhDisplay(song.title)}」？'),
         actions: appDialogActions(
           c,
           confirmLabel: '确认删除',

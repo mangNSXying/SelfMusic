@@ -7,6 +7,7 @@ import '../utils/duration_format.dart';
 import '../utils/play_progress.dart';
 import '../utils/play_stats.dart';
 import '../utils/url_display.dart';
+import '../utils/zh_variant.dart';
 import 'app_dialog_actions.dart';
 
 /// 歌曲信息弹窗：标题/歌手/专辑/流派/年份/时长/格式/来源/权重/收藏态
@@ -43,12 +44,15 @@ class SongInfoDialog extends StatelessWidget {
       bitrate = '${(song.fileSize * 8 / 1024 / song.duration!).round()} kbps';
     }
     final rows = <List<String>>[
-      ['标题', song.title],
-      ['歌手', optField(song.artist) ?? '—'],
-      ['专辑歌手', optField(song.albumArtist) ?? '—'],
-      ['专辑', optField(song.albumName) ?? '—'],
+      ['标题', zhDisplay(song.title)],
+      ['歌手', zhDisplay(optField(song.artist) ?? '—')],
+      ['专辑歌手', zhDisplay(optField(song.albumArtist) ?? '—')],
+      ['专辑', zhDisplay(optField(song.albumName) ?? '—')],
       if (song.metaUnread || (song.genre != null && song.genre!.isNotEmpty))
-        ['流派', song.metaUnread ? Song.unreadLabel : song.genre!],
+        [
+          '流派',
+          song.metaUnread ? Song.unreadLabel : zhDisplay(song.genre!),
+        ],
       if (song.metaUnread || song.year != null)
         ['年份', song.metaUnread ? Song.unreadLabel : '${song.year}'],
       if (song.metaUnread ||
