@@ -4,7 +4,8 @@
 /// 展示边界把文本转成用户选择的字形，**不写回任何存储**。
 ///
 /// - 词库：`assets/opencc/`（OpenCC ver.1.4.2，Apache-2.0）；
-/// - 只有设置为简体/繁体时才加载词库，默认「原文」零开销；
+/// - 启动后后台预热，搜索折叠与显示设置解耦（默认「原文」也能简繁互搜）；
+///   「原文」只关闭展示转换，词库常驻供搜索使用；
 /// - 只在 UI isolate 使用，后台 isolate（扫描/库快照）始终读原文。
 library;
 
@@ -68,10 +69,11 @@ String zhDisplay(String text) {
 
 /// 搜索归一：统一折叠为简体（与当前显示方向无关），供两侧比较。
 ///
-/// 设置「原文」时不做任何转换，保持旧行为。
+/// **与显示设置解耦**：只要搜索词库已预热，「原文」模式同样折叠，
+/// 保证默认设置下也能简繁互搜；词库未就绪时暂时按原字面匹配。
 String zhSearchFold(String? text) {
   if (text == null || text.isEmpty) return '';
-  if (_variant == ZhVariant.original || _t2s == null) return text;
+  if (_t2s == null) return text;
   final hit = _foldCache[text];
   if (hit != null) return hit;
   final out = _t2s!.convert(text);
@@ -87,9 +89,7 @@ List<String> zhQueryVariants(String query) {
   final q = query.trim();
   if (q.isEmpty) return const [];
   final out = <String>[q];
-  if (_variant == ZhVariant.original || _t2s == null || _s2t == null) {
-    return out;
-  }
+  if (_t2s == null || _s2t == null) return out;
   final simplified = _t2s!.convert(q);
   if (simplified.isNotEmpty && !out.contains(simplified)) out.add(simplified);
   final traditional = _s2t!.convert(q);
@@ -99,9 +99,10 @@ List<String> zhQueryVariants(String query) {
   return out;
 }
 
-/// 应用简繁设置：加载/释放词库、清缓存并推进版本号。
+/// 应用简繁设置：按需加载词库、切换展示口径、清缓存并推进版本号。
 ///
-/// 并发调用按顺序串行；返回 false 表示词库加载失败（已回退原文）。
+/// 词库加载后常驻（搜索折叠始终需要）；并发调用按顺序串行；返回 false
+/// 表示词库加载失败（已回退原文）。
 Future<bool> applyZhVariant(ZhVariant target) {
   final next = _serial.then((_) => _applyNow(target));
   _serial = next.then((_) => true, onError: (_) => false);
@@ -110,12 +111,35 @@ Future<bool> applyZhVariant(ZhVariant target) {
 
 Future<bool> _serial = Future.value(true);
 
+/// 预热搜索词库（与显示设置无关）。
+///
+/// 搜索折叠在「原文」模式下也要生效，因此启动后可后台调用本方法加载词库；
+/// 返回 true 表示本次新加载完成（调用方可据此通知列表重算已按搜索过滤的结果）。
+Future<bool> ensureZhSearchEngine() {
+  final next = _serial.then((_) => _ensureSearchReadyNow());
+  _serial = next.then((_) => true, onError: (_) => false);
+  return next;
+}
+
+Future<bool> _ensureSearchReadyNow() async {
+  if (_t2s != null && _s2t != null) return false;
+  try {
+    final loaded = await _loadDictionaries();
+    _t2s = loaded.t2s;
+    _s2t = loaded.s2t;
+    _bumpRevision();
+    return true;
+  } catch (e, st) {
+    debugPrint('[zh] 搜索词库预热失败（暂按原字面匹配）：$e\n$st');
+    return false;
+  }
+}
+
 Future<bool> _applyNow(ZhVariant target) async {
   if (target == ZhVariant.original) {
-    final changed = _variant != ZhVariant.original || _t2s != null;
+    // 只关闭展示转换；词库保留给搜索折叠（默认原文也要能简繁互搜）。
+    final changed = _variant != ZhVariant.original;
     _variant = ZhVariant.original;
-    _t2s = null;
-    _s2t = null;
     if (changed) _bumpRevision();
     return true;
   }

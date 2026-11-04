@@ -680,6 +680,12 @@ class DirectSourceManager extends ChangeNotifier {
     // 简繁显示（默认原文）：非原文时在首帧前加载 OpenCC 词库，避免先显示原文
     // 再跳变；加载失败自动回退原文，不阻塞启动。
     await applyZhVariant(settings.zhVariant);
+    // 搜索折叠与显示设置解耦：原文模式也后台预热词库，保证默认设置下可简繁互搜。
+    // 不 await：不参与冷启动首帧；加载完成后再通知列表重算搜索缓存。
+    // 测试环境不自动预热（避免全局词库状态跨用例泄漏），需要时显式调 warmZhSearch。
+    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
+      unawaited(warmZhSearch());
+    }
     // 自签策略只影响 dart:io（扫描/探测/API）；播放器（Media Kit）不校验 TLS。
     // 压缩图像画质开关（默认关）：同步给 cover_thumb 全局闸（显示+生成共用）。
     setCoverThumbCompressionEnabled(settings.compressCoverImage);
@@ -811,8 +817,17 @@ class DirectSourceManager extends ChangeNotifier {
     }
   }
 
-  /// 设置页切换「简繁显示」后调用：加载/释放词库并让所有展示层重建。
+  /// 后台预热搜索词库：搜索折叠不依赖显示设置，「原文」模式也可简繁互搜。
   ///
+  /// 加载完成通知一次，让已按搜索词过滤/缓存的页面（歌曲/喜欢/专辑/歌手/
+  /// 队列/源浏览）按新词库重算；失败静默，搜索暂时退回原字面匹配。
+  Future<void> warmZhSearch() async {
+    if (await ensureZhSearchEngine()) notifyListeners();
+  }
+
+  /// 设置页切换「简繁显示」后调用：加载词库并让所有展示层重建。
+  ///
+  /// 词库加载后常驻（搜索折叠始终需要），切回「原文」只关闭展示转换。
   /// 走 [settingsChanged] 而非只 [notifyListeners]：自增 settingsVersion 能同时
   /// 失效行级视图缓存、喜欢/源浏览页缓存与列表排序缓存（切换是低频操作，
   /// 多一次全库快照重读可接受）。词库加载失败时回退「原文」并返回 false。

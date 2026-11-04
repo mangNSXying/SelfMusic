@@ -547,9 +547,10 @@ class _LikedViewState extends State<_LikedView>
   int _favMetaVer = -1;
   List<Song> _favAll = const [];
 
-  /// 排序/过滤结果按 (收藏版本, 设置版本, 元数据版本, 搜索词, 排序偏好) 缓存：
+  /// 排序/过滤结果按 (收藏版本, 设置版本, 元数据版本, 简繁词库版本, 搜索词,
+  /// 排序偏好) 缓存：
   /// build 因 AnyChange 重跑时不重排（权重排序每首一次 SQL）。
-  (int, int, int, String, CollectionSort)? _sortedKey;
+  (int, int, int, int, String, CollectionSort)? _sortedKey;
   _SortedResult _sorted = const _SortedResult([], []);
 
   List<Song> _favoritesOf(DirectSourceManager direct) {
@@ -569,7 +570,8 @@ class _LikedViewState extends State<_LikedView>
     final pref = direct.settings.sortFavorites;
     // 先按版本刷新收藏全集，再用刷新后的版本号做缓存键（避免首帧多排一次）。
     final all = _favoritesOf(direct);
-    final key = (_favVersion, _favSettingsVer, _favMetaVer, search, pref);
+    final key = (_favVersion, _favSettingsVer, _favMetaVer,
+        zhVariantRevision, search, pref);
     if (_sortedKey == key) return _sorted;
     final filtered = filterSongs(all, search);
     // 权重/播放统计排序批量预取（一次分片查询），不再逐首同步查库。
@@ -684,16 +686,16 @@ class _SongsViewState extends State<_SongsView>
   bool get wantKeepAlive => true;
 
   /// 排序/过滤结果缓存（同喜欢页）：
-  /// 键 = (歌曲全集身份, 搜索词, 排序偏好)。build 重跑不重排不重查。
+  /// 键 = (歌曲全集身份, 简繁词库版本, 搜索词, 排序偏好)。build 重跑不重排不重查。
   List<Song>? _lastBase;
-  (int, String, CollectionSort)? _sortedKey;
+  (int, int, String, CollectionSort)? _sortedKey;
   _SortedResult _sorted = const _SortedResult([], []);
 
   _SortedResult _sortSongs(
       LibraryProvider lib, DirectSourceManager direct, String search) {
     final base = lib.songs;
     final pref = direct.settings.sortSongs;
-    final key = (base.length, search, pref);
+    final key = (base.length, zhVariantRevision, search, pref);
     if (_sortedKey == key && identical(base, _lastBase)) return _sorted;
     final filtered = filterSongs(base, search);
     // 权重/播放统计排序批量预取（一次分片查询），不再逐首同步查库。
@@ -822,14 +824,15 @@ class _AlbumsViewState extends State<_AlbumsView>
   AppSettings Function() get appSettings =>
       () => context.read<DirectSourceManager>().settings;
 
-  /// 排序/过滤结果缓存：键 = (专辑全集大小, 搜索词, 排序偏好)，build 重跑不重排。
+  /// 排序/过滤结果缓存：键 = (专辑全集大小, 简繁词库版本, 搜索词, 排序偏好)，
+  /// build 重跑不重排。
   List<Album>? _lastBase;
-  (int, String, CollectionSort)? _sortedKey;
+  (int, int, String, CollectionSort)? _sortedKey;
   List<Album> _sorted = const [];
 
   List<Album> _filteredSorted(
       List<Album> albums, String search, CollectionSort pref) {
-    final key = (albums.length, search, pref);
+    final key = (albums.length, zhVariantRevision, search, pref);
     if (_sortedKey == key && identical(albums, _lastBase)) return _sorted;
     _lastBase = albums;
     _sortedKey = key;
@@ -1227,14 +1230,15 @@ class _ArtistsViewState extends State<_ArtistsView>
   AppSettings Function() get appSettings =>
       () => context.read<DirectSourceManager>().settings;
 
-  /// 排序/过滤结果缓存：键 = (歌手全集大小, 搜索词, 排序偏好)，build 重跑不重排。
+  /// 排序/过滤结果缓存：键 = (歌手全集大小, 简繁词库版本, 搜索词, 排序偏好)，
+  /// build 重跑不重排。
   List<Artist>? _lastBase;
-  (int, String, CollectionSort)? _sortedKey;
+  (int, int, String, CollectionSort)? _sortedKey;
   List<Artist> _sorted = const [];
 
   List<Artist> _filteredSorted(
       List<Artist> artists, String search, CollectionSort pref) {
-    final key = (artists.length, search, pref);
+    final key = (artists.length, zhVariantRevision, search, pref);
     if (_sortedKey == key && identical(artists, _lastBase)) return _sorted;
     _lastBase = artists;
     _sortedKey = key;

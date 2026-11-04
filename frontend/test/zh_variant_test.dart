@@ -79,11 +79,22 @@ void main() {
   group('全局状态', () {
     tearDown(debugResetZhForTest);
 
-    test('默认原文：不做任何转换', () {
+    test('原文模式：词库未预热时按原字面', () {
       expect(zhVariant, ZhVariant.original);
       expect(zhDisplay('周傑倫'), '周傑倫');
       expect(zhSearchFold('周傑倫'), '周傑倫');
       expect(zhQueryVariants('周傑倫'), ['周傑倫']);
+    });
+
+    test('原文模式：显示保持原文，搜索仍可折叠', () {
+      debugInstallZhConvertersForTest(
+        t2s: _conv({'傑': '杰', '倫': '伦', '週': '周'}),
+        s2t: _conv({'杰': '傑', '伦': '倫', '周': '周'}),
+        variant: ZhVariant.original,
+      );
+      expect(zhDisplay('周傑倫'), '周傑倫');
+      expect(zhSearchFold('周傑倫'), '周杰伦');
+      expect(zhQueryVariants('周杰伦'), containsAll(['周杰伦', '周傑倫']));
     });
 
     test('简体：展示与搜索折叠、查询变体', () {
@@ -125,6 +136,24 @@ void main() {
 
   group('内置 OpenCC 1.4.2 词库', () {
     tearDown(debugResetZhForTest);
+
+    test('预热搜索词库：原文模式也可跨简繁搜索', () async {
+      debugResetZhForTest();
+      expect(await ensureZhSearchEngine(), isTrue);
+      expect(zhVariant, ZhVariant.original);
+      // 显示仍是原文，搜索已折叠。
+      expect(zhDisplay('周傑倫'), '周傑倫');
+      expect(zhSearchFold('周傑倫'), '周杰伦');
+      // OpenCC 专名保护：周杰伦 的繁体规范写法是「周杰倫」（杰不换傑）。
+      expect(zhQueryVariants('周杰伦'), contains('周杰倫'));
+      // 已加载不重复解析。
+      expect(await ensureZhSearchEngine(), isFalse);
+
+      // 切到简体再切回原文：词库保留，搜索继续生效。
+      expect(await applyZhVariant(ZhVariant.simplified), isTrue);
+      expect(await applyZhVariant(ZhVariant.original), isTrue);
+      expect(zhSearchFold('周傑倫'), '周杰伦');
+    });
 
     test('资源加载与真实转换（后台 isolate 解析）', () async {
       // 强制走真实 Isolate.run，验证「解析结果（自定义对象）跨 isolate 回传」
