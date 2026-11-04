@@ -2285,10 +2285,19 @@ void _opArtistMarkError(Database db, Map<String, dynamic> a) {
 /// 与 _opArtistRetry 的区别是**连 resolved 一起重置**，并清 expanded_at 让成员重新
 /// 展开；成员边本身先留着——展开成功时 _opArtistSetMembers 全量替换，失败时旧的
 /// 可用成员不至于被提前抹掉。
+///
+/// `clearMbid=true` 是「完全重新解析」：连 mbid / 匹配分 / 旧身份元数据一起清掉，
+/// 解析会重新走 MB 搜索（可能改判到另一个同名实体）。批量强制解析不带这个标志，
+/// 仍按原 mbid 重取。
 void _opArtistForceRetry(Database db, Map<String, dynamic> a) {
   final nowIso = DateTime.now().toIso8601String();
-  const head = "UPDATE artists SET status='pending', error_count=0, next_at=0, "
-      'expanded_at=NULL, updated_at=? WHERE ';
+  final clear = a['clearMbid'] == true
+      ? "mbid=NULL, match_score=NULL, resolved_at=NULL, names='[]', "
+          "groups='[]', type='person', disambiguation=NULL, "
+      : '';
+  final head = "UPDATE artists SET status='pending', error_count=0, next_at=0, "
+      'expanded_at=NULL, $clear'
+      'updated_at=? WHERE ';
   if (a['all'] == true) {
     db.execute('$head 1=1', [nowIso]);
     return;

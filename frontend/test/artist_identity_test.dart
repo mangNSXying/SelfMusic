@@ -1261,7 +1261,7 @@ void main() {
 
   // ---------- 重新解析的 MB 请求数 ----------
 
-  test('重解析已知 MBID：一次请求就拿全实体+关系', () async {
+  test('完全重新解析：清掉旧 mbid 后重新搜索 + 取实体', () async {
     final (index, dir) = await _openIndex();
     try {
       await index.upsertSongs([_song('a', 'Band Q')]);
@@ -1279,19 +1279,25 @@ void main() {
         matchScore: 100,
       );
 
-      // 同一个 MBID 以前要打两次：先 lookup 拿实体，再单独拉 artist-rels。
-      final adapter = _RecordingAdapter({
-        'id': 'mb-BandQ',
-        'name': 'Band Q',
-        'type': 'Group',
-        'relations': [
-          {
-            'type': 'member of band',
-            'direction': 'backward',
-            'artist': {'name': '成员A', 'type': 'Person', 'id': 'mb-A'},
-          },
-        ],
-      });
+      final adapter = _RecordingAdapter(
+        {
+          'artists': [
+            {'id': 'mb-BandQ', 'name': 'Band Q', 'type': 'Group', 'score': 100},
+          ],
+        },
+        entity: {
+          'id': 'mb-BandQ',
+          'name': 'Band Q',
+          'type': 'Group',
+          'relations': [
+            {
+              'type': 'member of band',
+              'direction': 'backward',
+              'artist': {'name': '成员A', 'type': 'Person', 'id': 'mb-A'},
+            },
+          ],
+        },
+      );
       final resolver = ArtistResolver(index, dio: _dioOf(adapter));
       try {
         await resolver.forceRetryOne(artistKey: band.artistKey);
@@ -1299,13 +1305,13 @@ void main() {
         resolver.dispose();
       }
 
-      expect(adapter.calls.map((u) => u.path), ['/ws/2/artist/mb-BandQ']);
-      // 关系也一并处理掉了（没为它再发第二次请求）：成员身份建好、边写上。
+      // 完全重新解析 = 先搜索、再按命中 mbid 取实体+关系。
+      expect(adapter.calls.map((u) => u.path),
+          ['/ws/2/artist/', '/ws/2/artist/mb-BandQ']);
       expect(index.artistRowByMbid('mb-A')?.displayName, '成员A');
-      // 边写上了：歌手页因此能显示这个 Person（它自己没有歌，靠组合继承）。
       expect(index.identityArtistGroups().map((a) => a.name), contains('成员A'));
       expect(index.artistRowByKey(band.artistKey)!.matchScore, 100,
-          reason: '重解析不能把已记录的分数抹掉');
+          reason: '搜索分要落到 match_score');
     } finally {
       await _dispose(index, dir);
     }
@@ -1345,12 +1351,11 @@ void main() {
       );
       final resolver = ArtistResolver(index, dio: _dioOf(adapter));
       try {
-        await resolver.forceRetryOne(artistKey: band.artistKey);
+        // 批量强制解析保留已有 mbid：正好覆盖「实体 404 退回搜索」这条兜底。
+        await resolver.forceRetryAll();
       } finally {
         resolver.dispose();
       }
-
-      // 先打旧 MBID（404），再搜索，最后取新实体 —— 顺序固定。
       expect(adapter.calls.map((u) => u.path), [
         '/ws/2/artist/mb-gone',
         '/ws/2/artist/',

@@ -259,11 +259,18 @@ class ArtistResolver extends ChangeNotifier {
     await runOnceNow();
   }
 
-  /// 重新解析单个歌手（歌手页「重新解析」按钮）。
+  /// 完全重新解析单个歌手（歌手页「重新解析」按钮）。
+  ///
+  /// 清掉已有 mbid 与旧身份元数据后重新走 MB 搜索：这个入口的语义就是「按当前
+  /// 数据重新判定」，所以可能改判到另一个同名实体（同名冲突会按专辑上下文定向）。
+  /// 设置页的批量「强制解析」不走这里，仍按原 mbid 重取。
   /// [artistKey] 为空时退回 [canonicalKey]。
   Future<void> forceRetryOne({String? artistKey, String? canonicalKey}) async {
     await _index.artistForceRetry(
-        all: false, artistKey: artistKey, canonicalKey: canonicalKey);
+        all: false,
+        artistKey: artistKey,
+        canonicalKey: canonicalKey,
+        clearMbid: true);
     await runOnceNow();
   }
 
