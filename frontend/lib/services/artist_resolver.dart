@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:unorm_dart/unorm_dart.dart' as unorm;
 
 import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
@@ -387,7 +388,7 @@ class ArtistResolver extends ChangeNotifier {
 
     await yieldToEventLoop(); // 让出：搜索之前（重试/直取分支的本地 DB 工作聚合不占满主线程）
     final hits = await _search(searchName, limit: 10);
-    final hit = pickFirstUsable(hits);
+    final hit = _pickBest(hits, item);
     if (hit != null) {
       final entity = await _requireEntity(hit.mbid, score: hit.score);
       await _bind(item.canonicalKey, item.artistKey, entity);
@@ -400,11 +401,12 @@ class ArtistResolver extends ChangeNotifier {
     }
   }
 
-  /// 脏数据过滤后取第一个可用候选（用户确认：不再判断 strong，MB 已做检索归一化）。
+  /// 脏数据过滤后的可用候选（用户确认：不再判断 strong，MB 已做检索归一化）。
   ///
   /// 过滤掉：空 mbid / 空名、占位名（`[no artist]`、`Unknown Artist`、
   /// `Various Artists` 等）、MB 不认的类型、以及低分噪声。
-  static MbArtistHit? pickFirstUsable(List<MbArtistHit> hits) {
+  static List<MbArtistHit> usableHits(List<MbArtistHit> hits) {
+    final out = <MbArtistHit>[];
     for (final h in hits) {
       if (h.mbid.isEmpty) continue;
       final name = h.name.trim();
@@ -413,10 +415,67 @@ class ArtistResolver extends ChangeNotifier {
       final t = _normType(h.type);
       if (t != null && !_allowedTypes.contains(t)) continue;
       if (h.score < _minScore) continue;
-      return h;
+      out.add(h);
+    }
+    return out;
+  }
+
+  /// 脏数据过滤后取第一个可用候选（无同名冲突时的默认路径）。
+  static MbArtistHit? pickFirstUsable(List<MbArtistHit> hits) {
+    final usable = usableHits(hits);
+    return usable.isEmpty ? null : usable.first;
+  }
+
+  /// 选型：默认取首个可用候选；**同名多候选**时用本地专辑名定向。
+  ///
+  /// MB 对同名实体只按检索分排序（`メグ`：同名 Person 100 / 角色 98），
+  /// 分差没有语义。角色的 disambiguation 是作品名、真人/组合的是所属乐队或
+  /// 艺名，本地歌曲专辑名通常包含其中一个（`ご注文はうさぎですか？`），
+  /// 所以只在撞名时读一次专辑名做上下文匹配，避免把同名真人误并给声优。
+  MbArtistHit? _pickBest(List<MbArtistHit> hits, ArtistWorkItem item) {
+    final usable = usableHits(hits);
+    if (usable.length <= 1) return usable.isEmpty ? null : usable.first;
+
+    final name = item.displayName.trim();
+    final sameName = [
+      for (final h in usable)
+        if (h.name.trim() == name) h
+    ];
+    if (sameName.length <= 1) return usable.first;
+
+    final albums = _index.artistAlbumNames(item.artistKey);
+    return pickByAlbumContext(sameName, albums) ?? usable.first;
+  }
+
+  /// 同名候选按本地专辑名定向：返回第一个 disambiguation 能与任一专辑名
+  /// 匹配的候选；对不上返回 null（调用方回落首个候选）。
+  ///
+  /// 两侧都做 NFKC + 小写 + 去空白（MB 用 `?`、标签里常见全角 `？`）。
+  /// 只接受等值或长度 ≥ 3 的包含关系，避免 `TV` / 数字类短串误命中。
+  static MbArtistHit? pickByAlbumContext(
+      Iterable<MbArtistHit> hits, Iterable<String> albums) {
+    final normalized = <String>[
+      for (final a in albums)
+        if (_normForMatch(a).isNotEmpty) _normForMatch(a)
+    ];
+    if (normalized.isEmpty) return null;
+    for (final h in hits) {
+      final dis = _normForMatch(h.disambiguation ?? '');
+      if (dis.isEmpty) continue;
+      for (final a in normalized) {
+        final shorter = a.length <= dis.length ? a : dis;
+        final longer = a.length <= dis.length ? dis : a;
+        if (a == dis || (shorter.length >= 3 && longer.contains(shorter))) {
+          return h;
+        }
+      }
     }
     return null;
   }
+
+  /// 上下文匹配用归一化：解析结果落库仍保持原始拼写，这里只用于比较。
+  static String _normForMatch(String s) =>
+      unorm.nfkc(s).toLowerCase().replaceAll(RegExp(r'\s+'), '');
 
   static bool _isPlaceholder(String name) {
     final k = name.toLowerCase();
