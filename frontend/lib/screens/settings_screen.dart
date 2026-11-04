@@ -28,6 +28,7 @@ import '../theme/app_metrics.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_provider.dart';
 import '../utils/cover_thumb.dart';
+import '../utils/zh_variant.dart';
 import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/app_volume_control.dart';
@@ -876,6 +877,7 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
   late AppSettings _settings;
   bool _clearingThumbs = false;
   bool _fontBusy = false;
+  bool _zhBusy = false;
 
   @override
   void didChangeDependencies() {
@@ -1117,6 +1119,21 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
                 '（不修改存储字段）'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _pickTitleFormat(context),
+          ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.translate),
+            title: const Text('简繁显示'),
+            subtitle: Text('当前：${_settings.zhVariant.label}'
+                '（只影响展示，不修改元数据）'),
+            trailing: _zhBusy
+                ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.chevron_right),
+            onTap: _zhBusy ? null : () => _pickZhVariant(context),
           ),
           ListTile(
             contentPadding: EdgeInsets.zero,
@@ -1403,6 +1420,62 @@ class _AppearanceSettingsState extends State<_AppearanceSettings> {
     setState(() => _settings.songTitleFormat = chosen);
     // 设置写入后通知全局重建（AppSettings 非 ChangeNotifier）。
     context.read<DirectSourceManager>().refresh();
+  }
+
+  /// 简繁显示：只影响元数据展示，不修改存储；首次切换会加载 OpenCC 词库。
+  Future<void> _pickZhVariant(BuildContext context) async {
+    final chosen = await showDialog<ZhVariant>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: const Text('简繁显示'),
+        children: [
+          for (final v in ZhVariant.values)
+            SimpleDialogOption(
+              onPressed: () => Navigator.of(c).pop(v),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(v.label),
+                          const SizedBox(height: 2),
+                          Text(v.hint,
+                              style: Theme.of(c).textTheme.bodySmall),
+                        ],
+                      ),
+                    ),
+                    if (v == _settings.zhVariant)
+                      Icon(Icons.check,
+                          color: Theme.of(c).colorScheme.primary),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (chosen == null || !context.mounted) return;
+    if (chosen == _settings.zhVariant) return;
+    setState(() => _settings.zhVariant = chosen);
+    if (chosen == ZhVariant.original) {
+      // 释放词库不耗时，无需展示加载态。
+      await context.read<DirectSourceManager>().applyZhVariantSetting();
+      if (!context.mounted) return;
+      context.read<PlayerProvider>().refreshSystemMedia();
+      setState(() {});
+      return;
+    }
+    setState(() => _zhBusy = true);
+    final ok = await context.read<DirectSourceManager>().applyZhVariantSetting();
+    if (!context.mounted) return;
+    context.read<PlayerProvider>().refreshSystemMedia();
+    setState(() => _zhBusy = false);
+    if (!ok) {
+      AppToast.show('简繁词库加载失败，已保持原文', isError: true);
+    }
   }
 
   /// 歌词最大行数：0=不限制；大屏按上限放大字号（只放大不缩小）。
@@ -3348,6 +3421,9 @@ class _BackupMigrationDialogState extends State<_BackupMigrationDialog> {
         if (!mounted) return;
         context.read<ShortcutSettings>().reload();
         context.read<PlayerProvider>().reloadEqualizerSettings();
+        // 导入的 zh_variant 需要立即重载词库并刷新展示（否则要重启才生效）。
+        await direct.applyZhVariantSetting();
+        if (mounted) context.read<PlayerProvider>().refreshSystemMedia();
       }
       if (kind == BackupKind.playlists) {
         if (!mounted) return;
@@ -3400,6 +3476,8 @@ class _BackupMigrationDialogState extends State<_BackupMigrationDialog> {
       if (kind != BackupKind.playlists) {
         context.read<ShortcutSettings>().reload();
         context.read<PlayerProvider>().reloadEqualizerSettings();
+        await direct.applyZhVariantSetting();
+        context.read<PlayerProvider>().refreshSystemMedia();
       }
       context.read<PlaylistsProvider>().refresh();
       AppToast.show(summaries.join('；'), isError: false);

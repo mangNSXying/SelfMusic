@@ -29,6 +29,7 @@ import '../services/artist_resolver.dart';
 import '../services/secret_store.dart';
 import '../utils/cover_thumb.dart';
 import '../utils/chunked_scheduler.dart';
+import '../utils/zh_variant.dart';
 import '../utils/source_folders.dart';
 import '../utils/perf_log.dart';
 import '../utils/main_thread_probe.dart';
@@ -676,6 +677,9 @@ class DirectSourceManager extends ChangeNotifier {
       }
     }
     settings = AppSettings(index);
+    // 简繁显示（默认原文）：非原文时在首帧前加载 OpenCC 词库，避免先显示原文
+    // 再跳变；加载失败自动回退原文，不阻塞启动。
+    await applyZhVariant(settings.zhVariant);
     // 自签策略只影响 dart:io（扫描/探测/API）；播放器（Media Kit）不校验 TLS。
     // 压缩图像画质开关（默认关）：同步给 cover_thumb 全局闸（显示+生成共用）。
     setCoverThumbCompressionEnabled(settings.compressCoverImage);
@@ -805,6 +809,18 @@ class DirectSourceManager extends ChangeNotifier {
       perfLog('direct.backfillCoverThumbs',
           '${sw.elapsedMilliseconds}ms'); // TEMP-PROBE
     }
+  }
+
+  /// 设置页切换「简繁显示」后调用：加载/释放词库并让所有展示层重建。
+  ///
+  /// 走 [settingsChanged] 而非只 [notifyListeners]：自增 settingsVersion 能同时
+  /// 失效行级视图缓存、喜欢/源浏览页缓存与列表排序缓存（切换是低频操作，
+  /// 多一次全库快照重读可接受）。词库加载失败时回退「原文」并返回 false。
+  Future<bool> applyZhVariantSetting() async {
+    final ok = await applyZhVariant(settings.zhVariant);
+    if (!ok) settings.zhVariant = ZhVariant.original;
+    settingsChanged();
+    return ok;
   }
 
   /// 设置页切换「压缩图像画质」后调用：同步全局开关并刷新列表；
