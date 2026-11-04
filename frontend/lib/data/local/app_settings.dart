@@ -3,6 +3,7 @@ import 'dart:convert';
 import '../../services/equalizer/equalizer_types.dart';
 import '../../utils/collection_sort.dart';
 import '../../utils/song_groups.dart';
+import '../../utils/zh_variant.dart';
 import 'local_index.dart';
 import 'table_column_weights.dart';
 
@@ -256,6 +257,10 @@ class AppSettings {
 
   /// 歌曲标题显示格式（settings.md §3.4 歌曲）：默认 song.artist - song.title。
   static const String kSongTitleFormat = 'song_title_format';
+
+  /// 简繁显示（settings.md §3.7 界面）：original / simplified / traditional，
+  /// 默认原文。只影响展示，不写回数据库、歌单快照或音频标签。
+  static const String kZhVariant = 'zh_variant';
 
   /// 时长削弱（改进.txt 功能8）：加权抽样时按歌曲时长乘以分段削弱系数。
   static const String kCurveWeightEnabled = 'curve_weight_enabled';
@@ -801,6 +806,10 @@ class AppSettings {
   set songTitleFormat(SongTitleFormat v) =>
       index.settingsSet(kSongTitleFormat, v.name);
 
+  /// 简繁显示（默认原文）：转换在展示层完成，见 utils/zh_variant.dart。
+  ZhVariant get zhVariant => ZhVariant.parse(index.settingsGet(kZhVariant));
+  set zhVariant(ZhVariant v) => index.settingsSet(kZhVariant, v.name);
+
   CollectionViewMode _viewMode(String key, CollectionViewMode fallback) {
     final raw = index.settingsGet(key);
     if (raw == null) return fallback;
@@ -1133,6 +1142,7 @@ class AppSettings {
     kPlayerTransition,
     kCoverThumbCompress,
     kSongTitleFormat,
+    kZhVariant,
     kViewModePlaylists,
     kViewModeSources,
     kViewModeAlbums,
