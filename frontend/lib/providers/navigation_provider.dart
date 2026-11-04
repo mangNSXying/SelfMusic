@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import '../models/album.dart';
 import '../models/artist.dart';
@@ -21,6 +23,15 @@ enum LibraryInfoPage {
 /// 内容栈里的同一族页面：不同族互斥，进新族会清掉旧族；
 /// 全局层（设置 / 歌曲信息）返回 null，可以压在任何族之上。
 enum ContentFamily { playlist, source, albumArtist }
+
+/// 按枚举 `name` 反解（持久化状态恢复用；未知值返回 null）。
+T? _enumByName<T extends Enum>(List<T> values, Object? name) {
+  if (name is! String) return null;
+  for (final value in values) {
+    if (value.name == name) return value;
+  }
+  return null;
+}
 
 /// 内容区路由（底 → 顶由 [NavigationProvider.contentRoutes] 持有）。
 ///
@@ -119,8 +130,32 @@ class ArtistDetailRoute extends ContentRoute {
 /// 保留单一 [NavigationProvider]，全局 `notifyListeners()` 继续广播；消费方
 /// **MUST** 只订阅其渲染所必需的最小字段（`context.select`）。内容区路由
 /// 订阅 `(section, contentRevision)`，不要 watch 整个导航对象。
+///
+/// ── 冷启动记忆内容页 ───────────────────────────────────────────────────
+/// 分组与内容栈经 [readState] / [writeState] 持久化（设备本地设置）；启动时
+/// 恢复「播放页下面是什么」，但 [playerView] 恒为 true（首页仍是播放页）。
+/// 专辑/歌手详情只存模型元信息，歌曲列表由页面在曲库加载后自行解析。
 /// ───────────────────────────────────────────────────────────────────────
 class NavigationProvider extends ChangeNotifier {
+  NavigationProvider({
+    String? Function()? readState,
+    void Function(String state)? writeState,
+  })  : _readState = readState,
+        _writeState = writeState {
+    _restoreState();
+  }
+
+  /// 冷启动恢复用的持久化读口（生产接 AppSettings.navigationState）。
+  final String? Function()? _readState;
+
+  /// 内容页状态写口（fire-and-forget，随写隔离落库）。
+  final void Function(String state)? _writeState;
+
+  /// 上次写入的序列化结果：状态没变就不重复落库。
+  String? _lastPersistedState;
+
+  static const int _stateVersion = 1;
+
   NavSection _section = NavSection.songs;
   String _search = '';
 
@@ -258,7 +293,118 @@ class NavigationProvider extends ChangeNotifier {
 
   void _notifyContent() {
     _contentRevision++;
+    _persistState();
     notifyListeners();
+  }
+
+  // ---------- 冷启动内容页记忆 ----------
+
+  /// 保存「当前分组 + 内容栈」。只存可重建的身份信息：
+  /// 专辑/歌手详情不存歌曲快照（避免大 JSON 写 UI 线程），恢复后由详情页
+  /// 按 groupKey / identityKey 从曲库解析。
+  void _persistState() {
+    final write = _writeState;
+    if (write == null) return;
+    try {
+      final encoded = jsonEncode({
+        'v': _stateVersion,
+        'section': _section.name,
+        'routes': [for (final route in _content) _routeToJson(route)],
+      });
+      if (encoded == _lastPersistedState) return;
+      _lastPersistedState = encoded;
+      write(encoded);
+    } catch (e) {
+      debugPrint('[nav] 保存内容页状态失败：$e');
+    }
+  }
+
+  /// 启动时恢复分组与内容栈（播放页根状态不恢复，恒从播放页首屏进入）。
+  void _restoreState() {
+    final raw = _readState?.call();
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return;
+      final state = Map<String, dynamic>.from(decoded);
+      if (state['v'] != _stateVersion) return;
+
+      final sectionName = state['section'];
+      _section = _enumByName(NavSection.values, sectionName) ?? _section;
+
+      final routes = state['routes'];
+      if (routes is! List) return;
+      final restored = <ContentRoute>[];
+      for (final item in routes) {
+        final route = _routeFromJson(item);
+        // 损坏/未知类型：保留已解析的底层，整段恢复到此为止。
+        if (route == null) break;
+        restored.add(route);
+      }
+      _content
+        ..clear()
+        ..addAll(restored);
+    } catch (e) {
+      debugPrint('[nav] 恢复内容页状态失败，已忽略：$e');
+    }
+  }
+
+  Map<String, dynamic> _routeToJson(ContentRoute route) => switch (route) {
+        SettingsRoute(:final item) => {'t': 'settings', 'item': item.name},
+        LibraryInfoRoute(:final page) => {'t': 'info', 'page': page.name},
+        AboutRoute() => {'t': 'about'},
+        PlaylistRoute(:final id) => {'t': 'playlist', 'id': id},
+        SourceBrowseRoute(:final sourceKey, :final dir) => {
+            't': 'source',
+            'key': sourceKey,
+            'dir': dir
+          },
+        AlbumDetailRoute(:final album) => {
+            't': 'album',
+            'album': album.toJson()
+          },
+        ArtistDetailRoute(:final artist) => {
+            't': 'artist',
+            'artist': artist.toJson(),
+          },
+      };
+
+  ContentRoute? _routeFromJson(Object? raw) {
+    if (raw is! Map) return null;
+    final map = Map<String, dynamic>.from(raw);
+    try {
+      switch (map['t']) {
+        case 'settings':
+          final item = _enumByName(SettingsItem.values, map['item']);
+          return item == null ? null : SettingsRoute(item);
+        case 'info':
+          final page = _enumByName(LibraryInfoPage.values, map['page']);
+          return page == null ? null : LibraryInfoRoute(page);
+        case 'about':
+          return const AboutRoute();
+        case 'playlist':
+          final id = map['id'];
+          return id is int ? PlaylistRoute(id) : null;
+        case 'source':
+          final key = map['key'];
+          final dir = map['dir'];
+          if (key is! String || dir is! String) return null;
+          return SourceBrowseRoute(key, dir);
+        case 'album':
+          final json = map['album'];
+          if (json is! Map) return null;
+          return AlbumDetailRoute(
+              Album.fromJson(Map<String, dynamic>.from(json)), const []);
+        case 'artist':
+          final json = map['artist'];
+          if (json is! Map) return null;
+          return ArtistDetailRoute(
+              Artist.fromJson(Map<String, dynamic>.from(json)), const []);
+      }
+    } catch (_) {
+      return null;
+    }
+    return null;
   }
 
   void openQueue() {

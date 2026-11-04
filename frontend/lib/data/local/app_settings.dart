@@ -315,6 +315,11 @@ class AppSettings {
   static const int logExportMinutesMin = 1;
   static const int logExportMinutesMax = 30;
 
+  /// 内容区导航状态（设备本地 UI 记忆）：当前分组 + 内容栈 JSON。
+  /// 只用于冷启动恢复「播放页下面是什么」，不随设置导出/同步，故不进
+  /// [knownKeys]。
+  static const String kNavigationState = 'navigation_state';
+
   /// 歌词追焦等待秒数（用户拖动歌词后多久恢复自动跟随；播放设置可调）。
   static const String kLyricFocusIdleSec = 'lyric_focus_idle_sec';
 
@@ -911,6 +916,10 @@ class AppSettings {
   bool get closeToTray => (index.settingsGet(kCloseToTray) ?? '1') == '1';
   set closeToTray(bool v) =>
       index.settingsSet(kCloseToTray, v ? '1' : '0');
+
+  /// 内容区导航状态（设备本地 UI 记忆）：由 [NavigationProvider] 读写。
+  String get navigationState => index.settingsGet(kNavigationState) ?? '';
+  set navigationState(String v) => index.settingsSet(kNavigationState, v);
 
   /// 列表分组折叠状态（按集合持久化，[collectionKey] 如 `playlist:12` /
   /// `favorites` / `songs` / `source:webdav:nas`）：存折叠组名集合
