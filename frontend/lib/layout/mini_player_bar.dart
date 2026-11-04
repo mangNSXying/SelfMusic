@@ -8,6 +8,7 @@ import '../providers/player_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/cover_thumb.dart';
 import '../utils/song_title_format.dart';
+import '../utils/zh_variant.dart';
 import '../widgets/draggable_sheet.dart';
 import '../widgets/player_sheet_anim.dart';
 import '../widgets/pressable.dart';
@@ -236,7 +237,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
                             ?.copyWith(fontWeight: FontWeight.w600),
                       ),
                       Text(
-                        song.artist ?? 'Unknown',
+                        zhDisplay(song.artist ?? 'Unknown'),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.bodyMedium,
