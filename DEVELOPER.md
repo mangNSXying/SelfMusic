@@ -135,7 +135,7 @@ selfmusic/
 │   │   │                            #   + song_weight_store / playlist_store / cache_manager / app_settings / backup_service
 │   │   │                            #   + 阶段5：sync_event_types / weight_outbox / breakpoint_mirror
 │   │   ├── models/                   # Song / Album / Artist
-│   │   ├── utils/                    # duration_format / song_title_format / lrc_parser
+│   │   ├── utils/                    # duration_format / song_title_format / lrc_parser / zh_variant
 │   │   ├── widgets/                  # 共享组件（SongTile / CoverThumb / lyrics_view / add_to_playlist / view_mode_toggle 等）
 │   │   └── screens/                  # library / playlists_view / sources / source_browse_view / settings / player / pairing / devices（阶段5 设备管理）
 │   ├── android/ linux/ windows/ ohos/   # 各平台壳工程（ohos 的 build-profile.json5 含本机签名材料不入库，模板 build-profile.json5.example）
@@ -615,6 +615,15 @@ abstract class MusicSource {
 - 测试：`test/webdav_scan_test.dart` 用真 `HttpServer`（PROPFIND/GET/Range + 可变 etag）验证跨 isolate 扫描、增量跳过与 etag 变化仅重探目标文件；`test/audio_metadata_test.dart` 覆盖头部越界与大封面边界；
   另有 `duration_format_test`（时长 mm:ss/h:mm:ss）、`lrc_parser_test`（歌词解析）、`song_title_format_test`（标题格式）、`play_reconcile_test`（播放前最新行纠正）、`top_bar_search_test`（搜索追焦与区域提示语）、`source_browse_search_test`（源内复用顶栏搜索）、`view_mode_settings_test`（集合页视图持久化）、`playlist_membership_test`（歌单归属/切换）与 `playlists_view_test` 等
 - 历史问题：mp3 enc==3 / flac VORBIS_COMMENT 曾用 `String.fromCharCodes` 逐字节解码导致 CJK 乱码——已改 UTF-8 解码；修复后需对已有源重扫一次覆写旧行（`upsert` 无条件覆盖 title/artist/album，无需删库）
+
+**简繁显示（展示层转换，`utils/zh_variant.dart`）**
+
+- **信息与展示解耦**：SQLite（`idx_songs` / `artists` / `playlist_items`）、`Song`/`Album`/`Artist` 模型、歌单同步载荷与 `library_cache.json` **永远保存原文**；只有 UI 文本出口调用 `zhDisplay()`。**不要**在 `songFromRow` / `Song.fromJson` / `Album.fromSongs` / `artistGroupsOf` 里转换——这些路径会进后台 isolate，模型还会被写回歌单/同步/编辑弹窗，转换会污染存储。
+- **词库**：`assets/opencc/` 内置 OpenCC ver.1.4.2 的 `TSCharacters/TSPhrases/STCharacters/STPhrases`（Apache-2.0，约 1.15 MB）。设置为「原文」时不加载；切到简体/繁体时由 `DirectSourceManager.applyZhVariantSetting()` 一次性读取并在子 isolate 解析（`runOffThread`），失败自动回退原文。纯 Dart 最长词组匹配 + 单字兜底，带 memo 缓存；天然跨 Android/Linux/Windows/OHOS，不依赖原生库。
+- **生效范围**：歌曲标题/歌手/专辑/专辑歌手、专辑与歌手列表、歌手详情、在线元数据候选、播放页/迷你条、Android 通知栏与鸿蒙 AVSession（`PlayerProvider.mediaItemOf`）、歌曲信息弹窗。**不转**：歌词、歌单名、播放源名、文件夹/路径、「修改信息」弹窗字段、标题格式=文件名、歌手身份键（`artistCanonicalKey`）与歌单锚点键（`anchorForArtist(artist.name)`）。
+- **搜索/排序**：`zhSearchFold()` 把两侧统一折叠为简体后再比较（`utils/song_search.dart`、专辑/歌手过滤、队列/信息页过滤）；`collection_sort` 在比较前 `zhDisplay()`。源浏览页的 SQL 搜索无法转换列值，由 `zhQueryVariants()` 在主 isolate 预先生成「原文/简体/繁体」三种查询词，再交给 `querySongs` 做多组 `LIKE`（后台 isolate 不加载词库，传 null 时退回原字面）。
+- **切换刷新**：`applyZhVariantSetting()` 走 `settingsChanged()`（自增 `settingsVersion`），现有行级缓存 / 喜欢页 / 源浏览页 / 列表排序缓存因此统一失效；切换是低频操作，多一次全库快照重读可接受。
+- **测试**：`test/zh_variant_test.dart`（词库解析、最长匹配、缓存失效、真实资源）、`test/zh_variant_settings_test.dart`（默认原文/持久化/导出白名单）。
 
 **读头部的多段策略（`data/local/audio_metadata.dart`）**
 
