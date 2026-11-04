@@ -5,6 +5,7 @@ import '../data/local/local_index.dart';
 import '../providers/direct_source_manager.dart';
 import '../utils/play_progress.dart';
 import '../utils/play_stats.dart';
+import '../utils/zh_variant.dart';
 import '../widgets/resizable_paginated_table.dart';
 import '../widgets/table_columns.dart';
 import 'library_info_detail_shared.dart';
@@ -164,12 +165,12 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
       totalCount += _countOf(r);
     }
 
-    final q = _query.trim().toLowerCase();
+    final q = zhSearchFold(_query.trim()).toLowerCase();
     var rows = all.where((r) {
       if (_onlyWithPlay && r.playSec <= 0) return false;
       if (q.isEmpty) return true;
-      final t = r.title.toLowerCase().contains(q);
-      final a = (r.artist ?? '').toLowerCase().contains(q);
+      final t = zhSearchFold(r.title).toLowerCase().contains(q);
+      final a = zhSearchFold(r.artist).toLowerCase().contains(q);
       return t || a;
     }).toList();
 
@@ -177,41 +178,53 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
       int c;
       switch (_sortColumn) {
         case 0:
-          c = a.title.toLowerCase().compareTo(b.title.toLowerCase());
+          c = zhDisplay(a.title)
+              .toLowerCase()
+              .compareTo(zhDisplay(b.title).toLowerCase());
           break;
         case 1:
-          c = (a.artist ?? '')
+          c = zhDisplay(a.artist ?? '')
               .toLowerCase()
-              .compareTo((b.artist ?? '').toLowerCase());
+              .compareTo(zhDisplay(b.artist ?? '').toLowerCase());
           if (c == 0) {
-            c = a.title.toLowerCase().compareTo(b.title.toLowerCase());
+            c = zhDisplay(a.title)
+              .toLowerCase()
+              .compareTo(zhDisplay(b.title).toLowerCase());
           }
           break;
         case 2:
           c = _countOf(a).compareTo(_countOf(b));
           if (c == 0) c = a.playSec.compareTo(b.playSec);
           if (c == 0) {
-            c = a.title.toLowerCase().compareTo(b.title.toLowerCase());
+            c = zhDisplay(a.title)
+              .toLowerCase()
+              .compareTo(zhDisplay(b.title).toLowerCase());
           }
           break;
         case 3:
           c = a.playSec.compareTo(b.playSec);
           if (c == 0) c = _countOf(a).compareTo(_countOf(b));
           if (c == 0) {
-            c = a.title.toLowerCase().compareTo(b.title.toLowerCase());
+            c = zhDisplay(a.title)
+              .toLowerCase()
+              .compareTo(zhDisplay(b.title).toLowerCase());
           }
           break;
         case 4:
           c = (a.medianPercent ?? -1).compareTo(b.medianPercent ?? -1);
           if (c == 0) {
-            c = a.title.toLowerCase().compareTo(b.title.toLowerCase());
+            c = zhDisplay(a.title)
+              .toLowerCase()
+              .compareTo(zhDisplay(b.title).toLowerCase());
           }
           break;
         case 5:
         default:
           c = a.sourceKey.toLowerCase().compareTo(b.sourceKey.toLowerCase());
           if (c == 0) {
-            c = a.title.toLowerCase().compareTo(b.title.toLowerCase());
+            c = zhDisplay(a.title)
+              .toLowerCase()
+              .compareTo(zhDisplay(b.title).toLowerCase());
           }
           break;
       }
@@ -352,8 +365,8 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
           style: base,
         );
     return switch (column) {
-      0 => text(r.title),
-      1 => text(r.artist ?? ''),
+      0 => text(zhDisplay(r.title)),
+      1 => text(zhDisplay(r.artist ?? '')),
       2 => text(playCountLabel(r.playSec, r.duration), align: TextAlign.right),
       3 => text(playSecLabel(r.playSec), align: TextAlign.right),
       4 => text(formatMedianProgress(r.medianPercent), align: TextAlign.right),
@@ -371,7 +384,9 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
         final r = rows[i];
         final played = r.playSec > 0;
         final artist =
-            (r.artist == null || r.artist!.isEmpty) ? '未知歌手' : r.artist!;
+            (r.artist == null || r.artist!.isEmpty)
+                ? '未知歌手'
+                : zhDisplay(r.artist!);
         return Card(
           margin: const EdgeInsets.symmetric(vertical: 4),
           child: ExpansionTile(
@@ -379,7 +394,8 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
             // 展开态默认画上下分割线（dividerColor），卡片本身已有边界，去掉。
             shape: const Border(),
             collapsedShape: const Border(),
-            title: Text(r.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+            title: Text(zhDisplay(r.title),
+                maxLines: 1, overflow: TextOverflow.ellipsis),
             subtitle: Text('$artist · ${r.sourceKey}',
                 maxLines: 1, overflow: TextOverflow.ellipsis),
             trailing: Container(
