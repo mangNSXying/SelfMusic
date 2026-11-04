@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
@@ -45,10 +48,27 @@ class _AppShellState extends State<AppShell> {
   /// 交互门控（可能为 null：未接入门控的旧测试/调用方，走原路径）。
   InteractionGate? _gate;
 
+  /// 窄屏统一窗口的开合进度（无 launcher 的旧测试为 null）。
+  ValueListenable<double>? _sheetProgress;
+
+  /// 宽屏队列面板的伸缩动画窗口（AnimatedContainer 同 300ms）。
+  Timer? _queuePanelGateTimer;
+
+  /// 上一次构建时的队列开合态（仅用于识别宽屏伸缩边沿）。
+  bool _lastQueueOpen = false;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _gate = InteractionGate.maybeOf(context);
+    // 窄屏队列窗口的门控只跟随开合/跟手过渡：窗口静止打开期间不再压住
+    // 后台数据通知（否则收藏/元数据要等 2s 兜底才刷新）。
+    final progress = context.read<AppSheetLauncher?>()?.progress;
+    if (!identical(_sheetProgress, progress)) {
+      _sheetProgress?.removeListener(_onSheetProgress);
+      _sheetProgress = progress;
+      _sheetProgress?.addListener(_onSheetProgress);
+    }
     final nav = context.read<NavigationProvider>();
     if (!identical(_nav, nav)) {
       _nav?.removeListener(_onNavChanged);
@@ -61,7 +81,17 @@ class _AppShellState extends State<AppShell> {
   @override
   void dispose() {
     _nav?.removeListener(_onNavChanged);
+    _sheetProgress?.removeListener(_onSheetProgress);
+    _queuePanelGateTimer?.cancel();
     super.dispose();
+  }
+
+  /// 悬浮层进度 → 门控：仅跟手/开合动画期间视为交互中。
+  void _onSheetProgress() {
+    final gate = _gate;
+    final p = _sheetProgress?.value;
+    if (gate == null || p == null) return;
+    gate.setQueuePanelOpen(p > 0.001 && p < 0.999);
   }
 
   void _onNavChanged() {
@@ -117,11 +147,20 @@ class _AppShellState extends State<AppShell> {
     final nav = context.read<NavigationProvider>();
     final queueOpen =
         context.select<NavigationProvider, bool>((n) => n.queueOpen);
-    // 队列面板开合 → 门控：面板打开/关闭期间被视为「交互中」。
-    if (_gate != null && _gate!.queuePanelOpen != queueOpen) {
-      final open = queueOpen;
-      WidgetsBinding.instance
-          .addPostFrameCallback((_) => _gate?.setQueuePanelOpen(open));
+    // 宽屏队列面板伸缩期间才算「交互中」；窄屏由 AppSheetLauncher.progress
+    // 驱动（见 [_onSheetProgress]），窗口静止打开时不阻塞数据通知。
+    if (wide && _gate != null && queueOpen != _lastQueueOpen) {
+      _lastQueueOpen = queueOpen;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _gate?.setQueuePanelOpen(true);
+        _queuePanelGateTimer?.cancel();
+        _queuePanelGateTimer = Timer(kPageMotion, () {
+          if (mounted) _gate?.setQueuePanelOpen(false);
+        });
+      });
+    } else if (!wide) {
+      _lastQueueOpen = queueOpen;
     }
 
     // 判屏口径：内容区宽度按**目标宽度**算（侧栏/队列各有 300ms 伸缩动画，
