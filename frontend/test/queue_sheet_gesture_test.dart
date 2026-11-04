@@ -287,18 +287,61 @@ void main() {
     expect(tester.getTopLeft(surface).dy, greaterThan(beforeMouse + 100),
         reason: '鼠标拖标题栏/把手也应升降窗口');
 
-    // ── 拖到极限：钳在 min/max，不越界（jumpTo 断言尺寸 ∈ [0,1]） ──
-    await tester.drag(
-        find.byKey(const ValueKey('app_sheet_handle')), const Offset(0, 800));
-    await tester.pumpAndSettle();
-    expect(tester.takeException(), isNull);
-    final atMin = tester.getTopLeft(surface).dy;
+    // ── 拉到上限：钳在 max，不越界（jumpTo 断言尺寸 ∈ [0,1]） ──
     await tester.drag(
         find.byKey(const ValueKey('app_sheet_handle')), const Offset(0, -800));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
-    expect(tester.getTopLeft(surface).dy, lessThan(atMin - 100),
-        reason: '拉到上限后仍可反向拖动（钳制不卡死）');
+    final atMax = tester.getTopLeft(surface).dy;
+    expect(atMax, greaterThanOrEqualTo(60.0),
+        reason: '拉到上限后窗口顶边仍应让开状态栏');
+
+    // ── 下限即关闭：拖到 minChildSize 直接收起 ──
+    // 与路由版 BottomSheet.extentChanged → onClosing 同语义；旧行为是停在
+    // 0.25、把手也关不掉（用户反馈）。
+    await tester.drag(
+        find.byKey(const ValueKey('app_sheet_handle')), const Offset(0, 800));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(surface, findsNothing, reason: '拖到最小应关闭窗口');
+    expect(h.nav.queueOpen, isFalse, reason: '关闭应镜像回写 nav.queueOpen');
+  });
+
+  testWidgets('队列窗口：标题栏上甩直接到全高（惯性）', (tester) async {
+    final h = await _pumpHost(tester, count: 30, playIndex: 8);
+    final surface = h.surface();
+
+    await tester.tap(h.entry);
+    await tester.pumpAndSettle();
+    final before = tester.getTopLeft(surface).dy;
+    expect(before, greaterThan(100), reason: '静息高度 0.6 屏，顶边不在状态栏下');
+
+    // 小幅上甩（手指只走 120px）也应靠速度补完剩余行程到全高。
+    await tester.fling(find.byKey(const ValueKey('app_sheet_handle')),
+        const Offset(0, -120), 1200);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(tester.getTopLeft(surface).dy, closeTo(60, 2),
+        reason: '上甩后应吸附到全高（顶边让开状态栏）');
+  });
+
+  testWidgets('队列窗口：列表下拉到最小直接关闭', (tester) async {
+    // 当前曲在首位 → 列表在顶部：下拉先缩窗口，触底即关闭（路由版语义）。
+    final h = await _pumpHost(tester, count: 30);
+    final surface = h.surface();
+
+    await tester.tap(h.entry);
+    await tester.pumpAndSettle();
+    expect(surface, findsOneWidget);
+
+    await tester.drag(
+      find.descendant(of: surface, matching: find.text('队列歌曲 1')),
+      const Offset(0, 800),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(surface, findsNothing, reason: '列表下拉到 minChildSize 应关闭窗口');
+    expect(h.nav.queueOpen, isFalse, reason: '关闭应镜像回写 nav.queueOpen');
   });
 }
 
