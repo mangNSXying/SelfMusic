@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -51,6 +52,14 @@ Future<T?> showAppDraggableSheet<T>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
+    // 与悬浮层（[AppSheetLauncher]）同一动效口径：框架默认 250/200ms +
+    // legacyDecelerate 会让路由版弹层比队列窗口更快更「钝」，三者手感不一致。
+    sheetAnimationStyle: const AnimationStyle(
+      duration: kPageMotion,
+      reverseDuration: kPageMotion,
+      curve: kPageMotionCurve,
+      reverseCurve: kPageMotionCurve,
+    ),
     builder: (c) => _AppSheetRouteBody(builder: builder, config: config),
   );
 }
@@ -110,6 +119,7 @@ class AppSheetScope extends InheritedWidget {
     super.key,
     required this.close,
     this.controller,
+    this.dismissing = false,
     required super.child,
   });
 
@@ -118,6 +128,10 @@ class AppSheetScope extends InheritedWidget {
   /// 窗口尺寸控制器（`DraggableScrollableSheet` 挂的那个）；未挂时为 null，
   /// 标题栏退化为普通内容（拖动交回窗口自身的滚动语义）。
   final DraggableScrollableController? controller;
+
+  /// 下限关闭已触发：标题栏拖拽通道随之失效，避免关闭动画与还按在把手上的
+  /// 手指互相打架。
+  final bool dismissing;
 
   /// 关闭当前统一窗口（无匹配 scope 时静默忽略）。
   static void closeOf(BuildContext context) {
@@ -128,9 +142,16 @@ class AppSheetScope extends InheritedWidget {
   static DraggableScrollableController? controllerOf(BuildContext context) =>
       context.getInheritedWidgetOfExactType<AppSheetScope>()?.controller;
 
+  /// 是否已进入下限关闭（无匹配 scope 时为 false）。
+  static bool dismissingOf(BuildContext context) =>
+      context.getInheritedWidgetOfExactType<AppSheetScope>()?.dismissing ??
+      false;
+
   @override
   bool updateShouldNotify(AppSheetScope oldWidget) =>
-      close != oldWidget.close || controller != oldWidget.controller;
+      close != oldWidget.close ||
+      controller != oldWidget.controller ||
+      dismissing != oldWidget.dismissing;
 }
 
 /// 统一窗口的置顶标题栏（`SliverPersistentHeader` 固定）。
@@ -249,6 +270,9 @@ class AppSheetTitleBar extends StatelessWidget {
     // 尺寸控制器（经 [AppSheetScope] 下发）：头部当抓手拖动时直接改窗口高度。
     // 无控制器 = 整页形态（宽屏详情页）：不画把手，也少去把手占位。
     final controller = AppSheetScope.controllerOf(context);
+    final canDrag =
+        controller != null && !AppSheetScope.dismissingOf(context);
+    final dragController = canDrag ? controller : null;
     // 用 [heightOf] 固定总高：钉住的 head 声明高度须与子树实际高度严格一致，
     // 否则 SliverPersistentHeader 会因 layoutExtent/paintExtent 不等而断言。
     return SizedBox(
@@ -259,9 +283,15 @@ class AppSheetTitleBar extends StatelessWidget {
         // 用于改高度，否则一律滚列表——队列窗口打开即定位当前曲、列表常不在
         // 顶部，拖头部会「纹丝不动」（回归 queue_sheet_gesture_test）。
         behavior: HitTestBehavior.opaque,
-        onVerticalDragUpdate: controller == null
+        onVerticalDragUpdate: dragController == null
             ? null
-            : (DragUpdateDetails d) => _dragSize(controller, d.delta.dy),
+            : (DragUpdateDetails d) => _dragSize(dragController, d.delta.dy),
+        // 松手补一段吸附/惯性：队列列表常不在顶部，撑满窗口只能拖头部；
+        // 没有 fling 时用户必须拖满 0.4 屏，体感比路由版「从列表一甩到顶」
+        // 费劲得多。上甩直达全高（路由/悬浮层共用）。
+        onVerticalDragEnd: dragController == null
+            ? null
+            : (DragEndDetails d) => _settleSize(dragController, d),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -317,6 +347,19 @@ class AppSheetTitleBar extends StatelessWidget {
     final next = controller.pixelsToSize(controller.pixels - dy);
     controller.jumpTo(next.clamp(0.0, 1.0));
   }
+
+  /// 头部松手定稿：上甩直接补完整行程到全高（无吸附档位，其余位置保持用户
+  /// 拖到的尺寸）。下滑关闭由 `DraggableScrollableSheet` 的下限通知统一处理
+  /// （路由版经 `BottomSheet.extentChanged`，悬浮层版经 `_SheetOverlay`）。
+  static void _settleSize(
+      DraggableScrollableController controller, DragEndDetails details) {
+    if (!controller.isAttached) return;
+    final v = details.primaryVelocity ?? 0;
+    if (v < -700 && controller.size < 0.999) {
+      controller.animateTo(1.0,
+          duration: kPageMotion, curve: kPageMotionCurve);
+    }
+  }
 }
 
 /// 统一拖拽式窗口（跟手启动）的宿主启动器（Root 持有，全 App 单例，经 Provider 下发）。
@@ -352,6 +395,12 @@ class AppSheetLauncher {
 
   /// 窗口悬浮层是否已展示（含展开动画 / 跟手进行中）。
   bool get isShowing => _portal.isShowing;
+
+  /// 开合/跟手进行中的展示进度（0=隐藏 → 1=展开）。
+  ///
+  /// 供交互门控区分「过渡中」与「已静止打开」：窗口静止打开时不应压住
+  /// 后台数据通知（历史问题：队列窗口开着期间收藏图标延迟 2s 才刷新）。
+  ValueListenable<double> get progress => _progress;
 
   /// 跟手进行中的展示进度（0=隐藏 → 1=展开），供宿主松手吸附判定。
   double get swipeValue => _progress.value;
@@ -498,10 +547,25 @@ class _SheetOverlay extends StatefulWidget {
 class _SheetOverlayState extends State<_SheetOverlay> {
   final DraggableScrollableController _sheet = DraggableScrollableController();
 
+  /// 已触发下限关闭：拖到 `minChildSize` 即收起（对齐路由版
+  /// `BottomSheet.extentChanged → onClosing`）。置位后忽略标题栏的后续拖拽，
+  /// 避免关闭动画与还按在把手上的手指互相打架。
+  bool _dismissing = false;
+
   @override
   void dispose() {
     _sheet.dispose();
     super.dispose();
+  }
+
+  bool _onSheetExtent(DraggableScrollableNotification n) {
+    if (!_dismissing &&
+        n.shouldCloseOnMinExtent &&
+        n.extent <= n.minExtent + 1e-3) {
+      setState(() => _dismissing = true);
+      widget.launcher.close();
+    }
+    return false;
   }
 
   @override
@@ -511,13 +575,52 @@ class _SheetOverlayState extends State<_SheetOverlay> {
     final media = MediaQuery.of(context);
     final top = media.padding.top;
     final available = media.size.height - top;
-    final sheetHeight = config.initialChildSize.clamp(0.0, 1.0) * available;
     final surface = Theme.of(context).colorScheme.surface;
+
+    // 窗口子树只构建一次：开合/跟手动画每帧只重算遮罩透明度与位移，
+    // 不再重建 `_QueueSheetContent`（历史：每帧重建整个 sheet + 触发
+    // `DraggableScrollableSheet.didUpdateWidget → _replaceExtent`）。
+    final sheet = NotificationListener<DraggableScrollableNotification>(
+      onNotification: _onSheetExtent,
+      child: DraggableScrollableSheet(
+        controller: _sheet,
+        expand: false,
+        initialChildSize: config.initialChildSize,
+        minChildSize: config.minChildSize,
+        maxChildSize: config.maxChildSize,
+        snap: config.snap,
+        snapSizes: config.snapSizes,
+        builder: (c2, scrollCtrl) => Material(
+          key: const ValueKey('app_sheet_surface'),
+          color: surface,
+          elevation: 8,
+          clipBehavior: Clip.antiAlias,
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+          ),
+          child: AppSheetScope(
+            close: launcher.close,
+            controller: _sheet,
+            dismissing: _dismissing,
+            child: widget.builder(c2, scrollCtrl),
+          ),
+        ),
+      ),
+    );
+
     return AnimatedBuilder(
       animation: launcher._progress,
-      builder: (c, _) {
+      child: sheet,
+      builder: (c, child) {
         final p = launcher._progress.value;
         if (p <= 0.001) return const SizedBox.shrink();
+        // 关闭/展开位移按窗口的**当前**高度算：窗口可能已被拖到 0.25 或 1.0，
+        // 固定用 initialChildSize 会导致从全高关闭时末帧硬切断、从最小关闭时
+        // 提前消失。
+        final visibleSize = _sheet.isAttached
+            ? _sheet.size
+            : config.initialChildSize.clamp(0.0, 1.0);
+        final sheetHeight = visibleSize * available;
         return Stack(
           children: [
             // 遮罩：点外部关闭。
@@ -535,31 +638,11 @@ class _SheetOverlayState extends State<_SheetOverlay> {
               right: 0,
               top: top,
               bottom: 0,
-              child: Transform.translate(
-                offset: Offset(0, (1 - p) * sheetHeight),
-                child: DraggableScrollableSheet(
-                  controller: _sheet,
-                  expand: false,
-                  initialChildSize: config.initialChildSize,
-                  minChildSize: config.minChildSize,
-                  maxChildSize: config.maxChildSize,
-                  snap: config.snap,
-                  snapSizes: config.snapSizes,
-                  builder: (c2, scrollCtrl) => Material(
-                    key: const ValueKey('app_sheet_surface'),
-                    color: surface,
-                    elevation: 8,
-                    clipBehavior: Clip.antiAlias,
-                    shape: const RoundedRectangleBorder(
-                      borderRadius:
-                          BorderRadius.vertical(top: Radius.circular(16)),
-                    ),
-                    child: AppSheetScope(
-                      close: launcher.close,
-                      controller: _sheet,
-                      child: widget.builder(c2, scrollCtrl),
-                    ),
-                  ),
+              child: IgnorePointer(
+                ignoring: _dismissing,
+                child: Transform.translate(
+                  offset: Offset(0, (1 - p) * sheetHeight),
+                  child: child,
                 ),
               ),
             ),
