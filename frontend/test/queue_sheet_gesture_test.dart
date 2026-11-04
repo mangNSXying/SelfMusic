@@ -13,6 +13,7 @@ import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/theme/theme_provider.dart';
+import 'package:selfmusic/utils/interaction_gate.dart';
 import 'package:selfmusic/widgets/draggable_sheet.dart';
 import 'package:selfmusic/widgets/player_sheet_anim.dart';
 import 'package:sqlite3/open.dart';
@@ -77,7 +78,8 @@ Future<
       AppSheetLauncher Function() launcher,
       Finder entry,
       Finder Function() surface,
-    })> _pumpHost(WidgetTester tester, {int count = 3, int playIndex = 0}) async {
+    })> _pumpHost(WidgetTester tester,
+    {int count = 3, int playIndex = 0, InteractionGate? gate}) async {
   late final DirectSourceManager direct;
   late final PlayerProvider player;
   await tester.runAsync(() async {
@@ -86,6 +88,7 @@ Future<
     PathProviderPlatform.instance = _FakePathProvider(dir.path);
     direct = DirectSourceManager();
     await direct.init();
+    if (gate != null) direct.attachInteractionGate(gate);
     player = await _playerWithQueue(count: count, playIndex: playIndex);
   });
   addTearDown(() {
@@ -104,6 +107,7 @@ Future<
       nav: nav,
       direct: direct,
       player: player,
+      gate: gate,
       child: MaterialApp(home: _Host(key: hostKey)),
     ),
   );
@@ -343,6 +347,29 @@ void main() {
     expect(surface, findsNothing, reason: '列表下拉到 minChildSize 应关闭窗口');
     expect(h.nav.queueOpen, isFalse, reason: '关闭应镜像回写 nav.queueOpen');
   });
+
+  testWidgets('队列窗口：门控只跟随开合过渡，静止打开不阻塞数据通知', (tester) async {
+    final gate = InteractionGate();
+    final h = await _pumpHost(tester, gate: gate);
+
+    await tester.tap(h.entry);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(gate.queuePanelOpen, isTrue, reason: '开合动画进行中应视为交互中');
+
+    await tester.pumpAndSettle();
+    expect(h.nav.queueOpen, isTrue);
+    expect(gate.queuePanelOpen, isFalse,
+        reason: '窗口静止打开期间不应继续压数据通知（收藏等要即时刷新）');
+
+    await tester.tap(
+        find.descendant(of: h.surface(), matching: find.byIcon(Icons.close)));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(gate.queuePanelOpen, isTrue, reason: '关闭动画进行中应视为交互中');
+    await tester.pumpAndSettle();
+    expect(gate.queuePanelOpen, isFalse, reason: '关闭完成后解除门控');
+  });
 }
 
 /// 照 main.dart Root 的装配：AppSheetLauncher 需要 TickerProvider，
@@ -395,11 +422,13 @@ class _Providers extends StatelessWidget {
     required this.direct,
     required this.player,
     required this.child,
+    this.gate,
   });
 
   final NavigationProvider nav;
   final DirectSourceManager direct;
   final PlayerProvider player;
+  final InteractionGate? gate;
   final Widget child;
 
   @override
@@ -409,6 +438,7 @@ class _Providers extends StatelessWidget {
         ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
         ChangeNotifierProvider<NavigationProvider>.value(value: nav),
         ChangeNotifierProvider<PlayerProvider>.value(value: player),
+        if (gate != null) ChangeNotifierProvider<InteractionGate>.value(value: gate!),
         // 窄屏首帧迷你条 / 队列窗口需要主题色。
         ChangeNotifierProvider<ThemeProvider>.value(
             value: ThemeProvider(autoLoad: false)),
