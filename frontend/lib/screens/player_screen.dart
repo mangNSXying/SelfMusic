@@ -1341,6 +1341,7 @@ class _ToolRow extends StatelessWidget {
     final s = song;
     final favorite = direct.weight.isFavorite(s);
     final disliked = direct.weight.isDisliked(s);
+    final cached = direct.isUserCached(s);
     final row = Row(
       mainAxisSize: center ? MainAxisSize.min : MainAxisSize.max,
       mainAxisAlignment:
@@ -1382,9 +1383,9 @@ class _ToolRow extends StatelessWidget {
         ),
         IconButton(
           iconSize: 22 * scale,
-          tooltip: '缓存歌曲',
-          color: cs.onSurface.withValues(alpha: 0.55),
-          icon: const Icon(Icons.download),
+          tooltip: cached ? '已缓存（可离线播放）' : '缓存歌曲',
+          color: cached ? cs.primary : cs.onSurface.withValues(alpha: 0.55),
+          icon: const Icon(Icons.download_outlined),
           onPressed: () => _cache(context, s),
         ),
         AppVolumeButton(player: player, scale: scale),

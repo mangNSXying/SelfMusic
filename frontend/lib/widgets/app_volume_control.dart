@@ -1,11 +1,113 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../providers/player_provider.dart';
 
-IconData appVolumeIcon(int volume) {
-  if (volume <= 0) return Icons.volume_off;
-  if (volume < 50) return Icons.volume_down;
-  return Icons.volume_up;
+/// 音量声波档位（0~3）：0=静音（无声波，带斜杠），1~3=声波数量。
+///
+/// 播放页/设置页图标共用：>70% 满三格，低音量一格，中音量两格。
+int appVolumeWaveCount(int volume) {
+  if (volume <= 0) return 0;
+  if (volume <= 35) return 1;
+  if (volume <= 70) return 2;
+  return 3;
+}
+
+/// 应用内音量图标：喇叭固定，声波数量随 [volume] 变化。
+class AppVolumeIcon extends StatelessWidget {
+  const AppVolumeIcon({
+    super.key,
+    required this.volume,
+    this.size,
+    this.color,
+  });
+
+  final int volume;
+  final double? size;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final iconTheme = IconTheme.of(context);
+    final resolvedSize = size ?? iconTheme.size ?? 24;
+    final resolvedColor =
+        color ?? iconTheme.color ?? Theme.of(context).colorScheme.onSurface;
+    return SizedBox(
+      width: resolvedSize,
+      height: resolvedSize,
+      child: CustomPaint(
+        painter: _VolumeIconPainter(volume: volume, color: resolvedColor),
+      ),
+    );
+  }
+}
+
+/// 喇叭 + 声波/静音斜杠。24×24 坐标系，矢量绘制保证 0~3 格声波间距一致。
+class _VolumeIconPainter extends CustomPainter {
+  const _VolumeIconPainter({required this.volume, required this.color});
+
+  final int volume;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final scale = size.shortestSide / 24;
+    if (scale <= 0) return;
+
+    final fill = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill;
+    final stroke = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.7
+      ..strokeCap = StrokeCap.round;
+
+    canvas.save();
+    canvas.scale(scale);
+
+    // 喇叭本体（与 Material volume 图标同形的实心轮廓）。
+    final speaker = Path()
+      ..moveTo(3, 9)
+      ..lineTo(7, 9)
+      ..lineTo(12, 4)
+      ..lineTo(12, 20)
+      ..lineTo(7, 15)
+      ..lineTo(3, 15)
+      ..close();
+    canvas.drawPath(speaker, fill);
+
+    final waves = appVolumeWaveCount(volume);
+    if (waves == 0) {
+      // 静音：无声波 + 斜杠。
+      final slash = Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.9
+        ..strokeCap = StrokeCap.round;
+      canvas.drawLine(const Offset(3.5, 3), const Offset(21, 20.5), slash);
+    } else {
+      const center = Offset(12, 12);
+      const radii = [3.1, 6.1, 9.1];
+      const startAngle = -math.pi / 4;
+      const sweepAngle = math.pi / 2;
+      for (var i = 0; i < waves && i < radii.length; i++) {
+        canvas.drawArc(
+          Rect.fromCircle(center: center, radius: radii[i]),
+          startAngle,
+          sweepAngle,
+          false,
+          stroke,
+        );
+      }
+    }
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_VolumeIconPainter oldDelegate) =>
+      oldDelegate.volume != volume || oldDelegate.color != color;
 }
 
 Future<void> showAppVolumeSheet(
@@ -43,7 +145,7 @@ class AppVolumeButton extends StatelessWidget {
           tooltip: volume == 0 ? '取消静音' : '音量 $volume%',
           color:
               volume == 0 ? cs.primary : cs.onSurface.withValues(alpha: 0.55),
-          icon: Icon(appVolumeIcon(volume)),
+          icon: AppVolumeIcon(volume: volume),
           onPressed: () => showAppVolumeSheet(context, player),
         );
       },
@@ -90,7 +192,7 @@ class _AppVolumeSheet extends StatelessWidget {
                 children: [
                   IconButton(
                     tooltip: volume == 0 ? '取消静音' : '静音',
-                    icon: Icon(appVolumeIcon(volume)),
+                    icon: AppVolumeIcon(volume: volume),
                     onPressed: player.toggleAppVolumeMute,
                   ),
                   Expanded(
