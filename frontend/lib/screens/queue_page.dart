@@ -52,7 +52,7 @@ class _QueuePageState extends State<QueuePage> {
 
   /// 可见序列缓存守卫：队列长度 / 查询词 / 排序任一变化才重算
   /// （播放事件频繁 notify，避免每次 build 重查权重库）。
-  (CollectionSort, String, int, int)? _sig;
+  (CollectionSort, String, int, int, int)? _sig;
   List<int> _visible = const [];
 
   /// 行级视图数据缓存（R-1）。
@@ -74,7 +74,8 @@ class _QueuePageState extends State<QueuePage> {
     var offset = 0.0;
     if (queue.isNotEmpty) {
       _rebuildVisible(queue, '', direct);
-      _sig = (_sort, '', queue.length, direct.settingsVersion);
+      _sig = (_sort, '', queue.length, direct.settingsVersion,
+          zhVariantRevision);
       final pos =
           _visible.indexOf(player.currentIndex.clamp(0, queue.length - 1));
       if (pos > 0) offset = _focusOffset(pos);
@@ -217,8 +218,9 @@ class _QueuePageState extends State<QueuePage> {
     final direct = context.watch<DirectSourceManager>();
     final queue = player.queue;
     final q = zhSearchFold(_query.trim()).toLowerCase();
-    // settingsVersion 覆盖简繁显示切换（可见序列按展示文本过滤）。
-    final sig = (_sort, q, queue.length, direct.settingsVersion);
+    // settingsVersion 覆盖简繁显示切换；zhVariantRevision 覆盖词库预热完成。
+    final sig = (_sort, q, queue.length, direct.settingsVersion,
+        zhVariantRevision);
     if (sig != _sig) {
       _sig = sig;
       _rebuildVisible(queue, q, direct);

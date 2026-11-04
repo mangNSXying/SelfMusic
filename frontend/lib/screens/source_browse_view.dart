@@ -15,6 +15,7 @@ import '../providers/navigation_provider.dart';
 import '../utils/collection_sort.dart';
 import '../utils/song_groups.dart';
 import '../utils/source_folders.dart';
+import '../utils/zh_variant.dart';
 import '../widgets/add_to_playlist.dart';
 import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
@@ -65,13 +66,13 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
   ScanProgress? _progress;
   StreamSubscription<ScanProgress>? _progressSub;
 
-  /// 源歌曲查询缓存：仅源/搜索词/元数据版本/设置版本变化时重查。
-  (String, String, int, int)? _songsKey;
+  /// 源歌曲查询缓存：源/搜索词/元数据/设置/简繁词库版本变化时重查。
+  (String, String, int, int, int)? _songsKey;
   List<Song> _cachedSongs = const [];
 
   /// 排序缓存：歌曲列表身份 + 排序偏好 + 影响权重的版本号。
   List<Song>? _sortedBase;
-  (CollectionSort, int, int, int)? _sortedKey;
+  (CollectionSort, int, int, int, int)? _sortedKey;
   List<Song> _sortedSongs = const [];
 
   /// 源内相对路径（与 [_sortedSongs] 平行）缓存。
@@ -295,6 +296,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
       query,
       direct.metaVersion,
       direct.settingsVersion,
+      zhVariantRevision,
     );
     if (_songsKey == key) return _cachedSongs;
     _songsKey = key;
@@ -311,6 +313,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
       direct.metaVersion,
       direct.favoriteVersion,
       direct.settingsVersion,
+      zhVariantRevision,
     );
     if (identical(_sortedBase, songs) && _sortedKey == key) {
       return _sortedSongs;
