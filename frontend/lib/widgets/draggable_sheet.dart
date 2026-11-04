@@ -102,6 +102,7 @@ class _AppSheetRouteBodyState extends State<_AppSheetRouteBody> {
       builder: (c, scrollCtrl) => AppSheetScope(
         close: () => Navigator.of(c).pop(),
         controller: _sheet,
+        minSize: config.minChildSize,
         child: widget.builder(c, scrollCtrl),
       ),
     );
@@ -119,6 +120,7 @@ class AppSheetScope extends InheritedWidget {
     super.key,
     required this.close,
     this.controller,
+    this.minSize,
     this.dismissing = false,
     required super.child,
   });
@@ -128,6 +130,10 @@ class AppSheetScope extends InheritedWidget {
   /// 窗口尺寸控制器（`DraggableScrollableSheet` 挂的那个）；未挂时为 null，
   /// 标题栏退化为普通内容（拖动交回窗口自身的滚动语义）。
   final DraggableScrollableController? controller;
+
+  /// 窗口最小尺寸（`AppSheetConfig.minChildSize`）：下滑惯性据此避免
+  /// 把窗口带到下限而误触发关闭。
+  final double? minSize;
 
   /// 下限关闭已触发：标题栏拖拽通道随之失效，避免关闭动画与还按在把手上的
   /// 手指互相打架。
@@ -142,6 +148,10 @@ class AppSheetScope extends InheritedWidget {
   static DraggableScrollableController? controllerOf(BuildContext context) =>
       context.getInheritedWidgetOfExactType<AppSheetScope>()?.controller;
 
+  /// 取窗口最小尺寸（无匹配 scope 时返回 null）。
+  static double? minSizeOf(BuildContext context) =>
+      context.getInheritedWidgetOfExactType<AppSheetScope>()?.minSize;
+
   /// 是否已进入下限关闭（无匹配 scope 时为 false）。
   static bool dismissingOf(BuildContext context) =>
       context.getInheritedWidgetOfExactType<AppSheetScope>()?.dismissing ??
@@ -151,6 +161,7 @@ class AppSheetScope extends InheritedWidget {
   bool updateShouldNotify(AppSheetScope oldWidget) =>
       close != oldWidget.close ||
       controller != oldWidget.controller ||
+      minSize != oldWidget.minSize ||
       dismissing != oldWidget.dismissing;
 }
 
@@ -288,10 +299,11 @@ class AppSheetTitleBar extends StatelessWidget {
             : (DragUpdateDetails d) => _dragSize(dragController, d.delta.dy),
         // 松手补一段吸附/惯性：队列列表常不在顶部，撑满窗口只能拖头部；
         // 没有 fling 时用户必须拖满 0.4 屏，体感比路由版「从列表一甩到顶」
-        // 费劲得多。上甩直达全高（路由/悬浮层共用）。
+        // 费劲得多。上甩直达全高，下甩只补一小段（路由/悬浮层共用）。
         onVerticalDragEnd: dragController == null
             ? null
-            : (DragEndDetails d) => _settleSize(dragController, d),
+            : (DragEndDetails d) =>
+                _settleSize(context, dragController, d),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -348,16 +360,31 @@ class AppSheetTitleBar extends StatelessWidget {
     controller.jumpTo(next.clamp(0.0, 1.0));
   }
 
-  /// 头部松手定稿：上甩直接补完整行程到全高（无吸附档位，其余位置保持用户
-  /// 拖到的尺寸）。下滑关闭由 `DraggableScrollableSheet` 的下限通知统一处理
-  /// （路由版经 `BottomSheet.extentChanged`，悬浮层版经 `_SheetOverlay`）。
-  static void _settleSize(
+  /// 头部松手定稿：
+  /// - 上甩补完整行程到全高；
+  /// - 下甩只补一小段惯性（速度换算，最多约 12% 窗口高度），并刻意停在
+  ///   [AppSheetScope.minSize] 上方一点——惯性本身不得触发下限关闭，关闭
+  ///   仍由用户实拖到 `minChildSize` 决定。
+  static void _settleSize(BuildContext context,
       DraggableScrollableController controller, DragEndDetails details) {
     if (!controller.isAttached) return;
     final v = details.primaryVelocity ?? 0;
-    if (v < -700 && controller.size < 0.999) {
-      controller.animateTo(1.0,
-          duration: kPageMotion, curve: kPageMotionCurve);
+    if (v < -700) {
+      if (controller.size < 0.999) {
+        controller.animateTo(1.0,
+            duration: kPageMotion, curve: kPageMotionCurve);
+      }
+      return;
+    }
+    if (v > 700) {
+      // 1500px/s ≈ 0.06 屏，3000px/s 封顶 0.12 屏：比上甩的全行程小得多。
+      final extra = (v / 25000).clamp(0.02, 0.12);
+      final minSize = AppSheetScope.minSizeOf(context) ?? 0.0;
+      final target = (controller.size - extra).clamp(minSize + 0.004, 1.0);
+      if (target < controller.size - 0.002) {
+        controller.animateTo(target,
+            duration: kPageMotion, curve: kPageMotionCurve);
+      }
     }
   }
 }
@@ -601,6 +628,7 @@ class _SheetOverlayState extends State<_SheetOverlay> {
           child: AppSheetScope(
             close: launcher.close,
             controller: _sheet,
+            minSize: config.minChildSize,
             dismissing: _dismissing,
             child: widget.builder(c2, scrollCtrl),
           ),

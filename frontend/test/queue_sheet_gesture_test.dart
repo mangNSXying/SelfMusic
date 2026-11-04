@@ -329,6 +329,24 @@ void main() {
         reason: '上甩后应吸附到全高（顶边让开状态栏）');
   });
 
+  testWidgets('队列窗口：标题栏下滑补一小段惯性（不误关闭）', (tester) async {
+    final h = await _pumpHost(tester, count: 30, playIndex: 8);
+    final surface = h.surface();
+
+    await tester.tap(h.entry);
+    await tester.pumpAndSettle();
+    final before = tester.getTopLeft(surface).dy;
+
+    // 手指只下滑 60px，松手后按速度再补一小段（比上甩的全行程小得多）。
+    await tester.fling(find.byKey(const ValueKey('app_sheet_handle')),
+        const Offset(0, 60), 1500);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(tester.getTopLeft(surface).dy, greaterThan(before + 70),
+        reason: '下滑松手应继续滑一小段（惯性）');
+    expect(surface, findsOneWidget, reason: '小惯性不应把窗口带到下限而关闭');
+  });
+
   testWidgets('队列窗口：列表下拉到最小直接关闭', (tester) async {
     // 当前曲在首位 → 列表在顶部：下拉先缩窗口，触底即关闭（路由版语义）。
     final h = await _pumpHost(tester, count: 30);
