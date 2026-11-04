@@ -723,6 +723,8 @@ abstract class MusicSource {
 
 几何常量（`row_list.dart`，改动须同步 `playlists_view_test` 的 `itemExtent` 断言）：`kRowHeight=72`、`kRowSeparatorHeight=1`、`kRowExtent=73`、`kRowDividerIndent=72`、`kListHeaderHeight=48`。
 
+`kListHeaderHeight` 只是 1.0 基准：计数栏/多选栏的实际高度取 `listHeaderHeightOf(context)`（= 48 × 窗口缩放系数），`ToolbarIconButton` 的图标与命中区同步缩放；缩放口径与播放页共用 `theme/app_metrics.dart` 的 `appUiScaleOf`（横屏 1920×1080、竖屏 400×800 为 1.0，封顶 2.2 / 2.4）。
+
 **为什么 `itemExtent` 不能省**：没有它时 Sliver 为定位深处目标需从第 0 行逐行排到目标行——千首歌单一帧构建 700+ 行与封面，进入必卡（实测 712 项 vs 16 项，`playlists_view_test` 有回归用例）。
 
 - 标题常驻加粗（`w600`），播放中 / 选中只叠主色区分；封面位恒为封面，播放指示 `graphic_eq` 排在标题之后。

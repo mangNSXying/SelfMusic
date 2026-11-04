@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../theme/app_metrics.dart';
+
 /// 内容列表行高（72 高度 ListTile + 1px 分隔线）。
 ///
 /// 全 App 内容列表（歌曲/喜欢/专辑/歌手/源浏览/歌单/播放源/队列）统一走
@@ -12,6 +14,10 @@ const double kRowHeight = 72;
 /// 48 = 上下各 6 内边距 + 36 工具条按钮/文字行，给排序/分类/视图图标留出
 /// 统一命中区（旧值 44 会把 36 图标压成 32）。
 const double kListHeaderHeight = 48;
+
+/// 计数栏/多选栏当前高度：随窗口缩放，与工具条按钮同步。
+double listHeaderHeightOf(BuildContext context) =>
+    kListHeaderHeight * appUiScaleOf(context);
 
 /// 行间分隔线高度（计入 [kRowExtent]）。
 const double kRowSeparatorHeight = 1;
