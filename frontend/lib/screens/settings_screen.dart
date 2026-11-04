@@ -3477,6 +3477,7 @@ class _BackupMigrationDialogState extends State<_BackupMigrationDialog> {
         context.read<ShortcutSettings>().reload();
         context.read<PlayerProvider>().reloadEqualizerSettings();
         await direct.applyZhVariantSetting();
+        if (!mounted) return;
         context.read<PlayerProvider>().refreshSystemMedia();
       }
       context.read<PlaylistsProvider>().refresh();
