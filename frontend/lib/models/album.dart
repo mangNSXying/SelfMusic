@@ -54,6 +54,7 @@ class Album {
       genre: j['genre'] as String?,
       trackCount: j['trackCount'] as int? ?? 0,
       totalDuration: j['totalDuration'] as int? ?? 0,
+      coverPath: j['coverPath'] as String?,
     );
   }
 
@@ -67,6 +68,7 @@ class Album {
         'genre': genre,
         'trackCount': trackCount,
         'totalDuration': totalDuration,
+        if (coverPath != null) 'coverPath': coverPath,
       };
 
   /// 客户端从歌曲列表按专辑名分组聚合（含直连源）。
