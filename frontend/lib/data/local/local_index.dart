@@ -2744,6 +2744,19 @@ class LocalIndex {
           : identityFallbackGroupsOf(_db!,
               minDurationSec: minDurationSec, minSizeBytes: minSizeBytes);
 
+  /// 某身份名下歌曲的去重专辑名（解析选型用：同名实体按专辑名匹配 MB 的
+  /// disambiguation——角色是作品名，真人是所属乐队/艺名）。
+  List<String> artistAlbumNames(String artistKey) {
+    if (_db == null) return const [];
+    final rs = _db!.select('''
+      SELECT DISTINCT TRIM(i.album) AS album
+      FROM artist_song_map m
+      JOIN idx_songs i ON i.source_key=m.source_key AND i.ref=m.ref AND i.missing=0
+      WHERE m.artist_key=? AND m.role='main' AND TRIM(COALESCE(i.album,''))<>''
+    ''', [artistKey]);
+    return [for (final r in rs) r['album'] as String];
+  }
+
   // ---------- 后台 isolate 快照读（启动/刷新不阻塞 UI） ----------
 
   /// 启动/刷新用后台快照：在后台 isolate 里一次完成「歌曲查询 + 专辑分组 +
