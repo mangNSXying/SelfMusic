@@ -989,6 +989,19 @@ class DirectSourceManager extends ChangeNotifier {
   MusicSource? sourceByKey(String key) =>
       _sources.where((x) => x.key == key).firstOrNull;
 
+  /// 该直连歌是否已有用户缓存（`cache.kind=user`）。
+  ///
+  /// 播放页缓存按钮据此显示强调色；只认用户缓存，预载原文件/转码变体不算，
+  /// 与 [CacheManager] 的「已缓存」口径一致。同步查询（build 内使用）。
+  bool isUserCached(Song s) {
+    if (!s.isDirect) return false;
+    final src = sourceByKey(s.sourceKey);
+    if (src == null) return false;
+    final key = cache.cacheKeyOf(src, s);
+    if (key == null) return false;
+    return index.cachedPath(key, kind: CacheEntryKind.user) != null;
+  }
+
   // ---------- 备用源 ----------
 
   /// 该逻辑源的备用配置（已 sanitize 的持久化形态，不含敏感明文）。

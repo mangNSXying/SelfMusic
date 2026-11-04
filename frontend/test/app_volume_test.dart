@@ -13,6 +13,7 @@ import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/screens/settings_screen.dart';
 import 'package:selfmusic/theme/app_theme.dart';
+import 'package:selfmusic/widgets/app_volume_control.dart';
 import 'package:sqlite3/open.dart';
 
 ffi.DynamicLibrary _openOnLinux() {
@@ -73,6 +74,16 @@ void main() {
       unawaited(p.player.play());
     } catch (_) {}
   }
+
+  test('音量声波档位：静音 0 格，低/中/高分别为 1/2/3 格', () {
+    expect(appVolumeWaveCount(0), 0);
+    expect(appVolumeWaveCount(1), 1);
+    expect(appVolumeWaveCount(35), 1);
+    expect(appVolumeWaveCount(36), 2);
+    expect(appVolumeWaveCount(70), 2);
+    expect(appVolumeWaveCount(71), 3);
+    expect(appVolumeWaveCount(100), 3);
+  });
 
   test('appVolume 默认 100、越界钳制、持久化往返', () {
     final settings = AppSettings(index);

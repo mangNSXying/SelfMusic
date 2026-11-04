@@ -2532,7 +2532,7 @@ class _PlaybackSettingsState extends State<_PlaybackSettings> {
             children: [
               IconButton(
                 tooltip: _settings.appVolume == 0 ? '取消静音' : '静音',
-                icon: Icon(appVolumeIcon(_settings.appVolume)),
+                icon: AppVolumeIcon(volume: _settings.appVolume),
                 onPressed: () {
                   setState(() =>
                       context.read<PlayerProvider>().toggleAppVolumeMute());
