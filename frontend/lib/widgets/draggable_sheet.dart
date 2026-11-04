@@ -256,7 +256,7 @@ class AppSheetTitleBar extends StatelessWidget {
       8 +
       math.max(kMinInteractiveDimension, _lineHeight(context)) +
       4 +
-      kListHeaderHeight +
+      listHeaderHeightOf(context) +
       kRowSeparatorHeight;
 
   static double _lineHeight(BuildContext context) {

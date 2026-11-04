@@ -25,16 +25,17 @@ class ToolbarIconButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scale = appUiScaleOf(context);
     return IconButton(
-      icon: Icon(icon, size: kToolbarIconSize),
+      icon: Icon(icon, size: kToolbarIconSize * scale),
       tooltip: tooltip,
       onPressed: onPressed,
       color: color,
       padding: EdgeInsets.zero,
       visualDensity: VisualDensity.compact,
-      constraints: const BoxConstraints.tightFor(
-        width: kToolbarButtonSize,
-        height: kToolbarButtonSize,
+      constraints: BoxConstraints.tightFor(
+        width: kToolbarButtonSize * scale,
+        height: kToolbarButtonSize * scale,
       ),
     );
   }
@@ -59,13 +60,17 @@ class ToolbarPopupMenuButton<T> extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scale = appUiScaleOf(context);
     return PopupMenuButton<T>(
-      icon: Icon(icon, size: kToolbarIconSize, color: color),
+      icon: Icon(icon, size: kToolbarIconSize * scale, color: color),
       tooltip: tooltip,
-      iconSize: kToolbarIconSize,
+      iconSize: kToolbarIconSize * scale,
       padding: EdgeInsets.zero,
       style: IconButton.styleFrom(
-        fixedSize: const Size(kToolbarButtonSize, kToolbarButtonSize),
+        fixedSize: Size(
+          kToolbarButtonSize * scale,
+          kToolbarButtonSize * scale,
+        ),
         padding: EdgeInsets.zero,
         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       ),

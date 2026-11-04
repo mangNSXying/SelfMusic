@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../theme/app_metrics.dart';
 import 'row_list.dart';
 import 'toolbar_icon_button.dart';
 
@@ -49,24 +50,27 @@ class SelectionBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scale = appUiScaleOf(context);
+    final textTheme = Theme.of(context).textTheme;
     return Material(
       color: Theme.of(context).colorScheme.secondaryContainer,
       child: SizedBox(
-        // 与计数头等高（[kListHeaderHeight]）：进出多选模式内容不跳动。
-        height: kListHeaderHeight,
+        // 与计数头等高（[listHeaderHeightOf]）：进出多选模式内容不跳动。
+        height: listHeaderHeightOf(context),
         child: Row(
           children: [
             IconButton(
               icon: const Icon(Icons.close),
+              iconSize: 24 * scale,
               tooltip: '取消选择',
               onPressed: onCancel,
             ),
             Text(
               '已选 $selectedCount',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleSmall
-                  ?.copyWith(fontWeight: FontWeight.w600),
+              style: textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                fontSize: (textTheme.titleSmall?.fontSize ?? 14) * scale,
+              ),
             ),
             const Spacer(),
             if (onSelectAll != null)
@@ -85,6 +89,7 @@ class SelectionBar extends StatelessWidget {
               PopupMenuButton<int>(
                 tooltip: '更多操作',
                 icon: const Icon(Icons.more_vert),
+                iconSize: 24 * scale,
                 onSelected: (i) => actions[i].onPressed?.call(),
                 itemBuilder: (c) => [
                   for (var i = 0; i < actions.length; i++)
@@ -102,7 +107,7 @@ class SelectionBar extends StatelessWidget {
                 ],
               )
             else
-              const SizedBox(width: 8),
+              SizedBox(width: 8 * scale),
           ],
         ),
       ),

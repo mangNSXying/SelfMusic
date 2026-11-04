@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'row_list.dart';
+import '../theme/app_metrics.dart';
 
 /// 内容页共用计数头（改进 B6-U5 / 效果修复）：图标 + 「共 N …」一行。
 ///
@@ -55,26 +55,33 @@ class CountHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final muted = Theme.of(context).colorScheme.onSurfaceVariant;
-    // 总高与多选栏一致（[kListHeaderHeight]）：进出多选模式时下方内容不跳动。
-    // 48 - 上下各 6 = 36，正好容纳统一工具条按钮。
-    const inner = kListHeaderHeight - 12;
+    final scale = appUiScaleOf(context);
+    final textTheme = Theme.of(context).textTheme;
+    final labelStyle = textTheme.bodyMedium?.copyWith(
+      color: muted,
+      fontSize: (textTheme.bodyMedium?.fontSize ?? 14) * scale,
+    );
+    // 总高与多选栏一致（listHeaderHeightOf）：上下内边距 + 工具条按钮。
+    final inner = kToolbarButtonSize * scale;
     return Padding(
-      padding: EdgeInsets.fromLTRB(16, 6, trailing == null ? 16 : 8, 6),
+      padding: EdgeInsets.fromLTRB(
+        16 * scale,
+        6 * scale,
+        trailing == null ? 16 * scale : 8 * scale,
+        6 * scale,
+      ),
       child: SizedBox(
         height: inner,
         child: Row(
           children: [
-            Icon(_icon, size: 17, color: muted),
-            const SizedBox(width: 6),
+            Icon(_icon, size: 17 * scale, color: muted),
+            SizedBox(width: 6 * scale),
             Expanded(
               child: Text(
                 _label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(color: muted),
+                style: labelStyle,
               ),
             ),
             if (trailing != null) trailing!,

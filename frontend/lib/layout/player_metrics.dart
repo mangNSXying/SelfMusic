@@ -2,6 +2,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/widgets.dart';
 
+import '../theme/app_metrics.dart';
+
 /// 播放页自适应尺寸：按视口算出封面/栏宽/歌词区/字号缩放。
 ///
 /// 目标不是整体等比放大（留白占比不会变），而是让播放内容随屏幕一起
@@ -58,11 +60,7 @@ class PlayerMetrics {
   factory PlayerMetrics.desktop(Size viewport) {
     final w = math.max(1.0, viewport.width);
     final h = math.max(1.0, viewport.height);
-    final uiScale = _clamp(
-      math.min(w / 1920, h / 1080),
-      1.0,
-      2.2,
-    );
+    final uiScale = landscapeUiScale(viewport);
     final columnPadding = 20.0 * uiScale;
     final targetCover = h * 0.44;
     // 窄屏不设上限直接铺满；更宽的屏幕最多占 85%，1920 处平滑过渡。
@@ -99,11 +97,7 @@ class PlayerMetrics {
   factory PlayerMetrics.portrait(Size viewport) {
     final w = math.max(1.0, viewport.width);
     final h = math.max(1.0, viewport.height);
-    final uiScale = _clamp(
-      math.min(w / 400, h / 800),
-      1.0,
-      2.4,
-    );
+    final uiScale = portraitUiScale(viewport);
     final edgePadding = 24.0 * uiScale;
     final contentMaxWidth = math.max(
       0.0,

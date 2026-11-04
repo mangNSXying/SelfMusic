@@ -10,11 +10,13 @@ import 'package:selfmusic/layout/top_bar.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
+import 'package:selfmusic/theme/app_metrics.dart';
 import 'package:selfmusic/widgets/count_header.dart';
 import 'package:selfmusic/widgets/row_list.dart';
 import 'package:selfmusic/widgets/selection_badge.dart';
 import 'package:selfmusic/widgets/selection_bar.dart';
 import 'package:selfmusic/widgets/square_card.dart';
+import 'package:selfmusic/widgets/toolbar_icon_button.dart';
 import 'package:sqlite3/open.dart';
 
 DynamicLibrary _openOnLinux() {
@@ -207,5 +209,55 @@ void main() {
     final barH = tester.getSize(find.byType(SelectionBar)).height;
     expect(headerH, closeTo(kListHeaderHeight, 0.01));
     expect(barH, closeTo(headerH, 0.01));
+  });
+
+  testWidgets('计数头/多选栏与工具条图标随窗口一起缩放', (tester) async {
+    tester.view.physicalSize = const Size(3840, 2160);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              CountHeader(
+                count: 12,
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ToolbarIconButton(
+                      icon: Icons.sort,
+                      tooltip: '排序',
+                      onPressed: () {},
+                    ),
+                  ],
+                ),
+              ),
+              const SelectionBar(total: 12, selectedCount: 3),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final scale = landscapeUiScale(const Size(3840, 2160));
+    expect(scale, closeTo(2.0, 0.001));
+
+    final headerH = tester.getSize(find.byType(CountHeader)).height;
+    final barH = tester.getSize(find.byType(SelectionBar)).height;
+    expect(headerH, closeTo(kListHeaderHeight * scale, 0.01));
+    expect(barH, closeTo(headerH, 0.01));
+
+    // compact 视觉密度会从约束上再收掉固定 8px，缩放后同样生效。
+    final buttonSide = kToolbarButtonSize * scale +
+        VisualDensity.compact.baseSizeAdjustment.dx;
+    final button = find.widgetWithIcon(IconButton, Icons.sort);
+    expect(tester.getSize(button), Size(buttonSide, buttonSide));
+    expect(
+      tester.getSize(find.byIcon(Icons.sort)),
+      Size(kToolbarIconSize * scale, kToolbarIconSize * scale),
+    );
   });
 }
