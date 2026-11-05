@@ -12,7 +12,7 @@ import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/providers/playlists_provider.dart';
-import 'package:selfmusic/screens/playlists_view.dart';
+import 'package:selfmusic/screens/playlists/playlists_view.dart';
 import 'package:selfmusic/theme/app_theme.dart';
 import 'package:selfmusic/widgets/list_detail_split.dart';
 import 'package:sqlite3/open.dart';

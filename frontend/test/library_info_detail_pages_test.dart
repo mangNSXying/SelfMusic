@@ -7,8 +7,8 @@ import 'package:path_provider_platform_interface/path_provider_platform_interfac
 import 'package:provider/provider.dart';
 import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
-import 'package:selfmusic/screens/library_info_meta_detail.dart';
-import 'package:selfmusic/screens/library_info_play_detail.dart';
+import 'package:selfmusic/screens/library_info/meta_detail_screen.dart';
+import 'package:selfmusic/screens/library_info/play_detail_screen.dart';
 import 'package:sqlite3/open.dart';
 
 DynamicLibrary _openOnLinux() {

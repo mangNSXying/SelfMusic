@@ -16,7 +16,7 @@ import '../library/artists_view.dart';
 import '../library/liked_view.dart';
 import '../library/songs_view.dart';
 import '../sources/sources_screen.dart';
-import '../playlists_view.dart';
+import '../playlists/playlists_view.dart';
 
 /// 六个顶级分组的容器（歌单/喜欢/播放源/歌曲/专辑/歌手）。
 ///
