@@ -883,13 +883,13 @@ class _AlbumsViewState extends State<_AlbumsView>
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
+              viewModeToggle(),
               SortMenuButton(
                 value: direct.settings.sortAlbums,
                 scope: SortScope.collections,
                 onChanged: (v) =>
                     setState(() => direct.settings.sortAlbums = v),
               ),
-              viewModeToggle(),
             ],
           ),
         ),
@@ -1289,13 +1289,13 @@ class _ArtistsViewState extends State<_ArtistsView>
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
+              viewModeToggle(),
               SortMenuButton(
                 value: direct.settings.sortArtists,
                 scope: SortScope.collections,
                 onChanged: (v) =>
                     setState(() => direct.settings.sortArtists = v),
               ),
-              viewModeToggle(),
             ],
           ),
         ),
