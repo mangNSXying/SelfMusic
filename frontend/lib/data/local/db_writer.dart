@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 import 'dart:isolate';
-import 'dart:math';
 
 import 'package:sqlite3/open.dart';
 import 'package:sqlite3/sqlite3.dart';
@@ -13,7 +12,10 @@ import '../sources/webdav_url.dart';
 import '../../utils/perf_log.dart';
 import '../../utils/play_progress.dart';
 import 'artist_names.dart';
+import 'play_meta_sql.dart';
 import 'schema.dart';
+import 'sql_columns.dart';
+import 'sql_util.dart' as sql_util;
 
 /// SQLite 写层：主线程只读，写全平台走后台 isolate（[DbWriter.start] 分派）。
 ///
@@ -801,76 +803,23 @@ void _inTx(Database db, void Function() body) {
 
 /// 把 [list] 按 [size] 切成连续子列表（[size] < 1 时按 1）。
 /// OHOS 内联兜底按此分片落库并在片间让出事件循环（见 `_InlineDbWriter.opBatch`）。
-List<List<T>> chunkedSublists<T>(List<T> list, int size) {
-  final step = size < 1 ? 1 : size;
-  final out = <List<T>>[];
-  for (var start = 0; start < list.length; start += step) {
-    final end = start + step < list.length ? start + step : list.length;
-    out.add(list.sublist(start, end));
-  }
-  return out;
-}
+List<List<T>> chunkedSublists<T>(List<T> list, int size) =>
+    sql_util.chunksOf(list, size).toList();
 
 // ---------- 共享小工具（写连接内的读依赖） ----------
 
-String _newUuid() {
-  final r = Random.secure();
-  final tail = List.generate(
-      3, (_) => r.nextInt(0xffffffff).toRadixString(16).padLeft(8, '0')).join();
-  return '${DateTime.now().microsecondsSinceEpoch.toRadixString(16)}-${tail.substring(0, 12)}';
-}
-
-String _sourceOfKey(String key) {
-  final i = key.indexOf(':');
-  return i > 0 ? key.substring(0, i) : key;
-}
-
-String? _sourceKeyOfUuid(Database db, String uuid) {
-  if (uuid.isEmpty) return null;
-  final rs = db.select('SELECT key FROM sources WHERE client_uuid=?', [uuid]);
-  return rs.isEmpty ? null : rs.first['key'] as String;
-}
-
 /// 读当前 play_meta 行（写前合并用；空行返回默认权重）。
-({int ls, int ds, double f, bool frozen, bool fav, String? sj, int ps, String? ph})
-    _curMeta(Database db, String sourceKey, String songRef) {
-  final rs = db.select(
-      'SELECT like_streak, dislike_streak, factor, frozen, is_favorite, song_json, play_sec, progress_hist '
-      'FROM play_meta WHERE source_key=? AND song_ref=?',
-      [sourceKey, songRef]);
-  if (rs.isEmpty) {
-    return (
-      ls: 0,
-      ds: 0,
-      f: 1.0,
-      frozen: false,
-      fav: false,
-      sj: null,
-      ps: 0,
-      ph: null,
-    );
-  }
-  final r = rs.first;
-  return (
-    ls: r['like_streak'] as int,
-    ds: r['dislike_streak'] as int,
-    f: (r['factor'] as num).toDouble(),
-    frozen: (r['frozen'] as int) != 0,
-    fav: (r['is_favorite'] as int) != 0,
-    sj: r['song_json'] as String?,
-    ps: (r['play_sec'] as int?) ?? 0,
-    ph: r['progress_hist'] as String?,
-  );
-}
+PlayMetaRow _curMeta(Database db, String sourceKey, String songRef) =>
+    readPlayMetaOrDefault(db, sourceKey, songRef);
 
 /// 历史 ENCODE 形态旧行迁移到当前 ref（幂等，逻辑同 LocalIndex._migrateMetaRef）。
 void _migrateRef(Database db, String sourceKey, String songRef) {
   final alts = webdavRefVariants(songRef).where((v) => v != songRef).toList();
   if (alts.isEmpty) return;
-  final ph = alts.map((_) => '?').join(',');
+  final ph = sql_util.sqlPlaceholders(alts.length);
   final rows = db.select(
-      'SELECT song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json, play_sec, progress_hist '
-      'FROM play_meta WHERE source_key=? AND song_ref IN ($ph)',
+      'SELECT $kPlayMetaColumns FROM play_meta '
+      'WHERE source_key=? AND song_ref IN ($ph)',
       [sourceKey, ...alts]);
   if (rows.isEmpty) return;
   Row best = rows.first;
@@ -886,9 +835,7 @@ void _migrateRef(Database db, String sourceKey, String songRef) {
   db.execute('DELETE FROM play_meta WHERE source_key=? AND song_ref IN ($ph)',
       [sourceKey, ...alts]);
   db.execute(
-      'INSERT OR IGNORE INTO play_meta(source_key, song_ref, like_streak, dislike_streak, '
-      'factor, frozen, is_favorite, song_json, play_sec, progress_hist) '
-      'VALUES(?,?,?,?,?,?,?,?,?,?)',
+      'INSERT OR IGNORE INTO play_meta($kPlayMetaColumns) VALUES(?,?,?,?,?,?,?,?,?,?)',
       [
         sourceKey,
         songRef,
@@ -918,31 +865,22 @@ void _opUpsertPlayMeta(Database db, Map<String, dynamic> a) {
   final ph = a['progressHist'] as String?;
   _migrateRef(db, sourceKey, songRef);
   final cur = _curMeta(db, sourceKey, songRef);
-  db.execute('''
-    INSERT INTO play_meta(source_key, song_ref, like_streak, dislike_streak,
-      factor, frozen, is_favorite, song_json, play_sec, progress_hist)
-    VALUES(?,?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(source_key, song_ref) DO UPDATE SET
-      like_streak = excluded.like_streak,
-      dislike_streak = excluded.dislike_streak,
-      factor = excluded.factor,
-      frozen = excluded.frozen,
-      is_favorite = excluded.is_favorite,
-      song_json = COALESCE(excluded.song_json, play_meta.song_json),
-      play_sec = excluded.play_sec,
-      progress_hist = excluded.progress_hist
-  ''', [
-    sourceKey,
-    songRef,
-    ls ?? cur.ls,
-    ds ?? cur.ds,
-    f ?? cur.f,
-    (frozen ?? cur.frozen) ? 1 : 0,
-    (fav ?? cur.fav) ? 1 : 0,
-    sj ?? cur.sj,
-    ps ?? cur.ps,
-    ph ?? cur.ph,
-  ]);
+  upsertPlayMetaRow(
+    db,
+    PlayMetaRow(
+      sourceKey: sourceKey,
+      songRef: songRef,
+      likeStreak: ls ?? cur.likeStreak,
+      dislikeStreak: ds ?? cur.dislikeStreak,
+      factor: f ?? cur.factor,
+      frozen: frozen ?? cur.frozen,
+      favorite: fav ?? cur.favorite,
+      songJson: sj ?? cur.songJson,
+      playSec: ps ?? cur.playSec,
+      progressHist: ph ?? cur.progressHist,
+    ),
+    update: PlayMetaField.values.toSet(),
+  );
 }
 
 /// 累计播放时长（秒）：`play_sec += seconds`。
@@ -956,24 +894,8 @@ void _opAddPlaySec(Database db, Map<String, dynamic> a) {
   if (sec <= 0) return;
   _migrateRef(db, sourceKey, songRef);
   final cur = _curMeta(db, sourceKey, songRef);
-  db.execute('''
-    INSERT INTO play_meta(source_key, song_ref, like_streak, dislike_streak,
-      factor, frozen, is_favorite, song_json, play_sec)
-    VALUES(?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(source_key, song_ref) DO UPDATE SET
-      play_sec = COALESCE(play_meta.play_sec, 0) + ?
-  ''', [
-    sourceKey,
-    songRef,
-    cur.ls,
-    cur.ds,
-    cur.f,
-    cur.frozen ? 1 : 0,
-    cur.fav ? 1 : 0,
-    cur.sj,
-    sec,
-    sec,
-  ]);
+  upsertPlayMetaRow(db, cur,
+      update: {PlayMetaField.playSec}, addPlaySec: sec);
 }
 
 void _opSetFavorite(Database db, Map<String, dynamic> a) {
@@ -983,23 +905,11 @@ void _opSetFavorite(Database db, Map<String, dynamic> a) {
   final songJson = a['songJson'] as String?;
   _migrateRef(db, sourceKey, songRef);
   final cur = _curMeta(db, sourceKey, songRef);
-  db.execute('''
-    INSERT INTO play_meta(source_key, song_ref, like_streak, dislike_streak,
-      factor, frozen, is_favorite, song_json)
-    VALUES(?,?,?,?,?,?,?,?)
-    ON CONFLICT(source_key, song_ref) DO UPDATE SET
-      is_favorite = excluded.is_favorite,
-      song_json = COALESCE(excluded.song_json, play_meta.song_json)
-  ''', [
-    sourceKey,
-    songRef,
-    cur.ls,
-    cur.ds,
-    cur.f,
-    cur.frozen ? 1 : 0,
-    fav ? 1 : 0,
-    songJson,
-  ]);
+  upsertPlayMetaRow(
+    db,
+    cur.copyWith(favorite: fav, songJson: songJson),
+    update: {PlayMetaField.favorite, PlayMetaField.songJson},
+  );
 }
 
 double _clampDb(double v, double lo, double hi) => v.clamp(lo, hi).toDouble();
@@ -1021,22 +931,22 @@ void _opApplyWeightEvent(Database db, Map<String, dynamic> a) {
   final songJson = a['songJson'] as String?;
   _migrateRef(db, sourceKey, songRef);
   final cur = _curMeta(db, sourceKey, songRef);
-  var hist = PlayProgressHistogram.fromJson(cur.ph);
+  var hist = PlayProgressHistogram.fromJson(cur.progressHist);
   final progressPct = a['progressPct'] as int?;
   if (progressPct != null) hist = hist.record(progressPct);
   final tracked = (a['tracked'] as bool?) ?? false;
-  var ls = cur.ls;
-  var ds = cur.ds;
-  var f = cur.f;
+  var ls = cur.likeStreak;
+  var ds = cur.dislikeStreak;
+  var f = cur.factor;
   var frozen = cur.frozen;
-  var fav = cur.fav;
+  var fav = cur.favorite;
   switch (event) {
     case 'complete':
-      ls = cur.ls + 1;
+      ls = cur.likeStreak + 1;
       ds = 0;
       if (!cur.frozen && ls >= 3) {
-        final target = _clampDb(cur.f + step, minF, maxF);
-        final canRaise = target > cur.f + 1e-9;
+        final target = _clampDb(cur.factor + step, minF, maxF);
+        final canRaise = target > cur.factor + 1e-9;
         // tracked 事件的样本已含本次；闸门未过时保留 streak，后续完播继续评比。
         final gateOk = !tracked || !canRaise || allowsUpgrade(hist, target);
         if (gateOk) {
@@ -1047,18 +957,18 @@ void _opApplyWeightEvent(Database db, Map<String, dynamic> a) {
       }
       break;
     case 'skip':
-      ds = cur.ds + 1;
+      ds = cur.dislikeStreak + 1;
       ls = 0;
       if (!cur.frozen && ds >= 3) {
         ds = 0;
-        f = _clampDb(cur.f - step, minF, maxF);
+        f = _clampDb(cur.factor - step, minF, maxF);
       }
       break;
     case 'complete_manual':
       // 手动点播自然完播：阶梯升权 + 清空双 streak；tracked 时同样要过中位闸门。
       // 闸门失败保持权重与刚累计的 streak；「不喜欢」锁定态不动权重。
-      final target = _clampDb(cur.f + step, minF, maxF);
-      final canRaise = target > cur.f + 1e-9;
+      final target = _clampDb(cur.factor + step, minF, maxF);
+      final canRaise = target > cur.factor + 1e-9;
       final gateOk =
           !tracked || cur.frozen || !canRaise || allowsUpgrade(hist, target);
       if (gateOk) {
@@ -1098,29 +1008,27 @@ void _opApplyWeightEvent(Database db, Map<String, dynamic> a) {
     default:
       throw StateError('unknown weight event: $event');
   }
-  db.execute('''
-    INSERT INTO play_meta(source_key, song_ref, like_streak, dislike_streak,
-      factor, frozen, is_favorite, song_json, progress_hist)
-    VALUES(?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(source_key, song_ref) DO UPDATE SET
-      like_streak = excluded.like_streak,
-      dislike_streak = excluded.dislike_streak,
-      factor = excluded.factor,
-      frozen = excluded.frozen,
-      is_favorite = excluded.is_favorite,
-      song_json = COALESCE(excluded.song_json, play_meta.song_json),
-      progress_hist = excluded.progress_hist
-  ''', [
-    sourceKey,
-    songRef,
-    ls,
-    ds,
-    f,
-    frozen ? 1 : 0,
-    fav ? 1 : 0,
-    songJson ?? cur.sj,
-    hist.toJsonOrNull(),
-  ]);
+  upsertPlayMetaRow(
+    db,
+    cur.copyWith(
+      likeStreak: ls,
+      dislikeStreak: ds,
+      factor: f,
+      frozen: frozen,
+      favorite: fav,
+      songJson: songJson ?? cur.songJson,
+      progressHist: hist.toJsonOrNull(),
+    ),
+    update: {
+      PlayMetaField.likeStreak,
+      PlayMetaField.dislikeStreak,
+      PlayMetaField.factor,
+      PlayMetaField.frozen,
+      PlayMetaField.favorite,
+      PlayMetaField.songJson,
+      PlayMetaField.progressHist,
+    },
+  );
 }
 
 /// 只记录一次播放进度样本（30%~95% 等无权重事件的离开）：保留其余列不变。
@@ -1130,25 +1038,9 @@ void _opRecordProgress(Database db, Map<String, dynamic> a) {
   final pct = clampProgressPercent(a['progressPct'] as int);
   _migrateRef(db, sourceKey, songRef);
   final cur = _curMeta(db, sourceKey, songRef);
-  final hist = PlayProgressHistogram.fromJson(cur.ph).record(pct);
-  db.execute('''
-    INSERT INTO play_meta(source_key, song_ref, like_streak, dislike_streak,
-      factor, frozen, is_favorite, song_json, play_sec, progress_hist)
-    VALUES(?,?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(source_key, song_ref) DO UPDATE SET
-      progress_hist = excluded.progress_hist
-  ''', [
-    sourceKey,
-    songRef,
-    cur.ls,
-    cur.ds,
-    cur.f,
-    cur.frozen ? 1 : 0,
-    cur.fav ? 1 : 0,
-    cur.sj,
-    cur.ps,
-    hist.toJsonOrNull(),
-  ]);
+  final hist = PlayProgressHistogram.fromJson(cur.progressHist).record(pct);
+  upsertPlayMetaRow(db, cur.copyWith(progressHist: hist.toJsonOrNull()),
+      update: {PlayMetaField.progressHist});
 }
 
 void _opApplySongSnapshot(Database db, Map<String, dynamic> a) {
@@ -1166,7 +1058,7 @@ void _opApplySongSnapshot(Database db, Map<String, dynamic> a) {
   void write(String key, String ref) {
     // 累计播放时长/进度直方图是单调量：快照值只增不减（服务端行级 LWW 可能比本地小）。
     final cur = _curMeta(db, key, ref);
-    final current = PlayProgressHistogram.fromJson(cur.ph);
+    final current = PlayProgressHistogram.fromJson(cur.progressHist);
     final incoming = progressHist == null
         ? null
         : PlayProgressHistogram.fromJson(progressHist);
@@ -1179,12 +1071,12 @@ void _opApplySongSnapshot(Database db, Map<String, dynamic> a) {
       'factor': factor,
       'frozen': frozen,
       'favorite': favorite,
-      'playSec': playSec == null ? null : (playSec > cur.ps ? playSec : cur.ps),
+      'playSec': playSec == null ? null : (playSec > cur.playSec ? playSec : cur.playSec),
       'progressHist': merged.toJsonOrNull(),
     });
   }
 
-  final byUuid = sourceId == null ? null : _sourceKeyOfUuid(db, sourceId);
+  final byUuid = sourceId == null ? null : sql_util.sourceKeyOfUuid(db, sourceId);
   if (byUuid != null) {
     write(byUuid, songRef);
     return;
@@ -1198,7 +1090,7 @@ void _opApplySongSnapshot(Database db, Map<String, dynamic> a) {
     for (final r in rows) {
       final key = r['source_key'] as String;
       if (key == 'server') continue;
-      if (_sourceOfKey(key) != source) continue;
+      if (sql_util.protocolOf(key) != source) continue;
       write(key, r['ref'] as String);
     }
   }
@@ -1330,7 +1222,7 @@ void _opApplyPlaylistSnapshot(Database db, Map<String, dynamic> a) {
     String key = 'server';
     final resolved = it['sourceId'] == null
         ? null
-        : _sourceKeyOfUuid(db, it['sourceId'] as String);
+        : sql_util.sourceKeyOfUuid(db, it['sourceId'] as String);
     if (resolved != null) {
       key = resolved;
     } else if (it['source'] != null && (it['source'] as String).isNotEmpty) {
@@ -1355,11 +1247,7 @@ void _opApplyPlaylistSnapshot(Database db, Map<String, dynamic> a) {
     db.execute(
         'DELETE FROM playlist_items WHERE playlist_id=? AND source_key=? AND song_ref=?',
         [pid, key, songRef]);
-    db.execute('''
-      INSERT INTO playlist_items(playlist_id, source_key, song_ref, title, artist,
-        album, cover_path, sort_order, added_at, source)
-      VALUES(?,?,?,?,?,?,?,?,?,?)
-    ''', [
+    db.execute(kPlaylistItemInsertSql, [
       pid,
       key,
       songRef,
@@ -1455,28 +1343,7 @@ void _opApplyPlaystateMirror(Database db, Map<String, dynamic> a) {
   if (isV2) {
     // head 字段只跟随更高 head_rev；deep_list 只跟随更高 history_rev。
     // 这样乱序到达的旧快照不会把新播放头/新历史写回去。
-    db.execute(
-        'INSERT INTO breakpoint_mirror(playlist_uuid, song_id, source_id, source, source_ref, '
-        'position_ms, deep_list_json, updated_at, device_id, last_event_at, '
-        'head_rev, history_rev, head_clock, head_op_id, head_session, head_playing, head_updated_at) '
-        'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
-        'ON CONFLICT(playlist_uuid) DO UPDATE SET '
-        'song_id=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.song_id ELSE breakpoint_mirror.song_id END, '
-        'source_id=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.source_id ELSE breakpoint_mirror.source_id END, '
-        'source=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.source ELSE breakpoint_mirror.source END, '
-        'source_ref=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.source_ref ELSE breakpoint_mirror.source_ref END, '
-        'position_ms=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.position_ms ELSE breakpoint_mirror.position_ms END, '
-        'deep_list_json=CASE WHEN excluded.deep_list_json IS NOT NULL AND excluded.history_rev >= breakpoint_mirror.history_rev THEN excluded.deep_list_json ELSE breakpoint_mirror.deep_list_json END, '
-        'device_id=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.device_id ELSE breakpoint_mirror.device_id END, '
-        'last_event_at=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.last_event_at ELSE breakpoint_mirror.last_event_at END, '
-        'updated_at=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.updated_at ELSE breakpoint_mirror.updated_at END, '
-        'head_rev=MAX(breakpoint_mirror.head_rev, excluded.head_rev), '
-        'history_rev=MAX(breakpoint_mirror.history_rev, CASE WHEN excluded.deep_list_json IS NOT NULL THEN excluded.history_rev ELSE 0 END), '
-        'head_clock=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_clock ELSE breakpoint_mirror.head_clock END, '
-        'head_op_id=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_op_id ELSE breakpoint_mirror.head_op_id END, '
-        'head_session=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_session ELSE breakpoint_mirror.head_session END, '
-        'head_playing=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_playing ELSE breakpoint_mirror.head_playing END, '
-        'head_updated_at=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_updated_at ELSE breakpoint_mirror.head_updated_at END',
+    db.execute(kBreakpointMirrorV2UpsertSql,
         [
           uuid,
           (a['song_id'] as num?)?.toInt(),
@@ -1497,16 +1364,7 @@ void _opApplyPlaystateMirror(Database db, Map<String, dynamic> a) {
           a['head_updated_at'],
         ]);
   } else {
-    db.execute(
-        'INSERT INTO breakpoint_mirror(playlist_uuid, song_id, source_id, source, source_ref, '
-        'position_ms, deep_list_json, updated_at, device_id, last_event_at) '
-        'VALUES(?,?,?,?,?,?,?,?,?,?) '
-        'ON CONFLICT(playlist_uuid) DO UPDATE SET '
-        'song_id=excluded.song_id, source_id=excluded.source_id, source=excluded.source, '
-        'source_ref=excluded.source_ref, position_ms=excluded.position_ms, '
-        'deep_list_json=excluded.deep_list_json, '
-        'updated_at=excluded.updated_at, device_id=excluded.device_id, '
-        'last_event_at=excluded.last_event_at',
+    db.execute(kBreakpointMirrorV1UpsertSql,
         [
           uuid,
           (a['song_id'] as num?)?.toInt(),
@@ -1594,7 +1452,7 @@ int _opCreatePlaylist(Database db, Map<String, dynamic> a) {
         a['name'],
         a['description'],
         DateTime.now().toIso8601String(),
-        _newUuid(),
+        sql_util.newEventUuid(),
       ]);
   return db.lastInsertRowId;
 }
@@ -1605,7 +1463,7 @@ String _opEnsurePlaylistUuid(Database db, Map<String, dynamic> a) {
   if (rs.isEmpty) throw StateError('playlist not found: $id');
   var uuid = rs.first['client_uuid'] as String?;
   if (uuid == null || uuid.isEmpty) {
-    uuid = _newUuid();
+    uuid = sql_util.newEventUuid();
     db.execute('UPDATE playlists SET client_uuid=? WHERE id=?', [uuid, id]);
   }
   return uuid;
@@ -1625,12 +1483,7 @@ List<int?> _opAddPlaylistItems(Database db, Map<String, dynamic> a) {
     final addedAt = DateTime.now().toIso8601String();
     for (final r in rows) {
       final order = max + 1;
-      db.execute('''
-        INSERT INTO playlist_items(playlist_id, source_key, song_ref, title, artist,
-          album, cover_path, sort_order, added_at, source)
-        VALUES(?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(playlist_id, source_key, song_ref) DO NOTHING
-      ''', [
+      db.execute(kPlaylistItemInsertIgnoreSql, [
         playlistId,
         r['sourceKey'],
         r['songRef'],
@@ -1658,12 +1511,7 @@ void _opAddPlaylistItem(Database db, Map<String, dynamic> a) {
   final max = db.select(
       'SELECT COALESCE(MAX(sort_order),0) m FROM playlist_items WHERE playlist_id=?',
       [playlistId]).first['m'] as int;
-  db.execute('''
-    INSERT INTO playlist_items(playlist_id, source_key, song_ref, title, artist,
-      album, cover_path, sort_order, added_at, source)
-    VALUES(?,?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(playlist_id, source_key, song_ref) DO NOTHING
-  ''', [
+  db.execute(kPlaylistItemInsertIgnoreSql, [
     playlistId,
     a['sourceKey'],
     a['songRef'],
@@ -2093,7 +1941,7 @@ void _opArtistReconcile(Database db) {
 
     for (final entry in canonDisplay.entries) {
       if (keyOfCanon.containsKey(entry.key)) continue;
-      final ak = _newUuid();
+      final ak = sql_util.newEventUuid();
       keyOfCanon[entry.key] = ak;
       db.execute(
           'INSERT INTO artists(artist_key, canonical_key, display_name, names, status, updated_at) '
@@ -2209,9 +2057,9 @@ bool _opArtistMergeMbid(Database db, Map<String, dynamic> a) {
         [targetAk]);
     if (row.isNotEmpty) {
       final r = row.first;
-      final names = _mergeNameLists(_jsonList(r['names']),
+      final names = _mergeNameLists(sql_util.jsonMapList(r['names']),
           (a['names'] as List).cast<Map<dynamic, dynamic>>());
-      final groups = _mergeJsonList(_jsonList(r['groups']),
+      final groups = _mergeJsonList(sql_util.jsonMapList(r['groups']),
           (a['groups'] as List).cast<Map<dynamic, dynamic>>());
       final nowIso = DateTime.now().toIso8601String();
       db.execute('''
@@ -2408,7 +2256,7 @@ String? _ensureMemberIdentity(
     }
     return ak;
   }
-  final ak = _newUuid();
+  final ak = sql_util.newEventUuid();
   db.execute('''
     INSERT INTO artists(artist_key, mbid, canonical_key, display_name, names,
       groups, type, status, error_count, next_at, resolved_at, updated_at)
@@ -2430,16 +2278,6 @@ String? _ensureMemberIdentity(
       'ON CONFLICT(canonical_key) DO NOTHING',
       [name, ak, now]);
   return ak;
-}
-
-/// DB 行里的 JSON 列表（容错：损坏返回空列表）。
-List<Map<dynamic, dynamic>> _jsonList(Object? raw) {
-  if (raw == null) return [];
-  try {
-    return (jsonDecode(raw as String) as List).cast<Map<dynamic, dynamic>>();
-  } catch (_) {
-    return [];
-  }
 }
 
 /// 名字列表合并去重（按 name+name_type），覆盖时以新值为准。

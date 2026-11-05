@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
@@ -18,11 +17,17 @@ import '../../utils/off_thread.dart';
 import '../../utils/main_thread_probe.dart';
 import '../../utils/perf_log.dart';
 import '../../utils/play_progress.dart';
+import '../../utils/song_key.dart';
 import '../../utils/zh_variant.dart';
 import '../sources/music_source.dart';
 import '../sources/webdav_url.dart';
 import 'audio_metadata.dart';
 import 'db_writer.dart';
+import 'play_meta_sql.dart';
+import 'sql_columns.dart';
+import 'sql_util.dart' as sql_util;
+
+export 'play_meta_sql.dart' show PlayMetaRow;
 
 /// 手动线路偏好设置项键名（`auto/primary/fb0/fb1`，按源 key 存）。
 String sourceLineSettingKey(String sourceKey) => 'source_line:$sourceKey';
@@ -123,12 +128,7 @@ class LocalIndex {
   }
 
   /// 按源实例 uuid 反查本地源 key（未配置对应源返回 null）。
-  String? sourceKeyOfUuid(String uuid) {
-    if (uuid.isEmpty) return null;
-    final rs =
-        _db!.select('SELECT key FROM sources WHERE client_uuid=?', [uuid]);
-    return rs.isEmpty ? null : rs.first['key'] as String;
-  }
+  String? sourceKeyOfUuid(String uuid) => sql_util.sourceKeyOfUuid(_db!, uuid);
 
   Future<void> updateSourceScan(String key, String status) {
     return _writer!.exec(
@@ -369,7 +369,7 @@ class LocalIndex {
   /// 返回重置行数。
   Future<int> resetMetaReadForMissingArtist(List<String> sourceKeys) {
     if (sourceKeys.isEmpty) return Future.value(0);
-    final marks = List.filled(sourceKeys.length, '?').join(',');
+    final marks = sql_util.sqlPlaceholders(sourceKeys.length);
     return _writer!.execUpdated(
         'UPDATE idx_songs SET meta_read=0 '
         'WHERE meta_read=1 AND artist IS NULL AND source_key IN ($marks)',
@@ -390,11 +390,8 @@ class LocalIndex {
       limit,
     ];
     final rows = _db!.select('''
-      SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
-             i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
-             i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
-      FROM idx_songs i
-      LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
+      SELECT $kSongSelectColumns
+      $kSongFromJoin
       WHERE i.source_key=? AND i.missing=0 AND COALESCE(i.meta_read, 0)=0$excludeCond$cursorCond
       ORDER BY i.id
       LIMIT ?
@@ -425,34 +422,22 @@ class LocalIndex {
     });
   }
 
-  /// 同步 play_meta 歌曲快照中的标题/歌手/专辑/专辑歌手（直连改库用）。
-  /// '' 表示清空为未知（写 null）。
-  /// 读快照在主连接上进行（song_json 仅此路径写），再经写隔离落库。
-  Future<void> syncMetaSnapshot(String sourceKey, String songRef,
-      {String? title,
-      String? artist,
-      String? album,
-      String? albumArtist}) async {
-    final rows = _db!.select(
-        'SELECT song_json FROM play_meta WHERE source_key=? AND song_ref=?',
-        [sourceKey, songRef]);
-    if (rows.isEmpty) return;
-    final raw = rows.first['song_json'] as String?;
-    if (raw == null || raw.isEmpty) return;
+  /// 封面落盘目标路径（`covers/<md5(ref)>.jpg`），确保目录存在。
+  String _coverFilePath(String ref) {
+    final dir = p.join(_dir!, 'covers');
+    Directory(dir).createSync(recursive: true);
+    final h = md5.convert(utf8.encode(ref)).toString();
+    return p.join(dir, '$h.jpg');
+  }
+
+  /// 已有同尺寸**且完整**的封面可幂等跳过（启动期免去大量无谓写盘）。
+  bool _coverUpToDate(File f, int size) =>
+      f.existsSync() && f.lengthSync() == size && _existingCoverComplete(f);
+
+  static void _deleteTmpQuietly(File tmp) {
     try {
-      final j = jsonDecode(raw) as Map<String, dynamic>;
-      if (title != null) j['title'] = title.isEmpty ? null : title;
-      if (artist != null) j['artist'] = artist.isEmpty ? null : artist;
-      if (album != null) j['albumName'] = album.isEmpty ? null : album;
-      if (albumArtist != null) {
-        j['albumArtist'] = albumArtist.isEmpty ? null : albumArtist;
-      }
-      await _writer!.exec(
-          'UPDATE play_meta SET song_json=? WHERE source_key=? AND song_ref=?',
-          [jsonEncode(j), sourceKey, songRef]);
-    } catch (_) {
-      // 快照损坏则忽略（下次收藏时重写）。
-    }
+      if (tmp.existsSync()) tmp.deleteSync();
+    } catch (_) {}
   }
 
   /// 把嵌入封面包装成可跨源复用的落盘（`covers/<md5(ref)>.jpg`），返回路径或 null。
@@ -463,16 +448,9 @@ class LocalIndex {
   String? persistCover(Uint8List cover, String ref) {
     if (cover.isEmpty || !isCompleteImageBytes(cover)) return null;
     try {
-      final dir = p.join(_dir!, 'covers');
-      Directory(dir).createSync(recursive: true);
-      final h = md5.convert(utf8.encode(ref)).toString();
-      final filePath = p.join(dir, '$h.jpg');
+      final filePath = _coverFilePath(ref);
       final f = File(filePath);
-      if (f.existsSync() &&
-          f.lengthSync() == cover.length &&
-          _existingCoverComplete(f)) {
-        return filePath;
-      }
+      if (_coverUpToDate(f, cover.length)) return filePath;
       // 覆盖写新封面：旧缩略图作废删除，随后由 ensureCoverThumb 重新生成。
       deleteCoverThumb(filePath);
       final tmp = File('$filePath.tmp');
@@ -480,9 +458,7 @@ class LocalIndex {
         tmp.writeAsBytesSync(cover, flush: true);
         tmp.renameSync(filePath);
       } catch (_) {
-        try {
-          if (tmp.existsSync()) tmp.deleteSync();
-        } catch (_) {}
+        _deleteTmpQuietly(tmp);
         rethrow;
       }
       return filePath;
@@ -500,16 +476,9 @@ class LocalIndex {
     if (cover.isEmpty || !isCompleteImageBytes(cover)) return null;
     final nextTick = yieldTo ?? yieldToEventLoop;
     try {
-      final dir = p.join(_dir!, 'covers');
-      Directory(dir).createSync(recursive: true);
-      final h = await _md5HexChunked(cover, nextTick);
-      final filePath = p.join(dir, '$h.jpg');
+      final filePath = _coverFilePath(ref);
       final f = File(filePath);
-      if (f.existsSync() &&
-          f.lengthSync() == cover.length &&
-          _existingCoverComplete(f)) {
-        return filePath;
-      }
+      if (_coverUpToDate(f, cover.length)) return filePath;
       // 覆盖写新封面：旧缩略图作废删除，随后由 ensureCoverThumb 重新生成。
       deleteCoverThumb(filePath);
       final tmp = File('$filePath.tmp');
@@ -517,9 +486,7 @@ class LocalIndex {
         await _writeBytesChunked(tmp, cover, nextTick);
         tmp.renameSync(filePath);
       } catch (_) {
-        try {
-          if (tmp.existsSync()) tmp.deleteSync();
-        } catch (_) {}
+        _deleteTmpQuietly(tmp);
         rethrow;
       }
       return filePath;
@@ -530,71 +497,16 @@ class LocalIndex {
 
   /// 现存封面文件是否完整（同尺寸幂等跳过前用）：只读头 12B + 尾 4B，
   /// 不整文件读入内存。判不完整时返回 false，调用方覆盖重写。
-  bool _existingCoverComplete(File f) {
-    try {
-      final len = f.lengthSync();
-      if (len < 12) return false;
-      final raf = f.openSync(mode: FileMode.read);
-      try {
-        final head = raf.readSync(12);
-        if (!looksLikeImageBytes(head)) return false;
-        // JPEG：尾2B须为 FFD9。
-        if (head[0] == 0xFF && head[1] == 0xD8) {
-          raf.setPositionSync(len - 2);
-          final tail = raf.readSync(2);
-          return tail.length == 2 && tail[0] == 0xFF && tail[1] == 0xD9;
-        }
-        // PNG：尾4B须为 AE426082。
-        if (head[0] == 0x89 && head[1] == 0x50) {
-          raf.setPositionSync(len - 4);
-          final tail = raf.readSync(4);
-          return tail.length == 4 &&
-              tail[0] == 0xAE &&
-              tail[1] == 0x42 &&
-              tail[2] == 0x60 &&
-              tail[3] == 0x82;
-        }
-        // GIF：尾字节 3B。
-        if (head[0] == 0x47 && head[1] == 0x49) {
-          raf.setPositionSync(len - 1);
-          final tail = raf.readSync(1);
-          return tail.length == 1 && tail[0] == 0x3B;
-        }
-        // BMP：声明大小须等于实际（0 无法校验按通过）。
-        if (head[0] == 0x42 && head[1] == 0x4D) {
-          final declared =
-              head[2] | (head[3] << 8) | (head[4] << 16) | (head[5] << 24);
-          if (declared == 0) return true;
-          return declared == len;
-        }
-        // WEBP：RIFF+8 须等于实际（0 按通过）。
-        if (head[0] == 0x52 && head[1] == 0x49) {
-          final riff =
-              head[4] | (head[5] << 8) | (head[6] << 16) | (head[7] << 24);
-          if (riff == 0) return true;
-          return riff + 8 == len;
-        }
-        return true; // ftyp：无廉价尾判
-      } finally {
-        raf.closeSync();
-      }
-    } catch (_) {
-      return false;
-    }
-  }
+  bool _existingCoverComplete(File f) => isCompleteImageFile(f);
 
   /// 封面落盘**目标路径**（沿用 [persistCover] 口径：`covers/<md5(ref)>.jpg`）。
   ///
   /// 仅供 ohos 原生解析把封面直接写到该路径（Dart 侧不再持有/重解析封面字节），
   /// 由 `extractAudioMeta` 的 `coverPath` 入参使用。目录不可用时返回 null。
   String? coverPathFor(String ref) {
-    final root = _dir;
-    if (root == null) return null;
+    if (_dir == null) return null;
     try {
-      final dir = p.join(root, 'covers');
-      Directory(dir).createSync(recursive: true);
-      final h = md5.convert(utf8.encode(ref)).toString();
-      return p.join(dir, '$h.jpg');
+      return _coverFilePath(ref);
     } catch (_) {
       return null;
     }
@@ -820,21 +732,7 @@ class LocalIndex {
         'frozen, is_favorite, song_json, play_sec, progress_hist FROM play_meta '
         'WHERE like_streak<>0 OR dislike_streak<>0 OR factor<>1.0 '
         'OR frozen<>0 OR is_favorite<>0 OR play_sec<>0 OR progress_hist IS NOT NULL');
-    return [
-      for (final r in rs)
-        PlayMetaRow(
-          sourceKey: r['source_key'] as String,
-          songRef: r['song_ref'] as String,
-          likeStreak: r['like_streak'] as int,
-          dislikeStreak: r['dislike_streak'] as int,
-          factor: (r['factor'] as num).toDouble(),
-          frozen: (r['frozen'] as int) != 0,
-          favorite: (r['is_favorite'] as int) != 0,
-          songJson: r['song_json'] as String?,
-          playSec: (r['play_sec'] as int?) ?? 0,
-          progressHist: r['progress_hist'] as String?,
-        ),
-    ];
+    return [for (final r in rs) playMetaRowFromRow(r)];
   }
 
   /// 「喜欢」列表：play_meta 中已收藏歌曲（含服务器歌快照；迁移回填的直连歌查 idx_songs 补全）。
@@ -890,16 +788,11 @@ class LocalIndex {
       final sourceKey = entry.key;
       final resolved = <int>{};
       void applyRows(List<String> refs, Map<String, List<int>> positionsByRef) {
-        for (var start = 0; start < refs.length; start += 400) {
-          final end = start + 400 < refs.length ? start + 400 : refs.length;
-          final chunk = refs.sublist(start, end);
-          final placeholders = List.filled(chunk.length, '?').join(',');
+        for (final chunk in sql_util.chunksOf(refs, 400)) {
+          final placeholders = sql_util.sqlPlaceholders(chunk.length);
           final rows = _db!.select('''
-            SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
-                   i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
-                   i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
-            FROM idx_songs i
-            LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
+            SELECT $kSongSelectColumns
+            $kSongFromJoin
             WHERE i.source_key=? AND i.ref IN ($placeholders)
           ''', [sourceKey, ...chunk]);
           for (final r in rows) {
@@ -951,14 +844,8 @@ class LocalIndex {
   }
 
   Song? _songByRef(String sourceKey, String ref) {
-    const sql = '''
-      SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
-             i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
-             i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
-      FROM idx_songs i
-      LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
-      WHERE i.source_key=? AND i.ref=?
-    ''';
+    const sql = 'SELECT $kSongSelectColumns $kSongFromJoin '
+        'WHERE i.source_key=? AND i.ref=?';
     for (final variant in webdavRefVariants(ref)) {
       final rows = _db!.select(sql, [sourceKey, variant]);
       if (rows.isNotEmpty) return _rowToSong(rows.first);
@@ -970,11 +857,8 @@ class LocalIndex {
       {int minDurationSec = 0, int minSizeBytes = 0}) {
     final ignore = _ignoreFilterSql(minDurationSec, minSizeBytes);
     final rows = _db!.select('''
-      SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
-             i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
-             i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
-      FROM idx_songs i
-      LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
+      SELECT $kSongSelectColumns
+      $kSongFromJoin
       WHERE i.source_key=? AND i.missing=0 AND COALESCE(p.is_favorite, 0) = 1
         ${ignore.sql}
       ORDER BY i.artist, i.album, i.track_no
@@ -1269,7 +1153,7 @@ class LocalIndex {
   }
 
   static String cacheSongKey(String sourceKey, String songRef) =>
-      '$sourceKey\u0000$songRef';
+      songKeyOf(sourceKey, songRef);
 
   /// 已登记缓存的权威路径（以库里的 path 列为准）。
   ///
@@ -1304,36 +1188,8 @@ class LocalIndex {
   // ---------- play_meta（阶段 2：权重 / 收藏，stage2.md §1.1） ----------
 
   /// 读 play_meta（纯读；历史 ENCODE 旧行迁移见 open() 的 migrateMetaRefs）。
-  PlayMetaRow playMetaOf(String sourceKey, String songRef) {
-    final rs = _db!.select(
-        'SELECT source_key, song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json, play_sec, progress_hist '
-        'FROM play_meta WHERE source_key=? AND song_ref=?',
-        [sourceKey, songRef]);
-    if (rs.isEmpty) {
-      return PlayMetaRow(
-        sourceKey: sourceKey,
-        songRef: songRef,
-        likeStreak: 0,
-        dislikeStreak: 0,
-        factor: 1.0,
-        frozen: false,
-        favorite: false,
-      );
-    }
-    final r = rs.first;
-    return PlayMetaRow(
-      sourceKey: r['source_key'] as String,
-      songRef: r['song_ref'] as String,
-      likeStreak: r['like_streak'] as int,
-      dislikeStreak: r['dislike_streak'] as int,
-      factor: (r['factor'] as num).toDouble(),
-      frozen: (r['frozen'] as int) == 1,
-      favorite: (r['is_favorite'] as int) == 1,
-      songJson: r['song_json'] as String?,
-      playSec: (r['play_sec'] as int?) ?? 0,
-      progressHist: r['progress_hist'] as String?,
-    );
-  }
+  PlayMetaRow playMetaOf(String sourceKey, String songRef) =>
+      readPlayMetaOrDefault(_db!, sourceKey, songRef);
 
   /// 批量读 factor（纯读）：一次查询拿回 [refs] 内已记录歌曲的权重，未命中不放入。
   /// 返回 map<songRef, factor>；`refs` 过大会超 SQLITE_MAX_VARIABLE_NUMBER，
@@ -1345,29 +1201,16 @@ class LocalIndex {
     final refsList = refs.toSet().toList();
     if (refsList.isEmpty) return const {};
     final result = <String, PlayMetaRow>{};
-    const chunkSize = 500;
-    for (var start = 0; start < refsList.length; start += chunkSize) {
-      final end = min(start + chunkSize, refsList.length);
-      final chunk = refsList.sublist(start, end);
-      final placeholders = List.filled(chunk.length, '?').join(',');
-      final rs = _db!.select(
+    final rows = sql_util.selectInChunks(
+      _db!,
+      refsList,
+      leadingArgs: [sourceKey],
+      sql: (ph) =>
           'SELECT source_key, song_ref, like_streak, dislike_streak, factor, frozen, is_favorite, song_json, play_sec, progress_hist '
-          'FROM play_meta WHERE source_key=? AND song_ref IN ($placeholders)',
-          [sourceKey, ...chunk]);
-      for (final r in rs) {
-        result[r['song_ref'] as String] = PlayMetaRow(
-          sourceKey: r['source_key'] as String,
-          songRef: r['song_ref'] as String,
-          likeStreak: r['like_streak'] as int,
-          dislikeStreak: r['dislike_streak'] as int,
-          factor: (r['factor'] as num).toDouble(),
-          frozen: (r['frozen'] as int) == 1,
-          favorite: (r['is_favorite'] as int) == 1,
-          songJson: r['song_json'] as String?,
-          playSec: (r['play_sec'] as int?) ?? 0,
-          progressHist: r['progress_hist'] as String?,
-        );
-      }
+          'FROM play_meta WHERE source_key=? AND song_ref IN ($ph)',
+    );
+    for (final r in rows) {
+      result[r['song_ref'] as String] = playMetaRowFromRow(r);
     }
     return result;
   }
@@ -1376,18 +1219,15 @@ class LocalIndex {
     final refsList = refs.toSet().toList();
     if (refsList.isEmpty) return const {};
     final result = <String, double>{};
-    const chunkSize = 500;
-    for (var start = 0; start < refsList.length; start += chunkSize) {
-      final end = min(start + chunkSize, refsList.length);
-      final chunk = refsList.sublist(start, end);
-      final placeholders = List.filled(chunk.length, '?').join(',');
-      final rs = _db!.select(
-          'SELECT song_ref, factor FROM play_meta '
-          'WHERE source_key=? AND song_ref IN ($placeholders)',
-          [sourceKey, ...chunk]);
-      for (final r in rs) {
-        result[r['song_ref'] as String] = (r['factor'] as num).toDouble();
-      }
+    final rows = sql_util.selectInChunks(
+      _db!,
+      refsList,
+      leadingArgs: [sourceKey],
+      sql: (ph) => 'SELECT song_ref, factor FROM play_meta '
+          'WHERE source_key=? AND song_ref IN ($ph)',
+    );
+    for (final r in rows) {
+      result[r['song_ref'] as String] = (r['factor'] as num).toDouble();
     }
     return result;
   }
@@ -1400,21 +1240,18 @@ class LocalIndex {
     final refsList = refs.toSet().toList();
     if (refsList.isEmpty) return const {};
     final result = <String, ({double factor, bool frozen})>{};
-    const chunkSize = 500;
-    for (var start = 0; start < refsList.length; start += chunkSize) {
-      final end = min(start + chunkSize, refsList.length);
-      final chunk = refsList.sublist(start, end);
-      final placeholders = List.filled(chunk.length, '?').join(',');
-      final rs = _db!.select(
-          'SELECT song_ref, factor, frozen FROM play_meta '
-          'WHERE source_key=? AND song_ref IN ($placeholders)',
-          [sourceKey, ...chunk]);
-      for (final r in rs) {
-        result[r['song_ref'] as String] = (
-          factor: (r['factor'] as num).toDouble(),
-          frozen: (r['frozen'] as int) == 1,
-        );
-      }
+    final rows = sql_util.selectInChunks(
+      _db!,
+      refsList,
+      leadingArgs: [sourceKey],
+      sql: (ph) => 'SELECT song_ref, factor, frozen FROM play_meta '
+          'WHERE source_key=? AND song_ref IN ($ph)',
+    );
+    for (final r in rows) {
+      result[r['song_ref'] as String] = (
+        factor: (r['factor'] as num).toDouble(),
+        frozen: (r['frozen'] as int) == 1,
+      );
     }
     return result;
   }
@@ -1434,19 +1271,16 @@ class LocalIndex {
     final refsList = refs.toSet().toList();
     if (refsList.isEmpty) return const {};
     final result = <String, int>{};
-    const chunkSize = 500;
-    for (var start = 0; start < refsList.length; start += chunkSize) {
-      final end = min(start + chunkSize, refsList.length);
-      final chunk = refsList.sublist(start, end);
-      final placeholders = List.filled(chunk.length, '?').join(',');
-      final rs = _db!.select(
-          'SELECT song_ref, play_sec FROM play_meta '
-          'WHERE source_key=? AND song_ref IN ($placeholders)',
-          [sourceKey, ...chunk]);
-      for (final r in rs) {
-        final v = r['play_sec'];
-        if (v is int) result[r['song_ref'] as String] = v;
-      }
+    final rows = sql_util.selectInChunks(
+      _db!,
+      refsList,
+      leadingArgs: [sourceKey],
+      sql: (ph) => 'SELECT song_ref, play_sec FROM play_meta '
+          'WHERE source_key=? AND song_ref IN ($ph)',
+    );
+    for (final r in rows) {
+      final v = r['play_sec'];
+      if (v is int) result[r['song_ref'] as String] = v;
     }
     return result;
   }
@@ -1563,7 +1397,7 @@ class LocalIndex {
   Future<void> removePlaylistItem(
       int playlistId, String sourceKey, String songRef) async {
     // 兼容历史 ENCODE/Unicode ref 形态：逐一删除（单事务整体提交）。
-    final ph = List.filled(webdavRefVariants(songRef).length, '?').join(',');
+    final ph = sql_util.sqlPlaceholders(webdavRefVariants(songRef).length);
     await _writer!.exec(
         'DELETE FROM playlist_items WHERE playlist_id=? AND source_key=? '
         'AND song_ref IN ($ph)',
@@ -1595,8 +1429,7 @@ class LocalIndex {
 
   List<PlaylistItemRow> playlistItems(int playlistId) {
     final rs = _db!.select('''
-      SELECT id, playlist_id, source_key, song_ref, title, artist, album,
-             cover_path, sort_order, source
+      SELECT $kPlaylistItemColumns
       FROM playlist_items WHERE playlist_id=?
       ORDER BY sort_order, id
     ''', [playlistId]);
@@ -1606,8 +1439,7 @@ class LocalIndex {
   /// 某源在全部歌单中的条目（删除源前取快照，用于补发 item_remove）。
   List<PlaylistItemRow> playlistItemsOfSource(String sourceKey) {
     final rs = _db!.select('''
-      SELECT id, playlist_id, source_key, song_ref, title, artist, album,
-             cover_path, sort_order, source
+      SELECT $kPlaylistItemColumns
       FROM playlist_items WHERE source_key=?
       ORDER BY playlist_id, sort_order, id
     ''', [sourceKey]);
@@ -1646,13 +1478,7 @@ class LocalIndex {
   // ---------- 多设备同步 outbox（阶段5，DEVELOPER.md「播放算法与同步协议」） ----------
 
   /// 事件 uuid（服务端 event_uuid 幂等键；36 列内唯一即可，不需标准 UUID 形态）。
-  static String newEventUuid() {
-    final r = Random.secure();
-    final tail = List.generate(
-            3, (_) => r.nextInt(0xffffffff).toRadixString(16).padLeft(8, '0'))
-        .join();
-    return '${DateTime.now().microsecondsSinceEpoch.toRadixString(16)}-${tail.substring(0, 12)}';
-  }
+  static String newEventUuid() => sql_util.newEventUuid();
 
   /// 时钟偏移（服务端回包 `server_time` 校准，见 [setClockSkew]）：
   /// 出队时间戳按此修正，治设备墙钟偏移导致的服务端 LWW 误判。
@@ -1769,7 +1595,7 @@ class LocalIndex {
     if (list.isEmpty) return Future.value();
     return _writer!.exec(
         'DELETE FROM weight_outbox WHERE event_uuid IN '
-        '(${List.filled(list.length, '?').join(',')})',
+        '(${sql_util.sqlPlaceholders(list.length)})',
         list);
   }
 
@@ -1779,7 +1605,7 @@ class LocalIndex {
     if (list.isEmpty) return Future.value();
     return _writer!.exec(
         'UPDATE weight_outbox SET acked=2 WHERE event_uuid IN '
-        '(${List.filled(list.length, '?').join(',')})',
+        '(${sql_util.sqlPlaceholders(list.length)})',
         list);
   }
 
@@ -2071,27 +1897,7 @@ class LocalIndex {
     String? headUpdatedAt,
   }) {
     return _writer!.exec(
-        'INSERT INTO breakpoint_mirror(playlist_uuid, song_id, source_id, source, source_ref, '
-        'position_ms, deep_list_json, updated_at, device_id, last_event_at, '
-        'head_rev, history_rev, head_clock, head_op_id, head_session, head_playing, head_updated_at) '
-        'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
-        'ON CONFLICT(playlist_uuid) DO UPDATE SET '
-        'song_id=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.song_id ELSE breakpoint_mirror.song_id END, '
-        'source_id=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.source_id ELSE breakpoint_mirror.source_id END, '
-        'source=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.source ELSE breakpoint_mirror.source END, '
-        'source_ref=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.source_ref ELSE breakpoint_mirror.source_ref END, '
-        'position_ms=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.position_ms ELSE breakpoint_mirror.position_ms END, '
-        'deep_list_json=CASE WHEN excluded.deep_list_json IS NOT NULL AND excluded.history_rev >= breakpoint_mirror.history_rev THEN excluded.deep_list_json ELSE breakpoint_mirror.deep_list_json END, '
-        'updated_at=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.updated_at ELSE breakpoint_mirror.updated_at END, '
-        'device_id=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.device_id ELSE breakpoint_mirror.device_id END, '
-        'last_event_at=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.last_event_at ELSE breakpoint_mirror.last_event_at END, '
-        'head_rev=MAX(breakpoint_mirror.head_rev, excluded.head_rev), '
-        'history_rev=MAX(breakpoint_mirror.history_rev, CASE WHEN excluded.deep_list_json IS NOT NULL THEN excluded.history_rev ELSE 0 END), '
-        'head_clock=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_clock ELSE breakpoint_mirror.head_clock END, '
-        'head_op_id=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_op_id ELSE breakpoint_mirror.head_op_id END, '
-        'head_session=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_session ELSE breakpoint_mirror.head_session END, '
-        'head_playing=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_playing ELSE breakpoint_mirror.head_playing END, '
-        'head_updated_at=CASE WHEN excluded.head_rev >= breakpoint_mirror.head_rev THEN excluded.head_updated_at ELSE breakpoint_mirror.head_updated_at END',
+        kBreakpointMirrorV2UpsertSql,
         [
           playlistUuid,
           songId,
@@ -2126,10 +1932,8 @@ class LocalIndex {
 
   BreakpointMirrorRow? breakpointMirrorOf(String playlistUuid) {
     final rs = _db!.select(
-        'SELECT playlist_uuid, song_id, source_id, source, source_ref, position_ms, '
-        'deep_list_json, updated_at, device_id, last_event_at, head_rev, history_rev, '
-        'head_clock, head_op_id, head_session, head_playing, head_updated_at '
-        'FROM breakpoint_mirror WHERE playlist_uuid=?',
+        'SELECT $kBreakpointMirrorColumns FROM breakpoint_mirror '
+        'WHERE playlist_uuid=?',
         [playlistUuid]);
     if (rs.isEmpty) return null;
     return BreakpointMirrorRow.fromMap(rs.first);
@@ -2399,10 +2203,7 @@ class LocalIndex {
   /// 全部跨设备断点镜像（启动优先最新断点用）。
   List<BreakpointMirrorRow> allBreakpointMirrors() {
     final rs = _db!.select(
-        'SELECT playlist_uuid, song_id, source_id, source, source_ref, position_ms, '
-        'deep_list_json, updated_at, device_id, last_event_at, head_rev, history_rev, '
-        'head_clock, head_op_id, head_session, head_playing, head_updated_at '
-        'FROM breakpoint_mirror');
+        'SELECT $kBreakpointMirrorColumns FROM breakpoint_mirror');
     return [for (final r in rs) BreakpointMirrorRow.fromMap(r)];
   }
 
@@ -2723,9 +2524,7 @@ class LocalIndex {
         UNION
         SELECT am.parent_key FROM up u JOIN artist_member am ON am.member_key=u.key
       )
-      SELECT DISTINCT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist,
-             i.track_no, i.year, i.genre, i.duration, i.format, i.size, i.cover_path,
-             i.url, i.missing, i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
+      SELECT DISTINCT $kSongSelectColumns
       FROM up
       JOIN artist_song_map m ON m.artist_key=up.key AND m.role='main'
       JOIN idx_songs i ON i.source_key=m.source_key AND i.ref=m.ref AND i.missing=0 ${ignore.sql}
@@ -3034,6 +2833,27 @@ class DirectSongRow {
     this.coverPath,
   });
 
+  /// 只替换封面路径（扫描落库时覆盖 `persistCover` 的返回值）。
+  DirectSongRow withCoverPath(String? coverPath) => DirectSongRow(
+        sourceKey: sourceKey,
+        ref: ref,
+        url: url,
+        title: title,
+        titleFromMeta: titleFromMeta,
+        artist: artist,
+        album: album,
+        albumArtist: albumArtist,
+        trackNo: trackNo,
+        year: year,
+        genre: genre,
+        duration: duration,
+        format: format,
+        size: size,
+        mtime: mtime,
+        etag: etag,
+        coverPath: coverPath,
+      );
+
   /// 序列化给写隔离（keys 与 [_opUpsertSongs] 约定的绑定参数一一对应）。
   Map<String, dynamic> toRowMap() => {
         'sourceKey': sourceKey,
@@ -3069,36 +2889,6 @@ class ScanFingerprint {
     if (etag != null && otherEtag != null && etag != otherEtag) return false;
     return true;
   }
-}
-
-/// 一首歌的播放元数据（权重/收藏，stage2.md §1.1）。
-class PlayMetaRow {
-  final String sourceKey;
-  final String songRef;
-  final int likeStreak;
-  final int dislikeStreak;
-  final double factor;
-  final bool frozen;
-  final bool favorite;
-  final String? songJson;
-
-  /// 累计播放时长（秒，整数）。播放次数由它派生：playSec / 歌曲时长（1 位小数）。
-  final int playSec;
-
-  /// 播放进度直方图原始 JSON（0..100 共 101 桶）；无样本为 null。
-  final String? progressHist;
-  const PlayMetaRow({
-    required this.sourceKey,
-    required this.songRef,
-    required this.likeStreak,
-    required this.dislikeStreak,
-    required this.factor,
-    required this.frozen,
-    required this.favorite,
-    this.songJson,
-    this.playSec = 0,
-    this.progressHist,
-  });
 }
 
 /// 播放数据总览（歌曲信息页用）：见 [LocalIndex.playOverview]。
@@ -3598,10 +3388,7 @@ class ArtistWorkItem {
 }
 
 /// 从 source_key（'webdav:name'）取协议名（'webdav'）。
-String sourceOf(String key) {
-  final i = key.indexOf(':');
-  return i > 0 ? key.substring(0, i) : key;
-}
+String sourceOf(String key) => sql_util.protocolOf(key);
 
 /// 数据库行 → 歌曲模型（列名与 [querySongs] 的 SELECT 对齐）。
 Song songFromRow(Row r) => Song.direct(
@@ -3667,11 +3454,8 @@ List<Song> querySongs(
     args.add((page - 1) * size);
   }
   final rows = db.select('''
-      SELECT i.id, i.source_key, i.ref, i.title, i.artist, i.album, i.album_artist, i.track_no,
-             i.year, i.genre, i.duration, i.format, i.size, i.cover_path, i.url, i.missing,
-             i.meta_read, COALESCE(p.is_favorite, 0) AS favorite
-      FROM idx_songs i
-      LEFT JOIN play_meta p ON p.source_key = i.source_key AND p.song_ref = i.ref
+      SELECT $kSongSelectColumns
+      $kSongFromJoin
       WHERE i.source_key=? AND i.missing=0
         $searchSql
         ${ignore.sql}
@@ -3773,8 +3557,8 @@ ArtistRow artistRowFrom(Row r) => ArtistRow(
       mbid: r['mbid'] as String?,
       canonicalKey: r['canonical_key'] as String,
       displayName: r['display_name'] as String,
-      names: _jsonMapList(r['names']),
-      groups: _jsonMapList(r['groups']),
+      names: sql_util.jsonMapList(r['names']),
+      groups: sql_util.jsonMapList(r['groups']),
       type: r['type'] as String,
       disambiguation: r['disambiguation'] as String?,
       status: r['status'] as String,
@@ -3783,15 +3567,6 @@ ArtistRow artistRowFrom(Row r) => ArtistRow(
       resolvedAt: r['resolved_at'] as String?,
       matchScore: (r['match_score'] as num?)?.toDouble(),
     );
-
-List<Map<String, dynamic>> _jsonMapList(Object? raw) {
-  if (raw == null) return const [];
-  try {
-    return (jsonDecode(raw as String) as List).cast<Map<String, dynamic>>();
-  } catch (_) {
-    return const [];
-  }
-}
 
 /// 从 [root] 沿成员边广度展开出所有 type='person' 的身份（含 root 自身若是 Person）。
 /// visited 按 artist_key 防环；成员表很小，深度不设限也不会失控。
@@ -4041,21 +3816,6 @@ List<String> collectInvalidCoverPaths(String coversDirPath) {
 
 // ---------- 封面切片落盘辅助（主线程长同步块治理 R-1） ----------
 
-/// 分片计算文件引用（ref）的 md5 十六进制——这里入参是**封面字节**（本函数只对
-/// 封面内容做分片处理，ref 的哈希在主路径上一次性完成）。
-Future<String> _md5HexChunked(Uint8List bytes, ChunkYield yieldTo) async {
-  const chunk = 256 * 1024;
-  final sink = _DigestCollector();
-  final input = md5.startChunkedConversion(sink);
-  for (var off = 0; off < bytes.length; off += chunk) {
-    final end = off + chunk < bytes.length ? off + chunk : bytes.length;
-    input.add(Uint8List.sublistView(bytes, off, end));
-    if (end < bytes.length) await yieldTo();
-  }
-  input.close();
-  return sink.digest.toString();
-}
-
 /// 分片写盘：覆盖写 [f]（截断），每片之间让出事件循环；末片 flush。
 Future<void> _writeBytesChunked(
     File f, Uint8List bytes, ChunkYield yieldTo) async {
@@ -4071,13 +3831,4 @@ Future<void> _writeBytesChunked(
   } finally {
     raf.closeSync();
   }
-}
-
-/// 收集 [md5.startChunkedConversion] 的最终摘要。
-class _DigestCollector implements Sink<Digest> {
-  late Digest digest;
-  @override
-  void add(Digest data) => digest = data;
-  @override
-  void close() {}
 }

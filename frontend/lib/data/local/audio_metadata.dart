@@ -1,8 +1,10 @@
 import 'dart:convert' show base64Decode, utf8;
+import 'dart:io';
 import 'dart:typed_data';
 
 import '../../utils/chunked_scheduler.dart' show ChunkYield;
 import '../../utils/main_thread_probe.dart'; // TEMP-PROBE
+import '../../utils/source_ref.dart';
 
 /// 音频头部元数据（来自扫描时的 Range 头部直读，DEVELOPER.md「客户端扫描与元数据」）。
 class AudioMeta {
@@ -835,27 +837,42 @@ Uint8List? _apicImage(Uint8List data) {
   return isCompleteImageBytes(img) ? img : null;
 }
 
+/// 常见封面图片容器。
+enum ImageKind { jpeg, png, gif, bmp, webp, heif }
+
+/// 图片字节签名识别（JPEG/PNG/GIF/BMP/WEBP/HEIF-AVIF）；非图片返回 null。
+ImageKind? imageKindOf(List<int> b) {
+  if (b.length < 12) return null;
+  if (b[0] == 0xFF && b[1] == 0xD8) return ImageKind.jpeg; // JPEG
+  if (b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) {
+    return ImageKind.png;
+  }
+  if (b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46) return ImageKind.gif;
+  if (b[0] == 0x42 && b[1] == 0x4D) return ImageKind.bmp;
+  if (b[0] == 0x52 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x46 &&
+      b[8] == 0x57 && b[9] == 0x45 && b[10] == 0x42 && b[11] == 0x50) {
+    return ImageKind.webp; // RIFF....WEBP
+  }
+  if (b[4] == 0x66 && b[5] == 0x74 && b[6] == 0x79 && b[7] == 0x70) {
+    return ImageKind.heif; // ftyp (HEIF/AVIF)
+  }
+  return null;
+}
+
 /// 图片字节签名校验（JPEG/PNG/GIF/BMP/WEBP/HEIF-AVIF）。
 ///
 /// 封面写入缓存前必须通过校验：解析出的字节可能是描述残留、URL 文本等，
 /// 直接落盘会让图片解码器报错刷日志。
-bool looksLikeImageBytes(List<int> b) {
-  if (b.length < 12) return false;
-  if (b[0] == 0xFF && b[1] == 0xD8) return true; // JPEG
-  if (b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) {
-    return true; // PNG
-  }
-  if (b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46) return true; // GIF
-  if (b[0] == 0x42 && b[1] == 0x4D) return true; // BMP
-  if (b[0] == 0x52 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x46 &&
-      b[8] == 0x57 && b[9] == 0x45 && b[10] == 0x42 && b[11] == 0x50) {
-    return true; // WEBP (RIFF....WEBP)
-  }
-  if (b[4] == 0x66 && b[5] == 0x74 && b[6] == 0x79 && b[7] == 0x70) {
-    return true; // ftyp (HEIF/AVIF)
-  }
-  return false;
-}
+bool looksLikeImageBytes(List<int> b) => imageKindOf(b) != null;
+
+/// 标签嵌入支持的封面 mime（仅 jpeg/png/gif/webp；其余返回 null）。
+String? imageMimeOf(List<int> b) => switch (imageKindOf(b)) {
+      ImageKind.jpeg => 'image/jpeg',
+      ImageKind.png => 'image/png',
+      ImageKind.gif => 'image/gif',
+      ImageKind.webp => 'image/webp',
+      _ => null,
+    };
 
 /// 轻量完整性校验（问题1修复：只验头会导致半图落盘）。
 ///
@@ -906,6 +923,54 @@ bool isCompleteImageBytes(List<int> b) {
     return riff + 8 == b.length;
   }
   return true; // ftyp：无廉价尾判
+}
+
+/// 文件版完整性校验：只读头 12B + 尾 4B，不整文件读入内存。
+///
+/// 与 [isCompleteImageBytes] 同口径；供封面覆盖写前的幂等跳过判定。
+bool isCompleteImageFile(File f) {
+  try {
+    final len = f.lengthSync();
+    if (len < 12) return false;
+    final raf = f.openSync(mode: FileMode.read);
+    try {
+      final head = raf.readSync(12);
+      final kind = imageKindOf(head);
+      if (kind == null) return false;
+      switch (kind) {
+        case ImageKind.jpeg:
+          raf.setPositionSync(len - 2);
+          final tail = raf.readSync(2);
+          return tail.length == 2 && tail[0] == 0xFF && tail[1] == 0xD9;
+        case ImageKind.png:
+          raf.setPositionSync(len - 4);
+          final tail = raf.readSync(4);
+          return tail.length == 4 &&
+              tail[0] == 0xAE &&
+              tail[1] == 0x42 &&
+              tail[2] == 0x60 &&
+              tail[3] == 0x82;
+        case ImageKind.gif:
+          raf.setPositionSync(len - 1);
+          final tail = raf.readSync(1);
+          return tail.length == 1 && tail[0] == 0x3B;
+        case ImageKind.bmp:
+          final declared =
+              head[2] | (head[3] << 8) | (head[4] << 16) | (head[5] << 24);
+          return declared == 0 || declared == len;
+        case ImageKind.webp:
+          final riff =
+              head[4] | (head[5] << 8) | (head[6] << 16) | (head[7] << 24);
+          return riff == 0 || riff + 8 == len;
+        case ImageKind.heif:
+          return true; // ftyp：无廉价尾判
+      }
+    } finally {
+      raf.closeSync();
+    }
+  } catch (_) {
+    return false;
+  }
 }
 
 String _decodeText(List<int> bytes) {
@@ -1783,8 +1848,4 @@ int? _trackOf(String? v) {
   return m == null ? null : int.tryParse(m.group(0)!);
 }
 
-String fallbackTitle(String ref) {
-  final name = ref.substring(ref.lastIndexOf('/') + 1);
-  final dot = name.lastIndexOf('.');
-  return dot > 0 ? name.substring(0, dot) : name;
-}
+String fallbackTitle(String ref) => refStem(ref);

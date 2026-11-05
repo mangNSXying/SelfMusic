@@ -6,6 +6,7 @@ import '../../models/song.dart';
 import '../../utils/chunked_scheduler.dart' show yieldToEventLoop;
 import '../../utils/main_thread_probe.dart';
 import '../../utils/play_progress.dart';
+import '../../utils/song_key.dart';
 import 'sync_event_types.dart';
 
 /// 歌曲权重与收藏的统一点（stage2.md §1.5 / §2.1）。
@@ -43,7 +44,7 @@ class SongWeightStore {
   /// 缓存上限：快速滑过长列表时防止无界堆积（超限整体清空重新暖）。
   static const int _metaCacheCap = 20000;
 
-  String _metaKey(String sourceKey, String ref) => '$sourceKey\u0000$ref';
+  String _metaKey(String sourceKey, String ref) => songKeyOf(sourceKey, ref);
 
   bool hasMetaCached(Song s) =>
       _metaCache.containsKey(_metaKey(s.sourceKey, s.sourceRef));
@@ -78,15 +79,7 @@ class SongWeightStore {
       }
       for (final ref in refs) {
         _metaCache[_metaKey(entry.key, ref)] = rows[ref] ??
-            PlayMetaRow(
-              sourceKey: entry.key,
-              songRef: ref,
-              likeStreak: 0,
-              dislikeStreak: 0,
-              factor: defaultFactor,
-              frozen: false,
-              favorite: false,
-            );
+            PlayMetaRow.empty(entry.key, ref, factor: defaultFactor);
       }
     }
   }
@@ -129,7 +122,7 @@ class SongWeightStore {
               _metaCache.clear();
             }
             _metaCache.addAll({
-              for (final e in rows.entries) '$key\u0000${e.key}': e.value,
+              for (final e in rows.entries) songKeyOf(key, e.key): e.value,
             });
           }
         } catch (_) {
@@ -318,7 +311,7 @@ class SongWeightStore {
     if (s.sourceKey != 'server' && !(serverAvailable?.call() ?? false)) {
       return false;
     }
-    final key = '${s.sourceKey}\u0000${s.sourceRef}';
+    final key = s.uid;
     final now = nowForTest ?? DateTime.now();
     final last = _lastPlaySecPush[key];
     if (!force &&
