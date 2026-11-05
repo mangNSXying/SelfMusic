@@ -359,8 +359,11 @@ class _CoverEditWindow extends StatefulWidget {
 
 class _CoverEditWindowState extends State<_CoverEditWindow> {
   String? _path;
+
+  /// 本地新选、尚未保存的封面字节（预览优先展示；保存时才落库/写回）。
   Uint8List? _mem;
   bool _busy = false;
+  bool _saving = false;
 
   @override
   void initState() {
@@ -369,7 +372,7 @@ class _CoverEditWindowState extends State<_CoverEditWindow> {
   }
 
   Future<void> _pickFile() async {
-    if (_busy) return;
+    if (_busy || _saving) return;
     setState(() => _busy = true);
     try {
       final f = await openFile(acceptedTypeGroups: const [
@@ -382,6 +385,25 @@ class _CoverEditWindowState extends State<_CoverEditWindow> {
         return;
       }
       if (!mounted) return;
+      setState(() => _mem = Uint8List.fromList(bytes));
+      AppToast.show('已选择新封面，点击保存生效', isError: false);
+    } catch (e) {
+      if (mounted) AppToast.error(e, '选择封面失败');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+    final bytes = _mem;
+    if (bytes == null) {
+      // 在线获取已在子窗内保存；这里只关闭。
+      Navigator.of(context).pop(true);
+      return;
+    }
+    setState(() => _saving = true);
+    try {
       final direct = context.read<DirectSourceManager>();
       final player = context.read<PlayerProvider>();
       final svc = OnlineMetaService(
@@ -391,26 +413,24 @@ class _CoverEditWindowState extends State<_CoverEditWindow> {
       final updated = direct.index
           .songByRef(widget.song.sourceKey, widget.song.sourceRef);
       if (updated != null) {
-        // 先通知再判 mounted：选图后立刻关窗也不能丢掉全局刷新信号。
+        // 先通知再判 mounted：保存后立刻关窗也不能丢掉全局刷新信号。
         direct.notifySongMetaChanged();
         player.refreshSongMeta(updated);
       }
       if (!mounted) return;
-      setState(() {
-        _mem = Uint8List.fromList(bytes);
-        _path = r.coverPath;
-      });
+      Navigator.of(context).pop(true);
       AppToast.show(
-          r.sidecarPath != null ? '封面已更换并覆盖 ${r.sidecarPath}' : '封面已更换',
+          r.sidecarPath != null ? '封面已保存并覆盖 ${r.sidecarPath}' : '封面已保存',
           isError: false);
     } catch (e) {
-      if (mounted) AppToast.error(e, '选择封面失败');
+      if (mounted) AppToast.error(e, '保存封面失败');
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() => _saving = false);
     }
   }
 
   Future<void> _openOnline() async {
+    if (_busy || _saving) return;
     await showDialog<void>(
       context: context,
       builder: (_) =>
@@ -421,7 +441,7 @@ class _CoverEditWindowState extends State<_CoverEditWindow> {
     final fresh = direct.index
         .songByRef(widget.song.sourceKey, widget.song.sourceRef);
     setState(() {
-      _mem = null;
+      // 本地待保存选择保留（预览仍以 _mem 为准）；在线结果只刷新已保存路径。
       _path = (fresh ?? widget.song).coverPath;
     });
   }
@@ -452,7 +472,7 @@ class _CoverEditWindowState extends State<_CoverEditWindow> {
             );
     }
     return AlertDialog(
-      title: const Text('封面'),
+      title: Text(_mem != null ? '封面 •未保存' : '封面'),
       content: SizedBox(
         width: 340,
         height: 400,
@@ -464,7 +484,7 @@ class _CoverEditWindowState extends State<_CoverEditWindow> {
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: _busy ? null : _pickFile,
+                    onPressed: (_busy || _saving) ? null : _pickFile,
                     icon: const Icon(Icons.folder_open_outlined, size: 18),
                     label: Text(_busy ? '处理中…' : '选择封面'),
                   ),
@@ -472,7 +492,7 @@ class _CoverEditWindowState extends State<_CoverEditWindow> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: _openOnline,
+                    onPressed: (_busy || _saving) ? null : _openOnline,
                     icon: const Icon(Icons.cloud_download_outlined, size: 18),
                     label: const Text('在线获取'),
                   ),
@@ -482,7 +502,13 @@ class _CoverEditWindowState extends State<_CoverEditWindow> {
           ],
         ),
       ),
-      actions: [appDialogCloseAction(context, label: '关闭')],
+      actions: appDialogActions(
+        context,
+        confirmLabel: _saving ? '保存中…' : '保存',
+        confirmEnabled: !_busy && !_saving,
+        onCancel: () => Navigator.of(context).pop(),
+        onConfirm: _save,
+      ),
     );
   }
 }
@@ -655,34 +681,24 @@ class _LyricsEditWindowState extends State<_LyricsEditWindow> {
         height: 480,
         child: Column(
           children: [
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              crossAxisAlignment: WrapCrossAlignment.center,
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                OutlinedButton.icon(
-                  onPressed: _busy ? null : _pickFile,
-                  icon: const Icon(Icons.folder_open_outlined, size: 18),
-                  label: const Text('选择歌词'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _openOnline,
-                  icon: const Icon(Icons.cloud_download_outlined, size: 18),
-                  label: const Text('在线获取'),
-                ),
                 IconButton(
                   onPressed: _undo.isEmpty ? null : _undoOnce,
                   icon: const Icon(Icons.undo),
                   tooltip: '撤回',
+                  visualDensity: VisualDensity.compact,
                 ),
                 IconButton(
                   onPressed: _redo.isEmpty ? null : _redoOnce,
                   icon: const Icon(Icons.redo),
                   tooltip: '反撤回',
+                  visualDensity: VisualDensity.compact,
                 ),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 4),
             Expanded(
               child: TextField(
                 controller: _controller,
@@ -697,12 +713,31 @@ class _LyricsEditWindowState extends State<_LyricsEditWindow> {
                 ),
               ),
             ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _busy ? null : _pickFile,
+                    icon: const Icon(Icons.folder_open_outlined, size: 18),
+                    label: const Text('选择歌词'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _busy ? null : _openOnline,
+                    icon: const Icon(Icons.cloud_download_outlined, size: 18),
+                    label: const Text('在线获取'),
+                  ),
+                ),
+              ],
+            ),
           ],
         ),
       ),
       actions: appDialogActions(
         context,
-        cancelLabel: '关闭',
         confirmLabel: _busy ? '保存中…' : '保存',
         confirmEnabled: !_busy,
         onCancel: () => Navigator.of(context).pop(),

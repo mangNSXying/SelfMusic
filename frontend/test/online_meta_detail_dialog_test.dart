@@ -34,6 +34,10 @@ OnlineLyricCandidate _cand({String? synced, String? plain}) =>
 Widget _host(Widget child) =>
     MaterialApp(home: Scaffold(body: Center(child: child)));
 
+/// 歌词正文改为只读文本框（与「歌词」子窗展示口径一致）。
+String _fieldText(WidgetTester tester) =>
+    tester.widget<TextField>(find.byType(TextField)).controller!.text;
+
 void main() {
   testWidgets('歌词详情：懒取正文、逐行展示、回填回调', (tester) async {
     OnlineLyricCandidate? backfilled;
@@ -50,10 +54,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(calls, 1);
-    final body = tester.widget<SelectableText>(find.byType(SelectableText));
-    expect(body.data, contains('第一行'));
-    expect(body.data, contains('第二行'));
-    expect(body.data, isNot(contains('[00:01.00]'))); // 已解析去时间轴
+    final text = _fieldText(tester);
+    expect(text, contains('第一行'));
+    expect(text, contains('第二行'));
+    expect(text, isNot(contains('[00:01.00]'))); // 已解析去时间轴
     expect(backfilled, isNotNull);
     expect(backfilled!.hasContent, isTrue);
   });
@@ -70,8 +74,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(calls, 0);
-    final body = tester.widget<SelectableText>(find.byType(SelectableText));
-    expect(body.data, contains('现成的词'));
+    expect(_fieldText(tester), contains('现成的词'));
   });
 
   testWidgets('歌词详情：取词失败显示错误，重试成功', (tester) async {
@@ -92,8 +95,7 @@ void main() {
     await tester.tap(find.text('重试'));
     await tester.pumpAndSettle();
 
-    final body = tester.widget<SelectableText>(find.byType(SelectableText));
-    expect(body.data, contains('恢复的正文'));
+    expect(_fieldText(tester), contains('恢复的正文'));
     expect(find.text('重试'), findsNothing);
   });
 
@@ -103,7 +105,6 @@ void main() {
       header: '发如雪 — 周杰伦',
       metaLines: const ['来源 MB→CAA'],
       initialBytes: Uint8List.fromList(_k1x1Png),
-      initialLabel: 'Front 1200px',
       load: () async {
         loads++;
         return null;
@@ -113,7 +114,8 @@ void main() {
 
     expect(loads, 0);
     expect(find.byType(Image), findsOneWidget);
-    expect(find.textContaining('Front 1200px'), findsOneWidget);
+    // 左下角不再显示候选标签/歌名文字。
+    expect(find.textContaining('Front 1200px'), findsNothing);
   });
 
   testWidgets('封面详情：懒取成功回调缓存', (tester) async {
