@@ -2772,6 +2772,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 用户修改元数据后：刷新队列与当前歌曲中的同源对象并通知（含断点快照）。
+  ///
+  /// 深层列表与融合基座是 [_rebuildFusedQueue] 的拼接来源，也必须同步换新：
+  /// 否则「下一首播放」等触发重建时会用起播时的旧快照覆盖 [_current]，
+  /// 典型表现为刚内嵌/在线获取的封面突然回退为空。
   void refreshSongMeta(Song updated) {
     var changed = false;
     for (var i = 0; i < _queue.length; i++) {
@@ -2784,6 +2788,27 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (cur != null && _same(cur, updated)) {
       _current = updated;
       changed = true;
+    }
+    final dl = _deepList;
+    if (dl != null && dl.replaceRefs(updated, same: _same)) {
+      _persistDeepList();
+      changed = true;
+    }
+    final base = _fusedBase;
+    if (base != null) {
+      for (var i = 0; i < base.length; i++) {
+        if (_same(base[i], updated)) {
+          base[i] = updated;
+          changed = true;
+        }
+      }
+    }
+    if (_nextUp != null && _same(_nextUp!, updated)) {
+      _nextUp = updated;
+      changed = true;
+    }
+    if (_peekedNext != null && _same(_peekedNext!, updated)) {
+      _peekedNext = updated;
     }
     if (changed) notifyListeners();
   }
