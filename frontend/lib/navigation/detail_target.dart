@@ -5,7 +5,7 @@ import '../models/album.dart';
 import '../models/artist.dart';
 import '../models/song.dart';
 import '../providers/navigation_provider.dart';
-import 'screen_metrics.dart';
+import '../layout/screen_metrics.dart';
 
 /// 内容详情页的统一入口目标。
 ///

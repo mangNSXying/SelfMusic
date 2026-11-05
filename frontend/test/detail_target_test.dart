@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
-import 'package:selfmusic/layout/detail_target.dart';
+import 'package:selfmusic/navigation/detail_target.dart';
 import 'package:selfmusic/models/album.dart';
 import 'package:selfmusic/models/artist.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';

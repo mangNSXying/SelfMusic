@@ -4,6 +4,7 @@ import '../providers/navigation_provider.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_provider.dart';
 import '../utils/app_exit.dart';
+import 'screen_metrics.dart';
 
 /// 侧边导航栏：主要承载设置分区 + 底部明暗切换/退出。
 class Sidebar extends StatelessWidget {
@@ -111,7 +112,7 @@ class _SettingsList extends StatelessWidget {
             onTap: () {
               nav.openSettings(item);
               // 移动端选中后收起抽屉。
-              if (NavigationProviderHelper.isNarrow(context)) {
+              if (!isWideWindow(MediaQuery.sizeOf(context))) {
                 Scaffold.of(context).closeDrawer();
               }
             },
@@ -137,7 +138,7 @@ class _BottomBar extends StatelessWidget {
           subtitle: const Text('歌曲信息统计与分布', style: TextStyle(fontSize: 11)),
           onTap: () {
             // 移动端先收起抽屉，再打开内容区工具页。
-            if (NavigationProviderHelper.isNarrow(context)) {
+            if (!isWideWindow(MediaQuery.sizeOf(context))) {
               Scaffold.of(context).closeDrawer();
             }
             context
@@ -152,7 +153,7 @@ class _BottomBar extends StatelessWidget {
           subtitle: const Text('版本与反馈', style: TextStyle(fontSize: 11)),
           onTap: () {
             // 移动端先收起抽屉，再打开内容区工具页。
-            if (NavigationProviderHelper.isNarrow(context)) {
+            if (!isWideWindow(MediaQuery.sizeOf(context))) {
               Scaffold.of(context).closeDrawer();
             }
             context.read<NavigationProvider>().openAbout();
@@ -187,14 +188,4 @@ String _labelFor(ThemeMode m, bool effectiveDark) {
     ThemeMode.light => '切换深色',
     ThemeMode.dark => '切换浅色',
   };
-}
-
-/// 便于 Sidebar 判断是否处于移动端抽屉（窄屏）。
-class NavigationProviderHelper {
-  static bool isNarrow(BuildContext context) {
-    final size = MediaQuery.sizeOf(context);
-    return !(size.width >= 900 || size.width > size.height);
-  }
-
-  const NavigationProviderHelper._();
 }

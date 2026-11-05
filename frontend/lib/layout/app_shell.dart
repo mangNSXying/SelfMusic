@@ -29,10 +29,8 @@ class AppShell extends StatefulWidget {
   /// 宽屏判定（UI10）：宽 ≥900，或横屏（宽>高）一律按桌面布局
   ///（常驻可收缩侧边栏 + 右队列槽 + 内容多列自适应）。
   /// 竖屏窄屏仍走抽屉。宽屏内容区整页详情也按同一口径分流。
-  static bool isWide(BuildContext context) {
-    final size = MediaQuery.sizeOf(context);
-    return size.width >= 900 || size.width > size.height;
-  }
+  static bool isWide(BuildContext context) =>
+      isWideWindow(MediaQuery.sizeOf(context));
 
   @override
   State<AppShell> createState() => _AppShellState();
