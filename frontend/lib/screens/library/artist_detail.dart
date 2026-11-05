@@ -16,10 +16,9 @@ import '../../widgets/app_toast.dart';
 import '../../widgets/corner_add_button.dart';
 import '../../widgets/detail_presentation.dart';
 import '../../widgets/draggable_sheet.dart';
-import '../../widgets/song_table.dart';
-import '../../widgets/song_table_sliver.dart';
 import 'artist_albums_strip.dart';
 import 'artist_entries.dart';
+import 'entry_songs_view.dart';
 import 'shared.dart';
 
 class ArtistSongsSheet extends StatelessWidget {
@@ -78,63 +77,34 @@ class ArtistSongsView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final player = context.read<PlayerProvider>();
-    final lib = context.read<LibraryProvider>();
-    final nav = context.read<NavigationProvider>();
-    return Stack(
-      children: [
-        // 头部与歌曲列表共用同一个 Scrollable / sheet controller：任意位置按下
-        // 都能拖动/滚动弹层，「详情」展开只是滚动内容变长、不挤压列表。
-        // 标题行经 [AppSheetHeader] 置顶：滚动时歌手名/歌曲数常驻顶部；专辑横滑条
-        // 与详情属滚动内容（不钉，避免占满窗口）。
-        LayoutBuilder(builder: (context, constraints) {
-          final table = SongTableLayout.fit(constraints.maxWidth);
-          return CustomScrollView(
-            controller: scrollCtrl,
-            slivers: [
-              AppSheetHeader(
-                height: AppSheetTitleBar.heightOf(context),
-                child: header,
-              ),
-              if (albums.isNotEmpty || detail != null)
-                SliverToBoxAdapter(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (albums.isNotEmpty)
-                        ArtistAlbumsStrip(albums: albums, artistSongs: songs),
-                      if (detail != null) _ArtistDetailBlock(detail: detail!),
-                    ],
-                  ),
-                ),
-              SongTableSliverList(
-                songs: songs,
-                table: table,
-                sourceOf: (s) => lib.sourceFor(s.sourceKey),
-                onPlay: (i) {
-                  if (fromSheet) Navigator.of(context).pop();
-                  player.playQueue(songs,
-                      index: i,
-                      contextKey: PlayerProvider.anchorForArtist(artist.name));
-                  nav.openPlayer();
-                },
-              ),
+    final leading = (albums.isEmpty && detail == null)
+        ? null
+        : Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (albums.isNotEmpty)
+                ArtistAlbumsStrip(albums: albums, artistSongs: songs),
+              if (detail != null) _ArtistDetailBlock(detail: detail!),
             ],
           );
-        }),
-        // 「重新解析」放歌手详情页右下角：只重拉这一位（含成员展开），
-        // 完全重新解析——清掉旧 mbid 重新搜索，可能改判到另一个同名实体。
-        Positioned(
-          right: 16,
-          bottom: 16,
-          child: CornerAddButton(
-            icon: Icons.sync_alt,
-            label: '重新解析',
-            tooltip: '重新解析 ${zhDisplay(artist.name)}',
-            onPressed: () => _forceReParse(context),
-          ),
+    return EntrySongsView(
+      songs: songs,
+      scrollCtrl: scrollCtrl,
+      header: header,
+      fromSheet: fromSheet,
+      contextKey: PlayerProvider.anchorForArtist(artist.name),
+      leading: leading,
+      // 「重新解析」放歌手详情页右下角：只重拉这一位（含成员展开）。
+      overlay: Positioned(
+        right: 16,
+        bottom: 16,
+        child: CornerAddButton(
+          icon: Icons.sync_alt,
+          label: '重新解析',
+          tooltip: '重新解析 ${zhDisplay(artist.name)}',
+          onPressed: () => _forceReParse(context),
         ),
-      ],
+      ),
     );
   }
 

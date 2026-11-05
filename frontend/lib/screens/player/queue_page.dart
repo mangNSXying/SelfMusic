@@ -16,6 +16,7 @@ import '../../widgets/list_selection.dart';
 import '../../widgets/row_list.dart';
 import '../../widgets/selection_bar.dart';
 import '../../widgets/song_list.dart';
+import '../../widgets/queue_song_tile.dart';
 import '../../widgets/song_row_view.dart';
 import '../../widgets/sort_menu_button.dart';
 import '../../widgets/toolbar_icon_button.dart';
@@ -384,24 +385,19 @@ class _QueuePageState extends State<QueuePage> {
               final s = queue[realIndex];
               // 下标判高亮（展示可重排，用真实队列下标；复本仅新播行亮）。
               final isCurrent = realIndex == player.currentIndex;
-              return SongTile(
+              return QueueSongTile(
                 song: s,
-                source: null,
-                row: _rowCache.rowAt(i, () {
+                index: i,
+                playing: isCurrent,
+                cache: _rowCache,
+                direct: direct,
+                wide: wide,
+                onEnsureMeta: () {
                   if (!direct.weight.hasMetaCached(s)) {
                     _ensureMetaWindow(direct, queue, i);
                   }
-                  final meta = direct.weight.metaOf(s);
-                  return SongRowView.of(
-                    song: s,
-                    titleFormat: direct.settings.songTitleFormat,
-                    sourceName: direct.sourceByKey(s.sourceKey)?.name,
-                    favorite: meta.favorite,
-                    disliked: meta.frozen,
-                    wide: wide,
-                  );
-                }),
-                playing: isCurrent,
+                },
+                onPlay: () => player.playAt(realIndex),
                 selectionMode: _sel.active,
                 selected: _sel.contains(realIndex),
                 onSelect: () => setState(() {
@@ -409,16 +405,8 @@ class _QueuePageState extends State<QueuePage> {
                   _sel.toggle(realIndex);
                 }),
                 onStartSelect: () => setState(() => _sel.startWith(realIndex)),
-                onPlay: () => player.playAt(realIndex),
-                extraMenuItems: const [
-                  PopupMenuItem(
-                    value: 'row:remove',
-                    child: Text('移除'),
-                  ),
-                ],
-                onExtraMenu: (v) {
-                  if (v == 'row:remove') _removeOne(player, realIndex);
-                },
+                showRemove: true,
+                onRemove: () => _removeOne(player, realIndex),
               );
             },
           );

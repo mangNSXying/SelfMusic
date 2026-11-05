@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../data/local/local_index.dart';
+import '../../layout/screen_metrics.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../utils/play_progress.dart';
 import '../../utils/play_stats.dart';
@@ -232,7 +233,7 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
     }
 
     rows.sort(cmp);
-    final wide = isWideDetail(context);
+    final wide = ScreenMetrics.of(context).isWide;
 
     return Column(
       children: [

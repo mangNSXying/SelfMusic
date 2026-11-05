@@ -2,14 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../../layout/screen_metrics.dart';
-
-/// 歌曲信息详情页共用：宽窄断点、单元格样式、异步装载。
-///
-/// 断点复用统一判屏口径（[isWideWindow]）。
-bool isWideDetail(BuildContext context) =>
-    isWideWindow(MediaQuery.sizeOf(context));
-
+/// 歌曲信息详情页共用：单元格样式与异步装载。
 /// 详情页全量数据的异步装载器（入场不冻帧）。
 ///
 /// - [request] 在后台 isolate 查库（详见 `runOffThread`；测试环境内联，OHOS

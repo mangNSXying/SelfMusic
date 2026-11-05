@@ -3,7 +3,6 @@ import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
 import '../../providers/library_provider.dart';
 import '../../providers/player_provider.dart';
-import '../../providers/navigation_provider.dart';
 import '../../layout/app_shell.dart';
 import '../../navigation/detail_target.dart';
 import '../../models/song.dart';
@@ -11,10 +10,9 @@ import '../../models/album.dart';
 import '../../utils/zh_variant.dart';
 import '../../widgets/detail_presentation.dart';
 import '../../widgets/draggable_sheet.dart';
-import '../../widgets/song_table.dart';
-import '../../widgets/song_table_sliver.dart';
 import '../../widgets/song_tile.dart';
 import '../../widgets/square_card.dart';
+import 'entry_songs_view.dart';
 import 'shared.dart';
 
 /// 专辑副标题 spans：主歌手正常色、其余合作者淡化，末尾跟曲目数。
@@ -154,34 +152,13 @@ class AlbumSongsView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final player = context.read<PlayerProvider>();
-    final lib = context.read<LibraryProvider>();
-    final nav = context.read<NavigationProvider>();
-    return LayoutBuilder(builder: (context, constraints) {
-      final table = SongTableLayout.fit(constraints.maxWidth);
-      return CustomScrollView(
-        controller: scrollCtrl,
-        slivers: [
-          // 置顶标题行：滚动歌曲时专辑名/歌曲数常驻顶部（与队列/歌手弹层同构）。
-          AppSheetHeader(
-            height: AppSheetTitleBar.heightOf(context),
-            child: header,
-          ),
-          SongTableSliverList(
-            songs: songs,
-            table: table,
-            sourceOf: (s) => lib.sourceFor(s.sourceKey),
-            onPlay: (i) {
-              if (fromSheet) Navigator.of(context).pop();
-              player.playQueue(songs,
-                  index: i,
-                  contextKey: PlayerProvider.anchorForAlbum(album.id));
-              nav.openPlayer();
-            },
-          ),
-        ],
-      );
-    });
+    return EntrySongsView(
+      songs: songs,
+      scrollCtrl: scrollCtrl,
+      header: header,
+      fromSheet: fromSheet,
+      contextKey: PlayerProvider.anchorForAlbum(album.id),
+    );
   }
 }
 

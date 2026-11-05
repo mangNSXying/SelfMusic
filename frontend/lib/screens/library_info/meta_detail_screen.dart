@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../data/local/local_index.dart';
+import '../../layout/screen_metrics.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../utils/zh_variant.dart';
 import '../../widgets/resizable_paginated_table.dart';
@@ -200,7 +201,7 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
     }
 
     rows.sort(cmp);
-    final wide = isWideDetail(context);
+    final wide = ScreenMetrics.of(context).isWide;
 
     return Column(
       children: [
