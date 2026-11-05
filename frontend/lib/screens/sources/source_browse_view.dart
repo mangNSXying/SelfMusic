@@ -13,6 +13,7 @@ import '../../providers/library_provider.dart';
 import '../../providers/player_provider.dart';
 import '../../providers/navigation_provider.dart';
 import '../../utils/collection_sort.dart';
+import '../../utils/media_kinds.dart';
 import '../../utils/song_groups.dart';
 import '../../utils/source_folders.dart';
 import '../../utils/zh_variant.dart';
@@ -173,9 +174,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
       if (!mounted) return;
       if (picked == null) return;
       final name = picked.name;
-      if (!RegExp(r'\.(mp3|flac|m4a|aac|ogg|wav|aif|aiff|aifc)$',
-              caseSensitive: false)
-          .hasMatch(name)) {
+      if (!isAudioFileName(name)) {
         if (mounted) AppToast.show('仅支持上传音频文件', isError: true);
         return;
       }

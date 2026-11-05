@@ -1,6 +1,8 @@
 import 'dart:typed_data';
 
 import '../../models/song.dart';
+import '../../utils/song_key.dart';
+import '../../utils/source_ref.dart';
 import '../local/audio_metadata.dart';
 import 'music_source.dart';
 
@@ -9,11 +11,9 @@ import 'music_source.dart';
 /// 例：`Music/Album/01 song.flac` →
 /// `01 song.png` … → `Music/Album/cover.jpg` → `folder.jpg` → …
 List<String> siblingImageCandidates(String ref) {
-  final slash = ref.lastIndexOf('/');
-  final dir = slash >= 0 ? ref.substring(0, slash + 1) : '';
-  final name = slash >= 0 ? ref.substring(slash + 1) : ref;
-  final dot = name.lastIndexOf('.');
-  final stem = dot > 0 ? name.substring(0, dot) : name;
+  final parent = refParent(ref);
+  final dir = parent.isEmpty ? '' : '$parent/';
+  final stem = refStem(ref);
   return [
     if (stem.isNotEmpty)
       for (final ext in const [
@@ -56,7 +56,7 @@ final Map<String, Uint8List?> _siblingCache = {};
 /// 每首歌/每个候选都按 `sourceKey|ref` 缓存（含否定结果），整库补读时
 /// 同目录的 `cover.jpg` 只探测一次；同名图片各自独立缓存。
 Future<Uint8List?> fetchSiblingImage(MusicSource src, Song song) async {
-  final key = '${src.key}\u0000${song.sourceRef}';
+  final key = songKeyOf(src.key, song.sourceRef);
   if (_siblingCache.containsKey(key)) return _siblingCache[key];
   for (final cand in siblingImageCandidates(song.sourceRef)) {
     final bytes = await _tryReadImage(src, song, cand);
@@ -71,7 +71,7 @@ Future<Uint8List?> fetchSiblingImage(MusicSource src, Song song) async {
 
 Future<Uint8List?> _tryReadImage(
     MusicSource src, Song song, String candRef) async {
-  final key = '${src.key}\u0000$candRef';
+  final key = songKeyOf(src.key, candRef);
   if (_siblingCache.containsKey(key)) return _siblingCache[key];
   try {
     final probe = Song.direct(

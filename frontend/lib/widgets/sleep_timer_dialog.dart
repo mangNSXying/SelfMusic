@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
+import '../utils/duration_format.dart';
 import 'app_dialog_actions.dart';
 import 'app_toast.dart';
 import 'row_action_button.dart';
@@ -278,11 +279,7 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
     Navigator.of(context).pop();
   }
 
-  static String _fmtTime(TimeOfDay t) {
-    final h = t.hour.toString().padLeft(2, '0');
-    final m = t.minute.toString().padLeft(2, '0');
-    return '$h:$m';
-  }
+  static String _fmtTime(TimeOfDay t) => formatHourMinute(t.hour, t.minute);
 }
 
 class _WheelDialog extends StatefulWidget {

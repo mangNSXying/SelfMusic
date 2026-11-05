@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import '../../services/equalizer/equalizer_types.dart';
 import '../../utils/collection_sort.dart';
+import '../../utils/enum_parse.dart';
 import '../../utils/song_groups.dart';
 import '../../utils/zh_variant.dart';
 import 'local_index.dart';
@@ -17,8 +18,8 @@ enum PlayerTransition {
   const PlayerTransition(this.label);
   final String label;
 
-  static PlayerTransition parse(String? v) => PlayerTransition.values
-      .firstWhere((e) => e.name == v, orElse: () => PlayerTransition.slide);
+  static PlayerTransition parse(String? v) =>
+      enumByNameOr(PlayerTransition.values, v, PlayerTransition.slide);
 }
 
 /// 歌曲标题显示格式（设置→歌曲，默认「歌手 - 歌名」）。
@@ -32,8 +33,7 @@ enum SongTitleFormat {
   final String label;
 
   static SongTitleFormat parse(String? v) =>
-      SongTitleFormat.values.firstWhere((e) => e.name == v,
-          orElse: () => SongTitleFormat.artistTitle);
+      enumByNameOr(SongTitleFormat.values, v, SongTitleFormat.artistTitle);
 }
 
 /// 在线元数据保存位置（设置→歌曲）。
@@ -57,8 +57,7 @@ enum OnlineMetaSaveMode {
   final String label;
 
   static OnlineMetaSaveMode parse(String? v) =>
-      OnlineMetaSaveMode.values.firstWhere((e) => e.name == v,
-          orElse: () => OnlineMetaSaveMode.appCache);
+      enumByNameOr(OnlineMetaSaveMode.values, v, OnlineMetaSaveMode.appCache);
 }
 
 /// 在线歌词来源（设置→歌曲，用户手动设定，无自动串源）。
@@ -70,9 +69,8 @@ enum OnlineMetaLyricSource {
   const OnlineMetaLyricSource(this.label);
   final String label;
 
-  static OnlineMetaLyricSource parse(String? v) =>
-      OnlineMetaLyricSource.values.firstWhere((e) => e.name == v,
-          orElse: () => OnlineMetaLyricSource.lrclib);
+  static OnlineMetaLyricSource parse(String? v) => enumByNameOr(
+      OnlineMetaLyricSource.values, v, OnlineMetaLyricSource.lrclib);
 }
 
 /// 在线封面来源（设置→歌曲，用户手动设定，无自动串源）。
@@ -84,9 +82,8 @@ enum OnlineMetaCoverSource {
   const OnlineMetaCoverSource(this.label);
   final String label;
 
-  static OnlineMetaCoverSource parse(String? v) =>
-      OnlineMetaCoverSource.values.firstWhere((e) => e.name == v,
-          orElse: () => OnlineMetaCoverSource.mbCaa);
+  static OnlineMetaCoverSource parse(String? v) => enumByNameOr(
+      OnlineMetaCoverSource.values, v, OnlineMetaCoverSource.mbCaa);
 }
 
 /// 集合页（歌单/播放源/专辑/歌手）展示形式。
@@ -120,8 +117,7 @@ enum WeightedDrawCooldown {
   final int lowLimit;
 
   static WeightedDrawCooldown parse(String? v) =>
-      WeightedDrawCooldown.values.firstWhere((e) => e.name == v,
-          orElse: () => WeightedDrawCooldown.normal);
+      enumByNameOr(WeightedDrawCooldown.values, v, WeightedDrawCooldown.normal);
 
   /// 取 [factor] 对应的抛弃次数上限。
   int limitFor(double factor) => factor > 1.0 ? highLimit : lowLimit;

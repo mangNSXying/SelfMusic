@@ -14,6 +14,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 
 import '../services/online_meta/online_meta_models.dart';
+import '../utils/duration_format.dart';
 import '../utils/lrc_parser.dart';
 import '../utils/zh_variant.dart';
 import 'app_dialog_actions.dart';
@@ -194,10 +195,8 @@ class _LyricDetailDialogState extends State<LyricDetailDialog> {
     );
   }
 
-  static String _fmtDur(double sec) {
-    final s = sec.round();
-    return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
-  }
+  static String _fmtDur(double sec) =>
+      formatDuration(sec.round(), padMinutes: false);
 }
 
 /// 封面详情窗：大图 + 头部 + 元数据。

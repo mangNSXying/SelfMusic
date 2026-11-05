@@ -27,10 +27,13 @@ import '../models/artist.dart';
 import '../services/api_client.dart';
 import '../services/artist_resolver.dart';
 import '../services/secret_store.dart';
+import '../utils/backoff.dart';
 import '../utils/cover_thumb.dart';
 import '../utils/chunked_scheduler.dart';
 import '../utils/zh_variant.dart';
 import '../utils/source_folders.dart';
+import '../utils/song_key.dart';
+import '../utils/source_ref.dart';
 import '../utils/perf_log.dart';
 import '../utils/main_thread_probe.dart';
 import '../utils/interaction_gate.dart';
@@ -1296,9 +1299,8 @@ class DirectSourceManager extends ChangeNotifier {
         final opened = await primary.open(song);
         final total = opened.totalLength ?? song.fileSize;
         final ref = song.sourceRef;
-        final slash = ref.lastIndexOf('/');
-        final parent = slash <= 0 ? '' : ref.substring(0, slash);
-        final filename = slash < 0 ? ref : ref.substring(slash + 1);
+        final parent = refParent(ref);
+        final filename = refLeaf(ref);
         if (filename.isEmpty || filename.contains('..')) continue;
         await fb.uploadFile(parent, filename, opened.stream, total);
       } catch (_) {
@@ -2135,7 +2137,7 @@ class DirectSourceManager extends ChangeNotifier {
       _preloadRetryTimer = null;
       if (_preloadAborted || ticket != _preloadTicket) return;
       if (!settings.preloadNext) return;
-      final key = '${s.sourceKey}\u0000${s.sourceRef}';
+      final key = s.uid;
       tasks.submit(DirectTaskPriority.nextAudio,
           key: 'nextAudio/$key',
           body: () => _runPreloadRetry(s, ticket, attempt));
@@ -2210,7 +2212,7 @@ class DirectSourceManager extends ChangeNotifier {
       headers.forEach(req.headers.set);
       final resp = await req.close();
       if (resp.statusCode != 200) {
-        final retryAfter = _parseRetryAfter(resp.headers.value('retry-after'));
+        final retryAfter = parseRetryAfter(resp.headers.value('retry-after'));
         try {
           await resp.drain<void>();
         } catch (_) {}
@@ -2259,12 +2261,6 @@ class DirectSourceManager extends ChangeNotifier {
         } catch (_) {}
       }
     }
-  }
-
-  static Duration? _parseRetryAfter(String? raw) {
-    final sec = int.tryParse((raw ?? '').trim());
-    if (sec == null || sec < 0) return null;
-    return Duration(seconds: sec);
   }
 
   /// 预载票据：换歌时作废在途的那一份（见 [_scheduleNextTrack]）。
@@ -2343,7 +2339,7 @@ class DirectSourceManager extends ChangeNotifier {
         next.sourceKey == _playingSourceKey &&
         next.sourceRef == _playingRef;
     if (next != null && !sameSong) {
-      final key = '${next.sourceKey}\u0000${next.sourceRef}';
+      final key = next.uid;
       if (settings.preloadNext && next.isDirect) {
         tasks.submit(DirectTaskPriority.nextAudio,
             key: 'nextAudio/$key', body: () => _runPreloadTask(next));
@@ -2463,7 +2459,7 @@ class DirectSourceManager extends ChangeNotifier {
       return;
     }
     tasks.submit(DirectTaskPriority.background,
-        key: 'background/${song.sourceKey}\u0000${song.sourceRef}',
+        key: 'background/${song.uid}',
         body: () async {
       try {
         await enrichSongMeta(index, src, song);

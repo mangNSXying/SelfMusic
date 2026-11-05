@@ -14,6 +14,7 @@
 library;
 
 import '../models/song.dart';
+import 'enum_parse.dart';
 import 'source_folders.dart';
 
 /// 歌曲列表分类方式（按页持久化，默认 [none]）。
@@ -34,10 +35,8 @@ extension SongGroupModeX on SongGroupMode {
   String labelFor({String? folderLabel}) =>
       this == SongGroupMode.folder && folderLabel != null ? folderLabel : label;
 
-  static SongGroupMode parse(String? v) => v == null
-      ? SongGroupMode.none
-      : SongGroupMode.values
-          .firstWhere((e) => e.name == v, orElse: () => SongGroupMode.none);
+  static SongGroupMode parse(String? v) =>
+      enumByNameOr(SongGroupMode.values, v, SongGroupMode.none);
 }
 
 /// 源根歌曲的分组名（`sourceRef` 无 `/`，即直接位于源根）。

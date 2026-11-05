@@ -15,6 +15,7 @@ import '../../providers/playlists_provider.dart';
 import '../../services/server_settings.dart';
 import '../../shortcuts/shortcut_settings.dart';
 import '../../theme/theme_provider.dart';
+import '../../utils/format_bytes.dart';
 import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/row_action_button.dart';
@@ -308,10 +309,6 @@ class _BackupMigrationDialogState extends State<BackupMigrationDialog> {
     _refresh();
   }
 
-  static String _sizeLabel(int bytes) {
-    if (bytes >= 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(bytes / 1024).toStringAsFixed(0)} KB';
-  }
+  static String _sizeLabel(int bytes) =>
+      formatBytes(bytes, mbDecimals: 1, useGb: false);
 }

@@ -377,7 +377,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
   List<String> _collectionKeysOf(List<Song> songs) {
     if (!identical(_collectionKeysRef, songs)) {
       _collectionKeysRef = songs;
-      _collectionKeys = [for (final s in songs) songKey(s)];
+      _collectionKeys = [for (final s in songs) selectionKey(s)];
     }
     return _collectionKeys;
   }
@@ -590,7 +590,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     // 追焦：以当前播放歌曲在展示列表中的位置为准（递归层级不在本层则跳过）。
     if (!identical(_keysRef, displaySongs)) {
       _keysRef = displaySongs;
-      _keys = [for (final s in displaySongs) songKey(s)];
+      _keys = [for (final s in displaySongs) selectionKey(s)];
     }
     final keys = _keys;
     final selection = _buildSelectionSummary(
@@ -601,7 +601,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       recursive: recursive,
     );
     final cur = player.current;
-    final curKey = cur == null ? null : songKey(cur);
+    final curKey = cur == null ? null : selectionKey(cur);
     if (!identical(_currentBaseRef, displaySongs) || _currentKey != curKey) {
       _currentBaseRef = displaySongs;
       _currentKey = curKey;

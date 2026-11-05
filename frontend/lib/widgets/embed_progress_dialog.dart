@@ -9,6 +9,7 @@ import '../data/sources/music_source.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
 import '../services/tag_embed_service.dart';
+import '../utils/format_bytes.dart';
 import 'app_dialog_actions.dart';
 import 'app_toast.dart';
 
@@ -191,12 +192,8 @@ class _EmbedProgressDialogState extends State<EmbedProgressDialog> {
     }
   }
 
-  static String _fmtBytes(int bytes) {
-    if (bytes >= 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(bytes / 1024).toStringAsFixed(0)} KB';
-  }
+  static String _fmtBytes(int bytes) =>
+      formatBytes(bytes, mbDecimals: 1, useGb: false);
 
   @override
   Widget build(BuildContext context) {

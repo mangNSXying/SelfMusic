@@ -18,6 +18,8 @@ import '../data/local/audio_tag_writer.dart';
 import '../data/local/local_index.dart';
 import '../data/sources/music_source.dart';
 import '../models/song.dart';
+import '../utils/media_kinds.dart';
+import '../utils/source_ref.dart';
 import 'online_meta/online_meta_service.dart';
 
 /// 嵌入阶段（进度对话框展示用）。
@@ -66,16 +68,9 @@ class TagEmbedService {
     return (lyrics: lyrics, coverBytes: cover);
   }
 
-  static String parentOf(String ref) {
-    final slash = ref.lastIndexOf('/');
-    if (slash <= 0) return '';
-    return ref.substring(0, slash);
-  }
+  static String parentOf(String ref) => refParent(ref);
 
-  static String leafOf(String ref) {
-    final slash = ref.lastIndexOf('/');
-    return slash < 0 ? ref : ref.substring(slash + 1);
-  }
+  static String leafOf(String ref) => refLeaf(ref);
 
   /// 执行嵌入（见文件头流程）。[shouldAbort] 在下载循环与落盘前轮询
   /// （PUT 一旦发起不再中断，取消在整传完成后还原处理）。
@@ -304,9 +299,7 @@ class TagEmbedService {
     try {
       final dir = settings.onlineMetaLyricDir.trim();
       if (dir.isEmpty || src.kind != SourceKind.local) return;
-      final stem = leafOf(song.sourceRef);
-      final dot = stem.lastIndexOf('.');
-      final base = dot > 0 ? stem.substring(0, dot) : stem;
+      final base = refStem(song.sourceRef);
       for (final leaf in ['$base.lrc', '$base.LRC']) {
         try {
           final f = File(p.join(dir, leaf));
@@ -322,11 +315,8 @@ class TagEmbedService {
   };
 
   static String formatOf(Song song) {
-    final ref = song.sourceRef;
-    final dot = ref.lastIndexOf('.');
-    final fromRef = dot >= 0 ? ref.substring(dot + 1).toLowerCase() : '';
     final f = (song.format ?? '').toLowerCase();
-    return f.isNotEmpty ? f : fromRef;
+    return f.isNotEmpty ? f : audioExtOf(song.sourceRef);
   }
 
   /// 该歌容器是否支持标签内嵌（保存前预检；不支持的退化为仅应用缓存）。

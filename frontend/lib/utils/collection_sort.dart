@@ -1,4 +1,5 @@
 import '../models/song.dart';
+import 'enum_parse.dart';
 import 'play_stats.dart';
 import 'zh_variant.dart';
 
@@ -135,10 +136,8 @@ extension CollectionSortX on CollectionSort {
               isCount,
       };
 
-  static CollectionSort parse(String? v) => v == null
-      ? CollectionSort.defaultOrder
-      : CollectionSort.values.firstWhere((e) => e.name == v,
-          orElse: () => CollectionSort.defaultOrder);
+  static CollectionSort parse(String? v) =>
+      enumByNameOr(CollectionSort.values, v, CollectionSort.defaultOrder);
 }
 
 /// 数值比较：null（未知）恒排最后——升序时「没时长」的歌不该霸占榜首，

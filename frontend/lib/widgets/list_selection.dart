@@ -1,7 +1,7 @@
 import '../models/song.dart';
 
-/// 歌曲稳定标识：源内唯一引用（跨源合并列表去重用）。
-String songKey(Song s) => '${s.sourceKey}|${s.sourceRef}|${s.id}';
+/// 列表选择/定位用的稳定键（含库内 id，区别于同步身份键 `Song.uid`）。
+String selectionKey(Song s) => '${s.sourceKey}|${s.sourceRef}|${s.id}';
 
 /// 通用多选状态：页面内的选择集合 + 是否处于「选择模式」。
 ///
@@ -69,4 +69,4 @@ class Selection<T> {
 
 /// 从列表中取出生效选中的歌曲，带便捷版。
 List<Song> selectedSongs(Selection<String> sel, Iterable<Song> songs) =>
-    songs.where((s) => sel.contains(songKey(s))).toList(growable: false);
+    songs.where((s) => sel.contains(selectionKey(s))).toList(growable: false);

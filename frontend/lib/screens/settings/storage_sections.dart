@@ -14,6 +14,7 @@ import '../../providers/player_provider.dart';
 import '../../services/api_client.dart';
 import '../../services/server_settings.dart';
 import '../../theme/app_metrics.dart';
+import '../../utils/format_bytes.dart';
 import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/row_action_button.dart';
@@ -26,12 +27,8 @@ class CacheDirTile extends StatefulWidget {
   @override
   State<CacheDirTile> createState() => _CacheDirTileState();
 
-  static String _fmtBytes(int bytes) {
-    if (bytes >= 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(bytes / 1024).toStringAsFixed(0)} KB';
-  }
+  static String _fmtBytes(int bytes) =>
+      formatBytes(bytes, mbDecimals: 1, useGb: false);
 }
 
 class _CacheDirTileState extends State<CacheDirTile> {
@@ -470,10 +467,6 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
     }
   }
 
-  static String _labelBytes(int bytes) {
-    if (bytes >= 1024 * 1024 * 1024) {
-      return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
-    }
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(0)} MB';
-  }
+  static String _labelBytes(int bytes) =>
+      formatBytes(bytes, zero: '0 MB', minUnit: ByteUnit.mb);
 }
