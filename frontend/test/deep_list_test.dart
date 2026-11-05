@@ -99,6 +99,18 @@ void main() {
       expect(dl.tail, isNull);
     });
 
+    test('replaceRefs：同源条目全部换成最新快照', () {
+      final dl = DeepListController(capacity: 5);
+      for (final r in ['a', 'b', 'a', 'c']) {
+        dl.pushPlayed(_song(r), same: _same);
+      }
+      final updated = _song('a').copyWith(coverPath: '/covers/a.jpg');
+      expect(dl.replaceRefs(updated, same: _same), isTrue);
+      expect(dl.entries.where((s) => s.sourceRef == 'a').every(
+          (s) => s.coverPath == '/covers/a.jpg'), isTrue);
+      expect(dl.replaceRefs(updated, same: _same), isFalse);
+    });
+
     test('removeRef：移除全部引用（含非末尾）', () {
       final dl = DeepListController(capacity: 5);
       for (final r in ['a', 'b', 'a', 'c']) {
