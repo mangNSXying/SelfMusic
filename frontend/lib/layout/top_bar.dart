@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
 import '../theme/app_theme.dart';
+import '../utils/motion.dart';
 
 /// 顶栏：上层 = 汉堡 + 搜索框（提示语随当前区域变化）；下层 = 导航（歌单/喜欢/播放源/歌曲/专辑/歌手）。
 class TopBar extends StatelessWidget {
@@ -154,13 +155,78 @@ class _NavBar extends StatefulWidget {
   State<_NavBar> createState() => _NavBarState();
 }
 
-class _NavBarState extends State<_NavBar> {
+class _NavBarState extends State<_NavBar>
+    with SingleTickerProviderStateMixin {
   final ScrollController _scroll = ScrollController();
+
+  /// 条带实际显示的页码：拖拽/邻项切换由 [NavigationProvider.pageOffset]
+  /// 逐帧驱动；隔项切换时 pageOffset 一步跳多页（PageView 直接跳页 +
+  /// 整页滑入），这里补一段 [kPageMotion] 插值，让条带与高亮也滚动过去。
+  late final ValueNotifier<double> _shownPage;
+  late final AnimationController _jumpCtrl;
+  late final CurvedAnimation _jumpCurve;
+  Tween<double>? _jumpTween;
+  late double _targetPage;
+
+  /// 单帧跳变超过一页才算隔项切换；拖拽/吸附每帧远小于一页。
+  static const double _jumpThreshold = 1.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _targetPage = widget.nav.pageOffset.value;
+    _shownPage = ValueNotifier<double>(_targetPage);
+    _jumpCtrl = AnimationController(vsync: this, duration: kPageMotion);
+    _jumpCurve = CurvedAnimation(parent: _jumpCtrl, curve: kPageMotionCurve);
+    _jumpCtrl.addListener(_onJumpTick);
+    widget.nav.pageOffset.addListener(_onPageOffset);
+    // 首帧布局后条带才拿到 maxScrollExtent：先对齐到当前分组，
+    // 避免挂载时停在最左端（恢复的非首个分组可能不在可视区）。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _followStrip(_shownPage.value);
+    });
+  }
 
   @override
   void dispose() {
+    widget.nav.pageOffset.removeListener(_onPageOffset);
+    _jumpCurve.dispose();
+    _jumpCtrl.dispose();
+    _shownPage.dispose();
     _scroll.dispose();
     super.dispose();
+  }
+
+  void _onJumpTick() {
+    final tween = _jumpTween;
+    if (tween != null) _shownPage.value = tween.transform(_jumpCurve.value);
+  }
+
+  void _onPageOffset() {
+    final page = widget.nav.pageOffset.value;
+    final far = (page - _targetPage).abs() > _jumpThreshold;
+    _targetPage = page;
+    if (far) {
+      _jumpTween = Tween<double>(begin: _shownPage.value, end: page);
+      _jumpCtrl.forward(from: 0);
+    } else {
+      _jumpCtrl.stop();
+      _jumpTween = null;
+      _shownPage.value = page;
+    }
+  }
+
+  /// 条带跟随：按显示页码比例滚动（jumpTo 不触发 ValueNotifier，无重建循环）。
+  void _followStrip(double page) {
+    if (!_scroll.hasClients) return;
+    final max = _scroll.position.maxScrollExtent;
+    if (max <= 0) return;
+    final target = max *
+        (page.clamp(0.0, NavSection.values.length - 1.0) /
+            (NavSection.values.length - 1));
+    if ((_scroll.offset - target).abs() > 0.5) {
+      _scroll.jumpTo(target);
+    }
   }
 
   @override
@@ -174,20 +240,9 @@ class _NavBarState extends State<_NavBar> {
     return SizedBox(
       height: 48,
       child: ValueListenableBuilder<double>(
-        valueListenable: widget.nav.pageOffset,
+        valueListenable: _shownPage,
         builder: (c, page, _) {
-          // 条带跟随：按拖拽页码比例滚动（jumpTo 不触发 ValueNotifier，无重建循环）。
-          if (_scroll.hasClients) {
-            final max = _scroll.position.maxScrollExtent;
-            if (max > 0) {
-              final target = max *
-                  (page.clamp(0.0, NavSection.values.length - 1.0) /
-                      (NavSection.values.length - 1));
-              if ((_scroll.offset - target).abs() > 0.5) {
-                _scroll.jumpTo(target);
-              }
-            }
-          }
+          _followStrip(page);
           return ListView.separated(
             controller: _scroll,
             scrollDirection: Axis.horizontal,
