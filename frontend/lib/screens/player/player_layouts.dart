@@ -135,24 +135,10 @@ class LandscapePlayer extends StatelessWidget {
             // 第二列：歌词区，上下边缘渐隐（参照稿 mask-image）；横屏两页
             // 布局里歌词内嵌在播放页，高亮行居中。
             Expanded(
-              child: ShaderMask(
-                shaderCallback: (r) => const LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.transparent,
-                    Colors.black,
-                    Colors.black,
-                    Colors.transparent
-                  ],
-                  stops: [0.0, 0.12, 0.88, 1.0],
-                ).createShader(r),
-                blendMode: BlendMode.dstIn,
-                child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                  child: LyricsView(player: player, align: 0.47),
-                ),
+              child: EdgeFade(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                child: LyricsView(player: player, align: 0.47),
               ),
             ),
             // 第三列：竖向主控制区（顶部定时 / 中部切歌播放 / 底部模式，
@@ -379,26 +365,12 @@ class DesktopLandscapePlayer extends StatelessWidget {
                 child: ConstrainedBox(
                   constraints: BoxConstraints(
                       maxWidth: m.lyricsMaxWidth + m.lyricsPadding * 2),
-                  child: ShaderMask(
-                    shaderCallback: (r) => const LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.transparent,
-                        Colors.black,
-                        Colors.black,
-                        Colors.transparent
-                      ],
-                      stops: [0.0, 0.12, 0.88, 1.0],
-                    ).createShader(r),
-                    blendMode: BlendMode.dstIn,
-                    child: Padding(
-                      padding: EdgeInsets.symmetric(
-                          horizontal: m.lyricsPadding,
-                          vertical: 12 * m.uiScale),
-                      child: LyricsView(
-                          player: player, scale: m.uiScale, align: 0.47),
-                    ),
+                  child: EdgeFade(
+                    padding: EdgeInsets.symmetric(
+                        horizontal: m.lyricsPadding,
+                        vertical: 12 * m.uiScale),
+                    child: LyricsView(
+                        player: player, scale: m.uiScale, align: 0.47),
                   ),
                 ),
               ),
@@ -560,6 +532,37 @@ class DesktopPlaylistSplit extends StatelessWidget {
   }
 }
 
+/// 歌词区上下边缘渐隐（参照稿 mask-image）。
+class EdgeFade extends StatelessWidget {
+  final Widget child;
+  final EdgeInsets padding;
+
+  const EdgeFade({
+    super.key,
+    required this.child,
+    this.padding = EdgeInsets.zero,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ShaderMask(
+      shaderCallback: (r) => const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          Colors.transparent,
+          Colors.black,
+          Colors.black,
+          Colors.transparent,
+        ],
+        stops: [0.0, 0.12, 0.88, 1.0],
+      ).createShader(r),
+      blendMode: BlendMode.dstIn,
+      child: Padding(padding: padding, child: child),
+    );
+  }
+}
+
 /// 横屏右列中部的竖向播放控制：上一首 / 播放暂停 / 下一首。
 class VerticalControls extends StatelessWidget {
   final PlayerProvider player;
@@ -577,24 +580,7 @@ class VerticalControls extends StatelessWidget {
           child: const Icon(Icons.skip_previous, size: 28),
         ),
         const SizedBox(height: 6),
-        ListenableBuilder(
-          listenable: player,
-          builder: (c, _) {
-            // 目标态（provider.playing）：点击后一帧内翻转，不等音频淡出完成。
-            final playing = player.playing;
-            return Pressable(
-              onPressed: player.toggle,
-              tooltip: playing ? '暂停' : '播放',
-              pressedScale: 0.85,
-              child: Icon(
-                  playing
-                      ? Icons.pause_circle_filled
-                      : Icons.play_circle_filled,
-                  size: 56,
-                  color: cs.primary),
-            );
-          },
-        ),
+        PlayPauseButton(player: player, cs: cs, size: 56),
         const SizedBox(height: 6),
         Pressable(
           onPressed: player.next,

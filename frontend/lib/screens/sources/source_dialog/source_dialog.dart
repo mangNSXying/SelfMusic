@@ -23,6 +23,7 @@ import '../../../utils/format_bytes.dart';
 import '../../../utils/url_input.dart';
 import '../../../widgets/app_dialog_actions.dart';
 import '../../../widgets/app_toast.dart';
+import '../../../widgets/inline_spinner.dart';
 import '../../../widgets/row_action_button.dart';
 import '../../../widgets/single_choice_group.dart';
 
@@ -855,11 +856,7 @@ class _SourceDialogState extends State<SourceDialog> {
                 onPressed:
                     _testing ? null : () => _testFbWebdavConnection(i, fb),
                 icon: _testing
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
+                    ? const InlineSpinner(size: 16)
                     : const Icon(Icons.verified_outlined, size: 18),
                 label: const Text('测试连接'),
               ),
@@ -947,11 +944,7 @@ class _SourceDialogState extends State<SourceDialog> {
               OutlinedButton.icon(
                 onPressed: _testing ? null : () => _testFbSftpConnection(i, fb),
                 icon: _testing
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
+                    ? const InlineSpinner(size: 16)
                     : const Icon(Icons.verified_outlined, size: 18),
                 label: const Text('测试连接'),
               ),
@@ -985,11 +978,7 @@ class _SourceDialogState extends State<SourceDialog> {
               OutlinedButton.icon(
                 onPressed: _testing ? null : () => _testFbSmbConnection(i, fb),
                 icon: _testing
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
+                    ? const InlineSpinner(size: 16)
                     : const Icon(Icons.verified_outlined, size: 18),
                 label: const Text('测试连接'),
               ),
@@ -1241,11 +1230,7 @@ class _SourceDialogState extends State<SourceDialog> {
             TextButton.icon(
               onPressed: _pickingFiles ? null : _pickAudioFiles,
               icon: _pickingFiles
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
+                  ? const InlineSpinner(size: 16)
                   : const Icon(Icons.add, size: 18),
               label: Text(_pickingFiles ? '选择中…' : '选择音频文件'),
             ),
@@ -1399,11 +1384,7 @@ class _SourceDialogState extends State<SourceDialog> {
               OutlinedButton.icon(
                 onPressed: _testing ? null : _testWebdavConnection,
                 icon: _testing
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
+                    ? const InlineSpinner(size: 16)
                     : const Icon(Icons.verified_outlined, size: 18),
                 label: const Text('测试连接'),
               ),
@@ -1491,11 +1472,7 @@ class _SourceDialogState extends State<SourceDialog> {
               OutlinedButton.icon(
                 onPressed: _testing ? null : _testSftpConnection,
                 icon: _testing
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
+                    ? const InlineSpinner(size: 16)
                     : const Icon(Icons.verified_outlined, size: 18),
                 label: const Text('测试连接'),
               ),
@@ -1529,11 +1506,7 @@ class _SourceDialogState extends State<SourceDialog> {
               OutlinedButton.icon(
                 onPressed: _testing ? null : _testSmbConnection,
                 icon: _testing
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
+                    ? const InlineSpinner(size: 16)
                     : const Icon(Icons.verified_outlined, size: 18),
                 label: const Text('测试连接'),
               ),

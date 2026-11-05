@@ -419,24 +419,7 @@ class ControlRow extends StatelessWidget {
           tooltip: '上一首',
           child: Icon(Icons.skip_previous, size: 34 * scale),
         ),
-        ListenableBuilder(
-          listenable: player,
-          builder: (c, _) {
-            // 目标态（provider.playing）：点击后一帧内翻转，不等音频淡出完成。
-            final playing = player.playing;
-            return Pressable(
-              onPressed: player.toggle,
-              tooltip: playing ? '暂停' : '播放',
-              pressedScale: 0.85,
-              child: Icon(
-                  playing
-                      ? Icons.pause_circle_filled
-                      : Icons.play_circle_filled,
-                  size: 74 * scale,
-                  color: cs.primary),
-            );
-          },
-        ),
+        PlayPauseButton(player: player, cs: cs, size: 74 * scale),
         Pressable(
           onPressed: player.next,
           tooltip: '下一首',
@@ -529,6 +512,41 @@ class PlayerSeek extends StatefulWidget {
 
   @override
   State<PlayerSeek> createState() => _PlayerSeekState();
+}
+
+/// 播放/暂停主键（竖屏控制行与横屏竖向控制共用）。
+class PlayPauseButton extends StatelessWidget {
+  final PlayerProvider player;
+  final ColorScheme cs;
+  final double size;
+
+  const PlayPauseButton({
+    super.key,
+    required this.player,
+    required this.cs,
+    required this.size,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: player,
+      builder: (c, _) {
+        // 目标态（provider.playing）：点击后一帧内翻转，不等音频淡出完成。
+        final playing = player.playing;
+        return Pressable(
+          onPressed: player.toggle,
+          tooltip: playing ? '暂停' : '播放',
+          pressedScale: 0.85,
+          child: Icon(
+            playing ? Icons.pause_circle_filled : Icons.play_circle_filled,
+            size: size,
+            color: cs.primary,
+          ),
+        );
+      },
+    );
+  }
 }
 
 class _PlayerSeekState extends State<PlayerSeek> {

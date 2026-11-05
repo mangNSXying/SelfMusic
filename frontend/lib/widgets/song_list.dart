@@ -14,10 +14,10 @@ import '../providers/playlists_provider.dart';
 import '../utils/collection_sort.dart';
 import '../utils/song_groups.dart';
 import '../utils/song_search.dart';
-import 'add_to_playlist.dart';
 import 'app_dialog_actions.dart';
 import 'header_action_button.dart';
 import 'list_selection.dart';
+import 'search_field.dart';
 import 'selection_bar.dart';
 import 'song_collection_view.dart';
 import 'song_selection_actions.dart';
@@ -290,31 +290,11 @@ class _SongListState extends State<SongList> {
         ),
         // 歌单页自带搜索框（内容区详情跟随全局搜索框，不重复渲染）。
         if (!widget.globalSearch)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-            child: TextField(
-              controller: _searchCtrl,
-              onChanged: (v) => setState(() => _localQuery = v),
-              decoration: InputDecoration(
-                hintText: '搜索当前歌单',
-                prefixIcon: const Icon(Icons.search),
-                suffixIcon: _localQuery.isEmpty
-                    ? null
-                    : IconButton(
-                        icon: const Icon(Icons.clear),
-                        tooltip: '清除',
-                        onPressed: () {
-                          _searchCtrl.clear();
-                          setState(() => _localQuery = '');
-                        },
-                      ),
-                isDense: true,
-                contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(24),
-                ),
-              ),
-            ),
+          SearchField(
+            controller: _searchCtrl,
+            hintText: '搜索当前歌单',
+            query: _localQuery,
+            onChanged: (v) => setState(() => _localQuery = v),
           ),
         Expanded(
           child: SongCollectionView(
@@ -392,25 +372,11 @@ class _SongListState extends State<SongList> {
               }
             },
             selectionActions: (selected, clear) => [
-              SelectionAction(
-                icon: Icons.play_arrow,
-                label: '播放选中',
-                onPressed: selected.isEmpty
-                    ? null
-                    : () {
-                        clear();
-                        _playGroup(context, selected);
-                      },
-              ),
-              SelectionAction(
-                icon: Icons.playlist_add,
-                label: '加入歌单',
-                onPressed: selected.isEmpty
-                    ? null
-                    : () {
-                        clear();
-                        showAddToPlaylistSheetForSongs(context, selected);
-                      },
+              ...collectionPlayAddActions(
+                context,
+                selected,
+                clear,
+                play: () => _playGroup(context, selected),
               ),
               SelectionAction(
                 icon: Icons.playlist_remove,

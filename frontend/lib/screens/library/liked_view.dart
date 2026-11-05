@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
 import '../../providers/library_provider.dart';
 import '../../providers/player_provider.dart';
@@ -10,9 +9,7 @@ import '../../theme/app_theme.dart';
 import '../../utils/collection_sort.dart';
 import '../../utils/song_search.dart';
 import '../../utils/zh_variant.dart';
-import '../../widgets/add_to_playlist.dart';
 import '../../widgets/corner_add_button.dart';
-import '../../widgets/selection_bar.dart';
 import '../../widgets/song_collection_view.dart';
 import '../../widgets/song_selection_actions.dart';
 import 'shared.dart';
@@ -84,21 +81,6 @@ class _LikedViewState extends State<LikedView>
     return _sorted;
   }
 
-  void _playSelected(List<Song> selected, VoidCallback clear) {
-    if (selected.isEmpty) return;
-    clear();
-    context
-        .read<PlayerProvider>()
-        .playQueue(selected, contextKey: PlayerProvider.anchorForLiked());
-    context.read<NavigationProvider>().openPlayer();
-  }
-
-  void _addToPlaylistSelected(List<Song> selected, VoidCallback clear) {
-    if (selected.isEmpty) return;
-    clear();
-    showAddToPlaylistSheetForSongs(context, selected);
-  }
-
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -134,19 +116,15 @@ class _LikedViewState extends State<LikedView>
                 .read<PlayerProvider>()
                 .playQueue(list, contextKey: PlayerProvider.anchorForLiked()),
             selectionActions: (selected, clear) => [
-              SelectionAction(
-                icon: Icons.play_arrow,
-                label: '播放选中',
-                onPressed: selected.isEmpty
-                    ? null
-                    : () => _playSelected(selected, clear),
-              ),
-              SelectionAction(
-                icon: Icons.playlist_add,
-                label: '加入歌单',
-                onPressed: selected.isEmpty
-                    ? null
-                    : () => _addToPlaylistSelected(selected, clear),
+              ...collectionPlayAddActions(
+                context,
+                selected,
+                clear,
+                play: () async {
+                  context.read<PlayerProvider>().playQueue(selected,
+                      contextKey: PlayerProvider.anchorForLiked());
+                  context.read<NavigationProvider>().openPlayer();
+                },
               ),
               ...songSelectionActions(
                 context,
