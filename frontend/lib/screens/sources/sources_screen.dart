@@ -12,12 +12,10 @@ import '../../navigation/detail_target.dart';
 import '../../layout/screen_metrics.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../providers/navigation_provider.dart';
-import '../../providers/player_provider.dart';
 import '../../providers/playlists_provider.dart';
 import '../../theme/app_theme.dart';
 import '../../utils/collection_sort.dart';
 import '../../widgets/app_dialog_actions.dart';
-import '../../widgets/app_toast.dart';
 import '../../widgets/context_menu.dart';
 import '../../widgets/corner_add_button.dart';
 import '../../widgets/count_header.dart';
@@ -30,6 +28,7 @@ import '../../widgets/view_mode_toggle.dart';
 import 'source_browse_view.dart';
 
 import 'source_dialog/source_dialog.dart';
+import '../../widgets/source_line_menu.dart';
 
 /// 播放源管理页：直连源（本地 / SMB / WebDAV / SFTP）列表（支持列表/卡片切换）。
 ///
@@ -340,7 +339,7 @@ List<PopupMenuEntry<String>> _sourceMenuItems(
     String sourceKey, DirectSourceManager direct) {
   return [
     const PopupMenuItem(value: 'edit', child: Text('编辑')),
-    ...buildLineMenuItems(direct, sourceKey),
+    ...buildSourceLineMenuItems(direct, sourceKey),
     const PopupMenuDivider(),
     const PopupMenuItem(
       value: 'delete',
@@ -362,31 +361,7 @@ Future<void> _handleSourceMenuValue(BuildContext context, String sourceKey,
     case 'line_primary':
     case 'line_fb0':
     case 'line_fb1':
-      final line = switch (v) {
-        'line_primary' => SourceLine.primary,
-        'line_fb0' => SourceLine.fb0,
-        'line_fb1' => SourceLine.fb1,
-        _ => SourceLine.auto,
-      };
-      await direct.setLinePref(sourceKey, line);
-      if (context.mounted) {
-        AppToast.show(
-            line == SourceLine.auto
-                ? '已切到自动线路（主→备 Failover）'
-                : line == SourceLine.primary
-                    ? '已锁定主用线路'
-                    : line == SourceLine.fb0
-                        ? '已锁定备用1线路'
-                        : '已锁定备用2线路',
-            isError: false);
-        // 若正在播该源，重载当前曲使线路即时生效。
-        try {
-          final player = context.read<PlayerProvider>();
-          if (player.current?.sourceKey == sourceKey) {
-            unawaited(player.reloadCurrentForPlaybackRoute());
-          }
-        } catch (_) {}
-      }
+      await applySourceLineSelection(context, sourceKey, v);
   }
 }
 
@@ -400,63 +375,6 @@ Future<void> _openSourceMenuAt(BuildContext context, String sourceKey,
   );
   if (picked != null && context.mounted) {
     await _handleSourceMenuValue(context, sourceKey, direct, picked);
-  }
-}
-
-/// 播放页/任意处共用的线路切换菜单项构造（与 [_SourceMenu] 同文案/同行为）。
-List<PopupMenuEntry<String>> buildLineMenuItems(
-    DirectSourceManager direct, String sourceKey) {
-  final fbCount = direct.fallbackCountOf(sourceKey);
-  if (fbCount == 0) return const [];
-  final linePref = direct.linePrefOf(sourceKey);
-  String label(SourceLine l) {
-    final cur = linePref == l ? ' ✓' : '';
-    return switch (l) {
-      SourceLine.auto => '线路：自动$cur',
-      SourceLine.primary => '线路：主用$cur',
-      SourceLine.fb0 => '线路：备用1$cur',
-      SourceLine.fb1 => '线路：备用2$cur',
-    };
-  }
-
-  return [
-    const PopupMenuDivider(),
-    PopupMenuItem(value: 'line_auto', child: Text(label(SourceLine.auto))),
-    PopupMenuItem(
-        value: 'line_primary', child: Text(label(SourceLine.primary))),
-    PopupMenuItem(value: 'line_fb0', child: Text(label(SourceLine.fb0))),
-    if (fbCount > 1)
-      PopupMenuItem(value: 'line_fb1', child: Text(label(SourceLine.fb1))),
-  ];
-}
-
-/// 线路切换选中后的统一处理（源卡片与播放页共用）。
-Future<void> handleLineMenuSelected(
-    BuildContext context, String sourceKey, String v) async {
-  final direct = context.read<DirectSourceManager>();
-  final line = switch (v) {
-    'line_primary' => SourceLine.primary,
-    'line_fb0' => SourceLine.fb0,
-    'line_fb1' => SourceLine.fb1,
-    _ => SourceLine.auto,
-  };
-  await direct.setLinePref(sourceKey, line);
-  if (context.mounted) {
-    AppToast.show(
-        line == SourceLine.auto
-            ? '已切到自动线路（主→备 Failover）'
-            : line == SourceLine.primary
-                ? '已锁定主用线路'
-                : line == SourceLine.fb0
-                    ? '已锁定备用1线路'
-                    : '已锁定备用2线路',
-        isError: false);
-    try {
-      final player = context.read<PlayerProvider>();
-      if (player.current?.sourceKey == sourceKey) {
-        unawaited(player.reloadCurrentForPlaybackRoute());
-      }
-    } catch (_) {}
   }
 }
 

@@ -10,6 +10,7 @@ import 'screen_metrics.dart';
 import '../widgets/draggable_sheet.dart';
 import '../widgets/row_list.dart';
 import '../widgets/song_list.dart';
+import '../widgets/queue_song_tile.dart';
 import '../widgets/song_row_view.dart';
 
 /// 宽屏右侧常驻面板宽度（[AppShell] 横排传入；窄屏走统一拖拽式窗口，不用宽）。
@@ -178,25 +179,19 @@ class _QueueSheetContentState extends State<_QueueSheetContent> {
             count: queueLength,
             itemBuilder: (c, i) {
               final s = queue[i];
-              return SongTile(
+              // 下标判高亮：同首复本仅新播行亮。
+              return QueueSongTile(
                 song: s,
-                source: null,
-                // 下标判高亮：同首复本仅新播行亮。
+                index: i,
                 playing: i == currentIndex,
-                row: _rows.rowAt(i, () {
+                cache: _rows,
+                direct: direct,
+                wide: wide,
+                onEnsureMeta: () {
                   if (!direct.weight.hasMetaCached(s)) {
                     direct.weight.ensureMetaOf([s]);
                   }
-                  final meta = direct.weight.metaOf(s);
-                  return SongRowView.of(
-                    song: s,
-                    titleFormat: direct.settings.songTitleFormat,
-                    sourceName: direct.sourceByKey(s.sourceKey)?.name,
-                    favorite: meta.favorite,
-                    disliked: meta.frozen,
-                    wide: wide,
-                  );
-                }),
+                },
                 onPlay: () => player.playAt(i),
               );
             },

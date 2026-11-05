@@ -123,7 +123,8 @@ selfmusic/
 │   │   ├── main.dart                 # 入口 + Provider 装配 / Root
 │   │   ├── platform/                 # ★ 平台收口层（平台差异收敛，bootstrap 装配），当前只有 harmonyos/
 │   │   ├── theme/                    # 可配置主题（app_theme / theme_provider）
-│   │   ├── layout/                   # 自适应布局（app_shell / sidebar / top_bar / queue_panel / mini_player_bar）
+│   │   ├── layout/                   # 窗口骨架与判屏几何（app_shell / sidebar / top_bar / queue_panel / screen_metrics）
+│   │   ├── navigation/               # 内容栈入口（detail_target）
 │   │   ├── providers/                # 状态（auth / library / player / navigation / playlists / direct_source_manager）
 │   │   ├── services/                 # dio+懒刷新拦截器(ApiClient)、AuthService、ServerSettings、SyncEngine（阶段5 推拉/cursor/退避）
 │   │   ├── data/sources/             # MusicSource 抽象 + WebdavDirect + LocalDirect + SmbDirect + sibling_cover（同目录图片回退）
@@ -137,7 +138,7 @@ selfmusic/
 │   │   ├── models/                   # Song / Album / Artist
 │   │   ├── utils/                    # duration_format / song_title_format / lrc_parser / zh_variant
 │   │   ├── widgets/                  # 共享组件（SongTile / CoverThumb / lyrics_view / add_to_playlist / view_mode_toggle 等）
-│   │   └── screens/                  # library / playlists_view / sources / source_browse_view / settings / player / pairing / devices（阶段5 设备管理）
+│   │   └── screens/<feature>/        # 页面按功能分目录：content / library / playlists / sources / player / settings / library_info / about
 │   ├── android/ linux/ windows/ ohos/   # 各平台壳工程（ohos 的 build-profile.json5 含本机签名材料不入库，模板 build-profile.json5.example）
 │   ├── third_party/               # vendored fork：audio_service（通知栏 5 键自定义按钮）、dart_smb2、smb_connect
 │   └── pubspec.yaml
@@ -759,7 +760,7 @@ abstract class MusicSource {
 | 是否分栏 | `splitDetailActive(context)` | 判屏 + 该分组有"列表→详情"语义（歌单/播放源/专辑/歌手）+ 该分组**展示形式为列表**；卡片在窄左栏放不下一列，不分栏 |
 | 容器 | `widgets/list_detail_split.dart` 的 `ListDetailSplit` | `enabled=false` 时原样返回列表（零额外图层）；两栏各自 `RepaintBoundary` + 1px `outlineVariant` 竖分隔线 |
 | 右栏 | 同文件 `DetailPane` | 空态占位 + 栏内轻量过渡（`kDetailPaneMotion=180ms`，全局「关闭」档为零）；比整页 300ms 短，因为只有一栏在动 |
-| 详情本体 | `library_screen.dart` 的 `detailPageOf` | 窄屏弹层 / 宽屏整页叠层 / 分栏右栏**共用同一份**详情实现（`_AlbumDetailPage` / `_ArtistDetailPage` / `PlaylistDetailView(presentation: pane)` / `SourceBrowseView(presentation: pane)`） |
+| 详情本体 | `screens/content/detail_pages.dart` 的 `detailPageOf` | 窄屏弹层 / 宽屏整页叠层 / 分栏右栏**共用同一份**详情实现（`AlbumDetailPage` / `ArtistDetailPage` / `PlaylistDetailView(presentation: pane)` / `SourceBrowseView(presentation: pane)`） |
 | 状态 | `NavigationProvider.contentRoutes`（`details` / `browsingPlaylistId` / `browsingSourceKey` 为最近层派生） | 分栏不新增"选中态"：右栏直接消费内容栈状态，跨断点切换不丢"当前在看什么" |
 
 - **内容区宽度必须用目标值**：`AppShell` 按 `窗口宽 − 侧栏 260 − 队列 360`（都是**目标**宽度，不是 300ms 伸缩动画中的实时值）算好经 `ScreenMetrics` 下发，否则分栏会在阈值附近来回抖。手机横屏（800−260=540）因此不会误分栏。
@@ -767,7 +768,7 @@ abstract class MusicSource {
 - **搜索词保留**：分栏时搜索框就是左栏的过滤器，`enterPlaylist / enterAlbum / enterArtist / enterSource / exitDetail / exitPlaylist / exitSource / backToPrevious` 都带 `keepSearch`，由调用点按 `splitDetailActive` 传值；非分栏沿用"进/出详情清空搜索"的旧口径。
 - **源内返回链**：每层目录一条 `SourceBrowseRoute`（不再是单独 `sourceDir` 字段）；`setSourceDir` 按公共前缀重建，保留共同前缀的路由对象（State/滚动不重建），`backToPrevious` 弹一层目录、到源根再退出源内；搜索态下目录不可见，返回直接退出源内。
 - **自动扫描节流**：打开源触发的增量扫描经 `DirectSourceManager.claimAutoScan`（同一源 60s 一次），分栏里来回点源不会反复扫描；手动「扫描」不经过该节流。
-- **详情入口统一**：`layout/detail_target.dart` 的 `DetailTarget`（Playlist / Album / Artist / Source）+ `openDetail` 收口「是否已在显示」的去重、`keepSearch` 与 `root` 语义；入口函数只构造 target。呈现外壳统一走 `widgets/detail_presentation.dart` 的 `DetailPresentationShell`（`page` 保留分组横滑；`pane` / `overlay` 自绘不透明底），页面本体不再各自判断。窄屏专辑/歌手拖拽弹层需要页面私有构建器，仍在 `library_screen.dart` 入口处分流。
+- **详情入口统一**：`navigation/detail_target.dart` 的 `DetailTarget`（Playlist / Album / Artist / Source）+ `openDetail` 收口「是否已在显示」的去重、`keepSearch` 与 `root` 语义；入口函数只构造 target。呈现外壳统一走 `widgets/detail_presentation.dart` 的 `DetailPresentationShell`（`page` 保留分组横滑；`pane` / `overlay` 自绘不透明底），页面本体不再各自判断。窄屏专辑/歌手拖拽弹层需要页面私有构建器，仍在 `screens/library/` 的入口函数处分流。
 - **左栏换选中项不叠加层**：左栏（分组列表）点选用 `root: true` 把详情栈重置为这一层；只有详情内部的嵌套入口（歌手专辑横条、成员/组合作品行）才压在上一层之上（`fromDetail`）。
 - **表格模式按列表实际宽度判定**：`SongCollectionView` 在外层做一次 `LayoutBuilder`（不再用窗口宽），达到 `kSongTableMinWidth=800` 时用 `SongTableList` 加表头；分栏右栏（如 360 宽）自动回退普通行，不会撑爆 `ListTile` 尾部断言。
 - **列表→卡片切换**：`ViewModeState.setViewMode` 在离开列表形态时调用 `NavigationProvider.closeSplitDetail` 关掉当前分栏详情（保留左栏搜索词），并经 `DirectSourceManager.viewModeChanged` 通知内容壳重算分栏——否则旧详情仍占着「已在显示」判定，再点卡片会被 `openDetail` 去重挡住。
@@ -921,7 +922,7 @@ SMB/SFTP 原始流默认不再走 just_audio 的 `StreamAudioSource`/Dart 回环
 
 其他鸿蒙配置事实（2026-09 收尾两连修，真机已验收）：
 
-- 横竖屏：module.json5 abilities 的 `orientation` 字段 **fork 模板默认缺失 = 窗口不随传感器旋转**（与 Android manifest 无 screenOrientation 的行为不一致，勿想当然）；补 `"orientation": "auto_rotation"` 即放行（Flutter 侧 `player_screen.dart` 横屏分支本就存在，纯配置层问题），控制中心旋转锁定关闭时横屏 UI 正常触发。HAP 内 module.json 可明文核对该字段
+- 横竖屏：module.json5 abilities 的 `orientation` 字段 **fork 模板默认缺失 = 窗口不随传感器旋转**（与 Android manifest 无 screenOrientation 的行为不一致，勿想当然）；补 `"orientation": "auto_rotation"` 即放行（Flutter 侧 `screens/player/player_screen.dart` 横屏分支本就存在，纯配置层问题），控制中心旋转锁定关闭时横屏 UI 正常触发。HAP 内 module.json 可明文核对该字段
 - 应用图标：`AppScope/resources/base/media/app_icon.png` + `entry/src/main/resources/base/media/icon.png` 两个文件（模板默认 = Flutter 默认图 144×144），直接覆盖内容即可，`$media:app_icon`/`$media:icon` 引用与资源 ID 不动；图标源 = 仓库根 `selfmusic-sharp.png`（2026-10 起，1024×1024 / 841 KB / 32bpp 带透明；hvigor 打包会自动重编码压至 512×512 / 238 KB 进 HAP，无需手动缩放；2026-10-19 MatePad Air 真机复验通过：桌面/启动/主界面）；旧源 `frontend/assets/selfmusic.png` 288×288 圆角方案弃用，Flutter 侧资产文件保留未动
 
 通知栏媒体播控（AVSession 桥，2026-09-29 真机验收）：

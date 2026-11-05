@@ -9,10 +9,8 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../models/song.dart';
-import '../../data/sources/music_source.dart' show SourceLine, parseSourceLine;
-import '../../providers/player_provider.dart';
 import '../../providers/direct_source_manager.dart';
-import '../../widgets/app_toast.dart';
+import '../../widgets/source_line_menu.dart';
 import '../../widgets/context_menu.dart';
 import '../../widgets/edit_song_meta_dialog.dart';
 import '../../widgets/online_meta_dialog.dart';
@@ -120,33 +118,8 @@ class Cover extends StatelessWidget {
     // 线路切换（与源卡片同功能）：仅当该源配了备用时出现。
     List<PopupMenuEntry<String>> lineItems = const [];
     try {
-      final direct = context.read<DirectSourceManager>();
-      final fbCount = direct.fallbackCountOf(song.sourceKey);
-      if (fbCount > 0) {
-        final pref =
-            parseSourceLine(direct.settings.getSourceLine(song.sourceKey));
-        String label(SourceLine l) {
-          final cur = pref == l ? ' ✓' : '';
-          return switch (l) {
-            SourceLine.auto => '线路：自动$cur',
-            SourceLine.primary => '线路：主用$cur',
-            SourceLine.fb0 => '线路：备用1$cur',
-            SourceLine.fb1 => '线路：备用2$cur',
-          };
-        }
-
-        lineItems = [
-          const PopupMenuDivider(),
-          PopupMenuItem(
-              value: 'line_auto', child: Text(label(SourceLine.auto))),
-          PopupMenuItem(
-              value: 'line_primary', child: Text(label(SourceLine.primary))),
-          PopupMenuItem(value: 'line_fb0', child: Text(label(SourceLine.fb0))),
-          if (fbCount > 1)
-            PopupMenuItem(
-                value: 'line_fb1', child: Text(label(SourceLine.fb1))),
-        ];
-      }
+      lineItems = buildSourceLineMenuItems(
+          context.read<DirectSourceManager>(), song.sourceKey);
     } catch (_) {}
     return [
       const PopupMenuItem(value: 'info', child: Text('歌曲信息')),
@@ -184,32 +157,7 @@ class Cover extends StatelessWidget {
         builder: (_) => OnlineMetaDialog(song: song),
       );
     } else if (v.startsWith('line_')) {
-      final direct = context.read<DirectSourceManager>();
-      final line = switch (v) {
-        'line_primary' => SourceLine.primary,
-        'line_fb0' => SourceLine.fb0,
-        'line_fb1' => SourceLine.fb1,
-        _ => SourceLine.auto,
-      };
-      direct.setLinePref(song.sourceKey, line).then((_) {
-        if (context.mounted) {
-          AppToast.show(
-              line == SourceLine.auto
-                  ? '已切到自动线路（主→备 Failover）'
-                  : line == SourceLine.primary
-                      ? '已锁定主用线路'
-                      : line == SourceLine.fb0
-                          ? '已锁定备用1线路'
-                          : '已锁定备用2线路',
-              isError: false);
-          try {
-            final player = context.read<PlayerProvider>();
-            if (player.current?.sourceKey == song.sourceKey) {
-              player.reloadCurrentForPlaybackRoute();
-            }
-          } catch (_) {}
-        }
-      });
+      applySourceLineSelection(context, song.sourceKey, v);
     }
   }
 }
