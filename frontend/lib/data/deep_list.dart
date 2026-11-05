@@ -45,6 +45,19 @@ class DeepListController {
   /// 上一首：弹出末尾（当前曲），返回被弹出的歌（空栈返回 null）。
   Song? popTail() => _entries.isEmpty ? null : _entries.removeLast();
 
+  /// 元数据刷新：把同源条目的旧快照换成最新行（封面/标题等随库更新）。
+  /// 返回是否有条目被替换。
+  bool replaceRefs(Song s, {required bool Function(Song a, Song b) same}) {
+    var changed = false;
+    for (var i = 0; i < _entries.length; i++) {
+      if (!identical(_entries[i], s) && same(_entries[i], s)) {
+        _entries[i] = s;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   /// 移除某歌的全部引用（歌单删歌联动）。
   void removeRef(Song s, {required bool Function(Song a, Song b) same}) {
     _entries.removeWhere((e) => same(e, s));

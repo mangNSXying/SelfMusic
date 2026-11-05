@@ -340,6 +340,38 @@ void main() {
       expect(_refs(player), ['s1', 's6', 's3', 's4', 's5', 's6'],
           reason: 's6 出队进入深层，原被顶的 s2 不复活');
     });
+
+    test('刷新元数据后添加下一首播放：当前曲封面不回退', () async {
+      final (index, player, uuid, _) = await setup();
+      addTearDown(index.close);
+      addTearDown(player.dispose);
+
+      await tap(player, uuid, 0); // 深层快照里的 s1 尚无封面
+      expect(player.current?.coverPath, isNull);
+
+      // 模拟在线获取/内嵌封面后刷新当前曲：队列与 current 已带封面，
+      // 但深层列表/融合基座仍是起播时的旧快照。
+      player.refreshSongMeta(
+          player.current!.copyWith(coverPath: '/covers/s1.jpg'));
+      expect(player.current?.coverPath, '/covers/s1.jpg');
+
+      // 添加下一首播放会重建融合队列（深层 + 预载 + 基座续播段）。
+      expect(player.playNext(_song('s6')), isTrue);
+
+      expect(player.current?.sourceRef, 's1');
+      expect(player.current?.coverPath, '/covers/s1.jpg',
+          reason: '重建后 current 不得换回深层/基座里的无封面旧快照');
+      expect(player.queue.first.coverPath, '/covers/s1.jpg',
+          reason: '队列面板当前行同样应保留新封面');
+
+      // 基座续播段里的歌刷新后同样不能被旧快照回退（s3 来自融合基座）。
+      player.refreshSongMeta(player.queue[2].copyWith(
+          coverPath: '/covers/s3.jpg'));
+      expect(player.playNext(_song('s7')), isTrue);
+      expect(player.queue[2].sourceRef, 's3');
+      expect(player.queue[2].coverPath, '/covers/s3.jpg',
+          reason: '融合基座快照也必须随元数据刷新');
+    });
   });
 
   group('复本定位（只亮新播行）', () {
