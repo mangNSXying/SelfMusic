@@ -181,6 +181,10 @@ class AppSettings {
   /// `fLaC` 在 offset 0，带前置 ID3v2 的文件（部分老工具写入）会读空、却已标已读。
   static const String kFlacId3PrefixMetaV1Done = 'flac_id3_prefix_meta_v1_done';
 
+  /// m4a 头部 moov 标签补读是否已回填过（一次性，本机标记）：旧版只认文件尾
+  /// moov，moov 在文件头且大于首采的文件会读空、却已标已读。
+  static const String kM4aHeadMoovMetaV1Done = 'm4a_head_moov_meta_v1_done';
+
   /// 存量封面缩略图是否已补齐（一次性，本机标记）：老版本只存全尺寸原图，
   /// 列表解码大图是滑动卡顿来源；补齐后新增封面走补读即时生成，无需再扫。
   static const String kCoverThumbsV1Done = 'cover_thumbs_v1_done';
@@ -490,6 +494,12 @@ class AppSettings {
       (index.settingsGet(kFlacId3PrefixMetaV1Done) ?? '0') == '1';
   set flacId3PrefixMetaV1Done(bool v) =>
       index.settingsSet(kFlacId3PrefixMetaV1Done, v ? '1' : '0');
+
+  /// m4a 头部 moov 标签回填补读标记（一次性，本机）；见 direct_source_manager。
+  bool get m4aHeadMoovMetaV1Done =>
+      (index.settingsGet(kM4aHeadMoovMetaV1Done) ?? '0') == '1';
+  set m4aHeadMoovMetaV1Done(bool v) =>
+      index.settingsSet(kM4aHeadMoovMetaV1Done, v ? '1' : '0');
 
   /// 存量封面缩略图补齐标记（一次性，本机）；见 direct_source_manager.init。
   bool get coverThumbsV1Done =>

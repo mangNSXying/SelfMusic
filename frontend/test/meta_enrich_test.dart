@@ -304,6 +304,54 @@ void main() {
     dir.deleteSync(recursive: true);
   });
 
+  test('m4a 头部 moov 回填一次性重置：已读但无歌手的 m4a 回到未读，其它格式不动', () async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    final dir = await Directory.systemTemp.createTemp('selfmusic_m4a_reenrich_');
+    PathProviderPlatform.instance = _FakePathProvider(dir.path);
+    final index = LocalIndex();
+    await index.open();
+
+    await index.upsertSongs([
+      DirectSongRow(
+        sourceKey: 'webdav:t',
+        ref: 'broken.m4a',
+        title: '应徵爱',
+        format: 'm4a',
+        duration: 100,
+        size: 1,
+        mtime: 1,
+      ),
+      DirectSongRow(
+        sourceKey: 'webdav:t',
+        ref: 'ok.m4a',
+        title: '有歌手',
+        artist: '陶喆',
+        format: 'm4a',
+        duration: 100,
+        size: 1,
+        mtime: 2,
+      ),
+      DirectSongRow(
+        sourceKey: 'webdav:t',
+        ref: 'no_artist.flac',
+        title: '非 m4a',
+        format: 'flac',
+        duration: 100,
+        size: 1,
+        mtime: 3,
+      ),
+    ]);
+    expect(index.unreadSongs('webdav:t', 10), isEmpty);
+
+    final reset = await index.resetMetaReadForM4aHeadMoov();
+    expect(reset, 1);
+    final unread = index.unreadSongs('webdav:t', 10);
+    expect(unread.map((s) => s.sourceRef), ['broken.m4a']);
+
+    index.close();
+    dir.deleteSync(recursive: true);
+  });
+
   test('元数据回填一次性重置：已读但无歌手的行回到未读（仅限指定直连源）', () async {
     open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
     final dir = await Directory.systemTemp.createTemp('selfmusic_meta_reenrich_');

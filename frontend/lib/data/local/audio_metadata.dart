@@ -147,6 +147,9 @@ int? coverReadHint(Uint8List head, String format) {
     case 'oga':
     case 'opus':
       return _oggCoverReadHint(head);
+    case 'm4a':
+    case 'mp4':
+      return _mp4CoverReadHint(head);
     default:
       return null;
   }
@@ -1248,13 +1251,23 @@ class _Mp4Box {
   final int offset; // 盒起始（含 size/type 头）
   final int size; // 整盒长度
   final int header; // 头长度（8 或 16）
-  const _Mp4Box(this.type, this.offset, this.size, this.header);
+
+  /// 声明长度超出采样边界、被按采样边界截断（仅头部解析可能为 true）。
+  final bool truncated;
+  const _Mp4Box(this.type, this.offset, this.size, this.header,
+      {this.truncated = false});
   int get bodyStart => offset + header;
   int get end => offset + size;
 }
 
 /// 遍历 [start, end) 内的同级盒；遇到越界/不完整即停止（不抛异常）。
-Iterable<_Mp4Box> _mp4Boxes(Uint8List b, int start, int end) sync* {
+///
+/// [clampTruncated]：头部采样被截断时，把**声明长度超出采样边界**的盒按采样
+/// 边界截断后继续（只对 m4a 头部解析启用）。这样 moov 在文件头、自身大于首采
+/// 时，仍能先解析出完整落在采样内的子盒（文本标签/歌词），而不是整盒丢弃。
+/// 尾部扫描保持默认值：必须整盒落在窗口内才可信。
+Iterable<_Mp4Box> _mp4Boxes(Uint8List b, int start, int end,
+    {bool clampTruncated = false}) sync* {
   var i = start;
   while (i + 8 <= end) {
     var size = _be32(b, i);
@@ -1267,10 +1280,41 @@ Iterable<_Mp4Box> _mp4Boxes(Uint8List b, int start, int end) sync* {
     } else if (size == 0) {
       size = end - i;
     }
-    if (size < header || i + size > end) return;
+    if (size < header) return;
+    if (i + size > end) {
+      if (!clampTruncated) return;
+      yield _Mp4Box(type, i, end - i, header, truncated: true);
+      return;
+    }
     yield _Mp4Box(type, i, size, header);
     i += size;
   }
+}
+
+/// m4a/mp4：moov 在头部采样内但未完整 → 返回 moov 声明末尾，供头部阶梯加深。
+/// moov 已完整落在采样内（读全了）、或 moov 不在头部（交给尾部阶梯）时返回
+/// null，不做无意义的放大读取。
+int? _mp4CoverReadHint(Uint8List head) {
+  var i = 0;
+  while (i + 8 <= head.length) {
+    var size = _be32(head, i);
+    final type = String.fromCharCodes(head.sublist(i + 4, i + 8));
+    var header = 8;
+    if (size == 1) {
+      if (i + 16 > head.length) return null;
+      size = _be64(head, i + 8);
+      header = 16;
+    } else if (size == 0) {
+      return null; // 延伸到文件尾：声明长度不可用
+    }
+    if (size < header) return null;
+    if (type == 'moov') {
+      return i + size > head.length ? i + size : null;
+    }
+    if (i + size > head.length) return null; // moov 不在本采样内
+    i += size;
+  }
+  return null;
 }
 
 bool _mp4NeedsMoovTail(Uint8List head) {
@@ -1287,7 +1331,9 @@ bool _mp4NeedsMoovTail(Uint8List head) {
       size = head.length - i;
     }
     if (size < header) return true;
-    if (type == 'moov') return i + size > head.length;
+    // moov 在头部（哪怕大于首采）由头部阶梯 [_mp4CoverReadHint] 加深取回，
+    // 不再走尾部扫描：moov-at-head 在文件尾永远找不到，只会白读 16MB。
+    if (type == 'moov') return false;
     if (i + size > head.length) return true; // 后续盒越界：moov 可能在文件尾
     i += size;
   }
@@ -1296,8 +1342,9 @@ bool _mp4NeedsMoovTail(Uint8List head) {
 
 AudioMeta _parseMp4(Uint8List head, int fileSize) {
   final meta = AudioMeta();
-  for (final box in _mp4Boxes(head, 0, head.length)) {
+  for (final box in _mp4Boxes(head, 0, head.length, clampTruncated: true)) {
     if (box.type == 'moov') {
+      meta.truncatedContainer = box.truncated;
       _parseMp4Moov(head, box.bodyStart, box.end, meta);
       return meta;
     }
@@ -1334,7 +1381,7 @@ AudioMeta? _parseMp4Tail(Uint8List tail, int fileSize) {
 }
 
 void _parseMp4Moov(Uint8List b, int start, int end, AudioMeta meta) {
-  for (final box in _mp4Boxes(b, start, end)) {
+  for (final box in _mp4Boxes(b, start, end, clampTruncated: true)) {
     switch (box.type) {
       case 'mvhd':
         _parseMp4Mvhd(b, box.bodyStart, box.end, meta);
@@ -1369,7 +1416,9 @@ void _parseMp4Mvhd(Uint8List b, int start, int end, AudioMeta meta) {
 }
 
 void _parseMp4Ilst(Uint8List b, int start, int end, AudioMeta meta) {
-  for (final item in _mp4Boxes(b, start, end)) {
+  // 条目盒允许截断（便于继续找后续条目），但 `data` 必须是完整盒才解析：
+  // 采样边界截断的文本/封面会得到半截内容，宁可丢弃也不写入错误标签。
+  for (final item in _mp4Boxes(b, start, end, clampTruncated: true)) {
     for (final data in _mp4Boxes(b, item.bodyStart, item.end)) {
       if (data.type != 'data' || data.bodyStart + 8 > data.end) continue;
       final dataType = _be32(b, data.bodyStart);

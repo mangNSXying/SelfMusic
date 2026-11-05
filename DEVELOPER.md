@@ -631,7 +631,8 @@ abstract class MusicSource {
 
 - **结构化阶梯读（`readAudioMeta`，播放补读与后台补读共用同一函数）**：首段采样（256KB）→ `coverReadHint` 按**文件自己声明的长度**（mp3 的 ID3v2 synchsafe 总长 / flac 元数据块的 24 位块长）给出「读到封面块尾」所需字节数，跳过去再解析。不够就继续阶梯，直到 `coverReadHint` 返回 null（结构上到头）或触到 `kMetaRegionCapBytes` = 16MB。歌词（USLT / LYRICS）与长文本帧同在整段标签内，随阶梯一并补全
 - **两条补读驱动**：(1) **结构跳**——按声明长度精确落点；(2) **几何放大（×4）**——结构上算不出落点时。典型是 FLAC 的 `PICTURE` 排在 `VORBIS_COMMENT` 之前：读完封面块标题还在更后面；ogg/opus 的段表在读完段表之后才知道 payload 落在哪，采样截断时同样只能放大
-- **`coverReadHint` 返回 null = 结构上到头**，此时不再放大：mp3 标签读完 / flac 块列表走到 last 块 / ogg comment 包完整 / 无结构可循的格式（m4a 的 moov 在文件尾，走尾部阶梯，不在头部放大到上限）
+- **`coverReadHint` 返回 null = 结构上到头**，此时不再放大：mp3 标签读完 / flac 块列表走到 last 块 / ogg comment 包完整 / m4a 的 moov 已完整落在采样内或根本不在头部（后者走尾部阶梯）
+- **m4a 的 moov 位置**：moov 可能在文件头（导入的 ALAC/M4A 常见，标签与高清封面都在 moov），旧实现只按「文件尾 moov」处理，首采截断后整首读空。现在头部解析允许截断盒继续解析已完整的子盒（先拿文本标签/歌词，截断的封面丢弃），`coverReadHint` 在 moov 未完整落在采样内时返回其**声明末尾**，头部阶梯据此补读到封面；`_mp4NeedsMoovTail` 只在 moov 不在头部时才启用尾扫。已标已读但 `artist` 为空的 m4a 行由一次性迁移（`kM4aHeadMoovMetaV1Done`，设备本地标记）重置重读
 - **绝不整读**：没有「采样不足就从 0 读到 fileSize」的退路（旧实现有 `fullRead`，在后台逐首补读链路上为拿几个标签把几十上百 MB 整首下下来，且命中的恰恰是大文件）。单次读取上限 `kMetaRegionCapBytes` = 16MB，是**声明值**的合理性边界，不是文件大小上限
 - **尾部补读 `tailReadHint`**：moov-at-end 的 m4a（按 256KB→1MB→4MB 逐级放大，上限同上）、ogg/opus 时长（取末页 granule）、无 ID3v2 的 mp3 ID3v1（取尾 128B）、**wav/aiff 的尾随 `id3 ` 块**（见下）
 - **wav / aiff / aifc（RIFF/FORM 容器）**：这两种容器没有官方标签规范，工具把 ID3v2 塞进一个 `id3 ` 块（RIFF/FORM 块 id 是 4 字节 ASCII，wav 块长小端、FORM 块长大端），位置也不固定（ffmpeg `-write_id3v2 1` 写在音频块**之后**）。`tailReadHint` 按音频块（`data`/`SSND`）**声明的长度**跳过音频，算出后面元数据区的长度并一次读准，不碰音频数据；尾读窗口解析 `id3 `（复用 mp3 那套 ID3v2 帧/APIC 解析）与 `LIST INFO`。老设备常把 RIFF 总长或 `data` 声明写错，块列表对不上时兜底在窗口内扫 `id3 ` 标记并按 ID3v2 头自己声明的长度严格校验，避免把音频数据里巧合的字节误当标签。aiff 另解析 `COMM` 的采样帧数与 80 位扩展浮点采样率算时长，`NAME`/`AUTH` 兜底标题/歌手
