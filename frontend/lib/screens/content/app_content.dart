@@ -12,7 +12,7 @@ import '../../widgets/content_stack.dart';
 import '../../widgets/page_transition.dart';
 import '../about_screen.dart';
 import '../library_info_screen.dart';
-import '../settings_screen.dart';
+import '../settings/settings_screen.dart';
 import '../source_browse_view.dart';
 import '../playlists_view.dart';
 import 'detail_pages.dart';

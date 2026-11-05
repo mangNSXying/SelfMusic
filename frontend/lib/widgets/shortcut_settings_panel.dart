@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../screens/shortcut_scope_screen.dart';
+import '../screens/settings/shortcut_scope_screen.dart';
 import '../shortcuts/shortcut_models.dart';
 import '../shortcuts/shortcut_settings.dart';
 

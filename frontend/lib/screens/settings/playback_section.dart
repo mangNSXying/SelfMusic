@@ -1,0 +1,656 @@
+import 'package:flutter/material.dart';
+
+import 'package:flutter/services.dart';
+
+import 'package:provider/provider.dart';
+
+import '../../data/local/app_settings.dart';
+import '../../platform/harmonyos/ohos_bootstrap.dart';
+import '../../providers/direct_source_manager.dart';
+import '../../providers/player_provider.dart';
+import '../../services/bluetooth_service.dart';
+import '../../services/equalizer/equalizer_service.dart';
+import '../../services/equalizer/equalizer_types.dart';
+import '../../widgets/app_dialog_actions.dart';
+import '../../widgets/app_toast.dart';
+import '../../widgets/app_volume_control.dart';
+import '../../widgets/eq_curve_editor.dart';
+import 'notifications_section.dart';
+
+/// 播放设置（settings.md §3.2）：默认播放模式 / 加权随机开关与削峰（次数·曲数冷却）/
+/// 断点续播 / 淡入淡出 / 均衡器。
+class PlaybackSection extends StatefulWidget {
+  const PlaybackSection();
+  @override
+  State<PlaybackSection> createState() => _PlaybackSettingsState();
+}
+
+class _PlaybackSettingsState extends State<PlaybackSection> {
+  late AppSettings _settings;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _settings = context.read<DirectSourceManager>().settings;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final current = PlayModeParse.fromStored(_settings.playModeDefault);
+    final eqBands = _settings.eqBands;
+    final eqPreampDb = _settings.eqPreampDb;
+
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('播放',
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        ListTile(
+          leading: const Icon(Icons.playlist_play),
+          title: const Text('默认播放模式'),
+          subtitle: Text(_modeSubtitle(current)),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _pickMode(context, current),
+        ),
+        SwitchListTile(
+          title: const Text('加权随机'),
+          subtitle: const Text('关闭后为普通随机：按深层列表不放回抽取，一轮内不重复，播完自动换轮'),
+          value: _settings.weightedRandomEnabled,
+          onChanged: (v) {
+            setState(() => _settings.weightedRandomEnabled = v);
+            context.read<PlayerProvider>().onRandomAlgorithmChanged();
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.waves),
+          title: const Text('加权随机·次数冷却'),
+          subtitle: Text(_drawCooldownSummary(_settings.weightedDrawCooldown)),
+          trailing: const Icon(Icons.chevron_right),
+          enabled: _settings.weightedRandomEnabled,
+          onTap: _settings.weightedRandomEnabled ? _pickDrawCooldown : null,
+        ),
+        ListTile(
+          leading: const Icon(Icons.timeline),
+          title: const Text('加权随机·曲数冷却'),
+          subtitle:
+              Text(_countCooldownSummary(_settings.weightedCountCooldownRatio)),
+          trailing: const Icon(Icons.chevron_right),
+          enabled: _settings.weightedRandomEnabled,
+          onTap: _settings.weightedRandomEnabled ? _editCountCooldown : null,
+        ),
+        SwitchListTile(
+          title: const Text('断点续播自动恢复'),
+          subtitle: const Text('启动时恢复上次队列与位置（恢复为暂停态，不自动播放）'),
+          value: _settings.resumeOnStartup,
+          onChanged: (v) => setState(() => _settings.resumeOnStartup = v),
+        ),
+        SwitchListTile(
+          title: const Text('预载下一首'),
+          subtitle: const Text('确定下一首后进行预载'),
+          value: _settings.preloadNext,
+          onChanged: (v) => setState(() => _settings.preloadNext = v),
+        ),
+        SwitchListTile(
+          title: const Text('备用源自动补歌'),
+          subtitle: const Text('主源播放成功后，把当前曲复制到缺失该歌的备用源（需备用读写权限）'),
+          value: _settings.fallbackAutoRepair,
+          onChanged: (v) => setState(() => _settings.fallbackAutoRepair = v),
+        ),
+        SwitchListTile(
+          title: const Text('睡眠定时默认播完最后曲目'),
+          subtitle: const Text('到点不中断当前歌曲，放完这曲再暂停（弹窗内可单独调整）'),
+          value: _settings.sleepPlayThroughDefault,
+          onChanged: (v) =>
+              setState(() => _settings.sleepPlayThroughDefault = v),
+        ),
+        ListTile(
+          leading: const Icon(Icons.lyrics_outlined),
+          title: const Text('歌词追焦等待'),
+          subtitle:
+              Text('拖动歌词后 ${_settings.lyricFocusIdleSec} 秒无操作恢复自动追焦并回中当前行'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _pickLyricIdle(context),
+        ),
+        SwitchListTile(
+          title: const Text('播放页屏幕常亮'),
+          subtitle: const Text('打开播放页期间不熄屏；可限定仅在指定蓝牙设备连接时生效'),
+          value: _settings.playerKeepScreenOn,
+          onChanged: (v) => setState(() => _settings.playerKeepScreenOn = v),
+        ),
+        if (_settings.playerKeepScreenOn)
+          ListTile(
+            leading: const Icon(Icons.bluetooth),
+            title: const Text('常亮限定蓝牙设备'),
+            subtitle: Text(_keepAwakeDeviceLabel()),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: _pickKeepAwakeDevice,
+          ),
+        const Divider(height: 32),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('音效',
+              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
+        ),
+        SwitchListTile(
+          title: const Text('淡入淡出'),
+          subtitle: Text(
+              '播放淡入、暂停淡出${_settings.fadeEnabled ? '，时长 ${(_settings.fadeDurationMs / 1000).toStringAsFixed(1)}s' : ''}'),
+          value: _settings.fadeEnabled,
+          onChanged: (v) => setState(() => _settings.fadeEnabled = v),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(left: 16, right: 16, top: 4),
+          child: Row(
+            children: [
+              const Text('时长', style: TextStyle(fontSize: 13)),
+              Expanded(
+                child: Slider(
+                  key: const ValueKey('fade-duration-slider'),
+                  // 有效域 [500, 2000]ms（读取已钳制）：0.5~2.0s、0.1s 步进
+                  //（divisions 15，16 档），标签一位小数实时预览。
+                  value: (_settings.fadeDurationMs / 1000).clamp(0.5, 2.0),
+                  min: 0.5,
+                  max: 2.0,
+                  divisions: 15,
+                  label:
+                      '${(_settings.fadeDurationMs / 1000).toStringAsFixed(1)} 秒',
+                  onChanged: (v) => setState(
+                      () => _settings.fadeDurationMs = (v * 1000).round()),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 24),
+        const ListTile(
+          leading: Icon(Icons.volume_up),
+          title: Text('应用内音量'),
+          subtitle: Text('独立于系统音量的软件增益；0% 静音但播放继续'),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(left: 16, right: 16),
+          child: Row(
+            children: [
+              IconButton(
+                tooltip: _settings.appVolume == 0 ? '取消静音' : '静音',
+                icon: AppVolumeIcon(volume: _settings.appVolume),
+                onPressed: () {
+                  setState(() =>
+                      context.read<PlayerProvider>().toggleAppVolumeMute());
+                },
+              ),
+              Expanded(
+                child: Slider(
+                  key: const ValueKey('app-volume-slider'),
+                  value: _settings.appVolume.toDouble(),
+                  min: 0,
+                  max: 100,
+                  divisions: 100,
+                  label: '${_settings.appVolume}%',
+                  onChanged: (v) {
+                    setState(() {
+                      context.read<PlayerProvider>().setAppVolume(v.round());
+                    });
+                  },
+                ),
+              ),
+              SizedBox(
+                width: 44,
+                child: Text(
+                  '${_settings.appVolume}%',
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 24),
+        _buildEqualizer(context, eqBands, eqPreampDb),
+        const Divider(height: 24),
+        SwitchListTile(
+          title: const Text('自动暂停/恢复'),
+          subtitle: const Text('通话等音频焦点抢占时自动暂停，结束后恢复（安卓/鸿蒙生效）'),
+          value: _settings.audioFocusEnabled,
+          onChanged: (v) {
+            setState(() => _settings.audioFocusEnabled = v);
+            context.read<PlayerProvider>().applyAudioConfig();
+          },
+        ),
+        SwitchListTile(
+          title: const Text('静音暂停'),
+          subtitle: const Text('媒体音量归零时自动暂停（安卓/鸿蒙生效）'),
+          value: _settings.pauseOnZeroVolume,
+          onChanged: (v) {
+            setState(() => _settings.pauseOnZeroVolume = v);
+            context.read<PlayerProvider>().refreshPlaybackGuard();
+          },
+        ),
+        SwitchListTile(
+          title: const Text('断连暂停'),
+          subtitle: const Text('当前播放设备（如蓝牙音箱）断开时自动暂停（安卓/鸿蒙生效）'),
+          value: _settings.pauseOnDeviceDisconnect,
+          onChanged: (v) {
+            setState(() => _settings.pauseOnDeviceDisconnect = v);
+            context.read<PlayerProvider>().refreshPlaybackGuard();
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEqualizer(
+    BuildContext context,
+    List<double> eqBands,
+    double eqPreampDb,
+  ) {
+    final supported = EqualizerService.supportedOnThisPlatform;
+    final enabled = supported && _settings.equalizerEnabled;
+    if (!supported) {
+      return SwitchListTile(
+        title: const Text('均衡器'),
+        subtitle: Text(EqualizerService.unsupportedNote),
+        value: false,
+        onChanged: null,
+      );
+    }
+    final switchTile = SwitchListTile(
+      title: const Text('均衡器'),
+      subtitle: Text(enabled
+          ? '10 段频段增益（Android / Windows / Linux）'
+          : '10 段频段增益；开启后按平台生效'),
+      value: enabled,
+      onChanged: (v) {
+        context.read<PlayerProvider>().setEqualizerEnabled(v);
+        setState(() {});
+      },
+    );
+    if (!enabled) return switchTile;
+    final player = context.read<PlayerProvider>();
+    return Column(
+      children: [
+        switchTile,
+        ValueListenableBuilder<EqualizerCapabilities?>(
+          valueListenable: player.equalizerCapabilities,
+          builder: (context, caps, _) {
+            return Column(
+              children: [
+                if (caps?.note != null) _eqNote(caps!.note!),
+                _buildEqControls(context, eqBands, eqPreampDb),
+              ],
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _eqNote(String text) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline, size: 16, color: cs.primary),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEqControls(
+    BuildContext context,
+    List<double> eqBands,
+    double eqPreampDb,
+  ) {
+    final cs = Theme.of(context).colorScheme;
+    final preset = matchingEqPreset(eqBands);
+    final player = context.read<PlayerProvider>();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 2),
+          child: Row(
+            children: [
+              Text('预设',
+                  style: TextStyle(
+                      fontSize: 13,
+                      color: cs.onSurfaceVariant,
+                      fontWeight: FontWeight.w600)),
+              const SizedBox(width: 10),
+              if (preset == null)
+                Text('自定义', style: TextStyle(fontSize: 12, color: cs.primary)),
+              const Spacer(),
+              TextButton(
+                onPressed: () {
+                  player.setEqPreset(kDefaultEqBands);
+                  player.setEqPreamp(0);
+                  setState(() {});
+                },
+                child: const Text('重置'),
+              ),
+            ],
+          ),
+        ),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              for (final p in kEqPresets)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ChoiceChip(
+                    label: Text(p.name),
+                    selected: preset?.name == p.name,
+                    onSelected: (_) {
+                      player.setEqPreset(p.gains);
+                      setState(() {});
+                    },
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          child: EqCurveEditor(
+            key: const ValueKey('eq-curve'),
+            gains: eqBands,
+            onChanged: (i, db) {
+              player.setEqBand(i, db);
+              setState(() {});
+            },
+            onCommit: player.flushEqualizer,
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+          child: Row(
+            children: [
+              const Icon(Icons.tune, size: 18),
+              const SizedBox(width: 8),
+              const Text('前级', style: TextStyle(fontSize: 13)),
+              Expanded(
+                child: Slider(
+                  key: const ValueKey('eq-preamp-slider'),
+                  value: eqPreampDb.clamp(kEqPreampMinDb, kEqPreampMaxDb),
+                  min: kEqPreampMinDb,
+                  max: kEqPreampMaxDb,
+                  divisions: 24,
+                  label: '${eqPreampDb.toStringAsFixed(1)} dB',
+                  onChanged: (v) {
+                    player.setEqPreamp(v);
+                    setState(() {});
+                  },
+                  onChangeEnd: (_) => player.flushEqualizer(),
+                ),
+              ),
+              SizedBox(
+                width: 60,
+                child: Text(
+                  '${eqPreampDb.toStringAsFixed(1)} dB',
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+          child: Text(
+            '前级衰减用于抵消正增益叠加造成的削波，默认 0 dB',
+            style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+          ),
+        ),
+        ExpansionTile(
+          key: const ValueKey('eq-band-sliders'),
+          title: const Text('逐段微调', style: TextStyle(fontSize: 14)),
+          tilePadding: const EdgeInsets.symmetric(horizontal: 16),
+          childrenPadding: const EdgeInsets.only(bottom: 8),
+          children: [
+            for (var i = 0; i < kEqBandCount; i++)
+              Padding(
+                padding: const EdgeInsets.only(left: 16, right: 16),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 48,
+                      child: Text(kEqFrequencyLabels[i],
+                          style: const TextStyle(fontSize: 12)),
+                    ),
+                    Expanded(
+                      child: Slider(
+                        key: ValueKey('eq-band-$i'),
+                        value: eqBands[i].clamp(kEqMinDb, kEqMaxDb),
+                        min: kEqMinDb,
+                        max: kEqMaxDb,
+                        divisions: 240,
+                        label: '${eqBands[i].toStringAsFixed(1)} dB',
+                        onChanged: (v) {
+                          player.setEqBand(i, v);
+                          setState(() {});
+                        },
+                        onChangeEnd: (_) => player.flushEqualizer(),
+                      ),
+                    ),
+                    SizedBox(
+                      width: 48,
+                      child: Text(
+                        '${eqBands[i] >= 0 ? '+' : ''}${eqBands[i].toStringAsFixed(1)}',
+                        textAlign: TextAlign.right,
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> _pickMode(BuildContext context, PlayMode current) async {
+    final picked = await showDialog<PlayMode>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: const Text('默认播放模式'),
+        children: [
+          RadioGroup<PlayMode>(
+            groupValue: current,
+            onChanged: (v) {
+              if (v != null) Navigator.of(c).pop(v);
+            },
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final m in PlayMode.values)
+                  RadioListTile<PlayMode>(
+                    title: Text(_modeLabel(m)),
+                    value: m,
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+    if (picked == null || picked == current || !context.mounted) return;
+    setState(() => _settings.playModeDefault = picked.name);
+    context.read<PlayerProvider>().setMode(picked);
+  }
+
+  static String _modeLabel(PlayMode m) => switch (m) {
+        PlayMode.sequence => '顺序播放',
+        PlayMode.loopList => '列表循环',
+        PlayMode.loopOne => '单曲循环',
+        PlayMode.weighted => '随机播放',
+      };
+
+  String _modeSubtitle(PlayMode m) {
+    if (m != PlayMode.weighted) return _modeLabel(m);
+    return _settings.weightedRandomEnabled ? '随机播放 · 加权' : '随机播放 · 普通（不放回）';
+  }
+
+  static String _drawCooldownSummary(WeightedDrawCooldown cd) => cd ==
+          WeightedDrawCooldown.off
+      ? '关（不启用次数冷却）'
+      : '${cd.label}（factor>1.0 抛弃 ${cd.highLimit} 次 / 其余抛弃 ${cd.lowLimit} 次）';
+
+  static String _countCooldownSummary(double ratio) => ratio <= 0
+      ? '关（不启用曲数冷却）'
+      : '列表长度 × ${(ratio * 100).toStringAsFixed(0)}%（窗口内不参与随机）';
+
+  Future<void> _pickDrawCooldown() async {
+    final current = _settings.weightedDrawCooldown;
+    final picked = await showDialog<WeightedDrawCooldown>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: const Text('加权随机·次数冷却'),
+        children: [
+          RadioGroup<WeightedDrawCooldown>(
+            groupValue: current,
+            onChanged: (v) {
+              if (v != null) Navigator.of(c).pop(v);
+            },
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final cd in WeightedDrawCooldown.values)
+                  RadioListTile<WeightedDrawCooldown>(
+                    title: Text(cd.label),
+                    subtitle: Text(_drawCooldownSummary(cd)),
+                    value: cd,
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+    if (picked == null || picked == current || !mounted) return;
+    setState(() => _settings.weightedDrawCooldown = picked);
+  }
+
+  Future<void> _editCountCooldown() async {
+    final current = _settings.weightedCountCooldownRatio;
+    final controller = TextEditingController(text: current.toStringAsFixed(2));
+    final result = await showDialog<double>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('加权随机·曲数冷却比例'),
+        content: TextField(
+          controller: controller,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          inputFormatters: [
+            FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+          ],
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '0 ~ 1.00',
+            helperText: '播放历史末尾「列表长度 × 比例」内的歌不参与随机；0=关闭',
+          ),
+        ),
+        actions: appDialogActions(
+          c,
+          confirmLabel: '确定',
+          onCancel: () => Navigator.of(c).pop(),
+          onConfirm: () =>
+              Navigator.of(c).pop(double.tryParse(controller.text) ?? current),
+        ),
+      ),
+    );
+    if (result == null || !mounted) return;
+    setState(() => _settings.weightedCountCooldownRatio = result);
+  }
+
+  /// 常亮限定设备展示名（未限定=全局常亮）。
+  String _keepAwakeDeviceLabel() {
+    final ds = btDevicesFromSetting(_settings.keepScreenOnDevice);
+    if (ds.isEmpty) return '不限定（打开播放页即常亮）';
+    if (ds.length == 1) return '${ds.first.name}（仅连接时生效）';
+    return '${ds.map((d) => d.name).join('、')}（任一连接时生效）';
+  }
+
+  Future<void> _pickKeepAwakeDevice() async {
+    final svc = BluetoothService();
+    final granted = await svc.ensurePermission();
+    if (!mounted) return;
+    if (!granted) {
+      // ohos 两次拒绝后系统弹窗不再出现，只能去系统设置手动开启
+      // （ArkTS 三段式已含设置弹框兜底，仍被拒即引导）。
+      AppToast.show(
+          isOhos
+              ? '未授予蓝牙权限，可在 设置 > 应用和元服务 > SelfMusic 中开启'
+              : '未授予蓝牙权限，无法读取已配对设备',
+          isError: true);
+      return;
+    }
+    final devices = await svc.bondedDevices();
+    if (!mounted) return;
+    if (devices.isEmpty) {
+      AppToast.show('未找到已配对设备（请先在系统设置中配对）', isError: true);
+      return;
+    }
+    if (isOhos) {
+      // 2026-10-06 曾加「endOfFrame + 150ms」延迟规避「只出遮罩无内容」，
+      // 2026-10-07 VM service 取证证伪该假设（延迟后仍复现；真因在对话框
+      // 内容结构，见 KeepAwakeDeviceDialog），故移除。
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return;
+    }
+    final selected = {
+      for (final d in btDevicesFromSetting(_settings.keepScreenOnDevice))
+        d.address
+    };
+    final picked = await showDialog<List<BtDevice>>(
+      context: context,
+      builder: (c) =>
+          KeepAwakeDeviceDialog(devices: devices, selected: selected),
+    );
+    if (picked == null || !mounted) return;
+    setState(() => _settings.keepScreenOnDevice = btDevicesToSetting(picked));
+  }
+
+  Future<void> _pickLyricIdle(BuildContext context) async {
+    final current = _settings.lyricFocusIdleSec;
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: const Text('歌词追焦等待'),
+        children: [
+          RadioGroup<int>(
+            groupValue: current,
+            onChanged: (v) {
+              if (v != null) Navigator.of(c).pop(v);
+            },
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final s in AppSettings.lyricFocusIdleOptions)
+                  RadioListTile<int>(title: Text('$s 秒'), value: s),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+    if (picked == null || picked == current || !context.mounted) return;
+    setState(() => _settings.lyricFocusIdleSec = picked);
+  }
+}

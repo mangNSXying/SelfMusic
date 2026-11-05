@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../services/api_client.dart';
-import '../widgets/app_dialog_actions.dart';
-import '../widgets/app_toast.dart';
-import '../widgets/context_menu.dart';
+import '../../services/api_client.dart';
+import '../../widgets/app_dialog_actions.dart';
+import '../../widgets/app_toast.dart';
+import '../../widgets/context_menu.dart';
 
 /// 已配对设备管理（阶段5）：列表 / 改名 / 吊销（调 `DeviceAdminController`）。
 /// 当前设备按配对时下发的 client_id 高亮。
@@ -75,7 +75,9 @@ class _DevicesScreenState extends State<DevicesScreen> {
     ctrl.dispose();
     if (name == null || name.isEmpty || !mounted) return;
     try {
-      await context.read<ApiClient>().renameDevice((d['id'] as num).toInt(), name);
+      await context
+          .read<ApiClient>()
+          .renameDevice((d['id'] as num).toInt(), name);
       await _load();
     } catch (e) {
       if (!mounted) return;
