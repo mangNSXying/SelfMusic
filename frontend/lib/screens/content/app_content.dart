@@ -13,7 +13,7 @@ import '../../widgets/page_transition.dart';
 import '../about_screen.dart';
 import '../library_info_screen.dart';
 import '../settings/settings_screen.dart';
-import '../source_browse_view.dart';
+import '../sources/source_browse_view.dart';
 import '../playlists_view.dart';
 import 'detail_pages.dart';
 import 'section_pager.dart';
