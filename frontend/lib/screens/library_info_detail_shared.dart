@@ -2,14 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../layout/screen_metrics.dart';
+
 /// 歌曲信息详情页共用：宽窄断点、单元格样式、异步装载。
 ///
-/// 断点复用侧边栏规则（`NavigationProviderHelper.isNarrow` 取反）：
-/// 宽度 >= 900 或横屏（宽 > 高）即宽屏，其余为窄屏。
-bool isWideDetail(BuildContext context) {
-  final size = MediaQuery.sizeOf(context);
-  return size.width >= 900 || size.width > size.height;
-}
+/// 断点复用统一判屏口径（[isWideWindow]）。
+bool isWideDetail(BuildContext context) =>
+    isWideWindow(MediaQuery.sizeOf(context));
 
 /// 详情页全量数据的异步装载器（入场不冻帧）。
 ///

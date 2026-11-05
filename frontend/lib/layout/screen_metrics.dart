@@ -37,6 +37,12 @@ double splitListWidth(double contentWidth) =>
         .clamp(kSplitListMinWidth, kSplitListMaxWidth)
         .toDouble();
 
+/// 宽屏判定唯一口径：宽 ≥900，或横屏（宽 > 高）。
+///
+/// AppShell、Sidebar、队列面板、歌曲信息页共用，避免各处各写一份。
+bool isWideWindow(Size size) =>
+    size.width >= 900 || size.width > size.height;
+
 /// 判屏口径。
 ///
 /// - [isWide]：与 `AppShell.isWide` 同口径（宽 ≥900 或任意横屏）；
@@ -57,8 +63,7 @@ class ScreenMetrics extends InheritedWidget {
   /// 内容区可用宽度（已扣掉侧边栏与队列面板的**目标**宽度）。
   final double contentWidth;
 
-  bool get isWide =>
-      windowSize.width >= 900 || windowSize.width > windowSize.height;
+  bool get isWide => isWideWindow(windowSize);
 
   bool get isLandscape => windowSize.width > windowSize.height;
 

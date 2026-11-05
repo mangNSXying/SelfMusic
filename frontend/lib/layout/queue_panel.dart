@@ -6,6 +6,7 @@ import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../widgets/count_header.dart';
+import 'screen_metrics.dart';
 import '../widgets/draggable_sheet.dart';
 import '../widgets/row_list.dart';
 import '../widgets/song_list.dart';
@@ -25,8 +26,7 @@ const double kQueuePanelWidth = 360;
 /// 宽屏判定与 AppShell.isWide 一致（queue_panel 不导入 app_shell 避免循环依赖）。
 void toggleQueuePanel(BuildContext context) {
   final nav = context.read<NavigationProvider>();
-  final size = MediaQuery.sizeOf(context);
-  final wide = size.width >= 900 || size.width > size.height;
+  final wide = isWideWindow(MediaQuery.sizeOf(context));
   if (!wide) {
     // 窄屏：统一拖拽式窗口（点击启动）。窗口在栈上时入口不可点，不会重复
     // 推入（AppSheetLauncher 另有 isShowing 兜底）。

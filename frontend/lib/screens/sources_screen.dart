@@ -12,7 +12,7 @@ import '../data/sources/sftp_direct_source.dart';
 import '../data/sources/smb_common.dart';
 import '../data/sources/smb_direct_source.dart';
 import '../data/sources/webdav_direct_source.dart';
-import '../layout/detail_target.dart';
+import '../navigation/detail_target.dart';
 import '../layout/screen_metrics.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart';
 import '../platform/harmonyos/ohos_platform_bridge.dart';

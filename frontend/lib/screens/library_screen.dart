@@ -11,7 +11,7 @@ import '../providers/direct_source_manager.dart';
 import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
 import '../layout/app_shell.dart';
-import '../layout/detail_target.dart';
+import '../navigation/detail_target.dart';
 import '../layout/screen_metrics.dart';
 import '../models/song.dart';
 import '../models/album.dart';
