@@ -110,7 +110,7 @@ class _TraySectionState extends State<TraySection> {
           subtitle: Text(!available
               ? '当前桌面未提供托盘支持，关闭窗口仍会退出软件'
               : enabled
-                  ? '关闭主窗口后继续后台播放；托盘菜单可恢复窗口或退出'
+                  ? '关闭主窗口后继续后台播放；托盘菜单可恢复窗口、控制播放或退出'
                   : '关闭主窗口即退出软件'),
           value: enabled,
           onChanged: available

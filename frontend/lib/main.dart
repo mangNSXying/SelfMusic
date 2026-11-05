@@ -32,6 +32,7 @@ import 'theme/theme_provider.dart';
 import 'theme/app_theme.dart';
 import 'screens/content/app_content.dart';
 import 'screens/player/player_screen.dart';
+import 'screens/sources/source_dialog/source_dialog.dart';
 import 'layout/app_shell.dart';
 import 'layout/screen_metrics.dart';
 import 'widgets/app_dialog_actions.dart';
@@ -408,7 +409,8 @@ class SelfMusicApp extends StatelessWidget {
           create: (_) {
             final p = PlaylistsProvider(direct.playlists);
             // 单曲硬删后增量刷新受影响歌单的计数（与同步回调同一收口）。
-            direct.onPlaylistsChanged = (uuids) => p.refresh(changedUuids: uuids);
+            direct.onPlaylistsChanged =
+                (uuids) => p.refresh(changedUuids: uuids);
             return p;
           },
         ),
@@ -462,6 +464,7 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
   late final AppSheetLauncher _sheetLauncher;
   late final NavigationProvider _nav;
   late final SyncEngine _syncEngine;
+  PlayerProvider? _trayPlayer;
 
   /// 交互门控：播放页浮层跟手/吸附进行中标记为「交互中」。
   InteractionGate? _gate;
@@ -548,6 +551,10 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
     // 断点而非「未在播放」占位；音频装载/seek 在后台异步继续。
     final direct = context.read<DirectSourceManager>();
     final player = context.read<PlayerProvider>();
+    // 桌面托盘菜单：播放控制、添加歌曲、打开设置。绑定在根组件里，托盘
+    // 平台层只持回调，不反向依赖 Provider。
+    _trayPlayer = player;
+    _bindDesktopTray();
     final Future<void> restoreFuture;
     if (direct.settings.resumeOnStartup) {
       restoreFuture = player.restorePreferRemote();
@@ -588,8 +595,54 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
     });
   }
 
+  /// 绑定桌面托盘菜单（Windows/Linux）。移动端无托盘，直接跳过。
+  void _bindDesktopTray() {
+    if (!DesktopTray.isSupported) return;
+    final tray = DesktopTray.instance;
+    tray.bindPlaybackActions(
+      onToggle: _trayPlayer!.toggle,
+      onPrevious: _trayPlayer!.prev,
+      onNext: _trayPlayer!.next,
+    );
+    tray.bindWindowActions(
+      onAddSongs: _openAddSongsFromTray,
+      onOpenSettings: () async {
+        _nav.openSettings(SettingsItem.general);
+      },
+    );
+    _trayPlayer!.addListener(_syncDesktopTray);
+    _syncDesktopTray();
+  }
+
+  /// 播放状态变化 → 托盘菜单曲名与按钮状态。签名比较在 DesktopTray 内做，
+  /// 播放进度等高频通知不会重复写菜单。
+  void _syncDesktopTray() {
+    final player = _trayPlayer;
+    if (player == null) return;
+    final song = player.current;
+    unawaited(DesktopTray.instance.updatePlaybackState(
+      hasCurrent: song != null,
+      playing: player.playing,
+      title: song == null ? null : player.displayTitle(song),
+      artist: song?.artist,
+    ));
+  }
+
+  /// 托盘「添加歌曲」：恢复窗口后打开播放源页，并直接弹出添加播放源对话框。
+  /// 本地文件夹 / SMB / WebDAV / SFTP 都从这里加入，加入后自动扫描入库。
+  Future<void> _openAddSongsFromTray() async {
+    if (!mounted) return;
+    _nav.select(NavSection.sources);
+    await showDialog<void>(
+      context: context,
+      builder: (_) => const SourceDialog(),
+    );
+  }
+
   @override
   void dispose() {
+    _trayPlayer?.removeListener(_syncDesktopTray);
+    DesktopTray.instance.clearActions();
     _nav.removeListener(_syncPlayerSheet);
     _nav.playerProgress.removeListener(_onPlayerProgress);
     _syncEngine.onPlaylistsApplied = null;
