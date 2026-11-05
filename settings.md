@@ -27,7 +27,7 @@
 
 > 设计原则：**单设备体验优先**——客户端设置完全本地闭环、离线可改；与服务器同名的配置项（缓存上限等）采用「跟随服务端 / 自定义」双来源，见 §3.3 与 §5。
 
-关联代码：`lib/screens/settings_screen.dart`（分区面板）、`lib/data/local/app_settings.dart`（键定义与默认值）、`lib/data/local/local_index.dart`（`settings` 键值表）。
+关联代码：`lib/screens/settings/settings_screen.dart`（分区面板）、`lib/data/local/app_settings.dart`（键定义与默认值）、`lib/data/local/local_index.dart`（`settings` 键值表）。
 
 ---
 
