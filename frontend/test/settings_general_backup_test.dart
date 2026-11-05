@@ -8,7 +8,7 @@ import 'package:provider/provider.dart';
 import 'package:selfmusic/data/local/app_settings.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
-import 'package:selfmusic/screens/settings_screen.dart';
+import 'package:selfmusic/screens/settings/settings_screen.dart';
 import 'package:selfmusic/services/server_settings.dart';
 import 'package:selfmusic/shortcuts/shortcut_settings.dart';
 import 'package:selfmusic/theme/app_theme.dart';

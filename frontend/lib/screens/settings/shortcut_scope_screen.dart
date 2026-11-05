@@ -4,10 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
-import '../shortcuts/shortcut_models.dart';
-import '../shortcuts/shortcut_settings.dart';
-import '../widgets/app_toast.dart';
-import '../widgets/shortcut_recorder_dialog.dart';
+import '../../shortcuts/shortcut_models.dart';
+import '../../shortcuts/shortcut_settings.dart';
+import '../../widgets/app_toast.dart';
+import '../../widgets/shortcut_recorder_dialog.dart';
 
 class ShortcutScopeScreen extends StatelessWidget {
   const ShortcutScopeScreen({super.key, required this.scope});

@@ -11,7 +11,7 @@ import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
-import 'package:selfmusic/screens/settings_screen.dart';
+import 'package:selfmusic/screens/settings/settings_screen.dart';
 import 'package:selfmusic/services/equalizer/equalizer_types.dart';
 import 'package:selfmusic/theme/app_theme.dart';
 import 'package:selfmusic/widgets/eq_curve_editor.dart';

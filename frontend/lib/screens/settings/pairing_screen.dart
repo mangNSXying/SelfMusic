@@ -1,15 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import '../providers/auth_provider.dart';
-import '../providers/direct_source_manager.dart';
-import '../services/api_client.dart';
-import '../services/server_settings.dart';
-import '../utils/platform_info.dart';
-import '../utils/url_input.dart';
-import '../widgets/app_dialog_actions.dart';
-import '../widgets/app_toast.dart';
-import '../widgets/row_action_button.dart';
+import '../../providers/auth_provider.dart';
+import '../../providers/direct_source_manager.dart';
+import '../../services/api_client.dart';
+import '../../services/server_settings.dart';
+import '../../utils/platform_info.dart';
+import '../../utils/url_input.dart';
+import '../../widgets/app_dialog_actions.dart';
+import '../../widgets/app_toast.dart';
+import '../../widgets/row_action_button.dart';
 
 class PairingScreen extends StatefulWidget {
   const PairingScreen({super.key});
@@ -154,9 +154,8 @@ class _PairingScreenState extends State<PairingScreen> {
                         title: const Text('配对密钥'),
                         subtitle: Text(
                           _keySubtitle(),
-                          style: _failed
-                              ? TextStyle(color: scheme.error)
-                              : null,
+                          style:
+                              _failed ? TextStyle(color: scheme.error) : null,
                         ),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
@@ -190,8 +189,8 @@ class _PairingScreenState extends State<PairingScreen> {
                       ),
                       const Divider(height: 1),
                       ListTile(
-                        leading: const Icon(Icons.link_off,
-                            color: Colors.redAccent),
+                        leading:
+                            const Icon(Icons.link_off, color: Colors.redAccent),
                         title: const Text('取消配对',
                             style: TextStyle(color: Colors.redAccent)),
                         onTap: () => _unpair(auth),
@@ -207,43 +206,55 @@ class _PairingScreenState extends State<PairingScreen> {
                         ?.copyWith(fontWeight: FontWeight.w600)),
                 const SizedBox(height: 8),
               ],
-              const Text('输入服务器配对令牌（pairing_token）以完成配对。', style: TextStyle(fontSize: 14)),
-            const SizedBox(height: 16),
-            _ServerAddressCard(),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _tokenCtrl,
-              decoration: const InputDecoration(labelText: 'pairing_token', border: OutlineInputBorder()),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _nameCtrl,
-              decoration: const InputDecoration(labelText: 'device_name', border: OutlineInputBorder()),
-            ),
-            const SizedBox(height: 16),
-            if (auth.error != null)
-              Text(auth.error!, style: const TextStyle(color: Colors.redAccent)),
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                onPressed: auth.loading
-                    ? null
-                    :                     () async {
-                        // 配对前是否已有令牌：有=重新配对（本机可能是旧数据），无=首次配对。
-                        final wasPaired = auth.isPaired;
-                        final ok = await auth.pair(_tokenCtrl.text.trim(), _nameCtrl.text.trim());
-                        if (!mounted) return;
-                        if (ok && context.mounted) {
-                          AppToast.show('配对成功', isError: false);
-                          await _askPushExisting(context, wasPaired: wasPaired);
-                        }
-                      },
-                child: auth.loading ? const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2)) : Text(auth.isPaired ? '重新配对' : '配对'),
+              const Text('输入服务器配对令牌（pairing_token）以完成配对。',
+                  style: TextStyle(fontSize: 14)),
+              const SizedBox(height: 16),
+              _ServerAddressCard(),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _tokenCtrl,
+                decoration: const InputDecoration(
+                    labelText: 'pairing_token', border: OutlineInputBorder()),
               ),
-            ),
-            const SizedBox(height: 12),
-            const Text('可在后端 .env 的 PAIRING_TOKEN_INIT 或 settings 表查看令牌。', style: TextStyle(fontSize: 12, color: Colors.grey)),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _nameCtrl,
+                decoration: const InputDecoration(
+                    labelText: 'device_name', border: OutlineInputBorder()),
+              ),
+              const SizedBox(height: 16),
+              if (auth.error != null)
+                Text(auth.error!,
+                    style: const TextStyle(color: Colors.redAccent)),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: auth.loading
+                      ? null
+                      : () async {
+                          // 配对前是否已有令牌：有=重新配对（本机可能是旧数据），无=首次配对。
+                          final wasPaired = auth.isPaired;
+                          final ok = await auth.pair(
+                              _tokenCtrl.text.trim(), _nameCtrl.text.trim());
+                          if (!mounted) return;
+                          if (ok && context.mounted) {
+                            AppToast.show('配对成功', isError: false);
+                            await _askPushExisting(context,
+                                wasPaired: wasPaired);
+                          }
+                        },
+                  child: auth.loading
+                      ? const SizedBox(
+                          height: 16,
+                          width: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : Text(auth.isPaired ? '重新配对' : '配对'),
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Text('可在后端 .env 的 PAIRING_TOKEN_INIT 或 settings 表查看令牌。',
+                  style: TextStyle(fontSize: 12, color: Colors.grey)),
             ],
           ),
         ),
