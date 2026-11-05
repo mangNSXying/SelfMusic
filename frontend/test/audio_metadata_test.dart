@@ -47,9 +47,90 @@ Uint8List misTaggedUtf8Frame(String id, String text) {
     ...id.codeUnits,
     ...syncsafe(body.length),
     0,
-    0,
+    0, // frame flags
     ...body,
   ]);
+}
+
+/// ISO-BMFF 盒：4 字节大端长度 + 4 字节类型 + body。
+Uint8List mp4Box(String type, List<int> body) {
+  final size = body.length + 8;
+  return Uint8List.fromList([
+    (size >> 24) & 0xFF,
+    (size >> 16) & 0xFF,
+    (size >> 8) & 0xFF,
+    size & 0xFF,
+    ...type.codeUnits,
+    ...body,
+  ]);
+}
+
+int _mp4BoxSize(Uint8List b, int offset) =>
+    (b[offset] << 24) |
+    (b[offset + 1] << 16) |
+    (b[offset + 2] << 8) |
+    b[offset + 3];
+
+/// ilst 的 `data` 盒：type(4) + locale(4) + payload。
+Uint8List mp4Data(int type, List<int> payload) => mp4Box('data', [
+      (type >> 24) & 0xFF,
+      (type >> 16) & 0xFF,
+      (type >> 8) & 0xFF,
+      type & 0xFF,
+      0, 0, 0, 0,
+      ...payload,
+    ]);
+
+Uint8List mp4TextItem(String type, String text) =>
+    mp4Box(type, mp4Data(1, utf8.encode(text)));
+
+Uint8List mp4Mvhd(int timescale, int duration) {
+  final body = Uint8List(20);
+  ByteData.view(body.buffer)
+    ..setUint32(12, timescale)
+    ..setUint32(16, duration);
+  return mp4Box('mvhd', body);
+}
+
+/// 测试用 JPEG（首尾完整，可通过 isCompleteImageBytes）。
+Uint8List fakeJpeg(int bytes) => Uint8List.fromList([
+      0xFF, 0xD8, 0xFF, 0xE0,
+      ...List<int>.filled(bytes, 0x11),
+      0xFF, 0xD9,
+    ]);
+
+/// 构造带完整标签的 m4a：moov 在文件头，标签/歌词在前、大封面在后。
+/// 返回 [ftyp + moov + mdat]，[moovEnd] 为 moov 盒的结束偏移。
+({Uint8List bytes, int moovEnd}) m4aWithFrontMoov(Uint8List cover) {
+  final ilst = mp4Box('ilst', [
+    ...mp4TextItem('©nam', '应徵爱'),
+    ...mp4TextItem('©ART', '陶喆'),
+    ...mp4TextItem('aART', '陶喆'),
+    ...mp4TextItem('©alb', '六九乐章'),
+    ...mp4TextItem('©gen', '国语流行'),
+    ...mp4TextItem('©day', '2009-08-21'),
+    ...mp4Box('trkn', mp4Data(0, [0, 0, 0, 11, 0, 13, 0, 0])),
+    ...mp4TextItem('©lyr', '[00:01.00]歌词一\n[00:02.00]歌词二'),
+    ...mp4Box('covr', mp4Data(13, cover)),
+  ]);
+  final meta = mp4Box('meta', [
+    0, 0, 0, 0, // version/flags
+    ...mp4Box('hdlr', List<int>.filled(25, 0)),
+    ...ilst,
+  ]);
+  final moov = mp4Box('moov', [
+    ...mp4Mvhd(1000, 223000),
+    ...mp4Box('udta', meta),
+  ]);
+  final ftyp = mp4Box('ftyp', [
+    ...'M4A '.codeUnits,
+    0, 0, 0, 1,
+    ...'M4A '.codeUnits,
+    ...'mp42'.codeUnits,
+  ]);
+  final mdat = mp4Box('mdat', List<int>.filled(64 * 1024, 0));
+  final bytes = Uint8List.fromList([...ftyp, ...moov, ...mdat]);
+  return (bytes: bytes, moovEnd: ftyp.length + moov.length);
 }
 
 void main() {
@@ -522,6 +603,92 @@ void main() {
       expect(meta.artist, '阶梯歌手');
       expect(meta.duration, 1);
       expect(meta.cover, isNull);
+    });
+  });
+
+  group('parseAudioHead - m4a（moov 位置）', () {
+    test('moov 在文件头且大于首采：头部阶梯补读到 moov 末尾，读全标签/封面/歌词', () async {
+      final cover = fakeJpeg(300 * 1024);
+      final f = m4aWithFrontMoov(cover);
+      const headBytes = 256 * 1024;
+      expect(f.moovEnd, greaterThan(headBytes));
+
+      final head = Uint8List.sublistView(f.bytes, 0, headBytes);
+      // 首采内先解析出文本标签/歌词（截断的大封面丢弃），并标记容器不完整。
+      final partial = parseAudioHead(head, 'm4a', f.bytes.length)!;
+      expect(partial.title, '应徵爱');
+      expect(partial.artist, '陶喆');
+      expect(partial.albumArtist, '陶喆');
+      expect(partial.album, '六九乐章');
+      expect(partial.genre, '国语流行');
+      expect(partial.year, 2009);
+      expect(partial.trackNo, 11);
+      expect(partial.lyrics, contains('歌词一'));
+      expect(partial.cover, isNull);
+      expect(partial.truncatedContainer, isTrue);
+
+      // 头部阶梯：提示补读到 moov 末尾；不再误判为 moov-at-end 走尾扫。
+      expect(coverReadHint(head, 'm4a'), f.moovEnd);
+      expect(tailReadHint(head, 'm4a', f.bytes.length), isNull);
+
+      final requests = <(int, int)>[];
+      final meta = await readAudioMeta(
+        readRange: (start, length) async {
+          requests.add((start, length));
+          final end =
+              start + length > f.bytes.length ? f.bytes.length : start + length;
+          return Uint8List.sublistView(f.bytes, start, end);
+        },
+        format: 'm4a',
+        fileSize: f.bytes.length,
+        headBytes: headBytes,
+      );
+      expect(meta, isNotNull);
+      expect(meta!.title, '应徵爱');
+      expect(meta.artist, '陶喆');
+      expect(meta.albumArtist, '陶喆');
+      expect(meta.album, '六九乐章');
+      expect(meta.genre, '国语流行');
+      expect(meta.year, 2009);
+      expect(meta.trackNo, 11);
+      expect(meta.duration, 223);
+      expect(meta.lyrics, contains('歌词一'));
+      expect(meta.cover, isNotNull);
+      expect(meta.cover!.length, cover.length);
+      expect(meta.truncatedContainer, isFalse);
+
+      expect(requests.length, 2, reason: '首采 + 增量补读到 moov 末尾');
+      expect(requests.first, (0, headBytes));
+      expect(requests.last.$1, headBytes);
+      expect(requests.last.$1 + requests.last.$2, f.moovEnd);
+    });
+
+    test('moov 在文件尾：仍走尾部阶梯读到标签', () async {
+      final cover = fakeJpeg(100 * 1024);
+      final front = m4aWithFrontMoov(cover);
+      final ftypSize = _mp4BoxSize(front.bytes, 0);
+      final tailMoov = Uint8List.sublistView(front.bytes, ftypSize, front.moovEnd);
+      final ftyp = Uint8List.sublistView(front.bytes, 0, ftypSize);
+      final mdat = mp4Box('mdat', List<int>.filled(400 * 1024, 0));
+      final bytes = Uint8List.fromList([...ftyp, ...mdat, ...tailMoov]);
+
+      final head = Uint8List.sublistView(bytes, 0, 256 * 1024);
+      expect(tailReadHint(head, 'm4a', bytes.length), 256 * 1024);
+
+      final meta = await readAudioMeta(
+        readRange: (start, length) async {
+          final end = start + length > bytes.length ? bytes.length : start + length;
+          return Uint8List.sublistView(bytes, start, end);
+        },
+        format: 'm4a',
+        fileSize: bytes.length,
+        headBytes: 256 * 1024,
+      );
+      expect(meta, isNotNull);
+      expect(meta!.title, '应徵爱');
+      expect(meta.artist, '陶喆');
+      expect(meta.duration, 223);
+      expect(meta.cover, isNotNull);
     });
   });
 

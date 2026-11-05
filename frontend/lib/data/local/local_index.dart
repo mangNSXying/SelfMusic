@@ -362,6 +362,14 @@ class LocalIndex {
         "WHERE meta_read=1 AND artist IS NULL AND format IN ('flac')");
   }
 
+  /// m4a 头部 moov 回填补读（旧版只认文件尾 moov）：moov 在文件头且大于
+  /// 首采（带高清封面/歌词时常见）的文件会整首读空却已标已读（artist 为空）。
+  /// 重置这些行，交给后台补读按「头部 moov 位置加深采样」重取。返回重置行数。
+  Future<int> resetMetaReadForM4aHeadMoov() {
+    return _writer!.execUpdated("UPDATE idx_songs SET meta_read=0 "
+        "WHERE meta_read=1 AND artist IS NULL AND format='m4a'");
+  }
+
   /// 块序异常元数据回填补读（旧版解析遇大封面/PICTURE 在 VORBIS_COMMENT
   /// 之前时提前中断，已标已读却没有歌手等信息）：把始终没有歌手的行重置为
   /// 未读，交给后台补读用「从头完整读取」重取。[sourceKeys] 限定直连源

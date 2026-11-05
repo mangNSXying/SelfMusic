@@ -124,6 +124,11 @@ Future<bool> _enrichViaDart(LocalIndex index, MusicSource src, Song song) async 
   if (meta == null) {
     return false; // 未识别容器：不标已读，留待后续重试
   }
+  if (meta.truncatedContainer && _isEmptyMeta(meta)) {
+    // 已识别容器但采样不完整、且一个字段都没解析出来（如 moov 超出读取上限）：
+    // 不能当成功标已读，否则该行永远不会再补读。保留 meta_read=0 交给后续重试。
+    return false;
+  }
   await yieldToEventLoop();
   var cover = meta.cover;
   if (cover == null || cover.isEmpty) {
@@ -173,6 +178,18 @@ void _logEnrich(Song song, Stopwatch sw) {
         '${ms}ms size=${song.fileSize} ${song.sourceKey}/${song.sourceRef}');
   }
 }
+
+bool _isEmptyMeta(AudioMeta meta) =>
+    meta.title == null &&
+    meta.artist == null &&
+    meta.album == null &&
+    meta.albumArtist == null &&
+    meta.genre == null &&
+    meta.year == null &&
+    meta.trackNo == null &&
+    meta.duration == null &&
+    meta.cover == null &&
+    (meta.lyrics == null || meta.lyrics!.trim().isEmpty);
 
 /// 打开 [start, start+length) 范围并读满；**读不满即抛异常**（问题1修复）。
 ///

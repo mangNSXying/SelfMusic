@@ -765,6 +765,17 @@ class DirectSourceManager extends ChangeNotifier {
           debugPrint('FLAC 前置 ID3v2 回填补读：已重置 $reset 首待重读');
         }
       }
+      // 一次性回填：旧版只在文件尾找 moov，moov 在文件头且大于首采的 m4a
+      // （带高清封面/歌词）会读空却已标已读（artist 为空）；重置交给后台补读。
+      // 仅本机一次（不进 knownKeys）。
+      if (!settings.m4aHeadMoovMetaV1Done) {
+        perfPhase('direct.backfills.resetM4aHeadMoov'); // TEMP-PROBE
+        final reset = await index.resetMetaReadForM4aHeadMoov();
+        settings.m4aHeadMoovMetaV1Done = true;
+        if (reset > 0) {
+          debugPrint('m4a 头部 moov 回填补读：已重置 $reset 首待重读');
+        }
+      }
       // 后台清理历史无效封面（旧解析缺陷可能写脏数据），清理到的歌标未读待补读。
       perfPhase('direct.backfills.cleanupInvalidCovers'); // TEMP-PROBE
       final cleaned = await index.cleanupInvalidCovers();
