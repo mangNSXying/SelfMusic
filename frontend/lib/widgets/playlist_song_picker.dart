@@ -15,6 +15,7 @@ import 'corner_add_button.dart';
 import 'draggable_sheet.dart';
 import 'list_selection.dart';
 import 'row_list.dart';
+import 'search_field.dart';
 import 'song_row_view.dart';
 import 'song_tile.dart';
 
@@ -224,31 +225,11 @@ class _PlaylistSongPickerState extends State<_PlaylistSongPicker> {
             count: display.length,
           ),
           if (lib.loading) const LinearProgressIndicator(minHeight: 2),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-            child: TextField(
-              controller: _searchCtrl,
-              onChanged: (v) => setState(() => _query = v),
-              decoration: InputDecoration(
-                hintText: '搜索曲库添加歌曲',
-                prefixIcon: const Icon(Icons.search),
-                suffixIcon: _query.isEmpty
-                    ? null
-                    : IconButton(
-                        icon: const Icon(Icons.clear),
-                        tooltip: '清除',
-                        onPressed: () {
-                          _searchCtrl.clear();
-                          setState(() => _query = '');
-                        },
-                      ),
-                isDense: true,
-                contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(24),
-                ),
-              ),
-            ),
+          SearchField(
+            controller: _searchCtrl,
+            hintText: '搜索曲库添加歌曲',
+            query: _query,
+            onChanged: (v) => setState(() => _query = v),
           ),
           Expanded(child: _body(lib, display, format)),
           SafeArea(

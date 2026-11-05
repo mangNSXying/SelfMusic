@@ -15,6 +15,7 @@ import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/list_selection.dart';
 import '../../widgets/row_list.dart';
 import '../../widgets/selection_bar.dart';
+import '../../widgets/search_field.dart';
 import '../../widgets/song_list.dart';
 import '../../widgets/queue_song_tile.dart';
 import '../../widgets/song_row_view.dart';
@@ -293,31 +294,11 @@ class _QueuePageState extends State<QueuePage> {
         ],
       );
     }
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-      child: TextField(
-        controller: _search,
-        onChanged: (v) => setState(() => _query = v),
-        decoration: InputDecoration(
-          hintText: '搜索当前队列',
-          prefixIcon: const Icon(Icons.search),
-          suffixIcon: _query.isEmpty
-              ? null
-              : IconButton(
-                  icon: const Icon(Icons.clear),
-                  tooltip: '清除',
-                  onPressed: () {
-                    _search.clear();
-                    setState(() => _query = '');
-                  },
-                ),
-          isDense: true,
-          contentPadding: const EdgeInsets.symmetric(vertical: 8),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(24),
-          ),
-        ),
-      ),
+    return SearchField(
+      controller: _search,
+      hintText: '搜索当前队列',
+      query: _query,
+      onChanged: (v) => setState(() => _query = v),
     );
   }
 

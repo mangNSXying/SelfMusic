@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../services/sync_engine.dart';
 import '../../widgets/app_toast.dart';
+import '../../widgets/inline_spinner.dart';
 import 'devices_screen.dart';
 
 /// 服务端 → 多设备同步（阶段5，DEVELOPER.md「播放算法与同步协议」）：总开关 + 立即同步 + 设备管理入口。
@@ -79,10 +80,7 @@ class _SyncSectionState extends State<SyncSection> {
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: _syncing
-              ? const SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(strokeWidth: 2))
+              ? const InlineSpinner(size: 24)
               : const Icon(Icons.sync),
           title: const Text('立即同步'),
           subtitle: Text(_subtitle()),

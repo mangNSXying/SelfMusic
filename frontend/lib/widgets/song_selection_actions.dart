@@ -6,9 +6,42 @@ import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
+import 'add_to_playlist.dart';
 import 'app_dialog_actions.dart';
 import 'app_toast.dart';
 import 'selection_bar.dart';
+
+/// 集合页通用的前两个多选动作：播放选中 / 加入歌单。
+List<SelectionAction> collectionPlayAddActions(
+  BuildContext context,
+  List<Song> selected,
+  VoidCallback clear, {
+  required Future<void> Function() play,
+  bool addToPlaylist = true,
+}) =>
+    [
+      SelectionAction(
+        icon: Icons.play_arrow,
+        label: '播放选中',
+        onPressed: selected.isEmpty
+            ? null
+            : () async {
+                clear();
+                await play();
+              },
+      ),
+      if (addToPlaylist)
+        SelectionAction(
+          icon: Icons.playlist_add,
+          label: '加入歌单',
+          onPressed: selected.isEmpty
+              ? null
+              : () {
+                  clear();
+                  showAddToPlaylistSheetForSongs(context, selected);
+                },
+        ),
+    ];
 
 enum FavoriteAction { like, unlike }
 
