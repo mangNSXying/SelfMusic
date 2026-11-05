@@ -23,7 +23,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'audio_metadata.dart'
-    show isCompleteImageBytes, kMetaRegionCapBytes;
+    show imageMimeOf, isCompleteImageBytes, kMetaRegionCapBytes;
 
 /// 单次流式搬运块（I/O 交错让出事件循环，大文件不卡主线程过久）。
 const int _kCopyChunkBytes = 1024 * 1024;
@@ -126,34 +126,9 @@ Future<void> _pipeRange(
 }
 
 /// APIC/covr/PICTURE 的 mime 判定（读侧验签已过，这里只做类型映射）。
-String _coverMime(Uint8List img) {
-  if (img.length >= 2 && img[0] == 0xFF && img[1] == 0xD8) {
-    return 'image/jpeg';
-  }
-  if (img.length >= 4 &&
-      img[0] == 0x89 &&
-      img[1] == 0x50 &&
-      img[2] == 0x4E &&
-      img[3] == 0x47) {
-    return 'image/png';
-  }
-  if (img.length >= 3 &&
-      img[0] == 0x47 &&
-      img[1] == 0x49 &&
-      img[2] == 0x46) {
-    return 'image/gif';
-  }
-  if (img.length >= 12 &&
-      img[0] == 0x52 &&
-      img[1] == 0x49 &&
-      img[8] == 0x57 &&
-      img[9] == 0x45 &&
-      img[10] == 0x42 &&
-      img[11] == 0x50) {
-    return 'image/webp';
-  }
-  throw StateError('不支持的封面图片类型（仅 jpeg/png/gif/webp）');
-}
+String _coverMime(Uint8List img) =>
+    imageMimeOf(img) ??
+    (throw StateError('不支持的封面图片类型（仅 jpeg/png/gif/webp）'));
 
 // ---------- ID3v2 共用 ----------
 
