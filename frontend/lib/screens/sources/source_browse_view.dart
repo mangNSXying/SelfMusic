@@ -17,14 +17,13 @@ import '../../utils/media_kinds.dart';
 import '../../utils/song_groups.dart';
 import '../../utils/source_folders.dart';
 import '../../utils/zh_variant.dart';
-import '../../widgets/add_to_playlist.dart';
-import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
+import '../../widgets/inline_spinner.dart';
 import '../../widgets/detail_presentation.dart';
 import '../../widgets/header_action_button.dart';
-import '../../widgets/selection_bar.dart';
 import '../../widgets/song_collection_view.dart';
 import '../../widgets/song_selection_actions.dart';
+import '../../widgets/text_input_dialog.dart';
 import '../../widgets/toolbar_icon_button.dart';
 
 /// 源内浏览组件：在 AppContent 内容区原地渲染。
@@ -202,34 +201,14 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
       return;
     }
     if (!_requireFolderMode()) return;
-    final controller = TextEditingController();
     final dir = context.read<NavigationProvider>().sourceDir;
     final where = dir.isEmpty ? '源根目录' : '/$dir';
-    final name = await showDialog<String>(
+    final name = await showTextInputDialog(
       context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('新建文件夹'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('位置：$where', style: Theme.of(c).textTheme.bodySmall),
-            const SizedBox(height: 8),
-            TextField(
-                controller: controller,
-                autofocus: true,
-                decoration: const InputDecoration(hintText: '文件夹名')),
-          ],
-        ),
-        actions: appDialogActions(
-          c,
-          confirmLabel: '确定',
-          onCancel: () => Navigator.of(c).pop(),
-          onConfirm: () => Navigator.of(c).pop(controller.text.trim()),
-        ),
-      ),
+      title: '新建文件夹',
+      description: '位置：$where',
+      hintText: '文件夹名',
     );
-    controller.dispose();
     if (name == null || name.isEmpty || !mounted) return;
     try {
       // 新建成功后 manager 会记录该空文件夹并 notify，逐级视图立刻显示。
@@ -257,12 +236,6 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
       BuildContext c, MusicSource source, List<Song> allSongs) async {
     if (allSongs.isEmpty) return;
     await _play(c, source, allSongs, 0);
-  }
-
-  void _addToPlaylistSelected(List<Song> songs, VoidCallback clear) {
-    if (songs.isEmpty) return;
-    clear();
-    showAddToPlaylistSheetForSongs(context, songs);
   }
 
   @override
@@ -393,11 +366,7 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
                 // 源里还没有歌时，扫描才是这一页唯一的主操作。
                 final scanPrimary = songs.isEmpty && !searching;
                 final scanIcon = _scanning
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
+                    ? const InlineSpinner(size: 16)
                     : const Icon(Icons.refresh, size: 18);
 
                 final scanButton = HeaderActionButton(
@@ -624,22 +593,11 @@ class _SourceBrowseViewState extends State<SourceBrowseView> {
               onPlay: (list, i) => _play(context, source, list, i),
               onPlayGroup: (list) => _play(context, source, list, 0),
               selectionActions: (selected, clear) => [
-                SelectionAction(
-                  icon: Icons.play_arrow,
-                  label: '播放选中',
-                  onPressed: selected.isEmpty
-                      ? null
-                      : () {
-                          clear();
-                          _play(context, source, selected, 0);
-                        },
-                ),
-                SelectionAction(
-                  icon: Icons.playlist_add,
-                  label: '加入歌单',
-                  onPressed: selected.isEmpty
-                      ? null
-                      : () => _addToPlaylistSelected(selected, clear),
+                ...collectionPlayAddActions(
+                  context,
+                  selected,
+                  clear,
+                  play: () => _play(context, source, selected, 0),
                 ),
                 ...songSelectionActions(context, selected, clear),
               ],

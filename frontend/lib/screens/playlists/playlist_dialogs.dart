@@ -6,30 +6,15 @@ import '../../providers/navigation_provider.dart';
 import '../../data/local/local_index.dart';
 import '../../providers/playlists_provider.dart';
 import '../../widgets/app_dialog_actions.dart';
+import '../../widgets/text_input_dialog.dart';
 
 Future<void> showCreatePlaylistDialog(
     BuildContext context, PlaylistsProvider provider) async {
-  final ctrl = TextEditingController();
-  final name = await showDialog<String>(
+  final name = await showTextInputDialog(
     context: context,
-    builder: (c) => AlertDialog(
-      title: const Text('新建歌单'),
-      content: TextField(
-        controller: ctrl,
-        autofocus: true,
-        decoration: const InputDecoration(hintText: '名称'),
-      ),
-      actions: appDialogActions(
-        c,
-        confirmLabel: '创建',
-        onCancel: () => Navigator.of(c).pop(),
-        onConfirm: () {
-          final t = ctrl.text.trim();
-          if (t.isEmpty) return;
-          Navigator.of(c).pop(t);
-        },
-      ),
-    ),
+    title: '新建歌单',
+    hintText: '名称',
+    confirmLabel: '创建',
   );
   if (name != null && name.isNotEmpty && context.mounted) {
     provider.create(name);
@@ -38,27 +23,12 @@ Future<void> showCreatePlaylistDialog(
 
 Future<void> showRenamePlaylistDialog(
     BuildContext context, PlaylistsProvider provider, PlaylistRow p) async {
-  final ctrl = TextEditingController(text: p.name);
-  final name = await showDialog<String>(
+  final name = await showTextInputDialog(
     context: context,
-    builder: (c) => AlertDialog(
-      title: const Text('重命名歌单'),
-      content: TextField(
-        controller: ctrl,
-        autofocus: true,
-        decoration: const InputDecoration(hintText: '名称'),
-      ),
-      actions: appDialogActions(
-        c,
-        confirmLabel: '保存',
-        onCancel: () => Navigator.of(c).pop(),
-        onConfirm: () {
-          final t = ctrl.text.trim();
-          if (t.isEmpty) return;
-          Navigator.of(c).pop(t);
-        },
-      ),
-    ),
+    title: '重命名歌单',
+    initial: p.name,
+    hintText: '名称',
+    confirmLabel: '保存',
   );
   if (name != null && name.isNotEmpty) provider.rename(p.id, name);
 }

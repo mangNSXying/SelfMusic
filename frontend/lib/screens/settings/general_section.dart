@@ -8,6 +8,7 @@ import '../../data/local/app_settings.dart';
 import '../../platform/desktop_tray.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../widgets/app_dialog_actions.dart';
+import '../../widgets/settings_section_header.dart';
 import '../../widgets/shortcut_settings_panel.dart';
 import 'backup_section.dart';
 
@@ -47,11 +48,7 @@ class _ViewBehaviorSectionState extends State<ViewBehaviorSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text('视图行为',
-              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
-        ),
+        const SettingsSectionHeader('视图行为'),
         SwitchListTile(
           title: const Text('长按展开/折叠'),
           subtitle: Text(settings.longPressCollapseGroups
@@ -90,7 +87,6 @@ class _TraySectionState extends State<TraySection> {
   Widget build(BuildContext context) {
     if (!DesktopTray.isSupported) return const SizedBox.shrink();
     final settings = context.read<DirectSourceManager>().settings;
-    final cs = Theme.of(context).colorScheme;
     final tray = DesktopTray.instance;
     // 托盘创建失败（如 Linux 桌面没有 StatusNotifier 宿主）时关闭仍会退出，
     // 开关置灰避免用户误以为窗口藏起来还能从托盘找回。
@@ -100,11 +96,7 @@ class _TraySectionState extends State<TraySection> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Divider(height: 32),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text('窗口',
-              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
-        ),
+        const SettingsSectionHeader('窗口'),
         SwitchListTile(
           title: const Text('关闭窗口时驻留托盘'),
           subtitle: Text(!available
@@ -152,11 +144,7 @@ class _LogSectionState extends State<LogSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text('日志',
-              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
-        ),
+        const SettingsSectionHeader('日志'),
         ListTile(
           leading: const Icon(Icons.schedule),
           title: const Text('日志时长'),

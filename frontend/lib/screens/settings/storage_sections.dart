@@ -15,10 +15,11 @@ import '../../services/api_client.dart';
 import '../../services/server_settings.dart';
 import '../../theme/app_metrics.dart';
 import '../../utils/format_bytes.dart';
-import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
+import '../../widgets/inline_spinner.dart';
 import '../../widgets/row_action_button.dart';
 import '../../widgets/single_choice_group.dart';
+import '../../widgets/text_input_dialog.dart';
 
 /// 服务端 → 缓存目录：展示真实路径与当前占用；复制路径 / 更改目录（含迁移）。
 class CacheDirTile extends StatefulWidget {
@@ -102,11 +103,7 @@ class _CacheDirTileState extends State<CacheDirTile> {
                   width: kRowActionButtonSize,
                   height: kRowActionButtonSize,
                   child: Center(
-                    child: SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
+                    child: InlineSpinner(size: 20),
                   ),
                 )
               : RowActionIconButton(
@@ -328,10 +325,7 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
                       ?.copyWith(fontWeight: FontWeight.w600)),
             ),
             if (_syncing)
-              const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2))
+              const InlineSpinner(size: 20)
             else
               RowActionIconButton(
                 tooltip: '同步服务端建议值',
@@ -415,54 +409,29 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
 
   Future<void> _editMaxBytes(BuildContext context) async {
     final current = _settings.cacheMaxBytes ~/ (1024 * 1024);
-    final controller = TextEditingController(text: current.toString());
-    final result = await showDialog<int>(
+    final text = await showTextInputDialog(
       context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('缓存总上限（MB）'),
-        content: TextField(
-          controller: controller,
-          keyboardType: TextInputType.number,
-          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          autofocus: true,
-        ),
-        actions: appDialogActions(
-          c,
-          confirmLabel: '确定',
-          onCancel: () => Navigator.of(c).pop(),
-          onConfirm: () =>
-              Navigator.of(c).pop(int.tryParse(controller.text) ?? current),
-        ),
-      ),
+      title: '缓存总上限（MB）',
+      initial: current.toString(),
+      numeric: true,
     );
-    if (result != null && result > 0 && mounted) {
+    if (text == null || !mounted) return;
+    final result = int.tryParse(text) ?? current;
+    if (result > 0) {
       setState(() => _settings.cacheMaxBytes = result * 1024 * 1024);
     }
   }
 
   Future<void> _editSongLimit(BuildContext context) async {
-    final controller =
-        TextEditingController(text: _settings.cacheSongLimit.toString());
-    final result = await showDialog<int>(
+    final text = await showTextInputDialog(
       context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('歌曲数量上限'),
-        content: TextField(
-          controller: controller,
-          keyboardType: TextInputType.number,
-          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          autofocus: true,
-        ),
-        actions: appDialogActions(
-          c,
-          confirmLabel: '确定',
-          onCancel: () => Navigator.of(c).pop(),
-          onConfirm: () => Navigator.of(c)
-              .pop(int.tryParse(controller.text) ?? _settings.cacheSongLimit),
-        ),
-      ),
+      title: '歌曲数量上限',
+      initial: _settings.cacheSongLimit.toString(),
+      numeric: true,
     );
-    if (result != null && result > 0 && mounted) {
+    if (text == null || !mounted) return;
+    final result = int.tryParse(text) ?? _settings.cacheSongLimit;
+    if (result > 0) {
       setState(() => _settings.cacheSongLimit = result);
     }
   }

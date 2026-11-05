@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../screens/settings/shortcut_scope_screen.dart';
 import '../shortcuts/shortcut_models.dart';
 import '../shortcuts/shortcut_settings.dart';
+import 'settings_section_header.dart';
 
 class ShortcutSettingsPanel extends StatelessWidget {
   const ShortcutSettingsPanel({super.key, this.footer});
@@ -13,7 +14,6 @@ class ShortcutSettingsPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     final settings = context.watch<ShortcutSettings>();
     final windowCount =
         settings.windowBindings.values.where((b) => b != null).length;
@@ -22,11 +22,7 @@ class ShortcutSettingsPanel extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.symmetric(vertical: 12),
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text('快捷键',
-              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
-        ),
+        const SettingsSectionHeader('快捷键'),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
           child: Text(

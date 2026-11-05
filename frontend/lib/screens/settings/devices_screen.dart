@@ -5,6 +5,7 @@ import '../../services/api_client.dart';
 import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/context_menu.dart';
+import '../../widgets/text_input_dialog.dart';
 
 /// 已配对设备管理（阶段5）：列表 / 改名 / 吊销（调 `DeviceAdminController`）。
 /// 当前设备按配对时下发的 client_id 高亮。
@@ -55,24 +56,13 @@ class _DevicesScreenState extends State<DevicesScreen> {
   }
 
   Future<void> _rename(Map<String, dynamic> d) async {
-    final ctrl = TextEditingController(text: (d['name'] as String?) ?? '');
-    final name = await showDialog<String>(
+    final name = await showTextInputDialog(
       context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('设备改名'),
-        content: TextField(
-          controller: ctrl,
-          decoration: const InputDecoration(labelText: '设备名'),
-        ),
-        actions: appDialogActions(
-          c,
-          confirmLabel: '保存',
-          onCancel: () => Navigator.of(c).pop(),
-          onConfirm: () => Navigator.of(c).pop(ctrl.text.trim()),
-        ),
-      ),
+      title: '设备改名',
+      initial: (d['name'] as String?) ?? '',
+      labelText: '设备名',
+      confirmLabel: '保存',
     );
-    ctrl.dispose();
     if (name == null || name.isEmpty || !mounted) return;
     try {
       await context

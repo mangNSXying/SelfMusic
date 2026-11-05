@@ -14,7 +14,10 @@ import '../../utils/format_bytes.dart';
 import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/row_action_button.dart';
+import '../../widgets/settings_section_header.dart';
+import '../../widgets/single_choice_dialog.dart';
 import '../../widgets/single_choice_group.dart';
+import '../../widgets/text_input_dialog.dart';
 
 /// 歌曲设置：缓存上限 / 歌曲上限 / 收藏自动缓存（stage2.md §1.4）。
 class SongsSection extends StatefulWidget {
@@ -39,11 +42,7 @@ class _SongsSettingsState extends State<SongsSection> {
     return ListView(
       padding: const EdgeInsets.symmetric(vertical: 12),
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text('缓存与离线',
-              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
-        ),
+        const SettingsSectionHeader('缓存与离线'),
         SwitchListTile(
           title: const Text('收藏自动缓存'),
           subtitle: const Text('歌曲离线可用'),
@@ -53,11 +52,7 @@ class _SongsSettingsState extends State<SongsSection> {
           },
         ),
         const Divider(height: 32),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text('歌曲显示与扫描',
-              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
-        ),
+        const SettingsSectionHeader('歌曲显示与扫描'),
         ListTile(
           title: const Text('时长过滤'),
           subtitle: Text(_settings.scanIgnoreMinDurationSec > 0
@@ -98,11 +93,7 @@ class _SongsSettingsState extends State<SongsSection> {
           onTap: () => _editScanInterval(context),
         ),
         const Divider(height: 32),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text('权重·时长削弱',
-              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
-        ),
+        const SettingsSectionHeader('权重·时长削弱'),
         SwitchListTile(
           title: const Text('时长削弱'),
           subtitle: const Text('开启后加权随机按歌曲时长乘削弱系数（长歌权重降低；仅加权随机开启时生效）'),
@@ -118,11 +109,7 @@ class _SongsSettingsState extends State<SongsSection> {
           onTap: () => _editWeightCurve(context),
         ),
         const Divider(height: 32),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text('歌手解析',
-              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
-        ),
+        const SettingsSectionHeader('歌手解析'),
         SwitchListTile(
           title: const Text('自动后台解析'),
           subtitle: const Text('向 MusicBrainz 查询歌手身份，关闭后仅保留本地归一去重'),
@@ -172,11 +159,7 @@ class _SongsSettingsState extends State<SongsSection> {
           },
         ),
         const Divider(height: 32),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text('在线元数据',
-              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
-        ),
+        const SettingsSectionHeader('在线元数据'),
         ListTile(
           title: const Text('歌词来源'),
           subtitle:
@@ -277,40 +260,13 @@ class _SongsSettingsState extends State<SongsSection> {
       OnlineMetaLyricSource.qq: '中文覆盖好；需联网直调 QQ 公开接口',
       OnlineMetaLyricSource.netease: '中文覆盖好；反爬严格，失败请换源',
     };
-    final chosen = await showDialog<OnlineMetaLyricSource>(
+    final chosen = await showSingleChoiceDialog<OnlineMetaLyricSource>(
       context: context,
-      builder: (c) => SimpleDialog(
-        title: const Text('歌词来源'),
-        children: [
-          for (final s in OnlineMetaLyricSource.values)
-            SimpleDialogOption(
-              onPressed: () => Navigator.of(c).pop(s),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(s.label),
-                          Text(notes[s]!,
-                              style: Theme.of(c).textTheme.bodySmall?.copyWith(
-                                  color: Theme.of(c)
-                                      .colorScheme
-                                      .onSurface
-                                      .withValues(alpha: 0.6))),
-                        ],
-                      ),
-                    ),
-                    if (s == _settings.onlineMetaLyricSource)
-                      Icon(Icons.check, color: Theme.of(c).colorScheme.primary),
-                  ],
-                ),
-              ),
-            ),
-        ],
-      ),
+      title: '歌词来源',
+      values: OnlineMetaLyricSource.values,
+      current: _settings.onlineMetaLyricSource,
+      labelOf: (s) => s.label,
+      subtitleOf: (s) => notes[s]!,
     );
     if (chosen == null || !context.mounted) return;
     setState(() => _settings.onlineMetaLyricSource = chosen);
@@ -324,40 +280,13 @@ class _SongsSettingsState extends State<SongsSection> {
       OnlineMetaCoverSource.qq: '中文覆盖好；800 方图',
       OnlineMetaCoverSource.netease: '中文覆盖好；反爬严格，失败请换源',
     };
-    final chosen = await showDialog<OnlineMetaCoverSource>(
+    final chosen = await showSingleChoiceDialog<OnlineMetaCoverSource>(
       context: context,
-      builder: (c) => SimpleDialog(
-        title: const Text('封面来源'),
-        children: [
-          for (final s in OnlineMetaCoverSource.values)
-            SimpleDialogOption(
-              onPressed: () => Navigator.of(c).pop(s),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(s.label),
-                          Text(notes[s]!,
-                              style: Theme.of(c).textTheme.bodySmall?.copyWith(
-                                  color: Theme.of(c)
-                                      .colorScheme
-                                      .onSurface
-                                      .withValues(alpha: 0.6))),
-                        ],
-                      ),
-                    ),
-                    if (s == _settings.onlineMetaCoverSource)
-                      Icon(Icons.check, color: Theme.of(c).colorScheme.primary),
-                  ],
-                ),
-              ),
-            ),
-        ],
-      ),
+      title: '封面来源',
+      values: OnlineMetaCoverSource.values,
+      current: _settings.onlineMetaCoverSource,
+      labelOf: (s) => s.label,
+      subtitleOf: (s) => notes[s]!,
     );
     if (chosen == null || !context.mounted) return;
     setState(() => _settings.onlineMetaCoverSource = chosen);
@@ -365,62 +294,32 @@ class _SongsSettingsState extends State<SongsSection> {
   }
 
   Future<void> _editIgnoreDuration(BuildContext context) async {
-    final controller = TextEditingController(
-        text: _settings.scanIgnoreMinDurationSec.toString());
-    final result = await showDialog<int>(
+    final text = await showTextInputDialog(
       context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('忽略音频：最小时长（秒）'),
-        content: TextField(
-          controller: controller,
-          keyboardType: TextInputType.number,
-          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          autofocus: true,
-        ),
-        actions: appDialogActions(
-          c,
-          confirmLabel: '确定',
-          onCancel: () => Navigator.of(c).pop(),
-          onConfirm: () =>
-              Navigator.of(c).pop(int.tryParse(controller.text) ?? 0),
-        ),
-      ),
+      title: '忽略音频：最小时长（秒）',
+      initial: _settings.scanIgnoreMinDurationSec.toString(),
+      numeric: true,
     );
-    if (result != null && result >= 0 && context.mounted) {
-      setState(() => _settings.scanIgnoreMinDurationSec = result);
-      // 忽略规则变更：让已入库歌曲按新规则过滤（喜欢/歌曲/专辑/歌手/源浏览即时生效）。
-      context.read<DirectSourceManager>().settingsChanged();
-    }
+    if (text == null || !context.mounted) return;
+    final result = int.tryParse(text) ?? 0;
+    setState(() => _settings.scanIgnoreMinDurationSec = result);
+    // 忽略规则变更：让已入库歌曲按新规则过滤（喜欢/歌曲/专辑/歌手/源浏览即时生效）。
+    context.read<DirectSourceManager>().settingsChanged();
   }
 
   Future<void> _editIgnoreBytes(BuildContext context) async {
     final mb = _settings.scanIgnoreMinSizeBytes ~/ (1024 * 1024);
-    final controller =
-        TextEditingController(text: (mb > 0 ? mb : 0).toString());
-    final result = await showDialog<int>(
+    final text = await showTextInputDialog(
       context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('忽略音频：最小大小（MB）'),
-        content: TextField(
-          controller: controller,
-          keyboardType: TextInputType.number,
-          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          autofocus: true,
-        ),
-        actions: appDialogActions(
-          c,
-          confirmLabel: '确定',
-          onCancel: () => Navigator.of(c).pop(),
-          onConfirm: () =>
-              Navigator.of(c).pop(int.tryParse(controller.text) ?? 0),
-        ),
-      ),
+      title: '忽略音频：最小大小（MB）',
+      initial: (mb > 0 ? mb : 0).toString(),
+      numeric: true,
     );
-    if (result != null && result >= 0 && context.mounted) {
-      setState(() => _settings.scanIgnoreMinSizeBytes = result * 1024 * 1024);
-      // 忽略规则变更：让已入库歌曲按新规则过滤（喜欢/歌曲/专辑/歌手/源浏览即时生效）。
-      context.read<DirectSourceManager>().settingsChanged();
-    }
+    if (text == null || !context.mounted) return;
+    final result = int.tryParse(text) ?? 0;
+    setState(() => _settings.scanIgnoreMinSizeBytes = result * 1024 * 1024);
+    // 忽略规则变更：让已入库歌曲按新规则过滤（喜欢/歌曲/专辑/歌手/源浏览即时生效）。
+    context.read<DirectSourceManager>().settingsChanged();
   }
 
   static double? _segNum(Object? v) {
@@ -558,39 +457,17 @@ class _SongsSettingsState extends State<SongsSection> {
       formatBytes(bytes, zero: '0 MB', minUnit: ByteUnit.mb);
 
   Future<void> _editScanInterval(BuildContext context) async {
-    final controller =
-        TextEditingController(text: _settings.scanAutoIntervalMin.toString());
-    final result = await showDialog<int>(
+    final text = await showTextInputDialog(
       context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('自动扫描间隔（分钟）'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            TextField(
-              controller: controller,
-              keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-              autofocus: true,
-            ),
-            const SizedBox(height: 8),
-            const Text('0 为关闭，建议关闭。开启后按固定周期增量扫描全部直连源；'
-                '本地目录变化也会自动触发增量扫描。'),
-          ],
-        ),
-        actions: appDialogActions(
-          c,
-          confirmLabel: '确定',
-          onCancel: () => Navigator.of(c).pop(),
-          onConfirm: () =>
-              Navigator.of(c).pop(int.tryParse(controller.text) ?? 0),
-        ),
-      ),
+      title: '自动扫描间隔（分钟）',
+      initial: _settings.scanAutoIntervalMin.toString(),
+      numeric: true,
+      footer: '0 为关闭，建议关闭。开启后按固定周期增量扫描全部直连源；'
+          '本地目录变化也会自动触发增量扫描。',
     );
-    if (result != null && result >= 0 && context.mounted) {
-      setState(() => _settings.scanAutoIntervalMin = result);
-      context.read<DirectSourceManager>().restartAutoScan();
-    }
+    if (text == null || !context.mounted) return;
+    final result = int.tryParse(text) ?? 0;
+    setState(() => _settings.scanAutoIntervalMin = result);
+    context.read<DirectSourceManager>().restartAutoScan();
   }
 }
