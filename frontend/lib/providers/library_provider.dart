@@ -13,6 +13,7 @@ import '../models/artist.dart';
 import '../services/artist_resolver.dart';
 import '../utils/off_thread.dart';
 import '../utils/perf_log.dart';
+import '../utils/single_flight.dart';
 import '../utils/main_thread_probe.dart';
 import 'direct_source_manager.dart';
 
@@ -65,13 +66,11 @@ class LibraryProvider extends ChangeNotifier {
 
   /// 全量快照的世代号：后台读完成时若已被更新的加载接管，丢弃旧结果。
   int _snapshotToken = 0;
-  bool _refreshInflight = false;
-  bool _refreshDirty = false;
+  final SingleFlight _refresh = SingleFlight();
 
   /// 歌手列表的世代号（全量加载/刷新也会自增，作废在途的只刷歌手结果）。
   int _artistsToken = 0;
-  bool _artistsRefreshInflight = false;
-  bool _artistsRefreshDirty = false;
+  final SingleFlight _artistsRefresh = SingleFlight();
 
   void _onArtistResolverChanged() {
     // 首批加载前不重算：startup/loadSongs 会读到最新数据。
@@ -103,39 +102,25 @@ class LibraryProvider extends ChangeNotifier {
   /// 查询/建模/分组都在后台 isolate 完成；token 丢弃乱序完成的旧结果，
   /// in-flight 期间的重复触发只登记 dirty，完成后补一轮（扫描期通知很密）。
   void refreshDirect() {
-    if (_refreshInflight) {
-      _refreshDirty = true;
-      return;
-    }
-    _refreshInflight = true;
-    final token = ++_snapshotToken;
-    // 整表刷新也会重算歌手，作废在途的「只刷歌手」结果。
-    _artistsToken++;
-    unawaited(() async {
-      try {
-        final m = _directManager;
-        if (m == null) return;
-        // 诊断埋点（E）：后台快照 vs 主线程通知拆分，定位同步后整表重建掉帧。
-        final swBg = Stopwatch()..start();
-        perfPhase('library.refreshDirect.snapshot'); // TEMP-PROBE
-        final snap = await m.librarySnapshotInBackground(query: _lastQuery);
-        final bgMs = swBg.elapsedMilliseconds;
-        if (token != _snapshotToken) return; // 更新的全量刷新已接管
-        perfPhase('library.refreshDirect.assign'); // TEMP-PROBE
-        songs = snap.songs;
-        albums = snap.albums;
-        artists = snap.artists;
-        notifyListeners();
-        perfLog('library.refreshDirect',
-            'bg=${bgMs}ms n=${snap.songs.length}');
-      } finally {
-        _refreshInflight = false;
-        if (_refreshDirty) {
-          _refreshDirty = false;
-          refreshDirect();
-        }
-      }
-    }());
+    _refresh.run(() async {
+      final token = ++_snapshotToken;
+      // 整表刷新也会重算歌手，作废在途的「只刷歌手」结果。
+      _artistsToken++;
+      final m = _directManager;
+      if (m == null) return;
+      // 诊断埋点（E）：后台快照 vs 主线程通知拆分，定位同步后整表重建掉帧。
+      final swBg = Stopwatch()..start();
+      perfPhase('library.refreshDirect.snapshot'); // TEMP-PROBE
+      final snap = await m.librarySnapshotInBackground(query: _lastQuery);
+      final bgMs = swBg.elapsedMilliseconds;
+      if (token != _snapshotToken) return; // 更新的全量刷新已接管
+      perfPhase('library.refreshDirect.assign'); // TEMP-PROBE
+      songs = snap.songs;
+      albums = snap.albums;
+      artists = snap.artists;
+      notifyListeners();
+      perfLog('library.refreshDirect', 'bg=${bgMs}ms n=${snap.songs.length}');
+    });
   }
 
   /// 读取全部直连源的歌曲（同步，来自本地索引）。
@@ -283,31 +268,18 @@ class LibraryProvider extends ChangeNotifier {
   /// 后台 isolate 重算；in-flight 期间再次触发只登记 dirty，完成后补一轮，
   /// 避免解析器逐批通知时排队堆积一串查询。
   void refreshArtists() {
-    if (_artistsRefreshInflight) {
-      _artistsRefreshDirty = true;
-      return;
-    }
-    _artistsRefreshInflight = true;
-    final token = ++_artistsToken;
-    unawaited(() async {
-      try {
-        final m = _directManager;
-        final current = songs;
-        final list = m == null
-            ? await runOffThread(() => Artist.fromSongs(current))
-            : await m.artistGroupsInBackground(query: _lastQuery);
-        if (token == _artistsToken) {
-          artists = list;
-          notifyListeners();
-        }
-      } finally {
-        _artistsRefreshInflight = false;
-        if (_artistsRefreshDirty) {
-          _artistsRefreshDirty = false;
-          refreshArtists();
-        }
+    _artistsRefresh.run(() async {
+      final token = ++_artistsToken;
+      final m = _directManager;
+      final current = songs;
+      final list = m == null
+          ? await runOffThread(() => Artist.fromSongs(current))
+          : await m.artistGroupsInBackground(query: _lastQuery);
+      if (token == _artistsToken) {
+        artists = list;
+        notifyListeners();
       }
-    }());
+    });
   }
 
   /// 依据匹配的 sourceKey 解析播放源。

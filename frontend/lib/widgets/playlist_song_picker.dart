@@ -7,6 +7,7 @@ import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/library_provider.dart';
 import '../providers/playlists_provider.dart';
+import '../utils/song_key.dart';
 import '../utils/song_search.dart';
 import '../utils/song_title_format.dart';
 import 'app_toast.dart';
@@ -144,7 +145,7 @@ class _PlaylistSongPickerState extends State<_PlaylistSongPicker> {
     final out = <String>{};
     for (final item in provider.itemsOf(widget.playlistId)) {
       for (final ref in webdavRefVariants(item.songRef)) {
-        out.add('${item.sourceKey}\u0000$ref');
+        out.add(songKeyOf(item.sourceKey, ref));
       }
     }
     return out;
@@ -154,7 +155,7 @@ class _PlaylistSongPickerState extends State<_PlaylistSongPicker> {
     final refs = _existingRefs;
     if (refs == null || refs.isEmpty) return false;
     for (final ref in webdavRefVariants(s.sourceRef)) {
-      if (refs.contains('${s.sourceKey}\u0000$ref')) return true;
+      if (refs.contains(songKeyOf(s.sourceKey, ref))) return true;
     }
     return false;
   }
@@ -167,22 +168,22 @@ class _PlaylistSongPickerState extends State<_PlaylistSongPicker> {
     _display = filterSongs(lib.songs, _query);
     _added = {
       for (final s in _display)
-        if (_isAdded(s)) songKey(s),
+        if (_isAdded(s)) selectionKey(s),
     };
   }
 
   List<Song> get _selectable => [
         for (final s in _display)
-          if (!_added.contains(songKey(s))) s,
+          if (!_added.contains(selectionKey(s))) s,
       ];
 
   bool get _allSelected {
     final list = _selectable;
-    return list.isNotEmpty && list.every((s) => _sel.contains(songKey(s)));
+    return list.isNotEmpty && list.every((s) => _sel.contains(selectionKey(s)));
   }
 
   void _toggle(Song s) {
-    final key = songKey(s);
+    final key = selectionKey(s);
     if (_added.contains(key)) return;
     setState(() => _sel.toggle(key));
   }
@@ -194,7 +195,7 @@ class _PlaylistSongPickerState extends State<_PlaylistSongPicker> {
       if (_allSelected) {
         _sel.clearAll();
       } else {
-        _sel.addAll([for (final s in list) songKey(s)]);
+        _sel.addAll([for (final s in list) selectionKey(s)]);
       }
     });
   }
@@ -303,7 +304,7 @@ class _PlaylistSongPickerState extends State<_PlaylistSongPicker> {
   }
 
   Widget _row(BuildContext c, Song s, SongTitleFormat format) {
-    final key = songKey(s);
+    final key = selectionKey(s);
     final added = _added.contains(key);
     final selected = _sel.contains(key);
     final cs = Theme.of(c).colorScheme;

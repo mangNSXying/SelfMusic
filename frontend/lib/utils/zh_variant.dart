@@ -14,6 +14,8 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
+import 'enum_parse.dart';
+
 import 'off_thread.dart';
 
 /// 简繁显示（设置→界面）：只影响元数据展示，不修改任何存储字段。
@@ -26,8 +28,8 @@ enum ZhVariant {
   final String label;
   final String hint;
 
-  static ZhVariant parse(String? v) => ZhVariant.values
-      .firstWhere((e) => e.name == v, orElse: () => ZhVariant.original);
+  static ZhVariant parse(String? v) =>
+      enumByNameOr(ZhVariant.values, v, ZhVariant.original);
 }
 
 const String _kTsCharacters = 'assets/opencc/TSCharacters.txt';

@@ -7,6 +7,8 @@ import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
 import '../data/local/sync_entity_key.dart';
 import '../data/local/sync_event_types.dart';
+import '../utils/backoff.dart';
+import '../utils/log_throttle.dart';
 import '../utils/perf_log.dart';
 import 'api_client.dart';
 
@@ -45,16 +47,10 @@ class SyncEngine {
 
   /// 早退类日志（未启用/未配对/退避中）节流：最多每 60s 一条，
   /// 避免 2s tick 反复打同一行（tick 会不断重试）。
-  DateTime? _lastIdleLogAt;
+  final LogThrottle _idleLog = LogThrottle();
 
   void _logIdle(String reason) {
-    final now = DateTime.now();
-    final last = _lastIdleLogAt;
-    if (last != null && now.difference(last) < const Duration(seconds: 60)) {
-      return;
-    }
-    _lastIdleLogAt = now;
-    perfLog('sync.idle', reason);
+    if (_idleLog.shouldLog(reason)) perfLog('sync.idle', reason);
   }
 
   /// 最近一次同步结果（UI 展示/调试用）。
@@ -286,8 +282,7 @@ class SyncEngine {
     final now = DateTime.now();
     final failAt = _lastFailAt;
     if (failAt != null) {
-      var backoff = Duration(seconds: 1 << _failCount.clamp(0, 5));
-      if (backoff > _maxBackoff) backoff = _maxBackoff;
+      final backoff = exponentialBackoff(_failCount, cap: _maxBackoff);
       if (now.difference(failAt) < backoff) return;
     }
     final pulledAt = _lastPullAt;
@@ -313,8 +308,7 @@ class SyncEngine {
     if (!force) {
       final failAt = _lastFailAt;
       if (failAt != null) {
-        var backoff = Duration(seconds: 1 << _failCount.clamp(0, 5));
-        if (backoff > _maxBackoff) backoff = _maxBackoff;
+        final backoff = exponentialBackoff(_failCount, cap: _maxBackoff);
         if (DateTime.now().difference(failAt) < backoff) {
           _logIdle('退避中（还剩 ${backoff.inSeconds}s）');
           return;

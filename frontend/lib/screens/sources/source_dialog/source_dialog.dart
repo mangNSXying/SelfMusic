@@ -19,6 +19,7 @@ import '../../../platform/harmonyos/ohos_platform_bridge.dart';
 import '../../../providers/direct_source_manager.dart';
 import '../../../providers/player_provider.dart';
 import '../../../services/api_client.dart';
+import '../../../utils/format_bytes.dart';
 import '../../../utils/url_input.dart';
 import '../../../widgets/app_dialog_actions.dart';
 import '../../../widgets/app_toast.dart';
@@ -1321,15 +1322,14 @@ class _SourceDialogState extends State<SourceDialog> {
     );
   }
 
-  String _formatBytes(int bytes) {
-    if (bytes <= 0) return '大小未知';
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
-  }
+  String _formatBytes(int bytes) => formatBytes(
+        bytes,
+        zero: '大小未知',
+        minUnit: ByteUnit.b,
+        kbDecimals: 1,
+        mbDecimals: 1,
+        gbDecimals: 2,
+      );
 
   @override
   Widget build(BuildContext context) {

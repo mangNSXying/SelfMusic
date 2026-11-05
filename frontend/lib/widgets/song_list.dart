@@ -168,11 +168,11 @@ class _SongListState extends State<SongList> {
     );
     if (ok != true || !mounted) return;
     clearSelection();
-    final keys = {for (final s in selected) songKey(s)};
+    final keys = {for (final s in selected) selectionKey(s)};
     // 从后往前移除，避免 store 序号移位问题（_items 与 _songs 按同序平行）。
     final removed = <Song>[];
     for (var i = _items.length - 1; i >= 0; i--) {
-      if (keys.contains(songKey(_songs[i]))) {
+      if (keys.contains(selectionKey(_songs[i]))) {
         provider.removeItemRow(widget.playlistId, _items[i]);
         removed.add(_songs[i]);
       }

@@ -10,6 +10,7 @@ import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
 import '../services/online_meta/online_meta_models.dart';
 import '../services/online_meta/online_meta_service.dart';
+import '../utils/duration_format.dart';
 import '../utils/zh_variant.dart';
 import 'app_dialog_actions.dart';
 import 'app_toast.dart';
@@ -1052,8 +1053,6 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
     );
   }
 
-  static String _fmtDur(double sec) {
-    final s = sec.round();
-    return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
-  }
+  static String _fmtDur(double sec) =>
+      formatDuration(sec.round(), padMinutes: false);
 }

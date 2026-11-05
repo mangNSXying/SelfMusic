@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import '../utils/duration_format.dart';
 import '../utils/perf_log.dart';
 
 /// 简易应用内日志缓冲区：捕获 [debugPrint] 输出与 [perfLog] 埋点
@@ -25,13 +26,7 @@ class LogEntry {
     return '[$ts][$level] $message';
   }
 
-  static String _formatTime(DateTime t) {
-    final h = t.hour.toString().padLeft(2, '0');
-    final m = t.minute.toString().padLeft(2, '0');
-    final s = t.second.toString().padLeft(2, '0');
-    final ms = t.millisecond.toString().padLeft(3, '0');
-    return '$h:$m:$s.$ms';
-  }
+  static String _formatTime(DateTime t) => formatLogTimestamp(t);
 }
 
 /// 日志缓冲管理器（单例）。

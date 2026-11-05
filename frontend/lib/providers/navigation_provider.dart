@@ -5,6 +5,7 @@ import '../models/album.dart';
 import '../models/artist.dart';
 import '../models/song.dart';
 import '../theme/app_theme.dart';
+import '../utils/enum_parse.dart';
 import '../utils/perf_log.dart';
 import '../utils/source_folders.dart';
 
@@ -25,13 +26,6 @@ enum LibraryInfoPage {
 enum ContentFamily { playlist, source, albumArtist }
 
 /// 按枚举 `name` 反解（持久化状态恢复用；未知值返回 null）。
-T? _enumByName<T extends Enum>(List<T> values, Object? name) {
-  if (name is! String) return null;
-  for (final value in values) {
-    if (value.name == name) return value;
-  }
-  return null;
-}
 
 /// 内容区路由（底 → 顶由 [NavigationProvider.contentRoutes] 持有）。
 ///
@@ -330,7 +324,7 @@ class NavigationProvider extends ChangeNotifier {
       if (state['v'] != _stateVersion) return;
 
       final sectionName = state['section'];
-      _section = _enumByName(NavSection.values, sectionName) ?? _section;
+      _section = enumByNameOrNull(NavSection.values, sectionName) ?? _section;
 
       final routes = state['routes'];
       if (routes is! List) return;
@@ -375,10 +369,10 @@ class NavigationProvider extends ChangeNotifier {
     try {
       switch (map['t']) {
         case 'settings':
-          final item = _enumByName(SettingsItem.values, map['item']);
+          final item = enumByNameOrNull(SettingsItem.values, map['item']);
           return item == null ? null : SettingsRoute(item);
         case 'info':
-          final page = _enumByName(LibraryInfoPage.values, map['page']);
+          final page = enumByNameOrNull(LibraryInfoPage.values, map['page']);
           return page == null ? null : LibraryInfoRoute(page);
         case 'about':
           return const AboutRoute();

@@ -10,6 +10,7 @@ import '../../data/local/app_settings.dart';
 import '../../platform/harmonyos/ohos_bootstrap.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../services/artist_resolver.dart';
+import '../../utils/format_bytes.dart';
 import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/row_action_button.dart';
@@ -553,12 +554,8 @@ class _SongsSettingsState extends State<SongsSection> {
     return {'min_sec': min, 'max_sec': max, 'factor': f.clamp(0.5, 1.5)};
   }
 
-  static String _labelBytes(int bytes) {
-    if (bytes >= 1024 * 1024 * 1024) {
-      return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
-    }
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(0)} MB';
-  }
+  static String _labelBytes(int bytes) =>
+      formatBytes(bytes, zero: '0 MB', minUnit: ByteUnit.mb);
 
   Future<void> _editScanInterval(BuildContext context) async {
     final controller =

@@ -6,6 +6,7 @@ import 'package:unorm_dart/unorm_dart.dart' as unorm;
 
 import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
+import '../utils/backoff.dart';
 import '../utils/chunked_scheduler.dart' show yieldToEventLoop;
 import '../utils/main_thread_probe.dart';
 
@@ -586,7 +587,11 @@ class ArtistResolver extends ChangeNotifier {
 
   Future<void> _markBackoff(ArtistWorkItem item, int extraMs) async {
     final err = item.errorCount + 1;
-    final base = err >= 4 ? 300000 : 10000 * (1 << (err - 1).clamp(0, 3));
+    final base = err >= 4
+        ? 300000
+        : exponentialBackoff(err - 1,
+            base: const Duration(seconds: 10),
+            cap: const Duration(seconds: 300)).inMilliseconds;
     await _index.artistMarkError(
       artistKey: item.artistKey,
       errorCount: err,
@@ -595,14 +600,10 @@ class ArtistResolver extends ChangeNotifier {
     );
   }
 
-  int _retryAfterMs(DioException e) {
-    final sec = e.response?.headers.value('retry-after');
-    final v = int.tryParse(sec ?? '');
-    if (v != null) return v * 1000;
-    final status = e.response?.statusCode;
-    if (status == 503 || status == 429) return 60000;
-    return 60000;
-  }
+  int _retryAfterMs(DioException e) =>
+      parseRetryAfter(e.response?.headers.value('retry-after'))
+              ?.inMilliseconds ??
+          60000;
 
   // ---------- MusicBrainz 请求 ----------
 

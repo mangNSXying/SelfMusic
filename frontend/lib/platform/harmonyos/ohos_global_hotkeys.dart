@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../../shortcuts/shortcut_models.dart';
+import '../../utils/enum_parse.dart';
 
 /// 鸿蒙全局快捷键桥（Dart 侧，`selfmusic/global_hotkeys` 通道封装）。
 ///
@@ -72,14 +73,8 @@ class OhosGlobalHotkeys {
 
   Future<Object?> _handleCall(MethodCall call) async {
     if (call.method != 'triggered') return null;
-    final id = call.arguments;
-    if (id is! String) return null;
-    for (final action in ShortcutAction.values) {
-      if (action.name == id) {
-        _onTriggered?.call(action);
-        break;
-      }
-    }
+    final action = enumByNameOrNull(ShortcutAction.values, call.arguments);
+    if (action != null) _onTriggered?.call(action);
     return null;
   }
 }
