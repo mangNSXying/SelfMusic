@@ -5,26 +5,26 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../data/sources/music_source.dart';
-import '../data/sources/scan_worker.dart';
-import '../models/song.dart';
-import '../providers/direct_source_manager.dart';
-import '../providers/library_provider.dart';
-import '../providers/player_provider.dart';
-import '../providers/navigation_provider.dart';
-import '../utils/collection_sort.dart';
-import '../utils/song_groups.dart';
-import '../utils/source_folders.dart';
-import '../utils/zh_variant.dart';
-import '../widgets/add_to_playlist.dart';
-import '../widgets/app_dialog_actions.dart';
-import '../widgets/app_toast.dart';
-import '../widgets/detail_presentation.dart';
-import '../widgets/header_action_button.dart';
-import '../widgets/selection_bar.dart';
-import '../widgets/song_collection_view.dart';
-import '../widgets/song_selection_actions.dart';
-import '../widgets/toolbar_icon_button.dart';
+import '../../data/sources/music_source.dart';
+import '../../data/sources/scan_worker.dart';
+import '../../models/song.dart';
+import '../../providers/direct_source_manager.dart';
+import '../../providers/library_provider.dart';
+import '../../providers/player_provider.dart';
+import '../../providers/navigation_provider.dart';
+import '../../utils/collection_sort.dart';
+import '../../utils/song_groups.dart';
+import '../../utils/source_folders.dart';
+import '../../utils/zh_variant.dart';
+import '../../widgets/add_to_playlist.dart';
+import '../../widgets/app_dialog_actions.dart';
+import '../../widgets/app_toast.dart';
+import '../../widgets/detail_presentation.dart';
+import '../../widgets/header_action_button.dart';
+import '../../widgets/selection_bar.dart';
+import '../../widgets/song_collection_view.dart';
+import '../../widgets/song_selection_actions.dart';
+import '../../widgets/toolbar_icon_button.dart';
 
 /// 源内浏览组件：在 AppContent 内容区原地渲染。
 ///

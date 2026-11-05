@@ -11,7 +11,7 @@ import 'package:selfmusic/data/sources/local_file_direct_source.dart';
 import 'package:selfmusic/data/sources/music_source.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
-import 'package:selfmusic/screens/sources_screen.dart';
+import 'package:selfmusic/screens/sources/sources_screen.dart';
 import 'package:selfmusic/theme/app_theme.dart';
 import 'package:selfmusic/widgets/single_choice_group.dart';
 import 'package:sqlite3/open.dart';
