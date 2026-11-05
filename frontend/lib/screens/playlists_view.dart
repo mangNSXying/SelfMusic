@@ -165,13 +165,13 @@ class _PlaylistsViewState extends State<PlaylistsView>
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      viewModeToggle(),
                       SortMenuButton(
                         value: direct.settings.sortPlaylists,
                         scope: SortScope.collections,
                         onChanged: (v) => setState(
                             () => direct.settings.sortPlaylists = v),
                       ),
-                      viewModeToggle(),
                     ],
                   ),
                 ),

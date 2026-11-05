@@ -167,13 +167,13 @@ class _SourcesScreenState extends State<SourcesScreen>
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  viewModeToggle(),
                   SortMenuButton(
                     value: direct.settings.sortSources,
                     scope: SortScope.collections,
                     onChanged: (v) =>
                         setState(() => direct.settings.sortSources = v),
                   ),
-                  viewModeToggle(),
                 ],
               ),
             ),
