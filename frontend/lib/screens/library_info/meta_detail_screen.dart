@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../data/local/local_index.dart';
-import '../providers/direct_source_manager.dart';
-import '../utils/zh_variant.dart';
-import '../widgets/resizable_paginated_table.dart';
-import '../widgets/table_columns.dart';
-import 'library_info_detail_shared.dart';
+import '../../data/local/local_index.dart';
+import '../../providers/direct_source_manager.dart';
+import '../../utils/zh_variant.dart';
+import '../../widgets/resizable_paginated_table.dart';
+import '../../widgets/table_columns.dart';
+import 'detail_shared.dart';
 
 /// 歌曲信息 → 元数据详情：精确到每一首歌，各维度“有没有 / 是什么”。
 ///
@@ -451,8 +451,8 @@ String metaDimValue(MetaDetailRow r, String dim) => switch (dim) {
       _ => '',
     };
 
-String metaText(String? s) =>
-    (s == null || s.isEmpty) ? '缺失' : zhDisplay(s);
+String metaText(String? s) => (s == null || s.isEmpty) ? '缺失' : zhDisplay(s);
 
-int _cmpTitle(MetaDetailRow a, MetaDetailRow b) =>
-    zhDisplay(a.title).toLowerCase().compareTo(zhDisplay(b.title).toLowerCase());
+int _cmpTitle(MetaDetailRow a, MetaDetailRow b) => zhDisplay(a.title)
+    .toLowerCase()
+    .compareTo(zhDisplay(b.title).toLowerCase());

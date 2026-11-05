@@ -1,33 +1,13 @@
 import 'package:flutter/material.dart';
+
 import 'package:provider/provider.dart';
 
-import '../data/local/local_index.dart';
-import '../providers/direct_source_manager.dart';
-import '../providers/navigation_provider.dart';
-import '../services/artist_resolver.dart';
-import '../utils/build_stamp.dart';
-import '../utils/play_stats.dart';
-import 'library_info_extra_details.dart';
-import 'library_info_meta_detail.dart';
-import 'library_info_play_detail.dart';
-
-/// 歌曲信息工具页（L2 内容栈）：按子页分发到总览或 4 个明细页。
-class LibraryInfoContent extends StatelessWidget {
-  const LibraryInfoContent({super.key, required this.page});
-
-  final LibraryInfoPage page;
-
-  @override
-  Widget build(BuildContext context) {
-    return switch (page) {
-      LibraryInfoPage.overview => const LibraryInfoScreen(),
-      LibraryInfoPage.meta => const MetaDetailScreen(),
-      LibraryInfoPage.artists => const ArtistDetailScreen(),
-      LibraryInfoPage.formats => const FormatDetailScreen(),
-      LibraryInfoPage.play => const PlayDetailScreen(),
-    };
-  }
-}
+import '../../data/local/local_index.dart';
+import '../../providers/direct_source_manager.dart';
+import '../../providers/navigation_provider.dart';
+import '../../services/artist_resolver.dart';
+import '../../utils/build_stamp.dart';
+import '../../utils/play_stats.dart';
 
 /// 侧边栏「歌曲信息」总览：汇总全部歌曲的元数据读取情况 + 播放数据。
 /// 口径见 [LocalIndex.metaStats] / [LocalIndex.playOverview]。

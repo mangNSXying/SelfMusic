@@ -11,10 +11,10 @@ import '../../utils/motion.dart';
 import '../../widgets/content_stack.dart';
 import '../../widgets/page_transition.dart';
 import '../about_screen.dart';
-import '../library_info_screen.dart';
+import '../library_info/library_info_content.dart';
 import '../settings/settings_screen.dart';
 import '../sources/source_browse_view.dart';
-import '../playlists_view.dart';
+import '../playlists/playlist_detail_view.dart';
 import 'detail_pages.dart';
 import 'section_pager.dart';
 

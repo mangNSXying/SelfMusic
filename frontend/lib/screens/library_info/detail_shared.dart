@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../layout/screen_metrics.dart';
+import '../../layout/screen_metrics.dart';
 
 /// 歌曲信息详情页共用：宽窄断点、单元格样式、异步装载。
 ///
@@ -61,4 +61,3 @@ class DetailDataLoader<T> {
     }
   }
 }
-

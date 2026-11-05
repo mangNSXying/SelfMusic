@@ -1,31 +1,33 @@
 import 'package:flutter/material.dart';
+
 import 'package:provider/provider.dart';
 
-import '../data/local/app_settings.dart';
-import '../data/local/local_index.dart';
-import '../navigation/detail_target.dart';
-import '../layout/screen_metrics.dart';
-import '../providers/direct_source_manager.dart';
-import '../providers/navigation_provider.dart';
-import '../providers/player_provider.dart';
-import '../providers/playlists_provider.dart';
-import '../theme/app_theme.dart';
-import '../utils/collection_sort.dart';
-import '../widgets/app_dialog_actions.dart';
-import '../widgets/context_menu.dart';
-import '../widgets/corner_add_button.dart';
-import '../widgets/count_header.dart';
-import '../widgets/detail_presentation.dart';
-import '../widgets/list_detail_split.dart';
-import '../widgets/row_list.dart';
-import '../widgets/selection_badge.dart';
-import '../widgets/square_card.dart';
-import '../widgets/list_selection.dart';
-import '../widgets/playlist_song_picker.dart';
-import '../widgets/selection_bar.dart';
-import '../widgets/song_list.dart';
-import '../widgets/sort_menu_button.dart';
-import '../widgets/view_mode_toggle.dart';
+import '../../data/local/app_settings.dart';
+import '../../data/local/local_index.dart';
+import '../../navigation/detail_target.dart';
+import '../../layout/screen_metrics.dart';
+import '../../providers/direct_source_manager.dart';
+import '../../providers/navigation_provider.dart';
+import '../../providers/player_provider.dart';
+import '../../providers/playlists_provider.dart';
+import '../../theme/app_theme.dart';
+import '../../utils/collection_sort.dart';
+import '../../widgets/app_dialog_actions.dart';
+import '../../widgets/context_menu.dart';
+import '../../widgets/corner_add_button.dart';
+import '../../widgets/count_header.dart';
+import '../../widgets/detail_presentation.dart';
+import '../../widgets/list_detail_split.dart';
+import '../../widgets/row_list.dart';
+import '../../widgets/selection_badge.dart';
+import '../../widgets/square_card.dart';
+import '../../widgets/list_selection.dart';
+import '../../widgets/selection_bar.dart';
+import '../../widgets/sort_menu_button.dart';
+import '../../widgets/view_mode_toggle.dart';
+
+import 'playlist_detail_view.dart';
+import 'playlist_dialogs.dart';
 
 /// 歌单栏：列表页（新建 / 重命名 / 删除 / 长按多选删除）与详情原地子视图。
 class PlaylistsView extends StatefulWidget {
@@ -138,78 +140,76 @@ class _PlaylistsViewState extends State<PlaylistsView>
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-              if (_sel.active)
-                SelectionBar(
-                  total: playlists.length,
-                  // 「已选 N」只数可见项；批量动作也只作用于可见项。
-                  selectedCount: _sel.of(playlists.map((p) => p.id)).length,
-                  onSelectAll: () => setState(
-                      () => _sel.addAll(playlists.map((p) => p.id))),
-                  onSelectNone: () => setState(_sel.clearAll),
-                  onCancel: () => setState(_sel.cancel),
-                  actions: [
-                    SelectionAction(
-                      icon: Icons.delete,
-                      label: '删除选中',
-                      onPressed: _sel.of(playlists.map((p) => p.id)).isEmpty
-                          ? null
-                          : () => _deleteSelected(provider, playlists),
+            if (_sel.active)
+              SelectionBar(
+                total: playlists.length,
+                // 「已选 N」只数可见项；批量动作也只作用于可见项。
+                selectedCount: _sel.of(playlists.map((p) => p.id)).length,
+                onSelectAll: () =>
+                    setState(() => _sel.addAll(playlists.map((p) => p.id))),
+                onSelectNone: () => setState(_sel.clearAll),
+                onCancel: () => setState(_sel.cancel),
+                actions: [
+                  SelectionAction(
+                    icon: Icons.delete,
+                    label: '删除选中',
+                    onPressed: _sel.of(playlists.map((p) => p.id)).isEmpty
+                        ? null
+                        : () => _deleteSelected(provider, playlists),
+                  ),
+                ],
+              ),
+            if (_sel.active) const Divider(height: 1),
+            if (!_sel.active)
+              CountHeader(
+                count: playlists.length,
+                unit: '个歌单',
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    viewModeToggle(),
+                    SortMenuButton(
+                      value: direct.settings.sortPlaylists,
+                      scope: SortScope.collections,
+                      onChanged: (v) =>
+                          setState(() => direct.settings.sortPlaylists = v),
                     ),
                   ],
                 ),
-              if (_sel.active) const Divider(height: 1),
-              if (!_sel.active)
-                CountHeader(
-                  count: playlists.length,
-                  unit: '个歌单',
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      viewModeToggle(),
-                      SortMenuButton(
-                        value: direct.settings.sortPlaylists,
-                        scope: SortScope.collections,
-                        onChanged: (v) => setState(
-                            () => direct.settings.sortPlaylists = v),
-                      ),
-                    ],
-                  ),
-                ),
-              Expanded(
-                child: playlists.isEmpty
-                    ? Center(
-                        child: Text(all.isEmpty
-                            ? '暂无歌单，点右下角「+」创建'
-                            : '无匹配歌单'))
-                    : card
-                        ? SquareCardGrid(
-                            itemCount: playlists.length,
-                            titleMaxLines: 2,
-                            itemBuilder: (c, i) =>
-                                _playlistCard(provider, playlists[i]),
-                          )
-                        : RowList(
-                            // 分栏↔整页切换会重建列表：靠 PageStorage 记住滚动位置。
-                            key: const PageStorageKey<String>('playlists-list'),
-                            count: playlists.length,
-                            itemBuilder: (c, i) => _playlistTile(
-                              provider,
-                              playlists[i],
-                              active: split && selectedId == playlists[i].id,
-                            ),
-                          ),
               ),
-            ],
-          ),
-          Positioned(
-            right: 16,
-            bottom: 16,
-            child: CornerAddButton(
-              tooltip: '新建歌单',
-              onPressed: () => _createDialog(context, provider),
+            Expanded(
+              child: playlists.isEmpty
+                  ? Center(
+                      child: Text(all.isEmpty ? '暂无歌单，点右下角「+」创建' : '无匹配歌单'))
+                  : card
+                      ? SquareCardGrid(
+                          itemCount: playlists.length,
+                          titleMaxLines: 2,
+                          itemBuilder: (c, i) =>
+                              _playlistCard(provider, playlists[i]),
+                        )
+                      : RowList(
+                          // 分栏↔整页切换会重建列表：靠 PageStorage 记住滚动位置。
+                          key: const PageStorageKey<String>('playlists-list'),
+                          count: playlists.length,
+                          itemBuilder: (c, i) => _playlistTile(
+                            provider,
+                            playlists[i],
+                            active: split && selectedId == playlists[i].id,
+                          ),
+                        ),
             ),
+          ],
+        ),
+        Positioned(
+          right: 16,
+          bottom: 16,
+          child: CornerAddButton(
+            tooltip: '新建歌单',
+            onPressed: () => showCreatePlaylistDialog(context, provider),
           ),
-        ],
+        ),
+      ],
     );
 
     return ListDetailSplit(
@@ -228,10 +228,9 @@ class _PlaylistsViewState extends State<PlaylistsView>
         detailKey: selectedId,
         emptyIcon: Icons.queue_music,
         emptyText: '从左侧选择歌单查看歌曲',
-        duration:
-            direct.settings.playerTransition == PlayerTransition.none
-                ? Duration.zero
-                : kDetailPaneMotion,
+        duration: direct.settings.playerTransition == PlayerTransition.none
+            ? Duration.zero
+            : kDetailPaneMotion,
       ),
     );
   }
@@ -322,9 +321,9 @@ class _PlaylistsViewState extends State<PlaylistsView>
       PlaylistsProvider provider, PlaylistRow p, String v) {
     switch (v) {
       case 'rename':
-        _renameDialog(context, provider, p);
+        showRenamePlaylistDialog(context, provider, p);
       case 'delete':
-        _confirmDelete(context, provider, p);
+        confirmDeletePlaylist(context, provider, p);
     }
   }
 
@@ -337,127 +336,5 @@ class _PlaylistsViewState extends State<PlaylistsView>
       items: _playlistMenuItems,
     );
     if (picked != null && mounted) _handlePlaylistMenu(provider, p, picked);
-  }
-
-  static Future<void> _createDialog(
-      BuildContext context, PlaylistsProvider provider) async {
-    final ctrl = TextEditingController();
-    final name = await showDialog<String>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('新建歌单'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: '名称'),
-        ),
-        actions: appDialogActions(
-          c,
-          confirmLabel: '创建',
-          onCancel: () => Navigator.of(c).pop(),
-          onConfirm: () {
-            final t = ctrl.text.trim();
-            if (t.isEmpty) return;
-            Navigator.of(c).pop(t);
-          },
-        ),
-      ),
-    );
-    if (name != null && name.isNotEmpty && context.mounted) {
-      provider.create(name);
-    }
-  }
-
-  static Future<void> _renameDialog(
-      BuildContext context, PlaylistsProvider provider, PlaylistRow p) async {
-    final ctrl = TextEditingController(text: p.name);
-    final name = await showDialog<String>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('重命名歌单'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: '名称'),
-        ),
-        actions: appDialogActions(
-          c,
-          confirmLabel: '保存',
-          onCancel: () => Navigator.of(c).pop(),
-          onConfirm: () {
-            final t = ctrl.text.trim();
-            if (t.isEmpty) return;
-            Navigator.of(c).pop(t);
-          },
-        ),
-      ),
-    );
-    if (name != null && name.isNotEmpty) provider.rename(p.id, name);
-  }
-
-  static Future<void> _confirmDelete(
-      BuildContext context, PlaylistsProvider provider, PlaylistRow p) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('删除歌单'),
-        content: Text('确定删除「${p.name}」？其中歌曲不会被删除，仅移除歌单。'),
-        actions: appDialogActions(
-          c,
-          confirmLabel: '删除',
-          destructive: true,
-          onCancel: () => Navigator.of(c).pop(false),
-          onConfirm: () => Navigator.of(c).pop(true),
-        ),
-      ),
-    );
-    if (ok == true && context.mounted) {
-      final nav = context.read<NavigationProvider>();
-      if (nav.browsingPlaylistId == p.id) nav.exitPlaylist();
-      provider.delete(p.id);
-    }
-  }
-}
-
-/// 歌单详情（内容区原地子视图 / 大横屏分栏右栏共用）。
-///
-/// 外壳内嵌统一的 [SongList]（与播放器带「歌单页」同一份列表实现：同源、
-/// 同行形态、同写回语义）。头部返回按钮返回内容层；搜索跟随全局搜索框。
-class PlaylistDetailView extends StatelessWidget {
-  final int playlistId;
-
-  /// 呈现形态：整页（非分栏）保留分组横滑；分栏右栏不包 SectionSwipe 且
-  /// 自绘不透明底（见 [DetailPresentationShell]）。
-  final DetailPresentation presentation;
-
-  const PlaylistDetailView({
-    super.key,
-    required this.playlistId,
-    this.presentation = DetailPresentation.page,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    // 订阅收窄（T012）：歌单详情的目标 playlistId 由 widget 参数承载（父级路由
-    // 变更会重建本组件），build 内不读取 NavigationProvider 字段；全局搜索由内层
-    // [SongList] 自行订阅，故此处不订阅导航状态、区段变更零重建。
-    final nav = context.read<NavigationProvider>();
-    final list = SongList(
-      playlistId: playlistId,
-      // 返回 = 退回歌单列表：分栏时只清右栏（左栏过滤词保留），整页时沿用原口径。
-      onBack: () => nav.exitPlaylist(keepSearch: splitDetailActive(context)),
-      globalSearch: true,
-    );
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        DetailPresentationShell(presentation: presentation, child: list),
-        Positioned(
-          right: 16,
-          bottom: 16,
-          child: PlaylistAddSongsButton(playlistId: playlistId),
-        ),
-      ],
-    );
   }
 }

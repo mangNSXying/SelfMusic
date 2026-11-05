@@ -1,14 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../data/local/local_index.dart';
-import '../providers/direct_source_manager.dart';
-import '../utils/play_progress.dart';
-import '../utils/play_stats.dart';
-import '../utils/zh_variant.dart';
-import '../widgets/resizable_paginated_table.dart';
-import '../widgets/table_columns.dart';
-import 'library_info_detail_shared.dart';
+import '../../data/local/local_index.dart';
+import '../../providers/direct_source_manager.dart';
+import '../../utils/play_progress.dart';
+import '../../utils/play_stats.dart';
+import '../../utils/zh_variant.dart';
+import '../../widgets/resizable_paginated_table.dart';
+import '../../widgets/table_columns.dart';
+import 'detail_shared.dart';
 
 /// 歌曲信息 → 播放数据详情：全部有效歌曲的播放次数、播放时长与中位播放进度。
 ///
@@ -188,8 +188,8 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
               .compareTo(zhDisplay(b.artist ?? '').toLowerCase());
           if (c == 0) {
             c = zhDisplay(a.title)
-              .toLowerCase()
-              .compareTo(zhDisplay(b.title).toLowerCase());
+                .toLowerCase()
+                .compareTo(zhDisplay(b.title).toLowerCase());
           }
           break;
         case 2:
@@ -197,8 +197,8 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
           if (c == 0) c = a.playSec.compareTo(b.playSec);
           if (c == 0) {
             c = zhDisplay(a.title)
-              .toLowerCase()
-              .compareTo(zhDisplay(b.title).toLowerCase());
+                .toLowerCase()
+                .compareTo(zhDisplay(b.title).toLowerCase());
           }
           break;
         case 3:
@@ -206,16 +206,16 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
           if (c == 0) c = _countOf(a).compareTo(_countOf(b));
           if (c == 0) {
             c = zhDisplay(a.title)
-              .toLowerCase()
-              .compareTo(zhDisplay(b.title).toLowerCase());
+                .toLowerCase()
+                .compareTo(zhDisplay(b.title).toLowerCase());
           }
           break;
         case 4:
           c = (a.medianPercent ?? -1).compareTo(b.medianPercent ?? -1);
           if (c == 0) {
             c = zhDisplay(a.title)
-              .toLowerCase()
-              .compareTo(zhDisplay(b.title).toLowerCase());
+                .toLowerCase()
+                .compareTo(zhDisplay(b.title).toLowerCase());
           }
           break;
         case 5:
@@ -223,8 +223,8 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
           c = a.sourceKey.toLowerCase().compareTo(b.sourceKey.toLowerCase());
           if (c == 0) {
             c = zhDisplay(a.title)
-              .toLowerCase()
-              .compareTo(zhDisplay(b.title).toLowerCase());
+                .toLowerCase()
+                .compareTo(zhDisplay(b.title).toLowerCase());
           }
           break;
       }
@@ -383,10 +383,9 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
       itemBuilder: (context, i) {
         final r = rows[i];
         final played = r.playSec > 0;
-        final artist =
-            (r.artist == null || r.artist!.isEmpty)
-                ? '未知歌手'
-                : zhDisplay(r.artist!);
+        final artist = (r.artist == null || r.artist!.isEmpty)
+            ? '未知歌手'
+            : zhDisplay(r.artist!);
         return Card(
           margin: const EdgeInsets.symmetric(vertical: 4),
           child: ExpansionTile(
