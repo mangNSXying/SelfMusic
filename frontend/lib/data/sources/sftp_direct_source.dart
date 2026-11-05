@@ -1,15 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
-import 'dart:isolate';
-import 'dart:typed_data';
-
-import 'package:crypto/crypto.dart';
 import 'package:dartssh2/dartssh2.dart';
-import 'package:path/path.dart' as p;
 
 import '../../models/song.dart';
+import '../../utils/media_kinds.dart';
+import 'cache_stream.dart';
 import 'music_source.dart';
+import 'scan_commit.dart';
 import 'scan_worker.dart';
 import 'sftp_common.dart';
 import 'sftp_direct_transport.dart';
@@ -56,7 +53,7 @@ String buildSshEnvelope({
 /// - 凭据（密码/私钥/passphrase）只活在内存字段里，持久化收敛到 SecretStore；
 /// - 主机指纹走 `ssh_known_hosts` TOFU 钉（[LocalIndex]），未知/失配直接抛错，
 ///   由弹窗测试连接流程处理（扫描 isolate 内同样校验）。
-class SftpDirectSource implements MusicSource, MediaProxySource {
+class SftpDirectSource extends MusicSource implements MediaProxySource {
   @override
   final String name;
   final String host;
@@ -198,7 +195,7 @@ class SftpDirectSource implements MusicSource, MediaProxySource {
       Stream<List<int>> bytes, int length) async {
     sftpGuardWriteParent(parentRef);
     sftpGuardWriteName(filename);
-    if (!_audioExt(filename) && !isSidecarFileName(filename)) {
+    if (!isAudioFileName(filename) && !isSidecarFileName(filename)) {
       throw StateError(
           '仅支持上传音频文件（mp3/flac/m4a/aac/ogg/wav/aif[f][c]）与歌词/封面 sidecar（.lrc/.jpg/.png/.webp）');
     }
@@ -212,11 +209,6 @@ class SftpDirectSource implements MusicSource, MediaProxySource {
       rethrow;
     }
   }
-
-  @override
-  Future<void> uploadSidecar(String parentRef, String filename,
-          Stream<List<int>> bytes, int length) =>
-      uploadFile(parentRef, filename, bytes, length);
 
   @override
   Future<void> deleteSong(Song song) async {
@@ -299,7 +291,7 @@ class SftpDirectSource implements MusicSource, MediaProxySource {
       throw StateError('未知 SSH 主机，请先测试连接并确认主机指纹');
     }
     final known = index.scanFingerprint(key);
-    final out = await runScan<List<_SftpWalkOut>>(
+    final out = await runScan<List<ScannedSong>>(
       entry: _sftpWalkEntry,
       params: <String, Object?>{
         'key': key,
@@ -320,53 +312,11 @@ class SftpDirectSource implements MusicSource, MediaProxySource {
     );
 
     // 数据安全闸（与 WebDAV 同）：正常完成却为空、而库里有曲时中止防误清库。
-    if (out.isEmpty && known.isNotEmpty && !(token?.cancelled ?? false)) {
-      throw ScanWorkerException('扫描结果为 0，但本地库已有 ${known.length} 首；'
-          '为防止误清库已中止。如确认服务器目录已清空，请删除并重建该源');
-    }
-
-    final alive = <String>[];
-    final toWrite = <DirectSongRow>[];
-    var added = 0, updated = 0, unchanged = 0;
-    for (final item in out) {
-      alive.add(item.row.ref);
-      switch (item.kind) {
-        case _OutKind.unchanged:
-          unchanged++;
-          continue;
-        case _OutKind.added:
-          added++;
-        case _OutKind.updated:
-          updated++;
-      }
-      toWrite.add(DirectSongRow(
-        sourceKey: item.row.sourceKey,
-        ref: item.row.ref,
-        title: item.row.title,
-        titleFromMeta: item.row.titleFromMeta,
-        artist: item.row.artist,
-        album: item.row.album,
-        albumArtist: item.row.albumArtist,
-        trackNo: item.row.trackNo,
-        year: item.row.year,
-        genre: item.row.genre,
-        duration: item.row.duration,
-        format: item.row.format,
-        size: item.row.size,
-        mtime: item.row.mtime,
-        etag: item.row.etag,
-        coverPath: item.row.coverPath,
-      ));
-    }
-    await index.upsertSongs(toWrite);
-    await index.markMissingExcept(key, alive);
-    final removed = await index.clearMissing(key);
-    return ScanSummary(
-        added: added,
-        removed: removed,
-        updated: updated,
-        unchanged: unchanged,
-        total: alive.length);
+    return commitScan(index,
+        sourceKey: key,
+        items: out,
+        known: known,
+        cancelled: token?.cancelled ?? false);
   }
 
   @override
@@ -399,7 +349,7 @@ class SftpDirectSource implements MusicSource, MediaProxySource {
       'pinnedFp': fp,
       'path': _absPath(song.sourceRef),
       'size': song.fileSize,
-      'mime': _mimeOf(_extOf(song.sourceRef)),
+      'mime': audioMimeOf(audioExtOf(song.sourceRef)),
     };
   }
 
@@ -442,7 +392,7 @@ class SftpDirectSource implements MusicSource, MediaProxySource {
     );
     return OpenedStream(
       contentLength: res.contentLength,
-      contentType: _mimeOf(_extOf(song.sourceRef)),
+      contentType: audioMimeOf(audioExtOf(song.sourceRef)),
       stream: res.stream,
       totalLength: res.totalLength,
     );
@@ -450,72 +400,38 @@ class SftpDirectSource implements MusicSource, MediaProxySource {
 
   // ---------- 离线缓存（DEVELOPER.md「客户端同步与缓存批处理」，同 WebDAV 口径） ----------
 
-  static const int _cacheWriteBufBytes = 1 << 20;
-
   /// 缓存下载的让出节拍（仅旧直连路径）：每个 16KB 解密块后歇 6ms，避免整曲
   /// 缓存长时间占满 UI isolate。worker 路径解密不在 UI isolate，无需节拍。
   static const Duration _cachePaceSleep = Duration(milliseconds: 6);
 
-  String cacheKeyFor(Song song) =>
-      md5.convert(utf8.encode('$key|${song.sourceRef}')).toString();
-
   @override
   Future<String?> cachedFilePath(Song song) async =>
-      index.cachedPath(cacheKeyFor(song));
+      index.cachedPath(cacheKeyForSong(song));
 
   @override
   Future<String?> userCachedFilePath(Song song) async => index.cachedPath(
-      cacheKeyFor(song),
+      cacheKeyForSong(song),
       kind: CacheEntryKind.user);
-
-  /// 远端源原生解析仅对已缓存文件可用（R-2）；未缓存走 Dart 切片兜底。
-  @override
-  Future<String?> localSandboxPath(Song song) => cachedFilePath(song);
 
   @override
   Future<void> cacheSong(Song song,
       {bool Function()? shouldAbort,
       CacheEntryKind kind = CacheEntryKind.user}) async {
-    final cacheKey = cacheKeyFor(song);
+    final cacheKey = cacheKeyForSong(song);
     if (index.isCached(cacheKey)) return;
-    final tmp = File(p.join(index.cacheDir, '.tmp-$cacheKey'));
-    var committed = false;
-    try {
-      final req = await open(song);
-      final sink = tmp.openSync(mode: FileMode.write);
-      var buf = BytesBuilder(copy: false);
-      int total = 0;
-      try {
-        await for (final chunk in req.stream) {
-          if (shouldAbort?.call() == true) {
-            throw const PreloadAbortedException();
-          }
-          buf.add(chunk);
-          total += chunk.length;
-          if (buf.length >= _cacheWriteBufBytes) {
-            sink.writeFromSync(buf.takeBytes());
-          }
-          // 仅旧直连：与元数据补读同一让出纪律（见直连传输的 maxPendingRequests
-          // 注释）——整曲缓存持续跑纯 Dart 解密，若不歇息会长时间占满 UI
-          // isolate 导致掉帧；缓存是后台行为，慢一点换取界面可响应。
-          if (!SftpWorker.enabled) {
-            await Future<void>.delayed(_cachePaceSleep);
-          }
-        }
-        if (buf.isNotEmpty) sink.writeFromSync(buf.takeBytes());
-      } finally {
-        sink.closeSync();
-      }
-      await index.cacheCommit(cacheKey, tmp.path, total,
-          sourceKey: key, songRef: song.sourceRef, kind: kind);
-      committed = true;
-    } finally {
-      if (!committed && tmp.existsSync()) {
-        try {
-          tmp.deleteSync();
-        } catch (_) {}
-      }
-    }
+    final req = await open(song);
+    await cacheStreamToFile(
+      index,
+      cacheKey: cacheKey,
+      sourceKey: key,
+      songRef: song.sourceRef,
+      stream: req.stream,
+      kind: kind,
+      shouldAbort: shouldAbort,
+      // 仅旧直连：整曲缓存持续跑纯 Dart 解密，不歇息会长时间占满 UI isolate。
+      // worker 路径解密不在 UI isolate，无需节拍。
+      pace: SftpWorker.enabled ? null : _cachePaceSleep,
+    );
   }
 
   @override
@@ -556,50 +472,27 @@ class SftpDirectSource implements MusicSource, MediaProxySource {
 
 // ---------- isolate worker（runScan entry） ----------
 
-void _sftpWalkEntry(Map<String, Object?> msg) async {
-  final params = msg['params']! as Map<String, Object?>;
-  final send = msg['send']! as SendPort;
-  final progress = msg['progress']! as SendPort;
-  final cancelReq = ReceivePort();
-  send.send({'__cancel__': cancelReq.sendPort});
-  var cancelled = false;
-  cancelReq.listen((_) => cancelled = true);
-  try {
-    final out = await _sftpWalk(
-      key: params['key']! as String,
-      host: params['host']! as String,
-      port: params['port']! as int,
-      username: params['username']! as String,
-      authMethod: parseSftpAuthMethod(params['authMethod']),
-      password: params['password']! as String,
-      keyPem: params['keyPem']! as String,
-      keyPassphrase: params['keyPassphrase']! as String,
-      pinnedFp: params['pinnedFp']! as String,
-      rootPath: params['rootPath']! as String,
-      minSizeBytes: params['minSizeBytes']! as int,
-      known: (params['known']! as Map<Object?, Object?>)
-          .map((k, v) => MapEntry(k as String, v as ScanFingerprint)),
-      onProgress: (q) => progress.send(q),
-      isCancelled: () => cancelled,
-    );
-    send.send(out);
-  } catch (e) {
-    send.send({'__error__': e.toString()});
-  } finally {
-    cancelReq.close();
-  }
-}
-
-class _SftpWalkOut {
-  final DirectSongRow row;
-  final _OutKind kind;
-  const _SftpWalkOut(this.row, this.kind);
-}
-
-enum _OutKind { added, updated, unchanged }
+void _sftpWalkEntry(Map<String, Object?> msg) =>
+    runScanEntry(msg, (params, progress, isCancelled) => _sftpWalk(
+          key: params['key']! as String,
+          host: params['host']! as String,
+          port: params['port']! as int,
+          username: params['username']! as String,
+          authMethod: parseSftpAuthMethod(params['authMethod']),
+          password: params['password']! as String,
+          keyPem: params['keyPem']! as String,
+          keyPassphrase: params['keyPassphrase']! as String,
+          pinnedFp: params['pinnedFp']! as String,
+          rootPath: params['rootPath']! as String,
+          minSizeBytes: params['minSizeBytes']! as int,
+          known: (params['known']! as Map<Object?, Object?>)
+              .map((k, v) => MapEntry(k as String, v as ScanFingerprint)),
+          onProgress: progress,
+          isCancelled: isCancelled,
+        ));
 
 /// 进入 worker isolate：递归 readdir + 指纹 diff，返回可落库行。
-Future<List<_SftpWalkOut>> _sftpWalk({
+Future<List<ScannedSong>> _sftpWalk({
   required String key,
   required String host,
   required int port,
@@ -635,7 +528,7 @@ Future<List<_SftpWalkOut>> _sftpWalk({
     if (isCancelled?.call() ?? false) return const [];
     onProgress
         ?.call(ScanProgress(listing: false, done: 0, total: files.length));
-    final out = <_SftpWalkOut>[];
+    final out = <ScannedSong>[];
     var done = 0;
     for (final f in files) {
       done++;
@@ -644,19 +537,19 @@ Future<List<_SftpWalkOut>> _sftpWalk({
           ?.call(ScanProgress(listing: false, done: done, total: files.length));
       if (minSizeBytes > 0 && f.size > 0 && f.size < minSizeBytes) continue;
       final fp = known[f.ref];
-      final kind = fp == null ? _OutKind.added : _OutKind.updated;
-      out.add(_SftpWalkOut(
-        DirectSongRow(
+      final kind = fp == null ? ScanItemKind.added : ScanItemKind.updated;
+      out.add(ScannedSong(
+        row: DirectSongRow(
           sourceKey: key,
           ref: f.ref,
           title: fallbackTitle(f.ref),
           titleFromMeta: false,
-          format: _extOf(f.ref),
+          format: audioExtOf(f.ref),
           size: f.size,
           mtime: f.mtime,
         ),
-        fp != null && fp.same(f.size, f.mtime, null)
-            ? _OutKind.unchanged
+        kind: fp != null && fp.same(f.size, f.mtime, null)
+            ? ScanItemKind.unchanged
             : kind,
       ));
       if (out.length >= 20000) {
@@ -699,7 +592,7 @@ Future<void> _listRecursive(
     final isDir = n.attr.mode?.type == SftpFileType.directory;
     if (isDir) {
       await _listRecursive(sftp, abs, rel, out, isCancelled: isCancelled);
-    } else if (_audioExt(n.filename)) {
+    } else if (isAudioFileName(n.filename)) {
       out.add(_SftpEntry(
         ref: rel,
         size: n.attr.size ?? 0,
@@ -707,34 +600,5 @@ Future<void> _listRecursive(
       ));
     }
     if (out.length >= 20000) return;
-  }
-}
-
-bool _audioExt(String path) =>
-    RegExp(r'\.(mp3|flac|m4a|aac|ogg|wav|aif|aiff|aifc)$', caseSensitive: false)
-        .hasMatch(path);
-
-String _extOf(String path) {
-  final i = path.lastIndexOf('.');
-  return i >= 0 ? path.substring(i + 1).toLowerCase() : '';
-}
-
-String _mimeOf(String ext) {
-  switch (ext) {
-    case 'flac':
-      return 'audio/flac';
-    case 'm4a':
-    case 'aac':
-      return 'audio/mp4';
-    case 'ogg':
-      return 'audio/ogg';
-    case 'wav':
-      return 'audio/wav';
-    case 'aif':
-    case 'aiff':
-    case 'aifc':
-      return 'audio/aiff';
-    default:
-      return 'audio/mpeg';
   }
 }

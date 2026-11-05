@@ -1,4 +1,9 @@
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
+
 import '../../models/song.dart';
+import '../../utils/enum_parse.dart';
 import 'scan_worker.dart';
 import 'webdav_url.dart';
 
@@ -34,10 +39,8 @@ enum CacheEntryKind {
 }
 
 /// 解析持久化/同步来的 route 取值；缺失或非法一律回落直连（旧配置兼容）。
-SourceRoute parseSourceRoute(Object? v) => SourceRoute.values.firstWhere(
-      (e) => e.name == v,
-      orElse: () => SourceRoute.direct,
-    );
+SourceRoute parseSourceRoute(Object? v) =>
+    enumByNameOr(SourceRoute.values, v, SourceRoute.direct);
 
 /// 是否参与跨设备源同步：本地文件夹源与设备绑定（各机独立），
 /// 远端类型（webdav/smb/onedrive…）默认同步。
@@ -65,10 +68,8 @@ String fallbackSlotSuffix(int slot) => '#fb$slot';
 enum SourceLine { auto, primary, fb0, fb1 }
 
 /// 解析持久化的线路偏好；非法回落 auto。
-SourceLine parseSourceLine(Object? v) => SourceLine.values.firstWhere(
-      (e) => e.name == v,
-      orElse: () => SourceLine.auto,
-    );
+SourceLine parseSourceLine(Object? v) =>
+    enumByNameOr(SourceLine.values, v, SourceLine.auto);
 
 /// 备用源展示标签（`备用1` / `备用2`）。
 String fallbackLabel(int slot) => '备用${slot + 1}';
@@ -325,6 +326,10 @@ abstract class MusicSource {
   /// 打开音频流（支持 Range）。默认抛"不支持直连"。
   Future<OpenedStream> open(Song song, {IntRange? range}) async =>
       throw UnimplementedError('$key 不支持直连播放');
+
+  /// 离线缓存 key：`md5('$key|$sourceRef')`（远端源统一口径；本地源不使用）。
+  String cacheKeyForSong(Song song) =>
+      md5.convert(utf8.encode('$key|${song.sourceRef}')).toString();
 
   /// 若该歌可直接以 URL 播放（原生 Range/seek），返回 URL 与请求头；否则 null。
   DirectStream? directStream(Song song) => null;
