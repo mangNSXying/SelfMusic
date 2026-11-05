@@ -31,7 +31,7 @@ import 'shortcuts/shortcut_settings.dart';
 import 'theme/theme_provider.dart';
 import 'theme/app_theme.dart';
 import 'screens/content/app_content.dart';
-import 'screens/player_screen.dart';
+import 'screens/player/player_screen.dart';
 import 'layout/app_shell.dart';
 import 'layout/screen_metrics.dart';
 import 'widgets/app_dialog_actions.dart';
