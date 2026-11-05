@@ -11,7 +11,7 @@ import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/library_provider.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
-import 'package:selfmusic/screens/library_screen.dart';
+import 'package:selfmusic/screens/content/section_pager.dart';
 import 'package:selfmusic/services/artist_resolver.dart';
 import 'package:selfmusic/theme/app_theme.dart';
 import 'package:selfmusic/widgets/song_list.dart';

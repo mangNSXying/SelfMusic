@@ -14,7 +14,8 @@ import 'package:selfmusic/providers/library_provider.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/providers/playlists_provider.dart';
-import 'package:selfmusic/screens/library_screen.dart';
+import 'package:selfmusic/screens/content/app_content.dart';
+import 'package:selfmusic/screens/content/section_pager.dart';
 import 'package:selfmusic/theme/app_theme.dart';
 import 'package:sqlite3/open.dart';
 
