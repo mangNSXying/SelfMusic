@@ -4,21 +4,21 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../models/song.dart';
-import '../data/local/app_settings.dart';
-import '../providers/direct_source_manager.dart';
-import '../providers/player_provider.dart';
-import '../utils/collection_sort.dart';
-import '../utils/song_title_format.dart';
-import '../utils/zh_variant.dart';
-import '../widgets/app_dialog_actions.dart';
-import '../widgets/list_selection.dart';
-import '../widgets/row_list.dart';
-import '../widgets/selection_bar.dart';
-import '../widgets/song_list.dart';
-import '../widgets/song_row_view.dart';
-import '../widgets/sort_menu_button.dart';
-import '../widgets/toolbar_icon_button.dart';
+import '../../models/song.dart';
+import '../../data/local/app_settings.dart';
+import '../../providers/direct_source_manager.dart';
+import '../../providers/player_provider.dart';
+import '../../utils/collection_sort.dart';
+import '../../utils/song_title_format.dart';
+import '../../utils/zh_variant.dart';
+import '../../widgets/app_dialog_actions.dart';
+import '../../widgets/list_selection.dart';
+import '../../widgets/row_list.dart';
+import '../../widgets/selection_bar.dart';
+import '../../widgets/song_list.dart';
+import '../../widgets/song_row_view.dart';
+import '../../widgets/sort_menu_button.dart';
+import '../../widgets/toolbar_icon_button.dart';
 
 /// 当前播放队列页（改进.txt UI6）：无绑定歌单（全部歌曲/喜欢/专辑/歌手/播放源
 /// 点播等）时右滑进入的兜底页，展示运行时播放队列。
@@ -74,8 +74,8 @@ class _QueuePageState extends State<QueuePage> {
     var offset = 0.0;
     if (queue.isNotEmpty) {
       _rebuildVisible(queue, '', direct);
-      _sig = (_sort, '', queue.length, direct.settingsVersion,
-          zhVariantRevision);
+      _sig =
+          (_sort, '', queue.length, direct.settingsVersion, zhVariantRevision);
       final pos =
           _visible.indexOf(player.currentIndex.clamp(0, queue.length - 1));
       if (pos > 0) offset = _focusOffset(pos);
@@ -124,8 +124,8 @@ class _QueuePageState extends State<QueuePage> {
     final pos =
         _visible.indexOf(player.currentIndex.clamp(0, queue.length - 1));
     if (pos < 0) return;
-    _scroll.jumpTo(_focusOffset(pos)
-        .clamp(0.0, _scroll.position.maxScrollExtent));
+    _scroll
+        .jumpTo(_focusOffset(pos).clamp(0.0, _scroll.position.maxScrollExtent));
   }
 
   /// 重进歌单页：下一帧再跳（回调可能发生在滚动/通知分发期间，frame 期间
@@ -191,8 +191,7 @@ class _QueuePageState extends State<QueuePage> {
   }
 
   Future<void> _clearQueue(PlayerProvider player) async {
-    if (!await _confirm('清空队列', '确定清空整个播放队列并停止播放？', '清空',
-        destructive: true)) {
+    if (!await _confirm('清空队列', '确定清空整个播放队列并停止播放？', '清空', destructive: true)) {
       return;
     }
     player.clearQueue();
@@ -201,8 +200,7 @@ class _QueuePageState extends State<QueuePage> {
   Future<void> _removeSelected(PlayerProvider player) async {
     final selected = _sel.selected.toList()..sort((a, b) => b.compareTo(a));
     if (selected.isEmpty) return;
-    if (!await _confirm('移除选中', '确定从队列中移除选中的 ${selected.length} 首歌曲？',
-        '移除')) {
+    if (!await _confirm('移除选中', '确定从队列中移除选中的 ${selected.length} 首歌曲？', '移除')) {
       return;
     }
     // 从大到小逐删：已删的更大下标不会影响仍待删的较小下标有效性。
@@ -219,8 +217,8 @@ class _QueuePageState extends State<QueuePage> {
     final queue = player.queue;
     final q = zhSearchFold(_query.trim()).toLowerCase();
     // settingsVersion 覆盖简繁显示切换；zhVariantRevision 覆盖词库预热完成。
-    final sig = (_sort, q, queue.length, direct.settingsVersion,
-        zhVariantRevision);
+    final sig =
+        (_sort, q, queue.length, direct.settingsVersion, zhVariantRevision);
     if (sig != _sig) {
       _sig = sig;
       _rebuildVisible(queue, q, direct);
@@ -373,57 +371,56 @@ class _QueuePageState extends State<QueuePage> {
     );
   }
 
-  Widget _listBody(PlayerProvider player, DirectSourceManager direct,
-      List<Song> queue) {
+  Widget _listBody(
+      PlayerProvider player, DirectSourceManager direct, List<Song> queue) {
     final wide = MediaQuery.sizeOf(context).width >= kSongTileWideInfoWidth;
     return _visible.isEmpty
         ? Center(child: Text(queue.isEmpty ? '队列为空' : '无匹配歌曲'))
         : RowList(
-              controller: _scroll,
-              count: _visible.length,
-              itemBuilder: (c, i) {
-                final realIndex = _visible[i];
-                final s = queue[realIndex];
-                // 下标判高亮（展示可重排，用真实队列下标；复本仅新播行亮）。
-                final isCurrent = realIndex == player.currentIndex;
-                return SongTile(
-                  song: s,
-                  source: null,
-                  row: _rowCache.rowAt(i, () {
-                    if (!direct.weight.hasMetaCached(s)) {
-                      _ensureMetaWindow(direct, queue, i);
-                    }
-                    final meta = direct.weight.metaOf(s);
-                    return SongRowView.of(
-                      song: s,
-                      titleFormat: direct.settings.songTitleFormat,
-                      sourceName: direct.sourceByKey(s.sourceKey)?.name,
-                      favorite: meta.favorite,
-                      disliked: meta.frozen,
-                      wide: wide,
-                    );
-                  }),
-                  playing: isCurrent,
-                  selectionMode: _sel.active,
-                  selected: _sel.contains(realIndex),
-                  onSelect: () => setState(() {
-                    _sel.active = true;
-                    _sel.toggle(realIndex);
-                  }),
-                  onStartSelect: () =>
-                      setState(() => _sel.startWith(realIndex)),
-                  onPlay: () => player.playAt(realIndex),
-                  extraMenuItems: const [
-                    PopupMenuItem(
-                      value: 'row:remove',
-                      child: Text('移除'),
-                    ),
-                  ],
-                  onExtraMenu: (v) {
-                    if (v == 'row:remove') _removeOne(player, realIndex);
-                  },
-                );
-              },
-            );
+            controller: _scroll,
+            count: _visible.length,
+            itemBuilder: (c, i) {
+              final realIndex = _visible[i];
+              final s = queue[realIndex];
+              // 下标判高亮（展示可重排，用真实队列下标；复本仅新播行亮）。
+              final isCurrent = realIndex == player.currentIndex;
+              return SongTile(
+                song: s,
+                source: null,
+                row: _rowCache.rowAt(i, () {
+                  if (!direct.weight.hasMetaCached(s)) {
+                    _ensureMetaWindow(direct, queue, i);
+                  }
+                  final meta = direct.weight.metaOf(s);
+                  return SongRowView.of(
+                    song: s,
+                    titleFormat: direct.settings.songTitleFormat,
+                    sourceName: direct.sourceByKey(s.sourceKey)?.name,
+                    favorite: meta.favorite,
+                    disliked: meta.frozen,
+                    wide: wide,
+                  );
+                }),
+                playing: isCurrent,
+                selectionMode: _sel.active,
+                selected: _sel.contains(realIndex),
+                onSelect: () => setState(() {
+                  _sel.active = true;
+                  _sel.toggle(realIndex);
+                }),
+                onStartSelect: () => setState(() => _sel.startWith(realIndex)),
+                onPlay: () => player.playAt(realIndex),
+                extraMenuItems: const [
+                  PopupMenuItem(
+                    value: 'row:remove',
+                    child: Text('移除'),
+                  ),
+                ],
+                onExtraMenu: (v) {
+                  if (v == 'row:remove') _removeOne(player, realIndex);
+                },
+              );
+            },
+          );
   }
 }
