@@ -1,9 +1,7 @@
 import '../../models/song.dart';
 import '../sources/music_source.dart';
-import '../sources/sftp_direct_source.dart';
-import '../sources/smb_direct_source.dart';
 import '../sources/transcode_variant.dart';
-import '../sources/webdav_direct_source.dart';
+import '../../utils/song_key.dart';
 import 'app_settings.dart';
 import 'local_index.dart';
 
@@ -24,13 +22,9 @@ class CacheManager {
 
   CacheManager(this.index, this.settings);
 
-  /// 计算某（直连）源歌曲的缓存 key；不支持的源返回 null。
-  String? cacheKeyOf(MusicSource src, Song s) {
-    if (src is WebdavDirectSource) return src.cacheKeyFor(s);
-    if (src is SftpDirectSource) return src.cacheKeyFor(s);
-    if (src is SmbDirectSource) return src.cacheKeyFor(s);
-    return null;
-  }
+  /// 计算某（直连）源歌曲的缓存 key；本地源不使用缓存，返回 null。
+  String? cacheKeyOf(MusicSource src, Song s) =>
+      src.kind == SourceKind.local ? null : src.cacheKeyForSong(s);
 
   /// 转码变体缓存 key：转码设置下与原文件缓存并存（同一首歌不同码率/响度
   /// 各一份），供预载与装载按当前设置取用；条件不满足返回 null（走原文件）。
@@ -128,8 +122,9 @@ class CacheManager {
       final sourceKey = r.sourceKey;
       final songRef = r.songRef;
       final hasSong = sourceKey != null && songRef != null;
-      final key =
-          hasSong ? 's\u0000$sourceKey\u0000$songRef' : 'l\u0000${r.cacheKey}';
+      final key = hasSong
+          ? 's\u0000${songKeyOf(sourceKey, songRef)}'
+          : 'l\u0000${r.cacheKey}';
       rowGroups.putIfAbsent(key, () => []).add(r);
       if (hasSong) {
         mapped[key] = (sourceKey: sourceKey, songRef: songRef);

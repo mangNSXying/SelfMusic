@@ -11,7 +11,8 @@ class ScanProgress {
 
   /// 是否仍在枚举（本地目录 / PROPFIND 树），探测尚未开始。
   final bool listing;
-  const ScanProgress({required this.done, required this.total, this.listing = false});
+  const ScanProgress(
+      {required this.done, required this.total, this.listing = false});
 
   /// 进度比例；枚举阶段或未知总量时 null（UI 转不确定态）。
   double? get value => listing || total <= 0 ? null : done / total;
@@ -115,6 +116,37 @@ Future<R> runScan<R>({
     progressPort.close();
     token?.close();
     isolate.kill(priority: Isolate.immediate);
+  }
+}
+
+/// worker 入口骨架的扫描体：参数 + 进度出口 + 取消检查。
+typedef ScanWalkBody<T> = Future<List<T>> Function(
+  Map<String, Object?> params,
+  void Function(ScanProgress) progress,
+  bool Function() isCancelled,
+);
+
+/// worker 入口骨架：取消握手 → 执行 [body] → 结果/错误回传 → 关闭取消口。
+///
+/// [body] 在 worker isolate 内创建（不跨 isolate 传递），入口本身仍是顶层函数，
+/// 满足 `Isolate.spawn` 的要求。
+void runScanEntry<T>(Map<String, Object?> msg, ScanWalkBody<T> body) async {
+  final params = msg['params']! as Map<String, Object?>;
+  final send = msg['send']! as SendPort;
+  final progress = msg['progress']! as SendPort;
+  final cancelReq = ReceivePort();
+  send.send({'__cancel__': cancelReq.sendPort});
+  var cancelled = false;
+  cancelReq.listen((_) => cancelled = true);
+  try {
+    final out = await body(params, (p) => progress.send(p), () => cancelled);
+    send.send(out);
+  } catch (e) {
+    // 隔离内异常以 {'__error__'} 回传主 isolate 转抛：worker 必须自行 catch，
+    // 否则带 uncaught error 死掉后 runScan 干等 10 分钟超时。
+    send.send({'__error__': e.toString()});
+  } finally {
+    cancelReq.close();
   }
 }
 

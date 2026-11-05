@@ -5,7 +5,9 @@ import 'dart:isolate';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 
+import '../../utils/enum_parse.dart';
 import 'music_source.dart';
+import 'source_write_guard.dart';
 
 /// 真机 PoC 诊断开关：`--dart-define=SFTP_WORKER_TRACE=true`。
 /// 只在明确排查 worker 生命周期/读流/测试连接时打开，正常构建无日志。
@@ -20,10 +22,7 @@ enum SftpAuthMethod { password, key }
 
 /// 解析持久化/同步来的认证方式；缺失或非法回落密码（旧配置兼容）。
 SftpAuthMethod parseSftpAuthMethod(Object? v) =>
-    SftpAuthMethod.values.firstWhere(
-      (e) => e.name == v,
-      orElse: () => SftpAuthMethod.password,
-    );
+    enumByNameOr(SftpAuthMethod.values, v, SftpAuthMethod.password);
 
 /// `host:port` 钉键（host 小写；与 `normalizeSftpAddress` 的主机段同口径）。
 String sftpHostPort(String host, int port) =>
@@ -49,22 +48,10 @@ String sftpOriginUrl({
 }
 
 /// SFTP 写路径守卫（与 WebDAV 同口径）：禁分隔符与 `..`。纯函数，可单测。
-void sftpGuardWriteName(String name) {
-  if (name.isEmpty || name.contains('/') || name.contains('\\')) {
-    throw StateError('文件名非法：$name');
-  }
-  if (name == '.' || name == '..' || name.contains('..')) {
-    throw StateError('文件名非法（路径穿越）：$name');
-  }
-}
+void sftpGuardWriteName(String name) => guardWriteName(name);
 
 /// 写父目录守卫（与 WebDAV 同口径）：各段禁 `.`/`..`。纯函数，可单测。
-void sftpGuardWriteParent(String parentRef) {
-  final parts = parentRef.split('/').where((s) => s.isNotEmpty);
-  if (parts.any((s) => s == '.' || s == '..')) {
-    throw StateError('目录非法（路径穿越）：$parentRef');
-  }
-}
+void sftpGuardWriteParent(String parentRef) => guardWriteParent(parentRef);
 
 /// SFTP 非 2xx 语义外的连接/协议错误：toString 面向用户直接展示。
 ///

@@ -10,6 +10,9 @@ library;
 
 import 'dart:convert';
 
+import '../../utils/media_kinds.dart';
+import 'source_write_guard.dart';
+
 /// 单次范围读块（喂播放器/缓存的粒度，与 DEVELOPER.md「客户端播放源」「单次读 256KB」一致）。
 const int kSmbReadChunkBytes = 256 * 1024;
 
@@ -93,52 +96,17 @@ String smbJoinInputPath({required String share, required String rootPath}) {
 }
 
 /// 音频后缀判定（与 WebDAV/SFTP 同集合）。
-bool isSmbAudioFile(String path) =>
-    RegExp(r'\.(mp3|flac|m4a|aac|ogg|wav|aif|aiff|aifc)$', caseSensitive: false)
-        .hasMatch(path);
+bool isSmbAudioFile(String path) => isAudioFileName(path);
 
-String smbExtOf(String path) {
-  final i = path.lastIndexOf('.');
-  return i >= 0 ? path.substring(i + 1).toLowerCase() : '';
-}
+String smbExtOf(String path) => audioExtOf(path);
 
-String smbMimeOf(String ext) {
-  switch (ext) {
-    case 'flac':
-      return 'audio/flac';
-    case 'm4a':
-    case 'aac':
-      return 'audio/mp4';
-    case 'ogg':
-      return 'audio/ogg';
-    case 'wav':
-      return 'audio/wav';
-    case 'aif':
-    case 'aiff':
-    case 'aifc':
-      return 'audio/aiff';
-    default:
-      return 'audio/mpeg';
-  }
-}
+String smbMimeOf(String ext) => audioMimeOf(ext);
 
 /// 写文件名守卫（与 WebDAV/SFTP 同口径）：禁分隔符与 `..`。纯函数，可单测。
-void smbGuardWriteName(String name) {
-  if (name.isEmpty || name.contains('/') || name.contains('\\')) {
-    throw StateError('文件名非法：$name');
-  }
-  if (name == '.' || name == '..' || name.contains('..')) {
-    throw StateError('文件名非法（路径穿越）：$name');
-  }
-}
+void smbGuardWriteName(String name) => guardWriteName(name);
 
 /// 写父目录守卫（与 WebDAV/SFTP 同口径）：各段禁 `.`/`..`。纯函数，可单测。
-void smbGuardWriteParent(String parentRef) {
-  final parts = parentRef.split('/').where((s) => s.isNotEmpty);
-  if (parts.any((s) => s == '.' || s == '..')) {
-    throw StateError('目录非法（路径穿越）：$parentRef');
-  }
-}
+void smbGuardWriteParent(String parentRef) => guardWriteParent(parentRef);
 
 /// X-Origin-Smb 信封体（base64url(JSON)：`{u, p?}`），供服务端代理回源鉴权
 /// （内存态单次使用；匿名源只有 `u` 空串）。纯函数，可单测。

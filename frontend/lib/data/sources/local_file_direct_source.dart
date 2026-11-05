@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../../models/song.dart';
 import '../../platform/harmonyos/ohos_platform_bridge.dart';
+import '../../utils/media_kinds.dart';
 import '../local/audio_metadata.dart';
 import '../local/local_index.dart';
 import 'music_source.dart';
@@ -139,7 +140,7 @@ String uniqueLocalFileRef(String name, Set<String> used) {
 ///
 /// 限制：文件清单平铺、不保留目录层级；同目录 `.lrc`/封面不在授权范围；
 /// 单次最多选择 500 个（ArkTS 侧限制），单源仍受 20000 首上限保护。
-class LocalFileDirectSource implements MusicSource {
+class LocalFileDirectSource extends MusicSource {
   @override
   final String name;
   final List<LocalFileEntry> files;
@@ -272,7 +273,7 @@ class LocalFileDirectSource implements MusicSource {
         ref: e.ref,
         title: fallbackTitle(e.ref),
         titleFromMeta: false,
-        format: _extOf(e.ref),
+        format: audioExtOf(e.ref),
         size: size,
         mtime: mtime,
         coverPath: null,
@@ -280,9 +281,6 @@ class LocalFileDirectSource implements MusicSource {
 
   @override
   Future<String?> cachedFilePath(Song song) => _sandboxPath(song);
-
-  @override
-  Future<String?> userCachedFilePath(Song song) => cachedFilePath(song);
 
   @override
   Future<String?> localSandboxPath(Song song) => _sandboxPath(song);
@@ -314,7 +312,7 @@ class LocalFileDirectSource implements MusicSource {
     final contentLength = range == null ? len : (end - start);
     return OpenedStream(
       contentLength: contentLength,
-      contentType: _mimeOf(_extOf(song.sourceRef)),
+      contentType: audioMimeOf(audioExtOf(song.sourceRef)),
       stream: _byteStream(entry.uri, start, end),
       totalLength: len,
     );
@@ -364,18 +362,6 @@ class LocalFileDirectSource implements MusicSource {
   Future<void> close() async {}
 
   @override
-  DirectStream? directStream(Song song) => null;
-
-  @override
-  String? proxyOrigin(Song song) => null;
-
-  @override
-  Future<Map<String, String>> proxyAuthHeaders(Song song) async => const {};
-
-  @override
-  Future<void> probe(Song song) async {}
-
-  @override
   String displayPath(Song song) =>
       _byRef[song.sourceRef]?.uri ?? song.sourceRef;
 
@@ -404,30 +390,5 @@ String _nameFromUri(String uri) {
     return Uri.decodeComponent(raw);
   } catch (_) {
     return raw;
-  }
-}
-
-String _extOf(String path) {
-  final i = path.lastIndexOf('.');
-  return i >= 0 ? path.substring(i + 1).toLowerCase() : '';
-}
-
-String _mimeOf(String ext) {
-  switch (ext) {
-    case 'flac':
-      return 'audio/flac';
-    case 'm4a':
-    case 'aac':
-      return 'audio/mp4';
-    case 'ogg':
-      return 'audio/ogg';
-    case 'wav':
-      return 'audio/wav';
-    case 'aif':
-    case 'aiff':
-    case 'aifc':
-      return 'audio/aiff';
-    default:
-      return 'audio/mpeg';
   }
 }

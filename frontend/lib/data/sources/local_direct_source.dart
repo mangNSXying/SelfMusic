@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:isolate';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -10,8 +9,11 @@ import 'package:permission_handler/permission_handler.dart';
 import '../../models/song.dart';
 import '../../platform/harmonyos/ohos_bootstrap.dart';
 import '../../platform/harmonyos/ohos_platform_bridge.dart';
+import '../../utils/media_kinds.dart';
 import 'music_source.dart';
+import 'scan_commit.dart';
 import 'scan_worker.dart';
+import 'source_write_guard.dart';
 import '../local/local_index.dart';
 import '../local/audio_metadata.dart';
 
@@ -33,7 +35,7 @@ import '../local/audio_metadata.dart';
 ///   ~1.5 核 CPU），解析失败回退 [open] 的字节流分支（512 KiB 分块
 ///   readRange → DirectAudioSource → just_audio 本地代理 → AVPlayer），
 ///   元数据/封面/歌词补读同路径自动复用。
-class LocalDirectSource implements MusicSource {
+class LocalDirectSource extends MusicSource {
   @override
   final String name;
   final String rootPath;
@@ -71,67 +73,24 @@ class LocalDirectSource implements MusicSource {
       ScanToken? token,
       void Function(ScanProgress)? onProgress}) async {
     await _ensureAudioPermission();
+    final known = index.scanFingerprint(key);
     final out = isOhos
         ? await _ohosScan(options: options, token: token, onProgress: onProgress)
-        : await runScan<List<_LocalWalkOut>>(
+        : await runScan<List<ScannedSong>>(
             entry: _localWalkEntry,
             params: <String, Object?>{
               'key': key,
               'root': rootPath,
               'minSizeBytes': options.minSizeBytes,
-              'known': index.scanFingerprint(key),
+              'known': known,
             },
             token: token,
             onProgress: onProgress,
           );
 
-    final alive = <String>[];
-    final toWrite = <DirectSongRow>[];
-    var added = 0, updated = 0, unchanged = 0;
-    for (final item in out) {
-      alive.add(item.row.ref);
-      switch (item.kind) {
-        case _OutKind.unchanged:
-          unchanged++;
-          continue;
-        case _OutKind.added:
-          added++;
-        case _OutKind.updated:
-          updated++;
-      }
-      // 快速扫描不取封面（item.cover 恒为 null），此分支保留给未来取值方式变化。
-      final coverPath = item.cover == null || item.cover!.isEmpty
-          ? null
-          : index.persistCover(item.cover!, item.row.ref);
-      toWrite.add(DirectSongRow(
-        sourceKey: item.row.sourceKey,
-        ref: item.row.ref,
-        title: item.row.title,
-        titleFromMeta: item.row.titleFromMeta,
-        artist: item.row.artist,
-        album: item.row.album,
-        albumArtist: item.row.albumArtist,
-        trackNo: item.row.trackNo,
-        year: item.row.year,
-        genre: item.row.genre,
-        duration: item.row.duration,
-        format: item.row.format,
-        size: item.row.size,
-        mtime: item.row.mtime,
-        etag: item.row.etag,
-        coverPath: coverPath ?? item.row.coverPath,
-      ));
-    }
-    // 提交（写隔离批量单事务）：await 保证 scan 返回时行已落库可见。
-    await index.upsertSongs(toWrite);
-    await index.markMissingExcept(key, alive);
-    final removed = await index.clearMissing(key);
-    return ScanSummary(
-        added: added,
-        removed: removed,
-        updated: updated,
-        unchanged: unchanged,
-        total: alive.length);
+    // 本地目录为空是合法状态（用户确实清空了目录），不启用防误清库闸门。
+    return commitScan(index,
+        sourceKey: key, items: out, known: known, guardEmpty: false);
   }
 
   /// ohos 目录枚举：直接列举（同会话临时授权与已激活的持久化授权均可
@@ -159,7 +118,7 @@ class LocalDirectSource implements MusicSource {
   /// URI、平台通道 handler 也注册在主 isolate，故桥一次性返回全量枚举
   /// （ArkTS 侧 fs.listFile + 逐文件 stat），Dart 侧复用 [_diffSnapshotEntry]
   /// 公共 diff。取消/进度降级为调用前后检查（桥调用进行中不可取消）。
-  Future<List<_LocalWalkOut>> _ohosScan({
+  Future<List<ScannedSong>> _ohosScan({
     required ScanOptions options,
     ScanToken? token,
     void Function(ScanProgress)? onProgress,
@@ -169,7 +128,7 @@ class LocalDirectSource implements MusicSource {
     try {
       final entries = await _listOhosDirectory();
       final known = index.scanFingerprint(key);
-      final out = <_LocalWalkOut>[];
+      final out = <ScannedSong>[];
       for (final e in entries) {
         // fs.listFile(recursion) 返回以 / 开头的相对路径；库内 ref 约定与
         // Android 一致（无头形态），读取时由桥封装补回头部斜杠再拼 URI。
@@ -222,26 +181,13 @@ class LocalDirectSource implements MusicSource {
     return File(path).existsSync() ? path : null;
   }
 
-  @override
-  Future<String?> userCachedFilePath(Song song) => cachedFilePath(song);
-
   /// 本地源的**原生解析可用路径**（R-2）：本体即本地文件，只要沙箱内可打开就
   /// 返回其真路径——**与离线缓存无关**（本地源本就无需「缓存登记」，旧判定把
   /// 「无缓存」误当「不可用」而错失原生解析）。语义与 [cachedFilePath] 在当前
   /// 实现下同源，但此处显式表达「原生可用性」而非「断网可播缓存」，避免未来
   /// 二者语义分化时再次误判。
   @override
-  Future<String?> localSandboxPath(Song song) async {
-    if (isOhos) {
-      // 同 cachedFilePath：冷启动首次补读也需先激活持久化授权。
-      final path = await OhosPlatformBridge.resolvePathWithActivation(
-          rootPath, song.sourceRef);
-      if (path == null) return null;
-      return File(path).existsSync() ? path : null;
-    }
-    final path = _absPath(song.sourceRef);
-    return File(path).existsSync() ? path : null;
-  }
+  Future<String?> localSandboxPath(Song song) => cachedFilePath(song);
 
   @override
   Future<OpenedStream> open(Song song, {IntRange? range}) async {
@@ -260,7 +206,7 @@ class LocalDirectSource implements MusicSource {
     final contentLength = range == null ? len : (end - start);
     return OpenedStream(
       contentLength: contentLength,
-      contentType: _mimeOf(_extOf(song.sourceRef)),
+      contentType: audioMimeOf(audioExtOf(song.sourceRef)),
       stream: file.openRead(start, end),
       // 文件大小已知 → 调用方能精确判断范围读取有没有被截断。
       totalLength: len,
@@ -269,7 +215,7 @@ class LocalDirectSource implements MusicSource {
 
   /// ohos 播放读取：`song.fileSize` 为扫描时已知的文件大小（totalLength
   /// 无需额外 stat），512 KiB 分块 [OhosPlatformBridge.readRange] 拼流；
-  /// MIME 复用 [_mimeOf]，范围/总长语义与其它分支一致（[IntRange.end] 为
+  /// MIME 复用 [audioMimeOf]，范围/总长语义与其它分支一致（[IntRange.end] 为
   /// 闭区间）。元数据/封面/lrc 补读（DirectTaskQueue 经 open(range) 字节流）
   /// 同路径自动复用。
   OpenedStream _openOhos(Song song, IntRange? range) {
@@ -284,7 +230,7 @@ class LocalDirectSource implements MusicSource {
     final contentLength = range == null ? len : (end - start);
     return OpenedStream(
       contentLength: contentLength,
-      contentType: _mimeOf(_extOf(song.sourceRef)),
+      contentType: audioMimeOf(audioExtOf(song.sourceRef)),
       stream: _ohosByteStream(song.sourceRef, start, end),
       totalLength: len,
     );
@@ -323,17 +269,11 @@ class LocalDirectSource implements MusicSource {
     return parts;
   }
 
-  void _guardLeaf(String name) {
-    if (name.isEmpty || name.contains('/') || name.contains('\\') || name.contains('..')) {
-      throw StateError('文件名非法：$name');
-    }
-  }
-
   @override
   Future<void> uploadFile(String parentRef, String filename,
       Stream<List<int>> bytes, int length) async {
     if (isOhos) throw UnimplementedError('鸿蒙端暂不支持上传');
-    _guardLeaf(filename);
+    guardWriteName(filename);
     final dirParts = parentRef.isEmpty ? <String>[] : _guardParts(parentRef);
     final dir = Directory(p.joinAll([rootPath, ...dirParts]));
     if (!await dir.exists()) await dir.create(recursive: true);
@@ -345,11 +285,6 @@ class LocalDirectSource implements MusicSource {
       await sink.close();
     }
   }
-
-  @override
-  Future<void> uploadSidecar(String parentRef, String filename,
-          Stream<List<int>> bytes, int length) =>
-      uploadFile(parentRef, filename, bytes, length);
 
   @override
   Future<void> deleteSong(Song song) async {
@@ -364,7 +299,7 @@ class LocalDirectSource implements MusicSource {
     if (!isSidecarFileName(filename)) {
       throw StateError('仅支持删除歌词/封面 sidecar（.lrc/.jpg/.png/.webp）');
     }
-    _guardLeaf(filename);
+    guardWriteName(filename);
     final dirParts = parentRef.isEmpty ? <String>[] : _guardParts(parentRef);
     final f = File(p.joinAll([rootPath, ...dirParts, filename]));
     // 不存在按幂等成功计。
@@ -374,7 +309,7 @@ class LocalDirectSource implements MusicSource {
   @override
   Future<void> createFolder(String parentRef, String name) async {
     if (isOhos) throw UnimplementedError('鸿蒙端暂不支持新建文件夹');
-    _guardLeaf(name);
+    guardWriteName(name);
     final dirParts = parentRef.isEmpty ? <String>[] : _guardParts(parentRef);
     final dir = Directory(p.joinAll([rootPath, ...dirParts, name]));
     if (!await dir.exists()) await dir.create(recursive: true);
@@ -382,21 +317,6 @@ class LocalDirectSource implements MusicSource {
 
   @override
   Future<void> close() async {}
-
-  /// 本地文件由 [cachedFilePath] 直接返回路径走 `setFilePath`，无需 URL。
-  @override
-  DirectStream? directStream(Song song) => null;
-
-  /// 本地源恒直连：不走代理。
-  @override
-  String? proxyOrigin(Song song) => null;
-
-  @override
-  Future<Map<String, String>> proxyAuthHeaders(Song song) async => const {};
-
-  /// 本地文件无需预热：装载时读的是本地路径，不存在网络握手。
-  @override
-  Future<void> probe(Song song) async {}
 
   @override
   String displayPath(Song song) => _absPath(song.sourceRef);
@@ -422,45 +342,19 @@ class LocalDirectSource implements MusicSource {
 
 // ---------- isolate worker（runScan entry） ----------
 
-void _localWalkEntry(Map<String, Object?> msg) async {
-  final params = msg['params']! as Map<String, Object?>;
-  final send = msg['send']! as SendPort;
-  final progress = msg['progress']! as SendPort;
-  final cancelReq = ReceivePort();
-  send.send({'__cancel__': cancelReq.sendPort});
-  var cancelled = false;
-  cancelReq.listen((_) => cancelled = true);
-  try {
-    final out = await _localWalk(
-      key: params['key']! as String,
-      root: params['root']! as String,
-      minSizeBytes: params['minSizeBytes']! as int,
-      known: (params['known']! as Map<Object?, Object?>)
-          .map((k, v) => MapEntry(k as String, v as ScanFingerprint)),
-      onProgress: (p) => progress.send(p),
-      isCancelled: () => cancelled,
-    );
-    send.send(out);
-  } catch (e) {
-    // 隔离内异常以 {'__error__'} 回传主 isolate 转抛：worker 必须自行 catch，
-    // 否则带 uncaught error 死掉后 runScan 干等 10 分钟超时。
-    send.send({'__error__': e.toString()});
-  } finally {
-    cancelReq.close();
-  }
-}
-
-class _LocalWalkOut {
-  final DirectSongRow row;
-  final Uint8List? cover;
-  final _OutKind kind;
-  const _LocalWalkOut(this.row, this.cover, this.kind);
-}
-
-enum _OutKind { added, updated, unchanged }
+void _localWalkEntry(Map<String, Object?> msg) =>
+    runScanEntry(msg, (params, progress, isCancelled) => _localWalk(
+          key: params['key']! as String,
+          root: params['root']! as String,
+          minSizeBytes: params['minSizeBytes']! as int,
+          known: (params['known']! as Map<Object?, Object?>)
+              .map((k, v) => MapEntry(k as String, v as ScanFingerprint)),
+          onProgress: progress,
+          isCancelled: isCancelled,
+        ));
 
 /// 进入 worker isolate：先枚举（stat 快照 + 指纹跳过），再并行读未变化文件头。
-Future<List<_LocalWalkOut>> _localWalk({
+Future<List<ScannedSong>> _localWalk({
   required String key,
   required String root,
   required int minSizeBytes,
@@ -473,7 +367,7 @@ Future<List<_LocalWalkOut>> _localWalk({
     throw StateError('本地目录不存在：$root');
   }
   // 快速：只建索引。枚举 + stat 拿到 rel/size/mtime 即落库，不打开任何音频文件。
-  final out = <_LocalWalkOut>[];
+  final out = <ScannedSong>[];
   onProgress?.call(const ScanProgress(listing: true, done: 0, total: 0));
   await for (final entity in dir.list(recursive: true, followLinks: false)) {
     if (isCancelled?.call() ?? false) return out;
@@ -481,7 +375,7 @@ Future<List<_LocalWalkOut>> _localWalk({
     final path = entity.path;
     final rel = p.relative(path, from: root).replaceAll('\\', '/');
     // 后缀过滤前置（stat 前）：非音频文件跳过 stat，避免无谓 IO。
-    if (!_audioExt(path)) continue;
+    if (!isAudioFileName(path)) continue;
     final stat = await entity.stat();
     // 「忽略音频」大小过滤：stat 已经带了 size，无需读文件。
     final mtime = stat.modified.millisecondsSinceEpoch ~/ 1000;
@@ -510,7 +404,7 @@ Future<List<_LocalWalkOut>> _localWalk({
 /// 逐字节一致：总数 ≥20000 时新的 added/updated 抛异常）。
 /// 返回 null 表示该文件被过滤；unchanged/added/updated 决策由 known 指纹
 /// 驱动。
-_LocalWalkOut? _diffSnapshotEntry({
+ScannedSong? _diffSnapshotEntry({
   required String key,
   required String rel,
   required String path,
@@ -520,23 +414,21 @@ _LocalWalkOut? _diffSnapshotEntry({
   required Map<String, ScanFingerprint> known,
   required int emitted,
 }) {
-  if (!_audioExt(path)) return null;
+  if (!isAudioFileName(path)) return null;
   if (minSizeBytes > 0 && size < minSizeBytes) return null;
   final fp = known[rel];
   if (fp != null && fp.same(size, mtime, null)) {
-    return _LocalWalkOut(
-      _rowFor(key, rel, _extOf(path), size, mtime),
-      null,
-      _OutKind.unchanged,
+    return ScannedSong(
+      row: _rowFor(key, rel, audioExtOf(path), size, mtime),
+      kind: ScanItemKind.unchanged,
     );
   }
   if (emitted >= 20000) {
     throw StateError('单源超过 20000 首上限（DEVELOPER.md「客户端扫描与元数据」 大目录保护）');
   }
-  return _LocalWalkOut(
-    _rowFor(key, rel, _extOf(path), size, mtime),
-    null,
-    fp == null ? _OutKind.added : _OutKind.updated,
+  return ScannedSong(
+    row: _rowFor(key, rel, audioExtOf(path), size, mtime),
+    kind: fp == null ? ScanItemKind.added : ScanItemKind.updated,
   );
 }
 
@@ -569,34 +461,5 @@ Future<void> _ensureAudioPermission() async {
   final storage = await Permission.storage.request();
   if (!storage.isGranted) {
     throw StateError('未授予音频读取权限，请在系统设置中允许后重试');
-  }
-}
-
-bool _audioExt(String path) =>
-    RegExp(r'\.(mp3|flac|m4a|aac|ogg|wav|aif|aiff|aifc)$', caseSensitive: false)
-        .hasMatch(path);
-
-String _extOf(String path) {
-  final i = path.lastIndexOf('.');
-  return i >= 0 ? path.substring(i + 1).toLowerCase() : '';
-}
-
-String _mimeOf(String ext) {
-  switch (ext) {
-    case 'flac':
-      return 'audio/flac';
-    case 'm4a':
-    case 'aac':
-      return 'audio/mp4';
-    case 'ogg':
-      return 'audio/ogg';
-    case 'wav':
-      return 'audio/wav';
-    case 'aif':
-    case 'aiff':
-    case 'aifc':
-      return 'audio/aiff';
-    default:
-      return 'audio/mpeg';
   }
 }

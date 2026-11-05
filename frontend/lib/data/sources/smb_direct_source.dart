@@ -1,16 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
-
-import 'package:crypto/crypto.dart';
-import 'package:path/path.dart' as p;
 
 import '../../models/song.dart';
 import '../local/audio_metadata.dart';
 import '../local/local_index.dart';
+import 'cache_stream.dart';
 import 'music_source.dart';
+import 'scan_commit.dart';
 import 'scan_worker.dart';
 import 'smb_common.dart';
 import 'smb_connect_backend.dart';
@@ -31,7 +29,7 @@ import 'smb_dart_smb2.dart';
 /// - 用户名与密码双空即匿名；读写全支持（`supportsWrite=true`，上传/删除/
 ///   建目录走双后端写通路，口径与 WebDAV 对齐：根目录、静默覆盖、同名目录
 ///   视为成功）。
-class SmbDirectSource implements MusicSource, MediaProxySource {
+class SmbDirectSource extends MusicSource implements MediaProxySource {
   @override
   final String name;
   final String host;
@@ -153,11 +151,6 @@ class SmbDirectSource implements MusicSource, MediaProxySource {
   }
 
   @override
-  Future<void> uploadSidecar(String parentRef, String filename,
-          Stream<List<int>> bytes, int length) =>
-      uploadFile(parentRef, filename, bytes, length);
-
-  @override
   Future<void> deleteSong(Song song) async {
     final remote = smbRemotePath(rootPath, song.sourceRef);
     if (useSmbConnect) {
@@ -223,7 +216,7 @@ class SmbDirectSource implements MusicSource, MediaProxySource {
       void Function(ScanProgress)? onProgress}) async {
     final known = index.scanFingerprint(key);
     if (!useSmbConnect) await SmbInitBroker.ensureStarted();
-    final out = await runScan<List<_SmbWalkOut>>(
+    final out = await runScan<List<ScannedSong>>(
       entry: _smbWalkEntry,
       params: <String, Object?>{
         'key': key,
@@ -242,55 +235,11 @@ class SmbDirectSource implements MusicSource, MediaProxySource {
     );
 
     // 数据安全闸（与 WebDAV/SFTP 同）：正常完成却为空、而库里有曲时中止防误清库。
-    if (out.isEmpty &&
-        known.isNotEmpty &&
-        !(token?.cancelled ?? false)) {
-      throw ScanWorkerException('扫描结果为 0，但本地库已有 ${known.length} 首；'
-          '为防止误清库已中止。如确认服务器目录已清空，请删除并重建该源');
-    }
-
-    final alive = <String>[];
-    final toWrite = <DirectSongRow>[];
-    var added = 0, updated = 0, unchanged = 0;
-    for (final item in out) {
-      alive.add(item.row.ref);
-      switch (item.kind) {
-        case _OutKind.unchanged:
-          unchanged++;
-          continue;
-        case _OutKind.added:
-          added++;
-        case _OutKind.updated:
-          updated++;
-      }
-      toWrite.add(DirectSongRow(
-        sourceKey: item.row.sourceKey,
-        ref: item.row.ref,
-        title: item.row.title,
-        titleFromMeta: item.row.titleFromMeta,
-        artist: item.row.artist,
-        album: item.row.album,
-        albumArtist: item.row.albumArtist,
-        trackNo: item.row.trackNo,
-        year: item.row.year,
-        genre: item.row.genre,
-        duration: item.row.duration,
-        format: item.row.format,
-        size: item.row.size,
-        mtime: item.row.mtime,
-        etag: item.row.etag,
-        coverPath: item.row.coverPath,
-      ));
-    }
-    await index.upsertSongs(toWrite);
-    await index.markMissingExcept(key, alive);
-    final removed = await index.clearMissing(key);
-    return ScanSummary(
-        added: added,
-        removed: removed,
-        updated: updated,
-        unchanged: unchanged,
-        total: alive.length);
+    return commitScan(index,
+        sourceKey: key,
+        items: out,
+        known: known,
+        cancelled: token?.cancelled ?? false);
   }
 
   @override
@@ -380,62 +329,31 @@ class SmbDirectSource implements MusicSource, MediaProxySource {
 
   // ---------- 离线缓存（DEVELOPER.md「客户端同步与缓存批处理」，同 WebDAV/SFTP 口径） ----------
 
-  static const int _cacheWriteBufBytes = 1 << 20;
-
-  String cacheKeyFor(Song song) =>
-      md5.convert(utf8.encode('$key|${song.sourceRef}')).toString();
-
   @override
   Future<String?> cachedFilePath(Song song) async =>
-      index.cachedPath(cacheKeyFor(song));
+      index.cachedPath(cacheKeyForSong(song));
 
   @override
   Future<String?> userCachedFilePath(Song song) async => index.cachedPath(
-      cacheKeyFor(song),
+      cacheKeyForSong(song),
       kind: CacheEntryKind.user);
-
-  /// 远端源原生解析仅对已缓存文件可用（R-2）；未缓存走 Dart 切片兜底。
-  @override
-  Future<String?> localSandboxPath(Song song) => cachedFilePath(song);
 
   @override
   Future<void> cacheSong(Song song,
       {bool Function()? shouldAbort,
       CacheEntryKind kind = CacheEntryKind.user}) async {
-    final cacheKey = cacheKeyFor(song);
+    final cacheKey = cacheKeyForSong(song);
     if (index.isCached(cacheKey)) return;
-    final tmp = File(p.join(index.cacheDir, '.tmp-$cacheKey'));
-    var committed = false;
-    try {
-      final req = await open(song);
-      final sink = tmp.openSync(mode: FileMode.write);
-      var buf = BytesBuilder(copy: false);
-      int total = 0;
-      try {
-        await for (final chunk in req.stream) {
-          if (shouldAbort?.call() == true) {
-            throw const PreloadAbortedException();
-          }
-          buf.add(chunk);
-          total += chunk.length;
-          if (buf.length >= _cacheWriteBufBytes) {
-            sink.writeFromSync(buf.takeBytes());
-          }
-        }
-        if (buf.isNotEmpty) sink.writeFromSync(buf.takeBytes());
-      } finally {
-        sink.closeSync();
-      }
-      await index.cacheCommit(cacheKey, tmp.path, total,
-          sourceKey: key, songRef: song.sourceRef, kind: kind);
-      committed = true;
-    } finally {
-      if (!committed && tmp.existsSync()) {
-        try {
-          tmp.deleteSync();
-        } catch (_) {}
-      }
-    }
+    final req = await open(song);
+    await cacheStreamToFile(
+      index,
+      cacheKey: cacheKey,
+      sourceKey: key,
+      songRef: song.sourceRef,
+      stream: req.stream,
+      kind: kind,
+      shouldAbort: shouldAbort,
+    );
   }
 
   @override
@@ -469,95 +387,73 @@ class SmbDirectSource implements MusicSource, MediaProxySource {
 
 // ---------- isolate worker（runScan entry） ----------
 
-void _smbWalkEntry(Map<String, Object?> msg) async {
-  final params = msg['params']! as Map<String, Object?>;
-  final send = msg['send']! as SendPort;
-  final progress = msg['progress']! as SendPort;
-  final cancelReq = ReceivePort();
-  send.send({'__cancel__': cancelReq.sendPort});
-  var cancelled = false;
-  cancelReq.listen((_) => cancelled = true);
-  try {
-    final host = params['host']! as String;
-    final share = params['share']! as String;
-    final username = params['username']! as String;
-    final password = params['password']! as String;
-    final rootPath = params['rootPath']! as String;
-    final minSizeBytes = params['minSizeBytes']! as int;
-    final known = (params['known']! as Map<Object?, Object?>)
-        .map((k, v) => MapEntry(k as String, v as ScanFingerprint));
-    final useSmbConnect = params['useSmbConnect']! as bool;
-    final initBrokerPort = params['initBrokerPort'] as SendPort?;
-    final key = params['key']! as String;
+void _smbWalkEntry(Map<String, Object?> msg) =>
+    runScanEntry(msg, (params, progress, isCancelled) async {
+      final host = params['host']! as String;
+      final share = params['share']! as String;
+      final username = params['username']! as String;
+      final password = params['password']! as String;
+      final rootPath = params['rootPath']! as String;
+      final minSizeBytes = params['minSizeBytes']! as int;
+      final known = (params['known']! as Map<Object?, Object?>)
+          .map((k, v) => MapEntry(k as String, v as ScanFingerprint));
+      final useSmbConnect = params['useSmbConnect']! as bool;
+      final initBrokerPort = params['initBrokerPort'] as SendPort?;
+      final key = params['key']! as String;
 
-    progress.send(const ScanProgress(listing: true, done: 0, total: 0));
-    final List<SmbScanEntry> entries;
-    if (useSmbConnect) {
-      final b = SmbConnectBackend(
-          host: host, share: share, username: username, password: password);
-      try {
-        entries = await b.walk(
-          root: rootPath,
+      progress(const ScanProgress(listing: true, done: 0, total: 0));
+      final List<SmbScanEntry> entries;
+      if (useSmbConnect) {
+        final b = SmbConnectBackend(
+            host: host, share: share, username: username, password: password);
+        try {
+          entries = await b.walk(
+            root: rootPath,
+            minSizeBytes: minSizeBytes,
+            onFile: (done, total) =>
+                progress(ScanProgress(listing: false, done: done, total: total)),
+            isCancelled: isCancelled,
+          );
+        } finally {
+          await b.close();
+        }
+      } else {
+        entries = await smb2Walk(
+          host: host,
+          share: share,
+          username: username,
+          password: password,
+          root: rootPath.split('/').where((s) => s.isNotEmpty).join('/'),
           minSizeBytes: minSizeBytes,
-          onFile: (done, total) => progress.send(
-              ScanProgress(listing: false, done: done, total: total)),
-          isCancelled: () => cancelled,
+          onFile: (done, total) =>
+              progress(ScanProgress(listing: false, done: done, total: total)),
+          isCancelled: isCancelled,
+          initBrokerPort: initBrokerPort,
         );
-      } finally {
-        await b.close();
       }
-    } else {
-      entries = await smb2Walk(
-        host: host,
-        share: share,
-        username: username,
-        password: password,
-        root: rootPath
-            .split('/')
-            .where((s) => s.isNotEmpty)
-            .join('/'),
-        minSizeBytes: minSizeBytes,
-        onFile: (done, total) => progress.send(
-            ScanProgress(listing: false, done: done, total: total)),
-        isCancelled: () => cancelled,
-        initBrokerPort: initBrokerPort,
-      );
-    }
-    final out = <_SmbWalkOut>[];
-    for (final f in entries) {
-      final ref = f.ref;
-      final fp = known[ref];
-      final kind = fp == null ? _OutKind.added : _OutKind.updated;
-      out.add(_SmbWalkOut(
-        DirectSongRow(
-          sourceKey: key,
-          ref: ref,
-          title: fallbackTitle(ref),
-          titleFromMeta: false,
-          format: smbExtOf(ref),
-          size: f.size,
-          mtime: f.mtime,
-        ),
-        fp != null && fp.same(f.size, f.mtime, null)
-            ? _OutKind.unchanged
-            : kind,
-      ));
-      if (out.length >= kSmbMaxEntries) {
-        throw StateError('单源超过 $kSmbMaxEntries 首上限（DEVELOPER.md「客户端扫描与元数据」 大目录保护）');
+      final out = <ScannedSong>[];
+      for (final f in entries) {
+        final ref = f.ref;
+        final fp = known[ref];
+        final kind = fp == null ? ScanItemKind.added : ScanItemKind.updated;
+        out.add(ScannedSong(
+          row: DirectSongRow(
+            sourceKey: key,
+            ref: ref,
+            title: fallbackTitle(ref),
+            titleFromMeta: false,
+            format: smbExtOf(ref),
+            size: f.size,
+            mtime: f.mtime,
+          ),
+          kind: fp != null && fp.same(f.size, f.mtime, null)
+              ? ScanItemKind.unchanged
+              : kind,
+        ));
+        if (out.length >= kSmbMaxEntries) {
+          throw StateError(
+              '单源超过 $kSmbMaxEntries 首上限（DEVELOPER.md「客户端扫描与元数据」 大目录保护）');
+        }
       }
-    }
-    send.send(out);
-  } catch (e) {
-    send.send({'__error__': e.toString()});
-  } finally {
-    cancelReq.close();
-  }
-}
-
-class _SmbWalkOut {
-  final DirectSongRow row;
-  final _OutKind kind;
-  const _SmbWalkOut(this.row, this.kind);
-}
-
-enum _OutKind { added, updated, unchanged }
+      return out;
+    });
