@@ -145,20 +145,9 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
   Widget build(BuildContext context) {
     final all = _loader.data;
     if (all == null) {
-      return Center(
-        child: _loader.failed
-            ? Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text('加载失败'),
-                  const SizedBox(height: 8),
-                  OutlinedButton(
-                    onPressed: _loader.request,
-                    child: const Text('重试'),
-                  ),
-                ],
-              )
-            : const CircularProgressIndicator(),
+      return DetailLoadingGuard(
+        failed: _loader.failed,
+        onRetry: _loader.request,
       );
     }
 
@@ -252,11 +241,11 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: Row(
               children: [
-                _sortBtn(context, 0, '歌曲名'),
+                _sortBtn(0, '歌曲名'),
                 const SizedBox(width: 6),
-                _sortBtn(context, 1, '歌手'),
+                _sortBtn(1, '歌手'),
                 const SizedBox(width: 6),
-                _sortBtn(context, 2, '缺失数'),
+                _sortBtn(2, '缺失数'),
                 const Spacer(),
                 Text('${rows.length} / ${all.length} 首',
                     style: Theme.of(context).textTheme.bodySmall),
@@ -284,15 +273,12 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
     );
   }
 
-  Widget _sortBtn(BuildContext context, int mode, String label) {
-    final selected = _sortMode == mode;
-    final arrow = selected ? (_ascending ? ' ↑' : ' ↓') : '';
-    return OutlinedButton(
-      style: OutlinedButton.styleFrom(
-        visualDensity: VisualDensity.compact,
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      ),
-      onPressed: () => setState(() {
+  Widget _sortBtn(int mode, String label) {
+    return LibrarySortButton(
+      label: label,
+      selected: _sortMode == mode,
+      ascending: _ascending,
+      onTap: () => setState(() {
         if (_sortMode == mode) {
           _ascending = !_ascending;
         } else {
@@ -300,7 +286,6 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
           _ascending = mode == 2 ? false : true;
         }
       }),
-      child: Text('$label$arrow'),
     );
   }
 
@@ -401,37 +386,8 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
   String _dimValue(MetaDetailRow r, String dim) => metaDimValue(r, dim);
 
   Widget _dimLine(BuildContext context, String label, String value,
-      {required bool ok}) {
-    final cs = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 3),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 150,
-            child: Text(label,
-                style: Theme.of(context)
-                    .textTheme
-                    .bodySmall
-                    ?.copyWith(color: cs.onSurface.withValues(alpha: 0.7))),
-          ),
-          Expanded(
-            child: Text(
-              value,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: ok ? null : cs.error,
-                    fontWeight: ok ? null : FontWeight.w600,
-                  ),
-            ),
-          ),
-          Icon(ok ? Icons.check : Icons.close,
-              size: 14, color: ok ? cs.primary : cs.error),
-        ],
-      ),
-    );
-  }
+          {required bool ok}) =>
+      DetailInfoRow(label: label, value: value, ok: ok);
 }
 
 /// 维度展示值：文本空/数字缺 → `缺失`（卡片与宽屏表格共用）。
