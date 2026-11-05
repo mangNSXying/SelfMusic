@@ -3,7 +3,7 @@
 /// 主窗列表不再内嵌预览，候选行尾「查看」打开本窗：
 /// - [LyricDetailDialog]：完整歌词（解析后逐行）+ 候选元数据；QQ/网易候选
 ///   在窗内懒取正文，取到后经 [LyricDetailDialog.onLoaded] 回填主窗列表。
-/// - [CoverDetailDialog]：大图 + 标签 + 元数据；懒取字节，取到后经
+/// - [CoverDetailDialog]：大图 + 头部 + 元数据；懒取字节，取到后经
 ///   [CoverDetailDialog.onLoaded] 回主窗缓存（保存免二次下载）。
 /// - [TagDetailDialog]：标签回填来源将写入的标题/歌手/专辑（纯查看）。
 library;
@@ -44,6 +44,7 @@ class LyricDetailDialog extends StatefulWidget {
 
 class _LyricDetailDialogState extends State<LyricDetailDialog> {
   late OnlineLyricCandidate _c;
+  late final TextEditingController _text;
   bool _loading = false;
   String _error = '';
 
@@ -51,10 +52,41 @@ class _LyricDetailDialogState extends State<LyricDetailDialog> {
   void initState() {
     super.initState();
     _c = widget.candidate;
+    _text = TextEditingController(text: _renderLyrics(_c));
     if (!_c.hasContent) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _load();
       });
+    }
+  }
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  /// 正文变化（首次取词/重试）后同步到只读文本框。
+  void _syncText() {
+    final text = _renderLyrics(_c);
+    if (_text.text != text) _text.text = text;
+  }
+
+  /// 解析歌词并拼接展示文本（去时间轴；有译文时附在下一行）。
+  static String _renderLyrics(OnlineLyricCandidate c) {
+    final content = c.saveContent;
+    if (content.isEmpty) return '';
+    try {
+      final p = parseLyrics(content);
+      return p.lines.isNotEmpty
+          ? p.lines
+              .map((e) => e.translation == null
+                  ? e.text
+                  : '${e.text}\n${e.translation}')
+              .join('\n')
+          : (p.plain ?? content).trim();
+    } catch (_) {
+      return content.trim();
     }
   }
 
@@ -72,6 +104,7 @@ class _LyricDetailDialogState extends State<LyricDetailDialog> {
         _loading = false;
         if (!full.hasContent) _error = '该候选暂无歌词正文（换一个候选或换源）';
       });
+      _syncText();
       if (full.hasContent) widget.onLoaded?.call(full);
     } on DioException catch (e) {
       if (!mounted) return;
@@ -151,23 +184,13 @@ class _LyricDetailDialogState extends State<LyricDetailDialog> {
             textAlign: TextAlign.center),
       );
     }
-    String text;
-    try {
-      final p = parseLyrics(content);
-      text = p.lines.isNotEmpty
-          ? p.lines
-              .map((e) =>
-                  e.translation == null ? e.text : '${e.text}\n${e.translation}')
-              .join('\n')
-          : (p.plain ?? content).trim();
-    } catch (_) {
-      text = content.trim();
-    }
-    return Scrollbar(
-      child: SingleChildScrollView(
-        child: SelectableText(text,
-            style: const TextStyle(fontSize: 13, height: 1.7)),
-      ),
+    return TextField(
+      controller: _text,
+      readOnly: true,
+      maxLines: null,
+      expands: true,
+      textAlignVertical: TextAlignVertical.top,
+      decoration: const InputDecoration(border: OutlineInputBorder()),
     );
   }
 
@@ -177,7 +200,7 @@ class _LyricDetailDialogState extends State<LyricDetailDialog> {
   }
 }
 
-/// 封面详情窗：大图 + 标签 + 元数据。
+/// 封面详情窗：大图 + 头部 + 元数据。
 ///
 /// 主窗已缓存时传 [initialBytes] 直接展示；否则调 [load] 懒取（加载/失败态）。
 /// 取到后回调 [onLoaded] 供主窗缓存。
@@ -186,7 +209,6 @@ class CoverDetailDialog extends StatefulWidget {
   final List<String> metaLines;
   final Future<({Uint8List bytes, String label})?> Function() load;
   final Uint8List? initialBytes;
-  final String initialLabel;
   final void Function(Uint8List bytes, String label)? onLoaded;
 
   const CoverDetailDialog({
@@ -195,7 +217,6 @@ class CoverDetailDialog extends StatefulWidget {
     required this.metaLines,
     required this.load,
     this.initialBytes,
-    this.initialLabel = '',
     this.onLoaded,
   });
 
@@ -205,7 +226,6 @@ class CoverDetailDialog extends StatefulWidget {
 
 class _CoverDetailDialogState extends State<CoverDetailDialog> {
   Uint8List? _bytes;
-  String _label = '';
   bool _loading = false;
   String _error = '';
 
@@ -214,7 +234,6 @@ class _CoverDetailDialogState extends State<CoverDetailDialog> {
     super.initState();
     if (widget.initialBytes != null && widget.initialBytes!.isNotEmpty) {
       _bytes = widget.initialBytes;
-      _label = widget.initialLabel;
     } else {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _load();
@@ -240,7 +259,6 @@ class _CoverDetailDialogState extends State<CoverDetailDialog> {
       }
       setState(() {
         _bytes = c.bytes;
-        _label = c.label;
         _loading = false;
       });
       widget.onLoaded?.call(c.bytes, c.label);
@@ -290,13 +308,6 @@ class _CoverDetailDialogState extends State<CoverDetailDialog> {
                   overflow: TextOverflow.ellipsis),
             const Divider(height: 16),
             Expanded(child: _imageArea()),
-            if (_label.isNotEmpty) ...[
-              const SizedBox(height: 4),
-              Text(_label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12)),
-            ],
           ],
         ),
       ),

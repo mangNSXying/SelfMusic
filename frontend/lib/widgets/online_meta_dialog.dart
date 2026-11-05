@@ -710,7 +710,6 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
           '匹配 ${rec.matchWeight.toStringAsFixed(2)}${idx == 0 ? ' · 最佳匹配' : ''}',
         ],
         initialBytes: hit?.bytes,
-        initialLabel: hit?.label ?? '',
         load: () async {
           final c = await _svc.fetchCover(rec);
           if (c == null) return null;
@@ -743,7 +742,6 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
           '匹配 ${cand.matchWeight.toStringAsFixed(2)}${idx == 0 ? ' · 最佳匹配' : ''}',
         ],
         initialBytes: hit?.bytes,
-        initialLabel: hit?.label ?? '',
         load: () async {
           final c = await _svc.fetchTrackCover(cand);
           if (c == null) return null;

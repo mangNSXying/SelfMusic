@@ -189,7 +189,7 @@ void main() {
       await _applyOnlineTagChange(tester, h.direct, '封面路径标题');
       await tester.tap(_closeTopmost);
       await pumpFrame(tester);
-      await tester.tap(find.text('关闭'));
+      await tester.tap(find.text('取消').last);
       await tester.pumpAndSettle();
 
       expect(_editFieldTexts(tester), contains('封面路径标题'));
@@ -213,7 +213,7 @@ void main() {
       await _applyOnlineTagChange(tester, h.direct, '歌词路径标题');
       await tester.tap(_closeTopmost);
       await pumpFrame(tester);
-      await tester.tap(find.text('关闭'));
+      await tester.tap(find.text('取消').last);
       await tester.pumpAndSettle();
 
       expect(_editFieldTexts(tester), contains('歌词路径标题'));
