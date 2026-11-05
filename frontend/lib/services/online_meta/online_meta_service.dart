@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -10,6 +11,8 @@ import '../../data/local/audio_metadata.dart';
 import '../../data/local/local_index.dart';
 import '../../data/sources/music_source.dart';
 import '../../models/song.dart';
+import '../../utils/cover_thumb.dart';
+import '../../utils/source_ref.dart';
 import 'lrclib_provider.dart';
 import 'musicbrainz_cover_provider.dart';
 import 'netease_provider.dart';
@@ -72,7 +75,7 @@ class OnlineMetaService {
     final artist = (artistOverride ?? (song.artist ?? '')).trim();
     final album = (albumOverride ?? (song.albumName ?? '')).trim();
     if (title.isEmpty) return const [];
-    final filename = _stemOf(song.sourceRef);
+    final filename = refStem(song.sourceRef);
 
     if (settings.onlineMetaLyricSource != OnlineMetaLyricSource.lrclib) {
       final tracks = await _searchTracks(
@@ -138,7 +141,7 @@ class OnlineMetaService {
       artist: artist,
       album: album,
     );
-    return _weigh(song, title, artist, album, _stemOf(song.sourceRef), tracks);
+    return _weigh(song, title, artist, album, refStem(song.sourceRef), tracks);
   }
 
   Future<List<OnlineLyricCandidate>> _searchTracks(
@@ -234,7 +237,7 @@ class OnlineMetaService {
     final title = (titleOverride ?? song.title).trim();
     final artist = (artistOverride ?? (song.artist ?? '')).trim();
     if (title.isEmpty) return const [];
-    final filename = _stemOf(song.sourceRef);
+    final filename = refStem(song.sourceRef);
     final list =
         await mbCover.searchRecording(title: title, artist: artist.isEmpty ? null : artist);
     final out = <MbRecordingCandidate>[];
@@ -331,6 +334,8 @@ class OnlineMetaService {
     final u8 = bytes is Uint8List ? bytes : Uint8List.fromList(bytes);
     final path = await index.persistCoverChunked(u8, song.sourceRef);
     if (path == null) throw StateError('封面校验失败（疑似截断/非图片）');
+    // 与补读链路同口径：新封面落盘即重建缩略图（persistCover 会删旧缩略图）。
+    unawaited(ensureCoverThumb(path));
     await index.enrichSong(song.sourceKey, song.sourceRef, coverPath: path);
     if (settings.onlineMetaSaveMode != OnlineMetaSaveMode.sidecar) {
       return (coverPath: path, sidecarPath: null, sidecarSkipped: false);
@@ -362,13 +367,6 @@ class OnlineMetaService {
 
   // ---------- sidecar ----------
 
-  /// 源内父目录（`sourceRef` 去末段；无斜杠即源根 `''`）。
-  static String _parentOf(String ref) {
-    final slash = ref.lastIndexOf('/');
-    if (slash <= 0) return '';
-    return ref.substring(0, slash);
-  }
-
   /// 歌词 sidecar 写回源目录：自定义歌词目录（仅本地）优先，否则歌曲同目录
   /// `<stem>.lrc`。同名覆盖（P0）。返回展示用路径；不可写返回 null。
   Future<String?> _writeSidecarLrc(
@@ -380,7 +378,7 @@ class OnlineMetaService {
       if (customDir.isNotEmpty && src.kind == SourceKind.local) {
         final dir = Directory(customDir);
         if (!dir.existsSync()) return null;
-        final leaf = '${_safeFileName(_stemOf(song.sourceRef))}.lrc';
+        final leaf = '${_safeFileName(refStem(song.sourceRef))}.lrc';
         final audioPath = await src.localSandboxPath(song);
         if (audioPath == null || audioPath.isEmpty) return null;
         final f = File(p.join(dir.path, leaf));
@@ -398,8 +396,8 @@ class OnlineMetaService {
         return f.path;
       }
       // 远端：经源上传口直写同目录（覆盖语义由各源 PUT/截断保证）。
-      final parent = _parentOf(song.sourceRef);
-      final leaf = '${_stemOf(song.sourceRef)}.lrc';
+      final parent = refParent(song.sourceRef);
+      final leaf = '${refStem(song.sourceRef)}.lrc';
       if (leaf == '.lrc') return null;
       final bytes = Uint8List.fromList(utf8.encode(content));
       await src.uploadSidecar(
@@ -423,7 +421,7 @@ class OnlineMetaService {
         await f.writeAsBytes(bytes, flush: true);
         return f.path;
       }
-      final parent = _parentOf(song.sourceRef);
+      final parent = refParent(song.sourceRef);
       await src.uploadSidecar(parent, kCoverSidecarName,
           Stream.value(bytes), bytes.length);
       return parent.isEmpty
@@ -441,8 +439,8 @@ class OnlineMetaService {
   /// 返回实际删掉的展示路径。
   Future<List<String>> deleteSidecars(Song song, MusicSource? src) async {
     if (src == null || !src.supportsWrite) return const [];
-    final parent = _parentOf(song.sourceRef);
-    final stem = _stemOf(song.sourceRef);
+    final parent = refParent(song.sourceRef);
+    final stem = refStem(song.sourceRef);
     final deleted = <String>[];
     for (final leaf in ['$stem.lrc', '$stem.LRC', kCoverSidecarName]) {
       if (leaf == '.lrc' || leaf == '.LRC') continue;
@@ -454,15 +452,6 @@ class OnlineMetaService {
       }
     }
     return deleted;
-  }
-
-  static String _stemOf(String ref) {
-    final slash = ref.lastIndexOf('/');
-    final dot = ref.lastIndexOf('.');
-    final base = slash < 0 ? ref : ref.substring(slash + 1);
-    if (dot <= slash) return base;
-    final stem = ref.substring(slash + 1, dot);
-    return stem.isEmpty ? base : stem;
   }
 
   static String _safeFileName(String s) {
