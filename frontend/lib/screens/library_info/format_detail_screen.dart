@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../providers/direct_source_manager.dart';
+import 'detail_shared.dart';
 
 /// 歌曲信息 → 格式详情：放大版统计，可按格式名 / 数量排序。
 class FormatDetailScreen extends StatefulWidget {
@@ -34,10 +35,12 @@ class _FormatDetailScreenState extends State<FormatDetailScreen> {
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
           child: Row(
             children: [
-              OutlinedButton(
-                style: OutlinedButton.styleFrom(
-                    visualDensity: VisualDensity.compact),
-                onPressed: () => setState(() {
+              LibrarySortButton(
+                label: '数量',
+                selected: _byCount,
+                ascending: _ascending,
+                padded: false,
+                onTap: () => setState(() {
                   if (_byCount) {
                     _ascending = !_ascending;
                   } else {
@@ -45,13 +48,14 @@ class _FormatDetailScreenState extends State<FormatDetailScreen> {
                     _ascending = false;
                   }
                 }),
-                child: Text('数量${_byCount ? (_ascending ? ' ↑' : ' ↓') : ''}'),
               ),
               const SizedBox(width: 6),
-              OutlinedButton(
-                style: OutlinedButton.styleFrom(
-                    visualDensity: VisualDensity.compact),
-                onPressed: () => setState(() {
+              LibrarySortButton(
+                label: '格式名',
+                selected: !_byCount,
+                ascending: _ascending,
+                padded: false,
+                onTap: () => setState(() {
                   if (!_byCount) {
                     _ascending = !_ascending;
                   } else {
@@ -59,8 +63,6 @@ class _FormatDetailScreenState extends State<FormatDetailScreen> {
                     _ascending = true;
                   }
                 }),
-                child:
-                    Text('格式名${!_byCount ? (_ascending ? ' ↑' : ' ↓') : ''}'),
               ),
               const Spacer(),
               Text('共 $total 首', style: Theme.of(context).textTheme.bodySmall),

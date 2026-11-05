@@ -2,6 +2,125 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+/// 详情页首次加载：失败显示重试，否则转圈。
+class DetailLoadingGuard extends StatelessWidget {
+  final bool failed;
+  final VoidCallback onRetry;
+
+  const DetailLoadingGuard({
+    super.key,
+    required this.failed,
+    required this.onRetry,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: failed
+          ? Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('加载失败'),
+                const SizedBox(height: 8),
+                OutlinedButton(onPressed: onRetry, child: const Text('重试')),
+              ],
+            )
+          : const CircularProgressIndicator(),
+    );
+  }
+}
+
+/// 详情页「标签 + 值」行；[ok] 非空时在尾部显示对勾/叉号。
+class DetailInfoRow extends StatelessWidget {
+  final String label;
+  final String value;
+  final double labelWidth;
+  final bool? ok;
+
+  const DetailInfoRow({
+    super.key,
+    required this.label,
+    required this.value,
+    this.labelWidth = 150,
+    this.ok,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final muted = Theme.of(context)
+        .textTheme
+        .bodySmall
+        ?.copyWith(color: cs.onSurface.withValues(alpha: 0.7));
+    final body = ok == null
+        ? Theme.of(context).textTheme.bodySmall
+        : Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: ok! ? null : cs.error,
+              fontWeight: ok! ? null : FontWeight.w600,
+            );
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 3),
+      child: Row(
+        children: [
+          SizedBox(
+            width: labelWidth,
+            child: Text(label, style: muted),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: body,
+            ),
+          ),
+          if (ok != null)
+            Icon(
+              ok! ? Icons.check : Icons.close,
+              size: 14,
+              color: ok! ? cs.primary : cs.error,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 详情页窄屏排序按钮：显示当前方向，点击切换。
+class LibrarySortButton extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final bool ascending;
+  final VoidCallback onTap;
+
+  /// 是否使用详情页统一的紧凑内边距（格式页沿用默认内边距）。
+  final bool padded;
+
+  const LibrarySortButton({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.ascending,
+    required this.onTap,
+    this.padded = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final arrow = selected ? (ascending ? ' ↑' : ' ↓') : '';
+    return OutlinedButton(
+      style: padded
+          ? OutlinedButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            )
+          : OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
+      onPressed: onTap,
+      child: Text('$label$arrow'),
+    );
+  }
+}
+
 /// 歌曲信息详情页共用：单元格样式与异步装载。
 /// 详情页全量数据的异步装载器（入场不冻帧）。
 ///

@@ -143,20 +143,9 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
   Widget build(BuildContext context) {
     final all = _loader.data;
     if (all == null) {
-      return Center(
-        child: _loader.failed
-            ? Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text('加载失败'),
-                  const SizedBox(height: 8),
-                  OutlinedButton(
-                    onPressed: _loader.request,
-                    child: const Text('重试'),
-                  ),
-                ],
-              )
-            : const CircularProgressIndicator(),
+      return DetailLoadingGuard(
+        failed: _loader.failed,
+        onRetry: _loader.request,
       );
     }
     var totalSec = 0;
@@ -317,14 +306,11 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
   }
 
   Widget _sortBtn(int mode, String label) {
-    final selected = _sortColumn == mode;
-    final arrow = selected ? (_ascending ? ' ↑' : ' ↓') : '';
-    return OutlinedButton(
-      style: OutlinedButton.styleFrom(
-        visualDensity: VisualDensity.compact,
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      ),
-      onPressed: () => setState(() {
+    return LibrarySortButton(
+      label: label,
+      selected: _sortColumn == mode,
+      ascending: _ascending,
+      onTap: () => setState(() {
         if (_sortColumn == mode) {
           _ascending = !_ascending;
         } else {
@@ -333,7 +319,6 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
           _ascending = mode == 2 || mode == 3 || mode == 4 ? false : true;
         }
       }),
-      child: Text('$label$arrow'),
     );
   }
 
@@ -430,28 +415,6 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
     );
   }
 
-  Widget _infoLine(String label, String value) {
-    final cs = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 3),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 120,
-            child: Text(label,
-                style: Theme.of(context)
-                    .textTheme
-                    .bodySmall
-                    ?.copyWith(color: cs.onSurface.withValues(alpha: 0.7))),
-          ),
-          Expanded(
-            child: Text(value,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _infoLine(String label, String value) =>
+      DetailInfoRow(label: label, value: value, labelWidth: 120);
 }
