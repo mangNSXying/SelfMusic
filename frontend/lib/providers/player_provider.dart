@@ -27,7 +27,12 @@ import '../services/equalizer/equalizer_service.dart';
 import '../services/equalizer/equalizer_types.dart';
 import '../services/playback_guard.dart';
 import '../services/selfmusic_audio_handler.dart';
+import '../utils/duration_format.dart';
+import '../utils/enum_parse.dart';
+import '../utils/log_throttle.dart';
 import '../utils/lrc_parser.dart';
+import '../utils/song_key.dart';
+import '../utils/source_ref.dart';
 import '../utils/perf_log.dart';
 import '../utils/play_progress.dart';
 import '../utils/play_stats.dart';
@@ -84,10 +89,8 @@ enum SleepTimerKind { time, duration, count, endOfList }
 
 extension PlayModeParse on PlayMode {
   /// 从存储值（settings.md §3.2 `play_mode_default`）解析；未知值回退 sequence。
-  static PlayMode fromStored(String? v) => PlayMode.values.firstWhere(
-        (m) => m.name == v,
-        orElse: () => PlayMode.sequence,
-      );
+  static PlayMode fromStored(String? v) =>
+      enumByNameOr(PlayMode.values, v, PlayMode.sequence);
 }
 
 /// 全局播放状态：统一持有 AudioPlayer 与播放队列，供播放页与队列面板共享。
@@ -295,7 +298,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 断点跳过原因去重（诊断日志）：同因连续出现只打一条，
   /// 原因变化或成功入队即重置（本方法约每 10s 被调一次，逐次打会刷屏）。
-  String? _lastBpSkipReason;
+  final LogThrottle _bpSkipLog = LogThrottle(sameReasonOnly: true);
 
   // ---------- 协议 v2：head/history 分离 ----------
 
@@ -802,11 +805,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     };
   }
 
-  static String _fmtTime(DateTime t) {
-    final h = t.hour.toString().padLeft(2, '0');
-    final m = t.minute.toString().padLeft(2, '0');
-    return '$h:$m';
-  }
+  static String _fmtTime(DateTime t) => formatClockTime(t);
 
   /// 指定时间：到 [target] 时刻停止（早于当前时间视为次日）。
   void setSleepTime(DateTime target,
@@ -1489,7 +1488,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? _completedKey;
 
   /// 歌曲身份 key（`sourceKey\0sourceRef`）：completed 去重与乐观位置归属共用。
-  static String _positionKeyOf(Song s) => '${s.sourceKey}\u0000${s.sourceRef}';
+  static String _positionKeyOf(Song s) => s.uid;
 
   /// 当前曲是否用户手动点播（playAt/playQueue；next/prev/自动/失败重试=非手动）。
   /// 自然完播（>95%）时在此基础上额外累计 `complete_manual` 权重 +0.1 一档。
@@ -2970,7 +2969,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       Future<void> enrichCurrent() => _enrichLazily(cur, enrichSrc);
       final submitMeta = _submitCurrentMeta;
       if (submitMeta != null) {
-        submitMeta('${cur.sourceKey}\u0000${cur.sourceRef}', enrichCurrent);
+        submitMeta(cur.uid, enrichCurrent);
       } else {
         unawaited(enrichCurrent());
       }
@@ -3426,7 +3425,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _enrichLazily(Song s, MusicSource src) async {
     final idx = _index;
     if (idx == null) return;
-    final k = '${s.sourceKey}\u0000${s.sourceRef}';
+    final k = s.uid;
     if (_enriching.contains(k)) return;
     _enriching.add(k);
     try {
@@ -3501,7 +3500,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   @visibleForTesting
   void debugApplyLyrics(String content) => _applyLyrics(content);
 
-  static String _songKey(Song s) => '${s.sourceKey}\u0000${s.sourceRef}';
+  static String _songKey(Song s) => s.uid;
 
   /// 通知栏 / 媒体会话元数据（settings.md §3.6）。
   ///
@@ -3586,11 +3585,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 尝试读取同目录同名 `.lrc`（大小写两种扩展名），失败/不存在返回 null。
   Future<String?> _fetchSiblingLrc(MusicSource src, Song s) async {
-    final ref = s.sourceRef;
-    final slash = ref.lastIndexOf('/');
-    final dot = ref.lastIndexOf('.');
-    if (dot <= slash) return null;
-    final stem = ref.substring(0, dot);
+    final stem = refStemPathOrNull(s.sourceRef);
+    if (stem == null) return null;
     for (final ext in const ['.lrc', '.LRC']) {
       try {
         final probe = Song.direct(
@@ -3605,11 +3601,22 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         final opened =
             await src.open(probe, range: const IntRange(0, 512 * 1024));
         final bytes = <int>[];
+        var hitCap = false;
         await for (final chunk in opened.stream) {
           bytes.addAll(chunk);
-          if (bytes.length >= 512 * 1024) break;
+          if (bytes.length >= 512 * 1024) {
+            hitCap = true;
+            break;
+          }
         }
-        if (bytes.isEmpty) continue;
+        // 与封面同口径：读满上限或流短于资源真实长度都算「没读全」，
+        // 不把半截歌词写库并标已读（否则永不重试）。
+        final total = opened.totalLength;
+        if (bytes.isEmpty ||
+            hitCap ||
+            (total != null && total > bytes.length)) {
+          continue;
+        }
         final text = _decodeTextBytes(bytes);
         if (text.trim().isNotEmpty) return text;
       } catch (_) {
@@ -3665,7 +3672,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   Map<String, int> _pendingWeightedRejections = const <String, int>{};
 
   /// 歌曲身份键（`sourceKey\0sourceRef`，与 completed 去重同口径）。
-  static String weightedKeyOf(Song s) => '${s.sourceKey}\u0000${s.sourceRef}';
+  static String weightedKeyOf(Song s) => s.uid;
 
   /// 【削峰补丁】加权抽样的次数冷却判定（规则1，纯函数，便于单测）：
   /// 自上次播放起被抽中的前 [drawLimit] 次抛弃（[draws] 为含本次的抽中次数，
@@ -4840,7 +4847,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _lastBpKey = key;
       _lastBpPosMs = pos.inMilliseconds;
       _lastBpAtMs = nowMs;
-      _lastBpSkipReason = null;
+      _bpSkipLog.reset();
       final sourceId = idx.sourceUuidOf(cur.sourceKey);
       final dl = _deepList;
       // 深层列表以身份数组随断点携带（有序 {source, source_ref}），对端按身份重建。
@@ -4932,11 +4939,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     return 's-$a-$b';
   }
 
-  /// 断点跳过原因日志（同因只打一次，见 [_lastBpSkipReason]）。
+  /// 断点跳过原因日志（同因只打一次，见 [_bpSkipLog]）。
   void _logBpSkip(String reason) {
-    if (_lastBpSkipReason == reason) return;
-    _lastBpSkipReason = reason;
-    perfLog('bp.skip', reason);
+    if (_bpSkipLog.shouldLog(reason)) perfLog('bp.skip', reason);
   }
 
   /// 启动恢复（仅本机断点）：装载上次队列与位置，暂停态不自动播放。
@@ -5818,12 +5823,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     return -1;
   }
 
-  static String _fmtMs(int ms) {
-    final d = Duration(milliseconds: ms);
-    final mm = d.inMinutes.remainder(60).toString().padLeft(2, '0');
-    final ss = d.inSeconds.remainder(60).toString().padLeft(2, '0');
-    return d.inHours > 0 ? '${d.inHours}:$mm:$ss' : '$mm:$ss';
-  }
+  static String _fmtMs(int ms) => formatDurationMs(ms, empty: '00:00');
 
   void clearResumeState() {
     _clearRestorePosition();
