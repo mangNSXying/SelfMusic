@@ -9,6 +9,7 @@ import '../../utils/platform_info.dart';
 import '../../utils/url_input.dart';
 import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
+import '../../widgets/inline_spinner.dart';
 import '../../widgets/row_action_button.dart';
 
 class PairingScreen extends StatefulWidget {
@@ -245,10 +246,7 @@ class _PairingScreenState extends State<PairingScreen> {
                           }
                         },
                   child: auth.loading
-                      ? const SizedBox(
-                          height: 16,
-                          width: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2))
+                      ? const InlineSpinner()
                       : Text(auth.isPaired ? '重新配对' : '配对'),
                 ),
               ),

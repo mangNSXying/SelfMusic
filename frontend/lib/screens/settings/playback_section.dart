@@ -11,10 +11,12 @@ import '../../providers/player_provider.dart';
 import '../../services/bluetooth_service.dart';
 import '../../services/equalizer/equalizer_service.dart';
 import '../../services/equalizer/equalizer_types.dart';
-import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/app_volume_control.dart';
 import '../../widgets/eq_curve_editor.dart';
+import '../../widgets/settings_section_header.dart';
+import '../../widgets/single_choice_dialog.dart';
+import '../../widgets/text_input_dialog.dart';
 import 'notifications_section.dart';
 
 /// 播放设置（settings.md §3.2）：默认播放模式 / 加权随机开关与削峰（次数·曲数冷却）/
@@ -36,7 +38,6 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     final current = PlayModeParse.fromStored(_settings.playModeDefault);
     final eqBands = _settings.eqBands;
     final eqPreampDb = _settings.eqPreampDb;
@@ -44,11 +45,7 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
     return ListView(
       padding: const EdgeInsets.symmetric(vertical: 12),
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text('播放',
-              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
-        ),
+        const SettingsSectionHeader('播放'),
         ListTile(
           leading: const Icon(Icons.playlist_play),
           title: const Text('默认播放模式'),
@@ -130,11 +127,7 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
             onTap: _pickKeepAwakeDevice,
           ),
         const Divider(height: 32),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text('音效',
-              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
-        ),
+        const SettingsSectionHeader('音效'),
         SwitchListTile(
           title: const Text('淡入淡出'),
           subtitle: Text(
@@ -466,29 +459,13 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
   }
 
   Future<void> _pickMode(BuildContext context, PlayMode current) async {
-    final picked = await showDialog<PlayMode>(
+    final picked = await showSingleChoiceDialog<PlayMode>(
       context: context,
-      builder: (c) => SimpleDialog(
-        title: const Text('默认播放模式'),
-        children: [
-          RadioGroup<PlayMode>(
-            groupValue: current,
-            onChanged: (v) {
-              if (v != null) Navigator.of(c).pop(v);
-            },
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (final m in PlayMode.values)
-                  RadioListTile<PlayMode>(
-                    title: Text(_modeLabel(m)),
-                    value: m,
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
+      title: '默认播放模式',
+      values: PlayMode.values,
+      current: current,
+      labelOf: _modeLabel,
+      asRadio: true,
     );
     if (picked == null || picked == current || !context.mounted) return;
     setState(() => _settings.playModeDefault = picked.name);
@@ -518,30 +495,14 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
 
   Future<void> _pickDrawCooldown() async {
     final current = _settings.weightedDrawCooldown;
-    final picked = await showDialog<WeightedDrawCooldown>(
+    final picked = await showSingleChoiceDialog<WeightedDrawCooldown>(
       context: context,
-      builder: (c) => SimpleDialog(
-        title: const Text('加权随机·次数冷却'),
-        children: [
-          RadioGroup<WeightedDrawCooldown>(
-            groupValue: current,
-            onChanged: (v) {
-              if (v != null) Navigator.of(c).pop(v);
-            },
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (final cd in WeightedDrawCooldown.values)
-                  RadioListTile<WeightedDrawCooldown>(
-                    title: Text(cd.label),
-                    subtitle: Text(_drawCooldownSummary(cd)),
-                    value: cd,
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
+      title: '加权随机·次数冷却',
+      values: WeightedDrawCooldown.values,
+      current: current,
+      labelOf: (cd) => cd.label,
+      subtitleOf: _drawCooldownSummary,
+      asRadio: true,
     );
     if (picked == null || picked == current || !mounted) return;
     setState(() => _settings.weightedDrawCooldown = picked);
@@ -549,33 +510,16 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
 
   Future<void> _editCountCooldown() async {
     final current = _settings.weightedCountCooldownRatio;
-    final controller = TextEditingController(text: current.toStringAsFixed(2));
-    final result = await showDialog<double>(
+    final text = await showTextInputDialog(
       context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('加权随机·曲数冷却比例'),
-        content: TextField(
-          controller: controller,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          inputFormatters: [
-            FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
-          ],
-          autofocus: true,
-          decoration: const InputDecoration(
-            hintText: '0 ~ 1.00',
-            helperText: '播放历史末尾「列表长度 × 比例」内的歌不参与随机；0=关闭',
-          ),
-        ),
-        actions: appDialogActions(
-          c,
-          confirmLabel: '确定',
-          onCancel: () => Navigator.of(c).pop(),
-          onConfirm: () =>
-              Navigator.of(c).pop(double.tryParse(controller.text) ?? current),
-        ),
-      ),
+      title: '加权随机·曲数冷却比例',
+      initial: current.toStringAsFixed(2),
+      hintText: '0 ~ 1.00',
+      helperText: '播放历史末尾「列表长度 × 比例」内的歌不参与随机；0=关闭',
+      decimal: true,
     );
-    if (result == null || !mounted) return;
+    if (text == null || !mounted) return;
+    final result = double.tryParse(text) ?? current;
     setState(() => _settings.weightedCountCooldownRatio = result);
   }
 
@@ -629,26 +573,13 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
 
   Future<void> _pickLyricIdle(BuildContext context) async {
     final current = _settings.lyricFocusIdleSec;
-    final picked = await showDialog<int>(
+    final picked = await showSingleChoiceDialog<int>(
       context: context,
-      builder: (c) => SimpleDialog(
-        title: const Text('歌词追焦等待'),
-        children: [
-          RadioGroup<int>(
-            groupValue: current,
-            onChanged: (v) {
-              if (v != null) Navigator.of(c).pop(v);
-            },
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (final s in AppSettings.lyricFocusIdleOptions)
-                  RadioListTile<int>(title: Text('$s 秒'), value: s),
-              ],
-            ),
-          ),
-        ],
-      ),
+      title: '歌词追焦等待',
+      values: AppSettings.lyricFocusIdleOptions,
+      current: current,
+      labelOf: (s) => '$s 秒',
+      asRadio: true,
     );
     if (picked == null || picked == current || !context.mounted) return;
     setState(() => _settings.lyricFocusIdleSec = picked);

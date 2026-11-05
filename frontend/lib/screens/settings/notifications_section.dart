@@ -9,6 +9,7 @@ import '../../providers/direct_source_manager.dart';
 import '../../services/bluetooth_service.dart';
 import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
+import '../../widgets/settings_section_header.dart';
 
 /// 通知设置（settings.md §3.6）：通知栏控制/后台播放（Android）。
 class NotificationsSection extends StatefulWidget {
@@ -28,15 +29,10 @@ class _NotificationsSettingsState extends State<NotificationsSection> {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     return ListView(
       padding: const EdgeInsets.symmetric(vertical: 12),
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text('通知',
-              style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
-        ),
+        const SettingsSectionHeader('通知'),
         Card(
           margin: const EdgeInsets.symmetric(horizontal: 16),
           child: Padding(

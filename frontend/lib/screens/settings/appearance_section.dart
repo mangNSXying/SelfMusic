@@ -19,6 +19,8 @@ import '../../utils/cover_thumb.dart';
 import '../../utils/zh_variant.dart';
 import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
+import '../../widgets/inline_spinner.dart';
+import '../../widgets/single_choice_dialog.dart';
 import '../../widgets/single_choice_group.dart';
 
 import 'color_picker.dart';
@@ -187,10 +189,7 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
                 ? (hasCustomFont ? '自定义字体' : '系统默认')
                 : '当前：$customFontLabel'),
             trailing: _fontBusy
-                ? const SizedBox(
-                    width: 24,
-                    height: 24,
-                    child: CircularProgressIndicator(strokeWidth: 2))
+                ? const InlineSpinner(size: 24)
                 : null,
           ),
           Wrap(
@@ -285,11 +284,7 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
             subtitle: Text('当前：${_settings.zhVariant.label}'
                 '（只影响展示，不修改元数据）'),
             trailing: _zhBusy
-                ? const SizedBox(
-                    width: 24,
-                    height: 24,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
+                ? const InlineSpinner(size: 24)
                 : const Icon(Icons.chevron_right),
             onTap: _zhBusy ? null : () => _pickZhVariant(context),
           ),
@@ -335,10 +330,7 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
             subtitle:
                 const Text('删除已生成的缩略图文件（*.thumb.jpg），显示即回原图；开关关闭时也可清理省磁盘'),
             trailing: _clearingThumbs
-                ? const SizedBox(
-                    width: 24,
-                    height: 24,
-                    child: CircularProgressIndicator(strokeWidth: 2))
+                ? const InlineSpinner(size: 24)
                 : const Icon(Icons.chevron_right),
             onTap: _clearingThumbs ? null : () => _clearCoverThumbs(context),
           ),
@@ -519,29 +511,13 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
   }
 
   Future<void> _pickTransition(BuildContext context) async {
-    final picked = await showDialog<PlayerTransition>(
+    final picked = await showSingleChoiceDialog<PlayerTransition>(
       context: context,
-      builder: (c) => SimpleDialog(
-        title: const Text('页面切换动画'),
-        children: [
-          RadioGroup<PlayerTransition>(
-            groupValue: _transition,
-            onChanged: (v) {
-              if (v != null) Navigator.of(c).pop(v);
-            },
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (final t in PlayerTransition.values)
-                  RadioListTile<PlayerTransition>(
-                    title: Text(t.label),
-                    value: t,
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
+      title: '页面切换动画',
+      values: PlayerTransition.values,
+      current: _transition,
+      labelOf: (t) => t.label,
+      asRadio: true,
     );
     if (picked == null || picked == _transition || !context.mounted) return;
     context.read<DirectSourceManager>().settings.playerTransition = picked;
@@ -552,27 +528,12 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
 
   /// 标题显示格式选择（从 设置>歌曲 迁入 设置>界面，改进.txt UI4）。
   Future<void> _pickTitleFormat(BuildContext context) async {
-    final chosen = await showDialog<SongTitleFormat>(
+    final chosen = await showSingleChoiceDialog<SongTitleFormat>(
       context: context,
-      builder: (c) => SimpleDialog(
-        title: const Text('标题显示格式'),
-        children: [
-          for (final f in SongTitleFormat.values)
-            SimpleDialogOption(
-              onPressed: () => Navigator.of(c).pop(f),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Row(
-                  children: [
-                    Expanded(child: Text(f.label)),
-                    if (f == _settings.songTitleFormat)
-                      Icon(Icons.check, color: Theme.of(c).colorScheme.primary),
-                  ],
-                ),
-              ),
-            ),
-        ],
-      ),
+      title: '标题显示格式',
+      values: SongTitleFormat.values,
+      current: _settings.songTitleFormat,
+      labelOf: (f) => f.label,
     );
     if (chosen == null || !context.mounted) return;
     setState(() => _settings.songTitleFormat = chosen);
@@ -582,36 +543,13 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
 
   /// 简繁显示：只影响元数据展示，不修改存储；首次切换会加载 OpenCC 词库。
   Future<void> _pickZhVariant(BuildContext context) async {
-    final chosen = await showDialog<ZhVariant>(
+    final chosen = await showSingleChoiceDialog<ZhVariant>(
       context: context,
-      builder: (c) => SimpleDialog(
-        title: const Text('简繁显示'),
-        children: [
-          for (final v in ZhVariant.values)
-            SimpleDialogOption(
-              onPressed: () => Navigator.of(c).pop(v),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(v.label),
-                          const SizedBox(height: 2),
-                          Text(v.hint, style: Theme.of(c).textTheme.bodySmall),
-                        ],
-                      ),
-                    ),
-                    if (v == _settings.zhVariant)
-                      Icon(Icons.check, color: Theme.of(c).colorScheme.primary),
-                  ],
-                ),
-              ),
-            ),
-        ],
-      ),
+      title: '简繁显示',
+      values: ZhVariant.values,
+      current: _settings.zhVariant,
+      labelOf: (v) => v.label,
+      hintOf: (v) => v.hint,
     );
     if (chosen == null || !context.mounted) return;
     if (chosen == _settings.zhVariant) return;
@@ -684,27 +622,12 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
 
   /// 播放页控件静置自动隐藏秒数（0=不隐藏）。
   Future<void> _pickPlayerAutoHide(BuildContext context) async {
-    final chosen = await showDialog<int>(
+    final chosen = await showSingleChoiceDialog<int>(
       context: context,
-      builder: (c) => SimpleDialog(
-        title: const Text('播放页控件自动隐藏'),
-        children: [
-          for (final sec in AppSettings.playerAutoHideIdleOptions)
-            SimpleDialogOption(
-              onPressed: () => Navigator.of(c).pop(sec),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Row(
-                  children: [
-                    Expanded(child: Text(sec == 0 ? '不自动隐藏' : '$sec 秒')),
-                    if (sec == _settings.playerAutoHideIdleSec)
-                      Icon(Icons.check, color: Theme.of(c).colorScheme.primary),
-                  ],
-                ),
-              ),
-            ),
-        ],
-      ),
+      title: '播放页控件自动隐藏',
+      values: AppSettings.playerAutoHideIdleOptions,
+      current: _settings.playerAutoHideIdleSec,
+      labelOf: (sec) => sec == 0 ? '不自动隐藏' : '$sec 秒',
     );
     if (chosen == null || !context.mounted) return;
     setState(() => _settings.playerAutoHideIdleSec = chosen);
