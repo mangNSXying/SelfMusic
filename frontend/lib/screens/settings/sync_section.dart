@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'package:provider/provider.dart';
 
+import '../../data/local/app_settings.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../services/sync_engine.dart';
 import '../../theme/app_theme.dart';
@@ -69,6 +70,42 @@ class _SyncSectionState extends State<SyncSection> {
         child: child,
       );
 
+  String _settingsSyncSubtitle(AppSettings settings) {
+    if (!settings.syncEnabled) return '先开启多设备同步';
+    if (!settings.syncSettingsEnabled) return '关闭（各设备保留自己的设置）';
+    final parts = <String>[
+      if (settings.syncSettingsPlayback) '播放偏好',
+      if (settings.syncSettingsLibrary) '媒体库规则',
+    ];
+    return parts.isEmpty ? '已开启（未选类目）' : '已开启 · ${parts.join(' / ')}';
+  }
+
+  Future<void> _openSettingsSync() async {
+    final settings = context.read<DirectSourceManager>().settings;
+    final before = (
+      settings.syncSettingsEnabled,
+      settings.syncSettingsPlayback,
+      settings.syncSettingsLibrary,
+    );
+    await showDialog<void>(
+      context: context,
+      builder: (_) => const SettingsSyncDialog(),
+    );
+    if (!mounted) return;
+    setState(() {});
+    final after = (
+      settings.syncSettingsEnabled,
+      settings.syncSettingsPlayback,
+      settings.syncSettingsLibrary,
+    );
+    if (after != before &&
+        settings.syncEnabled &&
+        settings.syncSettingsEnabled) {
+      // 首次开启/新开类目：下一次拉取后只补种服务端没有的键。
+      context.read<SyncEngine>().requestSettingsBootstrap();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final settings = context.read<DirectSourceManager>().settings;
@@ -84,6 +121,10 @@ class _SyncSectionState extends State<SyncSection> {
             onChanged: (v) {
               settings.syncEnabled = v;
               setState(() {});
+              if (v && settings.syncSettingsEnabled) {
+                // 先配置好设置同步、后开总开关：同样补种服务端缺失的键。
+                context.read<SyncEngine>().requestSettingsBootstrap();
+              }
             },
           ),
         ),
@@ -100,6 +141,17 @@ class _SyncSectionState extends State<SyncSection> {
           ),
         ),
         _anchor(
+          '同步设置',
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.tune),
+            title: const Text('同步设置'),
+            subtitle: Text(_settingsSyncSubtitle(settings)),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: _openSettingsSync,
+          ),
+        ),
+        _anchor(
           '设备管理',
           ListTile(
             contentPadding: EdgeInsets.zero,
@@ -111,6 +163,87 @@ class _SyncSectionState extends State<SyncSection> {
               MaterialPageRoute<void>(builder: (_) => const DevicesScreen()),
             ),
           ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 设置同步范围：总开关 + 播放偏好 / 媒体库规则两个类目。
+///
+/// 类目开关本身是设备本地项，不参与同步；类目关闭时该设备不推也不应用该类设置。
+class SettingsSyncDialog extends StatefulWidget {
+  const SettingsSyncDialog();
+
+  @override
+  State<SettingsSyncDialog> createState() => _SettingsSyncDialogState();
+}
+
+class _SettingsSyncDialogState extends State<SettingsSyncDialog> {
+  late final AppSettings _settings =
+      context.read<DirectSourceManager>().settings;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final enabled = _settings.syncSettingsEnabled;
+    return AlertDialog(
+      title: const Text('同步设置'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (!_settings.syncEnabled)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text('多设备同步当前关闭，开启后才会上传设置。',
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: cs.onSurface.withValues(alpha: 0.6))),
+                ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('同步设置'),
+                subtitle: const Text('把播放偏好和媒体库规则同步到其它设备；关闭后各设备保留自己的设置'),
+                value: _settings.syncSettingsEnabled,
+                onChanged: (v) =>
+                    setState(() => _settings.syncSettingsEnabled = v),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('播放偏好'),
+                subtitle: const Text('播放模式、随机权重、淡入淡出、睡眠定时、歌词追焦'),
+                value: _settings.syncSettingsPlayback,
+                onChanged: enabled
+                    ? (v) => setState(() => _settings.syncSettingsPlayback = v)
+                    : null,
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('媒体库规则'),
+                subtitle: const Text('扫描过滤、在线来源与保存方式、歌手解析、备用源同步'),
+                value: _settings.syncSettingsLibrary,
+                onChanged: enabled
+                    ? (v) => setState(() => _settings.syncSettingsLibrary = v)
+                    : null,
+              ),
+              const Divider(),
+              Text(
+                '缓存、音量 / 均衡器、网络与安全、通知、字体、快捷键等始终保留在本机。',
+                style: TextStyle(
+                    fontSize: 12, color: cs.onSurface.withValues(alpha: 0.6)),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('完成'),
         ),
       ],
     );

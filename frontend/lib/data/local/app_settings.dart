@@ -6,6 +6,7 @@ import '../../utils/enum_parse.dart';
 import '../../utils/song_groups.dart';
 import '../../utils/zh_variant.dart';
 import 'local_index.dart';
+import 'syncable_settings.dart';
 import 'table_column_weights.dart';
 
 /// 播放页（播放/歌词）切换过渡动画。
@@ -156,6 +157,15 @@ class AppSettings {
 
   /// 多设备状态同步总开关（关=仅本地，直连模式同样跳过）。
   static const String kSyncEnabled = 'sync_enabled';
+
+  /// 设置同步总开关（设备本地；默认关，开启后才推/拉播放与媒体库偏好）。
+  static const String kSyncSettingsEnabled = 'sync_settings_enabled';
+
+  /// 设置同步·播放偏好（设备本地类目开关，默认开）。
+  static const String kSyncSettingsPlayback = 'sync_settings_playback';
+
+  /// 设置同步·媒体库规则（设备本地类目开关，默认开）。
+  static const String kSyncSettingsLibrary = 'sync_settings_library';
 
   /// 上次同步成功时间（ISO-8601，网络分区展示用）。
   static const String kLastSyncAt = 'last_sync_at';
@@ -359,6 +369,121 @@ class AppSettings {
     _migrateEqBands();
   }
 
+  /// 本地可同步设置变更回调（SyncEngine 注入；远端应用时抑制）。
+  void Function(String key, String value)? onLocalSettingChanged;
+  bool _suppressSync = false;
+
+  static const Set<String> _playModeNames = {
+    'sequence',
+    'loopList',
+    'loopOne',
+    'weighted',
+  };
+
+  void _syncedSet(String key, String value) {
+    final old = index.settingsGet(key);
+    index.settingsSet(key, value);
+    if (old != value && !_suppressSync) {
+      onLocalSettingChanged?.call(key, value);
+    }
+  }
+
+  static T? _enumByName<T extends Enum>(List<T> values, String name) {
+    for (final value in values) {
+      if (value.name == name) return value;
+    }
+    return null;
+  }
+
+  /// 应用远端设置：抑制回声、非法值忽略；返回是否真的写入。
+  bool applyRemoteSetting(String key, String value) {
+    if (!SyncableSettings.isSyncable(key)) return false;
+    if (index.settingsGet(key) == value) return false;
+    _suppressSync = true;
+    try {
+      if (key == kPlayModeDefault) {
+        if (!_playModeNames.contains(value)) return false;
+        playModeDefault = value;
+      } else if (key == kResumeOnStartup) {
+        resumeOnStartup = value == '1';
+      } else if (key == kPreloadNext) {
+        preloadNext = value == '1';
+      } else if (key == kSleepPlayThroughDefault) {
+        sleepPlayThroughDefault = value == '1';
+      } else if (key == kSleepDefaultDurationMinutes) {
+        final n = int.tryParse(value);
+        if (n == null || n < 1) return false;
+        sleepDefaultDurationMinutes = n;
+      } else if (key == kSleepDefaultCount) {
+        final n = int.tryParse(value);
+        if (n == null || n < 1) return false;
+        sleepDefaultCount = n;
+      } else if (key == kLyricFocusIdleSec) {
+        final n = int.tryParse(value);
+        if (n == null || !lyricFocusIdleOptions.contains(n)) return false;
+        lyricFocusIdleSec = n;
+      } else if (key == kWeightedRandomEnabled) {
+        weightedRandomEnabled = value == '1';
+      } else if (key == kWeightedDrawCooldown) {
+        final v = _enumByName(WeightedDrawCooldown.values, value);
+        if (v == null) return false;
+        weightedDrawCooldown = v;
+      } else if (key == kWeightedCountCooldownRatio) {
+        final v = double.tryParse(value);
+        if (v == null) return false;
+        weightedCountCooldownRatio = v;
+      } else if (key == kCurveWeightEnabled) {
+        weightCurveEnabled = value == '1';
+      } else if (key == kCurveWeightSegments) {
+        final decoded = jsonDecode(value);
+        if (decoded is! List) return false;
+        final segments = <Map<String, Object?>>[];
+        for (final item in decoded) {
+          if (item is! Map) return false;
+          segments.add(item.cast<String, Object?>());
+        }
+        weightCurveSegments = segments;
+      } else if (key == kFadeEnabled) {
+        fadeEnabled = value == '1';
+      } else if (key == kFadeDurationMs) {
+        final n = int.tryParse(value);
+        if (n == null || n < 500 || n > 2000) return false;
+        fadeDurationMs = n;
+      } else if (key == kScanIgnoreMinDurationSec) {
+        final n = int.tryParse(value);
+        if (n == null || n < 0) return false;
+        scanIgnoreMinDurationSec = n;
+      } else if (key == kScanIgnoreMinSizeBytes) {
+        final n = int.tryParse(value);
+        if (n == null || n < 0) return false;
+        scanIgnoreMinSizeBytes = n;
+      } else if (key == kOnlineMetaLyricSource) {
+        final v = _enumByName(OnlineMetaLyricSource.values, value);
+        if (v == null) return false;
+        onlineMetaLyricSource = v;
+      } else if (key == kOnlineMetaCoverSource) {
+        final v = _enumByName(OnlineMetaCoverSource.values, value);
+        if (v == null) return false;
+        onlineMetaCoverSource = v;
+      } else if (key == kOnlineMetaSaveMode) {
+        final v = _enumByName(OnlineMetaSaveMode.values, value);
+        if (v == null) return false;
+        onlineMetaSaveMode = v;
+      } else if (key == kArtistResolveAuto) {
+        artistResolveAuto = value == '1';
+      } else if (key == kFallbackAutoRepair) {
+        fallbackAutoRepair = value == '1';
+      } else {
+        return false;
+      }
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      _suppressSync = false;
+    }
+  }
+
   /// 旧 5 段数据一次性迁移到 10 段；重复调用无副作用。
   void _migrateEqBands() {
     if ((index.settingsGet(kEqSchema) ?? '') == '2') return;
@@ -459,6 +584,24 @@ class AppSettings {
   bool get syncEnabled => (index.settingsGet(kSyncEnabled) ?? '1') == '1';
   set syncEnabled(bool v) => index.settingsSet(kSyncEnabled, v ? '1' : '0');
 
+  /// 设置同步总开关（默认关；设备本地，不参与同步）。
+  bool get syncSettingsEnabled =>
+      (index.settingsGet(kSyncSettingsEnabled) ?? '0') == '1';
+  set syncSettingsEnabled(bool v) =>
+      index.settingsSet(kSyncSettingsEnabled, v ? '1' : '0');
+
+  /// 设置同步·播放偏好（默认开；设备本地类目开关）。
+  bool get syncSettingsPlayback =>
+      (index.settingsGet(kSyncSettingsPlayback) ?? '1') == '1';
+  set syncSettingsPlayback(bool v) =>
+      index.settingsSet(kSyncSettingsPlayback, v ? '1' : '0');
+
+  /// 设置同步·媒体库规则（默认开；设备本地类目开关）。
+  bool get syncSettingsLibrary =>
+      (index.settingsGet(kSyncSettingsLibrary) ?? '1') == '1';
+  set syncSettingsLibrary(bool v) =>
+      index.settingsSet(kSyncSettingsLibrary, v ? '1' : '0');
+
   /// 上次同步成功时间（ISO-8601，空=从未成功）。
   String get lastSyncAt => index.settingsGet(kLastSyncAt) ?? '';
   set lastSyncAt(String v) => index.settingsSet(kLastSyncAt, v);
@@ -520,7 +663,7 @@ class AppSettings {
   /// `weighted` 的显示名为「随机播放」，实际算法由 [weightedRandomEnabled] 决定。
   String get playModeDefault =>
       index.settingsGet(kPlayModeDefault) ?? defaultPlayMode;
-  set playModeDefault(String v) => index.settingsSet(kPlayModeDefault, v);
+  set playModeDefault(String v) => _syncedSet(kPlayModeDefault, v);
 
   /// 随机播放模式下是否启用加权随机（默认开）。
   /// 关闭后为普通随机：按深层列表做不放回抽取（见 PlayerProvider 的
@@ -528,41 +671,38 @@ class AppSettings {
   bool get weightedRandomEnabled =>
       (index.settingsGet(kWeightedRandomEnabled) ?? '1') == '1';
   set weightedRandomEnabled(bool v) =>
-      index.settingsSet(kWeightedRandomEnabled, v ? '1' : '0');
+      _syncedSet(kWeightedRandomEnabled, v ? '1' : '0');
 
   /// 断点续播开关：启动时是否恢复上次队列与位置（恢复为暂停态）。
   bool get resumeOnStartup =>
       (index.settingsGet(kResumeOnStartup) ?? '1') == '1';
-  set resumeOnStartup(bool v) =>
-      index.settingsSet(kResumeOnStartup, v ? '1' : '0');
+  set resumeOnStartup(bool v) => _syncedSet(kResumeOnStartup, v ? '1' : '0');
 
   /// 睡眠定时弹窗中「播放完最后的曲目」开关的默认值（默认开）。
   bool get sleepPlayThroughDefault =>
       (index.settingsGet(kSleepPlayThroughDefault) ?? '1') == '1';
   set sleepPlayThroughDefault(bool v) =>
-      index.settingsSet(kSleepPlayThroughDefault, v ? '1' : '0');
+      _syncedSet(kSleepPlayThroughDefault, v ? '1' : '0');
 
   /// 睡眠定时弹窗「指定时长」模式的默认分钟数与「指定曲数」模式的默认首数
   /// （已在弹窗内调整过则记忆上次值，下次打开预选）。
   int get sleepDefaultDurationMinutes =>
       int.tryParse(index.settingsGet(kSleepDefaultDurationMinutes) ?? '') ?? 30;
   set sleepDefaultDurationMinutes(int v) =>
-      index.settingsSet(kSleepDefaultDurationMinutes, v.toString());
+      _syncedSet(kSleepDefaultDurationMinutes, v.toString());
   int get sleepDefaultCount =>
       int.tryParse(index.settingsGet(kSleepDefaultCount) ?? '') ?? 3;
-  set sleepDefaultCount(int v) =>
-      index.settingsSet(kSleepDefaultCount, v.toString());
+  set sleepDefaultCount(int v) => _syncedSet(kSleepDefaultCount, v.toString());
 
   /// 预载下一首（默认开）：播放某首歌时按播放顺序算法确定下一首并后台缓存
   /// （随机播放也先抽样确定，切歌时复用同一结果），开关只决定是否预载。
   bool get preloadNext => (index.settingsGet(kPreloadNext) ?? '1') == '1';
-  set preloadNext(bool v) => index.settingsSet(kPreloadNext, v ? '1' : '0');
+  set preloadNext(bool v) => _syncedSet(kPreloadNext, v ? '1' : '0');
 
   /// 歌词追焦等待秒数：用户拖动歌词后多久恢复自动追焦（默认 5 秒）。
   int get lyricFocusIdleSec =>
       int.tryParse(index.settingsGet(kLyricFocusIdleSec) ?? '') ?? 5;
-  set lyricFocusIdleSec(int v) =>
-      index.settingsSet(kLyricFocusIdleSec, v.toString());
+  set lyricFocusIdleSec(int v) => _syncedSet(kLyricFocusIdleSec, v.toString());
 
   /// 歌词最大行数可选档位（0=不限制）。
   static const List<int> lyricMaxLinesOptions = [0, 6, 8, 10, 12, 14, 16, 20];
@@ -635,7 +775,7 @@ class AppSettings {
   bool get artistResolveAuto =>
       (index.settingsGet(kArtistResolveAuto) ?? '1') == '1';
   set artistResolveAuto(bool v) =>
-      index.settingsSet(kArtistResolveAuto, v ? '1' : '0');
+      _syncedSet(kArtistResolveAuto, v ? '1' : '0');
 
   // ---------- 界面分区·显示（settings.md §3.7） ----------
 
@@ -650,13 +790,13 @@ class AppSettings {
   int get scanIgnoreMinDurationSec =>
       int.tryParse(index.settingsGet(kScanIgnoreMinDurationSec) ?? '') ?? 0;
   set scanIgnoreMinDurationSec(int v) =>
-      index.settingsSet(kScanIgnoreMinDurationSec, v.toString());
+      _syncedSet(kScanIgnoreMinDurationSec, v.toString());
 
   /// 忽略音频（大小过滤）：0=关；>0 字节，扫描时过滤更小的音频文件。
   int get scanIgnoreMinSizeBytes =>
       int.tryParse(index.settingsGet(kScanIgnoreMinSizeBytes) ?? '') ?? 0;
   set scanIgnoreMinSizeBytes(int v) =>
-      index.settingsSet(kScanIgnoreMinSizeBytes, v.toString());
+      _syncedSet(kScanIgnoreMinSizeBytes, v.toString());
 
   /// 仅 Wi-Fi 扫描（移动端生效，桌面忽略）。（settings.md §3.4）
   bool get scanWifiOnly => (index.settingsGet(kScanWifiOnly) ?? '1') == '1';
@@ -672,7 +812,7 @@ class AppSettings {
   // ---------- 播放分区·淡入淡出（settings.md §3.2） ----------
 
   bool get fadeEnabled => (index.settingsGet(kFadeEnabled) ?? '1') == '1';
-  set fadeEnabled(bool v) => index.settingsSet(kFadeEnabled, v ? '1' : '0');
+  set fadeEnabled(bool v) => _syncedSet(kFadeEnabled, v ? '1' : '0');
 
   /// 淡入淡出时长（ms）。有效域 [500, 2000]，默认 1000；越界的历史存储值
   /// （如旧版 1~3 s 档位写的 3000）在读取时钳制到最近边界，不迁移存储，
@@ -680,7 +820,7 @@ class AppSettings {
   int get fadeDurationMs =>
       (int.tryParse(index.settingsGet(kFadeDurationMs) ?? '') ?? 1000)
           .clamp(500, 2000);
-  set fadeDurationMs(int v) => index.settingsSet(kFadeDurationMs, v.toString());
+  set fadeDurationMs(int v) => _syncedSet(kFadeDurationMs, v.toString());
 
   /// 应用内音量（0~100，默认 100）：独立于系统音量的软件增益。
   /// 非法/缺省回退 100，越界读取钳制到 [0, 100]。
@@ -736,7 +876,7 @@ class AppSettings {
   bool get weightCurveEnabled =>
       (index.settingsGet(kCurveWeightEnabled) ?? '0') == '1';
   set weightCurveEnabled(bool v) =>
-      index.settingsSet(kCurveWeightEnabled, v ? '1' : '0');
+      _syncedSet(kCurveWeightEnabled, v ? '1' : '0');
 
   /// 时长-权重分段函数（默认空=不削弱）。条目 `{min_sec, max_sec|null, factor}`，
   /// 作用域为 [min_sec, max_sec)（max_sec 为空=时长 ≥ min_sec 起恒生效，可作「超过
@@ -760,7 +900,7 @@ class AppSettings {
   }
 
   set weightCurveSegments(List<Map<String, Object?>> v) {
-    index.settingsSet(kCurveWeightSegments, jsonEncode(v));
+    _syncedSet(kCurveWeightSegments, jsonEncode(v));
   }
 
   // ---------- 播放分区·加权随机削峰（设置→播放） ----------
@@ -770,7 +910,7 @@ class AppSettings {
   WeightedDrawCooldown get weightedDrawCooldown =>
       WeightedDrawCooldown.parse(index.settingsGet(kWeightedDrawCooldown));
   set weightedDrawCooldown(WeightedDrawCooldown v) =>
-      index.settingsSet(kWeightedDrawCooldown, v.name);
+      _syncedSet(kWeightedDrawCooldown, v.name);
 
   /// 曲数冷却比例（默认 0.2，范围 0~1，`0`=关闭）。削峰规则2：位于「深层列表
   /// （持久化播放历史）末尾 `round(列表长度 × 本比例)` 条」内的抽中直接抛弃
@@ -782,8 +922,8 @@ class AppSettings {
     return v.clamp(0.0, 1.0);
   }
 
-  set weightedCountCooldownRatio(double v) => index.settingsSet(
-      kWeightedCountCooldownRatio, v.clamp(0.0, 1.0).toString());
+  set weightedCountCooldownRatio(double v) =>
+      _syncedSet(kWeightedCountCooldownRatio, v.clamp(0.0, 1.0).toString());
 
   // ---------- 存储分区·封面缓存（settings.md §3.7） ----------
 
@@ -1005,7 +1145,7 @@ class AppSettings {
   set pauseOnDeviceDisconnect(bool v) =>
       index.settingsSet(kPauseOnDeviceDisconnect, v ? '1' : '0');
 
-  // ---------- 备用源（本地偏好，不进 knownKeys，不随设置导出/同步） ----------
+  // ---------- 备用源（媒体库规则，参与设置同步与备份） ----------
 
   /// 备用缺歌自动补齐（默认关）：主源播放成功后，后台抽查备用是否存在同 ref，
   /// 缺失则把主源当前曲流式复制过去（单首按需，不做全库静默全量）。
@@ -1028,7 +1168,7 @@ class AppSettings {
   bool get fallbackAutoRepair =>
       (index.settingsGet(kFallbackAutoRepair) ?? '0') == '1';
   set fallbackAutoRepair(bool v) =>
-      index.settingsSet(kFallbackAutoRepair, v ? '1' : '0');
+      _syncedSet(kFallbackAutoRepair, v ? '1' : '0');
 
   /// 手动线路偏好（auto/primary/fb0/fb1，默认 auto）：按源 key 存。
   String getSourceLine(String sourceKey) =>
@@ -1041,7 +1181,7 @@ class AppSettings {
   OnlineMetaSaveMode get onlineMetaSaveMode =>
       OnlineMetaSaveMode.parse(index.settingsGet(kOnlineMetaSaveMode));
   set onlineMetaSaveMode(OnlineMetaSaveMode v) =>
-      index.settingsSet(kOnlineMetaSaveMode, v.name);
+      _syncedSet(kOnlineMetaSaveMode, v.name);
 
   String get onlineMetaLyricDir => index.settingsGet(kOnlineMetaLyricDir) ?? '';
   set onlineMetaLyricDir(String v) => index.settingsSet(kOnlineMetaLyricDir, v);
@@ -1049,12 +1189,12 @@ class AppSettings {
   OnlineMetaLyricSource get onlineMetaLyricSource =>
       OnlineMetaLyricSource.parse(index.settingsGet(kOnlineMetaLyricSource));
   set onlineMetaLyricSource(OnlineMetaLyricSource v) =>
-      index.settingsSet(kOnlineMetaLyricSource, v.name);
+      _syncedSet(kOnlineMetaLyricSource, v.name);
 
   OnlineMetaCoverSource get onlineMetaCoverSource =>
       OnlineMetaCoverSource.parse(index.settingsGet(kOnlineMetaCoverSource));
   set onlineMetaCoverSource(OnlineMetaCoverSource v) =>
-      index.settingsSet(kOnlineMetaCoverSource, v.name);
+      _syncedSet(kOnlineMetaCoverSource, v.name);
 
   static const String kShortcutWindowBindings = 'shortcut_window_bindings';
   static const String kShortcutGlobalBindings = 'shortcut_global_bindings';
@@ -1122,6 +1262,9 @@ class AppSettings {
     kAllowSelfSigned,
     kSyncCursor,
     kSyncEnabled,
+    kSyncSettingsEnabled,
+    kSyncSettingsPlayback,
+    kSyncSettingsLibrary,
     kLastSyncAt,
     kPlayModeDefault,
     kWeightedRandomEnabled,
@@ -1167,6 +1310,7 @@ class AppSettings {
     kOnlineMetaLyricDir,
     kOnlineMetaLyricSource,
     kOnlineMetaCoverSource,
+    kFallbackAutoRepair,
     kSortSongs,
     kSortFavorites,
     kSortPlaylistDetail,

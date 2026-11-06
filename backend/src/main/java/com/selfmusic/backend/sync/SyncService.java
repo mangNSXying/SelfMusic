@@ -23,12 +23,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.selfmusic.backend.common.BizException;
 import com.selfmusic.backend.common.SourceAddresses;
+import com.selfmusic.backend.domain.entity.ClientSetting;
 import com.selfmusic.backend.domain.entity.PlayState;
 import com.selfmusic.backend.domain.entity.Playlist;
 import com.selfmusic.backend.domain.entity.PlaylistItem;
 import com.selfmusic.backend.domain.entity.SongState;
 import com.selfmusic.backend.domain.entity.SyncEvent;
 import com.selfmusic.backend.domain.entity.SyncSource;
+import com.selfmusic.backend.domain.repository.ClientSettingRepository;
 import com.selfmusic.backend.domain.repository.DeviceRepository;
 import com.selfmusic.backend.domain.repository.PlayStateRepository;
 import com.selfmusic.backend.domain.repository.PlaylistItemRepository;
@@ -83,6 +85,7 @@ public class SyncService {
     private final PlayStateRepository playStateRepository;
     private final DeviceRepository deviceRepository;
     private final SettingService settingService;
+    private final ClientSettingRepository clientSettingRepository;
     private final ObjectMapper objectMapper;
 
     public SyncService(SyncEventRepository syncEventRepository,
@@ -93,6 +96,7 @@ public class SyncService {
                        PlayStateRepository playStateRepository,
                        DeviceRepository deviceRepository,
                        SettingService settingService,
+                       ClientSettingRepository clientSettingRepository,
                        ObjectMapper objectMapper) {
         this.syncEventRepository = syncEventRepository;
         this.songStateRepository = songStateRepository;
@@ -102,6 +106,7 @@ public class SyncService {
         this.playStateRepository = playStateRepository;
         this.deviceRepository = deviceRepository;
         this.settingService = settingService;
+        this.clientSettingRepository = clientSettingRepository;
         this.objectMapper = objectMapper;
     }
 
@@ -497,6 +502,7 @@ public class SyncService {
                 yield ApplyOutcome.none();
             }
             case "breakpoint" -> applyBreakpoint(ev);
+            case "setting" -> new ApplyOutcome(applyClientSetting(ev), null);
             default -> throw new BizException(40001, "unknown event group: " + ev.type());
         };
     }
@@ -509,6 +515,7 @@ public class SyncService {
                 || type.equals(SyncEventTypes.PLAYLIST_DELETE)) return "playlist_meta";
         if (type.startsWith("playlist.item_")) return "playlist_item";
         if (type.equals(SyncEventTypes.BREAKPOINT_SET)) return "breakpoint";
+        if (type.equals(SyncEventTypes.SETTING_SET)) return "setting";
         return "?";
     }
 
@@ -571,7 +578,59 @@ public class SyncService {
             String uuid = p.path("playlist_uuid").asText(null);
             return (uuid == null || uuid.isBlank()) ? null : "breakpoint|" + uuid;
         }
+        if (SyncEventTypes.SETTING_SET.equals(type)) {
+            String key = p.path("key").asText(null);
+            return (key == null || key.isBlank()) ? null : "setting|" + key;
+        }
         return null;
+    }
+
+    /**
+     * 应用设置事件：逐键 LWW。只接受白名单键，值上限 64 KiB。
+     * 判输时回当前快照，客户端据此自纠；赢/首写返回 null。
+     */
+    private Object applyClientSetting(PushEvent ev) {
+        JsonNode p = ev.payload();
+        if (p == null) throw new BizException(40001, "setting payload required");
+        String key = p.path("key").asText(null);
+        if (key == null || key.isBlank()) {
+            throw new BizException(40001, "setting key required");
+        }
+        if (!SyncableSettings.isSyncable(key)) {
+            throw new BizException(40001, "setting key not syncable: " + key);
+        }
+        String value = p.path("value").asText(null);
+        if (value == null) throw new BizException(40001, "setting value required");
+        if (value.length() > 65536) {
+            throw new BizException(40001, "setting value too large");
+        }
+
+        LocalDateTime at = eventTime(ev);
+        ClientSetting row = clientSettingRepository.findById(key).orElse(null);
+        if (row != null) {
+            LocalDateTime last = row.getLastEventAt();
+            if (last != null && !at.isAfter(last)) {
+                return settingSnapshot(row);
+            }
+        } else {
+            row = new ClientSetting();
+            row.setSettingKey(key);
+        }
+        row.setSettingValue(value);
+        row.setLastEventAt(at);
+        row.setUpdatedAt(at);
+        row.setDeviceClientId(ev.device_client_id());
+        clientSettingRepository.save(row);
+        return null;
+    }
+
+    public static Map<String, Object> settingSnapshot(ClientSetting s) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("setting_key", s.getSettingKey());
+        m.put("setting_value", s.getSettingValue());
+        m.put("updated_at", s.getUpdatedAt() == null ? null : s.getUpdatedAt().toString());
+        m.put("device_client_id", s.getDeviceClientId());
+        return m;
     }
 
     /**
@@ -1324,6 +1383,14 @@ public class SyncService {
                     playStateRepository.findById(pl.getId()).ifPresent(st ->
                             playstates.add(playstateSnapshot(st, pl.getClientUuid()))));
         }
+        // 设置同步：每次 pull 都回全量白名单当前值（约 21 行），
+        // 新设备/刚开启类目的设备无需等 cursor 事件即可完成首拉。
+        List<Map<String, Object>> syncedSettings = new ArrayList<>();
+        for (ClientSetting cs : clientSettingRepository.findAllByOrderBySettingKeyAsc()) {
+            if (SyncableSettings.isSyncable(cs.getSettingKey())) {
+                syncedSettings.add(settingSnapshot(cs));
+            }
+        }
         long cursor;
         if (page.size() < PULL_EVENT_LIMIT) {
             cursor = syncEventRepository.maxSeq();
@@ -1342,14 +1409,16 @@ public class SyncService {
         out.put("sources", sources);
         out.put("playlists", playlists);
         out.put("playstates", playstates);
+        out.put("settings", syncedSettings);
         // v2：客户端据此切换到「head_rev/history_rev」路径；旧服务端无此字段。
         out.put("breakpoint_protocol", 2);
         out.put("server_epoch", serverEpoch());
         // 时钟校准：客户端据此修正出队时间戳，治设备墙钟偏移导致的 LWW 误判。
         out.put("server_time", serverTimeNow());
-        log.info("sync.pull device={} since={} page={} cursor={} has_more={} songs={} sources={} playlists={} playstates={}",
+        log.info("sync.pull device={} since={} page={} cursor={} has_more={} songs={} sources={} playlists={} playstates={} settings={}",
                 authClientId, sinceCursor, page.size(), cursor, out.get("has_more"),
-                songs.size(), sources.size(), playlists.size(), playstates.size());
+                songs.size(), sources.size(), playlists.size(), playstates.size(),
+                syncedSettings.size());
         return out;
     }
 

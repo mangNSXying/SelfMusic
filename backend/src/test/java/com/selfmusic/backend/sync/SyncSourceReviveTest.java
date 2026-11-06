@@ -8,6 +8,7 @@ import com.selfmusic.backend.domain.entity.PlaylistItem;
 import com.selfmusic.backend.domain.entity.SongState;
 import com.selfmusic.backend.domain.entity.SyncEvent;
 import com.selfmusic.backend.domain.entity.SyncSource;
+import com.selfmusic.backend.domain.repository.ClientSettingRepository;
 import com.selfmusic.backend.domain.repository.DeviceRepository;
 import com.selfmusic.backend.domain.repository.PlayStateRepository;
 import com.selfmusic.backend.domain.repository.PlaylistItemRepository;
@@ -44,6 +45,7 @@ class SyncSourceReviveTest {
     private final PlayStateRepository playStates = mock(PlayStateRepository.class);
     private final DeviceRepository devices = mock(DeviceRepository.class);
     private final SettingService settings = mock(SettingService.class);
+    private final ClientSettingRepository clientSettings = mock(ClientSettingRepository.class);
 
     private static final String ADDRESS = "https://dav.example.com/music";
     private static final LocalDateTime T1 = LocalDateTime.of(2026, 1, 1, 0, 0, 0);
@@ -55,7 +57,7 @@ class SyncSourceReviveTest {
         when(devices.findByClientId(any())).thenReturn(Optional.empty());
         when(syncSources.save(any(SyncSource.class))).thenAnswer(i -> i.getArgument(0));
         return new SyncService(syncEvents, songStates, syncSources, playlists,
-                items, playStates, devices, settings, mapper);
+                items, playStates, devices, settings, clientSettings, mapper);
     }
 
     private ObjectNode sourcePayload(String uuid, String name) {

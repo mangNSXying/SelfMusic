@@ -21,6 +21,8 @@ import 'services/selfmusic_audio_handler.dart';
 import 'services/playback_guard.dart';
 import 'services/sync_engine.dart';
 import 'services/artist_resolver.dart';
+import 'data/local/app_settings.dart';
+import 'data/local/syncable_settings.dart';
 import 'providers/auth_provider.dart';
 import 'providers/library_provider.dart';
 import 'providers/direct_source_manager.dart';
@@ -228,6 +230,8 @@ Future<void> main() async {
     sync.onSongStatesApplied = () {
       scheduleAfterFrame(direct.notifyPlayMetaChanged);
     };
+    // 本地设置变更 → outbox（SyncEngine 内部再按同步开关/类目过滤）。
+    direct.settings.onLocalSettingChanged = sync.onLocalSettingChanged;
     WidgetsBinding.instance.addObserver(_SyncLifecycleObserver(sync));
 
     debugPrint('[boot] 进入 runApp');
@@ -396,6 +400,35 @@ class SelfMusicApp extends StatelessWidget {
     // 鸿蒙 AVSession 桥接线：attach 注册回推钩子与 direct 监听，
     // 此后播放/暂停/切歌/seek/模式/收藏变化自动同步系统播控卡。
     ohosMediaSession?.attach(player);
+
+    // 设置同步落库后的副作用：随机算法失效重算、扫描过滤重查、在线元数据刷新。
+    sync.onSettingsApplied = (keys) {
+      scheduleAfterFrame(() {
+        const randomKeys = {
+          AppSettings.kWeightedRandomEnabled,
+          AppSettings.kWeightedDrawCooldown,
+          AppSettings.kWeightedCountCooldownRatio,
+          AppSettings.kCurveWeightEnabled,
+          AppSettings.kCurveWeightSegments,
+        };
+        if (keys.any((k) => randomKeys.contains(k))) {
+          player.onRandomAlgorithmChanged();
+        }
+        if (keys.any((k) => SyncableSettings.libraryKeys.contains(k))) {
+          final filtersChanged =
+              keys.contains(AppSettings.kScanIgnoreMinDurationSec) ||
+                  keys.contains(AppSettings.kScanIgnoreMinSizeBytes);
+          if (filtersChanged) {
+            direct.settingsChanged();
+          } else {
+            direct.refresh();
+          }
+          if (keys.contains(AppSettings.kArtistResolveAuto)) {
+            artistResolver.wake();
+          }
+        }
+      });
+    };
 
     return MultiProvider(
       providers: [

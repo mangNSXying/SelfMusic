@@ -7,6 +7,7 @@ import '../data/local/app_settings.dart';
 import '../data/local/local_index.dart';
 import '../data/local/sync_entity_key.dart';
 import '../data/local/sync_event_types.dart';
+import '../data/local/syncable_settings.dart';
 import '../utils/backoff.dart';
 import '../utils/log_throttle.dart';
 import '../utils/perf_log.dart';
@@ -76,6 +77,15 @@ class SyncEngine {
   void Function()? onSongStatesApplied;
   bool _songStatesDirty = false;
 
+  /// 设置同步落库后的回调：携带本轮真正变化的键，消费方按需刷新播放器/列表。
+  void Function(Set<String> keys)? onSettingsApplied;
+  bool _settingsDirty = false;
+  final Set<String> _dirtySettingKeys = {};
+  Timer? _settingsPokeTimer;
+  bool _seedSettingsOnNextPull = false;
+  bool _lastSettingsSyncEnabled = false;
+  int lastPulledSettings = 0;
+
   /// 断点镜像落库后的回调：新拉到的远端断点（当前曲/进度/深层列表）需由
   /// 播放器在空闲时套用（启动补切 / 回前台 / 手动「立即同步」）。仅本轮真有
   /// 断点变更时触发一次（对标 onSongStatesApplied）。
@@ -113,6 +123,36 @@ class SyncEngine {
   }
 
   SyncEngine({required this.api, required this.index, required this.settings});
+
+  /// 本地设置变更（AppSettings 注入口）：按类目过滤后入队并防抖触发同步。
+  void onLocalSettingChanged(String key, String value) {
+    if (!settings.syncEnabled || !settings.syncSettingsEnabled) return;
+    if (!_categoryEnabled(key)) return;
+    unawaited(index.enqueueOutbox(SyncEventTypes.settingSet, {
+      'key': key,
+      'value': value,
+    }));
+    _settingsPokeTimer?.cancel();
+    _settingsPokeTimer = Timer(const Duration(milliseconds: 600), poke);
+  }
+
+  /// 首次开启设置同步/新开类目时调用：下一次 pull 后把服务端没有的键用本机值补种。
+  void requestSettingsBootstrap() {
+    if (!settings.syncSettingsEnabled) return;
+    _seedSettingsOnNextPull = true;
+    poke();
+  }
+
+  bool _categoryEnabled(String key) {
+    if (!settings.syncSettingsEnabled) return false;
+    if (SyncableSettings.playbackKeys.contains(key)) {
+      return settings.syncSettingsPlayback;
+    }
+    if (SyncableSettings.libraryKeys.contains(key)) {
+      return settings.syncSettingsLibrary;
+    }
+    return false;
+  }
 
   /// 应用是否在前台。false 且未播放时 [start] 的定时器不触发同步，避免
   /// 应用退到后台后仍每 [tickFast]（2s）醒来一次做网络 IO——无前台服务撑着
@@ -152,6 +192,8 @@ class SyncEngine {
   void pause() {
     if (!_appForeground) return;
     _appForeground = false;
+    _settingsPokeTimer?.cancel();
+    _settingsPokeTimer = null;
     _updatePolling();
   }
 
@@ -166,7 +208,8 @@ class SyncEngine {
 
   void start() {
     stop();
-    if (!_appForeground && !_playing) return; // 后台且未播放：等 resume()/setPlaying(true)
+    if (!_appForeground && !_playing)
+      return; // 后台且未播放：等 resume()/setPlaying(true)
     _tick = Timer.periodic(tickFast, (_) => unawaited(_onTick()));
     // 快路径先行：最新断点 1 RTT 到手，不受全量 pull 分页 backlog 拖累
     // （旧服务端 404 → 静默回退，全量 pull 仍是兜底）。
@@ -193,8 +236,7 @@ class SyncEngine {
       }
       final snap = await api.fetchLatestBreakpoint();
       if (snap == null) {
-        perfLog('fastPath.skip',
-            '${sw.elapsedMilliseconds}ms 服务端无断点/端点不可用');
+        perfLog('fastPath.skip', '${sw.elapsedMilliseconds}ms 服务端无断点/端点不可用');
         return;
       }
       final uuid = snap['client_uuid'];
@@ -236,6 +278,8 @@ class SyncEngine {
   void stop() {
     _tick?.cancel();
     _tick = null;
+    _settingsPokeTimer?.cancel();
+    _settingsPokeTimer = null;
   }
 
   /// 外部请求同步（手动按钮/回前台）。[force] 跳过退避。
@@ -305,6 +349,12 @@ class SyncEngine {
       _logIdle('未配置服务器地址');
       return;
     }
+    // 设置同步从关到开（含备份导入/重启后恢复）：下一轮 pull 后补种服务端缺失键。
+    final settingsSyncOn = settings.syncSettingsEnabled;
+    if (settingsSyncOn && !_lastSettingsSyncEnabled) {
+      _seedSettingsOnNextPull = true;
+    }
+    _lastSettingsSyncEnabled = settingsSyncOn;
     if (!force) {
       final failAt = _lastFailAt;
       if (failAt != null) {
@@ -326,22 +376,25 @@ class SyncEngine {
       lastPushed = 0;
       final swPush = Stopwatch()..start();
       if (!pullOnly) await _push(clientId);
-      perfLog('sync.run push', '${swPush.elapsedMilliseconds}ms pushed=$lastPushed');
+      perfLog('sync.run push',
+          '${swPush.elapsedMilliseconds}ms pushed=$lastPushed');
       final swPull = Stopwatch()..start();
       await _pull(clientId);
       perfLog('sync.run pull',
-          '${swPull.elapsedMilliseconds}ms songs=$lastPulledSongs playlists=$lastPulledPlaylists');
+          '${swPull.elapsedMilliseconds}ms songs=$lastPulledSongs playlists=$lastPulledPlaylists settings=$lastPulledSettings');
       final swFlush = Stopwatch()..start();
       _flushPlaylists();
       _flushSongStates();
       _flushBreakpoints();
+      _flushSettings();
       perfLog('sync.run flushTotal', '${swFlush.elapsedMilliseconds}ms');
       settings.lastSyncAt = DateTime.now().toIso8601String();
       _lastPullAt = DateTime.now();
       _failCount = 0;
       _lastFailAt = null;
       lastError = '';
-      perfLog('sync.run total', '${sw.elapsedMilliseconds}ms pullOnly=$pullOnly');
+      perfLog(
+          'sync.run total', '${sw.elapsedMilliseconds}ms pullOnly=$pullOnly');
     } catch (e) {
       _lastFailAt = DateTime.now();
       _failCount++;
@@ -397,6 +450,24 @@ class SyncEngine {
       ];
       if (dropped.isEmpty) continue;
       superseded.putIfAbsent(kept.last.eventUuid, () => []).addAll(dropped);
+      coalesced.addAll(dropped);
+    }
+    // 设置事件：同一键只推最后一条（滑条连续写只保留终值）。
+    final settingGroups = <String, List<OutboxRow>>{};
+    for (final e in pending) {
+      if (e.type != SyncEventTypes.settingSet) continue;
+      final key = e.payload['key'];
+      if (key is String && key.isNotEmpty) {
+        settingGroups.putIfAbsent(key, () => []).add(e);
+      }
+    }
+    for (final group in settingGroups.values) {
+      if (group.length <= 1) continue;
+      final keep = group.last.eventUuid;
+      final dropped = [
+        for (final e in group.take(group.length - 1)) e.eventUuid
+      ];
+      superseded[keep] = dropped;
       coalesced.addAll(dropped);
     }
     final sendRows = [
@@ -460,10 +531,12 @@ class SyncEngine {
       await index.deadLetterOutbox(uuids);
       if (uuids.isNotEmpty) {
         debugPrint('SyncEngine 死信事件：$uuids');
-        perfLog('push.rejected', [
-          for (final r in rejected)
-            if (r is Map) '${r['event_uuid']}=${r['reason']}'
-        ].join(' | '));
+        perfLog(
+            'push.rejected',
+            [
+              for (final r in rejected)
+                if (r is Map) '${r['event_uuid']}=${r['reason']}'
+            ].join(' | '));
         final rejectedOps = <String, String>{};
         for (final uuid in uuids) {
           final row = sendByUuid[uuid];
@@ -491,7 +564,9 @@ class SyncEngine {
     // 自己的 op，快照可能已并入对端历史），再交给播放器按版本应用。
     final v2Breakpoints = data['breakpoints'];
     final v2Handled = <String>{};
-    if (breakpointProtocol && v2Breakpoints is Map && v2Breakpoints.isNotEmpty) {
+    if (breakpointProtocol &&
+        v2Breakpoints is Map &&
+        v2Breakpoints.isNotEmpty) {
       perfLog('push.breakpointsV2', 'n=${v2Breakpoints.length}');
       for (final entry in v2Breakpoints.entries) {
         final uuid = entry.key;
@@ -646,12 +721,26 @@ class SyncEngine {
     perfLog('flush.songStates', '${sw.elapsedMilliseconds}ms');
   }
 
+  /// 设置变更落库后的 UI/播放器刷新（按变化键分派）。
+  void _flushSettings() {
+    if (!_settingsDirty) return;
+    _settingsDirty = false;
+    final keys = Set<String>.from(_dirtySettingKeys);
+    _dirtySettingKeys.clear();
+    if (keys.isEmpty) return;
+    final sw = Stopwatch()..start();
+    onSettingsApplied?.call(keys);
+    perfLog('flush.settings',
+        '${sw.elapsedMilliseconds}ms n=${keys.length} ${keys.join(",")}');
+  }
+
   Future<void> _pull(String clientId) async {
     final swAll = Stopwatch()..start();
     var cursor = settings.syncCursor;
     var pages = 0;
     lastPulledSongs = 0;
     lastPulledPlaylists = 0;
+    lastPulledSettings = 0;
     // 跨页实体去重：服务端只在**单页内**按实体去重（页内 LinkedHashSet），
     // 同一实体的事件横跨多页时会重复回包同一快照。这里按实体身份去重，
     // 重复的只计数不重复落库（省写事务与 UI 线程的映射/等待）。
@@ -659,6 +748,8 @@ class SyncEngine {
     final seenPlaylists = <String>{};
     final seenSources = <String>{};
     final seenStates = <String>{};
+    final seenSettings = <String>{};
+    final serverSettingKeys = <String>{};
     // 本机优先 guard：本轮 push 已先执行，其 ack 的实体不在此集内；
     // 仍有未推事件的实体跳过 pull 快照（等下一轮收敛）。
     final guard = await _pendingGuardKeys();
@@ -666,6 +757,8 @@ class SyncEngine {
     var guardedPlaylists = 0;
     var guardedSources = 0;
     var guardedStates = 0;
+    var guardedSettings = 0;
+    var appliedSettings = 0;
     var selfStates = 0;
     while (true) {
       final swFetch = Stopwatch()..start();
@@ -675,7 +768,8 @@ class SyncEngine {
       _noteServerTime(data['server_time']);
       await _noteBreakpointProtocol(data);
       final pullV2 = (data['breakpoint_protocol'] as num?)?.toInt() == 2;
-      final rawSongs = data['songs'] is List ? (data['songs'] as List).length : 0;
+      final rawSongs =
+          data['songs'] is List ? (data['songs'] as List).length : 0;
       final rawSources =
           data['sources'] is List ? (data['sources'] as List).length : 0;
       final rawPlaylists =
@@ -739,7 +833,8 @@ class SyncEngine {
           if (p is! Map) continue;
           final m = p.cast<String, dynamic>();
           final uuid = m['client_uuid'] as String?;
-          if (uuid == null || uuid.isEmpty || !seenPlaylists.add(uuid)) continue;
+          if (uuid == null || uuid.isEmpty || !seenPlaylists.add(uuid))
+            continue;
           if (guard.playlists.contains(uuid)) {
             guardedPlaylists++;
             continue;
@@ -783,14 +878,69 @@ class SyncEngine {
         perfLog('pull.page states',
             '${swStates.elapsedMilliseconds}ms applied=$applied');
       }
+      final swSettings = Stopwatch()..start();
+      final settingRows = data['settings'];
+      if (settingRows is List) {
+        for (final raw in settingRows) {
+          if (raw is! Map) continue;
+          final m = raw.cast<String, dynamic>();
+          final key = m['setting_key'];
+          final value = m['setting_value'];
+          if (key is! String || value is! String || key.isEmpty) continue;
+          // 服务端本次返回的全部键（含本机类目关闭的键）：首次开启同步时
+          // 只用本机值补种服务端没有的键，不覆盖已有值。
+          serverSettingKeys.add(key);
+          if (!seenSettings.add(key)) continue;
+          if (!SyncableSettings.isSyncable(key)) continue;
+          if (!_categoryEnabled(key)) continue;
+          if (guard.settings.contains(key)) {
+            guardedSettings++;
+            continue;
+          }
+          if (settings.applyRemoteSetting(key, value)) {
+            _dirtySettingKeys.add(key);
+            _settingsDirty = true;
+            lastPulledSettings++;
+            appliedSettings++;
+          }
+        }
+        perfLog('pull.page settings',
+            '${swSettings.elapsedMilliseconds}ms applied=$appliedSettings');
+      }
       cursor = (data['cursor'] as num?)?.toInt() ?? cursor;
       settings.syncCursor = cursor;
       pages++;
       if (data['has_more'] != true || pages >= _maxPullPages) break;
     }
+    if (_seedSettingsOnNextPull) {
+      final seeded =
+          await _seedMissingSettings(serverSettingKeys, guard.settings);
+      _seedSettingsOnNextPull = false;
+      if (seeded > 0) poke();
+    }
     _flushSources();
     perfLog('pull.total',
-        '${swAll.elapsedMilliseconds}ms pages=$pages cursor=$cursor guardedSongs=$guardedSongs playlists=$guardedPlaylists sources=$guardedSources states=$guardedStates selfStates=$selfStates');
+        '${swAll.elapsedMilliseconds}ms pages=$pages cursor=$cursor guardedSongs=$guardedSongs playlists=$guardedPlaylists sources=$guardedSources states=$guardedStates settings=$lastPulledSettings guardedSettings=$guardedSettings appliedSettings=$appliedSettings selfStates=$selfStates');
+  }
+
+  /// 首次开启设置同步/新开类目：服务端没有的键用本机当前值补种，
+  /// 已有键不动（避免新设备把旧设备已同步的偏好覆盖掉）。
+  Future<int> _seedMissingSettings(
+      Set<String> serverKeys, Set<String> pendingKeys) async {
+    if (!settings.syncSettingsEnabled) return 0;
+    var seeded = 0;
+    for (final key in SyncableSettings.keys) {
+      if (!_categoryEnabled(key)) continue;
+      if (serverKeys.contains(key) || pendingKeys.contains(key)) continue;
+      final value = index.settingsGet(key);
+      if (value == null) continue;
+      await index.enqueueOutbox(SyncEventTypes.settingSet, {
+        'key': key,
+        'value': value,
+      });
+      seeded++;
+    }
+    return seeded;
   }
 
   /// 服务端时钟校准：push/pull 回包的 `server_time` 与本地钟的差值即偏移，
@@ -813,12 +963,14 @@ class SyncEngine {
         Set<String> songs,
         Set<String> sources,
         Set<String> playlists,
-        Set<String> states
+        Set<String> states,
+        Set<String> settings
       })> _pendingGuardKeys() async {
     final songs = <String>{};
     final sources = <String>{};
     final playlists = <String>{};
     final states = <String>{};
+    final settings = <String>{};
     try {
       final pending = await index.pendingOutbox();
       for (final e in pending) {
@@ -832,12 +984,20 @@ class SyncEngine {
           states.add(k.substring('breakpoint|'.length));
         } else if (k.startsWith('source|')) {
           sources.add(k.substring('source|'.length));
+        } else if (k.startsWith('setting|')) {
+          settings.add(k.substring('setting|'.length));
         }
       }
     } catch (_) {
       // guard 是保护性跳过，读不到就按全量应用处理。
     }
-    return (songs: songs, sources: sources, playlists: playlists, states: states);
+    return (
+      songs: songs,
+      sources: sources,
+      playlists: playlists,
+      states: states,
+      settings: settings
+    );
   }
 
   /// push correction 回执的快照落库（形状判分）：
@@ -845,7 +1005,8 @@ class SyncEngine {
   /// 落库一律走服务端原始形态直通写隔离（与 pull 同一路径）。
   /// 每条 correction 都是「服务端判我方事件输」的证据，记录关键字段供时间线对齐。
   /// [clientId] 本设备号（F2 自写回声过滤用；未知则不过滤）。
-  Future<void> _applySnapshot(Map<String, dynamic> s, [String? clientId]) async {
+  Future<void> _applySnapshot(Map<String, dynamic> s,
+      [String? clientId]) async {
     if (s.containsKey('kind') && s.containsKey('address')) {
       perfLog('push.correction',
           'source uuid=${s['client_uuid']} kind=${s['kind']} address=${s['address']} deleted=${s['deleted']}');
@@ -878,6 +1039,18 @@ class SyncEngine {
           'song ref=$ref weight=${s['weight']} fav=${s['is_favorite']} frozen=${s['frozen']}');
       await index.applySongSnapshotRaw(s);
       _songStatesDirty = true;
+    } else if (s.containsKey('setting_key')) {
+      final key = s['setting_key'];
+      final value = s['setting_value'];
+      if (key is String &&
+          value is String &&
+          SyncableSettings.isSyncable(key) &&
+          _categoryEnabled(key) &&
+          settings.applyRemoteSetting(key, value)) {
+        perfLog('push.correction', 'setting key=$key');
+        _dirtySettingKeys.add(key);
+        _settingsDirty = true;
+      }
     }
   }
 
