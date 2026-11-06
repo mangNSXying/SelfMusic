@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../../layout/screen_metrics.dart';
 import '../../providers/navigation_provider.dart';
+import '../../widgets/corner_add_button.dart';
 import '../../widgets/detail_presentation.dart';
 import '../../widgets/playlist_song_picker.dart';
 import '../../widgets/song_list.dart';
@@ -37,16 +38,9 @@ class PlaylistDetailView extends StatelessWidget {
       onBack: () => nav.exitPlaylist(keepSearch: splitDetailActive(context)),
       globalSearch: true,
     );
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        DetailPresentationShell(presentation: presentation, child: list),
-        Positioned(
-          right: 16,
-          bottom: 16,
-          child: PlaylistAddSongsButton(playlistId: playlistId),
-        ),
-      ],
+    return CornerFabLayer(
+      content: DetailPresentationShell(presentation: presentation, child: list),
+      fab: PlaylistAddSongsButton(playlistId: playlistId),
     );
   }
 }

@@ -33,9 +33,6 @@ class EntrySongsView extends StatefulWidget {
   /// 歌曲表之前的附加内容（歌手页的专辑横条 + 详情块）。
   final Widget? leading;
 
-  /// 叠在列表之上的浮动操作（歌手页「重新解析」）。
-  final Widget? overlay;
-
   const EntrySongsView({
     super.key,
     required this.songs,
@@ -46,7 +43,6 @@ class EntrySongsView extends StatefulWidget {
     this.headerLeading,
     this.showClose = true,
     this.leading,
-    this.overlay,
   });
 
   @override
@@ -66,7 +62,8 @@ class _EntrySongsViewState extends State<EntrySongsView> {
     final player = context.read<PlayerProvider>();
     final index = widget.songs.indexWhere(player.isCurrent);
     if (index < 0) return;
-    final preceding = SongListLocator.precedingExtentOf(_listKey.currentContext);
+    final preceding =
+        SongListLocator.precedingExtentOf(_listKey.currentContext);
     SongListLocator.jumpTo(
       widget.scrollCtrl,
       rowTop: preceding +
@@ -81,7 +78,7 @@ class _EntrySongsViewState extends State<EntrySongsView> {
     final player = context.read<PlayerProvider>();
     final lib = context.read<LibraryProvider>();
     final nav = context.read<NavigationProvider>();
-    final content = LayoutBuilder(builder: (context, constraints) {
+    return LayoutBuilder(builder: (context, constraints) {
       final table = SongTableLayout.fit(constraints.maxWidth);
       _tableHeader = table != null;
       final leading = widget.leading;
@@ -121,8 +118,5 @@ class _EntrySongsViewState extends State<EntrySongsView> {
         ],
       );
     });
-    final overlay = widget.overlay;
-    if (overlay == null) return content;
-    return Stack(children: [content, overlay]);
   }
 }
