@@ -156,10 +156,20 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('已选 1'), findsOneWidget);
 
-    // A 模式的长按已让位给多选，全部展开/折叠是计数栏工具条图标。
+    // A 模式的长按已让位给多选，展开/折叠是计数栏工具条的单个切换按钮。
     await tester.tap(find.byTooltip('取消选择'));
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.byTooltip('多选'), findsOneWidget);
+    // 混合态（A 折叠 / B 展开）：按钮显示「全部展开」，点一下全展开。
+    expect(find.byTooltip('全部展开'), findsOneWidget);
+    await tester.tap(find.byTooltip('全部展开'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('夜曲'), findsOneWidget);
+    expect(find.text('晴天'), findsOneWidget);
+    expect(direct.settings.groupCollapsed('test'), isEmpty);
+
+    // 已全展开 → 按钮翻成「全部折叠」，点一下全折叠并持久化。
+    expect(find.byTooltip('全部折叠'), findsOneWidget);
     await tester.tap(find.byTooltip('全部折叠'));
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('夜曲'), findsNothing);
@@ -778,28 +788,26 @@ void main() {
     );
 
     expect(find.byTooltip('多选'), findsOneWidget);
-    expect(find.byTooltip('全部展开'), findsOneWidget);
+    // 展开/折叠合并为单按钮：默认全展开 → 显示「全部折叠」，点击后翻转。
+    expect(find.byTooltip('全部展开'), findsNothing);
     expect(find.byTooltip('全部折叠'), findsOneWidget);
-    // 全展开时「全部展开」禁用、「全部折叠」可用。
-    expect(
-        tester
-            .widget<IconButton>(
-                find.widgetWithIcon(IconButton, Icons.unfold_more))
-            .onPressed,
-        isNull);
     expect(
         tester
             .widget<IconButton>(
                 find.widgetWithIcon(IconButton, Icons.unfold_less))
             .onPressed,
         isNotNull);
+    await tester.tap(find.byTooltip('全部折叠'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.byTooltip('全部折叠'), findsNothing);
+    expect(find.byTooltip('全部展开'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
-    // 多选态：工具条换成全选/全不选图标。
+    // 多选态：工具条换成「全选」单按钮（未选中 → 全选）。
     await tester.tap(find.byTooltip('多选'));
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.byTooltip('全选'), findsOneWidget);
-    expect(find.byTooltip('全不选'), findsOneWidget);
+    expect(find.byTooltip('全不选'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 }

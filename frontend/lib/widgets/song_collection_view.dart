@@ -13,6 +13,7 @@ import '../providers/player_provider.dart';
 import '../utils/collection_sort.dart';
 import '../utils/song_groups.dart';
 import '../utils/source_folders.dart';
+import '../utils/toggle_cycle.dart';
 import '../utils/zh_variant.dart';
 import 'count_header.dart';
 import 'list_selection.dart';
@@ -691,15 +692,13 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       _treeFolders = const [];
     }
     final treeFolders = _treeFolders;
-    final allCollapsed = groups.isNotEmpty
-        ? groups.every((g) => _collapsed.contains(g.name))
-        : treeFolders.isNotEmpty &&
-            treeFolders.every((p) => !_expandedFolders.contains(p));
     final allExpanded = groups.isNotEmpty
         ? groups.every((g) => !_collapsed.contains(g.name))
         : treeFolders.isNotEmpty &&
             treeFolders.every((p) => _expandedFolders.contains(p));
-    // 多选 / 全部展开 / 全部折叠与分类、排序平级；[AppSettings.longPressCollapseGroups]
+    // 展开/折叠单按钮：已全展开 → 折叠；否则（含混合态）→ 展开。
+    final expandAll = nextInCycle(allExpanded, const [true, false]);
+    // 多选 / 展开折叠与分类、排序平级；[AppSettings.longPressCollapseGroups]
     // 只决定长按组头/文件夹行的行为，不再影响工具条可见性。
     final trailing = Row(
       mainAxisSize: MainAxisSize.min,
@@ -713,34 +712,18 @@ class _SongCollectionViewState extends State<SongCollectionView> {
             tooltip: '多选',
             onPressed: _startSelectionMode,
           ),
-        if (groups.isNotEmpty || treeFolders.isNotEmpty) ...[
+        if (groups.isNotEmpty || treeFolders.isNotEmpty)
           ToolbarIconButton(
-            icon: Icons.unfold_more,
-            tooltip: '全部展开',
-            onPressed: allExpanded
-                ? null
-                : () {
-                    if (groups.isNotEmpty) {
-                      _setAllCollapsed(settings, groups, false);
-                    } else {
-                      _setAllFoldersExpanded(settings, folderTree!, true);
-                    }
-                  },
+            icon: expandAll ? Icons.unfold_more : Icons.unfold_less,
+            tooltip: expandAll ? '全部展开' : '全部折叠',
+            onPressed: () {
+              if (groups.isNotEmpty) {
+                _setAllCollapsed(settings, groups, !expandAll);
+              } else {
+                _setAllFoldersExpanded(settings, folderTree!, expandAll);
+              }
+            },
           ),
-          ToolbarIconButton(
-            icon: Icons.unfold_less,
-            tooltip: '全部折叠',
-            onPressed: allCollapsed
-                ? null
-                : () {
-                    if (groups.isNotEmpty) {
-                      _setAllCollapsed(settings, groups, true);
-                    } else {
-                      _setAllFoldersExpanded(settings, folderTree!, false);
-                    }
-                  },
-          ),
-        ],
         SongGroupButton(
           value: widget.groupMode,
           onChanged: widget.onGroupModeChanged,

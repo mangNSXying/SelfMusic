@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../theme/app_metrics.dart';
+import '../utils/toggle_cycle.dart';
 import 'row_list.dart';
 import 'toolbar_icon_button.dart';
 
@@ -13,8 +14,8 @@ class SelectionAction {
       {required this.icon, required this.label, this.onPressed});
 }
 
-/// 列表多选模式顶栏：显示已选数量，右侧为「全选 / 全不选」图标，
-/// 批量操作收进三点菜单。
+/// 列表多选模式顶栏：显示已选数量，右侧为「全选 / 全不选」单图标切换
+/// （已全选 → 全不选；否则 → 全选），批量操作收进三点菜单。
 class SelectionBar extends StatelessWidget {
   final int total;
 
@@ -52,6 +53,11 @@ class SelectionBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final scale = appUiScaleOf(context);
     final textTheme = Theme.of(context).textTheme;
+    // 全选/全不选单按钮：已全选 → 全不选；否则 → 全选。
+    final selectAll = nextInCycle(_allSelected, const [true, false]);
+    final VoidCallback? onToggle = selectAll
+        ? (onSelectAll != null && total > 0 ? onSelectAll : null)
+        : (onSelectNone != null && selectedCount > 0 ? onSelectNone : null);
     return Material(
       color: Theme.of(context).colorScheme.secondaryContainer,
       child: SizedBox(
@@ -73,17 +79,11 @@ class SelectionBar extends StatelessWidget {
               ),
             ),
             const Spacer(),
-            if (onSelectAll != null)
+            if (onSelectAll != null || onSelectNone != null)
               ToolbarIconButton(
-                icon: Icons.select_all,
-                tooltip: '全选',
-                onPressed: (_allSelected || total <= 0) ? null : onSelectAll,
-              ),
-            if (onSelectNone != null)
-              ToolbarIconButton(
-                icon: Icons.deselect,
-                tooltip: '全不选',
-                onPressed: selectedCount <= 0 ? null : onSelectNone,
+                icon: selectAll ? Icons.select_all : Icons.deselect,
+                tooltip: selectAll ? '全选' : '全不选',
+                onPressed: onToggle,
               ),
             if (actions.isNotEmpty)
               PopupMenuButton<int>(
