@@ -9,7 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 播放进度直方图（101 桶，0..100%）与升权中位闸门。
+ * 播放进度直方图（101 桶，0..100%）与长期资格线（升权门槛 + 降权上限）。
  *
  * 服务端直方图只由样本事件累加：complete/skip 带 progress_pct、song.progress
  * 普通样本各 +1 桶；baseline 基线按桶 max。客户端快照合并也按桶 max，
@@ -86,6 +86,25 @@ public final class PlayProgress {
         double v = 50.0 + (targetFactor - 1.1) * 100.0;
         v = Math.max(0.0, Math.min(100.0, v));
         return Math.round(v * 100.0) / 100.0;
+    }
+
+    /**
+     * 长期中位能支撑的最高权重（资格档）；样本不足 MIN_SAMPLES 返回 -1（不设上限）。
+     *
+     * <p>与 {@link #requiredMedian(double)} 共用同一条门槛曲线：50% → 1.1，
+     * 60% → 1.2，…，90% → 1.5；低于 50% 只支撑 1.0。权重只能按资格档下调，
+     * 不能据它上调。</p>
+     */
+    public static double maxSupportedFactor(String histJson) {
+        if (total(histJson) < MIN_SAMPLES) return -1;
+        double median = median(histJson);
+        if (median < 0) return -1;
+        double cap = 1.0;
+        for (int i = 11; i <= 15; i++) {
+            double factor = i / 10.0;
+            if (median + 1e-9 >= requiredMedian(factor)) cap = factor;
+        }
+        return Math.round(cap * 10.0) / 10.0;
     }
 
     public static boolean allowsUpgrade(String histJson, double targetFactor) {

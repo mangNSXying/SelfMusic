@@ -81,6 +81,30 @@ void main() {
     });
   });
 
+  group('长期资格档', () {
+    test('样本不足 3 条不设上限', () {
+      expect(maxSupportedFactor(PlayProgressHistogram.empty()), isNull);
+      expect(maxSupportedFactor(_hist([100, 100])), isNull);
+    });
+
+    test('长期中位映射最高权重', () {
+      expect(maxSupportedFactor(_hist([49, 49, 49])), 1.0);
+      expect(maxSupportedFactor(_hist([50, 50, 50])), 1.1);
+      expect(maxSupportedFactor(_hist([55, 55, 55])), 1.1);
+      expect(maxSupportedFactor(_hist([59, 59, 59])), 1.1);
+      expect(maxSupportedFactor(_hist([60, 60, 60])), 1.2);
+      expect(maxSupportedFactor(_hist([70, 70, 70])), 1.3);
+      expect(maxSupportedFactor(_hist([80, 80, 80])), 1.4);
+      expect(maxSupportedFactor(_hist([90, 90, 90])), 1.5);
+      expect(maxSupportedFactor(_hist([100, 100, 100])), 1.5);
+    });
+
+    test('偶数样本中位 x.5 落在低档', () {
+      expect(maxSupportedFactor(_hist([59, 59, 60, 60])), 1.1);
+      expect(maxSupportedFactor(_hist([89, 89, 90, 90])), 1.4);
+    });
+  });
+
   group('中位升权闸门', () {
     test('门槛随目标档位递增，目标 <=1.0 不设闸门', () {
       expect(requiredMedianPercent(1.0), isNull);

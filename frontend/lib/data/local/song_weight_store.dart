@@ -206,12 +206,13 @@ class SongWeightStore {
 
   bool isFavorite(Song s) => metaOf(s).favorite;
 
-  /// 全历史播放进度中位数；无样本返回 null。
+  /// 长期中位进度（全历史直方图中位数）；无样本返回 null。
   double? medianProgressPercentOf(Song s) =>
       PlayProgressHistogram.fromJson(metaOf(s).progressHist).medianPercent;
 
-  /// 记录一次播放进度样本（30%~95% 等无权重事件的离开）：只进直方图，
-  /// 不改权重/streak/收藏/播放时长。与推送给服务端的 `song.progress` 同值。
+  /// 30%~95% 中性离开：进直方图、清零连续完播（like_streak），并按长期
+  /// 资格线钳制权重；dislike_streak/收藏/播放时长不变。与推送服务端的
+  /// `song.progress` 同值。
   Future<void> recordProgress(Song s, int progressPct) async {
     if (s.sourceRef.isEmpty) return;
     final pct = clampProgressPercent(progressPct);
@@ -221,7 +222,8 @@ class SongWeightStore {
   }
 
   /// 完播（播放时长 >95%，通常为自然结束）：like_streak++，dislike 清零（覆盖先前跳过）；
-  /// streak≥3 且中位进度闸门通过 → factor+0.1（≤1.5）并清零；闸门未过保留 streak。
+  /// 连续完播≥3（中性离开会清零）且长期资格线通过 → factor+0.1（≤1.5）并清零；
+  /// 闸门未过保留 streak。
   /// 「不喜欢」（frozen）态只记 streak，不自动调权（权重锁定 [dislikedFactor]）。
   ///
   /// [progressPct] 为本次离开时的最终进度；有值时视为 tracked：同一写事务内先记样本
@@ -234,7 +236,8 @@ class SongWeightStore {
   }
 
   /// 中途跳过（播放时长 <30% 被打断）：dislike_streak++，like 清零（覆盖先前完播）；
-  /// streak≥3 → factor−0.1（≥0.5）并清零。降权不看中位进度。
+  /// streak≥3 → factor−0.1（≥0.5）并清零。降权不看长期中位进度；30%~95%
+  /// 中性离开不清零 dislike_streak。
   /// 「不喜欢」（frozen）态只记 streak，不自动调权。
   Future<void> onSkipped(Song s, {int? progressPct}) async {
     await _apply(s, 'skip', progressPct: progressPct, tracked: progressPct != null);
@@ -246,7 +249,7 @@ class SongWeightStore {
   /// 权重直接提高一档（f=clamp(f+0.1)）并清零累计的完播/切歌次数——用户主动
   /// 点选并听完一首，本身就是强正面信号。
   ///
-  /// [tracked] 为 true 时同样要过中位进度闸门（升权）；失败保留权重与 streak。
+  /// [tracked] 为 true 时同样要过长期资格线（升权）；失败保留权重与 streak。
   /// 本次播放的进度样本已由前一条 complete 记录，本事件不重复采样。
   /// 「不喜欢」锁定态不动权重。
   Future<void> onCompletedManual(Song s, {bool tracked = false}) async {

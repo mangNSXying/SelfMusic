@@ -132,9 +132,11 @@ public class SyncService {
         // tracked：本事件来自带进度采样的新客户端。complete/skip 由 progress_pct
         // 判定；complete_manual 不采样，用显式 tracked 标记（前一条 complete 已记样本）。
         boolean tracked = PlayProgress.hasSample(payload);
+        boolean sampled = false;
         if (SyncEventTypes.SONG_COMPLETE.equals(type)
                 || SyncEventTypes.SONG_SKIP.equals(type)) {
             PlayProgress.recordSample(song, payload);
+            sampled = tracked;
         } else if (SyncEventTypes.SONG_COMPLETE_MANUAL.equals(type)) {
             tracked = payload != null && payload.path("tracked").asBoolean(false);
         }
@@ -206,16 +208,41 @@ public class SyncService {
             }
             default -> throw new BizException(40001, "unknown song event: " + type);
         }
+        if (sampled) applyLongTermCap(song);
     }
 
-    /** song.progress：普通样本 +1 桶；baseline 基线按桶 max。不改权重/streak。 */
+    /**
+     * song.progress：中性离开（30%~95%）记一条样本，打断连续完播（like_streak=0），
+     * 并按长期资格线钳制权重；dislike_streak 保持不变。baseline 基线只按桶 max，
+     * 不改 streak/权重。
+     */
     private static void applyProgressEvent(SongState song, JsonNode payload) {
         if (payload == null) return;
         if (payload.path("baseline").asBoolean(false)) {
             song.setProgressHist(
                     PlayProgress.mergeMax(song.getProgressHist(), payload.get("progress_hist")));
-        } else {
-            PlayProgress.recordSample(song, payload);
+            return;
+        }
+        if (!PlayProgress.hasSample(payload)) return;
+        PlayProgress.recordSample(song, payload);
+        song.setLikeStreak(0);
+        applyLongTermCap(song);
+    }
+
+    /**
+     * 长期资格线：权重只能按长期中位下调，不能上调。
+     *
+     * <p>只处理权重 &gt; 1.0；favorite（手动喜欢）与 frozen（手动不喜欢）豁免；
+     * 样本不足 3 条不设上限；一次降到资格档。</p>
+     */
+    private static void applyLongTermCap(SongState song) {
+        if (song.isFrozen() || song.isFavorite()) return;
+        BigDecimal current = factor(song);
+        if (current.compareTo(BigDecimal.ONE) <= 0) return;
+        double cap = PlayProgress.maxSupportedFactor(song.getProgressHist());
+        if (cap < 0) return;
+        if (current.doubleValue() > cap + 1e-9) {
+            song.setWeight(BigDecimal.valueOf(cap));
         }
     }
 

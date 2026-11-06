@@ -64,7 +64,7 @@ class SongInfoDialog extends StatelessWidget {
       ['播放时长', playSecLabel(playSec)],
       ['播放次数', playCountLabel(playSec, song.duration)],
       [
-        '中位进度',
+        '长期中位进度',
         formatMedianProgress(direct.weight.medianProgressPercentOf(song)),
       ],
       ['来源', '${song.source}（${song.sourceKey}）'],

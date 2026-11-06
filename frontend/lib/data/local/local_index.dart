@@ -723,7 +723,8 @@ class LocalIndex {
     });
   }
 
-  /// 只记录一次播放进度样本（不改权重/streak/收藏/播放时长）。
+  /// 30%~95% 中性离开：记一条样本、清零连续完播（like_streak），并按长期
+  /// 资格线钳制权重；不改 dislike_streak/收藏/播放时长。
   Future<void> recordProgress(String sourceKey, String songRef, int percent) {
     return _writer!.op<void>('recordProgress', {
       'sourceKey': sourceKey,
@@ -1125,7 +1126,7 @@ class LocalIndex {
   }
 
   /// 缓存歌曲的播放统计（淘汰排序用）：按 (source_key, song_ref) 聚合，
-  /// 中位进度由 progress_hist 直方图计算；无统计/无样本为 null。
+  /// 长期中位进度由 progress_hist 直方图计算；无统计/无样本为 null。
   Map<String, CacheSongStats> cacheSongStats() {
     final rs = _db!.select('''
       SELECT DISTINCT c.source_key AS source_key, c.song_ref AS song_ref,

@@ -195,7 +195,7 @@ void main() {
     });
   });
 
-  group('中位播放进度闸门', () {
+  group('长期中位进度闸门', () {
     test('3 次完播带 100% 样本 → 1.1，中位数 100', () async {
       final (_, w) = await _openWeightStore();
       final s = _song('p1.mp3');
@@ -209,7 +209,7 @@ void main() {
       expect(w.medianProgressPercentOf(s), 100);
     });
 
-    test('中位不达标：保留 like_streak，补高进度后立即升权', () async {
+    test('中位不达标：保留 like_streak，补高进度后升权', () async {
       final (_, w) = await _openWeightStore();
       final s = _song('p2.mp3');
       for (var i = 0; i < 10; i++) {
@@ -222,15 +222,15 @@ void main() {
       expect(m.factor, SongWeightStore.defaultFactor);
       expect(m.likeStreak, 3); // 闸门失败保留，等后续完播继续评比
 
-      // 10×40 + 3×100 中位 40；补 8 条 100 后中位跨过 50。
-      for (var i = 0; i < 8; i++) {
-        await w.recordProgress(s, 100);
+      // 10×40 + 3×100 中位 40；再连续完播 7 次后达到 10×40 + 10×100，
+      // 中位跨到 70，闸门放行。
+      for (var i = 0; i < 7; i++) {
+        await w.onCompleted(s, progressPct: 100);
       }
-      await w.onCompleted(s, progressPct: 100);
       m = w.metaOf(s);
       expect(m.factor, closeTo(1.1, 1e-9));
       expect(m.likeStreak, 0);
-      expect(w.medianProgressPercentOf(s), 100);
+      expect(w.medianProgressPercentOf(s), 70);
     });
 
     test('目标 <=1.0 不设防：0.9 三次完播回 1.0', () async {
@@ -264,7 +264,7 @@ void main() {
       expect(m.likeStreak, 0);
     });
 
-    test('降权不受中位进度影响', () async {
+    test('降权不受长期中位影响', () async {
       final (_, w) = await _openWeightStore();
       final s = _song('p5.mp3');
       for (var i = 0; i < 3; i++) {
@@ -293,6 +293,84 @@ void main() {
       expect(m.factor, closeTo(1.1, 1e-9));
       expect(m.likeStreak, 0);
       expect(m.dislikeStreak, 0);
+    });
+
+    test('中性离开打断连续完播', () async {
+      final (_, w) = await _openWeightStore();
+      final s = _song('p7.mp3');
+      await w.onCompleted(s, progressPct: 100);
+      await w.onCompleted(s, progressPct: 100);
+      await w.recordProgress(s, 50);
+      expect(w.metaOf(s).likeStreak, 0);
+
+      await w.onCompleted(s, progressPct: 100);
+      await w.onCompleted(s, progressPct: 100);
+      expect(w.metaOf(s).factor, SongWeightStore.defaultFactor);
+      await w.onCompleted(s, progressPct: 100);
+      final m = w.metaOf(s);
+      expect(m.factor, closeTo(1.1, 1e-9));
+      expect(m.likeStreak, 0);
+    });
+
+    test('中性离开不清零 dislike_streak', () async {
+      final (_, w) = await _openWeightStore();
+      final s = _song('p8.mp3');
+      await w.onSkipped(s, progressPct: 10);
+      await w.onSkipped(s, progressPct: 10);
+      await w.recordProgress(s, 50);
+      expect(w.metaOf(s).dislikeStreak, 2);
+      await w.onSkipped(s, progressPct: 10);
+      expect(w.metaOf(s).factor, closeTo(0.9, 1e-9));
+    });
+
+    test('长期资格线一次到位降权，手动喜欢豁免', () async {
+      final (_, w) = await _openWeightStore();
+      final s = _song('p9.mp3');
+      for (var i = 0; i < 3; i++) {
+        await w.recordProgress(s, 100);
+      }
+      for (var i = 0; i < 5; i++) {
+        await w.onCompletedManual(s, tracked: true);
+      }
+      expect(w.metaOf(s).factor, closeTo(SongWeightStore.maxFactor, 1e-9));
+
+      for (var i = 0; i < 4; i++) {
+        await w.recordProgress(s, 50);
+      }
+      expect(w.metaOf(s).factor, closeTo(1.1, 1e-9));
+
+      final fav = _song('p10.mp3');
+      await w.setLiked(fav);
+      for (var i = 0; i < 4; i++) {
+        await w.recordProgress(fav, 50);
+      }
+      expect(w.metaOf(fav).factor, closeTo(SongWeightStore.maxFactor, 1e-9));
+    });
+
+    test('长期资格线不影响 1.0 及以下权重', () async {
+      final (_, w) = await _openWeightStore();
+      final s = _song('p11.mp3');
+      for (var i = 0; i < 3; i++) {
+        await w.onSkipped(s, progressPct: 10);
+      }
+      expect(w.metaOf(s).factor, closeTo(0.9, 1e-9));
+      for (var i = 0; i < 10; i++) {
+        await w.recordProgress(s, 10);
+      }
+      expect(w.metaOf(s).factor, closeTo(0.9, 1e-9));
+    });
+
+    test('长期资格线降到 1.0 为止', () async {
+      final (_, w) = await _openWeightStore();
+      final s = _song('p12.mp3');
+      for (var i = 0; i < 3; i++) {
+        await w.onCompleted(s, progressPct: 100);
+      }
+      expect(w.metaOf(s).factor, closeTo(1.1, 1e-9));
+      for (var i = 0; i < 10; i++) {
+        await w.recordProgress(s, 49);
+      }
+      expect(w.metaOf(s).factor, closeTo(1.0, 1e-9));
     });
   });
 }
