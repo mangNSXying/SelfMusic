@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
 
 import '../../models/song.dart';
@@ -9,6 +8,7 @@ import '../../providers/player_provider.dart';
 import '../../widgets/draggable_sheet.dart';
 import '../../widgets/locate_current_button.dart';
 import '../../widgets/row_list.dart';
+import '../../widgets/song_list_locator.dart';
 import '../../widgets/song_table.dart';
 import '../../widgets/song_table_sliver.dart';
 
@@ -60,23 +60,20 @@ class _EntrySongsViewState extends State<EntrySongsView> {
   /// 本次布局是否带表格表头（列表前多一行 pinned 表头，定位偏移要计入）。
   bool _tableHeader = false;
 
-  /// 计数栏「定位当前曲」：目标行置于置顶标题栏下方 96px（与其它列表同口径）。
+  /// 计数栏「定位当前曲」：目标行置于置顶标题栏下方（统一口径见
+  /// [SongListLocator]）。
   void _locateCurrent() {
     final player = context.read<PlayerProvider>();
     final index = widget.songs.indexWhere(player.isCurrent);
     if (index < 0) return;
-    final ctrl = widget.scrollCtrl;
-    if (!ctrl.hasClients) return;
-    final ro = _listKey.currentContext?.findRenderObject();
-    final preceding =
-        ro is RenderSliver ? ro.constraints.precedingScrollExtent : 0.0;
-    final target = (preceding +
-            (_tableHeader ? kSongTableHeaderHeight : 0) +
-            index * kRowExtent -
-            AppSheetTitleBar.heightOf(context) -
-            96)
-        .clamp(0.0, ctrl.position.maxScrollExtent);
-    ctrl.jumpTo(target);
+    final preceding = SongListLocator.precedingExtentOf(_listKey.currentContext);
+    SongListLocator.jumpTo(
+      widget.scrollCtrl,
+      rowTop: preceding +
+          (_tableHeader ? kSongTableHeaderHeight : 0) +
+          index * kRowExtent,
+      coveredTop: AppSheetTitleBar.heightOf(context),
+    );
   }
 
   @override

@@ -16,6 +16,7 @@ import 'package:selfmusic/utils/song_groups.dart';
 import 'package:selfmusic/widgets/locate_current_button.dart';
 import 'package:selfmusic/widgets/row_list.dart';
 import 'package:selfmusic/widgets/song_collection_view.dart';
+import 'package:selfmusic/widgets/song_list_locator.dart';
 import 'package:selfmusic/widgets/song_table.dart';
 import 'package:sqlite3/open.dart';
 
@@ -138,7 +139,8 @@ void main() {
     await tester.tap(find.byType(LocateCurrentButton));
     await tester.pump();
 
-    expect(pos.pixels, closeTo(50 * kRowExtent - 96, 0.5));
+    expect(pos.pixels,
+        closeTo(50 * kRowExtent - SongListLocator.margin, 0.5));
     expect(find.text('歌51'), findsOneWidget);
   });
 
@@ -209,8 +211,13 @@ void main() {
     await tester.pump();
 
     // 表格模式：列表前多一行 pinned 表头（32px），定位偏移随之抬高。
-    expect(ctrl.offset,
-        closeTo(30 * kRowExtent - 96 + kSongTableHeaderHeight, 0.5));
+    expect(
+        ctrl.offset,
+        closeTo(
+            30 * kRowExtent -
+                SongListLocator.margin +
+                kSongTableHeaderHeight,
+            0.5));
     expect(find.text('歌31'), findsOneWidget);
   });
 }

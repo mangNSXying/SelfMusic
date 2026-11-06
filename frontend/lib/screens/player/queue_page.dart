@@ -18,6 +18,7 @@ import '../../widgets/row_list.dart';
 import '../../widgets/selection_bar.dart';
 import '../../widgets/search_field.dart';
 import '../../widgets/song_list.dart';
+import '../../widgets/song_list_locator.dart';
 import '../../widgets/queue_song_tile.dart';
 import '../../widgets/song_row_view.dart';
 import '../../widgets/sort_menu_button.dart';
@@ -81,7 +82,7 @@ class _QueuePageState extends State<QueuePage> {
           (_sort, '', queue.length, direct.settingsVersion, zhVariantRevision);
       final pos =
           _visible.indexOf(player.currentIndex.clamp(0, queue.length - 1));
-      if (pos > 0) offset = _focusOffset(pos);
+      if (pos > 0) offset = SongListLocator.offsetForRow(pos);
     }
     _scroll = ScrollController(initialScrollOffset: offset);
     widget.focusTick?.addListener(_onFocusTick);
@@ -104,11 +105,6 @@ class _QueuePageState extends State<QueuePage> {
     super.dispose();
   }
 
-  /// 追焦目标 offset：目标行置于列表顶下 96px（与播放队列弹层同口径），
-  /// 超出列表范围的值交由滚动位置钳位。
-  double _focusOffset(int pos) =>
-      (pos * kRowExtent - 96).clamp(0.0, double.infinity);
-
   void _ensureMetaWindow(
       DirectSourceManager direct, List<Song> queue, int displayIndex) {
     final from = math.max(0, displayIndex - 24);
@@ -127,8 +123,7 @@ class _QueuePageState extends State<QueuePage> {
     final pos =
         _visible.indexOf(player.currentIndex.clamp(0, queue.length - 1));
     if (pos < 0) return;
-    _scroll
-        .jumpTo(_focusOffset(pos).clamp(0.0, _scroll.position.maxScrollExtent));
+    SongListLocator.jumpToRow(_scroll, pos);
   }
 
   /// 重进歌单页：下一帧再跳（回调可能发生在滚动/通知分发期间，frame 期间
