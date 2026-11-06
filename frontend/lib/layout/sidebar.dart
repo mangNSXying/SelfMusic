@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
+import '../screens/settings/settings_focus.dart';
+import '../screens/settings/settings_search_index.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_provider.dart';
 import '../utils/app_exit.dart';
@@ -77,15 +79,57 @@ class _Header extends StatelessWidget {
   }
 }
 
-class _SettingsList extends StatelessWidget {
+class _SettingsList extends StatefulWidget {
   final NavigationProvider nav;
   final SettingsItem? selected;
   const _SettingsList({required this.nav, required this.selected});
 
   @override
+  State<_SettingsList> createState() => _SettingsListState();
+}
+
+class _SettingsListState extends State<_SettingsList> {
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  void _onQueryChanged(String value) {
+    setState(() => _query = value.trim());
+  }
+
+  void _clearSearch() {
+    _searchCtrl.clear();
+    setState(() => _query = '');
+  }
+
+  void _openSection(SettingsItem item) {
+    widget.nav.openSettings(item);
+    // 移动端选中后收起抽屉。
+    if (!isWideWindow(MediaQuery.sizeOf(context))) {
+      Scaffold.of(context).closeDrawer();
+    }
+  }
+
+  void _openResult(SettingsSearchEntry entry) {
+    // 先挂定位请求，再切分区：新分区首帧即可消费并滚动/高亮。
+    SettingsFocusScope.read(context)?.request(entry.id);
+    widget.nav.openSettings(entry.section);
+    _clearSearch();
+    if (!isWideWindow(MediaQuery.sizeOf(context))) {
+      Scaffold.of(context).closeDrawer();
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.symmetric(vertical: 8),
+    final results =
+        _query.isEmpty ? const <SettingsSearchEntry>[] : searchSettings(_query);
+    return Column(
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
@@ -101,21 +145,95 @@ class _SettingsList extends StatelessWidget {
             ),
           ),
         ),
-        for (final item in SettingsItem.values)
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: TextField(
+            controller: _searchCtrl,
+            onChanged: _onQueryChanged,
+            style: const TextStyle(fontSize: 13),
+            decoration: InputDecoration(
+              hintText: '搜索设置',
+              prefixIcon: const Icon(Icons.search, size: 18),
+              suffixIcon: _query.isEmpty
+                  ? null
+                  : IconButton(
+                      tooltip: '清除',
+                      icon: const Icon(Icons.close, size: 18),
+                      onPressed: _clearSearch,
+                    ),
+              isDense: true,
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Expanded(
+          child: _query.isEmpty
+              ? ListView(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  children: [
+                    for (final item in SettingsItem.values)
+                      ListTile(
+                        dense: true,
+                        leading: Icon(item.icon),
+                        title: Text(item.label),
+                        selected: widget.selected == item,
+                        selectedTileColor: Theme.of(context)
+                            .colorScheme
+                            .primary
+                            .withValues(alpha: 0.12),
+                        onTap: () => _openSection(item),
+                      ),
+                  ],
+                )
+              : _buildResults(context, results),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildResults(
+      BuildContext context, List<SettingsSearchEntry> results) {
+    if (results.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+        child: Text(
+          '没有匹配设置',
+          style: TextStyle(
+            fontSize: 12,
+            color:
+                Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+          ),
+        ),
+      );
+    }
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      children: [
+        for (final entry in results)
           ListTile(
             dense: true,
-            leading: Icon(item.icon),
-            title: Text(item.label),
-            selected: selected == item,
-            selectedTileColor:
-                Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
-            onTap: () {
-              nav.openSettings(item);
-              // 移动端选中后收起抽屉。
-              if (!isWideWindow(MediaQuery.sizeOf(context))) {
-                Scaffold.of(context).closeDrawer();
-              }
-            },
+            leading: Icon(entry.section.icon, size: 20),
+            title: Text(
+              entry.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            subtitle: Text(
+              [
+                entry.section.label,
+                entry.group,
+                if (entry.hint != null) entry.hint!,
+              ].join(' · '),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 11),
+            ),
+            onTap: () => _openResult(entry),
           ),
       ],
     );
