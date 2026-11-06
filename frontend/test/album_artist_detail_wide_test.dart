@@ -561,7 +561,7 @@ void main() {
 
       // 设置压在内容栈上，返回回到原详情（不再清空）。
       nav.enterArtist(artist, const []);
-      nav.openSettings(SettingsItem.general);
+      nav.openSettings(SettingsItem.system);
       expect(nav.details, hasLength(1));
       expect(nav.contentTop, isA<SettingsRoute>());
       expect(nav.backToPrevious(), isTrue);

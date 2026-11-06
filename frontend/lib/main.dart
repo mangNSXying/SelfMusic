@@ -607,7 +607,7 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
     tray.bindWindowActions(
       onAddSongs: _openAddSongsFromTray,
       onOpenSettings: () async {
-        _nav.openSettings(SettingsItem.general);
+        _nav.openSettings(SettingsItem.system);
       },
     );
     _trayPlayer!.addListener(_syncDesktopTray);
@@ -780,7 +780,7 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
       });
     }
     // 首次启动不再强制配对：未配对也可正常使用直连模式；
-    // 配对 / 会话过期后重新配对在「设置 → 服务端」进行。
+    // 配对 / 会话过期后重新配对在「设置 → 网络」进行。
     // 订阅收窄（T006）：Root 仅关注播放页可见性；悬浮层进度由 playerProgress
     // （ValueNotifier）独立逐帧驱动，区段/搜索等变更不重建 Root。
     final playerView =
@@ -837,7 +837,7 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('会话已过期'),
-        content: const Text('服务端登录已过期，多设备同步将暂停；本地播放不受影响。可在「设置 → 服务端」重新配对。'),
+        content: const Text('服务端登录已过期，多设备同步将暂停；本地播放不受影响。可在「设置 → 网络」重新配对。'),
         actions: appDialogActions(
           ctx,
           cancelLabel: '稍后',
@@ -853,7 +853,7 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
             Navigator.of(ctx).pop();
             context
                 .read<NavigationProvider>()
-                .openSettings(SettingsItem.server);
+                .openSettings(SettingsItem.network);
           },
         ),
       ),

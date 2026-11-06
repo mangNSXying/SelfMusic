@@ -32,14 +32,14 @@ class ShortcutSettingsPanel extends StatelessWidget {
         ),
         ListTile(
           leading: const Icon(Icons.keyboard_outlined),
-          title: const Text('窗口内快捷键'),
+          title: const Text('窗口内'),
           subtitle: Text('应用窗口聚焦时生效 · 已设置 $windowCount 项'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _openScope(context, ShortcutScope.window),
         ),
         ListTile(
           leading: const Icon(Icons.public),
-          title: const Text('全局快捷键'),
+          title: const Text('全局'),
           subtitle: Text('应用在后台时也可触发 · 已设置 $globalCount 项'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _openScope(context, ShortcutScope.global),

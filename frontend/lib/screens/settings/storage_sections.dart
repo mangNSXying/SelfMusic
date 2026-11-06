@@ -167,7 +167,7 @@ class _TranscodeSectionState extends State<TranscodeSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('代理',
+        Text('转码代理',
             style: Theme.of(context)
                 .textTheme
                 .titleMedium
@@ -318,7 +318,7 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
         Row(
           children: [
             Expanded(
-              child: Text('缓存上限',
+              child: Text('缓存容量',
                   style: Theme.of(context)
                       .textTheme
                       .titleMedium
@@ -335,12 +335,18 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
           ],
         ),
         const SizedBox(height: 4),
-        Text('字节上限与预载共用；歌曲上限只算离线缓存',
+        Text('体积上限与预载共用；首数上限只算离线缓存',
             style: Theme.of(context)
                 .textTheme
                 .bodySmall
                 ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
         const SizedBox(height: 8),
+        Text('上限来源',
+            style: TextStyle(
+                fontSize: 12,
+                color: cs.onSurfaceVariant,
+                fontWeight: FontWeight.w600)),
+        const SizedBox(height: 4),
         SingleChoiceGroup<String>(
           options: const [
             SingleChoiceOption(value: 'custom', label: '自定义'),
@@ -388,7 +394,7 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: const Icon(Icons.storage_outlined),
-          title: const Text('缓存总上限'),
+          title: const Text('体积上限'),
           subtitle: Text(_labelBytes(_settings.cacheMaxBytes)),
           trailing: const Icon(Icons.chevron_right),
           enabled: !follow,
@@ -397,7 +403,7 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: const Icon(Icons.library_music_outlined),
-          title: const Text('歌曲数量上限'),
+          title: const Text('首数上限'),
           subtitle: Text('${_settings.cacheSongLimit} 首'),
           trailing: const Icon(Icons.chevron_right),
           enabled: !follow,
@@ -411,7 +417,7 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
     final current = _settings.cacheMaxBytes ~/ (1024 * 1024);
     final text = await showTextInputDialog(
       context: context,
-      title: '缓存总上限（MB）',
+      title: '体积上限（MB）',
       initial: current.toString(),
       numeric: true,
     );
@@ -425,7 +431,7 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
   Future<void> _editSongLimit(BuildContext context) async {
     final text = await showTextInputDialog(
       context: context,
-      title: '歌曲数量上限',
+      title: '首数上限',
       initial: _settings.cacheSongLimit.toString(),
       numeric: true,
     );

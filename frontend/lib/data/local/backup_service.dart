@@ -12,7 +12,7 @@ import 'local_index.dart';
 /// 备份文件类型：仅设置 / 仅歌单 / 兼容旧的综合备份。
 enum BackupKind { settings, playlists, full }
 
-/// 设置 / 歌单导出导入（settings.md §3.5，常规分区）。
+/// 设置 / 歌单导出导入（settings.md §3.5，存储分区）。
 ///
 /// **设置与歌单分开导出导入**（含独立文件选择器导入，方便跨机迁移）：
 /// - 导出写入应用支持目录 `selfmusic/backups/` 下
@@ -83,16 +83,14 @@ class BackupService {
   }
 
   File _write(String type, Map<String, dynamic> body) {
-    final file = File(p.join(
-        _backupDir, 'selfmusic-$type-${_stamp()}.json'));
+    final file = File(p.join(_backupDir, 'selfmusic-$type-${_stamp()}.json'));
     file.writeAsStringSync(
-        const JsonEncoder.withIndent('  ')
-            .convert(<String, dynamic>{
-              'schema': schema,
-              'type': type,
-              'exportedAt': DateTime.now().toIso8601String(),
-              ...body,
-            }),
+        const JsonEncoder.withIndent('  ').convert(<String, dynamic>{
+          'schema': schema,
+          'type': type,
+          'exportedAt': DateTime.now().toIso8601String(),
+          ...body,
+        }),
         flush: true);
     return file;
   }
@@ -150,8 +148,7 @@ class BackupService {
     final serverMap = (data['server'] as Map<String, dynamic>?) ?? const {};
     final baseUrl = serverMap['baseUrl'] as String?;
     if (baseUrl != null) await server.setBaseUrl(baseUrl);
-    await _restoreTheme(
-        (data['theme'] as Map<String, dynamic>?) ?? const {});
+    await _restoreTheme((data['theme'] as Map<String, dynamic>?) ?? const {});
     return '已导入设置 $restored 项（含服务端地址、主题）';
   }
 
@@ -168,8 +165,7 @@ class BackupService {
     var itemCount = 0;
     for (final raw in playlists) {
       final pl = raw as Map<String, dynamic>;
-      final id = await index.createPlaylist(
-          pl['name'] as String? ?? '未命名歌单',
+      final id = await index.createPlaylist(pl['name'] as String? ?? '未命名歌单',
           description: pl['description'] as String?);
       playlistCount++;
       for (final it in (pl['items'] as List<dynamic>? ?? const <dynamic>[])) {
@@ -225,6 +221,8 @@ class BackupService {
     }
   }
 
-  static String _stamp() =>
-      DateTime.now().toIso8601String().replaceAll(RegExp(r'[-:T]'), '').substring(0, 14);
+  static String _stamp() => DateTime.now()
+      .toIso8601String()
+      .replaceAll(RegExp(r'[-:T]'), '')
+      .substring(0, 14);
 }

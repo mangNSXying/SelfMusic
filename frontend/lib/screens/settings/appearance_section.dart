@@ -4,8 +4,6 @@ import 'package:file_selector/file_selector.dart';
 
 import 'package:flutter/material.dart';
 
-import 'package:flutter/services.dart';
-
 import 'package:provider/provider.dart';
 
 import '../../data/local/app_settings.dart';
@@ -15,9 +13,7 @@ import '../../services/custom_font_service.dart';
 import '../../services/ttc_font.dart';
 import '../../theme/app_theme.dart';
 import '../../theme/theme_provider.dart';
-import '../../utils/cover_thumb.dart';
 import '../../utils/zh_variant.dart';
-import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/inline_spinner.dart';
 import '../../widgets/single_choice_dialog.dart';
@@ -35,7 +31,6 @@ class AppearanceSection extends StatefulWidget {
 class _AppearanceSettingsState extends State<AppearanceSection> {
   late PlayerTransition _transition;
   late AppSettings _settings;
-  bool _clearingThumbs = false;
   bool _fontBusy = false;
   bool _zhBusy = false;
 
@@ -45,6 +40,17 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
     final s = context.read<DirectSourceManager>().settings;
     _transition = s.playerTransition;
     _settings = s;
+  }
+
+  Widget _groupHeader(String title) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(
+        title,
+        style: TextStyle(color: cs.primary, fontWeight: FontWeight.w600),
+      ),
+    );
   }
 
   @override
@@ -70,6 +76,7 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
                   color: colorScheme.onSurface.withValues(alpha: 0.6))),
           const SizedBox(height: 24),
 
+          _groupHeader('主题'),
           // 明暗模式：跟随系统 / 浅色 / 深色
           Text('明暗模式',
               style: Theme.of(context)
@@ -171,16 +178,20 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
               ],
             ),
           ],
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              icon: const Icon(Icons.restart_alt),
+              label: const Text('恢复默认'),
+              onPressed: theme.resetDefaults,
+            ),
+          ),
           const Divider(),
           const SizedBox(height: 8),
 
           // 文字：自定义字体（导入文件、仅本机生效）
-          Text('文字',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w600)),
-          const SizedBox(height: 4),
+          _groupHeader('文字'),
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.font_download_outlined),
@@ -188,9 +199,7 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
             subtitle: Text(customFontLabel.isEmpty
                 ? (hasCustomFont ? '自定义字体' : '系统默认')
                 : '当前：$customFontLabel'),
-            trailing: _fontBusy
-                ? const InlineSpinner(size: 24)
-                : null,
+            trailing: _fontBusy ? const InlineSpinner(size: 24) : null,
           ),
           Wrap(
             spacing: 12,
@@ -226,7 +235,7 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.format_line_spacing),
-            title: const Text('歌词最大行数'),
+            title: const Text('歌词行数'),
             subtitle: Text(_settings.lyricMaxLines == 0
                 ? '不限制（沿用当前字号）'
                 : '自动放大字号，屏幕最多约 ${_settings.lyricMaxLines} 行（译文/长句更少）'),
@@ -236,42 +245,12 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
           const Divider(),
           const SizedBox(height: 8),
 
-          // 切换动画
-          Text('动画',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w600)),
-          const SizedBox(height: 4),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.animation_outlined),
-            title: const Text('页面切换动画'),
-            subtitle: Text('页面切换效果：${_transition.label}'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => _pickTransition(context),
-          ),
-          const Divider(),
-          const SizedBox(height: 8),
-
-          // 播放页设定
-          Text('播放页',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w600)),
-          const SizedBox(height: 4),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('播放页显示权重信息'),
-            subtitle: const Text('播放页展示当前歌曲喜欢 / 权重状态'),
-            value: _settings.playerShowWeight,
-            onChanged: (v) => setState(() => _settings.playerShowWeight = v),
-          ),
+          // 显示：标题格式 / 简繁 / 播放页权重与控件隐藏
+          _groupHeader('显示'),
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.title),
-            title: const Text('标题显示格式'),
+            title: const Text('标题格式'),
             subtitle: Text('当前：${_settings.songTitleFormat.label}'
                 '（不修改存储字段）'),
             trailing: const Icon(Icons.chevron_right),
@@ -280,7 +259,7 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.translate),
-            title: const Text('简繁显示'),
+            title: const Text('简繁转换'),
             subtitle: Text('当前：${_settings.zhVariant.label}'
                 '（只影响展示，不修改元数据）'),
             trailing: _zhBusy
@@ -288,10 +267,17 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
                 : const Icon(Icons.chevron_right),
             onTap: _zhBusy ? null : () => _pickZhVariant(context),
           ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('播放页显示权重'),
+            subtitle: const Text('播放页展示当前歌曲喜欢 / 权重状态'),
+            value: _settings.playerShowWeight,
+            onChanged: (v) => setState(() => _settings.playerShowWeight = v),
+          ),
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.timer_outlined),
-            title: const Text('播放页控件自动隐藏'),
+            title: const Text('播放页控件隐藏'),
             subtitle: Text(_settings.playerAutoHideIdleSec > 0
                 ? '播放页无操作 ${_settings.playerAutoHideIdleSec} 秒后自动隐藏左上返回与右上更多按钮，触摸即恢复'
                 : '关闭（控制按钮常驻显示）'),
@@ -301,50 +287,41 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
           const Divider(),
           const SizedBox(height: 8),
 
-          // 封面画质：压缩开关 + 手动清理（默认关=原图优先）。
-          Text('封面画质',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w600)),
-          const SizedBox(height: 4),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('压缩图像画质'),
-            subtitle: Text(_settings.compressCoverImage
-                ? '开：用 JPEG 缩略图，后台创建缩略图可能会导致发热'
-                : '关：（推荐）直接显示原图'),
-            value: _settings.compressCoverImage,
-            onChanged: (v) async {
-              setState(() => _settings.compressCoverImage = v);
-              await context
-                  .read<DirectSourceManager>()
-                  .applyCoverThumbSetting();
-              if (context.mounted) setState(() {});
-            },
-          ),
+          // 动效
+          _groupHeader('动效'),
           ListTile(
             contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.cleaning_services_outlined),
-            title: const Text('清理缩略图缓存'),
-            subtitle:
-                const Text('删除已生成的缩略图文件（*.thumb.jpg），显示即回原图；开关关闭时也可清理省磁盘'),
-            trailing: _clearingThumbs
-                ? const InlineSpinner(size: 24)
-                : const Icon(Icons.chevron_right),
-            onTap: _clearingThumbs ? null : () => _clearCoverThumbs(context),
+            leading: const Icon(Icons.animation_outlined),
+            title: const Text('切换动画'),
+            subtitle: Text('页面切换效果：${_transition.label}'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _pickTransition(context),
           ),
           const Divider(),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
 
-          Align(
-            alignment: Alignment.centerLeft,
-            child: OutlinedButton.icon(
-              icon: const Icon(Icons.restart_alt),
-              label: const Text('恢复默认主题'),
-              onPressed: theme.resetDefaults,
-            ),
+          // 交互
+          _groupHeader('交互'),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('长按组头'),
+            subtitle: Text(_settings.longPressCollapseGroups
+                ? '开：长按组头/文件夹行展开/折叠；多选使用工具条图标'
+                : '关：长按组头/文件夹行进入多选；展开/折叠使用工具条图标'),
+            value: _settings.longPressCollapseGroups,
+            onChanged: (v) {
+              setState(() => _settings.longPressCollapseGroups = v);
+              // AppSettings 非 ChangeNotifier：通知已打开的列表页按新行为重建。
+              context.read<DirectSourceManager>().refresh();
+            },
           ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text('播放源逐级文件夹行支持就地展开：开时长按切换展开，关时长按选中整个子树',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurface.withValues(alpha: 0.6))),
+          ),
+          const SizedBox(height: 24),
         ],
       ),
     );
@@ -573,7 +550,7 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
     }
   }
 
-  /// 歌词最大行数：0=不限制；大屏按上限放大字号（只放大不缩小）。
+  /// 歌词行数：0=不限制；大屏按上限放大字号（只放大不缩小）。
   Future<void> _pickLyricMaxLines(BuildContext context) async {
     final current = _settings.lyricMaxLines;
     final maxHeight = (MediaQuery.sizeOf(context).height * 0.6)
@@ -582,7 +559,7 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
     final picked = await showDialog<int>(
       context: context,
       builder: (c) => AlertDialog(
-        title: const Text('歌词最大行数'),
+        title: const Text('歌词行数'),
         content: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 360),
           child: SizedBox(
@@ -624,7 +601,7 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
   Future<void> _pickPlayerAutoHide(BuildContext context) async {
     final chosen = await showSingleChoiceDialog<int>(
       context: context,
-      title: '播放页控件自动隐藏',
+      title: '播放页控件隐藏',
       values: AppSettings.playerAutoHideIdleOptions,
       current: _settings.playerAutoHideIdleSec,
       labelOf: (sec) => sec == 0 ? '不自动隐藏' : '$sec 秒',
@@ -632,39 +609,6 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
     if (chosen == null || !context.mounted) return;
     setState(() => _settings.playerAutoHideIdleSec = chosen);
     context.read<DirectSourceManager>().refresh();
-  }
-
-  /// 清理缩略图缓存：二次确认后删 `*.thumb.jpg`（开关状态不变）。
-  Future<void> _clearCoverThumbs(BuildContext context) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('清理缩略图缓存？'),
-        content: const Text('将删除已生成的封面缩略图文件，列表即回原图显示。\n'
-            '压缩开关保持不变：开时后续滚动会重新生成，关时不再生成。'),
-        actions: appDialogActions(
-          c,
-          confirmLabel: '清理',
-          onCancel: () => Navigator.of(c).pop(false),
-          onConfirm: () => Navigator.of(c).pop(true),
-        ),
-      ),
-    );
-    if (ok != true || !context.mounted) return;
-    setState(() => _clearingThumbs = true);
-    try {
-      final mgr = context.read<DirectSourceManager>();
-      final removed = await clearCoverThumbFiles(mgr.index.allCoverPaths());
-      if (!context.mounted) return;
-      setState(() => _clearingThumbs = false);
-      mgr.refresh();
-      AppToast.show(removed == 0 ? '没有可清理的缩略图' : '已清理 $removed 张缩略图',
-          isError: false);
-    } catch (e) {
-      if (!context.mounted) return;
-      setState(() => _clearingThumbs = false);
-      AppToast.error(e, '清理缩略图失败');
-    }
   }
 
   String _rgb(Color c) => 'rgb(${c.r}, ${c.g}, ${c.b})'.replaceAll('.0', '');

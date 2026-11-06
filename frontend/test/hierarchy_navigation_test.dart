@@ -49,7 +49,7 @@ void main() {
         ..select(NavSection.artists)
         ..enterArtist(_artist, const []);
 
-      nav.openSettings(SettingsItem.general);
+      nav.openSettings(SettingsItem.system);
       expect(nav.contentTop, isA<SettingsRoute>());
 
       expect(nav.backToPrevious(), isTrue);
@@ -104,12 +104,12 @@ void main() {
 
       // 设置 + 歌曲信息：返回先弹歌曲信息，再弹设置。
       nav.closePlayer();
-      nav.openSettings(SettingsItem.general);
+      nav.openSettings(SettingsItem.system);
       nav.openLibraryInfo(LibraryInfoPage.overview);
       expect(nav.libraryInfoPage, LibraryInfoPage.overview);
       expect(nav.backToPrevious(keepSearch: true), isTrue);
       expect(nav.libraryInfoPage, isNull);
-      expect(nav.settings, SettingsItem.general);
+      expect(nav.settings, SettingsItem.system);
 
       // 侧栏“歌曲信息”从明细回总览：收掉子栈，不叠总览。
       nav.openLibraryInfo(LibraryInfoPage.meta);
@@ -134,8 +134,8 @@ void main() {
       expect(nav.toolPageTitle, '关于软件');
       expect(nav.playerView, isFalse);
 
-      nav.openSettings(SettingsItem.general);
-      expect(nav.settings, SettingsItem.general);
+      nav.openSettings(SettingsItem.system);
+      expect(nav.settings, SettingsItem.system);
       expect(nav.toolPageTitle, isNull);
 
       expect(nav.backToPrevious(), isTrue);

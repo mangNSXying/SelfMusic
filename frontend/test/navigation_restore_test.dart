@@ -134,7 +134,7 @@ void main() {
       'routes': [
         {'t': 'source', 'key': 'smb:nas', 'dir': ''},
         {'t': 'unknown'},
-        {'t': 'settings', 'item': 'general'},
+        {'t': 'settings', 'item': 'system'},
       ],
     });
     final nav = NavigationProvider(

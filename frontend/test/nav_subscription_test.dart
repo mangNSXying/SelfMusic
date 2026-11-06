@@ -410,7 +410,7 @@ void main() {
       expect(nav.playerView, isFalse);
 
       // 返回：内容栈 → 首页；宽屏队列面板不消费返回
-      nav.openSettings(SettingsItem.general);
+      nav.openSettings(SettingsItem.system);
       expect(nav.backToPrevious(), isTrue);
       expect(nav.settings, isNull);
       expect(nav.playerView, isFalse);
@@ -512,7 +512,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(nav.pageOffset.value, NavSection.values.indexOf(NavSection.liked));
 
-    nav.openSettings(SettingsItem.general);
+    nav.openSettings(SettingsItem.system);
     await tester.pumpAndSettle();
 
     // 设置页内按 Ctrl+1：关闭设置并切到歌单。SectionPager 与 TopBar 会在

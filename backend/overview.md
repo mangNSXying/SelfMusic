@@ -83,7 +83,7 @@ curl http://localhost:18088/api/v1/health
 # {"status":"UP","service":"SelfMusic API","timestamp":"..."}
 ```
 
-**4. 配对客户端**：打开 SelfMusic App → 设置 → 服务端，填入 `http://<主机地址>:18088` 与配对密钥（显式设置的 `PAIRING_TOKEN`，或首次启动日志中的随机值）。
+**4. 配对客户端**：打开 SelfMusic App → 设置 → 网络 → 服务端 → 配对服务端，填入 `http://<主机地址>:18088` 与配对密钥（显式设置的 `PAIRING_TOKEN`，或首次启动日志中的随机值）。
 
 ## 环境变量
 
