@@ -20,6 +20,7 @@ import '../../widgets/single_choice_dialog.dart';
 import '../../widgets/single_choice_group.dart';
 
 import 'color_picker.dart';
+import 'settings_focus.dart';
 
 /// 界面设置：强调色/背景色/明暗/恢复默认，实时生效并持久化。
 class AppearanceSection extends StatefulWidget {
@@ -41,6 +42,11 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
     _transition = s.playerTransition;
     _settings = s;
   }
+
+  Widget _anchor(String label, Widget child) => SettingsFocusAnchor(
+        id: settingsAnchorId(SettingsItem.appearance, label),
+        child: child,
+      );
 
   Widget _groupHeader(String title) {
     final cs = Theme.of(context).colorScheme;
@@ -84,23 +90,26 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
                   .titleMedium
                   ?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 12),
-          SingleChoiceGroup<ThemeMode>(
-            options: const [
-              SingleChoiceOption(
-                  value: ThemeMode.system,
-                  label: '跟随系统',
-                  icon: Icons.brightness_auto),
-              SingleChoiceOption(
-                  value: ThemeMode.light,
-                  label: '浅色',
-                  icon: Icons.light_mode_outlined),
-              SingleChoiceOption(
-                  value: ThemeMode.dark,
-                  label: '深色',
-                  icon: Icons.dark_mode_outlined),
-            ],
-            value: theme.themeMode,
-            onChanged: theme.setThemeMode,
+          _anchor(
+            '明暗模式',
+            SingleChoiceGroup<ThemeMode>(
+              options: const [
+                SingleChoiceOption(
+                    value: ThemeMode.system,
+                    label: '跟随系统',
+                    icon: Icons.brightness_auto),
+                SingleChoiceOption(
+                    value: ThemeMode.light,
+                    label: '浅色',
+                    icon: Icons.light_mode_outlined),
+                SingleChoiceOption(
+                    value: ThemeMode.dark,
+                    label: '深色',
+                    icon: Icons.dark_mode_outlined),
+              ],
+              value: theme.themeMode,
+              onChanged: theme.setThemeMode,
+            ),
           ),
           const SizedBox(height: 8),
           Text(theme.themeMode == ThemeMode.system ? '随系统自动切换明暗' : '不跟随系统',
@@ -116,25 +125,28 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
                   .titleMedium
                   ?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 12),
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            children: [
-              for (final col in AppTheme.accentPalette)
+          _anchor(
+            '强调色',
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                for (final col in AppTheme.accentPalette)
+                  ColorDot(
+                    color: col,
+                    selected: theme.accent.toARGB32() == col.toARGB32(),
+                    onTap: () => theme.setAccent(col),
+                  ),
                 ColorDot(
-                  color: col,
-                  selected: theme.accent.toARGB32() == col.toARGB32(),
-                  onTap: () => theme.setAccent(col),
+                  color: theme.accent,
+                  selected: !AppTheme.accentPalette
+                      .any((c) => c.toARGB32() == theme.accent.toARGB32()),
+                  icon: Icons.add,
+                  onTap: () => _pickAccent(context, theme),
+                  isCustom: true,
                 ),
-              ColorDot(
-                color: theme.accent,
-                selected: !AppTheme.accentPalette
-                    .any((c) => c.toARGB32() == theme.accent.toARGB32()),
-                icon: Icons.add,
-                onTap: () => _pickAccent(context, theme),
-                isCustom: true,
-              ),
-            ],
+              ],
+            ),
           ),
           const Divider(),
           const SizedBox(height: 8),
@@ -146,22 +158,25 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
                   .titleMedium
                   ?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              OutlinedButton.icon(
-                icon: const Icon(Icons.auto_fix_high, size: 18),
-                label: const Text('自动（跟随强调色）'),
-                onPressed: theme.clearBackgroundOverride,
-              ),
-              OutlinedButton.icon(
-                icon: const Icon(Icons.colorize, size: 18),
-                label: const Text('自定义背景色'),
-                onPressed: () => _pickBackground(context, theme),
-              ),
-            ],
+          _anchor(
+            '背景色',
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.auto_fix_high, size: 18),
+                  label: const Text('自动（跟随强调色）'),
+                  onPressed: theme.clearBackgroundOverride,
+                ),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.colorize, size: 18),
+                  label: const Text('自定义背景色'),
+                  onPressed: () => _pickBackground(context, theme),
+                ),
+              ],
+            ),
           ),
           if (theme.background != null) ...[
             const SizedBox(height: 8),
@@ -179,12 +194,15 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
             ),
           ],
           const SizedBox(height: 12),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: OutlinedButton.icon(
-              icon: const Icon(Icons.restart_alt),
-              label: const Text('恢复默认'),
-              onPressed: theme.resetDefaults,
+          _anchor(
+            '恢复默认',
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.restart_alt),
+                label: const Text('恢复默认'),
+                onPressed: theme.resetDefaults,
+              ),
             ),
           ),
           const Divider(),
@@ -192,14 +210,17 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
 
           // 文字：自定义字体（导入文件、仅本机生效）
           _groupHeader('文字'),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.font_download_outlined),
-            title: const Text('界面字体'),
-            subtitle: Text(customFontLabel.isEmpty
-                ? (hasCustomFont ? '自定义字体' : '系统默认')
-                : '当前：$customFontLabel'),
-            trailing: _fontBusy ? const InlineSpinner(size: 24) : null,
+          _anchor(
+            '界面字体',
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.font_download_outlined),
+              title: const Text('界面字体'),
+              subtitle: Text(customFontLabel.isEmpty
+                  ? (hasCustomFont ? '自定义字体' : '系统默认')
+                  : '当前：$customFontLabel'),
+              trailing: _fontBusy ? const InlineSpinner(size: 24) : null,
+            ),
           ),
           Wrap(
             spacing: 12,
@@ -232,88 +253,109 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: colorScheme.onSurface.withValues(alpha: 0.6))),
           const SizedBox(height: 4),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.format_line_spacing),
-            title: const Text('歌词行数'),
-            subtitle: Text(_settings.lyricMaxLines == 0
-                ? '不限制（沿用当前字号）'
-                : '自动放大字号，屏幕最多约 ${_settings.lyricMaxLines} 行（译文/长句更少）'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => _pickLyricMaxLines(context),
+          _anchor(
+            '歌词行数',
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.format_line_spacing),
+              title: const Text('歌词行数'),
+              subtitle: Text(_settings.lyricMaxLines == 0
+                  ? '不限制（沿用当前字号）'
+                  : '自动放大字号，屏幕最多约 ${_settings.lyricMaxLines} 行（译文/长句更少）'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _pickLyricMaxLines(context),
+            ),
           ),
           const Divider(),
           const SizedBox(height: 8),
 
           // 显示：标题格式 / 简繁 / 播放页权重与控件隐藏
           _groupHeader('显示'),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.title),
-            title: const Text('标题格式'),
-            subtitle: Text('当前：${_settings.songTitleFormat.label}'
-                '（不修改存储字段）'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => _pickTitleFormat(context),
+          _anchor(
+            '标题格式',
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.title),
+              title: const Text('标题格式'),
+              subtitle: Text('当前：${_settings.songTitleFormat.label}'
+                  '（不修改存储字段）'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _pickTitleFormat(context),
+            ),
           ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.translate),
-            title: const Text('简繁转换'),
-            subtitle: Text('当前：${_settings.zhVariant.label}'
-                '（只影响展示，不修改元数据）'),
-            trailing: _zhBusy
-                ? const InlineSpinner(size: 24)
-                : const Icon(Icons.chevron_right),
-            onTap: _zhBusy ? null : () => _pickZhVariant(context),
+          _anchor(
+            '简繁转换',
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.translate),
+              title: const Text('简繁转换'),
+              subtitle: Text('当前：${_settings.zhVariant.label}'
+                  '（只影响展示，不修改元数据）'),
+              trailing: _zhBusy
+                  ? const InlineSpinner(size: 24)
+                  : const Icon(Icons.chevron_right),
+              onTap: _zhBusy ? null : () => _pickZhVariant(context),
+            ),
           ),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('播放页显示权重'),
-            subtitle: const Text('播放页展示当前歌曲喜欢 / 权重状态'),
-            value: _settings.playerShowWeight,
-            onChanged: (v) => setState(() => _settings.playerShowWeight = v),
+          _anchor(
+            '播放页显示权重',
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('播放页显示权重'),
+              subtitle: const Text('播放页展示当前歌曲喜欢 / 权重状态'),
+              value: _settings.playerShowWeight,
+              onChanged: (v) => setState(() => _settings.playerShowWeight = v),
+            ),
           ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.timer_outlined),
-            title: const Text('播放页控件隐藏'),
-            subtitle: Text(_settings.playerAutoHideIdleSec > 0
-                ? '播放页无操作 ${_settings.playerAutoHideIdleSec} 秒后自动隐藏左上返回与右上更多按钮，触摸即恢复'
-                : '关闭（控制按钮常驻显示）'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => _pickPlayerAutoHide(context),
+          _anchor(
+            '播放页控件隐藏',
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.timer_outlined),
+              title: const Text('播放页控件隐藏'),
+              subtitle: Text(_settings.playerAutoHideIdleSec > 0
+                  ? '播放页无操作 ${_settings.playerAutoHideIdleSec} 秒后自动隐藏左上返回与右上更多按钮，触摸即恢复'
+                  : '关闭（控制按钮常驻显示）'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _pickPlayerAutoHide(context),
+            ),
           ),
           const Divider(),
           const SizedBox(height: 8),
 
           // 动效
           _groupHeader('动效'),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.animation_outlined),
-            title: const Text('切换动画'),
-            subtitle: Text('页面切换效果：${_transition.label}'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => _pickTransition(context),
+          _anchor(
+            '切换动画',
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.animation_outlined),
+              title: const Text('切换动画'),
+              subtitle: Text('页面切换效果：${_transition.label}'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _pickTransition(context),
+            ),
           ),
           const Divider(),
           const SizedBox(height: 8),
 
           // 交互
           _groupHeader('交互'),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('长按组头'),
-            subtitle: Text(_settings.longPressCollapseGroups
-                ? '开：长按组头/文件夹行展开/折叠；多选使用工具条图标'
-                : '关：长按组头/文件夹行进入多选；展开/折叠使用工具条图标'),
-            value: _settings.longPressCollapseGroups,
-            onChanged: (v) {
-              setState(() => _settings.longPressCollapseGroups = v);
-              // AppSettings 非 ChangeNotifier：通知已打开的列表页按新行为重建。
-              context.read<DirectSourceManager>().refresh();
-            },
+          _anchor(
+            '长按组头',
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('长按组头'),
+              subtitle: Text(_settings.longPressCollapseGroups
+                  ? '开：长按组头/文件夹行展开/折叠；多选使用工具条图标'
+                  : '关：长按组头/文件夹行进入多选；展开/折叠使用工具条图标'),
+              value: _settings.longPressCollapseGroups,
+              onChanged: (v) {
+                setState(() => _settings.longPressCollapseGroups = v);
+                // AppSettings 非 ChangeNotifier：通知已打开的列表页按新行为重建。
+                context.read<DirectSourceManager>().refresh();
+              },
+            ),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
