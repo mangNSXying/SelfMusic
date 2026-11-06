@@ -44,6 +44,18 @@
 | 网络 | `network` | ✅ 已实现 | 服务端（配对服务端，副标题遮显配对密钥）/ 多设备同步（同步开关 / 立即同步 / 设备管理，§3.3.2）/ 网络安全（允许 HTTP、信任自签名，§3.3.1）/ 转码代理（转码省流、码率、响度均衡）。首次启动不强制配对——未配对可正常使用直连模式，服务端 / 代理功能需配对 |
 | 系统 | `system` | ✅ 已实现 | 快捷键（窗口内 / 全局）/ 桌面和后台（关闭窗口驻留托盘、通知栏控制，§3.6）/ 诊断（日志时长 1~30 分钟，§3.8） |
 
+### 2.1 设置搜索（侧栏）
+
+侧栏「设置」标题下提供搜索框，输入即列出匹配条目；点击结果会打开对应分区、滚动到目标条目并短暂高亮。
+
+- 索引：`lib/screens/settings/settings_search_index.dart`。每条包含分区 / 分组 / 标签 / 旧名别名 / 可选目标锚点 / 条件提示；旧名（如「应用内音量」「缓存上限」「窗口驻留」）可直接搜到新名字。
+- 定位：`lib/screens/settings/settings_focus.dart`。锚点 ID 统一为 `分区枚举名/标签`（`settingsAnchorId`），侧栏写入 `SettingsFocusController`，目标分区首帧后 `Scrollable.ensureVisible` 并高亮 1.6 秒。
+- 条件项：不隐藏结果，指向父项并标注提示（如「限定蓝牙」→「屏幕常亮」、「歌词目录」→「保存方式」、「同步建议值」→「缓存容量」）；平台项（托盘）按 `DesktopTray.isSupported` 隐藏。
+- 维护约定：新增/改名设置项时，同步更新索引条目与对应 `SettingsFocusAnchor` 的 ID；索引与锚点使用同一 `settingsAnchorId` 口径，避免手写字符串漂移。
+- 页面容器：设置分区统一使用 `SingleChildScrollView + Column`，保证屏外条目已构建，`ensureVisible` 才能拿到目标上下文。
+
+测试：`settings_search_index_test.dart`（别名/多词/排序）、`sidebar_search_test.dart`（命中→跳分区→清空恢复）、`settings_focus_test.dart`（滚动/高亮/超时）、`settings_focus_appearance_test.dart`（真实分区定位）。
+
 ---
 
 ## 3. 客户端键值设置（app_settings）
