@@ -31,7 +31,6 @@ class Sidebar extends StatelessWidget {
           child: Column(
             children: [
               const _Header(),
-              const Divider(height: 1),
               Expanded(child: _SettingsList(nav: nav, selected: settings)),
               const Divider(height: 1),
               _BottomBar(theme: theme),
@@ -132,21 +131,7 @@ class _SettingsListState extends State<_SettingsList> {
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-          child: Text(
-            '设置',
-            style: TextStyle(
-              fontSize: 12,
-              color: Theme.of(context)
-                  .colorScheme
-                  .onSurface
-                  .withValues(alpha: 0.6),
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
           child: TextField(
             controller: _searchCtrl,
             onChanged: _onQueryChanged,
