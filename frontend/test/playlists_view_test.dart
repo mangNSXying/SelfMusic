@@ -192,8 +192,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('已选 1'), findsOneWidget);
+    // 全选/全不选是同一个按钮：未全选 → 显示「全选」。
     expect(find.byTooltip('全选'), findsOneWidget);
-    expect(find.byTooltip('全不选'), findsOneWidget);
+    expect(find.byTooltip('全不选'), findsNothing);
     // 批量操作已收进右侧三点菜单。
     expect(find.byTooltip('更多操作'), findsOneWidget);
     await tester.tap(find.byTooltip('更多操作'));
@@ -202,16 +203,16 @@ void main() {
     await tester.tapAt(const Offset(2, 2));
     await tester.pumpAndSettle();
 
-    // 点击另一项累计选中 → 全部选中后「全选」禁用、「全不选」可用。
+    // 点击另一项累计选中 → 全部选中后按钮翻成「全不选」。
     await tester.tap(find.text('另一个歌单'));
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('已选 2'), findsOneWidget);
     expect(
         tester
             .widget<IconButton>(
-                find.widgetWithIcon(IconButton, Icons.select_all))
+                find.widgetWithIcon(IconButton, Icons.deselect))
             .onPressed,
-        isNull);
+        isNotNull);
 
     // 全不选清空勾选
     await tester.tap(find.byTooltip('全不选'));

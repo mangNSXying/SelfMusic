@@ -176,11 +176,8 @@ class SongTableHeader extends StatelessWidget {
   });
 
   /// 同一列表头的点击循环：升 → 降 → 默认；换列时从升序开始。
-  static CollectionSort nextSort(CollectionSort current, CollectionSort asc) {
-    if (current == asc) return asc.flipped;
-    if (current == asc.flipped) return CollectionSort.defaultOrder;
-    return asc;
-  }
+  static CollectionSort nextSort(CollectionSort current, CollectionSort asc) =>
+      asc.nextOnClick(current);
 
   /// 排序字段 → 表头列下标（权重/播放统计没有对应列）。
   static int? columnOf(CollectionSort sort) => switch (sort) {

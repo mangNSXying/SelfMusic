@@ -5,9 +5,10 @@ import 'toolbar_icon_button.dart';
 
 /// 内容页排序入口（挂在 CountHeader 右侧）。
 ///
-/// 弹窗里每项占两行合一的一格：**上行字段名、下行方向箭头**（改进.txt）：
-/// - 点字段名 → 该字段切换方向（升↔降）；默认排序项无方向，点它即回默认。
-/// - 点箭头 → 直接选该字段的该方向。
+/// 弹窗里每项占一行的「字段名 + 方向按钮」（改进.txt）：
+/// - 点字段名或方向按钮都走同一循环：升序 → 降序 → 默认（与表头列头一致）；
+///   默认排序项无方向，点它即回默认。
+/// - 方向按钮显示当前方向（未生效字段显示淡化的升序箭头）。
 /// - 当前生效的字段+方向用强调色标出，一眼能看到「现在按什么排」。
 ///
 /// [scope] 决定可选字段：歌曲类内容页给权重/播放时长/播放次数/时长，
@@ -67,11 +68,12 @@ class SortMenuButton extends StatelessWidget {
               plain: f == CollectionSort.defaultOrder,
               active: selected.$1 == f,
               desc: selected.$1 == f && selected.$2,
-              onLabelTap: () => _pick(context, f == CollectionSort.defaultOrder
-                  ? CollectionSort.defaultOrder
-                  : _flip(f)),
-              onAscTap: () => _pick(context, f),
-              onDescTap: () => _pick(context, f.flipped),
+              onTap: () => _pick(
+                context,
+                f == CollectionSort.defaultOrder
+                    ? CollectionSort.defaultOrder
+                    : f.nextOnClick(value),
+              ),
             ),
           ),
       ],
@@ -92,12 +94,6 @@ class SortMenuButton extends StatelessWidget {
     final left = (origin.dx + box.size.width - width).clamp(8.0, overlay.size.width - 8.0);
     return RelativeRect.fromLTRB(left, origin.dy + box.size.height, left + width,
         overlay.size.height);
-  }
-
-  /// 点字段名：在「该字段升/降」之间切换；若当前不是该字段，先落升序再翻。
-  CollectionSort _flip(CollectionSort field) {
-    if (value.label == field.label) return value.flipped;
-    return field.flipped;
   }
 
   void _pick(BuildContext context, CollectionSort v) {
@@ -124,18 +120,14 @@ class _SortFieldTile extends StatelessWidget {
   final bool plain;
   final bool active;
   final bool desc;
-  final VoidCallback onLabelTap;
-  final VoidCallback? onAscTap;
-  final VoidCallback? onDescTap;
+  final VoidCallback onTap;
 
   const _SortFieldTile({
     required this.label,
     required this.plain,
     required this.active,
     required this.desc,
-    required this.onLabelTap,
-    this.onAscTap,
-    this.onDescTap,
+    required this.onTap,
   });
 
   @override
@@ -146,7 +138,7 @@ class _SortFieldTile extends StatelessWidget {
       children: [
         Expanded(
           child: InkWell(
-            onTap: onLabelTap,
+            onTap: onTap,
             child: Container(
               height: 46,
               alignment: Alignment.centerLeft,
@@ -160,20 +152,14 @@ class _SortFieldTile extends StatelessWidget {
             ),
           ),
         ),
-        if (!plain) ...[
+        if (!plain)
           _Arrow(
-            icon: Icons.arrow_upward,
-            active: active && !desc,
+            icon: desc ? Icons.arrow_downward : Icons.arrow_upward,
+            active: active,
             color: color,
-            onTap: onAscTap!,
+            tooltip: active ? (desc ? '恢复默认排序' : '切换为降序') : '升序',
+            onTap: onTap,
           ),
-          _Arrow(
-            icon: Icons.arrow_downward,
-            active: active && desc,
-            color: color,
-            onTap: onDescTap!,
-          ),
-        ],
       ],
     );
   }
@@ -183,37 +169,42 @@ class _Arrow extends StatelessWidget {
   final IconData icon;
   final bool active;
   final Color color;
+  final String tooltip;
   final VoidCallback onTap;
 
   const _Arrow({
     required this.icon,
     required this.active,
     required this.color,
+    required this.tooltip,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
-      child: Container(
-        width: 34,
-        height: 34,
-        margin: const EdgeInsets.only(right: 2),
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: active
-              ? Theme.of(context).colorScheme.primaryContainer
-              : Colors.transparent,
-        ),
-        child: Icon(
-          icon,
-          size: 16,
-          color: active
-              ? Theme.of(context).colorScheme.onPrimaryContainer
-              : color.withValues(alpha: 0.45),
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          width: 34,
+          height: 34,
+          margin: const EdgeInsets.only(right: 2),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: active
+                ? Theme.of(context).colorScheme.primaryContainer
+                : Colors.transparent,
+          ),
+          child: Icon(
+            icon,
+            size: 16,
+            color: active
+                ? Theme.of(context).colorScheme.onPrimaryContainer
+                : color.withValues(alpha: 0.45),
+          ),
         ),
       ),
     );

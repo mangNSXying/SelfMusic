@@ -1,6 +1,7 @@
 import '../models/song.dart';
 import 'enum_parse.dart';
 import 'play_stats.dart';
+import 'toggle_cycle.dart';
 import 'zh_variant.dart';
 
 /// 内容页排序方式。
@@ -84,6 +85,12 @@ extension CollectionSortX on CollectionSort {
           true,
         _ => false,
       };
+
+  /// 点击循环（表头列头与排序菜单共用）：升 → 降 → 默认；换字段时从升序开始。
+  ///
+  /// [current] 为当前生效的排序（可能是另一个字段）。
+  CollectionSort nextOnClick(CollectionSort current) =>
+      nextInCycle(current, [this, flipped, CollectionSort.defaultOrder]);
 
   /// 同一字段切换方向（弹窗/箭头点击用）。
   CollectionSort get flipped => switch (this) {
