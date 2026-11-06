@@ -8,6 +8,7 @@ import com.selfmusic.backend.domain.entity.Playlist;
 import com.selfmusic.backend.domain.entity.PlaylistItem;
 import com.selfmusic.backend.domain.entity.SongState;
 import com.selfmusic.backend.domain.entity.SyncSource;
+import com.selfmusic.backend.domain.repository.ClientSettingRepository;
 import com.selfmusic.backend.domain.repository.DeviceRepository;
 import com.selfmusic.backend.domain.repository.PlayStateRepository;
 import com.selfmusic.backend.domain.repository.PlaylistItemRepository;
@@ -44,13 +45,14 @@ class SyncBackfillTest {
     private final PlayStateRepository playStates = mock(PlayStateRepository.class);
     private final DeviceRepository devices = mock(DeviceRepository.class);
     private final SettingService settings = mock(SettingService.class);
+    private final ClientSettingRepository clientSettings = mock(ClientSettingRepository.class);
 
     private SyncService service() {
         when(syncEvents.findByEventUuid(any())).thenReturn(Optional.empty());
         when(devices.findByClientId(any())).thenReturn(Optional.empty());
         when(settings.get("sync.server_epoch", "")).thenReturn("test-epoch");
         return new SyncService(syncEvents, songStates, syncSources, playlists,
-                items, playStates, devices, settings, mapper);
+                items, playStates, devices, settings, clientSettings, mapper);
     }
 
     private static final LocalDateTime T1 = LocalDateTime.of(2026, 1, 1, 0, 0, 0);

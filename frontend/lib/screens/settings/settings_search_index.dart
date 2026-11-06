@@ -391,6 +391,12 @@ final List<SettingsSearchEntry> settingsSearchEntries = [
   SettingsSearchEntry(
     section: SettingsItem.network,
     group: '多设备同步',
+    label: '同步设置',
+    aliases: ['设置同步', '同步偏好', '同步播放偏好', '同步媒体库'],
+  ),
+  SettingsSearchEntry(
+    section: SettingsItem.network,
+    group: '多设备同步',
     label: '设备管理',
     aliases: ['已配对设备', '设备', '吊销'],
   ),

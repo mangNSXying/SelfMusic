@@ -39,4 +39,7 @@ public final class SyncEventTypes {
 
     // 断点：行级 LWW（以 last_event_at 为基准）
     public static final String BREAKPOINT_SET = "breakpoint.set";
+
+    // 客户端设置：逐键 LWW；键必须在 SyncableSettings.KEYS 白名单内
+    public static final String SETTING_SET = "setting.set";
 }

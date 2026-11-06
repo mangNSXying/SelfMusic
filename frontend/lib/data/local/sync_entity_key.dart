@@ -27,6 +27,11 @@ String? syncEntityKey(String type, Map<String, dynamic> payload) {
     if (uuid is! String || uuid.isEmpty) return null;
     return 'breakpoint|$uuid';
   }
+  if (type == 'setting.set') {
+    final key = payload['key'];
+    if (key is! String || key.isEmpty) return null;
+    return 'setting|$key';
+  }
   return null;
 }
 
@@ -37,9 +42,7 @@ String _songSourceIdOf(Map<String, dynamic> p) {
   final sid = p['source_id'];
   if (sid is String && sid.isNotEmpty) return sid;
   final source = p['source'];
-  if (source is String &&
-      source.isNotEmpty &&
-      source != 'server') {
+  if (source is String && source.isNotEmpty && source != 'server') {
     return 'legacy:$source';
   }
   return '';
