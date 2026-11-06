@@ -6,12 +6,11 @@ import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/theme/app_theme.dart';
 import 'package:selfmusic/theme/theme_provider.dart';
 
-/// 侧边栏设置分区顺序（改进.txt：把「歌曲」移到「播放」前）。
+/// 侧边栏设置分区顺序：界面 / 播放 / 歌曲 / 存储 / 网络 / 系统。
 void main() {
-  test('SettingsItem 顺序：歌曲在播放前', () {
+  test('SettingsItem 顺序与标签', () {
     final labels = SettingsItem.values.map((e) => e.label).toList();
-    expect(labels.indexOf('歌曲'), lessThan(labels.indexOf('播放')));
-    expect(labels, ['常规', '歌曲', '播放', '界面', '通知', '服务端']);
+    expect(labels, ['界面', '播放', '歌曲', '存储', '网络', '系统']);
   });
 
   testWidgets('侧边栏按该顺序渲染分区', (tester) async {

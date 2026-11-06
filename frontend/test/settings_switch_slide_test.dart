@@ -100,11 +100,11 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     expect(find.text('自定义配色与字体，实时生效并保存到本机'), findsOneWidget,
         reason: '退场层应仍是旧分区');
-    expect(find.text('缓存与离线'), findsOneWidget, reason: '新分区在滑入');
+    expect(find.text('扫描过滤'), findsOneWidget, reason: '新分区在滑入');
     expect(tester.takeException(), isNull);
 
     await tester.pumpAndSettle();
     expect(find.text('自定义配色与字体，实时生效并保存到本机'), findsNothing);
-    expect(find.text('缓存与离线'), findsOneWidget);
+    expect(find.text('扫描过滤'), findsOneWidget);
   });
 }

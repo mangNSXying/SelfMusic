@@ -2,12 +2,12 @@ import 'package:flutter/material.dart';
 
 import '../../theme/app_theme.dart';
 
-import 'server_section.dart';
 import 'appearance_section.dart';
-import 'songs_section.dart';
+import 'network_section.dart';
 import 'playback_section.dart';
-import 'general_section.dart';
-import 'notifications_section.dart';
+import 'songs_section.dart';
+import 'storage_section.dart';
+import 'system_section.dart';
 
 /// 设置页：根据侧边栏选中的分区渲染对应设置面板。
 class SettingsScreen extends StatelessWidget {
@@ -23,16 +23,16 @@ class SettingsScreen extends StatelessWidget {
     switch (item) {
       case SettingsItem.appearance:
         return const AppearanceSection();
-      case SettingsItem.server:
-        return const ServerSettingsSection();
-      case SettingsItem.songs:
-        return const SongsSection();
-      case SettingsItem.general:
-        return const GeneralSection();
       case SettingsItem.playback:
         return const PlaybackSection();
-      case SettingsItem.notifications:
-        return const NotificationsSection();
+      case SettingsItem.songs:
+        return const SongsSection();
+      case SettingsItem.storage:
+        return const StorageSection();
+      case SettingsItem.network:
+        return const NetworkSection();
+      case SettingsItem.system:
+        return const SystemSection();
     }
   }
 }

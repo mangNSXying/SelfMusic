@@ -9,13 +9,14 @@ import 'package:selfmusic/data/local/app_settings.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/screens/settings/settings_screen.dart';
+import 'package:selfmusic/services/api_client.dart';
 import 'package:selfmusic/services/server_settings.dart';
 import 'package:selfmusic/shortcuts/shortcut_settings.dart';
 import 'package:selfmusic/theme/app_theme.dart';
 import 'package:selfmusic/theme/theme_provider.dart';
 import 'package:sqlite3/open.dart';
 
-/// 常规分区：备份页并入后只保留一个「备份与迁移」入口，点击弹窗列出本机备份。
+/// 系统 / 存储分区：日志在系统，备份与迁移在存储。
 ffi.DynamicLibrary _openOnLinux() {
   try {
     return ffi.DynamicLibrary.open('libsqlite3.so');
@@ -52,7 +53,46 @@ void main() {
     } catch (_) {}
   });
 
-  testWidgets('常规页「备份与迁移」入口：弹窗列出本机备份与导入导出动作', (tester) async {
+  testWidgets('系统页：快捷键 / 桌面和后台 / 诊断，日志时长可改', (tester) async {
+    final settings = AppSettings(direct.index);
+    direct.settings = settings;
+    final nav = NavigationProvider()..openSettings(SettingsItem.system);
+
+    tester.view.physicalSize = const Size(1200, 3000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(MultiProvider(
+      providers: [
+        ChangeNotifierProvider<NavigationProvider>.value(value: nav),
+        ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+        ChangeNotifierProvider<ShortcutSettings>.value(
+            value: ShortcutSettings(settings)),
+      ],
+      child: const MaterialApp(
+        home: Scaffold(body: SettingsScreen(item: SettingsItem.system)),
+      ),
+    ));
+    await tester.pump();
+
+    expect(find.text('快捷键'), findsOneWidget);
+    expect(find.text('窗口内'), findsOneWidget);
+    expect(find.text('全局'), findsOneWidget);
+    expect(find.text('桌面和后台'), findsOneWidget);
+    expect(find.text('通知栏控制'), findsOneWidget);
+    expect(find.text('诊断'), findsOneWidget);
+    expect(find.text('日志时长'), findsOneWidget);
+
+    await tester.tap(find.text('日志时长'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('导出最近 1 分钟的日志'), findsOneWidget);
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect(settings.logExportMinutes, 1);
+  });
+
+  testWidgets('存储页「备份与迁移」入口：弹窗列出本机备份与导入导出动作', (tester) async {
     final backupDir = Directory('${direct.index.dir}/backups')
       ..createSync(recursive: true);
     const backupName = 'selfmusic-settings-20261026000000.json';
@@ -61,9 +101,9 @@ void main() {
 
     final settings = AppSettings(direct.index);
     direct.settings = settings;
-    final nav = NavigationProvider()..openSettings(SettingsItem.general);
+    final nav = NavigationProvider()..openSettings(SettingsItem.storage);
 
-    tester.view.physicalSize = const Size(1200, 2400);
+    tester.view.physicalSize = const Size(1200, 5000);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
@@ -74,28 +114,22 @@ void main() {
         ChangeNotifierProvider<ThemeProvider>.value(
             value: ThemeProvider(autoLoad: false)),
         ChangeNotifierProvider<ServerSettings>.value(value: ServerSettings()),
-        ChangeNotifierProvider<ShortcutSettings>.value(
-            value: ShortcutSettings(settings)),
+        Provider<ApiClient>.value(value: ApiClient()),
       ],
       child: const MaterialApp(
-        home: Scaffold(body: SettingsScreen(item: SettingsItem.general)),
+        home: Scaffold(body: SettingsScreen(item: SettingsItem.storage)),
       ),
     ));
     await tester.pump();
 
-    expect(find.text('视图行为'), findsOneWidget);
-    expect(find.text('长按展开/折叠'), findsOneWidget);
-    expect(find.text('日志'), findsOneWidget);
-    expect(find.text('日志时长'), findsOneWidget);
-
-    await tester.tap(find.text('日志时长'));
-    await tester.pumpAndSettle();
-    expect(find.byType(AlertDialog), findsOneWidget);
-    expect(find.text('导出最近 1 分钟的日志'), findsOneWidget);
-    await tester.tap(find.text('保存'));
-    await tester.pumpAndSettle();
-    expect(settings.logExportMinutes, 1);
-
+    expect(find.text('离线缓存'), findsOneWidget);
+    expect(find.text('收藏自动缓存'), findsOneWidget);
+    expect(find.text('缓存容量'), findsOneWidget);
+    expect(find.text('缓存位置'), findsOneWidget);
+    expect(find.text('缓存目录'), findsOneWidget);
+    expect(find.text('封面缓存'), findsOneWidget);
+    expect(find.text('压缩画质'), findsOneWidget);
+    expect(find.text('清理缩略图'), findsOneWidget);
     expect(find.text('备份与迁移'), findsOneWidget);
 
     await tester.tap(find.text('备份与迁移'));

@@ -235,17 +235,17 @@ void main() {
 
       ListTile cooldown(String title) =>
           tester.widget<ListTile>(find.widgetWithText(ListTile, title));
-      expect(cooldown('加权随机·次数冷却').enabled, isTrue);
-      expect(cooldown('加权随机·次数冷却').onTap, isNotNull);
-      expect(cooldown('加权随机·曲数冷却').enabled, isTrue);
-      expect(cooldown('加权随机·曲数冷却').onTap, isNotNull);
+      expect(cooldown('次数冷却').enabled, isTrue);
+      expect(cooldown('次数冷却').onTap, isNotNull);
+      expect(cooldown('曲数冷却').enabled, isTrue);
+      expect(cooldown('曲数冷却').onTap, isNotNull);
 
       await tester.tap(sw);
       await tester.pump();
 
       expect(settings.weightedRandomEnabled, isFalse);
       expect(find.text('随机播放 · 普通（不放回）'), findsOneWidget);
-      for (final title in ['加权随机·次数冷却', '加权随机·曲数冷却']) {
+      for (final title in ['次数冷却', '曲数冷却']) {
         final tile = cooldown(title);
         expect(tile.enabled, isFalse, reason: '$title 应置灰');
         expect(tile.onTap, isNull, reason: '$title 不可点击');

@@ -179,7 +179,7 @@ class _AppVolumeSheet extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Text('应用内音量', style: textTheme.titleMedium),
+                  Text('应用音量', style: textTheme.titleMedium),
                   const Spacer(),
                   Text(
                     '$volume%',

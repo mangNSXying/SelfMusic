@@ -129,7 +129,7 @@ enum WeightedDrawCooldown {
 /// - 缓存来源模式 `cache_config_mode`（custom / follow_server）与自定义上限；
 /// - 收藏自动缓存；播放页权重信息显示；忽略音频过滤；仅 Wi-Fi 扫描；
 /// - 默认播放模式、断点续播开关（对应 DEVELOPER.md「数据模型」）；
-/// - 服务端分区网络（settings.md §3.3）：`allow_insecure_http`（默认关，显式 http 才允许）、
+/// - 网络分区（settings.md §3.3）：`allow_insecure_http`（默认关，显式 http 才允许）、
 ///   `allow_self_signed`（默认关，dio/WebDAV 信任自签名 TLS）。
 class AppSettings {
   static const String kCacheMaxBytes = 'cache_max_bytes';
@@ -144,10 +144,10 @@ class AppSettings {
   static const String kCacheServerSongLimit = 'cache_server_song_limit';
   static const String kAutoCacheFavorites = 'auto_cache_favorites';
 
-  /// 允许不安全 HTTP（settings.md §3.3 服务端）：关（默认）时显式 `http://` 地址一律拒绝。
+  /// 允许不安全 HTTP（settings.md §3.3 网络）：关（默认）时显式 `http://` 地址一律拒绝。
   static const String kAllowInsecureHttp = 'allow_insecure_http';
 
-  /// 信任自签名证书（settings.md §3.3 服务端）：覆盖 dio API 与直连 WebDAV（dart:io）；
+  /// 信任自签名证书（settings.md §3.3 网络）：覆盖 dio API 与直连 WebDAV（dart:io）；
   /// 播放器层（ExoPlayer/mpv）不受此开关影响，仍要求 CA 有效证书。
   static const String kAllowSelfSigned = 'allow_self_signed';
 
@@ -157,7 +157,7 @@ class AppSettings {
   /// 多设备状态同步总开关（关=仅本地，直连模式同样跳过）。
   static const String kSyncEnabled = 'sync_enabled';
 
-  /// 上次同步成功时间（ISO-8601，服务端分区展示用）。
+  /// 上次同步成功时间（ISO-8601，网络分区展示用）。
   static const String kLastSyncAt = 'last_sync_at';
 
   /// 大封面回填补读是否已执行（设备本地一次性迁移标记）。
@@ -238,13 +238,13 @@ class AppSettings {
   /// 断连暂停（Android/鸿蒙）：当前播放输出设备断开时自动暂停。
   static const String kPauseOnDeviceDisconnect = 'pause_on_device_disconnect';
 
-  /// 通知栏播放控制（settings.md §3.6）：Android 通知栏/后台播放。
+  /// 通知栏控制（settings.md §3.6）：Android 通知栏/后台播放。
   static const String kNotificationControls = 'notification_controls';
 
   /// 播放页切换过渡动画（settings.md §3.7 界面）：none / fade / slide / scale。
   static const String kPlayerTransition = 'player_transition';
 
-  /// 压缩图像画质（设置 → 界面）：开=列表/卡片用 768 长边 JPEG82 缩略图；
+  /// 压缩画质（设置 → 存储 → 封面缓存）：开=列表/卡片用 768 长边 JPEG82 缩略图；
   /// 关（默认）=直接显示封面原图，画质无损。播放页恒用原图，不受此开关影响。
   static const String kCoverThumbCompress = 'cover_thumb_compress';
 
@@ -255,7 +255,7 @@ class AppSettings {
   static const String kCustomFontFile = 'custom_font_file';
   static const String kCustomFontLabel = 'custom_font_label';
 
-  /// 歌曲标题显示格式（settings.md §3.4 歌曲）：默认 song.artist - song.title。
+  /// 歌曲标题显示格式（settings.md §3.7 界面）：默认 song.artist - song.title。
   static const String kSongTitleFormat = 'song_title_format';
 
   /// 简繁显示（settings.md §3.7 界面）：original / simplified / traditional，
@@ -433,7 +433,7 @@ class AppSettings {
     return cacheSongLimit;
   }
 
-  // ---------- 服务端分区·网络（settings.md §3.3） ----------
+  // ---------- 网络分区·网络安全（settings.md §3.3） ----------
 
   /// 允许不安全 HTTP：关（默认）时显式 `http://` 地址被拒绝；缺 scheme 恒默认 https，
   /// 不受此开关影响。
@@ -507,7 +507,7 @@ class AppSettings {
   set coverThumbsV1Done(bool v) =>
       index.settingsSet(kCoverThumbsV1Done, v ? '1' : '0');
 
-  // ---------- 收藏自动缓存（settings.md §3.4 歌曲分区） ----------
+  // ---------- 存储分区·离线缓存（settings.md §3.4） ----------
 
   bool get autoCacheFavorites =>
       (index.settingsGet(kAutoCacheFavorites) ?? '1') == '1';
@@ -637,12 +637,14 @@ class AppSettings {
   set artistResolveAuto(bool v) =>
       index.settingsSet(kArtistResolveAuto, v ? '1' : '0');
 
-  // ---------- 歌曲分区（settings.md §3.4） ----------
+  // ---------- 界面分区·显示（settings.md §3.7） ----------
 
   bool get playerShowWeight =>
       (index.settingsGet(kPlayerShowWeight) ?? '1') == '1';
   set playerShowWeight(bool v) =>
       index.settingsSet(kPlayerShowWeight, v ? '1' : '0');
+
+  // ---------- 歌曲分区·扫描过滤（settings.md §3.4） ----------
 
   /// 忽略音频（时长过滤）：0=关；>0 秒，扫描时过滤更短的音频文件。
   int get scanIgnoreMinDurationSec =>
@@ -783,9 +785,9 @@ class AppSettings {
   set weightedCountCooldownRatio(double v) => index.settingsSet(
       kWeightedCountCooldownRatio, v.clamp(0.0, 1.0).toString());
 
-  // ---------- 界面分区（settings.md §3.7） ----------
+  // ---------- 存储分区·封面缓存（settings.md §3.7） ----------
 
-  /// 压缩图像画质（默认关）：开时列表/卡片/迷你条用缩略图（省解码），
+  /// 压缩画质（默认关）：开时列表/卡片/迷你条用缩略图（省解码），
   /// 关时一律显示封面原图。
   bool get compressCoverImage =>
       (index.settingsGet(kCoverThumbCompress) ?? '0') == '1';
@@ -920,8 +922,7 @@ class AppSettings {
 
   /// 桌面端关闭主窗口时驻留托盘（默认开）；关=关闭即退出。
   bool get closeToTray => (index.settingsGet(kCloseToTray) ?? '1') == '1';
-  set closeToTray(bool v) =>
-      index.settingsSet(kCloseToTray, v ? '1' : '0');
+  set closeToTray(bool v) => index.settingsSet(kCloseToTray, v ? '1' : '0');
 
   /// 内容区导航状态（设备本地 UI 记忆）：由 [NavigationProvider] 读写。
   String get navigationState => index.settingsGet(kNavigationState) ?? '';
@@ -979,7 +980,7 @@ class AppSettings {
         set.map(Uri.encodeComponent).join('|'));
   }
 
-  // ---------- 通知分区（settings.md §3.6） ----------
+  // ---------- 播放保护 / 桌面和后台（settings.md §3.2 / §3.6） ----------
 
   bool get audioFocusEnabled =>
       (index.settingsGet(kAudioFocusEnabled) ?? '1') == '1';

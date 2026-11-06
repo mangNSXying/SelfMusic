@@ -74,7 +74,7 @@ Future<bool> ensureHttpAllowed(BuildContext context, String url) async {
     builder: (c) => AlertDialog(
       title: const Text('检测到明文 HTTP'),
       content: const Text(
-          '当前地址使用明文 http://，默认已被关闭。\n\n可前往「设置 → 服务端 → 网络与安全」开启「允许不安全 HTTP」，或改用 https://。\n\n是否现在开启并继续保存？'),
+          '当前地址使用明文 http://，默认已被关闭。\n\n可前往「设置 → 网络 → 网络安全」开启「允许 HTTP」，或改用 https://。\n\n是否现在开启并继续保存？'),
       actions: appDialogActions(
         c,
         confirmLabel: '去开启并继续',

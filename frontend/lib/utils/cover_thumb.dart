@@ -23,7 +23,7 @@ import 'thumb_gen_stats.dart';
 const int kCoverThumbMaxEdge = 768;
 const int kCoverThumbQuality = 82;
 
-/// 压缩图像画质总开关（设置 → 界面，对应 `AppSettings.kCoverThumbCompress`）。
+/// 压缩画质总开关（设置 → 存储 → 封面缓存，对应 `AppSettings.kCoverThumbCompress`）。
 ///
 /// 开=true：列表/卡片走 768 长边 JPEG82 缩略图（省解码，默认行为的历史形态）；
 /// 关=false（默认，原图优先）：显示与生成一律走封面原图，画质无损。
@@ -64,9 +64,9 @@ final Set<String> _thumbReady = {};
 final Set<String> _thumbInflight = {};
 
 /// 列表/卡片应显示的封面路径：压缩开且缩略图已生成/已存在时用它，否则退回原图。
- ///
- /// 每条原图路径只做一次文件存在性检查（结果进内存缓存）。
- /// 开关关闭时恒返原图（不读缓存、不查盘）。
+///
+/// 每条原图路径只做一次文件存在性检查（结果进内存缓存）。
+/// 开关关闭时恒返原图（不读缓存、不查盘）。
 String coverDisplayPath(String coverPath) {
   if (!coverThumbCompressionEnabled) return coverPath;
   final cached = _displayPathCache[coverPath];
@@ -163,7 +163,7 @@ void deleteCoverThumb(String coverPath) {
   }
 }
 
-/// 手动清理已生成的缩略图（设置 → 界面「清理缩略图缓存」按钮用）。
+/// 手动清理已生成的缩略图（设置 → 存储 → 封面缓存「清理缩略图」按钮用）。
 ///
 /// 逐张删 `<md5>.thumb.jpg` 并失效对应内存缓存（显示即回原图）；
 /// 开关状态不变（仅清磁盘产物）。返回实际删除的张数，失败单张忽略。

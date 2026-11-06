@@ -363,7 +363,7 @@ class _AppShortcutsState extends State<AppShortcuts> {
       case ShortcutAction.toggleSidebar:
         nav.requestSidebarToggle();
       case ShortcutAction.openSettings:
-        nav.openSettings(SettingsItem.general);
+        nav.openSettings(SettingsItem.system);
       case ShortcutAction.sleepTimer:
         // 窗口可能已隐藏到托盘：先恢复窗口，否则弹窗开在看不见的地方。
         await DesktopTray.instance.showWindow();

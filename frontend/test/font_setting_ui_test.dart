@@ -73,8 +73,7 @@ void main() {
             value: theme ?? ThemeProvider(autoLoad: false)),
       ],
       child: const MaterialApp(
-          home: Scaffold(
-              body: SettingsScreen(item: SettingsItem.appearance))),
+          home: Scaffold(body: SettingsScreen(item: SettingsItem.appearance))),
     ));
     await tester.pump();
   }
@@ -89,7 +88,7 @@ void main() {
     expect(find.textContaining('TTC'), findsOneWidget);
     expect(find.text('更换字体'), findsNothing);
     expect(find.text('恢复系统字体'), findsNothing);
-    expect(find.text('歌词最大行数'), findsOneWidget);
+    expect(find.text('歌词行数'), findsOneWidget);
     expect(find.text('不限制（沿用当前字号）'), findsOneWidget);
   });
 

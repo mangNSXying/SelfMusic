@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 
-import 'package:flutter/services.dart';
-
 import 'package:provider/provider.dart';
 
 import '../../data/local/app_settings.dart';
@@ -11,16 +9,16 @@ import '../../providers/player_provider.dart';
 import '../../services/bluetooth_service.dart';
 import '../../services/equalizer/equalizer_service.dart';
 import '../../services/equalizer/equalizer_types.dart';
+import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/app_volume_control.dart';
 import '../../widgets/eq_curve_editor.dart';
 import '../../widgets/settings_section_header.dart';
 import '../../widgets/single_choice_dialog.dart';
 import '../../widgets/text_input_dialog.dart';
-import 'notifications_section.dart';
+import 'keep_awake_device_dialog.dart';
 
-/// 播放设置（settings.md §3.2）：默认播放模式 / 加权随机开关与削峰（次数·曲数冷却）/
-/// 断点续播 / 淡入淡出 / 均衡器。
+/// 播放设置（settings.md §3.2）：播放行为 / 随机权重 / 音效 / 播放保护。
 class PlaybackSection extends StatefulWidget {
   const PlaybackSection();
   @override
@@ -45,42 +43,16 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
     return ListView(
       padding: const EdgeInsets.symmetric(vertical: 12),
       children: [
-        const SettingsSectionHeader('播放'),
+        const SettingsSectionHeader('播放行为'),
         ListTile(
           leading: const Icon(Icons.playlist_play),
-          title: const Text('默认播放模式'),
+          title: const Text('默认模式'),
           subtitle: Text(_modeSubtitle(current)),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _pickMode(context, current),
         ),
         SwitchListTile(
-          title: const Text('加权随机'),
-          subtitle: const Text('关闭后为普通随机：按深层列表不放回抽取，一轮内不重复，播完自动换轮'),
-          value: _settings.weightedRandomEnabled,
-          onChanged: (v) {
-            setState(() => _settings.weightedRandomEnabled = v);
-            context.read<PlayerProvider>().onRandomAlgorithmChanged();
-          },
-        ),
-        ListTile(
-          leading: const Icon(Icons.waves),
-          title: const Text('加权随机·次数冷却'),
-          subtitle: Text(_drawCooldownSummary(_settings.weightedDrawCooldown)),
-          trailing: const Icon(Icons.chevron_right),
-          enabled: _settings.weightedRandomEnabled,
-          onTap: _settings.weightedRandomEnabled ? _pickDrawCooldown : null,
-        ),
-        ListTile(
-          leading: const Icon(Icons.timeline),
-          title: const Text('加权随机·曲数冷却'),
-          subtitle:
-              Text(_countCooldownSummary(_settings.weightedCountCooldownRatio)),
-          trailing: const Icon(Icons.chevron_right),
-          enabled: _settings.weightedRandomEnabled,
-          onTap: _settings.weightedRandomEnabled ? _editCountCooldown : null,
-        ),
-        SwitchListTile(
-          title: const Text('断点续播自动恢复'),
+          title: const Text('断点续播'),
           subtitle: const Text('启动时恢复上次队列与位置（恢复为暂停态，不自动播放）'),
           value: _settings.resumeOnStartup,
           onChanged: (v) => setState(() => _settings.resumeOnStartup = v),
@@ -92,13 +64,7 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
           onChanged: (v) => setState(() => _settings.preloadNext = v),
         ),
         SwitchListTile(
-          title: const Text('备用源自动补歌'),
-          subtitle: const Text('主源播放成功后，把当前曲复制到缺失该歌的备用源（需备用读写权限）'),
-          value: _settings.fallbackAutoRepair,
-          onChanged: (v) => setState(() => _settings.fallbackAutoRepair = v),
-        ),
-        SwitchListTile(
-          title: const Text('睡眠定时默认播完最后曲目'),
+          title: const Text('定时行为'),
           subtitle: const Text('到点不中断当前歌曲，放完这曲再暂停（弹窗内可单独调整）'),
           value: _settings.sleepPlayThroughDefault,
           onChanged: (v) =>
@@ -106,14 +72,14 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
         ),
         ListTile(
           leading: const Icon(Icons.lyrics_outlined),
-          title: const Text('歌词追焦等待'),
+          title: const Text('歌词追焦'),
           subtitle:
               Text('拖动歌词后 ${_settings.lyricFocusIdleSec} 秒无操作恢复自动追焦并回中当前行'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _pickLyricIdle(context),
         ),
         SwitchListTile(
-          title: const Text('播放页屏幕常亮'),
+          title: const Text('屏幕常亮'),
           subtitle: const Text('打开播放页期间不熄屏；可限定仅在指定蓝牙设备连接时生效'),
           value: _settings.playerKeepScreenOn,
           onChanged: (v) => setState(() => _settings.playerKeepScreenOn = v),
@@ -121,11 +87,52 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
         if (_settings.playerKeepScreenOn)
           ListTile(
             leading: const Icon(Icons.bluetooth),
-            title: const Text('常亮限定蓝牙设备'),
+            title: const Text('限定蓝牙'),
             subtitle: Text(_keepAwakeDeviceLabel()),
             trailing: const Icon(Icons.chevron_right),
             onTap: _pickKeepAwakeDevice,
           ),
+        const Divider(height: 32),
+        const SettingsSectionHeader('随机权重'),
+        SwitchListTile(
+          title: const Text('加权随机'),
+          subtitle: const Text('关闭后为普通随机：按深层列表不放回抽取，一轮内不重复，播完自动换轮'),
+          value: _settings.weightedRandomEnabled,
+          onChanged: (v) {
+            setState(() => _settings.weightedRandomEnabled = v);
+            context.read<PlayerProvider>().onRandomAlgorithmChanged();
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.waves),
+          title: const Text('次数冷却'),
+          subtitle: Text(_drawCooldownSummary(_settings.weightedDrawCooldown)),
+          trailing: const Icon(Icons.chevron_right),
+          enabled: _settings.weightedRandomEnabled,
+          onTap: _settings.weightedRandomEnabled ? _pickDrawCooldown : null,
+        ),
+        ListTile(
+          leading: const Icon(Icons.timeline),
+          title: const Text('曲数冷却'),
+          subtitle:
+              Text(_countCooldownSummary(_settings.weightedCountCooldownRatio)),
+          trailing: const Icon(Icons.chevron_right),
+          enabled: _settings.weightedRandomEnabled,
+          onTap: _settings.weightedRandomEnabled ? _editCountCooldown : null,
+        ),
+        SwitchListTile(
+          title: const Text('时长削弱'),
+          subtitle: const Text('开启后加权随机按歌曲时长乘削弱系数（长歌权重降低；仅加权随机开启时生效）'),
+          value: _settings.weightCurveEnabled,
+          onChanged: (v) => setState(() => _settings.weightCurveEnabled = v),
+        ),
+        ListTile(
+          leading: const Icon(Icons.show_chart),
+          title: const Text('权重曲线'),
+          subtitle: Text(_weightCurveSummary(_settings.weightCurveSegments)),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _editWeightCurve(context),
+        ),
         const Divider(height: 32),
         const SettingsSectionHeader('音效'),
         SwitchListTile(
@@ -161,7 +168,7 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
         const Divider(height: 24),
         const ListTile(
           leading: Icon(Icons.volume_up),
-          title: Text('应用内音量'),
+          title: Text('应用音量'),
           subtitle: Text('独立于系统音量的软件增益；0% 静音但播放继续'),
         ),
         Padding(
@@ -204,9 +211,10 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
         ),
         const Divider(height: 24),
         _buildEqualizer(context, eqBands, eqPreampDb),
-        const Divider(height: 24),
+        const Divider(height: 32),
+        const SettingsSectionHeader('播放保护'),
         SwitchListTile(
-          title: const Text('自动暂停/恢复'),
+          title: const Text('焦点自动暂停'),
           subtitle: const Text('通话等音频焦点抢占时自动暂停，结束后恢复（安卓/鸿蒙生效）'),
           value: _settings.audioFocusEnabled,
           onChanged: (v) {
@@ -497,7 +505,7 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
     final current = _settings.weightedDrawCooldown;
     final picked = await showSingleChoiceDialog<WeightedDrawCooldown>(
       context: context,
-      title: '加权随机·次数冷却',
+      title: '次数冷却',
       values: WeightedDrawCooldown.values,
       current: current,
       labelOf: (cd) => cd.label,
@@ -512,7 +520,7 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
     final current = _settings.weightedCountCooldownRatio;
     final text = await showTextInputDialog(
       context: context,
-      title: '加权随机·曲数冷却比例',
+      title: '曲数冷却比例',
       initial: current.toStringAsFixed(2),
       hintText: '0 ~ 1.00',
       helperText: '播放历史末尾「列表长度 × 比例」内的歌不参与随机；0=关闭',
@@ -521,6 +529,137 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
     if (text == null || !mounted) return;
     final result = double.tryParse(text) ?? current;
     setState(() => _settings.weightedCountCooldownRatio = result);
+  }
+
+  static double? _segNum(Object? v) {
+    if (v is num) return v.toDouble();
+    if (v is String) return double.tryParse(v);
+    return null;
+  }
+
+  static String _weightCurveSummary(List<Map<String, Object?>> segs) {
+    if (segs.isEmpty) return '未配置（不削弱）';
+    return '${segs.length} 段区间；按时长乘系数抽样';
+  }
+
+  static String _segmentLabel(Map<String, Object?> m) {
+    final min = _segNum(m['min_sec']);
+    final max = _segNum(m['max_sec']);
+    final f = _segNum(m['factor']);
+    final range = max == null
+        ? '≥ ${min?.toStringAsFixed(0) ?? '?'} 秒'
+        : '${min?.toStringAsFixed(0) ?? '?'} - ${max.toStringAsFixed(0)} 秒';
+    return '$range → ×${f == null ? '?' : f.toStringAsFixed(2)}';
+  }
+
+  Future<void> _editWeightCurve(BuildContext context) async {
+    final working =
+        List<Map<String, Object?>>.from(_settings.weightCurveSegments);
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (c) => StatefulBuilder(
+        builder: (c, setDialog) => AlertDialog(
+          title: const Text('权重曲线'),
+          content: SizedBox(
+            width: 380,
+            child: working.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Text('尚未配置区间：所有歌曲权重按 1.0（不削弱）。'),
+                  )
+                : ListView(
+                    shrinkWrap: true,
+                    children: [
+                      for (var i = 0; i < working.length; i++) ...[
+                        ListTile(
+                          dense: true,
+                          leading: IconButton(
+                            icon: const Icon(Icons.delete_outline,
+                                color: Colors.redAccent),
+                            tooltip: '删除区间',
+                            onPressed: () =>
+                                setDialog(() => working.removeAt(i)),
+                          ),
+                          title: Text(_segmentLabel(working[i])),
+                          onTap: () async {
+                            final edited =
+                                await _editWeightSegment(c, working[i]);
+                            if (edited != null) {
+                              setDialog(() => working[i] = edited);
+                            }
+                          },
+                        ),
+                      ],
+                    ],
+                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => setDialog(() => working.add(
+                  const {'min_sec': 300.0, 'max_sec': null, 'factor': 0.5})),
+              child: const Text('+ 添加区间'),
+            ),
+            ...appDialogActions(
+              c,
+              confirmLabel: '保存',
+              onCancel: () => Navigator.of(c).pop(false),
+              onConfirm: () => Navigator.of(c).pop(true),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (saved == true && mounted) {
+      setState(() => _settings.weightCurveSegments = working);
+    }
+  }
+
+  Future<Map<String, Object?>?> _editWeightSegment(
+      BuildContext c, Map<String, Object?> current) async {
+    final minC = TextEditingController(
+        text: _segNum(current['min_sec'])?.toStringAsFixed(0) ?? '');
+    final maxC = TextEditingController(
+        text: _segNum(current['max_sec'])?.toStringAsFixed(0) ?? '');
+    final fC = TextEditingController(
+        text: _segNum(current['factor'])?.toStringAsFixed(2) ?? '');
+    const kt = TextInputType.numberWithOptions(decimal: true);
+    final result = await showDialog<bool>(
+      context: c,
+      builder: (d) => AlertDialog(
+        title: const Text('编辑区间'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+                controller: minC,
+                keyboardType: kt,
+                decoration: const InputDecoration(labelText: '起始时长（秒，必填）')),
+            TextField(
+                controller: maxC,
+                keyboardType: kt,
+                decoration: const InputDecoration(labelText: '结束时长（秒，留空=无上限）')),
+            TextField(
+                controller: fC,
+                keyboardType: kt,
+                decoration: const InputDecoration(labelText: '系数（0.5 - 1.5）')),
+          ],
+        ),
+        actions: appDialogActions(
+          d,
+          confirmLabel: '保存',
+          onCancel: () => Navigator.of(d).pop(false),
+          onConfirm: () => Navigator.of(d).pop(true),
+        ),
+      ),
+    );
+    if (result != true) return null;
+    final min = double.tryParse(minC.text.trim());
+    final max =
+        maxC.text.trim().isEmpty ? null : double.tryParse(maxC.text.trim());
+    final f = double.tryParse(fC.text.trim());
+    if (min == null || min <= 0 || f == null || f <= 0) return current;
+    if (max != null && max <= min) return current;
+    return {'min_sec': min, 'max_sec': max, 'factor': f.clamp(0.5, 1.5)};
   }
 
   /// 常亮限定设备展示名（未限定=全局常亮）。

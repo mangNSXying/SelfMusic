@@ -81,12 +81,12 @@ enum NavSection {
 
 /// 侧边栏设置分区条目。
 enum SettingsItem {
-  general('常规', Icons.keyboard_outlined),
-  songs('歌曲', Icons.library_music_outlined),
-  playback('播放', Icons.play_circle_outline),
   appearance('界面', Icons.palette_outlined),
-  notifications('通知', Icons.notifications_outlined),
-  server('服务端', Icons.dns_outlined);
+  playback('播放', Icons.play_circle_outline),
+  songs('歌曲', Icons.library_music_outlined),
+  storage('存储', Icons.storage_outlined),
+  network('网络', Icons.dns_outlined),
+  system('系统', Icons.settings_outlined);
 
   const SettingsItem(this.label, this.icon);
   final String label;

@@ -8,7 +8,7 @@ import '../../widgets/app_toast.dart';
 import '../../widgets/inline_spinner.dart';
 import 'devices_screen.dart';
 
-/// 服务端 → 多设备同步（阶段5，DEVELOPER.md「播放算法与同步协议」）：总开关 + 立即同步 + 设备管理入口。
+/// 网络 → 多设备同步（阶段5，DEVELOPER.md「播放算法与同步协议」）：总开关 + 立即同步 + 设备管理入口。
 class SyncSection extends StatefulWidget {
   const SyncSection();
 
@@ -69,7 +69,7 @@ class _SyncSectionState extends State<SyncSection> {
       children: [
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
-          title: const Text('多设备同步'),
+          title: const Text('同步开关'),
           subtitle: const Text('同步 权重 / 收藏 / 歌单 / 断点'),
           value: settings.syncEnabled,
           onChanged: (v) {
@@ -79,9 +79,8 @@ class _SyncSectionState extends State<SyncSection> {
         ),
         ListTile(
           contentPadding: EdgeInsets.zero,
-          leading: _syncing
-              ? const InlineSpinner(size: 24)
-              : const Icon(Icons.sync),
+          leading:
+              _syncing ? const InlineSpinner(size: 24) : const Icon(Icons.sync),
           title: const Text('立即同步'),
           subtitle: Text(_subtitle()),
           onTap: _syncing ? null : _syncNow,
@@ -89,7 +88,7 @@ class _SyncSectionState extends State<SyncSection> {
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: const Icon(Icons.devices),
-          title: const Text('已配对设备'),
+          title: const Text('设备管理'),
           subtitle: const Text('查看 / 改名 / 吊销'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => Navigator.of(context).push(

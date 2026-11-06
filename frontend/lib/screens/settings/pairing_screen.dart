@@ -124,7 +124,7 @@ class _PairingScreenState extends State<PairingScreen> {
       });
     }
     return Scaffold(
-      appBar: AppBar(title: const Text('配对服务器')),
+      appBar: AppBar(title: const Text('配对服务端')),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),

@@ -1,69 +1,84 @@
 import 'package:flutter/material.dart';
 
-import 'package:flutter/services.dart';
-
 import 'package:provider/provider.dart';
 
 import '../../data/local/app_settings.dart';
 import '../../platform/desktop_tray.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../widgets/app_dialog_actions.dart';
+import '../../widgets/app_toast.dart';
 import '../../widgets/settings_section_header.dart';
 import '../../widgets/shortcut_settings_panel.dart';
-import 'backup_section.dart';
 
-/// 常规：快捷键 + 视图行为 + 日志 + 备份与迁移入口。
-class GeneralSection extends StatelessWidget {
-  const GeneralSection();
+/// 系统：快捷键 / 桌面和后台 / 诊断。
+class SystemSection extends StatelessWidget {
+  const SystemSection();
 
   @override
   Widget build(BuildContext context) => const ShortcutSettingsPanel(
         footer: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            ViewBehaviorSection(),
-            TraySection(),
+            DesktopAndBackgroundSection(),
             Divider(height: 32),
             LogSection(),
-            Divider(height: 32),
-            BackupMigrationTile(),
           ],
         ),
       );
 }
 
-/// 常规 → 视图行为（自「界面」迁入）：长按组头展开/折叠。
-class ViewBehaviorSection extends StatefulWidget {
-  const ViewBehaviorSection();
+/// 桌面和后台：关闭驻留托盘 + 通知栏控制。
+class DesktopAndBackgroundSection extends StatefulWidget {
+  const DesktopAndBackgroundSection();
 
   @override
-  State<ViewBehaviorSection> createState() => _ViewBehaviorSectionState();
+  State<DesktopAndBackgroundSection> createState() =>
+      _DesktopAndBackgroundSectionState();
 }
 
-class _ViewBehaviorSectionState extends State<ViewBehaviorSection> {
+class _DesktopAndBackgroundSectionState
+    extends State<DesktopAndBackgroundSection> {
   @override
   Widget build(BuildContext context) {
     final settings = context.read<DirectSourceManager>().settings;
     final cs = Theme.of(context).colorScheme;
+    final tray = DesktopTray.isSupported ? DesktopTray.instance : null;
+    // 托盘创建失败（如 Linux 桌面没有 StatusNotifier 宿主）时关闭仍会退出，
+    // 开关置灰避免用户误以为窗口藏起来还能从托盘找回。
+    final trayAvailable = tray?.trayReady ?? false;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const SettingsSectionHeader('视图行为'),
+        const SettingsSectionHeader('桌面和后台'),
+        if (tray != null)
+          SwitchListTile(
+            title: const Text('驻留托盘'),
+            subtitle: Text(!trayAvailable
+                ? '当前桌面未提供托盘支持，关闭窗口仍会退出软件'
+                : settings.closeToTray
+                    ? '关闭主窗口后继续后台播放；托盘菜单可恢复窗口、控制播放或退出'
+                    : '关闭主窗口即退出软件'),
+            value: settings.closeToTray,
+            onChanged: trayAvailable
+                ? (v) {
+                    setState(() => settings.closeToTray = v);
+                    tray.setCloseToTray(v);
+                  }
+                : null,
+          ),
         SwitchListTile(
-          title: const Text('长按展开/折叠'),
-          subtitle: Text(settings.longPressCollapseGroups
-              ? '开：长按组头/文件夹行展开/折叠；多选使用工具条图标'
-              : '关：长按组头/文件夹行进入多选；展开/折叠使用工具条图标'),
-          value: settings.longPressCollapseGroups,
+          title: const Text('通知栏控制'),
+          subtitle: const Text('在通知栏/播控中心显示播放控制按钮（修改后重启生效）。关闭只隐藏'
+              '按钮——后台播放所需的保活（前台服务/长时任务）始终保持，不受影响。'),
+          value: settings.notificationControls,
           onChanged: (v) {
-            setState(() => settings.longPressCollapseGroups = v);
-            // AppSettings 非 ChangeNotifier：通知已打开的列表页按新行为重建。
-            context.read<DirectSourceManager>().refresh();
+            setState(() => settings.notificationControls = v);
+            AppToast.show('通知栏控制将在重启应用后生效', isError: false);
           },
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-          child: Text('播放源逐级文件夹行支持就地展开：B 模式长按切换展开，A 模式长按选中整个子树',
+          child: Text('通知栏控制基于 just_audio_background，仅 Android 生效；桌面端忽略此开关。',
               style: Theme.of(context)
                   .textTheme
                   .bodySmall
@@ -74,50 +89,7 @@ class _ViewBehaviorSectionState extends State<ViewBehaviorSection> {
   }
 }
 
-/// 常规 → 窗口（仅桌面）：关闭主窗口时驻留系统托盘。
-class TraySection extends StatefulWidget {
-  const TraySection();
-
-  @override
-  State<TraySection> createState() => _TraySectionState();
-}
-
-class _TraySectionState extends State<TraySection> {
-  @override
-  Widget build(BuildContext context) {
-    if (!DesktopTray.isSupported) return const SizedBox.shrink();
-    final settings = context.read<DirectSourceManager>().settings;
-    final tray = DesktopTray.instance;
-    // 托盘创建失败（如 Linux 桌面没有 StatusNotifier 宿主）时关闭仍会退出，
-    // 开关置灰避免用户误以为窗口藏起来还能从托盘找回。
-    final available = tray.trayReady;
-    final enabled = settings.closeToTray;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Divider(height: 32),
-        const SettingsSectionHeader('窗口'),
-        SwitchListTile(
-          title: const Text('关闭窗口时驻留托盘'),
-          subtitle: Text(!available
-              ? '当前桌面未提供托盘支持，关闭窗口仍会退出软件'
-              : enabled
-                  ? '关闭主窗口后继续后台播放；托盘菜单可恢复窗口、控制播放或退出'
-                  : '关闭主窗口即退出软件'),
-          value: enabled,
-          onChanged: available
-              ? (v) {
-                  setState(() => settings.closeToTray = v);
-                  tray.setCloseToTray(v);
-                }
-              : null,
-        ),
-      ],
-    );
-  }
-}
-
-/// 常规 → 日志：收集日志 / 反馈附件的导出时长。
+/// 诊断：收集日志 / 反馈附件的导出时长。
 class LogSection extends StatefulWidget {
   const LogSection();
 
@@ -144,7 +116,7 @@ class _LogSectionState extends State<LogSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const SettingsSectionHeader('日志'),
+        const SettingsSectionHeader('诊断'),
         ListTile(
           leading: const Icon(Icons.schedule),
           title: const Text('日志时长'),
