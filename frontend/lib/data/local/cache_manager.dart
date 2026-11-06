@@ -6,7 +6,7 @@ import 'app_settings.dart';
 import 'local_index.dart';
 
 /// 离线缓存管理（stage2.md §6）：
-/// 收藏直连歌自动缓存 + 按歌曲数据淘汰（中位进度 → 播放次数 → LRU）+ 上下限。
+/// 收藏直连歌自动缓存 + 按歌曲数据淘汰（长期中位进度 → 播放次数 → LRU）+ 上下限。
 ///
 /// 缓存与预载分离：只有 [CacheEntryKind.user] 算“已缓存”并计入歌曲上限；
 /// 预载原文件/转码变体是预载产物，只在字节上限与淘汰排序中参与。
@@ -98,7 +98,7 @@ class CacheManager {
     }
   }
 
-  /// 超出上限时按歌曲数据淘汰：中位进度低者先淘汰（无样本最弱），
+  /// 超出上限时按歌曲数据淘汰：长期中位进度低者先淘汰（无样本最弱），
   /// 再按播放次数低者先淘汰，最后才用 LRU 兜底。收藏歌曲豁免。
   ///
   /// 上限取「生效值」（custom=本地；follow_server=服务端建议，settings.md §3.3）。
@@ -189,7 +189,7 @@ class CacheManager {
       r.cacheKey == preloadCacheKey ||
       (protectKey != null && r.cacheKey == protectKey));
 
-  /// 升序：中位进度（null 最弱）→ 播放次数 → 播放时长（时长未知时兜底）
+  /// 升序：长期中位进度（null 最弱）→ 播放次数 → 播放时长（时长未知时兜底）
   /// → LRU → 分组 key（保证顺序确定）。
   int _compareGroups(_CacheGroup a, _CacheGroup b) {
     var c = (a.medianPercent ?? -1.0).compareTo(b.medianPercent ?? -1.0);

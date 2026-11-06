@@ -11,10 +11,10 @@ import '../../widgets/resizable_paginated_table.dart';
 import '../../widgets/table_columns.dart';
 import 'detail_shared.dart';
 
-/// 歌曲信息 → 播放数据详情：全部有效歌曲的播放次数、播放时长与中位播放进度。
+/// 歌曲信息 → 播放数据详情：全部有效歌曲的播放次数、播放时长与长期中位进度。
 ///
 /// 口径：次数 = play_sec / 歌曲时长（见 [playCountOf]），未知时长按 0 次；
-/// 中位进度为全历史离开进度直方图的中位数（见 [PlayProgressHistogram]）。
+/// 长期中位进度为全历史离开进度直方图的中位数（见 [PlayProgressHistogram]）。
 /// 数据入场走后台 isolate（[DetailDataLoader]），宽屏用可拖拽列宽的分页表格
 /// （[ResizablePaginatedTable]），窄屏用卡片。
 class PlayDetailScreen extends StatefulWidget {
@@ -30,12 +30,12 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
   String _query = '';
   bool _onlyWithPlay = false;
 
-  /// 0=歌曲名，1=歌手，2=播放次数，3=播放时长，4=中位进度，5=播放源。
+  /// 0=歌曲名，1=歌手，2=播放次数，3=播放时长，4=长期中位进度，5=播放源。
   int _sortColumn = 2;
   bool _ascending = false;
   final _searchCtrl = TextEditingController();
 
-  static const _sortLabels = ['歌曲名', '歌手', '次数', '时长', '中位进度', '源'];
+  static const _sortLabels = ['歌曲名', '歌手', '次数', '时长', '长期中位进度', '源'];
 
   static const List<TableColumnSpec> _columns = [
     TableColumnSpec(
@@ -70,7 +70,7 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
         sortable: true),
     TableColumnSpec(
         id: 'median',
-        label: '中位进度',
+        label: '长期中位进度',
         defaultWeight: 120,
         minWeight: 50,
         rightPadding: 16,
@@ -120,7 +120,7 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
     super.dispose();
   }
 
-  /// 表头点击：同列切方向；换列时次数/时长/中位进度默认降序，文本列升序。
+  /// 表头点击：同列切方向；换列时次数/时长/长期中位进度默认降序，文本列升序。
   void _onHeaderSort(int column) {
     setState(() {
       if (_sortColumn == column) {
@@ -315,14 +315,14 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
           _ascending = !_ascending;
         } else {
           _sortColumn = mode;
-          // 次数/时长/中位进度默认降序，文本列默认升序。
+          // 次数/时长/长期中位进度默认降序，文本列默认升序。
           _ascending = mode == 2 || mode == 3 || mode == 4 ? false : true;
         }
       }),
     );
   }
 
-  /// 宽屏分页表格：列序 歌名、歌手、播放次数、播放时长、中位进度、播放源。
+  /// 宽屏分页表格：列序 歌名、歌手、播放次数、播放时长、长期中位进度、播放源。
   ///
   /// 只构建当前页若干行；表头列宽可拖拽（与歌曲表共用同一套表头核心）。
   Widget _wideTable(List<PlayDetailRow> rows) {
@@ -401,7 +401,7 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
             children: [
               _infoLine('播放次数', playCountLabel(r.playSec, r.duration)),
               _infoLine('播放时长', playSecLabel(r.playSec)),
-              _infoLine('中位进度', formatMedianProgress(r.medianPercent)),
+              _infoLine('长期中位进度', formatMedianProgress(r.medianPercent)),
               _infoLine('播放源', r.sourceKey),
               _infoLine(
                   '歌曲时长',

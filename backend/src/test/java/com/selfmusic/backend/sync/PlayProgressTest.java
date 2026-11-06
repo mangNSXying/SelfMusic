@@ -69,6 +69,24 @@ class PlayProgressTest {
     }
 
     @Test
+    void maxSupportedFactorMapsMedianToTier() {
+        assertEquals(-1, PlayProgress.maxSupportedFactor(null), 1e-9);
+        assertEquals(-1, PlayProgress.maxSupportedFactor(hist(100, 100)), 1e-9);
+        assertEquals(1.0, PlayProgress.maxSupportedFactor(hist(49, 49, 49)), 1e-9);
+        assertEquals(1.1, PlayProgress.maxSupportedFactor(hist(50, 50, 50)), 1e-9);
+        assertEquals(1.1, PlayProgress.maxSupportedFactor(hist(55, 55, 55)), 1e-9);
+        assertEquals(1.1, PlayProgress.maxSupportedFactor(hist(59, 59, 59)), 1e-9);
+        assertEquals(1.2, PlayProgress.maxSupportedFactor(hist(60, 60, 60)), 1e-9);
+        assertEquals(1.3, PlayProgress.maxSupportedFactor(hist(70, 70, 70)), 1e-9);
+        assertEquals(1.4, PlayProgress.maxSupportedFactor(hist(80, 80, 80)), 1e-9);
+        assertEquals(1.5, PlayProgress.maxSupportedFactor(hist(90, 90, 90)), 1e-9);
+        assertEquals(1.5, PlayProgress.maxSupportedFactor(hist(100, 100, 100)), 1e-9);
+        // 偶数样本中位 x.5 落在低档。
+        assertEquals(1.1, PlayProgress.maxSupportedFactor(hist(59, 59, 60, 60)), 1e-9);
+        assertEquals(1.4, PlayProgress.maxSupportedFactor(hist(89, 89, 90, 90)), 1e-9);
+    }
+
+    @Test
     void allowsUpgradeRules() {
         assertTrue(PlayProgress.allowsUpgrade(null, 1.0));
         assertFalse(PlayProgress.allowsUpgrade(null, 1.1));

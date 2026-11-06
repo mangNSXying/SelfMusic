@@ -1,4 +1,4 @@
-/// 播放进度统计（中位播放进度）：101 桶直方图 + 升权门槛。
+/// 播放进度统计（长期中位进度）：101 桶直方图 + 升权资格线。
 ///
 /// 一次播放占用在离开曲目时记一个最终进度样本（0..100%）。直方图只保存
 /// 每桶次数，不保存逐条明细；跨设备同步时按桶取 max（服务端为事件累加的
@@ -119,6 +119,23 @@ double? requiredMedianPercent(double targetFactor) {
   if (targetFactor <= 1.0 + 1e-9) return null;
   final v = (50 + (targetFactor - 1.1) * 100).clamp(0.0, 100.0).toDouble();
   return (v * 100).roundToDouble() / 100;
+}
+
+/// 长期中位能支撑的最高权重（资格档）；样本不足 3 条返回 null（不设上限）。
+///
+/// 与 [requiredMedianPercent] 共用同一条门槛曲线：50% → 1.1，60% → 1.2，…，
+/// 90% → 1.5；低于 50% 只支撑 1.0。权重只能按资格档下调，不能据它上调。
+double? maxSupportedFactor(PlayProgressHistogram hist) {
+  if (hist.total < PlayProgressHistogram.minSamples) return null;
+  final median = hist.medianPercent;
+  if (median == null) return null;
+  var cap = 1.0;
+  for (var i = 11; i <= 15; i++) {
+    final factor = i / 10.0;
+    final required = requiredMedianPercent(factor);
+    if (required != null && median + 1e-9 >= required) cap = factor;
+  }
+  return (cap * 10).roundToDouble() / 10;
 }
 
 /// 中位线是否放行升权：目标 <= 1.0 放行；样本不足 3 条拒绝；否则中位数 >= 门槛。

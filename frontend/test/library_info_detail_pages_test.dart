@@ -90,7 +90,7 @@ void main() {
     expect(find.text('播放时长'), findsOneWidget);
     expect(find.text('歌曲时长'), findsOneWidget);
     // 排序按钮 + 展开卡片明细行。
-    expect(find.text('中位进度'), findsNWidgets(2));
+    expect(find.text('长期中位进度'), findsNWidgets(2));
     expect(find.text('100%'), findsOneWidget);
   });
 
@@ -105,7 +105,7 @@ void main() {
     expect(find.byKey(const Key('play-detail-table')), findsOneWidget);
     expect(find.text('歌曲 249'), findsOneWidget);
     expect(find.textContaining('/ 250'), findsOneWidget);
-    expect(find.text('中位进度'), findsOneWidget);
+    expect(find.text('长期中位进度'), findsOneWidget);
     expect(find.text('100%'), findsOneWidget);
     // 第 26 名不在当前页，未被构建。
     expect(find.text('歌曲 224'), findsNothing);

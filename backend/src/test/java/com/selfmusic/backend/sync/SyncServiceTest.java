@@ -380,24 +380,116 @@ class SyncServiceTest {
     }
 
     @Test
-    void songProgressEventRecordsSampleWithoutWeightChange() {
+    void songProgressResetsLikeStreakOnlyAndRecordsSample() {
         SongState s = freshState();
+        s.setLikeStreak(2);
+        s.setDislikeStreak(2);
         ObjectNode p = mapper.createObjectNode();
         p.put("progress_pct", 42);
         SyncService.applySongEvent(s, SyncEventTypes.SONG_PROGRESS, p);
         assertEquals(0, BigDecimal.ONE.compareTo(s.getWeight()));
         assertEquals(0, s.getLikeStreak());
+        assertEquals(2, s.getDislikeStreak());
         assertEquals(1, PlayProgress.total(s.getProgressHist()));
         assertEquals(1, PlayProgress.parse(s.getProgressHist())[42]);
+    }
 
+    @Test
+    void songProgressBaselineMergesWithoutTouchingStreakOrWeight() {
+        SongState s = freshState();
+        s.setLikeStreak(2);
         ObjectNode baseline = mapper.createObjectNode();
         baseline.put("baseline", true);
         baseline.set("progress_hist",
                 mapper.valueToTree(PlayProgress.toList(hist(42, 42))));
         SyncService.applySongEvent(s, SyncEventTypes.SONG_PROGRESS, baseline);
-        // max 合并：已有 1 桶，基线 2 桶 → 2（不累加成 3）。
+        // max 合并：基线 2 桶；不改 streak/权重。
         assertEquals(2, PlayProgress.total(s.getProgressHist()));
+        assertEquals(2, s.getLikeStreak());
         assertEquals(0, BigDecimal.ONE.compareTo(s.getWeight()));
+    }
+
+    @Test
+    void neutralProgressBreaksConsecutiveCompletes() {
+        SongState s = freshState();
+        ObjectNode complete = mapper.createObjectNode();
+        complete.put("progress_pct", 100);
+        ObjectNode neutral = mapper.createObjectNode();
+        neutral.put("progress_pct", 50);
+
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE, complete);
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE, complete);
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_PROGRESS, neutral);
+        assertEquals(0, s.getLikeStreak());
+
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE, complete);
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE, complete);
+        assertEquals(0, BigDecimal.ONE.compareTo(s.getWeight()));
+        assertEquals(2, s.getLikeStreak());
+
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_COMPLETE, complete);
+        assertEquals(0, new BigDecimal("1.1").compareTo(s.getWeight()));
+        assertEquals(0, s.getLikeStreak());
+    }
+
+    @Test
+    void longTermCapDemotesOneShot() {
+        SongState s = freshState();
+        s.setWeight(new BigDecimal("1.5"));
+        s.setProgressHist(hist(100, 100, 100));
+        ObjectNode p = mapper.createObjectNode();
+        p.put("progress_pct", 50);
+        for (int i = 0; i < 4; i++) {
+            SyncService.applySongEvent(s, SyncEventTypes.SONG_PROGRESS, p);
+        }
+        // 3×100 + 4×50，中位 50 → 资格 1.1。
+        assertEquals(0, new BigDecimal("1.1").compareTo(s.getWeight()));
+    }
+
+    @Test
+    void longTermCapSkipsFavorite() {
+        SongState s = freshState();
+        s.setFavorite(true);
+        s.setWeight(new BigDecimal("1.5"));
+        s.setProgressHist(hist(50, 50, 50, 50, 50));
+        ObjectNode p = mapper.createObjectNode();
+        p.put("progress_pct", 50);
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_PROGRESS, p);
+        assertEquals(0, new BigDecimal("1.5").compareTo(s.getWeight()));
+    }
+
+    @Test
+    void longTermCapFloorsAtOne() {
+        SongState s = freshState();
+        s.setWeight(new BigDecimal("1.1"));
+        s.setProgressHist(hist(49, 49, 49));
+        ObjectNode p = mapper.createObjectNode();
+        p.put("progress_pct", 49);
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_PROGRESS, p);
+        assertEquals(0, BigDecimal.ONE.compareTo(s.getWeight()));
+    }
+
+    @Test
+    void longTermCapDoesNotTouchAtOrBelowOne() {
+        SongState s = freshState();
+        s.setWeight(new BigDecimal("0.9"));
+        s.setProgressHist(hist(10, 10, 10));
+        ObjectNode p = mapper.createObjectNode();
+        p.put("progress_pct", 10);
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_PROGRESS, p);
+        assertEquals(0, new BigDecimal("0.9").compareTo(s.getWeight()));
+    }
+
+    @Test
+    void firstSkipAppliesLongTermCapWithoutWaitingForThreeSkips() {
+        SongState s = freshState();
+        s.setWeight(new BigDecimal("1.5"));
+        s.setProgressHist(hist(55, 55, 55));
+        ObjectNode p = mapper.createObjectNode();
+        p.put("progress_pct", 10);
+        SyncService.applySongEvent(s, SyncEventTypes.SONG_SKIP, p);
+        assertEquals(0, new BigDecimal("1.1").compareTo(s.getWeight()));
+        assertEquals(1, s.getDislikeStreak());
     }
 
     @Test

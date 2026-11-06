@@ -914,6 +914,22 @@ void _opSetFavorite(Database db, Map<String, dynamic> a) {
 
 double _clampDb(double v, double lo, double hi) => v.clamp(lo, hi).toDouble();
 
+/// 长期资格线：权重只能按长期中位下调，不能上调。
+///
+/// 只处理权重 >1.0；favorite（手动喜欢）与 frozen（手动不喜欢）豁免；
+/// 样本不足 3 条不设上限；一次降到资格档。
+double _applyLongTermCap(
+  PlayProgressHistogram hist,
+  double factor, {
+  required bool frozen,
+  required bool favorite,
+}) {
+  if (frozen || favorite || factor <= 1.0 + 1e-9) return factor;
+  final cap = maxSupportedFactor(hist);
+  if (cap == null || factor <= cap + 1e-9) return factor;
+  return cap;
+}
+
 /// 权重/收藏事件的读-改-写（complete/skip/liked/unfavorite/disliked/reset）。
 ///
 /// 必须在写连接内一次算完：若按「主连接读 streak/factor → 写绝对值」两段做，
@@ -1008,6 +1024,10 @@ void _opApplyWeightEvent(Database db, Map<String, dynamic> a) {
     default:
       throw StateError('unknown weight event: $event');
   }
+  // 新样本事件：事件调权后再按长期资格线钳制（只降不升，一次到位）。
+  if (progressPct != null) {
+    f = _applyLongTermCap(hist, f, frozen: frozen, favorite: fav);
+  }
   upsertPlayMetaRow(
     db,
     cur.copyWith(
@@ -1031,7 +1051,8 @@ void _opApplyWeightEvent(Database db, Map<String, dynamic> a) {
   );
 }
 
-/// 只记录一次播放进度样本（30%~95% 等无权重事件的离开）：保留其余列不变。
+/// 30%~95% 中性离开：记一条进度样本，打断连续完播（like_streak=0），
+/// 并按长期资格线钳制权重；dislike_streak/收藏/播放时长保持不变。
 void _opRecordProgress(Database db, Map<String, dynamic> a) {
   final sourceKey = a['sourceKey'] as String;
   final songRef = a['songRef'] as String;
@@ -1039,8 +1060,21 @@ void _opRecordProgress(Database db, Map<String, dynamic> a) {
   _migrateRef(db, sourceKey, songRef);
   final cur = _curMeta(db, sourceKey, songRef);
   final hist = PlayProgressHistogram.fromJson(cur.progressHist).record(pct);
-  upsertPlayMetaRow(db, cur.copyWith(progressHist: hist.toJsonOrNull()),
-      update: {PlayMetaField.progressHist});
+  final factor = _applyLongTermCap(hist, cur.factor,
+      frozen: cur.frozen, favorite: cur.favorite);
+  upsertPlayMetaRow(
+    db,
+    cur.copyWith(
+      likeStreak: 0,
+      factor: factor,
+      progressHist: hist.toJsonOrNull(),
+    ),
+    update: {
+      PlayMetaField.likeStreak,
+      PlayMetaField.factor,
+      PlayMetaField.progressHist,
+    },
+  );
 }
 
 void _opApplySongSnapshot(Database db, Map<String, dynamic> a) {
