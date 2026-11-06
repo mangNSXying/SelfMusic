@@ -4,11 +4,13 @@ import 'package:provider/provider.dart';
 
 import '../../data/local/app_settings.dart';
 import '../../providers/direct_source_manager.dart';
+import '../../theme/app_theme.dart';
 import '../../utils/cover_thumb.dart';
 import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/inline_spinner.dart';
 import 'backup_section.dart';
+import 'settings_focus.dart';
 import 'storage_sections.dart';
 
 /// 存储：离线缓存 / 缓存容量 / 缓存位置 / 封面缓存 / 备份与迁移。
@@ -29,6 +31,11 @@ class _StorageSectionState extends State<StorageSection> {
     _settings = context.read<DirectSourceManager>().settings;
   }
 
+  Widget _anchor(String label, Widget child) => SettingsFocusAnchor(
+        id: settingsAnchorId(SettingsItem.storage, label),
+        child: child,
+      );
+
   Widget _groupTitle(String title) => Padding(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
         child: Text(
@@ -42,55 +49,73 @@ class _StorageSectionState extends State<StorageSection> {
 
   @override
   Widget build(BuildContext context) {
-    return ListView(
+    return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(vertical: 12),
-      children: [
-        _groupTitle('离线缓存'),
-        SwitchListTile(
-          title: const Text('收藏自动缓存'),
-          subtitle: const Text('歌曲离线可用'),
-          value: _settings.autoCacheFavorites,
-          onChanged: (v) {
-            setState(() => _settings.autoCacheFavorites = v);
-          },
-        ),
-        const Divider(height: 32),
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 16),
-          child: CacheConfigSection(),
-        ),
-        const Divider(height: 32),
-        _groupTitle('缓存位置'),
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 16),
-          child: CacheDirTile(),
-        ),
-        const Divider(height: 32),
-        _groupTitle('封面缓存'),
-        SwitchListTile(
-          title: const Text('压缩画质'),
-          subtitle: Text(_settings.compressCoverImage
-              ? '开：用 JPEG 缩略图，后台创建缩略图可能会导致发热'
-              : '关：（推荐）直接显示原图'),
-          value: _settings.compressCoverImage,
-          onChanged: (v) async {
-            setState(() => _settings.compressCoverImage = v);
-            await context.read<DirectSourceManager>().applyCoverThumbSetting();
-            if (mounted) setState(() {});
-          },
-        ),
-        ListTile(
-          leading: const Icon(Icons.cleaning_services_outlined),
-          title: const Text('清理缩略图'),
-          subtitle: const Text('删除已生成的缩略图文件（*.thumb.jpg），显示即回原图；开关关闭时也可清理省磁盘'),
-          trailing: _clearingThumbs
-              ? const InlineSpinner(size: 24)
-              : const Icon(Icons.chevron_right),
-          onTap: _clearingThumbs ? null : () => _clearCoverThumbs(context),
-        ),
-        const Divider(height: 32),
-        const BackupMigrationTile(),
-      ],
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _groupTitle('离线缓存'),
+          _anchor(
+            '收藏自动缓存',
+            SwitchListTile(
+              title: const Text('收藏自动缓存'),
+              subtitle: const Text('歌曲离线可用'),
+              value: _settings.autoCacheFavorites,
+              onChanged: (v) {
+                setState(() => _settings.autoCacheFavorites = v);
+              },
+            ),
+          ),
+          const Divider(height: 32),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child: CacheConfigSection(),
+          ),
+          const Divider(height: 32),
+          _groupTitle('缓存位置'),
+          _anchor(
+            '缓存目录',
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: CacheDirTile(),
+            ),
+          ),
+          const Divider(height: 32),
+          _groupTitle('封面缓存'),
+          _anchor(
+            '压缩画质',
+            SwitchListTile(
+              title: const Text('压缩画质'),
+              subtitle: Text(_settings.compressCoverImage
+                  ? '开：用 JPEG 缩略图，后台创建缩略图可能会导致发热'
+                  : '关：（推荐）直接显示原图'),
+              value: _settings.compressCoverImage,
+              onChanged: (v) async {
+                setState(() => _settings.compressCoverImage = v);
+                await context
+                    .read<DirectSourceManager>()
+                    .applyCoverThumbSetting();
+                if (mounted) setState(() {});
+              },
+            ),
+          ),
+          _anchor(
+            '清理缩略图',
+            ListTile(
+              leading: const Icon(Icons.cleaning_services_outlined),
+              title: const Text('清理缩略图'),
+              subtitle:
+                  const Text('删除已生成的缩略图文件（*.thumb.jpg），显示即回原图；开关关闭时也可清理省磁盘'),
+              trailing: _clearingThumbs
+                  ? const InlineSpinner(size: 24)
+                  : const Icon(Icons.chevron_right),
+              onTap: _clearingThumbs ? null : () => _clearCoverThumbs(context),
+            ),
+          ),
+          const Divider(height: 32),
+          _anchor('备份与迁移', const BackupMigrationTile()),
+        ],
+      ),
     );
   }
 

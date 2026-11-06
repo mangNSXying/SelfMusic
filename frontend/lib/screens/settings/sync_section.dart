@@ -4,9 +4,11 @@ import 'package:provider/provider.dart';
 
 import '../../providers/direct_source_manager.dart';
 import '../../services/sync_engine.dart';
+import '../../theme/app_theme.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/inline_spinner.dart';
 import 'devices_screen.dart';
+import 'settings_focus.dart';
 
 /// 网络 → 多设备同步（阶段5，DEVELOPER.md「播放算法与同步协议」）：总开关 + 立即同步 + 设备管理入口。
 class SyncSection extends StatefulWidget {
@@ -62,37 +64,52 @@ class _SyncSectionState extends State<SyncSection> {
     AppToast.show(err.isEmpty ? '同步完成' : '同步失败：$err', isError: err.isNotEmpty);
   }
 
+  Widget _anchor(String label, Widget child) => SettingsFocusAnchor(
+        id: settingsAnchorId(SettingsItem.network, label),
+        child: child,
+      );
+
   @override
   Widget build(BuildContext context) {
     final settings = context.read<DirectSourceManager>().settings;
     return Column(
       children: [
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: const Text('同步开关'),
-          subtitle: const Text('同步 权重 / 收藏 / 歌单 / 断点'),
-          value: settings.syncEnabled,
-          onChanged: (v) {
-            settings.syncEnabled = v;
-            setState(() {});
-          },
+        _anchor(
+          '同步开关',
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('同步开关'),
+            subtitle: const Text('同步 权重 / 收藏 / 歌单 / 断点'),
+            value: settings.syncEnabled,
+            onChanged: (v) {
+              settings.syncEnabled = v;
+              setState(() {});
+            },
+          ),
         ),
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading:
-              _syncing ? const InlineSpinner(size: 24) : const Icon(Icons.sync),
-          title: const Text('立即同步'),
-          subtitle: Text(_subtitle()),
-          onTap: _syncing ? null : _syncNow,
+        _anchor(
+          '立即同步',
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: _syncing
+                ? const InlineSpinner(size: 24)
+                : const Icon(Icons.sync),
+            title: const Text('立即同步'),
+            subtitle: Text(_subtitle()),
+            onTap: _syncing ? null : _syncNow,
+          ),
         ),
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: const Icon(Icons.devices),
-          title: const Text('设备管理'),
-          subtitle: const Text('查看 / 改名 / 吊销'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute<void>(builder: (_) => const DevicesScreen()),
+        _anchor(
+          '设备管理',
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.devices),
+            title: const Text('设备管理'),
+            subtitle: const Text('查看 / 改名 / 吊销'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const DevicesScreen()),
+            ),
           ),
         ),
       ],

@@ -14,12 +14,14 @@ import '../../providers/player_provider.dart';
 import '../../services/api_client.dart';
 import '../../services/server_settings.dart';
 import '../../theme/app_metrics.dart';
+import '../../theme/app_theme.dart';
 import '../../utils/format_bytes.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/inline_spinner.dart';
 import '../../widgets/row_action_button.dart';
 import '../../widgets/single_choice_group.dart';
 import '../../widgets/text_input_dialog.dart';
+import 'settings_focus.dart';
 
 /// 服务端 → 缓存目录：展示真实路径与当前占用；复制路径 / 更改目录（含迁移）。
 class CacheDirTile extends StatefulWidget {
@@ -131,6 +133,11 @@ class _TranscodeSectionState extends State<TranscodeSection> {
   bool? _ffmpegAvailable;
   String? _version;
 
+  Widget _anchor(String label, Widget child) => SettingsFocusAnchor(
+        id: settingsAnchorId(SettingsItem.network, label),
+        child: child,
+      );
+
   @override
   void initState() {
     super.initState();
@@ -183,33 +190,39 @@ class _TranscodeSectionState extends State<TranscodeSection> {
                 .textTheme
                 .bodySmall
                 ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: const Text('转码省流'),
-          subtitle: const Text('失败回落直连'),
-          value: settings.transcodeEnabled && canUse,
-          onChanged: !canUse
-              ? null
-              : (v) {
-                  setState(() => settings.transcodeEnabled = v);
-                  // 转码总开关即时生效：重载当前曲（保位置/保播放态），无需重启；
-                  // 已缓存歌曲仍播本地原文件，内部自动跳过。
-                  _applyTranscodeNow();
-                },
+        _anchor(
+          '转码省流',
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('转码省流'),
+            subtitle: const Text('失败回落直连'),
+            value: settings.transcodeEnabled && canUse,
+            onChanged: !canUse
+                ? null
+                : (v) {
+                    setState(() => settings.transcodeEnabled = v);
+                    // 转码总开关即时生效：重载当前曲（保位置/保播放态），无需重启；
+                    // 已缓存歌曲仍播本地原文件，内部自动跳过。
+                    _applyTranscodeNow();
+                  },
+          ),
         ),
-        SingleChoiceGroup<int>(
-          options: const [
-            SingleChoiceOption(value: 192, label: '192k'),
-            SingleChoiceOption(value: 256, label: '256k'),
-            SingleChoiceOption(value: 320, label: '320k'),
-          ],
-          value: settings.transcodeBitrate,
-          onChanged: !canUse
-              ? null
-              : (v) {
-                  setState(() => settings.transcodeBitrate = v);
-                  _applyTranscodeNow();
-                },
+        _anchor(
+          '码率',
+          SingleChoiceGroup<int>(
+            options: const [
+              SingleChoiceOption(value: 192, label: '192k'),
+              SingleChoiceOption(value: 256, label: '256k'),
+              SingleChoiceOption(value: 320, label: '320k'),
+            ],
+            value: settings.transcodeBitrate,
+            onChanged: !canUse
+                ? null
+                : (v) {
+                    setState(() => settings.transcodeBitrate = v);
+                    _applyTranscodeNow();
+                  },
+          ),
         ),
         const SizedBox(height: 8),
         Text('响度均衡（需开启转码）',
@@ -218,22 +231,25 @@ class _TranscodeSectionState extends State<TranscodeSection> {
                 .bodySmall
                 ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
         const SizedBox(height: 4),
-        SingleChoiceGroup<String>(
-          options: const [
-            SingleChoiceOption(value: 'off', label: '关'),
-            SingleChoiceOption(value: '8', label: '-8'),
-            SingleChoiceOption(value: '10', label: '-10'),
-            SingleChoiceOption(value: '14', label: '-14'),
-            SingleChoiceOption(value: '16', label: '-16'),
-            SingleChoiceOption(value: '23', label: '-23'),
-          ],
-          value: settings.transcodeLoudnorm,
-          onChanged: !(canUse && settings.transcodeEnabled)
-              ? null
-              : (v) {
-                  setState(() => settings.transcodeLoudnorm = v);
-                  _applyTranscodeNow();
-                },
+        _anchor(
+          '响度均衡',
+          SingleChoiceGroup<String>(
+            options: const [
+              SingleChoiceOption(value: 'off', label: '关'),
+              SingleChoiceOption(value: '8', label: '-8'),
+              SingleChoiceOption(value: '10', label: '-10'),
+              SingleChoiceOption(value: '14', label: '-14'),
+              SingleChoiceOption(value: '16', label: '-16'),
+              SingleChoiceOption(value: '23', label: '-23'),
+            ],
+            value: settings.transcodeLoudnorm,
+            onChanged: !(canUse && settings.transcodeEnabled)
+                ? null
+                : (v) {
+                    setState(() => settings.transcodeLoudnorm = v);
+                    _applyTranscodeNow();
+                  },
+          ),
         ),
       ],
     );
@@ -262,6 +278,11 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
   late AppSettings _settings;
   bool _syncing = false;
   bool _serverReachable = false;
+
+  Widget _anchor(String label, Widget child) => SettingsFocusAnchor(
+        id: settingsAnchorId(SettingsItem.storage, label),
+        child: child,
+      );
 
   @override
   void didChangeDependencies() {
@@ -315,24 +336,27 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text('缓存容量',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleMedium
-                      ?.copyWith(fontWeight: FontWeight.w600)),
-            ),
-            if (_syncing)
-              const InlineSpinner(size: 20)
-            else
-              RowActionIconButton(
-                tooltip: '同步服务端建议值',
-                icon: Icons.sync,
-                onPressed: () => _refreshServerConfig(),
+        _anchor(
+          '缓存容量',
+          Row(
+            children: [
+              Expanded(
+                child: Text('缓存容量',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w600)),
               ),
-          ],
+              if (_syncing)
+                const InlineSpinner(size: 20)
+              else
+                RowActionIconButton(
+                  tooltip: '同步服务端建议值',
+                  icon: Icons.sync,
+                  onPressed: () => _refreshServerConfig(),
+                ),
+            ],
+          ),
         ),
         const SizedBox(height: 4),
         Text('体积上限与预载共用；首数上限只算离线缓存',
@@ -347,25 +371,28 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
                 color: cs.onSurfaceVariant,
                 fontWeight: FontWeight.w600)),
         const SizedBox(height: 4),
-        SingleChoiceGroup<String>(
-          options: const [
-            SingleChoiceOption(value: 'custom', label: '自定义'),
-            SingleChoiceOption(value: 'follow_server', label: '跟随服务端'),
-          ],
-          value: follow ? 'follow_server' : 'custom',
-          onChanged: (v) async {
-            if (v == 'follow_server' && !canFollow) {
-              // 先拉一次，成功才允许切换。
-              await _refreshServerConfig();
-              if (!mounted) return;
-              if (!(_serverReachable ||
-                  _settings.serverCacheMaxBytes != null)) {
-                AppToast.show('服务端不可达，请检查后端连接', isError: true);
-                return;
+        _anchor(
+          '上限来源',
+          SingleChoiceGroup<String>(
+            options: const [
+              SingleChoiceOption(value: 'custom', label: '自定义'),
+              SingleChoiceOption(value: 'follow_server', label: '跟随服务端'),
+            ],
+            value: follow ? 'follow_server' : 'custom',
+            onChanged: (v) async {
+              if (v == 'follow_server' && !canFollow) {
+                // 先拉一次，成功才允许切换。
+                await _refreshServerConfig();
+                if (!mounted) return;
+                if (!(_serverReachable ||
+                    _settings.serverCacheMaxBytes != null)) {
+                  AppToast.show('服务端不可达，请检查后端连接', isError: true);
+                  return;
+                }
               }
-            }
-            setState(() => _settings.cacheConfigMode = v);
-          },
+              setState(() => _settings.cacheConfigMode = v);
+            },
+          ),
         ),
         if (follow)
           Padding(
@@ -391,23 +418,29 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
                   ?.copyWith(color: cs.primary, fontWeight: FontWeight.w600)),
         ),
         const SizedBox(height: 8),
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: const Icon(Icons.storage_outlined),
-          title: const Text('体积上限'),
-          subtitle: Text(_labelBytes(_settings.cacheMaxBytes)),
-          trailing: const Icon(Icons.chevron_right),
-          enabled: !follow,
-          onTap: follow ? null : () => _editMaxBytes(context),
+        _anchor(
+          '体积上限',
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.storage_outlined),
+            title: const Text('体积上限'),
+            subtitle: Text(_labelBytes(_settings.cacheMaxBytes)),
+            trailing: const Icon(Icons.chevron_right),
+            enabled: !follow,
+            onTap: follow ? null : () => _editMaxBytes(context),
+          ),
         ),
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: const Icon(Icons.library_music_outlined),
-          title: const Text('首数上限'),
-          subtitle: Text('${_settings.cacheSongLimit} 首'),
-          trailing: const Icon(Icons.chevron_right),
-          enabled: !follow,
-          onTap: follow ? null : () => _editSongLimit(context),
+        _anchor(
+          '首数上限',
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.library_music_outlined),
+            title: const Text('首数上限'),
+            subtitle: Text('${_settings.cacheSongLimit} 首'),
+            trailing: const Icon(Icons.chevron_right),
+            enabled: !follow,
+            onTap: follow ? null : () => _editSongLimit(context),
+          ),
         ),
       ],
     );

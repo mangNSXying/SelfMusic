@@ -32,6 +32,7 @@ import 'theme/theme_provider.dart';
 import 'theme/app_theme.dart';
 import 'screens/content/app_content.dart';
 import 'screens/player/player_screen.dart';
+import 'screens/settings/settings_focus.dart';
 import 'screens/sources/source_dialog/source_dialog.dart';
 import 'layout/app_shell.dart';
 import 'layout/screen_metrics.dart';
@@ -245,6 +246,7 @@ Future<void> main() async {
         sync: sync,
         interactionGate: interactionGate,
         shortcutSettings: shortcutSettings,
+        settingsFocus: SettingsFocusController(),
         initialFontFamily: initialFontFamily));
     perfLog('boot.runApp dispatched');
     // 首帧轻量化：源补推 / 歌手解析 / 同步引擎都不参与首帧渲染，统一推迟到
@@ -322,6 +324,7 @@ class SelfMusicApp extends StatelessWidget {
   final ArtistResolver artistResolver;
   final InteractionGate interactionGate;
   final ShortcutSettings shortcutSettings;
+  final SettingsFocusController settingsFocus;
   final String? initialFontFamily;
   const SelfMusicApp({
     super.key,
@@ -334,6 +337,7 @@ class SelfMusicApp extends StatelessWidget {
     required this.artistResolver,
     required this.interactionGate,
     required this.shortcutSettings,
+    required this.settingsFocus,
     this.initialFontFamily,
   });
 
@@ -418,7 +422,10 @@ class SelfMusicApp extends StatelessWidget {
         ChangeNotifierProvider<NavigationProvider>.value(value: nav),
         ChangeNotifierProvider<ShortcutSettings>.value(value: shortcutSettings),
       ],
-      child: const _ThemedApp(),
+      child: SettingsFocusScope(
+        controller: settingsFocus,
+        child: const _ThemedApp(),
+      ),
     );
   }
 }

@@ -9,6 +9,7 @@ import '../../providers/player_provider.dart';
 import '../../services/bluetooth_service.dart';
 import '../../services/equalizer/equalizer_service.dart';
 import '../../services/equalizer/equalizer_types.dart';
+import '../../theme/app_theme.dart';
 import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/app_volume_control.dart';
@@ -17,6 +18,7 @@ import '../../widgets/settings_section_header.dart';
 import '../../widgets/single_choice_dialog.dart';
 import '../../widgets/text_input_dialog.dart';
 import 'keep_awake_device_dialog.dart';
+import 'settings_focus.dart';
 
 /// 播放设置（settings.md §3.2）：播放行为 / 随机权重 / 音效 / 播放保护。
 class PlaybackSection extends StatefulWidget {
@@ -34,213 +36,274 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
     _settings = context.read<DirectSourceManager>().settings;
   }
 
+  Widget _anchor(String label, Widget child) => SettingsFocusAnchor(
+        id: settingsAnchorId(SettingsItem.playback, label),
+        child: child,
+      );
+
   @override
   Widget build(BuildContext context) {
     final current = PlayModeParse.fromStored(_settings.playModeDefault);
     final eqBands = _settings.eqBands;
     final eqPreampDb = _settings.eqPreampDb;
 
-    return ListView(
+    return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(vertical: 12),
-      children: [
-        const SettingsSectionHeader('播放行为'),
-        ListTile(
-          leading: const Icon(Icons.playlist_play),
-          title: const Text('默认模式'),
-          subtitle: Text(_modeSubtitle(current)),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => _pickMode(context, current),
-        ),
-        SwitchListTile(
-          title: const Text('断点续播'),
-          subtitle: const Text('启动时恢复上次队列与位置（恢复为暂停态，不自动播放）'),
-          value: _settings.resumeOnStartup,
-          onChanged: (v) => setState(() => _settings.resumeOnStartup = v),
-        ),
-        SwitchListTile(
-          title: const Text('预载下一首'),
-          subtitle: const Text('确定下一首后进行预载'),
-          value: _settings.preloadNext,
-          onChanged: (v) => setState(() => _settings.preloadNext = v),
-        ),
-        SwitchListTile(
-          title: const Text('定时行为'),
-          subtitle: const Text('到点不中断当前歌曲，放完这曲再暂停（弹窗内可单独调整）'),
-          value: _settings.sleepPlayThroughDefault,
-          onChanged: (v) =>
-              setState(() => _settings.sleepPlayThroughDefault = v),
-        ),
-        ListTile(
-          leading: const Icon(Icons.lyrics_outlined),
-          title: const Text('歌词追焦'),
-          subtitle:
-              Text('拖动歌词后 ${_settings.lyricFocusIdleSec} 秒无操作恢复自动追焦并回中当前行'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => _pickLyricIdle(context),
-        ),
-        SwitchListTile(
-          title: const Text('屏幕常亮'),
-          subtitle: const Text('打开播放页期间不熄屏；可限定仅在指定蓝牙设备连接时生效'),
-          value: _settings.playerKeepScreenOn,
-          onChanged: (v) => setState(() => _settings.playerKeepScreenOn = v),
-        ),
-        if (_settings.playerKeepScreenOn)
-          ListTile(
-            leading: const Icon(Icons.bluetooth),
-            title: const Text('限定蓝牙'),
-            subtitle: Text(_keepAwakeDeviceLabel()),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: _pickKeepAwakeDevice,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SettingsSectionHeader('播放行为'),
+          _anchor(
+            '默认模式',
+            ListTile(
+              leading: const Icon(Icons.playlist_play),
+              title: const Text('默认模式'),
+              subtitle: Text(_modeSubtitle(current)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _pickMode(context, current),
+            ),
           ),
-        const Divider(height: 32),
-        const SettingsSectionHeader('随机权重'),
-        SwitchListTile(
-          title: const Text('加权随机'),
-          subtitle: const Text('关闭后为普通随机：按深层列表不放回抽取，一轮内不重复，播完自动换轮'),
-          value: _settings.weightedRandomEnabled,
-          onChanged: (v) {
-            setState(() => _settings.weightedRandomEnabled = v);
-            context.read<PlayerProvider>().onRandomAlgorithmChanged();
-          },
-        ),
-        ListTile(
-          leading: const Icon(Icons.waves),
-          title: const Text('次数冷却'),
-          subtitle: Text(_drawCooldownSummary(_settings.weightedDrawCooldown)),
-          trailing: const Icon(Icons.chevron_right),
-          enabled: _settings.weightedRandomEnabled,
-          onTap: _settings.weightedRandomEnabled ? _pickDrawCooldown : null,
-        ),
-        ListTile(
-          leading: const Icon(Icons.timeline),
-          title: const Text('曲数冷却'),
-          subtitle:
-              Text(_countCooldownSummary(_settings.weightedCountCooldownRatio)),
-          trailing: const Icon(Icons.chevron_right),
-          enabled: _settings.weightedRandomEnabled,
-          onTap: _settings.weightedRandomEnabled ? _editCountCooldown : null,
-        ),
-        SwitchListTile(
-          title: const Text('时长削弱'),
-          subtitle: const Text('开启后加权随机按歌曲时长乘削弱系数（长歌权重降低；仅加权随机开启时生效）'),
-          value: _settings.weightCurveEnabled,
-          onChanged: (v) => setState(() => _settings.weightCurveEnabled = v),
-        ),
-        ListTile(
-          leading: const Icon(Icons.show_chart),
-          title: const Text('权重曲线'),
-          subtitle: Text(_weightCurveSummary(_settings.weightCurveSegments)),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => _editWeightCurve(context),
-        ),
-        const Divider(height: 32),
-        const SettingsSectionHeader('音效'),
-        SwitchListTile(
-          title: const Text('淡入淡出'),
-          subtitle: Text(
-              '播放淡入、暂停淡出${_settings.fadeEnabled ? '，时长 ${(_settings.fadeDurationMs / 1000).toStringAsFixed(1)}s' : ''}'),
-          value: _settings.fadeEnabled,
-          onChanged: (v) => setState(() => _settings.fadeEnabled = v),
-        ),
-        Padding(
-          padding: const EdgeInsets.only(left: 16, right: 16, top: 4),
-          child: Row(
-            children: [
-              const Text('时长', style: TextStyle(fontSize: 13)),
-              Expanded(
-                child: Slider(
-                  key: const ValueKey('fade-duration-slider'),
-                  // 有效域 [500, 2000]ms（读取已钳制）：0.5~2.0s、0.1s 步进
-                  //（divisions 15，16 档），标签一位小数实时预览。
-                  value: (_settings.fadeDurationMs / 1000).clamp(0.5, 2.0),
-                  min: 0.5,
-                  max: 2.0,
-                  divisions: 15,
-                  label:
-                      '${(_settings.fadeDurationMs / 1000).toStringAsFixed(1)} 秒',
-                  onChanged: (v) => setState(
-                      () => _settings.fadeDurationMs = (v * 1000).round()),
+          _anchor(
+            '断点续播',
+            SwitchListTile(
+              title: const Text('断点续播'),
+              subtitle: const Text('启动时恢复上次队列与位置（恢复为暂停态，不自动播放）'),
+              value: _settings.resumeOnStartup,
+              onChanged: (v) => setState(() => _settings.resumeOnStartup = v),
+            ),
+          ),
+          _anchor(
+            '预载下一首',
+            SwitchListTile(
+              title: const Text('预载下一首'),
+              subtitle: const Text('确定下一首后进行预载'),
+              value: _settings.preloadNext,
+              onChanged: (v) => setState(() => _settings.preloadNext = v),
+            ),
+          ),
+          _anchor(
+            '定时行为',
+            SwitchListTile(
+              title: const Text('定时行为'),
+              subtitle: const Text('到点不中断当前歌曲，放完这曲再暂停（弹窗内可单独调整）'),
+              value: _settings.sleepPlayThroughDefault,
+              onChanged: (v) =>
+                  setState(() => _settings.sleepPlayThroughDefault = v),
+            ),
+          ),
+          _anchor(
+            '歌词追焦',
+            ListTile(
+              leading: const Icon(Icons.lyrics_outlined),
+              title: const Text('歌词追焦'),
+              subtitle:
+                  Text('拖动歌词后 ${_settings.lyricFocusIdleSec} 秒无操作恢复自动追焦并回中当前行'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _pickLyricIdle(context),
+            ),
+          ),
+          _anchor(
+            '屏幕常亮',
+            SwitchListTile(
+              title: const Text('屏幕常亮'),
+              subtitle: const Text('打开播放页期间不熄屏；可限定仅在指定蓝牙设备连接时生效'),
+              value: _settings.playerKeepScreenOn,
+              onChanged: (v) =>
+                  setState(() => _settings.playerKeepScreenOn = v),
+            ),
+          ),
+          if (_settings.playerKeepScreenOn)
+            ListTile(
+              leading: const Icon(Icons.bluetooth),
+              title: const Text('限定蓝牙'),
+              subtitle: Text(_keepAwakeDeviceLabel()),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: _pickKeepAwakeDevice,
+            ),
+          const Divider(height: 32),
+          const SettingsSectionHeader('随机权重'),
+          _anchor(
+            '加权随机',
+            SwitchListTile(
+              title: const Text('加权随机'),
+              subtitle: const Text('关闭后为普通随机：按深层列表不放回抽取，一轮内不重复，播完自动换轮'),
+              value: _settings.weightedRandomEnabled,
+              onChanged: (v) {
+                setState(() => _settings.weightedRandomEnabled = v);
+                context.read<PlayerProvider>().onRandomAlgorithmChanged();
+              },
+            ),
+          ),
+          _anchor(
+            '次数冷却',
+            ListTile(
+              leading: const Icon(Icons.waves),
+              title: const Text('次数冷却'),
+              subtitle:
+                  Text(_drawCooldownSummary(_settings.weightedDrawCooldown)),
+              trailing: const Icon(Icons.chevron_right),
+              enabled: _settings.weightedRandomEnabled,
+              onTap: _settings.weightedRandomEnabled ? _pickDrawCooldown : null,
+            ),
+          ),
+          _anchor(
+            '曲数冷却',
+            ListTile(
+              leading: const Icon(Icons.timeline),
+              title: const Text('曲数冷却'),
+              subtitle: Text(
+                  _countCooldownSummary(_settings.weightedCountCooldownRatio)),
+              trailing: const Icon(Icons.chevron_right),
+              enabled: _settings.weightedRandomEnabled,
+              onTap:
+                  _settings.weightedRandomEnabled ? _editCountCooldown : null,
+            ),
+          ),
+          _anchor(
+            '时长削弱',
+            SwitchListTile(
+              title: const Text('时长削弱'),
+              subtitle: const Text('开启后加权随机按歌曲时长乘削弱系数（长歌权重降低；仅加权随机开启时生效）'),
+              value: _settings.weightCurveEnabled,
+              onChanged: (v) =>
+                  setState(() => _settings.weightCurveEnabled = v),
+            ),
+          ),
+          _anchor(
+            '权重曲线',
+            ListTile(
+              leading: const Icon(Icons.show_chart),
+              title: const Text('权重曲线'),
+              subtitle:
+                  Text(_weightCurveSummary(_settings.weightCurveSegments)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _editWeightCurve(context),
+            ),
+          ),
+          const Divider(height: 32),
+          const SettingsSectionHeader('音效'),
+          _anchor(
+            '淡入淡出',
+            SwitchListTile(
+              title: const Text('淡入淡出'),
+              subtitle: Text(
+                  '播放淡入、暂停淡出${_settings.fadeEnabled ? '，时长 ${(_settings.fadeDurationMs / 1000).toStringAsFixed(1)}s' : ''}'),
+              value: _settings.fadeEnabled,
+              onChanged: (v) => setState(() => _settings.fadeEnabled = v),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(left: 16, right: 16, top: 4),
+            child: Row(
+              children: [
+                const Text('时长', style: TextStyle(fontSize: 13)),
+                Expanded(
+                  child: Slider(
+                    key: const ValueKey('fade-duration-slider'),
+                    // 有效域 [500, 2000]ms（读取已钳制）：0.5~2.0s、0.1s 步进
+                    //（divisions 15，16 档），标签一位小数实时预览。
+                    value: (_settings.fadeDurationMs / 1000).clamp(0.5, 2.0),
+                    min: 0.5,
+                    max: 2.0,
+                    divisions: 15,
+                    label:
+                        '${(_settings.fadeDurationMs / 1000).toStringAsFixed(1)} 秒',
+                    onChanged: (v) => setState(
+                        () => _settings.fadeDurationMs = (v * 1000).round()),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-        const Divider(height: 24),
-        const ListTile(
-          leading: Icon(Icons.volume_up),
-          title: Text('应用音量'),
-          subtitle: Text('独立于系统音量的软件增益；0% 静音但播放继续'),
-        ),
-        Padding(
-          padding: const EdgeInsets.only(left: 16, right: 16),
-          child: Row(
-            children: [
-              IconButton(
-                tooltip: _settings.appVolume == 0 ? '取消静音' : '静音',
-                icon: AppVolumeIcon(volume: _settings.appVolume),
-                onPressed: () {
-                  setState(() =>
-                      context.read<PlayerProvider>().toggleAppVolumeMute());
-                },
-              ),
-              Expanded(
-                child: Slider(
-                  key: const ValueKey('app-volume-slider'),
-                  value: _settings.appVolume.toDouble(),
-                  min: 0,
-                  max: 100,
-                  divisions: 100,
-                  label: '${_settings.appVolume}%',
-                  onChanged: (v) {
-                    setState(() {
-                      context.read<PlayerProvider>().setAppVolume(v.round());
-                    });
+          const Divider(height: 24),
+          _anchor(
+            '应用音量',
+            const ListTile(
+              leading: Icon(Icons.volume_up),
+              title: Text('应用音量'),
+              subtitle: Text('独立于系统音量的软件增益；0% 静音但播放继续'),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(left: 16, right: 16),
+            child: Row(
+              children: [
+                IconButton(
+                  tooltip: _settings.appVolume == 0 ? '取消静音' : '静音',
+                  icon: AppVolumeIcon(volume: _settings.appVolume),
+                  onPressed: () {
+                    setState(() =>
+                        context.read<PlayerProvider>().toggleAppVolumeMute());
                   },
                 ),
-              ),
-              SizedBox(
-                width: 44,
-                child: Text(
-                  '${_settings.appVolume}%',
-                  textAlign: TextAlign.right,
-                  style: const TextStyle(fontSize: 13),
+                Expanded(
+                  child: Slider(
+                    key: const ValueKey('app-volume-slider'),
+                    value: _settings.appVolume.toDouble(),
+                    min: 0,
+                    max: 100,
+                    divisions: 100,
+                    label: '${_settings.appVolume}%',
+                    onChanged: (v) {
+                      setState(() {
+                        context.read<PlayerProvider>().setAppVolume(v.round());
+                      });
+                    },
+                  ),
                 ),
-              ),
-            ],
+                SizedBox(
+                  width: 44,
+                  child: Text(
+                    '${_settings.appVolume}%',
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                ),
+              ],
+            ),
           ),
-        ),
-        const Divider(height: 24),
-        _buildEqualizer(context, eqBands, eqPreampDb),
-        const Divider(height: 32),
-        const SettingsSectionHeader('播放保护'),
-        SwitchListTile(
-          title: const Text('焦点自动暂停'),
-          subtitle: const Text('通话等音频焦点抢占时自动暂停，结束后恢复（安卓/鸿蒙生效）'),
-          value: _settings.audioFocusEnabled,
-          onChanged: (v) {
-            setState(() => _settings.audioFocusEnabled = v);
-            context.read<PlayerProvider>().applyAudioConfig();
-          },
-        ),
-        SwitchListTile(
-          title: const Text('静音暂停'),
-          subtitle: const Text('媒体音量归零时自动暂停（安卓/鸿蒙生效）'),
-          value: _settings.pauseOnZeroVolume,
-          onChanged: (v) {
-            setState(() => _settings.pauseOnZeroVolume = v);
-            context.read<PlayerProvider>().refreshPlaybackGuard();
-          },
-        ),
-        SwitchListTile(
-          title: const Text('断连暂停'),
-          subtitle: const Text('当前播放设备（如蓝牙音箱）断开时自动暂停（安卓/鸿蒙生效）'),
-          value: _settings.pauseOnDeviceDisconnect,
-          onChanged: (v) {
-            setState(() => _settings.pauseOnDeviceDisconnect = v);
-            context.read<PlayerProvider>().refreshPlaybackGuard();
-          },
-        ),
-      ],
+          const Divider(height: 24),
+          _anchor('均衡器', _buildEqualizer(context, eqBands, eqPreampDb)),
+          const Divider(height: 32),
+          const SettingsSectionHeader('播放保护'),
+          _anchor(
+            '焦点自动暂停',
+            SwitchListTile(
+              title: const Text('焦点自动暂停'),
+              subtitle: const Text('通话等音频焦点抢占时自动暂停，结束后恢复（安卓/鸿蒙生效）'),
+              value: _settings.audioFocusEnabled,
+              onChanged: (v) {
+                setState(() => _settings.audioFocusEnabled = v);
+                context.read<PlayerProvider>().applyAudioConfig();
+              },
+            ),
+          ),
+          _anchor(
+            '静音暂停',
+            SwitchListTile(
+              title: const Text('静音暂停'),
+              subtitle: const Text('媒体音量归零时自动暂停（安卓/鸿蒙生效）'),
+              value: _settings.pauseOnZeroVolume,
+              onChanged: (v) {
+                setState(() => _settings.pauseOnZeroVolume = v);
+                context.read<PlayerProvider>().refreshPlaybackGuard();
+              },
+            ),
+          ),
+          _anchor(
+            '断连暂停',
+            SwitchListTile(
+              title: const Text('断连暂停'),
+              subtitle: const Text('当前播放设备（如蓝牙音箱）断开时自动暂停（安卓/鸿蒙生效）'),
+              value: _settings.pauseOnDeviceDisconnect,
+              onChanged: (v) {
+                setState(() => _settings.pauseOnDeviceDisconnect = v);
+                context.read<PlayerProvider>().refreshPlaybackGuard();
+              },
+            ),
+          ),
+        ],
+      ),
     );
   }
 

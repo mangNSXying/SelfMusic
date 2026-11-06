@@ -6,7 +6,9 @@ import '../../providers/auth_provider.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../services/api_client.dart';
 import '../../services/server_settings.dart';
+import '../../theme/app_theme.dart';
 import 'pairing_screen.dart';
+import 'settings_focus.dart';
 import 'storage_sections.dart';
 import 'sync_section.dart';
 
@@ -53,6 +55,11 @@ class _NetworkSectionState extends State<NetworkSection> {
     return '$state · 密钥 $masked';
   }
 
+  Widget _anchor(String label, Widget child) => SettingsFocusAnchor(
+        id: settingsAnchorId(SettingsItem.network, label),
+        child: child,
+      );
+
   Widget _groupTitle(String title) => Text(
         title,
         style: Theme.of(context)
@@ -85,14 +92,17 @@ class _NetworkSectionState extends State<NetworkSection> {
           const SizedBox(height: 24),
           _groupTitle('服务端'),
           const SizedBox(height: 4),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.key),
-            title: const Text('配对服务端'),
-            subtitle: Text(_pairingSubtitle(auth.isPaired)),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const PairingScreen()),
+          _anchor(
+            '配对服务端',
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.key),
+              title: const Text('配对服务端'),
+              subtitle: Text(_pairingSubtitle(auth.isPaired)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => const PairingScreen()),
+              ),
             ),
           ),
           const Divider(height: 32),
@@ -102,28 +112,34 @@ class _NetworkSectionState extends State<NetworkSection> {
           const Divider(height: 32),
           _groupTitle('网络安全'),
           const SizedBox(height: 4),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('允许 HTTP'),
-            subtitle: const Text('默认关闭，屏蔽 http:// 地址'),
-            value: directSettings.allowInsecureHttp,
-            onChanged: (v) {
-              directSettings.allowInsecureHttp = v;
-              setState(() {});
-            },
+          _anchor(
+            '允许 HTTP',
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('允许 HTTP'),
+              subtitle: const Text('默认关闭，屏蔽 http:// 地址'),
+              value: directSettings.allowInsecureHttp,
+              onChanged: (v) {
+                directSettings.allowInsecureHttp = v;
+                setState(() {});
+              },
+            ),
           ),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('信任自签名'),
-            subtitle: const Text(
-                '默认关闭；开启后 API 与直连 WebDAV 的扫描/探测跳过证书校验（鸿蒙播放器不校验证书，自签可直接播放）'),
-            value: directSettings.allowSelfSigned,
-            onChanged: (v) {
-              directSettings.allowSelfSigned = v;
-              context.read<DirectSourceManager>().applySecuritySettings();
-              context.read<ApiClient>().setSelfSignedPolicy(v);
-              setState(() {});
-            },
+          _anchor(
+            '信任自签名',
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('信任自签名'),
+              subtitle: const Text(
+                  '默认关闭；开启后 API 与直连 WebDAV 的扫描/探测跳过证书校验（鸿蒙播放器不校验证书，自签可直接播放）'),
+              value: directSettings.allowSelfSigned,
+              onChanged: (v) {
+                directSettings.allowSelfSigned = v;
+                context.read<DirectSourceManager>().applySecuritySettings();
+                context.read<ApiClient>().setSelfSignedPolicy(v);
+                setState(() {});
+              },
+            ),
           ),
           const Divider(height: 32),
           const TranscodeSection(),
