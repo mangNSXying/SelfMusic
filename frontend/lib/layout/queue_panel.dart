@@ -11,6 +11,7 @@ import 'screen_metrics.dart';
 import '../widgets/draggable_sheet.dart';
 import '../widgets/row_list.dart';
 import '../widgets/song_list.dart';
+import '../widgets/song_list_locator.dart';
 import '../widgets/queue_song_tile.dart';
 import '../widgets/song_row_view.dart';
 
@@ -122,16 +123,18 @@ class _QueueSheetContentState extends State<_QueueSheetContent> {
 
   void _jumpToCurrent() {
     if (!mounted) return;
-    final ctrl = widget.scrollCtrl;
-    if (!ctrl.hasClients) return;
     final player = context.read<PlayerProvider>();
     // 下标定位：复本只亮新播的尾一行（身份首匹配会指回旧行）。
     final queue = player.queue;
     if (queue.isEmpty) return;
     final idx = player.currentIndex.clamp(0, queue.length - 1);
-    final target =
-        (idx * kRowExtent - 96).clamp(0.0, ctrl.position.maxScrollExtent);
-    ctrl.jumpTo(target);
+    // 标题栏在滚动区内：行顶边加上标题栏高度，再让出同一高度。
+    final header = AppSheetTitleBar.heightOf(context);
+    SongListLocator.jumpTo(
+      widget.scrollCtrl,
+      rowTop: header + idx * kRowExtent,
+      coveredTop: header,
+    );
   }
 
   @override
@@ -263,13 +266,11 @@ class _QueuePanelState extends State<QueuePanel> {
   }
 
   void _jumpToCurrent() {
-    if (!mounted || !_scroll.hasClients) return;
+    if (!mounted) return;
     final player = context.read<PlayerProvider>();
     final idx = _currentIndex(player);
     if (idx < 0) return;
-    final target =
-        (idx * kRowExtent - 96).clamp(0.0, _scroll.position.maxScrollExtent);
-    _scroll.jumpTo(target);
+    SongListLocator.jumpToRow(_scroll, idx);
   }
 
   int _currentIndex(PlayerProvider player) {

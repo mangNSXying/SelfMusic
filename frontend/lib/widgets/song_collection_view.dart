@@ -21,6 +21,7 @@ import 'row_action_button.dart';
 import 'row_list.dart';
 import 'selection_badge.dart';
 import 'selection_bar.dart';
+import 'song_list_locator.dart';
 import 'song_row_view.dart';
 import 'song_table.dart';
 import 'song_tile.dart';
@@ -512,12 +513,10 @@ class _SongCollectionViewState extends State<SongCollectionView> {
   }
 
   void _scrollToRow(int row) {
-    if (!mounted || !_scroll.hasClients) return;
-    // 目标行置于距顶 96px 处；越界位置由滚动范围钳位。
+    if (!mounted) return;
     final base =
         row < _rowOffsets.length ? _rowOffsets[row] : row * kRowExtent;
-    final offset = (base - 96).clamp(0.0, double.infinity);
-    _scroll.jumpTo(offset.clamp(0.0, _scroll.position.maxScrollExtent));
+    SongListLocator.jumpTo(_scroll, rowTop: base);
   }
 
   @override
