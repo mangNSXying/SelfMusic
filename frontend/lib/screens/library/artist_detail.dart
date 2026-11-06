@@ -83,25 +83,23 @@ class ArtistSongsView extends StatelessWidget {
               if (detail != null) _ArtistDetailBlock(detail: detail!),
             ],
           );
-    return EntrySongsView(
-      songs: songs,
-      scrollCtrl: scrollCtrl,
-      title: zhDisplay(artist.name),
-      headerLeading: fromSheet ? null : const DetailBackButton(),
-      showClose: fromSheet,
-      fromSheet: fromSheet,
-      contextKey: PlayerProvider.anchorForArtist(artist.name),
-      leading: leading,
+    return CornerFabLayer(
+      content: EntrySongsView(
+        songs: songs,
+        scrollCtrl: scrollCtrl,
+        title: zhDisplay(artist.name),
+        headerLeading: fromSheet ? null : const DetailBackButton(),
+        showClose: fromSheet,
+        fromSheet: fromSheet,
+        contextKey: PlayerProvider.anchorForArtist(artist.name),
+        leading: leading,
+      ),
       // 「重新解析」放歌手详情页右下角：只重拉这一位（含成员展开）。
-      overlay: Positioned(
-        right: 16,
-        bottom: 16,
-        child: CornerAddButton(
-          icon: Icons.sync_alt,
-          label: '重新解析',
-          tooltip: '重新解析 ${zhDisplay(artist.name)}',
-          onPressed: () => _forceReParse(context),
-        ),
+      fab: CornerAddButton(
+        icon: Icons.sync_alt,
+        label: '重新解析',
+        tooltip: '重新解析 ${zhDisplay(artist.name)}',
+        onPressed: () => _forceReParse(context),
       ),
     );
   }

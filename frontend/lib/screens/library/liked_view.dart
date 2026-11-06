@@ -91,60 +91,51 @@ class _LikedViewState extends State<LikedView>
     final res = _sortSongs(direct, search);
     final songs = res.songs;
 
-    return Stack(
-      children: [
-        Positioned.fill(
-          child: SongCollectionView(
-            songs: songs,
-            searching: search.trim().isNotEmpty,
-            collectionKey: 'favorites',
-            groupMode: direct.settings.groupFavorites,
-            onGroupModeChanged: (v) =>
-                setState(() => direct.settings.groupFavorites = v),
-            sort: direct.settings.sortFavorites,
-            onSortChanged: (v) =>
-                setState(() => direct.settings.sortFavorites = v),
-            sourceOf: (s) => lib.sourceFor(s.sourceKey),
-            emptyText: res.raw.isEmpty ? '暂无喜欢的歌曲，去歌曲页点 ♡ 收藏' : '无匹配歌曲',
-            countLabel: (n, _) => '共 $n 首歌曲',
-            onPlay: (list, i) {
-              context.read<PlayerProvider>().playQueue(list,
-                  index: i, contextKey: PlayerProvider.anchorForLiked());
+    return CornerFabLayer(
+      content: SongCollectionView(
+        songs: songs,
+        searching: search.trim().isNotEmpty,
+        collectionKey: 'favorites',
+        groupMode: direct.settings.groupFavorites,
+        onGroupModeChanged: (v) =>
+            setState(() => direct.settings.groupFavorites = v),
+        sort: direct.settings.sortFavorites,
+        onSortChanged: (v) => setState(() => direct.settings.sortFavorites = v),
+        sourceOf: (s) => lib.sourceFor(s.sourceKey),
+        emptyText: res.raw.isEmpty ? '暂无喜欢的歌曲，去歌曲页点 ♡ 收藏' : '无匹配歌曲',
+        countLabel: (n, _) => '共 $n 首歌曲',
+        onPlay: (list, i) {
+          context.read<PlayerProvider>().playQueue(list,
+              index: i, contextKey: PlayerProvider.anchorForLiked());
+          context.read<NavigationProvider>().openPlayer();
+        },
+        onPlayGroup: (list) => context
+            .read<PlayerProvider>()
+            .playQueue(list, contextKey: PlayerProvider.anchorForLiked()),
+        selectionActions: (selected, clear) => [
+          ...collectionPlayAddActions(
+            context,
+            selected,
+            clear,
+            play: () async {
+              context.read<PlayerProvider>().playQueue(selected,
+                  contextKey: PlayerProvider.anchorForLiked());
               context.read<NavigationProvider>().openPlayer();
             },
-            onPlayGroup: (list) => context
-                .read<PlayerProvider>()
-                .playQueue(list, contextKey: PlayerProvider.anchorForLiked()),
-            selectionActions: (selected, clear) => [
-              ...collectionPlayAddActions(
-                context,
-                selected,
-                clear,
-                play: () async {
-                  context.read<PlayerProvider>().playQueue(selected,
-                      contextKey: PlayerProvider.anchorForLiked());
-                  context.read<NavigationProvider>().openPlayer();
-                },
-              ),
-              ...songSelectionActions(
-                context,
-                selected,
-                clear,
-                favorite: FavoriteAction.unlike,
-              ),
-            ],
           ),
-        ),
-        Positioned(
-          right: 16,
-          bottom: 16,
-          child: CornerAddButton(
-            tooltip: '去歌曲页收藏',
-            onPressed: () =>
-                context.read<NavigationProvider>().select(NavSection.songs),
+          ...songSelectionActions(
+            context,
+            selected,
+            clear,
+            favorite: FavoriteAction.unlike,
           ),
-        ),
-      ],
+        ],
+      ),
+      fab: CornerAddButton(
+        tooltip: '去歌曲页收藏',
+        onPressed: () =>
+            context.read<NavigationProvider>().select(NavSection.songs),
+      ),
     );
   }
 }

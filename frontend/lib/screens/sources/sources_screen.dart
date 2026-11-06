@@ -79,62 +79,56 @@ class _SourcesScreenState extends State<SourcesScreen>
     final selectedKey = context.select<NavigationProvider, String?>(
         (n) => split ? n.browsingSourceKey : null);
 
-    final listPane = Stack(
-      children: [
-        Column(
-          children: [
-            CountHeader(
-              count: sources.length,
-              unit: '个播放源',
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  viewModeToggle(),
-                  SortMenuButton(
-                    value: direct.settings.sortSources,
-                    scope: SortScope.collections,
-                    onChanged: (v) =>
-                        setState(() => direct.settings.sortSources = v),
-                  ),
-                ],
-              ),
+    final listPane = CornerFabLayer(
+      content: Column(
+        children: [
+          CountHeader(
+            count: sources.length,
+            unit: '个播放源',
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                viewModeToggle(),
+                SortMenuButton(
+                  value: direct.settings.sortSources,
+                  scope: SortScope.collections,
+                  onChanged: (v) =>
+                      setState(() => direct.settings.sortSources = v),
+                ),
+              ],
             ),
-            Expanded(
-              child: sources.isEmpty
-                  ? Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 24),
-                      child: Text(all.isEmpty ? '尚未添加播放源，点右下角「+」添加' : '无匹配播放源',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: scheme.onSurfaceVariant)),
-                    )
-                  : card
-                      ? SquareCardGrid(
-                          itemCount: sources.length,
-                          itemBuilder: (c, i) =>
-                              _DirectSourceCard(sourceKey: sources[i].key),
-                        )
-                      : RowList(
-                          // 分栏↔整页切换会重建列表：靠 PageStorage 记住滚动位置。
-                          key: const PageStorageKey<String>('sources-list'),
-                          count: sources.length,
-                          itemBuilder: (c, i) => _DirectSourceTile(
-                            sourceKey: sources[i].key,
-                            active: split && selectedKey == sources[i].key,
-                          ),
-                        ),
-            ),
-          ],
-        ),
-        Positioned(
-          right: 16,
-          bottom: 16,
-          child: CornerAddButton(
-            tooltip: '添加播放源',
-            onPressed: () => showDialog<void>(
-                context: context, builder: (_) => const SourceDialog()),
           ),
-        ),
-      ],
+          Expanded(
+            child: sources.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 24),
+                    child: Text(all.isEmpty ? '尚未添加播放源，点右下角「+」添加' : '无匹配播放源',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: scheme.onSurfaceVariant)),
+                  )
+                : card
+                    ? SquareCardGrid(
+                        itemCount: sources.length,
+                        itemBuilder: (c, i) =>
+                            _DirectSourceCard(sourceKey: sources[i].key),
+                      )
+                    : RowList(
+                        // 分栏↔整页切换会重建列表：靠 PageStorage 记住滚动位置。
+                        key: const PageStorageKey<String>('sources-list'),
+                        count: sources.length,
+                        itemBuilder: (c, i) => _DirectSourceTile(
+                          sourceKey: sources[i].key,
+                          active: split && selectedKey == sources[i].key,
+                        ),
+                      ),
+          ),
+        ],
+      ),
+      fab: CornerAddButton(
+        tooltip: '添加播放源',
+        onPressed: () => showDialog<void>(
+            context: context, builder: (_) => const SourceDialog()),
+      ),
     );
 
     return ListDetailSplit(

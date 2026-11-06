@@ -135,81 +135,74 @@ class _PlaylistsViewState extends State<PlaylistsView>
     final selectedId = context.select<NavigationProvider, int?>(
         (n) => split ? n.browsingPlaylistId : null);
 
-    final listPane = Stack(
-      children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (_sel.active)
-              SelectionBar(
-                total: playlists.length,
-                // 「已选 N」只数可见项；批量动作也只作用于可见项。
-                selectedCount: _sel.of(playlists.map((p) => p.id)).length,
-                onSelectAll: () =>
-                    setState(() => _sel.addAll(playlists.map((p) => p.id))),
-                onSelectNone: () => setState(_sel.clearAll),
-                onCancel: () => setState(_sel.cancel),
-                actions: [
-                  SelectionAction(
-                    icon: Icons.delete,
-                    label: '删除选中',
-                    onPressed: _sel.of(playlists.map((p) => p.id)).isEmpty
-                        ? null
-                        : () => _deleteSelected(provider, playlists),
+    final listPane = CornerFabLayer(
+      content: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (_sel.active)
+            SelectionBar(
+              total: playlists.length,
+              // 「已选 N」只数可见项；批量动作也只作用于可见项。
+              selectedCount: _sel.of(playlists.map((p) => p.id)).length,
+              onSelectAll: () =>
+                  setState(() => _sel.addAll(playlists.map((p) => p.id))),
+              onSelectNone: () => setState(_sel.clearAll),
+              onCancel: () => setState(_sel.cancel),
+              actions: [
+                SelectionAction(
+                  icon: Icons.delete,
+                  label: '删除选中',
+                  onPressed: _sel.of(playlists.map((p) => p.id)).isEmpty
+                      ? null
+                      : () => _deleteSelected(provider, playlists),
+                ),
+              ],
+            ),
+          if (_sel.active) const Divider(height: 1),
+          if (!_sel.active)
+            CountHeader(
+              count: playlists.length,
+              unit: '个歌单',
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  viewModeToggle(),
+                  SortMenuButton(
+                    value: direct.settings.sortPlaylists,
+                    scope: SortScope.collections,
+                    onChanged: (v) =>
+                        setState(() => direct.settings.sortPlaylists = v),
                   ),
                 ],
               ),
-            if (_sel.active) const Divider(height: 1),
-            if (!_sel.active)
-              CountHeader(
-                count: playlists.length,
-                unit: '个歌单',
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    viewModeToggle(),
-                    SortMenuButton(
-                      value: direct.settings.sortPlaylists,
-                      scope: SortScope.collections,
-                      onChanged: (v) =>
-                          setState(() => direct.settings.sortPlaylists = v),
-                    ),
-                  ],
-                ),
-              ),
-            Expanded(
-              child: playlists.isEmpty
-                  ? Center(
-                      child: Text(all.isEmpty ? '暂无歌单，点右下角「+」创建' : '无匹配歌单'))
-                  : card
-                      ? SquareCardGrid(
-                          itemCount: playlists.length,
-                          titleMaxLines: 2,
-                          itemBuilder: (c, i) =>
-                              _playlistCard(provider, playlists[i]),
-                        )
-                      : RowList(
-                          // 分栏↔整页切换会重建列表：靠 PageStorage 记住滚动位置。
-                          key: const PageStorageKey<String>('playlists-list'),
-                          count: playlists.length,
-                          itemBuilder: (c, i) => _playlistTile(
-                            provider,
-                            playlists[i],
-                            active: split && selectedId == playlists[i].id,
-                          ),
-                        ),
             ),
-          ],
-        ),
-        Positioned(
-          right: 16,
-          bottom: 16,
-          child: CornerAddButton(
-            tooltip: '新建歌单',
-            onPressed: () => showCreatePlaylistDialog(context, provider),
+          Expanded(
+            child: playlists.isEmpty
+                ? Center(child: Text(all.isEmpty ? '暂无歌单，点右下角「+」创建' : '无匹配歌单'))
+                : card
+                    ? SquareCardGrid(
+                        itemCount: playlists.length,
+                        titleMaxLines: 2,
+                        itemBuilder: (c, i) =>
+                            _playlistCard(provider, playlists[i]),
+                      )
+                    : RowList(
+                        // 分栏↔整页切换会重建列表：靠 PageStorage 记住滚动位置。
+                        key: const PageStorageKey<String>('playlists-list'),
+                        count: playlists.length,
+                        itemBuilder: (c, i) => _playlistTile(
+                          provider,
+                          playlists[i],
+                          active: split && selectedId == playlists[i].id,
+                        ),
+                      ),
           ),
-        ),
-      ],
+        ],
+      ),
+      fab: CornerAddButton(
+        tooltip: '新建歌单',
+        onPressed: () => showCreatePlaylistDialog(context, provider),
+      ),
     );
 
     return ListDetailSplit(

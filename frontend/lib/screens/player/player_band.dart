@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import '../../providers/player_provider.dart';
 import '../../providers/navigation_provider.dart';
 import '../../providers/playlists_provider.dart';
+import '../../widgets/corner_add_button.dart';
 import '../../widgets/playlist_song_picker.dart';
 import '../../widgets/song_list.dart';
 
@@ -46,16 +47,9 @@ class BandSongPage extends StatelessWidget {
     if (pid == null) {
       return QueuePage(embedded: embedded, focusTick: focusTick);
     }
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        SongList(playlistId: pid, focusTick: focusTick),
-        Positioned(
-          right: 16,
-          bottom: 16,
-          child: PlaylistAddSongsButton(playlistId: pid),
-        ),
-      ],
+    return CornerFabLayer(
+      content: SongList(playlistId: pid, focusTick: focusTick),
+      fab: PlaylistAddSongsButton(playlistId: pid),
     );
   }
 }
