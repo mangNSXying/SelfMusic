@@ -55,6 +55,18 @@ class _AppShellState extends State<AppShell> {
   /// 上一次构建时的队列开合态（仅用于识别宽屏伸缩边沿）。
   bool _lastQueueOpen = false;
 
+  /// 窄屏内容顶栏（搜索行 + 分组 Tab）的收起态，滚动方向驱动。
+  final ValueNotifier<bool> _topCollapsed = ValueNotifier<bool>(false);
+
+  /// 顶栏收起判定的单向滚动累计量（换向清零），口径同 CornerFabLayer。
+  double _topTravel = 0;
+
+  /// 当前是否窄屏：顶栏收起只在窄屏生效（宽屏纵向空间充足，不动）。
+  bool _narrow = true;
+
+  /// 定向滚动累计超过该像素才切换顶栏显隐，滤掉触摸抖动与回弹。
+  static const double _topCollapseThreshold = 8;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -81,6 +93,7 @@ class _AppShellState extends State<AppShell> {
     _nav?.removeListener(_onNavChanged);
     _sheetProgress?.removeListener(_onSheetProgress);
     _queuePanelGateTimer?.cancel();
+    _topCollapsed.dispose();
     super.dispose();
   }
 
@@ -128,7 +141,44 @@ class _AppShellState extends State<AppShell> {
         gate.endScroll();
       }
     }
+    _trackTopCollapse(n);
     return false; // 不拦截，继续向上冒泡。
+  }
+
+  /// 窄屏顶栏跟随浏览方向收起/展开。
+  ///
+  /// 判定口径与 [CornerFabLayer] 一致：只认纵向滚动、换向清零累计、
+  /// 走满阈值才切换、停手保持。到顶继续下拉必展开——列表已在 0 位时
+  /// 没有向上的滚动量，否则顶栏会一直收着无法唤回。
+  void _trackTopCollapse(ScrollNotification n) {
+    if (!_narrow || n.metrics.axis != Axis.vertical) return;
+    if (n is ScrollStartNotification) {
+      _topTravel = 0;
+      return;
+    }
+    if (n is OverscrollNotification && n.overscroll < 0) {
+      _setTopCollapsed(false);
+      return;
+    }
+    if (n is! ScrollUpdateNotification) return;
+    if (n.metrics.pixels <= 0) {
+      _setTopCollapsed(false);
+      return;
+    }
+    final delta = n.scrollDelta ?? 0;
+    if (delta == 0) return;
+    if ((delta > 0) != (_topTravel > 0)) _topTravel = 0;
+    _topTravel += delta;
+    if (_topTravel > _topCollapseThreshold) {
+      _setTopCollapsed(true);
+    } else if (_topTravel < -_topCollapseThreshold) {
+      _setTopCollapsed(false);
+    }
+  }
+
+  void _setTopCollapsed(bool value) {
+    if (_topCollapsed.value == value) return;
+    _topCollapsed.value = value;
   }
 
   @override
@@ -139,6 +189,13 @@ class _AppShellState extends State<AppShell> {
     // 中间宽度会把 contentColumn 挤到不足最小宽度（迷你条横向溢出）。
     final crossingWide = _lastWide != null && _lastWide != wide;
     _lastWide = wide;
+    _narrow = !wide;
+    // 宽屏不参与顶栏收起：跨断点回宽屏后复位（postFrame 避开 build 期通知）。
+    if (wide && _topCollapsed.value) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _setTopCollapsed(false);
+      });
+    }
     final slotMotion = crossingWide ? Duration.zero : kPageMotion;
     // 订阅收窄（T005）：布局壳只关注队列面板开合；区段/搜索/播放页等变更
     // 不再牵连整壳重建。
@@ -172,7 +229,12 @@ class _AppShellState extends State<AppShell> {
       children: [
         // 图层隔离：顶栏/迷你条高频重建（滑动跟手、播放进度）不脏内容页，
         // 内容页横滑/列表滚动各自独立栅格化，降低掉帧。
-        RepaintBoundary(child: TopBar(onSidebarToggle: _toggleSidebar)),
+        RepaintBoundary(
+          child: TopBar(
+            onSidebarToggle: _toggleSidebar,
+            collapsed: _topCollapsed,
+          ),
+        ),
         Expanded(
           // 顶栏已用 SafeArea 消费过状态栏；内容区不能再叠加一次系统安全区。
           // Flutter 的 ListView/GridView 在 padding==null 时会把 MediaQuery.padding

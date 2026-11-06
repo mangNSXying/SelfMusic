@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
@@ -5,11 +6,20 @@ import '../theme/app_theme.dart';
 import '../utils/motion.dart';
 
 /// 顶栏：上层 = 汉堡 + 搜索框（提示语随当前区域变化）；下层 = 导航（歌单/喜欢/播放源/歌曲/专辑/歌手）。
+///
+/// [collapsed] 为窄屏内容页的收起状态：true 时搜索行与分组 Tab 一起收起
+/// （只留状态栏占位），由 AppShell 按滚动方向驱动，口径与右下角悬浮按钮一致
+/// （向下浏览收起、向上浏览展开、停手保持）。设置/工具页变体不参与收起。
 class TopBar extends StatelessWidget {
   final VoidCallback onSidebarToggle;
+
+  /// 内容顶栏收起状态；null = 常显（无外壳的旧用法/测试）。
+  final ValueListenable<bool>? collapsed;
+
   const TopBar({
     super.key,
     required this.onSidebarToggle,
+    this.collapsed,
   });
 
   @override
@@ -20,23 +30,67 @@ class TopBar extends StatelessWidget {
         context.select<NavigationProvider, (bool, SettingsItem?, String?)>(
             (n) => (n.inSettings, n.settings, n.toolPageTitle));
 
-    final Widget bar = inSettings
-        ? _SettingsTopBar(nav: nav, onSidebarToggle: onSidebarToggle)
-        : toolTitle != null
-            ? _ToolTopBar(
-                nav: nav,
-                title: toolTitle,
-                onSidebarToggle: onSidebarToggle,
-              )
-            : Column(
-                children: [
-                  _UpperRow(nav: nav, onSidebarToggle: onSidebarToggle),
-                  _NavBar(nav: nav),
-                  const Divider(height: 1),
-                ],
-              );
+    final Widget bar;
+    if (inSettings) {
+      bar = _SettingsTopBar(nav: nav, onSidebarToggle: onSidebarToggle);
+    } else if (toolTitle != null) {
+      bar = _ToolTopBar(
+        nav: nav,
+        title: toolTitle,
+        onSidebarToggle: onSidebarToggle,
+      );
+    } else {
+      bar = _collapsible(
+        collapsed,
+        Column(
+          children: [
+            _UpperRow(nav: nav, onSidebarToggle: onSidebarToggle),
+            _NavBar(nav: nav),
+            const Divider(height: 1),
+          ],
+        ),
+      );
+    }
     // 适配手机状态栏：无 AppBar 时顶栏会顶到状态栏，这里让出顶部安全区。
+    // 收起时这层占位仍保留，内容不会顶进状态栏。
     return SafeArea(bottom: false, child: bar);
+  }
+
+  /// 有收起状态时按它收缩；没有则原样返回。
+  static Widget _collapsible(ValueListenable<bool>? collapsed, Widget child) {
+    if (collapsed == null) return child;
+    return ValueListenableBuilder<bool>(
+      valueListenable: collapsed,
+      child: child,
+      builder: (c, hidden, body) =>
+          _CollapsedHeight(hidden: hidden, child: body!),
+    );
+  }
+}
+
+/// 在「原高 ↔ 0」之间收缩（顶部对齐裁切），时长/曲线与全 App 页面动效一致。
+///
+/// 子树保持挂载：搜索框的 controller/focus 在收起再展开后不丢。
+class _CollapsedHeight extends StatelessWidget {
+  final bool hidden;
+  final Widget child;
+  const _CollapsedHeight({required this.hidden, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0, end: hidden ? 1 : 0),
+      duration: kPageMotion,
+      curve: kPageMotionCurve,
+      child: child,
+      builder: (c, t, body) => ClipRect(
+        child: Align(
+          alignment: Alignment.topCenter,
+          heightFactor: 1 - t,
+          child: body,
+        ),
+      ),
+    );
   }
 }
 
@@ -155,8 +209,7 @@ class _NavBar extends StatefulWidget {
   State<_NavBar> createState() => _NavBarState();
 }
 
-class _NavBarState extends State<_NavBar>
-    with SingleTickerProviderStateMixin {
+class _NavBarState extends State<_NavBar> with SingleTickerProviderStateMixin {
   final ScrollController _scroll = ScrollController();
 
   /// 条带实际显示的页码：拖拽/邻项切换由 [NavigationProvider.pageOffset]
