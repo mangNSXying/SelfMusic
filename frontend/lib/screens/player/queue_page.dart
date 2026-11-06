@@ -13,6 +13,7 @@ import '../../utils/song_title_format.dart';
 import '../../utils/zh_variant.dart';
 import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/list_selection.dart';
+import '../../widgets/locate_current_button.dart';
 import '../../widgets/row_list.dart';
 import '../../widgets/selection_bar.dart';
 import '../../widgets/search_field.dart';
@@ -250,6 +251,11 @@ class _QueuePageState extends State<QueuePage> {
         title: Text('播放队列（${queue.length}）'),
         actions: [
           if (queue.isNotEmpty) ...[
+            IconButton(
+              icon: const Icon(Icons.my_location),
+              tooltip: '定位当前曲',
+              onPressed: _jumpToCurrent,
+            ),
             SortMenuButton(
               value: direct.settings.sortQueue,
               scope: SortScope.songs,
@@ -325,6 +331,7 @@ class _QueuePageState extends State<QueuePage> {
                 ),
               ),
               if (queue.isNotEmpty) ...[
+                LocateCurrentButton(onPressed: _jumpToCurrent),
                 SortMenuButton(
                   value: direct.settings.sortQueue,
                   scope: SortScope.songs,

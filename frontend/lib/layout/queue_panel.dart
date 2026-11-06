@@ -6,6 +6,7 @@ import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../widgets/count_header.dart';
+import '../widgets/locate_current_button.dart';
 import 'screen_metrics.dart';
 import '../widgets/draggable_sheet.dart';
 import '../widgets/row_list.dart';
@@ -112,12 +113,15 @@ class _QueueSheetContentState extends State<_QueueSheetContent> {
   void initState() {
     super.initState();
     // 打开即定位到当前播放歌曲（首帧布局完成后再滚动）。
-    WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToCurrent());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_jumped) return;
+      _jumped = true;
+      _jumpToCurrent();
+    });
   }
 
   void _jumpToCurrent() {
-    if (_jumped || !mounted) return;
-    _jumped = true;
+    if (!mounted) return;
     final ctrl = widget.scrollCtrl;
     if (!ctrl.hasClients) return;
     final player = context.read<PlayerProvider>();
@@ -125,7 +129,6 @@ class _QueueSheetContentState extends State<_QueueSheetContent> {
     final queue = player.queue;
     if (queue.isEmpty) return;
     final idx = player.currentIndex.clamp(0, queue.length - 1);
-    if (idx <= 0) return;
     final target =
         (idx * kRowExtent - 96).clamp(0.0, ctrl.position.maxScrollExtent);
     ctrl.jumpTo(target);
@@ -167,7 +170,13 @@ class _QueueSheetContentState extends State<_QueueSheetContent> {
         // 时标题与关闭按钮始终可见（仍在同一 scrollable，头部同样可拖拽窗口）。
         AppSheetHeader(
           height: AppSheetTitleBar.heightOf(context),
-          child: AppSheetTitleBar(title: '播放队列', count: queue.length),
+          child: AppSheetTitleBar(
+            title: '播放队列',
+            count: queue.length,
+            trailing: LocateCurrentButton(
+              onPressed: queue.isEmpty ? null : _jumpToCurrent,
+            ),
+          ),
         ),
         if (queue.isEmpty)
           const SliverFillRemaining(
@@ -257,7 +266,7 @@ class _QueuePanelState extends State<QueuePanel> {
     if (!mounted || !_scroll.hasClients) return;
     final player = context.read<PlayerProvider>();
     final idx = _currentIndex(player);
-    if (idx <= 0) return;
+    if (idx < 0) return;
     final target =
         (idx * kRowExtent - 96).clamp(0.0, _scroll.position.maxScrollExtent);
     _scroll.jumpTo(target);
@@ -306,7 +315,12 @@ class _QueuePanelState extends State<QueuePanel> {
                 ),
               ),
               // 计数栏：与窄屏窗口标题栏同一组件（[CountHeader]）。
-              CountHeader(count: queue.length),
+              CountHeader(
+                count: queue.length,
+                trailing: LocateCurrentButton(
+                  onPressed: queue.isEmpty ? null : _jumpToCurrent,
+                ),
+              ),
               const Divider(height: 1),
               Expanded(
                 child: queue.isEmpty
