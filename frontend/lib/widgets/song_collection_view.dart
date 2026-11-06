@@ -16,6 +16,7 @@ import '../utils/source_folders.dart';
 import '../utils/zh_variant.dart';
 import 'count_header.dart';
 import 'list_selection.dart';
+import 'locate_current_button.dart';
 import 'row_action_button.dart';
 import 'row_list.dart';
 import 'selection_badge.dart';
@@ -161,6 +162,9 @@ class _SongCollectionViewState extends State<SongCollectionView> {
   /// 最近一次 build 的展示行/追焦位置（供 [focusTick] 在 build 外复用）。
   List<SongListRow> _rows = const [];
   int _focusDisplay = -1;
+
+  /// 最近一次 build 的平铺分组（定位时判断当前曲是否被折叠的组藏起）。
+  List<SongGroup> _groups = const [];
 
   /// 行高前缀偏移：递归块表头（32）与歌曲/文件夹（73）混排时，滚动定位
   /// 不能再用 `row * kRowExtent`。
@@ -455,6 +459,39 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     });
   }
 
+  /// 计数栏「定位当前曲」：滚到当前播放歌曲所在行；被折叠组藏起时先展开该组。
+  void _locateCurrent() {
+    final idx = _currentIdx;
+    if (idx < 0) return;
+    final pos = _rows.indexWhere((r) => r.song == idx);
+    if (pos >= 0) {
+      _scrollToRow(pos);
+      return;
+    }
+    if (!_expandGroupOf(idx)) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final next = _rows.indexWhere((r) => r.song == idx);
+      if (next >= 0) _scrollToRow(next);
+    });
+  }
+
+  /// 展开包含 [songIndex] 的折叠分组；已展开或不属于任何分组时返回 false。
+  bool _expandGroupOf(int songIndex) {
+    for (final g in _groups) {
+      if (!g.songIndices.contains(songIndex)) continue;
+      if (!_collapsed.contains(g.name)) return false;
+      final settings = context.read<DirectSourceManager>().settings;
+      setState(() {
+        _collapsed.remove(g.name);
+        _collapseRev++;
+        _persistCollapsed(settings);
+      });
+      return true;
+    }
+    return false;
+  }
+
   /// 每行顶部的滚动偏移（行模型/块表头模式不变时复用）。
   List<double> _offsetsOf(List<SongListRow> rows, bool blockHeaders) {
     if (identical(_rowOffsetsRows, rows) &&
@@ -586,6 +623,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
         rows = _flatRows;
       }
     }
+    _groups = groups;
 
     // 追焦：以当前播放歌曲在展示列表中的位置为准（递归层级不在本层则跳过）。
     if (!identical(_keysRef, displaySongs)) {
@@ -667,6 +705,9 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     final trailing = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        LocateCurrentButton(
+          onPressed: currentIdx < 0 ? null : _locateCurrent,
+        ),
         if (keys.isNotEmpty || folderCount > 0)
           ToolbarIconButton(
             icon: Icons.checklist,

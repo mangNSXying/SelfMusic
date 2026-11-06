@@ -237,11 +237,15 @@ class AppSheetTitleBar extends StatelessWidget {
     this.unit = '首',
     this.leading,
     this.showClose = true,
+    this.trailing,
   });
 
   final String title;
   final int count;
   final String unit;
+
+  /// 计数行行尾控件（如「定位当前曲」）；为空时右侧留常规内边距。
+  final Widget? trailing;
 
   /// 标题行最左侧的附加控件（宽屏详情页放返回箭头；弹层为 null）。
   final Widget? leading;
@@ -344,7 +348,7 @@ class AppSheetTitleBar extends StatelessWidget {
                 ],
               ),
             ),
-            CountHeader(count: count, unit: unit),
+            CountHeader(count: count, unit: unit, trailing: trailing),
             const Divider(height: kRowSeparatorHeight),
           ],
         ),

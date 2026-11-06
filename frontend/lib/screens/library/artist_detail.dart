@@ -46,8 +46,6 @@ class ArtistSongsSheet extends StatelessWidget {
       albums: albums,
       scrollCtrl: scrollCtrl,
       fromSheet: true,
-      header:
-          AppSheetTitleBar(title: zhDisplay(artist.name), count: songs.length),
     );
   }
 }
@@ -60,7 +58,6 @@ class ArtistSongsView extends StatelessWidget {
   final ArtistDetail? detail;
   final List<Album> albums;
   final ScrollController scrollCtrl;
-  final Widget header;
 
   /// true=窄屏弹层（点歌/重新解析先关窗）；false=宽屏整页（保持页面）。
   final bool fromSheet;
@@ -71,7 +68,6 @@ class ArtistSongsView extends StatelessWidget {
     required this.detail,
     required this.albums,
     required this.scrollCtrl,
-    required this.header,
     required this.fromSheet,
   });
 
@@ -90,7 +86,9 @@ class ArtistSongsView extends StatelessWidget {
     return EntrySongsView(
       songs: songs,
       scrollCtrl: scrollCtrl,
-      header: header,
+      title: zhDisplay(artist.name),
+      headerLeading: fromSheet ? null : const DetailBackButton(),
+      showClose: fromSheet,
       fromSheet: fromSheet,
       contextKey: PlayerProvider.anchorForArtist(artist.name),
       leading: leading,
@@ -199,12 +197,6 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
         albums: _albumsFor(songs),
         scrollCtrl: _scroll,
         fromSheet: false,
-        header: AppSheetTitleBar(
-          title: zhDisplay(widget.artist.name),
-          count: songs.length,
-          leading: const DetailBackButton(),
-          showClose: false,
-        ),
       ),
     );
   }
