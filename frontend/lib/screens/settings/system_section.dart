@@ -63,10 +63,10 @@ class _DesktopAndBackgroundSectionState
             SwitchListTile(
               title: const Text('驻留托盘'),
               subtitle: Text(!trayAvailable
-                  ? '当前桌面未提供托盘支持，关闭窗口仍会退出软件'
+                  ? '当前桌面不支持托盘，关闭窗口会退出'
                   : settings.closeToTray
-                      ? '关闭主窗口后继续后台播放；托盘菜单可恢复窗口、控制播放或退出'
-                      : '关闭主窗口即退出软件'),
+                      ? '关闭窗口后继续播放，可从托盘恢复'
+                      : '关闭窗口即退出'),
               value: settings.closeToTray,
               onChanged: trayAvailable
                   ? (v) {
@@ -80,8 +80,7 @@ class _DesktopAndBackgroundSectionState
           '通知栏控制',
           SwitchListTile(
             title: const Text('通知栏控制'),
-            subtitle: const Text('在通知栏/播控中心显示播放控制按钮（修改后重启生效）。关闭只隐藏'
-                '按钮——后台播放所需的保活（前台服务/长时任务）始终保持，不受影响。'),
+            subtitle: const Text('重启后生效'),
             value: settings.notificationControls,
             onChanged: (v) {
               setState(() => settings.notificationControls = v);
@@ -91,7 +90,7 @@ class _DesktopAndBackgroundSectionState
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-          child: Text('通知栏控制基于 just_audio_background，仅 Android 生效；桌面端忽略此开关。',
+          child: Text('仅安卓；关闭不影响后台播放',
               style: Theme.of(context)
                   .textTheme
                   .bodySmall
@@ -124,7 +123,6 @@ class _LogSectionState extends State<LogSection> {
   @override
   Widget build(BuildContext context) {
     final settings = context.read<DirectSourceManager>().settings;
-    final cs = Theme.of(context).colorScheme;
     final minutes = settings.logExportMinutes;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -135,18 +133,10 @@ class _LogSectionState extends State<LogSection> {
           ListTile(
             leading: const Icon(Icons.schedule),
             title: const Text('日志时长'),
-            subtitle: Text('收集日志与反馈附件导出最近 $minutes 分钟的内容'),
+            subtitle: Text('反馈时附带最近 $minutes 分钟的日志'),
             trailing: const Icon(Icons.chevron_right),
             onTap: _pickDuration,
           ),
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-          child: Text('可设置 1~30 分钟，作用于「关于软件」的收集日志与反馈附件',
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
-                  ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
         ),
       ],
     );

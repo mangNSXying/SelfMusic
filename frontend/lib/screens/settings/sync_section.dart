@@ -42,10 +42,12 @@ class _SyncSectionState extends State<SyncSection> {
     final settings = context.read<DirectSourceManager>().settings;
     final engine = context.read<SyncEngine>();
     final parts = <String>[];
-    if (_pending > 0) parts.add('待上推 $_pending');
+    if (_pending > 0) parts.add('$_pending 项待同步');
     final last = settings.lastSyncAt;
-    parts.add(last.isEmpty ? '尚未同步成功' : '上次 ${_shortTime(last)}');
-    if (engine.lastError.isNotEmpty) parts.add('错误：${engine.lastError}');
+    parts.add(last.isEmpty ? '尚未同步' : '上次 ${_shortTime(last)}');
+    if (engine.lastError.isNotEmpty) {
+      parts.add('同步失败：${engine.lastError}');
+    }
     return parts.join(' · ');
   }
 
@@ -72,14 +74,14 @@ class _SyncSectionState extends State<SyncSection> {
 
   String _settingsSyncSubtitle(AppSettings settings) {
     if (!settings.syncEnabled) return '先开启多设备同步';
-    if (!settings.syncSettingsEnabled) return '关闭（各设备保留自己的设置）';
+    if (!settings.syncSettingsEnabled) return '未开启';
     final parts = <String>[
       if (settings.syncSettingsPlayback) '播放偏好',
       if (settings.syncSettingsLibrary) '媒体库规则',
       if (settings.syncSettingsInterface) '界面偏好',
       if (settings.syncSettingsTheme) '主题外观',
     ];
-    return parts.isEmpty ? '已开启（未选类目）' : '已开启 · ${parts.join(' / ')}';
+    return parts.isEmpty ? '已开启（未选类目）' : '已开启：${parts.join('、')}';
   }
 
   Future<void> _openSettingsSync() async {
@@ -122,7 +124,7 @@ class _SyncSectionState extends State<SyncSection> {
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('同步开关'),
-            subtitle: const Text('同步 权重 / 收藏 / 歌单 / 断点'),
+            subtitle: const Text('收藏、权重、歌单和播放进度'),
             value: settings.syncEnabled,
             onChanged: (v) {
               settings.syncEnabled = v;
@@ -163,7 +165,6 @@ class _SyncSectionState extends State<SyncSection> {
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.devices),
             title: const Text('设备管理'),
-            subtitle: const Text('查看 / 改名 / 吊销'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute<void>(builder: (_) => const DevicesScreen()),
@@ -175,7 +176,7 @@ class _SyncSectionState extends State<SyncSection> {
   }
 }
 
-/// 设置同步范围：总开关 + 播放偏好 / 媒体库规则两个类目。
+/// 设置同步范围：总开关 + 播放偏好 / 媒体库规则 / 界面偏好 / 主题外观。
 ///
 /// 类目开关本身是设备本地项，不参与同步；类目关闭时该设备不推也不应用该类设置。
 class SettingsSyncDialog extends StatefulWidget {
@@ -205,7 +206,7 @@ class _SettingsSyncDialogState extends State<SettingsSyncDialog> {
               if (!_settings.syncEnabled)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 8),
-                  child: Text('多设备同步当前关闭，开启后才会上传设置。',
+                  child: Text('多设备同步未开启',
                       style: TextStyle(
                           fontSize: 12,
                           color: cs.onSurface.withValues(alpha: 0.6))),
@@ -213,8 +214,7 @@ class _SettingsSyncDialogState extends State<SettingsSyncDialog> {
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('同步设置'),
-                subtitle: const Text(
-                    '把播放偏好、媒体库规则、界面偏好和主题外观同步到其它设备；关闭后各设备保留自己的设置'),
+                subtitle: const Text('选择哪些设置跟随账号同步'),
                 value: _settings.syncSettingsEnabled,
                 onChanged: (v) =>
                     setState(() => _settings.syncSettingsEnabled = v),
@@ -222,7 +222,6 @@ class _SettingsSyncDialogState extends State<SettingsSyncDialog> {
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('播放偏好'),
-                subtitle: const Text('播放模式、随机权重、淡入淡出、睡眠定时、歌词追焦'),
                 value: _settings.syncSettingsPlayback,
                 onChanged: enabled
                     ? (v) => setState(() => _settings.syncSettingsPlayback = v)
@@ -231,7 +230,6 @@ class _SettingsSyncDialogState extends State<SettingsSyncDialog> {
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('媒体库规则'),
-                subtitle: const Text('扫描过滤、在线来源与保存方式、歌手解析、备用源同步'),
                 value: _settings.syncSettingsLibrary,
                 onChanged: enabled
                     ? (v) => setState(() => _settings.syncSettingsLibrary = v)
@@ -240,7 +238,6 @@ class _SettingsSyncDialogState extends State<SettingsSyncDialog> {
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('界面偏好'),
-                subtitle: const Text('标题格式、简繁转换、切换动画、播放页权重/控件、长按组头'),
                 value: _settings.syncSettingsInterface,
                 onChanged: enabled
                     ? (v) => setState(() => _settings.syncSettingsInterface = v)
@@ -249,7 +246,6 @@ class _SettingsSyncDialogState extends State<SettingsSyncDialog> {
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('主题外观'),
-                subtitle: const Text('明暗模式、强调色、背景色'),
                 value: _settings.syncSettingsTheme,
                 onChanged: enabled
                     ? (v) => setState(() => _settings.syncSettingsTheme = v)
@@ -257,7 +253,7 @@ class _SettingsSyncDialogState extends State<SettingsSyncDialog> {
               ),
               const Divider(),
               Text(
-                '缓存、音量 / 均衡器、网络与安全、通知、字体、快捷键等始终保留在本机。',
+                '缓存、音量、网络和快捷键只在本机生效。',
                 style: TextStyle(
                     fontSize: 12, color: cs.onSurface.withValues(alpha: 0.6)),
               ),

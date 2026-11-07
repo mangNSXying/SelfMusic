@@ -72,7 +72,7 @@ void main() {
     await tester.pump();
 
     expect(find.text('同步设置'), findsOneWidget);
-    expect(find.textContaining('各设备保留自己的设置'), findsOneWidget);
+    expect(find.text('未开启'), findsOneWidget);
 
     await tester.tap(find.text('同步设置'));
     await tester.pumpAndSettle();

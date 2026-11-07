@@ -85,11 +85,10 @@ void main() {
     expect(find.text('界面字体'), findsOneWidget);
     expect(find.text('系统默认'), findsOneWidget);
     expect(find.text('导入字体文件'), findsOneWidget);
-    expect(find.textContaining('TTC'), findsOneWidget);
     expect(find.text('更换字体'), findsNothing);
     expect(find.text('恢复系统字体'), findsNothing);
     expect(find.text('歌词行数'), findsOneWidget);
-    expect(find.text('不限制（沿用当前字号）'), findsOneWidget);
+    expect(find.text('不限制'), findsOneWidget);
   });
 
   testWidgets('已导入字体时显示当前字体、更换与恢复入口', (tester) async {
@@ -112,6 +111,6 @@ void main() {
     expect(find.text('更换字体'), findsOneWidget);
     expect(find.text('恢复系统字体'), findsOneWidget);
     expect(find.textContaining('预览：'), findsOneWidget);
-    expect(find.textContaining('屏幕最多约 10 行'), findsOneWidget);
+    expect(find.text('10 行'), findsOneWidget);
   });
 }

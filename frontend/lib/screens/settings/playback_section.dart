@@ -67,7 +67,7 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
             '断点续播',
             SwitchListTile(
               title: const Text('断点续播'),
-              subtitle: const Text('启动时恢复上次队列与位置（恢复为暂停态，不自动播放）'),
+              subtitle: const Text('启动时恢复上次位置，保持暂停'),
               value: _settings.resumeOnStartup,
               onChanged: (v) => setState(() => _settings.resumeOnStartup = v),
             ),
@@ -76,7 +76,6 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
             '预载下一首',
             SwitchListTile(
               title: const Text('预载下一首'),
-              subtitle: const Text('确定下一首后进行预载'),
               value: _settings.preloadNext,
               onChanged: (v) => setState(() => _settings.preloadNext = v),
             ),
@@ -85,7 +84,7 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
             '定时行为',
             SwitchListTile(
               title: const Text('定时行为'),
-              subtitle: const Text('到点不中断当前歌曲，放完这曲再暂停（弹窗内可单独调整）'),
+              subtitle: const Text('播完当前曲再暂停'),
               value: _settings.sleepPlayThroughDefault,
               onChanged: (v) =>
                   setState(() => _settings.sleepPlayThroughDefault = v),
@@ -96,8 +95,7 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
             ListTile(
               leading: const Icon(Icons.lyrics_outlined),
               title: const Text('歌词追焦'),
-              subtitle:
-                  Text('拖动歌词后 ${_settings.lyricFocusIdleSec} 秒无操作恢复自动追焦并回中当前行'),
+              subtitle: Text('拖动后 ${_settings.lyricFocusIdleSec} 秒回到当前行'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _pickLyricIdle(context),
             ),
@@ -106,7 +104,6 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
             '屏幕常亮',
             SwitchListTile(
               title: const Text('屏幕常亮'),
-              subtitle: const Text('打开播放页期间不熄屏；可限定仅在指定蓝牙设备连接时生效'),
               value: _settings.playerKeepScreenOn,
               onChanged: (v) =>
                   setState(() => _settings.playerKeepScreenOn = v),
@@ -126,7 +123,7 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
             '加权随机',
             SwitchListTile(
               title: const Text('加权随机'),
-              subtitle: const Text('关闭后为普通随机：按深层列表不放回抽取，一轮内不重复，播完自动换轮'),
+              subtitle: const Text('按权重抽歌；关闭为普通随机'),
               value: _settings.weightedRandomEnabled,
               onChanged: (v) {
                 setState(() => _settings.weightedRandomEnabled = v);
@@ -140,7 +137,7 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
               leading: const Icon(Icons.waves),
               title: const Text('次数冷却'),
               subtitle:
-                  Text(_drawCooldownSummary(_settings.weightedDrawCooldown)),
+                  Text(_drawCooldownValue(_settings.weightedDrawCooldown)),
               trailing: const Icon(Icons.chevron_right),
               enabled: _settings.weightedRandomEnabled,
               onTap: _settings.weightedRandomEnabled ? _pickDrawCooldown : null,
@@ -152,7 +149,7 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
               leading: const Icon(Icons.timeline),
               title: const Text('曲数冷却'),
               subtitle: Text(
-                  _countCooldownSummary(_settings.weightedCountCooldownRatio)),
+                  _countCooldownValue(_settings.weightedCountCooldownRatio)),
               trailing: const Icon(Icons.chevron_right),
               enabled: _settings.weightedRandomEnabled,
               onTap:
@@ -163,7 +160,7 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
             '时长削弱',
             SwitchListTile(
               title: const Text('时长削弱'),
-              subtitle: const Text('开启后加权随机按歌曲时长乘削弱系数（长歌权重降低；仅加权随机开启时生效）'),
+              subtitle: const Text('长歌权重低（仅加权随机）'),
               value: _settings.weightCurveEnabled,
               onChanged: (v) =>
                   setState(() => _settings.weightCurveEnabled = v),
@@ -186,8 +183,6 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
             '淡入淡出',
             SwitchListTile(
               title: const Text('淡入淡出'),
-              subtitle: Text(
-                  '播放淡入、暂停淡出${_settings.fadeEnabled ? '，时长 ${(_settings.fadeDurationMs / 1000).toStringAsFixed(1)}s' : ''}'),
               value: _settings.fadeEnabled,
               onChanged: (v) => setState(() => _settings.fadeEnabled = v),
             ),
@@ -221,7 +216,6 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
             const ListTile(
               leading: Icon(Icons.volume_up),
               title: Text('应用音量'),
-              subtitle: Text('独立于系统音量的软件增益；0% 静音但播放继续'),
             ),
           ),
           Padding(
@@ -266,11 +260,19 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
           _anchor('均衡器', _buildEqualizer(context, eqBands, eqPreampDb)),
           const Divider(height: 32),
           const SettingsSectionHeader('播放保护'),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text('以下功能仅安卓 / 鸿蒙生效',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: 0.6))),
+          ),
           _anchor(
             '焦点自动暂停',
             SwitchListTile(
               title: const Text('焦点自动暂停'),
-              subtitle: const Text('通话等音频焦点抢占时自动暂停，结束后恢复（安卓/鸿蒙生效）'),
               value: _settings.audioFocusEnabled,
               onChanged: (v) {
                 setState(() => _settings.audioFocusEnabled = v);
@@ -282,7 +284,6 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
             '静音暂停',
             SwitchListTile(
               title: const Text('静音暂停'),
-              subtitle: const Text('媒体音量归零时自动暂停（安卓/鸿蒙生效）'),
               value: _settings.pauseOnZeroVolume,
               onChanged: (v) {
                 setState(() => _settings.pauseOnZeroVolume = v);
@@ -294,7 +295,6 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
             '断连暂停',
             SwitchListTile(
               title: const Text('断连暂停'),
-              subtitle: const Text('当前播放设备（如蓝牙音箱）断开时自动暂停（安卓/鸿蒙生效）'),
               value: _settings.pauseOnDeviceDisconnect,
               onChanged: (v) {
                 setState(() => _settings.pauseOnDeviceDisconnect = v);
@@ -324,9 +324,6 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
     }
     final switchTile = SwitchListTile(
       title: const Text('均衡器'),
-      subtitle: Text(enabled
-          ? '10 段频段增益（Android / Windows / Linux）'
-          : '10 段频段增益；开启后按平台生效'),
       value: enabled,
       onChanged: (v) {
         context.read<PlayerProvider>().setEqualizerEnabled(v);
@@ -552,17 +549,19 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
 
   String _modeSubtitle(PlayMode m) {
     if (m != PlayMode.weighted) return _modeLabel(m);
-    return _settings.weightedRandomEnabled ? '随机播放 · 加权' : '随机播放 · 普通（不放回）';
+    return _settings.weightedRandomEnabled ? '随机（加权）' : '随机（不放回）';
   }
+
+  static String _drawCooldownValue(WeightedDrawCooldown cd) =>
+      cd == WeightedDrawCooldown.off ? '关' : cd.label;
 
   static String _drawCooldownSummary(WeightedDrawCooldown cd) => cd ==
           WeightedDrawCooldown.off
       ? '关（不启用次数冷却）'
       : '${cd.label}（factor>1.0 抛弃 ${cd.highLimit} 次 / 其余抛弃 ${cd.lowLimit} 次）';
 
-  static String _countCooldownSummary(double ratio) => ratio <= 0
-      ? '关（不启用曲数冷却）'
-      : '列表长度 × ${(ratio * 100).toStringAsFixed(0)}%（窗口内不参与随机）';
+  static String _countCooldownValue(double ratio) =>
+      ratio <= 0 ? '关' : '${(ratio * 100).toStringAsFixed(0)}%';
 
   Future<void> _pickDrawCooldown() async {
     final current = _settings.weightedDrawCooldown;
@@ -601,8 +600,8 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
   }
 
   static String _weightCurveSummary(List<Map<String, Object?>> segs) {
-    if (segs.isEmpty) return '未配置（不削弱）';
-    return '${segs.length} 段区间；按时长乘系数抽样';
+    if (segs.isEmpty) return '未设置';
+    return '${segs.length} 段';
   }
 
   static String _segmentLabel(Map<String, Object?> m) {
@@ -728,9 +727,8 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
   /// 常亮限定设备展示名（未限定=全局常亮）。
   String _keepAwakeDeviceLabel() {
     final ds = btDevicesFromSetting(_settings.keepScreenOnDevice);
-    if (ds.isEmpty) return '不限定（打开播放页即常亮）';
-    if (ds.length == 1) return '${ds.first.name}（仅连接时生效）';
-    return '${ds.map((d) => d.name).join('、')}（任一连接时生效）';
+    if (ds.isEmpty) return '所有设备';
+    return '仅 ${ds.map((d) => d.name).join('、')}';
   }
 
   Future<void> _pickKeepAwakeDevice() async {

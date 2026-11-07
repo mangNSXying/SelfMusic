@@ -87,7 +87,7 @@ class _CacheDirTileState extends State<CacheDirTile> {
       leading: const Icon(Icons.folder_open),
       title: const Text('缓存目录'),
       subtitle: Text(
-          '${index.cacheDir}${index.usingDefaultCacheDir ? '（默认）' : '（自定义）'}\n已缓存 $count 首 · 占用 ${CacheDirTile._fmtBytes(index.cacheTotalBytes())}（含预载）'),
+          '${index.cacheDir}${index.usingDefaultCacheDir ? '（默认）' : '（自定义）'}\n已缓存 $count 首 · 占用 ${CacheDirTile._fmtBytes(index.cacheTotalBytes())}'),
       isThreeLine: true,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -131,7 +131,6 @@ class TranscodeSection extends StatefulWidget {
 
 class _TranscodeSectionState extends State<TranscodeSection> {
   bool? _ffmpegAvailable;
-  String? _version;
 
   Widget _anchor(String label, Widget child) => SettingsFocusAnchor(
         id: settingsAnchorId(SettingsItem.network, label),
@@ -158,7 +157,6 @@ class _TranscodeSectionState extends State<TranscodeSection> {
       if (!mounted) return;
       setState(() {
         _ffmpegAvailable = (meta?['ffmpegAvailable'] as bool?) ?? false;
-        _version = meta?['version']?.toString();
       });
     } catch (_) {
       if (mounted) setState(() => _ffmpegAvailable = false);
@@ -180,12 +178,7 @@ class _TranscodeSectionState extends State<TranscodeSection> {
                 .titleMedium
                 ?.copyWith(fontWeight: FontWeight.w600)),
         const SizedBox(height: 4),
-        Text(
-            unknown
-                ? '播放源设为代理生效；正在探测服务端能力…'
-                : canUse
-                    ? '播放源设为代理生效；（${_version == null ? '' : ' · 服务端 $_version'}）'
-                    : '服务端不可用或无 ffmpeg；播放自动走直连原文件',
+        Text(unknown || canUse ? '在播放源中选择代理后生效' : '服务端暂不可用，将直接播放原文件',
             style: Theme.of(context)
                 .textTheme
                 .bodySmall
@@ -195,7 +188,7 @@ class _TranscodeSectionState extends State<TranscodeSection> {
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('转码省流'),
-            subtitle: const Text('失败回落直连'),
+            subtitle: const Text('省流量；失败时自动播放原文件'),
             value: settings.transcodeEnabled && canUse,
             onChanged: !canUse
                 ? null
@@ -225,7 +218,7 @@ class _TranscodeSectionState extends State<TranscodeSection> {
           ),
         ),
         const SizedBox(height: 8),
-        Text('响度均衡（需开启转码）',
+        Text('统一不同歌曲的音量（需开启转码）',
             style: Theme.of(context)
                 .textTheme
                 .bodySmall
@@ -358,12 +351,6 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
             ],
           ),
         ),
-        const SizedBox(height: 4),
-        Text('体积上限与预载共用；首数上限只算离线缓存',
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
         const SizedBox(height: 8),
         Text('上限来源',
             style: TextStyle(
@@ -399,9 +386,8 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
             padding: const EdgeInsets.only(top: 4),
             child: Text(
               _settings.serverCacheMaxBytes == null
-                  ? '尚未同步到服务端建议值（点右上同步）'
-                  : '服务端建议：${_labelBytes(_settings.serverCacheMaxBytes!)} · ${_settings.serverCacheSongLimit ?? _settings.cacheSongLimit} 首'
-                      '${_serverReachable ? '' : '（离线，回退显示上次镜像）'}',
+                  ? '尚未获取'
+                  : '服务端建议：${_labelBytes(_settings.serverCacheMaxBytes!)} · ${_settings.serverCacheSongLimit ?? _settings.cacheSongLimit} 首',
               style: Theme.of(context)
                   .textTheme
                   .bodySmall
@@ -411,7 +397,7 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
         Padding(
           padding: const EdgeInsets.only(top: 4),
           child: Text(
-              '当前生效：${_labelBytes(_settings.effectiveCacheMaxBytes)} · 离线缓存 ${_settings.effectiveCacheSongLimit} 首',
+              '当前：${_labelBytes(_settings.effectiveCacheMaxBytes)} · ${_settings.effectiveCacheSongLimit} 首',
               style: Theme.of(context)
                   .textTheme
                   .bodySmall

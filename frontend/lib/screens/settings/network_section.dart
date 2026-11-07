@@ -46,7 +46,7 @@ class _NetworkSectionState extends State<NetworkSection> {
 
   /// 配对服务端副标题：配对态 + 同一份配对密钥（与配对页一致）。
   String _pairingSubtitle(bool paired) {
-    final state = paired ? '已配对' : '未配对（首次启动不强制，直连模式仍可用）';
+    final state = paired ? '已配对' : '未配对';
     if (_pairingToken.isEmpty) return state;
     final t = _pairingToken;
     final masked = t.length <= 8
@@ -117,7 +117,7 @@ class _NetworkSectionState extends State<NetworkSection> {
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('允许 HTTP'),
-              subtitle: const Text('默认关闭，屏蔽 http:// 地址'),
+              subtitle: const Text('默认关闭；开启后才能连接 http://'),
               value: directSettings.allowInsecureHttp,
               onChanged: (v) {
                 directSettings.allowInsecureHttp = v;
@@ -130,8 +130,7 @@ class _NetworkSectionState extends State<NetworkSection> {
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('信任自签名'),
-              subtitle: const Text(
-                  '默认关闭；开启后 API 与直连 WebDAV 的扫描/探测跳过证书校验（鸿蒙播放器不校验证书，自签可直接播放）'),
+              subtitle: const Text('默认关闭；仅自签名证书需要'),
               value: directSettings.allowSelfSigned,
               onChanged: (v) {
                 directSettings.allowSelfSigned = v;

@@ -4,7 +4,6 @@ import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../../data/local/app_settings.dart';
-import '../../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
 import 'android_equalizer_backend.dart';
 import 'equalizer_backend.dart';
 import 'equalizer_types.dart';
@@ -47,10 +46,7 @@ class EqualizerService {
   static bool get supportedOnThisPlatform =>
       !kIsWeb && (Platform.isAndroid || Platform.isWindows || Platform.isLinux);
 
-  static String get unsupportedNote {
-    if (isOhos) return '鸿蒙 AVPlayer 暂不支持应用级均衡器';
-    return '当前平台暂不支持应用级均衡器';
-  }
+  static String get unsupportedNote => '当前平台不支持';
 
   EqualizerCapabilities get capabilities => _backend.capabilities;
 

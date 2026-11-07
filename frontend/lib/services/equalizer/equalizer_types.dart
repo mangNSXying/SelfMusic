@@ -169,7 +169,7 @@ class EqualizerCapabilities {
     frequencies: [],
     minDb: kEqMinDb,
     maxDb: kEqMaxDb,
-    note: '当前平台暂不支持应用级均衡器',
+    note: '当前平台不支持',
   );
 
   static const EqualizerCapabilities mpv = EqualizerCapabilities(

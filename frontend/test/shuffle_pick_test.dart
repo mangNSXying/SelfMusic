@@ -228,7 +228,7 @@ void main() {
       ));
       await tester.pumpAndSettle();
 
-      expect(find.text('随机播放 · 加权'), findsOneWidget);
+      expect(find.text('随机（加权）'), findsOneWidget);
       final sw = find.widgetWithText(SwitchListTile, '加权随机');
       expect(tester.widget<SwitchListTile>(sw).value, isTrue,
           reason: '加权随机默认开启');
@@ -244,7 +244,7 @@ void main() {
       await tester.pump();
 
       expect(settings.weightedRandomEnabled, isFalse);
-      expect(find.text('随机播放 · 普通（不放回）'), findsOneWidget);
+      expect(find.text('随机（不放回）'), findsOneWidget);
       for (final title in ['次数冷却', '曲数冷却']) {
         final tile = cooldown(title);
         expect(tile.enabled, isFalse, reason: '$title 应置灰');

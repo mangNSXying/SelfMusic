@@ -59,7 +59,6 @@ class _StorageSectionState extends State<StorageSection> {
             '收藏自动缓存',
             SwitchListTile(
               title: const Text('收藏自动缓存'),
-              subtitle: const Text('歌曲离线可用'),
               value: _settings.autoCacheFavorites,
               onChanged: (v) {
                 setState(() => _settings.autoCacheFavorites = v);
@@ -86,9 +85,8 @@ class _StorageSectionState extends State<StorageSection> {
             '压缩画质',
             SwitchListTile(
               title: const Text('压缩画质'),
-              subtitle: Text(_settings.compressCoverImage
-                  ? '开：用 JPEG 缩略图，后台创建缩略图可能会导致发热'
-                  : '关：（推荐）直接显示原图'),
+              subtitle:
+                  Text(_settings.compressCoverImage ? '省空间，可能发热' : '原图（推荐）'),
               value: _settings.compressCoverImage,
               onChanged: (v) async {
                 setState(() => _settings.compressCoverImage = v);
@@ -104,8 +102,6 @@ class _StorageSectionState extends State<StorageSection> {
             ListTile(
               leading: const Icon(Icons.cleaning_services_outlined),
               title: const Text('清理缩略图'),
-              subtitle:
-                  const Text('删除已生成的缩略图文件（*.thumb.jpg），显示即回原图；开关关闭时也可清理省磁盘'),
               trailing: _clearingThumbs
                   ? const InlineSpinner(size: 24)
                   : const Icon(Icons.chevron_right),

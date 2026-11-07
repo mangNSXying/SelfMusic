@@ -29,7 +29,6 @@ class BackupMigrationTile extends StatelessWidget {
     return ListTile(
       leading: const Icon(Icons.backup_outlined),
       title: const Text('备份与迁移'),
-      subtitle: const Text('导出 / 导入设置与歌单 · 选择本机备份恢复'),
       trailing: const Icon(Icons.chevron_right),
       onTap: () => showDialog<void>(
         context: context,

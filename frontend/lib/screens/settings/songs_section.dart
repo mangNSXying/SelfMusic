@@ -42,8 +42,6 @@ class _SongsSettingsState extends State<SongsSection> {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(vertical: 12),
       child: Column(
@@ -55,7 +53,7 @@ class _SongsSettingsState extends State<SongsSection> {
             ListTile(
               title: const Text('时长过滤'),
               subtitle: Text(_settings.scanIgnoreMinDurationSec > 0
-                  ? '忽略短于 ${_settings.scanIgnoreMinDurationSec} 秒的音频（获取到时长信息后生效）'
+                  ? '${_settings.scanIgnoreMinDurationSec} 秒'
                   : '关闭'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _editIgnoreDuration(context),
@@ -66,7 +64,7 @@ class _SongsSettingsState extends State<SongsSection> {
             ListTile(
               title: const Text('大小过滤'),
               subtitle: Text(_settings.scanIgnoreMinSizeBytes > 0
-                  ? '忽略小于 ${_labelBytes(_settings.scanIgnoreMinSizeBytes)} 的音频'
+                  ? _labelBytes(_settings.scanIgnoreMinSizeBytes)
                   : '关闭'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _editIgnoreBytes(context),
@@ -76,7 +74,7 @@ class _SongsSettingsState extends State<SongsSection> {
             '仅 Wi-Fi',
             SwitchListTile(
               title: const Text('仅 Wi-Fi'),
-              subtitle: const Text('移动端直连扫描仅在 Wi-Fi 下进行（桌面忽略）'),
+              subtitle: const Text('手机只在 Wi-Fi 下扫描'),
               value: _settings.scanWifiOnly,
               onChanged: (v) {
                 setState(() => _settings.scanWifiOnly = v);
@@ -88,8 +86,8 @@ class _SongsSettingsState extends State<SongsSection> {
             ListTile(
               title: const Text('扫描间隔'),
               subtitle: Text(_settings.scanAutoIntervalMin > 0
-                  ? '每 ${_settings.scanAutoIntervalMin} 分钟增量扫描一次（本地目录变化也会立即触发）'
-                  : '关闭（手动扫描 / 打开源页触发）'),
+                  ? '每 ${_settings.scanAutoIntervalMin} 分钟'
+                  : '关闭'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _editScanInterval(context),
             ),
@@ -101,8 +99,7 @@ class _SongsSettingsState extends State<SongsSection> {
             '歌词来源',
             ListTile(
               title: const Text('歌词来源'),
-              subtitle: Text(
-                  '${_settings.onlineMetaLyricSource.label}（无结果时手动换源，无自动串源）'),
+              subtitle: Text(_settings.onlineMetaLyricSource.label),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _pickLyricSource(context),
             ),
@@ -111,8 +108,7 @@ class _SongsSettingsState extends State<SongsSection> {
             '封面来源',
             ListTile(
               title: const Text('封面来源'),
-              subtitle: Text(
-                  '${_settings.onlineMetaCoverSource.label}（无结果时手动换源，无自动串源）'),
+              subtitle: Text(_settings.onlineMetaCoverSource.label),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _pickCoverSource(context),
             ),
@@ -139,29 +135,12 @@ class _SongsSettingsState extends State<SongsSection> {
               ),
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Text(
-              switch (_settings.onlineMetaSaveMode) {
-                OnlineMetaSaveMode.sidecar =>
-                  '歌词/封面必写应用缓存，并覆盖写回源目录（歌词 <stem>.lrc，封面 cover.jpg 专辑级：同目录共享，杂烩目录后写盖先写）。远端经上传口直写、不经代理；服务端歌/鸿蒙本地自动跳过。封面应用缓存 covers/ 恒保留。',
-                OnlineMetaSaveMode.embed =>
-                  '歌词/封面必写应用缓存；仅在“修改信息”窗口点击保存时，才把缓存中的歌词/封面写入歌曲文件标签（mp3/flac/wav/aiff/m4a），验签通过后删同名 sidecar；其它入口（在线获取/封面/歌词子窗）暂只存缓存。远端源需整首下载＋上传（流量较大，建议 Wi-Fi）；服务端歌/鸿蒙本地/源不可写/格式不支持时自动仅存应用缓存。同曲在播会在写盘前自动暂停，完成后恢复；嵌入过程中请勿退出应用。',
-                OnlineMetaSaveMode.appCache =>
-                  '歌词写应用内 song_lyrics，封面写 covers/（全源安全，不动用户文件）。',
-              },
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
-                  ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6)),
-            ),
-          ),
           _anchor(
             '歌词目录',
             ListTile(
               title: const Text('歌词目录'),
               subtitle: Text(_settings.onlineMetaLyricDir.isEmpty
-                  ? '未设置（写歌曲同目录；远端恒写歌曲同目录）'
+                  ? '默认'
                   : _settings.onlineMetaLyricDir),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
@@ -194,7 +173,7 @@ class _SongsSettingsState extends State<SongsSection> {
             '自动解析',
             SwitchListTile(
               title: const Text('自动解析'),
-              subtitle: const Text('向 MusicBrainz 查询歌手身份，关闭后仅保留本地归一去重'),
+              subtitle: const Text('自动补全歌手信息'),
               value: _settings.artistResolveAuto,
               onChanged: (v) {
                 setState(() => _settings.artistResolveAuto = v);
@@ -208,7 +187,6 @@ class _SongsSettingsState extends State<SongsSection> {
             '重试解析',
             ListTile(
               title: const Text('重试解析'),
-              subtitle: const Text('重新解析 未命中/待确认 的歌手'),
               trailing: const Icon(Icons.refresh),
               onTap: () async {
                 await context.read<ArtistResolver>().retryAll();
@@ -222,7 +200,6 @@ class _SongsSettingsState extends State<SongsSection> {
             '强制解析',
             ListTile(
               title: const Text('强制解析'),
-              subtitle: const Text('强制解析所有歌手（有限流，需等待）'),
               trailing: const Icon(Icons.playlist_add_check),
               onTap: () async {
                 final ok = await showDialog<bool>(
@@ -253,7 +230,7 @@ class _SongsSettingsState extends State<SongsSection> {
             '备用源同步',
             SwitchListTile(
               title: const Text('备用源同步'),
-              subtitle: const Text('主源播放成功后，把当前曲复制到缺失该歌的备用源（需备用读写权限）'),
+              subtitle: const Text('备用源缺歌时自动补一份'),
               value: _settings.fallbackAutoRepair,
               onChanged: (v) {
                 setState(() => _settings.fallbackAutoRepair = v);

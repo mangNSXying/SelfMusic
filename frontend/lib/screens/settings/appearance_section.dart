@@ -108,10 +108,6 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
               onChanged: theme.setThemeMode,
             ),
           ),
-          const SizedBox(height: 8),
-          Text(theme.themeMode == ThemeMode.system ? '随系统自动切换明暗' : '不跟随系统',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: colorScheme.onSurface.withValues(alpha: 0.6))),
           const Divider(),
           const SizedBox(height: 8),
 
@@ -245,10 +241,6 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
               style: Theme.of(context).textTheme.titleMedium,
             ),
           ],
-          const SizedBox(height: 6),
-          Text('支持 TTF / OTF / TTC；TTC 可选择字面，仅本机生效；缺字时由系统字体回退',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: colorScheme.onSurface.withValues(alpha: 0.6))),
           const SizedBox(height: 4),
           _anchor(
             '歌词行数',
@@ -257,8 +249,8 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
               leading: const Icon(Icons.format_line_spacing),
               title: const Text('歌词行数'),
               subtitle: Text(_settings.lyricMaxLines == 0
-                  ? '不限制（沿用当前字号）'
-                  : '自动放大字号，屏幕最多约 ${_settings.lyricMaxLines} 行（译文/长句更少）'),
+                  ? '不限制'
+                  : '${_settings.lyricMaxLines} 行'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _pickLyricMaxLines(context),
             ),
@@ -274,8 +266,7 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
               contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.title),
               title: const Text('标题格式'),
-              subtitle: Text('当前：${_settings.songTitleFormat.label}'
-                  '（不修改存储字段）'),
+              subtitle: Text('当前：${_settings.songTitleFormat.label}'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _pickTitleFormat(context),
             ),
@@ -286,8 +277,7 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
               contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.translate),
               title: const Text('简繁转换'),
-              subtitle: Text('当前：${_settings.zhVariant.label}'
-                  '（只影响展示，不修改元数据）'),
+              subtitle: Text('当前：${_settings.zhVariant.label}'),
               trailing: _zhBusy
                   ? const InlineSpinner(size: 24)
                   : const Icon(Icons.chevron_right),
@@ -299,7 +289,6 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('播放页显示权重'),
-              subtitle: const Text('播放页展示当前歌曲喜欢 / 权重状态'),
               value: _settings.playerShowWeight,
               onChanged: (v) => setState(() => _settings.playerShowWeight = v),
             ),
@@ -311,8 +300,8 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
               leading: const Icon(Icons.timer_outlined),
               title: const Text('播放页控件隐藏'),
               subtitle: Text(_settings.playerAutoHideIdleSec > 0
-                  ? '播放页无操作 ${_settings.playerAutoHideIdleSec} 秒后自动隐藏左上返回与右上更多按钮，触摸即恢复'
-                  : '关闭（控制按钮常驻显示）'),
+                  ? '${_settings.playerAutoHideIdleSec} 秒'
+                  : '关闭'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _pickPlayerAutoHide(context),
             ),
@@ -328,7 +317,7 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
               contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.animation_outlined),
               title: const Text('切换动画'),
-              subtitle: Text('页面切换效果：${_settings.playerTransition.label}'),
+              subtitle: Text(_settings.playerTransition.label),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _pickTransition(context),
             ),
@@ -344,8 +333,8 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
               contentPadding: EdgeInsets.zero,
               title: const Text('长按组头'),
               subtitle: Text(_settings.longPressCollapseGroups
-                  ? '开：长按组头/文件夹行展开/折叠；多选使用工具条图标'
-                  : '关：长按组头/文件夹行进入多选；展开/折叠使用工具条图标'),
+                  ? '长按展开/折叠；多选用工具条'
+                  : '长按多选整组；展开/折叠用工具条'),
               value: _settings.longPressCollapseGroups,
               onChanged: (v) {
                 setState(() => _settings.longPressCollapseGroups = v);
@@ -353,12 +342,6 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
                 context.read<DirectSourceManager>().refresh();
               },
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Text('播放源逐级文件夹行支持就地展开：开时长按切换展开，关时长按选中整个子树',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurface.withValues(alpha: 0.6))),
           ),
           const SizedBox(height: 24),
         ],
