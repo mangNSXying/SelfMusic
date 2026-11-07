@@ -82,12 +82,12 @@ class _LyricDetailDialogState extends State<LyricDetailDialog> {
       return p.lines.isNotEmpty
           ? p.lines
               .map((e) => e.translation == null
-                  ? e.text
-                  : '${e.text}\n${e.translation}')
+                  ? zhDisplay(e.text)
+                  : '${zhDisplay(e.text)}\n${zhDisplay(e.translation!)}')
               .join('\n')
-          : (p.plain ?? content).trim();
+          : zhDisplay((p.plain ?? content).trim());
     } catch (_) {
-      return content.trim();
+      return zhDisplay(content.trim());
     }
   }
 

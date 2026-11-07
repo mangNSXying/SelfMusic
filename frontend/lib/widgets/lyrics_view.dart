@@ -9,6 +9,7 @@ import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
 import '../utils/lrc_parser.dart';
 import '../utils/lyric_scale.dart';
+import '../utils/zh_variant.dart';
 
 /// 歌词视图：LRC 时间轴同步滚动 + 当前行高亮（点击行跳转播放位置）；
 /// 纯文本歌词居中滚动展示；无歌词时显示空态。
@@ -154,7 +155,8 @@ class _LyricsViewState extends State<LyricsView> {
           padding: EdgeInsets.fromLTRB(
               24 * baseScale, 8 * baseScale, 24 * baseScale, 32 * baseScale),
           child: Text(
-            plain,
+            // 歌词与元数据一样：存储原文，仅展示时按简繁设置转换。
+            zhDisplay(plain),
             textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: 16 * baseScale,
@@ -261,8 +263,10 @@ class _LyricsViewState extends State<LyricsView> {
                         horizontal: 24 * scale,
                         vertical: kLyricRowVerticalPadding * scale),
                     child: _LyricRowText(
-                      text: lines[i].text,
-                      translation: lines[i].translation,
+                      text: zhDisplay(lines[i].text),
+                      translation: lines[i].translation == null
+                          ? null
+                          : zhDisplay(lines[i].translation!),
                       scale: scale,
                       mainStyle: TextStyle(
                         fontSize: (active
