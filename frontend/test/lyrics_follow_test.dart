@@ -9,6 +9,7 @@ import 'package:path_provider_platform_interface/path_provider_platform_interfac
 import 'package:provider/provider.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/player_provider.dart';
+import 'package:selfmusic/utils/zh_variant.dart';
 import 'package:selfmusic/widgets/lyrics_view.dart';
 import 'package:sqlite3/open.dart';
 
@@ -110,6 +111,50 @@ void main() {
     ));
     await tester.pump();
   }
+
+  testWidgets('歌词跟随简繁显示：逐行与译文转换', (tester) async {
+    final pos = StreamController<Duration>();
+    debugInstallZhConvertersForTest(
+      t2s: OpenccConverter.fromEntries(
+          {'傑': '杰', '倫': '伦', '藝': '艺', '術': '术'}),
+      s2t: OpenccConverter.fromEntries(
+          {'杰': '傑', '伦': '倫', '艺': '藝', '术': '術'}),
+      variant: ZhVariant.simplified,
+    );
+    addTearDown(debugResetZhForTest);
+    final player = PlayerProvider()
+      ..lyricsPositionOverride = pos.stream
+      ..debugApplyLyrics('[00:00.00]周傑倫\n[00:04.00]藝術 / 藝術');
+    await pumpLyrics(tester, player);
+
+    expect(find.text('周杰伦'), findsOneWidget);
+    // 主行 + 译文行各一个 Text。
+    expect(find.text('艺术'), findsNWidgets(2));
+
+    await pos.close();
+    player.dispose();
+  });
+
+  testWidgets('纯文本歌词跟随简繁显示', (tester) async {
+    final pos = StreamController<Duration>();
+    debugInstallZhConvertersForTest(
+      t2s: OpenccConverter.fromEntries(
+          {'傑': '杰', '倫': '伦', '藝': '艺', '術': '术'}),
+      s2t: OpenccConverter.fromEntries(
+          {'杰': '傑', '伦': '倫', '艺': '藝', '术': '術'}),
+      variant: ZhVariant.simplified,
+    );
+    addTearDown(debugResetZhForTest);
+    final player = PlayerProvider()
+      ..lyricsPositionOverride = pos.stream
+      ..debugApplyLyrics('周傑倫\n藝術');
+    await pumpLyrics(tester, player);
+
+    expect(find.text('周杰伦\n艺术'), findsOneWidget);
+
+    await pos.close();
+    player.dispose();
+  });
 
   testWidgets('歌词 scale 同步放大字号', (tester) async {
     final pos = StreamController<Duration>();
