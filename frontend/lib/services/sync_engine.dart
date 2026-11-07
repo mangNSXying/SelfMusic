@@ -86,6 +86,11 @@ class SyncEngine {
   bool _lastSettingsSyncEnabled = false;
   int lastPulledSettings = 0;
 
+  /// 主题同步外部桥（ThemeProvider）：读当前值 / 应用远端值。
+  /// 主题存 secure storage，不在 app_settings；未注入时主题类目跳过。
+  Future<String?> Function(String key)? readExternalSetting;
+  Future<bool> Function(String key, String value)? applyExternalSetting;
+
   /// 断点镜像落库后的回调：新拉到的远端断点（当前曲/进度/深层列表）需由
   /// 播放器在空闲时套用（启动补切 / 回前台 / 手动「立即同步」）。仅本轮真有
   /// 断点变更时触发一次（对标 onSongStatesApplied）。
@@ -150,6 +155,12 @@ class SyncEngine {
     }
     if (SyncableSettings.libraryKeys.contains(key)) {
       return settings.syncSettingsLibrary;
+    }
+    if (SyncableSettings.interfaceKeys.contains(key)) {
+      return settings.syncSettingsInterface;
+    }
+    if (SyncableSettings.themeKeys.contains(key)) {
+      return settings.syncSettingsTheme;
     }
     return false;
   }
@@ -897,7 +908,11 @@ class SyncEngine {
             guardedSettings++;
             continue;
           }
-          if (settings.applyRemoteSetting(key, value)) {
+          final changed = SyncableSettings.themeKeys.contains(key)
+              ? await (applyExternalSetting?.call(key, value) ??
+                  Future<bool>.value(false))
+              : settings.applyRemoteSetting(key, value);
+          if (changed) {
             _dirtySettingKeys.add(key);
             _settingsDirty = true;
             lastPulledSettings++;
@@ -932,7 +947,9 @@ class SyncEngine {
     for (final key in SyncableSettings.keys) {
       if (!_categoryEnabled(key)) continue;
       if (serverKeys.contains(key) || pendingKeys.contains(key)) continue;
-      final value = index.settingsGet(key);
+      final value = SyncableSettings.themeKeys.contains(key)
+          ? await readExternalSetting?.call(key)
+          : index.settingsGet(key);
       if (value == null) continue;
       await index.enqueueOutbox(SyncEventTypes.settingSet, {
         'key': key,
@@ -1045,11 +1062,16 @@ class SyncEngine {
       if (key is String &&
           value is String &&
           SyncableSettings.isSyncable(key) &&
-          _categoryEnabled(key) &&
-          settings.applyRemoteSetting(key, value)) {
-        perfLog('push.correction', 'setting key=$key');
-        _dirtySettingKeys.add(key);
-        _settingsDirty = true;
+          _categoryEnabled(key)) {
+        final changed = SyncableSettings.themeKeys.contains(key)
+            ? await (applyExternalSetting?.call(key, value) ??
+                Future<bool>.value(false))
+            : settings.applyRemoteSetting(key, value);
+        if (changed) {
+          perfLog('push.correction', 'setting key=$key');
+          _dirtySettingKeys.add(key);
+          _settingsDirty = true;
+        }
       }
     }
   }

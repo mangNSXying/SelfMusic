@@ -55,7 +55,7 @@ void main() {
     } catch (_) {}
   });
 
-  testWidgets('同步设置弹窗：总开关控制两个类目，关闭后回写副标题', (tester) async {
+  testWidgets('同步设置弹窗：总开关控制四个类目，关闭后回写副标题', (tester) async {
     await tester.pumpWidget(
       MultiProvider(
         providers: [
@@ -91,10 +91,26 @@ void main() {
     expect(settings.syncSettingsPlayback, isFalse);
     expect(settings.syncSettingsLibrary, isTrue);
 
+    final iface = find.widgetWithText(SwitchListTile, '界面偏好');
+    expect(tester.widget<SwitchListTile>(iface).value, isFalse);
+    expect(tester.widget<SwitchListTile>(iface).onChanged, isNotNull);
+    await tester.tap(iface);
+    await tester.pump();
+    expect(settings.syncSettingsInterface, isTrue);
+
+    final theme = find.widgetWithText(SwitchListTile, '主题外观');
+    expect(tester.widget<SwitchListTile>(theme).value, isFalse);
+    expect(tester.widget<SwitchListTile>(theme).onChanged, isNotNull);
+    await tester.tap(theme);
+    await tester.pump();
+    expect(settings.syncSettingsTheme, isTrue);
+
     await tester.tap(find.text('完成'));
     await tester.pumpAndSettle();
     expect(find.byType(SettingsSyncDialog), findsNothing);
     expect(find.textContaining('媒体库规则'), findsOneWidget);
+    expect(find.textContaining('界面偏好'), findsOneWidget);
+    expect(find.textContaining('主题外观'), findsOneWidget);
     expect(find.textContaining('播放偏好'), findsNothing);
   });
 }

@@ -76,6 +76,8 @@ class _SyncSectionState extends State<SyncSection> {
     final parts = <String>[
       if (settings.syncSettingsPlayback) '播放偏好',
       if (settings.syncSettingsLibrary) '媒体库规则',
+      if (settings.syncSettingsInterface) '界面偏好',
+      if (settings.syncSettingsTheme) '主题外观',
     ];
     return parts.isEmpty ? '已开启（未选类目）' : '已开启 · ${parts.join(' / ')}';
   }
@@ -86,6 +88,8 @@ class _SyncSectionState extends State<SyncSection> {
       settings.syncSettingsEnabled,
       settings.syncSettingsPlayback,
       settings.syncSettingsLibrary,
+      settings.syncSettingsInterface,
+      settings.syncSettingsTheme,
     );
     await showDialog<void>(
       context: context,
@@ -97,6 +101,8 @@ class _SyncSectionState extends State<SyncSection> {
       settings.syncSettingsEnabled,
       settings.syncSettingsPlayback,
       settings.syncSettingsLibrary,
+      settings.syncSettingsInterface,
+      settings.syncSettingsTheme,
     );
     if (after != before &&
         settings.syncEnabled &&
@@ -207,7 +213,8 @@ class _SettingsSyncDialogState extends State<SettingsSyncDialog> {
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('同步设置'),
-                subtitle: const Text('把播放偏好和媒体库规则同步到其它设备；关闭后各设备保留自己的设置'),
+                subtitle: const Text(
+                    '把播放偏好、媒体库规则、界面偏好和主题外观同步到其它设备；关闭后各设备保留自己的设置'),
                 value: _settings.syncSettingsEnabled,
                 onChanged: (v) =>
                     setState(() => _settings.syncSettingsEnabled = v),
@@ -228,6 +235,24 @@ class _SettingsSyncDialogState extends State<SettingsSyncDialog> {
                 value: _settings.syncSettingsLibrary,
                 onChanged: enabled
                     ? (v) => setState(() => _settings.syncSettingsLibrary = v)
+                    : null,
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('界面偏好'),
+                subtitle: const Text('标题格式、简繁转换、切换动画、播放页权重/控件、长按组头'),
+                value: _settings.syncSettingsInterface,
+                onChanged: enabled
+                    ? (v) => setState(() => _settings.syncSettingsInterface = v)
+                    : null,
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('主题外观'),
+                subtitle: const Text('明暗模式、强调色、背景色'),
+                value: _settings.syncSettingsTheme,
+                onChanged: enabled
+                    ? (v) => setState(() => _settings.syncSettingsTheme = v)
                     : null,
               ),
               const Divider(),

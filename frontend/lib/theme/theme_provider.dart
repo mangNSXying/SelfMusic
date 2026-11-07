@@ -11,14 +11,24 @@ import 'app_theme.dart';
 /// `MaterialApp` 需同时提供 `theme` 与 `darkTheme` 并在 `themeMode` 上读取本类，
 /// 系统亮度变化时由 Flutter 自动切换并重建主题相关依赖。
 class ThemeProvider extends ChangeNotifier {
-  static const _kAccent = 'theme_accent';
-  static const _kBackground = 'theme_background';
-  static const _kMode = 'theme_mode';
+  static const String syncKeyAccent = 'theme_accent';
+  static const String syncKeyBackground = 'theme_background';
+  static const String syncKeyMode = 'theme_mode';
+  static const _kAccent = syncKeyAccent;
+  static const _kBackground = syncKeyBackground;
+  static const _kMode = syncKeyMode;
+
+  /// 本地主题变更回调（SyncEngine 注入；远端应用时抑制）。
+  void Function(String key, String value)? onSettingChanged;
+  bool _suppressSync = false;
 
   final FlutterSecureStorage _storage;
   ThemeMode _mode = ThemeMode.system;
   Color _accent = AppTheme.defaultAccent;
   Color? _background;
+  bool _modeSet = false;
+  bool _accentSet = false;
+  bool _backgroundSet = false;
   String? _fontFamily;
   AppTheme? _cachedLight;
   AppTheme? _cachedDark;
@@ -84,6 +94,9 @@ class ThemeProvider extends ChangeNotifier {
       final a = await _storage.read(key: _kAccent);
       final b = await _storage.read(key: _kBackground);
       final m = await _storage.read(key: _kMode);
+      _accentSet = a != null;
+      _backgroundSet = b != null;
+      _modeSet = m != null;
       if (a != null) _accent = Color(int.parse(a));
       if (b != null) _background = Color(int.parse(b));
       switch (m) {
@@ -106,9 +119,11 @@ class ThemeProvider extends ChangeNotifier {
     await _loading;
     if (color.toARGB32() == _accent.toARGB32()) return;
     _accent = color;
+    _accentSet = true;
     _cachedLight = null;
     _cachedDark = null;
     notifyListeners();
+    _emit(syncKeyAccent, color.toARGB32().toString());
     try {
       await _storage.write(key: _kAccent, value: color.toARGB32().toString());
     } catch (e) {
@@ -118,13 +133,16 @@ class ThemeProvider extends ChangeNotifier {
 
   Future<void> setBackground(Color color) async {
     await _loading;
+    final value = color.toARGB32();
+    if (_background?.toARGB32() == value) return;
     _background = color;
+    _backgroundSet = true;
     _cachedLight = null;
     _cachedDark = null;
     notifyListeners();
+    _emit(syncKeyBackground, value.toString());
     try {
-      await _storage.write(
-          key: _kBackground, value: color.toARGB32().toString());
+      await _storage.write(key: _kBackground, value: value.toString());
     } catch (e) {
       debugPrint('persist background failed: $e');
     }
@@ -133,10 +151,13 @@ class ThemeProvider extends ChangeNotifier {
   /// 恢复基于强调色自动派生的背景（清除手动背景色）。
   Future<void> clearBackgroundOverride() async {
     await _loading;
+    if (_background == null) return;
     _background = null;
+    _backgroundSet = true;
     _cachedLight = null;
     _cachedDark = null;
     notifyListeners();
+    _emit(syncKeyBackground, '');
     try {
       await _storage.delete(key: _kBackground);
     } catch (e) {
@@ -148,12 +169,85 @@ class ThemeProvider extends ChangeNotifier {
     await _loading;
     if (mode == _mode) return;
     _mode = mode;
+    _modeSet = true;
     notifyListeners();
+    _emit(syncKeyMode, mode.name);
     try {
       await _storage.write(key: _kMode, value: mode.name);
     } catch (e) {
       debugPrint('persist mode failed: $e');
     }
+  }
+
+  void _emit(String key, String value) {
+    if (!_suppressSync) onSettingChanged?.call(key, value);
+  }
+
+  /// 设置同步：读取当前主题的协议值（背景自动=`''`）。
+  /// 未显式设置过的键返回 null——默认值不参与补种，避免新设备覆盖云端。
+  Future<String?> syncValue(String key) async {
+    await load();
+    switch (key) {
+      case syncKeyMode:
+        return _modeSet ? _mode.name : null;
+      case syncKeyAccent:
+        return _accentSet ? _accent.toARGB32().toString() : null;
+      case syncKeyBackground:
+        if (!_backgroundSet) return null;
+        return _background?.toARGB32().toString() ?? '';
+      default:
+        return null;
+    }
+  }
+
+  /// 设置同步：应用远端主题值；非法值忽略，写入时不回推。
+  Future<bool> applyRemoteSyncValue(String key, String value) async {
+    await load();
+    _suppressSync = true;
+    try {
+      switch (key) {
+        case syncKeyMode:
+          ThemeMode? mode;
+          for (final m in ThemeMode.values) {
+            if (m.name == value) {
+              mode = m;
+              break;
+            }
+          }
+          if (mode == null || mode == _mode) return false;
+          await setThemeMode(mode);
+          return true;
+        case syncKeyAccent:
+          final color = _parseColor(value);
+          if (color == null || color.toARGB32() == _accent.toARGB32()) {
+            return false;
+          }
+          await setAccent(color);
+          return true;
+        case syncKeyBackground:
+          if (value.isEmpty) {
+            if (_background == null) return false;
+            await clearBackgroundOverride();
+            return true;
+          }
+          final color = _parseColor(value);
+          if (color == null || _background?.toARGB32() == color.toARGB32()) {
+            return false;
+          }
+          await setBackground(color);
+          return true;
+        default:
+          return false;
+      }
+    } finally {
+      _suppressSync = false;
+    }
+  }
+
+  static Color? _parseColor(String value) {
+    final v = int.tryParse(value);
+    if (v == null || v < 0 || v > 0xFFFFFFFF) return null;
+    return Color(v);
   }
 
   /// 即时切换界面字体（null=平台默认）。字体文件与持久化由 CustomFontService
@@ -187,9 +281,16 @@ class ThemeProvider extends ChangeNotifier {
     _accent = AppTheme.defaultAccent;
     _background = null;
     _mode = ThemeMode.system;
+    _accentSet = true;
+    _backgroundSet = true;
+    _modeSet = true;
     _cachedLight = null;
     _cachedDark = null;
     notifyListeners();
+    // 恢复默认是显式意图：三键都推，覆盖云端旧的自定义值。
+    _emit(syncKeyAccent, _accent.toARGB32().toString());
+    _emit(syncKeyBackground, '');
+    _emit(syncKeyMode, _mode.name);
     try {
       await _storage.delete(key: _kAccent);
       await _storage.delete(key: _kBackground);

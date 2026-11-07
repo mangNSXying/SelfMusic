@@ -3,7 +3,7 @@ package com.selfmusic.backend.sync;
 import java.util.Set;
 
 /**
- * 设置同步白名单（v1：播放偏好 + 媒体库规则）。
+ * 设置同步白名单（v1：播放偏好 + 媒体库规则；v2：界面偏好 + 主题外观）。
  *
  * <p>与客户端 {@code SyncableSettings} 保持同一键集合。服务端只接受这些键，
  * 缓存/网络/音频设备/快捷键等设备本地项一律拒绝，避免凭据或本机路径上行。</p>
@@ -34,7 +34,18 @@ public final class SyncableSettings {
             "online_meta_cover_source",
             "online_meta_save_mode",
             "artist_resolve_auto",
-            "fallback_auto_repair"
+            "fallback_auto_repair",
+            // 界面偏好（v2）
+            "song_title_format",
+            "zh_variant",
+            "player_transition",
+            "player_show_weight",
+            "player_auto_hide_idle_sec",
+            "long_press_collapse_groups",
+            // 主题外观（v2，客户端经 ThemeProvider 桥接）
+            "theme_mode",
+            "theme_accent",
+            "theme_background"
     );
 
     public static boolean isSyncable(String key) {

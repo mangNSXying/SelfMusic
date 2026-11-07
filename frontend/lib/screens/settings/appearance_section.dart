@@ -30,7 +30,6 @@ class AppearanceSection extends StatefulWidget {
 }
 
 class _AppearanceSettingsState extends State<AppearanceSection> {
-  late PlayerTransition _transition;
   late AppSettings _settings;
   bool _fontBusy = false;
   bool _zhBusy = false;
@@ -38,9 +37,7 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final s = context.read<DirectSourceManager>().settings;
-    _transition = s.playerTransition;
-    _settings = s;
+    _settings = context.read<DirectSourceManager>().settings;
   }
 
   Widget _anchor(String label, Widget child) => SettingsFocusAnchor(
@@ -331,7 +328,7 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
               contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.animation_outlined),
               title: const Text('切换动画'),
-              subtitle: Text('页面切换效果：${_transition.label}'),
+              subtitle: Text('页面切换效果：${_settings.playerTransition.label}'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _pickTransition(context),
             ),
@@ -530,19 +527,20 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
   }
 
   Future<void> _pickTransition(BuildContext context) async {
+    final current = _settings.playerTransition;
     final picked = await showSingleChoiceDialog<PlayerTransition>(
       context: context,
       title: '页面切换动画',
       values: PlayerTransition.values,
-      current: _transition,
+      current: current,
       labelOf: (t) => t.label,
       asRadio: true,
     );
-    if (picked == null || picked == _transition || !context.mounted) return;
-    context.read<DirectSourceManager>().settings.playerTransition = picked;
+    if (picked == null || picked == current || !context.mounted) return;
+    _settings.playerTransition = picked;
     // 通知全局监听者（根路由切换器）即时生效。
     context.read<DirectSourceManager>().refresh();
-    setState(() => _transition = picked);
+    setState(() {});
   }
 
   /// 标题显示格式选择（从 设置>歌曲 迁入 设置>界面，改进.txt UI4）。

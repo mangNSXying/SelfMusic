@@ -167,6 +167,12 @@ class AppSettings {
   /// 设置同步·媒体库规则（设备本地类目开关，默认开）。
   static const String kSyncSettingsLibrary = 'sync_settings_library';
 
+  /// 设置同步·界面偏好（设备本地类目开关，默认关；v2）。
+  static const String kSyncSettingsInterface = 'sync_settings_interface';
+
+  /// 设置同步·主题外观（设备本地类目开关，默认关；v2，经 ThemeProvider 桥接）。
+  static const String kSyncSettingsTheme = 'sync_settings_theme';
+
   /// 上次同步成功时间（ISO-8601，网络分区展示用）。
   static const String kLastSyncAt = 'last_sync_at';
 
@@ -473,6 +479,26 @@ class AppSettings {
         artistResolveAuto = value == '1';
       } else if (key == kFallbackAutoRepair) {
         fallbackAutoRepair = value == '1';
+      } else if (key == kSongTitleFormat) {
+        final v = _enumByName(SongTitleFormat.values, value);
+        if (v == null) return false;
+        songTitleFormat = v;
+      } else if (key == kZhVariant) {
+        final v = _enumByName(ZhVariant.values, value);
+        if (v == null) return false;
+        zhVariant = v;
+      } else if (key == kPlayerTransition) {
+        final v = _enumByName(PlayerTransition.values, value);
+        if (v == null) return false;
+        playerTransition = v;
+      } else if (key == kPlayerShowWeight) {
+        playerShowWeight = value == '1';
+      } else if (key == kPlayerAutoHideIdleSec) {
+        final n = int.tryParse(value);
+        if (n == null || !playerAutoHideIdleOptions.contains(n)) return false;
+        playerAutoHideIdleSec = n;
+      } else if (key == kLongPressCollapseGroups) {
+        longPressCollapseGroups = value == '1';
       } else {
         return false;
       }
@@ -602,6 +628,18 @@ class AppSettings {
   set syncSettingsLibrary(bool v) =>
       index.settingsSet(kSyncSettingsLibrary, v ? '1' : '0');
 
+  /// 设置同步·界面偏好（默认关；设备本地类目开关）。
+  bool get syncSettingsInterface =>
+      (index.settingsGet(kSyncSettingsInterface) ?? '0') == '1';
+  set syncSettingsInterface(bool v) =>
+      index.settingsSet(kSyncSettingsInterface, v ? '1' : '0');
+
+  /// 设置同步·主题外观（默认关；设备本地类目开关）。
+  bool get syncSettingsTheme =>
+      (index.settingsGet(kSyncSettingsTheme) ?? '0') == '1';
+  set syncSettingsTheme(bool v) =>
+      index.settingsSet(kSyncSettingsTheme, v ? '1' : '0');
+
   /// 上次同步成功时间（ISO-8601，空=从未成功）。
   String get lastSyncAt => index.settingsGet(kLastSyncAt) ?? '';
   set lastSyncAt(String v) => index.settingsSet(kLastSyncAt, v);
@@ -727,7 +765,7 @@ class AppSettings {
   int get playerAutoHideIdleSec =>
       int.tryParse(index.settingsGet(kPlayerAutoHideIdleSec) ?? '') ?? 5;
   set playerAutoHideIdleSec(int v) =>
-      index.settingsSet(kPlayerAutoHideIdleSec, v.toString());
+      _syncedSet(kPlayerAutoHideIdleSec, v.toString());
 
   /// 常亮限定的蓝牙设备 JSON（空=不限定）。
   String get keepScreenOnDevice => index.settingsGet(kKeepScreenOnDevice) ?? '';
@@ -781,8 +819,7 @@ class AppSettings {
 
   bool get playerShowWeight =>
       (index.settingsGet(kPlayerShowWeight) ?? '1') == '1';
-  set playerShowWeight(bool v) =>
-      index.settingsSet(kPlayerShowWeight, v ? '1' : '0');
+  set playerShowWeight(bool v) => _syncedSet(kPlayerShowWeight, v ? '1' : '0');
 
   // ---------- 歌曲分区·扫描过滤（settings.md §3.4） ----------
 
@@ -951,17 +988,17 @@ class AppSettings {
   PlayerTransition get playerTransition =>
       PlayerTransition.parse(index.settingsGet(kPlayerTransition));
   set playerTransition(PlayerTransition v) =>
-      index.settingsSet(kPlayerTransition, v.name);
+      _syncedSet(kPlayerTransition, v.name);
 
   /// 歌曲标题显示格式（默认「歌手 - 歌名」）。
   SongTitleFormat get songTitleFormat =>
       SongTitleFormat.parse(index.settingsGet(kSongTitleFormat));
   set songTitleFormat(SongTitleFormat v) =>
-      index.settingsSet(kSongTitleFormat, v.name);
+      _syncedSet(kSongTitleFormat, v.name);
 
   /// 简繁显示（默认原文）：转换在展示层完成，见 utils/zh_variant.dart。
   ZhVariant get zhVariant => ZhVariant.parse(index.settingsGet(kZhVariant));
-  set zhVariant(ZhVariant v) => index.settingsSet(kZhVariant, v.name);
+  set zhVariant(ZhVariant v) => _syncedSet(kZhVariant, v.name);
 
   CollectionViewMode _viewMode(String key, CollectionViewMode fallback) {
     final raw = index.settingsGet(key);
@@ -1050,7 +1087,7 @@ class AppSettings {
   bool get longPressCollapseGroups =>
       (index.settingsGet(kLongPressCollapseGroups) ?? '0') == '1';
   set longPressCollapseGroups(bool v) =>
-      index.settingsSet(kLongPressCollapseGroups, v ? '1' : '0');
+      _syncedSet(kLongPressCollapseGroups, v ? '1' : '0');
 
   /// 日志导出时长（分钟，1~30，默认 1）：收集日志与反馈附件的导出范围。
   int get logExportMinutes =>
@@ -1265,6 +1302,8 @@ class AppSettings {
     kSyncSettingsEnabled,
     kSyncSettingsPlayback,
     kSyncSettingsLibrary,
+    kSyncSettingsInterface,
+    kSyncSettingsTheme,
     kLastSyncAt,
     kPlayModeDefault,
     kWeightedRandomEnabled,

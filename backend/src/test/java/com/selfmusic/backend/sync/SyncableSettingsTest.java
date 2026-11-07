@@ -20,6 +20,9 @@ class SyncableSettingsTest {
         assertTrue(SyncableSettings.isSyncable("fade_duration_ms"));
         assertTrue(SyncableSettings.isSyncable("scan_ignore_min_duration_sec"));
         assertTrue(SyncableSettings.isSyncable("fallback_auto_repair"));
+        assertTrue(SyncableSettings.isSyncable("song_title_format"));
+        assertTrue(SyncableSettings.isSyncable("theme_mode"));
+        assertTrue(SyncableSettings.isSyncable("theme_accent"));
 
         assertFalse(SyncableSettings.isSyncable("app_volume"));
         assertFalse(SyncableSettings.isSyncable("lyric_max_lines"));
@@ -48,7 +51,16 @@ class SyncableSettingsTest {
                 "online_meta_cover_source",
                 "online_meta_save_mode",
                 "artist_resolve_auto",
-                "fallback_auto_repair"
+                "fallback_auto_repair",
+                "song_title_format",
+                "zh_variant",
+                "player_transition",
+                "player_show_weight",
+                "player_auto_hide_idle_sec",
+                "long_press_collapse_groups",
+                "theme_mode",
+                "theme_accent",
+                "theme_background"
         ), SyncableSettings.KEYS);
     }
 
