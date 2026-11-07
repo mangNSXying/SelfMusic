@@ -4,9 +4,9 @@ import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
 /**
- * 客户端设置同步行（阶段5 设置同步 v1）：每个可同步设置键一条当前值。
+ * 客户端设置同步行（阶段5 设置同步 v1+v2）：每个可同步设置键一条当前值。
  *
- * <p>只存播放偏好与媒体库规则白名单内的键（见 {@code SyncableSettings}）；
+ * <p>只存播放偏好/媒体库/界面/主题白名单内的键（见 {@code SyncableSettings}）；
  * 缓存路径、音量、均衡器、网络凭据、快捷键等设备本地项永远不会进入本表。
  * 多设备按 {@code last_event_at} 做逐键 LWW。</p>
  */

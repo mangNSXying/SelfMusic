@@ -130,6 +130,8 @@ Future<void> main() async {
     final initialFontFamily = await customFont.loadSaved();
     perfLog('boot.customFont done',
         initialFontFamily == null ? 'system' : 'custom');
+    // 主题容器提前到 runApp 前：设置同步桥接要赶在首轮 pull 前就位。
+    final themeProvider = ThemeProvider(initialFontFamily: initialFontFamily);
     // 源补推（attachApi 内部 _bootstrapSourceSync）不参与首帧：见文末首帧后启动块。
     // 信任自签名证书开关（settings.md §3.3）：按 AppSettings 配置 dio 一次。
     api.setSelfSignedPolicy(direct.settings.allowSelfSigned);
@@ -232,6 +234,10 @@ Future<void> main() async {
     };
     // 本地设置变更 → outbox（SyncEngine 内部再按同步开关/类目过滤）。
     direct.settings.onLocalSettingChanged = sync.onLocalSettingChanged;
+    // 主题存 secure storage，走外部桥：读当前值 / 应用远端值 / 本地变更回推。
+    themeProvider.onSettingChanged = sync.onLocalSettingChanged;
+    sync.readExternalSetting = themeProvider.syncValue;
+    sync.applyExternalSetting = themeProvider.applyRemoteSyncValue;
     WidgetsBinding.instance.addObserver(_SyncLifecycleObserver(sync));
 
     debugPrint('[boot] 进入 runApp');
@@ -251,7 +257,7 @@ Future<void> main() async {
         interactionGate: interactionGate,
         shortcutSettings: shortcutSettings,
         settingsFocus: SettingsFocusController(),
-        initialFontFamily: initialFontFamily));
+        themeProvider: themeProvider));
     perfLog('boot.runApp dispatched');
     // 首帧轻量化：源补推 / 歌手解析 / 同步引擎都不参与首帧渲染，统一推迟到
     // 首帧渲染完成后启动——此前它们在 runApp 前就发起网络请求与同步 DB 读，
@@ -329,7 +335,7 @@ class SelfMusicApp extends StatelessWidget {
   final InteractionGate interactionGate;
   final ShortcutSettings shortcutSettings;
   final SettingsFocusController settingsFocus;
-  final String? initialFontFamily;
+  final ThemeProvider themeProvider;
   const SelfMusicApp({
     super.key,
     required this.direct,
@@ -342,7 +348,7 @@ class SelfMusicApp extends StatelessWidget {
     required this.interactionGate,
     required this.shortcutSettings,
     required this.settingsFocus,
-    this.initialFontFamily,
+    required this.themeProvider,
   });
 
   @override
@@ -427,6 +433,15 @@ class SelfMusicApp extends StatelessWidget {
             artistResolver.wake();
           }
         }
+        if (keys.any((k) => SyncableSettings.interfaceKeys.contains(k))) {
+          if (keys.contains(AppSettings.kZhVariant)) {
+            unawaited(direct.applyZhVariantSetting().then((_) {
+              player.refreshSystemMedia();
+            }));
+          } else {
+            direct.refresh();
+          }
+        }
       });
     };
 
@@ -435,8 +450,7 @@ class SelfMusicApp extends StatelessWidget {
         Provider<ApiClient>.value(value: api),
         Provider<SyncEngine>.value(value: sync),
         ChangeNotifierProvider<ServerSettings>.value(value: settings),
-        ChangeNotifierProvider<ThemeProvider>.value(
-            value: ThemeProvider(initialFontFamily: initialFontFamily)),
+        ChangeNotifierProvider<ThemeProvider>.value(value: themeProvider),
         ChangeNotifierProvider<AuthProvider>.value(value: auth),
         ChangeNotifierProvider<LibraryProvider>.value(value: lib),
         ChangeNotifierProvider<DirectSourceManager>.value(value: direct),

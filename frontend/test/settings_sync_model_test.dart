@@ -10,6 +10,8 @@ import 'package:selfmusic/data/local/sync_event_types.dart';
 import 'package:selfmusic/data/local/syncable_settings.dart';
 import 'package:selfmusic/services/api_client.dart';
 import 'package:selfmusic/services/sync_engine.dart';
+import 'package:selfmusic/theme/theme_provider.dart';
+import 'package:selfmusic/utils/zh_variant.dart';
 import 'package:sqlite3/open.dart';
 
 DynamicLibrary _openOnLinux() {
@@ -51,7 +53,7 @@ void main() {
     index.close();
   });
 
-  test('白名单只含播放偏好与媒体库规则，且键都在 knownKeys', () {
+  test('白名单覆盖 v1/v2 四类，且非主题键都在 knownKeys', () {
     expect(SyncableSettings.playbackKeys, {
       AppSettings.kPlayModeDefault,
       AppSettings.kResumeOnStartup,
@@ -77,9 +79,24 @@ void main() {
       AppSettings.kArtistResolveAuto,
       AppSettings.kFallbackAutoRepair,
     });
-    expect(SyncableSettings.keys, hasLength(21));
+    expect(SyncableSettings.interfaceKeys, {
+      AppSettings.kSongTitleFormat,
+      AppSettings.kZhVariant,
+      AppSettings.kPlayerTransition,
+      AppSettings.kPlayerShowWeight,
+      AppSettings.kPlayerAutoHideIdleSec,
+      AppSettings.kLongPressCollapseGroups,
+    });
+    expect(SyncableSettings.themeKeys, {
+      ThemeProvider.syncKeyMode,
+      ThemeProvider.syncKeyAccent,
+      ThemeProvider.syncKeyBackground,
+    });
+    expect(SyncableSettings.keys, hasLength(30));
 
     for (final key in SyncableSettings.keys) {
+      // 主题存在 ThemeProvider(secure storage)，不在 app_settings.knownKeys。
+      if (SyncableSettings.themeKeys.contains(key)) continue;
       expect(AppSettings.knownKeys, contains(key),
           reason: '缺少 knownKeys: $key');
     }
@@ -93,8 +110,8 @@ void main() {
       AppSettings.kAllowInsecureHttp,
       AppSettings.kCacheMaxBytes,
       AppSettings.kShortcutWindowBindings,
-      AppSettings.kSongTitleFormat,
       AppSettings.kLyricMaxLines,
+      AppSettings.kScanWifiOnly,
     ]) {
       expect(SyncableSettings.isSyncable(key), isFalse, reason: key);
     }
@@ -106,10 +123,18 @@ void main() {
 
     settings.playModeDefault = 'loopList';
     settings.fadeDurationMs = 1200;
-    expect(changes, ['play_mode_default=loopList', 'fade_duration_ms=1200']);
+    settings.playerTransition = PlayerTransition.fade;
+    settings.longPressCollapseGroups = true;
+    expect(changes, [
+      'play_mode_default=loopList',
+      'fade_duration_ms=1200',
+      'player_transition=fade',
+      'long_press_collapse_groups=1',
+    ]);
 
     changes.clear();
     settings.appVolume = 40;
+    settings.lyricMaxLines = 10;
     settings.syncSettingsEnabled = true;
     settings.syncSettingsPlayback = false;
     expect(changes, isEmpty);
@@ -140,6 +165,31 @@ void main() {
     expect(settings.weightCurveSegments, hasLength(1));
     expect(settings.weightCurveSegments.single['factor'], 0.5);
 
+    expect(
+        settings.applyRemoteSetting(AppSettings.kSongTitleFormat, 'titleOnly'),
+        isTrue);
+    expect(settings.songTitleFormat, SongTitleFormat.titleOnly);
+    expect(settings.applyRemoteSetting(AppSettings.kZhVariant, 'simplified'),
+        isTrue);
+    expect(settings.zhVariant, ZhVariant.simplified);
+    expect(settings.applyRemoteSetting(AppSettings.kPlayerTransition, 'fade'),
+        isTrue);
+    expect(settings.playerTransition, PlayerTransition.fade);
+    expect(settings.applyRemoteSetting(AppSettings.kPlayerShowWeight, '0'),
+        isTrue);
+    expect(settings.playerShowWeight, isFalse);
+    expect(
+        settings.applyRemoteSetting(AppSettings.kPlayerAutoHideIdleSec, '10'),
+        isTrue);
+    expect(settings.playerAutoHideIdleSec, 10);
+    expect(settings.applyRemoteSetting(AppSettings.kPlayerAutoHideIdleSec, '7'),
+        isFalse);
+    expect(settings.playerAutoHideIdleSec, 10);
+    expect(
+        settings.applyRemoteSetting(AppSettings.kLongPressCollapseGroups, '1'),
+        isTrue);
+    expect(settings.longPressCollapseGroups, isTrue);
+
     settings.playModeDefault = 'loopList';
     changes.clear();
     expect(settings.applyRemoteSetting(AppSettings.kPlayModeDefault, 'bogus'),
@@ -148,8 +198,8 @@ void main() {
 
     expect(settings.applyRemoteSetting('app_volume', '50'), isFalse);
     expect(
-        settings.applyRemoteSetting(AppSettings.kSongTitleFormat, 'titleOnly'),
-        isFalse);
+        settings.applyRemoteSetting(ThemeProvider.syncKeyMode, 'dark'), isFalse,
+        reason: '主题键由 SyncEngine 外部桥接');
     expect(changes, isEmpty);
   });
 
@@ -160,10 +210,12 @@ void main() {
     expect(syncEntityKey('setting.set', {'key': ''}), isNull);
   });
 
-  test('设置同步类目默认值：总关、播放/媒体库类目开', () {
+  test('设置同步类目默认值：总关，v1 开、v2 关', () {
     expect(settings.syncSettingsEnabled, isFalse);
     expect(settings.syncSettingsPlayback, isTrue);
     expect(settings.syncSettingsLibrary, isTrue);
+    expect(settings.syncSettingsInterface, isFalse);
+    expect(settings.syncSettingsTheme, isFalse);
   });
 
   test('本地变更按同步开关/类目入队 outbox', () async {
@@ -198,6 +250,42 @@ void main() {
         .where((e) => e.type == SyncEventTypes.settingSet)
         .toList();
     expect(rows, hasLength(1));
+
+    sync.stop();
+  });
+
+  test('界面/主题类目默认关，按开关入队', () async {
+    final sync = SyncEngine(api: ApiClient(), index: index, settings: settings);
+    settings.syncSettingsEnabled = true;
+    settings.syncSettingsPlayback = false;
+    settings.syncSettingsLibrary = false;
+
+    sync.onLocalSettingChanged(AppSettings.kPlayerTransition, 'fade');
+    sync.onLocalSettingChanged(ThemeProvider.syncKeyMode, 'dark');
+    await index.flushWrites();
+    var rows = (await index.pendingOutbox())
+        .where((e) => e.type == SyncEventTypes.settingSet)
+        .toList();
+    expect(rows, isEmpty);
+
+    settings.syncSettingsInterface = true;
+    sync.onLocalSettingChanged(AppSettings.kPlayerTransition, 'fade');
+    await index.flushWrites();
+    rows = (await index.pendingOutbox())
+        .where((e) => e.type == SyncEventTypes.settingSet)
+        .toList();
+    expect(rows, hasLength(1));
+    expect(rows.single.payload['key'], AppSettings.kPlayerTransition);
+
+    settings.syncSettingsTheme = true;
+    sync.onLocalSettingChanged(ThemeProvider.syncKeyMode, 'dark');
+    await index.flushWrites();
+    rows = (await index.pendingOutbox())
+        .where((e) => e.type == SyncEventTypes.settingSet)
+        .toList();
+    expect(rows, hasLength(2));
+    expect(
+        rows.map((e) => e.payload['key']), contains(ThemeProvider.syncKeyMode));
 
     sync.stop();
   });

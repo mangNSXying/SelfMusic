@@ -145,20 +145,22 @@ mode == follow_server → 有服务端镜像用镜像，无镜像回退本地自
 > 断点仅当"从已同步歌单播放 + 当前歌曲有身份"时上报（服务器歌恒上报，直连歌需连着服务器），远端断点进 `breakpoint_mirror`（只读，不驱动运行时播放）。
 > 「设备管理」入口：列表 / 改名 / 吊销（调后端设备管理接口；本机按配对 client_id 高亮，吊销本机后需重新配对）。
 
-### 3.3.3 网络分区 · 设置同步（v1，已实现）
+### 3.3.3 网络分区 · 设置同步（v1 + v2，已实现）
 
-> 入口：`设置 → 网络 → 多设备同步 → 同步设置`。总开关默认关（升级不改变现有行为）；播放偏好 / 媒体库规则类目默认开。类目开关是设备本地项，不参与同步。
+> 入口：`设置 → 网络 → 多设备同步 → 同步设置`。总开关默认关（升级不改变现有行为）；播放偏好 / 媒体库规则类目默认开，界面偏好 / 主题外观默认关（v2）。类目开关是设备本地项，不参与同步。
 
 | 类目 | 同步项 |
 |------|--------|
 | 播放偏好 | `play_mode_default`、`resume_on_startup`、`preload_next`、`sleep_play_through_default`、`sleep_default_duration_minutes`、`sleep_default_count`、`lyric_focus_idle_sec`、`weighted_random_enabled`、`weighted_draw_cooldown`、`weighted_count_cooldown_ratio`、`curve_weight_enabled`、`curve_weight_segments`、`fade_enabled`、`fade_duration_ms` |
 | 媒体库规则 | `scan_ignore_min_duration_sec`、`scan_ignore_min_size_bytes`、`online_meta_lyric_source`、`online_meta_cover_source`、`online_meta_save_mode`、`artist_resolve_auto`、`fallback_auto_repair` |
+| 界面偏好（v2，默认关） | `song_title_format`、`zh_variant`、`player_transition`、`player_show_weight`、`player_auto_hide_idle_sec`、`long_press_collapse_groups` |
+| 主题外观（v2，默认关） | `theme_mode`、`theme_accent`、`theme_background`（自动背景=`''`） |
 
-**始终本机（不进入同步白名单）**：缓存容量/位置/收藏自动缓存/封面压缩、应用音量、均衡器、焦点/静音/断连暂停、屏幕常亮/限定蓝牙、歌词行数、界面字体/歌词目录、仅 Wi-Fi/扫描间隔、配对与网络凭据、HTTP/自签名、转码、通知栏/托盘、日志、快捷键、视图/排序/分组/列宽、导航状态、同步总开关/cursor/上次同步。界面偏好与主题外观暂列二期，v1 不参与。
+**始终本机（不进入同步白名单）**：缓存容量/位置/收藏自动缓存/封面压缩、应用音量、均衡器、焦点/静音/断连暂停、屏幕常亮/限定蓝牙、歌词行数、界面字体/歌词目录、仅 Wi-Fi/扫描间隔、配对与网络凭据、HTTP/自签名、转码、通知栏/托盘、日志、快捷键、视图/排序/分组/列宽、导航状态、同步总开关/cursor/上次同步。
 
-**协议**：`setting.set`（载荷 `{key,value}`）→ 服务端 `client_settings` 逐键 LWW（`last_event_at`）；pull 每次带全量白名单当前值，新设备/新开类目无需等 cursor 事件。客户端按本机总开关/类目过滤，pending guard 为 `setting|<key>`（本地未推值不被远端旧值覆盖）；远端应用抑制回声，不重新入队。首次开启/新开类目时，拉取后只把**服务端没有的键**用本机值补种，已有键以服务端为准。服务端只接受 `SyncableSettings.KEYS` 白名单，值上限 64 KiB。
+**协议**：`setting.set`（载荷 `{key,value}`）→ 服务端 `client_settings` 逐键 LWW（`last_event_at`）；pull 每次带全量白名单当前值，新设备/新开类目无需等 cursor 事件。客户端按本机总开关/类目过滤，pending guard 为 `setting|<key>`（本地未推值不被远端旧值覆盖）；远端应用抑制回声，不重新入队。首次开启/新开类目时，拉取后只把**服务端没有的键**用本机值补种，已有键以服务端为准；主题未显式设置过的键不补种默认值（避免新设备用默认值覆盖云端）。服务端只接受 `SyncableSettings.KEYS` 白名单，值上限 64 KiB。界面偏好走 `AppSettings`；主题值仍存 `ThemeProvider` secure storage，通过 `syncValue` / `applyRemoteSyncValue` 外部桥读写，主题键不落 `app_settings`。
 
-实现：`lib/data/local/syncable_settings.dart`、`lib/services/sync_engine.dart`、`lib/screens/settings/sync_section.dart`；后端 `SyncableSettings` / `SyncService` / `V5__client_settings.sql`。测试：`settings_sync_model_test.dart`、`settings_sync_dialog_test.dart`、后端 `SyncServiceTest`。
+实现：`lib/data/local/syncable_settings.dart`、`lib/services/sync_engine.dart`、`lib/theme/theme_provider.dart`、`lib/screens/settings/sync_section.dart`；后端 `SyncableSettings` / `SyncService` / `V5__client_settings.sql`。测试：`settings_sync_model_test.dart`、`theme_sync_test.dart`、`settings_sync_dialog_test.dart`、后端 `SyncableSettingsTest` / `SyncServiceTest`。
 
 ### 3.4 歌曲分区 · 扫描过滤 / 元数据 / 播放源（已实现）
 
