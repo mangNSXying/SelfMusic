@@ -38,7 +38,7 @@ const RENDERER_INFO: audio.AudioRendererInfo = {
  * 通道协议（与 Android 完全一致，Dart 解码逻辑零分叉）：
  * - 方法通道 com.shamiko.selfmusic/audio_guard：
  *   - getMediaVolume：返回当前媒体音量档位（number）；读取失败返回 null，
- *     Dart 侧按「未知」忽略。用于恢复前台时补判静音暂停。
+ *     Dart 侧按「未知」忽略。用于开始播放 / 打开静音暂停时补判。
  * - 事件通道 com.shamiko.selfmusic/audio_guard/events：
  *   - {type: 'volume', value: number}（仅 MEDIA 流，已按档位去重）；
  *   - {type: 'outputLost'}。

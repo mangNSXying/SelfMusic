@@ -14,8 +14,8 @@ import 'package:selfmusic/services/audio_focus_monitor.dart';
 import 'package:selfmusic/services/playback_guard.dart';
 import 'package:sqlite3/open.dart';
 
-/// 静音/断连暂停的端到端接线：守卫事件经 [PlayerProvider.pauseByGuard] 真正
-/// 把正在播放的播放器暂停（淡入淡出关闭时直切，避免拖慢测试）。
+/// 播放保护自动暂停的端到端接线：焦点/静音/断连事件经统一入口真正把正在
+/// 播放的播放器暂停（淡入淡出关闭时直切，避免拖慢测试）。
 
 class _FakeSource extends MusicSource {
   @override
@@ -234,7 +234,7 @@ void main() {
     final p = PlayerProvider();
     try {
       p.attachAppSettings(settings);
-      p.attachAudioGuard(guard);
+      p.attachPlaybackGuard(guard, focus);
       await p.playQueue([_song('a.mp3', 'A')], source: _FakeSource());
       expect(p.playing, isTrue);
 
@@ -254,13 +254,55 @@ void main() {
     final p = PlayerProvider();
     try {
       p.attachAppSettings(settings);
-      p.attachAudioGuard(guard);
+      p.attachPlaybackGuard(guard, focus);
       await p.playQueue([_song('a.mp3', 'A')], source: _FakeSource());
       expect(p.playing, isTrue);
 
       guard.emit(const AudioGuardEvent.volume(0));
       await Future<void>.delayed(const Duration(milliseconds: 100));
       expect(p.playing, isTrue);
+    } finally {
+      p.dispose();
+    }
+  });
+
+  test('静音状态下开始播放：起播补判音量后暂停', () async {
+    final settings = AppSettings(index);
+    settings.fadeEnabled = false;
+    settings.pauseOnZeroVolume = true;
+    guard.volume = 0;
+
+    final p = PlayerProvider();
+    try {
+      p.attachAppSettings(settings);
+      p.attachPlaybackGuard(guard, focus);
+      await p.playQueue([_song('a.mp3', 'A')], source: _FakeSource());
+      await pumpUntil(() => !p.playing);
+      expect(p.playing, isFalse);
+    } finally {
+      p.dispose();
+    }
+  });
+
+  test('鸿蒙焦点 wasPlaying=false 但本地在播：仍兜底暂停', () async {
+    final settings = AppSettings(index);
+    settings.fadeEnabled = false;
+    settings.audioFocusEnabled = true;
+
+    final p = PlayerProvider();
+    try {
+      p.attachAppSettings(settings);
+      p.attachPlaybackGuard(guard, focus);
+      await p.playQueue([_song('a.mp3', 'A')], source: _FakeSource());
+      expect(p.playing, isTrue);
+
+      focus.emit(const AudioFocusEvent(
+        type: AudioFocusEventType.pause,
+        forced: true,
+        wasPlaying: false,
+      ));
+      await pumpUntil(() => !p.playing);
+      expect(p.playing, isFalse);
     } finally {
       p.dispose();
     }
@@ -274,7 +316,7 @@ void main() {
     final p = PlayerProvider();
     try {
       p.attachAppSettings(settings);
-      p.attachAudioFocus(focus);
+      p.attachPlaybackGuard(guard, focus);
       await p.playQueue([_song('a.mp3', 'A')], source: _FakeSource());
       expect(p.playing, isTrue);
       final platform = fakeAudio.players.values.single;
@@ -311,7 +353,7 @@ void main() {
     final p = PlayerProvider();
     try {
       p.attachAppSettings(settings);
-      p.attachAudioFocus(focus);
+      p.attachPlaybackGuard(guard, focus);
       await p.playQueue([_song('a.mp3', 'A')], source: _FakeSource());
       expect(p.playing, isTrue);
       final platform = fakeAudio.players.values.single;
@@ -345,7 +387,7 @@ void main() {
     final p = PlayerProvider();
     try {
       p.attachAppSettings(settings);
-      p.attachAudioFocus(focus);
+      p.attachPlaybackGuard(guard, focus);
       await p.playQueue([_song('a.mp3', 'A')], source: _FakeSource());
       final platform = fakeAudio.players.values.single;
 

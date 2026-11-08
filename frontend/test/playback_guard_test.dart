@@ -1,10 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:selfmusic/services/audio_focus_monitor.dart';
 import 'package:selfmusic/services/playback_guard.dart';
 
-/// 静音暂停 / 断连暂停的守卫逻辑（settings.md §3.2，仅 Android）。
-/// 平台信号以假 [AudioGuardPlatform] 注入，验证开关/播放态门控与订阅起停。
+/// 播放保护自动暂停的守卫逻辑（settings.md §3.2，仅 Android/鸿蒙）。
+/// 平台信号以假 [AudioGuardPlatform] / [AudioFocusPlatform] 注入，验证
+/// 开关/播放态门控、起播补判与订阅起停。
 
 class _FakePlatform implements AudioGuardPlatform {
   final _controller = StreamController<AudioGuardEvent>.broadcast();
@@ -19,6 +21,13 @@ class _FakePlatform implements AudioGuardPlatform {
   void emit(AudioGuardEvent e) => _controller.add(e);
 
   Future<void> close() => _controller.close();
+}
+
+class _EmptyFocusPlatform implements AudioFocusPlatform {
+  const _EmptyFocusPlatform();
+
+  @override
+  Stream<AudioFocusEvent> get events => const Stream<AudioFocusEvent>.empty();
 }
 
 void main() {
@@ -40,12 +49,14 @@ void main() {
 
   PlaybackGuard make() => PlaybackGuard(
         platform: platform,
+        focusPlatform: const _EmptyFocusPlatform(),
         volumePauseEnabled: () => volumeOn,
         disconnectPauseEnabled: () => disconnectOn,
         isPlaying: () => playing,
-        onPause: () async {
+        onPause: (AutoPauseRequest request) async {
           pauses++;
         },
+        onResume: () async {},
       );
 
   test('音量归零 + 开关开 + 播放中 → 暂停一次', () async {
@@ -109,21 +120,25 @@ void main() {
     g.dispose();
   });
 
-  test('订阅时音量已为 0 → 立即暂停', () async {
+  test('开始播放时音量已为 0 → 立即暂停', () async {
     volumeOn = true;
     playing = true;
     platform.volume = 0;
-    final g = make()..refresh();
+    final g = make()
+      ..refresh()
+      ..onPlaybackStarted();
     await pumpEventQueue();
     expect(pauses, 1);
     g.dispose();
   });
 
-  test('订阅时音量已为 0 但未播放 → 不暂停', () async {
+  test('开始播放时音量已为 0 但未播放 → 不暂停', () async {
     volumeOn = true;
     playing = false;
     platform.volume = 0;
-    final g = make()..refresh();
+    final g = make()
+      ..refresh()
+      ..onPlaybackStarted();
     await pumpEventQueue();
     expect(pauses, 0);
     g.dispose();

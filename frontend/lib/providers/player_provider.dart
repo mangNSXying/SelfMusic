@@ -128,13 +128,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   void Function(Song s)? _onSongMetaRefreshed;
   SelfMusicAudioHandler? _audioHandler;
 
-  /// 静音/断连暂停守卫（settings.md §3.2，Android/鸿蒙）：由 [attachAudioGuard]
-  /// 装配，设置开关变动后经 [refreshPlaybackGuard] 同步订阅。
+  /// 播放保护（焦点/静音/断连）的唯一自动暂停入口（settings.md §3.2）：
+  /// 由 [attachPlaybackGuard] 装配，设置开关变动后经 [refreshPlaybackGuard] 同步。
   PlaybackGuard? _playbackGuard;
-
-  /// 音频焦点事件源（settings.md §3.2）：Android 由 just_audio 内部处理，
-  /// 进入这里的是空流；鸿蒙由 AVPlayer 的 audioInterrupt 驱动。
-  StreamSubscription<AudioFocusEvent>? _audioFocusSub;
 
   /// 系统焦点中断已经把播放器暂停，等待焦点恢复后按开关自动续播。
   bool _audioFocusPaused = false;
@@ -1084,6 +1080,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       } else {
         _armStallWatchdog();
+        // 先静音再按播放不会产生音量变化事件：每次真正起播补判一次。
+        if (playingChanged) _playbackGuard?.onPlaybackStarted();
       }
       if (playingChanged && !_disposed) {
         // Android just_audio 因音频焦点自动 pause 时 playing 会变，但此前
@@ -2247,73 +2245,92 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// 装配静音/断连暂停守卫（main 注入 `AudioGuardPlatform.forCurrentPlatform()`；
-  /// Android/鸿蒙为原生通道实现，其余平台为 no-op，行为不变）。装配后立即按当前开关同步订阅。
-  void attachAudioGuard(AudioGuardPlatform platform) {
+  /// 装配播放保护统一入口（main 注入 `AudioGuardPlatform` /
+  /// `AudioFocusPlatform`）。Android/鸿蒙以外平台两者为 no-op，行为不变。
+  /// 装配后立即按当前开关同步订阅，并在播放器已处于播放态时补判一次静音暂停。
+  void attachPlaybackGuard(
+    AudioGuardPlatform guardPlatform,
+    AudioFocusPlatform focusPlatform,
+  ) {
     _playbackGuard?.dispose();
     _playbackGuard = PlaybackGuard(
-      platform: platform,
+      platform: guardPlatform,
+      focusPlatform: focusPlatform,
       volumePauseEnabled: () => _appSettings?.pauseOnZeroVolume ?? false,
-      disconnectPauseEnabled: () => _appSettings?.pauseOnDeviceDisconnect ?? false,
+      disconnectPauseEnabled: () =>
+          _appSettings?.pauseOnDeviceDisconnect ?? false,
       isPlaying: () => _player?.playing ?? false,
-      onPause: pauseByGuard,
+      onPause: _handleAutoPause,
+      onResume: _handleAutoFocusResume,
     );
     _playbackGuard!.refresh();
+    if (_player?.playing ?? false) _playbackGuard!.onPlaybackStarted();
   }
 
   /// 设置开关变动后同步守卫订阅（开启则订阅原生信号，全关则注销）。
-  void refreshPlaybackGuard() => _playbackGuard?.refresh();
-
-  /// 装配音频焦点事件源（main 注入 `AudioFocusPlatform.forCurrentPlatform()`）。
-  ///
-  /// Android 的 just_audio 已自行处理焦点，事件流为空；鸿蒙 AVPlayer 必须
-  /// 由应用在 audioInterrupt 回调里暂停并同步状态，这里负责 UI/断点收口与
-  /// 按 `audio_focus_enabled` 自动续播。
-  void attachAudioFocus(AudioFocusPlatform platform) {
-    unawaited(_audioFocusSub?.cancel());
-    _audioFocusSub = platform.events.listen(
-      _onAudioFocusEvent,
-      onError: (Object e) => debugPrint('[play] 音频焦点事件流错误（忽略）：$e'),
-    );
+  /// 若播放中刚打开静音暂停（音量已经是 0），补判一次，避免等不到变化事件。
+  void refreshPlaybackGuard() {
+    _playbackGuard?.refresh();
+    _playbackGuard?.onPlaybackStarted();
   }
 
-  void _onAudioFocusEvent(AudioFocusEvent e) {
+  /// 播放保护统一自动暂停入口：焦点 / 静音 / 断连共用。
+  ///
+  /// 静音/断连是应用主动保护性暂停，立即执行（不等淡出）；焦点抢占时
+  /// 系统已强制暂停音频，原生桥负责同步 AVPlayer 状态，这里兜底暂停并
+  /// 收口 UI/断点，避免原生回调缺失时状态卡在“播放中”。
+  Future<void> _handleAutoPause(AutoPauseRequest req) async {
     if (_shuttingDown || _disposed) return;
-    switch (e.type) {
-      case AudioFocusEventType.pause:
-        if (!e.wasPlaying) return;
-        // 用户刚点了暂停、淡出收尾尚未完成时，系统焦点中断不应在恢复时
-        // 抢回播放：是否自动续播只由用户最后一次明确意图决定。
-        _audioFocusPaused = !_fadingPause;
-        final p = _player;
-        if (p == null || !p.playing) {
-          // 原生暂停/适配层 playing=false 已先到：position 已是原生停顿点，
-          // 直接落最终断点；UI 与系统媒体由随后的状态流刷新。
-          _finishAudioFocusPause();
-        } else {
-          _audioFocusSavePending = true;
+    final p = _player;
+    if (p == null) return;
+
+    if (req.isFocus) {
+      final wasPlaying = req.focusWasPlaying ?? false;
+      // 用户本来就在暂停态，且本地也未播放：无需收口。
+      if (!wasPlaying && !p.playing) return;
+      // 用户手动暂停的淡出仍在收尾：不抢恢复意图，交给用户暂停路径。
+      if (_fadingPause) {
+        if (req.reason == AutoPauseReason.audioFocus) {
+          _audioFocusPaused = false;
         }
-        notifyListeners();
-        break;
-      case AudioFocusEventType.resume:
-        if (!_audioFocusPaused) return;
-        _audioFocusPaused = false;
-        if (_appSettings?.audioFocusEnabled ?? true) {
-          unawaited(_resumeFromAudioFocus());
-        }
-        break;
-      case AudioFocusEventType.stop:
-        // 永久失去焦点：不自动恢复，用户可手动继续；断点仍要收口。
-        _audioFocusPaused = false;
-        if (!e.wasPlaying) return;
-        final p = _player;
-        if (p == null || !p.playing) {
-          _finishAudioFocusPause();
-        } else {
-          _audioFocusSavePending = true;
-        }
-        break;
+        return;
+      }
+      // 焦点抢占优先：取消可能还在跑的淡入，避免暂停后音量仍在变。
+      _cancelFadeAndComplete();
+      _fadingPause = false;
+      // 临时失去焦点才记录“焦点暂停”，恢复时按开关自动续播；
+      // STOP 是永久失去焦点，只暂停不自动恢复。
+      _audioFocusPaused = req.reason == AutoPauseReason.audioFocus;
+      if (p.playing) {
+        _audioFocusSavePending = true;
+        // 原生已判定在播时由 audioInterrupt 回调发起 pause，这里不再重复；
+        // 只有原生状态滞后（wasPlaying=false 但本地仍在播）才兜底。
+        if (!wasPlaying) await _pauseSafe();
+      }
+      if (!p.playing) _finishAudioFocusPause();
+      notifyListeners();
+      _syncSystemMedia();
+      return;
     }
+
+    if (_fadingPause || !p.playing) return;
+    _userTookOver = true;
+    // 保护性暂停接管：取消可能残留的焦点续播意图与淡入。
+    _audioFocusPaused = false;
+    _audioFocusSavePending = false;
+    _cancelFadeAndComplete();
+    await _pauseSafe();
+    notifyListeners();
+    _syncSystemMedia();
+    _saveForcedAndPoke();
+  }
+
+  /// 焦点恢复：仅临时失去焦点（PAUSE）且开关开启时自动续播。
+  Future<void> _handleAutoFocusResume() async {
+    if (!_audioFocusPaused) return;
+    _audioFocusPaused = false;
+    if (!(_appSettings?.audioFocusEnabled ?? true)) return;
+    await _resumeFromAudioFocus();
   }
 
   void _finishAudioFocusPause() {
@@ -2341,19 +2358,6 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
     _syncSystemMedia();
     _onSyncPoke?.call();
-  }
-
-  /// 静音/断连守卫请求暂停：仅在**实际正在播放**且未在淡出暂停中时执行，
-  /// 走与通知栏暂停同一路径（含淡出），并标记用户接管以阻止迟到的远端镜像回切。
-  Future<void> pauseByGuard() async {
-    final p = _player;
-    if (p == null || _shuttingDown || _disposed) return;
-    if (_fadingPause || !p.playing) return;
-    _userTookOver = true;
-    await _fadeOutThenPause();
-    notifyListeners();
-    _syncSystemMedia();
-    _saveForcedAndPoke();
   }
 
   /// 文件写盘/上传前暂停（嵌入等外部写操作调用）：走与暂停同一路径（含
@@ -6168,8 +6172,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     ++_playToken;
     _disarmStallWatchdog();
     _clearNetworkSuspension();
-    unawaited(_audioFocusSub?.cancel());
-    _audioFocusSub = null;
+    _playbackGuard?.dispose();
+    _playbackGuard = null;
     // 清理路径：取消渐变 + 收口挂起的淡出 Future（不暂停）+ 复位意图位。
     _cancelFadeAndComplete();
     _fadingPause = false;
@@ -6217,8 +6221,6 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _bootGateTimer = null;
     _playbackGuard?.dispose();
     _playbackGuard = null;
-    unawaited(_audioFocusSub?.cancel());
-    _audioFocusSub = null;
     unawaited(_disposeEqualizer());
     equalizerCapabilities.dispose();
     // 退出前把最后一段播放时长结清（与 _saveState 同样不等待）。

@@ -5,6 +5,42 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
+import 'audio_focus_monitor.dart';
+
+/// 播放保护自动暂停的触发源（settings.md §3.2）。
+///
+/// 焦点、静音、断连三项共用同一套暂停入口；平台差异只保留在信号层，
+/// 不再让焦点暂停走一条独立的状态收口路径。
+enum AutoPauseReason {
+  /// 媒体音量归零。
+  volumeZero,
+
+  /// 当前播放输出设备断开。
+  outputLost,
+
+  /// 临时失去音频焦点（来电/他应用抢占），恢复后可按开关续播。
+  audioFocus,
+
+  /// 永久失去音频焦点（STOP），只暂停，不自动恢复。
+  audioFocusStop,
+}
+
+/// 一次自动暂停请求。
+class AutoPauseRequest {
+  final AutoPauseReason reason;
+
+  /// 焦点中断发生前原生播放器是否真的在播；非焦点事件为 null。
+  ///
+  /// 原生状态可能滞后（装载中、play 挂起、系统强制暂停不改 state），
+  /// 不能只依赖本地的 `player.playing`。
+  final bool? focusWasPlaying;
+
+  const AutoPauseRequest(this.reason, {this.focusWasPlaying});
+
+  bool get isFocus =>
+      reason == AutoPauseReason.audioFocus ||
+      reason == AutoPauseReason.audioFocusStop;
+}
 
 /// 静音暂停 / 断连暂停的平台信号（settings.md §3.2，Android/鸿蒙）。
 ///
@@ -45,6 +81,7 @@ abstract class AudioGuardPlatform {
   Stream<AudioGuardEvent> get events;
 
   /// 当前媒体音量档位；不支持/读取失败返回 null（调用方按「未知」忽略）。
+  /// 原生订阅时主动回推一次当前音量，这里用于开始播放时补判静音暂停。
   Future<int?> get mediaVolume;
 
   /// 当前平台实现：Android/鸿蒙走原生通道，其余平台 no-op。
@@ -101,66 +138,118 @@ class _NoopAudioGuard implements AudioGuardPlatform {
   Future<int?> get mediaVolume async => null;
 }
 
-/// 播放守卫：订阅 [AudioGuardPlatform] 信号，在开关开启且**正在播放**时请求暂停。
+/// 播放守卫：焦点 / 静音 / 断连三项共用的唯一自动暂停入口。
 ///
-/// 与 [PlayerProvider] 解耦（回调注入），便于单测：音量事件仅在
-/// [volumePauseEnabled] 为真且档位为 0 时触发；断连事件仅在
-/// [disconnectPauseEnabled] 为真时触发。订阅按需起停（[refresh]），
-/// 两个开关全关时取消订阅（原生侧随之注销监听）。
+/// - [AudioGuardPlatform] 提供音量归零与输出断开信号；
+/// - [AudioFocusPlatform] 提供鸿蒙焦点抢占/恢复信号（Android 为空流）；
+/// - 所有触发都经统一的 [onPause] 交回 PlayerProvider，避免焦点一套、
+///   静音/断连另一套的重复暂停路径。
+///
+/// 音量与断连事件仍要求**正在播放**；焦点事件始终上送，由 PlayerProvider
+/// 结合 [AutoPauseRequest.focusWasPlaying] 与本地播放态决定是否收口。
 class PlaybackGuard {
   PlaybackGuard({
     required AudioGuardPlatform platform,
+    required AudioFocusPlatform focusPlatform,
     required bool Function() volumePauseEnabled,
     required bool Function() disconnectPauseEnabled,
     required bool Function() isPlaying,
-    required Future<void> Function() onPause,
+    required Future<void> Function(AutoPauseRequest request) onPause,
+    required Future<void> Function() onResume,
   })  : _platform = platform,
+        _focusPlatform = focusPlatform,
         _volumePauseEnabled = volumePauseEnabled,
         _disconnectPauseEnabled = disconnectPauseEnabled,
         _isPlaying = isPlaying,
-        _onPause = onPause;
+        _onPause = onPause,
+        _onResume = onResume;
 
   final AudioGuardPlatform _platform;
+  final AudioFocusPlatform _focusPlatform;
   final bool Function() _volumePauseEnabled;
   final bool Function() _disconnectPauseEnabled;
   final bool Function() _isPlaying;
-  final Future<void> Function() _onPause;
+  final Future<void> Function(AutoPauseRequest request) _onPause;
+  final Future<void> Function() _onResume;
 
-  StreamSubscription<AudioGuardEvent>? _sub;
+  StreamSubscription<AudioGuardEvent>? _guardSub;
+  StreamSubscription<AudioFocusEvent>? _focusSub;
   bool _disposed = false;
 
-  /// 依据当前开关同步订阅状态：任一开启则订阅（并补查一次当前音量），
-  /// 全关则取消。可在设置变动后反复调用。
+  /// 依据当前开关同步订阅状态：静音/断连任一开启则订阅原生守卫信号，
+  /// 全关则取消。焦点信号常驻订阅——鸿蒙系统强制暂停后，即使开关关闭
+  /// 也需要同步 UI/断点，开关只决定焦点恢复时是否自动续播。
   void refresh() {
     if (_disposed) return;
     if (_volumePauseEnabled() || _disconnectPauseEnabled()) {
-      _sub ??= _platform.events.listen(_handle, onError: (_) {});
-      if (_volumePauseEnabled()) unawaited(_checkInitialVolume());
+      _guardSub ??= _platform.events.listen(_handleGuardEvent, onError: (_) {});
     } else {
-      _sub?.cancel();
-      _sub = null;
+      _guardSub?.cancel();
+      _guardSub = null;
     }
+    _focusSub ??=
+        _focusPlatform.events.listen(_handleFocusEvent, onError: (_) {});
   }
 
-  /// 订阅时当前音量已为 0 时立即暂停（否则要等下一次音量变化事件）。
-  Future<void> _checkInitialVolume() async {
+  /// 开始/恢复播放时补判一次当前媒体音量。
+  ///
+  /// 先静音再按播放不会产生 volumeChange 事件，单靠订阅监听会漏掉
+  /// 「静音暂停」；原生 onListen 的首次回推只覆盖订阅时刻。
+  void onPlaybackStarted() {
+    if (_disposed || !_volumePauseEnabled()) return;
+    unawaited(_checkCurrentVolume());
+  }
+
+  Future<void> _checkCurrentVolume() async {
     final v = await _platform.mediaVolume;
-    if (v == 0) _handle(const AudioGuardEvent.volume(0));
+    if (_disposed || v != 0) return;
+    _emitPause(const AutoPauseRequest(AutoPauseReason.volumeZero));
   }
 
-  void _handle(AudioGuardEvent e) {
-    if (_disposed) return;
+  void _handleGuardEvent(AudioGuardEvent e) {
     final shouldPause = switch (e.type) {
       AudioGuardEventType.volume => _volumePauseEnabled() && e.value == 0,
       AudioGuardEventType.outputLost => _disconnectPauseEnabled(),
     };
-    if (!shouldPause || !_isPlaying()) return;
-    unawaited(_onPause());
+    if (!shouldPause) return;
+    _emitPause(AutoPauseRequest(e.type == AudioGuardEventType.volume
+        ? AutoPauseReason.volumeZero
+        : AutoPauseReason.outputLost));
+  }
+
+  void _handleFocusEvent(AudioFocusEvent e) {
+    switch (e.type) {
+      case AudioFocusEventType.pause:
+        _emitPause(AutoPauseRequest(
+          AutoPauseReason.audioFocus,
+          focusWasPlaying: e.wasPlaying,
+        ));
+        break;
+      case AudioFocusEventType.stop:
+        _emitPause(AutoPauseRequest(
+          AutoPauseReason.audioFocusStop,
+          focusWasPlaying: e.wasPlaying,
+        ));
+        break;
+      case AudioFocusEventType.resume:
+        unawaited(_onResume());
+        break;
+    }
+  }
+
+  void _emitPause(AutoPauseRequest request) {
+    if (_disposed) return;
+    // 焦点事件即使本地 playing 已翻转也要交给 Provider 收口断点/UI；
+    // 音量与断连事件仍要求真正在播，避免恢复界面时误暂停。
+    if (!request.isFocus && !_isPlaying()) return;
+    unawaited(_onPause(request));
   }
 
   void dispose() {
     _disposed = true;
-    _sub?.cancel();
-    _sub = null;
+    _guardSub?.cancel();
+    _guardSub = null;
+    _focusSub?.cancel();
+    _focusSub = null;
   }
 }

@@ -372,9 +372,12 @@ class SelfMusicApp extends StatelessWidget {
       ..attachAppSettings(direct.settings)
       ..attachApi(api)
       ..attachServerAvailable(() => direct.isServerAvailable)
-      ..attachAudioGuard(AudioGuardPlatform.forCurrentPlatform())
-      // 鸿蒙 AVPlayer 音频焦点（Android 由 just_audio 内部处理，空流）。
-      ..attachAudioFocus(AudioFocusPlatform.forCurrentPlatform())
+      // 播放保护统一入口：焦点/静音/断连三路共用一套自动暂停。
+      // 鸿蒙 AVPlayer 音频焦点走 AudioFocusPlatform；Android 由 just_audio 内部处理。
+      ..attachPlaybackGuard(
+        AudioGuardPlatform.forCurrentPlatform(),
+        AudioFocusPlatform.forCurrentPlatform(),
+      )
       // 同步引擎钩子：实际播放态驱动后台同步门控（播放中后台仍同步），
       // 播放/暂停/切歌后即时推一轮（单飞合并；未注入不影响播放）。
       ..attachSyncHooks(
