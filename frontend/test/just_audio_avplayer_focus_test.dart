@@ -45,6 +45,29 @@ void main() {
     }
   });
 
+  test('audioInterrupt wasPlaying=0 但适配层在播：仍翻 playing=false', () async {
+    final handle = AvPlayerHandle('focus-test-5');
+    final data = <PlayerDataMessage>[];
+    final sub = handle.playerDataMessageStream.listen(data.add);
+    try {
+      handle.handleEvent({'type': 'state', 'state': 'playing'});
+      await Future<void>.delayed(Duration.zero);
+
+      handle.handleEvent({
+        'type': 'audioInterrupt',
+        'hint': 'pause',
+        'forced': 1,
+        'wasPlaying': 0,
+        'positionMs': 4321,
+      });
+      await Future<void>.delayed(Duration.zero);
+
+      expect(data.last.playing, isFalse);
+    } finally {
+      await sub.cancel();
+    }
+  });
+
   test('原生 paused 回传真实停顿位置且 playing=false', () async {
     final handle = AvPlayerHandle('focus-test-2');
     final data = <PlayerDataMessage>[];

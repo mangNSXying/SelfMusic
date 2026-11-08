@@ -53,6 +53,14 @@ class PlayerEntry {
   pendingVolume: number = -1;
   /** prepared 前收到的 play（just_audio 激活平台时会先 play 再 load）。 */
   pendingPlay: boolean = false;
+  /**
+   * 播放意图：play 已请求（含 pendingPlay）。判焦点中断 wasPlaying 用——
+   * 系统强制暂停不会改 AVPlayer.state，装载中/play 挂起时 state 也不是 playing，
+   * 只看 state 会漏判「正在播」。
+   */
+  playingIntent: boolean = false;
+  /** pause 执行中：期间的 play 先排队，pause 完成后补发（快速暂停→恢复竞态）。 */
+  pausing: boolean = false;
 
   constructor(id: string) {
     this.id = id;
@@ -228,6 +236,15 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
       result.error('404', '播放器不存在', null);
       return;
     }
+    entry.playingIntent = true;
+    // 焦点 PAUSE 的 pause() 尚未落地：先排队，pause 完成后由 pauseEntry 补发。
+    // 否则 handlePlay 看到旧 state='playing' 直接返回，随后 pause 生效会卡死。
+    if (entry.pausing) {
+      entry.pendingPlay = true;
+      Log.w(TAG, `play 排队：pause 在途`);
+      result.success(null);
+      return;
+    }
     const state = player.state;
     if (state === 'playing') {
       result.success(null);
@@ -241,6 +258,7 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
         Log.w(TAG, `play 挂起：state=${state}，prepared 后补发`);
       } else {
         entry.pendingPlay = false;
+        entry.playingIntent = false;
         Log.w(TAG, `play 忽略：state=${state}`);
       }
       result.success(null);
@@ -248,10 +266,53 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
     }
     try {
       await player.play();
+      // play 期间被焦点/用户暂停打断：补一次 pause，避免抢音。
+      if (!entry.playingIntent) {
+        await this.pauseEntry(entry);
+      }
       result.success(null);
     } catch (e) {
+      entry.playingIntent = false;
       Log.w(TAG, `play 忽略异常 ${entry.id}: ${(e as BusinessError).code}`);
       result.success(null);
+    }
+  }
+
+  /**
+   * 统一暂停一次原生播放器：取消挂起 play、清播放意图；pause 在途时收到的
+   * play 会排队并在 pause 完成后补发（实体设备上快速 PAUSE→RESUME 的竞态）。
+   */
+  private async pauseEntry(entry: PlayerEntry): Promise<void> {
+    entry.pendingPlay = false;
+    entry.playingIntent = false;
+    const player = entry.player;
+    if (player === null || entry.released || player.state !== 'playing') {
+      return;
+    }
+    if (entry.pausing) {
+      return;
+    }
+    entry.pausing = true;
+    try {
+      await player.pause();
+    } catch (e) {
+      Log.w(TAG, `${entry.id} pause 忽略异常: ${(e as BusinessError).code}`);
+    } finally {
+      entry.pausing = false;
+    }
+    const nextPlayer = entry.player;
+    if (entry.pendingPlay && !entry.released && nextPlayer !== null) {
+      entry.pendingPlay = false;
+      entry.playingIntent = true;
+      try {
+        await nextPlayer.play();
+      } catch (e) {
+        entry.playingIntent = false;
+        Log.w(TAG, `${entry.id} 补发 play 失败: ${(e as BusinessError).code}`);
+      }
+    } else {
+      // 收口 pause 期间迟到的 state='playing' 事件，避免意图位残留。
+      entry.playingIntent = false;
     }
   }
 
@@ -264,6 +325,11 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
     }
     const hadPendingPlay = entry.pendingPlay;
     entry.pendingPlay = false;
+    entry.playingIntent = false;
+    if (entry.pausing) {
+      result.success(null);
+      return;
+    }
     if (player.state !== 'playing') {
       if (hadPendingPlay) {
         Log.w(TAG, `pause 取消挂起的 play：state=${player.state}`);
@@ -271,13 +337,8 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
       result.success(null);
       return;
     }
-    try {
-      await player.pause();
-      result.success(null);
-    } catch (e) {
-      Log.w(TAG, `pause 忽略异常 ${entry.id}: ${(e as BusinessError).code}`);
-      result.success(null);
-    }
+    await this.pauseEntry(entry);
+    result.success(null);
   }
 
   private async handleStop(call: MethodCall, result: MethodResult): Promise<void> {
@@ -288,6 +349,12 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
       return;
     }
     entry.pendingPlay = false;
+    entry.playingIntent = false;
+    if (entry.pausing) {
+      // pause 在途：停止意图已清，等 pause 收口即可，避免并发状态操作。
+      result.success(null);
+      return;
+    }
     const state = player.state;
     if (state !== 'prepared' && state !== 'playing' && state !== 'paused' && state !== 'completed') {
       result.success(null);
@@ -481,6 +548,7 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
       return;
     }
     if (state === 'playing') {
+      entry.playingIntent = true;
       this.emitStateEvent(entry.id, 'playing');
       return;
     }
@@ -488,10 +556,14 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
       // 手动暂停时 just_audio 已先翻 playing=false 并冻结在墙钟插值位置；
       // 这里把原生真实停顿位置一并带回，适配层在 _emit 前刷新 _position，
       // 避免进度条回跳到上一次 timeUpdate（最多 100ms）。
+      if (!entry.pausing && !entry.pendingPlay) {
+        entry.playingIntent = false;
+      }
       this.emitStateEvent(entry.id, 'paused', this.readCurrentTime(entry.player));
       return;
     }
     if (state === 'completed') {
+      entry.playingIntent = false;
       this.emitStateEvent(entry.id, 'completed');
       return;
     }
@@ -504,6 +576,7 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
       return;
     }
     if (state === 'error') {
+      entry.playingIntent = false;
       if (!entry.errorReported) {
         entry.errorReported = true;
         entry.needsRecreate = true;
@@ -531,7 +604,9 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
     if (player === null || entry.released) {
       return;
     }
-    const wasPlaying = player.state === 'playing';
+    // 播放意图优先：系统强制暂停不改 AVPlayer.state，装载中/play 挂起时
+    // state 甚至还不是 playing；只看 state 会把有效打断误判成“本来没在播”。
+    const wasPlaying = entry.playingIntent || entry.pendingPlay || player.state === 'playing';
     const forced = event.forceType === audio.InterruptForceType.INTERRUPT_FORCE;
     let positionMs = -1;
     try {
@@ -545,7 +620,8 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
     if (event.hintType === audio.InterruptHint.INTERRUPT_HINT_PAUSE) {
       this.emitInterrupt(entry.id, 'pause', forced, wasPlaying, positionMs);
       if (wasPlaying) {
-        player.pause().catch((e: BusinessError): void => {
+        // 取消尚未起播的 play，并同步 AVPlayer 状态（系统不改 state）。
+        this.pauseEntry(entry).catch((e: BusinessError): void => {
           Log.w(TAG, `${entry.id} 焦点暂停同步失败: ${e.code}`);
         });
       }
@@ -555,7 +631,7 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
       this.emitInterrupt(entry.id, 'stop', forced, wasPlaying, positionMs);
       if (wasPlaying) {
         // 用 pause 而非 stop：保留当前进度，用户可手动继续。
-        player.pause().catch((e: BusinessError): void => {
+        this.pauseEntry(entry).catch((e: BusinessError): void => {
           Log.w(TAG, `${entry.id} 焦点停止同步失败: ${e.code}`);
         });
       }
@@ -575,6 +651,7 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
     if (err.code === 5400102) {
       return;
     }
+    entry.playingIntent = false;
     if (!entry.errorReported) {
       entry.errorReported = true;
       entry.needsRecreate = true;
@@ -723,8 +800,17 @@ export default class AvPlayerBridge implements MethodCallHandler, StreamHandler 
       const pendingPlayer = entry.player;
       if (entry.pendingPlay && pendingPlayer !== null && !entry.released) {
         entry.pendingPlay = false;
+        entry.playingIntent = true;
         Log.w(TAG, `${entry.id} load 完成，补发挂起的 play`);
-        pendingPlayer.play().catch((e: BusinessError): void => {
+        pendingPlayer.play().then((): void => {
+          // 补发期间又来了焦点抢占/用户暂停：补一次 pause，避免装载完成后抢音。
+          if (!entry.playingIntent) {
+            this.pauseEntry(entry).catch((e: BusinessError): void => {
+              Log.w(TAG, `${entry.id} 补发后暂停失败: ${e.code}`);
+            });
+          }
+        }).catch((e: BusinessError): void => {
+          entry.playingIntent = false;
           Log.w(TAG, `${entry.id} 补发 play 失败: ${e.code}`);
         });
       }

@@ -130,6 +130,9 @@ class AvPlayerHandle extends AudioPlayerPlatform {
   bool _transcodeStream = false;
   bool _released = false;
 
+  /// 适配层认为原生正在播放（用于 wasPlaying 缺失时仍能同步 UI）。
+  bool _playing = false;
+
   @override
   Stream<PlaybackEventMessage> get playbackEventMessageStream => _events.stream;
 
@@ -356,12 +359,12 @@ class AvPlayerHandle extends AudioPlayerPlatform {
       case 'playing':
         _processingState = ProcessingStateMessage.ready;
         _emit();
-        _emitPlaying(true);
+        _setPlaying(true);
         break;
       case 'paused':
         _processingState = ProcessingStateMessage.ready;
         _emit();
-        _emitPlaying(false);
+        _setPlaying(false);
         break;
       case 'completed':
         _processingState = ProcessingStateMessage.completed;
@@ -377,7 +380,7 @@ class AvPlayerHandle extends AudioPlayerPlatform {
         if (_loading) return;
         _processingState = ProcessingStateMessage.idle;
         _emit();
-        _emitPlaying(false);
+        _setPlaying(false);
         break;
     }
   }
@@ -408,10 +411,10 @@ class AvPlayerHandle extends AudioPlayerPlatform {
     ));
 
     if ((hint == AvPlayerFocusHint.pause || hint == AvPlayerFocusHint.stop) &&
-        wasPlaying) {
+        (wasPlaying || _playing)) {
       if (position != null) _position = position;
       _emit();
-      _emitPlaying(false);
+      _setPlaying(false);
     }
   }
 
@@ -429,6 +432,11 @@ class AvPlayerHandle extends AudioPlayerPlatform {
         return AvPlayerFocusHint.unduck;
     }
     return null;
+  }
+
+  void _setPlaying(bool value) {
+    _playing = value;
+    _emitPlaying(value);
   }
 
   void _emitPlaying(bool value) {
