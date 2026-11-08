@@ -40,6 +40,7 @@ public final class SyncableSettings {
             "zh_variant",
             "player_transition",
             "player_show_weight",
+            "lyrics_show_cover",
             "player_auto_hide_idle_sec",
             "long_press_collapse_groups",
             // 主题外观（v2，客户端经 ThemeProvider 桥接）

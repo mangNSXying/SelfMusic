@@ -84,6 +84,7 @@ void main() {
       AppSettings.kZhVariant,
       AppSettings.kPlayerTransition,
       AppSettings.kPlayerShowWeight,
+      AppSettings.kLyricsShowCover,
       AppSettings.kPlayerAutoHideIdleSec,
       AppSettings.kLongPressCollapseGroups,
     });
@@ -92,7 +93,7 @@ void main() {
       ThemeProvider.syncKeyAccent,
       ThemeProvider.syncKeyBackground,
     });
-    expect(SyncableSettings.keys, hasLength(30));
+    expect(SyncableSettings.keys, hasLength(31));
 
     for (final key in SyncableSettings.keys) {
       // 主题存在 ThemeProvider(secure storage)，不在 app_settings.knownKeys。
@@ -178,6 +179,9 @@ void main() {
     expect(settings.applyRemoteSetting(AppSettings.kPlayerShowWeight, '0'),
         isTrue);
     expect(settings.playerShowWeight, isFalse);
+    expect(
+        settings.applyRemoteSetting(AppSettings.kLyricsShowCover, '0'), isTrue);
+    expect(settings.lyricsShowCover, isFalse);
     expect(
         settings.applyRemoteSetting(AppSettings.kPlayerAutoHideIdleSec, '10'),
         isTrue);

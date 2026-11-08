@@ -37,7 +37,7 @@
 
 | 分区 | 键 | 当前状态 | 内容与规划 |
 |------|----|---------|-----------|
-| 界面 | `appearance` | ✅ 已实现 | 主题（明暗 / 强调色 / 背景色 / 恢复默认）/ 文字（自定义字体、歌词行数，§3.7）/ 显示（标题格式、简繁转换、播放页显示权重、播放页控件隐藏）/ 动效（切换动画）/ 交互（长按组头，§3.8） |
+| 界面 | `appearance` | ✅ 已实现 | 主题（明暗 / 强调色 / 背景色 / 恢复默认）/ 文字（自定义字体、歌词行数，§3.7）/ 显示（标题格式、简繁转换、播放页显示权重、歌词页显示封面、播放页控件隐藏）/ 动效（切换动画）/ 交互（长按组头，§3.8） |
 | 播放 | `playback` | ✅ 已实现 | 播放行为（默认模式 / 断点续播 / 预载下一首 / 定时行为 / 歌词追焦 / 屏幕常亮 + 限定蓝牙）/ 随机权重（加权随机、次数冷却、曲数冷却、时长削弱、权重曲线）/ 音效（淡入淡出、应用音量、均衡器）/ 播放保护（焦点自动暂停、静音暂停、断连暂停）（§3.2） |
 | 歌曲 | `songs` | ✅ 已实现 | 扫描过滤（时长/大小过滤、仅 Wi-Fi、扫描间隔，**已入库歌曲即时生效**）/ 元数据（歌词与封面来源、保存方式、歌词目录、歌手解析）/ 播放源（备用源同步）（§3.4） |
 | 存储 | `storage` | ✅ 已实现 | 离线缓存（收藏自动缓存）/ 缓存容量（自定义 / 跟随服务端，§3.3）/ 缓存位置（目录展示与迁移）/ 封面缓存（压缩画质、清理缩略图）/ 备份与迁移（设置 / 歌单导出导入、本机备份，§3.5） |
@@ -154,7 +154,7 @@ mode == follow_server → 有服务端镜像用镜像，无镜像回退本地自
 |------|--------|
 | 播放偏好 | `play_mode_default`、`resume_on_startup`、`preload_next`、`sleep_play_through_default`、`sleep_default_duration_minutes`、`sleep_default_count`、`lyric_focus_idle_sec`、`weighted_random_enabled`、`weighted_draw_cooldown`、`weighted_count_cooldown_ratio`、`curve_weight_enabled`、`curve_weight_segments`、`fade_enabled`、`fade_duration_ms` |
 | 媒体库规则 | `scan_ignore_min_duration_sec`、`scan_ignore_min_size_bytes`、`online_meta_lyric_source`、`online_meta_cover_source`、`online_meta_save_mode`、`artist_resolve_auto`、`fallback_auto_repair` |
-| 界面偏好（v2，默认关） | `song_title_format`、`zh_variant`、`player_transition`、`player_show_weight`、`player_auto_hide_idle_sec`、`long_press_collapse_groups` |
+| 界面偏好（v2，默认关） | `song_title_format`、`zh_variant`、`player_transition`、`player_show_weight`、`lyrics_show_cover`、`player_auto_hide_idle_sec`、`long_press_collapse_groups` |
 | 主题外观（v2，默认关） | `theme_mode`、`theme_accent`、`theme_background`（自动背景=`''`） |
 
 **始终本机（不进入同步白名单）**：缓存容量/位置/收藏自动缓存/封面压缩、应用音量、均衡器、焦点/静音/断连暂停、屏幕常亮/限定蓝牙、歌词行数、界面字体/歌词目录、仅 Wi-Fi/扫描间隔、配对与网络凭据、HTTP/自签名、转码、通知栏/托盘、日志、快捷键、视图/排序/分组/列宽、导航状态、同步总开关/cursor/上次同步。
@@ -214,6 +214,7 @@ mode == follow_server → 有服务端镜像用镜像，无镜像回退本地自
 |--------|----|------|------|
 | 切换动画 | `player_transition` | `slide` | 播放页、分组、设置、源内、歌单详情等全部页面切换效果：`none` 关闭 / `fade` 淡入 / `slide` 整页滑动（前进从右进、返回从左进，类似抽屉） / `scale` 缩放 |
 | 播放页显示权重 | `player_show_weight` | `true`（显示） | 设置 → 界面 → 显示：播放页是否展示当前歌曲 liked / factor 权重芯片 |
+| 歌词页显示封面 | `lyrics_show_cover` | `true`（开） | 设置 → 界面 → 显示：竖屏歌词页（第 2 页）顶部是否显示当前曲目专辑封面；关闭时保持原「标题 + 歌词」布局。封面尺寸同时受宽、高与缩放口径约束，不会挤占歌词区 |
 | 标题格式 | `song_title_format` | `artistTitle`（歌手 - 歌名） | 设置 → 界面 → 显示：所有列表/播放页/队列的标题展示格式 |
 | 简繁转换 | `zh_variant` | `original`（原文） | 设置 → 界面 → 显示：`original` 原文 / `simplified` 繁体元数据以简体显示 / `traditional` 简体元数据以繁体显示。**只影响展示**（歌曲/专辑/歌手/在线候选/播放页/歌词/通知栏），不写回数据库、歌单快照或音频标签；搜索按折叠后的字形匹配（简繁互搜），排序按转换后文字比较。内置 OpenCC 1.4.2 词库（约 1.15 MB）在启动后后台预热，不阻塞首帧；**搜索折叠与显示设置解耦**，默认「原文」模式下也加载并支持简繁互搜。加载失败时展示回退原文、SQL 搜索回退原字面。歌单名、播放源名、文件夹名与「修改信息」弹窗保持原文 |
 | 播放页控件隐藏 | `player_auto_hide_idle_sec` | `5` | 播放页（竖屏第 0 页 / 横屏整页）停留该秒数且无触摸时，自动淡出左上返回键与封面右上「更多」，**只隐藏入口**（封面/进度条/控制按钮常显）；任何触摸立即恢复并重新计时；`0`=不隐藏 |

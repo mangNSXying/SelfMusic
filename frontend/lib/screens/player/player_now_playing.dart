@@ -61,35 +61,60 @@ class LyricsPage extends StatelessWidget {
     final m = PlayerMetrics.portrait(size);
     final scale = m.uiScale;
     final maxWidth = math.min(size.width, math.max(480.0, 720.0 * scale));
+    final showCover = direct.settings.lyricsShowCover;
 
     return Center(
       child: ConstrainedBox(
         constraints: BoxConstraints(maxWidth: maxWidth),
-        child: Column(
-          children: [
-            if (s != null)
-              Padding(
-                padding:
-                    EdgeInsets.fromLTRB(24 * scale, 28 * scale, 24 * scale, 0),
-                child: TitleBlock(
-                    player: player,
-                    direct: direct,
-                    compact: true,
-                    scale: scale),
-              ),
-            SizedBox(height: 6 * scale),
-            Expanded(
-              child: s == null
-                  ? Center(
-                      child: Text('暂无歌曲',
-                          style: TextStyle(
-                              fontSize: 14 * scale,
-                              color: cs.onSurface.withValues(alpha: 0.5))),
-                    )
-                  : LyricsView(player: player, scale: scale, align: 0.42),
-            ),
-            SizedBox(height: 8 * scale),
-          ],
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            // 封面尺寸同时受宽、高与缩放口径约束，矮屏不挤压歌词区。
+            final coverSize = math.min(
+              math.min(
+                  constraints.maxWidth * 0.42, constraints.maxHeight * 0.24),
+              180.0 * scale,
+            );
+            return Column(
+              children: [
+                if (s != null)
+                  Padding(
+                    padding: EdgeInsets.fromLTRB(24 * scale,
+                        (showCover ? 16 : 28) * scale, 24 * scale, 0),
+                    child: Column(
+                      children: [
+                        if (showCover) ...[
+                          CoverArt(
+                            coverPath: s.coverPath,
+                            song: s,
+                            cs: cs,
+                            size: coverSize,
+                            scale: scale,
+                          ),
+                          SizedBox(height: 12 * scale),
+                        ],
+                        TitleBlock(
+                            player: player,
+                            direct: direct,
+                            compact: true,
+                            scale: scale),
+                      ],
+                    ),
+                  ),
+                SizedBox(height: 6 * scale),
+                Expanded(
+                  child: s == null
+                      ? Center(
+                          child: Text('暂无歌曲',
+                              style: TextStyle(
+                                  fontSize: 14 * scale,
+                                  color: cs.onSurface.withValues(alpha: 0.5))),
+                        )
+                      : LyricsView(player: player, scale: scale, align: 0.42),
+                ),
+                SizedBox(height: 8 * scale),
+              ],
+            );
+          },
         ),
       ),
     );

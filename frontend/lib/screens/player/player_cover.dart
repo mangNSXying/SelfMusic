@@ -18,6 +18,55 @@ import '../../widgets/song_info_dialog.dart';
 
 import 'player_now_playing.dart';
 
+/// 专辑封面图像本体（不含右上「更多」入口）：播放页与歌词页共用。
+class CoverArt extends StatelessWidget {
+  final String? coverPath;
+  final Song song;
+  final ColorScheme cs;
+  final double size;
+  final double scale;
+
+  const CoverArt({
+    super.key,
+    required this.coverPath,
+    required this.song,
+    required this.cs,
+    required this.size,
+    this.scale = 1.0,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: size,
+      height: size,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24 * scale),
+        child: Container(
+          color: cs.primary.withValues(alpha: 0.10),
+          child: coverPath != null
+              ? Image.file(
+                  File(coverPath!),
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => Icon(
+                    Icons.music_note,
+                    size: size * 0.3,
+                    color: cs.primary.withValues(alpha: 0.5),
+                  ),
+                )
+              : song.metaUnread
+                  ? UnreadCoverPlaceholder(cs: cs, size: size)
+                  : Icon(
+                      Icons.music_note,
+                      size: size * 0.3,
+                      color: cs.primary.withValues(alpha: 0.5),
+                    ),
+        ),
+      ),
+    );
+  }
+}
+
 /// 专辑封面：指定尺寸的方形圆角封面 + 右上角更多操作。
 class Cover extends StatelessWidget {
   final String? coverPath;
@@ -45,28 +94,12 @@ class Cover extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(24 * scale),
-            child: Container(
-              color: cs.primary.withValues(alpha: 0.10),
-              child: coverPath != null
-                  ? Image.file(
-                      File(coverPath!),
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Icon(
-                        Icons.music_note,
-                        size: size * 0.3,
-                        color: cs.primary.withValues(alpha: 0.5),
-                      ),
-                    )
-                  : song.metaUnread
-                      ? UnreadCoverPlaceholder(cs: cs, size: size)
-                      : Icon(
-                          Icons.music_note,
-                          size: size * 0.3,
-                          color: cs.primary.withValues(alpha: 0.5),
-                        ),
-            ),
+          CoverArt(
+            coverPath: coverPath,
+            song: song,
+            cs: cs,
+            size: size,
+            scale: scale,
           ),
           Positioned(
             top: size * 0.04,

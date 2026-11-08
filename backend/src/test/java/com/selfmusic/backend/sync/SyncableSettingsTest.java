@@ -21,6 +21,7 @@ class SyncableSettingsTest {
         assertTrue(SyncableSettings.isSyncable("scan_ignore_min_duration_sec"));
         assertTrue(SyncableSettings.isSyncable("fallback_auto_repair"));
         assertTrue(SyncableSettings.isSyncable("song_title_format"));
+        assertTrue(SyncableSettings.isSyncable("lyrics_show_cover"));
         assertTrue(SyncableSettings.isSyncable("theme_mode"));
         assertTrue(SyncableSettings.isSyncable("theme_accent"));
 
@@ -56,6 +57,7 @@ class SyncableSettingsTest {
                 "zh_variant",
                 "player_transition",
                 "player_show_weight",
+                "lyrics_show_cover",
                 "player_auto_hide_idle_sec",
                 "long_press_collapse_groups",
                 "theme_mode",

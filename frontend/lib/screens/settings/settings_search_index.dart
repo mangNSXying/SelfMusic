@@ -101,6 +101,12 @@ final List<SettingsSearchEntry> settingsSearchEntries = [
   SettingsSearchEntry(
     section: SettingsItem.appearance,
     group: '显示',
+    label: '歌词页显示封面',
+    aliases: ['歌词封面', '歌词页封面', '专辑封面', '封面'],
+  ),
+  SettingsSearchEntry(
+    section: SettingsItem.appearance,
+    group: '显示',
     label: '播放页控件隐藏',
     aliases: ['播放页控件自动隐藏', '自动隐藏', '控件'],
   ),

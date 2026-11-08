@@ -294,6 +294,20 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
             ),
           ),
           _anchor(
+            '歌词页显示封面',
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('歌词页显示封面'),
+              subtitle: const Text('竖屏歌词页顶部显示专辑封面'),
+              value: _settings.lyricsShowCover,
+              onChanged: (v) {
+                setState(() => _settings.lyricsShowCover = v);
+                // AppSettings 非 ChangeNotifier：通知已挂载的歌词页即时重建。
+                context.read<DirectSourceManager>().refresh();
+              },
+            ),
+          ),
+          _anchor(
             '播放页控件隐藏',
             ListTile(
               contentPadding: EdgeInsets.zero,

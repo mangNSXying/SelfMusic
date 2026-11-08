@@ -212,6 +212,9 @@ class AppSettings {
   static const String kWeightedRandomEnabled = 'weighted_random_enabled';
   static const String kResumeOnStartup = 'resume_on_startup';
   static const String kPlayerShowWeight = 'player_show_weight';
+
+  /// 竖屏歌词页显示专辑封面（设置 → 界面 → 显示，默认开）。
+  static const String kLyricsShowCover = 'lyrics_show_cover';
   static const String kSleepPlayThroughDefault = 'sleep_play_through_default';
   static const String kSleepDefaultDurationMinutes =
       'sleep_default_duration_minutes';
@@ -493,6 +496,8 @@ class AppSettings {
         playerTransition = v;
       } else if (key == kPlayerShowWeight) {
         playerShowWeight = value == '1';
+      } else if (key == kLyricsShowCover) {
+        lyricsShowCover = value == '1';
       } else if (key == kPlayerAutoHideIdleSec) {
         final n = int.tryParse(value);
         if (n == null || !playerAutoHideIdleOptions.contains(n)) return false;
@@ -820,6 +825,11 @@ class AppSettings {
   bool get playerShowWeight =>
       (index.settingsGet(kPlayerShowWeight) ?? '1') == '1';
   set playerShowWeight(bool v) => _syncedSet(kPlayerShowWeight, v ? '1' : '0');
+
+  /// 竖屏歌词页是否显示专辑封面（默认开）。
+  bool get lyricsShowCover =>
+      (index.settingsGet(kLyricsShowCover) ?? '1') == '1';
+  set lyricsShowCover(bool v) => _syncedSet(kLyricsShowCover, v ? '1' : '0');
 
   // ---------- 歌曲分区·扫描过滤（settings.md §3.4） ----------
 
@@ -1309,6 +1319,7 @@ class AppSettings {
     kWeightedRandomEnabled,
     kResumeOnStartup,
     kPlayerShowWeight,
+    kLyricsShowCover,
     kSleepPlayThroughDefault,
     kSleepDefaultDurationMinutes,
     kSleepDefaultCount,
