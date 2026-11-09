@@ -314,35 +314,50 @@ class _NavBarState extends State<_NavBar> with SingleTickerProviderStateMixin {
               return InkWell(
                 borderRadius: BorderRadius.circular(10),
                 onTap: () => widget.nav.select(s),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Stack(
                   alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: selected
-                        ? colorScheme.primary.withValues(alpha: 0.12)
-                        : Colors.transparent,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(s.icon,
-                          size: 18,
-                          color: Color.lerp(
-                              colorScheme.onSurface.withValues(alpha: 0.6),
-                              colorScheme.primary,
-                              w)),
-                      const SizedBox(width: 6),
-                      Text(
-                        s.label,
-                        style: TextStyle(
-                          color: color,
-                          fontWeight:
-                              selected ? FontWeight.w600 : FontWeight.normal,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(s.icon,
+                              size: 18,
+                              color: Color.lerp(
+                                  colorScheme.onSurface.withValues(alpha: 0.6),
+                                  colorScheme.primary,
+                                  w)),
+                          const SizedBox(width: 6),
+                          Text(
+                            s.label,
+                            style: TextStyle(
+                              color: color,
+                              fontWeight: selected
+                                  ? FontWeight.w600
+                                  : FontWeight.normal,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    // 选中下划线：与文字同色、跟手淡入淡出，宽度贴合图标+文字。
+                    Positioned(
+                      left: 16,
+                      right: 16,
+                      bottom: 5,
+                      child: Opacity(
+                        opacity: w,
+                        child: Container(
+                          height: 3,
+                          decoration: BoxDecoration(
+                            color: colorScheme.primary,
+                            borderRadius: BorderRadius.circular(2),
+                          ),
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               );
             },
