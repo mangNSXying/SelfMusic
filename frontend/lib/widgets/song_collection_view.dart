@@ -810,7 +810,6 @@ class _SongCollectionViewState extends State<SongCollectionView> {
             label: widget.countLabel?.call(displaySongs.length, folderCount),
             trailing: trailing,
           ),
-        const Divider(height: 1),
         Expanded(
           child: rows.isEmpty
               ? (widget.emptyPlaceholder ??

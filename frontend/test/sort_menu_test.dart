@@ -34,6 +34,21 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  testWidgets('弹层贴着按钮右边缘（两种字段范围都不再偏左）', (tester) async {
+    for (final scope in SortScope.values) {
+      await openMenu(tester,
+          value: CollectionSort.defaultOrder, scope: scope, onChanged: (_) {});
+      final button = tester.getRect(find.byType(IconButton));
+      final item =
+          tester.getRect(find.byType(PopupMenuItem<CollectionSort>).first);
+      // 按钮贴着窗口右边：菜单右边缘只让出 showMenu 的 8px 屏幕边距。
+      expect(item.right, closeTo(button.right - 8, 1.0),
+          reason: '$scope 菜单右边缘应与按钮右边缘对齐（不再内缩一截）');
+      await tester.tapAt(const Offset(2, 400));
+      await tester.pumpAndSettle();
+    }
+  });
+
   testWidgets('歌曲页弹窗列出字符/歌手/专辑/权重/播放时长/播放次数/时长，无曲数', (tester) async {
     await openMenu(tester, value: CollectionSort.defaultOrder, onChanged: (_) {});
     for (final label in ['默认排序', '字符', '歌手', '专辑', '权重', '播放时长', '播放次数', '时长']) {

@@ -158,7 +158,6 @@ class _PlaylistsViewState extends State<PlaylistsView>
                 ),
               ],
             ),
-          if (_sel.active) const Divider(height: 1),
           if (!_sel.active)
             CountHeader(
               count: playlists.length,

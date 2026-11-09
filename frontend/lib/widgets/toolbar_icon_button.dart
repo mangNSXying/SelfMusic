@@ -56,7 +56,17 @@ class ToolbarPopupMenuButton<T> extends StatelessWidget {
     required this.itemBuilder,
     this.onSelected,
     this.color,
+    this.menuColor,
+    this.menuShape,
+    this.menuPosition,
   });
+
+  /// 菜单底色/圆角；为空时用 [PopupMenuButton] 的主题默认值。
+  final Color? menuColor;
+  final ShapeBorder? menuShape;
+
+  /// 菜单相对按钮的弹出方向；为空时用 [PopupMenuButton] 的默认（覆盖按钮）。
+  final PopupMenuPosition? menuPosition;
 
   @override
   Widget build(BuildContext context) {
@@ -76,6 +86,9 @@ class ToolbarPopupMenuButton<T> extends StatelessWidget {
       ),
       onSelected: onSelected,
       itemBuilder: itemBuilder,
+      color: menuColor,
+      shape: menuShape,
+      position: menuPosition,
     );
   }
 }
