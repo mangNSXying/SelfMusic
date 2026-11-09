@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:selfmusic/widgets/app_toast.dart';
 
@@ -75,5 +76,76 @@ void main() {
 
     await tester.pump(const Duration(milliseconds: 3000));
     expect(find.text('新消息'), findsNothing);
+  });
+
+  testWidgets('错误 toast 默认停留 6 秒，比普通 toast 更久', (tester) async {
+    await tester.pumpWidget(host());
+    AppToast.error('源不可用', '播放失败');
+    await tester.pump();
+
+    // 普通 toast 的 2800ms 已过，错误 toast 仍应停留。
+    await tester.pump(const Duration(milliseconds: 2900));
+    expect(find.text('播放失败：源不可用'), findsOneWidget);
+
+    // 累计 6100ms：错误 toast 过期。
+    await tester.pump(const Duration(milliseconds: 3200));
+    expect(find.text('播放失败：源不可用'), findsNothing);
+  });
+
+  testWidgets('错误 toast 气泡外的点击仍穿透到下层控件', (tester) async {
+    var tapped = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorKey: appNavigatorKey,
+        home: Scaffold(
+          body: Center(
+            child: ElevatedButton(
+              onPressed: () => tapped = true,
+              child: const Text('under'),
+            ),
+          ),
+        ),
+      ),
+    );
+    AppToast.show('出错了');
+    await tester.pump();
+    expect(find.text('出错了'), findsOneWidget);
+
+    await tester.tap(find.text('under'));
+    await tester.pump();
+    expect(tapped, isTrue);
+
+    await tester.pump(const Duration(milliseconds: 6100));
+    expect(find.text('出错了'), findsNothing);
+  });
+
+  testWidgets('点击错误 toast：复制错误信息、关闭当前 toast 并提示已复制', (tester) async {
+    final calls = <MethodCall>[];
+    final messenger = tester.binding.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      calls.add(call);
+      return null;
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+
+    await tester.pumpWidget(host());
+    AppToast.show('播放失败：源不可用');
+    await tester.pump();
+    expect(find.text('点击复制'), findsOneWidget);
+
+    await tester.tap(find.text('播放失败：源不可用'));
+    await tester.pump();
+    expect(find.text('播放失败：源不可用'), findsNothing);
+
+    await tester.pump();
+    expect(find.text('错误信息已复制'), findsOneWidget);
+    final copy = calls.singleWhere((c) => c.method == 'Clipboard.setData');
+    expect((copy.arguments as Map)['text'], '播放失败：源不可用');
+
+    // 让「已复制」提示自然过期，避免遗留计时器。
+    await tester.pump(const Duration(milliseconds: 3000));
+    expect(find.text('错误信息已复制'), findsNothing);
   });
 }
