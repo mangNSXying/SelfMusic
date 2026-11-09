@@ -167,6 +167,10 @@ class AvPlayerHandle extends AudioPlayerPlatform {
       'headersJson': jsonEncode(source.headers ?? const <String, String>{}),
       'initialPositionMs': request.initialPosition?.inMilliseconds ?? 0,
     };
+    // 原生 load 会 reset+prepare（位置归零后按 initialPositionMs seek）：任何
+    // 播中重载都从这里开始，导出日志必须能对上「为什么声音回到开头」。
+    debugPrint('[avplayer] load id=$id file=${filePath ?? playUrl} '
+        'initialMs=${request.initialPosition?.inMilliseconds ?? 0}');
     try {
       Map<dynamic, dynamic>? result;
       try {
@@ -186,6 +190,8 @@ class AvPlayerHandle extends AudioPlayerPlatform {
           ? Duration(milliseconds: ms.toInt())
           : null;
       _processingState = ProcessingStateMessage.ready;
+      debugPrint('[avplayer] load ok id=$id '
+          'durationMs=${ms is num ? ms.toInt() : -1}');
       return LoadResponse(duration: _duration);
     } finally {
       _loading = false;
@@ -200,6 +206,8 @@ class AvPlayerHandle extends AudioPlayerPlatform {
   @override
   Future<PlayResponse> play(PlayRequest request) async {
     if (_released) return PlayResponse();
+    debugPrint('[avplayer] play id=$id pos=${_position.inMilliseconds}ms '
+        'state=${_processingState.name}');
     await _channel.invokeMethod<void>('play', {'playerId': id});
     return PlayResponse();
   }
@@ -207,6 +215,8 @@ class AvPlayerHandle extends AudioPlayerPlatform {
   @override
   Future<PauseResponse> pause(PauseRequest request) async {
     if (_released) return PauseResponse();
+    debugPrint('[avplayer] pause id=$id pos=${_position.inMilliseconds}ms '
+        'state=${_processingState.name}');
     await _channel.invokeMethod<void>('pause', {'playerId': id});
     return PauseResponse();
   }
@@ -215,6 +225,8 @@ class AvPlayerHandle extends AudioPlayerPlatform {
   Future<SeekResponse> seek(SeekRequest request) async {
     if (_released) return SeekResponse();
     final pos = request.position ?? Duration.zero;
+    debugPrint('[avplayer] seek id=$id target=${pos.inMilliseconds}ms '
+        'before=${_position.inMilliseconds}ms');
     _position = pos;
     _emit();
     await _channel.invokeMethod<void>('seek', {
@@ -278,13 +290,25 @@ class AvPlayerHandle extends AudioPlayerPlatform {
           if (positionMs is num && positionMs >= 0) {
             _position = Duration(milliseconds: positionMs.toInt());
           }
+          debugPrint('[avplayer] state id=$id $state pos='
+              '${positionMs is num ? positionMs.toInt() : _position.inMilliseconds}ms');
           _onNativeState(state);
         }
         break;
       case 'position':
         final value = event['value'];
         if (value is num) {
-          _position = Duration(milliseconds: value.toInt());
+          final nextMs = value.toInt();
+          final prevMs = _position.inMilliseconds;
+          // 原生位置异常回退/前跳：播中「回到开头」或未记日志的 seek 会在这里。
+          if (prevMs - nextMs > 1000) {
+            debugPrint('[avplayer] pos regress id=$id prev=${prevMs}ms '
+                'next=${nextMs}ms state=${_processingState.name}');
+          } else if (nextMs - prevMs > 3000) {
+            debugPrint('[avplayer] pos jump id=$id prev=${prevMs}ms '
+                'next=${nextMs}ms state=${_processingState.name}');
+          }
+          _position = Duration(milliseconds: nextMs);
           _emit();
         }
         break;
@@ -329,6 +353,7 @@ class AvPlayerHandle extends AudioPlayerPlatform {
       case 'seekDone':
         final value = event['value'];
         if (value is num) {
+          debugPrint('[avplayer] seekDone id=$id pos=${value.toInt()}ms');
           _position = Duration(milliseconds: value.toInt());
           _emit();
         }
@@ -339,6 +364,7 @@ class AvPlayerHandle extends AudioPlayerPlatform {
       case 'error':
         final code = event['code'];
         final message = event['message'];
+        debugPrint('[avplayer] error id=$id code=$code msg=$message');
         _processingState = ProcessingStateMessage.idle;
         _emit();
         // 播中错误的唯一出口（PlayerProvider 的恢复/冷却/跳曲链路依赖它）。
@@ -401,6 +427,10 @@ class AvPlayerHandle extends AudioPlayerPlatform {
     final position = rawPosition is num && rawPosition >= 0
         ? Duration(milliseconds: rawPosition.toInt())
         : null;
+
+    debugPrint('[avplayer] interrupt id=$id hint=${hint.name} '
+        'forced=$forced wasPlaying=$wasPlaying '
+        'pos=${position?.inMilliseconds ?? -1}ms playing=$_playing');
 
     _focusEvents.add(AvPlayerFocusEvent(
       playerId: id,

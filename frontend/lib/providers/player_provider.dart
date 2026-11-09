@@ -1105,6 +1105,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       final key = _positionKeyOf(finished);
       if (_completedKey == key) return;
       _completedKey = key;
+      debugPrint('[play] 播放完成《${finished.title}》'
+          'pos=${p.position.inMilliseconds}ms '
+          'dur=${p.duration?.inMilliseconds ?? -1}ms mode=${_mode.name}');
       _emitWeight(finished, completed: true,
           position: player.duration ?? Duration.zero);
       if (_handleTrackCompletedSleep()) return;
@@ -1135,6 +1138,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 真的推进时更新、卡死即冻住，看门狗判据与恢复落点都以它为准。
     p.playbackEventStream.listen((e) {
       if (e.updatePosition > Duration.zero) {
+        // 原生上报位置回退：声音「回到开头」而 UI 仍正常时，这里是关键证据。
+        if (_lastPlatformPos > Duration.zero &&
+            e.updatePosition + const Duration(seconds: 1) < _lastPlatformPos) {
+          debugPrint('[play] 原生位置回退 '
+              'prev=${_lastPlatformPos.inMilliseconds}ms '
+              'next=${e.updatePosition.inMilliseconds}ms '
+              'playing=${p.playing} state=${p.processingState.name}');
+        }
         _lastPlatformPos = e.updatePosition;
         _stallPosSeen = true;
       }
@@ -1194,6 +1205,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       await _advance(autoAdvanceOnFailure: true);
       return;
     }
+    debugPrint('[play] 错误恢复→重载当前曲 at=${pos.inMilliseconds}ms');
     await _play(s,
         source: src,
         fromPlaylist: false,
@@ -1731,6 +1743,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final wasPlaying = player.playing;
     final current = _current!;
     final source = _curSource;
+    debugPrint('[play] 音频配置变更→重建播放器 '
+        'pos=${pos.inMilliseconds}ms playing=$wasPlaying');
     // 清理路径：同上——重建期间旧渐变作废，挂起的淡出 Future 解挂。
     _cancelFadeAndComplete();
     _fadingPause = false;
@@ -1774,6 +1788,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     final pos = position;
     final wasPlaying = player.playing && !_fadingPause;
+    debugPrint('[play] 播放链路变更→重载当前曲 '
+        'pos=${pos.inMilliseconds}ms playing=$wasPlaying');
     // 重载期间旧渐变作废，与 _play/applyAudioConfig 同口径。
     _cancelFadeAndComplete();
     _fadingPause = false;
@@ -2117,6 +2133,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   AudioPlayer get player => _player ??= _buildAndWire();
 
   AudioPlayer _buildAndWire() {
+    // 播放器实例变化会丢位置/重新 prepare：任何意外重建都应留下时间点。
+    debugPrint('[play] 创建/重建播放器实例');
     // 重建播放器即放弃旧的焦点暂停意图，避免旧实例的 RESUME 事件误触发。
     _audioFocusPaused = false;
     _audioFocusSavePending = false;
@@ -2283,6 +2301,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_shuttingDown || _disposed) return;
     final p = _player;
     if (p == null) return;
+    debugPrint('[play] 自动暂停请求 reason=${req.reason.name} '
+        'focus=${req.isFocus} focusWasPlaying=${req.focusWasPlaying} '
+        'playing=${p.playing} pos=${p.position.inMilliseconds}ms');
 
     if (req.isFocus) {
       final wasPlaying = req.focusWasPlaying ?? false;
@@ -2347,6 +2368,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_shuttingDown || _disposed) return;
     final p = _player;
     if (p == null || p.playing) return;
+    debugPrint('[play] 焦点恢复→自动续播 '
+        'pos=${p.position.inMilliseconds}ms');
     // 焦点暂停期间可能有挂起的淡出 Future（用户刚点暂停又切走）：先收口，
     // 避免恢复后迟到的淡出回调把音量/意图位复位。
     _cancelFadeAndComplete();
@@ -2846,6 +2869,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 解决了快速 next/prev 时旧 setUrl 的 connection abort / source error  toast 刷屏。
     final token = ++_playToken;
     bool alive() => token == _playToken;
+    // 任何一次装载都会换音源/归零位置：播中若再次出现本行即为「重播」嫌疑点。
+    debugPrint('[play] 装载《${s.title}》'
+        'startAt=${startAt?.inMilliseconds ?? -1}ms play=$play '
+        'preload=$preloadOnly emitBp=$emitBreakpoint');
     // 任何新的装载都意味着用户/自动链路已接管：取消网络挂起探针，避免旧挂起
     // 在装载成功后又把播放器 reload 一次。
     if (_netSuspended) _clearNetworkSuspension();
@@ -4008,6 +4035,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
     }
+    debugPrint('[play] 单曲重播→seek(0) '
+        'pos=${player.position.inMilliseconds}ms playing=${player.playing}');
     await player.seek(Duration.zero);
     if (play) {
       await player.play();
@@ -4464,8 +4493,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _resumePlaybackNow() async {
+    debugPrint('[play] 续播请求 pos=${_player?.position.inMilliseconds ?? -1}ms '
+        'playing=${_player?.playing ?? false} '
+        'state=${_player?.processingState.name ?? '-'} '
+        'restore=$_restorePositionMs deferred=$_hasDeferredRestore '
+        'netSuspend=$_netSuspended');
     // 网络挂起中：用户点播放/通知栏播放 → 立即尝试重连续播（探针仍在后台跑）。
     if (_netSuspended) {
+      debugPrint('[play] 续播分支：网络挂起→重连续播');
       await _resumeFromNetworkSuspension();
       return;
     }
@@ -4474,6 +4509,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         _restoreResumeTarget = null;
         return;
       }
+      debugPrint('[play] 续播分支：延迟恢复装载 '
+          'startAt=${_restorePositionMs}ms');
       final ok = await _play(
         _current!,
         play: false,
@@ -4505,6 +4542,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         (_sourceInvalid || p == null)) {
       if (_restoreResumeTarget == false) return;
       _restoreResumeTarget = null;
+      debugPrint('[play] 续播分支：音源无效→重载当前曲 '
+          'startAt=${_lastKnownPos.inMilliseconds}ms');
       final ok = await _play(_current!,
           source: _curSource,
           play: true,
@@ -4517,6 +4556,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     if (player.processingState == ProcessingState.completed) {
+      debugPrint('[play] 续播分支：completed→seek(0) '
+          'pos=${player.position.inMilliseconds}ms');
       try {
         await player.seek(Duration.zero);
       } catch (_) {}
@@ -4524,6 +4565,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 恢复期目标态可能在上面的 seek 期间又被连点翻转；以最新值为准。
     if (_restoreResumeTarget == false) return;
     _restoreResumeTarget = null;
+    debugPrint('[play] 续播分支：直接 play() '
+        'pos=${player.position.inMilliseconds}ms '
+        'state=${player.processingState.name}');
     // 同 [_play]：play() 的 Future 到播完/暂停才 complete，不能 await，否则
     // toggle()/通知栏「播放」的 _syncSystemMedia() 被推迟（前台服务/唤醒锁
     // 起不来，后台播放不成立）。
@@ -4616,6 +4660,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> seek(Duration d) async {
     _userTookOver = true;
+    debugPrint('[play] seek 请求 target=${d.inMilliseconds}ms '
+        'playing=${_player?.playing ?? false} '
+        'state=${_player?.processingState.name ?? '-'} '
+        'deferred=$_hasDeferredRestore live=$_liveTranscode');
     // 网络挂起中：只用目标位置更新挂起进度，等探针/用户播放时从那续播。
     if (_netSuspended) {
       var ms = d.inMilliseconds;

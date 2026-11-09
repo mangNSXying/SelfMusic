@@ -207,6 +207,9 @@ class PlaybackGuard {
   }
 
   void _handleGuardEvent(AudioGuardEvent e) {
+    debugPrint('[guard] 设备事件 ${e.type.name} value=${e.value} '
+        'volumePause=${_volumePauseEnabled()} '
+        'disconnectPause=${_disconnectPauseEnabled()}');
     final shouldPause = switch (e.type) {
       AudioGuardEventType.volume => _volumePauseEnabled() && e.value == 0,
       AudioGuardEventType.outputLost => _disconnectPauseEnabled(),
@@ -218,6 +221,8 @@ class PlaybackGuard {
   }
 
   void _handleFocusEvent(AudioFocusEvent e) {
+    debugPrint('[guard] 焦点事件 ${e.type.name} forced=${e.forced} '
+        'wasPlaying=${e.wasPlaying}');
     switch (e.type) {
       case AudioFocusEventType.pause:
         _emitPause(AutoPauseRequest(
@@ -241,7 +246,12 @@ class PlaybackGuard {
     if (_disposed) return;
     // 焦点事件即使本地 playing 已翻转也要交给 Provider 收口断点/UI；
     // 音量与断连事件仍要求真正在播，避免恢复界面时误暂停。
-    if (!request.isFocus && !_isPlaying()) return;
+    if (!request.isFocus && !_isPlaying()) {
+      debugPrint('[guard] 忽略自动暂停 ${request.reason.name}（未在播）');
+      return;
+    }
+    debugPrint('[guard] 自动暂停 ${request.reason.name} '
+        'focus=${request.isFocus} focusWasPlaying=${request.focusWasPlaying}');
     unawaited(_onPause(request));
   }
 
