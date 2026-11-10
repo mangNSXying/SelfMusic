@@ -13,6 +13,7 @@ import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/theme/theme_provider.dart';
+import 'package:selfmusic/widgets/player_controls.dart';
 import 'package:selfmusic/widgets/player_sheet_anim.dart';
 import 'package:sqlite3/open.dart';
 
@@ -66,8 +67,7 @@ Song _song(int i) => Song(
 ///
 /// 回归口径：宽屏打开面板后布局零异常，面板可见且宽度为 kQueuePanelWidth。
 void main() {
-  testWidgets('宽屏队列面板：打开后正常渲染（无 unbounded 布局异常）',
-      (tester) async {
+  testWidgets('宽屏队列面板：打开后正常渲染（无 unbounded 布局异常）', (tester) async {
     late final DirectSourceManager direct;
     late final PlayerProvider player;
     await tester.runAsync(() async {
@@ -79,8 +79,7 @@ void main() {
       // 非空队列：验证计数栏显示真实长度（不触真实装载）。
       player = PlayerProvider();
       player.loadOverride = (s, src) async {};
-      await player.playQueue(
-          [for (var i = 1; i <= 3; i++) _song(i)],
+      await player.playQueue([for (var i = 1; i <= 3; i++) _song(i)],
           source: _FakeSource());
     });
     addTearDown(() {
@@ -129,10 +128,8 @@ void main() {
       player = PlayerProvider();
       player.loadOverride = (s, src) async {};
       // 40 首、从第 31 首起播：首屏（约 9 行）看不到当前曲，必须靠展开定位。
-      await player.playQueue(
-          [for (var i = 1; i <= 40; i++) _song(i)],
-          index: 30,
-          source: _FakeSource());
+      await player.playQueue([for (var i = 1; i <= 40; i++) _song(i)],
+          index: 30, source: _FakeSource());
     });
     addTearDown(() {
       player.dispose();
@@ -169,6 +166,43 @@ void main() {
     await tester.pump();
     expect(tester.state<ScrollableState>(scrollable).position.pixels,
         greaterThan(0));
+  });
+
+  testWidgets('手机横屏队列展开到 224：回退条保留上一首且不溢出', (tester) async {
+    late final DirectSourceManager direct;
+    late final PlayerProvider player;
+    await tester.runAsync(() async {
+      open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+      final dir =
+          await Directory.systemTemp.createTemp('selfmusic_queue_narrow_');
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      direct = DirectSourceManager();
+      await direct.init();
+      player = PlayerProvider();
+      player.loadOverride = (s, src) async {};
+      await player.playQueue([for (var i = 1; i <= 3; i++) _song(i)],
+          source: _FakeSource());
+    });
+    addTearDown(() {
+      player.dispose();
+      direct.dispose();
+    });
+    // 844 − 260 侧栏 − 360 队列 = 迷你条只剩 224，走极窄回退。
+    tester.view.physicalSize = const Size(844, 390);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final nav = NavigationProvider();
+    await tester.pumpWidget(
+      MaterialApp(home: _Host(nav: nav, direct: direct, player: player)),
+    );
+    nav.toggleQueue();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+
+    expect(tester.takeException(), isNull);
+    expect(find.byType(PlayPauseButton), findsOneWidget);
+    expect(find.byIcon(Icons.skip_previous), findsOneWidget);
   });
 }
 

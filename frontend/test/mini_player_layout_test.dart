@@ -20,6 +20,20 @@ void main() {
     expect(huge.gap, 22);
   });
 
+  test('回退态正常保持 42，极窄才收紧到 34；封面始终 56', () {
+    final normal = compactTransportMetrics(390);
+    expect(normal.play, 42);
+    expect(normal.skipHit, 46);
+    expect(normal.queueHit, 48);
+
+    final tight = compactTransportMetrics(224);
+    expect(tight.play, 34);
+    expect(tight.skipHit, 30);
+    expect(tight.queueHit, 30);
+
+    expect(kMiniBarCoverSize, 56);
+  });
+
   test('条高始终固定 72，三列/回退同高', () {
     expect(kMiniPlayerBarHeight, 72);
     expect(kMiniWideMinWidth, 550);

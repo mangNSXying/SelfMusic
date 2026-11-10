@@ -23,6 +23,9 @@ import 'screen_metrics.dart';
 /// 迷你条高度始终固定为 72：三列与回退同高，不随内容/进度行变化。
 const double kMiniPlayerBarHeight = 72;
 
+/// 迷你条封面：按固定 72 高取 56；三列与回退共用，不再回退变小。
+const double kMiniBarCoverSize = 56;
+
 /// 宽屏三列迷你条的最低可用宽度：右侧 3 个 48 命中区 + 内边距。
 /// 低于此值回退现有 72 条（手机横屏队列展开时约 224）。
 const double kMiniWideMinWidth = 550;
@@ -38,6 +41,40 @@ const double kMiniWideMinWidth = 550;
     play: (w * 0.085).clamp(34.0, 36.0).toDouble(),
     skip: (w * 0.075).clamp(30.0, 34.0).toDouble(),
     gap: (w * 0.055).clamp(12.0, 22.0).toDouble(),
+  );
+}
+
+/// 回退态播控：正常宽度用 42 播放键 + 46 命中切歌；条宽 <300 的极窄
+/// 情况（手机横屏队列展开约 224）才收紧到 34/30/30，封面仍保持 56。
+@visibleForTesting
+({
+  double play,
+  double skipIcon,
+  double skipHit,
+  double queueIcon,
+  double queueHit,
+  double horizontalPadding,
+  EdgeInsetsGeometry playPadding,
+}) compactTransportMetrics(double barWidth) {
+  if (barWidth < 300) {
+    return (
+      play: 34,
+      skipIcon: 22,
+      skipHit: 30,
+      queueIcon: 26,
+      queueHit: 30,
+      horizontalPadding: 10,
+      playPadding: EdgeInsets.zero,
+    );
+  }
+  return (
+    play: 42,
+    skipIcon: 30,
+    skipHit: 46,
+    queueIcon: 28,
+    queueHit: 48,
+    horizontalPadding: 14,
+    playPadding: const EdgeInsets.all(8),
   );
 }
 
@@ -184,8 +221,15 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
             return wide
                 ? _buildWide(context, player, nav, song,
                     settings.songTitleFormat, cs, queueOpen)
-                : _buildCompact(context, player, nav, song,
-                    settings.songTitleFormat, cs, queueOpen);
+                : _buildCompact(
+                    context,
+                    player,
+                    nav,
+                    song,
+                    settings.songTitleFormat,
+                    cs,
+                    queueOpen,
+                    constraints.maxWidth);
           },
         ),
       ),
@@ -199,13 +243,13 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
         onTap: () => nav.select(NavSection.sources),
         child: Container(
           height: kMiniPlayerBarHeight,
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 14),
           decoration: BoxDecoration(
             border: Border(top: BorderSide(color: cs.outlineVariant)),
           ),
           child: Row(
             children: [
-              _coverPlaceholder(cs, 46),
+              _coverPlaceholder(cs, kMiniBarCoverSize),
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
@@ -227,7 +271,10 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
     );
   }
 
-  /// 现有单行迷你条：固定 72 高，内容不撑高。
+  /// 回退单行迷你条：固定 72 高，封面与三列同为 56。
+  ///
+  /// 正常宽度用 42 播放键 / 46 命中切歌；<300 的极窄回退才收小播控，
+  /// 但保留上一首与封面尺寸，不因回退改变左列大小。
   Widget _buildCompact(
       BuildContext context,
       PlayerProvider player,
@@ -235,39 +282,37 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
       Song song,
       SongTitleFormat titleFormat,
       ColorScheme cs,
-      bool queueOpen) {
+      bool queueOpen,
+      double barWidth) {
+    final t = compactTransportMetrics(barWidth);
     return InkWell(
       onTap: () {
         if (!nav.playerView) nav.openPlayer();
       },
       child: Container(
         height: kMiniPlayerBarHeight,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+        padding: EdgeInsets.symmetric(horizontal: t.horizontalPadding),
         decoration: BoxDecoration(
           border: Border(top: BorderSide(color: cs.outlineVariant)),
         ),
         child: Row(
           children: [
-            _cover(context, song, cs, 46),
-            const SizedBox(width: 12),
-            Expanded(child: _trackText(context, song, titleFormat, cs)),
-            Pressable(
-              onPressed: player.toggle,
-              tooltip: player.playing ? '暂停' : '播放',
-              pressedScale: 0.85,
-              child: Icon(
-                  player.playing
-                      ? Icons.pause_circle_filled
-                      : Icons.play_circle_filled,
-                  size: 42,
-                  color: cs.primary),
+            Expanded(
+              child:
+                  _trackInfo(context, song, titleFormat, cs, kMiniBarCoverSize),
             ),
-            Pressable(
-              onPressed: player.next,
-              tooltip: '下一首',
-              child: const Icon(Icons.skip_next, size: 30),
+            _skipButton(player.prev, '上一首', Icons.skip_previous, t.skipIcon,
+                t.skipHit, cs),
+            PlayPauseButton(
+              player: player,
+              cs: cs,
+              size: t.play,
+              padding: t.playPadding,
             ),
-            _queueButton(context, queueOpen, cs, iconSize: 28),
+            _skipButton(
+                player.next, '下一首', Icons.skip_next, t.skipIcon, t.skipHit, cs),
+            _queueButton(context, queueOpen, cs,
+                iconSize: t.queueIcon, buttonSize: t.queueHit),
           ],
         ),
       ),
@@ -277,8 +322,8 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
   /// 横屏三列：左当前曲 / 中播控 + 进度 / 右模式·音量·队列。
   ///
   /// 列宽 2:3:2（等价 1:1.5:1），中列封顶 560；条高与回退态同为固定 72，
-  /// 左侧封面按条高取 56。三列里播控整体缩小（含播放键整圆），给底部
-  /// 18 高进度行留出上下留白；回退态无进度，保持现有 42 播放键。
+  /// 左侧封面同为 [kMiniBarCoverSize]。三列里播控整体缩小（含播放键整圆），
+  /// 给底部 18 高进度行留出上下留白；回退态正常 42，仅 <300 极窄时收紧。
   Widget _buildWide(
       BuildContext context,
       PlayerProvider player,
@@ -287,8 +332,6 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
       SongTitleFormat titleFormat,
       ColorScheme cs,
       bool queueOpen) {
-    final coverSize =
-        (kMiniPlayerBarHeight * 0.78).clamp(46.0, 56.0).toDouble();
     return Container(
       height: kMiniPlayerBarHeight,
       padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -302,20 +345,15 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
             flex: 2,
             child: Align(
               alignment: Alignment.centerLeft,
-              child: InkWell(
+              child: _trackInfo(
+                context,
+                song,
+                titleFormat,
+                cs,
+                kMiniBarCoverSize,
                 onTap: () {
                   if (!nav.playerView) nav.openPlayer();
                 },
-                borderRadius: BorderRadius.circular(10),
-                child: Row(
-                  children: [
-                    _cover(context, song, cs, coverSize),
-                    const SizedBox(width: 11),
-                    Expanded(
-                      child: _trackText(context, song, titleFormat, cs),
-                    ),
-                  ],
-                ),
               ),
             ),
           ),
@@ -397,7 +435,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
   }
 
   Widget _queueButton(BuildContext context, bool queueOpen, ColorScheme cs,
-      {double iconSize = 28}) {
+      {double iconSize = 28, double buttonSize = 48}) {
     return GestureDetector(
       // 队列按钮区上滑打开队列（子手势先命中即胜出，不触发外层播放页上滑）。
       behavior: HitTestBehavior.translucent,
@@ -407,10 +445,37 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
       child: IconButton(
         icon: Icon(queueOpen ? Icons.queue_music : Icons.queue_music_outlined),
         iconSize: iconSize,
+        constraints:
+            BoxConstraints.tightFor(width: buttonSize, height: buttonSize),
+        style: IconButton.styleFrom(
+          minimumSize: Size.zero,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+        padding: EdgeInsets.zero,
         color: queueOpen ? cs.primary : null,
         tooltip: '播放队列',
         onPressed: () => toggleQueuePanel(context),
       ),
+    );
+  }
+
+  /// 左列信息（封面 + 标题/歌手）：三列与回退共用；[onTap] 为空时由
+  /// 回退整条 InkWell 接管点击，非空时三列只让左列点击进播放页。
+  Widget _trackInfo(BuildContext context, Song song,
+      SongTitleFormat titleFormat, ColorScheme cs, double coverSize,
+      {VoidCallback? onTap}) {
+    final row = Row(
+      children: [
+        _cover(context, song, cs, coverSize),
+        const SizedBox(width: 11),
+        Expanded(child: _trackText(context, song, titleFormat, cs)),
+      ],
+    );
+    if (onTap == null) return row;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: row,
     );
   }
 
