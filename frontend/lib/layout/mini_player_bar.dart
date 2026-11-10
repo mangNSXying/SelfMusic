@@ -2,6 +2,9 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
+import '../data/local/app_settings.dart';
+import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
@@ -9,10 +12,36 @@ import '../theme/app_theme.dart';
 import '../utils/cover_thumb.dart';
 import '../utils/song_title_format.dart';
 import '../utils/zh_variant.dart';
+import '../widgets/app_volume_control.dart';
 import '../widgets/draggable_sheet.dart';
+import '../widgets/player_controls.dart';
 import '../widgets/player_sheet_anim.dart';
 import '../widgets/pressable.dart';
 import 'queue_panel.dart';
+import 'screen_metrics.dart';
+
+/// 迷你条固定高度：竖屏/回退 72，横屏三列 88。
+const double kMiniPlayerBarHeight = 72;
+const double kMiniPlayerBarHeightWide = 88;
+
+/// 宽屏三列迷你条的最低可用宽度：右侧 3 个 48 命中区 + 内边距。
+/// 低于此值回退现有 72 条（手机横屏队列展开时约 224）。
+const double kMiniWideMinWidth = 550;
+
+/// 宽屏中列播控尺寸：随中列宽度自适应。
+///
+/// play 44~48、切歌图标 28~34、左右间隔 14~26。播放键上限 48 是为给
+/// 底部 22 高进度行留出至少 8 的上下留白；间隔仍可继续随宽度增长。
+@visibleForTesting
+({double play, double skip, double gap}) miniTransportMetrics(
+    double centerWidth) {
+  final w = centerWidth.clamp(0.0, 560.0);
+  return (
+    play: (w * 0.115).clamp(44.0, 48.0).toDouble(),
+    skip: (w * 0.08).clamp(28.0, 34.0).toDouble(),
+    gap: (w * 0.06).clamp(14.0, 26.0).toDouble(),
+  );
+}
 
 /// 队列按钮区上滑判定：向上速度或累计上移距离足够即视为「上滑打开播放队列」。
 /// 与整条迷你条的上滑（打开播放页）阈值一致（velocity < -700）。
@@ -21,7 +50,10 @@ bool isQueueUpSwipe(double? primaryVelocity, double startY, double lastY) =>
     (primaryVelocity ?? 0) < -700 || startY - lastY > 40;
 
 /// 底部“正在播放”迷你条：点击进入全屏播放页；提供播放控制。
-/// 尺寸较大（72 高 + 封面缩略图），便于移动端点击。
+///
+/// 宽度够且窗口为宽屏时走三列：左当前曲 / 中播控 + 进度 / 右模式·音量·队列；
+/// 竖屏、窄窗或队列挤压到 [kMiniWideMinWidth] 以下时回退现有 72 高单行。
+/// 两种形态都是固定高度，内容不反向撑高播放条。
 class MiniPlayerBar extends StatefulWidget {
   const MiniPlayerBar({super.key});
 
@@ -72,7 +104,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
     if (start == null || last == null || !mounted) return;
     final nav = context.read<NavigationProvider>();
     final size = MediaQuery.sizeOf(context);
-    final wide = size.width >= 900 || size.width > size.height;
+    final wide = isWideWindow(size);
     final launcher = context.read<AppSheetLauncher>();
     if (wide) {
       // 宽屏无底部弹层：上滑（速度或累计位移）切右侧常驻面板，与旧行为一致。
@@ -128,158 +160,315 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
         context.select<NavigationProvider, bool>((n) => n.queueOpen);
     final settings = context.watch<DirectSourceManager>().settings;
     final cs = Theme.of(context).colorScheme;
+    final wideWindow = isWideWindow(MediaQuery.sizeOf(context));
 
     // 队列为空（初次进入）时显示占位条：点按进入播放源页添加歌曲，
     // 保证内容页底部始终有迷你条（改进 B6-U9）。
     if (player.queue.isEmpty) {
-      return Material(
-        color: cs.surface,
-        child: InkWell(
-          onTap: () => nav.select(NavSection.sources),
-          child: Container(
-            constraints: const BoxConstraints(minHeight: 72),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-            decoration: BoxDecoration(
-              border: Border(top: BorderSide(color: cs.outlineVariant)),
-            ),
-            child: Row(
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: SizedBox(
-                    width: 46,
-                    height: 46,
-                    child: Container(
-                      color: cs.primary.withValues(alpha: 0.12),
-                      child: Icon(Icons.music_note, color: cs.primary),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    '还没有播放队列，去播放源页添加歌曲',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context)
-                        .textTheme
-                        .bodyMedium
-                        ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6)),
-                  ),
-                ),
-                Icon(Icons.chevron_right,
-                    color: cs.onSurface.withValues(alpha: 0.4)),
-              ],
-            ),
-          ),
-        ),
-      );
+      return _buildEmpty(nav, cs);
     }
     final song = player.current ?? player.queue.first;
-    // 封面按实际显示尺寸 ×DPR 降解码（缩略图优先）。
-    final coverPx = (46 * MediaQuery.devicePixelRatioOf(context)).round();
 
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
-      // 上滑跟手进入播放页（点按同样进入）。
+      // 上滑跟手进入播放页（点按左侧信息同样进入）。
       onVerticalDragStart: _onDragStart,
       onVerticalDragUpdate: _onDragUpdate,
       onVerticalDragEnd: _onDragEnd,
       child: Material(
         color: cs.surface,
-        child: InkWell(
-          onTap: () {
-            if (!nav.playerView) nav.openPlayer();
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            // 固定高度 + 实际宽度：队列/侧栏 300ms 伸缩期间按真实可用宽
+            // 切三列/回退，不把宽布局硬塞进动画中的窄列。
+            final wide =
+                wideWindow && constraints.maxWidth >= kMiniWideMinWidth;
+            return wide
+                ? _buildWide(context, player, nav, song,
+                    settings.songTitleFormat, cs, queueOpen)
+                : _buildCompact(context, player, nav, song,
+                    settings.songTitleFormat, cs, queueOpen);
           },
-          child: Container(
-            constraints: const BoxConstraints(minHeight: 72),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-            decoration: BoxDecoration(
-              border: Border(top: BorderSide(color: cs.outlineVariant)),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmpty(NavigationProvider nav, ColorScheme cs) {
+    return Material(
+      color: cs.surface,
+      child: InkWell(
+        onTap: () => nav.select(NavSection.sources),
+        child: Container(
+          height: kMiniPlayerBarHeight,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          decoration: BoxDecoration(
+            border: Border(top: BorderSide(color: cs.outlineVariant)),
+          ),
+          child: Row(
+            children: [
+              _coverPlaceholder(cs, 46),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  '还没有播放队列，去播放源页添加歌曲',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodyMedium
+                      ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6)),
+                ),
+              ),
+              Icon(Icons.chevron_right,
+                  color: cs.onSurface.withValues(alpha: 0.4)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 现有单行迷你条：固定 72 高，内容不撑高。
+  Widget _buildCompact(
+      BuildContext context,
+      PlayerProvider player,
+      NavigationProvider nav,
+      Song song,
+      SongTitleFormat titleFormat,
+      ColorScheme cs,
+      bool queueOpen) {
+    return InkWell(
+      onTap: () {
+        if (!nav.playerView) nav.openPlayer();
+      },
+      child: Container(
+        height: kMiniPlayerBarHeight,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+        decoration: BoxDecoration(
+          border: Border(top: BorderSide(color: cs.outlineVariant)),
+        ),
+        child: Row(
+          children: [
+            _cover(context, song, cs, 46),
+            const SizedBox(width: 12),
+            Expanded(child: _trackText(context, song, titleFormat, cs)),
+            Pressable(
+              onPressed: player.toggle,
+              tooltip: player.playing ? '暂停' : '播放',
+              pressedScale: 0.85,
+              child: Icon(
+                  player.playing
+                      ? Icons.pause_circle_filled
+                      : Icons.play_circle_filled,
+                  size: 42,
+                  color: cs.primary),
             ),
-            child: Row(
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: SizedBox(
-                    width: 46,
-                    height: 46,
-                    child: song.coverPath != null
-                        ? Image.file(
-                            File(coverDisplayPath(song.coverPath!)),
-                            fit: BoxFit.cover,
-                            cacheWidth: coverPx,
-                            cacheHeight: coverPx,
-                            errorBuilder: (_, __, ___) => Container(
-                              color: cs.primary.withValues(alpha: 0.12),
-                              child: Icon(Icons.music_note, color: cs.primary),
+            Pressable(
+              onPressed: player.next,
+              tooltip: '下一首',
+              child: const Icon(Icons.skip_next, size: 30),
+            ),
+            _queueButton(context, queueOpen, cs, iconSize: 28),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 横屏三列：左当前曲 / 中播控 + 进度 / 右模式·音量·队列。
+  ///
+  /// 列宽 2:3:2（等价 1:1.5:1），中列封顶 560；左侧封面按固定条高取大，
+  /// 中列播控与间隔由 [miniTransportMetrics] 随中列宽自适应。
+  Widget _buildWide(
+      BuildContext context,
+      PlayerProvider player,
+      NavigationProvider nav,
+      Song song,
+      SongTitleFormat titleFormat,
+      ColorScheme cs,
+      bool queueOpen) {
+    final coverSize =
+        (kMiniPlayerBarHeightWide * 0.68).clamp(46.0, 60.0).toDouble();
+    return Container(
+      height: kMiniPlayerBarHeightWide,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      decoration: BoxDecoration(
+        border: Border(top: BorderSide(color: cs.outlineVariant)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+            flex: 2,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: InkWell(
+                onTap: () {
+                  if (!nav.playerView) nav.openPlayer();
+                },
+                borderRadius: BorderRadius.circular(10),
+                child: Row(
+                  children: [
+                    _cover(context, song, cs, coverSize),
+                    const SizedBox(width: 11),
+                    Expanded(
+                      child: _trackText(context, song, titleFormat, cs),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 3,
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 560),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final m = miniTransportMetrics(constraints.maxWidth);
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            _skipButton(player.prev, '上一首', Icons.skip_previous,
+                                m.skip, cs),
+                            SizedBox(width: m.gap),
+                            PlayPauseButton(
+                              player: player,
+                              cs: cs,
+                              size: m.play,
+                              padding: EdgeInsets.zero,
                             ),
-                          )
-                        : Container(
-                            color: cs.primary.withValues(alpha: 0.12),
-                            child: Icon(Icons.music_note, color: cs.primary),
-                          ),
-                  ),
+                            SizedBox(width: m.gap),
+                            _skipButton(player.next, '下一首', Icons.skip_next,
+                                m.skip, cs),
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        PlayerSeek(
+                          player: player,
+                          cs: cs,
+                          compact: true,
+                          inlineTime: true,
+                          showTime: false,
+                          scale: 0.75,
+                        ),
+                      ],
+                    );
+                  },
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        formatSongTitle(song, settings.songTitleFormat),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodyLarge
-                            ?.copyWith(fontWeight: FontWeight.w600),
-                      ),
-                      Text(
-                        zhDisplay(song.artist ?? 'Unknown'),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodyMedium,
-                      ),
-                    ],
-                  ),
-                ),
-                Pressable(
-                  onPressed: player.toggle,
-                  tooltip: player.playing ? '暂停' : '播放',
-                  pressedScale: 0.85,
-                  child: Icon(
-                      player.playing
-                          ? Icons.pause_circle_filled
-                          : Icons.play_circle_filled,
-                      size: 42,
-                      color: cs.primary),
-                ),
-                Pressable(
-                  onPressed: player.next,
-                  tooltip: '下一首',
-                  child: const Icon(Icons.skip_next, size: 30),
-                ),
-                GestureDetector(
-                  // 队列按钮区上滑打开队列（子手势先命中即胜出，不触发外层播放页上滑）。
-                  behavior: HitTestBehavior.translucent,
-                  onVerticalDragStart: _onQueueDragStart,
-                  onVerticalDragUpdate: _onQueueDragUpdate,
-                  onVerticalDragEnd: _onQueueDragEnd,
-                  child: IconButton(
-                    icon: Icon(queueOpen
-                        ? Icons.queue_music
-                        : Icons.queue_music_outlined),
-                    iconSize: 28,
-                    color: queueOpen ? cs.primary : null,
-                    tooltip: '播放队列',
-                    onPressed: () => toggleQueuePanel(context),
-                  ),
-                ),
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                ModeButton(player: player, cs: cs),
+                AppVolumeButton(player: player),
+                _queueButton(context, queueOpen, cs, iconSize: 28),
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _skipButton(VoidCallback onPressed, String tooltip, IconData icon,
+      double iconSize, ColorScheme cs) {
+    return Pressable(
+      onPressed: onPressed,
+      tooltip: tooltip,
+      padding: EdgeInsets.zero,
+      child: SizedBox(
+        width: 44,
+        height: 44,
+        child: Center(
+          child: Icon(icon,
+              size: iconSize, color: cs.onSurface.withValues(alpha: 0.78)),
+        ),
+      ),
+    );
+  }
+
+  Widget _queueButton(BuildContext context, bool queueOpen, ColorScheme cs,
+      {double iconSize = 28}) {
+    return GestureDetector(
+      // 队列按钮区上滑打开队列（子手势先命中即胜出，不触发外层播放页上滑）。
+      behavior: HitTestBehavior.translucent,
+      onVerticalDragStart: _onQueueDragStart,
+      onVerticalDragUpdate: _onQueueDragUpdate,
+      onVerticalDragEnd: _onQueueDragEnd,
+      child: IconButton(
+        icon: Icon(queueOpen ? Icons.queue_music : Icons.queue_music_outlined),
+        iconSize: iconSize,
+        color: queueOpen ? cs.primary : null,
+        tooltip: '播放队列',
+        onPressed: () => toggleQueuePanel(context),
+      ),
+    );
+  }
+
+  Widget _trackText(BuildContext context, Song song,
+      SongTitleFormat titleFormat, ColorScheme cs) {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          formatSongTitle(song, titleFormat),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context)
+              .textTheme
+              .bodyLarge
+              ?.copyWith(fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          zhDisplay(song.artist ?? 'Unknown'),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+      ],
+    );
+  }
+
+  Widget _cover(BuildContext context, Song song, ColorScheme cs, double size) {
+    if (song.coverPath == null) return _coverPlaceholder(cs, size);
+    final px = (size * MediaQuery.devicePixelRatioOf(context)).round();
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(size * 0.22),
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: Image.file(
+          File(coverDisplayPath(song.coverPath!)),
+          fit: BoxFit.cover,
+          cacheWidth: px,
+          cacheHeight: px,
+          errorBuilder: (_, __, ___) => _coverPlaceholder(cs, size),
+        ),
+      ),
+    );
+  }
+
+  Widget _coverPlaceholder(ColorScheme cs, double size) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(size * 0.22),
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: Container(
+          color: cs.primary.withValues(alpha: 0.12),
+          child: Icon(Icons.music_note, color: cs.primary, size: size * 0.5),
         ),
       ),
     );

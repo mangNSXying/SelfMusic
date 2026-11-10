@@ -4,13 +4,12 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 
 import 'package:flutter/material.dart';
 
-import 'package:flutter/services.dart';
-
 import '../../layout/player_metrics.dart';
 import '../../models/song.dart';
 import '../../providers/player_provider.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../widgets/lyrics_view.dart';
+import '../../widgets/player_controls.dart';
 import '../../widgets/pressable.dart';
 import '../../widgets/song_list.dart';
 
@@ -367,8 +366,7 @@ class DesktopLandscapePlayer extends StatelessWidget {
                       maxWidth: m.lyricsMaxWidth + m.lyricsPadding * 2),
                   child: EdgeFade(
                     padding: EdgeInsets.symmetric(
-                        horizontal: m.lyricsPadding,
-                        vertical: 12 * m.uiScale),
+                        horizontal: m.lyricsPadding, vertical: 12 * m.uiScale),
                     child: LyricsView(
                         player: player, scale: m.uiScale, align: 0.47),
                   ),
