@@ -2,25 +2,25 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:selfmusic/layout/mini_player_bar.dart';
 
 void main() {
-  test('宽屏播控随中列自适应：窄列收紧，宽列放大，上限封顶', () {
+  test('三列播控比回退更小，随中列宽在小区间内自适应', () {
     final narrow = miniTransportMetrics(238);
-    expect(narrow.play, 44);
-    expect(narrow.skip, 28);
-    expect(narrow.gap, closeTo(14.28, 0.01));
+    expect(narrow.play, 34);
+    expect(narrow.skip, 30);
+    expect(narrow.gap, closeTo(13.09, 0.01));
 
     final wide = miniTransportMetrics(425);
-    expect(wide.play, 48);
-    expect(wide.skip, 34);
-    expect(wide.gap, closeTo(25.5, 0.01));
+    expect(wide.play, 36);
+    expect(wide.skip, closeTo(31.875, 0.01));
+    expect(wide.gap, 22);
+    expect(wide.play, lessThan(42)); // 回退态播放键 42
 
     final huge = miniTransportMetrics(900);
-    expect(huge.play, 48);
+    expect(huge.play, 36);
     expect(huge.skip, 34);
-    expect(huge.gap, 26);
+    expect(huge.gap, 22);
   });
 
-  test('固定高度与回退阈值', () {
-    expect(kMiniPlayerBarHeightWide, 88);
+  test('条高始终固定 72，三列/回退同高', () {
     expect(kMiniPlayerBarHeight, 72);
     expect(kMiniWideMinWidth, 550);
   });

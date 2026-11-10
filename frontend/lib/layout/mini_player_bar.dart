@@ -20,26 +20,24 @@ import '../widgets/pressable.dart';
 import 'queue_panel.dart';
 import 'screen_metrics.dart';
 
-/// 迷你条固定高度：竖屏/回退 72，横屏三列 88。
+/// 迷你条高度始终固定为 72：三列与回退同高，不随内容/进度行变化。
 const double kMiniPlayerBarHeight = 72;
-const double kMiniPlayerBarHeightWide = 88;
 
 /// 宽屏三列迷你条的最低可用宽度：右侧 3 个 48 命中区 + 内边距。
 /// 低于此值回退现有 72 条（手机横屏队列展开时约 224）。
 const double kMiniWideMinWidth = 550;
 
-/// 宽屏中列播控尺寸：随中列宽度自适应。
-///
-/// play 44~48、切歌图标 28~34、左右间隔 14~26。播放键上限 48 是为给
-/// 底部 22 高进度行留出至少 8 的上下留白；间隔仍可继续随宽度增长。
+/// 宽屏三列播控尺寸：随中列宽度自适应，但比回退态更小——底部有进度行时
+/// 为上下留白让位。play 34~36（整圆随 size 缩放）、切歌按钮命中 30~34
+/// （图标约 0.72 倍）、左右间隔 12~22。
 @visibleForTesting
 ({double play, double skip, double gap}) miniTransportMetrics(
     double centerWidth) {
   final w = centerWidth.clamp(0.0, 560.0);
   return (
-    play: (w * 0.115).clamp(44.0, 48.0).toDouble(),
-    skip: (w * 0.08).clamp(28.0, 34.0).toDouble(),
-    gap: (w * 0.06).clamp(14.0, 26.0).toDouble(),
+    play: (w * 0.085).clamp(34.0, 36.0).toDouble(),
+    skip: (w * 0.075).clamp(30.0, 34.0).toDouble(),
+    gap: (w * 0.055).clamp(12.0, 22.0).toDouble(),
   );
 }
 
@@ -278,8 +276,9 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
 
   /// 横屏三列：左当前曲 / 中播控 + 进度 / 右模式·音量·队列。
   ///
-  /// 列宽 2:3:2（等价 1:1.5:1），中列封顶 560；左侧封面按固定条高取大，
-  /// 中列播控与间隔由 [miniTransportMetrics] 随中列宽自适应。
+  /// 列宽 2:3:2（等价 1:1.5:1），中列封顶 560；条高与回退态同为固定 72，
+  /// 左侧封面按条高取 56。三列里播控整体缩小（含播放键整圆），给底部
+  /// 18 高进度行留出上下留白；回退态无进度，保持现有 42 播放键。
   Widget _buildWide(
       BuildContext context,
       PlayerProvider player,
@@ -289,9 +288,9 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
       ColorScheme cs,
       bool queueOpen) {
     final coverSize =
-        (kMiniPlayerBarHeightWide * 0.68).clamp(46.0, 60.0).toDouble();
+        (kMiniPlayerBarHeight * 0.78).clamp(46.0, 56.0).toDouble();
     return Container(
-      height: kMiniPlayerBarHeightWide,
+      height: kMiniPlayerBarHeight,
       padding: const EdgeInsets.symmetric(horizontal: 14),
       decoration: BoxDecoration(
         border: Border(top: BorderSide(color: cs.outlineVariant)),
@@ -335,7 +334,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             _skipButton(player.prev, '上一首', Icons.skip_previous,
-                                m.skip, cs),
+                                m.skip * 0.72, m.skip, cs),
                             SizedBox(width: m.gap),
                             PlayPauseButton(
                               player: player,
@@ -345,7 +344,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
                             ),
                             SizedBox(width: m.gap),
                             _skipButton(player.next, '下一首', Icons.skip_next,
-                                m.skip, cs),
+                                m.skip * 0.72, m.skip, cs),
                           ],
                         ),
                         const SizedBox(height: 2),
@@ -381,14 +380,14 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
   }
 
   Widget _skipButton(VoidCallback onPressed, String tooltip, IconData icon,
-      double iconSize, ColorScheme cs) {
+      double iconSize, double hitSize, ColorScheme cs) {
     return Pressable(
       onPressed: onPressed,
       tooltip: tooltip,
       padding: EdgeInsets.zero,
       child: SizedBox(
-        width: 44,
-        height: 44,
+        width: hitSize,
+        height: hitSize,
         child: Center(
           child: Icon(icon,
               size: iconSize, color: cs.onSurface.withValues(alpha: 0.78)),

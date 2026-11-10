@@ -53,7 +53,7 @@ class ModeButton extends StatelessWidget {
 /// 进度条（v5 设计稿：细进度 + 下方时间标签）。
 ///
 /// [inlineTime] 为迷你条紧凑用法：时间与轨道同一行、隐藏断网提示；
-/// [compact] 收窄轨道/thumb，并把滑块压到 22 高，供固定高度横屏条使用。
+/// [compact] 收窄轨道/thumb，并把进度压到 18 高，供固定高度横屏条使用。
 class PlayerSeek extends StatefulWidget {
   final PlayerProvider player;
   final ColorScheme cs;
@@ -129,7 +129,7 @@ class _PlayerSeekState extends State<PlayerSeek> {
   /// 直播转码态每次 seek 都重开一条服务端流，逐 tick 发 seek 等于连续重启。
   double? _dragValue;
 
-  /// 迷你条紧凑进度：固定 22 高，拖动只存本地，松手才 seek。
+  /// 迷你条紧凑进度：固定 18 高，拖动只存本地，松手才 seek。
   Widget _compactSeek(double shown, double max) {
     final progress = max <= 0 ? 0.0 : (shown / max).clamp(0.0, 1.0);
     return LayoutBuilder(
@@ -158,7 +158,7 @@ class _PlayerSeekState extends State<PlayerSeek> {
           onHorizontalDragEnd: (_) => commit(),
           onHorizontalDragCancel: () => setState(() => _dragValue = null),
           child: SizedBox(
-            height: 22,
+            height: 18,
             child: Stack(
               alignment: Alignment.centerLeft,
               children: [
@@ -181,7 +181,7 @@ class _PlayerSeekState extends State<PlayerSeek> {
                 ),
                 Positioned(
                   left: (progress * width - 4.5).clamp(0.0, width - 9),
-                  top: 6.5,
+                  top: 4.5,
                   child: Container(
                     width: 9,
                     height: 9,
@@ -224,7 +224,7 @@ class _PlayerSeekState extends State<PlayerSeek> {
             color: widget.cs.onSurface.withValues(alpha: 0.62),
           );
           return SizedBox(
-            height: 22,
+            height: 18,
             child: Row(
               children: [
                 SizedBox(
