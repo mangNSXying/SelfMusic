@@ -154,8 +154,7 @@ Song _song(String ref) => Song(
 
 List<Song> _songs6() => [for (var i = 1; i <= 6; i++) _song('s$i')];
 
-List<String> _refs(PlayerProvider p) =>
-    [for (final s in p.queue) s.sourceRef];
+List<String> _refs(PlayerProvider p) => [for (final s in p.queue) s.sourceRef];
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -230,8 +229,7 @@ void main() {
           reason: '接缝复本不断言去重，但深层不再随点播增长');
 
       await player.next(); // 越过接缝 s3 → s4（推入，深层 [s1,s3,s4]）
-      expect(player.current?.sourceRef, 's4',
-          reason: '下一首不得原地打转重播 s3');
+      expect(player.current?.sourceRef, 's4', reason: '下一首不得原地打转重播 s3');
       expect(_refs(player), ['s1', 's3', 's4', 's4', 's5', 's6']);
     });
 
@@ -287,8 +285,7 @@ void main() {
       await player.onPlaylistSongRemoved(uuid, _song('s2'),
           newPlaylistCount: 5);
 
-      expect(player.current?.sourceRef, 's3',
-          reason: '用户预期：删当前改播下一首（不再回放上一首）');
+      expect(player.current?.sourceRef, 's3', reason: '用户预期：删当前改播下一首（不再回放上一首）');
       expect(_refs(player), ['s1', 's3', 's4', 's5', 's6'],
           reason: '用户预期：深层 1 3（此处为 1 3 结构类比），已删的 s2 不复活');
     });
@@ -309,6 +306,103 @@ void main() {
 
       expect(player.current?.sourceRef, 's5');
       expect(_refs(player), ['s1', 's2', 's3', 's4', 's5']);
+    });
+  });
+
+  group('批量删歌 / 扫描 missing', () {
+    test('一次移除当前曲+其后一首：播旧歌单顺序中的下一首存活曲', () async {
+      final (index, player, uuid, pid) = await setup();
+      addTearDown(index.close);
+      addTearDown(player.dispose);
+
+      await tap(player, uuid, 0);
+      await player.next(); // s2，当前 s2@1
+      await index.removePlaylistItem(pid, 'webdav:test', 's2');
+      await index.removePlaylistItem(pid, 'webdav:test', 's3');
+      await player.onPlaylistSongsRemoved(uuid, [_song('s2'), _song('s3')],
+          newPlaylistCount: 4);
+
+      expect(player.current?.sourceRef, 's4', reason: '旧歌单顺序里 s2 之后第一首存活曲是 s4');
+      expect(_refs(player), ['s1', 's4', 's5', 's6']);
+    });
+
+    test('移除最后一首/整单：队列空、停播、清断点', () async {
+      final (index, player, uuid, pid) = await setup();
+      addTearDown(index.close);
+      addTearDown(player.dispose);
+
+      await tap(player, uuid, 5); // s6
+      for (var i = 1; i <= 6; i++) {
+        await index.removePlaylistItem(pid, 'webdav:test', 's$i');
+      }
+      await player.onPlaylistSongsRemoved(uuid, _songs6(), newPlaylistCount: 0);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(player.queue, isEmpty);
+      expect(player.current, isNull, reason: '没有存活曲应停播，而不是留着死引用');
+      expect(index.getPlayState(), isNull);
+    });
+
+    test('非锚定歌单移除：当前队列完全不变', () async {
+      final (index, player, uuid, _) = await setup();
+      addTearDown(index.close);
+      addTearDown(player.dispose);
+
+      await tap(player, uuid, 0);
+      await player.onPlaylistSongsRemoved('another-uuid', [_song('s2')]);
+      expect(_refs(player), ['s1', 's2', 's3', 's4', 's5', 's6']);
+      expect(player.current?.sourceRef, 's1');
+    });
+
+    test('missing 当前曲：按旧歌单顺序续播下一首存活曲', () async {
+      final (index, player, uuid, _) = await setup();
+      addTearDown(index.close);
+      addTearDown(player.dispose);
+
+      await tap(player, uuid, 0);
+      await player.next(); // s2
+      await player.onSongsMissing('webdav:test', {'s2', 's3'});
+
+      expect(player.current?.sourceRef, 's4');
+      expect(_refs(player), ['s1', 's4', 's5', 's6']);
+    });
+
+    test('missing 非当前曲：队列剔除，播放不打断', () async {
+      final (index, player, uuid, _) = await setup();
+      addTearDown(index.close);
+      addTearDown(player.dispose);
+
+      await tap(player, uuid, 0); // s1
+      await player.onSongsMissing('webdav:test', {'s3'});
+
+      expect(player.current?.sourceRef, 's1');
+      expect(_refs(player), ['s1', 's2', 's4', 's5', 's6']);
+    });
+
+    test('playQueue 过滤 missing 曲并 remap 起播下标', () async {
+      final (index, player, uuid, _) = await setup();
+      addTearDown(index.close);
+      addTearDown(player.dispose);
+
+      await index.upsertSource('webdav:test', 'webdav', 'test', '{}');
+      await index.upsertSongs([
+        for (var i = 1; i <= 6; i++)
+          DirectSongRow(
+            sourceKey: 'webdav:test',
+            ref: 's$i',
+            title: 's$i',
+            size: 1,
+            mtime: 1,
+          ),
+      ]);
+      // 只留 s1 为 alive → s2 被标记 missing。
+      await index
+          .markMissingExcept('webdav:test', ['s1', 's3', 's4', 's5', 's6']);
+
+      await tap(player, uuid, 1); // 点名 s2（已 missing）
+      expect(player.current?.sourceRef, 's3', reason: '被点曲不可播时应落到其后第一首可播曲');
+      expect(player.queueLength, 5);
+      expect(_refs(player), isNot(contains('s2')), reason: 'missing 曲不得进入新队列');
     });
   });
 
@@ -365,8 +459,8 @@ void main() {
           reason: '队列面板当前行同样应保留新封面');
 
       // 基座续播段里的歌刷新后同样不能被旧快照回退（s3 来自融合基座）。
-      player.refreshSongMeta(player.queue[2].copyWith(
-          coverPath: '/covers/s3.jpg'));
+      player.refreshSongMeta(
+          player.queue[2].copyWith(coverPath: '/covers/s3.jpg'));
       expect(player.playNext(_song('s7')), isTrue);
       expect(player.queue[2].sourceRef, 's3');
       expect(player.queue[2].coverPath, '/covers/s3.jpg',

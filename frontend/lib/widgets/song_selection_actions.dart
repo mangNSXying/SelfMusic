@@ -242,8 +242,12 @@ Future<void> _delete(
       await direct.deleteSong(s);
       deleted.add(s);
       // 删歌不挑上下文：锚定/未锚定都剔除该死引用（歌单路径另有
-      // onDeleted → onPlaylistSongRemoved 收口容量与续播定位）。
-      unawaited(player.onSongDeleted(s));
+      // onDeleted → onPlaylistSongsRemoved 收口容量与续播定位）。
+      // 等播放器收口完成再处理下一首，避免批量删当前曲时下标/续播错位；
+      // 收口异常不影响“文件已删除”的统计。
+      try {
+        await player.onSongDeleted(s);
+      } catch (_) {}
     } catch (e) {
       firstError ??= e;
     }

@@ -236,6 +236,11 @@ class LocalFileDirectSource extends MusicSource {
       );
     }
     await index.upsertSongs(toWrite);
+    final aliveSet = alive.toSet();
+    final missingRefs = [
+      for (final ref in known.keys)
+        if (!aliveSet.contains(ref)) ref,
+    ];
     await index.markMissingExcept(key, alive);
     final removed = await index.clearMissing(key);
     return ScanSummary(
@@ -244,7 +249,7 @@ class LocalFileDirectSource extends MusicSource {
       updated: updated,
       unchanged: unchanged,
       total: alive.length,
-      cancelled: token?.cancelled ?? false,
+      missingRefs: missingRefs,
     );
   }
 

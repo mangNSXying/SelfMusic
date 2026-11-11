@@ -89,8 +89,13 @@ class LocalDirectSource extends MusicSource {
           );
 
     // 本地目录为空是合法状态（用户确实清空了目录），不启用防误清库闸门。
+    // 取消的半途扫描同样不提交 missing diff（见 commitScan）。
     return commitScan(index,
-        sourceKey: key, items: out, known: known, guardEmpty: false);
+        sourceKey: key,
+        items: out,
+        known: known,
+        guardEmpty: false,
+        cancelled: token?.cancelled ?? false);
   }
 
   /// ohos 目录枚举：直接列举（同会话临时授权与已激活的持久化授权均可

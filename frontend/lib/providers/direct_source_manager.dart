@@ -236,7 +236,12 @@ class DirectSourceManager extends ChangeNotifier {
   /// 播放器据此清掉队列/深层历史里属于该源的死引用（见
   /// [PlayerProvider.onSourceRemoved]）。main 装配期注入；未注入（单测/无播放器）
   /// 时静默跳过。
-  void Function(String key)? onSourceRemoved;
+  Future<void> Function(String key)? onSourceRemoved;
+
+  /// 扫描发现某些歌曲从源上消失（missing）后的统一出口：播放器剔除运行时
+  /// 队列/深层历史里的死引用；库侧 play_state/deep_lists 由
+  /// [LocalIndex.pruneUnavailable] 清理。main 装配期注入；未注入时只清库。
+  Future<void> Function(String sourceKey, Set<String> refs)? onSongsMissing;
 
   /// 单曲硬删后受影响的歌单 uuid（[deleteSong] 触发）：UI 据此增量刷新歌单计数。
   /// main 装配期注入；未注入（单测/无歌单 UI）时静默跳过。
@@ -509,7 +514,7 @@ class DirectSourceManager extends ChangeNotifier {
     for (final k in removedKeys) {
       // 同步删除：凭据与队列/深层历史一并清（与本机 removeSource 同口径）。
       await _purgeSourceSecrets(k);
-      notify?.call(k);
+      await notify?.call(k);
     }
   }
 
@@ -1677,7 +1682,7 @@ class DirectSourceManager extends ChangeNotifier {
     // 已删的源不该再出现在对账基准里（否则下次 reload 会重复通知一次）。
     _knownSourceKeys.remove(key);
     // 队列/深层历史里的死引用由播放器收口（与「其它设备同步删除」同一出口）。
-    onSourceRemoved?.call(key);
+    await onSourceRemoved?.call(key);
     notifyListeners();
   }
 
@@ -1816,9 +1821,24 @@ class DirectSourceManager extends ChangeNotifier {
         },
       );
       await index.updateSourceScan(key, token.cancelled ? 'cancelled' : 'done');
-      // 扫描有增/改/删 → 元数据版本自增（全局库/LibraryProvider 就地刷新）。
+      // 取消的半途扫描不产生 missing（commitScan 已保证），这里再兜一层。
+      final missing = token.cancelled ? const <String>[] : summary.missingRefs;
+      if (missing.isNotEmpty) {
+        final refs = missing.toSet();
+        try {
+          // 先清库里的断点/深历史死引用，再让播放器清运行时队列。
+          await index.pruneUnavailable(key, refs);
+          await onSongsMissing?.call(key, refs);
+        } catch (e) {
+          debugPrint('[direct] missing 队列收口失败（忽略）：$e');
+        }
+      }
+      // 扫描有增/改/删/missing → 元数据版本自增（全局库/LibraryProvider 就地刷新）。
       // 只删不增也要刷新：否则被剔除的曲目会留在列表里直到下次整库重载。
-      if (summary.added > 0 || summary.updated > 0 || summary.removed > 0) {
+      if (summary.added > 0 ||
+          summary.updated > 0 ||
+          summary.removed > 0 ||
+          missing.isNotEmpty) {
         _metaVersion++;
         _reconcileArtists();
       }
@@ -1829,6 +1849,7 @@ class DirectSourceManager extends ChangeNotifier {
         unchanged: summary.unchanged,
         total: summary.total,
         cancelled: token.cancelled,
+        missingRefs: missing,
       );
     } catch (e) {
       error = e.toString();

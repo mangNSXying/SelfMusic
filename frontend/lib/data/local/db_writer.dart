@@ -719,6 +719,9 @@ Object? _runOp(Database db, String name, Map<String, dynamic> a) {
       return null;
     case 'clearMissing':
       return _opClearMissing(db, a['sourceKey'] as String);
+    case 'pruneUnavailable':
+      _opPruneUnavailable(db, a);
+      return null;
     case 'deleteSong':
       _opDeleteSong(db, a['sourceKey'] as String, a['ref'] as String);
       return null;
@@ -1682,6 +1685,20 @@ int _opClearMissing(Database db, String sourceKey) {
                       AND p.song_ref = idx_songs.ref), 0) = 0
   ''', [sourceKey]);
   return db.updatedRows;
+}
+
+/// 扫描判定 missing 后：只剔除断点队列与深层历史里的死引用，不动歌曲本体、
+/// 收藏、歌词与歌单条目（文件恢复后仍可继续使用）。锚定键不作废。
+void _opPruneUnavailable(Database db, Map<String, dynamic> a) {
+  final sourceKey = a['sourceKey'] as String;
+  final refs = {for (final r in (a['refs'] as List)) r as String};
+  if (refs.isEmpty) return;
+  bool dead(Map<dynamic, dynamic> e) =>
+      e['sourceKey'] == sourceKey && refs.contains(e['sourceRef']);
+  _inTx(db, () {
+    _prunePlayStateWhere(db, dead);
+    _pruneDeepListsWhere(db, dead);
+  });
 }
 
 void _opMovePlaylistItem(Database db, Map<String, dynamic> a) {

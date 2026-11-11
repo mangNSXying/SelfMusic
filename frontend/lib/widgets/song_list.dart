@@ -29,8 +29,8 @@ export 'song_tile.dart';
 ///
 /// 内容区歌单详情与播放器带的「歌单页」共用这一份代码路径，保证：
 /// 同源（同一持久化歌单 [playlists_provider]）、同一行形态（[SongTile] 完整行）、
-/// 同一增删写回语义（[PlaylistsProvider.removeItemRow] / [PlaylistsProvider.moveItemRow]，
-/// 并联动播放器 [PlayerProvider.onPlaylistSongRemoved]）、同一排序键
+/// 同一增删写回语义（[PlaylistsProvider.removeSongs] / [PlaylistsProvider.moveItemRow]，
+/// 并联动播放器 [PlayerProvider.onPlaylistSongsRemoved]）、同一排序键
 /// （[DirectSourceManager.settings.sortPlaylistDetail]）。
 ///
 /// 分类/折叠/多选/计数栏由 [SongCollectionView] 统一实现。
@@ -169,27 +169,35 @@ class _SongListState extends State<SongList> {
     if (ok != true || !mounted) return;
     clearSelection();
     final keys = {for (final s in selected) selectionKey(s)};
-    // 从后往前移除，避免 store 序号移位问题（_items 与 _songs 按同序平行）。
+    // 从后往前收集，避免 store 序号移位问题（_items 与 _songs 按同序平行）。
     final removed = <Song>[];
     for (var i = _items.length - 1; i >= 0; i--) {
       if (keys.contains(selectionKey(_songs[i]))) {
-        provider.removeItemRow(widget.playlistId, _items[i]);
         removed.add(_songs[i]);
       }
     }
-    _notifyPlayerRemoved(provider, removed);
+    if (removed.isEmpty) return;
+    final newCount = await provider.removeSongs(widget.playlistId, removed);
+    if (!mounted) return;
+    await _notifyPlayerRemoved(provider, removed, newCount);
   }
 
-  /// 歌单删歌后联动当前播放（删到当前曲则播新末尾；深层列表移除引用）。
-  void _notifyPlayerRemoved(PlaylistsProvider provider, List<Song> removed) {
+  /// 单曲移除（行菜单）：写库完成后再通知播放器。
+  Future<void> _removeOne(PlaylistsProvider provider, Song s) async {
+    final count = await provider.removeSongs(widget.playlistId, [s]);
+    if (!mounted) return;
+    await _notifyPlayerRemoved(provider, [s], count);
+  }
+
+  /// 歌单删歌后联动当前播放（删到当前曲则播下一首；深层列表移除引用）。
+  Future<void> _notifyPlayerRemoved(
+      PlaylistsProvider provider, List<Song> removed, int count) async {
     if (removed.isEmpty) return;
     final uuid = provider.store.index.playlistUuidOf(widget.playlistId);
     if (uuid == null) return;
-    final player = context.read<PlayerProvider>();
-    final count = provider.countOf(widget.playlistId);
-    for (final s in removed) {
-      unawaited(player.onPlaylistSongRemoved(uuid, s, newPlaylistCount: count));
-    }
+    await context
+        .read<PlayerProvider>()
+        .onPlaylistSongsRemoved(uuid, removed, newPlaylistCount: count);
   }
 
   /// 「播放 / 从头播放」。[startWithOrder] 为 true 时起始曲按当前播放顺序
@@ -367,8 +375,8 @@ class _SongListState extends State<SongList> {
                     provider.moveItemRow(widget.playlistId, itemRow, 1);
                   }
                 case 'row:remove':
-                  provider.removeItemRow(widget.playlistId, itemRow);
-                  _notifyPlayerRemoved(provider, [provider.songOf(itemRow)]);
+                  unawaited(
+                      _removeOne(provider, provider.songOf(itemRow)));
               }
             },
             selectionActions: (selected, clear) => [
@@ -391,16 +399,14 @@ class _SongListState extends State<SongList> {
                 clear,
                 onDeleted: (deleted) {
                   provider.refresh();
-                  if (!mounted) return;
+                  if (!mounted || deleted.isEmpty) return;
                   final uuid =
                       provider.store.index.playlistUuidOf(widget.playlistId);
-                  if (uuid == null || deleted.isEmpty) return;
-                  final player = context.read<PlayerProvider>();
+                  if (uuid == null) return;
                   final count = provider.countOf(widget.playlistId);
-                  for (final s in deleted) {
-                    unawaited(player.onPlaylistSongRemoved(uuid, s,
-                        newPlaylistCount: count));
-                  }
+                  unawaited(context.read<PlayerProvider>().onPlaylistSongsRemoved(
+                      uuid, deleted,
+                      newPlaylistCount: count));
                 },
               ),
             ],

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../../providers/navigation_provider.dart';
 import '../../data/local/local_index.dart';
+import '../../providers/player_provider.dart';
 import '../../providers/playlists_provider.dart';
 import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/text_input_dialog.dart';
@@ -52,6 +53,9 @@ Future<void> confirmDeletePlaylist(
   if (ok == true && context.mounted) {
     final nav = context.read<NavigationProvider>();
     if (nav.browsingPlaylistId == p.id) nav.exitPlaylist();
+    // 与批量删除同口径：先取 uuid（删行后查不到），再解绑播放器锚定/断点归属。
+    final uuid = provider.store.index.playlistUuidOf(p.id);
     provider.delete(p.id);
+    if (uuid != null) context.read<PlayerProvider>().onPlaylistDeleted(uuid);
   }
 }

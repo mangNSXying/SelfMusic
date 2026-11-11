@@ -852,6 +852,59 @@ class LocalIndex {
     return out;
   }
 
+  /// 输入歌曲中当前不可播放的身份集合。
+  ///
+  /// - 直连源 `missing=1`：扫描已判定文件消失；
+  /// - 已配置源里查不到 idx_songs 行：索引已删（历史悬挂歌单条目），同样不能播。
+  ///
+  /// 未配置的源（server 快照/未添加的源）查不到行不代表已删除，按可用保留；
+  /// server 占位歌不走本地索引，恒视为可用。
+  Set<(String, String)> unavailableKeys(List<Song> songs) {
+    final out = <(String, String)>{};
+    if (songs.isEmpty) return out;
+    final bySource = <String, List<Song>>{};
+    for (final s in songs) {
+      if (s.sourceKey == 'server') continue;
+      bySource.putIfAbsent(s.sourceKey, () => []).add(s);
+    }
+    for (final entry in bySource.entries) {
+      final refs = <String>{for (final s in entry.value) s.sourceRef};
+      final flags = <String, int>{};
+      for (final chunk in sql_util.chunksOf(refs.toList(growable: false), 400)) {
+        final placeholders = sql_util.sqlPlaceholders(chunk.length);
+        final rows = _db!.select(
+          'SELECT ref, missing FROM idx_songs '
+          'WHERE source_key=? AND ref IN ($placeholders)',
+          [entry.key, ...chunk],
+        );
+        for (final r in rows) {
+          flags[r['ref'] as String] = (r['missing'] as int?) ?? 0;
+        }
+      }
+      final configured = _db!.select(
+            'SELECT 1 FROM sources WHERE key=? LIMIT 1',
+            [entry.key],
+          ).isNotEmpty;
+      for (final s in entry.value) {
+        final missing = flags[s.sourceRef];
+        if (missing != null ? missing != 0 : configured) {
+          out.add((s.sourceKey, s.sourceRef));
+        }
+      }
+    }
+    return out;
+  }
+
+  /// 扫描发现 missing 后清理队列/深层历史里的死引用（不动歌曲本体、
+  /// 收藏、歌词与歌单条目：文件恢复后仍可继续使用）。
+  Future<void> pruneUnavailable(String sourceKey, Set<String> refs) {
+    if (refs.isEmpty) return Future.value();
+    return _writer!.op<void>('pruneUnavailable', {
+      'sourceKey': sourceKey,
+      'refs': refs.toList(growable: false),
+    });
+  }
+
   Song? _songByRef(String sourceKey, String ref) {
     const sql = 'SELECT $kSongSelectColumns $kSongFromJoin '
         'WHERE i.source_key=? AND i.ref=?';

@@ -233,6 +233,13 @@ class ScanSummary {
 
   /// 用户是否中途取消了本次扫描（取消后仍返回已处理部分）。
   final bool cancelled;
+
+  /// 本轮扫描后不再可用的曲目 ref（源上消失 / 未出现在本轮清单）。
+  ///
+  /// 仅完整扫描产出；取消的扫描恒为空（未遍历到的清单项不能被当成 missing）。
+  /// 播放器据此把当前队列、深层历史与断点里的死引用一并清掉。
+  final List<String> missingRefs;
+
   const ScanSummary({
     required this.added,
     this.removed = 0,
@@ -240,6 +247,7 @@ class ScanSummary {
     this.unchanged = 0,
     required this.total,
     this.cancelled = false,
+    this.missingRefs = const [],
   });
 }
 

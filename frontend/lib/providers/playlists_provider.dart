@@ -105,9 +105,22 @@ class PlaylistsProvider extends ChangeNotifier {
     return added;
   }
 
-  Future<void> removeSong(int playlistId, Song s) async {
-    await store.removeSong(playlistId, s);
-    _recount(playlistId);
+  Future<void> removeSong(int playlistId, Song s) =>
+      removeSongs(playlistId, [s]);
+
+  /// 批量移除并等待落库；返回移除后的条目数（播放器容量/续播收口用）。
+  ///
+  /// 不再“逐首 unawaited 写库再读计数”：写没落库时 count 是旧值，深历史
+  /// 容量会偏大，批量移除当前曲时续播定位也会错位。
+  Future<int> removeSongs(int playlistId, List<Song> songs) async {
+    for (final s in songs) {
+      await store.removeSong(playlistId, s);
+    }
+    final count = _countsOf(playlistId);
+    _counts[playlistId] = count;
+    _dataRevision++;
+    notifyListeners();
+    return count;
   }
 
   /// 该歌是否已在指定歌单。
@@ -136,14 +149,6 @@ class PlaylistsProvider extends ChangeNotifier {
   /// 目标行）；歌单详情的选择键一律取索引实时行（`LocalIndex.songByRef`），
   /// 否则两套 key 不同源（已选计数恒 0 / 全选变整单）。
   Song songOf(PlaylistItemRow r) => store.songOf(r);
-
-  void removeItemRow(int playlistId, PlaylistItemRow r) {
-    // 写走后台隔离，必须等落库后再刷新：此前不等写完就 _recount，计数读到
-    // 旧值、列表也要等下一次重建才去掉该行（移除后 UI 短暂仍显示已删歌曲）。
-    unawaited(store
-        .removeSong(playlistId, store.songOf(r))
-        .then((_) => _recount(playlistId)));
-  }
 
   void moveItemRow(int playlistId, PlaylistItemRow r, int delta) {
     store.move(playlistId, r.id, delta);

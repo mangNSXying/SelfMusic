@@ -56,6 +56,23 @@ Future<ScanSummary> commitScan(
     toWrite.add(item.row.withCoverPath(coverPath ?? item.row.coverPath));
   }
   await index.upsertSongs(toWrite);
+  // 取消的半途扫描不能把未遍历到的清单项标成 missing：本轮只提交已扫到的
+  // 新增/更新，不做 missing diff。否则一次取消就会误清大量歌曲（并触发
+  // 播放器把队列里的歌当成已删除）。
+  if (cancelled) {
+    return ScanSummary(
+      added: added,
+      updated: updated,
+      unchanged: unchanged,
+      total: alive.length,
+      cancelled: true,
+    );
+  }
+  final aliveSet = alive.toSet();
+  final missingRefs = [
+    for (final ref in known.keys)
+      if (!aliveSet.contains(ref)) ref,
+  ];
   await index.markMissingExcept(sourceKey, alive);
   final removed = await index.clearMissing(sourceKey);
   return ScanSummary(
@@ -64,5 +81,6 @@ Future<ScanSummary> commitScan(
     updated: updated,
     unchanged: unchanged,
     total: alive.length,
+    missingRefs: missingRefs,
   );
 }

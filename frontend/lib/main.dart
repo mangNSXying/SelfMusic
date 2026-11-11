@@ -403,6 +403,10 @@ class SelfMusicApp extends StatelessWidget {
     // 深层历史里属于该源的死引用——否则播到即抛「找不到该歌曲的播放源」，
     // 断点快照还会把死引用写回库。库侧清理由 LocalIndex.deleteSource 收口。
     direct.onSourceRemoved = player.onSourceRemoved;
+    // 扫描判定 missing（文件从源上消失）按“删除”口径处理：播放器剔除队列/
+    // 深层历史/下一首槽里的死引用；库侧 play_state/deep_lists 由
+    // LocalIndex.pruneUnavailable 在扫描收口内清理。
+    direct.onSongsMissing = player.onSongsMissing;
     // 桌面托盘「退出」与未驻留时的窗口关闭共用同一收口：先停播放器
     //（落库断点/释放 mpv），再由 DesktopTray 退进程。
     DesktopTray.instance.setBeforeQuit(player.shutdown);

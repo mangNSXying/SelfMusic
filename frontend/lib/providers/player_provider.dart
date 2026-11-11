@@ -2584,6 +2584,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       String? contextKey,
       bool resetAnchor = false}) async {
     if (songs.isEmpty) return;
+    // 统一队列入口：扫描已判定 missing / 索引已无行的直连歌不进入新队列；
+    // 起播下标同步映射到过滤后的列表（被点曲不可用时落到其后第一首可播曲）。
+    final filtered = _playableQueue(songs, index);
+    if (filtered.songs.isEmpty) return;
+    songs = filtered.songs;
+    index = filtered.index;
     final resolved = _resolveLiveAll(songs);
     // 起播一批新歌 = 换上下文：旧的「下一首播放」暂存项不再有意义。
     _nextUp = null;
@@ -2679,6 +2685,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   ///
   /// 只改运行时队列，不改写持久化歌单（与 [removeAt] 同源）。已排过的同一首幂等（不重复替换）。
   bool playNext(Song s) {
+    // missing/索引已无行的直连歌不再允许排进「下一首播放」。
+    if (!_isPlayable(s)) return false;
     _userTookOver = true;
     if (_current == null || _queue.isEmpty) {
       // 没有当前曲：「下一首播放」无从谈起，退化为直接起播。
@@ -2785,6 +2793,71 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final idx = _index;
     if (idx == null || songs.isEmpty) return List<Song>.of(songs);
     return idx.resolveLiveSongs(songs);
+  }
+
+  /// 过滤掉扫描已判定 missing / 已配置源里索引已无行的直连歌
+  ///（server 歌不受影响）。
+  List<Song> _playableSongs(List<Song> songs) {
+    final idx = _index;
+    if (idx == null || songs.isEmpty) return List<Song>.of(songs);
+    final dead = idx.unavailableKeys(songs);
+    if (dead.isEmpty) return List<Song>.of(songs);
+    return [
+      for (final s in songs)
+        if (!dead.contains((s.sourceKey, s.sourceRef))) s,
+    ];
+  }
+
+  bool _isPlayable(Song s) {
+    final idx = _index;
+    if (idx == null) return true;
+    return !idx.unavailableKeys([s]).contains((s.sourceKey, s.sourceRef));
+  }
+
+  /// 队列入口统一过滤不可用曲，并把起播下标映射到过滤后的列表。
+  ///
+  /// 被点的曲本身不可用时，优先落到它后面的第一首可播曲，其次前一首；
+  /// 全空则返回空列表（调用方直接不起播）。
+  ({List<Song> songs, int index}) _playableQueue(
+      List<Song> songs, int index) {
+    final idx = _index;
+    if (idx == null || songs.isEmpty) {
+      return (
+        songs: List<Song>.of(songs),
+        index: songs.isEmpty ? 0 : index.clamp(0, songs.length - 1)
+      );
+    }
+    final dead = idx.unavailableKeys(songs);
+    if (dead.isEmpty) {
+      return (
+        songs: List<Song>.of(songs),
+        index: index.clamp(0, songs.length - 1)
+      );
+    }
+    final kept = <Song>[];
+    final keptOf = <int, int>{};
+    for (var i = 0; i < songs.length; i++) {
+      final s = songs[i];
+      if (dead.contains((s.sourceKey, s.sourceRef))) continue;
+      keptOf[i] = kept.length;
+      kept.add(s);
+    }
+    if (kept.isEmpty) return (songs: kept, index: 0);
+    final start = index.clamp(0, songs.length - 1);
+    var mapped = keptOf[start];
+    if (mapped == null) {
+      for (var i = start + 1; i < songs.length; i++) {
+        mapped = keptOf[i];
+        if (mapped != null) break;
+      }
+    }
+    if (mapped == null) {
+      for (var i = start - 1; i >= 0; i--) {
+        mapped = keptOf[i];
+        if (mapped != null) break;
+      }
+    }
+    return (songs: kept, index: mapped ?? 0);
   }
 
   /// 两列引用一致性（sourceKey+sourceRef 逐位）：供 mirror 复用基座判定（D），
@@ -5522,11 +5595,18 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         idx.clearPlayState();
         return;
       }
+      // 旧断点可能还带着扫描后已 missing 的曲：恢复时同样过滤，起播下标
+      // 落到其后第一首可播曲；全空则视为无断点。
+      final filtered = _playableQueue(list, st.idx);
+      if (filtered.songs.isEmpty) {
+        idx.clearPlayState();
+        return;
+      }
       final swResolve = Stopwatch()..start();
-      _queue = _resolveLiveAll(list);
+      _queue = _resolveLiveAll(filtered.songs);
       perfLog('restoreLocal resolveLiveAll',
-          '${swResolve.elapsedMilliseconds}ms n=${list.length}');
-      _idx = st.idx.clamp(0, _queue.length - 1);
+          '${swResolve.elapsedMilliseconds}ms n=${_queue.length}');
+      _idx = filtered.index.clamp(0, _queue.length - 1);
       final storedCurrent = _queue[_idx];
       // 归属歌单仍在则保留（断点继续上报），否则清除。
       _syncPlaylistUuid = (st.playlistUuid != null &&
@@ -5575,7 +5655,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       final pid =
           _syncPlaylistUuid == null ? null : idx.playlistIdOfUuid(_syncPlaylistUuid!);
       if (_syncPlaylistUuid != null && pid != null) {
-        final base = _resolveLiveAll(idx.playlistSongs(pid));
+        final base =
+            _playableSongs(_resolveLiveAll(idx.playlistSongs(pid)));
         if (base.isNotEmpty) {
           _fusedBase = base;
           _queue = _fusedQueue(base);
@@ -5661,7 +5742,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       return false;
     }
     final swSongs = Stopwatch()..start();
-    final songs = idx.playlistSongs(pid);
+    // 镜像恢复同样跳过扫描后已 missing 的曲，避免远端断点把死引用带回队列。
+    final songs = _playableSongs(idx.playlistSongs(pid));
     perfLog('restoreMirror playlistSongs',
         '${swSongs.elapsedMilliseconds}ms n=${songs.length}');
     if (songs.isEmpty) return false;
@@ -5941,6 +6023,17 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _deepList = DeepListController(
         capacity: listSize > 0 ? listSize : entries.length,
         entries: entries);
+    // 旧断点/深层历史里可能残留扫描后已 missing 的曲：恢复时一并过滤，
+    // 避免下次重建融合队列时把死引用带回队列。
+    if (entries.isNotEmpty) {
+      final dead = _index?.unavailableKeys(entries) ??
+          const <(String, String)>{};
+      if (dead.isNotEmpty) {
+        _deepList!
+            .removeIf((s) => dead.contains((s.sourceKey, s.sourceRef)));
+        _persistDeepList();
+      }
+    }
     if (reset) _persistDeepList();
   }
 
@@ -6011,14 +6104,21 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 基座快照同步去掉死引用：删歌后旧基座里的残留不再参与续播拼接
     //（歌单路径基座已整体刷新，这里兜住喜欢/专辑等快照锚定）。
     _fusedBase?.removeWhere((e) => _same(e, s));
-    if (newCount != null && newCount > 0) {
-      dl.capacity = newCount;
-    }
+    if (newCount != null) dl.capacity = newCount;
     final removedCurrent = _current != null && _same(_current!, s);
     dl.removeRef(s, same: _same);
     _persistDeepList();
     _rebuildFusedQueue(target: _current);
-    if (!removedCurrent) return;
+    if (!removedCurrent) {
+      // 非当前曲也要让队列面板立即反映删除；播放器本身不打断。
+      notifyListeners();
+      _syncSystemMedia();
+      return;
+    }
+    if (_queue.isEmpty) {
+      await _clearStoppedState();
+      return;
+    }
     Song? target;
     final fresh = _fusedBase;
     if (deletedBaseIndex != null &&
@@ -6028,8 +6128,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       target = fresh[deletedBaseIndex];
     }
     target ??= dl.tail;
+    // 删的是基座末尾/仅剩的历史尾已被清：退回融合队列当前位，避免停在
+    // 已从队列移除的旧 _current 上。
+    target ??= _queue[_idx.clamp(0, _queue.length - 1).toInt()];
     final resolved = target;
-    if (resolved == null) return;
     final i = _queue.indexWhere((x) => _same(x, resolved));
     if (i >= 0) _idx = i;
     await _play(resolved, source: _curSource);
@@ -6074,34 +6176,141 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         deletedBaseIndex: deletedBaseIndex >= 0 ? deletedBaseIndex : null);
   }
 
-  /// 歌单删歌联动（转锚定键统一处理）。
-  Future<void> onPlaylistSongRemoved(String playlistUuid, Song s,
-      {int? newPlaylistCount}) {
-    // 歌单变了 → 融合基座同步刷新为最新歌单，否则续播段仍按删歌前的旧快照
-    // 接续：删当前曲会从旧基座里复活、删已播曲会把前面的歌顶到当前曲后面。
-    // 仅当前锚定且能读到非空新歌单时刷新；读不到沿用旧基座（既有行为）。
-    // 另记下被删曲在旧基座中的下标，供删当前曲时定位「下一首」。
+  /// 歌单批量删歌联动：一次刷新基座、一次重建融合队列。
+  ///
+  /// 与逐首走 [onAnchorSongRemoved] 的区别只在实现：先记住当前曲在**旧基座**
+  /// 的下标，再统一移除；续播仍按“旧歌单顺序中当前曲之后的第一首存活曲”，
+  /// 不因批量左移而错位。融合公式与深历史语义不变。
+  Future<void> onPlaylistSongsRemoved(String playlistUuid, List<Song> songs,
+      {int? newPlaylistCount}) async {
     final key = PlayerProvider.anchorForPlaylist(playlistUuid);
-    int? deletedBaseIndex;
-    if (_anchorKey == key && _fusedBase != null) {
-      final stale = _fusedBase!;
-      for (var i = 0; i < stale.length; i++) {
-        if (_same(stale[i], s)) {
-          deletedBaseIndex = i;
+    final dl = _deepList;
+    if (_anchorKey != key || dl == null || songs.isEmpty) return;
+    bool dead(Song s) => songs.any((x) => _same(x, s));
+    // 必须拷贝：后面会对 _fusedBase 原地 removeWhere，直接引用会让“旧歌单
+    // 顺序”少掉被删曲、下标右移，续播定位错到后一首。
+    final oldBase = _fusedBase == null ? null : List<Song>.of(_fusedBase!);
+    final cur = _current;
+    int? currentBaseIndex;
+    if (cur != null && oldBase != null) {
+      final i = oldBase.indexWhere((e) => _same(e, cur));
+      if (i >= 0) currentBaseIndex = i;
+    }
+    final currentRemoved = cur != null && dead(cur);
+    if (_nextUp != null && dead(_nextUp!)) _nextUp = null;
+    _fusedBase?.removeWhere(dead);
+    for (final s in songs) {
+      dl.removeRef(s, same: _same);
+    }
+    final idx = _index;
+    final pid = idx?.playlistIdOfUuid(playlistUuid);
+    if (idx != null && pid != null) {
+      final fresh = _playableSongs(_resolveLiveAll(idx.playlistSongs(pid)));
+      _fusedBase = fresh;
+      // 歌单已空：深历史不再有合法来源，整栈清空，避免旧条目被融合回队列。
+      if (fresh.isEmpty) dl.clear();
+      dl.capacity = fresh.length;
+    } else if (newPlaylistCount != null) {
+      dl.capacity = newPlaylistCount;
+    }
+    _persistDeepList();
+    _rebuildFusedQueue(target: currentRemoved ? null : cur);
+    if (!currentRemoved) {
+      notifyListeners();
+      _syncSystemMedia();
+      return;
+    }
+    if (_queue.isEmpty) {
+      await _clearStoppedState();
+      return;
+    }
+    Song? target;
+    if (currentBaseIndex != null && oldBase != null) {
+      // 旧歌单顺序里当前曲之后的第一首存活曲（跳过本批一起删掉的）。
+      for (var i = currentBaseIndex + 1; i < oldBase.length; i++) {
+        final candidate = oldBase[i];
+        if (!dead(candidate)) {
+          target = candidate;
           break;
         }
       }
-      final idx = _index;
-      if (idx != null) {
-        final pid = idx.playlistIdOfUuid(playlistUuid);
-        if (pid != null) {
-          final fresh = _resolveLiveAll(idx.playlistSongs(pid));
-          if (fresh.isNotEmpty) _fusedBase = fresh;
+    }
+    target ??= dl.tail;
+    target ??= _queue[_idx.clamp(0, _queue.length - 1).toInt()];
+    final resolved = target;
+    final i = _queue.indexWhere((x) => _same(x, resolved));
+    if (i >= 0) _idx = i;
+    await _play(resolved, source: _curSource, autoAdvanceOnFailure: true);
+  }
+
+  /// 歌单删歌联动（单曲入口，转批量收口）。
+  Future<void> onPlaylistSongRemoved(String playlistUuid, Song s,
+          {int? newPlaylistCount}) =>
+      onPlaylistSongsRemoved(playlistUuid, [s],
+          newPlaylistCount: newPlaylistCount);
+
+  /// 扫描判定某源若干曲 missing：按“删除”口径剔除运行时队列、深层历史、
+  /// 融合基座与「下一首播放」槽。源本身仍在，故不作废 `source:<key>` 锚定。
+  Future<void> onSongsMissing(String sourceKey, Set<String> refs) async {
+    if (refs.isEmpty) return;
+    bool dead(Song s) =>
+        s.sourceKey == sourceKey && refs.contains(s.sourceRef);
+    final cur = _current;
+    final currentRemoved = cur != null && dead(cur);
+    // 拷贝旧基座：下面会原地 removeWhere，续播定位必须基于删除前的顺序。
+    final oldBase = _fusedBase == null ? null : List<Song>.of(_fusedBase!);
+    int? currentBaseIndex;
+    if (cur != null && oldBase != null) {
+      final i = oldBase.indexWhere((e) => _same(e, cur));
+      if (i >= 0) currentBaseIndex = i;
+    }
+    if (_nextUp != null && dead(_nextUp!)) _nextUp = null;
+    final dl = _deepList;
+    final dlChanged = dl?.removeIf(dead) ?? false;
+    final base = _fusedBase;
+    var baseChanged = false;
+    if (base != null) {
+      final before = base.length;
+      base.removeWhere(dead);
+      baseChanged = base.length != before;
+      if (dl != null) dl.capacity = base.length;
+    }
+    if (dl != null && base != null) {
+      if (dlChanged || baseChanged) {
+        _persistDeepList();
+        _rebuildFusedQueue(target: currentRemoved ? null : cur);
+      }
+    } else {
+      if (dlChanged) _persistDeepList();
+      if (_queue.any(dead)) _pruneQueueIf(dead);
+    }
+    if (currentRemoved) {
+      if (_queue.isEmpty) {
+        await _clearStoppedState();
+        return;
+      }
+      Song? target;
+      if (currentBaseIndex != null && oldBase != null) {
+        for (var i = currentBaseIndex + 1; i < oldBase.length; i++) {
+          final candidate = oldBase[i];
+          if (!dead(candidate)) {
+            target = candidate;
+            break;
+          }
         }
       }
+      target ??= dl?.tail;
+      target ??= _queue[_idx.clamp(0, _queue.length - 1).toInt()];
+      final resolved = target;
+      final i = _queue.indexWhere((x) => _same(x, resolved));
+      if (i >= 0) _idx = i;
+      await _play(resolved, source: _curSource, autoAdvanceOnFailure: true);
+      return;
     }
-    return onAnchorSongRemoved(key, s,
-        newCount: newPlaylistCount, deletedBaseIndex: deletedBaseIndex);
+    if (dlChanged || baseChanged) {
+      notifyListeners();
+      _syncSystemMedia();
+    }
   }
 
   /// 歌单被整体删除：解绑其深层列表与断点归属。

@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
+import '../providers/player_provider.dart';
 import '../providers/playlists_provider.dart';
 import '../utils/song_title_format.dart';
 import 'app_dialog_actions.dart';
@@ -66,7 +67,17 @@ class _AddToPlaylistSheet extends StatelessWidget {
 
     Future<void> pick(int id) async {
       if (editMode) {
-        await provider.toggleSong(id, songs.first);
+        final song = songs.first;
+        final player = context.read<PlayerProvider>();
+        final inPlaylist = await provider.toggleSong(id, song);
+        if (!inPlaylist) {
+          // 编辑歌单里取消勾选 = 从歌单移除：队列/深层历史同步剔除。
+          final uuid = provider.store.index.playlistUuidOf(id);
+          if (uuid != null) {
+            await player.onPlaylistSongsRemoved(uuid, [song],
+                newPlaylistCount: provider.countOf(id));
+          }
+        }
         return;
       }
       for (final s in songs) {
