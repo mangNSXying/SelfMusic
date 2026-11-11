@@ -223,6 +223,34 @@ class _SectionPagerState extends State<SectionPager>
     context.read<NavigationProvider>().select(NavSection.values[i]);
   }
 
+  /// 手指是否正在拖动 PageView（松手后的吸附/惯性不算）。
+  ///
+  /// 不能用 `isScrollingNotifier`：它在松手后的吸附阶段仍为 true（页码视觉
+  /// 已落定后还要持续数百毫秒）。若用它拦截，滑动后立刻点 tab 会被跳过且
+  /// 永不补执行——表现为 tab 已切换、内容停在旧页（历史 bug）。
+  bool _dragging = false;
+
+  /// 记录拖拽状态；滚动结束（吸附/惯性落定）时补一次被跳过的分组切换，
+  /// 避免 `section` 与页码永久错位。
+  bool _onPagerScroll(ScrollNotification n) {
+    if (n.depth != 0) return false;
+    if (n is ScrollStartNotification) {
+      _dragging = n.dragDetails != null;
+    } else if (n is ScrollUpdateNotification) {
+      // 松手后的吸附/惯性滚动不带 dragDetails。
+      if (n.dragDetails == null) _dragging = false;
+    } else if (n is ScrollEndNotification) {
+      _dragging = false;
+      final target = _indexOf(context.read<NavigationProvider>().section);
+      if (target != _applied) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && !_dragging) setState(() {});
+        });
+      }
+    }
+    return false;
+  }
+
   @override
   Widget build(BuildContext context) {
     // 订阅收窄（T009）：Pager 只关注目标 `section`；拖拽期跟手页码由 pageOffset
@@ -280,10 +308,9 @@ class _SectionPagerState extends State<SectionPager>
     }
 
     if (target != _applied) {
-      final scrolling =
-          _ctrl.hasClients && _ctrl.position.isScrollingNotifier.value;
-      // 手指拖拽中跳过，避免拽手指；程序飞行中可重定向。
-      if (!scrolling || _programmatic) {
+      // 手指拖拽中跳过，避免拽手指（拖拽结束由 [_onPagerScroll] 补对齐）；
+      // 程序飞行中可重定向。
+      if (!_dragging || _programmatic) {
         // 上一段入场动画未跑完：先落定，再按新目标重排。
         _enterCtrl.stop();
         // 先清快照再落值：value=1 会同步触发 completed 监听里的 setState。
@@ -331,13 +358,16 @@ class _SectionPagerState extends State<SectionPager>
       child: RepaintBoundary(
         // 退场快照的取景边界：在进场位移之内，截到的是未位移的整页。
         key: _viewportKey,
-        child: PageView(
-          controller: _ctrl,
-          onPageChanged: _onPageChanged,
-          // 首次横滑前预构建左右邻页（只建可见范围的行），降低滑动首帧构建开销。
-          allowImplicitScrolling: _warmNeighbors,
-          // 每页独立图层：横滑期间页面平移只重合成、不重栅格化（降低滑动掉帧）。
-          children: [for (final p in _pages) RepaintBoundary(child: p)],
+        child: NotificationListener<ScrollNotification>(
+          onNotification: _onPagerScroll,
+          child: PageView(
+            controller: _ctrl,
+            onPageChanged: _onPageChanged,
+            // 首次横滑前预构建左右邻页（只建可见范围的行），降低滑动首帧构建开销。
+            allowImplicitScrolling: _warmNeighbors,
+            // 每页独立图层：横滑期间页面平移只重合成、不重栅格化（降低滑动掉帧）。
+            children: [for (final p in _pages) RepaintBoundary(child: p)],
+          ),
         ),
       ),
     );

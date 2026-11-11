@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:provider/provider.dart';
 import 'package:selfmusic/data/local/app_settings.dart';
+import 'package:selfmusic/layout/top_bar.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/library_provider.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
@@ -89,5 +90,67 @@ void main() {
       direct.dispose();
       dir.deleteSync(recursive: true);
     });
+  });
+
+  testWidgets('滑动后的吸附阶段点 tab：内容页必须跟随切换（不得停在旧页）',
+      (tester) async {
+    open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+    late final Directory dir;
+    late final DirectSourceManager direct;
+    late final NavigationProvider nav;
+    await tester.runAsync(() async {
+      dir = await Directory.systemTemp.createTemp('selfmusic_pager_tap_');
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      direct = DirectSourceManager();
+      await direct.init();
+      direct.settings.playerTransition = PlayerTransition.slide;
+    });
+    addTearDown(() {
+      direct.dispose();
+      try {
+        dir.deleteSync(recursive: true);
+      } catch (_) {}
+    });
+    final lib = LibraryProvider()..attachDirectManager(direct);
+    nav = NavigationProvider();
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
+          ChangeNotifierProvider<LibraryProvider>.value(value: lib),
+          ChangeNotifierProvider<PlaylistsProvider>.value(
+              value: PlaylistsProvider(direct.playlists)),
+          ChangeNotifierProvider<PlayerProvider>(
+              create: (_) => PlayerProvider()),
+          ChangeNotifierProvider<NavigationProvider>.value(value: nav),
+        ],
+        child: MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                TopBar(onSidebarToggle: () {}),
+                const Expanded(child: SectionPager()),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(nav.section, NavSection.songs);
+
+    // 手指左滑 → 专辑(4)。松手后 PageView 仍在吸附（isScrollingNotifier
+    // 仍为 true），此时点 tab 不能被跳过，否则 section 已变、内容停在旧页。
+    await tester.fling(find.byType(PageView), const Offset(-400, 0), 1000);
+    expect(nav.section, NavSection.albums);
+
+    await tester.tap(find.descendant(
+        of: find.byType(TopBar), matching: find.text('播放源')));
+    await tester.pumpAndSettle();
+
+    expect(nav.section, NavSection.sources);
+    expect(nav.pageOffset.value, 2.0, reason: '内容页应切到播放源');
+    expect(find.textContaining('尚未添加播放源'), findsOneWidget);
   });
 }
