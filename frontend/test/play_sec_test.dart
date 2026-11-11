@@ -193,6 +193,40 @@ void main() {
       expect(r.sec, 0);
       expect(r.window, t0);
     });
+
+    test('长间隔但媒体位置未前进（休眠/进程挂起）整段丢弃', () {
+      // 真机事故复现：晚上挂着歌，设备休眠 10 小时，恢复后不能记 10 小时。
+      final now = t0.add(const Duration(hours: 10));
+      final r = settlePlaySecWindow(t0, now,
+          position: const Duration(seconds: 42),
+          lastPosition: const Duration(seconds: 42));
+      expect(r.sec, 0);
+      expect(r.window, now); // 断档后窗口重挂到当前时刻
+    });
+
+    test('长间隔按媒体位置前进量计入（后台真在播/定时器被节流）', () {
+      final now = t0.add(const Duration(minutes: 5));
+      final r = settlePlaySecWindow(t0, now,
+          position: const Duration(seconds: 190),
+          lastPosition: const Duration(seconds: 10));
+      expect(r.sec, 180); // 只认位置前进的 180 秒
+      expect(r.window, now);
+    });
+
+    test('长间隔缺位置基准时不计入（宁少记不多记）', () {
+      final now = t0.add(const Duration(hours: 3));
+      final r = settlePlaySecWindow(t0, now);
+      expect(r.sec, 0);
+      expect(r.window, now);
+    });
+
+    test('正常 tick 间隔仍按挂钟结算，位置参数不参与', () {
+      final r = settlePlaySecWindow(t0, t0.add(const Duration(seconds: 3)),
+          position: const Duration(seconds: 10),
+          lastPosition: const Duration(seconds: 10));
+      expect(r.sec, 3);
+      expect(r.window, t0.add(const Duration(seconds: 3)));
+    });
   });
 
   group('播放次数派生（时长÷歌曲时长，1 位小数）', () {

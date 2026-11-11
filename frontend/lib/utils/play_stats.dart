@@ -35,12 +35,37 @@ String playCountLabel(int playSec, int? durationSec) {
   return c == c.roundToDouble() ? '${c.round()} 次' : '$c 次';
 }
 
+/// 位置流播放中约 200ms 一次 tick。超过该间隔说明采集断档（设备休眠、进程被
+/// 系统挂起/冻结、主线程长时间阻塞）：这段时间的挂钟不可信——设备睡着时
+/// 声音早就停了，定时器也停了，整段挂起时间不能算成播放。
+const Duration kPlaySecMaxTickGap = Duration(seconds: 5);
+
 /// 挂钟窗口结算：把 [window]→[now] 的整秒数取出，余下不足 1 秒的零头留在窗口里。
 ///
 /// 播放时长必须按挂钟计（后台/息屏时 just_audio 仍在推进，位置流可能被节流），
 /// 所以窗口只前进「已整秒」部分，避免逐秒取整累计的漂移。
-({int sec, DateTime window}) settlePlaySecWindow(DateTime window, DateTime now) {
-  final whole = now.difference(window).inSeconds;
-  if (whole <= 0) return (sec: 0, window: window);
-  return (sec: whole, window: window.add(Duration(seconds: whole)));
+///
+/// 采集断档（间隔 > [kPlaySecMaxTickGap]）时改用媒体位置前进量兜底：只有
+/// `position - lastPosition` 证明真的播了多久，才计入多久；位置没前进就整段
+/// 丢弃（窗口重挂到 [now]），避免一次挂起把几小时灌进某首歌的累计时长。
+({int sec, DateTime window}) settlePlaySecWindow(
+  DateTime window,
+  DateTime now, {
+  Duration? position,
+  Duration? lastPosition,
+}) {
+  final elapsed = now.difference(window);
+  if (elapsed.inSeconds <= 0) return (sec: 0, window: window);
+  if (elapsed <= kPlaySecMaxTickGap) {
+    final whole = elapsed.inSeconds;
+    return (sec: whole, window: window.add(Duration(seconds: whole)));
+  }
+  var sec = 0;
+  if (position != null && lastPosition != null) {
+    final advanced = (position - lastPosition).inSeconds;
+    if (advanced > 0) {
+      sec = advanced < elapsed.inSeconds ? advanced : elapsed.inSeconds;
+    }
+  }
+  return (sec: sec, window: now);
 }

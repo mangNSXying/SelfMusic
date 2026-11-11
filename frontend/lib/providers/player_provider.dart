@@ -2193,12 +2193,21 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// [_playSecPending] 归属的歌曲（切歌时先把上一首结清）。
   Song? _playSecSong;
 
+  /// 上次结算时的**原生**播放位置（不是 just_audio 的墙钟插值）：采集断档后
+  /// 用它判断挂起期间媒体到底有没有前进（见 [_playSecReconcile]）。
+  Duration? _playSecPosBase;
+
   /// 采集 tick（positionStream，播放中约 200ms 一次）：对齐「当前曲 + 是否在播」
   /// 与挂钟窗口。
   ///
   /// 挂在已有的 positionStream 上而不是另起定时器：播放中位置流本身就是稳定的
   /// 心跳，且自动续播/错误恢复时 `playing` 一直为 true 不产生新事件，靠 playing
   /// 事件会漏采——这里每次都按 [_current] 重新对账，切歌自动归属到新歌。
+  ///
+  /// 断档保护：设备休眠/进程被冻结时位置流停摆而 `playing` 仍是 true，恢复后
+  /// 首个 tick 若按挂钟整段结算，会把几小时挂起时间记成播放（真机事故：一首
+  /// 4 分钟的歌累计到 11 小时）。[settlePlaySecWindow] 对超长间隔只认原生位置
+  /// 前进量，这里是它的位置基准维护处。
   void _playSecReconcile({required bool playing}) {
     final s = _current;
     if (s == null || !playing) {
@@ -2208,12 +2217,19 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_playSecSong == null || !_same(_playSecSong!, s)) {
       unawaited(_playSecFlush(forcePush: true)); // 换歌：先结清上一首并强制推送
       _playSecSong = s;
+      _playSecPosBase = null; // 换了音源，旧位置基准不再可比
     }
     final win = _playSecWindow ??= DateTime.now();
-    final r = settlePlaySecWindow(win, DateTime.now());
+    final r = settlePlaySecWindow(
+      win,
+      DateTime.now(),
+      position: _lastPlatformPos,
+      lastPosition: _playSecPosBase,
+    );
+    _playSecWindow = r.window;
+    _playSecPosBase = _lastPlatformPos;
     if (r.sec > 0) {
       _playSecPending += r.sec;
-      _playSecWindow = r.window;
       if (_playSecPending >= _playSecFlushAt) unawaited(_playSecFlush());
     }
   }
@@ -2222,10 +2238,16 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _playSecStop() async {
     final win = _playSecWindow;
     if (win != null) {
-      final r = settlePlaySecWindow(win, DateTime.now());
+      final r = settlePlaySecWindow(
+        win,
+        DateTime.now(),
+        position: _lastPlatformPos,
+        lastPosition: _playSecPosBase,
+      );
       _playSecPending += r.sec;
       _playSecWindow = null;
     }
+    _playSecPosBase = null;
     await _playSecFlush(forcePush: true);
   }
 
@@ -2955,6 +2977,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (startAt == null) _clearRestorePosition();
     _lastKnownPos = startAt ?? Duration.zero;
     _lastPlatformPos = startAt ?? Duration.zero;
+    _playSecPosBase = null; // 任何重新装载都换了位置基准
     _stallBufferedSeen = false;
     _stallPosSeen = false;
     _sourceInvalid = false;
