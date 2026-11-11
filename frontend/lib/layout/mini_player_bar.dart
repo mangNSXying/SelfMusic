@@ -30,16 +30,17 @@ const double kMiniBarCoverSize = 56;
 /// 低于此值回退现有 72 条（手机横屏队列展开时约 224）。
 const double kMiniWideMinWidth = 550;
 
-/// 宽屏三列播控尺寸：随中列宽度自适应，但比回退态更小——底部有进度行时
-/// 为上下留白让位。play 34~36（整圆随 size 缩放）、切歌按钮命中 30~34
-/// （图标约 0.72 倍）、左右间隔 12~22。
+/// 宽屏三列播控尺寸：随中列宽度自适应，仍略小于回退态 42。
+/// play 38~40（整圆随 size 缩放）、切歌按钮命中 34~38（图标约 0.72 倍）、
+/// 左右间隔 12~22。进度行从 18 收到 16、播控与进度间距归 0，抵消增大后
+/// 条高仍保持 72、上下留白不变。
 @visibleForTesting
 ({double play, double skip, double gap}) miniTransportMetrics(
     double centerWidth) {
   final w = centerWidth.clamp(0.0, 560.0);
   return (
-    play: (w * 0.085).clamp(34.0, 36.0).toDouble(),
-    skip: (w * 0.075).clamp(30.0, 34.0).toDouble(),
+    play: (w * 0.095).clamp(38.0, 40.0).toDouble(),
+    skip: (w * 0.085).clamp(34.0, 38.0).toDouble(),
     gap: (w * 0.055).clamp(12.0, 22.0).toDouble(),
   );
 }
@@ -322,8 +323,8 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
   /// 横屏三列：左当前曲 / 中播控 + 进度 / 右模式·音量·队列。
   ///
   /// 列宽 2:3:2（等价 1:1.5:1），中列封顶 560；条高与回退态同为固定 72，
-  /// 左侧封面同为 [kMiniBarCoverSize]。三列里播控整体缩小（含播放键整圆），
-  /// 给底部 18 高进度行留出上下留白；回退态正常 42，仅 <300 极窄时收紧。
+  /// 左侧封面同为 [kMiniBarCoverSize]。三列里播控整圆 38~40、与 16 高进度
+  /// 行贴紧；回退态正常 42，仅 <300 极窄时收紧。
   Widget _buildWide(
       BuildContext context,
       PlayerProvider player,
@@ -385,7 +386,6 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
                                 m.skip * 0.72, m.skip, cs),
                           ],
                         ),
-                        const SizedBox(height: 2),
                         PlayerSeek(
                           player: player,
                           cs: cs,

@@ -53,7 +53,8 @@ class ModeButton extends StatelessWidget {
 /// 进度条（v5 设计稿：细进度 + 下方时间标签）。
 ///
 /// [inlineTime] 为迷你条紧凑用法：时间与轨道同一行、隐藏断网提示；
-/// [compact] 收窄轨道/thumb，并把进度压到 18 高，供固定高度横屏条使用。
+/// [compact] 与播放页共用同一 Slider，只套紧凑主题（5px 轨 / 10 thumb /
+/// overlay 0 / 16 高），供固定高度横屏条使用。
 class PlayerSeek extends StatefulWidget {
   final PlayerProvider player;
   final ColorScheme cs;
@@ -129,77 +130,6 @@ class _PlayerSeekState extends State<PlayerSeek> {
   /// 直播转码态每次 seek 都重开一条服务端流，逐 tick 发 seek 等于连续重启。
   double? _dragValue;
 
-  /// 迷你条紧凑进度：固定 18 高，拖动只存本地，松手才 seek。
-  Widget _compactSeek(double shown, double max) {
-    final progress = max <= 0 ? 0.0 : (shown / max).clamp(0.0, 1.0);
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final width = constraints.maxWidth;
-        void setFromDx(double dx) {
-          if (width <= 0) return;
-          setState(() => _dragValue = (dx / width).clamp(0.0, 1.0) * max);
-        }
-
-        void commit() {
-          final v = _dragValue;
-          setState(() => _dragValue = null);
-          if (v != null) {
-            widget.player.seek(Duration(milliseconds: v.toInt()));
-          }
-        }
-
-        return GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTapDown: (d) => setFromDx(d.localPosition.dx),
-          onTapUp: (_) => commit(),
-          onTapCancel: () => setState(() => _dragValue = null),
-          onHorizontalDragStart: (d) => setFromDx(d.localPosition.dx),
-          onHorizontalDragUpdate: (d) => setFromDx(d.localPosition.dx),
-          onHorizontalDragEnd: (_) => commit(),
-          onHorizontalDragCancel: () => setState(() => _dragValue = null),
-          child: SizedBox(
-            height: 18,
-            child: Stack(
-              alignment: Alignment.centerLeft,
-              children: [
-                Container(
-                  height: 3,
-                  decoration: BoxDecoration(
-                    color: widget.cs.onSurface.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-                FractionallySizedBox(
-                  widthFactor: progress,
-                  child: Container(
-                    height: 3,
-                    decoration: BoxDecoration(
-                      color: widget.cs.primary,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                ),
-                Positioned(
-                  left: (progress * width - 4.5).clamp(0.0, width - 9),
-                  top: 4.5,
-                  child: Container(
-                    width: 9,
-                    height: 9,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      shape: BoxShape.circle,
-                      border: Border.all(color: widget.cs.primary, width: 2),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<Duration>(
@@ -217,46 +147,13 @@ class _PlayerSeekState extends State<PlayerSeek> {
         final shown =
             _dragValue?.clamp(0, max == 0 ? 1 : max).toDouble() ?? cur;
 
-        if (widget.inlineTime) {
-          final timeStyle = TextStyle(
-            fontFamily: 'monospace',
-            fontSize: 14 * widget.scale,
-            color: widget.cs.onSurface.withValues(alpha: 0.62),
-          );
-          return SizedBox(
-            height: 18,
-            child: Row(
-              children: [
-                SizedBox(
-                  width: 34,
-                  child: Text(
-                    formatClock(Duration(milliseconds: shown.toInt())),
-                    maxLines: 1,
-                    textAlign: TextAlign.right,
-                    style: timeStyle,
-                  ),
-                ),
-                Expanded(child: _compactSeek(shown, max)),
-                SizedBox(
-                  width: 34,
-                  child: Text(
-                    formatClock(dur),
-                    maxLines: 1,
-                    style: timeStyle,
-                  ),
-                ),
-              ],
-            ),
-          );
-        }
-
         final slider = SliderTheme(
           data: SliderTheme.of(context).copyWith(
-            trackHeight: 4 * widget.scale,
-            thumbShape:
-                RoundSliderThumbShape(enabledThumbRadius: 6 * widget.scale),
-            overlayShape:
-                RoundSliderOverlayShape(overlayRadius: 14 * widget.scale),
+            trackHeight: widget.compact ? 5 : 4 * widget.scale,
+            thumbShape: RoundSliderThumbShape(
+                enabledThumbRadius: widget.compact ? 5 : 6 * widget.scale),
+            overlayShape: RoundSliderOverlayShape(
+                overlayRadius: widget.compact ? 0 : 14 * widget.scale),
             activeTrackColor: widget.cs.primary,
             inactiveTrackColor: widget.cs.onSurface.withValues(alpha: 0.12),
             thumbColor: widget.cs.primary,
@@ -272,6 +169,39 @@ class _PlayerSeekState extends State<PlayerSeek> {
             },
           ),
         );
+
+        if (widget.inlineTime) {
+          final timeStyle = TextStyle(
+            fontFamily: 'monospace',
+            fontSize: 14 * widget.scale,
+            color: widget.cs.onSurface.withValues(alpha: 0.62),
+          );
+          return SizedBox(
+            height: 16,
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 34,
+                  child: Text(
+                    formatClock(Duration(milliseconds: shown.toInt())),
+                    maxLines: 1,
+                    textAlign: TextAlign.right,
+                    style: timeStyle,
+                  ),
+                ),
+                Expanded(child: SizedBox(height: 16, child: slider)),
+                SizedBox(
+                  width: 34,
+                  child: Text(
+                    formatClock(dur),
+                    maxLines: 1,
+                    style: timeStyle,
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
 
         return Column(
           mainAxisSize: MainAxisSize.min,
