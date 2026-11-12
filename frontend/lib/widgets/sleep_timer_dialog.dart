@@ -1,4 +1,3 @@
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -8,6 +7,7 @@ import '../utils/duration_format.dart';
 import 'app_dialog_actions.dart';
 import 'app_toast.dart';
 import 'row_action_button.dart';
+import 'wheel_picker_dialog.dart';
 
 Future<void> showSleepTimerDialog(BuildContext context) {
   return showDialog<void>(
@@ -198,18 +198,16 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
   }
 
   Future<void> _pickDurationWheel() async {
-    final picked = await showDialog<int>(
+    final picked = await showWheelPickerDialog<int>(
       context: context,
-      builder: (c) => _WheelDialog(
-        title: '选择时长',
-        columns: [
-          [for (var h = 0; h <= 12; h++) '$h 小时'],
-          [for (var m = 0; m <= 59; m++) '$m 分'],
-        ],
-        initial: [_minutes ~/ 60, _minutes % 60],
-        resultOf: (idx) => idx[0] * 60 + idx[1],
-        valid: (v) => v > 0,
-      ),
+      title: '选择时长',
+      columns: [
+        WheelColumn(labels: [for (var h = 0; h <= 12; h++) '$h 小时']),
+        WheelColumn(labels: [for (var m = 0; m <= 59; m++) '$m 分']),
+      ],
+      initialIndices: [_minutes ~/ 60, _minutes % 60],
+      resultOf: (idx) => idx[0] * 60 + idx[1],
+      valid: (v) => v > 0,
     );
     if (picked != null && picked > 0 && mounted) {
       setState(() => _minutes = picked);
@@ -217,17 +215,12 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
   }
 
   Future<void> _pickCountWheel() async {
-    final picked = await showDialog<int>(
+    final picked = await showNumberWheelDialog(
       context: context,
-      builder: (c) => _WheelDialog(
-        title: '选择曲数',
-        columns: [
-          [for (var n = 1; n <= 200; n++) '$n 首'],
-        ],
-        initial: [(_count - 1).clamp(0, 199)],
-        resultOf: (idx) => idx[0] + 1,
-        valid: (v) => v > 0,
-      ),
+      title: '选择曲数',
+      value: _count,
+      values: wheelRange(1, 200, 1),
+      labelOf: (n) => '$n 首',
     );
     if (picked != null && picked > 0 && mounted) {
       setState(() => _count = picked);
@@ -280,85 +273,4 @@ class _SleepTimerDialogState extends State<_SleepTimerDialog> {
   }
 
   static String _fmtTime(TimeOfDay t) => formatHourMinute(t.hour, t.minute);
-}
-
-class _WheelDialog extends StatefulWidget {
-  final String title;
-  final List<List<String>> columns;
-  final List<int> initial;
-  final int Function(List<int>) resultOf;
-  final bool Function(int) valid;
-  const _WheelDialog({
-    required this.title,
-    required this.columns,
-    required this.initial,
-    required this.resultOf,
-    required this.valid,
-  });
-
-  @override
-  State<_WheelDialog> createState() => _WheelDialogState();
-}
-
-class _WheelDialogState extends State<_WheelDialog> {
-  late List<int> _idx;
-  late List<FixedExtentScrollController> _ctrls;
-
-  @override
-  void initState() {
-    super.initState();
-    _idx = List.of(widget.initial);
-    _ctrls = [
-      for (var c = 0; c < widget.columns.length; c++)
-        FixedExtentScrollController(initialItem: widget.initial[c]),
-    ];
-  }
-
-  @override
-  void dispose() {
-    for (final c in _ctrls) {
-      c.dispose();
-    }
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final value = widget.resultOf(_idx);
-    final ok = widget.valid(value);
-    return AlertDialog(
-      title: Text(widget.title, style: const TextStyle(fontSize: 20)),
-      content: SizedBox(
-        width: 320,
-        height: 200,
-        child: Row(
-          children: [
-            for (var c = 0; c < widget.columns.length; c++)
-              Expanded(
-                child: CupertinoPicker(
-                  scrollController: _ctrls[c],
-                  itemExtent: 40,
-                  magnification: 1.15,
-                  onSelectedItemChanged: (i) => setState(() => _idx[c] = i),
-                  children: [
-                    for (final label in widget.columns[c])
-                      Center(
-                        child:
-                            Text(label, style: const TextStyle(fontSize: 17)),
-                      ),
-                  ],
-                ),
-              ),
-          ],
-        ),
-      ),
-      actions: appDialogActions(
-        context,
-        confirmLabel: '确定',
-        confirmEnabled: ok,
-        onCancel: () => Navigator.of(context).pop(),
-        onConfirm: () => Navigator.of(context).pop(value),
-      ),
-    );
-  }
 }
