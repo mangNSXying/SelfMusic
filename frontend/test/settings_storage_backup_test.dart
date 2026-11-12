@@ -2,6 +2,7 @@ import 'dart:ffi' as ffi;
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:provider/provider.dart';
@@ -86,10 +87,12 @@ void main() {
     await tester.tap(find.text('日志时长'));
     await tester.pumpAndSettle();
     expect(find.byType(AlertDialog), findsOneWidget);
-    expect(find.text('导出最近 1 分钟的日志'), findsOneWidget);
-    await tester.tap(find.text('保存'));
+    expect(find.text('导出最近该时长内的日志'), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
     await tester.pumpAndSettle();
-    expect(settings.logExportMinutes, 1);
+    await tester.tap(find.text('确定'));
+    await tester.pumpAndSettle();
+    expect(settings.logExportMinutes, 2);
   });
 
   testWidgets('存储页「备份与迁移」入口：弹窗列出本机备份与导入导出动作', (tester) async {

@@ -16,7 +16,7 @@ import '../../widgets/row_action_button.dart';
 import '../../widgets/settings_section_header.dart';
 import '../../widgets/single_choice_dialog.dart';
 import '../../widgets/single_choice_group.dart';
-import '../../widgets/text_input_dialog.dart';
+import '../../widgets/wheel_picker_dialog.dart';
 import 'settings_focus.dart';
 
 /// 歌曲设置：扫描过滤 / 元数据 / 播放源。
@@ -310,30 +310,33 @@ class _SongsSettingsState extends State<SongsSection> {
   }
 
   Future<void> _editIgnoreDuration(BuildContext context) async {
-    final text = await showTextInputDialog(
+    final current = _settings.scanIgnoreMinDurationSec;
+    final picked = await showNumberWheelDialog(
       context: context,
-      title: '忽略音频：最小时长（秒）',
-      initial: _settings.scanIgnoreMinDurationSec.toString(),
-      numeric: true,
+      title: '时长过滤',
+      value: current,
+      values: [0, ...wheelRange(5, 600, 5)],
+      labelOf: (sec) => sec == 0 ? '关闭' : '$sec 秒',
+      hint: '短于该时长的文件不参与扫描',
     );
-    if (text == null || !context.mounted) return;
-    final result = int.tryParse(text) ?? 0;
-    setState(() => _settings.scanIgnoreMinDurationSec = result);
+    if (picked == null || !context.mounted) return;
+    setState(() => _settings.scanIgnoreMinDurationSec = picked);
     // 忽略规则变更：让已入库歌曲按新规则过滤（喜欢/歌曲/专辑/歌手/源浏览即时生效）。
     context.read<DirectSourceManager>().settingsChanged();
   }
 
   Future<void> _editIgnoreBytes(BuildContext context) async {
-    final mb = _settings.scanIgnoreMinSizeBytes ~/ (1024 * 1024);
-    final text = await showTextInputDialog(
+    final currentMb = _settings.scanIgnoreMinSizeBytes ~/ (1024 * 1024);
+    final picked = await showNumberWheelDialog(
       context: context,
-      title: '忽略音频：最小大小（MB）',
-      initial: (mb > 0 ? mb : 0).toString(),
-      numeric: true,
+      title: '大小过滤',
+      value: currentMb,
+      values: [0, ...wheelRange(1, 200, 1)],
+      labelOf: (mb) => mb == 0 ? '关闭' : '$mb MB',
+      hint: '小于该大小的文件不参与扫描',
     );
-    if (text == null || !context.mounted) return;
-    final result = int.tryParse(text) ?? 0;
-    setState(() => _settings.scanIgnoreMinSizeBytes = result * 1024 * 1024);
+    if (picked == null || !context.mounted) return;
+    setState(() => _settings.scanIgnoreMinSizeBytes = picked * 1024 * 1024);
     // 忽略规则变更：让已入库歌曲按新规则过滤（喜欢/歌曲/专辑/歌手/源浏览即时生效）。
     context.read<DirectSourceManager>().settingsChanged();
   }
@@ -342,17 +345,17 @@ class _SongsSettingsState extends State<SongsSection> {
       formatBytes(bytes, zero: '0 MB', minUnit: ByteUnit.mb);
 
   Future<void> _editScanInterval(BuildContext context) async {
-    final text = await showTextInputDialog(
+    final current = _settings.scanAutoIntervalMin;
+    final picked = await showNumberWheelDialog(
       context: context,
-      title: '自动扫描间隔（分钟）',
-      initial: _settings.scanAutoIntervalMin.toString(),
-      numeric: true,
-      footer: '0 为关闭，建议关闭。开启后按固定周期增量扫描全部直连源；'
-          '本地目录变化也会自动触发增量扫描。',
+      title: '扫描间隔',
+      value: current,
+      values: [0, ...wheelRange(5, 1440, 5)],
+      labelOf: (min) => min == 0 ? '关闭' : '每 $min 分钟',
+      hint: '0 为关闭；开启后按固定周期增量扫描',
     );
-    if (text == null || !context.mounted) return;
-    final result = int.tryParse(text) ?? 0;
-    setState(() => _settings.scanAutoIntervalMin = result);
+    if (picked == null || !context.mounted) return;
+    setState(() => _settings.scanAutoIntervalMin = picked);
     context.read<DirectSourceManager>().restartAutoScan();
   }
 }

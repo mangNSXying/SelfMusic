@@ -20,7 +20,7 @@ import '../../widgets/app_toast.dart';
 import '../../widgets/inline_spinner.dart';
 import '../../widgets/row_action_button.dart';
 import '../../widgets/single_choice_group.dart';
-import '../../widgets/text_input_dialog.dart';
+import '../../widgets/wheel_picker_dialog.dart';
 import 'settings_focus.dart';
 
 /// 服务端 → 缓存目录：展示真实路径与当前占用；复制路径 / 更改目录（含迁移）。
@@ -434,31 +434,30 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
 
   Future<void> _editMaxBytes(BuildContext context) async {
     final current = _settings.cacheMaxBytes ~/ (1024 * 1024);
-    final text = await showTextInputDialog(
+    final picked = await showNumberWheelDialog(
       context: context,
-      title: '体积上限（MB）',
-      initial: current.toString(),
-      numeric: true,
+      title: '体积上限',
+      value: current,
+      values: wheelRange(64, 8192, 64),
+      labelOf: (mb) => _labelBytes(mb * 1024 * 1024),
+      hint: '缓存占用的总大小上限',
     );
-    if (text == null || !mounted) return;
-    final result = int.tryParse(text) ?? current;
-    if (result > 0) {
-      setState(() => _settings.cacheMaxBytes = result * 1024 * 1024);
+    if (picked == null || !mounted) return;
+    if (picked > 0) {
+      setState(() => _settings.cacheMaxBytes = picked * 1024 * 1024);
     }
   }
 
   Future<void> _editSongLimit(BuildContext context) async {
-    final text = await showTextInputDialog(
+    final picked = await showNumberWheelDialog(
       context: context,
       title: '首数上限',
-      initial: _settings.cacheSongLimit.toString(),
-      numeric: true,
+      value: _settings.cacheSongLimit,
+      values: wheelRange(10, 5000, 10),
+      labelOf: (n) => '$n 首',
     );
-    if (text == null || !mounted) return;
-    final result = int.tryParse(text) ?? _settings.cacheSongLimit;
-    if (result > 0) {
-      setState(() => _settings.cacheSongLimit = result);
-    }
+    if (picked == null || !mounted) return;
+    if (picked > 0) setState(() => _settings.cacheSongLimit = picked);
   }
 
   static String _labelBytes(int bytes) =>

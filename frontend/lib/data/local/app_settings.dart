@@ -361,11 +361,13 @@ class AppSettings {
 
   static const String defaultPlayMode = 'sequence';
 
-  /// 歌词追焦等待可选秒数。
-  static const List<int> lyricFocusIdleOptions = [2, 3, 5, 10, 15, 30];
+  /// 歌词追焦等待秒数范围（设置页数字滚轮）。
+  static const int lyricFocusIdleMinSec = 1;
+  static const int lyricFocusIdleMaxSec = 60;
 
-  /// 播放页控件静置自动隐藏可选秒数（0=不隐藏）。
-  static const List<int> playerAutoHideIdleOptions = [0, 3, 5, 10, 15, 30];
+  /// 播放页控件静置自动隐藏秒数范围（0=不隐藏）。
+  static const int playerAutoHideIdleMinSec = 0;
+  static const int playerAutoHideIdleMaxSec = 60;
 
   /// 均衡器默认频段增益（10 段，dB）。
   static const List<double> defaultEqBands = kDefaultEqBands;
@@ -429,7 +431,9 @@ class AppSettings {
         sleepDefaultCount = n;
       } else if (key == kLyricFocusIdleSec) {
         final n = int.tryParse(value);
-        if (n == null || !lyricFocusIdleOptions.contains(n)) return false;
+        if (n == null || n < lyricFocusIdleMinSec || n > lyricFocusIdleMaxSec) {
+          return false;
+        }
         lyricFocusIdleSec = n;
       } else if (key == kWeightedRandomEnabled) {
         weightedRandomEnabled = value == '1';
@@ -500,7 +504,11 @@ class AppSettings {
         lyricsShowCover = value == '1';
       } else if (key == kPlayerAutoHideIdleSec) {
         final n = int.tryParse(value);
-        if (n == null || !playerAutoHideIdleOptions.contains(n)) return false;
+        if (n == null ||
+            n < playerAutoHideIdleMinSec ||
+            n > playerAutoHideIdleMaxSec) {
+          return false;
+        }
         playerAutoHideIdleSec = n;
       } else if (key == kLongPressCollapseGroups) {
         longPressCollapseGroups = value == '1';
@@ -744,20 +752,28 @@ class AppSettings {
 
   /// 歌词追焦等待秒数：用户拖动歌词后多久恢复自动追焦（默认 5 秒）。
   int get lyricFocusIdleSec =>
-      int.tryParse(index.settingsGet(kLyricFocusIdleSec) ?? '') ?? 5;
-  set lyricFocusIdleSec(int v) => _syncedSet(kLyricFocusIdleSec, v.toString());
+      (int.tryParse(index.settingsGet(kLyricFocusIdleSec) ?? '') ?? 5)
+          .clamp(lyricFocusIdleMinSec, lyricFocusIdleMaxSec)
+          .toInt();
+  set lyricFocusIdleSec(int v) => _syncedSet(kLyricFocusIdleSec,
+      v.clamp(lyricFocusIdleMinSec, lyricFocusIdleMaxSec).toString());
 
-  /// 歌词最大行数可选档位（0=不限制）。
-  static const List<int> lyricMaxLinesOptions = [0, 6, 8, 10, 12, 14, 16, 20];
+  /// 歌词最大行数范围（0=不限制）。
+  static const int lyricMaxLinesMin = 6;
+  static const int lyricMaxLinesMax = 30;
 
   /// 歌词最大行数（默认 0=不限制）：>0 时按歌词区可用高度自动放大字号，
-  /// 保证屏幕最多约显示该行数（译文/长句只会更少）。非法历史值按不限制处理。
+  /// 保证屏幕最多约显示该行数（译文/长句只会更少）。越界历史值钳制到范围。
   int get lyricMaxLines {
     final v = int.tryParse(index.settingsGet(kLyricMaxLines) ?? '') ?? 0;
-    return lyricMaxLinesOptions.contains(v) ? v : 0;
+    if (v <= 0) return 0;
+    return v.clamp(lyricMaxLinesMin, lyricMaxLinesMax).toInt();
   }
 
-  set lyricMaxLines(int v) => index.settingsSet(kLyricMaxLines, v.toString());
+  set lyricMaxLines(int v) {
+    final n = v <= 0 ? 0 : v.clamp(lyricMaxLinesMin, lyricMaxLinesMax).toInt();
+    index.settingsSet(kLyricMaxLines, n.toString());
+  }
 
   /// 播放页屏幕常亮：打开播放页期间不熄屏（默认关）。
   bool get playerKeepScreenOn =>
@@ -768,9 +784,11 @@ class AppSettings {
   /// 播放页控件静置自动隐藏（默认 5 秒；0=不隐藏）：无操作 N 秒后隐藏
   /// 左上返回箭头与右上「更多」按钮，触摸即恢复。
   int get playerAutoHideIdleSec =>
-      int.tryParse(index.settingsGet(kPlayerAutoHideIdleSec) ?? '') ?? 5;
-  set playerAutoHideIdleSec(int v) =>
-      _syncedSet(kPlayerAutoHideIdleSec, v.toString());
+      (int.tryParse(index.settingsGet(kPlayerAutoHideIdleSec) ?? '') ?? 5)
+          .clamp(playerAutoHideIdleMinSec, playerAutoHideIdleMaxSec)
+          .toInt();
+  set playerAutoHideIdleSec(int v) => _syncedSet(kPlayerAutoHideIdleSec,
+      v.clamp(playerAutoHideIdleMinSec, playerAutoHideIdleMaxSec).toString());
 
   /// 常亮限定的蓝牙设备 JSON（空=不限定）。
   String get keepScreenOnDevice => index.settingsGet(kKeepScreenOnDevice) ?? '';

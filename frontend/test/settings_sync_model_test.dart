@@ -187,8 +187,17 @@ void main() {
         isTrue);
     expect(settings.playerAutoHideIdleSec, 10);
     expect(settings.applyRemoteSetting(AppSettings.kPlayerAutoHideIdleSec, '7'),
+        isTrue);
+    expect(settings.playerAutoHideIdleSec, 7);
+    expect(
+        settings.applyRemoteSetting(AppSettings.kPlayerAutoHideIdleSec, '61'),
         isFalse);
-    expect(settings.playerAutoHideIdleSec, 10);
+    expect(settings.playerAutoHideIdleSec, 7);
+    expect(settings.applyRemoteSetting(AppSettings.kLyricFocusIdleSec, '17'),
+        isTrue);
+    expect(settings.lyricFocusIdleSec, 17);
+    expect(settings.applyRemoteSetting(AppSettings.kLyricFocusIdleSec, '0'),
+        isFalse);
     expect(
         settings.applyRemoteSetting(AppSettings.kLongPressCollapseGroups, '1'),
         isTrue);

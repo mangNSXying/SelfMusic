@@ -6,10 +6,10 @@ import '../../data/local/app_settings.dart';
 import '../../platform/desktop_tray.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../theme/app_theme.dart';
-import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/settings_section_header.dart';
 import '../../widgets/shortcut_settings_panel.dart';
+import '../../widgets/wheel_picker_dialog.dart';
 import 'settings_focus.dart';
 
 Widget _systemAnchor(String label, Widget child) => SettingsFocusAnchor(
@@ -112,9 +112,17 @@ class LogSection extends StatefulWidget {
 class _LogSectionState extends State<LogSection> {
   Future<void> _pickDuration() async {
     final settings = context.read<DirectSourceManager>().settings;
-    final picked = await showDialog<int>(
+    final picked = await showNumberWheelDialog(
       context: context,
-      builder: (c) => LogDurationDialog(current: settings.logExportMinutes),
+      title: '日志时长',
+      value: settings.logExportMinutes,
+      values: wheelRange(
+        AppSettings.logExportMinutesMin,
+        AppSettings.logExportMinutesMax,
+        1,
+      ),
+      labelOf: (min) => '$min 分钟',
+      hint: '导出最近该时长内的日志',
     );
     if (picked == null || !mounted) return;
     setState(() => settings.logExportMinutes = picked);
@@ -139,51 +147,6 @@ class _LogSectionState extends State<LogSection> {
           ),
         ),
       ],
-    );
-  }
-}
-
-/// 日志时长选择弹窗：1~30 分钟整数（步进 1 分钟）。
-class LogDurationDialog extends StatefulWidget {
-  const LogDurationDialog({required this.current});
-
-  final int current;
-
-  @override
-  State<LogDurationDialog> createState() => _LogDurationDialogState();
-}
-
-class _LogDurationDialogState extends State<LogDurationDialog> {
-  late int _minutes = widget.current;
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('日志时长'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('导出最近 $_minutes 分钟的日志'),
-          Slider(
-            value: _minutes.toDouble(),
-            min: AppSettings.logExportMinutesMin.toDouble(),
-            max: AppSettings.logExportMinutesMax.toDouble(),
-            divisions: AppSettings.logExportMinutesMax -
-                AppSettings.logExportMinutesMin,
-            label: '$_minutes 分钟',
-            onChanged: (v) => setState(() => _minutes = v.round()),
-          ),
-          Text('范围 1~30 分钟；设置越大，导出的日志文件越大。',
-              style: Theme.of(context).textTheme.bodySmall),
-        ],
-      ),
-      actions: appDialogActions(
-        context,
-        onCancel: () => Navigator.of(context).pop(),
-        onConfirm: () => Navigator.of(context).pop(_minutes),
-        confirmLabel: '保存',
-      ),
     );
   }
 }

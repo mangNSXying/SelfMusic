@@ -16,7 +16,7 @@ import '../../widgets/app_volume_control.dart';
 import '../../widgets/eq_curve_editor.dart';
 import '../../widgets/settings_section_header.dart';
 import '../../widgets/single_choice_dialog.dart';
-import '../../widgets/text_input_dialog.dart';
+import '../../widgets/wheel_picker_dialog.dart';
 import 'keep_awake_device_dialog.dart';
 import 'settings_focus.dart';
 
@@ -579,18 +579,20 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
   }
 
   Future<void> _editCountCooldown() async {
-    final current = _settings.weightedCountCooldownRatio;
-    final text = await showTextInputDialog(
+    final currentPercent = (_settings.weightedCountCooldownRatio * 100)
+        .round()
+        .clamp(0, 100)
+        .toInt();
+    final picked = await showNumberWheelDialog(
       context: context,
       title: '曲数冷却比例',
-      initial: current.toStringAsFixed(2),
-      hintText: '0 ~ 1.00',
-      helperText: '播放历史末尾「列表长度 × 比例」内的歌不参与随机；0=关闭',
-      decimal: true,
+      value: currentPercent,
+      values: wheelRange(0, 100, 1),
+      labelOf: (v) => v == 0 ? '关' : '$v%',
+      hint: '播放历史末尾该比例内的歌不参与随机；0=关闭',
     );
-    if (text == null || !mounted) return;
-    final result = double.tryParse(text) ?? current;
-    setState(() => _settings.weightedCountCooldownRatio = result);
+    if (picked == null || !mounted) return;
+    setState(() => _settings.weightedCountCooldownRatio = picked / 100);
   }
 
   static double? _segNum(Object? v) {
@@ -676,52 +678,96 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
     }
   }
 
+  static List<int> get _weightSecValues => [
+        ...wheelRange(1, 60, 1),
+        ...wheelRange(65, 3600, 5),
+      ];
+
   Future<Map<String, Object?>?> _editWeightSegment(
       BuildContext c, Map<String, Object?> current) async {
-    final minC = TextEditingController(
-        text: _segNum(current['min_sec'])?.toStringAsFixed(0) ?? '');
-    final maxC = TextEditingController(
-        text: _segNum(current['max_sec'])?.toStringAsFixed(0) ?? '');
-    final fC = TextEditingController(
-        text: _segNum(current['factor'])?.toStringAsFixed(2) ?? '');
-    const kt = TextInputType.numberWithOptions(decimal: true);
+    var minSec =
+        (_segNum(current['min_sec']) ?? 300).clamp(1.0, 3600.0).toDouble();
+    var maxSec = _segNum(current['max_sec']);
+    var factor = (_segNum(current['factor']) ?? 0.5).clamp(0.5, 1.5).toDouble();
+
     final result = await showDialog<bool>(
       context: c,
-      builder: (d) => AlertDialog(
-        title: const Text('编辑区间'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-                controller: minC,
-                keyboardType: kt,
-                decoration: const InputDecoration(labelText: '起始时长（秒，必填）')),
-            TextField(
-                controller: maxC,
-                keyboardType: kt,
-                decoration: const InputDecoration(labelText: '结束时长（秒，留空=无上限）')),
-            TextField(
-                controller: fC,
-                keyboardType: kt,
-                decoration: const InputDecoration(labelText: '系数（0.5 - 1.5）')),
-          ],
-        ),
-        actions: appDialogActions(
-          d,
-          confirmLabel: '保存',
-          onCancel: () => Navigator.of(d).pop(false),
-          onConfirm: () => Navigator.of(d).pop(true),
-        ),
+      builder: (d) => StatefulBuilder(
+        builder: (d, setDialog) {
+          final valid = minSec > 0 &&
+              factor >= 0.5 &&
+              factor <= 1.5 &&
+              (maxSec == null || maxSec! > minSec);
+          Widget row(String label, String value, Future<void> Function() pick) {
+            return ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: Text(label),
+              subtitle: Text(value),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: pick,
+            );
+          }
+
+          return AlertDialog(
+            title: const Text('编辑区间'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                row('起始时长', '${minSec.toStringAsFixed(0)} 秒', () async {
+                  final picked = await showNumberWheelDialog(
+                    context: d,
+                    title: '起始时长',
+                    value: minSec.round(),
+                    values: _weightSecValues,
+                    labelOf: (sec) => '$sec 秒',
+                  );
+                  if (picked != null && d.mounted) {
+                    setDialog(() => minSec = picked.toDouble());
+                  }
+                }),
+                row('结束时长',
+                    maxSec == null ? '无上限' : '${maxSec!.toStringAsFixed(0)} 秒',
+                    () async {
+                  final picked = await showNumberWheelDialog(
+                    context: d,
+                    title: '结束时长',
+                    value: maxSec?.round() ?? 0,
+                    values: [0, ..._weightSecValues],
+                    labelOf: (sec) => sec == 0 ? '无上限' : '$sec 秒',
+                  );
+                  if (picked != null && d.mounted) {
+                    setDialog(
+                        () => maxSec = picked == 0 ? null : picked.toDouble());
+                  }
+                }),
+                row('系数', '×${factor.toStringAsFixed(2)}', () async {
+                  final picked = await showNumberWheelDialog(
+                    context: d,
+                    title: '系数',
+                    value: (factor * 100).round(),
+                    values: wheelRange(50, 150, 1),
+                    labelOf: (v) => '×${(v / 100).toStringAsFixed(2)}',
+                  );
+                  if (picked != null && d.mounted) {
+                    setDialog(() => factor = picked / 100);
+                  }
+                }),
+              ],
+            ),
+            actions: appDialogActions(
+              d,
+              confirmLabel: '保存',
+              confirmEnabled: valid,
+              onCancel: () => Navigator.of(d).pop(false),
+              onConfirm: () => Navigator.of(d).pop(true),
+            ),
+          );
+        },
       ),
     );
     if (result != true) return null;
-    final min = double.tryParse(minC.text.trim());
-    final max =
-        maxC.text.trim().isEmpty ? null : double.tryParse(maxC.text.trim());
-    final f = double.tryParse(fC.text.trim());
-    if (min == null || min <= 0 || f == null || f <= 0) return current;
-    if (max != null && max <= min) return current;
-    return {'min_sec': min, 'max_sec': max, 'factor': f.clamp(0.5, 1.5)};
+    return {'min_sec': minSec, 'max_sec': maxSec, 'factor': factor};
   }
 
   /// 常亮限定设备展示名（未限定=全局常亮）。
@@ -773,13 +819,12 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
 
   Future<void> _pickLyricIdle(BuildContext context) async {
     final current = _settings.lyricFocusIdleSec;
-    final picked = await showSingleChoiceDialog<int>(
+    final picked = await showNumberWheelDialog(
       context: context,
-      title: '歌词追焦等待',
-      values: AppSettings.lyricFocusIdleOptions,
-      current: current,
+      title: '歌词追焦',
+      value: current,
+      values: wheelRange(1, 60, 1),
       labelOf: (s) => '$s 秒',
-      asRadio: true,
     );
     if (picked == null || picked == current || !context.mounted) return;
     setState(() => _settings.lyricFocusIdleSec = picked);

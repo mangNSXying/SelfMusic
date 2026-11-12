@@ -18,6 +18,7 @@ import '../../widgets/app_toast.dart';
 import '../../widgets/inline_spinner.dart';
 import '../../widgets/single_choice_dialog.dart';
 import '../../widgets/single_choice_group.dart';
+import '../../widgets/wheel_picker_dialog.dart';
 
 import 'color_picker.dart';
 import 'settings_focus.dart';
@@ -590,43 +591,12 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
   /// 歌词行数：0=不限制；大屏按上限放大字号（只放大不缩小）。
   Future<void> _pickLyricMaxLines(BuildContext context) async {
     final current = _settings.lyricMaxLines;
-    final maxHeight = (MediaQuery.sizeOf(context).height * 0.6)
-        .clamp(200.0, 420.0)
-        .toDouble();
-    final picked = await showDialog<int>(
+    final picked = await showNumberWheelDialog(
       context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('歌词行数'),
-        content: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 360),
-          child: SizedBox(
-            width: double.maxFinite,
-            height: maxHeight,
-            child: RadioGroup<int>(
-              groupValue: current,
-              onChanged: (v) {
-                if (v != null) Navigator.of(c).pop(v);
-              },
-              child: ListView(
-                shrinkWrap: true,
-                children: [
-                  for (final n in AppSettings.lyricMaxLinesOptions)
-                    RadioListTile<int>(
-                      title: Text(n == 0 ? '不限制（沿用当前字号）' : '$n 行'),
-                      value: n,
-                    ),
-                ],
-              ),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(c).pop(),
-            child: const Text('取消'),
-          ),
-        ],
-      ),
+      title: '歌词行数',
+      value: current,
+      values: [0, ...wheelRange(6, 30, 1)],
+      labelOf: (n) => n == 0 ? '不限制' : '$n 行',
     );
     if (picked == null || picked == current || !context.mounted) return;
     setState(() => _settings.lyricMaxLines = picked);
@@ -636,15 +606,16 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
 
   /// 播放页控件静置自动隐藏秒数（0=不隐藏）。
   Future<void> _pickPlayerAutoHide(BuildContext context) async {
-    final chosen = await showSingleChoiceDialog<int>(
+    final current = _settings.playerAutoHideIdleSec;
+    final picked = await showNumberWheelDialog(
       context: context,
       title: '播放页控件隐藏',
-      values: AppSettings.playerAutoHideIdleOptions,
-      current: _settings.playerAutoHideIdleSec,
-      labelOf: (sec) => sec == 0 ? '不自动隐藏' : '$sec 秒',
+      value: current,
+      values: wheelRange(0, 60, 1),
+      labelOf: (sec) => sec == 0 ? '关闭' : '$sec 秒',
     );
-    if (chosen == null || !context.mounted) return;
-    setState(() => _settings.playerAutoHideIdleSec = chosen);
+    if (picked == null || picked == current || !context.mounted) return;
+    setState(() => _settings.playerAutoHideIdleSec = picked);
     context.read<DirectSourceManager>().refresh();
   }
 
