@@ -287,14 +287,14 @@ void main() {
     );
   });
 
-  test('QQ 歌词：musicu base64 主路径（同步+译文）', () async {
+  test('QQ 歌词：musicu base64 主路径（同步+译文合并）', () async {
     final qq = QqProvider(
         dio: _dioOf(_qqLyricMusicu(
             lyric: '[00:18.46]今天我寒夜里看雪飘过\n',
             trans: '[00:18.46]translation\n')));
     final r = await qq.fetchLyric('001p7ZZ83R1M9z');
-    expect(r.syncedLyrics, contains('[00:18.46]今天我'));
-    expect(r.plainLyrics, contains('translation'));
+    expect(r.syncedLyrics, contains('[00:18.46]今天我寒夜里看雪飘过 / translation'));
+    expect(r.plainLyrics, isNull);
   });
 
   test('QQ 歌词：加密返回（crypt=1）回落旧接口', () async {
@@ -349,11 +349,12 @@ void main() {
     expect(c.artistName, 'Beyond');
   });
 
-  test('网易歌词：lrc/tlyric 映射', () async {
+  test('网易歌词：lrc/tlyric 无时间轴按行序合并', () async {
     final ne = NeteaseProvider(dio: _dioOf(_neRoutes()));
     final r = await ne.fetchLyric('347230');
-    expect(r.syncedLyrics, contains('[00:18.466]'));
-    expect(r.plainLyrics, contains('test trans'));
+    expect(r.syncedLyrics,
+        contains('[00:18.466]今天我寒夜里看雪飘过 / test trans'));
+    expect(r.plainLyrics, isNull);
   });
 
   test('网易反爬码（-460）转中文错', () async {
@@ -420,6 +421,7 @@ void main() {
     expect(list.first.matchWeight, greaterThan(0));
     final full = await svc.ensureLyrics(list.first);
     expect(full.hasContent, isTrue);
+    expect(full.saveContent, contains('今天我 / translation'));
     final tracks = await svc.searchCoverTracks(song);
     expect(tracks.length, 1);
     final cover = await svc.fetchTrackCover(tracks.first);

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 
+import '../../utils/lrc_parser.dart';
 import 'online_meta_models.dart';
 
 /// QQ音乐源（免费无登录：双端点互备，免 Cookie / 免签名）。
@@ -202,7 +203,7 @@ class QqProvider {
   // ---------- 歌词 ----------
 
   /// 取歌词：musicu（base64 主）→ 旧接口（明文备）。
-  /// `lyric` → 同步（无时间轴时退为纯文本），`trans` → 译文。
+  /// `lyric` → 同步（无时间轴时退为纯文本），`trans` → 按时间轴并入同步正文。
   Future<({String? syncedLyrics, String? plainLyrics})> fetchLyric(
       String songmid) async {
     final mid = songmid.trim();
@@ -271,16 +272,20 @@ class QqProvider {
     return _mapLyric(lyric, trans);
   }
 
-  /// 同步/纯文本映射（与网易云同口径）：有 LRC 时间轴取同步，译文入
-  /// `plainLyrics`（保存时同步优先，现库无译文轨）。
+  /// 同步/纯文本映射（与网易云同口径）：有 LRC 时间轴取同步（译文按时间轴
+  /// 合并为同行 `原文 / 译文`），否则退为纯文本。
   static ({String? syncedLyrics, String? plainLyrics}) _mapLyric(
       String lyric, String trans) {
     final hasSync = lyric.isNotEmpty && lyric.contains('[');
+    if (hasSync) {
+      return (
+        syncedLyrics: mergeLyricTranslation(lyric, trans),
+        plainLyrics: null,
+      );
+    }
     return (
-      syncedLyrics: hasSync ? lyric : null,
-      plainLyrics: hasSync
-          ? (trans.isEmpty ? null : trans)
-          : (lyric.isEmpty ? (trans.isEmpty ? null : trans) : lyric),
+      syncedLyrics: null,
+      plainLyrics: lyric.isEmpty ? (trans.isEmpty ? null : trans) : lyric,
     );
   }
 

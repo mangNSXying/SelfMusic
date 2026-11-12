@@ -30,6 +30,113 @@ class ParsedLyrics {
   return (original, translation);
 }
 
+final RegExp _timeTag = RegExp(r'\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]');
+final RegExp _metaTag =
+    RegExp(r'^\[(ti|ar|al|by|offset):(.*)\]$', caseSensitive: false);
+
+/// 任意 `[tag:value]` 元信息行（合并译文时跳过，避免把 `[kana:...]` 当译文）。
+final RegExp _anyMetaTag = RegExp(r'^\[[A-Za-z]+:.*\]$');
+
+int _timeMsOf(RegExpMatch m) {
+  final minutes = int.parse(m.group(1)!);
+  final seconds = int.parse(m.group(2)!);
+  final fracRaw = m.group(3);
+  var fracMs = 0;
+  if (fracRaw != null && fracRaw.isNotEmpty) {
+    final v = int.parse(fracRaw);
+    fracMs = switch (fracRaw.length) {
+      1 => v * 100,
+      2 => v * 10,
+      _ => v,
+    };
+  }
+  return minutes * 60000 + seconds * 1000 + fracMs;
+}
+
+/// 把译文 LRC 按时间轴合并进原文 LRC，命中行输出 `[mm:ss.xx]原文 / 译文`。
+///
+/// - 时间容差 300ms（各源 lyric/trans 时间戳口径基本一致，避免相邻行串译）；
+/// - 译文无时间轴时，仅当与原文歌词行数一致才按行序合并；
+/// - 原文已有同行译文、译文与原文相同、或完全对不上时保持原样。
+String mergeLyricTranslation(String lyric, String trans) {
+  if (lyric.trim().isEmpty || trans.trim().isEmpty) return lyric;
+
+  final timed = <(int, String)>[];
+  final untimed = <String>[];
+  for (final raw
+      in trans.replaceFirst('\uFEFF', '').split(RegExp(r'\r?\n'))) {
+    final line = raw.trim();
+    if (line.isEmpty || _anyMetaTag.hasMatch(line)) continue;
+    final tags = _timeTag.allMatches(line).toList();
+    if (tags.isEmpty) {
+      untimed.add(line);
+      continue;
+    }
+    final text = line.substring(tags.last.end).trim();
+    if (text.isEmpty) continue;
+    for (final tag in tags) {
+      timed.add((_timeMsOf(tag), text));
+    }
+  }
+  if (timed.isEmpty && untimed.isEmpty) return lyric;
+
+  final srcLines = lyric.replaceFirst('\uFEFF', '').split(RegExp(r'\r?\n'));
+  var lyricRows = 0;
+  for (final raw in srcLines) {
+    final line = raw.trim();
+    final tags = _timeTag.allMatches(line).toList();
+    if (tags.isNotEmpty &&
+        !_metaTag.hasMatch(line) &&
+        line.substring(tags.last.end).trim().isNotEmpty) {
+      lyricRows++;
+    }
+  }
+  final byOrder = timed.isEmpty && lyricRows == untimed.length;
+
+  final out = <String>[];
+  var order = 0;
+  for (final raw in srcLines) {
+    final line = raw.trim();
+    if (line.isEmpty) continue;
+    final tags = _timeTag.allMatches(line).toList();
+    if (tags.isEmpty || _metaTag.hasMatch(line)) {
+      out.add(line);
+      continue;
+    }
+    final text = line.substring(tags.last.end).trim();
+    if (text.isEmpty) {
+      out.add(line); // 纯时间行（间奏标记）不挂译文。
+      continue;
+    }
+    final translation = byOrder
+        ? untimed[order++]
+        : _nearestTranslation(timed, _timeMsOf(tags.last));
+    if (translation == null ||
+        translation.isEmpty ||
+        translation == text ||
+        splitLyricTranslation(text).$2 != null) {
+      out.add(line);
+      continue;
+    }
+    out.add('${line.substring(0, tags.last.end)}$text / $translation');
+  }
+  return out.join('\n');
+}
+
+/// 时间轴最近的译文（容差 300ms）；对不上返回 null。
+String? _nearestTranslation(List<(int, String)> items, int ms) {
+  String? best;
+  var bestDiff = 301;
+  for (final (time, text) in items) {
+    final diff = (time - ms).abs();
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = text;
+    }
+  }
+  return best;
+}
+
 /// 解析歌词原文（LRC 或纯文本）。
 ///
 /// - 支持一行多个时间标签 `[mm:ss.xx][mm:ss.xx]文本`；
@@ -42,22 +149,19 @@ ParsedLyrics parseLyrics(String raw) {
   final lines = <LyricLine>[];
   final plainLines = <String>[];
   var offsetMs = 0;
-  final timeTag = RegExp(r'\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]');
-  final metaTag =
-      RegExp(r'^\[(ti|ar|al|by|offset):(.*)\]$', caseSensitive: false);
 
   for (final rawLine
       in raw.replaceFirst('\uFEFF', '').split(RegExp(r'\r?\n'))) {
     final line = rawLine.trim();
     if (line.isEmpty) continue;
-    final meta = metaTag.firstMatch(line);
+    final meta = _metaTag.firstMatch(line);
     if (meta != null) {
       if (meta.group(1)!.toLowerCase() == 'offset') {
         offsetMs = int.tryParse(meta.group(2)!.trim()) ?? 0;
       }
       continue;
     }
-    final tags = timeTag.allMatches(line).toList();
+    final tags = _timeTag.allMatches(line).toList();
     if (tags.isEmpty) {
       // 有时间轴歌词后出现的无时间轴行：作为上一行的独立译文（多行译文换行拼接）。
       if (lines.isNotEmpty) {
@@ -76,19 +180,7 @@ ParsedLyrics parseLyrics(String raw) {
     if (rawText.isEmpty) continue; // 纯时间行（间奏标记）跳过
     final (text, translation) = splitLyricTranslation(rawText);
     for (final m in tags) {
-      final minutes = int.parse(m.group(1)!);
-      final seconds = int.parse(m.group(2)!);
-      final fracRaw = m.group(3);
-      var fracMs = 0;
-      if (fracRaw != null && fracRaw.isNotEmpty) {
-        final v = int.parse(fracRaw);
-        fracMs = switch (fracRaw.length) {
-          1 => v * 100,
-          2 => v * 10,
-          _ => v,
-        };
-      }
-      var ms = minutes * 60000 + seconds * 1000 + fracMs + offsetMs;
+      var ms = _timeMsOf(m) + offsetMs;
       if (ms < 0) ms = 0;
       lines.add(LyricLine(Duration(milliseconds: ms), text, translation));
     }

@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 
+import '../../utils/lrc_parser.dart';
 import 'online_meta_models.dart';
 
 /// 网易云源（免费无Key，直调公开 `api/*`；逻辑对标 MusicPlayer2
@@ -99,7 +100,7 @@ class NeteaseProvider {
     }
   }
 
-  /// 取歌词：`lrc.lyric` → 同步，`tlyric.lyric` → 译文。
+  /// 取歌词：`lrc.lyric` → 同步，`tlyric.lyric` → 按时间轴并入同步正文。
   Future<({String? syncedLyrics, String? plainLyrics})> fetchLyric(
       String onlineId) async {
     final id = onlineId.trim();
@@ -127,9 +128,9 @@ class NeteaseProvider {
         : '';
     final hasSync = lrc.isNotEmpty && lrc.contains('[');
     return (
-      syncedLyrics: hasSync ? lrc : null,
+      syncedLyrics: hasSync ? mergeLyricTranslation(lrc, tlyric) : null,
       plainLyrics: hasSync
-          ? (tlyric.isEmpty ? null : tlyric)
+          ? null
           : (lrc.isEmpty ? (tlyric.isEmpty ? null : tlyric) : lrc),
     );
   }

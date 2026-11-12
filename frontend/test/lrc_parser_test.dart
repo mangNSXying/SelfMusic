@@ -88,6 +88,58 @@ void main() {
     });
   });
 
+  group('译文合并', () {
+    test('按时间轴并入同行并保留元信息/空行结构', () {
+      final merged = mergeLyricTranslation(
+        '[ti:标题]\n[00:18.46]Hello\n[00:20.00]World\n',
+        '[00:18.46]你好\n[00:20.00]世界\n',
+      );
+      expect(merged, '[ti:标题]\n[00:18.46]Hello / 你好\n[00:20.00]World / 世界');
+    });
+
+    test('时间戳毫秒级差异在容差内仍可对齐', () {
+      final merged =
+          mergeLyricTranslation('[00:18.50]Hello', '[00:18.46]你好');
+      expect(merged, '[00:18.50]Hello / 你好');
+    });
+
+    test('时间对不上（超出容差）保持原文', () {
+      const lyric = '[00:18.80]Hello';
+      expect(mergeLyricTranslation(lyric, '[00:18.46]你好'), lyric);
+    });
+
+    test('无时间轴译文与原文行数一致时按行序合并', () {
+      final merged = mergeLyricTranslation(
+        '[00:01.00]Hello\n[00:05.00]World',
+        '你好\n世界',
+      );
+      expect(merged, '[00:01.00]Hello / 你好\n[00:05.00]World / 世界');
+    });
+
+    test('无时间轴译文行数不一致时不合并', () {
+      const lyric = '[00:01.00]Hello\n[00:05.00]World';
+      expect(mergeLyricTranslation(lyric, '你好'), lyric);
+    });
+
+    test('已有同行译文不重复追加', () {
+      const lyric = '[00:01.00]Hello / 你好';
+      expect(mergeLyricTranslation(lyric, '[00:01.00]你好'), lyric);
+    });
+
+    test('纯时间行不挂译文，译文与原文相同不追加', () {
+      const lyric = '[00:01.00]\n[00:02.00]Hello';
+      expect(mergeLyricTranslation(lyric, '[00:02.00]Hello'), lyric);
+    });
+
+    test('译文侧元信息与纯时间行忽略', () {
+      const lyric = '[00:02.00]Hello';
+      expect(
+        mergeLyricTranslation(lyric, '[ti:x]\n[kana:か]\n[00:02.00]'),
+        lyric,
+      );
+    });
+  });
+
   group('lyricIndexAt', () {
     final lines = [
       const LyricLine(Duration(seconds: 1), 'a'),
