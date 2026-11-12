@@ -242,38 +242,29 @@ class _WheelPickerDialogState<T> extends State<_WheelPickerDialog<T>> {
                             }
                             _focusNode.requestFocus();
                           },
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 120),
-                            decoration: BoxDecoration(
-                              color: _activeColumn == c
-                                  ? cs.primary.withValues(alpha: 0.06)
-                                  : null,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: CupertinoPicker(
-                              scrollController: _controllers[c],
-                              itemExtent: 40,
-                              magnification: 1.15,
-                              onSelectedItemChanged: (i) {
-                                if (_indices[c] != i) {
-                                  setState(() => _indices[c] = i);
-                                }
-                              },
-                              children: [
-                                for (final label in widget.columns[c].labels)
-                                  Center(
-                                    child: Text(
-                                      label,
-                                      style: TextStyle(
-                                        fontSize: 17,
-                                        color: _activeColumn == c
-                                            ? cs.onSurface
-                                            : cs.onSurfaceVariant,
-                                      ),
+                          child: CupertinoPicker(
+                            scrollController: _controllers[c],
+                            itemExtent: 40,
+                            magnification: 1.15,
+                            onSelectedItemChanged: (i) {
+                              if (_indices[c] != i) {
+                                setState(() => _indices[c] = i);
+                              }
+                            },
+                            children: [
+                              for (final label in widget.columns[c].labels)
+                                Center(
+                                  child: Text(
+                                    label,
+                                    style: TextStyle(
+                                      fontSize: 17,
+                                      color: _activeColumn == c
+                                          ? cs.onSurface
+                                          : cs.onSurfaceVariant,
                                     ),
                                   ),
-                              ],
-                            ),
+                                ),
+                            ],
                           ),
                         ),
                       ),
