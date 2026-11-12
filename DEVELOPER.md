@@ -1107,7 +1107,7 @@ tracked 事件（complete/skip 带 `progress_pct`、manual 带 `tracked:true`）
 | 事件 | 触发 | 效果 |
 |------|------|------|
 | complete | 自然结束且播放比例 >95% | 先记一条进度样本；like_streak++，dislike_streak=0；非锁定态连续完播≥3 且资格线通过 → factor=min(1.5, +0.1)、streak 清零；闸门未过保留 streak（后续完播继续评比）；锁定态只记 streak 不调权；随后按资格线钳制权重（只降不升） |
-| complete_manual | **用户手动点播**（`_play(manual:true)` 起始）且自然完播 | 不重复采样（前一条 complete 已记）；tracked 时同样过资格线；通过 → like_streak=0、dislike_streak=0、factor=min(1.5, +0.1)；失败保留权重与 streak；锁定态不动权重 |
+| complete_manual | **用户手动点播 / 「下一首播放」**（`_play(manual:true)` 起始）且自然完播 | 不重复采样（前一条 complete 已记）；tracked 时同样过资格线；通过 → like_streak=0、dislike_streak=0、factor=min(1.5, +0.1)；失败保留权重与 streak；锁定态不动权重 |
 | skip | 被 next/prev/换歌打断且比例 <30% | 先记一条进度样本；dislike_streak++，like_streak=0；非锁定态 dislike_streak≥3 → factor=max(0.5, −0.1)、streak 清零；锁定态只记 streak；降权不看长期中位，但随后按资格线钳制权重 |
 | progress | 30%~95% 中性离开 / 补推基线 | `song.progress`：普通样本 progress_pct +1 桶、like_streak=0（dislike_streak 不变）、按资格线钳制权重；`baseline:true` 的 progress_hist 按桶 max，不改 streak/权重 |
 | liked | 手动喜欢 / 收藏 | favorite=true，factor=1.5，解除「不喜欢」锁定（frozen=false） |
@@ -1115,7 +1115,7 @@ tracked 事件（complete/skip 带 `progress_pct`、manual 带 `tracked:true`）
 | disliked | 手动不喜欢（开关式） | favorite 不变；开 → factor=0.1 且 frozen=true；关 → 解锁回 1.0 |
 | reset | 手动重置 | 双 streak 清零，factor 回 1.0，解除「不喜欢」锁定 |
 
-> `complete_manual` 仅**用户主动选择**（playAt / playQueue / 播放页点行 / 歌单「播放全部」）起始的歌自然完播才计数；`next()`/`prev()`/自动下一首/失败重试均为非手动起点。
+> `complete_manual` 仅**用户主动选择**（playAt / playQueue / 播放页点行 / 歌单「播放全部」/ 「下一首播放」排入的下一首）起始的歌自然完播才计数；`next()`/`prev()`/自动下一首/失败重试均为非手动起点。
 
 播放模式：`sequence`（顺序播放，播完即停）/ `loopList` / `loopOne` / `weighted`（显示「随机播放」，由 `weighted_random_enabled` 决定加权随机 / 普通不放回）；切换入口播放页 + 队列面板；`next()` 与自动下一首按当前模式路由。
 

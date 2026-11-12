@@ -56,6 +56,9 @@ class _FakePlatformPlayer extends AudioPlayerPlatform {
 
   final _events = StreamController<PlaybackEventMessage>.broadcast();
 
+  /// 装载次数：测试据此等待切歌装载真正开始/完成。
+  int loads = 0;
+
   void _emit(Duration position) {
     _events.add(PlaybackEventMessage(
       processingState: ProcessingStateMessage.ready,
@@ -69,11 +72,24 @@ class _FakePlatformPlayer extends AudioPlayerPlatform {
     ));
   }
 
+  /// 模拟当前曲自然播放结束：平台上报 completed（playing 客户端侧仍为 true）。
+  void emitCompleted() => _events.add(PlaybackEventMessage(
+        processingState: ProcessingStateMessage.completed,
+        updateTime: DateTime.now(),
+        updatePosition: const Duration(minutes: 3),
+        bufferedPosition: const Duration(minutes: 3),
+        duration: const Duration(minutes: 3),
+        icyMetadata: null,
+        currentIndex: 0,
+        androidAudioSessionId: null,
+      ));
+
   @override
   Stream<PlaybackEventMessage> get playbackEventMessageStream => _events.stream;
 
   @override
   Future<LoadResponse> load(LoadRequest request) async {
+    loads++;
     _emit(request.initialPosition ?? Duration.zero);
     return LoadResponse(duration: const Duration(minutes: 3));
   }
@@ -160,11 +176,20 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   late JustAudioPlatform saved;
+  late _FakeJustAudio fake;
 
   setUp(() {
     saved = JustAudioPlatform.instance;
-    JustAudioPlatform.instance = _FakeJustAudio();
+    fake = _FakeJustAudio();
+    JustAudioPlatform.instance = fake;
   });
+
+  Future<void> pumpUntil(bool Function() done) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 3));
+    while (!done() && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+  }
 
   tearDown(() {
     JustAudioPlatform.instance = saved;
@@ -433,6 +458,37 @@ void main() {
       expect(player.current?.sourceRef, 's6');
       expect(_refs(player), ['s1', 's6', 's3', 's4', 's5', 's6'],
           reason: 's6 出队进入深层，原被顶的 s2 不复活');
+    });
+
+    test('下一首播放自然完播：与点播同口径，立即升一档', () async {
+      final (index, player, uuid, _) = await setup();
+      addTearDown(index.close);
+      addTearDown(player.dispose);
+
+      final target = _song('s6');
+      // 预置 3 条 100% 样本：tracked 升权闸门放行（首播样本不足 3 条时不升权）。
+      for (var i = 0; i < 3; i++) {
+        await index.recordProgress('webdav:test', 's6', 100);
+      }
+
+      await tap(player, uuid, 0); // 手动点播 s1
+      expect(player.playNext(target), isTrue);
+
+      // s1 自然播完 → 自动起播「下一首播放」的 s6（手动起点）。
+      fake.players.values.last.emitCompleted();
+      await pumpUntil(() =>
+          player.current?.sourceRef == 's6' &&
+          fake.players.values.last.loads >= 2);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      // s6 自然播完：complete_manual 直接 +0.1，不走三次完播门槛。
+      fake.players.values.last.emitCompleted();
+      await pumpUntil(() => index.playMetaOf('webdav:test', 's6').factor > 1.0);
+
+      final m = index.playMetaOf('webdav:test', 's6');
+      expect(m.factor, closeTo(1.1, 1e-9));
+      expect(m.likeStreak, 0);
+      expect(m.dislikeStreak, 0);
     });
 
     test('刷新元数据后添加下一首播放：当前曲封面不回退', () async {

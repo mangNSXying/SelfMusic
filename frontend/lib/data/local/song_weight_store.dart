@@ -245,9 +245,9 @@ class SongWeightStore {
         progressPct == null ? null : {'progress_pct': progressPct});
   }
 
-  /// 手动点播后自然完播（改进.txt 功能7）：与 [onCompleted] 的 streak 门槛制不同，
-  /// 权重直接提高一档（f=clamp(f+0.1)）并清零累计的完播/切歌次数——用户主动
-  /// 点选并听完一首，本身就是强正面信号。
+  /// 手动点播 / 「下一首播放」后自然完播（改进.txt 功能7）：与 [onCompleted] 的
+  /// streak 门槛制不同，权重直接提高一档（f=clamp(f+0.1)）并清零累计的完播/切歌
+  /// 次数——用户主动点选并听完一首，本身就是强正面信号。
   ///
   /// [tracked] 为 true 时同样要过长期资格线（升权）；失败保留权重与 streak。
   /// 本次播放的进度样本已由前一条 complete 记录，本事件不重复采样。

@@ -1500,8 +1500,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 歌曲身份 key（`sourceKey\0sourceRef`）：completed 去重与乐观位置归属共用。
   static String _positionKeyOf(Song s) => s.uid;
 
-  /// 当前曲是否用户手动点播（playAt/playQueue；next/prev/自动/失败重试=非手动）。
-  /// 自然完播（>95%）时在此基础上额外累计 `complete_manual` 权重 +0.1 一档。
+  /// 当前曲是否用户手动点播（playAt/playQueue/「下一首播放」；next/prev/自动/
+  /// 失败重试=非手动）。自然完播（>95%）时在此基础上额外累计 `complete_manual`
+  /// 权重 +0.1 一档。
   bool _startedManual = false;
 
   /// 本次曲目占用是否已记录离开样本/权重事件：自然结束与 next/prev 竞态下
@@ -2701,7 +2702,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 锚定上下文里 [_queue] 是「深层历史 ‖ 基座续播段」的融合投影且总长恒等于基座长度，
   /// 直接 `_queue.insert` 会被下次 [_rebuildFusedQueue] 整段重算冲掉。因此这里只写
   /// [_nextUp]，由 [_fusedQueue]/[_rebuildFusedQueue] 在 [_nextUpOffset] 处替换拼接，
-  /// 队列面板看到的顺序与实际播出一致。
+  /// 队列面板看到的顺序与实际播出一致。非锚定队列不会被重算：直接把「当前曲之后那一格」
+  /// 换成新歌，同时记入 [_nextUp] 供 [_advance] 定位——起播按「同点播」口径计权。
   ///
   /// 语义是**替换**：「下一首播放」只有一格，再排别的就顶掉原先那首，队列不腾位置。
   ///
@@ -2723,8 +2725,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _rebuildFusedQueue(target: _current);
     } else {
       // 非锚定队列不会被重算：直接把「当前曲之后那一格」换成新歌即可。
-      // 注意这里不能碰 [_nextUp]——非锚定时 [_nextUpOffset] 恒为 0，
-      // 留在槽里会让 [_advance] 跳回队首。
+      // [_nextUp] 同步记录（不参与拼接，仅供 [_advance] 按身份定位并以点播口径起播）。
       final at = _idx + 1;
       if (at < _queue.length) {
         if (_same(_queue[at], s)) return false;
@@ -2732,6 +2733,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       } else {
         _queue.add(s);
       }
+      _nextUp = s;
     }
     // 下一首变了：作废旧的预取/预热，避免预热到已经不该播的那首。
     _peekedNext = null;
@@ -2947,8 +2949,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// false；_advance / _playRandom / 删当前曲续播 / 断点恢复一律 true。
   /// [autoAdvanceOnFailure]：自动续播链路（自然播完/失败跳歌）专用——装载彻底失败
   /// 时不逐首弹 toast，直接跳下一首（见 [_autoSkipAfterFailure]）。
-  /// [manual]：本曲是否用户手动点播（playAt/playQueue）——自然完播时额外走
-  /// `complete_manual` 权重 +0.1 一档（改进.txt 功能7）；next/prev/自动/失败重试均非手动。
+  /// [manual]：本曲是否用户主动选择（playAt/playQueue/「下一首播放」）——自然完播时
+  /// 额外走 `complete_manual` 权重 +0.1 一档（改进.txt 功能7）；next/prev/自动/失败重试
+  /// 均非手动。
   Future<bool> _play(Song s,
       {MusicSource? source,
       bool play = true,
@@ -3965,16 +3968,23 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     // 「下一首播放」优先于随机抽样与列表循环：无论何种模式，用户排的那首都先播。
+    // 用户显式排入的下一首按「点播」口径起播（自然完播时同样 complete_manual +0.1）。
     if (_nextUp != null) {
-      _idx = _nextUpOffset.clamp(0, _queue.length - 1);
-      final target = _queue[_idx];
+      final queued = _nextUp!;
+      // 锚定队列里预载项位于深层尾之后（[_nextUpOffset]）；非锚定队列直接占
+      // 「当前曲之后那一格」。按身份定位，兼容两种队列形态。
+      final located = _queue.indexWhere((s) => _same(s, queued));
+      _idx = (located >= 0 ? located : _nextUpOffset)
+          .clamp(0, _queue.length - 1);
+      final target = located >= 0 ? _queue[located] : queued;
       // 先出队再播：装载失败时 [_autoSkipAfterFailure] 会重入 [_advance]，
       // 槽位若还在就会一直重播同一首。播成后由 [_rebuildFusedQueue] 让基座补位。
       _nextUp = null;
       await _play(target,
           source: _curSource,
           autoAdvanceOnFailure: autoAdvanceOnFailure,
-          play: play);
+          play: play,
+          manual: true);
       return;
     }
     if (_mode == PlayMode.weighted) {
@@ -4423,8 +4433,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final j = judgeWeightRatio(player.duration, position);
     // 离开时的最终进度（自然结束固定 100%，与 judgeWeightRatio 同用播放器时长）。
     final pct = progressPercentOf(player.duration, position, completed: completed);
-    // 用户手动点播并自然完播（>95%）：额外记一次 complete_manual——权重 +0.1
-    // 一档并清空双 streak（改进.txt 功能7）。非手动起点（next/prev/自动/失败重试）不触发。
+    // 用户手动点播 / 「下一首播放」并自然完播（>95%）：额外记一次 complete_manual——
+    // 权重 +0.1 一档并清空双 streak（改进.txt 功能7）。非手动起点（next/prev/自动/
+    // 失败重试）不触发。
     final manual = _startedManual;
     _startedManual = false;
     if (j == WeightJudgement.complete) {
