@@ -143,25 +143,25 @@ class _SyncSectionState extends State<SyncSection> {
             description: _subtitle(),
             trailing: _syncing
                 ? const InlineSpinner(size: 20)
-                : const SettingsValueText('同步'),
+                : const SettingsActionText('同步'),
             onTap: _syncing ? null : _syncNow,
           ),
         ),
         _anchor(
           '同步设置',
-          SettingsTile(
+          SettingsTile.action(
             title: '同步设置',
             description: _settingsSyncSubtitle(settings),
-            trailing: const SettingsValueText('选择'),
+            label: '选择',
             onTap: _openSettingsSync,
           ),
         ),
         _anchor(
           '设备管理',
-          SettingsTile(
+          SettingsTile.action(
             title: '设备管理',
             description: '查看与吊销已配对设备',
-            trailing: const SettingsValueText('查看'),
+            label: '查看',
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute<void>(builder: (_) => const DevicesScreen()),
             ),

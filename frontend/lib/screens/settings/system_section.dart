@@ -7,6 +7,7 @@ import '../../platform/desktop_tray.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/app_toast.dart';
+import '../../widgets/settings_layout.dart';
 import '../../widgets/settings_section_header.dart';
 import '../../widgets/settings_tile.dart';
 import '../../widgets/shortcut_settings_panel.dart';
@@ -28,7 +29,7 @@ class SystemSection extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             DesktopAndBackgroundSection(),
-            Divider(height: 32),
+            SettingsGroupDivider(),
             LogSection(),
           ],
         ),
@@ -49,7 +50,6 @@ class _DesktopAndBackgroundSectionState
   @override
   Widget build(BuildContext context) {
     final settings = context.read<DirectSourceManager>().settings;
-    final cs = Theme.of(context).colorScheme;
     final tray = DesktopTray.isSupported ? DesktopTray.instance : null;
     // 托盘创建失败（如 Linux 桌面没有 StatusNotifier 宿主）时关闭仍会退出，
     // 开关置灰避免用户误以为窗口藏起来还能从托盘找回。
@@ -89,14 +89,7 @@ class _DesktopAndBackgroundSectionState
             },
           ),
         ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-          child: Text('仅安卓；关闭不影响后台播放',
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
-                  ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
-        ),
+        const SettingsGroupNote('仅安卓；关闭不影响后台播放'),
       ],
     );
   }
@@ -139,10 +132,10 @@ class _LogSectionState extends State<LogSection> {
         const SettingsSectionHeader('诊断'),
         _systemAnchor(
           '日志时长',
-          SettingsTile(
+          SettingsTile.value(
             title: '日志时长',
             description: '反馈时附带最近该时长的日志',
-            trailing: SettingsValueText('$minutes 分钟'),
+            value: '$minutes 分钟',
             onTap: _pickDuration,
           ),
         ),

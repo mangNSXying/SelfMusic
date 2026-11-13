@@ -6,6 +6,7 @@ import '../screens/settings/settings_focus.dart';
 import '../shortcuts/shortcut_models.dart';
 import '../shortcuts/shortcut_settings.dart';
 import '../theme/app_theme.dart';
+import 'settings_layout.dart';
 import 'settings_section_header.dart';
 import 'settings_tile.dart';
 
@@ -27,43 +28,33 @@ class ShortcutSettingsPanel extends StatelessWidget {
         settings.windowBindings.values.where((b) => b != null).length;
     final globalCount =
         settings.globalBindings.values.where((b) => b != null).length;
-    return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const SettingsSectionHeader('快捷键'),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Text(
-              '窗口内与全局快捷键分别设置，点击进入对应列表。',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
+    return SettingsPage(
+      children: [
+        const SettingsSectionHeader('快捷键'),
+        const SettingsGroupNote('窗口内与全局快捷键分别设置，点击进入对应列表。'),
+        _anchor(
+          '窗口内',
+          SettingsTile.action(
+            title: '窗口内',
+            description: '应用窗口聚焦时生效 · 已设置 $windowCount 项',
+            label: '设置',
+            onTap: () => _openScope(context, ShortcutScope.window),
           ),
-          _anchor(
-            '窗口内',
-            SettingsTile(
-              title: '窗口内',
-              description: '应用窗口聚焦时生效 · 已设置 $windowCount 项',
-              trailing: const SettingsValueText('设置'),
-              onTap: () => _openScope(context, ShortcutScope.window),
-            ),
+        ),
+        _anchor(
+          '全局',
+          SettingsTile.action(
+            title: '全局',
+            description: '应用在后台时也可触发 · 已设置 $globalCount 项',
+            label: '设置',
+            onTap: () => _openScope(context, ShortcutScope.global),
           ),
-          _anchor(
-            '全局',
-            SettingsTile(
-              title: '全局',
-              description: '应用在后台时也可触发 · 已设置 $globalCount 项',
-              trailing: const SettingsValueText('设置'),
-              onTap: () => _openScope(context, ShortcutScope.global),
-            ),
-          ),
-          if (footer != null) ...[
-            const Divider(height: 32),
-            footer!,
-          ],
+        ),
+        if (footer != null) ...[
+          const SettingsGroupDivider(),
+          footer!,
         ],
-      ),
+      ],
     );
   }
 
