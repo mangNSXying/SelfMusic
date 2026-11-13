@@ -1145,6 +1145,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
               'prev=${_lastPlatformPos.inMilliseconds}ms '
               'next=${e.updatePosition.inMilliseconds}ms '
               'playing=${p.playing} state=${p.processingState.name}');
+          // 位置基准被改写（用户回拨/原生 seek）：看门狗锚点必须重建，
+          // 否则锚点停在旧高位，回拨后 12s 会被误判为卡死并按旧位置重载。
+          _resetStallAnchor();
         }
         _lastPlatformPos = e.updatePosition;
         _stallPosSeen = true;
@@ -1230,6 +1233,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _stallTimer?.cancel();
     _stallTimer = null;
     _stallAnchorAt = null;
+  }
+
+  /// 位置基准被改写（拖动进度/原生回退）：锚点作废，下一拍在新位置重建。
+  /// 锚点只在「位置超过锚点」时推进，回拨后旧高位锚点永远追不上——若不重建，
+  /// 一个 [stallTimeout] 后必然误判卡死并重载回旧位置（回拨后播放又跳回原处）。
+  void _resetStallAnchor() {
+    _stallAnchorAt = null;
+    _stallAnchorPos = Duration.zero;
+    _stallAnchorPlayPos = Duration.zero;
   }
 
   void _checkStall() {
@@ -4822,6 +4834,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     // 用户手动 seek 接管：恢复期的乐观位置失效，之后走真实位置。
     _clearRestorePosition();
+    // 拖进度改写了位置基准：看门狗锚点与新基准一起重建（seek 到 0 时原生
+    // 位置事件会被 `> 0` 过滤，这里必须先把基准落到位），否则回拨后 12s
+    // 会被误判为卡死并按回拨前的位置重载。
+    _resetStallAnchor();
+    _lastPlatformPos = d.isNegative ? Duration.zero : d;
     // 直播转码流不可原生 seek：带偏移重开流（服务端输出端 -ss）。
     if (_liveTranscode) {
       await _seekLiveTranscode(d);

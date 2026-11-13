@@ -257,6 +257,39 @@ void main() {
     expect(_seekSeconds(seek), inInclusiveRange(29, 32));
   });
 
+  test('回拨进度后看门狗锚点重建：新位置前进不算卡死、恢复落在新位置', () async {
+    PlayerProvider.stallTimeout = const Duration(milliseconds: 120);
+    PlayerProvider.stallCheckInterval = const Duration(milliseconds: 20);
+    final fake = JustAudioPlatform.instance as _FakeJustAudio;
+    final p = PlayerProvider();
+    addTearDown(p.dispose);
+
+    await p.playQueue([_song()], source: _FakeSource());
+    // 回拨前锚点站在 30s；buffered 冻住（模拟鸿蒙 CACHED_DURATION 只报一次），
+    // 老实现里回拨后位置永远追不上 30s 锚点 → 超时误判卡死并按 30s 重载。
+    fake.current.emitProgress(const Duration(seconds: 30),
+        buffered: const Duration(seconds: 30));
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    final loadsBeforeSeek = fake.allLoads.length;
+    await p.seek(Duration.zero);
+    // 回拨后在新基础上前进 10s，总时长超过 stallTimeout：不得重载。
+    for (var i = 1; i <= 10; i++) {
+      fake.current.emitProgress(Duration(seconds: i),
+          buffered: const Duration(seconds: 30));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    expect(fake.allLoads.length, loadsBeforeSeek,
+        reason: '回拨后位置在新基准上前进，不能按旧锚点判停滞');
+
+    // 真卡住时，恢复落点必须用回拨后的位置，而不是回拨前的 30s。
+    await _waitFor(() => fake.allLoads.length > loadsBeforeSeek,
+        timeout: const Duration(seconds: 3));
+    final seek = fake.allSeeks.lastWhere((s) => _seekSeconds(s) >= 5);
+    expect(_seekSeconds(seek), inInclusiveRange(9, 11),
+        reason: '恢复应从回拨后的真实位置继续');
+  });
+
   test('缓冲位置冻结但原生位置在走：不判停滞（鸿蒙 CACHED_DURATION 稀疏）', () async {
     PlayerProvider.stallTimeout = const Duration(milliseconds: 120);
     PlayerProvider.stallCheckInterval = const Duration(milliseconds: 20);
