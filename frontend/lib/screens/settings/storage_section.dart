@@ -9,6 +9,7 @@ import '../../utils/cover_thumb.dart';
 import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/inline_spinner.dart';
+import '../../widgets/settings_tile.dart';
 import 'backup_section.dart';
 import 'settings_focus.dart';
 import 'storage_sections.dart';
@@ -57,8 +58,9 @@ class _StorageSectionState extends State<StorageSection> {
           _groupTitle('离线缓存'),
           _anchor(
             '收藏自动缓存',
-            SwitchListTile(
-              title: const Text('收藏自动缓存'),
+            SettingsTile.toggle(
+              title: '收藏自动缓存',
+              description: '收藏的歌曲自动离线保存',
               value: _settings.autoCacheFavorites,
               onChanged: (v) {
                 setState(() => _settings.autoCacheFavorites = v);
@@ -83,10 +85,9 @@ class _StorageSectionState extends State<StorageSection> {
           _groupTitle('封面缓存'),
           _anchor(
             '压缩画质',
-            SwitchListTile(
-              title: const Text('压缩画质'),
-              subtitle:
-                  Text(_settings.compressCoverImage ? '省空间，可能发热' : '原图（推荐）'),
+            SettingsTile.toggle(
+              title: '压缩画质',
+              description: _settings.compressCoverImage ? '省空间，可能发热' : '原图（推荐）',
               value: _settings.compressCoverImage,
               onChanged: (v) async {
                 setState(() => _settings.compressCoverImage = v);
@@ -99,12 +100,12 @@ class _StorageSectionState extends State<StorageSection> {
           ),
           _anchor(
             '清理缩略图',
-            ListTile(
-              leading: const Icon(Icons.cleaning_services_outlined),
-              title: const Text('清理缩略图'),
+            SettingsTile(
+              title: '清理缩略图',
+              description: '删除已生成的封面缩略图',
               trailing: _clearingThumbs
                   ? const InlineSpinner(size: 24)
-                  : const Icon(Icons.chevron_right),
+                  : SettingsValueText('清理'),
               onTap: _clearingThumbs ? null : () => _clearCoverThumbs(context),
             ),
           ),

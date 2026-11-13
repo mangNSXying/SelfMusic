@@ -7,6 +7,7 @@ import '../../providers/direct_source_manager.dart';
 import '../../services/api_client.dart';
 import '../../services/server_settings.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/settings_tile.dart';
 import 'pairing_screen.dart';
 import 'settings_focus.dart';
 import 'storage_sections.dart';
@@ -74,76 +75,79 @@ class _NetworkSectionState extends State<NetworkSection> {
     final auth = context.watch<AuthProvider>();
     final directSettings = context.read<DirectSourceManager>().settings;
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('网络',
-              style: Theme.of(context)
-                  .textTheme
-                  .headlineSmall
-                  ?.copyWith(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 4),
-          Text('配置服务端、多设备同步与转码代理',
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
-                  ?.copyWith(color: scheme.onSurface.withValues(alpha: 0.6))),
-          const SizedBox(height: 24),
-          _groupTitle('服务端'),
-          const SizedBox(height: 4),
-          _anchor(
-            '配对服务端',
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.key),
-              title: const Text('配对服务端'),
-              subtitle: Text(_pairingSubtitle(auth.isPaired)),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const PairingScreen()),
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('网络',
+                style: Theme.of(context)
+                    .textTheme
+                    .headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            Text('配置服务端、多设备同步与转码代理',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: scheme.onSurface.withValues(alpha: 0.6))),
+            const SizedBox(height: 24),
+            _groupTitle('服务端'),
+            const SizedBox(height: 4),
+            _anchor(
+              '配对服务端',
+              SettingsTile(
+                title: '配对服务端',
+                description: '配对后可多设备同步与转码',
+                trailing: SettingsValueText(
+                  _pairingSubtitle(auth.isPaired),
+                  maxWidth: 200,
+                ),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                      builder: (_) => const PairingScreen()),
+                ),
               ),
             ),
-          ),
-          const Divider(height: 32),
-          _groupTitle('多设备同步'),
-          const SizedBox(height: 4),
-          const SyncSection(),
-          const Divider(height: 32),
-          _groupTitle('网络安全'),
-          const SizedBox(height: 4),
-          _anchor(
-            '允许 HTTP',
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('允许 HTTP'),
-              subtitle: const Text('默认关闭；开启后才能连接 http://'),
-              value: directSettings.allowInsecureHttp,
-              onChanged: (v) {
-                directSettings.allowInsecureHttp = v;
-                setState(() {});
-              },
+            const Divider(height: 32),
+            _groupTitle('多设备同步'),
+            const SizedBox(height: 4),
+            const SyncSection(),
+            const Divider(height: 32),
+            _groupTitle('网络安全'),
+            const SizedBox(height: 4),
+            _anchor(
+              '允许 HTTP',
+              SettingsTile.toggle(
+                title: '允许 HTTP',
+                description: '默认关闭；开启后才能连接 http://',
+                value: directSettings.allowInsecureHttp,
+                onChanged: (v) {
+                  directSettings.allowInsecureHttp = v;
+                  setState(() {});
+                },
+              ),
             ),
-          ),
-          _anchor(
-            '信任自签名',
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('信任自签名'),
-              subtitle: const Text('默认关闭；仅自签名证书需要'),
-              value: directSettings.allowSelfSigned,
-              onChanged: (v) {
-                directSettings.allowSelfSigned = v;
-                context.read<DirectSourceManager>().applySecuritySettings();
-                context.read<ApiClient>().setSelfSignedPolicy(v);
-                setState(() {});
-              },
+            _anchor(
+              '信任自签名',
+              SettingsTile.toggle(
+                title: '信任自签名',
+                description: '默认关闭；仅自签名证书需要',
+                value: directSettings.allowSelfSigned,
+                onChanged: (v) {
+                  directSettings.allowSelfSigned = v;
+                  context.read<DirectSourceManager>().applySecuritySettings();
+                  context.read<ApiClient>().setSelfSignedPolicy(v);
+                  setState(() {});
+                },
+              ),
             ),
-          ),
-          const Divider(height: 32),
-          const TranscodeSection(),
-          const SizedBox(height: 16),
-        ],
+            const Divider(height: 32),
+            const TranscodeSection(),
+            const SizedBox(height: 16),
+          ],
+        ),
       ),
     );
   }

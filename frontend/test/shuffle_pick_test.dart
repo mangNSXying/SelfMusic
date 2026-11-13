@@ -14,6 +14,7 @@ import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/screens/settings/settings_screen.dart';
 import 'package:selfmusic/theme/app_theme.dart';
+import 'package:selfmusic/widgets/settings_tile.dart';
 import 'package:sqlite3/open.dart';
 
 ffi.DynamicLibrary _openOnLinux() {
@@ -229,12 +230,11 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('随机（加权）'), findsOneWidget);
-      final sw = find.widgetWithText(SwitchListTile, '加权随机');
-      expect(tester.widget<SwitchListTile>(sw).value, isTrue,
-          reason: '加权随机默认开启');
+      final sw = find.widgetWithText(SettingsTile, '加权随机');
+      expect(sw, findsOneWidget, reason: '加权随机默认开启');
 
-      ListTile cooldown(String title) =>
-          tester.widget<ListTile>(find.widgetWithText(ListTile, title));
+      SettingsTile cooldown(String title) =>
+          tester.widget<SettingsTile>(find.widgetWithText(SettingsTile, title));
       expect(cooldown('次数冷却').enabled, isTrue);
       expect(cooldown('次数冷却').onTap, isNotNull);
       expect(cooldown('曲数冷却').enabled, isTrue);

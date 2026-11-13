@@ -10,6 +10,7 @@ import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/screens/settings/sync_section.dart';
 import 'package:selfmusic/services/api_client.dart';
 import 'package:selfmusic/services/sync_engine.dart';
+import 'package:selfmusic/widgets/settings_tile.dart';
 import 'package:sqlite3/open.dart';
 
 DynamicLibrary _openOnLinux() {
@@ -78,29 +79,40 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(SettingsSyncDialog), findsOneWidget);
 
-    final master = find.widgetWithText(SwitchListTile, '同步设置');
-    expect(tester.widget<SwitchListTile>(master).value, isFalse);
+    Finder inDialog(String label) => find.descendant(
+          of: find.byType(SettingsSyncDialog),
+          matching: find.widgetWithText(SettingsTile, label),
+        );
+
+    final master = inDialog('同步设置');
+    expect(tester.widget<SettingsTile>(master).enabled, isTrue,
+        reason: '总开关本身始终可点');
+    for (final label in ['播放偏好', '媒体库规则', '界面偏好', '主题外观']) {
+      expect(
+        tester.widget<SettingsTile>(inDialog(label)).enabled,
+        isFalse,
+        reason: '总开关关闭时 $label 不可点',
+      );
+    }
     await tester.tap(master);
     await tester.pump();
     expect(settings.syncSettingsEnabled, isTrue);
 
-    final playback = find.widgetWithText(SwitchListTile, '播放偏好');
-    expect(tester.widget<SwitchListTile>(playback).onChanged, isNotNull);
+    final playback = inDialog('播放偏好');
+    expect(tester.widget<SettingsTile>(playback).onTap, isNotNull);
     await tester.tap(playback);
     await tester.pump();
     expect(settings.syncSettingsPlayback, isFalse);
     expect(settings.syncSettingsLibrary, isTrue);
 
-    final iface = find.widgetWithText(SwitchListTile, '界面偏好');
-    expect(tester.widget<SwitchListTile>(iface).value, isFalse);
-    expect(tester.widget<SwitchListTile>(iface).onChanged, isNotNull);
+    final iface = inDialog('界面偏好');
+    expect(tester.widget<SettingsTile>(iface).onTap, isNotNull);
     await tester.tap(iface);
     await tester.pump();
     expect(settings.syncSettingsInterface, isTrue);
 
-    final theme = find.widgetWithText(SwitchListTile, '主题外观');
-    expect(tester.widget<SwitchListTile>(theme).value, isFalse);
-    expect(tester.widget<SwitchListTile>(theme).onChanged, isNotNull);
+    final theme = inDialog('主题外观');
+    expect(tester.widget<SettingsTile>(theme).onTap, isNotNull);
     await tester.tap(theme);
     await tester.pump();
     expect(settings.syncSettingsTheme, isTrue);

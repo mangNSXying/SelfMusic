@@ -19,6 +19,7 @@ import '../../utils/format_bytes.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/inline_spinner.dart';
 import '../../widgets/row_action_button.dart';
+import '../../widgets/settings_tile.dart';
 import '../../widgets/single_choice_group.dart';
 import '../../widgets/wheel_picker_dialog.dart';
 import 'settings_focus.dart';
@@ -82,13 +83,11 @@ class _CacheDirTileState extends State<CacheDirTile> {
   Widget build(BuildContext context) {
     final index = context.read<DirectSourceManager>().index;
     final count = index.countUserCachedSongs();
-    return ListTile(
-      contentPadding: EdgeInsets.zero,
-      leading: const Icon(Icons.folder_open),
-      title: const Text('缓存目录'),
-      subtitle: Text(
-          '${index.cacheDir}${index.usingDefaultCacheDir ? '（默认）' : '（自定义）'}\n已缓存 $count 首 · 占用 ${CacheDirTile._fmtBytes(index.cacheTotalBytes())}'),
-      isThreeLine: true,
+    return SettingsTile(
+      title: '缓存目录',
+      description:
+          '${index.cacheDir}${index.usingDefaultCacheDir ? '（默认）' : '（自定义）'}\n'
+          '已缓存 $count 首 · 占用 ${CacheDirTile._fmtBytes(index.cacheTotalBytes())}',
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -185,10 +184,9 @@ class _TranscodeSectionState extends State<TranscodeSection> {
                 ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
         _anchor(
           '转码省流',
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('转码省流'),
-            subtitle: const Text('省流量；失败时自动播放原文件'),
+          SettingsTile.toggle(
+            title: '转码省流',
+            description: '省流量；失败时自动播放原文件',
             value: settings.transcodeEnabled && canUse,
             onChanged: !canUse
                 ? null
@@ -406,24 +404,26 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
         const SizedBox(height: 8),
         _anchor(
           '体积上限',
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.storage_outlined),
-            title: const Text('体积上限'),
-            subtitle: Text(_labelBytes(_settings.cacheMaxBytes)),
-            trailing: const Icon(Icons.chevron_right),
+          SettingsTile(
+            title: '体积上限',
+            description: '缓存占用的总大小上限',
+            trailing: SettingsValueText(
+              _labelBytes(_settings.cacheMaxBytes),
+              enabled: !follow,
+            ),
             enabled: !follow,
             onTap: follow ? null : () => _editMaxBytes(context),
           ),
         ),
         _anchor(
           '首数上限',
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.library_music_outlined),
-            title: const Text('首数上限'),
-            subtitle: Text('${_settings.cacheSongLimit} 首'),
-            trailing: const Icon(Icons.chevron_right),
+          SettingsTile(
+            title: '首数上限',
+            description: '最多保留的缓存歌曲数',
+            trailing: SettingsValueText(
+              '${_settings.cacheSongLimit} 首',
+              enabled: !follow,
+            ),
             enabled: !follow,
             onTap: follow ? null : () => _editSongLimit(context),
           ),

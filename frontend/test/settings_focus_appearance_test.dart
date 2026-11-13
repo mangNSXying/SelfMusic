@@ -13,6 +13,7 @@ import 'package:selfmusic/screens/settings/settings_focus.dart';
 import 'package:selfmusic/screens/settings/settings_screen.dart';
 import 'package:selfmusic/theme/app_theme.dart';
 import 'package:selfmusic/theme/theme_provider.dart';
+import 'package:selfmusic/widgets/settings_tile.dart';
 import 'package:sqlite3/open.dart';
 
 DynamicLibrary _openOnLinux() {
@@ -84,7 +85,7 @@ void main() {
     );
     await tester.pump();
 
-    final target = find.widgetWithText(SwitchListTile, '长按组头');
+    final target = find.widgetWithText(SettingsTile, '长按组头');
     expect(target, findsOneWidget);
     final anchor =
         find.byKey(const ValueKey<String>('settings-anchor:appearance/长按组头'));

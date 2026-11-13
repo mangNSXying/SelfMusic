@@ -15,6 +15,7 @@ import '../../widgets/app_toast.dart';
 import '../../widgets/app_volume_control.dart';
 import '../../widgets/eq_curve_editor.dart';
 import '../../widgets/settings_section_header.dart';
+import '../../widgets/settings_tile.dart';
 import '../../widgets/single_choice_dialog.dart';
 import '../../widgets/wheel_picker_dialog.dart';
 import 'keep_awake_device_dialog.dart';
@@ -55,36 +56,36 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
           const SettingsSectionHeader('播放行为'),
           _anchor(
             '默认模式',
-            ListTile(
-              leading: const Icon(Icons.playlist_play),
-              title: const Text('默认模式'),
-              subtitle: Text(_modeSubtitle(current)),
-              trailing: const Icon(Icons.chevron_right),
+            SettingsTile(
+              title: '默认模式',
+              description: '启动后进入的播放模式',
+              trailing: SettingsValueText(_modeSubtitle(current)),
               onTap: () => _pickMode(context, current),
             ),
           ),
           _anchor(
             '断点续播',
-            SwitchListTile(
-              title: const Text('断点续播'),
-              subtitle: const Text('启动时恢复上次位置，保持暂停'),
+            SettingsTile.toggle(
+              title: '断点续播',
+              description: '启动时恢复上次位置，保持暂停',
               value: _settings.resumeOnStartup,
               onChanged: (v) => setState(() => _settings.resumeOnStartup = v),
             ),
           ),
           _anchor(
             '预载下一首',
-            SwitchListTile(
-              title: const Text('预载下一首'),
+            SettingsTile.toggle(
+              title: '预载下一首',
+              description: '提前缓存下一首，切歌更快',
               value: _settings.preloadNext,
               onChanged: (v) => setState(() => _settings.preloadNext = v),
             ),
           ),
           _anchor(
             '定时行为',
-            SwitchListTile(
-              title: const Text('定时行为'),
-              subtitle: const Text('播完当前曲再暂停'),
+            SettingsTile.toggle(
+              title: '定时行为',
+              description: '睡眠定时默认播完当前曲再暂停',
               value: _settings.sleepPlayThroughDefault,
               onChanged: (v) =>
                   setState(() => _settings.sleepPlayThroughDefault = v),
@@ -92,38 +93,37 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
           ),
           _anchor(
             '歌词追焦',
-            ListTile(
-              leading: const Icon(Icons.lyrics_outlined),
-              title: const Text('歌词追焦'),
-              subtitle: Text('拖动后 ${_settings.lyricFocusIdleSec} 秒回到当前行'),
-              trailing: const Icon(Icons.chevron_right),
+            SettingsTile(
+              title: '歌词追焦',
+              description: '拖动后多久回到当前行',
+              trailing: SettingsValueText('${_settings.lyricFocusIdleSec} 秒'),
               onTap: () => _pickLyricIdle(context),
             ),
           ),
           _anchor(
             '屏幕常亮',
-            SwitchListTile(
-              title: const Text('屏幕常亮'),
+            SettingsTile.toggle(
+              title: '屏幕常亮',
+              description: '打开播放页期间不熄屏',
               value: _settings.playerKeepScreenOn,
               onChanged: (v) =>
                   setState(() => _settings.playerKeepScreenOn = v),
             ),
           ),
           if (_settings.playerKeepScreenOn)
-            ListTile(
-              leading: const Icon(Icons.bluetooth),
-              title: const Text('限定蓝牙'),
-              subtitle: Text(_keepAwakeDeviceLabel()),
-              trailing: const Icon(Icons.chevron_right),
+            SettingsTile(
+              title: '限定蓝牙',
+              description: '仅在指定设备连接时保持常亮',
+              trailing: SettingsValueText(_keepAwakeDeviceLabel()),
               onTap: _pickKeepAwakeDevice,
             ),
           const Divider(height: 32),
           const SettingsSectionHeader('随机权重'),
           _anchor(
             '加权随机',
-            SwitchListTile(
-              title: const Text('加权随机'),
-              subtitle: const Text('按权重抽歌；关闭为普通随机'),
+            SettingsTile.toggle(
+              title: '加权随机',
+              description: '按权重抽歌；关闭为普通随机',
               value: _settings.weightedRandomEnabled,
               onChanged: (v) {
                 setState(() => _settings.weightedRandomEnabled = v);
@@ -133,24 +133,22 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
           ),
           _anchor(
             '次数冷却',
-            ListTile(
-              leading: const Icon(Icons.waves),
-              title: const Text('次数冷却'),
-              subtitle:
-                  Text(_drawCooldownValue(_settings.weightedDrawCooldown)),
-              trailing: const Icon(Icons.chevron_right),
+            SettingsTile(
+              title: '次数冷却',
+              description: '刚播过的歌连续抽中时先跳过',
+              trailing: SettingsValueText(
+                  _drawCooldownValue(_settings.weightedDrawCooldown)),
               enabled: _settings.weightedRandomEnabled,
               onTap: _settings.weightedRandomEnabled ? _pickDrawCooldown : null,
             ),
           ),
           _anchor(
             '曲数冷却',
-            ListTile(
-              leading: const Icon(Icons.timeline),
-              title: const Text('曲数冷却'),
-              subtitle: Text(
+            SettingsTile(
+              title: '曲数冷却',
+              description: '最近播过的一段不进候选池',
+              trailing: SettingsValueText(
                   _countCooldownValue(_settings.weightedCountCooldownRatio)),
-              trailing: const Icon(Icons.chevron_right),
               enabled: _settings.weightedRandomEnabled,
               onTap:
                   _settings.weightedRandomEnabled ? _editCountCooldown : null,
@@ -158,9 +156,9 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
           ),
           _anchor(
             '时长削弱',
-            SwitchListTile(
-              title: const Text('时长削弱'),
-              subtitle: const Text('长歌权重低（仅加权随机）'),
+            SettingsTile.toggle(
+              title: '时长削弱',
+              description: '长歌权重低（仅加权随机）',
               value: _settings.weightCurveEnabled,
               onChanged: (v) =>
                   setState(() => _settings.weightCurveEnabled = v),
@@ -168,12 +166,11 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
           ),
           _anchor(
             '权重曲线',
-            ListTile(
-              leading: const Icon(Icons.show_chart),
-              title: const Text('权重曲线'),
-              subtitle:
-                  Text(_weightCurveSummary(_settings.weightCurveSegments)),
-              trailing: const Icon(Icons.chevron_right),
+            SettingsTile(
+              title: '权重曲线',
+              description: '按歌曲时长分段的权重系数',
+              trailing: SettingsValueText(
+                  _weightCurveSummary(_settings.weightCurveSegments)),
               onTap: () => _editWeightCurve(context),
             ),
           ),
@@ -181,8 +178,9 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
           const SettingsSectionHeader('音效'),
           _anchor(
             '淡入淡出',
-            SwitchListTile(
-              title: const Text('淡入淡出'),
+            SettingsTile.toggle(
+              title: '淡入淡出',
+              description: '播放与暂停时音量渐变',
               value: _settings.fadeEnabled,
               onChanged: (v) => setState(() => _settings.fadeEnabled = v),
             ),
@@ -213,9 +211,10 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
           const Divider(height: 24),
           _anchor(
             '应用音量',
-            const ListTile(
-              leading: Icon(Icons.volume_up),
-              title: Text('应用音量'),
+            SettingsTile(
+              title: '应用音量',
+              description: '独立于系统音量的应用内增益',
+              trailing: SettingsValueText('${_settings.appVolume}%'),
             ),
           ),
           Padding(
@@ -271,8 +270,9 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
           ),
           _anchor(
             '焦点自动暂停',
-            SwitchListTile(
-              title: const Text('焦点自动暂停'),
+            SettingsTile.toggle(
+              title: '焦点自动暂停',
+              description: '来电或其他应用抢占时自动暂停与恢复',
               value: _settings.audioFocusEnabled,
               onChanged: (v) {
                 setState(() => _settings.audioFocusEnabled = v);
@@ -282,8 +282,9 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
           ),
           _anchor(
             '静音暂停',
-            SwitchListTile(
-              title: const Text('静音暂停'),
+            SettingsTile.toggle(
+              title: '静音暂停',
+              description: '系统音量归零时自动暂停',
               value: _settings.pauseOnZeroVolume,
               onChanged: (v) {
                 setState(() => _settings.pauseOnZeroVolume = v);
@@ -293,8 +294,9 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
           ),
           _anchor(
             '断连暂停',
-            SwitchListTile(
-              title: const Text('断连暂停'),
+            SettingsTile.toggle(
+              title: '断连暂停',
+              description: '输出设备断开时自动暂停',
               value: _settings.pauseOnDeviceDisconnect,
               onChanged: (v) {
                 setState(() => _settings.pauseOnDeviceDisconnect = v);
@@ -315,15 +317,16 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
     final supported = EqualizerService.supportedOnThisPlatform;
     final enabled = supported && _settings.equalizerEnabled;
     if (!supported) {
-      return SwitchListTile(
-        title: const Text('均衡器'),
-        subtitle: Text(EqualizerService.unsupportedNote),
+      return SettingsTile.toggle(
+        title: '均衡器',
+        description: EqualizerService.unsupportedNote,
         value: false,
         onChanged: null,
       );
     }
-    final switchTile = SwitchListTile(
-      title: const Text('均衡器'),
+    final switchTile = SettingsTile.toggle(
+      title: '均衡器',
+      description: '调整各频段增益与整体音色',
       value: enabled,
       onChanged: (v) {
         context.read<PlayerProvider>().setEqualizerEnabled(v);
@@ -699,12 +702,9 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
               factor <= 1.5 &&
               (maxSec == null || maxSec! > minSec);
           Widget row(String label, String value, Future<void> Function() pick) {
-            return ListTile(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              title: Text(label),
-              subtitle: Text(value),
-              trailing: const Icon(Icons.chevron_right),
+            return SettingsTile(
+              title: label,
+              trailing: SettingsValueText(value),
               onTap: pick,
             );
           }

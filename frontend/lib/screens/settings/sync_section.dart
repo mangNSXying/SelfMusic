@@ -8,6 +8,7 @@ import '../../services/sync_engine.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/inline_spinner.dart';
+import '../../widgets/settings_tile.dart';
 import 'devices_screen.dart';
 import 'settings_focus.dart';
 
@@ -121,10 +122,9 @@ class _SyncSectionState extends State<SyncSection> {
       children: [
         _anchor(
           '同步开关',
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('同步开关'),
-            subtitle: const Text('收藏、权重、歌单和播放进度'),
+          SettingsTile.toggle(
+            title: '同步开关',
+            description: '收藏、权重、歌单和播放进度',
             value: settings.syncEnabled,
             onChanged: (v) {
               settings.syncEnabled = v;
@@ -138,34 +138,30 @@ class _SyncSectionState extends State<SyncSection> {
         ),
         _anchor(
           '立即同步',
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: _syncing
-                ? const InlineSpinner(size: 24)
-                : const Icon(Icons.sync),
-            title: const Text('立即同步'),
-            subtitle: Text(_subtitle()),
+          SettingsTile(
+            title: '立即同步',
+            description: _subtitle(),
+            trailing: _syncing
+                ? const InlineSpinner(size: 20)
+                : const SettingsValueText('同步'),
             onTap: _syncing ? null : _syncNow,
           ),
         ),
         _anchor(
           '同步设置',
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.tune),
-            title: const Text('同步设置'),
-            subtitle: Text(_settingsSyncSubtitle(settings)),
-            trailing: const Icon(Icons.chevron_right),
+          SettingsTile(
+            title: '同步设置',
+            description: _settingsSyncSubtitle(settings),
+            trailing: const SettingsValueText('选择'),
             onTap: _openSettingsSync,
           ),
         ),
         _anchor(
           '设备管理',
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.devices),
-            title: const Text('设备管理'),
-            trailing: const Icon(Icons.chevron_right),
+          SettingsTile(
+            title: '设备管理',
+            description: '查看与吊销已配对设备',
+            trailing: const SettingsValueText('查看'),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute<void>(builder: (_) => const DevicesScreen()),
             ),
@@ -211,41 +207,36 @@ class _SettingsSyncDialogState extends State<SettingsSyncDialog> {
                           fontSize: 12,
                           color: cs.onSurface.withValues(alpha: 0.6))),
                 ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('同步设置'),
-                subtitle: const Text('选择哪些设置跟随账号同步'),
+              SettingsTile.toggle(
+                title: '同步设置',
+                description: '选择哪些设置跟随账号同步',
                 value: _settings.syncSettingsEnabled,
                 onChanged: (v) =>
                     setState(() => _settings.syncSettingsEnabled = v),
               ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('播放偏好'),
+              SettingsTile.toggle(
+                title: '播放偏好',
                 value: _settings.syncSettingsPlayback,
                 onChanged: enabled
                     ? (v) => setState(() => _settings.syncSettingsPlayback = v)
                     : null,
               ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('媒体库规则'),
+              SettingsTile.toggle(
+                title: '媒体库规则',
                 value: _settings.syncSettingsLibrary,
                 onChanged: enabled
                     ? (v) => setState(() => _settings.syncSettingsLibrary = v)
                     : null,
               ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('界面偏好'),
+              SettingsTile.toggle(
+                title: '界面偏好',
                 value: _settings.syncSettingsInterface,
                 onChanged: enabled
                     ? (v) => setState(() => _settings.syncSettingsInterface = v)
                     : null,
               ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('主题外观'),
+              SettingsTile.toggle(
+                title: '主题外观',
                 value: _settings.syncSettingsTheme,
                 onChanged: enabled
                     ? (v) => setState(() => _settings.syncSettingsTheme = v)

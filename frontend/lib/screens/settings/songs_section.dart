@@ -14,6 +14,7 @@ import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/row_action_button.dart';
 import '../../widgets/settings_section_header.dart';
+import '../../widgets/settings_tile.dart';
 import '../../widgets/single_choice_dialog.dart';
 import '../../widgets/single_choice_group.dart';
 import '../../widgets/wheel_picker_dialog.dart';
@@ -50,31 +51,31 @@ class _SongsSettingsState extends State<SongsSection> {
           const SettingsSectionHeader('扫描过滤'),
           _anchor(
             '时长过滤',
-            ListTile(
-              title: const Text('时长过滤'),
-              subtitle: Text(_settings.scanIgnoreMinDurationSec > 0
+            SettingsTile(
+              title: '时长过滤',
+              description: '短于该时长的文件不参与扫描',
+              trailing: SettingsValueText(_settings.scanIgnoreMinDurationSec > 0
                   ? '${_settings.scanIgnoreMinDurationSec} 秒'
                   : '关闭'),
-              trailing: const Icon(Icons.chevron_right),
               onTap: () => _editIgnoreDuration(context),
             ),
           ),
           _anchor(
             '大小过滤',
-            ListTile(
-              title: const Text('大小过滤'),
-              subtitle: Text(_settings.scanIgnoreMinSizeBytes > 0
+            SettingsTile(
+              title: '大小过滤',
+              description: '小于该大小的文件不参与扫描',
+              trailing: SettingsValueText(_settings.scanIgnoreMinSizeBytes > 0
                   ? _labelBytes(_settings.scanIgnoreMinSizeBytes)
                   : '关闭'),
-              trailing: const Icon(Icons.chevron_right),
               onTap: () => _editIgnoreBytes(context),
             ),
           ),
           _anchor(
             '仅 Wi-Fi',
-            SwitchListTile(
-              title: const Text('仅 Wi-Fi'),
-              subtitle: const Text('手机只在 Wi-Fi 下扫描'),
+            SettingsTile.toggle(
+              title: '仅 Wi-Fi',
+              description: '手机只在 Wi-Fi 下扫描',
               value: _settings.scanWifiOnly,
               onChanged: (v) {
                 setState(() => _settings.scanWifiOnly = v);
@@ -83,12 +84,12 @@ class _SongsSettingsState extends State<SongsSection> {
           ),
           _anchor(
             '扫描间隔',
-            ListTile(
-              title: const Text('扫描间隔'),
-              subtitle: Text(_settings.scanAutoIntervalMin > 0
+            SettingsTile(
+              title: '扫描间隔',
+              description: '按固定周期增量扫描全部直连源',
+              trailing: SettingsValueText(_settings.scanAutoIntervalMin > 0
                   ? '每 ${_settings.scanAutoIntervalMin} 分钟'
                   : '关闭'),
-              trailing: const Icon(Icons.chevron_right),
               onTap: () => _editScanInterval(context),
             ),
           ),
@@ -97,19 +98,21 @@ class _SongsSettingsState extends State<SongsSection> {
           _subHeader('在线来源'),
           _anchor(
             '歌词来源',
-            ListTile(
-              title: const Text('歌词来源'),
-              subtitle: Text(_settings.onlineMetaLyricSource.label),
-              trailing: const Icon(Icons.chevron_right),
+            SettingsTile(
+              title: '歌词来源',
+              description: '在线歌词的检索接口',
+              trailing:
+                  SettingsValueText(_settings.onlineMetaLyricSource.label),
               onTap: () => _pickLyricSource(context),
             ),
           ),
           _anchor(
             '封面来源',
-            ListTile(
-              title: const Text('封面来源'),
-              subtitle: Text(_settings.onlineMetaCoverSource.label),
-              trailing: const Icon(Icons.chevron_right),
+            SettingsTile(
+              title: '封面来源',
+              description: '在线封面的检索接口',
+              trailing:
+                  SettingsValueText(_settings.onlineMetaCoverSource.label),
               onTap: () => _pickCoverSource(context),
             ),
           ),
@@ -137,14 +140,20 @@ class _SongsSettingsState extends State<SongsSection> {
           ),
           _anchor(
             '歌词目录',
-            ListTile(
-              title: const Text('歌词目录'),
-              subtitle: Text(_settings.onlineMetaLyricDir.isEmpty
-                  ? '默认'
-                  : _settings.onlineMetaLyricDir),
+            SettingsTile(
+              title: '歌词目录',
+              description: '写回源目录时的自定义位置',
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  SettingsValueText(
+                    _settings.onlineMetaLyricDir.isEmpty
+                        ? '默认'
+                        : _settings.onlineMetaLyricDir,
+                    enabled: _settings.onlineMetaSaveMode ==
+                        OnlineMetaSaveMode.sidecar,
+                    maxWidth: 140,
+                  ),
                   if (_settings.onlineMetaLyricDir.isNotEmpty)
                     RowActionIconButton(
                       icon: Icons.clear,
@@ -157,7 +166,6 @@ class _SongsSettingsState extends State<SongsSection> {
                               context.read<DirectSourceManager>().refresh();
                             },
                     ),
-                  const Icon(Icons.chevron_right),
                 ],
               ),
               enabled:
@@ -171,9 +179,9 @@ class _SongsSettingsState extends State<SongsSection> {
           _subHeader('歌手解析'),
           _anchor(
             '自动解析',
-            SwitchListTile(
-              title: const Text('自动解析'),
-              subtitle: const Text('自动补全歌手信息'),
+            SettingsTile.toggle(
+              title: '自动解析',
+              description: '自动补全歌手信息',
               value: _settings.artistResolveAuto,
               onChanged: (v) {
                 setState(() => _settings.artistResolveAuto = v);
@@ -185,9 +193,10 @@ class _SongsSettingsState extends State<SongsSection> {
           ),
           _anchor(
             '重试解析',
-            ListTile(
-              title: const Text('重试解析'),
-              trailing: const Icon(Icons.refresh),
+            SettingsTile(
+              title: '重试解析',
+              description: '重新尝试此前解析失败的歌手',
+              trailing: SettingsValueText('开始'),
               onTap: () async {
                 await context.read<ArtistResolver>().retryAll();
                 if (context.mounted) {
@@ -198,9 +207,10 @@ class _SongsSettingsState extends State<SongsSection> {
           ),
           _anchor(
             '强制解析',
-            ListTile(
-              title: const Text('强制解析'),
-              trailing: const Icon(Icons.playlist_add_check),
+            SettingsTile(
+              title: '强制解析',
+              description: '忽略已有结果，全部重新拉取',
+              trailing: SettingsValueText('开始'),
               onTap: () async {
                 final ok = await showDialog<bool>(
                   context: context,
@@ -228,9 +238,9 @@ class _SongsSettingsState extends State<SongsSection> {
           const SettingsSectionHeader('播放源'),
           _anchor(
             '备用源同步',
-            SwitchListTile(
-              title: const Text('备用源同步'),
-              subtitle: const Text('备用源缺歌时自动补一份'),
+            SettingsTile.toggle(
+              title: '备用源同步',
+              description: '备用源缺歌时自动补一份',
               value: _settings.fallbackAutoRepair,
               onChanged: (v) {
                 setState(() => _settings.fallbackAutoRepair = v);

@@ -8,6 +8,7 @@ import '../../providers/direct_source_manager.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/settings_section_header.dart';
+import '../../widgets/settings_tile.dart';
 import '../../widgets/shortcut_settings_panel.dart';
 import '../../widgets/wheel_picker_dialog.dart';
 import 'settings_focus.dart';
@@ -60,13 +61,13 @@ class _DesktopAndBackgroundSectionState
         if (tray != null)
           _systemAnchor(
             '驻留托盘',
-            SwitchListTile(
-              title: const Text('驻留托盘'),
-              subtitle: Text(!trayAvailable
+            SettingsTile.toggle(
+              title: '驻留托盘',
+              description: !trayAvailable
                   ? '当前桌面不支持托盘，关闭窗口会退出'
                   : settings.closeToTray
                       ? '关闭窗口后继续播放，可从托盘恢复'
-                      : '关闭窗口即退出'),
+                      : '关闭窗口即退出',
               value: settings.closeToTray,
               onChanged: trayAvailable
                   ? (v) {
@@ -78,9 +79,9 @@ class _DesktopAndBackgroundSectionState
           ),
         _systemAnchor(
           '通知栏控制',
-          SwitchListTile(
-            title: const Text('通知栏控制'),
-            subtitle: const Text('重启后生效'),
+          SettingsTile.toggle(
+            title: '通知栏控制',
+            description: '通知栏提供播放控制，重启后生效',
             value: settings.notificationControls,
             onChanged: (v) {
               setState(() => settings.notificationControls = v);
@@ -138,11 +139,10 @@ class _LogSectionState extends State<LogSection> {
         const SettingsSectionHeader('诊断'),
         _systemAnchor(
           '日志时长',
-          ListTile(
-            leading: const Icon(Icons.schedule),
-            title: const Text('日志时长'),
-            subtitle: Text('反馈时附带最近 $minutes 分钟的日志'),
-            trailing: const Icon(Icons.chevron_right),
+          SettingsTile(
+            title: '日志时长',
+            description: '反馈时附带最近该时长的日志',
+            trailing: SettingsValueText('$minutes 分钟'),
             onTap: _pickDuration,
           ),
         ),

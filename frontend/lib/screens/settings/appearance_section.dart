@@ -16,6 +16,7 @@ import '../../theme/theme_provider.dart';
 import '../../utils/zh_variant.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/inline_spinner.dart';
+import '../../widgets/settings_tile.dart';
 import '../../widgets/single_choice_dialog.dart';
 import '../../widgets/single_choice_group.dart';
 import '../../widgets/wheel_picker_dialog.dart';
@@ -65,301 +66,294 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
     final customFontLabel = _settings.customFontLabel;
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('界面',
-              style: Theme.of(context)
-                  .textTheme
-                  .headlineSmall
-                  ?.copyWith(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 4),
-          Text('自定义配色与字体，实时生效并保存到本机',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: colorScheme.onSurface.withValues(alpha: 0.6))),
-          const SizedBox(height: 24),
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('界面',
+                style: Theme.of(context)
+                    .textTheme
+                    .headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            Text('自定义配色与字体，实时生效并保存到本机',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurface.withValues(alpha: 0.6))),
+            const SizedBox(height: 24),
 
-          _groupHeader('主题'),
-          // 明暗模式：跟随系统 / 浅色 / 深色
-          Text('明暗模式',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w600)),
-          const SizedBox(height: 12),
-          _anchor(
-            '明暗模式',
-            SingleChoiceGroup<ThemeMode>(
-              options: const [
-                SingleChoiceOption(
-                    value: ThemeMode.system,
-                    label: '跟随系统',
-                    icon: Icons.brightness_auto),
-                SingleChoiceOption(
-                    value: ThemeMode.light,
-                    label: '浅色',
-                    icon: Icons.light_mode_outlined),
-                SingleChoiceOption(
-                    value: ThemeMode.dark,
-                    label: '深色',
-                    icon: Icons.dark_mode_outlined),
-              ],
-              value: theme.themeMode,
-              onChanged: theme.setThemeMode,
-            ),
-          ),
-          const Divider(),
-          const SizedBox(height: 8),
-
-          // 强调色
-          Text('强调色',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w600)),
-          const SizedBox(height: 12),
-          _anchor(
-            '强调色',
-            Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: [
-                for (final col in AppTheme.accentPalette)
-                  ColorDot(
-                    color: col,
-                    selected: theme.accent.toARGB32() == col.toARGB32(),
-                    onTap: () => theme.setAccent(col),
-                  ),
-                ColorDot(
-                  color: theme.accent,
-                  selected: !AppTheme.accentPalette
-                      .any((c) => c.toARGB32() == theme.accent.toARGB32()),
-                  icon: Icons.add,
-                  onTap: () => _pickAccent(context, theme),
-                  isCustom: true,
-                ),
-              ],
-            ),
-          ),
-          const Divider(),
-          const SizedBox(height: 8),
-
-          // 背景色
-          Text('背景色',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w600)),
-          const SizedBox(height: 4),
-          _anchor(
-            '背景色',
-            Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.auto_fix_high, size: 18),
-                  label: const Text('自动（跟随强调色）'),
-                  onPressed: theme.clearBackgroundOverride,
-                ),
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.colorize, size: 18),
-                  label: const Text('自定义背景色'),
-                  onPressed: () => _pickBackground(context, theme),
-                ),
-              ],
-            ),
-          ),
-          if (theme.background != null) ...[
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                SwatchPreview(color: theme.background!),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text('当前自定义背景 ${_rgb(theme.background!)}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall),
-                ),
-              ],
-            ),
-          ],
-          const SizedBox(height: 12),
-          _anchor(
-            '恢复默认',
-            Align(
-              alignment: Alignment.centerLeft,
-              child: OutlinedButton.icon(
-                icon: const Icon(Icons.restart_alt),
-                label: const Text('恢复默认'),
-                onPressed: theme.resetDefaults,
-              ),
-            ),
-          ),
-          const Divider(),
-          const SizedBox(height: 8),
-
-          // 文字：自定义字体（导入文件、仅本机生效）
-          _groupHeader('文字'),
-          _anchor(
-            '界面字体',
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.font_download_outlined),
-              title: const Text('界面字体'),
-              subtitle: Text(customFontLabel.isEmpty
-                  ? (hasCustomFont ? '自定义字体' : '系统默认')
-                  : '当前：$customFontLabel'),
-              trailing: _fontBusy ? const InlineSpinner(size: 24) : null,
-            ),
-          ),
-          Wrap(
-            spacing: 12,
-            runSpacing: 8,
-            children: [
-              OutlinedButton.icon(
-                icon: const Icon(Icons.upload_file, size: 18),
-                label: Text(hasCustomFont ? '更换字体' : '导入字体文件'),
-                onPressed: _fontBusy ? null : _importFont,
-              ),
-              if (hasCustomFont)
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.restart_alt, size: 18),
-                  label: const Text('恢复系统字体'),
-                  onPressed: _fontBusy ? null : _resetFont,
-                ),
-            ],
-          ),
-          if (hasCustomFont) ...[
+            _groupHeader('主题'),
+            // 明暗模式：跟随系统 / 浅色 / 深色
+            Text('明暗模式',
+                style: Theme.of(context)
+                    .textTheme
+                    .titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w600)),
             const SizedBox(height: 12),
-            Text(
-              '预览：音乐让生活更美好 SelfMusic 0123456789',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.titleMedium,
+            _anchor(
+              '明暗模式',
+              SingleChoiceGroup<ThemeMode>(
+                options: const [
+                  SingleChoiceOption(
+                      value: ThemeMode.system,
+                      label: '跟随系统',
+                      icon: Icons.brightness_auto),
+                  SingleChoiceOption(
+                      value: ThemeMode.light,
+                      label: '浅色',
+                      icon: Icons.light_mode_outlined),
+                  SingleChoiceOption(
+                      value: ThemeMode.dark,
+                      label: '深色',
+                      icon: Icons.dark_mode_outlined),
+                ],
+                value: theme.themeMode,
+                onChanged: theme.setThemeMode,
+              ),
             ),
+            const Divider(),
+            const SizedBox(height: 8),
+
+            // 强调色
+            Text('强调色',
+                style: Theme.of(context)
+                    .textTheme
+                    .titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 12),
+            _anchor(
+              '强调色',
+              Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: [
+                  for (final col in AppTheme.accentPalette)
+                    ColorDot(
+                      color: col,
+                      selected: theme.accent.toARGB32() == col.toARGB32(),
+                      onTap: () => theme.setAccent(col),
+                    ),
+                  ColorDot(
+                    color: theme.accent,
+                    selected: !AppTheme.accentPalette
+                        .any((c) => c.toARGB32() == theme.accent.toARGB32()),
+                    icon: Icons.add,
+                    onTap: () => _pickAccent(context, theme),
+                    isCustom: true,
+                  ),
+                ],
+              ),
+            ),
+            const Divider(),
+            const SizedBox(height: 8),
+
+            // 背景色
+            Text('背景色',
+                style: Theme.of(context)
+                    .textTheme
+                    .titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            _anchor(
+              '背景色',
+              Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.auto_fix_high, size: 18),
+                    label: const Text('自动（跟随强调色）'),
+                    onPressed: theme.clearBackgroundOverride,
+                  ),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.colorize, size: 18),
+                    label: const Text('自定义背景色'),
+                    onPressed: () => _pickBackground(context, theme),
+                  ),
+                ],
+              ),
+            ),
+            if (theme.background != null) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  SwatchPreview(color: theme.background!),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text('当前自定义背景 ${_rgb(theme.background!)}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall),
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 12),
+            _anchor(
+              '恢复默认',
+              Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                  icon: const Icon(Icons.restart_alt),
+                  label: const Text('恢复默认'),
+                  onPressed: theme.resetDefaults,
+                ),
+              ),
+            ),
+            const Divider(),
+            const SizedBox(height: 8),
+
+            // 文字：自定义字体（导入文件、仅本机生效）
+            _groupHeader('文字'),
+            _anchor(
+              '界面字体',
+              SettingsTile(
+                title: '界面字体',
+                description: customFontLabel.isEmpty
+                    ? (hasCustomFont ? '自定义字体，仅本机生效' : '系统默认')
+                    : '当前：$customFontLabel',
+                trailing: _fontBusy
+                    ? const InlineSpinner(size: 24)
+                    : SettingsValueText(hasCustomFont ? '更换' : '导入'),
+                onTap: _fontBusy ? null : _importFont,
+              ),
+            ),
+            Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.upload_file, size: 18),
+                  label: Text(hasCustomFont ? '更换字体' : '导入字体文件'),
+                  onPressed: _fontBusy ? null : _importFont,
+                ),
+                if (hasCustomFont)
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.restart_alt, size: 18),
+                    label: const Text('恢复系统字体'),
+                    onPressed: _fontBusy ? null : _resetFont,
+                  ),
+              ],
+            ),
+            if (hasCustomFont) ...[
+              const SizedBox(height: 12),
+              Text(
+                '预览：音乐让生活更美好 SelfMusic 0123456789',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ],
+            const SizedBox(height: 4),
+            _anchor(
+              '歌词行数',
+              SettingsTile(
+                title: '歌词行数',
+                description: '按歌词区高度放大字号，保持不超出该行数',
+                trailing: SettingsValueText(_settings.lyricMaxLines == 0
+                    ? '不限制'
+                    : '${_settings.lyricMaxLines} 行'),
+                onTap: () => _pickLyricMaxLines(context),
+              ),
+            ),
+            const Divider(),
+            const SizedBox(height: 8),
+
+            // 显示：标题格式 / 简繁 / 播放页权重与控件隐藏
+            _groupHeader('显示'),
+            _anchor(
+              '标题格式',
+              SettingsTile(
+                title: '标题格式',
+                description: '列表与播放页的歌曲标题拼法',
+                trailing: SettingsValueText(_settings.songTitleFormat.label),
+                onTap: () => _pickTitleFormat(context),
+              ),
+            ),
+            _anchor(
+              '简繁转换',
+              SettingsTile(
+                title: '简繁转换',
+                description: '只影响显示，不改动文件与库内文本',
+                trailing: _zhBusy
+                    ? const InlineSpinner(size: 24)
+                    : SettingsValueText(_settings.zhVariant.label),
+                onTap: _zhBusy ? null : () => _pickZhVariant(context),
+              ),
+            ),
+            _anchor(
+              '播放页显示权重',
+              SettingsTile.toggle(
+                title: '播放页显示权重',
+                description: '在播放页展示当前歌曲的权重',
+                value: _settings.playerShowWeight,
+                onChanged: (v) =>
+                    setState(() => _settings.playerShowWeight = v),
+              ),
+            ),
+            _anchor(
+              '歌词页显示封面',
+              SettingsTile.toggle(
+                title: '歌词页显示封面',
+                description: '竖屏歌词页顶部显示专辑封面',
+                value: _settings.lyricsShowCover,
+                onChanged: (v) {
+                  setState(() => _settings.lyricsShowCover = v);
+                  // AppSettings 非 ChangeNotifier：通知已挂载的歌词页即时重建。
+                  context.read<DirectSourceManager>().refresh();
+                },
+              ),
+            ),
+            _anchor(
+              '播放页控件隐藏',
+              SettingsTile(
+                title: '播放页控件隐藏',
+                description: '静止无触摸后隐藏返回与更多按钮',
+                trailing: SettingsValueText(_settings.playerAutoHideIdleSec > 0
+                    ? '${_settings.playerAutoHideIdleSec} 秒'
+                    : '关闭'),
+                onTap: () => _pickPlayerAutoHide(context),
+              ),
+            ),
+            const Divider(),
+            const SizedBox(height: 8),
+
+            // 动效
+            _groupHeader('动效'),
+            _anchor(
+              '切换动画',
+              SettingsTile(
+                title: '切换动画',
+                description: '播放页与歌词页之间的过渡效果',
+                trailing: SettingsValueText(_settings.playerTransition.label),
+                onTap: () => _pickTransition(context),
+              ),
+            ),
+            const Divider(),
+            const SizedBox(height: 8),
+
+            // 交互
+            _groupHeader('交互'),
+            _anchor(
+              '长按组头',
+              SettingsTile.toggle(
+                title: '长按组头',
+                description: _settings.longPressCollapseGroups
+                    ? '长按展开/折叠；多选用工具条'
+                    : '长按多选整组；展开/折叠用工具条',
+                value: _settings.longPressCollapseGroups,
+                onChanged: (v) {
+                  setState(() => _settings.longPressCollapseGroups = v);
+                  // AppSettings 非 ChangeNotifier：通知已打开的列表页按新行为重建。
+                  context.read<DirectSourceManager>().refresh();
+                },
+              ),
+            ),
+            const SizedBox(height: 24),
           ],
-          const SizedBox(height: 4),
-          _anchor(
-            '歌词行数',
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.format_line_spacing),
-              title: const Text('歌词行数'),
-              subtitle: Text(_settings.lyricMaxLines == 0
-                  ? '不限制'
-                  : '${_settings.lyricMaxLines} 行'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _pickLyricMaxLines(context),
-            ),
-          ),
-          const Divider(),
-          const SizedBox(height: 8),
-
-          // 显示：标题格式 / 简繁 / 播放页权重与控件隐藏
-          _groupHeader('显示'),
-          _anchor(
-            '标题格式',
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.title),
-              title: const Text('标题格式'),
-              subtitle: Text('当前：${_settings.songTitleFormat.label}'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _pickTitleFormat(context),
-            ),
-          ),
-          _anchor(
-            '简繁转换',
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.translate),
-              title: const Text('简繁转换'),
-              subtitle: Text('当前：${_settings.zhVariant.label}'),
-              trailing: _zhBusy
-                  ? const InlineSpinner(size: 24)
-                  : const Icon(Icons.chevron_right),
-              onTap: _zhBusy ? null : () => _pickZhVariant(context),
-            ),
-          ),
-          _anchor(
-            '播放页显示权重',
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('播放页显示权重'),
-              value: _settings.playerShowWeight,
-              onChanged: (v) => setState(() => _settings.playerShowWeight = v),
-            ),
-          ),
-          _anchor(
-            '歌词页显示封面',
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('歌词页显示封面'),
-              subtitle: const Text('竖屏歌词页顶部显示专辑封面'),
-              value: _settings.lyricsShowCover,
-              onChanged: (v) {
-                setState(() => _settings.lyricsShowCover = v);
-                // AppSettings 非 ChangeNotifier：通知已挂载的歌词页即时重建。
-                context.read<DirectSourceManager>().refresh();
-              },
-            ),
-          ),
-          _anchor(
-            '播放页控件隐藏',
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.timer_outlined),
-              title: const Text('播放页控件隐藏'),
-              subtitle: Text(_settings.playerAutoHideIdleSec > 0
-                  ? '${_settings.playerAutoHideIdleSec} 秒'
-                  : '关闭'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _pickPlayerAutoHide(context),
-            ),
-          ),
-          const Divider(),
-          const SizedBox(height: 8),
-
-          // 动效
-          _groupHeader('动效'),
-          _anchor(
-            '切换动画',
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.animation_outlined),
-              title: const Text('切换动画'),
-              subtitle: Text(_settings.playerTransition.label),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _pickTransition(context),
-            ),
-          ),
-          const Divider(),
-          const SizedBox(height: 8),
-
-          // 交互
-          _groupHeader('交互'),
-          _anchor(
-            '长按组头',
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('长按组头'),
-              subtitle: Text(_settings.longPressCollapseGroups
-                  ? '长按展开/折叠；多选用工具条'
-                  : '长按多选整组；展开/折叠用工具条'),
-              value: _settings.longPressCollapseGroups,
-              onChanged: (v) {
-                setState(() => _settings.longPressCollapseGroups = v);
-                // AppSettings 非 ChangeNotifier：通知已打开的列表页按新行为重建。
-                context.read<DirectSourceManager>().refresh();
-              },
-            ),
-          ),
-          const SizedBox(height: 24),
-        ],
+        ),
       ),
     );
   }

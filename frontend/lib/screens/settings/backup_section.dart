@@ -19,6 +19,7 @@ import '../../utils/format_bytes.dart';
 import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/row_action_button.dart';
+import '../../widgets/settings_tile.dart';
 
 /// 「备份与迁移」入口：文件导出/导入与本机备份合并为一个弹窗。
 class BackupMigrationTile extends StatelessWidget {
@@ -26,10 +27,10 @@ class BackupMigrationTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListTile(
-      leading: const Icon(Icons.backup_outlined),
-      title: const Text('备份与迁移'),
-      trailing: const Icon(Icons.chevron_right),
+    return SettingsTile(
+      title: '备份与迁移',
+      description: '导出或导入设置与歌单',
+      trailing: const SettingsValueText('打开'),
       onTap: () => showDialog<void>(
         context: context,
         builder: (_) => const BackupMigrationDialog(),
