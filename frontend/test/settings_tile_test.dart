@@ -109,4 +109,42 @@ void main() {
     );
     expect(find.byIcon(Icons.chevron_right), findsNothing);
   });
+
+  testWidgets('动作行：主色文字 + 小箭头，点击可执行', (tester) async {
+    var tapped = false;
+    await pump(
+      tester,
+      SettingsTile.action(
+        title: '重试解析',
+        label: '开始',
+        onTap: () => tapped = true,
+      ),
+    );
+
+    expect(find.text('开始'), findsOneWidget);
+    expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+    await tester.tap(find.text('重试解析'));
+    await tester.pump();
+    expect(tapped, isTrue);
+  });
+
+  testWidgets('动作行禁用：不显示箭头高亮且不可点击', (tester) async {
+    var tapped = false;
+    await pump(
+      tester,
+      SettingsTile.action(
+        title: '设备管理',
+        label: '查看',
+        onTap: () => tapped = true,
+        enabled: false,
+      ),
+    );
+
+    final context = tester.element(find.text('查看'));
+    final text = tester.widget<Text>(find.text('查看'));
+    expect(text.style?.color, isNot(Theme.of(context).colorScheme.primary));
+    await tester.tap(find.text('设备管理'));
+    await tester.pump();
+    expect(tapped, isFalse);
+  });
 }

@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 
 /// 设置页统一行：左侧上为名称、下为解释，右侧为当前设置。
 ///
-/// 右侧可以是开关、当前值文本、加载指示或动作图标；不再使用右侧箭头，
-/// 当前值本身即「可点开修改」的提示。
+/// 右侧只有三种语义：
+/// - 当前值：弱色文本，可点开修改；
+/// - 动作：主色文本 + 小箭头，表示执行/进入；
+/// - 开关：Material Switch。
 class SettingsTile extends StatelessWidget {
   const SettingsTile({
     super.key,
@@ -48,6 +50,26 @@ class SettingsTile extends StatelessWidget {
       trailing: SettingsValueText(value, enabled: enabled),
       onTap: enabled ? onTap : null,
       enabled: enabled,
+    );
+  }
+
+  /// 动作行：右侧为主色文字 + 小箭头，点击整行执行动作。
+  factory SettingsTile.action({
+    Key? key,
+    required String title,
+    String? description,
+    required String label,
+    VoidCallback? onTap,
+    bool enabled = true,
+  }) {
+    final active = enabled && onTap != null;
+    return SettingsTile(
+      key: key,
+      title: title,
+      description: description,
+      trailing: SettingsActionText(label, enabled: active),
+      onTap: active ? onTap : null,
+      enabled: active,
     );
   }
 
@@ -102,6 +124,43 @@ class SettingsTile extends StatelessWidget {
 
     if (onTap == null || !enabled) return row;
     return InkWell(onTap: onTap, child: row);
+  }
+}
+
+/// 设置行右侧的动作文本：主色 + 小箭头，和当前值明确区分。
+class SettingsActionText extends StatelessWidget {
+  const SettingsActionText(
+    this.label, {
+    super.key,
+    this.enabled = true,
+  });
+
+  final String label;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final color = enabled ? cs.primary : cs.onSurface.withValues(alpha: 0.38);
+    return Padding(
+      padding: const EdgeInsets.only(right: 4),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: color,
+                  fontWeight: FontWeight.w600,
+                ),
+          ),
+          const SizedBox(width: 2),
+          Icon(Icons.chevron_right, size: 16, color: color),
+        ],
+      ),
+    );
   }
 }
 
