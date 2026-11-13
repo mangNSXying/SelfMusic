@@ -91,20 +91,23 @@ void main() {
 
     nav.openSettings(SettingsItem.appearance);
     await tester.pumpAndSettle();
-    expect(find.text('自定义配色与字体，实时生效并保存到本机'), findsOneWidget);
+    expect(find.text('主题'), findsOneWidget);
 
     // 界面 → 歌曲：旧分区必须留在退场层（历史 bug：旧层重挂载后读到新
     // 分区，页面在原地先变成新分区，再被新的同款分区滑入覆盖）。
     nav.openSettings(SettingsItem.songs);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
-    expect(find.text('自定义配色与字体，实时生效并保存到本机'), findsOneWidget,
-        reason: '退场层应仍是旧分区');
+    expect(find.text('主题'), findsOneWidget, reason: '退场层应仍是旧分区');
     expect(find.text('扫描过滤'), findsOneWidget, reason: '新分区在滑入');
     expect(tester.takeException(), isNull);
 
     await tester.pumpAndSettle();
-    expect(find.text('自定义配色与字体，实时生效并保存到本机'), findsNothing);
+    expect(find.text('主题'), findsNothing);
     expect(find.text('扫描过滤'), findsOneWidget);
+
+    final groupX = tester.getTopLeft(find.text('扫描过滤')).dx;
+    expect(groupX, 16);
+    expect(tester.getTopLeft(find.text('时长过滤')).dx, groupX);
   });
 }

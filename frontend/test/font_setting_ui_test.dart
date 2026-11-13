@@ -89,6 +89,11 @@ void main() {
     expect(find.text('恢复系统字体'), findsNothing);
     expect(find.text('歌词行数'), findsOneWidget);
     expect(find.text('不限制'), findsOneWidget);
+
+    final groupX = tester.getTopLeft(find.text('文字')).dx;
+    expect(groupX, 16, reason: '组标题统一 16px 左边距');
+    expect(tester.getTopLeft(find.text('界面字体')).dx, groupX,
+        reason: '设置行与组标题同一条左基线');
   });
 
   testWidgets('已导入字体时显示当前字体、更换与恢复入口', (tester) async {
