@@ -9,6 +9,8 @@ import '../../utils/cover_thumb.dart';
 import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/inline_spinner.dart';
+import '../../widgets/settings_layout.dart';
+import '../../widgets/settings_section_header.dart';
 import '../../widgets/settings_tile.dart';
 import 'backup_section.dart';
 import 'settings_focus.dart';
@@ -37,82 +39,61 @@ class _StorageSectionState extends State<StorageSection> {
         child: child,
       );
 
-  Widget _groupTitle(String title) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-        child: Text(
-          title,
-          style: Theme.of(context)
-              .textTheme
-              .titleMedium
-              ?.copyWith(fontWeight: FontWeight.w600),
-        ),
-      );
-
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _groupTitle('离线缓存'),
-          _anchor(
-            '收藏自动缓存',
-            SettingsTile.toggle(
-              title: '收藏自动缓存',
-              description: '收藏的歌曲自动离线保存',
-              value: _settings.autoCacheFavorites,
-              onChanged: (v) {
-                setState(() => _settings.autoCacheFavorites = v);
-              },
-            ),
+    return SettingsPage(
+      children: [
+        const SettingsSectionHeader('离线缓存'),
+        _anchor(
+          '收藏自动缓存',
+          SettingsTile.toggle(
+            title: '收藏自动缓存',
+            description: '收藏的歌曲自动离线保存',
+            value: _settings.autoCacheFavorites,
+            onChanged: (v) {
+              setState(() => _settings.autoCacheFavorites = v);
+            },
           ),
-          const Divider(height: 32),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16),
-            child: CacheConfigSection(),
+        ),
+        const SettingsGroupDivider(),
+        const CacheConfigSection(),
+        const SettingsGroupDivider(),
+        const SettingsSectionHeader('缓存位置'),
+        _anchor(
+          '缓存目录',
+          const CacheDirTile(),
+        ),
+        const SettingsGroupDivider(),
+        const SettingsSectionHeader('封面缓存'),
+        _anchor(
+          '压缩画质',
+          SettingsTile.toggle(
+            title: '压缩画质',
+            description: _settings.compressCoverImage ? '省空间，可能发热' : '原图（推荐）',
+            value: _settings.compressCoverImage,
+            onChanged: (v) async {
+              setState(() => _settings.compressCoverImage = v);
+              await context
+                  .read<DirectSourceManager>()
+                  .applyCoverThumbSetting();
+              if (mounted) setState(() {});
+            },
           ),
-          const Divider(height: 32),
-          _groupTitle('缓存位置'),
-          _anchor(
-            '缓存目录',
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16),
-              child: CacheDirTile(),
-            ),
+        ),
+        _anchor(
+          '清理缩略图',
+          SettingsTile(
+            title: '清理缩略图',
+            description: '删除已生成的封面缩略图',
+            trailing: _clearingThumbs
+                ? const InlineSpinner(size: 24)
+                : const SettingsActionText('清理'),
+            onTap: _clearingThumbs ? null : () => _clearCoverThumbs(context),
           ),
-          const Divider(height: 32),
-          _groupTitle('封面缓存'),
-          _anchor(
-            '压缩画质',
-            SettingsTile.toggle(
-              title: '压缩画质',
-              description: _settings.compressCoverImage ? '省空间，可能发热' : '原图（推荐）',
-              value: _settings.compressCoverImage,
-              onChanged: (v) async {
-                setState(() => _settings.compressCoverImage = v);
-                await context
-                    .read<DirectSourceManager>()
-                    .applyCoverThumbSetting();
-                if (mounted) setState(() {});
-              },
-            ),
-          ),
-          _anchor(
-            '清理缩略图',
-            SettingsTile(
-              title: '清理缩略图',
-              description: '删除已生成的封面缩略图',
-              trailing: _clearingThumbs
-                  ? const InlineSpinner(size: 24)
-                  : SettingsValueText('清理'),
-              onTap: _clearingThumbs ? null : () => _clearCoverThumbs(context),
-            ),
-          ),
-          const Divider(height: 32),
-          _anchor('备份与迁移', const BackupMigrationTile()),
-        ],
-      ),
+        ),
+        const SettingsGroupDivider(),
+        _anchor('备份与迁移', const BackupMigrationTile()),
+      ],
     );
   }
 

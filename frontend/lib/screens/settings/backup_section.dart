@@ -27,10 +27,10 @@ class BackupMigrationTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SettingsTile(
+    return SettingsTile.action(
       title: '备份与迁移',
       description: '导出或导入设置与歌单',
-      trailing: const SettingsValueText('打开'),
+      label: '打开',
       onTap: () => showDialog<void>(
         context: context,
         builder: (_) => const BackupMigrationDialog(),

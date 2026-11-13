@@ -135,6 +135,13 @@ void main() {
     expect(find.text('清理缩略图'), findsOneWidget);
     expect(find.text('备份与迁移'), findsOneWidget);
 
+    final groupX = tester.getTopLeft(find.text('离线缓存')).dx;
+    expect(groupX, 16);
+    expect(tester.getTopLeft(find.text('收藏自动缓存')).dx, groupX);
+    expect(tester.getTopLeft(find.text('缓存容量')).dx, groupX);
+    expect(tester.getTopLeft(find.text('缓存目录')).dx, groupX);
+    expect(tester.getTopLeft(find.text('备份与迁移')).dx, groupX);
+
     await tester.tap(find.text('备份与迁移'));
     await tester.pumpAndSettle();
 

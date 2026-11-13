@@ -19,6 +19,8 @@ import '../../utils/format_bytes.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/inline_spinner.dart';
 import '../../widgets/row_action_button.dart';
+import '../../widgets/settings_layout.dart';
+import '../../widgets/settings_section_header.dart';
 import '../../widgets/settings_tile.dart';
 import '../../widgets/single_choice_group.dart';
 import '../../widgets/wheel_picker_dialog.dart';
@@ -165,23 +167,15 @@ class _TranscodeSectionState extends State<TranscodeSection> {
   @override
   Widget build(BuildContext context) {
     final settings = context.read<DirectSourceManager>().settings;
-    final cs = Theme.of(context).colorScheme;
     final canUse = _ffmpegAvailable == true;
     final unknown = _ffmpegAvailable == null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('转码代理',
-            style: Theme.of(context)
-                .textTheme
-                .titleMedium
-                ?.copyWith(fontWeight: FontWeight.w600)),
-        const SizedBox(height: 4),
-        Text(unknown || canUse ? '在播放源中选择代理后生效' : '服务端暂不可用，将直接播放原文件',
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
+        const SettingsSectionHeader('转码代理'),
+        SettingsGroupNote(
+          unknown || canUse ? '在播放源中选择代理后生效' : '服务端暂不可用，将直接播放原文件',
+        ),
         _anchor(
           '转码省流',
           SettingsTile.toggle(
@@ -198,48 +192,48 @@ class _TranscodeSectionState extends State<TranscodeSection> {
                   },
           ),
         ),
+        const SettingsSubgroupHeader('码率'),
         _anchor(
           '码率',
-          SingleChoiceGroup<int>(
-            options: const [
-              SingleChoiceOption(value: 192, label: '192k'),
-              SingleChoiceOption(value: 256, label: '256k'),
-              SingleChoiceOption(value: 320, label: '320k'),
-            ],
-            value: settings.transcodeBitrate,
-            onChanged: !canUse
-                ? null
-                : (v) {
-                    setState(() => settings.transcodeBitrate = v);
-                    _applyTranscodeNow();
-                  },
+          SettingsControlBlock(
+            child: SingleChoiceGroup<int>(
+              options: const [
+                SingleChoiceOption(value: 192, label: '192k'),
+                SingleChoiceOption(value: 256, label: '256k'),
+                SingleChoiceOption(value: 320, label: '320k'),
+              ],
+              value: settings.transcodeBitrate,
+              onChanged: !canUse
+                  ? null
+                  : (v) {
+                      setState(() => settings.transcodeBitrate = v);
+                      _applyTranscodeNow();
+                    },
+            ),
           ),
         ),
-        const SizedBox(height: 8),
-        Text('统一不同歌曲的音量（需开启转码）',
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
-        const SizedBox(height: 4),
+        const SettingsSubgroupHeader('响度均衡'),
+        const SettingsGroupNote('统一不同歌曲的音量（需开启转码）'),
         _anchor(
           '响度均衡',
-          SingleChoiceGroup<String>(
-            options: const [
-              SingleChoiceOption(value: 'off', label: '关'),
-              SingleChoiceOption(value: '8', label: '-8'),
-              SingleChoiceOption(value: '10', label: '-10'),
-              SingleChoiceOption(value: '14', label: '-14'),
-              SingleChoiceOption(value: '16', label: '-16'),
-              SingleChoiceOption(value: '23', label: '-23'),
-            ],
-            value: settings.transcodeLoudnorm,
-            onChanged: !(canUse && settings.transcodeEnabled)
-                ? null
-                : (v) {
-                    setState(() => settings.transcodeLoudnorm = v);
-                    _applyTranscodeNow();
-                  },
+          SettingsControlBlock(
+            child: SingleChoiceGroup<String>(
+              options: const [
+                SingleChoiceOption(value: 'off', label: '关'),
+                SingleChoiceOption(value: '8', label: '-8'),
+                SingleChoiceOption(value: '10', label: '-10'),
+                SingleChoiceOption(value: '14', label: '-14'),
+                SingleChoiceOption(value: '16', label: '-16'),
+                SingleChoiceOption(value: '23', label: '-23'),
+              ],
+              value: settings.transcodeLoudnorm,
+              onChanged: !(canUse && settings.transcodeEnabled)
+                  ? null
+                  : (v) {
+                      setState(() => settings.transcodeLoudnorm = v);
+                      _applyTranscodeNow();
+                    },
+            ),
           ),
         ),
       ],
@@ -329,59 +323,46 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
       children: [
         _anchor(
           '缓存容量',
-          Row(
-            children: [
-              Expanded(
-                child: Text('缓存容量',
-                    style: Theme.of(context)
-                        .textTheme
-                        .titleMedium
-                        ?.copyWith(fontWeight: FontWeight.w600)),
-              ),
-              if (_syncing)
-                const InlineSpinner(size: 20)
-              else
-                RowActionIconButton(
-                  tooltip: '同步服务端建议值',
-                  icon: Icons.sync,
-                  onPressed: () => _refreshServerConfig(),
-                ),
-            ],
+          SettingsSectionHeader(
+            '缓存容量',
+            trailing: _syncing
+                ? const InlineSpinner(size: 20)
+                : RowActionIconButton(
+                    tooltip: '同步服务端建议值',
+                    icon: Icons.sync,
+                    onPressed: () => _refreshServerConfig(),
+                  ),
           ),
         ),
-        const SizedBox(height: 8),
-        Text('上限来源',
-            style: TextStyle(
-                fontSize: 12,
-                color: cs.onSurfaceVariant,
-                fontWeight: FontWeight.w600)),
-        const SizedBox(height: 4),
+        const SettingsSubgroupHeader('上限来源'),
         _anchor(
           '上限来源',
-          SingleChoiceGroup<String>(
-            options: const [
-              SingleChoiceOption(value: 'custom', label: '自定义'),
-              SingleChoiceOption(value: 'follow_server', label: '跟随服务端'),
-            ],
-            value: follow ? 'follow_server' : 'custom',
-            onChanged: (v) async {
-              if (v == 'follow_server' && !canFollow) {
-                // 先拉一次，成功才允许切换。
-                await _refreshServerConfig();
-                if (!mounted) return;
-                if (!(_serverReachable ||
-                    _settings.serverCacheMaxBytes != null)) {
-                  AppToast.show('服务端不可达，请检查后端连接', isError: true);
-                  return;
+          SettingsControlBlock(
+            child: SingleChoiceGroup<String>(
+              options: const [
+                SingleChoiceOption(value: 'custom', label: '自定义'),
+                SingleChoiceOption(value: 'follow_server', label: '跟随服务端'),
+              ],
+              value: follow ? 'follow_server' : 'custom',
+              onChanged: (v) async {
+                if (v == 'follow_server' && !canFollow) {
+                  // 先拉一次，成功才允许切换。
+                  await _refreshServerConfig();
+                  if (!mounted) return;
+                  if (!(_serverReachable ||
+                      _settings.serverCacheMaxBytes != null)) {
+                    AppToast.show('服务端不可达，请检查后端连接', isError: true);
+                    return;
+                  }
                 }
-              }
-              setState(() => _settings.cacheConfigMode = v);
-            },
+                setState(() => _settings.cacheConfigMode = v);
+              },
+            ),
           ),
         ),
         if (follow)
-          Padding(
-            padding: const EdgeInsets.only(top: 4),
+          SettingsControlBlock(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
             child: Text(
               _settings.serverCacheMaxBytes == null
                   ? '尚未获取'
@@ -392,8 +373,8 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
                   ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6)),
             ),
           ),
-        Padding(
-          padding: const EdgeInsets.only(top: 4),
+        SettingsControlBlock(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
           child: Text(
               '当前：${_labelBytes(_settings.effectiveCacheMaxBytes)} · ${_settings.effectiveCacheSongLimit} 首',
               style: Theme.of(context)
@@ -401,29 +382,22 @@ class _CacheConfigSectionState extends State<CacheConfigSection> {
                   .bodySmall
                   ?.copyWith(color: cs.primary, fontWeight: FontWeight.w600)),
         ),
-        const SizedBox(height: 8),
         _anchor(
           '体积上限',
-          SettingsTile(
+          SettingsTile.value(
             title: '体积上限',
             description: '缓存占用的总大小上限',
-            trailing: SettingsValueText(
-              _labelBytes(_settings.cacheMaxBytes),
-              enabled: !follow,
-            ),
+            value: _labelBytes(_settings.cacheMaxBytes),
             enabled: !follow,
             onTap: follow ? null : () => _editMaxBytes(context),
           ),
         ),
         _anchor(
           '首数上限',
-          SettingsTile(
+          SettingsTile.value(
             title: '首数上限',
             description: '最多保留的缓存歌曲数',
-            trailing: SettingsValueText(
-              '${_settings.cacheSongLimit} 首',
-              enabled: !follow,
-            ),
+            value: '${_settings.cacheSongLimit} 首',
             enabled: !follow,
             onTap: follow ? null : () => _editSongLimit(context),
           ),
