@@ -11,11 +11,19 @@ class ModeButton extends StatelessWidget {
   final ColorScheme cs;
   final double scale;
 
+  /// 命中区与内边距；迷你条传 44 / EdgeInsets.zero，播放页保持默认。
+  final double buttonSize;
+  final EdgeInsetsGeometry padding;
+  final Color? inactiveColor;
+
   const ModeButton({
     super.key,
     required this.player,
     required this.cs,
     this.scale = 1.0,
+    this.buttonSize = 48,
+    this.padding = const EdgeInsets.all(8),
+    this.inactiveColor,
   });
 
   @override
@@ -24,7 +32,17 @@ class ModeButton extends StatelessWidget {
     final active = m != PlayMode.sequence;
     return IconButton(
       iconSize: 22 * scale,
-      color: active ? cs.primary : cs.onSurface.withValues(alpha: 0.7),
+      color: active
+          ? cs.primary
+          : (inactiveColor ?? cs.onSurface.withValues(alpha: 0.7)),
+      constraints:
+          BoxConstraints.tightFor(width: buttonSize, height: buttonSize),
+      style: IconButton.styleFrom(
+        fixedSize: Size(buttonSize, buttonSize),
+        padding: padding,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
+      padding: padding,
       tooltip: '播放模式：${_label(m)}（点击切换）',
       icon: Icon(_icon(m)),
       onPressed: () {

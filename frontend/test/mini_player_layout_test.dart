@@ -41,4 +41,11 @@ void main() {
     expect((kMiniPlayerBarHeight - kMiniWideContentHeight) / 2, 12);
     expect(kMiniWideMinWidth, 550);
   });
+
+  test('右列模式/音量/队列统一 44 命中、22 图标、2 间距', () {
+    expect(kMiniToolButtonSize, 44);
+    expect(kMiniToolIconSize, 22);
+    expect(kMiniToolGap, 2);
+    expect(3 * kMiniToolButtonSize + 2 * kMiniToolGap, lessThan(550 / 3.5));
+  });
 }

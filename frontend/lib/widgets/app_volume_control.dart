@@ -127,11 +127,19 @@ class AppVolumeButton extends StatelessWidget {
     required this.player,
     this.scale = 1.0,
     this.iconSize = 22,
+    this.buttonSize = 48,
+    this.padding = const EdgeInsets.all(8),
+    this.inactiveColor,
   });
 
   final PlayerProvider player;
   final double scale;
   final double iconSize;
+
+  /// 命中区与内边距；迷你条传 44 / EdgeInsets.zero，播放页保持默认。
+  final double buttonSize;
+  final EdgeInsetsGeometry padding;
+  final Color? inactiveColor;
 
   @override
   Widget build(BuildContext context) {
@@ -142,9 +150,18 @@ class AppVolumeButton extends StatelessWidget {
         final volume = player.appVolume;
         return IconButton(
           iconSize: iconSize * scale,
+          constraints:
+              BoxConstraints.tightFor(width: buttonSize, height: buttonSize),
+          style: IconButton.styleFrom(
+            fixedSize: Size(buttonSize, buttonSize),
+            padding: padding,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          padding: padding,
           tooltip: volume == 0 ? '取消静音' : '音量 $volume%',
-          color:
-              volume == 0 ? cs.primary : cs.onSurface.withValues(alpha: 0.55),
+          color: volume == 0
+              ? cs.primary
+              : (inactiveColor ?? cs.onSurface.withValues(alpha: 0.55)),
           icon: AppVolumeIcon(volume: volume),
           onPressed: () => showAppVolumeSheet(context, player),
         );

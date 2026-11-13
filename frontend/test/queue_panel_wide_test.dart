@@ -14,6 +14,7 @@ import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/theme/theme_provider.dart';
+import 'package:selfmusic/widgets/app_volume_control.dart';
 import 'package:selfmusic/widgets/player_controls.dart';
 import 'package:selfmusic/widgets/player_sheet_anim.dart';
 import 'package:sqlite3/open.dart';
@@ -113,9 +114,29 @@ void main() {
     // 计数栏：与窄屏窗口一致，显示队列真实长度。
     expect(find.text('共 3 首歌曲'), findsOneWidget);
     expect(tester.getSize(find.byType(QueuePanel)).width, kQueuePanelWidth);
-    // 三列条固定 80：内容 56 + 上下各 12 安全区。
+    // 三列条固定 84：内容 60 + 上下各 12 安全区。
     expect(tester.getSize(find.byType(MiniPlayerBar)).height,
         kMiniPlayerBarHeight);
+    // 右列三枚工具同尺寸、同图标、同间距（队列保留自己的上滑手势）。
+    final modeButton = find.descendant(
+        of: find.byType(ModeButton), matching: find.byType(IconButton));
+    final volumeButton = find.descendant(
+        of: find.byType(AppVolumeButton), matching: find.byType(IconButton));
+    final queueButton =
+        find.byWidgetPredicate((w) => w is IconButton && w.tooltip == '播放队列');
+    final modeRect = tester.getRect(modeButton);
+    final volumeRect = tester.getRect(volumeButton);
+    final queueRect = tester.getRect(queueButton);
+    expect(modeRect.size, const Size(kMiniToolButtonSize, kMiniToolButtonSize));
+    expect(
+        volumeRect.size, const Size(kMiniToolButtonSize, kMiniToolButtonSize));
+    expect(
+        queueRect.size, const Size(kMiniToolButtonSize, kMiniToolButtonSize));
+    expect(volumeRect.left - modeRect.right, kMiniToolGap);
+    expect(queueRect.left - volumeRect.right, kMiniToolGap);
+    expect(tester.getSize(find.byType(AppVolumeIcon)).width, kMiniToolIconSize);
+    expect(tester.getSize(find.byIcon(Icons.playlist_play_rounded)).width,
+        kMiniToolIconSize);
     // 面板顶部内容必须让开状态栏（2026-09-30 真机：顶部留白不足）。
     expect(tester.getTopLeft(find.text('播放队列')).dy, greaterThanOrEqualTo(60));
   });

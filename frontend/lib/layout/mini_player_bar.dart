@@ -31,9 +31,14 @@ const double kMiniWideContentHeight = 60;
 /// 迷你条封面：按内容列 60；三列与回退共用，不再回退变小。
 const double kMiniBarCoverSize = 60;
 
-/// 宽屏三列迷你条的最低可用宽度：右侧 3 个 48 命中区 + 内边距。
+/// 宽屏三列迷你条的最低可用宽度：右侧 3 个 44 命中区 + 间距。
 /// 低于此值回退现有 84 条（手机横屏队列展开时约 224）。
 const double kMiniWideMinWidth = 550;
+
+/// 右列三枚工具统一：44 命中、22 图标、2 间距。
+const double kMiniToolButtonSize = 44;
+const double kMiniToolIconSize = 22;
+const double kMiniToolGap = 2;
 
 /// 宽屏三列播控尺寸：随中列宽度自适应，仍略小于回退态 42。
 /// play 38~39（整圆随 size 缩放）、切歌按钮命中 34~38（图标约 0.72 倍）、
@@ -338,6 +343,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
       SongTitleFormat titleFormat,
       ColorScheme cs,
       bool queueOpen) {
+    final toolColor = cs.onSurface.withValues(alpha: 0.62);
     return Container(
       height: kMiniPlayerBarHeight,
       padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -419,9 +425,29 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                ModeButton(player: player, cs: cs),
-                AppVolumeButton(player: player),
-                _queueButton(context, queueOpen, cs, iconSize: 28),
+                _toolSlot(ModeButton(
+                  player: player,
+                  cs: cs,
+                  buttonSize: kMiniToolButtonSize,
+                  padding: EdgeInsets.zero,
+                  inactiveColor: toolColor,
+                )),
+                const SizedBox(width: kMiniToolGap),
+                _toolSlot(AppVolumeButton(
+                  player: player,
+                  buttonSize: kMiniToolButtonSize,
+                  padding: EdgeInsets.zero,
+                  inactiveColor: toolColor,
+                )),
+                const SizedBox(width: kMiniToolGap),
+                _queueButton(
+                  context,
+                  queueOpen,
+                  cs,
+                  iconSize: kMiniToolIconSize,
+                  buttonSize: kMiniToolButtonSize,
+                  inactiveColor: toolColor,
+                ),
               ],
             ),
           ),
@@ -429,6 +455,11 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
       ),
     );
   }
+
+  Widget _toolSlot(Widget child) => SizedBox.square(
+        dimension: kMiniToolButtonSize,
+        child: child,
+      );
 
   Widget _skipButton(VoidCallback onPressed, String tooltip, IconData icon,
       double iconSize, double hitSize, ColorScheme cs) {
@@ -448,7 +479,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
   }
 
   Widget _queueButton(BuildContext context, bool queueOpen, ColorScheme cs,
-      {double iconSize = 28, double buttonSize = 48}) {
+      {double iconSize = 28, double buttonSize = 48, Color? inactiveColor}) {
     return GestureDetector(
       // 队列按钮区上滑打开队列（子手势先命中即胜出，不触发外层播放页上滑）。
       behavior: HitTestBehavior.translucent,
@@ -461,11 +492,13 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
         constraints:
             BoxConstraints.tightFor(width: buttonSize, height: buttonSize),
         style: IconButton.styleFrom(
-          minimumSize: Size.zero,
+          fixedSize: Size(buttonSize, buttonSize),
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         ),
         padding: EdgeInsets.zero,
-        color: queueOpen ? cs.primary : null,
+        color: queueOpen
+            ? cs.primary
+            : (inactiveColor ?? cs.onSurface.withValues(alpha: 0.62)),
         tooltip: '播放队列',
         onPressed: () => toggleQueuePanel(context),
       ),
