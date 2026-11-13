@@ -65,7 +65,7 @@ class PlayerSeek extends StatefulWidget {
   /// 时间是否内联：位于轨道两端上方；迷你条使用。
   final bool inlineTime;
 
-  /// inlineTime 时进度区的固定高度；迷你条按 56 - play 传入。
+  /// inlineTime 时进度区的固定高度；迷你条按 60 - play 传入。
   final double inlineHeight;
 
   /// 紧凑轨道/滑块/高度；播放页使用默认值。

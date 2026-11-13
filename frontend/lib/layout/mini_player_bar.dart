@@ -20,38 +20,38 @@ import '../widgets/pressable.dart';
 import 'queue_panel.dart';
 import 'screen_metrics.dart';
 
-/// 迷你条高度始终固定为 80：三列与回退同高，不随内容/进度行变化。
-/// 三列内容列 56，上下各留 12 安全区。
-const double kMiniPlayerBarHeight = 80;
+/// 迷你条高度始终固定为 84：三列与回退同高，不随内容/进度行变化。
+/// 三列内容列 60，上下各留 12 安全区。
+const double kMiniPlayerBarHeight = 84;
 
-/// 三列左封面列与中播控列统一的垂直占高：两边都是 56，
-/// 条高 80 时上下各 12，不靠内容反向撑高。
-const double kMiniWideContentHeight = 56;
+/// 三列左封面列与中播控列统一的垂直占高：两边都是 60，
+/// 条高 84 时上下各 12，不靠内容反向撑高。
+const double kMiniWideContentHeight = 60;
 
-/// 迷你条封面：按内容列 56；三列与回退共用，不再回退变小。
-const double kMiniBarCoverSize = 56;
+/// 迷你条封面：按内容列 60；三列与回退共用，不再回退变小。
+const double kMiniBarCoverSize = 60;
 
 /// 宽屏三列迷你条的最低可用宽度：右侧 3 个 48 命中区 + 内边距。
-/// 低于此值回退现有 80 条（手机横屏队列展开时约 224）。
+/// 低于此值回退现有 84 条（手机横屏队列展开时约 224）。
 const double kMiniWideMinWidth = 550;
 
 /// 宽屏三列播控尺寸：随中列宽度自适应，仍略小于回退态 42。
-/// play 38~40（整圆随 size 缩放）、切歌按钮命中 34~38（图标约 0.72 倍）、
-/// 左右间隔 12~22。中列总高锁 56：进度区吃掉 56 - play（16~18），时间在
-/// 轨道两端上方，播控与进度贴紧；条高 80、上下 12 安全区不变。
+/// play 38~39（整圆随 size 缩放）、切歌按钮命中 34~38（图标约 0.72 倍）、
+/// 左右间隔 12~22。中列总高锁 60：进度区吃掉 60 - play（21~22），时间在
+/// 轨道两端上方并留出间距；条高 84、上下 12 安全区不变。
 @visibleForTesting
 ({double play, double skip, double gap}) miniTransportMetrics(
     double centerWidth) {
   final w = centerWidth.clamp(0.0, 560.0);
   return (
-    play: (w * 0.095).clamp(38.0, 40.0).toDouble(),
+    play: (w * 0.095).clamp(38.0, 39.0).toDouble(),
     skip: (w * 0.085).clamp(34.0, 38.0).toDouble(),
     gap: (w * 0.055).clamp(12.0, 22.0).toDouble(),
   );
 }
 
 /// 回退态播控：正常宽度用 42 播放键 + 46 命中切歌；条宽 <300 的极窄
-/// 情况（手机横屏队列展开约 224）才收紧到 34/30/30，封面仍保持 56。
+/// 情况（手机横屏队列展开约 224）才收紧到 34/30/30，封面仍保持 60。
 @visibleForTesting
 ({
   double play,
@@ -93,7 +93,7 @@ bool isQueueUpSwipe(double? primaryVelocity, double startY, double lastY) =>
 /// 底部“正在播放”迷你条：点击进入全屏播放页；提供播放控制。
 ///
 /// 宽度够且窗口为宽屏时走三列：左当前曲 / 中播控 + 进度 / 右模式·音量·队列；
-/// 竖屏、窄窗或队列挤压到 [kMiniWideMinWidth] 以下时回退现有 80 高单行。
+/// 竖屏、窄窗或队列挤压到 [kMiniWideMinWidth] 以下时回退现有 84 高单行。
 /// 两种形态都是固定高度，内容不反向撑高播放条。
 class MiniPlayerBar extends StatefulWidget {
   const MiniPlayerBar({super.key});
@@ -277,7 +277,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
     );
   }
 
-  /// 回退单行迷你条：固定 80 高，封面与三列同为 56，上下各 12。
+  /// 回退单行迷你条：固定 84 高，封面与三列同为 60，上下各 12。
   ///
   /// 正常宽度用 42 播放键 / 46 命中切歌；<300 的极窄回退才收小播控，
   /// 但保留上一首与封面尺寸，不因回退改变左列大小。
@@ -327,8 +327,8 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
 
   /// 横屏三列：左当前曲 / 中播控 + 进度 / 右模式·音量·队列。
   ///
-  /// 列宽 2:3:2（等价 1:1.5:1），中列封顶 560；条高 80，左封面列与中列
-  /// 同占 56。中列播控整圆 38~40，进度区占 56 - play（16~18），时间在轨道
+  /// 列宽 2:3:2（等价 1:1.5:1），中列封顶 560；条高 84，左封面列与中列
+  /// 同占 60。中列播控整圆 38~39，进度区占 60 - play（21~22），时间在轨道
   /// 两端上方；回退态正常 42，仅 <300 极窄时收紧。
   Widget _buildWide(
       BuildContext context,
