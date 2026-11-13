@@ -331,6 +331,14 @@ class AppSettings {
   /// 桌面端关闭主窗口时驻留系统托盘（设置→常规→窗口，默认开）。
   /// 手机/鸿蒙无托盘，读取该键无意义。
   static const String kCloseToTray = 'close_to_tray';
+
+  /// 桌面端主窗口几何状态（设备本地 UI 记忆，JSON `[x, y, width, height]`，
+  /// 逻辑像素；见 platform/desktop_window_state.dart）：冷启动恢复上次的
+  /// 尺寸与位置。不随设置导出/同步，故不进 [knownKeys]。
+  static const String kWindowBounds = 'window_bounds';
+
+  /// 桌面端主窗口上次是否最大化（设备本地，同上）。
+  static const String kWindowMaximized = 'window_maximized';
   static const int logExportMinutesMin = 1;
   static const int logExportMinutesMax = 30;
 
@@ -1128,6 +1136,16 @@ class AppSettings {
   /// 桌面端关闭主窗口时驻留托盘（默认开）；关=关闭即退出。
   bool get closeToTray => (index.settingsGet(kCloseToTray) ?? '1') == '1';
   set closeToTray(bool v) => index.settingsSet(kCloseToTray, v ? '1' : '0');
+
+  /// 桌面端主窗口几何（空=无历史记录；编码/校验见 DesktopWindowState）。
+  String get windowBounds => index.settingsGet(kWindowBounds) ?? '';
+  set windowBounds(String v) => index.settingsSet(kWindowBounds, v);
+
+  /// 桌面端主窗口上次是否最大化（默认否）。
+  bool get windowMaximized =>
+      (index.settingsGet(kWindowMaximized) ?? '0') == '1';
+  set windowMaximized(bool v) =>
+      index.settingsSet(kWindowMaximized, v ? '1' : '0');
 
   /// 内容区导航状态（设备本地 UI 记忆）：由 [NavigationProvider] 读写。
   String get navigationState => index.settingsGet(kNavigationState) ?? '';

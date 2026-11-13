@@ -150,7 +150,10 @@ bool Win32Window::Create(const std::wstring& title,
 }
 
 bool Win32Window::Show() {
-  return ShowWindow(window_handle_, SW_SHOWNORMAL);
+  // SW_SHOW 而非模板默认的 SW_SHOWNORMAL：后者会把已最大化的窗口复位成
+  // 普通状态。冷启动恢复最大化（window_manager 在首帧后调用）可能先于
+  // 本次 show 落地，这里必须保留窗口当前的最大化/尺寸状态。
+  return ShowWindow(window_handle_, SW_SHOW);
 }
 
 // static

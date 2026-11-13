@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 
+import 'desktop_window_state.dart';
 import 'harmonyos/ohos_bootstrap.dart' show isOhos;
 
 /// 把应用移到后台（等效 home 键，不销毁 Activity/UIAbility）。
@@ -37,6 +38,9 @@ Future<void> Function()? beforeExitHook;
 /// 退出进程的统一收口：先跑 [beforeExitHook]（异常吞掉，不许拦住退出），
 /// 再 exit(0)。调用方仍需先完成各自的播放器 shutdown / 断点落库。
 Future<void> exitAppGracefully() async {
+  // 桌面端窗口几何写入带防抖（见 DesktopWindowState）：退进程前补一次，
+  // 避免「刚拖完窗口就退出」丢状态；非桌面平台内部直接返回。
+  await DesktopWindowState.instance.flush();
   final hook = beforeExitHook;
   if (hook != null) {
     try {

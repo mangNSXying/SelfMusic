@@ -67,6 +67,10 @@ dependencies:
   # 工具链验证。0.5.x 仅要求 Dart 3.0，Linux 构建需 libayatana-appindicator3-dev。
   window_manager: ^0.5.2
   tray_manager: ^0.5.3
+  # 桌面端窗口几何记忆（platform/desktop_window_state.dart）：按显示器可视
+  # 区域校验恢复位置，避免拔掉外接屏后窗口落在屏外。本就是 window_manager
+  # 的传递依赖（同一原生插件），主代码直接 import 需显式声明。
+  screen_retriever: ^0.2.2
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -10,6 +10,7 @@ import 'package:provider/provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'platform/app_background.dart';
 import 'platform/desktop_tray.dart';
+import 'platform/desktop_window_state.dart';
 import 'platform/harmonyos/ohos_bootstrap.dart';
 import 'platform/harmonyos/ohos_media_session.dart';
 import 'services/api_client.dart';
@@ -116,6 +117,11 @@ Future<void> main() async {
 
     final direct = DirectSourceManager();
     await direct.init();
+    // 桌面端窗口几何记忆：首帧前恢复上次的尺寸/位置（首次启动居中），避免
+    // 每次冷启动都以窗口化状态落在左上角；Windows 的最大化推迟到首帧后
+    //（见首帧后启动块与 DesktopWindowState.restore 的说明）。
+    await DesktopWindowState.instance.restore(direct.settings);
+    perfLog('boot.windowState done');
     final shortcutSettings = ShortcutSettings(direct.settings);
     // 托盘图标/菜单：读「关闭窗口时驻留托盘」开关；创建失败自动退回
     // 「关闭即退出」，不会出现窗口藏起来却无法找回的死角。
@@ -265,6 +271,8 @@ Future<void> main() async {
     // 等在飞行的首轮收尾，不会重复发起新一轮。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       perfLog('boot.postFrame start');
+      // Windows 冷启动恢复最大化：必须等首帧（详见 DesktopWindowState.restore）。
+      unawaited(DesktopWindowState.instance.applyDeferredMaximize());
       direct.attachApi(api); // 内部补发存量 source.create（有服务器才发）
       artistResolver.start();
       sync.start();

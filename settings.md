@@ -233,6 +233,8 @@ mode == follow_server → 有服务端镜像用镜像，无镜像回退本地自
 
 > 播放页滑动手势已移除开关并强制开启：横滑切换播放页与歌词页、下滑返回列表；原 `player_gesture_swipe` 键不再读取，也不再作为设置项导出。
 
+> 桌面端窗口几何（`window_bounds` / `window_maximized`）是设备本地 UI 记忆，不是设置项：冷启动恢复上次的尺寸/位置与最大化，无记录时居中，历史位置按当前显示器可视区域钳制（见 `platform/desktop_window_state.dart`）；两键不进 `knownKeys`，不随设置导出/同步。
+
 ## 4. 客户端运行配置（独立持久化）
 
 | 配置 | 存储 | 说明 |
