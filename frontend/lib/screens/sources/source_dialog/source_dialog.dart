@@ -830,7 +830,7 @@ class _SourceDialogState extends State<SourceDialog> {
               value: fb.kind,
               onChanged: (v) => setState(() => fb.kind = v),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 12),
             if (fb.kind == SourceKind.webdav) ...[
               TextField(
                 controller: fb.baseUrl,
@@ -841,17 +841,19 @@ class _SourceDialogState extends State<SourceDialog> {
                   hintText: 'https://192.168.1.11/dav/music',
                 ),
               ),
+              const SizedBox(height: 12),
               TextField(
                 controller: fb.username,
                 decoration: const InputDecoration(labelText: '用户名（可空）'),
               ),
+              const SizedBox(height: 12),
               TextField(
                 controller: fb.password,
                 keyboardType: _passwordKeyboardType,
                 obscureText: true,
                 decoration: const InputDecoration(labelText: '密码（可空）'),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 12),
               OutlinedButton.icon(
                 onPressed:
                     _testing ? null : () => _testFbWebdavConnection(i, fb),
@@ -868,6 +870,7 @@ class _SourceDialogState extends State<SourceDialog> {
                   hintText: '192.168.1.11 或 nas2.local',
                 ),
               ),
+              const SizedBox(height: 12),
               TextField(
                 controller: fb.port,
                 decoration: const InputDecoration(
@@ -877,16 +880,18 @@ class _SourceDialogState extends State<SourceDialog> {
                 keyboardType: TextInputType.number,
                 inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               ),
+              const SizedBox(height: 12),
               TextField(
                 controller: fb.username,
                 decoration: const InputDecoration(labelText: '用户名'),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 12),
               SingleChoiceGroup<SftpAuthMethod>(
                 options: _sftpAuthOptions,
                 value: fb.authMethod,
                 onChanged: (v) => setState(() => fb.authMethod = v),
               ),
+              const SizedBox(height: 12),
               if (fb.authMethod == SftpAuthMethod.password)
                 TextField(
                   controller: fb.password,
@@ -926,6 +931,7 @@ class _SourceDialogState extends State<SourceDialog> {
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
+                const SizedBox(height: 12),
                 TextField(
                   controller: fb.keyPassphrase,
                   keyboardType: _passwordKeyboardType,
@@ -933,6 +939,7 @@ class _SourceDialogState extends State<SourceDialog> {
                   decoration: const InputDecoration(labelText: '私钥口令（无则空）'),
                 ),
               ],
+              const SizedBox(height: 12),
               TextField(
                 controller: fb.path,
                 decoration: const InputDecoration(
@@ -940,7 +947,7 @@ class _SourceDialogState extends State<SourceDialog> {
                   hintText: '/music',
                 ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 12),
               OutlinedButton.icon(
                 onPressed: _testing ? null : () => _testFbSftpConnection(i, fb),
                 icon: _testing
@@ -956,6 +963,7 @@ class _SourceDialogState extends State<SourceDialog> {
                   hintText: '192.168.1.11 或 nas2.local',
                 ),
               ),
+              const SizedBox(height: 12),
               TextField(
                 controller: fb.smbPath,
                 decoration: const InputDecoration(
@@ -964,17 +972,19 @@ class _SourceDialogState extends State<SourceDialog> {
                   helperText: '首个「/」前为共享名，其余为共享内目录',
                 ),
               ),
+              const SizedBox(height: 12),
               TextField(
                 controller: fb.username,
                 decoration: const InputDecoration(labelText: '用户名（可空，空即匿名）'),
               ),
+              const SizedBox(height: 12),
               TextField(
                 controller: fb.password,
                 keyboardType: _passwordKeyboardType,
                 obscureText: true,
                 decoration: const InputDecoration(labelText: '密码（可空，空即匿名）'),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 12),
               OutlinedButton.icon(
                 onPressed: _testing ? null : () => _testFbSmbConnection(i, fb),
                 icon: _testing
@@ -1339,6 +1349,7 @@ class _SourceDialogState extends State<SourceDialog> {
               controller: _name,
               decoration: const InputDecoration(labelText: '名称（如 NAS / 本地音乐）'),
             ),
+            const SizedBox(height: 12),
             if (isLocal) ...[
               if (_filesMode)
                 _buildLocalFilesSection(context)
@@ -1370,17 +1381,19 @@ class _SourceDialogState extends State<SourceDialog> {
                   helperText: '未填协议时自动补 https://；需明文请显式写 http://',
                 ),
               ),
+              const SizedBox(height: 12),
               TextField(
                 controller: _username,
                 decoration: const InputDecoration(labelText: '用户名（可空）'),
               ),
+              const SizedBox(height: 12),
               TextField(
                 controller: _password,
                 keyboardType: _passwordKeyboardType,
                 obscureText: true,
                 decoration: const InputDecoration(labelText: '密码（可空）'),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 12),
               OutlinedButton.icon(
                 onPressed: _testing ? null : _testWebdavConnection,
                 icon: _testing
@@ -1396,6 +1409,7 @@ class _SourceDialogState extends State<SourceDialog> {
                   hintText: '192.168.1.10 或 nas.local',
                 ),
               ),
+              const SizedBox(height: 12),
               TextField(
                 controller: _port,
                 decoration: const InputDecoration(
@@ -1405,16 +1419,18 @@ class _SourceDialogState extends State<SourceDialog> {
                 keyboardType: TextInputType.number,
                 inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               ),
+              const SizedBox(height: 12),
               TextField(
                 controller: _username,
                 decoration: const InputDecoration(labelText: '用户名'),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 12),
               SingleChoiceGroup<SftpAuthMethod>(
                 options: _sftpAuthOptions,
                 value: _authMethod,
                 onChanged: (v) => setState(() => _authMethod = v),
               ),
+              const SizedBox(height: 12),
               if (_authMethod == SftpAuthMethod.password)
                 TextField(
                   controller: _password,
@@ -1454,6 +1470,7 @@ class _SourceDialogState extends State<SourceDialog> {
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
+                const SizedBox(height: 12),
                 TextField(
                   controller: _keyPassphrase,
                   keyboardType: _passwordKeyboardType,
@@ -1461,6 +1478,7 @@ class _SourceDialogState extends State<SourceDialog> {
                   decoration: const InputDecoration(labelText: '私钥口令（无则空）'),
                 ),
               ],
+              const SizedBox(height: 12),
               TextField(
                 controller: _path,
                 decoration: const InputDecoration(
@@ -1468,7 +1486,7 @@ class _SourceDialogState extends State<SourceDialog> {
                   hintText: '/music',
                 ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 12),
               OutlinedButton.icon(
                 onPressed: _testing ? null : _testSftpConnection,
                 icon: _testing
@@ -1484,6 +1502,7 @@ class _SourceDialogState extends State<SourceDialog> {
                   hintText: '192.168.1.10 或 nas.local',
                 ),
               ),
+              const SizedBox(height: 12),
               TextField(
                 controller: _smbPath,
                 decoration: const InputDecoration(
@@ -1492,17 +1511,19 @@ class _SourceDialogState extends State<SourceDialog> {
                   helperText: '首个「/」前为共享名，其余为共享内目录',
                 ),
               ),
+              const SizedBox(height: 12),
               TextField(
                 controller: _username,
                 decoration: const InputDecoration(labelText: '用户名（可空，空即匿名）'),
               ),
+              const SizedBox(height: 12),
               TextField(
                 controller: _password,
                 keyboardType: _passwordKeyboardType,
                 obscureText: true,
                 decoration: const InputDecoration(labelText: '密码（可空，空即匿名）'),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 12),
               OutlinedButton.icon(
                 onPressed: _testing ? null : _testSmbConnection,
                 icon: _testing
