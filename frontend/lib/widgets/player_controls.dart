@@ -83,8 +83,11 @@ class PlayerSeek extends StatefulWidget {
   /// 时间是否内联：位于轨道两端上方；迷你条使用。
   final bool inlineTime;
 
-  /// inlineTime 时进度区的固定高度；迷你条按 60 - play 传入。
+  /// inlineTime 时进度区的固定高度；迷你条按 48 - play 传入。
   final double inlineHeight;
+
+  /// 时间行与轨道之间的固定安全距离；字体变化只向上长，不压轨道。
+  final double inlineTimeGap;
 
   /// 紧凑轨道/滑块/高度；播放页使用默认值。
   final bool compact;
@@ -99,6 +102,7 @@ class PlayerSeek extends StatefulWidget {
     this.showTime = true,
     this.inlineTime = false,
     this.inlineHeight = 16,
+    this.inlineTimeGap = 6,
     this.compact = false,
     this.scale = 1.0,
   });
@@ -201,6 +205,7 @@ class _PlayerSeekState extends State<PlayerSeek> {
           return SizedBox(
             height: widget.inlineHeight,
             child: Stack(
+              clipBehavior: Clip.none,
               children: [
                 Positioned(
                   left: 0,
@@ -211,7 +216,7 @@ class _PlayerSeekState extends State<PlayerSeek> {
                 Positioned(
                   left: 0,
                   right: 0,
-                  top: 0,
+                  bottom: widget.inlineHeight + widget.inlineTimeGap,
                   child: Row(
                     children: [
                       Text(
