@@ -14,6 +14,7 @@ import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/app_volume_control.dart';
 import '../../widgets/eq_curve_editor.dart';
+import '../../widgets/settings_layout.dart';
 import '../../widgets/settings_section_header.dart';
 import '../../widgets/settings_tile.dart';
 import '../../widgets/single_choice_dialog.dart';
@@ -48,264 +49,242 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
     final eqBands = _settings.eqBands;
     final eqPreampDb = _settings.eqPreampDb;
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const SettingsSectionHeader('播放行为'),
-          _anchor(
-            '默认模式',
-            SettingsTile(
-              title: '默认模式',
-              description: '启动后进入的播放模式',
-              trailing: SettingsValueText(_modeSubtitle(current)),
-              onTap: () => _pickMode(context, current),
-            ),
+    return SettingsPage(
+      children: [
+        const SettingsSectionHeader('播放行为'),
+        _anchor(
+          '默认模式',
+          SettingsTile.value(
+            title: '默认模式',
+            description: '启动后进入的播放模式',
+            value: _modeSubtitle(current),
+            onTap: () => _pickMode(context, current),
           ),
-          _anchor(
-            '断点续播',
-            SettingsTile.toggle(
-              title: '断点续播',
-              description: '启动时恢复上次位置，保持暂停',
-              value: _settings.resumeOnStartup,
-              onChanged: (v) => setState(() => _settings.resumeOnStartup = v),
-            ),
+        ),
+        _anchor(
+          '断点续播',
+          SettingsTile.toggle(
+            title: '断点续播',
+            description: '启动时恢复上次位置，保持暂停',
+            value: _settings.resumeOnStartup,
+            onChanged: (v) => setState(() => _settings.resumeOnStartup = v),
           ),
-          _anchor(
-            '预载下一首',
-            SettingsTile.toggle(
-              title: '预载下一首',
-              description: '提前缓存下一首，切歌更快',
-              value: _settings.preloadNext,
-              onChanged: (v) => setState(() => _settings.preloadNext = v),
-            ),
+        ),
+        _anchor(
+          '预载下一首',
+          SettingsTile.toggle(
+            title: '预载下一首',
+            description: '提前缓存下一首，切歌更快',
+            value: _settings.preloadNext,
+            onChanged: (v) => setState(() => _settings.preloadNext = v),
           ),
-          _anchor(
-            '定时行为',
-            SettingsTile.toggle(
-              title: '定时行为',
-              description: '睡眠定时默认播完当前曲再暂停',
-              value: _settings.sleepPlayThroughDefault,
-              onChanged: (v) =>
-                  setState(() => _settings.sleepPlayThroughDefault = v),
-            ),
+        ),
+        _anchor(
+          '定时行为',
+          SettingsTile.toggle(
+            title: '定时行为',
+            description: '睡眠定时默认播完当前曲再暂停',
+            value: _settings.sleepPlayThroughDefault,
+            onChanged: (v) =>
+                setState(() => _settings.sleepPlayThroughDefault = v),
           ),
-          _anchor(
-            '歌词追焦',
-            SettingsTile(
-              title: '歌词追焦',
-              description: '拖动后多久回到当前行',
-              trailing: SettingsValueText('${_settings.lyricFocusIdleSec} 秒'),
-              onTap: () => _pickLyricIdle(context),
-            ),
+        ),
+        _anchor(
+          '歌词追焦',
+          SettingsTile.value(
+            title: '歌词追焦',
+            description: '拖动后多久回到当前行',
+            value: '${_settings.lyricFocusIdleSec} 秒',
+            onTap: () => _pickLyricIdle(context),
           ),
-          _anchor(
-            '屏幕常亮',
-            SettingsTile.toggle(
-              title: '屏幕常亮',
-              description: '打开播放页期间不熄屏',
-              value: _settings.playerKeepScreenOn,
-              onChanged: (v) =>
-                  setState(() => _settings.playerKeepScreenOn = v),
-            ),
+        ),
+        _anchor(
+          '屏幕常亮',
+          SettingsTile.toggle(
+            title: '屏幕常亮',
+            description: '打开播放页期间不熄屏',
+            value: _settings.playerKeepScreenOn,
+            onChanged: (v) => setState(() => _settings.playerKeepScreenOn = v),
           ),
-          if (_settings.playerKeepScreenOn)
-            SettingsTile(
-              title: '限定蓝牙',
-              description: '仅在指定设备连接时保持常亮',
-              trailing: SettingsValueText(_keepAwakeDeviceLabel()),
-              onTap: _pickKeepAwakeDevice,
-            ),
-          const Divider(height: 32),
-          const SettingsSectionHeader('随机权重'),
-          _anchor(
-            '加权随机',
-            SettingsTile.toggle(
-              title: '加权随机',
-              description: '按权重抽歌；关闭为普通随机',
-              value: _settings.weightedRandomEnabled,
-              onChanged: (v) {
-                setState(() => _settings.weightedRandomEnabled = v);
-                context.read<PlayerProvider>().onRandomAlgorithmChanged();
-              },
-            ),
+        ),
+        if (_settings.playerKeepScreenOn)
+          SettingsTile.value(
+            title: '限定蓝牙',
+            description: '仅在指定设备连接时保持常亮',
+            value: _keepAwakeDeviceLabel(),
+            onTap: _pickKeepAwakeDevice,
           ),
-          _anchor(
-            '次数冷却',
-            SettingsTile(
-              title: '次数冷却',
-              description: '刚播过的歌连续抽中时先跳过',
-              trailing: SettingsValueText(
-                  _drawCooldownValue(_settings.weightedDrawCooldown)),
-              enabled: _settings.weightedRandomEnabled,
-              onTap: _settings.weightedRandomEnabled ? _pickDrawCooldown : null,
-            ),
+        const SettingsGroupDivider(),
+        const SettingsSectionHeader('随机权重'),
+        _anchor(
+          '加权随机',
+          SettingsTile.toggle(
+            title: '加权随机',
+            description: '按权重抽歌；关闭为普通随机',
+            value: _settings.weightedRandomEnabled,
+            onChanged: (v) {
+              setState(() => _settings.weightedRandomEnabled = v);
+              context.read<PlayerProvider>().onRandomAlgorithmChanged();
+            },
           ),
-          _anchor(
-            '曲数冷却',
-            SettingsTile(
-              title: '曲数冷却',
-              description: '最近播过的一段不进候选池',
-              trailing: SettingsValueText(
-                  _countCooldownValue(_settings.weightedCountCooldownRatio)),
-              enabled: _settings.weightedRandomEnabled,
-              onTap:
-                  _settings.weightedRandomEnabled ? _editCountCooldown : null,
-            ),
+        ),
+        _anchor(
+          '次数冷却',
+          SettingsTile.value(
+            title: '次数冷却',
+            description: '刚播过的歌连续抽中时先跳过',
+            value: _drawCooldownValue(_settings.weightedDrawCooldown),
+            enabled: _settings.weightedRandomEnabled,
+            onTap: _settings.weightedRandomEnabled ? _pickDrawCooldown : null,
           ),
-          _anchor(
-            '时长削弱',
-            SettingsTile.toggle(
-              title: '时长削弱',
-              description: '长歌权重低（仅加权随机）',
-              value: _settings.weightCurveEnabled,
-              onChanged: (v) =>
-                  setState(() => _settings.weightCurveEnabled = v),
-            ),
+        ),
+        _anchor(
+          '曲数冷却',
+          SettingsTile.value(
+            title: '曲数冷却',
+            description: '最近播过的一段不进候选池',
+            value: _countCooldownValue(_settings.weightedCountCooldownRatio),
+            enabled: _settings.weightedRandomEnabled,
+            onTap: _settings.weightedRandomEnabled ? _editCountCooldown : null,
           ),
-          _anchor(
-            '权重曲线',
-            SettingsTile(
-              title: '权重曲线',
-              description: '按歌曲时长分段的权重系数',
-              trailing: SettingsValueText(
-                  _weightCurveSummary(_settings.weightCurveSegments)),
-              onTap: () => _editWeightCurve(context),
-            ),
+        ),
+        _anchor(
+          '时长削弱',
+          SettingsTile.toggle(
+            title: '时长削弱',
+            description: '长歌权重低（仅加权随机）',
+            value: _settings.weightCurveEnabled,
+            onChanged: (v) => setState(() => _settings.weightCurveEnabled = v),
           ),
-          const Divider(height: 32),
-          const SettingsSectionHeader('音效'),
-          _anchor(
-            '淡入淡出',
-            SettingsTile.toggle(
-              title: '淡入淡出',
-              description: '播放与暂停时音量渐变',
-              value: _settings.fadeEnabled,
-              onChanged: (v) => setState(() => _settings.fadeEnabled = v),
-            ),
+        ),
+        _anchor(
+          '权重曲线',
+          SettingsTile.value(
+            title: '权重曲线',
+            description: '按歌曲时长分段的权重系数',
+            value: _weightCurveSummary(_settings.weightCurveSegments),
+            onTap: () => _editWeightCurve(context),
           ),
-          Padding(
-            padding: const EdgeInsets.only(left: 16, right: 16, top: 4),
-            child: Row(
-              children: [
-                const Text('时长', style: TextStyle(fontSize: 13)),
-                Expanded(
-                  child: Slider(
-                    key: const ValueKey('fade-duration-slider'),
-                    // 有效域 [500, 2000]ms（读取已钳制）：0.5~2.0s、0.1s 步进
-                    //（divisions 15，16 档），标签一位小数实时预览。
-                    value: (_settings.fadeDurationMs / 1000).clamp(0.5, 2.0),
-                    min: 0.5,
-                    max: 2.0,
-                    divisions: 15,
-                    label:
-                        '${(_settings.fadeDurationMs / 1000).toStringAsFixed(1)} 秒',
-                    onChanged: (v) => setState(
-                        () => _settings.fadeDurationMs = (v * 1000).round()),
-                  ),
+        ),
+        const SettingsGroupDivider(),
+        const SettingsSectionHeader('音效'),
+        _anchor(
+          '淡入淡出',
+          SettingsTile.toggle(
+            title: '淡入淡出',
+            description: '播放与暂停时音量渐变',
+            value: _settings.fadeEnabled,
+            onChanged: (v) => setState(() => _settings.fadeEnabled = v),
+          ),
+        ),
+        SettingsControlBlock(
+          child: Row(
+            children: [
+              const Text('时长', style: TextStyle(fontSize: 13)),
+              Expanded(
+                child: Slider(
+                  key: const ValueKey('fade-duration-slider'),
+                  // 有效域 [500, 2000]ms（读取已钳制）：0.5~2.0s、0.1s 步进
+                  //（divisions 15，16 档），标签一位小数实时预览。
+                  value: (_settings.fadeDurationMs / 1000).clamp(0.5, 2.0),
+                  min: 0.5,
+                  max: 2.0,
+                  divisions: 15,
+                  label:
+                      '${(_settings.fadeDurationMs / 1000).toStringAsFixed(1)} 秒',
+                  onChanged: (v) => setState(
+                      () => _settings.fadeDurationMs = (v * 1000).round()),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-          const Divider(height: 24),
-          _anchor(
-            '应用音量',
-            SettingsTile(
-              title: '应用音量',
-              description: '独立于系统音量的应用内增益',
-              trailing: SettingsValueText('${_settings.appVolume}%'),
-            ),
+        ),
+        _anchor(
+          '应用音量',
+          SettingsTile.value(
+            title: '应用音量',
+            description: '独立于系统音量的应用内增益',
+            value: '${_settings.appVolume}%',
           ),
-          Padding(
-            padding: const EdgeInsets.only(left: 16, right: 16),
-            child: Row(
-              children: [
-                IconButton(
-                  tooltip: _settings.appVolume == 0 ? '取消静音' : '静音',
-                  icon: AppVolumeIcon(volume: _settings.appVolume),
-                  onPressed: () {
-                    setState(() =>
-                        context.read<PlayerProvider>().toggleAppVolumeMute());
+        ),
+        SettingsControlBlock(
+          child: Row(
+            children: [
+              IconButton(
+                tooltip: _settings.appVolume == 0 ? '取消静音' : '静音',
+                icon: AppVolumeIcon(volume: _settings.appVolume),
+                onPressed: () {
+                  setState(() =>
+                      context.read<PlayerProvider>().toggleAppVolumeMute());
+                },
+              ),
+              Expanded(
+                child: Slider(
+                  key: const ValueKey('app-volume-slider'),
+                  value: _settings.appVolume.toDouble(),
+                  min: 0,
+                  max: 100,
+                  divisions: 100,
+                  label: '${_settings.appVolume}%',
+                  onChanged: (v) {
+                    setState(() {
+                      context.read<PlayerProvider>().setAppVolume(v.round());
+                    });
                   },
                 ),
-                Expanded(
-                  child: Slider(
-                    key: const ValueKey('app-volume-slider'),
-                    value: _settings.appVolume.toDouble(),
-                    min: 0,
-                    max: 100,
-                    divisions: 100,
-                    label: '${_settings.appVolume}%',
-                    onChanged: (v) {
-                      setState(() {
-                        context.read<PlayerProvider>().setAppVolume(v.round());
-                      });
-                    },
-                  ),
+              ),
+              SizedBox(
+                width: 44,
+                child: Text(
+                  '${_settings.appVolume}%',
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(fontSize: 13),
                 ),
-                SizedBox(
-                  width: 44,
-                  child: Text(
-                    '${_settings.appVolume}%',
-                    textAlign: TextAlign.right,
-                    style: const TextStyle(fontSize: 13),
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
-          const Divider(height: 24),
-          _anchor('均衡器', _buildEqualizer(context, eqBands, eqPreampDb)),
-          const Divider(height: 32),
-          const SettingsSectionHeader('播放保护'),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Text('以下功能仅安卓 / 鸿蒙生效',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context)
-                        .colorScheme
-                        .onSurface
-                        .withValues(alpha: 0.6))),
+        ),
+        _anchor('均衡器', _buildEqualizer(context, eqBands, eqPreampDb)),
+        const SettingsGroupDivider(),
+        const SettingsSectionHeader('播放保护'),
+        const SettingsGroupNote('以下功能仅安卓 / 鸿蒙生效'),
+        _anchor(
+          '焦点自动暂停',
+          SettingsTile.toggle(
+            title: '焦点自动暂停',
+            description: '来电或其他应用抢占时自动暂停与恢复',
+            value: _settings.audioFocusEnabled,
+            onChanged: (v) {
+              setState(() => _settings.audioFocusEnabled = v);
+              context.read<PlayerProvider>().applyAudioConfig();
+            },
           ),
-          _anchor(
-            '焦点自动暂停',
-            SettingsTile.toggle(
-              title: '焦点自动暂停',
-              description: '来电或其他应用抢占时自动暂停与恢复',
-              value: _settings.audioFocusEnabled,
-              onChanged: (v) {
-                setState(() => _settings.audioFocusEnabled = v);
-                context.read<PlayerProvider>().applyAudioConfig();
-              },
-            ),
+        ),
+        _anchor(
+          '静音暂停',
+          SettingsTile.toggle(
+            title: '静音暂停',
+            description: '系统音量归零时自动暂停',
+            value: _settings.pauseOnZeroVolume,
+            onChanged: (v) {
+              setState(() => _settings.pauseOnZeroVolume = v);
+              context.read<PlayerProvider>().refreshPlaybackGuard();
+            },
           ),
-          _anchor(
-            '静音暂停',
-            SettingsTile.toggle(
-              title: '静音暂停',
-              description: '系统音量归零时自动暂停',
-              value: _settings.pauseOnZeroVolume,
-              onChanged: (v) {
-                setState(() => _settings.pauseOnZeroVolume = v);
-                context.read<PlayerProvider>().refreshPlaybackGuard();
-              },
-            ),
+        ),
+        _anchor(
+          '断连暂停',
+          SettingsTile.toggle(
+            title: '断连暂停',
+            description: '输出设备断开时自动暂停',
+            value: _settings.pauseOnDeviceDisconnect,
+            onChanged: (v) {
+              setState(() => _settings.pauseOnDeviceDisconnect = v);
+              context.read<PlayerProvider>().refreshPlaybackGuard();
+            },
           ),
-          _anchor(
-            '断连暂停',
-            SettingsTile.toggle(
-              title: '断连暂停',
-              description: '输出设备断开时自动暂停',
-              value: _settings.pauseOnDeviceDisconnect,
-              onChanged: (v) {
-                setState(() => _settings.pauseOnDeviceDisconnect = v);
-                context.read<PlayerProvider>().refreshPlaybackGuard();
-              },
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -702,9 +681,9 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
               factor <= 1.5 &&
               (maxSec == null || maxSec! > minSec);
           Widget row(String label, String value, Future<void> Function() pick) {
-            return SettingsTile(
+            return SettingsTile.value(
               title: label,
-              trailing: SettingsValueText(value),
+              value: value,
               onTap: pick,
             );
           }

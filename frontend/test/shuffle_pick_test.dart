@@ -230,6 +230,9 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('随机（加权）'), findsOneWidget);
+      final groupX = tester.getTopLeft(find.text('播放行为')).dx;
+      expect(groupX, 16);
+      expect(tester.getTopLeft(find.text('默认模式')).dx, groupX);
       final sw = find.widgetWithText(SettingsTile, '加权随机');
       expect(sw, findsOneWidget, reason: '加权随机默认开启');
 
