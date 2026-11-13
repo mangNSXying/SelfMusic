@@ -77,6 +77,27 @@ void main() {
     expect(tapped, isFalse);
   });
 
+  testWidgets('右侧值与开关轨道右缘对齐', (tester) async {
+    await pump(
+      tester,
+      Column(
+        children: [
+          SettingsTile.toggle(
+            title: '带开关',
+            value: false,
+            onChanged: (_) {},
+          ),
+          SettingsTile.value(title: '取值行', value: '10 行'),
+        ],
+      ),
+    );
+
+    final switchRight = tester.getRect(find.byType(Switch)).right;
+    final valueRight = tester.getRect(find.text('10 行')).right;
+    // 开关控件左右各留 4px，轨道右缘为控件右缘 - 4。
+    expect(valueRight, switchRight - 4);
+  });
+
   testWidgets('行内不再绘制右箭头图标', (tester) async {
     await pump(
       tester,

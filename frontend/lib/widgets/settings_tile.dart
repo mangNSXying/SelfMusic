@@ -121,18 +121,22 @@ class SettingsValueText extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return ConstrainedBox(
-      constraints: BoxConstraints(maxWidth: maxWidth),
-      child: Text(
-        value,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        textAlign: TextAlign.right,
-        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              color: enabled
-                  ? cs.onSurfaceVariant
-                  : cs.onSurface.withValues(alpha: 0.38),
-            ),
+    // 开关控件宽 60、轨道宽 52，左右各留 4；文字右缘对齐轨道而非控件外框。
+    return Padding(
+      padding: const EdgeInsets.only(right: 4),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: maxWidth),
+        child: Text(
+          value,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          textAlign: TextAlign.right,
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: enabled
+                    ? cs.onSurfaceVariant
+                    : cs.onSurface.withValues(alpha: 0.38),
+              ),
+        ),
       ),
     );
   }

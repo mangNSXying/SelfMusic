@@ -220,24 +220,16 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
                 onTap: _fontBusy ? null : _importFont,
               ),
             ),
-            Wrap(
-              spacing: 12,
-              runSpacing: 8,
-              children: [
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.upload_file, size: 18),
-                  label: Text(hasCustomFont ? '更换字体' : '导入字体文件'),
-                  onPressed: _fontBusy ? null : _importFont,
-                ),
-                if (hasCustomFont)
-                  OutlinedButton.icon(
-                    icon: const Icon(Icons.restart_alt, size: 18),
-                    label: const Text('恢复系统字体'),
-                    onPressed: _fontBusy ? null : _resetFont,
-                  ),
-              ],
-            ),
             if (hasCustomFont) ...[
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                  icon: const Icon(Icons.restart_alt, size: 18),
+                  label: const Text('恢复系统字体'),
+                  onPressed: _fontBusy ? null : _resetFont,
+                ),
+              ),
               const SizedBox(height: 12),
               Text(
                 '预览：音乐让生活更美好 SelfMusic 0123456789',

@@ -84,8 +84,8 @@ void main() {
     expect(find.text('文字'), findsOneWidget);
     expect(find.text('界面字体'), findsOneWidget);
     expect(find.text('系统默认'), findsOneWidget);
-    expect(find.text('导入字体文件'), findsOneWidget);
-    expect(find.text('更换字体'), findsNothing);
+    expect(find.text('导入'), findsOneWidget);
+    expect(find.text('更换'), findsNothing);
     expect(find.text('恢复系统字体'), findsNothing);
     expect(find.text('歌词行数'), findsOneWidget);
     expect(find.text('不限制'), findsOneWidget);
@@ -108,7 +108,7 @@ void main() {
     );
 
     expect(find.text('当前：测试字体'), findsOneWidget);
-    expect(find.text('更换字体'), findsOneWidget);
+    expect(find.text('更换'), findsOneWidget);
     expect(find.text('恢复系统字体'), findsOneWidget);
     expect(find.textContaining('预览：'), findsOneWidget);
     expect(find.text('10 行'), findsOneWidget);
