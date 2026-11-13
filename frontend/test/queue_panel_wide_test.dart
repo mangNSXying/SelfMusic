@@ -7,6 +7,7 @@ import 'package:path_provider_platform_interface/path_provider_platform_interfac
 import 'package:provider/provider.dart';
 import 'package:selfmusic/data/sources/music_source.dart';
 import 'package:selfmusic/layout/app_shell.dart';
+import 'package:selfmusic/layout/mini_player_bar.dart';
 import 'package:selfmusic/layout/queue_panel.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
@@ -112,6 +113,9 @@ void main() {
     // 计数栏：与窄屏窗口一致，显示队列真实长度。
     expect(find.text('共 3 首歌曲'), findsOneWidget);
     expect(tester.getSize(find.byType(QueuePanel)).width, kQueuePanelWidth);
+    // 三列条固定 80：内容 56 + 上下各 12 安全区。
+    expect(tester.getSize(find.byType(MiniPlayerBar)).height,
+        kMiniPlayerBarHeight);
     // 面板顶部内容必须让开状态栏（2026-09-30 真机：顶部留白不足）。
     expect(tester.getTopLeft(find.text('播放队列')).dy, greaterThanOrEqualTo(60));
   });
@@ -249,7 +253,7 @@ class _HostState extends State<_Host> with TickerProviderStateMixin {
         ChangeNotifierProvider<ThemeProvider>.value(
             value: ThemeProvider(autoLoad: false)),
       ],
-      child: AppShell(content: const SizedBox()),
+      child: const AppShell(content: SizedBox()),
     );
   }
 }

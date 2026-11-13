@@ -20,20 +20,25 @@ import '../widgets/pressable.dart';
 import 'queue_panel.dart';
 import 'screen_metrics.dart';
 
-/// 迷你条高度始终固定为 72：三列与回退同高，不随内容/进度行变化。
-const double kMiniPlayerBarHeight = 72;
+/// 迷你条高度始终固定为 80：三列与回退同高，不随内容/进度行变化。
+/// 三列内容列 56，上下各留 12 安全区。
+const double kMiniPlayerBarHeight = 80;
 
-/// 迷你条封面：按固定 72 高取 56；三列与回退共用，不再回退变小。
+/// 三列左封面列与中播控列统一的垂直占高：两边都是 56，
+/// 条高 80 时上下各 12，不靠内容反向撑高。
+const double kMiniWideContentHeight = 56;
+
+/// 迷你条封面：按内容列 56；三列与回退共用，不再回退变小。
 const double kMiniBarCoverSize = 56;
 
 /// 宽屏三列迷你条的最低可用宽度：右侧 3 个 48 命中区 + 内边距。
-/// 低于此值回退现有 72 条（手机横屏队列展开时约 224）。
+/// 低于此值回退现有 80 条（手机横屏队列展开时约 224）。
 const double kMiniWideMinWidth = 550;
 
 /// 宽屏三列播控尺寸：随中列宽度自适应，仍略小于回退态 42。
 /// play 38~40（整圆随 size 缩放）、切歌按钮命中 34~38（图标约 0.72 倍）、
-/// 左右间隔 12~22。进度行从 18 收到 16、播控与进度间距归 0，抵消增大后
-/// 条高仍保持 72、上下留白不变。
+/// 左右间隔 12~22。中列总高锁 56：进度区吃掉 56 - play（16~18），时间在
+/// 轨道两端上方，播控与进度贴紧；条高 80、上下 12 安全区不变。
 @visibleForTesting
 ({double play, double skip, double gap}) miniTransportMetrics(
     double centerWidth) {
@@ -88,7 +93,7 @@ bool isQueueUpSwipe(double? primaryVelocity, double startY, double lastY) =>
 /// 底部“正在播放”迷你条：点击进入全屏播放页；提供播放控制。
 ///
 /// 宽度够且窗口为宽屏时走三列：左当前曲 / 中播控 + 进度 / 右模式·音量·队列；
-/// 竖屏、窄窗或队列挤压到 [kMiniWideMinWidth] 以下时回退现有 72 高单行。
+/// 竖屏、窄窗或队列挤压到 [kMiniWideMinWidth] 以下时回退现有 80 高单行。
 /// 两种形态都是固定高度，内容不反向撑高播放条。
 class MiniPlayerBar extends StatefulWidget {
   const MiniPlayerBar({super.key});
@@ -272,7 +277,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
     );
   }
 
-  /// 回退单行迷你条：固定 72 高，封面与三列同为 56。
+  /// 回退单行迷你条：固定 80 高，封面与三列同为 56，上下各 12。
   ///
   /// 正常宽度用 42 播放键 / 46 命中切歌；<300 的极窄回退才收小播控，
   /// 但保留上一首与封面尺寸，不因回退改变左列大小。
@@ -322,9 +327,9 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
 
   /// 横屏三列：左当前曲 / 中播控 + 进度 / 右模式·音量·队列。
   ///
-  /// 列宽 2:3:2（等价 1:1.5:1），中列封顶 560；条高与回退态同为固定 72，
-  /// 左侧封面同为 [kMiniBarCoverSize]。三列里播控整圆 38~40、与 16 高进度
-  /// 行贴紧；回退态正常 42，仅 <300 极窄时收紧。
+  /// 列宽 2:3:2（等价 1:1.5:1），中列封顶 560；条高 80，左封面列与中列
+  /// 同占 56。中列播控整圆 38~40，进度区占 56 - play（16~18），时间在轨道
+  /// 两端上方；回退态正常 42，仅 <300 极窄时收紧。
   Widget _buildWide(
       BuildContext context,
       PlayerProvider player,
@@ -366,35 +371,43 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
                 child: LayoutBuilder(
                   builder: (context, constraints) {
                     final m = miniTransportMetrics(constraints.maxWidth);
-                    return Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            _skipButton(player.prev, '上一首', Icons.skip_previous,
-                                m.skip * 0.72, m.skip, cs),
-                            SizedBox(width: m.gap),
-                            PlayPauseButton(
-                              player: player,
-                              cs: cs,
-                              size: m.play,
-                              padding: EdgeInsets.zero,
-                            ),
-                            SizedBox(width: m.gap),
-                            _skipButton(player.next, '下一首', Icons.skip_next,
-                                m.skip * 0.72, m.skip, cs),
-                          ],
-                        ),
-                        PlayerSeek(
-                          player: player,
-                          cs: cs,
-                          compact: true,
-                          inlineTime: true,
-                          showTime: false,
-                          scale: 0.75,
-                        ),
-                      ],
+                    return SizedBox(
+                      height: kMiniWideContentHeight,
+                      child: Column(
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              _skipButton(
+                                  player.prev,
+                                  '上一首',
+                                  Icons.skip_previous,
+                                  m.skip * 0.72,
+                                  m.skip,
+                                  cs),
+                              SizedBox(width: m.gap),
+                              PlayPauseButton(
+                                player: player,
+                                cs: cs,
+                                size: m.play,
+                                padding: EdgeInsets.zero,
+                              ),
+                              SizedBox(width: m.gap),
+                              _skipButton(player.next, '下一首', Icons.skip_next,
+                                  m.skip * 0.72, m.skip, cs),
+                            ],
+                          ),
+                          PlayerSeek(
+                            player: player,
+                            cs: cs,
+                            compact: true,
+                            inlineTime: true,
+                            showTime: false,
+                            scale: 0.75,
+                            inlineHeight: kMiniWideContentHeight - m.play,
+                          ),
+                        ],
+                      ),
                     );
                   },
                 ),

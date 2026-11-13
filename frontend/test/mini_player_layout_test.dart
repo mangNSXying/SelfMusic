@@ -34,8 +34,11 @@ void main() {
     expect(kMiniBarCoverSize, 56);
   });
 
-  test('条高始终固定 72，三列/回退同高', () {
-    expect(kMiniPlayerBarHeight, 72);
+  test('条高固定 80，三列封面列与中列同占 56，上下各 12', () {
+    expect(kMiniPlayerBarHeight, 80);
+    expect(kMiniWideContentHeight, 56);
+    expect(kMiniBarCoverSize, kMiniWideContentHeight);
+    expect((kMiniPlayerBarHeight - kMiniWideContentHeight) / 2, 12);
     expect(kMiniWideMinWidth, 550);
   });
 }

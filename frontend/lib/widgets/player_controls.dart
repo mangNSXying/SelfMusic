@@ -52,9 +52,9 @@ class ModeButton extends StatelessWidget {
 
 /// 进度条（v5 设计稿：细进度 + 下方时间标签）。
 ///
-/// [inlineTime] 为迷你条紧凑用法：时间与轨道同一行、隐藏断网提示；
-/// [compact] 与播放页共用同一 Slider，只套紧凑主题（5px 轨 / 10 thumb /
-/// overlay 0 / 16 高），供固定高度横屏条使用。
+/// [inlineTime] 为迷你条紧凑用法：时间在轨道两端上方、轨道铺满宽度，
+/// 隐藏断网提示；[compact] 与播放页共用同一 Slider，只套紧凑主题
+/// （5px 轨 / 10 thumb / overlay 0），供固定高度横屏条使用。
 class PlayerSeek extends StatefulWidget {
   final PlayerProvider player;
   final ColorScheme cs;
@@ -62,8 +62,11 @@ class PlayerSeek extends StatefulWidget {
   /// 进度条下方是否显示时间（横屏三列页隐藏，把空间留给封面）。
   final bool showTime;
 
-  /// 时间是否与轨道同一行；迷你条使用。
+  /// 时间是否内联：位于轨道两端上方；迷你条使用。
   final bool inlineTime;
+
+  /// inlineTime 时进度区的固定高度；迷你条按 56 - play 传入。
+  final double inlineHeight;
 
   /// 紧凑轨道/滑块/高度；播放页使用默认值。
   final bool compact;
@@ -77,6 +80,7 @@ class PlayerSeek extends StatefulWidget {
     required this.cs,
     this.showTime = true,
     this.inlineTime = false,
+    this.inlineHeight = 16,
     this.compact = false,
     this.scale = 1.0,
   });
@@ -177,25 +181,33 @@ class _PlayerSeekState extends State<PlayerSeek> {
             color: widget.cs.onSurface.withValues(alpha: 0.62),
           );
           return SizedBox(
-            height: 16,
-            child: Row(
+            height: widget.inlineHeight,
+            child: Stack(
               children: [
-                SizedBox(
-                  width: 34,
-                  child: Text(
-                    formatClock(Duration(milliseconds: shown.toInt())),
-                    maxLines: 1,
-                    textAlign: TextAlign.right,
-                    style: timeStyle,
-                  ),
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: slider,
                 ),
-                Expanded(child: SizedBox(height: 16, child: slider)),
-                SizedBox(
-                  width: 34,
-                  child: Text(
-                    formatClock(dur),
-                    maxLines: 1,
-                    style: timeStyle,
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  top: 0,
+                  child: Row(
+                    children: [
+                      Text(
+                        formatClock(Duration(milliseconds: shown.toInt())),
+                        maxLines: 1,
+                        style: timeStyle,
+                      ),
+                      const Spacer(),
+                      Text(
+                        formatClock(dur),
+                        maxLines: 1,
+                        style: timeStyle,
+                      ),
+                    ],
                   ),
                 ),
               ],
