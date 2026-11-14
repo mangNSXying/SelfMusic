@@ -13,7 +13,6 @@ import '../../providers/direct_source_manager.dart';
 import '../../widgets/source_line_menu.dart';
 import '../../widgets/context_menu.dart';
 import '../../widgets/edit_song_meta_dialog.dart';
-import '../../widgets/online_meta_dialog.dart';
 import '../../widgets/song_info_dialog.dart';
 
 import 'player_now_playing.dart';
@@ -157,7 +156,6 @@ class Cover extends StatelessWidget {
     return [
       const PopupMenuItem(value: 'info', child: Text('歌曲信息')),
       const PopupMenuItem(value: 'edit', child: Text('修改信息')),
-      const PopupMenuItem(value: 'online', child: Text('在线获取元数据')),
       ...lineItems,
     ];
   }
@@ -183,11 +181,6 @@ class Cover extends StatelessWidget {
       showDialog<void>(
         context: context,
         builder: (_) => EditSongMetaDialog(song: song),
-      );
-    } else if (v == 'online') {
-      showDialog<void>(
-        context: context,
-        builder: (_) => OnlineMetaDialog(song: song),
       );
     } else if (v.startsWith('line_')) {
       applySourceLineSelection(context, song.sourceKey, v);

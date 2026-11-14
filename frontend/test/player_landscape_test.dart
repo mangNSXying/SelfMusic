@@ -433,7 +433,6 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('歌曲信息'), findsOneWidget);
     expect(find.text('修改信息'), findsOneWidget);
-    expect(find.text('在线获取元数据'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
   });
