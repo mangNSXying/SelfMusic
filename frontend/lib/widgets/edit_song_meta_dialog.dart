@@ -323,13 +323,13 @@ class _EditSongMetaDialogState extends State<EditSongMetaDialog> {
                     TextButton.icon(
                       onPressed: _openOnline,
                       icon: const Icon(Icons.cloud_download_outlined, size: 18),
-                      label: const Text('在线获取元数据…'),
+                      label: const Text('在线获取'),
                     ),
                     if (canEmbed)
                       TextButton.icon(
                         onPressed: _openEmbed,
                         icon: const Icon(Icons.file_upload_outlined, size: 18),
-                        label: const Text('嵌入到文件…'),
+                        label: const Text('嵌入文件'),
                       ),
                   ],
                 ),

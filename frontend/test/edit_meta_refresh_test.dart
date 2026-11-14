@@ -133,9 +133,9 @@ Future<void> _openEditDialog(
 }
 
 Future<void> _openMainOnline(WidgetTester tester) async {
-  await tester.ensureVisible(find.text('在线获取元数据…'));
+  await tester.ensureVisible(find.text('在线获取'));
   await tester.pumpAndSettle();
-  await tester.tap(find.text('在线获取元数据…'));
+  await tester.tap(find.text('在线获取'));
   await pumpFrame(tester);
 }
 
@@ -184,7 +184,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('封面'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('在线获取'));
+      await tester.tap(find.text('在线获取').last);
       await pumpFrame(tester);
       await _applyOnlineTagChange(tester, h.direct, '封面路径标题');
       await tester.tap(_closeTopmost);
@@ -208,7 +208,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('歌词'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('在线获取'));
+      await tester.tap(find.text('在线获取').last);
       await pumpFrame(tester);
       await _applyOnlineTagChange(tester, h.direct, '歌词路径标题');
       await tester.tap(_closeTopmost);
