@@ -31,9 +31,10 @@ const double kMiniWideContentHeight = 48;
 /// 迷你条封面：按内容列 48；三列与回退共用，不再回退变小。
 const double kMiniBarCoverSize = 48;
 
-/// 宽屏三列迷你条的最低可用宽度：右侧 3 个 44 命中区 + 间距。
+/// 宽屏三列迷你条的最低可用宽度：1:2:1 下右列至少放得下
+/// 3 个 44 命中区 + 2 个 2px 间距（28 内边距 + 4 × 136 = 572）。
 /// 低于此值回退现有 72 条（手机横屏队列展开时约 224）。
-const double kMiniWideMinWidth = 550;
+const double kMiniWideMinWidth = 572;
 
 /// 右列三枚工具统一：44 命中、22 图标、2 间距。
 const double kMiniToolButtonSize = 44;
@@ -332,7 +333,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
 
   /// 横屏三列：左当前曲 / 中播控 + 进度 / 右模式·音量·队列。
   ///
-  /// 列宽 2:3:2（等价 1:1.5:1），中列封顶 560；条高 72，左封面列与中列
+  /// 列宽 1:2:1，中列封顶 560；条高 72，左封面列与中列
   /// 同占 48。中列播控整圆 38~39，进度区只占 48 - play（9~10），时间上移
   /// 到播控行下缘；回退态正常 42，仅 <300 极窄时收紧。
   Widget _buildWide(
@@ -354,7 +355,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Expanded(
-            flex: 2,
+            flex: 1,
             child: Align(
               alignment: Alignment.centerLeft,
               child: _trackInfo(
@@ -370,7 +371,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
             ),
           ),
           Expanded(
-            flex: 3,
+            flex: 2,
             child: Center(
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 560),
@@ -421,7 +422,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
             ),
           ),
           Expanded(
-            flex: 2,
+            flex: 1,
             child: Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [

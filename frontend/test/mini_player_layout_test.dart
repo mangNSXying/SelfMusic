@@ -39,13 +39,15 @@ void main() {
     expect(kMiniWideContentHeight, 48);
     expect(kMiniBarCoverSize, kMiniWideContentHeight);
     expect((kMiniPlayerBarHeight - kMiniWideContentHeight) / 2, 12);
-    expect(kMiniWideMinWidth, 550);
+    expect(kMiniWideMinWidth, 572);
   });
 
   test('右列模式/音量/队列统一 44 命中、22 图标、2 间距', () {
     expect(kMiniToolButtonSize, 44);
     expect(kMiniToolIconSize, 22);
     expect(kMiniToolGap, 2);
-    expect(3 * kMiniToolButtonSize + 2 * kMiniToolGap, lessThan(550 / 3.5));
+    // 1:2:1 下右列 = (条宽 - 28) / 4，最小条宽 572 时刚好 136。
+    expect(3 * kMiniToolButtonSize + 2 * kMiniToolGap,
+        lessThanOrEqualTo((kMiniWideMinWidth - 28) / 4));
   });
 }
