@@ -158,10 +158,23 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 展示运行时播放队列。
   String? get syncPlaylistUuid => _syncPlaylistUuid;
 
+  /// 当前队列是否锚定在该歌单（歌单页「播放」据此区分继续当前现场 / 切歌单）。
+  bool isAnchoredToPlaylist(String uuid) =>
+      _anchorKey == PlayerProvider.anchorForPlaylist(uuid);
+
+  /// 该歌单是否有本机现场缓存（本次运行内切走过；切回时直接恢复，不再按模式选曲）。
+  bool hasPlaylistContext(String uuid) =>
+      _anchorContexts.containsKey(PlayerProvider.anchorForPlaylist(uuid));
+
   /// 深层列表（隐藏历史栈）：绑定当前锚定列表（anchorKey）时启用；未锚定为 null。
   /// anchorKey 值域：playlist:<uuid>/liked/songs/album:<id>/artist:<name>/source:<key>。
   String? _anchorKey;
   DeepListController? _deepList;
+
+  /// 每个歌单锚定的本机播放现场（当前曲/进度/「下一首播放」槽）。
+  /// 深层历史本身已按锚定键持久化在 `deep_lists`，这里不重复保存；只有歌单
+  /// 锚定有切换入口（歌单页「播放」），所以只缓存 `playlist:*`。
+  final Map<String, _AnchorContext> _anchorContexts = {};
 
   /// 融合基座：当前锚定列表的歌曲快照。
   /// 融合语义「固定首位接续」：队列 = 深层列表（前 N 位）+ 基座第 N+1 位起（后 M-N 位），
@@ -2598,26 +2611,29 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 载入一个播放队列并从 [index] 开始播放。
   /// [index]：起始曲下标。歌单「播放」传 [startIndexForPlaylist]（按当前播放
-  /// 顺序算法决定），「从头播放」传 0（默认）；点歌传被点行下标。
+  /// 顺序算法决定），「重播」传 0（默认）；点歌传被点行下标。
   /// [playlistUuid]：从已同步歌单播全部/点歌时传入（阶段5 断点归属用），其它队列不传。
   /// [resumeFromBreakpoint]：打开歌单「播放」时开启——若其他设备的断点更新，
-  /// 自动定位到该进度并提示（详情页「从头播放」走默认 false）。
+  /// 自动定位到该进度并提示（详情页「重播」走默认 false）。
   /// [contextKey]：当前点歌所在列表的锚定键（PlayerProvider.anchorForXxx）。
-  /// [resetAnchor]：歌单页「播放/从头播放」专用——清空深层历史并切换到该歌单。
+  /// [resetAnchor]：歌单页「重播」专用——清空目标歌单深层历史并重锚到它。
+  /// [switchAnchor]：歌单页「播放」在目标不是当前歌单时专用——快照旧现场，
+  /// 载入目标歌单的深层历史与现场后继续播；不传则保持“外点”语义（不切锚定）。
   ///
   /// 锚定语义（深层列表功能）：
   /// - 手动点播一律替换深层末尾（不增长）：首个列表即锚定并建融合队列；
   ///   同锚定键点歌 / 其它列表点歌都不切 base、不重建队列，仅换尾；
   /// - 自动推进（自然播完 / 失败跳歌 / 随机抽样 / 删当前曲续播 / 断点恢复）
   ///   才推入深层末尾；
-  /// - resetAnchor 清空深层 + 重锚到目标歌单。
+  /// - switchAnchor 切到目标歌单并恢复其现场；resetAnchor 清空深层 + 重锚。
   Future<void> playQueue(List<Song> songs,
       {int index = 0,
       MusicSource? source,
       String? playlistUuid,
       bool resumeFromBreakpoint = false,
       String? contextKey,
-      bool resetAnchor = false}) async {
+      bool resetAnchor = false,
+      bool switchAnchor = false}) async {
     if (songs.isEmpty) return;
     // 统一队列入口：扫描已判定 missing / 索引已无行的直连歌不进入新队列；
     // 起播下标同步映射到过滤后的列表（被点曲不可用时落到其后第一首可播曲）。
@@ -2632,7 +2648,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         (playlistUuid != null ? PlayerProvider.anchorForPlaylist(playlistUuid) : null);
 
     if (resetAnchor) {
-      // 「播放/从头播放」：清空深层历史 + 重锚到目标（歌单）。
+      // 「重播」：目标歌单的旧现场作废；切到别的歌单时先把当前现场存起来。
+      if (key != _anchorKey) _snapshotAnchorContext();
+      if (key != null) _anchorContexts.remove(key);
       if (playlistUuid != null) _suppressAutoMirror.remove(playlistUuid);
       _syncPlaylistUuid = playlistUuid;
       _fusedBase = null;
@@ -2662,6 +2680,19 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _leaveFor(target);
       notifyListeners();
       await _play(target, source: source, fromPlaylist: false, manual: true);
+      return;
+    }
+
+    if (switchAnchor && _anchorKey != null && key != null && key != _anchorKey) {
+      // 「播放」切到另一个歌单：恢复目标歌单自己的深层历史与现场。
+      await _switchAnchorAndPlay(
+        key,
+        resolved,
+        index,
+        source,
+        playlistUuid: playlistUuid,
+        resumeFromBreakpoint: resumeFromBreakpoint,
+      );
       return;
     }
 
@@ -4561,6 +4592,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _onSyncPoke?.call();
   }
 
+  /// 歌单页「播放」且当前队列已锚定该歌单：播放中保持原状，暂停则继续。
+  /// 不重建队列、不清深层历史——真正“从头”由「重播」负责。
+  Future<void> resumeCurrentIfPaused() async {
+    if (_current == null || playing) return;
+    await toggle();
+  }
+
   /// 恢复播放：若当前曲已播完（顺序模式队尾收尾或单曲播完），
   /// 先回到 0 处再播——否则 play() 会立刻再次 completed，表现为「按了没反应」。
   ///
@@ -6042,9 +6080,164 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   // ---------- 深层列表（隐藏历史栈，任意列表锚定上下文） ----------
 
+  static bool _isPlaylistAnchor(String key) => key.startsWith('playlist:');
+
+  /// 把当前歌单现场存进内存缓存（只存歌单锚定：其它锚定没有切换入口）。
+  /// 深层历史不在这里存——它已按锚定键落 `deep_lists`，切回时从库读取，
+  /// 这样歌单删歌/删源的库侧清理能自然生效。
+  void _snapshotAnchorContext() {
+    final key = _anchorKey;
+    if (key == null || !_isPlaylistAnchor(key)) return;
+    final cur = _current;
+    if (cur == null || _queue.isEmpty) {
+      _anchorContexts.remove(key);
+      return;
+    }
+    Duration pos;
+    try {
+      pos = position;
+    } catch (_) {
+      pos = _lastKnownPos;
+    }
+    _anchorContexts[key] = _AnchorContext(
+      current: cur,
+      position: pos,
+      nextUp: _nextUp,
+    );
+  }
+
+  /// 清掉某一个歌单锚定的内存现场中已失效的当前曲/预载槽。
+  void _pruneAnchorContext(String key, bool Function(Song s) dead) {
+    final c = _anchorContexts[key];
+    if (c == null) return;
+    if (dead(c.current)) {
+      _anchorContexts.remove(key);
+      return;
+    }
+    if (c.nextUp != null && dead(c.nextUp!)) {
+      _anchorContexts[key] = _AnchorContext(
+        current: c.current,
+        position: c.position,
+        nextUp: null,
+      );
+    }
+  }
+
+  /// 硬删歌/删源：所有歌单现场里的死引用一起清（歌已不存在，任何上下文都别留）。
+  void _pruneAllAnchorContexts(bool Function(Song s) dead) {
+    for (final key in _anchorContexts.keys.toList()) {
+      _pruneAnchorContext(key, dead);
+    }
+  }
+
+  /// 非活动歌单删歌：直接改该锚定键的持久化深层历史（活动上下文走
+  /// [_trackDeepList] 同源的内存/落库路径）。
+  void _pruneDeepListForAnchor(String key, bool Function(Song s) dead) {
+    final idx = _index;
+    if (idx == null) return;
+    final raw = idx.loadDeepList(key);
+    if (raw == null || raw.isEmpty) return;
+    List<Song> entries;
+    try {
+      entries = DeepListController.parseEntries(jsonDecode(raw));
+    } catch (_) {
+      return;
+    }
+    final before = entries.length;
+    entries.removeWhere(dead);
+    if (entries.length == before) return;
+    if (entries.isEmpty) {
+      idx.deleteDeepList(key);
+    } else {
+      idx.saveDeepList(key, jsonEncode([for (final s in entries) s.toJson()]));
+    }
+  }
+
+  /// 「播放」切到另一个歌单：快照旧现场 → 恢复目标歌单的深层历史与现场。
+  /// 目标没有本机现场时，若远端断点更新则套用（与打开歌单续播同口径）；
+  /// 仍没有就按传入的 [index]（歌单页的模式起播下标）从目标歌单起播。
+  Future<void> _switchAnchorAndPlay(
+    String key,
+    List<Song> resolved,
+    int index,
+    MusicSource? source, {
+    String? playlistUuid,
+    bool resumeFromBreakpoint = false,
+  }) async {
+    _snapshotAnchorContext();
+    _peekedNext = null;
+    final idx = _index;
+    final cached = _anchorContexts.remove(key);
+    // 深层历史以库为准：先把排队中的写落盘，再绑定目标歌单。
+    if (idx != null) {
+      try {
+        await idx.flushWrites();
+      } catch (_) {}
+    }
+    if (cached == null &&
+        resumeFromBreakpoint &&
+        playlistUuid != null &&
+        idx != null) {
+      final m = idx.breakpointMirrorOf(playlistUuid);
+      if (m != null) {
+        final local = idx.getPlayState();
+        final localAt = (local != null && local.playlistUuid == playlistUuid)
+            ? DateTime.tryParse(local.updatedAt)
+            : null;
+        final mAt = DateTime.tryParse(m.compareClock);
+        if (mAt != null && (localAt == null || mAt.isAfter(localAt))) {
+          if (await _restoreFromMirror(idx, m)) {
+            // 镜像恢复是暂停态装载；「播放」按钮要求直接起播。
+            await resumeFromNotifier();
+            return;
+          }
+        }
+      }
+    }
+    if (playlistUuid != null) _suppressAutoMirror.remove(playlistUuid);
+    _syncPlaylistUuid = playlistUuid;
+    _bindDeepList(key, listSize: resolved.length);
+    _fusedBase = resolved;
+    _nextUp = cached?.nextUp;
+    final savedCurrent = cached?.current;
+    if (savedCurrent != null &&
+        _nextUp != null &&
+        _same(savedCurrent, _nextUp!)) {
+      _nextUp = null;
+    }
+    _queue = _fusedQueue(resolved);
+    final start = index.clamp(0, resolved.length - 1);
+    Song? target;
+    var at = -1;
+    if (savedCurrent != null) {
+      at = locateCurrentIndex(
+          _queue, _deepList?.length ?? 0, savedCurrent, _same);
+      if (at >= 0) target = _queue[at];
+    }
+    var resumePos = Duration.zero;
+    if (target != null) {
+      final p = cached?.position ?? Duration.zero;
+      if (p > Duration.zero) resumePos = p;
+    } else {
+      at = _fusedIndexOf(start, resolved);
+      target = _queue[at.clamp(0, _queue.length - 1)];
+    }
+    _idx = at.clamp(0, _queue.length - 1);
+    final chosen = target;
+    _leaveFor(chosen);
+    notifyListeners();
+    await _play(
+      chosen,
+      source: source,
+      fromPlaylist: false,
+      manual: true,
+      startAt: resumePos > Duration.zero ? resumePos : null,
+    );
+  }
+
   /// 绑定（或解绑）当前锚定列表的深层列表；同一锚定重复绑定仅更新容量。
   /// [listSize]：锚定列表当前歌曲总数（容量；>0 时更新）。
-  /// [reset]：切换锚定（播放/从头播放）——清空深层历史后按空栈重建。
+  /// [reset]：切换锚定（播放/重播）——清空深层历史后按空栈重建。
   void _bindDeepList(String? anchorKey, {int listSize = 0, bool reset = false}) {
     if (anchorKey == null) {
       // 解锚后 [_queue] 保留（其中已含「下一首播放」实际位置），暂存区必须清空：
@@ -6194,6 +6387,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// [onAnchorSongRemoved] 那样要求调用方指明锚定键：锚定上下文内直接复用其
   /// 容量与续播定位口径；未锚定则只在普通队列里剔除死引用。
   Future<void> onSongDeleted(Song s) async {
+    _pruneAllAnchorContexts((e) => _same(e, s));
     final dl = _deepList;
     final base = _fusedBase;
     if (dl == null || _anchorKey == null || base == null) {
@@ -6236,8 +6430,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       {int? newPlaylistCount}) async {
     final key = PlayerProvider.anchorForPlaylist(playlistUuid);
     final dl = _deepList;
-    if (_anchorKey != key || dl == null || songs.isEmpty) return;
+    if (songs.isEmpty) return;
     bool dead(Song s) => songs.any((x) => _same(x, s));
+    if (_anchorKey != key || dl == null) {
+      // 非活动歌单：内存现场与持久化深层历史同步剔除，切回时不复活已删歌。
+      _pruneAnchorContext(key, dead);
+      _pruneDeepListForAnchor(key, dead);
+      return;
+    }
     // 必须拷贝：后面会对 _fusedBase 原地 removeWhere，直接引用会让“旧歌单
     // 顺序”少掉被删曲、下标右移，续播定位错到后一首。
     final oldBase = _fusedBase == null ? null : List<Song>.of(_fusedBase!);
@@ -6367,6 +6567,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 歌单被整体删除：解绑其深层列表与断点归属。
   void onPlaylistDeleted(String playlistUuid) {
     final key = PlayerProvider.anchorForPlaylist(playlistUuid);
+    _anchorContexts.remove(key);
     if (_anchorKey == key) {
       _nextUp = null;
       _deepList = null;
@@ -6390,6 +6591,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 则收尾停止（同 [removeAt] 删光队列）。
   Future<void> onSourceRemoved(String sourceKey) async {
     bool dead(Song s) => s.sourceKey == sourceKey;
+    _pruneAllAnchorContexts(dead);
     final cur = _current;
     final currentRemoved = cur != null && dead(cur);
     // 该源自身的浏览列表锚定随源消失（库里的锚定行已一并删除）。
@@ -6544,4 +6746,18 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     super.dispose();
   }
+}
+
+/// 一个歌单锚定的本机现场：切走时快照，切回时恢复。
+/// 深层历史不在此列（见 [PlayerProvider._snapshotAnchorContext]）。
+class _AnchorContext {
+  final Song current;
+  final Duration position;
+  final Song? nextUp;
+
+  const _AnchorContext({
+    required this.current,
+    required this.position,
+    this.nextUp,
+  });
 }

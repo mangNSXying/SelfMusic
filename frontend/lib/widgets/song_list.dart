@@ -200,22 +200,37 @@ class _SongListState extends State<SongList> {
         .onPlaylistSongsRemoved(uuid, removed, newPlaylistCount: count);
   }
 
-  /// 「播放 / 从头播放」。[startWithOrder] 为 true 时起始曲按当前播放顺序
-  /// 算法决定（随机播放=加权/普通随机抽样、列表循环=接续当前曲、顺序/单曲=首曲），
-  /// 否则固定首曲。
-  Future<void> _playAll({required bool startWithOrder}) async {
+  /// 「播放 / 重播」。
+  ///
+  /// 「播放」：当前已经锚定本歌单时直接继续（播放中保持、暂停则恢复），
+  /// 否则切到本歌单并恢复它自己的深层历史/现场；起始曲仅在目标没有现场时
+  /// 按当前播放顺序算法决定（随机=抽样、列表循环=接续、顺序/单曲=首曲）。
+  /// 「重播」：清空本歌单深层历史，固定从第一首开始。
+  Future<void> _playAll({required bool replay}) async {
     final provider = context.read<PlaylistsProvider>();
     final player = context.read<PlayerProvider>();
     final nav = context.read<NavigationProvider>();
     final uuid =
         await provider.store.index.ensurePlaylistUuid(widget.playlistId);
     if (!mounted) return;
+    final sameAnchor = player.isAnchoredToPlaylist(uuid);
+    if (!replay && sameAnchor && player.current != null) {
+      await player.resumeCurrentIfPaused();
+      nav.openPlayer();
+      return;
+    }
+    // 切回已有现场的歌单时 playQueue 会恢复现场，传入下标不会被使用；
+    // 此时不提前跑 startIndexForPlaylist，避免加权模式白记一次起播抽样。
+    final restoresContext = !sameAnchor && player.hasPlaylistContext(uuid);
     player.playQueue(_songs,
-        index: startWithOrder ? player.startIndexForPlaylist(_songs) : 0,
+        index: (replay || restoresContext)
+            ? 0
+            : player.startIndexForPlaylist(_songs),
         playlistUuid: uuid,
         contextKey: PlayerProvider.anchorForPlaylist(uuid),
-        resetAnchor: true,
-        resumeFromBreakpoint: startWithOrder);
+        resetAnchor: replay,
+        switchAnchor: !replay,
+        resumeFromBreakpoint: !replay);
     nav.openPlayer();
   }
 
@@ -283,14 +298,14 @@ class _SongListState extends State<SongList> {
                   primary: true,
                   icon: const Icon(Icons.play_arrow),
                   label: '播放',
-                  onPressed: () => _playAll(startWithOrder: true),
+                  onPressed: () => _playAll(replay: false),
                 ),
                 const SizedBox(width: 8),
                 HeaderActionButton(
                   primary: false,
                   icon: const Icon(Icons.replay),
-                  label: '从头播放',
-                  onPressed: () => _playAll(startWithOrder: false),
+                  label: '重播',
+                  onPressed: () => _playAll(replay: true),
                 ),
               ],
             ],

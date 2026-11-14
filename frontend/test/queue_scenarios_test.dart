@@ -524,6 +524,109 @@ void main() {
     });
   });
 
+  group('歌单切换保留深层列表现场', () {
+    List<Song> songsB() => [for (var i = 1; i <= 6; i++) _song('b$i')];
+
+    Future<void> playB(PlayerProvider p, String uuidB,
+            {int index = 0, bool switchAnchor = false, bool reset = false}) =>
+        p.playQueue(
+          songsB(),
+          index: index,
+          source: _FakeSource(),
+          playlistUuid: uuidB,
+          contextKey: 'playlist:$uuidB',
+          switchAnchor: switchAnchor,
+          resetAnchor: reset,
+        );
+
+    Future<void> playA(PlayerProvider p, String uuidA,
+            {int index = 0, bool switchAnchor = false}) =>
+        p.playQueue(
+          _songs6(),
+          index: index,
+          source: _FakeSource(),
+          playlistUuid: uuidA,
+          contextKey: 'playlist:$uuidA',
+          switchAnchor: switchAnchor,
+        );
+
+    test('A→B→A：A 的深层历史与当前曲恢复，而不是从头开始', () async {
+      final (index, player, uuidA, _) = await setup();
+      addTearDown(index.close);
+      addTearDown(player.dispose);
+      const uuidB = 'uuid-b';
+
+      await tap(player, uuidA, 0); // s1
+      await player.next(); // s2
+      await player.next(); // s3
+      await tap(player, uuidA, 4); // 点 s5：深层 [s1,s2,s5]
+      final aQueue = _refs(player);
+      expect(player.current?.sourceRef, 's5');
+
+      await playB(player, uuidB, switchAnchor: true);
+      expect(player.current?.sourceRef, 'b1');
+      expect(player.isAnchoredToPlaylist(uuidB), isTrue);
+
+      await playA(player, uuidA, switchAnchor: true);
+      expect(player.isAnchoredToPlaylist(uuidA), isTrue,
+          reason: '「播放」异歌单应切回 A');
+      expect(player.current?.sourceRef, 's5', reason: 'A 的当前曲应恢复，而不是按模式重新选曲');
+      expect(_refs(player), aQueue, reason: 'A 的深层历史与融合队列应原样恢复');
+    });
+
+    test('重播：只清目标歌单历史并回第一首，另一个歌单现场保留', () async {
+      final (index, player, uuidA, _) = await setup();
+      addTearDown(index.close);
+      addTearDown(player.dispose);
+      const uuidB = 'uuid-b';
+
+      await tap(player, uuidA, 0); // s1
+      await player.next(); // s2
+      await playB(player, uuidB, switchAnchor: true); // b1
+      await player.next(); // b2
+      await playB(player, uuidB, index: 4); // 同锚定点 b5：深层 [b1,b5]
+      expect(_refs(player), ['b1', 'b5', 'b3', 'b4', 'b5', 'b6']);
+
+      await playB(player, uuidB, reset: true); // 重播 B
+      expect(player.current?.sourceRef, 'b1');
+      expect(_refs(player), ['b1', 'b2', 'b3', 'b4', 'b5', 'b6'],
+          reason: '重播应清空 B 的深层历史');
+
+      await playA(player, uuidA, switchAnchor: true);
+      expect(player.current?.sourceRef, 's2', reason: '重播 B 不应影响 A 的现场');
+      expect(_refs(player), ['s1', 's2', 's3', 's4', 's5', 's6']);
+    });
+
+    test('外点保留：点 B 的歌不切锚定，切回 A 仍恢复被替换的末尾', () async {
+      final (index, player, uuidA, _) = await setup();
+      addTearDown(index.close);
+      addTearDown(player.dispose);
+      const uuidB = 'uuid-b';
+
+      await tap(player, uuidA, 0); // s1
+      await player.next(); // s2
+      // 在 A 播放时点 B 的歌：外点，只替换 A 的深层末尾。
+      await player.playQueue(songsB(),
+          index: 2,
+          source: _FakeSource(),
+          playlistUuid: uuidB,
+          contextKey: 'playlist:$uuidB');
+      expect(player.isAnchoredToPlaylist(uuidA), isTrue);
+      expect(player.isAnchoredToPlaylist(uuidB), isFalse);
+      expect(player.current?.sourceRef, 'b3');
+      expect(_refs(player), ['s1', 'b3', 's3', 's4', 's5', 's6']);
+
+      // 显式切到 B：B 没有本机现场，按传入下标起播。
+      await playB(player, uuidB, switchAnchor: true);
+      expect(player.current?.sourceRef, 'b1');
+
+      // 切回 A：外点换掉的末尾仍在，现场不被 B 覆盖。
+      await playA(player, uuidA, switchAnchor: true);
+      expect(player.current?.sourceRef, 'b3');
+      expect(_refs(player), ['s1', 'b3', 's3', 's4', 's5', 's6']);
+    });
+  });
+
   group('复本定位（只亮新播行）', () {
     test('复播旧歌：currentIndex 指深层尾，下一首从尾后续播', () async {
       final (index, player, uuid, _) = await setup();

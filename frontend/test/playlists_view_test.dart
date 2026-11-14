@@ -530,7 +530,7 @@ void main() {
     });
   });
 
-  testWidgets('歌单详情播放入口：播放 + 并列「从头播放」文字按钮（空三点菜单移除）', (tester) async {
+  testWidgets('歌单详情播放入口：播放 + 并列「重播」文字按钮（空三点菜单移除）', (tester) async {
     late final Directory dir;
     late final DirectSourceManager direct;
     late final int plId;
@@ -562,9 +562,9 @@ void main() {
 
     expect(find.text('播放'), findsOneWidget);
     expect(find.text('播放全部'), findsNothing);
-    expect(find.text('从头播放'), findsOneWidget);
+    expect(find.text('重播'), findsOneWidget);
     expect(find.byIcon(Icons.replay), findsOneWidget);
-    expect(find.byTooltip('从头播放'), findsNothing);
+    expect(find.byTooltip('重播'), findsNothing);
     expect(find.byTooltip('更多播放方式'), findsNothing);
 
     // 窄屏：两枚按钮仍带文字，标题让位但不溢出。
@@ -575,7 +575,7 @@ void main() {
     await tester.pump();
     expect(tester.takeException(), isNull);
     expect(find.text('播放'), findsOneWidget);
-    expect(find.text('从头播放'), findsOneWidget);
+    expect(find.text('重播'), findsOneWidget);
 
     await tester.runAsync(() async {
       direct.dispose();
