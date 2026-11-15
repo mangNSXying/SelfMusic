@@ -35,7 +35,14 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
   bool _ascending = false;
   final _searchCtrl = TextEditingController();
 
-  static const _sortLabels = ['歌曲名', '歌手', '次数', '时长', '长期中位进度', '源'];
+  static const _sortOptions = <(int, String)>[
+    (0, '歌曲名'),
+    (1, '歌手'),
+    (2, '次数'),
+    (3, '时长'),
+    (4, '长期中位进度'),
+    (5, '源'),
+  ];
 
   static const List<TableColumnSpec> _columns = [
     TableColumnSpec(
@@ -132,6 +139,18 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
     });
   }
 
+  void _onSortSelected(int mode) {
+    setState(() {
+      if (_sortColumn == mode) {
+        _ascending = !_ascending;
+      } else {
+        _sortColumn = mode;
+        // 次数/时长/长期中位进度默认降序，文本列默认升序。
+        _ascending = mode != 2 && mode != 3 && mode != 4;
+      }
+    });
+  }
+
   static double _countOf(PlayDetailRow r) {
     if (r.playSec <= 0) return 0;
     final d = r.duration;
@@ -222,77 +241,37 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
     }
 
     rows.sort(cmp);
-    final wide = ScreenMetrics.of(context).isWide;
+    final wide = ScreenMetrics.of(context).contentWidth >= kInfoTableMinWidth;
 
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-          child: Card(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '共 ${all.length} 首 · '
-                      '累计 ${totalCount.toStringAsFixed(1)} 次 · '
-                      '${playSecLabel(totalSec)}',
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodyMedium
-                          ?.copyWith(fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-          child: TextField(
+        LibraryDetailToolbar(
+          summary: '共 ${all.length} 首 · '
+              '累计 ${totalCount.toStringAsFixed(1)} 次 · '
+              '${playSecLabel(totalSec)}',
+          search: LibrarySearchField(
             controller: _searchCtrl,
-            decoration: const InputDecoration(
-              prefixIcon: Icon(Icons.search),
-              hintText: '按歌曲名 / 歌手过滤',
-              isDense: true,
-              border: OutlineInputBorder(),
-            ),
+            hint: '按歌曲名 / 歌手过滤',
             onChanged: (v) => setState(() => _query = v),
           ),
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
-          child: Row(
-            children: [
-              FilterChip(
-                label: const Text('仅看有播放'),
-                selected: _onlyWithPlay,
-                onSelected: (v) => setState(() => _onlyWithPlay = v),
-              ),
-              const SizedBox(width: 8),
-              Text('${rows.length} 首',
-                  style: Theme.of(context).textTheme.bodySmall),
-            ],
-          ),
-        ),
-        // 窄屏表格表头放不下，改用按钮组排序（与元数据详情页同样式）。
-        if (!wide)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  for (var i = 0; i < _sortLabels.length; i++) ...[
-                    if (i > 0) const SizedBox(width: 6),
-                    _sortBtn(i, _sortLabels[i]),
-                  ],
-                ],
-              ),
+          actions: [
+            LibraryTogglePill(
+              label: '仅看有播放',
+              selected: _onlyWithPlay,
+              icon: Icons.play_circle_outline,
+              onChanged: (v) => setState(() => _onlyWithPlay = v),
             ),
-          ),
+            if (!wide)
+              LibrarySortMenu(
+                label: '排序',
+                value: _sortColumn,
+                ascending: _ascending,
+                options: _sortOptions,
+                onSelected: _onSortSelected,
+              ),
+          ],
+          countLabel: '${rows.length} 首',
+        ),
         const SizedBox(height: 4),
         Expanded(
           child: rows.isEmpty
@@ -302,23 +281,6 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
                   : _narrowCards(rows),
         ),
       ],
-    );
-  }
-
-  Widget _sortBtn(int mode, String label) {
-    return LibrarySortButton(
-      label: label,
-      selected: _sortColumn == mode,
-      ascending: _ascending,
-      onTap: () => setState(() {
-        if (_sortColumn == mode) {
-          _ascending = !_ascending;
-        } else {
-          _sortColumn = mode;
-          // 次数/时长/长期中位进度默认降序，文本列默认升序。
-          _ascending = mode == 2 || mode == 3 || mode == 4 ? false : true;
-        }
-      }),
     );
   }
 
@@ -416,5 +378,5 @@ class _PlayDetailScreenState extends State<PlayDetailScreen> {
   }
 
   Widget _infoLine(String label, String value) =>
-      DetailInfoRow(label: label, value: value, labelWidth: 120);
+      DetailInfoRow(label: label, value: value, labelWidth: 110);
 }

@@ -84,13 +84,21 @@ void main() {
     expect(find.byKey(const Key('play-detail-table')), findsNothing);
     expect(find.textContaining('共 250 首'), findsOneWidget);
 
+    // 扁平开关：仅看有播放（song_0 没有播放记录）。
+    expect(find.text('仅看有播放'), findsOneWidget);
+    expect(find.text('250 首'), findsOneWidget);
+    await tester.tap(find.text('仅看有播放'));
+    await tester.pumpAndSettle();
+    expect(find.text('249 首'), findsOneWidget);
+
     // 展开卡片看明细行。
     await tester.tap(find.text('歌曲 249'));
     await tester.pumpAndSettle();
     expect(find.text('播放时长'), findsOneWidget);
     expect(find.text('歌曲时长'), findsOneWidget);
-    // 排序按钮 + 展开卡片明细行。
-    expect(find.text('长期中位进度'), findsNWidgets(2));
+    // 排序改为单一下拉菜单，展开卡片后只剩明细行这一处。
+    expect(find.text('排序：次数 ↓'), findsOneWidget);
+    expect(find.text('长期中位进度'), findsOneWidget);
     expect(find.text('100%'), findsOneWidget);
   });
 
@@ -138,7 +146,33 @@ void main() {
     await tester.tap(find.text('歌曲 0'));
     await tester.pumpAndSettle();
     expect(find.text('专辑歌手'), findsOneWidget);
-    expect(find.text('专辑封面'), findsOneWidget);
+    expect(find.text('封面'), findsOneWidget);
+  });
+
+  testWidgets('元数据·窄屏：筛选与排序菜单', (tester) async {
+    tester.view.physicalSize = const Size(400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(_wrap(mgr, const MetaDetailScreen()));
+    await tester.pumpAndSettle();
+
+    expect(find.text('筛选：全部'), findsOneWidget);
+    expect(find.text('排序：歌曲名 ↑'), findsOneWidget);
+
+    await tester.tap(find.text('筛选：全部'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('缺专辑'));
+    await tester.pumpAndSettle();
+    expect(find.text('筛选：缺专辑'), findsOneWidget);
+    // 种子里 i%3==0 的 84 首没有专辑。
+    expect(find.text('84 / 250 首'), findsOneWidget);
+
+    await tester.tap(find.text('排序：歌曲名 ↑'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('缺失数'));
+    await tester.pumpAndSettle();
+    expect(find.text('排序：缺失数 ↓'), findsOneWidget);
   });
 
   testWidgets('元数据·宽屏分页表格：14 列与缺失值直显', (tester) async {

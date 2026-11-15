@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-
 import 'package:provider/provider.dart';
 
 import '../../providers/direct_source_manager.dart';
@@ -28,88 +27,93 @@ class _FormatDetailScreenState extends State<FormatDetailScreen> {
           : a.key.toLowerCase().compareTo(b.key.toLowerCase());
       return _ascending ? c : -c;
     });
-    final total = entries.fold<int>(0, (p, e) => p + e.value);
+    final total = entries.fold<int>(0, (sum, e) => sum + e.value);
+    final cs = Theme.of(context).colorScheme;
+
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-          child: Row(
-            children: [
-              LibrarySortButton(
-                label: '数量',
-                selected: _byCount,
-                ascending: _ascending,
-                padded: false,
-                onTap: () => setState(() {
-                  if (_byCount) {
-                    _ascending = !_ascending;
-                  } else {
-                    _byCount = true;
-                    _ascending = false;
-                  }
-                }),
-              ),
-              const SizedBox(width: 6),
-              LibrarySortButton(
-                label: '格式名',
-                selected: !_byCount,
-                ascending: _ascending,
-                padded: false,
-                onTap: () => setState(() {
-                  if (!_byCount) {
-                    _ascending = !_ascending;
-                  } else {
-                    _byCount = false;
-                    _ascending = true;
-                  }
-                }),
-              ),
-              const Spacer(),
-              Text('共 $total 首', style: Theme.of(context).textTheme.bodySmall),
-            ],
+        Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: kInfoContentMaxWidth),
+            child: LibraryDetailToolbar(
+              actions: [
+                LibrarySortMenu(
+                  label: '排序',
+                  value: _byCount ? 0 : 1,
+                  ascending: _ascending,
+                  options: const [(0, '数量'), (1, '格式名')],
+                  onSelected: (v) => setState(() {
+                    final byCount = v == 0;
+                    if (byCount == _byCount) {
+                      _ascending = !_ascending;
+                    } else {
+                      _byCount = byCount;
+                      // 格式名默认升序，数量默认降序。
+                      _ascending = !byCount;
+                    }
+                  }),
+                ),
+              ],
+              countLabel: '共 $total 首 · ${entries.length} 种格式',
+            ),
           ),
         ),
+        const SizedBox(height: 4),
         Expanded(
           child: entries.isEmpty
               ? const Center(child: Text('暂无格式数据'))
-              : ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-                  itemCount: entries.length,
-                  itemBuilder: (context, i) {
-                    final e = entries[i];
-                    final pct =
-                        total <= 0 ? 0.0 : (e.value / total).clamp(0.0, 1.0);
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 5),
-                      child: Row(
-                        children: [
-                          SizedBox(
-                            width: 120,
-                            child: Text(e.key,
-                                style: Theme.of(context).textTheme.bodyMedium),
+              : Center(
+                  child: ConstrainedBox(
+                    constraints:
+                        const BoxConstraints(maxWidth: kInfoContentMaxWidth),
+                    child: ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                      itemCount: entries.length,
+                      itemBuilder: (context, i) {
+                        final entry = entries[i];
+                        final pct = total <= 0
+                            ? 0.0
+                            : (entry.value / total).clamp(0.0, 1.0);
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          child: Row(
+                            children: [
+                              SizedBox(
+                                width: 96,
+                                child: Text(
+                                  entry.key,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.bodyMedium,
+                                ),
+                              ),
+                              Expanded(
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: LinearProgressIndicator(
+                                    value: pct,
+                                    minHeight: 8,
+                                    backgroundColor:
+                                        cs.primary.withValues(alpha: 0.12),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              SizedBox(
+                                width: 140,
+                                child: Text(
+                                  '${entry.value} 首 · '
+                                  '${(pct * 100).toStringAsFixed(0)}%',
+                                  textAlign: TextAlign.right,
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ),
+                            ],
                           ),
-                          Expanded(
-                            child: LinearProgressIndicator(
-                              value: pct,
-                              backgroundColor: Theme.of(context)
-                                  .colorScheme
-                                  .primary
-                                  .withValues(alpha: 0.15),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          SizedBox(
-                            width: 110,
-                            child: Text(
-                              '${e.value} 首 · ${(pct * 100).toStringAsFixed(0)}%',
-                              textAlign: TextAlign.right,
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
+                        );
+                      },
+                    ),
+                  ),
                 ),
         ),
       ],

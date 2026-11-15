@@ -25,13 +25,13 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
   late final DetailDataLoader<List<MetaDetailRow>> _loader;
 
   String _query = '';
-  String? _dimFilter; // null=全部，'missing_any'=有缺失，否则为维度 key
+  String _dimFilter = 'all';
   int _sortMode = 0; // 0=歌曲名，1=歌手，2=缺失数
   bool _ascending = true;
   final _searchCtrl = TextEditingController();
 
   static const dims = [
-    ('meta_read', '已读元数据'),
+    ('meta_read', '已读'),
     ('artist', '歌手'),
     ('album', '专辑'),
     ('album_artist', '专辑歌手'),
@@ -39,10 +39,33 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
     ('track_no', '曲目号'),
     ('year', '年份'),
     ('duration', '时长'),
-    ('cover', '专辑封面'),
+    ('cover', '封面'),
     ('lyrics', '歌词'),
     ('format', '格式'),
-    ('bitrate', '码率（大小+时长估算）'),
+    ('bitrate', '码率'),
+  ];
+
+  static const _filters = <(String, String)>[
+    ('all', '全部'),
+    ('missing_any', '有缺失'),
+    ('meta_read', '缺已读元数据'),
+    ('artist', '缺歌手'),
+    ('album', '缺专辑'),
+    ('album_artist', '缺专辑歌手'),
+    ('genre', '缺流派'),
+    ('track_no', '缺曲目号'),
+    ('year', '缺年份'),
+    ('duration', '缺时长'),
+    ('cover', '缺封面'),
+    ('lyrics', '缺歌词'),
+    ('format', '缺格式'),
+    ('bitrate', '缺码率'),
+  ];
+
+  static const _sortOptions = <(int, String)>[
+    (0, '歌曲名'),
+    (1, '歌手'),
+    (2, '缺失数'),
   ];
 
   /// 宽屏表格的维度列：除歌手（已有独立列）外的 11 维，直接显示值。
@@ -141,6 +164,17 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
     });
   }
 
+  void _onSortSelected(int mode) {
+    setState(() {
+      if (_sortMode == mode) {
+        _ascending = !_ascending;
+      } else {
+        _sortMode = mode;
+        _ascending = mode != 2;
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final all = _loader.data;
@@ -159,9 +193,9 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
             zhSearchFold(r.album).toLowerCase().contains(q);
         if (!hit) return false;
       }
-      if (_dimFilter == null) return true;
+      if (_dimFilter == 'all') return true;
       if (_dimFilter == 'missing_any') return r.missingCount > 0;
-      return !r.hasDim(_dimFilter!);
+      return !r.hasDim(_dimFilter);
     }).toList();
 
     int cmp(MetaDetailRow a, MetaDetailRow b) {
@@ -190,77 +224,35 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
     }
 
     rows.sort(cmp);
-    final wide = ScreenMetrics.of(context).isWide;
+    final wide = ScreenMetrics.of(context).contentWidth >= kInfoTableMinWidth;
 
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-          child: TextField(
+        LibraryDetailToolbar(
+          search: LibrarySearchField(
             controller: _searchCtrl,
-            decoration: const InputDecoration(
-              prefixIcon: Icon(Icons.search),
-              hintText: '按歌曲名 / 歌手 / 专辑过滤',
-              isDense: true,
-              border: OutlineInputBorder(),
-            ),
+            hint: '按歌曲名 / 歌手 / 专辑过滤',
             onChanged: (v) => setState(() => _query = v),
           ),
+          actions: [
+            LibraryFilterButton<String>(
+              label: '筛选',
+              value: _dimFilter,
+              options: _filters,
+              active: _dimFilter != 'all',
+              onChanged: (v) => setState(() => _dimFilter = v),
+            ),
+            if (!wide)
+              LibrarySortMenu(
+                label: '排序',
+                value: _sortMode,
+                ascending: _ascending,
+                options: _sortOptions,
+                onSelected: _onSortSelected,
+              ),
+          ],
+          countLabel: '${rows.length} / ${all.length} 首',
         ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                ChoiceChip(
-                  label: const Text('全部'),
-                  selected: _dimFilter == null,
-                  onSelected: (_) => setState(() => _dimFilter = null),
-                ),
-                ChoiceChip(
-                  label: const Text('有缺失'),
-                  selected: _dimFilter == 'missing_any',
-                  onSelected: (_) => setState(() => _dimFilter = 'missing_any'),
-                ),
-                for (final d in dims)
-                  ChoiceChip(
-                    label: Text('缺${d.$2}'),
-                    selected: _dimFilter == d.$1,
-                    onSelected: (_) => setState(() => _dimFilter = d.$1),
-                  ),
-              ],
-            ),
-          ),
-        ),
-        // 窄屏用按钮组排序，宽屏用表格表头排序。
-        if (!wide)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-            child: Row(
-              children: [
-                _sortBtn(0, '歌曲名'),
-                const SizedBox(width: 6),
-                _sortBtn(1, '歌手'),
-                const SizedBox(width: 6),
-                _sortBtn(2, '缺失数'),
-                const Spacer(),
-                Text('${rows.length} / ${all.length} 首',
-                    style: Theme.of(context).textTheme.bodySmall),
-              ],
-            ),
-          ),
-        if (wide)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: Text('${rows.length} / ${all.length} 首',
-                  style: Theme.of(context).textTheme.bodySmall),
-            ),
-          ),
         const SizedBox(height: 4),
         Expanded(
           child: rows.isEmpty
@@ -270,22 +262,6 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
                   : _narrowCards(rows),
         ),
       ],
-    );
-  }
-
-  Widget _sortBtn(int mode, String label) {
-    return LibrarySortButton(
-      label: label,
-      selected: _sortMode == mode,
-      ascending: _ascending,
-      onTap: () => setState(() {
-        if (_sortMode == mode) {
-          _ascending = !_ascending;
-        } else {
-          _sortMode = mode;
-          _ascending = mode == 2 ? false : true;
-        }
-      }),
     );
   }
 
@@ -355,7 +331,9 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
             title: Text(zhDisplay(r.title),
                 maxLines: 1, overflow: TextOverflow.ellipsis),
             subtitle: Text(
-              '${(r.artist == null || r.artist!.isEmpty) ? '未知歌手' : zhDisplay(r.artist!)} · ${(r.album == null || r.album!.isEmpty) ? '未知专辑' : zhDisplay(r.album!)} · ${r.sourceKey}',
+              '${(r.artist == null || r.artist!.isEmpty) ? '未知歌手' : zhDisplay(r.artist!)} · '
+              '${(r.album == null || r.album!.isEmpty) ? '未知专辑' : zhDisplay(r.album!)} · '
+              '${r.sourceKey}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
@@ -374,8 +352,30 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
               ),
             ),
             children: [
-              for (final d in dims)
-                _dimLine(context, d.$2, _dimValue(r, d.$1), ok: r.hasDim(d.$1)),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: LayoutBuilder(
+                  builder: (context, c) {
+                    const gap = 12.0;
+                    final width = (c.maxWidth - gap) / 2 - 0.5;
+                    return Wrap(
+                      spacing: gap,
+                      runSpacing: 10,
+                      children: [
+                        for (final d in dims)
+                          SizedBox(
+                            width: width,
+                            child: _DimCell(
+                              label: d.$2,
+                              value: _dimValue(r, d.$1),
+                              ok: r.hasDim(d.$1),
+                            ),
+                          ),
+                      ],
+                    );
+                  },
+                ),
+              ),
             ],
           ),
         );
@@ -384,10 +384,46 @@ class _MetaDetailScreenState extends State<MetaDetailScreen> {
   }
 
   String _dimValue(MetaDetailRow r, String dim) => metaDimValue(r, dim);
+}
 
-  Widget _dimLine(BuildContext context, String label, String value,
-          {required bool ok}) =>
-      DetailInfoRow(label: label, value: value, ok: ok);
+/// 窄屏卡片里的维度格：标签上、值下。
+class _DimCell extends StatelessWidget {
+  final String label;
+  final String value;
+  final bool ok;
+
+  const _DimCell({
+    required this.label,
+    required this.value,
+    required this.ok,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final text = Theme.of(context).textTheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: text.labelSmall?.copyWith(
+            color: cs.onSurface.withValues(alpha: 0.55),
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          value,
+          style: text.bodySmall?.copyWith(
+            color: ok ? null : cs.error,
+            fontWeight: ok ? null : FontWeight.w600,
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 /// 维度展示值：文本空/数字缺 → `缺失`（卡片与宽屏表格共用）。
