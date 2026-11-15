@@ -151,17 +151,22 @@ class _LyricsViewState extends State<LyricsView> {
     if (lines.isEmpty) {
       final plain = p.plainLyrics;
       if (plain != null) {
-        return SingleChildScrollView(
-          padding: EdgeInsets.fromLTRB(
-              24 * baseScale, 8 * baseScale, 24 * baseScale, 32 * baseScale),
-          child: Text(
-            // 歌词与元数据一样：存储原文，仅展示时按简繁设置转换。
-            zhDisplay(plain),
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 16 * baseScale,
-              height: 1.7,
-              color: cs.onSurface.withValues(alpha: 0.85),
+        return ScrollConfiguration(
+          // 桌面端默认 ScrollBehavior 会给垂直滚动视图自动挂 Scrollbar；
+          // 歌词页按设计是无边框的沉浸式滚动，这里关掉。
+          behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+          child: SingleChildScrollView(
+            padding: EdgeInsets.fromLTRB(
+                24 * baseScale, 8 * baseScale, 24 * baseScale, 32 * baseScale),
+            child: Text(
+              // 歌词与元数据一样：存储原文，仅展示时按简繁设置转换。
+              zhDisplay(plain),
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 16 * baseScale,
+                height: 1.7,
+                color: cs.onSurface.withValues(alpha: 0.85),
+              ),
             ),
           ),
         );
@@ -246,55 +251,62 @@ class _LyricsViewState extends State<LyricsView> {
             );
             // 上下留白按对齐位对称分配，首/末句也能滚到对齐位。
             final pad = c.maxHeight * widget.align;
-            return ListView.builder(
-              controller: _scroll,
-              padding: EdgeInsets.symmetric(vertical: pad),
-              cacheExtent: _wideCache ? _wideCacheExtent : null,
-              itemCount: lines.length,
-              itemBuilder: (context, i) {
-                final active = i == _current;
-                final near = (i - _current).abs() <= 1;
-                return InkWell(
-                  key: _keys[i],
-                  borderRadius: BorderRadius.circular(10 * scale),
-                  onTap: () => p.seek(lines[i].time),
-                  child: Padding(
-                    padding: EdgeInsets.symmetric(
-                        horizontal: 24 * scale,
-                        vertical: kLyricRowVerticalPadding * scale),
-                    child: _LyricRowText(
-                      text: zhDisplay(lines[i].text),
-                      translation: lines[i].translation == null
-                          ? null
-                          : zhDisplay(lines[i].translation!),
-                      scale: scale,
-                      mainStyle: TextStyle(
-                        fontSize: (active
-                                ? kLyricActiveFontSize
-                                : kLyricInactiveFontSize) *
-                            scale,
-                        height: kLyricLineHeight,
-                        fontWeight: active ? FontWeight.w700 : FontWeight.w400,
-                        color: active
-                            ? cs.primary
-                            : cs.onSurface
-                                .withValues(alpha: near ? 0.72 : 0.38),
+            return ScrollConfiguration(
+              // 桌面端默认 ScrollBehavior 会为垂直滚动视图自动挂 Scrollbar；
+              // 歌词页是无边框沉浸式滚动，这里关掉滚动条。
+              behavior:
+                  ScrollConfiguration.of(context).copyWith(scrollbars: false),
+              child: ListView.builder(
+                controller: _scroll,
+                padding: EdgeInsets.symmetric(vertical: pad),
+                cacheExtent: _wideCache ? _wideCacheExtent : null,
+                itemCount: lines.length,
+                itemBuilder: (context, i) {
+                  final active = i == _current;
+                  final near = (i - _current).abs() <= 1;
+                  return InkWell(
+                    key: _keys[i],
+                    borderRadius: BorderRadius.circular(10 * scale),
+                    onTap: () => p.seek(lines[i].time),
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(
+                          horizontal: 24 * scale,
+                          vertical: kLyricRowVerticalPadding * scale),
+                      child: _LyricRowText(
+                        text: zhDisplay(lines[i].text),
+                        translation: lines[i].translation == null
+                            ? null
+                            : zhDisplay(lines[i].translation!),
+                        scale: scale,
+                        mainStyle: TextStyle(
+                          fontSize: (active
+                                  ? kLyricActiveFontSize
+                                  : kLyricInactiveFontSize) *
+                              scale,
+                          height: kLyricLineHeight,
+                          fontWeight:
+                              active ? FontWeight.w700 : FontWeight.w400,
+                          color: active
+                              ? cs.primary
+                              : cs.onSurface
+                                  .withValues(alpha: near ? 0.72 : 0.38),
+                        ),
+                        subStyle: lines[i].translation == null
+                            ? null
+                            : TextStyle(
+                                fontSize: (active ? 16 : 14) * scale,
+                                height: 1.4,
+                                fontWeight: FontWeight.w400,
+                                color: active
+                                    ? cs.primary.withValues(alpha: 0.85)
+                                    : cs.onSurface
+                                        .withValues(alpha: near ? 0.62 : 0.32),
+                              ),
                       ),
-                      subStyle: lines[i].translation == null
-                          ? null
-                          : TextStyle(
-                              fontSize: (active ? 16 : 14) * scale,
-                              height: 1.4,
-                              fontWeight: FontWeight.w400,
-                              color: active
-                                  ? cs.primary.withValues(alpha: 0.85)
-                                  : cs.onSurface
-                                      .withValues(alpha: near ? 0.62 : 0.32),
-                            ),
                     ),
-                  ),
-                );
-              },
+                  );
+                },
+              ),
             );
           },
         ),
