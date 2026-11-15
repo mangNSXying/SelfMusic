@@ -220,10 +220,10 @@ class _TranscodeSectionState extends State<TranscodeSection> {
             child: SingleChoiceGroup<String>(
               options: const [
                 SingleChoiceOption(value: 'off', label: '关'),
-                SingleChoiceOption(value: '8', label: '-8'),
-                SingleChoiceOption(value: '10', label: '-10'),
                 SingleChoiceOption(value: '14', label: '-14'),
                 SingleChoiceOption(value: '16', label: '-16'),
+                SingleChoiceOption(value: '18', label: '-18'),
+                SingleChoiceOption(value: '20', label: '-20'),
                 SingleChoiceOption(value: '23', label: '-23'),
               ],
               value: settings.transcodeLoudnorm,

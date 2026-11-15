@@ -175,6 +175,13 @@ class TranscodeControllerTest {
     @Test
     void rejectsInvalidLoudnorm() {
         var c = controllerWith(src("https://nas:5006/music"));
+        // 已下架的低档（8/10）与非法值同样拒绝（档位现为 off/14/16/18/20/23）。
+        assertThrows(BizException.class, () -> c.stream(
+                "https://nas:5006/music/a.flac", "192", "8", "0", null, null, null,
+                new MockHttpServletResponse()));
+        assertThrows(BizException.class, () -> c.stream(
+                "https://nas:5006/music/a.flac", "192", "10", "0", null, null, null,
+                new MockHttpServletResponse()));
         assertThrows(BizException.class, () -> c.stream(
                 "https://nas:5006/music/a.flac", "192", "99", "0", null, null, null,
                 new MockHttpServletResponse()));
@@ -193,17 +200,19 @@ class TranscodeControllerTest {
 
     @Test
     void ffmpegArgsMapsLoudnessTiers() {
-        assertTrue(TranscodeController.ffmpegArgs("192", "8")
-                .contains("loudnorm=I=-8:TP=-1.5:LRA=11"));
-        assertTrue(TranscodeController.ffmpegArgs("192", "10")
-                .contains("loudnorm=I=-10:TP=-1.5:LRA=11"));
         assertTrue(TranscodeController.ffmpegArgs("192", "14")
                 .contains("loudnorm=I=-14:TP=-1.5:LRA=11"));
-        assertTrue(TranscodeController.ffmpegArgs("256", "16")
+        assertTrue(TranscodeController.ffmpegArgs("192", "16")
                 .contains("loudnorm=I=-16:TP=-1.5:LRA=11"));
+        assertTrue(TranscodeController.ffmpegArgs("192", "18")
+                .contains("loudnorm=I=-18:TP=-1.5:LRA=11"));
+        assertTrue(TranscodeController.ffmpegArgs("256", "20")
+                .contains("loudnorm=I=-20:TP=-1.5:LRA=11"));
         assertTrue(TranscodeController.ffmpegArgs("320", "23")
                 .contains("loudnorm=I=-23:TP=-1.5:LRA=11"));
         assertNull(TranscodeController.loudFilter("off"));
+        assertNull(TranscodeController.loudFilter("8"));
+        assertNull(TranscodeController.loudFilter("10"));
         assertNull(TranscodeController.loudFilter("bogus"));
     }
 

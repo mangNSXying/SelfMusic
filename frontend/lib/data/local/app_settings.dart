@@ -825,13 +825,13 @@ class AppSettings {
   set transcodeBitrate(int v) =>
       index.settingsSet(kTranscodeBitrate, v.toString());
 
-  /// 转码响度均衡（off=关；8/10/14/16/23=统一到该 LUFS；默认关；
+  /// 转码响度均衡（off=关；14/16/18/20/23=统一到该 LUFS；默认关；
   /// 只在代理转码链路生效，直连/缓存不经过服务端）。
   static const String kTranscodeLoudnorm = 'transcode_loudnorm';
 
   String get transcodeLoudnorm {
     final v = (index.settingsGet(kTranscodeLoudnorm) ?? 'off').trim();
-    if (v == '8' || v == '10' || v == '14' || v == '16' || v == '23') {
+    if (v == '14' || v == '16' || v == '18' || v == '20' || v == '23') {
       return v;
     }
     return 'off';

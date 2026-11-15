@@ -145,10 +145,15 @@ void main() {
       expect(s.transcodeLoudnorm, 'off');
       s.transcodeLoudnorm = '16';
       expect(AppSettings(index).transcodeLoudnorm, '16');
-      s.transcodeLoudnorm = '8';
-      expect(AppSettings(index).transcodeLoudnorm, '8');
-      s.transcodeLoudnorm = '10';
-      expect(AppSettings(index).transcodeLoudnorm, '10');
+      s.transcodeLoudnorm = '18';
+      expect(AppSettings(index).transcodeLoudnorm, '18');
+      s.transcodeLoudnorm = '20';
+      expect(AppSettings(index).transcodeLoudnorm, '20');
+      // 已下架的 8/10 与非法值回退关。
+      index.settingsSet(AppSettings.kTranscodeLoudnorm, '8');
+      expect(AppSettings(index).transcodeLoudnorm, 'off');
+      index.settingsSet(AppSettings.kTranscodeLoudnorm, '10');
+      expect(AppSettings(index).transcodeLoudnorm, 'off');
       index.settingsSet(AppSettings.kTranscodeLoudnorm, '99');
       expect(AppSettings(index).transcodeLoudnorm, 'off');
       index.close();
