@@ -318,7 +318,8 @@ void main() {
     await tester.tap(h.entry);
     await tester.pumpAndSettle();
     final before = tester.getTopLeft(surface).dy;
-    expect(before, greaterThan(100), reason: '静息高度 0.6 屏，顶边不在状态栏下');
+    // 可用高 800-60=740，静息 0.7 屏 → 顶边 = 60 + 740×0.3 = 282。
+    expect(before, closeTo(282, 2), reason: '静息高度 0.7 屏，顶边让开状态栏');
 
     // 小幅上甩（手指只走 120px）也应靠速度补完剩余行程到全高。
     await tester.fling(find.byKey(const ValueKey('app_sheet_handle')),
@@ -329,22 +330,22 @@ void main() {
         reason: '上甩后应吸附到全高（顶边让开状态栏）');
   });
 
-  testWidgets('队列窗口：标题栏下滑补一小段惯性（不误关闭）', (tester) async {
+  testWidgets('队列窗口：标题栏下甩直接收起（低阻尼）', (tester) async {
     final h = await _pumpHost(tester, count: 30, playIndex: 8);
     final surface = h.surface();
 
     await tester.tap(h.entry);
     await tester.pumpAndSettle();
-    final before = tester.getTopLeft(surface).dy;
+    expect(surface, findsOneWidget);
 
-    // 手指只下滑 60px，松手后按速度再补一小段（比上甩的全行程小得多）。
+    // 手指只下滑 60px，松手后按与列表相同的滚动弹道续滑；
+    // 落点越过下限 0.25 → 直接收起，不需要再补拖一次。
     await tester.fling(find.byKey(const ValueKey('app_sheet_handle')),
         const Offset(0, 60), 1500);
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
-    expect(tester.getTopLeft(surface).dy, greaterThan(before + 70),
-        reason: '下滑松手应继续滑一小段（惯性）');
-    expect(surface, findsOneWidget, reason: '小惯性不应把窗口带到下限而关闭');
+    expect(surface, findsNothing, reason: '下甩越过下限应直接关闭窗口');
+    expect(h.nav.queueOpen, isFalse, reason: '关闭应镜像回写 nav.queueOpen');
   });
 
   testWidgets('队列窗口：列表下拉到最小直接关闭', (tester) async {

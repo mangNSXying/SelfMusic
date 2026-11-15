@@ -17,7 +17,7 @@ class AppSheetConfig {
   final List<double>? snapSizes;
 
   const AppSheetConfig({
-    this.initialChildSize = 0.6,
+    this.initialChildSize = 0.7,
     this.minChildSize = 0.25,
     this.maxChildSize = 1.0,
     this.snap = false,
@@ -25,9 +25,9 @@ class AppSheetConfig {
   });
 }
 
-/// 滑动启动时「手指行程 → 悬浮层展示进度」的换算因子：上移 `0.6` 屏高度
+/// 滑动启动时「手指行程 → 悬浮层展示进度」的换算因子：上移 `0.7` 屏高度
 /// 即拉满（与窗口静息高度 [AppSheetConfig.initialChildSize] 对齐）。
-const double kAppSheetSwipeTravelFactor = 0.6;
+const double kAppSheetSwipeTravelFactor = 0.7;
 
 /// 统一拖拽式窗口（点击启动）：底部模态路由 + `DraggableScrollableSheet`。
 ///
@@ -131,8 +131,8 @@ class AppSheetScope extends InheritedWidget {
   /// 标题栏退化为普通内容（拖动交回窗口自身的滚动语义）。
   final DraggableScrollableController? controller;
 
-  /// 窗口最小尺寸（`AppSheetConfig.minChildSize`）：下滑惯性据此避免
-  /// 把窗口带到下限而误触发关闭。
+  /// 窗口最小尺寸（`AppSheetConfig.minChildSize`）：标题栏下甩的弹道落点
+  /// 据此判断是否已越过下限、直接收起。
   final double? minSize;
 
   /// 下限关闭已触发：标题栏拖拽通道随之失效，避免关闭动画与还按在把手上的
@@ -303,7 +303,8 @@ class AppSheetTitleBar extends StatelessWidget {
             : (DragUpdateDetails d) => _dragSize(dragController, d.delta.dy),
         // 松手补一段吸附/惯性：队列列表常不在顶部，撑满窗口只能拖头部；
         // 没有 fling 时用户必须拖满 0.4 屏，体感比路由版「从列表一甩到顶」
-        // 费劲得多。上甩直达全高，下甩只补一小段（路由/悬浮层共用）。
+        // 费劲得多。上甩直达全高；下甩按与列表相同的滚动弹道续滑，越过下限
+        // 即直接收起（路由/悬浮层共用）。
         onVerticalDragEnd: dragController == null
             ? null
             : (DragEndDetails d) =>
@@ -366,9 +367,9 @@ class AppSheetTitleBar extends StatelessWidget {
 
   /// 头部松手定稿：
   /// - 上甩补完整行程到全高；
-  /// - 下甩只补一小段惯性（速度换算，最多约 12% 窗口高度），并刻意停在
-  ///   [AppSheetScope.minSize] 上方一点——惯性本身不得触发下限关闭，关闭
-  ///   仍由用户实拖到 `minChildSize` 决定。
+  /// - 下甩按与列表同一套滚动弹道续滑（`ClampingScrollSimulation`，不再用
+  ///   速度换算封顶 12%）；弹道落点越过 [AppSheetScope.minSize] 就直接收起，
+  ///   与列表下拉到下限即关闭一致——下甩一次即可关窗，不必再补一次拖动。
   static void _settleSize(BuildContext context,
       DraggableScrollableController controller, DragEndDetails details) {
     if (!controller.isAttached) return;
@@ -381,10 +382,19 @@ class AppSheetTitleBar extends StatelessWidget {
       return;
     }
     if (v > 700) {
-      // 1500px/s ≈ 0.06 屏，3000px/s 封顶 0.12 屏：比上甩的全行程小得多。
-      final extra = (v / 25000).clamp(0.02, 0.12);
+      // 手指向下为正速度，滚动轴上的速度取反；落点按框架列表下甩的同一
+      // 物理计算（x(t) 在时间超过总时长后返回终点）。
+      final target = controller.pixelsToSize(
+        ClampingScrollSimulation(
+          position: controller.sizeToPixels(controller.size),
+          velocity: -v,
+        ).x(1e6),
+      );
       final minSize = AppSheetScope.minSizeOf(context) ?? 0.0;
-      final target = (controller.size - extra).clamp(minSize + 0.004, 1.0);
+      if (target <= minSize + 0.001) {
+        AppSheetScope.closeOf(context);
+        return;
+      }
       if (target < controller.size - 0.002) {
         controller.animateTo(target,
             duration: kPageMotion, curve: kPageMotionCurve);

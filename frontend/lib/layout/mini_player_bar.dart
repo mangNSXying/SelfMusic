@@ -136,7 +136,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
     if (start == null || !_queueSwiping) return;
     final h = MediaQuery.sizeOf(context).height;
     if (h <= 0) return;
-    // 滑动启动②：上移 0.6 屏即拉满（与窗口静息高度对齐）。
+    // 滑动启动②：上移 0.7 屏即拉满（与窗口静息高度对齐）。
     context.read<AppSheetLauncher>().swipeTo(
         (start - d.globalPosition.dy) / (h * kAppSheetSwipeTravelFactor));
   }

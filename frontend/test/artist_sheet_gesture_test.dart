@@ -246,6 +246,19 @@ void main() {
     await tester.runAsync(() => _dispose(direct, dir));
   });
 
+  testWidgets('歌手弹层：标题栏下甩直接收起（路由版低阻尼）', (tester) async {
+    final (dir, direct, sheetTitle) = await _pumpArtistSheet(tester);
+
+    // 下甩（手指 80px + 速度）：路由版同样直接收起，而不是只缩一小段。
+    await tester.fling(sheetTitle, const Offset(0, 80), 1500);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.byType(DraggableScrollableSheet), findsNothing,
+        reason: '下甩越过下限应收起弹层');
+
+    await tester.runAsync(() => _dispose(direct, dir));
+  });
+
   testWidgets('歌手弹层：统一标题栏（拖拽把手 + 关闭按钮经 scope 收起）', (tester) async {
     final (dir, direct, _) = await _pumpArtistSheet(tester);
 
