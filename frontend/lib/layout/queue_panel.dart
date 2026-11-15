@@ -176,6 +176,7 @@ class _QueueSheetContentState extends State<_QueueSheetContent> {
           child: AppSheetTitleBar(
             title: '播放队列',
             count: queue.length,
+            scrollCtrl: widget.scrollCtrl,
             trailing: LocateCurrentButton(
               onPressed: queue.isEmpty ? null : _jumpToCurrent,
             ),
@@ -318,6 +319,7 @@ class _QueuePanelState extends State<QueuePanel> {
               // 计数栏：与窄屏窗口标题栏同一组件（[CountHeader]）。
               CountHeader(
                 count: queue.length,
+                scrollCtrl: _scroll,
                 trailing: LocateCurrentButton(
                   onPressed: queue.isEmpty ? null : _jumpToCurrent,
                 ),

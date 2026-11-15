@@ -809,6 +809,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
             count: displaySongs.length,
             label: widget.countLabel?.call(displaySongs.length, folderCount),
             trailing: trailing,
+            scrollCtrl: _scroll,
           ),
         Expanded(
           child: rows.isEmpty

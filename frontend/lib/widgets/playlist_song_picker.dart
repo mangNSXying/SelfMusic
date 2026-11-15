@@ -223,6 +223,7 @@ class _PlaylistSongPickerState extends State<_PlaylistSongPicker> {
           AppSheetTitleBar(
             title: '添加歌曲到「${widget.playlistName}」',
             count: display.length,
+            scrollCtrl: widget.scrollCtrl,
           ),
           if (lib.loading) const LinearProgressIndicator(minHeight: 2),
           SearchField(

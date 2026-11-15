@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../theme/app_metrics.dart';
+import '../utils/motion.dart';
 
 /// 内容页共用计数头（改进 B6-U5 / 效果修复）：图标 + 「共 N …」一行。
 ///
@@ -23,6 +24,9 @@ class CountHeader extends StatelessWidget {
   /// 自定义图标（为空时按 [unit] 推导）。
   final IconData? icon;
 
+  /// 本栏下方列表的滚动控制器：非空时双击整条计数栏回到列表顶部。
+  final ScrollController? scrollCtrl;
+
   const CountHeader({
     super.key,
     required this.count,
@@ -30,6 +34,7 @@ class CountHeader extends StatelessWidget {
     this.trailing,
     this.label,
     this.icon,
+    this.scrollCtrl,
   });
 
   String get _label =>
@@ -63,6 +68,30 @@ class CountHeader extends StatelessWidget {
     );
     // 总高与多选栏一致（listHeaderHeightOf）：上下内边距 + 工具条按钮。
     final inner = kToolbarButtonSize * scale;
+    final ctrl = scrollCtrl;
+    Widget leading = Row(
+      children: [
+        Icon(_icon, size: 17 * scale, color: muted),
+        SizedBox(width: 6 * scale),
+        Expanded(
+          child: Text(
+            _label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: labelStyle,
+          ),
+        ),
+      ],
+    );
+    // 双击这一行回到列表顶部。双击识别器只包图标 + 计数文字：包住行尾按钮
+    // 会让它们的单击进入双击等待（第一次点击要等 300ms 超时才生效）。
+    if (ctrl != null) {
+      leading = GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onDoubleTap: () => _scrollToTop(ctrl),
+        child: leading,
+      );
+    }
     return Padding(
       padding: EdgeInsets.fromLTRB(
         16 * scale,
@@ -74,20 +103,23 @@ class CountHeader extends StatelessWidget {
         height: inner,
         child: Row(
           children: [
-            Icon(_icon, size: 17 * scale, color: muted),
-            SizedBox(width: 6 * scale),
-            Expanded(
-              child: Text(
-                _label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: labelStyle,
-              ),
-            ),
+            Expanded(child: leading),
             if (trailing != null) trailing!,
           ],
         ),
       ),
+    );
+  }
+
+  /// 平滑回顶（与页面切换同一动效口径）；列表未挂载时静默忽略。
+  static void _scrollToTop(ScrollController ctrl) {
+    if (!ctrl.hasClients) return;
+    final position = ctrl.position;
+    if (position.pixels <= 0) return;
+    ctrl.animateTo(
+      0,
+      duration: kPageMotion,
+      curve: kPageMotionCurve,
     );
   }
 }

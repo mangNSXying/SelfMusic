@@ -54,6 +54,15 @@ class _SourcesScreenState extends State<SourcesScreen>
   AppSettings Function() get appSettings =>
       () => context.read<DirectSourceManager>().settings;
 
+  /// 列表/网格共用：计数栏双击回顶。
+  final ScrollController _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -85,6 +94,7 @@ class _SourcesScreenState extends State<SourcesScreen>
           CountHeader(
             count: sources.length,
             unit: '个播放源',
+            scrollCtrl: _scroll,
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -108,6 +118,7 @@ class _SourcesScreenState extends State<SourcesScreen>
                   )
                 : card
                     ? SquareCardGrid(
+                        controller: _scroll,
                         itemCount: sources.length,
                         itemBuilder: (c, i) =>
                             _DirectSourceCard(sourceKey: sources[i].key),
@@ -115,6 +126,7 @@ class _SourcesScreenState extends State<SourcesScreen>
                     : RowList(
                         // 分栏↔整页切换会重建列表：靠 PageStorage 记住滚动位置。
                         key: const PageStorageKey<String>('sources-list'),
+                        controller: _scroll,
                         count: sources.length,
                         itemBuilder: (c, i) => _DirectSourceTile(
                           sourceKey: sources[i].key,

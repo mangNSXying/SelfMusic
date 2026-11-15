@@ -41,6 +41,15 @@ class _PlaylistsViewState extends State<PlaylistsView>
     with AutomaticKeepAliveClientMixin, ViewModeState {
   final Selection<int> _sel = Selection<int>();
 
+  /// 列表/网格共用：计数栏双击回顶。
+  final ScrollController _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
   /// 滑动档横滑时保持存活：离开可视区即销毁 State，重进会重跑 refresh +
   /// 每行 countOf 首次查询，KeepAlive 使来回滑动零开销。
   @override
@@ -162,6 +171,7 @@ class _PlaylistsViewState extends State<PlaylistsView>
             CountHeader(
               count: playlists.length,
               unit: '个歌单',
+              scrollCtrl: _scroll,
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -180,6 +190,7 @@ class _PlaylistsViewState extends State<PlaylistsView>
                 ? Center(child: Text(all.isEmpty ? '暂无歌单，点右下角「+」创建' : '无匹配歌单'))
                 : card
                     ? SquareCardGrid(
+                        controller: _scroll,
                         itemCount: playlists.length,
                         titleMaxLines: 2,
                         itemBuilder: (c, i) =>
@@ -188,6 +199,7 @@ class _PlaylistsViewState extends State<PlaylistsView>
                     : RowList(
                         // 分栏↔整页切换会重建列表：靠 PageStorage 记住滚动位置。
                         key: const PageStorageKey<String>('playlists-list'),
+                        controller: _scroll,
                         count: playlists.length,
                         itemBuilder: (c, i) => _playlistTile(
                           provider,

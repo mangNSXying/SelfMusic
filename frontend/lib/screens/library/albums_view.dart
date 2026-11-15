@@ -47,6 +47,15 @@ class _AlbumsViewState extends State<AlbumsView>
   (int, int, String, CollectionSort)? _sortedKey;
   List<Album> _sorted = const [];
 
+  /// 列表/网格共用：计数栏双击回顶。
+  final ScrollController _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
   List<Album> _filteredSorted(
       List<Album> albums, String search, CollectionSort pref) {
     final key = (albums.length, zhVariantRevision, search, pref);
@@ -97,6 +106,7 @@ class _AlbumsViewState extends State<AlbumsView>
         CountHeader(
           count: albums.length,
           unit: '张',
+          scrollCtrl: _scroll,
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -117,6 +127,7 @@ class _AlbumsViewState extends State<AlbumsView>
                   ? RefreshIndicator(
                       onRefresh: lib.loadAlbums,
                       child: SquareCardGrid(
+                        controller: _scroll,
                         itemCount: albums.length,
                         itemBuilder: (c, i) => AlbumCard(album: albums[i]),
                       ),
@@ -124,6 +135,7 @@ class _AlbumsViewState extends State<AlbumsView>
                   : RowList(
                       // 分栏↔整页切换会重建列表：靠 PageStorage 记住滚动位置。
                       key: const PageStorageKey<String>('albums-list'),
+                      controller: _scroll,
                       count: albums.length,
                       onRefresh: lib.loadAlbums,
                       itemBuilder: (c, i) => AlbumListTile(

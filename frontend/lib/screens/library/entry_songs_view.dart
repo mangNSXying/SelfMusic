@@ -91,6 +91,7 @@ class _EntrySongsViewState extends State<EntrySongsView> {
             child: AppSheetTitleBar(
               title: widget.title,
               count: widget.songs.length,
+              scrollCtrl: widget.scrollCtrl,
               leading: widget.headerLeading,
               showClose: widget.showClose,
               trailing: Builder(builder: (c) {

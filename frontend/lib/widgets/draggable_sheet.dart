@@ -238,6 +238,7 @@ class AppSheetTitleBar extends StatelessWidget {
     this.leading,
     this.showClose = true,
     this.trailing,
+    this.scrollCtrl,
   });
 
   final String title;
@@ -246,6 +247,9 @@ class AppSheetTitleBar extends StatelessWidget {
 
   /// 计数行行尾控件（如「定位当前曲」）；为空时右侧留常规内边距。
   final Widget? trailing;
+
+  /// 窗口内容共用的滚动控制器：双击计数行回到列表顶部。
+  final ScrollController? scrollCtrl;
 
   /// 标题行最左侧的附加控件（宽屏详情页放返回箭头；弹层为 null）。
   final Widget? leading;
@@ -349,7 +353,12 @@ class AppSheetTitleBar extends StatelessWidget {
                 ],
               ),
             ),
-            CountHeader(count: count, unit: unit, trailing: trailing),
+            CountHeader(
+              count: count,
+              unit: unit,
+              trailing: trailing,
+              scrollCtrl: scrollCtrl,
+            ),
             const Divider(height: kRowSeparatorHeight),
           ],
         ),

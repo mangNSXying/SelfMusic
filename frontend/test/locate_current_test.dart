@@ -13,6 +13,7 @@ import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/screens/library/entry_songs_view.dart';
 import 'package:selfmusic/utils/song_groups.dart';
+import 'package:selfmusic/widgets/count_header.dart';
 import 'package:selfmusic/widgets/locate_current_button.dart';
 import 'package:selfmusic/widgets/row_list.dart';
 import 'package:selfmusic/widgets/song_collection_view.dart';
@@ -219,5 +220,25 @@ void main() {
                 kSongTableHeaderHeight,
             0.5));
     expect(find.text('歌31'), findsOneWidget);
+  });
+
+  testWidgets('歌曲列表：双击统计栏回到顶部', (tester) async {
+    final songs = [for (var i = 1; i <= 60; i++) _song(i, 's$i.mp3')];
+    await pumpCollection(tester, songs: songs, playing: 50);
+
+    await tester.tap(find.byType(LocateCurrentButton));
+    await tester.pump();
+    final scrollable = find.descendant(
+        of: find.byType(SongCollectionView),
+        matching: find.byType(Scrollable));
+    final pos = tester.state<ScrollableState>(scrollable).position;
+    expect(pos.pixels, greaterThan(0));
+
+    await tester.tap(find.byType(CountHeader));
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(find.byType(CountHeader));
+    await tester.pumpAndSettle();
+
+    expect(pos.pixels, 0);
   });
 }

@@ -64,6 +64,15 @@ class _ArtistsViewState extends State<ArtistsView>
   (int, int, String, CollectionSort)? _sortedKey;
   List<Artist> _sorted = const [];
 
+  /// 列表/网格共用：计数栏双击回顶。
+  final ScrollController _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
   List<Artist> _filteredSorted(
       List<Artist> artists, String search, CollectionSort pref) {
     final key = (artists.length, zhVariantRevision, search, pref);
@@ -114,6 +123,7 @@ class _ArtistsViewState extends State<ArtistsView>
         CountHeader(
           count: artists.length,
           unit: '位',
+          scrollCtrl: _scroll,
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -134,6 +144,7 @@ class _ArtistsViewState extends State<ArtistsView>
                   ? RefreshIndicator(
                       onRefresh: lib.loadArtists,
                       child: SquareCardGrid(
+                        controller: _scroll,
                         itemCount: artists.length,
                         itemBuilder: (c, i) => ArtistCard(artist: artists[i]),
                       ),
@@ -141,6 +152,7 @@ class _ArtistsViewState extends State<ArtistsView>
                   : RowList(
                       // 分栏↔整页切换会重建列表：靠 PageStorage 记住滚动位置。
                       key: const PageStorageKey<String>('artists-list'),
+                      controller: _scroll,
                       count: artists.length,
                       onRefresh: lib.loadArtists,
                       itemBuilder: (c, i) => ArtistListTile(

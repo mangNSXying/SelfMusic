@@ -195,11 +195,15 @@ class SquareCardGrid extends StatelessWidget {
   /// 标题最大行数（与卡片保持一致，用于估算文本高度）。
   final int titleMaxLines;
 
+  /// 网格滚动控制器（计数栏双击回顶用）；为空时自带位置。
+  final ScrollController? controller;
+
   const SquareCardGrid({
     super.key,
     required this.itemCount,
     required this.itemBuilder,
     this.titleMaxLines = 1,
+    this.controller,
   });
 
   /// 卡片底部文本区高度（间距 + 标题 + 副标题），带少量余量防溢出。
@@ -228,6 +232,7 @@ class SquareCardGrid extends StatelessWidget {
         return _SquareCardMetrics(
           itemWidth: itemW,
           child: GridView.builder(
+            controller: controller,
             padding: const EdgeInsets.fromLTRB(sidePadding, 0, sidePadding, 16),
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
               crossAxisCount: cols,
