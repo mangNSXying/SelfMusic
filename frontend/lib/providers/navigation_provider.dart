@@ -11,14 +11,19 @@ import '../utils/source_folders.dart';
 
 /// 「歌曲信息」工具页的子页（内容栈 L2）。
 enum LibraryInfoPage {
-  overview('歌曲信息'),
-  meta('元数据信息'),
-  artists('歌手信息'),
-  formats('格式分布'),
-  play('播放数据');
+  overview('歌曲信息', '总览'),
+  meta('元数据信息', '元数据'),
+  artists('歌手信息', '歌手'),
+  formats('格式分布', '格式'),
+  play('播放数据', '播放');
 
-  const LibraryInfoPage(this.label);
+  const LibraryInfoPage(this.label, this.tabLabel);
+
+  /// 完整展示名（页签 tooltip / 路由展示）。
   final String label;
+
+  /// 页签短名（总览 / 元数据 / 歌手 / 格式 / 播放）。
+  final String tabLabel;
 }
 
 /// 内容栈里的同一族页面：不同族互斥，进新族会清掉旧族；
@@ -229,7 +234,8 @@ class NavigationProvider extends ChangeNotifier {
   /// 顶栏据此切换为「菜单 + 返回 + 标题」变体，不显示分组导航与搜索。
   String? get toolPageTitle {
     final top = contentTop;
-    if (top is LibraryInfoRoute) return top.page.label;
+    // 子页由页签表达；顶栏标题稳定为「歌曲信息」，避免每个页签都换标题。
+    if (top is LibraryInfoRoute) return '歌曲信息';
     if (top is AboutRoute) return '关于软件';
     return null;
   }
@@ -673,19 +679,24 @@ class NavigationProvider extends ChangeNotifier {
   }
 
   /// 打开歌曲信息工具页（L2 内容栈，保留侧栏）。
+  ///
+  /// 页签口径：总览是毂，四个明细是平级页签。
+  /// - 总览 → 明细：压一层，总览留在下面（返回回总览）；
+  /// - 明细 → 明细：替换栈顶，不继续压栈；
+  /// - 明细/总览 → 总览：收掉整个歌曲信息子栈，只留总览。
   void openLibraryInfo(LibraryInfoPage page) {
     _playerView = false;
     final top = contentTop;
     if (top is LibraryInfoRoute) {
       if (top.page == page) return;
       if (page == LibraryInfoPage.overview) {
-        // 从明细回总览：收掉整个歌曲信息子栈，避免总览叠总览。
         _content.removeWhere((route) => route is LibraryInfoRoute);
         _content.add(const LibraryInfoRoute(LibraryInfoPage.overview));
-        _notifyContent();
-        return;
+      } else if (top.page == LibraryInfoPage.overview) {
+        _content.add(LibraryInfoRoute(page));
+      } else {
+        _content[_content.length - 1] = LibraryInfoRoute(page);
       }
-      _content.add(LibraryInfoRoute(page));
       _notifyContent();
       return;
     }

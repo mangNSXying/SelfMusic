@@ -95,6 +95,14 @@ void main() {
       expect(nav.backToPrevious(keepSearch: true), isTrue);
       expect(nav.libraryInfoPage, LibraryInfoPage.overview);
 
+      // 明细之间是平级页签：替换栈顶，不继续压栈；返回仍回总览。
+      nav.openLibraryInfo(LibraryInfoPage.meta);
+      nav.openLibraryInfo(LibraryInfoPage.artists);
+      expect(nav.libraryInfoPage, LibraryInfoPage.artists);
+      expect(nav.contentRoutes.whereType<LibraryInfoRoute>(), hasLength(2));
+      expect(nav.backToPrevious(keepSearch: true), isTrue);
+      expect(nav.libraryInfoPage, LibraryInfoPage.overview);
+
       // 从总览返回：回到内容基座，不直接离家。
       expect(nav.backToPrevious(keepSearch: true), isTrue);
       expect(nav.contentRoutes, isEmpty);
