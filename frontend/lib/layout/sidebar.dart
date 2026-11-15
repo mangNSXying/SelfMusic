@@ -45,6 +45,16 @@ class Sidebar extends StatelessWidget {
 class _Header extends StatelessWidget {
   const _Header();
 
+  /// 点标题行回内容页：切回当前分组（清空内容栈、退出播放页）。
+  /// 与顶栏点当前分组同一路径，窄屏同时收起抽屉。
+  void _backToContent(BuildContext context) {
+    final nav = context.read<NavigationProvider>();
+    nav.select(nav.section);
+    if (!isWideWindow(MediaQuery.sizeOf(context))) {
+      Scaffold.of(context).closeDrawer();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final title = Text(
@@ -64,15 +74,18 @@ class _Header extends StatelessWidget {
       height: 34,
       fit: BoxFit.cover,
     );
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      child: Row(
-        children: [
-          ClipRRect(borderRadius: BorderRadius.circular(8), child: logo),
-          const SizedBox(width: 10),
-          // 大字号下标题不撑破 260 宽的侧栏
-          Expanded(child: title),
-        ],
+    return InkWell(
+      onTap: () => _backToContent(context),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Row(
+          children: [
+            ClipRRect(borderRadius: BorderRadius.circular(8), child: logo),
+            const SizedBox(width: 10),
+            // 大字号下标题不撑破 260 宽的侧栏
+            Expanded(child: title),
+          ],
+        ),
       ),
     );
   }
