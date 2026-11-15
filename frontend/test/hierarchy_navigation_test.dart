@@ -83,27 +83,26 @@ void main() {
       expect((nav.contentTop as ArtistDetailRoute).artist.name, '歌手');
     });
 
-    test('歌曲信息是 L2 内容栈：明细/总览逐层返回，设置在其下', () {
+    test('歌曲信息五个页签平级：切换只替换栈顶，返回回下层内容', () {
       final nav = NavigationProvider()..select(NavSection.songs);
 
       nav.openLibraryInfo(LibraryInfoPage.overview);
       expect(nav.libraryInfoPage, LibraryInfoPage.overview);
       expect(nav.playerView, isFalse);
+      expect(nav.contentRoutes.whereType<LibraryInfoRoute>(), hasLength(1));
 
+      // 页签平级：总览 -> 明细只替换栈顶，不再把总览垫在下面。
       nav.openLibraryInfo(LibraryInfoPage.meta);
       expect(nav.libraryInfoPage, LibraryInfoPage.meta);
-      expect(nav.backToPrevious(keepSearch: true), isTrue);
-      expect(nav.libraryInfoPage, LibraryInfoPage.overview);
-
-      // 明细之间是平级页签：替换栈顶，不继续压栈；返回仍回总览。
-      nav.openLibraryInfo(LibraryInfoPage.meta);
+      expect(nav.contentRoutes.whereType<LibraryInfoRoute>(), hasLength(1));
       nav.openLibraryInfo(LibraryInfoPage.artists);
       expect(nav.libraryInfoPage, LibraryInfoPage.artists);
-      expect(nav.contentRoutes.whereType<LibraryInfoRoute>(), hasLength(2));
-      expect(nav.backToPrevious(keepSearch: true), isTrue);
+      expect(nav.contentRoutes.whereType<LibraryInfoRoute>(), hasLength(1));
+      nav.openLibraryInfo(LibraryInfoPage.overview);
       expect(nav.libraryInfoPage, LibraryInfoPage.overview);
+      expect(nav.contentRoutes.whereType<LibraryInfoRoute>(), hasLength(1));
 
-      // 从总览返回：回到内容基座，不直接离家。
+      // 返回：直接回内容基座，不经过其它页签。
       expect(nav.backToPrevious(keepSearch: true), isTrue);
       expect(nav.contentRoutes, isEmpty);
       expect(nav.playerView, isFalse);
@@ -119,7 +118,7 @@ void main() {
       expect(nav.libraryInfoPage, isNull);
       expect(nav.settings, SettingsItem.system);
 
-      // 侧栏“歌曲信息”从明细回总览：收掉子栈，不叠总览。
+      // 从明细切回总览：只替换，不叠总览。
       nav.openLibraryInfo(LibraryInfoPage.meta);
       nav.openLibraryInfo(LibraryInfoPage.overview);
       expect(nav.contentRoutes.whereType<LibraryInfoRoute>(), hasLength(1));

@@ -680,23 +680,14 @@ class NavigationProvider extends ChangeNotifier {
 
   /// 打开歌曲信息工具页（L2 内容栈，保留侧栏）。
   ///
-  /// 页签口径：总览是毂，四个明细是平级页签。
-  /// - 总览 → 明细：压一层，总览留在下面（返回回总览）；
-  /// - 明细 → 明细：替换栈顶，不继续压栈；
-  /// - 明细/总览 → 总览：收掉整个歌曲信息子栈，只留总览。
+  /// 五个子页（总览 / 元数据 / 歌手 / 格式 / 播放）完全平级：切页签只替换
+  /// 栈顶，不把总览垫在明细下面；从任意页签返回都直接回下层内容。
   void openLibraryInfo(LibraryInfoPage page) {
     _playerView = false;
     final top = contentTop;
     if (top is LibraryInfoRoute) {
       if (top.page == page) return;
-      if (page == LibraryInfoPage.overview) {
-        _content.removeWhere((route) => route is LibraryInfoRoute);
-        _content.add(const LibraryInfoRoute(LibraryInfoPage.overview));
-      } else if (top.page == LibraryInfoPage.overview) {
-        _content.add(LibraryInfoRoute(page));
-      } else {
-        _content[_content.length - 1] = LibraryInfoRoute(page);
-      }
+      _content[_content.length - 1] = LibraryInfoRoute(page);
       _notifyContent();
       return;
     }
