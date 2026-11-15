@@ -12,16 +12,6 @@ const double kInfoTableMinWidth = 800;
 String infoPercent(int got, int total) =>
     total <= 0 ? '—' : '${(got / total * 100).toStringAsFixed(0)}%';
 
-/// 格式/分布图的单色系调色板（主题主色递进，适配深色与自定义强调色）。
-List<Color> sharePalette(ColorScheme cs) => [
-      cs.primary,
-      cs.primary.withValues(alpha: 0.72),
-      cs.primary.withValues(alpha: 0.52),
-      cs.primary.withValues(alpha: 0.34),
-      cs.primary.withValues(alpha: 0.20),
-      cs.outlineVariant,
-    ];
-
 /// 详情页首次加载：失败显示重试，否则转圈。
 class DetailLoadingGuard extends StatelessWidget {
   final bool failed;
@@ -256,12 +246,15 @@ class StatTile extends StatelessWidget {
   }
 }
 
-/// 元数据维度单元格：标签 + 百分比 + 4px 细条。
+/// 条状指标项：标签 + 右侧文案（默认百分比）+ 4px 细条。
 class CoverageItem {
   final String label;
   final int got;
 
-  const CoverageItem(this.label, this.got);
+  /// 右侧文案；null 时显示百分比（例如「84 个 · 66%」）。
+  final String? valueLabel;
+
+  const CoverageItem(this.label, this.got, {this.valueLabel});
 }
 
 class CoverageCell extends StatelessWidget {
@@ -269,11 +262,19 @@ class CoverageCell extends StatelessWidget {
   final int got;
   final int total;
 
+  /// 低于 50% 是否标红（元数据覆盖 = true；分布/占比 = false）。
+  final bool lowIsBad;
+
+  /// 右侧文案；null 时显示百分比。
+  final String? valueLabel;
+
   const CoverageCell({
     super.key,
     required this.label,
     required this.got,
     required this.total,
+    this.lowIsBad = true,
+    this.valueLabel,
   });
 
   @override
@@ -281,7 +282,7 @@ class CoverageCell extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
     final pct = total <= 0 ? 0.0 : (got / total).clamp(0.0, 1.0);
-    final low = pct < 0.5;
+    final low = lowIsBad && pct < 0.5;
     final color = low ? cs.error : cs.primary;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -300,7 +301,7 @@ class CoverageCell extends StatelessWidget {
             ),
             const SizedBox(width: 6),
             Text(
-              '${(pct * 100).toStringAsFixed(0)}%',
+              valueLabel ?? '${(pct * 100).toStringAsFixed(0)}%',
               style: text.bodySmall?.copyWith(
                 color: low ? cs.error : cs.onSurface,
                 fontWeight: FontWeight.w600,
@@ -324,10 +325,11 @@ class CoverageCell extends StatelessWidget {
   }
 }
 
-/// 元数据覆盖网格：按可用宽度排 2/3 列。
+/// 条状指标网格：按可用宽度排 2/3 列。
 class CoverageGrid extends StatelessWidget {
   final List<CoverageItem> items;
   final int total;
+  final bool lowIsBad;
   final double spacing;
   final double runSpacing;
 
@@ -335,6 +337,7 @@ class CoverageGrid extends StatelessWidget {
     super.key,
     required this.items,
     required this.total,
+    this.lowIsBad = true,
     this.spacing = 20,
     this.runSpacing = 12,
   });
@@ -343,7 +346,8 @@ class CoverageGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, c) {
-        final cols = c.maxWidth >= 620 ? 3 : 2;
+        // 很窄时回退单列，避免「标签 + 数量/百分比」挤成省略号。
+        final cols = c.maxWidth >= 620 ? 3 : (c.maxWidth < 320 ? 1 : 2);
         // 预留半像素，避免浮点误差把最后一格挤到下一行。
         final width = (c.maxWidth - spacing * (cols - 1)) / cols - 0.5;
         return Wrap(
@@ -357,6 +361,8 @@ class CoverageGrid extends StatelessWidget {
                   label: item.label,
                   got: item.got,
                   total: total,
+                  lowIsBad: lowIsBad,
+                  valueLabel: item.valueLabel,
                 ),
               ),
           ],
@@ -366,130 +372,9 @@ class CoverageGrid extends StatelessWidget {
   }
 }
 
-/// 堆叠条的一段。
-class ShareSegment {
-  final String label;
-  final int value;
-  final Color color;
-
-  const ShareSegment(this.label, this.value, this.color);
-}
-
-/// 单条占比堆叠条；0 值段自动跳过，全 0 显示空轨。
-class ShareBar extends StatelessWidget {
-  final List<ShareSegment> segments;
-  final double height;
-
-  const ShareBar({
-    super.key,
-    required this.segments,
-    this.height = 10,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final total = segments.fold<int>(0, (sum, s) => sum + s.value);
-    if (total <= 0) {
-      return Container(
-        height: height,
-        decoration: BoxDecoration(
-          color: cs.outlineVariant.withValues(alpha: 0.4),
-          borderRadius: BorderRadius.circular(height / 2),
-        ),
-      );
-    }
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(height / 2),
-      child: SizedBox(
-        height: height,
-        child: Row(
-          children: [
-            for (final segment in segments)
-              if (segment.value > 0)
-                Expanded(
-                  flex: segment.value,
-                  child: ColoredBox(color: segment.color),
-                ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// 堆叠条图例：色点 + 标签 + 数量 + 百分比。
-class ShareLegend extends StatelessWidget {
-  final List<ShareSegment> segments;
-  final int? total;
-  final int columns;
-  final double spacing;
-
-  const ShareLegend({
-    super.key,
-    required this.segments,
-    this.total,
-    this.columns = 2,
-    this.spacing = 12,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final text = Theme.of(context).textTheme;
-    final cs = Theme.of(context).colorScheme;
-    final sum = total ?? segments.fold<int>(0, (acc, s) => acc + s.value);
-    return LayoutBuilder(
-      builder: (context, c) {
-        final cols = columns.clamp(1, 4);
-        final width = cols <= 1
-            ? c.maxWidth
-            : (c.maxWidth - spacing * (cols - 1)) / cols - 0.5;
-        return Wrap(
-          spacing: spacing,
-          runSpacing: 6,
-          children: [
-            for (final segment in segments)
-              SizedBox(
-                width: width,
-                child: Row(
-                  children: [
-                    Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: segment.color,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        segment.label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: text.bodySmall,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      sum <= 0
-                          ? '${segment.value}'
-                          : '${segment.value} · '
-                              '${(segment.value / sum * 100).toStringAsFixed(0)}%',
-                      style: text.bodySmall?.copyWith(
-                        color: cs.onSurface.withValues(alpha: 0.65),
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-          ],
-        );
-      },
-    );
-  }
-}
+/// 数量 + 百分比文案（「84 个 · 66%」）。
+String infoCountLabel(int got, int total, String unit) =>
+    '$got $unit · ${infoPercent(got, total)}';
 
 /// 统一搜索框。
 class LibrarySearchField extends StatelessWidget {

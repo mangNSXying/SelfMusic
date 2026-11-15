@@ -113,6 +113,9 @@ void main() {
       expect(find.text(title), findsOneWidget);
     }
     expect(find.text('查看明细'), findsNWidgets(4));
+    // 格式 / 播放卡与元数据卡一样走条状展示（右侧带数量）。
+    expect(find.text('15 首 · 50%'), findsOneWidget);
+    expect(find.text('24 首 · 80%'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     // 窄屏：单列排布，滚到底部同样完整。

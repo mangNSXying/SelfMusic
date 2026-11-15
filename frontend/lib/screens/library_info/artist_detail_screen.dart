@@ -15,8 +15,6 @@ class ArtistDetailScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final index = context.watch<DirectSourceManager>().index;
     final stats = index.artistStats();
-    final cs = Theme.of(context).colorScheme;
-    final text = Theme.of(context).textTheme;
     final total = stats['total'] ?? 0;
     if (total <= 0) {
       return const Center(child: Text('暂无歌手数据'));
@@ -24,12 +22,27 @@ class ArtistDetailScreen extends StatelessWidget {
 
     final mapped = stats['mapped'] ?? 0;
     final withArtist = stats['withArtist'] ?? 0;
-    final pct = withArtist <= 0 ? 0.0 : (mapped / withArtist).clamp(0.0, 1.0);
-    final segments = [
-      ShareSegment('已解析', stats['resolved'] ?? 0, cs.primary),
-      ShareSegment('待确认', stats['ambiguous'] ?? 0, cs.tertiary),
-      ShareSegment('未命中', stats['local'] ?? 0, cs.secondary),
-      ShareSegment('待解析', stats['pending'] ?? 0, cs.outlineVariant),
+    final statusItems = [
+      CoverageItem(
+        '已解析',
+        stats['resolved'] ?? 0,
+        valueLabel: infoCountLabel(stats['resolved'] ?? 0, total, '个'),
+      ),
+      CoverageItem(
+        '待确认',
+        stats['ambiguous'] ?? 0,
+        valueLabel: infoCountLabel(stats['ambiguous'] ?? 0, total, '个'),
+      ),
+      CoverageItem(
+        '未命中',
+        stats['local'] ?? 0,
+        valueLabel: infoCountLabel(stats['local'] ?? 0, total, '个'),
+      ),
+      CoverageItem(
+        '待解析',
+        stats['pending'] ?? 0,
+        valueLabel: infoCountLabel(stats['pending'] ?? 0, total, '个'),
+      ),
     ];
 
     final statusCard = InfoCard(
@@ -38,23 +51,18 @@ class ArtistDetailScreen extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          ShareBar(segments: segments, height: 12),
-          const SizedBox(height: 12),
-          ShareLegend(segments: segments, total: total),
-          const SizedBox(height: 12),
-          Text(
-            '歌曲映射 $mapped / $withArtist 首 · '
-            '${(pct * 100).toStringAsFixed(0)}%',
-            style: text.bodySmall,
+          CoverageGrid(
+            items: statusItems,
+            total: total,
+            lowIsBad: false,
           ),
-          const SizedBox(height: 6),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(2),
-            child: LinearProgressIndicator(
-              value: pct,
-              minHeight: 6,
-              backgroundColor: cs.primary.withValues(alpha: 0.12),
-            ),
+          const SizedBox(height: 12),
+          CoverageCell(
+            label: '歌曲映射',
+            got: mapped,
+            total: withArtist,
+            valueLabel: '$mapped / $withArtist 首 · '
+                '${infoPercent(mapped, withArtist)}',
           ),
         ],
       ),

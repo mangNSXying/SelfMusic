@@ -7,6 +7,7 @@ import 'package:path_provider_platform_interface/path_provider_platform_interfac
 import 'package:provider/provider.dart';
 import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
+import 'package:selfmusic/screens/library_info/artist_detail_screen.dart';
 import 'package:selfmusic/screens/library_info/meta_detail_screen.dart';
 import 'package:selfmusic/screens/library_info/play_detail_screen.dart';
 import 'package:sqlite3/open.dart';
@@ -192,5 +193,38 @@ void main() {
     await tester.drag(handle, const Offset(40, 0));
     await tester.pumpAndSettle();
     expect(mgr.settings.tableColumnWeights('library_meta_detail'), isNotNull);
+  });
+
+  testWidgets('歌手详情：状态与映射用条状展示', (tester) async {
+    // 写隔离的 Future 要在真实异步环境里等，否则 widget test 会挂住。
+    await tester.runAsync(() async {
+      for (final (key, status) in [
+        ('a1', 'resolved'),
+        ('a2', 'ambiguous'),
+        ('a3', 'pending'),
+        ('a4', 'local'),
+      ]) {
+        await mgr.index.artistUpsert(
+          artistKey: key,
+          canonicalKey: key,
+          displayName: key,
+          status: status,
+          errorCount: 0,
+          nextAt: 0,
+        );
+      }
+    });
+    tester.view.physicalSize = const Size(800, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(_wrap(mgr, const ArtistDetailScreen()));
+    await tester.pumpAndSettle();
+
+    expect(find.text('解析状态'), findsOneWidget);
+    // 四个状态各 1 个，映射 0 / 250；四条状态条 + 一条映射条。
+    expect(find.text('1 个 · 25%'), findsNWidgets(4));
+    expect(find.text('0 / 250 首 · 0%'), findsOneWidget);
+    expect(find.byType(LinearProgressIndicator), findsNWidgets(5));
   });
 }

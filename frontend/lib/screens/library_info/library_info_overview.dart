@@ -217,7 +217,7 @@ class _MetadataCard extends StatelessWidget {
   }
 }
 
-/// 歌手身份卡：状态占比 + 映射覆盖率 + 关系进度。
+/// 歌手身份卡：状态占比 + 映射覆盖率。
 class _ArtistCard extends StatelessWidget {
   final Map<String, int> stats;
 
@@ -225,17 +225,30 @@ class _ArtistCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final text = Theme.of(context).textTheme;
     final total = stats['total'] ?? 0;
     final mapped = stats['mapped'] ?? 0;
     final withArtist = stats['withArtist'] ?? 0;
-    final pct = withArtist <= 0 ? 0.0 : (mapped / withArtist).clamp(0.0, 1.0);
-    final segments = [
-      ShareSegment('已解析', stats['resolved'] ?? 0, cs.primary),
-      ShareSegment('待确认', stats['ambiguous'] ?? 0, cs.tertiary),
-      ShareSegment('未命中', stats['local'] ?? 0, cs.secondary),
-      ShareSegment('待解析', stats['pending'] ?? 0, cs.outlineVariant),
+    final statusItems = [
+      CoverageItem(
+        '已解析',
+        stats['resolved'] ?? 0,
+        valueLabel: infoCountLabel(stats['resolved'] ?? 0, total, '个'),
+      ),
+      CoverageItem(
+        '待确认',
+        stats['ambiguous'] ?? 0,
+        valueLabel: infoCountLabel(stats['ambiguous'] ?? 0, total, '个'),
+      ),
+      CoverageItem(
+        '未命中',
+        stats['local'] ?? 0,
+        valueLabel: infoCountLabel(stats['local'] ?? 0, total, '个'),
+      ),
+      CoverageItem(
+        '待解析',
+        stats['pending'] ?? 0,
+        valueLabel: infoCountLabel(stats['pending'] ?? 0, total, '个'),
+      ),
     ];
 
     final content = total <= 0
@@ -243,32 +256,18 @@ class _ArtistCard extends StatelessWidget {
         : Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              ShareBar(segments: segments),
-              const SizedBox(height: 10),
-              ShareLegend(segments: segments, total: total),
-              const SizedBox(height: 10),
-              Text(
-                '歌曲映射 $mapped / $withArtist 首 · '
-                '${(pct * 100).toStringAsFixed(0)}%',
-                style: text.bodySmall,
+              CoverageGrid(
+                items: statusItems,
+                total: total,
+                lowIsBad: false,
               ),
-              const SizedBox(height: 6),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(2),
-                child: LinearProgressIndicator(
-                  value: pct,
-                  minHeight: 4,
-                  backgroundColor: cs.primary.withValues(alpha: 0.12),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                '成员 ${stats['members'] ?? 0} 条 · '
-                '已展开 ${stats['expanded'] ?? 0} 个 · '
-                '回落 ${stats['fallback'] ?? 0} 个',
-                style: text.bodySmall?.copyWith(
-                  color: cs.onSurface.withValues(alpha: 0.55),
-                ),
+              const SizedBox(height: 10),
+              CoverageCell(
+                label: '歌曲映射',
+                got: mapped,
+                total: withArtist,
+                valueLabel: '$mapped / $withArtist 首 · '
+                    '${infoPercent(mapped, withArtist)}',
               ),
             ],
           );
@@ -285,7 +284,7 @@ class _ArtistCard extends StatelessWidget {
   }
 }
 
-/// 格式分布卡：Top 5 + 其他 的堆叠条与图例。
+/// 格式分布卡：Top 5 + 其他 的条状展示。
 class _FormatCard extends StatelessWidget {
   final Map<String, int> formats;
 
@@ -294,20 +293,23 @@ class _FormatCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final entries = formats.entries.toList();
-    final cs = Theme.of(context).colorScheme;
-    final palette = sharePalette(cs);
     final top = entries.take(5).toList();
     final rest =
         entries.skip(5).fold<int>(0, (sum, entry) => sum + entry.value);
     final total = entries.fold<int>(0, (sum, entry) => sum + entry.value);
-    final segments = [
-      for (var i = 0; i < top.length; i++)
-        ShareSegment(
-          top[i].key.isEmpty ? '未知' : top[i].key,
-          top[i].value,
-          palette[i % palette.length],
+    final items = [
+      for (final entry in top)
+        CoverageItem(
+          entry.key.isEmpty ? '未知' : entry.key,
+          entry.value,
+          valueLabel: infoCountLabel(entry.value, total, '首'),
         ),
-      if (rest > 0) ShareSegment('其他', rest, cs.outlineVariant),
+      if (rest > 0)
+        CoverageItem(
+          '其他',
+          rest,
+          valueLabel: infoCountLabel(rest, total, '首'),
+        ),
     ];
 
     return InfoCard(
@@ -319,20 +321,12 @@ class _FormatCard extends StatelessWidget {
           .openLibraryInfo(LibraryInfoPage.formats),
       child: entries.isEmpty
           ? const Text('暂无格式数据')
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                ShareBar(segments: segments),
-                const SizedBox(height: 10),
-                for (final segment in segments)
-                  _LegendRow(segment: segment, total: total),
-              ],
-            ),
+          : CoverageGrid(items: items, total: total, lowIsBad: false),
     );
   }
 }
 
-/// 播放数据卡：累计值 + 次数/时长两条分布。
+/// 播放数据卡：累计值 + 次数/时长两条条状分布。
 class _PlayCard extends StatelessWidget {
   final PlayOverview play;
 
@@ -340,22 +334,50 @@ class _PlayCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     final total = play.total;
-    final pct = total <= 0 ? 0.0 : (play.withPlay / total).clamp(0.0, 1.0);
-    final countSegments = [
-      ShareSegment('未播放', play.countZero, cs.outlineVariant),
-      ShareSegment('小于 1 次', play.countLt1, cs.primary.withValues(alpha: 0.35)),
-      ShareSegment('1-5 次', play.count1to5, cs.primary.withValues(alpha: 0.65)),
-      ShareSegment('大于 5 次', play.countGt5, cs.primary),
+    final countItems = [
+      CoverageItem(
+        '未播放',
+        play.countZero,
+        valueLabel: infoCountLabel(play.countZero, total, '首'),
+      ),
+      CoverageItem(
+        '小于 1 次',
+        play.countLt1,
+        valueLabel: infoCountLabel(play.countLt1, total, '首'),
+      ),
+      CoverageItem(
+        '1-5 次',
+        play.count1to5,
+        valueLabel: infoCountLabel(play.count1to5, total, '首'),
+      ),
+      CoverageItem(
+        '大于 5 次',
+        play.countGt5,
+        valueLabel: infoCountLabel(play.countGt5, total, '首'),
+      ),
     ];
-    final secSegments = [
-      ShareSegment('未播放', play.secZero, cs.outlineVariant),
-      ShareSegment(
-          '10 分钟以内', play.secLt10m, cs.primary.withValues(alpha: 0.35)),
-      ShareSegment(
-          '10 分钟-1 小时', play.sec10mTo1h, cs.primary.withValues(alpha: 0.65)),
-      ShareSegment('1 小时以上', play.secGt1h, cs.primary),
+    final secItems = [
+      CoverageItem(
+        '未播放',
+        play.secZero,
+        valueLabel: infoCountLabel(play.secZero, total, '首'),
+      ),
+      CoverageItem(
+        '10 分钟以内',
+        play.secLt10m,
+        valueLabel: infoCountLabel(play.secLt10m, total, '首'),
+      ),
+      CoverageItem(
+        '10 分钟-1 小时',
+        play.sec10mTo1h,
+        valueLabel: infoCountLabel(play.sec10mTo1h, total, '首'),
+      ),
+      CoverageItem(
+        '1 小时以上',
+        play.secGt1h,
+        valueLabel: infoCountLabel(play.secGt1h, total, '首'),
+      ),
     ];
 
     return InfoCard(
@@ -369,23 +391,24 @@ class _PlayCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            '有播放记录 ${play.withPlay} / $total 首 · '
-            '${(pct * 100).toStringAsFixed(0)}%',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: cs.onSurface.withValues(alpha: 0.6),
-                ),
+          CoverageCell(
+            label: '有播放记录',
+            got: play.withPlay,
+            total: total,
+            lowIsBad: false,
+            valueLabel: '${play.withPlay} / $total 首 · '
+                '${infoPercent(play.withPlay, total)}',
           ),
-          const SizedBox(height: 10),
-          _MiniDistribution(
+          const SizedBox(height: 12),
+          _DistributionGroup(
             title: '按播放次数',
-            segments: countSegments,
+            items: countItems,
             total: total,
           ),
           const SizedBox(height: 12),
-          _MiniDistribution(
+          _DistributionGroup(
             title: '按播放时长',
-            segments: secSegments,
+            items: secItems,
             total: total,
           ),
         ],
@@ -394,14 +417,14 @@ class _PlayCard extends StatelessWidget {
   }
 }
 
-class _MiniDistribution extends StatelessWidget {
+class _DistributionGroup extends StatelessWidget {
   final String title;
-  final List<ShareSegment> segments;
+  final List<CoverageItem> items;
   final int total;
 
-  const _MiniDistribution({
+  const _DistributionGroup({
     required this.title,
-    required this.segments,
+    required this.items,
     required this.total,
   });
 
@@ -419,55 +442,8 @@ class _MiniDistribution extends StatelessWidget {
               ),
         ),
         const SizedBox(height: 6),
-        ShareBar(segments: segments, height: 8),
-        const SizedBox(height: 6),
-        ShareLegend(segments: segments, total: total),
+        CoverageGrid(items: items, total: total, lowIsBad: false),
       ],
-    );
-  }
-}
-
-class _LegendRow extends StatelessWidget {
-  final ShareSegment segment;
-  final int total;
-
-  const _LegendRow({required this.segment, required this.total});
-
-  @override
-  Widget build(BuildContext context) {
-    final text = Theme.of(context).textTheme;
-    final cs = Theme.of(context).colorScheme;
-    final pct = total <= 0 ? 0.0 : segment.value / total;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        children: [
-          Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(
-              color: segment.color,
-              shape: BoxShape.circle,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              segment.label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: text.bodySmall,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Text(
-            '${segment.value} 首 · ${(pct * 100).toStringAsFixed(0)}%',
-            style: text.bodySmall?.copyWith(
-              color: cs.onSurface.withValues(alpha: 0.65),
-            ),
-          ),
-        ],
-      ),
     );
   }
 }
