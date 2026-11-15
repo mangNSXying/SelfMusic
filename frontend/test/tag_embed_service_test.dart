@@ -32,7 +32,7 @@ class _FakePathProvider extends PathProviderPlatform {
   Future<String> getApplicationCachePath() async => dir;
 }
 
-const String _tempDir = '/home/shamiko/.vscode/project/selfmusic/temp';
+final String _tempDir = '${Directory.current.parent.path}/temp';
 const String _lyrics =
     '[ti:embed-flow]\n[00:01.00]嵌入流程歌\n[00:05.00]第二行\n';
 

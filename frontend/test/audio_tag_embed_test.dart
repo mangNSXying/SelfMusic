@@ -11,7 +11,7 @@ import 'package:selfmusic/data/local/audio_tag_writer.dart';
 /// 覆盖 mp3/flac/wav/aiff/m4a 五种；断言歌词+封面写入成功、标题保留、
 ///
 /// 时长不变。另含读侧扫描兜底的大小写回归（大写 `ID3 ` + 声明扰动）。
-const String _tempDir = '/home/shamiko/.vscode/project/selfmusic/temp';
+final String _tempDir = '${Directory.current.parent.path}/temp';
 
 /// 最小合法 JPEG（SOI + JFIF + EOI，20B，过轻量头尾校验）。
 Uint8List _fakeJpeg() => Uint8List.fromList([
