@@ -383,6 +383,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 否则两次装载并发，旧缓存文件可能在最后落地，出现「UI 新歌、声音旧歌」。
   int? _loadingToken;
 
+  /// 用户切歌（[next]/[prev]）单飞：正在推进时再收到请求只记一次待办，
+  /// 当前这次收尾后再推进一格。连按快捷键（Windows 全局热键未带
+  /// MOD_NOREPEAT，按住会以 ~30 次/秒投递）不会在共享播放器上叠发
+  /// `setUrl`——just_audio 不会中断并发 load，桌面 media_kit 适配层的
+  /// `_mediaOpened`/`_loadCompleter` 是跨 load 共享字段，旧曲的迟到事件
+  /// 会把新曲的装载提前判成功，最终表现为「界面切了、声音还在旧曲」。
+  Future<void>? _switchInFlight;
+  Future<void> Function()? _pendingSwitch;
+
   /// 关联 audio_service 通知栏处理器（settings.md §3.6）：状态变化时回推媒体信息。
   void attachAudioHandler(SelfMusicAudioHandler handler) {
     _audioHandler = handler;
@@ -3189,6 +3198,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
       debugPrint('[play] 装载失败《${s.title}》: $e');
+      // 新曲没装起来时旧音源可能还在响，而 [_current]/界面已经切到新曲——
+      // 不处理就是「UI 切歌、耳朵没切」，且用户会以为切歌没生效而反复按键。
+      // 直接暂停让两者一致：界面显示新曲但暂停，点播放走重新装载。
+      // `play: false`（睡眠预切/启动预载）本来就不该出声，不在此收口。
+      if (play && _player != null) unawaited(_pauseSafe());
       // 自动续播链路：后台切歌失败不逐首弹 toast（人不在屏幕前），跳下一首；
       // 连败到上限才提示。手动点播仍逐次提示；启动预载失败保持静默（停在
       // 断点等待用户点播放，届时按正常链路重试并提示）。
@@ -3993,11 +4007,49 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     return i < 0 ? null : _queue[i];
   }
 
-  Future<void> next() {
-    _userTookOver = true;
-    _leaveFor(null);
-    return _advance();
+  /// 用户切歌入口（下一首/上一首共用）：串行化 + 合并连按。
+  ///
+  /// 正在推进时新的请求只覆盖「待办」那一格，不并发下发装载；当前这次
+  /// 收尾后再执行一次。既有语义不变（一次请求推进一首），只是把连按/
+  /// 全局热键自动重复产生的风暴压成最多一格待办。
+  Future<void> _requestSwitch(Future<void> Function() run) {
+    _pendingSwitch = run;
+    final inFlight = _switchInFlight;
+    if (inFlight != null) return inFlight;
+    final done = Completer<void>();
+    _switchInFlight = done.future;
+    unawaited(_drainSwitches(done));
+    return done.future;
   }
+
+  Future<void> _drainSwitches(Completer<void> done) async {
+    try {
+      while (true) {
+        if (_disposed || _shuttingDown) {
+          _pendingSwitch = null;
+          break;
+        }
+        final nextSwitch = _pendingSwitch;
+        if (nextSwitch == null) break;
+        _pendingSwitch = null;
+        try {
+          await nextSwitch();
+        } catch (e, st) {
+          // 单个切换失败不应让整条队列停摆（下一次按键仍要能切歌）。
+          debugPrint('[play] 切歌失败: $e\n$st');
+        }
+      }
+    } finally {
+      _switchInFlight = null;
+      if (!done.isCompleted) done.complete();
+    }
+  }
+
+  Future<void> next() => _requestSwitch(() {
+        _userTookOver = true;
+        _leaveFor(null);
+        return _advance();
+      });
 
   /// 推进到下一首。[autoAdvanceOnFailure] 为 true 表示这是自动续播链路
   /// （自然播完、失败跳歌、播放错误恢复），装载失败时继续跳下一首而非停住。
@@ -4135,9 +4187,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     await _advance(autoAdvanceOnFailure: true, play: play);
   }
 
-  Future<void> prev() async {
-    _userTookOver = true;
-    _leaveFor(null);
+  Future<void> prev() => _requestSwitch(() {
+        _userTookOver = true;
+        _leaveFor(null);
+        return _prevStep();
+      });
+
+  Future<void> _prevStep() async {
     if (_queue.isEmpty || _current == null) return;
     // 深层列表（改进.txt 1.4）：上一首 = 弹出深层末尾（当前曲），新末尾从头播放。
     // 融合队列下同样弹栈——历史在深层中；深层空时退队列线性上一首。
