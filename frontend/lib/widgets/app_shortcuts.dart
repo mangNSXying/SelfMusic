@@ -14,6 +14,7 @@ import '../platform/harmonyos/ohos_global_hotkeys.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
+import '../shortcuts/global_hotkey_repeat_guard.dart';
 import '../shortcuts/shortcut_models.dart';
 import '../shortcuts/shortcut_settings.dart';
 import '../theme/app_theme.dart';
@@ -48,6 +49,9 @@ class _AppShortcutsState extends State<AppShortcuts> {
   Future<void> _registrationQueue = Future<void>.value();
   int _registrationGeneration = 0;
   bool _disposed = false;
+
+  /// 全局热键去抖（见 [GlobalHotkeyRepeatGuard]）：不可重复动作在窗口内只认第一次。
+  final GlobalHotkeyRepeatGuard _globalRepeatGuard = GlobalHotkeyRepeatGuard();
 
   bool get _isDesktop =>
       !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
@@ -120,6 +124,8 @@ class _AppShortcutsState extends State<AppShortcuts> {
   Future<void> _applyGlobalHotkeys() async {
     if (_disposed || !_supportsGlobalHotkeys) return;
     final generation = ++_registrationGeneration;
+    // 绑定变更/录制开始：旧时间窗不能跨绑定继续压新按键。
+    _globalRepeatGuard.reset();
     if (_isOhos) {
       await _applyOhosGlobalHotkeys(generation);
       return;
@@ -203,6 +209,13 @@ class _AppShortcutsState extends State<AppShortcuts> {
     // 注销是异步的：录制开始的瞬间仍可能收到旧系统热键回调，直接忽略，
     // 保证录制期间不会误触播放/切歌等动作。
     if (!mounted || (_settings?.isRecording ?? false)) return;
+    // 系统级热键拿不到 KeyRepeatEvent：桌面 RegisterHotKey 没带 MOD_NOREPEAT
+    // （hotkey_manager_windows 的 WM_HOTKEY 每次都按 onKeyDown 投递），按住
+    // 组合键就会以系统重复频率连续触发。窗口内路径已按事件类型过滤，这里只能
+    // 按时间窗给不可重复动作去抖——否则切歌会在共享播放器上叠发并发装载。
+    if (!_globalRepeatGuard.allow(action, repeatable: _allowsRepeat(action))) {
+      return;
+    }
     unawaited(
       _runGlobalAction(action).catchError((Object e, StackTrace stack) {
         debugPrint('global shortcut ${action.name} failed: $e\n$stack');
