@@ -34,9 +34,20 @@ class MediaKitPlayer extends AudioPlayerPlatform {
   Duration? _duration;
   bool _playing = false;
   bool _mediaOpened = false;
+
+  /// 已释放（just_audio 的 stop/dispose 会走 [release]）：播放器已销毁，
+  /// 迟到的 play/pause 不能再落到 mpv 上（会抛 assertion）。
+  bool _released = false;
   int? _errorCode;
   String? _errorMessage;
   Completer<Duration?>? _loadCompleter;
+
+  /// 装载批次号（SelfMusic 补丁）：每次 [load] 自增。just_audio 不会中断
+  /// 并发的 `setUrl`，旧批次的 `open` 只能排队等待，因此旧批次的迟到回调
+  /// 绝不能再改写 [_mediaOpened]/[_loadCompleter]/[_processingState] 等共享
+  /// 状态——否则旧曲的 buffering 事件会把新曲的装载提前判成功，App 认为
+  /// 切歌完成而 mpv 还在放旧曲（「UI 切歌、声音不切」）。
+  int _loadGeneration = 0;
 
   /// The index that's currently playing
   int _currentIndex = 0;
@@ -151,6 +162,10 @@ class MediaKitPlayer extends AudioPlayerPlatform {
           _processingState = ProcessingStateMessage.idle;
           _errorCode = kErrorCode;
           _errorMessage = error;
+          // 装载期间出错：叫醒等待中的 load，让错误尽快经 playbackEvent
+          // 冒到上层（否则只能等上层的装载看门狗超时）。
+          final loading = _loadCompleter;
+          if (loading != null && !loading.isCompleted) loading.complete(null);
           _updatePlaybackEvent();
         }
         _logger.severe('ERROR OCCURRED: $error');
@@ -231,8 +246,13 @@ class MediaKitPlayer extends AudioPlayerPlatform {
   @override
   Future<LoadResponse> load(LoadRequest request) async {
     _logger.finest('load(${request.toMap()})');
+    final generation = ++_loadGeneration;
+    // 上一批装载若还在等自己的 completer，先放它回去（它的结果已由
+    // just_audio/调用方的切歌令牌作废）；否则会留下一个永不完成的 Future。
+    final previous = _loadCompleter;
+    if (previous != null && !previous.isCompleted) previous.complete(null);
+    final completer = _loadCompleter = Completer<Duration?>();
     _mediaOpened = false;
-    _loadCompleter = Completer();
     _currentIndex = request.initialIndex ?? 0;
     _bufferedPosition = Duration.zero;
     _position = Duration.zero;
@@ -242,6 +262,8 @@ class MediaKitPlayer extends AudioPlayerPlatform {
     _errorMessage = null;
     _updatePlaybackEvent();
 
+    // 统一以暂停态打开，起播意图在打开完成后按 [_playing] 的最新值补发：
+    // open 内部的 `pause=true` 与装载期间到达的 play()/pause() 不会再互踩。
     if (request.audioSourceMessage is ConcatenatingAudioSourceMessage) {
       final audioSource =
           request.audioSourceMessage as ConcatenatingAudioSourceMessage;
@@ -249,39 +271,69 @@ class MediaKitPlayer extends AudioPlayerPlatform {
           audioSource.children.map(_convertAudioSourceIntoMediaKit).toList(),
           index: _currentIndex);
 
-      await _player.open(playable, play: _playing);
+      if (generation == _loadGeneration) {
+        await _player.open(playable, play: false);
+      }
     } else {
       final playable =
           _convertAudioSourceIntoMediaKit(request.audioSourceMessage);
       _logger.finest('playable is ${playable.toString()}');
-      await _player.open(playable, play: _playing);
+      if (generation == _loadGeneration) {
+        await _player.open(playable, play: false);
+      }
+    }
+
+    // 装载期间已发起更新的批次：本次结果作废。不得改状态（尤其
+    // [_mediaOpened]），也不得播放——最终落地的是新批次打开的音源。
+    if (generation != _loadGeneration) {
+      return LoadResponse(duration: null);
     }
     _mediaOpened = true;
+
+    // open 期间可能已经错过 ready/buffering 事件（那一拍 `_mediaOpened`
+    // 还是 false，流回调不会完成 completer）。这里按当前状态补判一次，
+    // 避免 load 永远停在等待上（上层只会看到 15s 装载超时）。
+    if (!completer.isCompleted &&
+        _processingState != ProcessingStateMessage.loading) {
+      completer.complete(_duration);
+    }
 
     if (request.initialPosition != null) {
       _setPosition = _position = request.initialPosition!;
     }
 
+    // 装载期间到达的 play()/pause() 只更新了意图位（[_playing]），这里按
+    // 最新意图补发实际命令；否则「装载中按播放」会被丢掉，mpv 停在 open
+    // 内部的 pause=true 上，而 UI 显示播放中。
+    //
+    // 暂停意图不需要补发：open 内部本来就是 pause=true，下一批 open 也会
+    // 重新置暂停；反而 pause() 会关掉 media_kit 的 buffering 状态广播，
+    // 让装载永远等不到 ready。
+    if (_playing) {
+      await _player.play();
+    }
+
     _updatePlaybackEvent();
-    final duration = await _loadCompleter?.future;
+    final duration = await completer.future;
     return LoadResponse(duration: duration);
   }
 
   @override
   Future<PlayResponse> play(PlayRequest request) async {
     _playing = true;
-    if (_mediaOpened) {
-      await _player.play();
-    }
+    // 不能用 `_mediaOpened` 门控：装载进行中 `_mediaOpened` 为 false，此时
+    // 的播放请求会被静默丢弃，而它恰恰是最需要生效的场景（装载中按播放）。
+    // media_kit 允许在 open 之前先设 play/pause（open 安排在之后执行）。
+    if (!_released) await _player.play();
     return PlayResponse();
   }
 
   @override
   Future<PauseResponse> pause(PauseRequest request) async {
     _playing = false;
-    if (_mediaOpened) {
-      await _player.pause();
-    }
+    // 不按 `_mediaOpened` 门控：装载排队期间旧音源还在响，暂停必须立刻
+    // 落到 mpv；新一次 open 内部本来也会置暂停，不会有副作用。
+    if (!_released) await _player.pause();
     return PauseResponse();
   }
 
@@ -394,6 +446,7 @@ class MediaKitPlayer extends AudioPlayerPlatform {
   /// Release the resources used by this player.
   Future<void> release() async {
     _logger.info('releasing player resources');
+    _released = true;
     _mediaOpened = false;
     await _player.dispose();
     // cancel all stream subscriptions
