@@ -8,6 +8,7 @@ import '../../models/song.dart';
 import '../../data/local/app_settings.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../providers/player_provider.dart';
+import '../../services/haptics.dart';
 import '../../utils/collection_sort.dart';
 import '../../utils/song_title_format.dart';
 import '../../utils/zh_variant.dart';
@@ -249,7 +250,10 @@ class _QueuePageState extends State<QueuePage> {
             IconButton(
               icon: const Icon(Icons.my_location),
               tooltip: '定位当前曲',
-              onPressed: _jumpToCurrent,
+              onPressed: () {
+                Haptics.fire(HapticStrength.light);
+                _jumpToCurrent();
+              },
             ),
             SortMenuButton(
               value: direct.settings.sortQueue,
@@ -263,7 +267,10 @@ class _QueuePageState extends State<QueuePage> {
               icon: Icon(Icons.delete_outline,
                   color: Theme.of(context).colorScheme.error),
               tooltip: '清空队列',
-              onPressed: () => _clearQueue(player),
+              onPressed: () {
+                Haptics.fire(HapticStrength.light);
+                _clearQueue(player);
+              },
             ),
           ],
         ],

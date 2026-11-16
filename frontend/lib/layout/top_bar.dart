@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
+import '../services/haptics.dart';
 import '../theme/app_theme.dart';
 import '../utils/motion.dart';
 
@@ -313,7 +314,10 @@ class _NavBarState extends State<_NavBar> with SingleTickerProviderStateMixin {
                   w)!;
               return InkWell(
                 borderRadius: BorderRadius.circular(10),
-                onTap: () => widget.nav.select(s),
+                onTap: () {
+                  Haptics.fire(HapticStrength.selection);
+                  widget.nav.select(s);
+                },
                 child: Stack(
                   alignment: Alignment.center,
                   children: [

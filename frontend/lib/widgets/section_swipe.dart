@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/navigation_provider.dart';
+import '../services/haptics.dart';
 import '../theme/app_theme.dart';
 
 /// 内容区分组横滑切换：歌单 ↔ 喜欢 ↔ 播放源 ↔ 歌曲 ↔ 专辑 ↔ 歌手。
@@ -28,6 +29,7 @@ class SectionSwipe extends StatelessWidget {
         final next = v < 0 ? i + 1 : i - 1;
         if (next < 0 || next >= _order.length) return;
         // 滑动方向即新页面进入方向；分组 Pager/切换器自行决定动画方向。
+        Haptics.fire(HapticStrength.selection);
         nav.select(_order[next]);
       },
       child: child,

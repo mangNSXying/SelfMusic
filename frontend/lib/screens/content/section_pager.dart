@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../../providers/navigation_provider.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../data/local/app_settings.dart';
+import '../../services/haptics.dart';
 import '../../theme/app_theme.dart';
 import '../../utils/interaction_gate.dart';
 import '../../utils/motion.dart';
@@ -218,6 +219,8 @@ class _SectionPagerState extends State<SectionPager>
   }
 
   void _onPageChanged(int i) {
+    // 只有手指拖拽落页才震；顶栏/横滑切换已在触发处反馈，避免重复。
+    if (!_programmatic) Haptics.fire(HapticStrength.selection);
     _applied = i;
     _programmatic = false;
     context.read<NavigationProvider>().select(NavSection.values[i]);

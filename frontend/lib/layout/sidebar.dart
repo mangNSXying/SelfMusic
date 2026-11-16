@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../providers/navigation_provider.dart';
 import '../screens/settings/settings_focus.dart';
 import '../screens/settings/settings_search_index.dart';
+import '../services/haptics.dart';
 import '../theme/app_theme.dart';
 import '../theme/theme_provider.dart';
 import '../utils/app_exit.dart';
@@ -184,7 +185,10 @@ class _SettingsListState extends State<_SettingsList> {
                             .colorScheme
                             .primary
                             .withValues(alpha: 0.12),
-                        onTap: () => _openSection(item),
+                        onTap: () {
+                          Haptics.fire(HapticStrength.selection);
+                          _openSection(item);
+                        },
                       ),
                   ],
                 )
@@ -231,7 +235,10 @@ class _SettingsListState extends State<_SettingsList> {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 11),
             ),
-            onTap: () => _openResult(entry),
+            onTap: () {
+              Haptics.fire(HapticStrength.selection);
+              _openResult(entry);
+            },
           ),
       ],
     );
@@ -253,6 +260,7 @@ class _BottomBar extends StatelessWidget {
           title: const Text('歌曲信息'),
           subtitle: const Text('歌曲信息统计与分布', style: TextStyle(fontSize: 11)),
           onTap: () {
+            Haptics.fire(HapticStrength.selection);
             // 移动端先收起抽屉，再打开内容区工具页。
             if (!isWideWindow(MediaQuery.sizeOf(context))) {
               Scaffold.of(context).closeDrawer();
@@ -268,6 +276,7 @@ class _BottomBar extends StatelessWidget {
           title: const Text('关于软件'),
           subtitle: const Text('版本与反馈', style: TextStyle(fontSize: 11)),
           onTap: () {
+            Haptics.fire(HapticStrength.selection);
             // 移动端先收起抽屉，再打开内容区工具页。
             if (!isWideWindow(MediaQuery.sizeOf(context))) {
               Scaffold.of(context).closeDrawer();

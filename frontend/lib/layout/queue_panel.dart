@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
+import '../services/haptics.dart';
 import '../widgets/count_header.dart';
 import '../widgets/locate_current_button.dart';
 import 'screen_metrics.dart';
@@ -312,7 +313,10 @@ class _QueuePanelState extends State<QueuePanel> {
                     IconButton(
                         icon: const Icon(Icons.close),
                         tooltip: '关闭',
-                        onPressed: widget.onClose),
+                        onPressed: () {
+                          Haptics.fire(HapticStrength.light);
+                          widget.onClose();
+                        }),
                   ],
                 ),
               ),

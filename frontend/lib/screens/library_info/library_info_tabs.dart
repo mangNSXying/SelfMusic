@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../providers/navigation_provider.dart';
+import '../../services/haptics.dart';
 
 /// 歌曲信息工具页的内部页签：总览 / 元数据 / 歌手 / 格式 / 播放。
 ///
@@ -34,7 +35,10 @@ class LibraryInfoTabBar extends StatelessWidget {
           final tab = InkWell(
             key: ValueKey('library-info-tab-${page.name}'),
             borderRadius: BorderRadius.circular(8),
-            onTap: () => onSelect(page),
+            onTap: () {
+              Haptics.fire(HapticStrength.selection);
+              onSelect(page);
+            },
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 14),
               child: Stack(
