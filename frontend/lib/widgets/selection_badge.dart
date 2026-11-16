@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../services/haptics.dart';
+
 /// 多选勾选标记：叠在行首（封面/图标）左上角，列表行与方形卡片共用同一形态。
 ///
 /// 半透明圆形底衬保证叠在封面上也能看清勾；紧凑尺寸（`shrinkWrap` + 紧凑视觉密度）
@@ -14,8 +16,13 @@ class SelectionBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    void fire() {
+      Haptics.fire(HapticStrength.selection);
+      onTap?.call();
+    }
+
     return GestureDetector(
-      onTap: onTap,
+      onTap: onTap == null ? null : fire,
       behavior: HitTestBehavior.opaque,
       child: Material(
         color: cs.surface.withValues(alpha: 0.85),
@@ -24,7 +31,7 @@ class SelectionBadge extends StatelessWidget {
         child: Checkbox(
           tristate: selected == null,
           value: selected,
-          onChanged: (_) => onTap?.call(),
+          onChanged: onTap == null ? null : (_) => fire(),
           materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
           visualDensity: VisualDensity.compact,
           shape: const CircleBorder(),

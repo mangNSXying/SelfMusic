@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../services/haptics.dart';
 import '../utils/cover_thumb.dart';
 import '../utils/motion.dart';
 import 'selection_badge.dart';
@@ -75,8 +76,16 @@ class SquareCard extends StatelessWidget {
             SquareCardGrid.maxItemWidth, MediaQuery.devicePixelRatioOf(context));
     return InkWell(
       borderRadius: BorderRadius.circular(12),
-      onTap: onTap,
-      onLongPress: onLongPress,
+      onTap: () {
+        Haptics.fire(HapticStrength.light);
+        onTap();
+      },
+      onLongPress: onLongPress == null
+          ? null
+          : () {
+              Haptics.fire(HapticStrength.medium);
+              onLongPress!();
+            },
       onSecondaryTapDown: onSecondaryTapDown,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

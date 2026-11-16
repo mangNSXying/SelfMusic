@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 
 import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
+import '../services/haptics.dart';
 import '../utils/lrc_parser.dart';
 import '../utils/lyric_scale.dart';
 import '../utils/zh_variant.dart';
@@ -267,7 +268,10 @@ class _LyricsViewState extends State<LyricsView> {
                   return InkWell(
                     key: _keys[i],
                     borderRadius: BorderRadius.circular(10 * scale),
-                    onTap: () => p.seek(lines[i].time),
+                    onTap: () {
+                      Haptics.fire(HapticStrength.light);
+                      p.seek(lines[i].time);
+                    },
                     child: Padding(
                       padding: EdgeInsets.symmetric(
                           horizontal: 24 * scale,

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../services/haptics.dart';
 import '../theme/app_metrics.dart';
 import '../utils/toggle_cycle.dart';
 import 'row_list.dart';
@@ -69,7 +70,12 @@ class SelectionBar extends StatelessWidget {
               icon: const Icon(Icons.close),
               iconSize: 24 * scale,
               tooltip: '取消选择',
-              onPressed: onCancel,
+              onPressed: onCancel == null
+                  ? null
+                  : () {
+                      Haptics.fire(HapticStrength.light);
+                      onCancel!();
+                    },
             ),
             Text(
               '已选 $selectedCount',
@@ -90,7 +96,11 @@ class SelectionBar extends StatelessWidget {
                 tooltip: '更多操作',
                 icon: const Icon(Icons.more_vert),
                 iconSize: 24 * scale,
-                onSelected: (i) => actions[i].onPressed?.call(),
+                onOpened: () => Haptics.fire(HapticStrength.light),
+                onSelected: (i) {
+                  Haptics.fire(HapticStrength.light);
+                  actions[i].onPressed?.call();
+                },
                 itemBuilder: (c) => [
                   for (var i = 0; i < actions.length; i++)
                     PopupMenuItem(

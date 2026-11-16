@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../services/haptics.dart';
 import '../theme/app_metrics.dart';
 
 /// 列表行、设置行、单选行右侧的紧凑图标按钮。
@@ -26,7 +27,12 @@ class RowActionIconButton extends StatelessWidget {
     return IconButton(
       icon: Icon(icon, size: kRowActionIconSize),
       tooltip: tooltip,
-      onPressed: onPressed,
+      onPressed: onPressed == null
+          ? null
+          : () {
+              Haptics.fire(HapticStrength.light);
+              onPressed!();
+            },
       color: color,
       padding: EdgeInsets.zero,
       splashRadius: kRowActionButtonSize / 2,
@@ -60,7 +66,12 @@ class RowActionTextButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return TextButton(
-      onPressed: onPressed,
+      onPressed: onPressed == null
+          ? null
+          : () {
+              Haptics.fire(HapticStrength.light);
+              onPressed!();
+            },
       style: TextButton.styleFrom(
         minimumSize: const Size(0, kRowActionTextButtonHeight),
         padding: const EdgeInsets.symmetric(horizontal: 8),

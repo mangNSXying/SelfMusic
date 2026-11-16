@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../services/haptics.dart';
+
 /// 歌曲信息页统一的宽度/断点口径。
 const double kInfoContentMaxWidth = 1080;
 const double kInfoTwoColumnMinWidth = 680;
@@ -162,7 +164,15 @@ class InfoCard extends StatelessWidget {
     return Card(
       margin: EdgeInsets.zero,
       clipBehavior: Clip.antiAlias,
-      child: onTap == null ? body : InkWell(onTap: onTap, child: body),
+      child: onTap == null
+          ? body
+          : InkWell(
+              onTap: () {
+                Haptics.fire(HapticStrength.light);
+                onTap!();
+              },
+              child: body,
+            ),
     );
   }
 }
@@ -466,7 +476,10 @@ class LibraryTogglePill extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       borderRadius: BorderRadius.circular(18),
-      onTap: () => onChanged(!selected),
+      onTap: () {
+        Haptics.fire(HapticStrength.selection);
+        onChanged(!selected);
+      },
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 3),
         child: _InfoPill(
@@ -506,7 +519,11 @@ class LibraryFilterButton<T> extends StatelessWidget {
     return PopupMenuButton<T>(
       tooltip: '筛选',
       position: PopupMenuPosition.under,
-      onSelected: onChanged,
+      onOpened: () => Haptics.fire(HapticStrength.light),
+      onSelected: (v) {
+        Haptics.fire(HapticStrength.light);
+        onChanged(v);
+      },
       itemBuilder: (context) => [
         for (final option in options)
           PopupMenuItem<T>(
@@ -573,7 +590,11 @@ class LibrarySortMenu extends StatelessWidget {
     return PopupMenuButton<int>(
       tooltip: '排序',
       position: PopupMenuPosition.under,
-      onSelected: onSelected,
+      onOpened: () => Haptics.fire(HapticStrength.light),
+      onSelected: (v) {
+        Haptics.fire(HapticStrength.light);
+        onSelected(v);
+      },
       itemBuilder: (context) => [
         for (final option in options)
           PopupMenuItem<int>(

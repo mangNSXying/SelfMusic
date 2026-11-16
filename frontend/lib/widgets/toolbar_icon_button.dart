@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../services/haptics.dart';
 import '../theme/app_metrics.dart';
 
 /// 内容页工具条统一图标按钮：固定 [kToolbarButtonSize] 见方、图标
@@ -29,7 +30,12 @@ class ToolbarIconButton extends StatelessWidget {
     return IconButton(
       icon: Icon(icon, size: kToolbarIconSize * scale),
       tooltip: tooltip,
-      onPressed: onPressed,
+      onPressed: onPressed == null
+          ? null
+          : () {
+              Haptics.fire(HapticStrength.light);
+              onPressed!();
+            },
       color: color,
       padding: EdgeInsets.zero,
       visualDensity: VisualDensity.compact,
@@ -84,7 +90,13 @@ class ToolbarPopupMenuButton<T> extends StatelessWidget {
         padding: EdgeInsets.zero,
         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       ),
-      onSelected: onSelected,
+      onOpened: () => Haptics.fire(HapticStrength.light),
+      onSelected: onSelected == null
+          ? null
+          : (v) {
+              Haptics.fire(HapticStrength.light);
+              onSelected!(v);
+            },
       itemBuilder: itemBuilder,
       color: menuColor,
       shape: menuShape,

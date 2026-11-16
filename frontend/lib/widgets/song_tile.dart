@@ -8,6 +8,7 @@ import '../data/sources/music_source.dart';
 import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
+import '../services/haptics.dart';
 import '../utils/cover_thumb.dart';
 import '../utils/duration_format.dart';
 import '../utils/song_title_format.dart';
@@ -187,11 +188,38 @@ class SongTile extends StatelessWidget {
     return PopupMenuButton<String>(
       tooltip: '更多',
       icon: const Icon(Icons.more_vert),
-      onSelected: (v) =>
-          _handleMenuValue(context, direct, favorite, disliked, v),
+      onOpened: () => Haptics.fire(HapticStrength.light),
+      onSelected: (v) {
+        Haptics.fire(HapticStrength.light);
+        _handleMenuValue(context, direct, favorite, disliked, v);
+      },
       itemBuilder: (_) => _menuItems(favorite, disliked),
     );
   }
+
+  /// 行点击：普通态轻触，多选态用更细的 selection 反馈。
+  void _tap() {
+    Haptics.fire(
+        selectionMode ? HapticStrength.selection : HapticStrength.light);
+    if (selectionMode) {
+      onSelect?.call();
+    } else {
+      onPlay();
+    }
+  }
+
+  /// 长按：普通态进入多选、多选态切换勾选，统一 medium；回调为空时保持禁用。
+  VoidCallback? get _longPress =>
+      (selectionMode ? onSelect : onStartSelect) == null
+          ? null
+          : () {
+              Haptics.fire(HapticStrength.medium);
+              if (selectionMode) {
+                onSelect?.call();
+              } else {
+                onStartSelect?.call();
+              }
+            };
 
   /// 菜单项（三点按钮与右键菜单共用）。
   List<PopupMenuEntry<String>> _menuItems(bool favorite, bool disliked) {
@@ -342,6 +370,7 @@ class SongTile extends StatelessWidget {
       items: _menuItems(favorite, disliked),
     );
     if (picked != null && context.mounted) {
+      Haptics.fire(HapticStrength.light);
       _handleMenuValue(context, direct, favorite, disliked, picked);
     }
   }
@@ -458,8 +487,8 @@ class SongTile extends StatelessWidget {
             _menu(context, direct, view.favorite, view.disliked),
         ],
       ),
-      onTap: selectionMode ? onSelect : onPlay,
-      onLongPress: selectionMode ? onSelect : onStartSelect,
+      onTap: _tap,
+      onLongPress: _longPress,
     );
   }
 
@@ -519,8 +548,8 @@ class SongTile extends StatelessWidget {
             ? null
             : _menu(context, direct, view.favorite, view.disliked),
       ),
-      onTap: selectionMode ? onSelect : onPlay,
-      onLongPress: selectionMode ? onSelect : onStartSelect,
+      onTap: _tap,
+      onLongPress: _longPress,
     );
   }
 
@@ -637,8 +666,8 @@ class SongTile extends StatelessWidget {
             if (!selectionMode) _menu(context, direct, favorite, disliked),
           ],
         ),
-        onTap: selectionMode ? onSelect : onPlay,
-        onLongPress: selectionMode ? onSelect : onStartSelect,
+        onTap: _tap,
+        onLongPress: _longPress,
       );
       return GestureDetector(
         // 桌面右键：在指针处弹出与三点按钮相同的菜单；多选态不响应（与隐藏按钮一致）。

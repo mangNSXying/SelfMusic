@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../services/haptics.dart';
 import '../theme/app_metrics.dart';
 
 /// 页面右下角圆角矩形悬浮按钮（歌单/喜欢/播放源的新建入口，歌手页的重新解析入口）。
@@ -30,7 +31,10 @@ class CornerAddButton extends StatelessWidget {
       elevation: 4,
       child: InkWell(
         borderRadius: radius,
-        onTap: onPressed,
+        onTap: () {
+          Haptics.fire(HapticStrength.light);
+          onPressed();
+        },
         child: Tooltip(
           message: tooltip,
           child: Padding(

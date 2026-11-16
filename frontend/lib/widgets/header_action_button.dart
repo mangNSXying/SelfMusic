@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../services/haptics.dart';
 import '../theme/app_metrics.dart';
 
 /// 内容页头部（歌单详情、播放源浏览等）的动作按钮。
@@ -37,16 +38,22 @@ class HeaderActionButton extends StatelessWidget {
               horizontal: kHeaderButtonHorizontalPadding,
             ),
           );
+    final handler = onPressed == null
+        ? null
+        : () {
+            Haptics.fire(HapticStrength.light);
+            onPressed!();
+          };
     return primary
         ? FilledButton.icon(
             style: style,
-            onPressed: onPressed,
+            onPressed: handler,
             icon: icon,
             label: Text(label),
           )
         : OutlinedButton.icon(
             style: style,
-            onPressed: onPressed,
+            onPressed: handler,
             icon: icon,
             label: Text(label),
           );
