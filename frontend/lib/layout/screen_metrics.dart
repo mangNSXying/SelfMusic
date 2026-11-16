@@ -61,6 +61,10 @@ class ScreenMetrics extends InheritedWidget {
   final Size windowSize;
 
   /// 内容区可用宽度（已扣掉侧边栏与队列面板的**目标**宽度）。
+  ///
+  /// **离散目标值**：一次开合只跳一次，是判屏/分栏/表格阈值的唯一口径。
+  /// 连续几何（卡片卡宽补间等）一律用当前 `constraints`，两者不要混用——
+  /// 拿它逐帧驱动卡片列数正是「开关队列时卡片疯狂变大小」的历史根因。
   final double contentWidth;
 
   bool get isWide => isWideWindow(windowSize);

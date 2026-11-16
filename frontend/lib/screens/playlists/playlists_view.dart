@@ -193,6 +193,8 @@ class _PlaylistsViewState extends State<PlaylistsView>
                         controller: _scroll,
                         itemCount: playlists.length,
                         titleMaxLines: 2,
+                        // 终态宽：开合队列/侧栏时卡宽走补间，不逐帧锯齿。
+                        targetWidth: ScreenMetrics.of(context).contentWidth,
                         itemBuilder: (c, i) =>
                             _playlistCard(provider, playlists[i]),
                       )

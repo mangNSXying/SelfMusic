@@ -721,8 +721,19 @@ abstract class MusicSource {
 | 外壳 | `widgets/row_list.dart` 的 `RowList` | 唯一固定行高列表外壳：统一 `itemExtent`、分隔线缩进、末行不带线、可选下拉刷新 |
 | 表格 | `widgets/song_table.dart` / `song_table_sliver.dart` | 宽列表表头、列几何与两种外壳（普通 `SongTableList` / sliver `SliverSongTable`）；行仍由 `SongTile` 渲染 |
 | 行 | `widgets/song_list.dart` 的 `SongTile` | 唯一歌曲行：封面 + 标题 + 副标题 + 时长/菜单；宽列表走 9 列表格分支；集合类行（歌单 / 专辑 / 歌手 / 播放源）用 `ListTile` + `CoverThumb` |
-| 卡片 | `widgets/square_card.dart` 的 `SquareCard`/`SquareCardGrid` | 唯一方形卡片：封面恒 1:1（列宽按可用宽度算，不写死 `childAspectRatio`）、标题 2 行上限、按「最大宽 × 设备像素比」降采样解码 |
+| 卡片 | `widgets/square_card.dart` 的 `SquareCard`/`SquareCardGrid` | 唯一方形卡片：封面恒 1:1（不写死 `childAspectRatio`）、标题 2 行上限、按档位降采样解码（见下条） |
 | 多选 | `widgets/list_selection.dart` 的 `Selection<T>` + `widgets/selection_bar.dart` | 选择状态内核与批量栏；勾选标记统一 `widgets/selection_badge.dart` |
+
+**卡宽与列数解耦（`SquareCardGrid`）**：卡宽 `itemW` 由 `kPageMotion` 补间驱动（**连续**），列数
+`cols = floor((可用宽 + gap) / (itemW + gap))` 由当前卡宽反推（**离散**），网格自身宽度按
+`2*sidePadding + cols*itemW + (cols-1)*gap` 显式给出。禁止再用
+`cols = ceil((avail+gap)/(220+gap))` 反算 `itemW`——那是卡宽锯齿的根因（侧栏/队列 300ms 伸缩期间
+内容区逐帧变窄，1020→660 会走过 `173 → 220 → 161 → 220 → 198.7`，两次 +27%/+36% 暴涨）；
+也禁止把 `decodeWidth` 直接绑到逐像素的 `itemW`（每帧换 ImageCache key → 每帧重解码 → 封面闪白）。
+解码宽一律走 `squareCardDecodeWidth(itemWidth, dpr)` 的 32px 档位量化，`Image` 恒开 `gaplessPlayback`。
+页面侧通过 `SquareCardGrid(targetWidth: ScreenMetrics.of(context).contentWidth)` 下发终态宽——
+它是离散值（一次开合只跳一次），仅用于判断"是否发生了足以补间的跳变"，实际布局仍看实时约束，
+所以窗口拖拽跟手、补间被打断也能无缝接续。回归：`test/square_card_grid_motion_test.dart`。
 
 几何常量（`row_list.dart`，改动须同步 `playlists_view_test` 的 `itemExtent` 断言）：`kRowHeight=72`、`kRowSeparatorHeight=1`、`kRowExtent=73`、`kRowDividerIndent=72`、`kListHeaderHeight=48`。
 

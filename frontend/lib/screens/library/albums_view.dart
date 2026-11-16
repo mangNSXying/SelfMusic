@@ -129,6 +129,8 @@ class _AlbumsViewState extends State<AlbumsView>
                       child: SquareCardGrid(
                         controller: _scroll,
                         itemCount: albums.length,
+                        // 终态宽：开合队列/侧栏时卡宽走补间，不逐帧锯齿。
+                        targetWidth: ScreenMetrics.of(context).contentWidth,
                         itemBuilder: (c, i) => AlbumCard(album: albums[i]),
                       ),
                     )
