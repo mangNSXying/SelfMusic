@@ -16,6 +16,7 @@ import AvSessionBridge from '../media/AvSessionBridge';
 import EmailShareBridge from '../platform/EmailShareBridge';
 import GlobalHotkeyBridge from '../platform/GlobalHotkeyBridge';
 import PlatformBridge from '../platform/PlatformBridge';
+import VibrationBridge from '../platform/VibrationBridge';
 
 const TAG = 'SelfMusicBoot';
 /** 与 Dart 侧（ohos_bootstrap.dart）约定的启动上报通道。 */
@@ -111,6 +112,7 @@ export default class EntryAbility extends FlutterAbility {
   private globalHotkeyBridge: GlobalHotkeyBridge | null = null;
   private audioGuardBridge: AudioGuardBridge | null = null;
   private emailShareBridge: EmailShareBridge | null = null;
+  private vibrationBridge: VibrationBridge | null = null;
 
   configureFlutterEngine(flutterEngine: FlutterEngine): void {
     super.configureFlutterEngine(flutterEngine)
@@ -127,6 +129,9 @@ export default class EntryAbility extends FlutterAbility {
     // 反馈附件桥（反馈携带日志：systemShare 分享面板，selfmusic/email）。
     this.emailShareBridge = new EmailShareBridge(this.context);
     this.emailShareBridge.setup(flutterEngine)
+    // 触感反馈（设置→界面→交互，com.shamiko.selfmusic/vibration，与 Android 同名）。
+    this.vibrationBridge = new VibrationBridge();
+    this.vibrationBridge.setup(flutterEngine)
     // 静音暂停/断连暂停信号源（com.shamiko.selfmusic/audio_guard，与 Android 同名通道）。
     this.audioGuardBridge = new AudioGuardBridge();
     this.audioGuardBridge.setup(flutterEngine)
@@ -177,6 +182,10 @@ export default class EntryAbility extends FlutterAbility {
     if (this.emailShareBridge) {
       this.emailShareBridge.shutdown();
       this.emailShareBridge = null;
+    }
+    if (this.vibrationBridge) {
+      this.vibrationBridge.shutdown();
+      this.vibrationBridge = null;
     }
     super.onDestroy();
   }

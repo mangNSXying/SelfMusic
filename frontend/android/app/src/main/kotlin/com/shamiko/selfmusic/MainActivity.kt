@@ -34,10 +34,14 @@ class MainActivity : AudioServiceActivity() {
     // 进程级单例：Activity 重建时不丢 AudioEffect。
     private val equalizer: EqualizerController by lazy { EqualizerController.shared() }
 
+    // 触感反馈（settings.md §3.7，com.shamiko.selfmusic/vibration 通道）。
+    private val vibration: VibrationController by lazy { VibrationController(this) }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         audioGuard.register(flutterEngine.dartExecutor.binaryMessenger)
         equalizer.register(flutterEngine.dartExecutor.binaryMessenger)
+        vibration.register(flutterEngine.dartExecutor.binaryMessenger)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {

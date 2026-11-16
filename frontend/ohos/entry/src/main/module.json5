@@ -42,6 +42,8 @@
     "requestPermissions": [
       {"name" :  "ohos.permission.INTERNET"},
       {"name" :  "ohos.permission.KEEP_BACKGROUND_RUNNING"},
+      // 触感反馈（设置→界面→交互）：system_grant，免弹窗。
+      {"name" :  "ohos.permission.VIBRATE"},
       // 目录选择器持久化授权（API 12+ normal/system_grant，免弹窗）：
       // pickDirectory 当场 persistPermission + 重启后 activatePermission。
       {"name" :  "ohos.permission.FILE_ACCESS_PERSIST"},

@@ -2,6 +2,7 @@
 // ignore_for_file: prefer_const_constructors
 
 import '../../platform/desktop_tray.dart';
+import '../../services/haptics.dart';
 import '../../theme/app_theme.dart';
 import 'settings_focus.dart';
 
@@ -121,6 +122,13 @@ final List<SettingsSearchEntry> settingsSearchEntries = [
     group: '交互',
     label: '长按组头',
     aliases: ['长按展开', '折叠', '多选', '长按'],
+  ),
+  SettingsSearchEntry(
+    section: SettingsItem.appearance,
+    group: '交互',
+    label: '震动反馈',
+    aliases: ['振动', '触感', '触觉反馈', 'haptic'],
+    visible: () => Haptics.capable,
   ),
 
   // ── 播放 ──────────────────────────────────────────────────────────────

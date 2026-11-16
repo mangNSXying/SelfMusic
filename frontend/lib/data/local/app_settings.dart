@@ -324,6 +324,10 @@ class AppSettings {
   /// 多选 / 全部展开 / 全部折叠始终可用列表工具条图标。
   static const String kLongPressCollapseGroups = 'long_press_collapse_groups';
 
+  /// 触感反馈（设置→界面→交互，默认开）：按键/滑杆落点/列表点击等轻震动。
+  /// 依赖具体设备的马达，属设备本地项，不随设置导出/同步，故不进 [knownKeys]。
+  static const String kHapticFeedback = 'haptic_feedback';
+
   /// 日志导出时长（设置→常规→日志，单位分钟，1~30，默认 1）。
   /// 作用于「关于软件」的收集日志与反馈附件。
   static const String kLogExportMinutes = 'log_export_minutes';
@@ -1124,6 +1128,12 @@ class AppSettings {
       (index.settingsGet(kLongPressCollapseGroups) ?? '0') == '1';
   set longPressCollapseGroups(bool v) =>
       _syncedSet(kLongPressCollapseGroups, v ? '1' : '0');
+
+  /// 触感反馈（默认开）：无马达设备由 Haptics 探测后自动失效。
+  bool get hapticFeedback =>
+      (index.settingsGet(kHapticFeedback) ?? '1') == '1';
+  set hapticFeedback(bool v) =>
+      index.settingsSet(kHapticFeedback, v ? '1' : '0');
 
   /// 日志导出时长（分钟，1~30，默认 1）：收集日志与反馈附件的导出范围。
   int get logExportMinutes =>

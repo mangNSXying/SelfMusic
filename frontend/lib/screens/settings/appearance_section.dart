@@ -10,6 +10,7 @@ import '../../data/local/app_settings.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../providers/player_provider.dart';
 import '../../services/custom_font_service.dart';
+import '../../services/haptics.dart';
 import '../../services/ttc_font.dart';
 import '../../theme/app_theme.dart';
 import '../../theme/theme_provider.dart';
@@ -37,6 +38,17 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
   late AppSettings _settings;
   bool _fontBusy = false;
   bool _zhBusy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // 马达探测异步完成后再决定开关行可用态；桌面端整行不渲染。
+    if (Haptics.capable) {
+      Haptics.probe().then((_) {
+        if (mounted) setState(() {});
+      });
+    }
+  }
 
   @override
   void didChangeDependencies() {
@@ -296,6 +308,23 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
             },
           ),
         ),
+        if (Haptics.capable)
+          _anchor(
+            '震动反馈',
+            SettingsTile.toggle(
+              title: '震动反馈',
+              value: _settings.hapticFeedback,
+              // 无马达设备置灰（探测完成前先按可用处理）。
+              onChanged: Haptics.hasVibrator
+                  ? (v) {
+                      setState(() => _settings.hapticFeedback = v);
+                      Haptics.enabled = v;
+                      // 开启时立即给一次示例触感。
+                      if (v) Haptics.fire(HapticStrength.light);
+                    }
+                  : null,
+            ),
+          ),
       ],
     );
   }

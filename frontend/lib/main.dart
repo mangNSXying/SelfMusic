@@ -16,6 +16,7 @@ import 'platform/harmonyos/ohos_media_session.dart';
 import 'services/api_client.dart';
 import 'services/audio_focus_monitor.dart';
 import 'services/custom_font_service.dart';
+import 'services/haptics.dart';
 import 'services/log_buffer.dart';
 import 'services/server_settings.dart';
 import 'services/selfmusic_audio_handler.dart';
@@ -117,6 +118,10 @@ Future<void> main() async {
 
     final direct = DirectSourceManager();
     await direct.init();
+    // 触感反馈（设置→界面→交互）：开关值与马达能力在首帧前就位，
+    // 避免首个点击晚于异步探测；无马达/桌面由 Haptics 内部静默降级。
+    Haptics.enabled = direct.settings.hapticFeedback;
+    unawaited(Haptics.probe());
     // 桌面端窗口几何记忆：首帧前恢复上次的尺寸/位置（首次启动居中），避免
     // 每次冷启动都以窗口化状态落在左上角；Windows 的最大化推迟到首帧后
     //（见首帧后启动块与 DesktopWindowState.restore 的说明）。
