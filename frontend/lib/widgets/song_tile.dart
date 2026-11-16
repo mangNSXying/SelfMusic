@@ -198,14 +198,15 @@ class SongTile extends StatelessWidget {
   }
 
   /// 行点击：普通态轻触，多选态用更细的 selection 反馈。
-  void _tap() {
-    Haptics.fire(
-        selectionMode ? HapticStrength.selection : HapticStrength.light);
-    if (selectionMode) {
-      onSelect?.call();
-    } else {
-      onPlay();
-    }
+  /// 回调为空时保持原禁用语义（不能因为包了触感就变成可点）。
+  VoidCallback? get _tap {
+    final handler = selectionMode ? onSelect : onPlay;
+    if (handler == null) return null;
+    return () {
+      Haptics.fire(
+          selectionMode ? HapticStrength.selection : HapticStrength.light);
+      handler();
+    };
   }
 
   /// 长按：普通态进入多选、多选态切换勾选，统一 medium；回调为空时保持禁用。
