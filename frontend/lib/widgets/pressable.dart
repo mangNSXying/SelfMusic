@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../services/haptics.dart';
+
 /// 全 APP 统一按压反馈（改进 B6-U2）：水波纹 + 轻微缩放。
 ///
 /// IconButton / ListTile 保持原生水波纹；自定义大按钮（播放/切歌等）
@@ -40,7 +42,12 @@ class _PressableState extends State<Pressable> {
       type: MaterialType.transparency,
       child: InkWell(
         borderRadius: widget.borderRadius,
-        onTap: widget.onPressed,
+        onTap: widget.onPressed == null
+            ? null
+            : () {
+                Haptics.fire(HapticStrength.light);
+                widget.onPressed!();
+              },
         onHighlightChanged: (v) {
           if (mounted) setState(() => _down = v);
         },

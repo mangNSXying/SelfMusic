@@ -10,6 +10,7 @@ import '../../layout/player_metrics.dart';
 import '../../models/song.dart';
 import '../../providers/player_provider.dart';
 import '../../providers/direct_source_manager.dart';
+import '../../services/haptics.dart';
 import '../../utils/duration_format.dart';
 import '../../utils/song_title_format.dart';
 import '../../utils/zh_variant.dart';
@@ -374,6 +375,7 @@ class ToolRow extends StatelessWidget {
           color: favorite ? Colors.pink : cs.onSurface.withValues(alpha: 0.55),
           icon: Icon(favorite ? Icons.favorite : Icons.favorite_border),
           onPressed: () {
+            Haptics.fire(HapticStrength.light);
             direct.setFavorite(s, !favorite);
             if (favorite) {
               context
@@ -390,6 +392,7 @@ class ToolRow extends StatelessWidget {
               disliked ? Colors.orange : cs.onSurface.withValues(alpha: 0.55),
           icon: Icon(disliked ? Icons.thumb_down : Icons.thumb_down_outlined),
           onPressed: () {
+            Haptics.fire(HapticStrength.light);
             direct.setDisliked(s, !disliked);
             AppToast.show(!disliked ? '已标记不喜欢，权重降到 0.1' : '已取消不喜欢',
                 isError: false);
@@ -400,14 +403,20 @@ class ToolRow extends StatelessWidget {
           tooltip: '编辑歌单',
           color: cs.onSurface.withValues(alpha: 0.55),
           icon: const Icon(Icons.playlist_add_check),
-          onPressed: () => showEditPlaylistsSheet(context, s),
+          onPressed: () {
+            Haptics.fire(HapticStrength.light);
+            showEditPlaylistsSheet(context, s);
+          },
         ),
         IconButton(
           iconSize: 22 * scale,
           tooltip: cached ? '已缓存（可离线播放）' : '缓存歌曲',
           color: cached ? cs.primary : cs.onSurface.withValues(alpha: 0.55),
           icon: const Icon(Icons.download_outlined),
-          onPressed: () => _cache(context, s),
+          onPressed: () {
+            Haptics.fire(HapticStrength.light);
+            _cache(context, s);
+          },
         ),
         AppVolumeButton(player: player, scale: scale),
       ],
@@ -473,7 +482,10 @@ class SleepButton extends StatelessWidget {
       color: active ? cs.primary : cs.onSurface.withValues(alpha: 0.7),
       tooltip: '睡眠定时${active && summary != null ? '：$summary' : ''}',
       icon: Icon(active ? Icons.bedtime : Icons.bedtime_outlined),
-      onPressed: () => showSleepTimerDialog(context),
+      onPressed: () {
+        Haptics.fire(HapticStrength.light);
+        showSleepTimerDialog(context);
+      },
     );
   }
 }

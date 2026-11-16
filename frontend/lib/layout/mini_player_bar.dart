@@ -8,6 +8,7 @@ import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
+import '../services/haptics.dart';
 import '../theme/app_theme.dart';
 import '../utils/cover_thumb.dart';
 import '../utils/song_title_format.dart';
@@ -252,7 +253,10 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
     return Material(
       color: cs.surface,
       child: InkWell(
-        onTap: () => nav.select(NavSection.sources),
+        onTap: () {
+          Haptics.fire(HapticStrength.light);
+          nav.select(NavSection.sources);
+        },
         child: Container(
           height: kMiniPlayerBarHeight,
           padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -299,6 +303,7 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
     final t = compactTransportMetrics(barWidth);
     return InkWell(
       onTap: () {
+        Haptics.fire(HapticStrength.light);
         if (!nav.playerView) nav.openPlayer();
       },
       child: Container(
@@ -501,7 +506,10 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
             ? cs.primary
             : (inactiveColor ?? cs.onSurface.withValues(alpha: 0.62)),
         tooltip: '播放队列',
-        onPressed: () => toggleQueuePanel(context),
+        onPressed: () {
+          Haptics.fire(HapticStrength.light);
+          toggleQueuePanel(context);
+        },
       ),
     );
   }
@@ -520,7 +528,10 @@ class _MiniPlayerBarState extends State<MiniPlayerBar> {
     );
     if (onTap == null) return row;
     return InkWell(
-      onTap: onTap,
+      onTap: () {
+        Haptics.fire(HapticStrength.light);
+        onTap();
+      },
       borderRadius: BorderRadius.circular(10),
       child: row,
     );

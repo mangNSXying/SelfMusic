@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import '../../providers/player_provider.dart';
 import '../../providers/navigation_provider.dart';
 import '../../providers/playlists_provider.dart';
+import '../../services/haptics.dart';
 import '../../widgets/corner_add_button.dart';
 import '../../widgets/playlist_song_picker.dart';
 import '../../widgets/song_list.dart';
@@ -74,7 +75,10 @@ class BackToContentButton extends StatelessWidget {
           iconSize: 26,
           visualDensity: VisualDensity.compact,
           icon: const Icon(Icons.keyboard_arrow_down_rounded),
-          onPressed: () => context.read<NavigationProvider>().closePlayer(),
+          onPressed: () {
+            Haptics.fire(HapticStrength.light);
+            context.read<NavigationProvider>().closePlayer();
+          },
         ),
       ),
     );

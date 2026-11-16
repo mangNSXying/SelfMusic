@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../providers/player_provider.dart';
+import '../services/haptics.dart';
 import '../utils/duration_format.dart';
 import 'app_toast.dart';
 import 'pressable.dart';
@@ -46,6 +47,7 @@ class ModeButton extends StatelessWidget {
       tooltip: '播放模式：${_label(m)}（点击切换）',
       icon: Icon(_icon(m)),
       onPressed: () {
+        Haptics.fire(HapticStrength.light);
         final next = PlayMode.values[(m.index + 1) % PlayMode.values.length];
         player.setMode(next);
         AppToast.show('播放模式：${_label(next)}', isError: false);
@@ -190,6 +192,7 @@ class _PlayerSeekState extends State<PlayerSeek> {
             value: shown,
             onChanged: (v) => setState(() => _dragValue = v),
             onChangeEnd: (v) {
+              Haptics.fire(HapticStrength.light);
               setState(() => _dragValue = null);
               widget.player.seek(Duration(milliseconds: v.toInt()));
             },
