@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../services/haptics.dart';
+
 /// 单选列表弹窗（设置页各选项共用）。
 ///
 /// [asRadio] = true 使用 `RadioListTile`（选中即关闭）；false 使用
@@ -24,7 +26,10 @@ Future<T?> showSingleChoiceDialog<T>({
             RadioGroup<T>(
               groupValue: current,
               onChanged: (v) {
-                if (v != null) Navigator.of(c).pop(v);
+                if (v != null) {
+                  Haptics.fire(HapticStrength.selection);
+                  Navigator.of(c).pop(v);
+                }
               },
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -46,7 +51,10 @@ Future<T?> showSingleChoiceDialog<T>({
         children: [
           for (final v in values)
             SimpleDialogOption(
-              onPressed: () => Navigator.of(c).pop(v),
+              onPressed: () {
+                Haptics.fire(HapticStrength.selection);
+                Navigator.of(c).pop(v);
+              },
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 6),
                 child: Row(

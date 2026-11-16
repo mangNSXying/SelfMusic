@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../services/haptics.dart';
 import 'app_dialog_actions.dart';
 
 /// 滚轮的一列：只负责展示文案，值由 [showWheelPickerDialog] 的 resultOf 反算。
@@ -194,6 +195,7 @@ class _WheelPickerDialogState<T> extends State<_WheelPickerDialog<T>> {
 
   void _select(int next) {
     if (next == _indices[_activeColumn]) return;
+    Haptics.fire(HapticStrength.selection);
     setState(() => _indices[_activeColumn] = next);
     final controller = _controllers[_activeColumn];
     if (!controller.hasClients) return;
@@ -248,6 +250,7 @@ class _WheelPickerDialogState<T> extends State<_WheelPickerDialog<T>> {
                             magnification: 1.15,
                             onSelectedItemChanged: (i) {
                               if (_indices[c] != i) {
+                                Haptics.fire(HapticStrength.selection);
                                 setState(() => _indices[c] = i);
                               }
                             },

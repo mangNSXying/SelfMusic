@@ -9,6 +9,7 @@ import '../../providers/player_provider.dart';
 import '../../services/bluetooth_service.dart';
 import '../../services/equalizer/equalizer_service.dart';
 import '../../services/equalizer/equalizer_types.dart';
+import '../../services/haptics.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
@@ -194,6 +195,7 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
                       '${(_settings.fadeDurationMs / 1000).toStringAsFixed(1)} 秒',
                   onChanged: (v) => setState(
                       () => _settings.fadeDurationMs = (v * 1000).round()),
+                  onChangeEnd: (_) => Haptics.fire(HapticStrength.light),
                 ),
               ),
             ],
@@ -214,6 +216,7 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
                 tooltip: _settings.appVolume == 0 ? '取消静音' : '静音',
                 icon: AppVolumeIcon(volume: _settings.appVolume),
                 onPressed: () {
+                  Haptics.fire(HapticStrength.light);
                   setState(() =>
                       context.read<PlayerProvider>().toggleAppVolumeMute());
                 },
@@ -231,6 +234,7 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
                       context.read<PlayerProvider>().setAppVolume(v.round());
                     });
                   },
+                  onChangeEnd: (_) => Haptics.fire(HapticStrength.light),
                 ),
               ),
               SizedBox(
@@ -439,7 +443,10 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
                     player.setEqPreamp(v);
                     setState(() {});
                   },
-                  onChangeEnd: (_) => player.flushEqualizer(),
+                  onChangeEnd: (_) {
+                    Haptics.fire(HapticStrength.light);
+                    player.flushEqualizer();
+                  },
                 ),
               ),
               SizedBox(
@@ -488,7 +495,10 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
                           player.setEqBand(i, v);
                           setState(() {});
                         },
-                        onChangeEnd: (_) => player.flushEqualizer(),
+                        onChangeEnd: (_) {
+                          Haptics.fire(HapticStrength.light);
+                          player.flushEqualizer();
+                        },
                       ),
                     ),
                     SizedBox(

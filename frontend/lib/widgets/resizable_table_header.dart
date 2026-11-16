@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../services/haptics.dart';
 import 'table_columns.dart';
 
 /// 通用表头：标题、排序箭头、可拖拽的列分隔线。
@@ -194,7 +195,10 @@ class _ResizeHandleState extends State<_ResizeHandle> {
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onHorizontalDragUpdate: _onDrag,
-        onHorizontalDragEnd: (_) => widget.onCommitted?.call(_latest),
+        onHorizontalDragEnd: (_) {
+          Haptics.fire(HapticStrength.light);
+          widget.onCommitted?.call(_latest);
+        },
         onDoubleTap: widget.onReset,
         // 热区不可见：不画列间分割线，只保留 resize 光标与拖拽。
         child: const SizedBox.expand(),

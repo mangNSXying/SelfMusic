@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../services/haptics.dart';
 import '../theme/app_metrics.dart';
 
 /// 单选组中的一个选项。
@@ -47,7 +48,12 @@ class SingleChoiceGroup<T> extends StatelessWidget {
               key: ValueKey(option.value),
               option: option,
               selected: option.value == value,
-              onTap: onChanged == null ? null : () => onChanged!(option.value),
+              onTap: onChanged == null
+                  ? null
+                  : () {
+                      Haptics.fire(HapticStrength.selection);
+                      onChanged!(option.value);
+                    },
             ),
         ],
       ),

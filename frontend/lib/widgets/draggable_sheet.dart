@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../services/haptics.dart';
 import '../utils/motion.dart';
 import 'count_header.dart';
 import 'row_list.dart';
@@ -348,7 +349,10 @@ class AppSheetTitleBar extends StatelessWidget {
                     IconButton(
                       icon: const Icon(Icons.close),
                       tooltip: '关闭',
-                      onPressed: () => AppSheetScope.closeOf(context),
+                      onPressed: () {
+                        Haptics.fire(HapticStrength.light);
+                        AppSheetScope.closeOf(context);
+                      },
                     ),
                 ],
               ),

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../services/equalizer/equalizer_types.dart';
+import '../services/haptics.dart';
 
 /// 均衡器频响曲线编辑器：对数频率轴 + 10 个固定频段节点，上下拖动调增益。
 ///
@@ -37,6 +38,7 @@ class _EqCurveEditorState extends State<EqCurveEditor> {
     final index = EqCurveGeometry.nearestBandIndex(dx, size);
     final db = EqCurveGeometry.gainForY(dy, size);
     if (index == null) return;
+    if (index != _selected) Haptics.fire(HapticStrength.selection);
     setState(() => _selected = index);
     widget.onChanged(index, db);
   }
@@ -55,8 +57,14 @@ class _EqCurveEditorState extends State<EqCurveEditor> {
             onTapDown: (d) => _update(size, d.localPosition),
             onPanStart: (d) => _update(size, d.localPosition),
             onPanUpdate: (d) => _update(size, d.localPosition),
-            onPanEnd: (_) => widget.onCommit?.call(),
-            onTapUp: (_) => widget.onCommit?.call(),
+            onPanEnd: (_) {
+              Haptics.fire(HapticStrength.light);
+              widget.onCommit?.call();
+            },
+            onTapUp: (_) {
+              Haptics.fire(HapticStrength.light);
+              widget.onCommit?.call();
+            },
             child: CustomPaint(
               size: size,
               painter: _EqCurvePainter(

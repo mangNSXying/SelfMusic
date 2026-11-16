@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../services/haptics.dart';
+
 /// 设置页统一行：左侧上为名称、下为解释，右侧为当前设置。
 ///
 /// 右侧只有三种语义：
@@ -28,7 +30,15 @@ class SettingsTile extends StatelessWidget {
       key: key,
       title: title,
       description: description,
-      trailing: Switch(value: value, onChanged: onChanged),
+      trailing: Switch(
+        value: value,
+        onChanged: onChanged == null
+            ? null
+            : (v) {
+                Haptics.fire(HapticStrength.light);
+                onChanged(v);
+              },
+      ),
       onTap: onChanged == null ? null : () => onChanged(!value),
       enabled: onChanged != null,
     );
@@ -123,7 +133,13 @@ class SettingsTile extends StatelessWidget {
     );
 
     if (onTap == null || !enabled) return row;
-    return InkWell(onTap: onTap, child: row);
+    return InkWell(
+      onTap: () {
+        Haptics.fire(HapticStrength.light);
+        onTap!();
+      },
+      child: row,
+    );
   }
 }
 
