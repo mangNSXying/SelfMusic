@@ -82,29 +82,61 @@ class _AppSheetRouteBody extends StatefulWidget {
 class _AppSheetRouteBodyState extends State<_AppSheetRouteBody> {
   final DraggableScrollableController _sheet = DraggableScrollableController();
 
+  /// 本弹层的 Modal 路由（关闭前据此确认仍在栈顶，见 [_close]）。
+  ModalRoute<dynamic>? _route;
+
+  /// 已触发关闭：下限通知、标题栏下甩、关闭按钮可能在同一段手势里先后到达。
+  /// 关闭只放行一次——多余的那次 `Navigator.pop` 会落到下面的页面；首页被
+  /// 弹掉后只剩空 Navigator（整屏变黑，历史反馈）。
+  bool _dismissing = false;
+
   @override
   void dispose() {
     _sheet.dispose();
     super.dispose();
   }
 
+  /// 下限关闭：拖到 `minChildSize` 即收起（与悬浮层 [_SheetOverlay] 同一口径）。
+  /// 框架的 `shouldCloseOnMinExtent` 已关掉，关闭通道只保留本组件这一条。
+  bool _onSheetExtent(DraggableScrollableNotification n) {
+    if (!_dismissing && n.extent <= n.minExtent + 1e-3) _close();
+    return false;
+  }
+
+  /// 关闭本弹层路由（幂等）：只在本路由仍是栈顶时 pop。已经进入下限/下甩
+  /// 关闭的退场动画时静默忽略，避免重复 pop 弹掉底层页面。
+  void _close() {
+    if (_dismissing || !mounted) return;
+    final route = _route;
+    if (route == null || !route.isCurrent) return;
+    setState(() => _dismissing = true);
+    Navigator.of(context).pop();
+  }
+
   @override
   Widget build(BuildContext context) {
     final config = widget.config;
-    return DraggableScrollableSheet(
-      controller: _sheet,
-      expand: false,
-      initialChildSize: config.initialChildSize,
-      minChildSize: config.minChildSize,
-      maxChildSize: config.maxChildSize,
-      snap: config.snap,
-      snapSizes: config.snapSizes,
-      // 路由版关闭通道：pop 本弹层路由（悬浮层版由 [AppSheetLauncher] 注入）。
-      builder: (c, scrollCtrl) => AppSheetScope(
-        close: () => Navigator.of(c).pop(),
+    _route = ModalRoute.of(context);
+    return NotificationListener<DraggableScrollableNotification>(
+      onNotification: _onSheetExtent,
+      child: DraggableScrollableSheet(
         controller: _sheet,
-        minSize: config.minChildSize,
-        child: widget.builder(c, scrollCtrl),
+        expand: false,
+        initialChildSize: config.initialChildSize,
+        minChildSize: config.minChildSize,
+        maxChildSize: config.maxChildSize,
+        snap: config.snap,
+        snapSizes: config.snapSizes,
+        // 下限关闭由本组件统一发起（[_onSheetExtent]），不让框架再 pop 一次。
+        shouldCloseOnMinExtent: false,
+        // 路由版关闭通道：pop 本弹层路由（悬浮层版由 [AppSheetLauncher] 注入）。
+        builder: (c, scrollCtrl) => AppSheetScope(
+          close: _close,
+          controller: _sheet,
+          minSize: config.minChildSize,
+          dismissing: _dismissing,
+          child: widget.builder(c, scrollCtrl),
+        ),
       ),
     );
   }
