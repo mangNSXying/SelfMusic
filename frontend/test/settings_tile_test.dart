@@ -147,4 +147,21 @@ void main() {
     await tester.pump();
     expect(tapped, isFalse);
   });
+
+  testWidgets('状态行：leading 图标在标题左侧', (tester) async {
+    await pump(
+      tester,
+      const SettingsTile(
+        leading: Icon(Icons.verified_outlined),
+        title: '已配对',
+        description: 'https://192.168.1.10:18443',
+        trailing: SettingsValueText('设置'),
+      ),
+    );
+
+    final iconX = tester.getTopLeft(find.byIcon(Icons.verified_outlined)).dx;
+    final titleX = tester.getTopLeft(find.text('已配对')).dx;
+    expect(iconX, lessThan(titleX), reason: '图标在标题左侧');
+    expect(find.text('https://192.168.1.10:18443'), findsOneWidget);
+  });
 }

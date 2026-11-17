@@ -13,6 +13,8 @@ class SettingsTile extends StatelessWidget {
     super.key,
     required this.title,
     this.description,
+    this.descriptionColor,
+    this.leading,
     this.trailing,
     this.onTap,
     this.enabled = true,
@@ -85,6 +87,12 @@ class SettingsTile extends StatelessWidget {
 
   final String title;
   final String? description;
+
+  /// 解释文本的强调色（例如失败态）；为空时使用默认弱色。
+  final Color? descriptionColor;
+
+  /// 标题列左侧的图标/状态指示；为空时行布局与原先一致。
+  final Widget? leading;
   final Widget? trailing;
   final VoidCallback? onTap;
   final bool enabled;
@@ -95,8 +103,9 @@ class SettingsTile extends StatelessWidget {
     final textTheme = Theme.of(context).textTheme;
     final titleColor =
         enabled ? cs.onSurface : cs.onSurface.withValues(alpha: 0.38);
-    final descColor =
-        enabled ? cs.onSurfaceVariant : cs.onSurface.withValues(alpha: 0.38);
+    final descColor = enabled
+        ? (descriptionColor ?? cs.onSurfaceVariant)
+        : cs.onSurface.withValues(alpha: 0.38);
 
     final row = Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -104,6 +113,10 @@ class SettingsTile extends StatelessWidget {
         constraints: const BoxConstraints(minHeight: 40),
         child: Row(
           children: [
+            if (leading != null) ...[
+              leading!,
+              const SizedBox(width: 12),
+            ],
             Expanded(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
