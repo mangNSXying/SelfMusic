@@ -335,4 +335,9 @@ class ApiClient {
   Future<void> revokeDevice(int id) async {
     await dio.delete('/api/v1/admin/devices/$id');
   }
+
+  /// 永久删除已吊销设备记录（服务端只允许 revoked=true 的记录）。
+  Future<void> purgeDevice(int id) async {
+    await dio.delete('/api/v1/admin/devices/$id/purge');
+  }
 }
