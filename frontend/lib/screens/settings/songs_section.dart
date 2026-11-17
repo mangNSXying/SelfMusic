@@ -10,8 +10,8 @@ import '../../providers/direct_source_manager.dart';
 import '../../services/artist_resolver.dart';
 import '../../theme/app_theme.dart';
 import '../../utils/format_bytes.dart';
-import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
+import '../../widgets/confirm_dialog.dart';
 import '../../widgets/row_action_button.dart';
 import '../../widgets/settings_layout.dart';
 import '../../widgets/settings_section_header.dart';
@@ -205,21 +205,14 @@ class _SongsSettingsState extends State<SongsSection> {
             description: '忽略已有结果，全部重新拉取',
             label: '开始',
             onTap: () async {
-              final ok = await showDialog<bool>(
-                context: context,
-                builder: (c) => AlertDialog(
-                  title: const Text('确认强制解析全部歌手？'),
-                  content: const Text(
-                      '会把所有歌手（含已解析成功的）重新拉取一遍，并重新展开组合成员。请求受 MusicBrainz 限流，需要一定时间。'),
-                  actions: appDialogActions(
-                    c,
-                    confirmLabel: '开始',
-                    onCancel: () => Navigator.of(c).pop(false),
-                    onConfirm: () => Navigator.of(c).pop(true),
-                  ),
-                ),
+              final ok = await showConfirmDialog(
+                context,
+                title: '确认强制解析全部歌手？',
+                content:
+                    '会把所有歌手（含已解析成功的）重新拉取一遍，并重新展开组合成员。请求受 MusicBrainz 限流，需要一定时间。',
+                confirmLabel: '开始',
               );
-              if (ok != true || !context.mounted) return;
+              if (!ok || !context.mounted) return;
               await context.read<ArtistResolver>().forceRetryAll();
               if (context.mounted) {
                 AppToast.show('已开始强制解析歌手', isError: false);

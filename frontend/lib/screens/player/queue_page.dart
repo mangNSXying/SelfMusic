@@ -12,7 +12,7 @@ import '../../services/haptics.dart';
 import '../../utils/collection_sort.dart';
 import '../../utils/song_title_format.dart';
 import '../../utils/zh_variant.dart';
-import '../../widgets/app_dialog_actions.dart';
+import '../../widgets/confirm_dialog.dart';
 import '../../widgets/list_selection.dart';
 import '../../widgets/locate_current_button.dart';
 import '../../widgets/row_list.dart';
@@ -167,21 +167,14 @@ class _QueuePageState extends State<QueuePage> {
 
   Future<bool> _confirm(String title, String content, String okLabel,
       {bool destructive = false}) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: Text(title),
-        content: Text(content),
-        actions: appDialogActions(
-          c,
-          confirmLabel: okLabel,
-          destructive: destructive,
-          onCancel: () => Navigator.of(c).pop(false),
-          onConfirm: () => Navigator.of(c).pop(true),
-        ),
-      ),
+    final ok = await showConfirmDialog(
+      context,
+      title: title,
+      content: content,
+      confirmLabel: okLabel,
+      destructive: destructive,
     );
-    return ok == true && mounted;
+    return ok && mounted;
   }
 
   Future<void> _removeOne(PlayerProvider player, int realIndex) async {

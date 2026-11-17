@@ -6,8 +6,8 @@ import '../../data/local/app_settings.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../theme/app_theme.dart';
 import '../../utils/cover_thumb.dart';
-import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
+import '../../widgets/confirm_dialog.dart';
 import '../../widgets/inline_spinner.dart';
 import '../../widgets/settings_layout.dart';
 import '../../widgets/settings_section_header.dart';
@@ -99,21 +99,14 @@ class _StorageSectionState extends State<StorageSection> {
 
   /// 清理缩略图：二次确认后删 `*.thumb.jpg`（开关状态不变）。
   Future<void> _clearCoverThumbs(BuildContext context) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('清理缩略图？'),
-        content: const Text('将删除已生成的封面缩略图文件，列表即回原图显示。\n'
-            '压缩开关保持不变：开时后续滚动会重新生成，关时不再生成。'),
-        actions: appDialogActions(
-          c,
-          confirmLabel: '清理',
-          onCancel: () => Navigator.of(c).pop(false),
-          onConfirm: () => Navigator.of(c).pop(true),
-        ),
-      ),
+    final ok = await showConfirmDialog(
+      context,
+      title: '清理缩略图？',
+      content: '将删除已生成的封面缩略图文件，列表即回原图显示。\n'
+          '压缩开关保持不变：开时后续滚动会重新生成，关时不再生成。',
+      confirmLabel: '清理',
     );
-    if (ok != true || !context.mounted) return;
+    if (!ok || !context.mounted) return;
     setState(() => _clearingThumbs = true);
     try {
       final mgr = context.read<DirectSourceManager>();

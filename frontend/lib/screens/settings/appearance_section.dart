@@ -329,28 +329,25 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
     );
   }
 
-  Future<void> _pickAccent(BuildContext context, ThemeProvider theme) async {
-    final picked = await showDialog<Color>(
+  Future<Color?> _pickColor(BuildContext context, String title) {
+    return showDialog<Color>(
       context: context,
       builder: (c) => ColorPickerDialog(
-          title: '选择强调色',
+          title: title,
           onPicked: (col) {
             Navigator.of(c).pop(col);
           }),
     );
+  }
+
+  Future<void> _pickAccent(BuildContext context, ThemeProvider theme) async {
+    final picked = await _pickColor(context, '选择强调色');
     if (picked != null) await theme.setAccent(picked);
   }
 
   Future<void> _pickBackground(
       BuildContext context, ThemeProvider theme) async {
-    final picked = await showDialog<Color>(
-      context: context,
-      builder: (c) => ColorPickerDialog(
-          title: '选择背景色',
-          onPicked: (col) {
-            Navigator.of(c).pop(col);
-          }),
-    );
+    final picked = await _pickColor(context, '选择背景色');
     if (picked != null) await theme.setBackground(picked);
   }
 

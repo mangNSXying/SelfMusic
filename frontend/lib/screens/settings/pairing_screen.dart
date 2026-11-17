@@ -13,6 +13,7 @@ import '../../utils/platform_info.dart';
 import '../../utils/url_input.dart';
 import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
+import '../../widgets/confirm_dialog.dart';
 import '../../widgets/inline_spinner.dart';
 import '../../widgets/row_action_button.dart';
 import '../../widgets/settings_layout.dart';
@@ -126,22 +127,15 @@ class _PairingScreenState extends State<PairingScreen> {
   }
 
   Future<void> _unpair(AuthProvider auth) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('取消配对'),
-        content: const Text('取消后服务端功能不可用，直连模式不受影响。确定取消？'),
-        actions: appDialogActions(
-          c,
-          cancelLabel: '保留',
-          confirmLabel: '取消配对',
-          destructive: true,
-          onCancel: () => Navigator.of(c).pop(false),
-          onConfirm: () => Navigator.of(c).pop(true),
-        ),
-      ),
+    final ok = await showConfirmDialog(
+      context,
+      title: '取消配对',
+      content: '取消后服务端功能不可用，直连模式不受影响。确定取消？',
+      cancelLabel: '保留',
+      confirmLabel: '取消配对',
+      destructive: true,
     );
-    if (ok != true || !mounted) return;
+    if (!ok || !mounted) return;
     await auth.unpair();
     if (!mounted) return;
     _tokenCtrl.clear();
@@ -525,26 +519,17 @@ class _PairingScreenState extends State<PairingScreen> {
   /// 其它设备旧，不推送更稳。
   Future<void> _askPushExisting(BuildContext context,
       {required bool wasPaired}) async {
-    final push = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('推送配对前的数据？'),
-        content: Text(
-          wasPaired
-              ? '将本机在配对前创建的歌单、收藏与播放权重推送到服务端吗？这是重新配对：只补服务端没有的数据，现行数据不受影响；若本机数据比其它设备旧，不推送更稳。'
-              : '将本机在配对前创建的歌单、收藏与播放权重推送到服务端吗？首台设备建议推送，其它设备随后会同步到这些数据（只补服务端没有的数据）。',
-        ),
-        actions: appDialogActions(
-          ctx,
-          cancelLabel: '不推送',
-          confirmLabel: '推送',
-          onCancel: () => Navigator.of(ctx).pop(false),
-          onConfirm: () => Navigator.of(ctx).pop(true),
-        ),
-      ),
+    final push = await showConfirmDialog(
+      context,
+      title: '推送配对前的数据？',
+      content: wasPaired
+          ? '将本机在配对前创建的歌单、收藏与播放权重推送到服务端吗？这是重新配对：只补服务端没有的数据，现行数据不受影响；若本机数据比其它设备旧，不推送更稳。'
+          : '将本机在配对前创建的歌单、收藏与播放权重推送到服务端吗？首台设备建议推送，其它设备随后会同步到这些数据（只补服务端没有的数据）。',
+      cancelLabel: '不推送',
+      confirmLabel: '推送',
     );
     if (!context.mounted) return;
-    if (push != true) return;
+    if (!push) return;
     try {
       final r = await context.read<DirectSourceManager>().backfillNow();
       if (!context.mounted) return;

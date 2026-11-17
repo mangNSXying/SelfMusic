@@ -3,8 +3,8 @@ import 'package:provider/provider.dart';
 
 import '../../services/api_client.dart';
 import '../../theme/app_metrics.dart';
-import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
+import '../../widgets/confirm_dialog.dart';
 import '../../widgets/context_menu.dart';
 import '../../widgets/row_action_button.dart';
 import '../../widgets/text_input_dialog.dart';
@@ -111,22 +111,15 @@ class _DevicesScreenState extends State<DevicesScreen> {
 
   Future<void> _revoke(Map<String, dynamic> d) async {
     final isSelf = _isSelf(d);
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('吊销设备？'),
-        content: Text('「${_deviceName(d)}」的令牌将即刻失效。'
-            '${isSelf ? '这是本机，吊销后需重新配对。' : ''}'),
-        actions: appDialogActions(
-          c,
-          confirmLabel: '吊销',
-          destructive: true,
-          onCancel: () => Navigator.of(c).pop(false),
-          onConfirm: () => Navigator.of(c).pop(true),
-        ),
-      ),
+    final ok = await showConfirmDialog(
+      context,
+      title: '吊销设备？',
+      content: '「${_deviceName(d)}」的令牌将即刻失效。'
+          '${isSelf ? '这是本机，吊销后需重新配对。' : ''}',
+      confirmLabel: '吊销',
+      destructive: true,
     );
-    if (ok != true || !mounted) return;
+    if (!ok || !mounted) return;
     try {
       await context.read<ApiClient>().revokeDevice((d['id'] as num).toInt());
       await _load(showLoading: false);
@@ -137,23 +130,15 @@ class _DevicesScreenState extends State<DevicesScreen> {
   }
 
   Future<void> _purge(Map<String, dynamic> d) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('永久删除设备？'),
-        content: Text('「${_deviceName(d)}」的记录将从服务端移除，不可恢复；'
-            '该设备令牌已失效，不影响其它设备。'),
-        actions: appDialogActions(
-          c,
-          cancelLabel: '取消',
-          confirmLabel: '删除',
-          destructive: true,
-          onCancel: () => Navigator.of(c).pop(false),
-          onConfirm: () => Navigator.of(c).pop(true),
-        ),
-      ),
+    final ok = await showConfirmDialog(
+      context,
+      title: '永久删除设备？',
+      content: '「${_deviceName(d)}」的记录将从服务端移除，不可恢复；'
+          '该设备令牌已失效，不影响其它设备。',
+      confirmLabel: '删除',
+      destructive: true,
     );
-    if (ok != true || !mounted) return;
+    if (!ok || !mounted) return;
     try {
       await context.read<ApiClient>().purgeDevice((d['id'] as num).toInt());
       if (!mounted) return;
@@ -168,23 +153,15 @@ class _DevicesScreenState extends State<DevicesScreen> {
   Future<void> _purgeAllRevoked() async {
     final revoked = _group(revoked: true);
     if (revoked.isEmpty || _purging) return;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('清空已吊销设备？'),
-        content: Text('将永久删除 ${revoked.length} 台已吊销设备的记录，不可恢复；'
-            '其它设备不受影响。'),
-        actions: appDialogActions(
-          c,
-          cancelLabel: '取消',
-          confirmLabel: '全部删除',
-          destructive: true,
-          onCancel: () => Navigator.of(c).pop(false),
-          onConfirm: () => Navigator.of(c).pop(true),
-        ),
-      ),
+    final ok = await showConfirmDialog(
+      context,
+      title: '清空已吊销设备？',
+      content: '将永久删除 ${revoked.length} 台已吊销设备的记录，不可恢复；'
+          '其它设备不受影响。',
+      confirmLabel: '全部删除',
+      destructive: true,
     );
-    if (ok != true || !mounted) return;
+    if (!ok || !mounted) return;
     setState(() => _purging = true);
     final api = context.read<ApiClient>();
     var success = 0;
