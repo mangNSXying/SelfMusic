@@ -4,8 +4,7 @@ import 'package:file_selector/file_selector.dart';
 
 import 'package:flutter/material.dart';
 
-import 'package:flutter/services.dart';
-
+import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 
 import '../../data/local/backup_service.dart';
@@ -18,6 +17,7 @@ import '../../theme/theme_provider.dart';
 import '../../utils/format_bytes.dart';
 import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
+import '../../widgets/confirm_dialog.dart';
 import '../../widgets/row_action_button.dart';
 import '../../widgets/settings_tile.dart';
 
@@ -75,63 +75,67 @@ class _BackupMigrationDialogState extends State<BackupMigrationDialog> {
 
     return AlertDialog(
       title: const Text('备份与迁移'),
-      content: SizedBox(
-        width: double.maxFinite,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.file_download_outlined, size: 18),
-                  label: const Text('导出设置'),
-                  onPressed: _doExportSettings,
-                ),
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.file_upload_outlined, size: 18),
-                  label: const Text('导入设置'),
-                  onPressed: () => _pickAndImport(BackupKind.settings),
-                ),
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.queue_music, size: 18),
-                  label: const Text('导出歌单'),
-                  onPressed: _doExportPlaylists,
-                ),
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.playlist_add, size: 18),
-                  label: const Text('导入歌单'),
-                  onPressed: () => _pickAndImport(BackupKind.playlists),
-                ),
-              ],
-            ),
-            const Divider(height: 24),
-            Text('本机备份',
-                style:
-                    TextStyle(color: cs.primary, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 4),
-            Text('点选备份恢复对应的设置或歌单',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodySmall
-                    ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
-            const SizedBox(height: 4),
-            Flexible(
-              child: _backups.isEmpty
-                  ? const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 16),
-                      child: Text('暂无备份。点击上方「导出」创建。'),
-                    )
-                  : SingleChildScrollView(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [for (final f in _backups) _backupTile(f)],
+      content: ConstrainedBox(
+        key: const ValueKey('backupDialogContent'),
+        constraints: const BoxConstraints(maxWidth: 480),
+        child: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.file_download_outlined, size: 18),
+                    label: const Text('导出设置'),
+                    onPressed: _doExportSettings,
+                  ),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.file_upload_outlined, size: 18),
+                    label: const Text('导入设置'),
+                    onPressed: () => _pickAndImport(BackupKind.settings),
+                  ),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.queue_music, size: 18),
+                    label: const Text('导出歌单'),
+                    onPressed: _doExportPlaylists,
+                  ),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.playlist_add, size: 18),
+                    label: const Text('导入歌单'),
+                    onPressed: () => _pickAndImport(BackupKind.playlists),
+                  ),
+                ],
+              ),
+              const Divider(height: 24),
+              Text('本机备份',
+                  style: TextStyle(
+                      color: cs.primary, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              Text('点选备份恢复对应的设置或歌单',
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(color: cs.onSurface.withValues(alpha: 0.6))),
+              const SizedBox(height: 4),
+              Flexible(
+                child: _backups.isEmpty
+                    ? const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 16),
+                        child: Text('暂无备份。点击上方「导出」创建。'),
+                      )
+                    : SingleChildScrollView(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [for (final f in _backups) _backupTile(f)],
+                        ),
                       ),
-                    ),
-            ),
-          ],
+              ),
+            ],
+          ),
         ),
       ),
       actions: [appDialogCloseAction(context, label: '关闭')],
@@ -139,7 +143,7 @@ class _BackupMigrationDialogState extends State<BackupMigrationDialog> {
   }
 
   Widget _backupTile(File f) {
-    final name = f.path.split('/').last;
+    final name = p.basename(f.path);
     final kind = BackupService.kindOf(f);
     final kindLabel = switch (kind) {
       BackupKind.settings => '设置',
@@ -176,7 +180,7 @@ class _BackupMigrationDialogState extends State<BackupMigrationDialog> {
     final file = await _service(direct).exportSettings();
     if (!mounted) return;
     _refresh();
-    AppToast.show('已导出：${file.path.split('/').last}（不含令牌与源凭据）', isError: false);
+    AppToast.show('已导出：${p.basename(file.path)}（不含令牌与源凭据）', isError: false);
   }
 
   Future<void> _doExportPlaylists() async {
@@ -184,7 +188,7 @@ class _BackupMigrationDialogState extends State<BackupMigrationDialog> {
     final file = await _service(direct).exportPlaylists();
     if (!mounted) return;
     _refresh();
-    AppToast.show('已导出：${file.path.split('/').last}', isError: false);
+    AppToast.show('已导出：${p.basename(file.path)}', isError: false);
   }
 
   /// 文件选择器导入设置/歌单。
@@ -246,21 +250,14 @@ class _BackupMigrationDialogState extends State<BackupMigrationDialog> {
       BackupKind.playlists => '将以本机歌单重建',
       BackupKind.full => '将覆盖当前设置并重建歌单',
     };
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('导入备份'),
-        content: Text('$scope，是否继续？\n\n$name'),
-        actions: appDialogActions(
-          c,
-          confirmLabel: '导入',
-          destructive: true,
-          onCancel: () => Navigator.of(c).pop(false),
-          onConfirm: () => Navigator.of(c).pop(true),
-        ),
-      ),
+    final ok = await showConfirmDialog(
+      context,
+      title: '导入备份',
+      content: '$scope，是否继续？\n\n$name',
+      confirmLabel: '导入',
+      destructive: true,
     );
-    if (ok != true || !mounted) return;
+    if (!ok || !mounted) return;
     final direct = context.read<DirectSourceManager>();
     final service = _service(direct);
     try {
@@ -288,21 +285,14 @@ class _BackupMigrationDialogState extends State<BackupMigrationDialog> {
   }
 
   Future<void> _doDelete(File f) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('删除备份'),
-        content: Text('确定删除 ${f.path.split('/').last}？'),
-        actions: appDialogActions(
-          c,
-          confirmLabel: '删除',
-          destructive: true,
-          onCancel: () => Navigator.of(c).pop(false),
-          onConfirm: () => Navigator.of(c).pop(true),
-        ),
-      ),
+    final ok = await showConfirmDialog(
+      context,
+      title: '删除备份',
+      content: '确定删除 ${p.basename(f.path)}？',
+      confirmLabel: '删除',
+      destructive: true,
     );
-    if (ok != true || !mounted) return;
+    if (!ok || !mounted) return;
     try {
       f.deleteSync();
     } catch (_) {}

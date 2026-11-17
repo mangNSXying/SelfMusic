@@ -78,6 +78,10 @@ void main() {
     await tester.tap(find.text('同步设置'));
     await tester.pumpAndSettle();
     expect(find.byType(SettingsSyncDialog), findsOneWidget);
+    expect(
+        tester.getSize(find.byKey(const ValueKey('syncDialogContent'))).width,
+        lessThanOrEqualTo(420),
+        reason: '宽屏下弹窗内容有 420 上限');
 
     Finder inDialog(String label) => find.descendant(
           of: find.byType(SettingsSyncDialog),

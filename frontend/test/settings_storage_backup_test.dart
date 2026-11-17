@@ -146,6 +146,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(AlertDialog), findsOneWidget);
+    expect(
+        tester.getSize(find.byKey(const ValueKey('backupDialogContent'))).width,
+        lessThanOrEqualTo(480),
+        reason: '宽屏下弹窗内容有 480 上限');
     expect(find.text('导出设置'), findsOneWidget);
     expect(find.text('导入设置'), findsOneWidget);
     expect(find.text('导出歌单'), findsOneWidget);

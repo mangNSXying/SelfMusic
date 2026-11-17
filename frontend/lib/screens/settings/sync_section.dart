@@ -192,63 +192,69 @@ class _SettingsSyncDialogState extends State<SettingsSyncDialog> {
     final enabled = _settings.syncSettingsEnabled;
     return AlertDialog(
       title: const Text('同步设置'),
-      content: SizedBox(
-        width: double.maxFinite,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (!_settings.syncEnabled)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Text('多设备同步未开启',
-                      style: TextStyle(
-                          fontSize: 12,
-                          color: cs.onSurface.withValues(alpha: 0.6))),
+      content: ConstrainedBox(
+        key: const ValueKey('syncDialogContent'),
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: SizedBox(
+          width: double.maxFinite,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (!_settings.syncEnabled)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text('多设备同步未开启',
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: cs.onSurface.withValues(alpha: 0.6))),
+                  ),
+                SettingsTile.toggle(
+                  title: '同步设置',
+                  description: '选择哪些设置跟随账号同步',
+                  value: _settings.syncSettingsEnabled,
+                  onChanged: (v) =>
+                      setState(() => _settings.syncSettingsEnabled = v),
                 ),
-              SettingsTile.toggle(
-                title: '同步设置',
-                description: '选择哪些设置跟随账号同步',
-                value: _settings.syncSettingsEnabled,
-                onChanged: (v) =>
-                    setState(() => _settings.syncSettingsEnabled = v),
-              ),
-              SettingsTile.toggle(
-                title: '播放偏好',
-                value: _settings.syncSettingsPlayback,
-                onChanged: enabled
-                    ? (v) => setState(() => _settings.syncSettingsPlayback = v)
-                    : null,
-              ),
-              SettingsTile.toggle(
-                title: '媒体库规则',
-                value: _settings.syncSettingsLibrary,
-                onChanged: enabled
-                    ? (v) => setState(() => _settings.syncSettingsLibrary = v)
-                    : null,
-              ),
-              SettingsTile.toggle(
-                title: '界面偏好',
-                value: _settings.syncSettingsInterface,
-                onChanged: enabled
-                    ? (v) => setState(() => _settings.syncSettingsInterface = v)
-                    : null,
-              ),
-              SettingsTile.toggle(
-                title: '主题外观',
-                value: _settings.syncSettingsTheme,
-                onChanged: enabled
-                    ? (v) => setState(() => _settings.syncSettingsTheme = v)
-                    : null,
-              ),
-              const Divider(),
-              Text(
-                '缓存、音量、网络和快捷键只在本机生效。',
-                style: TextStyle(
-                    fontSize: 12, color: cs.onSurface.withValues(alpha: 0.6)),
-              ),
-            ],
+                SettingsTile.toggle(
+                  title: '播放偏好',
+                  value: _settings.syncSettingsPlayback,
+                  onChanged: enabled
+                      ? (v) =>
+                          setState(() => _settings.syncSettingsPlayback = v)
+                      : null,
+                ),
+                SettingsTile.toggle(
+                  title: '媒体库规则',
+                  value: _settings.syncSettingsLibrary,
+                  onChanged: enabled
+                      ? (v) => setState(() => _settings.syncSettingsLibrary = v)
+                      : null,
+                ),
+                SettingsTile.toggle(
+                  title: '界面偏好',
+                  value: _settings.syncSettingsInterface,
+                  onChanged: enabled
+                      ? (v) =>
+                          setState(() => _settings.syncSettingsInterface = v)
+                      : null,
+                ),
+                SettingsTile.toggle(
+                  title: '主题外观',
+                  value: _settings.syncSettingsTheme,
+                  onChanged: enabled
+                      ? (v) => setState(() => _settings.syncSettingsTheme = v)
+                      : null,
+                ),
+                const Divider(),
+                Text(
+                  '缓存、音量、网络和快捷键只在本机生效。',
+                  style: TextStyle(
+                      fontSize: 12, color: cs.onSurface.withValues(alpha: 0.6)),
+                ),
+              ],
+            ),
           ),
         ),
       ),
