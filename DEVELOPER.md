@@ -339,6 +339,7 @@ selfmusic/
 | GET | `/admin/pairing-token` | 主配对令牌明文（`设置→服务端→配对服务器` 展示用；密钥源自 env 镜像） |
 | GET | `/admin/config` | 服务端缓存建议值 `{cache_max_bytes, cache_song_limit}`（取值自 settings 表） |
 | GET | `/admin/devices` · PUT/DELETE `/admin/devices/{id}` | 设备列表 / 改名 / 吊销 |
+| DELETE | `/admin/devices/{id}/purge` | 永久删除已吊销设备记录（未吊销设备拒绝，须先吊销） |
 | PUT | `/admin/settings` | 管理端改缓存建议值（仅两键；`pairing_token` 为 env 只读拒绝写入） |
 
 > 服务端**不提供曲库索引**：歌曲由 App 在各播放源处扫描、直接从源播放；后端仅提供认证 / 配对、状态同步与无状态转码代理。上传 / 删除走客户端 WebDAV/本地/SFTP/SMB 直写，不经服务端。

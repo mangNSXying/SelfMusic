@@ -41,4 +41,21 @@ public class DeviceAdminController {
         deviceRepository.save(d);
         return ApiResponse.ok();
     }
+
+    /**
+     * 永久删除设备记录：仅允许删除已吊销设备。
+     *
+     * <p>吊销保留记录用于同步水位等计算；硬删除只清理已失效条目。
+     * 未吊销设备直接删除会抹掉其令牌，故要求先走 {@link #revoke(Long)}。</p>
+     */
+    @DeleteMapping("/{id}/purge")
+    public ApiResponse<Void> purge(@PathVariable Long id) {
+        Device d = deviceRepository.findById(id)
+                .orElseThrow(() -> new BizException(40401, "device not found"));
+        if (!d.isRevoked()) {
+            throw new BizException(40901, "device must be revoked before purge");
+        }
+        deviceRepository.delete(d);
+        return ApiResponse.ok();
+    }
 }
