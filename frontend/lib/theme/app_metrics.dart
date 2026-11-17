@@ -69,3 +69,42 @@ const double kPageIconSize = 24;
 
 /// 播放页次级控制图标尺寸。
 const double kPlayerSecondaryIconSize = 22;
+
+/// 播放页次级按钮（工具行 / 睡眠定时 / 播放模式 / 音量）的命中区基准边长。
+///
+/// 与 [kPlayerSecondaryIconSize] 同一口径随窗口缩放（48×scale / 22×scale），
+/// 避免同一行里混着固定 48 与随字号放大的隐式命中区。
+const double kPlayerSecondaryButtonSize = 48;
+
+/// 播放页工具行按钮之间的间距基准。
+///
+/// 工具行与主控制行同构（都由内容定宽、不铺满容器），间距取
+/// [kPlayerSecondaryButtonSize] 的 1/4：5 枚工具按钮合计
+/// 5×48 + 4×12 = [kPlayerToolRowWidth]，比主控制行
+/// [kPlayerControlsRowWidth] 略窄——工具栏是次级入口，比播控行窄是对的，
+/// 反过来会抢视觉重心。
+const double kPlayerToolGap = kPlayerSecondaryButtonSize / 4;
+
+/// 播放页工具行的内容宽度（5 枚按钮 + 4 段间距）。
+const double kPlayerToolRowWidth =
+    kPlayerSecondaryButtonSize * 5 + kPlayerToolGap * 4;
+
+/// 播放页主控制行里的切歌按钮：命中区与图标基准。
+const double kPlayerSkipButtonSize = 56;
+const double kPlayerSkipIconSize = 34;
+
+/// 播放页主控制行的播放/暂停键图标基准与内边距基准。
+const double kPlayerPrimaryButtonSize = 74;
+const double kPlayerPrimaryButtonPadding = 8;
+
+/// 播放页主控制行的内容宽度（次级键×2 + 切歌×2 + 播放键 + 内边距 + 两段 8 间距）。
+///
+/// 全部由上方 token 派生，工具行据此比对宽度口径，不再各写一个孤立的魔数。
+/// 内边距也必须随 scale（[kPlayerPrimaryButtonPadding] × scale），否则本行
+/// 是 `298×scale + 16` 而非纯正比，与工具行的比值会随缩放漂移。
+const double kPlayerControlsRowWidth =
+    kPlayerSecondaryButtonSize * 2 +
+        kPlayerSkipButtonSize * 2 +
+        kPlayerPrimaryButtonSize +
+        kPlayerPrimaryButtonPadding * 2 +
+        8 * 2;

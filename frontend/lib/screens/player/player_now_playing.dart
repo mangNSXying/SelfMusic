@@ -11,6 +11,7 @@ import '../../models/song.dart';
 import '../../providers/player_provider.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../services/haptics.dart';
+import '../../theme/app_metrics.dart';
 import '../../utils/duration_format.dart';
 import '../../utils/song_title_format.dart';
 import '../../utils/zh_variant.dart';
@@ -323,23 +324,27 @@ class MetaLine extends StatelessWidget {
   }
 }
 
-/// 工具行（喜欢/不喜欢/编辑歌单/缓存）：竖屏/横屏共用。
+/// 工具行（喜欢/不喜欢/编辑歌单/缓存/音量）：竖屏/横屏共用。
+///
+/// 每个按钮都按 [kPlayerSecondaryButtonSize] × scale 的命中区与
+/// [kPlayerSecondaryIconSize] × scale 的图标落地，同一行不再混着固定 48
+/// 与隐式「图标 + 内边距」两种命中区（4K 下曾出现 48/60 并存）。
+///
+/// 宽度与 [ControlRow] 同构：由内容定宽（`mainAxisSize.min` + 按钮之间
+/// [kPlayerToolGap] × scale 的固定间距），不铺满容器。旧实现先定一条
+/// 420×scale 的带子再 `spaceEvenly` 摊开，带宽比主控制行宽约 1/3，大屏下
+/// 次级入口反而抢了播控行的视觉重心。
 class ToolRow extends StatelessWidget {
   final PlayerProvider player;
   final DirectSourceManager direct;
   final ColorScheme cs;
   final Song song;
-
-  /// 横屏用：按钮紧凑成组居中（列宽较大时 spaceEvenly 会把按钮摊到列两缘，
-  /// 与封面/标题的居中感不齐）；竖屏保持铺满一行均分。
-  final bool center;
   final double scale;
   const ToolRow(
       {required this.player,
       required this.direct,
       required this.cs,
       required this.song,
-      this.center = false,
       this.scale = 1.0});
 
   Future<void> _cache(BuildContext context, Song s) async {
@@ -364,76 +369,131 @@ class ToolRow extends StatelessWidget {
     final favorite = direct.weight.isFavorite(s);
     final disliked = direct.weight.isDisliked(s);
     final cached = direct.isUserCached(s);
-    final row = Row(
-      mainAxisSize: center ? MainAxisSize.min : MainAxisSize.max,
-      mainAxisAlignment:
-          center ? MainAxisAlignment.center : MainAxisAlignment.spaceEvenly,
-      children: [
-        IconButton(
-          iconSize: 22 * scale,
-          tooltip: favorite ? '取消喜欢' : '喜欢',
-          color: favorite ? Colors.pink : cs.onSurface.withValues(alpha: 0.55),
-          icon: Icon(favorite ? Icons.favorite : Icons.favorite_border),
-          onPressed: () {
-            Haptics.fire(HapticStrength.light);
-            direct.setFavorite(s, !favorite);
-            if (favorite) {
-              context
-                  .read<PlayerProvider>()
-                  .onAnchorSongRemoved(PlayerProvider.anchorForLiked(), s);
-            }
-            AppToast.show(!favorite ? '已加入喜欢' : '已取消喜欢', isError: false);
-          },
-        ),
-        IconButton(
-          iconSize: 22 * scale,
-          tooltip: disliked ? '取消不喜欢' : '不喜欢（权重降到 0.1）',
-          color:
-              disliked ? Colors.orange : cs.onSurface.withValues(alpha: 0.55),
-          icon: Icon(disliked ? Icons.thumb_down : Icons.thumb_down_outlined),
-          onPressed: () {
-            Haptics.fire(HapticStrength.light);
-            direct.setDisliked(s, !disliked);
-            AppToast.show(!disliked ? '已标记不喜欢，权重降到 0.1' : '已取消不喜欢',
-                isError: false);
-          },
-        ),
-        IconButton(
-          iconSize: 22 * scale,
-          tooltip: '编辑歌单',
-          color: cs.onSurface.withValues(alpha: 0.55),
-          icon: const Icon(Icons.playlist_add_check),
-          onPressed: () {
-            Haptics.fire(HapticStrength.light);
-            showEditPlaylistsSheet(context, s);
-          },
-        ),
-        IconButton(
-          iconSize: 22 * scale,
-          tooltip: cached ? '已缓存（可离线播放）' : '缓存歌曲',
-          color: cached ? cs.primary : cs.onSurface.withValues(alpha: 0.55),
-          icon: const Icon(Icons.download_outlined),
-          onPressed: () {
-            Haptics.fire(HapticStrength.light);
-            _cache(context, s);
-          },
-        ),
-        AppVolumeButton(player: player, scale: scale),
-      ],
-    );
+    final icon = kPlayerSecondaryIconSize * scale;
+    final buttons = <Widget>[
+      _toolButton(
+        context,
+        icon: favorite ? Icons.favorite : Icons.favorite_border,
+        iconSize: icon,
+        color: favorite ? Colors.pink : cs.onSurface.withValues(alpha: 0.55),
+        tooltip: favorite ? '取消喜欢' : '喜欢',
+        onPressed: () {
+          Haptics.fire(HapticStrength.light);
+          direct.setFavorite(s, !favorite);
+          if (favorite) {
+            context
+                .read<PlayerProvider>()
+                .onAnchorSongRemoved(PlayerProvider.anchorForLiked(), s);
+          }
+          AppToast.show(!favorite ? '已加入喜欢' : '已取消喜欢', isError: false);
+        },
+      ),
+      _toolButton(
+        context,
+        icon: disliked ? Icons.thumb_down : Icons.thumb_down_outlined,
+        iconSize: icon,
+        color: disliked ? Colors.orange : cs.onSurface.withValues(alpha: 0.55),
+        tooltip: disliked ? '取消不喜欢' : '不喜欢（权重降到 0.1）',
+        onPressed: () {
+          Haptics.fire(HapticStrength.light);
+          direct.setDisliked(s, !disliked);
+          AppToast.show(!disliked ? '已标记不喜欢，权重降到 0.1' : '已取消不喜欢',
+              isError: false);
+        },
+      ),
+      _toolButton(
+        context,
+        icon: Icons.playlist_add_check,
+        iconSize: icon,
+        color: cs.onSurface.withValues(alpha: 0.55),
+        tooltip: '编辑歌单',
+        onPressed: () {
+          Haptics.fire(HapticStrength.light);
+          showEditPlaylistsSheet(context, s);
+        },
+      ),
+      _toolButton(
+        context,
+        icon: Icons.download_outlined,
+        iconSize: icon,
+        color: cached ? cs.primary : cs.onSurface.withValues(alpha: 0.55),
+        tooltip: cached ? '已缓存（可离线播放）' : '缓存歌曲',
+        onPressed: () {
+          Haptics.fire(HapticStrength.light);
+          _cache(context, s);
+        },
+      ),
+      AppVolumeButton(
+        player: player,
+        scale: scale,
+        iconSize: kPlayerSecondaryIconSize,
+        buttonSize: kPlayerSecondaryButtonSize * scale,
+        padding: EdgeInsets.zero,
+      ),
+    ];
+    final gap = kPlayerToolGap * scale;
     return Padding(
       padding: EdgeInsets.symmetric(vertical: 12 * scale),
-      // 窄横屏左列放不下 5 个工具按钮时整体等比缩小，避免溢出。
-      child: center
-          ? Center(
-              child: FittedBox(fit: BoxFit.scaleDown, child: row),
-            )
-          : row,
+      // 与主控制行同构：内容定宽、居中，宽度随按钮与间距自然得出
+      // （[kPlayerToolRowWidth] × scale），窗口再宽也不外扩。
+      // 放不下时（手机横屏左列等）等比收缩，同 [ControlRow]。
+      child: Center(
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var i = 0; i < buttons.length; i++) ...[
+                if (i > 0) SizedBox(width: gap),
+                buttons[i],
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 工具按钮统一形态：固定命中区 + 居中图标，与 [ModeButton] /
+  /// [AppVolumeButton] 的「48×scale 命中区、22×scale 图标」口径一致。
+  Widget _toolButton(
+    BuildContext context, {
+    required IconData icon,
+    required double iconSize,
+    required Color color,
+    required String tooltip,
+    required VoidCallback onPressed,
+  }) {
+    return IconButton(
+      iconSize: iconSize,
+      tooltip: tooltip,
+      color: color,
+      padding: EdgeInsets.zero,
+      constraints: BoxConstraints.tightFor(
+        width: kPlayerSecondaryButtonSize * scale,
+        height: kPlayerSecondaryButtonSize * scale,
+      ),
+      style: IconButton.styleFrom(
+        fixedSize: Size(
+          kPlayerSecondaryButtonSize * scale,
+          kPlayerSecondaryButtonSize * scale,
+        ),
+        padding: EdgeInsets.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
+      icon: Icon(icon),
+      onPressed: onPressed,
     );
   }
 }
 
 /// 主控制区（定时 - 上一首 - 播放 - 下一首 - 播放模式）：竖屏/横屏共用。
+///
+/// 五枚控件统一口径：次级键（定时 / 模式）[kPlayerSecondaryButtonSize] ×
+/// scale 命中区，切歌键 [kPlayerSkipButtonSize] × scale 命中区，播放键
+/// [kPlayerPrimaryButtonSize] × scale。旧实现里定时/模式是固定 48，切歌键
+/// 则是「图标 + 默认内边距」推出来的不定值，4K 下同一行出现 48/60 两种
+/// 命中区，视觉上按键大小不一。
 class ControlRow extends StatelessWidget {
   final PlayerProvider player;
   final ColorScheme cs;
@@ -442,7 +502,11 @@ class ControlRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
+    final secondary = kPlayerSecondaryButtonSize * scale;
+    final skip = kPlayerSkipButtonSize * scale;
+    final skipIcon = kPlayerSkipIconSize * scale;
+    final row = Row(
+      mainAxisSize: MainAxisSize.min,
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         SleepButton(player: player, cs: cs, scale: scale),
@@ -450,17 +514,48 @@ class ControlRow extends StatelessWidget {
         Pressable(
           onPressed: player.prev,
           tooltip: '上一首',
-          child: Icon(Icons.skip_previous, size: 34 * scale),
+          padding: EdgeInsets.zero,
+          child: SizedBox(
+            width: skip,
+            height: skip,
+            child: Center(
+              child: Icon(Icons.skip_previous, size: skipIcon),
+            ),
+          ),
         ),
-        PlayPauseButton(player: player, cs: cs, size: 74 * scale),
+        PlayPauseButton(
+          player: player,
+          cs: cs,
+          size: kPlayerPrimaryButtonSize * scale,
+          // 内边距同样随 scale：本行宽度才能严格正比于 scale，
+          // 与工具行的宽度比值在所有档位保持恒定。
+          padding: EdgeInsets.all(kPlayerPrimaryButtonPadding * scale),
+        ),
         Pressable(
           onPressed: player.next,
           tooltip: '下一首',
-          child: Icon(Icons.skip_next, size: 34 * scale),
+          padding: EdgeInsets.zero,
+          child: SizedBox(
+            width: skip,
+            height: skip,
+            child: Center(
+              child: Icon(Icons.skip_next, size: skipIcon),
+            ),
+          ),
         ),
         SizedBox(width: 8 * scale),
-        ModeButton(player: player, cs: cs, scale: scale),
+        ModeButton(
+            player: player,
+            cs: cs,
+            scale: scale,
+            buttonSize: secondary,
+            padding: EdgeInsets.zero),
       ],
+    );
+    // 极窄竖屏（如 360 宽、内容区 312）整行比内容区宽 2px：只在这种情况下
+    // 等比收缩，正常宽度零影响。
+    return Center(
+      child: FittedBox(fit: BoxFit.scaleDown, child: row),
     );
   }
 }
@@ -477,9 +572,17 @@ class SleepButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final active = player.sleepTimerActive;
     final summary = player.sleepSummaryText;
+    final size = kPlayerSecondaryButtonSize * scale;
     return IconButton(
-      iconSize: 22 * scale,
+      iconSize: kPlayerSecondaryIconSize * scale,
       color: active ? cs.primary : cs.onSurface.withValues(alpha: 0.7),
+      padding: EdgeInsets.zero,
+      constraints: BoxConstraints.tightFor(width: size, height: size),
+      style: IconButton.styleFrom(
+        fixedSize: Size(size, size),
+        padding: EdgeInsets.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
       tooltip: '睡眠定时${active && summary != null ? '：$summary' : ''}',
       icon: Icon(active ? Icons.bedtime : Icons.bedtime_outlined),
       onPressed: () {

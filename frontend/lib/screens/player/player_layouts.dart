@@ -8,6 +8,7 @@ import '../../layout/player_metrics.dart';
 import '../../models/song.dart';
 import '../../providers/player_provider.dart';
 import '../../providers/direct_source_manager.dart';
+import '../../theme/app_metrics.dart';
 import '../../widgets/lyrics_view.dart';
 import '../../widgets/player_controls.dart';
 import '../../widgets/pressable.dart';
@@ -210,7 +211,7 @@ class LandscapePlayerMain extends StatelessWidget {
                 player: player, direct: direct, compact: true, dense: true),
             const SizedBox(height: 4),
             ToolRow(
-                player: player, direct: direct, cs: cs, song: s, center: true),
+                player: player, direct: direct, cs: cs, song: s, scale: 1.0),
             PlayerSeek(player: player, cs: cs, showTime: false),
           ],
         ),
@@ -454,16 +455,11 @@ class DesktopPlayerColumn extends StatelessWidget {
                       direct: direct,
                       cs: cs,
                       song: s,
-                      center: true,
                       scale: scale),
                   PlayerSeek(player: player, cs: cs, scale: scale),
-                  // 左栏宽会被钳到最小 320×uiScale（内容区随比例缩放），
-                  // 控制行约 302×uiScale；窄桌面窗口会横向溢出，scaleDown
-                  // 只在放不下时整体等比收缩，宽窗口零影响。
-                  FittedBox(
-                    fit: BoxFit.scaleDown,
-                    child: ControlRow(player: player, cs: cs, scale: scale),
-                  ),
+                  // ControlRow 自身在放不下时等比收缩（窄桌面窗口左栏被钳到
+                  // 最小 320×uiScale），这里不再重复包 FittedBox。
+                  ControlRow(player: player, cs: cs, scale: scale),
                 ],
               ),
             ),
@@ -562,6 +558,9 @@ class EdgeFade extends StatelessWidget {
 }
 
 /// 横屏右列中部的竖向播放控制：上一首 / 播放暂停 / 下一首。
+///
+/// 与横屏左列工具行、底部主控制行共用同一套尺寸 token，只按需要缩小一档
+/// 以适配窄竖向列（命中区不随列宽漂移）。
 class VerticalControls extends StatelessWidget {
   final PlayerProvider player;
   final ColorScheme cs;
@@ -575,7 +574,14 @@ class VerticalControls extends StatelessWidget {
         Pressable(
           onPressed: player.prev,
           tooltip: '上一首',
-          child: const Icon(Icons.skip_previous, size: 28),
+          padding: EdgeInsets.zero,
+          child: const SizedBox(
+            width: kPlayerSkipButtonSize,
+            height: kPlayerSkipButtonSize,
+            child: Center(
+              child: Icon(Icons.skip_previous, size: kPlayerSkipIconSize),
+            ),
+          ),
         ),
         const SizedBox(height: 6),
         PlayPauseButton(player: player, cs: cs, size: 56),
@@ -583,7 +589,14 @@ class VerticalControls extends StatelessWidget {
         Pressable(
           onPressed: player.next,
           tooltip: '下一首',
-          child: const Icon(Icons.skip_next, size: 28),
+          padding: EdgeInsets.zero,
+          child: const SizedBox(
+            width: kPlayerSkipButtonSize,
+            height: kPlayerSkipButtonSize,
+            child: Center(
+              child: Icon(Icons.skip_next, size: kPlayerSkipIconSize),
+            ),
+          ),
         ),
       ],
     );
