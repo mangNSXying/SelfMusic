@@ -7,6 +7,7 @@ import '../../providers/direct_source_manager.dart';
 import '../../services/api_client.dart';
 import '../../services/server_settings.dart';
 import '../../theme/app_theme.dart';
+import '../../utils/pairing_key_format.dart';
 import '../../widgets/settings_layout.dart';
 import '../../widgets/settings_section_header.dart';
 import '../../widgets/settings_tile.dart';
@@ -51,11 +52,7 @@ class _NetworkSectionState extends State<NetworkSection> {
   String _pairingSubtitle(bool paired) {
     final state = paired ? '已配对' : '未配对';
     if (_pairingToken.isEmpty) return state;
-    final t = _pairingToken;
-    final masked = t.length <= 8
-        ? '••••••••'
-        : '${t.substring(0, 4)}••••••${t.substring(t.length - 4)}';
-    return '$state · 密钥 $masked';
+    return '$state · 密钥 ${maskPairingKey(_pairingToken)}';
   }
 
   Widget _anchor(String label, Widget child) => SettingsFocusAnchor(
