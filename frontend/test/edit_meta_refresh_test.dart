@@ -9,12 +9,12 @@ import 'package:provider/provider.dart';
 import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/player_provider.dart';
-import 'package:selfmusic/widgets/edit_song_meta_dialog.dart';
+import 'package:selfmusic/widgets/song_info_dialog.dart';
 import 'package:sqlite3/open.dart';
 
-/// 「修改信息」窗的数据自动刷新回归：
+/// 「歌曲信息」窗（已合并旧「修改信息」）的数据自动刷新回归：
 /// 在线回填（标签/封面/歌词）落库后，无论在线窗是否关闭、从主窗还是
-/// 封面/歌词子窗进入，主窗输入框与媒体摘要都应自动取索引最新行，
+/// 封面/歌词子窗进入，主窗字段与媒体摘要都应自动取索引最新行，
 /// 不能要求关窗重开；用户已手改的字段不被覆盖。
 
 DynamicLibrary _openOnLinux() {
@@ -90,19 +90,26 @@ class _Harness {
 
   Future<void> dispose() async {
     direct.dispose();
-    dir.deleteSync(recursive: true);
+    // Windows 上 sqlite 句柄可能仍持有临时目录：清理失败不影响断言结果。
+    try {
+      dir.deleteSync(recursive: true);
+    } catch (_) {}
   }
 }
 
-List<String> _editFieldTexts(WidgetTester tester) => [
-      for (final f in tester.widgetList<TextField>(find.descendant(
-        of: find.byType(EditSongMetaDialog),
-        matching: find.byType(TextField),
+/// 当前查看态的标题/歌手文本（就地编辑未展开时是 Text）。
+List<String> _fieldTexts(WidgetTester tester) => [
+      for (final t in tester.widgetList<Text>(find.descendant(
+        of: find.byType(SongInfoDialog),
+        matching: find.byType(Text),
       )))
-        f.controller!.text
+        if (t.data != null) t.data!
     ];
 
-Future<void> _openEditDialog(
+bool _hasField(WidgetTester tester, String v) =>
+    _fieldTexts(tester).contains(v);
+
+Future<void> _openInfoDialog(
     WidgetTester tester, DirectSourceManager direct) async {
   await tester.pumpWidget(
     MultiProvider(
@@ -117,10 +124,10 @@ Future<void> _openEditDialog(
               child: TextButton(
                 onPressed: () => showDialog<void>(
                   context: c,
-                  builder: (_) => EditSongMetaDialog(
+                  builder: (_) => SongInfoDialog(
                       song: direct.index.songByRef('local:test', 'a')!),
                 ),
-                child: const Text('打开修改信息'),
+                child: const Text('打开歌曲信息'),
               ),
             ),
           ),
@@ -128,7 +135,18 @@ Future<void> _openEditDialog(
       ),
     ),
   );
-  await tester.tap(find.text('打开修改信息'));
+  await tester.tap(find.text('打开歌曲信息'));
+  await tester.pumpAndSettle();
+}
+
+/// 点字段进入编辑态并输入新值（就地编辑合并后没有常驻输入框）。
+Future<void> _editField(
+    WidgetTester tester, String fieldLabel, String value) async {
+  await tester.tap(find.text(fieldLabel));
+  await tester.pumpAndSettle();
+  await tester.enterText(find.byType(TextField), value);
+  await tester.pumpAndSettle();
+  await tester.testTextInput.receiveAction(TextInputAction.done);
   await tester.pumpAndSettle();
 }
 
@@ -156,19 +174,18 @@ void main() {
     final h = (await tester
         .runAsync(() => _Harness.create('selfmusic_metarefresh_live_')))!;
     try {
-      await _openEditDialog(tester, h.direct);
-      await tester.enterText(find.byType(TextField).at(1), '手改歌手');
-      await tester.pump();
+      await _openInfoDialog(tester, h.direct);
+      await _editField(tester, '歌手', '手改歌手');
       await _openMainOnline(tester);
       await _applyOnlineTagChange(tester, h.direct, '新标题');
 
-      expect(_editFieldTexts(tester), contains('新标题'));
-      expect(_editFieldTexts(tester), contains('手改歌手'));
+      expect(_hasField(tester, '新标题'), isTrue);
+      expect(_hasField(tester, '手改歌手'), isTrue);
 
       // 连续第二次回填仍应跟随（此前自动回填的值不算用户手改）。
       await _applyOnlineTagChange(tester, h.direct, '再改标题');
-      expect(_editFieldTexts(tester), contains('再改标题'));
-      expect(_editFieldTexts(tester), contains('手改歌手'));
+      expect(_hasField(tester, '再改标题'), isTrue);
+      expect(_hasField(tester, '手改歌手'), isTrue);
     } finally {
       await tester.runAsync(h.dispose);
     }
@@ -178,11 +195,10 @@ void main() {
     final h = (await tester
         .runAsync(() => _Harness.create('selfmusic_metarefresh_cover_')))!;
     try {
-      await _openEditDialog(tester, h.direct);
+      await _openInfoDialog(tester, h.direct);
 
-      await tester.ensureVisible(find.text('封面'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('封面'));
+      // 封面区点击进封面子窗（合并后封面不再有 ListTile，点击封面本身）。
+      await tester.tap(find.byTooltip('查看/更换封面'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('在线获取').last);
       await pumpFrame(tester);
@@ -192,7 +208,7 @@ void main() {
       await tester.tap(find.text('取消').last);
       await tester.pumpAndSettle();
 
-      expect(_editFieldTexts(tester), contains('封面路径标题'));
+      expect(_hasField(tester, '封面路径标题'), isTrue);
     } finally {
       await tester.runAsync(h.dispose);
     }
@@ -202,11 +218,11 @@ void main() {
     final h = (await tester
         .runAsync(() => _Harness.create('selfmusic_metarefresh_lyrics_')))!;
     try {
-      await _openEditDialog(tester, h.direct);
+      await _openInfoDialog(tester, h.direct);
 
-      await tester.ensureVisible(find.text('歌词'));
+      await tester.ensureVisible(find.text('无（点击设置）'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('歌词'));
+      await tester.tap(find.text('无（点击设置）'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('在线获取').last);
       await pumpFrame(tester);
@@ -216,7 +232,7 @@ void main() {
       await tester.tap(find.text('取消').last);
       await tester.pumpAndSettle();
 
-      expect(_editFieldTexts(tester), contains('歌词路径标题'));
+      expect(_hasField(tester, '歌词路径标题'), isTrue);
     } finally {
       await tester.runAsync(h.dispose);
     }
@@ -226,8 +242,8 @@ void main() {
     final h = (await tester
         .runAsync(() => _Harness.create('selfmusic_metarefresh_media_')))!;
     try {
-      await _openEditDialog(tester, h.direct);
-      expect(find.text('无（点击设置）'), findsNWidgets(2));
+      await _openInfoDialog(tester, h.direct);
+      expect(_hasField(tester, '无（点击设置）'), isTrue);
 
       final coverFile = File('${h.dir.path}/cv.png');
       await tester.runAsync(() async {
@@ -242,8 +258,7 @@ void main() {
       await tester.tap(_closeTopmost);
       await tester.pumpAndSettle();
 
-      expect(find.text('已设置（点击查看/更换）'), findsOneWidget);
-      expect(find.text('2 行（点击查看/编辑）'), findsOneWidget);
+      expect(_hasField(tester, '2 行（点击查看/编辑）'), isTrue);
     } finally {
       await tester.runAsync(h.dispose);
     }

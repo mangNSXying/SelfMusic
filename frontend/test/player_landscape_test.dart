@@ -432,7 +432,8 @@ void main() {
         buttons: kSecondaryButton, kind: PointerDeviceKind.mouse);
     await tester.pumpAndSettle();
     expect(find.text('歌曲信息'), findsOneWidget);
-    expect(find.text('修改信息'), findsOneWidget);
+    expect(find.text('修改信息'), findsNothing,
+        reason: '两窗已合并，菜单只留「歌曲信息」');
 
     await tester.pumpWidget(const SizedBox());
   });
