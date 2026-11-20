@@ -17,7 +17,6 @@ import 'add_to_playlist.dart';
 import 'app_dialog_actions.dart';
 import 'app_toast.dart';
 import 'context_menu.dart';
-import 'edit_song_meta_dialog.dart';
 import 'row_list.dart';
 import 'selection_badge.dart';
 import 'song_info_dialog.dart';
@@ -304,16 +303,6 @@ class SongTile extends StatelessWidget {
           ],
         ),
       ),
-      const PopupMenuItem(
-        value: 'edit',
-        child: Row(
-          children: [
-            Icon(Icons.edit_outlined),
-            SizedBox(width: 12),
-            Text('修改信息'),
-          ],
-        ),
-      ),
       if (extra != null && extra.isNotEmpty) ...[
         const PopupMenuDivider(),
         ...extra,
@@ -350,11 +339,6 @@ class SongTile extends StatelessWidget {
         showDialog<void>(
           context: context,
           builder: (_) => SongInfoDialog(song: song),
-        );
-      case 'edit':
-        showDialog<void>(
-          context: context,
-          builder: (_) => EditSongMetaDialog(song: song),
         );
       default:
         onExtraMenu?.call(v);

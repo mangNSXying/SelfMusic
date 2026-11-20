@@ -25,7 +25,7 @@ enum _TagSource { lyrics, cover }
 /// 三页统一「点选候选 + 行尾查看 + 底部保存」：歌词/封面保存当前候选，
 /// 标签页选回填来源（歌词/封面候选）后由底部保存回填标题/歌手/专辑。
 /// 本窗保存口径遵循设置 `online_meta_save_mode`：内嵌模式下暂只写应用缓存，
-/// 内嵌由“修改信息”窗口点击保存时统一执行。
+/// 内嵌由“歌曲信息”窗口点击保存时统一执行。
 class OnlineMetaDialog extends StatefulWidget {
   final Song song;
 
@@ -588,7 +588,7 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
             Text(
               '歌词：${lyricSource.label} · 封面：${coverSource.label}（设置可换源，无自动串源） · 保存：${switch (saveMode) {
                 OnlineMetaSaveMode.sidecar => '应用缓存＋写回源目录（同名覆盖）',
-                OnlineMetaSaveMode.embed => '应用缓存（需在“修改信息”窗口保存时内嵌）',
+                OnlineMetaSaveMode.embed => '应用缓存（需在“歌曲信息”窗口保存时内嵌）',
                 OnlineMetaSaveMode.appCache => '仅应用缓存',
               }}',
               style: Theme.of(context)

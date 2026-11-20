@@ -2424,7 +2424,7 @@ class DirectSourceManager extends ChangeNotifier {
   }
 
   /// 元数据写入后调用（播放链路懒补读、在线标签/封面/歌词回填、手动封面编辑）：
-  /// 版本号 +1，驱动全局库/列表与存活的「修改信息」窗口就地刷新。
+  /// 版本号 +1，驱动全局库/列表与存活的「歌曲信息」窗口就地刷新。
   void notifySongMetaChanged() {
     _metaVersion++;
     notifyListeners();

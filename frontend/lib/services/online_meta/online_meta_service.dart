@@ -34,7 +34,7 @@ import 'string_sim.dart';
 ///   多首歌共享一张，杂烩目录后写覆盖先写）；远端源经各源 `uploadFile`
 ///   直写（播放读链路同路，不经服务端代理，无多余流量）；无真路径
 ///   （服务端歌/远端未解析）时跳过，不报错；
-/// - `embed`：DB/cache 照常必写；本服务不碰源文件，内嵌由“修改信息”
+/// - `embed`：DB/cache 照常必写；本服务不碰源文件，内嵌由“歌曲信息”
 ///   窗口点击保存时调用 `embedAfterSaveIfEnabled`（TagEmbedService）执行，
 ///   其它保存入口只存缓存。嵌入失败/条件不满足时保留缓存结果；
 ///   `deleteSidecars` 供嵌入成功后清理。
@@ -306,7 +306,7 @@ class OnlineMetaService {
   // ---------- 应用（保存） ----------
 
   /// 保存歌词：必写 DB；sidecar 模式下额外写 `.lrc`（embed 模式不在本层
-  /// 触碰源文件，由“修改信息”保存时统一内嵌）。
+  /// 触碰源文件，由“歌曲信息”保存时统一内嵌）。
   /// 返回 sidecar 实际落盘路径（未写时为 null）。
   Future<({String? sidecarPath, bool sidecarSkipped})> applyLyrics(
     Song song,
@@ -325,7 +325,7 @@ class OnlineMetaService {
   }
 
   /// 保存封面：必写 `covers/` 并回填 `cover_path`；sidecar 模式下额外
-  /// 写回源目录 `cover.jpg`（专辑级，同名覆盖）；embed 模式由“修改信息”
+  /// 写回源目录 `cover.jpg`（专辑级，同名覆盖）；embed 模式由“歌曲信息”
   /// 保存时统一内嵌（本层不碰源文件）。
   /// [src] 为空（服务端歌）或源不支持写时 sidecar 跳过。
   Future<({String? coverPath, String? sidecarPath, bool sidecarSkipped})>
