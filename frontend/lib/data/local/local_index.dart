@@ -1081,7 +1081,7 @@ class LocalIndex {
       return;
     } on FileSystemException catch (e) {
       // 仅跨文件系统才回退；权限/占用等其它错误照旧抛出，别把真问题糊过去。
-      if (e.osError?.errorCode != _exdev) rethrow;
+      if (!_isCrossDeviceError(e)) rethrow;
     }
     final dst = File(dstPath);
     final tmpDst = File('$dstPath.moving');
@@ -1092,7 +1092,18 @@ class LocalIndex {
     src.deleteSync();
   }
 
-  static const int _exdev = 18; // POSIX EXDEV（Linux）
+  static const int _exdev = 18; // POSIX EXDEV（Linux/macOS/HarmonyOS）
+
+  /// 是否是「跨卷」导致的 rename 失败。
+  ///
+  /// 同样是跨盘 rename，Windows 抛的是 Win32 的 ERROR_NOT_SAME_DEVICE（17），
+  /// POSIX 才是 EXDEV（18）。只认 18 会让 Windows 上换盘永远走不到复制回退，
+  /// 直接报「系统无法将文件移到不同的磁盘驱动器」。
+  static bool _isCrossDeviceError(FileSystemException e) {
+    final code = e.osError?.errorCode;
+    if (code == null) return false;
+    return Platform.isWindows ? code == 17 : code == _exdev;
+  }
 
   /// 已登记缓存的可用路径；[kind] 非空时要求行类型匹配（用户缓存判定用）。
   /// 行不存在但有派生文件：无 kind 过滤时兼容旧行为，有过滤时不认。
