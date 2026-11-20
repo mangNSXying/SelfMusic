@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/player_provider.dart';
+import 'package:selfmusic/theme/app_metrics.dart';
 import 'package:selfmusic/widgets/song_info_dialog.dart';
 import 'package:sqlite3/open.dart';
 
@@ -194,6 +195,43 @@ void main() {
     await tester.testTextInput.receiveAction(TextInputAction.done);
     await tester.pumpAndSettle();
     expect(find.byType(TextField), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('编辑框为圆角矩形描边，失焦后复原为查看态', (tester) async {
+    late final DirectSourceManager direct;
+    await tester.runAsync(() async {
+      direct = await _openDirect();
+    });
+    addTearDown(direct.dispose);
+    tester.view.physicalSize = const Size(1000, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(_host(direct, _song()));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('千里之外'));
+    await tester.pumpAndSettle();
+
+    final decoration =
+        tester.widget<TextField>(find.byType(TextField)).decoration!;
+    for (final border in [decoration.border, decoration.enabledBorder]) {
+      expect(border, isA<OutlineInputBorder>(), reason: '圆角矩形描边，不是下划线');
+      expect(
+        (border! as OutlineInputBorder).borderRadius,
+        BorderRadius.circular(kButtonRadius),
+        reason: '与全 App 输入框同一圆角',
+      );
+    }
+    expect(decoration.filled, isFalse, reason: '字段区保持平面，不铺底色');
+
+    // 键盘 Tab 等路径失焦 → 不做额外处理也要复原成查看态。
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField), findsNothing, reason: '失焦后收起输入框');
+    expect(find.text('千里之外'), findsOneWidget, reason: '值原样回到查看态');
 
     await tester.pumpWidget(const SizedBox());
   });

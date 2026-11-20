@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
+import '../theme/app_metrics.dart';
 import '../utils/cover_thumb.dart';
 import '../utils/duration_format.dart';
 import '../utils/play_progress.dart';
@@ -707,8 +708,9 @@ class _CoverHead extends StatelessWidget {
   }
 }
 
-/// 可编辑字段块：查看态与 [_FieldTile] 完全一致，点击就地变输入框；
-/// 回车/点别处/Esc 收起。输入框读写**原文**，展示态才做简繁转换。
+/// 可编辑字段块：查看态与 [_FieldTile] 完全一致，点击就地变圆角输入框；
+/// 回车/点别处/Esc/失焦都收起，复原为查看态。输入框读写**原文**，
+/// 展示态才做简繁转换。
 class _EditableFieldTile extends StatefulWidget {
   final String label;
   final TextEditingController controller;
@@ -742,6 +744,18 @@ class _EditableFieldTileState extends State<_EditableFieldTile> {
   final FocusNode _focus = FocusNode();
 
   @override
+  void initState() {
+    super.initState();
+    // 失焦即收起：回车/点别处/Esc 之外的路径（Tab、窗口切走、程序化
+    // unfocus）也要复原成查看态，不能让输入框一直挂着。
+    _focus.addListener(_onFocusChanged);
+  }
+
+  void _onFocusChanged() {
+    if (!_focus.hasFocus && widget.editing) widget.onEndEdit();
+  }
+
+  @override
   void didUpdateWidget(covariant _EditableFieldTile old) {
     super.didUpdateWidget(old);
     if (widget.editing && !old.editing) {
@@ -754,6 +768,7 @@ class _EditableFieldTileState extends State<_EditableFieldTile> {
 
   @override
   void dispose() {
+    _focus.removeListener(_onFocusChanged);
     _focus.dispose();
     super.dispose();
   }
@@ -778,82 +793,81 @@ class _EditableFieldTileState extends State<_EditableFieldTile> {
     return ConstrainedBox(
       // Wrap 内必须有明确宽度区间，否则输入框会塌成一条缝。
       constraints: const BoxConstraints(minWidth: 220, maxWidth: 380),
-      child: MouseRegion(
-        cursor: SystemMouseCursors.text,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
-          child: Stack(
-            clipBehavior: Clip.none,
-            children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 1),
-                    child: Text(
-                      widget.label,
-                      style: TextStyle(
-                        fontSize: 10.5,
-                        height: 1.4,
-                        letterSpacing: 0.3,
-                        color: cs.primary.withValues(alpha: 0.8),
-                      ),
-                    ),
-                  ),
-                  Focus(
-                    onKeyEvent: (node, event) {
-                      if (event is KeyDownEvent &&
-                          event.logicalKey == LogicalKeyboardKey.escape) {
-                        widget.onEndEdit();
-                        return KeyEventResult.handled;
-                      }
-                      return KeyEventResult.ignored;
-                    },
-                    child: TextField(
-                      controller: widget.controller,
-                      focusNode: _focus,
-                      style: TextStyle(
-                        fontSize: 13,
-                        height: 1.5,
-                        color: cs.onSurface,
-                      ),
-                      cursorColor: cs.primary,
-                      decoration: InputDecoration(
-                        isDense: true,
-                        border: InputBorder.none,
-                        contentPadding: EdgeInsets.zero,
-                        hintText: widget.hint,
-                        hintStyle: TextStyle(
-                          fontSize: 13,
-                          height: 1.5,
-                          color: cs.onSurface.withValues(alpha: 0.35),
-                        ),
-                      ),
-                      inputFormatters: widget.digitsOnly
-                          ? [FilteringTextInputFormatter.digitsOnly]
-                          : null,
-                      onSubmitted: (_) => widget.onEndEdit(),
-                      onTapOutside: (_) => widget.onEndEdit(),
-                    ),
-                  ),
-                ],
-              ),
-              // 编辑底边：与查看态选中的强调色下划线同口径。
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: -5,
-                child: Container(
-                  height: 3,
-                  decoration: BoxDecoration(
-                    color: cs.primary,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
+      child: Padding(
+        // 与查看态字段块同一外框（6/5），切换时不跳位。
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text(
+                widget.label,
+                style: TextStyle(
+                  fontSize: 10.5,
+                  height: 1.4,
+                  letterSpacing: 0.3,
+                  color: cs.primary.withValues(alpha: 0.8),
                 ),
               ),
-            ],
-          ),
+            ),
+            MouseRegion(
+              cursor: SystemMouseCursors.text,
+              child: Focus(
+                onKeyEvent: (node, event) {
+                  if (event is KeyDownEvent &&
+                      event.logicalKey == LogicalKeyboardKey.escape) {
+                    widget.onEndEdit();
+                    return KeyEventResult.handled;
+                  }
+                  return KeyEventResult.ignored;
+                },
+                child: TextField(
+                  controller: widget.controller,
+                  focusNode: _focus,
+                  style: TextStyle(
+                    fontSize: 13,
+                    height: 1.5,
+                    color: cs.onSurface,
+                  ),
+                  cursorColor: cs.primary,
+                  decoration: InputDecoration(
+                    isDense: true,
+                    // 只描边、不填充：字段区保持平面，圆角与全 App 输入框一致。
+                    filled: false,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(kButtonRadius),
+                      borderSide: BorderSide(color: cs.outlineVariant),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(kButtonRadius),
+                      borderSide: BorderSide(color: cs.outlineVariant),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(kButtonRadius),
+                      borderSide: BorderSide(color: cs.primary, width: 1.5),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 8,
+                    ),
+                    hintText: widget.hint,
+                    hintStyle: TextStyle(
+                      fontSize: 13,
+                      height: 1.5,
+                      color: cs.onSurface.withValues(alpha: 0.35),
+                    ),
+                  ),
+                  inputFormatters: widget.digitsOnly
+                      ? [FilteringTextInputFormatter.digitsOnly]
+                      : null,
+                  onSubmitted: (_) => widget.onEndEdit(),
+                  onTapOutside: (_) => widget.onEndEdit(),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
