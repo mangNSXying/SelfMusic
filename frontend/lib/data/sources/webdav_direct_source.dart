@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:xml/xml.dart';
 
 import '../../models/song.dart';
@@ -104,6 +105,8 @@ class WebdavDirectSource extends MusicSource {
       ScanToken? token,
       void Function(ScanProgress)? onProgress}) async {
     // 只传可跨 isolate 发送的原始值（不含 this）。
+    debugPrint('[webdav:scan] key=$key '
+        '${webdavCredFingerprint(username, password)} base=$_base');
     final known = index.scanFingerprint(key);
     final out = await runScan<List<ScannedSong>>(
       entry: _webdavWalkEntry,
@@ -150,6 +153,7 @@ class WebdavDirectSource extends MusicSource {
   Future<void> probe(Song song) async {
     final url = _playUrl(song);
     if (url == null) throw StateError('WebDAV 缺少播放地址，无法预热');
+    debugPrint('[webdav:probe] key=$key ${webdavCredFingerprint(username, password)} url=$url');
     final client = _newClient(allowSelfSigned);
     try {
       final req = await client.getUrl(Uri.parse(url));
@@ -158,6 +162,8 @@ class WebdavDirectSource extends MusicSource {
       final resp = await req.close();
       if (resp.statusCode != 200 && resp.statusCode != 206) {
         if (resp.statusCode == 401 || resp.statusCode == 403) {
+          debugPrint('[webdav:401] probe ${webdavAuthDiag(resp, url)} '
+              '${webdavCredFingerprint(username, password)}');
           throw SourceAuthException(WebdavStatusException(resp.statusCode, url).toString());
         }
         throw WebdavStatusException(resp.statusCode, url);
@@ -177,6 +183,7 @@ class WebdavDirectSource extends MusicSource {
   @override
   Future<OpenedStream> open(Song song, {IntRange? range}) async {
     final url = _playUrl(song)!;
+    debugPrint('[webdav:open] key=$key ${webdavCredFingerprint(username, password)} url=$url');
     final client = _newClient(allowSelfSigned);
     final req = await client.getUrl(Uri.parse(url));
     _auth(req, username, password);
@@ -186,6 +193,10 @@ class WebdavDirectSource extends MusicSource {
     }
     final resp = await req.close();
     if (resp.statusCode != 200 && resp.statusCode != 206) {
+      if (resp.statusCode == 401 || resp.statusCode == 403) {
+        debugPrint('[webdav:401] open ${webdavAuthDiag(resp, url)} '
+            '${webdavCredFingerprint(username, password)}');
+      }
       await resp.drain<void>();
       client.close(force: true);
       if (resp.statusCode == 401 || resp.statusCode == 403) {
@@ -246,8 +257,16 @@ class WebdavDirectSource extends MusicSource {
 
   /// 直接把 WebDAV URL 交给 just_audio 原生播放（ExoPlayer Range/seek 更可靠）。
   @override
-  DirectStream? directStream(Song song) =>
-      DirectStream(_playUrl(song)!, headers: _basicAuthHeaders());
+  DirectStream? directStream(Song song) {
+    final headers = _basicAuthHeaders();
+    // 关键对照点：401 若出自探针而这里指纹一致，说明凭据本身没问题，
+    // 差别只在“谁发请求”（dart:io vs 原生播放器）。
+    debugPrint('[webdav:directStream] key=$key '
+        '${webdavCredFingerprint(username, password)} '
+        'headers=${headers == null ? '无(none)' : headers.keys.join(",")} '
+        'url=${_playUrl(song)}');
+    return DirectStream(_playUrl(song)!, headers: headers);
+  }
 
   Map<String, String>? _basicAuthHeaders() => username.isEmpty
       ? null
@@ -627,6 +646,40 @@ void _auth(HttpClientRequest req, String username, String password) {
   req.headers.set(HttpHeaders.authorizationHeader, 'Basic $cred');
 }
 
+/// 凭据指纹（临时诊断用）：只输出长度与短哈希，绝不打印明文。
+/// 同一份账密在扫描/探针/播放三条链路上应产出同一个指纹，对不上即说明
+/// 某条链路拿到的是空密码或旧密码。
+String webdavCredFingerprint(String username, String password) {
+  final s = '$username:$password';
+  var h = 0x811c9dc5;
+  for (final b in utf8.encode(s)) {
+    h ^= b;
+    h = (h * 0x01000193) & 0xffffffff;
+  }
+  return 'user=${username.length} pwd=${password.length} fp=${h.toRadixString(16).padLeft(8, '0')}';
+}
+
+/// 401/403 取证：把响应头与对端地址打成一行。
+///
+/// 真实服务器拒绝与中间层拦截的响应头特征不同——真机服务器是
+/// `Server: nginx/...` + `WWW-Authenticate: Basic realm="..."`；若是 CDN/代理/
+/// 鉴权网关拦截，`Server`/`realm`/`Via`/`X-Cache` 往往对不上，或状态码来自
+/// 50ms 内的本地应答。凭据本身正确却偶发 401 时，这行日志用来定性。
+String webdavAuthDiag(HttpClientResponse resp, String url) {
+  final h = resp.headers;
+  String v(String name) => h.value(name) ?? '-';
+  final ci = resp.connectionInfo;
+  final remote = ci == null
+      ? '-'
+      : '${ci.remoteAddress.address}:${ci.remotePort}';
+  return 'status=${resp.statusCode} remote=$remote '
+      'server=${v(HttpHeaders.serverHeader)} '
+      'www-auth=${v(HttpHeaders.wwwAuthenticateHeader)} '
+      'via=${v('via')} x-cache=${v('x-cache')} '
+      'content-length=${resp.contentLength} '
+      'content-type=${v(HttpHeaders.contentTypeHeader)} url=$url';
+}
+
 Future<void> _listRecursive(HttpClient client, String url,
     List<_WebdavEntry> out, String username, String password,
     {bool Function()? isCancelled}) async {
@@ -668,6 +721,11 @@ Future<List<_WebdavEntry>> _propfind(
   _auth(req, username, password);
   final resp = await req.close().timeout(const Duration(seconds: 30));
   if (resp.statusCode != 207 && resp.statusCode != 200) {
+    if (resp.statusCode == 401 || resp.statusCode == 403) {
+      // 扫描侧也留一行：与播放侧 401 对照，判断是否只有某些链路被拒。
+      debugPrint('[webdav:401] propfind ${webdavAuthDiag(resp, url)} '
+          '${webdavCredFingerprint(username, password)}');
+    }
     await resp.drain<void>();
     // 鉴权/路径/服务端错误必须响亮失败：曾静默返回空列表，上层把整库当
     // 「全部消失」清掉（2026-09-29 真机：密码过期 401 → 扫描"成功"0 首 →
