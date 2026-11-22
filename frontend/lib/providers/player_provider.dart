@@ -1528,6 +1528,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     return keys.any(s.contains);
   }
 
+  /// 重试同一源必定再次失败的失败类型：鉴权被拒 / 源侧永久不可用。
+  /// 这类错误不能留在“延迟恢复装载”里反复重装（会遮住 [_sourceInvalid]
+  /// 的恢复分支，表现为点播放永远失败且不跳歌）。
+  static bool _permanentLoadFailure(Object e) =>
+      e is SourceAuthException || e is MediaProxyUnavailableException;
+
   /// 已处理过 completed 的曲目 key（含暂停导致的二次 completed，见监听器注释）。
   String? _completedKey;
 
@@ -3207,7 +3213,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         final cur = _current;
         final pos = _restorePositionMs;
         if (cur != null && pos != null && _same(cur, s)) {
-          _deferRestoreLoad(cur, pos);
+          if (_permanentLoadFailure(e)) {
+            // 鉴权/源永久不可用：重试同一源不会成功，退出延迟恢复死循环。
+            // 保留乐观位置，点播放走 [_sourceInvalid] 恢复分支（可自动跳歌）。
+            _deferredRestoreLoad = false;
+            _deferredRestoreKey = null;
+            _lastKnownPos = Duration(milliseconds: pos);
+          } else {
+            _deferRestoreLoad(cur, pos);
+          }
         }
       }
       debugPrint('[play] 装载失败《${s.title}》: $e');
@@ -4738,6 +4752,37 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       await _resumeFromNetworkSuspension();
       return;
     }
+    final p = _player;
+    // 音源无效优先于延迟恢复：延迟分支只会用同一个源 `play:false` 反复装载，
+    // 永久类失败会一直在这里打转、永远到不了下面的恢复/跳歌分支。
+    // 上次装载失败/源已失效（[_sourceInvalid]）：播放器停在 idle/loading，裸
+    // play() 是空转（表现为「点了没反应」，只能重启软件）。重新装载当前曲并
+    // 从最后已知位置继续。装载中（_loadingToken 非空）不抢。
+    if (_loadingToken == null &&
+        _current != null &&
+        _curSource != null &&
+        (_sourceInvalid || p == null)) {
+      if (_restoreResumeTarget == false) {
+        _restoreResumeTarget = null;
+        return;
+      }
+      _restoreResumeTarget = null;
+      final startAt = _restorePositionMs != null
+          ? Duration(milliseconds: _restorePositionMs!)
+          : _lastKnownPos;
+      debugPrint('[play] 续播分支：音源无效→重载当前曲 '
+          'startAt=${startAt.inMilliseconds}ms');
+      final ok = await _play(_current!,
+          source: _curSource,
+          play: true,
+          fromPlaylist: false,
+          emitBreakpoint: false,
+          startAt: startAt,
+          autoAdvanceOnFailure: true);
+      if (!ok || _shuttingDown || _disposed) return;
+      _saveForcedAndPoke(intent: 'resume');
+      return;
+    }
     if (_hasDeferredRestore) {
       if (_restoreResumeTarget == false) {
         _restoreResumeTarget = null;
@@ -4763,29 +4808,6 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         debugPrint('[play] play 调用异常（忽略）：$e');
       }));
       _fadeIn();
-      _saveForcedAndPoke(intent: 'resume');
-      return;
-    }
-    final p = _player;
-    // 上次装载失败/源已失效（[_sourceInvalid]）：播放器停在 idle/loading，裸
-    // play() 是空转（表现为「点了没反应」，只能重启软件）。重新装载当前曲并
-    // 从最后已知位置继续。装载中（_loadingToken 非空）不抢。
-    if (_loadingToken == null &&
-        _current != null &&
-        _curSource != null &&
-        (_sourceInvalid || p == null)) {
-      if (_restoreResumeTarget == false) return;
-      _restoreResumeTarget = null;
-      debugPrint('[play] 续播分支：音源无效→重载当前曲 '
-          'startAt=${_lastKnownPos.inMilliseconds}ms');
-      final ok = await _play(_current!,
-          source: _curSource,
-          play: true,
-          fromPlaylist: false,
-          emitBreakpoint: false,
-          startAt: _lastKnownPos,
-          autoAdvanceOnFailure: true);
-      if (!ok || _shuttingDown || _disposed) return;
       _saveForcedAndPoke(intent: 'resume');
       return;
     }
