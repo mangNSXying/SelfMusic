@@ -1178,9 +1178,17 @@ class DirectSourceManager extends ChangeNotifier {
       case SourceLine.primary:
         return [(primary, 0)];
       case SourceLine.fb0:
-        return fbs.isNotEmpty ? [(fbs[0], 1)] : [(primary, 0)];
+        if (fbs.isEmpty) {
+          debugPrint('[play] 线路偏好备用1不存在，回落主源（$key）');
+          return [(primary, 0)];
+        }
+        return [(fbs[0], 1)];
       case SourceLine.fb1:
-        return fbs.length > 1 ? [(fbs[1], 2)] : [(primary, 0)];
+        if (fbs.length < 2) {
+          debugPrint('[play] 线路偏好备用2不存在，回落主源（$key）');
+          return [(primary, 0)];
+        }
+        return [(fbs[1], 2)];
       case SourceLine.auto:
         final out = <(MusicSource, int)>[(primary, 0)];
         for (var i = 0; i < fbs.length; i++) {

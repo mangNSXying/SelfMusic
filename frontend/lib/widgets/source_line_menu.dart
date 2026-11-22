@@ -47,21 +47,39 @@ Future<void> applySourceLineSelection(
     'line_fb1' => SourceLine.fb1,
     _ => SourceLine.auto,
   };
+  // 目标槽不存在时不能静默回落主源：那会让“切到备用”看起来成功、实际仍走
+  // 主源。这里直接拒绝，且不改写已保存的线路偏好。
+  final fbCount = direct.fallbackCountOf(sourceKey);
+  if ((line == SourceLine.fb0 && fbCount < 1) ||
+      (line == SourceLine.fb1 && fbCount < 2)) {
+    AppToast.show(
+        '该源未配置${line == SourceLine.fb0 ? '备用1' : '备用2'}线路',
+        isError: true);
+    return;
+  }
   await direct.setLinePref(sourceKey, line);
   if (!context.mounted) return;
-  AppToast.show(
-      line == SourceLine.auto
-          ? '已切到自动线路（主→备 Failover）'
-          : line == SourceLine.primary
-              ? '已锁定主用线路'
-              : line == SourceLine.fb0
-                  ? '已锁定备用1线路'
-                  : '已锁定备用2线路',
-      isError: false);
+  final label = line == SourceLine.auto
+      ? '已切到自动线路（主→备 Failover）'
+      : line == SourceLine.primary
+          ? '已锁定主用线路'
+          : line == SourceLine.fb0
+              ? '已锁定备用1线路'
+              : '已锁定备用2线路';
   try {
     final player = context.read<PlayerProvider>();
-    if (player.current?.sourceKey == sourceKey) {
-      unawaited(player.reloadCurrentForPlaybackRoute());
+    final cur = player.current;
+    if (cur != null && cur.sourceKey == sourceKey) {
+      // 缓存优先重载会直接跳过（见 reloadCurrentForPlaybackRoute）：必须
+      // 明确告知，否则切线路看起来完全没反应。
+      if (direct.isUserCached(cur)) {
+        AppToast.show('$label；当前曲已缓存，仍播本地', isError: false);
+      } else {
+        AppToast.show(label, isError: false);
+        unawaited(player.reloadCurrentForPlaybackRoute());
+      }
+      return;
     }
   } catch (_) {}
+  AppToast.show(label, isError: false);
 }

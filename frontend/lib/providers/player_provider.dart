@@ -1839,6 +1839,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _curSource = used;
       _curLine = line;
       _loadFailStreak = 0;
+      _sourceInvalid = false;
+      // 本次重载已把目标曲装好：启动期遗留的延迟恢复不再需要，继续挂着会
+      // 让下一次点播放重新走 play:false 的延迟分支而不是直接续播。
+      _clearRestorePosition();
       if (wasPlaying) {
         // 与 _play 同口径：自然播完时 playing 不复位，直接 play() 会空转，
         // 先复位再播，避免自动切歌无声。
@@ -1872,6 +1876,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     } catch (e) {
       if (!alive()) return false;
       debugPrint('[play] 重载当前曲失败《${cur.title}》: $e');
+      // 切换/重载失败要让用户看见，并落到可自动跳歌的 [_sourceInvalid] 恢复
+      // 分支：旧实现只写日志，手切线路会表现成“提示成功但没声音”。
+      _sourceInvalid = true;
+      _deferredRestoreLoad = false;
+      _deferredRestoreKey = null;
+      _lastKnownPos = pos;
+      AppToast.error(e, '切换播放链路失败');
+      notifyListeners();
+      _syncSystemMedia();
       return false;
     }
   }
