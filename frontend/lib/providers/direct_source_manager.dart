@@ -584,6 +584,14 @@ class DirectSourceManager extends ChangeNotifier {
         }
         _webdavPwds[r.key] = pwd ?? '';
         cfg['password'] = pwd ?? '';
+        // 诊断：源实例构建时实际拿到什么凭据（只打长度/指纹，不含明文）。
+        // 与 [webdav:scan]/[webdav:probe]/[webdav:directStream] 的指纹对照，
+        // 指纹不同即说明某条链路拿到了另一份（空/旧）凭据。
+        debugPrint('[direct:build] key=${r.key} '
+            'user=${(cfg['username'] as String? ?? '').length} '
+            'pwd=${(pwd ?? '').length} '
+            'secretSource=${pwd == null || pwd.isEmpty ? (legacy.isNotEmpty ? 'legacy-config' : 'EMPTY') : 'secret-store'} '
+            'baseUrl=${cfg['baseUrl']}');
         await _loadFallbackSecrets(r.key, cfg);
         return _buildDirect(kind: r.kind, key: r.key, name: name, cfg: cfg);
       }
@@ -1546,14 +1554,26 @@ class DirectSourceManager extends ChangeNotifier {
 
     // WebDAV 密码：持久化收敛到 SecretStore，config 不落地明文。
     // （仅 webdav 行；sftp 走下方三件套，避免杂散键。）
+    //
+    // 空串语义 = 「保留已有凭据」而非「清空」：编辑弹窗的密码框由
+    // `_webdavPwds[key]` 回填，Windows/鸿蒙上 SecretStore 读取偶发失败时
+    // 弹窗是空的；用户只改个名字保存，就会把可用凭据删掉，随后播放 401
+    // 而扫描（旧实例）仍正常。
     if (row.kind == 'webdav' && password != null) {
       cfg.remove('password');
+      final keepExisting =
+          password.isEmpty && (_webdavPwds[key] ?? '').isNotEmpty;
+      final effective = keepExisting ? _webdavPwds[key]! : password;
+      if (keepExisting) {
+        debugPrint('[direct] 编辑源保留原 WebDAV 密码（$key，提交为空串）');
+      }
       if (newKey != key) {
+        // 改名：先迁移旧键到新 key，再用有效密码覆盖/清理目标键。
         await secrets.migrateWebdav(key, newKey);
         _webdavPwds.remove(key);
       }
-      await secrets.setWebdavPassword(newKey, password);
-      _webdavPwds[newKey] = password;
+      await secrets.setWebdavPassword(newKey, effective);
+      _webdavPwds[newKey] = effective;
     } else if (row.kind == 'webdav' &&
         newKey != key &&
         _webdavPwds.containsKey(key)) {

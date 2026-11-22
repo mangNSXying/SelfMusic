@@ -32,8 +32,16 @@ class SecretStore {
 
   /// 写密码；空串/不含内容即删除该键。
   Future<void> setWebdavPassword(String sourceKey, String? password) async {
-    final key = _webdavKey(sourceKey);
-    final v = (password ?? '').trim();
+    await _writeOrDelete(_webdavKey(sourceKey), password);
+  }
+
+  /// 空值写键的统一规则：空即删。
+  ///
+  /// 注意调用方语义：编辑弹窗若把“没读到旧密码”当成“用户清空了密码”，
+  /// 会把本来可用的凭据删掉。写入口前应先确认这是用户的真实意图
+  /// （见 [DirectSourceManager.updateSource] 的 keepPassword 处理）。
+  Future<void> _writeOrDelete(String key, String? value) async {
+    final v = (value ?? '').trim();
     if (v.isEmpty) {
       await storage.delete(key: key);
     } else {
