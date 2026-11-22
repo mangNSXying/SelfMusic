@@ -3261,10 +3261,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     for (var c = 0; c < cands.length; c++) {
       final (cand, line) = cands[c];
       final isLast = c == cands.length - 1;
-      // 主线路（首候选）走完整退避；备用只单次尝试，避免 44s×3 的漫长卡死。
-      final attempts = (c == 0 && cands.length > 1)
-          ? loadBackoff.length + 1
-          : (cands.length == 1 ? loadBackoff.length + 1 : 1);
+      // 有备用线路时每个候选只试一次：failover 要快，主线路的退避重试
+      // 会让备用在几十秒后才被想起（用户视角=自动切换失效）。单线路
+      // 仍走完整退避。
+      final attempts = cands.length > 1 ? 1 : loadBackoff.length + 1;
       var probeUsable = true;
       for (var i = 0; i < attempts; i++) {
         if (!alive() || _shuttingDown) return (cand, line);
@@ -3298,7 +3298,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           }
           return (cand, line);
         } catch (e) {
-          if (e is PlayerInterruptedException) rethrow;
+          // 只有「装载已被更新的切歌接管」（令牌过期/退出）才终止整条候选链。
+          // 平台层的 Loading interrupted（网络中断、底层请求被取消）必须继续
+          // 试下一线路，否则有备用时自动切换也永远不会触发。
+          if (e is PlayerInterruptedException) {
+            if (!alive() || _shuttingDown) rethrow;
+            last = e;
+            if (isLast) rethrow;
+            break;
+          }
           // 预载只能走原生链路：本候选只剩自建字节流时不再重试，换下一线路；
           // 全部候选都不安全则 _play 静默失败，保持延迟装载。
           if (e is PreloadUnsafeSourceException) {
