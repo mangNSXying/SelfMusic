@@ -1422,6 +1422,63 @@ void _opApplyPlaystateMirror(Database db, Map<String, dynamic> a) {
   // 播放器采用镜像/合并回执时显式写入。
 }
 
+/// 服务端不下发的敏感键：只可能来自本机 SecretStore 或历史遗留 config，
+/// 远端快照里为空时绝不能拿它覆盖本地已有值。
+const _kLocalSecretConfigKeys = {
+  'password',
+  'keyPem',
+  'passphrase',
+  'smbPassword',
+  'sftpPassword',
+  'sftpKeyPem',
+  'sftpPassphrase',
+};
+
+/// 合并远端源配置到本机 config：远端为准，但本机独有/远端缺失的键要留住。
+///
+/// 典型场景：本机配了备用线路（`fallbacks`）或凭据，另一台设备推来一份
+/// 不含这些键的旧快照。整份覆盖会让备用线路“凭空消失”，进而使 failover
+/// 与手动切线路都没有候选。规则：
+/// - 远端存在该键 → 用远端值（远端是配置的权威来源）；
+/// - 远端缺失、本机有 → 保留本机值；
+/// - 敏感键：远端空值/缺失不覆盖本机非空值（服务端本就不同步明文）。
+Map<String, dynamic> mergeSourceConfig({
+  required Map<String, dynamic> local,
+  required Map<String, dynamic> remote,
+}) {
+  final out = <String, dynamic>{...local};
+  for (final e in remote.entries) {
+    final key = e.key;
+    final remoteVal = e.value;
+    if (_kLocalSecretConfigKeys.contains(key)) {
+      final localVal = local[key];
+      final localHas = localVal is String && localVal.isNotEmpty;
+      final remoteHas = remoteVal is String && remoteVal.isNotEmpty;
+      if (localHas && !remoteHas) continue;
+      out[key] = remoteVal;
+      continue;
+    }
+    // `fallbacks`：远端给了就不空手覆盖——按槽位逐项合并，避免远端精简
+    // 列表把本机多余槽位抹掉（凭据本就只在本机）。
+    if (key == 'fallbacks' && remoteVal is List && local[key] is List) {
+      out[key] = _mergeFallbackLists(local[key] as List, remoteVal);
+      continue;
+    }
+    out[key] = remoteVal;
+  }
+  return out;
+}
+
+List<dynamic> _mergeFallbackLists(List local, List remote) {
+  final out = <dynamic>[...remote];
+  if (local.length <= out.length) return out;
+  // 远端只给了前 N 个槽位：保留本机多出来的槽位（通常是远端版本更旧）。
+  for (var i = out.length; i < local.length; i++) {
+    out.add(local[i]);
+  }
+  return out;
+}
+
 bool _opApplySourceSnapshot(Database db, Map<String, dynamic> a) {
   final uuid = a['uuid'] as String;
   final kind = a['kind'] as String;
@@ -1457,7 +1514,30 @@ bool _opApplySourceSnapshot(Database db, Map<String, dynamic> a) {
     _opDeleteSource(db, hitKey);
     return true;
   }
-  final cfgJson = jsonEncode(<String, dynamic>{...?config});
+  // 合并而非整份覆盖：远端快照缺失的键（典型是 `fallbacks`，以及服务端
+  // 按设计不下发的敏感字段）必须保留本机值。旧实现直接写入远端 config，
+  // 会让对端的旧快照把本机备用线路/凭据配置抹掉，表现为“某段时间后备源
+  // 消失、切线路无候选”。
+  var merged = <String, dynamic>{...?config};
+  if (hitKey != null) {
+    final cur = db.select(
+        'SELECT config FROM sources WHERE client_uuid=? OR key=?',
+        [uuid, hitKey]);
+    if (cur.isNotEmpty) {
+      Map<String, dynamic> local = const {};
+      try {
+        local = jsonDecode(cur.first['config'] as String) as Map<String, dynamic>;
+      } catch (_) {}
+      if (local.isNotEmpty) {
+        final before = merged.length;
+        merged = mergeSourceConfig(local: local, remote: merged);
+        perfLog('source.merge',
+            'key=$hitKey localKeys=$before mergedKeys=${merged.length} '
+            'kept=${merged.length - before}');
+      }
+    }
+  }
+  final cfgJson = jsonEncode(merged);
   if (hitKey != null) {
     final fallbackName = hitKey.contains(':')
         ? hitKey.substring(hitKey.indexOf(':') + 1)
