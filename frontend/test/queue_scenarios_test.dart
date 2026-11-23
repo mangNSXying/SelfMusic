@@ -522,6 +522,31 @@ void main() {
       expect(player.queue[2].coverPath, '/covers/s3.jpg',
           reason: '融合基座快照也必须随元数据刷新');
     });
+
+    test('刷新当前曲元数据：强制回推系统媒体，非当前曲不回推', () async {
+      final (index, player, uuid, _) = await setup();
+      addTearDown(index.close);
+      addTearDown(player.dispose);
+
+      await tap(player, uuid, 0); // s1 起播
+      var syncs = 0;
+      var forced = false;
+      player.attachSystemMediaSync(({bool force = false}) {
+        syncs++;
+        forced = force;
+      });
+
+      // 当前曲的文案编辑 / 封面原地重写：必须回推通知栏/播控卡。
+      player.refreshSongMeta(
+          player.current!.copyWith(title: '新标题', coverPath: '/covers/s1.jpg'),
+          forceMedia: true);
+      expect(syncs, 1);
+      expect(forced, isTrue);
+
+      // 非当前曲编辑：只刷队列，不产生系统媒体推送。
+      player.refreshSongMeta(_song('s6').copyWith(title: '改名'));
+      expect(syncs, 1);
+    });
   });
 
   group('歌单切换保留深层列表现场', () {
