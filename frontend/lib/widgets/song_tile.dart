@@ -179,7 +179,7 @@ class SongTile extends StatelessWidget {
     }
   }
 
-  /// 三点菜单：下一首播放 / 喜欢 / 不喜欢 / 缓存（仅直连）/ 加入歌单 / 歌曲信息。
+  /// 三点菜单：下一首播放 / 加入歌单 / 喜欢 / 不喜欢 / 缓存（仅直连）/ 歌曲信息 / 删除（仅可写直连）。
   ///
   /// 歌单详情等需要「追加」自定义项时传 [extraMenuItems]，其回调走 [onExtraMenu]。
   Widget _menu(BuildContext context, DirectSourceManager direct, bool favorite,
@@ -235,6 +235,16 @@ class SongTile extends StatelessWidget {
           ],
         ),
       ),
+      const PopupMenuItem(
+        value: 'playlist',
+        child: Row(
+          children: [
+            Icon(Icons.playlist_add),
+            SizedBox(width: 12),
+            Text('加入歌单'),
+          ],
+        ),
+      ),
       PopupMenuItem(
         value: 'favorite',
         child: Row(
@@ -272,6 +282,16 @@ class SongTile extends StatelessWidget {
             ],
           ),
         ),
+      const PopupMenuItem(
+        value: 'info',
+        child: Row(
+          children: [
+            Icon(Icons.info_outline),
+            SizedBox(width: 12),
+            Text('歌曲信息'),
+          ],
+        ),
+      ),
       if (song.isDirect && source != null && source!.supportsWrite)
         const PopupMenuItem(
           value: 'delete',
@@ -283,26 +303,6 @@ class SongTile extends StatelessWidget {
             ],
           ),
         ),
-      const PopupMenuItem(
-        value: 'playlist',
-        child: Row(
-          children: [
-            Icon(Icons.playlist_add),
-            SizedBox(width: 12),
-            Text('加入歌单'),
-          ],
-        ),
-      ),
-      const PopupMenuItem(
-        value: 'info',
-        child: Row(
-          children: [
-            Icon(Icons.info_outline),
-            SizedBox(width: 12),
-            Text('歌曲信息'),
-          ],
-        ),
-      ),
       if (extra != null && extra.isNotEmpty) ...[
         const PopupMenuDivider(),
         ...extra,
