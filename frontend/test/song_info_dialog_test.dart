@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:provider/provider.dart';
 import 'package:selfmusic/data/local/app_settings.dart';
+import 'package:selfmusic/data/local/local_index.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/player_provider.dart';
@@ -391,5 +392,73 @@ void main() {
     expect(find.text('关闭'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('仅待内嵌、字段未改时保存：不把该行标成 user_edited', (tester) async {
+    late final DirectSourceManager direct;
+    late final Directory dir;
+    await tester.runAsync(() async {
+      open.overrideFor(OperatingSystem.linux, () => _openOnLinux());
+      dir = await Directory.systemTemp.createTemp('selfmusic_info_noedit_');
+      PathProviderPlatform.instance = _FakePathProvider(dir.path);
+      direct = DirectSourceManager();
+      await direct.init();
+      await direct.index.upsertSource('local:info', 'local', '本地', '{}');
+      await direct.index.upsertSongs([
+        DirectSongRow(
+            sourceKey: 'local:info',
+            ref: '/music/a.flac',
+            title: '千里之外',
+            artist: '周杰伦、费玉清',
+            duration: 254,
+            format: 'flac',
+            size: 100,
+            mtime: 1),
+      ]);
+      direct.settings.onlineMetaSaveMode = OnlineMetaSaveMode.embed;
+    });
+    addTearDown(direct.dispose);
+    tester.view.physicalSize = const Size(1000, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final song = await tester.runAsync(
+        () async => direct.index.songByRef('local:info', '/music/a.flac')!);
+    await _openDialog(tester, direct, song!);
+
+    // 子窗写歌词 → 主窗进入「待内嵌」。
+    await tester.ensureVisible(find.text('无（点击设置）'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('无（点击设置）'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '[00:01.00]第一行\n');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('保存'));
+    await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 200)));
+    await tester.pumpAndSettle();
+    expect(find.text('保存'), findsOneWidget);
+
+    // 不碰任何字段，直接保存：源不可写 → 内嵌 skipped，但绝不能写库。
+    await tester.tap(find.text('保存'));
+    await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 300)));
+    await tester.pumpAndSettle();
+
+    // 用「扫描回填能否覆盖标题」间接判定 user_edited 是否被置位：
+    // enrichSong 对 user_edited=1 的行只补技术字段、不动文本。
+    await tester.runAsync(() async {
+      await direct.index
+          .enrichSong('local:info', '/music/a.flac', title: '扫描标题');
+    });
+    final after = await tester.runAsync(
+        () async => direct.index.songByRef('local:info', '/music/a.flac'));
+    expect(after!.title, '扫描标题',
+        reason: '没改字段就不该标成用户已编辑，扫描仍应能覆盖标题');
+
+    await tester.pumpWidget(const SizedBox());
+    try {
+      dir.deleteSync(recursive: true);
+    } catch (_) {}
   });
 }

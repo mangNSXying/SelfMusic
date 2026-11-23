@@ -202,6 +202,11 @@ class _SongInfoDialogState extends State<SongInfoDialog> {
       return;
     }
     final base = _cur;
+    // 字段语义：null=未改动不写；''=清空为未知；其余=新值。
+    final title = _delta(_title.text, base.title);
+    final artist = _delta(_artist.text, base.artist);
+    final albumArtist = _delta(_albumArtist.text, base.albumArtist);
+    final album = _delta(_album.text, base.albumName);
     // 年份：null 且不清=不修改；数字=新值；清空（原有值→留空）=clearYear。
     final yearInput = _year.text.trim();
     final yearOrig = base.year;
@@ -214,45 +219,65 @@ class _SongInfoDialogState extends State<SongInfoDialog> {
         year = int.tryParse(yearInput);
       }
     }
+    // 只有「待内嵌」而没有字段改动时，不能写库：updateSongMeta 会把该行
+    // 标成 user_edited=1 并让扫描永久不再覆盖元数据，白白丢掉元数据。
+    final hasFieldEdit = title != null ||
+        artist != null ||
+        albumArtist != null ||
+        album != null ||
+        year != null ||
+        clearYear;
 
     setState(() => _saving = true);
     try {
       final direct = context.read<DirectSourceManager>();
-      final updated = await direct.updateSongMeta(
-        base,
-        title: _delta(_title.text, base.title),
-        artist: _delta(_artist.text, base.artist),
-        albumArtist: _delta(_albumArtist.text, base.albumArtist),
-        album: _delta(_album.text, base.albumName),
-        year: year,
-        clearYear: clearYear,
-      );
-      if (!mounted) return;
-      if (updated != null) {
-        context.read<PlayerProvider>().refreshSongMeta(updated);
-        _cur = updated;
-        _seedBaseline();
-        setState(() {
-          _dirty = false;
-          _pendingEmbed = false;
-          _titleFilled = updated.title.trim().isNotEmpty;
-          _editingField = null;
-        });
+      var current = base;
+      if (hasFieldEdit) {
+        final updated = await direct.updateSongMeta(
+          base,
+          title: title,
+          artist: artist,
+          albumArtist: albumArtist,
+          album: album,
+          year: year,
+          clearYear: clearYear,
+        );
+        if (!mounted) return;
+        if (updated != null) {
+          context.read<PlayerProvider>().refreshSongMeta(updated);
+          current = _cur = updated;
+          _seedBaseline();
+          setState(() {
+            _dirty = false;
+            _titleFilled = updated.title.trim().isNotEmpty;
+            _editingField = null;
+          });
+        }
       }
       // 内嵌口径：仅本窗“保存”按钮触发；在线获取/封面/歌词子窗只存缓存。
-      final embed = await embedAfterSaveIfEnabled(context, _cur);
+      final embed = await embedAfterSaveIfEnabled(context, current);
       if (!mounted) return;
       Navigator.of(context).pop();
-      final label = base.isDirect
-          ? '已保存歌曲信息（扫描不再覆盖）'
-          : '已保存歌曲信息（本地覆盖）';
+      final baseLabel = hasFieldEdit
+          ? (base.isDirect
+              ? '已保存歌曲信息（扫描不再覆盖）'
+              : '已保存歌曲信息（本地覆盖）')
+          : null;
       AppToast.show(
         switch (embed?.status) {
-          EmbedOutcomeStatus.embedded => '$label，并已将歌词/封面内嵌到歌曲文件',
-          EmbedOutcomeStatus.cancelled => '$label，嵌入已取消（仅应用缓存）',
-          EmbedOutcomeStatus.failed => '$label，未嵌入：${embed?.detail}',
-          EmbedOutcomeStatus.skipped => '$label，未嵌入：${embed?.detail}',
-          null => label,
+          EmbedOutcomeStatus.embedded => baseLabel == null
+              ? '已内嵌歌词/封面到歌曲文件'
+              : '$baseLabel，并已将歌词/封面内嵌到歌曲文件',
+          EmbedOutcomeStatus.cancelled => baseLabel == null
+              ? '嵌入已取消（仅应用缓存）'
+              : '$baseLabel，嵌入已取消（仅应用缓存）',
+          EmbedOutcomeStatus.failed => baseLabel == null
+              ? '未嵌入：${embed?.detail}'
+              : '$baseLabel，未嵌入：${embed?.detail}',
+          EmbedOutcomeStatus.skipped => baseLabel == null
+              ? '未嵌入：${embed?.detail}'
+              : '$baseLabel，未嵌入：${embed?.detail}',
+          null => baseLabel ?? '已保存歌曲信息',
         },
         isError: false,
       );
