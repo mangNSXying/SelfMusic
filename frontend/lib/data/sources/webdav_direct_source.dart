@@ -624,8 +624,13 @@ const Duration _kRequestDeadline = Duration(seconds: 30);
 /// 但慢速网络下几十 MB 的歌也要给够余量，故取宽松值。
 const Duration _kCacheDownloadDeadline = Duration(minutes: 15);
 
+/// TCP 建连时限：黑洞路由（IPv6 不可达、代理 DNS 给出假地址）只能靠它止损。
+/// 曾经的 15s 让「主源 + 备用」要白等半分钟；真实服务器握手正常时远低于 5s，
+/// 超时只会发生在连不上/被拦截的场景。
+const Duration _kConnectTimeout = Duration(seconds: 5);
+
 HttpClient _newClient(bool allowSelfSigned) => HttpClient()
-  ..connectionTimeout = const Duration(seconds: 15)
+  ..connectionTimeout = _kConnectTimeout
   ..idleTimeout = _kIdleTimeout
   ..userAgent = 'SelfMusic'
   ..badCertificateCallback =

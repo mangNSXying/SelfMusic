@@ -1573,9 +1573,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// ExoPlayer 自带连接超时通常先于此报错（对 Android 无感）。
   static const Duration _loadUrlTimeout = Duration(seconds: 15);
 
-  /// 装载前探针看门狗：[MusicSource.probe] 的 HttpClient 只有 15s 连接超时，
+  /// 装载前探针看门狗：[MusicSource.probe] 的 HttpClient 只有 5s 连接超时，
   /// 不覆盖「连上但无响应」；探针失败本就不阻塞装载，超时同按失败忽略。
-  static const Duration _probeTimeout = Duration(seconds: 10);
+  /// 4s 而不是更长的 10s：黑洞路由下主源+备用各等 10s 就是 20s，用户看到
+  /// 的是「点了没反应」；探针只用于快速鉴权/可达性判定，宁可早放弃。
+  static const Duration _probeTimeout = Duration(seconds: 4);
 
   /// 播放错误自动恢复的最小间隔，抑制错误风暴反复重装同一首。
   static const Duration _recoverCooldown = Duration(seconds: 5);
