@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../data/local/app_settings.dart';
 import '../models/song.dart';
 import '../providers/direct_source_manager.dart';
 import '../providers/player_provider.dart';
@@ -68,11 +69,26 @@ class _SongInfoDialogState extends State<SongInfoDialog> {
 
   bool _dirty = false;
 
+  /// 缓存里的歌词/封面已被本窗的外部入口更新、但还没写回音频文件。
+  ///
+  /// 只在内嵌模式（保存方式＝内嵌到歌曲）下有意义：其它模式里在线获取
+  /// 写的缓存就是最终结果，不存在「还要再点一次保存」。内嵌模式则相反——
+  /// 在线获取只写缓存，**写进音频文件只在点保存时发生**，所以必须让保存
+  /// 按钮出现，否则这条路走不通。
+  bool _pendingEmbed = false;
+
   /// 标题是否非空。保存按钮可用性依赖它，所以要在标题变化时一起 setState。
   bool _titleFilled = true;
   bool _saving = false;
 
   Song get song => _cur;
+
+  /// 当前保存方式是否为「内嵌到歌曲」。
+  bool get _embedMode =>
+      _direct.settings.onlineMetaSaveMode == OnlineMetaSaveMode.embed;
+
+  /// 待保存：字段被手改，或有待写入文件的内容。
+  bool get _unsaved => _dirty || _pendingEmbed || _saving;
 
   @override
   void initState() {
@@ -218,6 +234,7 @@ class _SongInfoDialogState extends State<SongInfoDialog> {
         _seedBaseline();
         setState(() {
           _dirty = false;
+          _pendingEmbed = false;
           _titleFilled = updated.title.trim().isNotEmpty;
           _editingField = null;
         });
@@ -247,7 +264,7 @@ class _SongInfoDialogState extends State<SongInfoDialog> {
   /// 统一关闭通道：有未保存修改时二次确认（[PopScope] 与取消键共用）。
   Future<void> _requestClose() async {
     if (_saving) return;
-    if (!_dirty) {
+    if (!_unsaved) {
       Navigator.of(context).pop();
       return;
     }
@@ -271,6 +288,7 @@ class _SongInfoDialogState extends State<SongInfoDialog> {
 
   /// 打开在线获取（手动）：保存后经 metaVersion 监听自动回填本窗。
   Future<void> _openOnline() async {
+    final before = _mediaStamp();
     await showDialog<void>(
       context: context,
       builder: (_) => OnlineMetaDialog(song: _cur),
@@ -278,6 +296,7 @@ class _SongInfoDialogState extends State<SongInfoDialog> {
     if (!mounted) return;
     // 兜底同步一次（幂等）：覆盖在线窗未走 notifySongMetaChanged 的旧路径。
     _refreshFromIndex();
+    _markPendingEmbedIfChanged(before);
   }
 
   Future<void> _openEmbed() async {
@@ -287,26 +306,55 @@ class _SongInfoDialogState extends State<SongInfoDialog> {
       barrierDismissible: false,
       builder: (_) => EmbedProgressDialog(song: _cur),
     );
-    if (!mounted || result?.status != EmbedOutcomeStatus.embedded) return;
+    if (!mounted) return;
+    if (result?.status == EmbedOutcomeStatus.embedded) {
+      // 内容已写进音频文件，无需再保存一次。
+      setState(() => _pendingEmbed = false);
+    }
     _refreshFromIndex();
   }
 
   Future<void> _openCover() async {
+    final before = _mediaStamp();
     await showDialog<void>(
       context: context,
       builder: (_) => CoverEditWindow(song: _cur),
     );
     if (!mounted) return;
     _refreshFromIndex();
+    _markPendingEmbedIfChanged(before);
   }
 
   Future<void> _openLyrics() async {
+    final before = _mediaStamp();
     await showDialog<void>(
       context: context,
       builder: (_) => LyricsEditWindow(song: _cur),
     );
     if (!mounted) return;
     _refreshFromIndex();
+    _markPendingEmbedIfChanged(before);
+  }
+
+  /// 歌词与封面在缓存侧的当前快照：用于判断子窗/在线窗是否真的改动过。
+  ({String? lyrics, String? cover}) _mediaStamp() {
+    final fresh =
+        _direct.index.songByRef(widget.song.sourceKey, widget.song.sourceRef);
+    return (
+      lyrics: _direct.index.lyricsOf(
+          widget.song.sourceKey, widget.song.sourceRef),
+      cover: (fresh ?? widget.song).coverPath,
+    );
+  }
+
+  /// 子窗/在线窗回来后，若歌词或封面确有变化且当前是内嵌模式，
+  /// 则标记「待写入文件」，让保存按钮出现（内嵌只在本窗点保存时执行）。
+  void _markPendingEmbedIfChanged(
+      ({String? lyrics, String? cover}) before) {
+    if (!_embedMode) return;
+    final now = _mediaStamp();
+    if (now.lyrics == before.lyrics && now.cover == before.cover) return;
+    setState(() => _pendingEmbed = true);
   }
 
   @override
@@ -360,7 +408,7 @@ class _SongInfoDialogState extends State<SongInfoDialog> {
       _ro('路径', displayPath, mono: true),
     ];
 
-    final unsaved = _dirty || _saving;
+    final unsaved = _unsaved;
 
     return PopScope(
       canPop: !unsaved,

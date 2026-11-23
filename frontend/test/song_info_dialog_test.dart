@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:provider/provider.dart';
+import 'package:selfmusic/data/local/app_settings.dart';
 import 'package:selfmusic/models/song.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/player_provider.dart';
@@ -321,5 +322,74 @@ void main() {
     expect(find.byType(SongInfoDialog), findsNothing);
     expect(find.text('放弃未保存的修改？'), findsNothing);
     expect(find.text('打开歌曲信息'), findsOneWidget, reason: '只关弹窗，首页仍在');
+  });
+
+  testWidgets('内嵌模式：歌词子窗写入缓存后，保存按钮出现', (tester) async {
+    late final DirectSourceManager direct;
+    await tester.runAsync(() async {
+      direct = await _openDirect();
+      // 保存方式＝内嵌到歌曲：在线/子窗只写缓存，写进文件要再点一次保存。
+      direct.settings.onlineMetaSaveMode = OnlineMetaSaveMode.embed;
+    });
+    addTearDown(direct.dispose);
+    tester.view.physicalSize = const Size(1000, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await _openDialog(tester, direct, _song());
+    expect(find.text('保存'), findsNothing, reason: '尚未有任何改动');
+
+    // 进歌词子窗写一首歌词（等价于在线获取/选择文件后的缓存结果）。
+    await tester.ensureVisible(find.text('无（点击设置）'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('无（点击设置）'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+        find.byType(TextField), '[00:01.00]第一行\n[00:02.00]第二行\n');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('保存'));
+    await tester.runAsync(() => Future<void>.delayed(
+        const Duration(milliseconds: 200)));
+    await tester.pumpAndSettle();
+
+    // 回到主窗：文本字段没变，但缓存里有了待写回文件的内容 → 必须能保存。
+    expect(find.text('歌曲信息 •未保存'), findsOneWidget);
+    expect(find.text('保存'), findsOneWidget);
+    final save =
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, '保存'));
+    expect(save.onPressed, isNotNull, reason: '待内嵌内容要能点保存写进文件');
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('非内嵌模式：歌词子窗写入缓存后不冒出保存按钮', (tester) async {
+    late final DirectSourceManager direct;
+    await tester.runAsync(() async {
+      direct = await _openDirect();
+      // 默认 appCache：缓存即最终结果，不存在「还要再点一次保存」。
+      direct.settings.onlineMetaSaveMode = OnlineMetaSaveMode.appCache;
+    });
+    addTearDown(direct.dispose);
+    tester.view.physicalSize = const Size(1000, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await _openDialog(tester, direct, _song());
+
+    await tester.ensureVisible(find.text('无（点击设置）'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('无（点击设置）'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '[00:01.00]第一行\n');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('保存'));
+    await tester.runAsync(() => Future<void>.delayed(
+        const Duration(milliseconds: 200)));
+    await tester.pumpAndSettle();
+
+    expect(find.text('保存'), findsNothing, reason: '缓存已是最终结果');
+    expect(find.text('关闭'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
   });
 }
