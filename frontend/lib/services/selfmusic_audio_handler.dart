@@ -92,7 +92,10 @@ class SelfMusicAudioHandler extends BaseAudioHandler {
   /// 问题2修复：同曲晚到封面（补读在切歌后才落盘）也要重推 mediaItem，
   /// 否则无图→有图不换图；`mediaItemOf` 已把悬空路径归一为 null，
   /// 此处按 artUri/标题等变化检出，变化即重推，原生侧无图时走清图分支。
-  void sync() {
+  ///
+  /// [force]：跳过上面的去重直接重推（封面原地重写时 artUri 字符串不变，
+  /// 去重看不出来；原生解码缓存键按 path|size|mtime 能拿到新图）。
+  void sync({bool force = false}) {
     final p = _player;
     if (p == null) return;
     final s = p.current;
@@ -101,7 +104,8 @@ class SelfMusicAudioHandler extends BaseAudioHandler {
       final next = PlayerProvider.mediaItemOf(s,
           title: p.displayTitle(s), duration: p.duration);
       final cur = mediaItem.valueOrNull;
-      if (cur == null ||
+      if (force ||
+          cur == null ||
           cur.id != id ||
           cur.artUri?.toString() != next.artUri?.toString() ||
           cur.title != next.title ||

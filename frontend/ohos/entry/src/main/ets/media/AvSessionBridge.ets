@@ -64,8 +64,9 @@ export default class AvSessionBridge implements MethodCallHandler {
   private backgroundRunning: boolean = false;
   /** 当前已生效封面（保持引用防送显失败，替换完成后才 release）。 */
   private currentCover: image.PixelMap | null = null;
-  /** 上次封面路径（去重：同曲重复 updateMetadata 不重解码）。 */
-  private lastCoverPath: string | null = null;
+  /** 上次封面路径+内容指纹（去重：同曲重复 updateMetadata 不重解码；
+   *  同一路径被原地重写时指纹变化，仍会重新解码换图）。 */
+  private lastCoverKey: string | null = null;
   /** 封面任务票据（快速切歌竞态：仅最新任务可生效）。 */
   private coverJob: number = 0;
 
@@ -122,7 +123,7 @@ export default class AvSessionBridge implements MethodCallHandler {
 
   /** EntryAbility.onDestroy / Dart destroy 后的资源回收。 */
   shutdown(): void {
-    this.lastCoverPath = null;
+    this.lastCoverKey = null;
     this.coverJob++;
     this.releaseCover();
     if (this.backgroundRunning) {
@@ -348,6 +349,7 @@ export default class AvSessionBridge implements MethodCallHandler {
    */
   private async updateCover(call: MethodCall): Promise<void> {
     const path = AvSessionBridge.argString(call, 'coverPath');
+    const stamp = AvSessionBridge.argString(call, 'coverStamp') ?? '';
     const session = this.session;
     if (!session) {
       return;
@@ -355,7 +357,7 @@ export default class AvSessionBridge implements MethodCallHandler {
     if (path == null || path === '') {
       // 无封面曲目：作废在飞解码、释放本地引用，并显式下发无图元数据清系统侧。
       this.coverJob++;
-      this.lastCoverPath = null;
+      this.lastCoverKey = null;
       this.releaseCover();
       try {
         const metadata = this.buildMetadata(call);
@@ -368,7 +370,10 @@ export default class AvSessionBridge implements MethodCallHandler {
       }
       return;
     }
-    if (path === this.lastCoverPath && this.currentCover != null) {
+    // 去重键 = 路径 + 内容指纹：applyCover 原地重写同一文件时路径不变，
+    // 只比路径会把新封面吞掉（通知栏一直显示旧图）。
+    const coverKey = `${path}|${stamp}`;
+    if (coverKey === this.lastCoverKey && this.currentCover != null) {
       return;
     }
     const job = ++this.coverJob;
@@ -389,13 +394,13 @@ export default class AvSessionBridge implements MethodCallHandler {
       // 新封面已过 IPC：释放上一张、接住新引用（保持引用直至下次替换）。
       this.releaseCover();
       this.currentCover = pixelMap;
-      this.lastCoverPath = path;
+      this.lastCoverKey = coverKey;
       Log.i(TAG, '封面已补推');
     } catch (err) {
       const e = err as BusinessError;
       Log.w(TAG, `封面补推失败（忽略）：${e.code} ${e.message}`);
       // 解码失败同样清图，避免残留上一首（如下一首封面文件损坏/半图残留）。
-      this.lastCoverPath = null;
+      this.lastCoverKey = null;
       this.releaseCover();
       try {
         const fallback = this.buildMetadata(call);

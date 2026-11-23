@@ -445,7 +445,8 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
     if (updated != null) {
       // 先通知再判 mounted：保存后立刻关窗也不能丢掉全局刷新信号。
       direct.notifySongMetaChanged();
-      player.refreshSongMeta(updated);
+      // 封面原地覆盖写（covers/<md5>.jpg），路径不变，需强制重推系统媒体。
+      player.refreshSongMeta(updated, forceMedia: true);
     }
     if (!mounted) return;
     AppToast.show(

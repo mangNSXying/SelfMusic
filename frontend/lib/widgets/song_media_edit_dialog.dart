@@ -84,7 +84,7 @@ class _CoverEditWindowState extends State<CoverEditWindow> {
       if (updated != null) {
         // 先通知再判 mounted：保存后立刻关窗也不能丢掉全局刷新信号。
         direct.notifySongMetaChanged();
-        player.refreshSongMeta(updated);
+        player.refreshSongMeta(updated, forceMedia: true);
       }
       if (!mounted) return;
       Navigator.of(context).pop(true);

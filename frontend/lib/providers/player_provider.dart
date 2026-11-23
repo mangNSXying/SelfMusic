@@ -405,15 +405,17 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 鸿蒙 AVSession 桥的回推挂钩（ohos_media_session.dart）：状态变化时与
   /// audio_handler 一起被 [_syncSystemMedia] 调用（非鸿蒙/开关关闭时为空）。
-  void Function()? _systemMediaSync;
+  void Function({bool force})? _systemMediaSync;
 
-  void attachSystemMediaSync(void Function()? sync) {
+  void attachSystemMediaSync(void Function({bool force})? sync) {
     _systemMediaSync = sync;
   }
 
-  void _syncSystemMedia() {
-    _audioHandler?.sync();
-    _systemMediaSync?.call();
+  /// [force]：跳过两端 handler 的去重，强制重推当前曲 mediaItem 元数据。
+  /// 用于「同路径封面被原地重写」——artUri/路径字符串不变，去重层看不出来。
+  void _syncSystemMedia({bool force = false}) {
+    _audioHandler?.sync(force: force);
+    _systemMediaSync?.call(force: force);
   }
 
   /// 影响媒体文案的设置变更后调用（如简繁显示）：立即回推通知栏/鸿蒙播控卡，
@@ -2970,7 +2972,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 深层列表与融合基座是 [_rebuildFusedQueue] 的拼接来源，也必须同步换新：
   /// 否则「下一首播放」等触发重建时会用起播时的旧快照覆盖 [_current]，
   /// 典型表现为刚内嵌/在线获取的封面突然回退为空。
-  void refreshSongMeta(Song updated) {
+  ///
+  /// 改的是当前曲时同时回推通知栏/鸿蒙播控卡：此前只 notifyListeners，
+  /// 系统媒体元数据要等下一次播放状态变化（暂停/seek/切歌）才跟上。
+  /// [forceMedia]：封面原地重写（同路径新内容）时去重层看不出变化，强制重推。
+  void refreshSongMeta(Song updated, {bool forceMedia = false}) {
     var changed = false;
     for (var i = 0; i < _queue.length; i++) {
       if (_same(_queue[i], updated)) {
@@ -3004,7 +3010,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (_peekedNext != null && _same(_peekedNext!, updated)) {
       _peekedNext = updated;
     }
-    if (changed) notifyListeners();
+    if (changed) {
+      notifyListeners();
+      // 只有改的是当前曲才需要回推系统媒体（非当前曲改元数据只刷列表）。
+      final cur = _current;
+      if (cur != null && _same(cur, updated)) {
+        _syncSystemMedia(force: forceMedia);
+      }
+    }
   }
 
   /// 在线歌词保存后：若 [song] 正在播放，重载歌词展示。
@@ -3689,7 +3702,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
             updated.year != s.year ||
             updated.coverPath != s.coverPath;
         final coverChanged = updated.coverPath != s.coverPath;
-        refreshSongMeta(updated);
+        // 晚到封面是当前曲才推系统媒体（通知栏/OHOS 播控卡），
+        // refreshSongMeta 内部按「是否当前曲」判断；封面原地重写靠 forceMedia。
+        refreshSongMeta(updated, forceMedia: coverChanged);
         if (changed) {
           final cover = updated.coverPath;
           if (cover != null) {
@@ -3697,13 +3712,6 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
             unawaited(FileImage(File(cover)).evict());
           }
           _onSongMetaRefreshed?.call(updated);
-        }
-        // 晚到封面是当前曲才推系统媒体（通知栏/OHOS 播控卡），非当前曲只刷列表。
-        if (coverChanged) {
-          final cur = _current;
-          if (cur != null && _same(cur, updated)) {
-            _syncSystemMedia();
-          }
         }
       }
       _applyLyricsIfCurrent(s);
