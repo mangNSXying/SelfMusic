@@ -22,6 +22,10 @@ audio_service 原版只在通知里渲染「原生动作」（play/pause/skipToP
   - 新增 `handleCustomAction()`：与 `MediaSessionCallback.onCustomAction` 同分发
     （STOP/FF/REWIND 特判兼容 SDK>=33 的动作映射），其余落 `listener.onCustomAction`
     → Dart handler 的 `customAction` 回调。
+  - `setMetadata()` + `getPlaceholderArtBitmap()`（问题2）：无封面曲目不再留空，
+    显式下发占位图（品牌色底 + `drawable/ic_np_cover_placeholder` 音符）并写入
+    `ALBUM_ART`/`DISPLAY_ICON`。Android 13+ SystemUI 对「无图元数据」是合并语义，
+    省略 artwork 会残留上一首封面。占位图 256px，惰性生成并缓存。
 - `android/src/main/java/com/ryanheise/audioservice/MediaButtonReceiver.java`
   - 新增 `ACTION_CUSTOM` / `EXTRA_CUSTOM_NAME` / `EXTRA_CUSTOM_EXTRAS`，
     `onReceive` 直接派发到 `AudioService.handleCustomAction`（不经 media 会话 keycode 路由）。

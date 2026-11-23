@@ -9,6 +9,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.drawable.Drawable;
 import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Build;
@@ -295,6 +297,9 @@ public class AudioService extends MediaBrowserServiceCompat {
     private int[] compactActionIndices;
     private MediaMetadataCompat mediaMetadata;
     private Bitmap artBitmap;
+    // 无封面曲目的占位图（问题2）：必须显式下发一张图，省略 artwork 时
+    // Android 13+ SystemUI 会沿用上一首的封面（合并语义）。
+    private Bitmap placeholderArtBitmap;
     private String notificationChannelId;
     private LruCache<String, Bitmap> artBitmapCache;
     private boolean playing = false;
@@ -386,6 +391,7 @@ public class AudioService extends MediaBrowserServiceCompat {
         }
         mediaMetadata = null;
         artBitmap = null;
+        placeholderArtBitmap = null;
         queue.clear();
         mediaMetadataCache.clear();
         controls.clear();
@@ -845,26 +851,58 @@ public class AudioService extends MediaBrowserServiceCompat {
      *  - https://9to5google.com/2020/08/02/android-11-lockscreen-art/
      */
     synchronized void setMetadata(MediaMetadataCompat mediaMetadata) {
+        Bitmap art = null;
         String artCacheFilePath = mediaMetadata.getString("artCacheFile");
         if (artCacheFilePath != null) {
             // Load local files and network images, cached in files
-            artBitmap = loadArtBitmap(artCacheFilePath, null);
-            mediaMetadata = putArtToMetadata(mediaMetadata);
+            art = loadArtBitmap(artCacheFilePath, null);
         } else {
             // Load content:// URIs
             String artUri = mediaMetadata.getString(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON_URI);
             if (artUri != null && artUri.startsWith("content:")) {
                 String loadThumbnailUri = mediaMetadata.getString("loadThumbnailUri");
-                artBitmap = loadArtBitmap(artUri, loadThumbnailUri);
-                mediaMetadata = putArtToMetadata(mediaMetadata);
-            } else {
-                artBitmap = null;
+                art = loadArtBitmap(artUri, loadThumbnailUri);
             }
         }
+        // 问题2：无封面曲目也必须显式下发一张占位图。若留空（不 setLargeIcon、
+        // 不写 ALBUM_ART），Android 13+ 的 SystemUI 会沿用上一首封面（MediaData
+        // 合并语义），表现为切到无图歌曲后通知仍显示旧图。
+        artBitmap = (art != null) ? art : getPlaceholderArtBitmap();
+        mediaMetadata = putArtToMetadata(mediaMetadata);
         this.mediaMetadata = mediaMetadata;
         mediaSession.setMetadata(mediaMetadata);
         handler.removeCallbacksAndMessages(null);
         handler.post(this::updateNotification);
+    }
+
+    /**
+     * 无封面曲目的占位图：品牌色底 + 居中音符，惰性生成并缓存。
+     *
+     * 尺寸取 256px——占位图不需要高分辨率，同时避免 metadata 经 Binder
+     * 传输大 bitmap 的风险（真实封面仍按原图/下采样走 loadArtBitmap）。
+     */
+    private Bitmap getPlaceholderArtBitmap() {
+        if (placeholderArtBitmap != null) return placeholderArtBitmap;
+        final int size = 256;
+        Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bitmap);
+        canvas.drawColor(config.notificationColor != -1 ? config.notificationColor : 0xFF00A098);
+        try {
+            int iconId = getResourceId("drawable/ic_np_cover_placeholder");
+            if (iconId != 0) {
+                Drawable icon = getResources().getDrawable(iconId, null);
+                if (icon != null) {
+                    int iconSize = (int)(size * 0.6f);
+                    int offset = (size - iconSize) / 2;
+                    icon.setBounds(offset, offset, offset + iconSize, offset + iconSize);
+                    icon.draw(canvas);
+                }
+            }
+        } catch (Exception ignored) {
+            // 资源缺失/加载失败：保留纯色底，仍能替换掉上一首封面。
+        }
+        placeholderArtBitmap = bitmap;
+        return bitmap;
     }
 
     private MediaMetadataCompat putArtToMetadata(MediaMetadataCompat mediaMetadata) {
