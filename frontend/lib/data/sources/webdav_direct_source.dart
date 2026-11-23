@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:xml/xml.dart';
 
 import '../../models/song.dart';
@@ -107,6 +107,7 @@ class WebdavDirectSource extends MusicSource {
     // 只传可跨 isolate 发送的原始值（不含 this）。
     debugPrint('[webdav:scan] key=$key '
         '${webdavCredFingerprint(username, password)} base=$_base');
+    await _logDnsResolution(_base);
     final known = index.scanFingerprint(key);
     final out = await runScan<List<ScannedSong>>(
       entry: _webdavWalkEntry,
@@ -154,6 +155,7 @@ class WebdavDirectSource extends MusicSource {
     final url = _playUrl(song);
     if (url == null) throw StateError('WebDAV 缺少播放地址，无法预热');
     debugPrint('[webdav:probe] key=$key ${webdavCredFingerprint(username, password)} url=$url');
+    await _logDnsResolution(url);
     final client = _newClient(allowSelfSigned);
     try {
       final req = await client.getUrl(Uri.parse(url));
@@ -184,6 +186,7 @@ class WebdavDirectSource extends MusicSource {
   Future<OpenedStream> open(Song song, {IntRange? range}) async {
     final url = _playUrl(song)!;
     debugPrint('[webdav:open] key=$key ${webdavCredFingerprint(username, password)} url=$url');
+    await _logDnsResolution(url);
     final client = _newClient(allowSelfSigned);
     final req = await client.getUrl(Uri.parse(url));
     _auth(req, username, password);
@@ -635,6 +638,54 @@ HttpClient _newClient(bool allowSelfSigned) => HttpClient()
   ..userAgent = 'SelfMusic'
   ..badCertificateCallback =
       allowSelfSigned ? (cert, host, port) => true : null;
+
+/// 已打过 DNS 诊断的主机（毫秒时间戳）：每个主机 5 分钟内只打一行。
+final Map<String, int> _kDnsLoggedAtMs = {};
+
+/// 判断是否为代理 fake-ip 网段（Clash/Mihomo：A 用 198.18.0.0/15，
+/// AAAA 用 fc00::/18）。命中即说明 DNS 被代理接管，连接目标是虚拟地址。
+@visibleForTesting
+bool isFakeIpAddress(InternetAddress a) {
+  final b = a.rawAddress;
+  if (a.type == InternetAddressType.IPv4) {
+    return b.length == 4 && b[0] == 198 && (b[1] & 0xfe) == 18;
+  }
+  return b.length == 16 && b[0] == 0xfc && (b[1] & 0xc0) == 0;
+}
+
+/// 解析并记录目标主机的地址族与 fake-ip 特征。
+///
+/// IPv6-only 域名 + 只查 IPv4 的代理 DNS 是「能扫描/偶发超时但不是 401」的
+/// 经典根因：应用拿到假 IPv4 后一路黑洞，日志里只看到 TimeoutException。
+/// 这里把 v4/v6 数量、是否 fake-ip、具体地址一次打出来，便于直接定性。
+Future<void> _logDnsResolution(String url) async {
+  Uri u;
+  try {
+    u = Uri.parse(url);
+  } catch (_) {
+    return;
+  }
+  final host = u.host;
+  if (host.isEmpty) return;
+  final now = DateTime.now().millisecondsSinceEpoch;
+  final last = _kDnsLoggedAtMs[host];
+  if (last != null && now - last < 5 * 60 * 1000) return;
+  _kDnsLoggedAtMs[host] = now;
+  try {
+    // 解析本身也可能被黑洞（代理 DNS 不响应）：加短超时，诊断不能反噬主流程。
+    final addrs = await InternetAddress.lookup(host)
+        .timeout(const Duration(seconds: 3));
+    final v4 = addrs.where((a) => a.type == InternetAddressType.IPv4).length;
+    final v6 = addrs.length - v4;
+    final fake = addrs.any(isFakeIpAddress);
+    final onlyV6 = v6 > 0 && v4 == 0;
+    debugPrint('[webdav:dns] host=$host v4=$v4 v6=$v6 fakeIp=$fake '
+        '${onlyV6 ? 'ipv6-only ' : ''}'
+        'addrs=${addrs.map((a) => a.address).join(",")}');
+  } catch (e) {
+    debugPrint('[webdav:dns] host=$host 解析失败: $e');
+  }
+}
 
 /// 给 [future] 加总时限，超时抛 [TimeoutException] 并带上可读原因。
 /// 注意 Dart 的 `.timeout` 不会真正掐断底层 socket（真正的回收靠调用方
