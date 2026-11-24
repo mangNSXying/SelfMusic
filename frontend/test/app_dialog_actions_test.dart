@@ -54,4 +54,44 @@ void main() {
     expect(style.backgroundColor?.resolve({}), scheme.error);
     expect(style.foregroundColor?.resolve({}), scheme.onError);
   });
+
+  testWidgets('leading 动作排在取消之前，且同处一个折返组', (tester) async {
+    tester.view.physicalSize = const Size(360, 720);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: theme,
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => AlertDialog(
+              title: const Text('标题'),
+              content: const Text('内容'),
+              actions: appDialogActions(
+                context,
+                leading: [
+                  TextButton(
+                    onPressed: () {},
+                    child: const Text('+ 添加区间'),
+                  ),
+                ],
+                confirmLabel: '保存',
+                onCancel: () {},
+                onConfirm: () {},
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final add = tester.getCenter(find.text('+ 添加区间'));
+    final cancel = tester.getCenter(find.text('取消'));
+    expect(add.dx, lessThan(cancel.dx), reason: 'leading 在取消左侧');
+    expect(add.dy, cancel.dy, reason: 'leading 与取消同一行（同组折返）');
+    expect(find.text('保存'), findsOneWidget);
+    expect(tester.takeException(), isNull, reason: '不应出现溢出报错');
+  });
 }

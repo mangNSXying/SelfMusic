@@ -25,6 +25,9 @@ List<Widget> appDialogActionGroup(List<Widget> actions) {
 /// 全 App 的 `AlertDialog.actions` 统一走这里，避免出现「两个 TextButton」
 /// 或确认/取消顺序相反的写法。危险操作传 [destructive]：确认键使用
 /// `colorScheme.error` 背景 + `onError` 前景，不再用红字叠在强调色底上。
+///
+/// [leading] 为取消键之前的补充动作（如「+ 添加区间」），与取消/确认同处
+/// 一个 [Wrap]，窄屏时一起折返，不再单独占行。
 List<Widget> appDialogActions(
   BuildContext context, {
   required VoidCallback onCancel,
@@ -34,9 +37,11 @@ List<Widget> appDialogActions(
   bool destructive = false,
   bool cancelEnabled = true,
   bool confirmEnabled = true,
+  List<Widget> leading = const [],
 }) {
   final cs = Theme.of(context).colorScheme;
   return appDialogActionGroup([
+    ...leading,
     TextButton(
       onPressed: cancelEnabled ? onCancel : null,
       child: Text(cancelLabel),
