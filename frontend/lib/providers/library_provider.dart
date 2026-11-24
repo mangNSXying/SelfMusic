@@ -148,6 +148,11 @@ class LibraryProvider extends ChangeNotifier {
       final file = await _cacheFile();
       if (file == null) return;
       final path = file.path;
+      // 现存源 key：快照里已删源的行必须一起丢掉，否则首帧会闪出这些歌
+      //（点它就是「找不到该歌曲的播放源」），要等 loadSongs 才纠正。
+      final alive = _directManager == null
+          ? null
+          : {for (final s in _directManager!.sources) s.key};
       perfPhase('library.restoreCache.decode'); // TEMP-PROBE
       final loaded = await runOffThread<List<Song>?>(() {
         final f = File(path);
@@ -156,7 +161,9 @@ class LibraryProvider extends ChangeNotifier {
         if (data is! List) return null;
         return [
           for (final e in data.whereType<Map<String, dynamic>>())
-            if ((e['sourceKey'] as String?) != 'server') Song.fromJson(e),
+            if ((e['sourceKey'] as String?) != 'server' &&
+                (alive == null || alive.contains(e['sourceKey'])))
+              Song.fromJson(e),
         ];
       });
       if (loaded == null) return;

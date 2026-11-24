@@ -202,19 +202,68 @@ class LocalIndex {
   /// 1)、2) 只能在本 isolate 做：缓存行必须「文件先删、删不掉就留着」，
   /// 设置要同步失效内存缓存，都不能塞进写连接的事务里。
   Future<void> deleteSource(String key) async {
+    // 封面路径只能从 idx_songs 读，必须在删行之前摘出来。
+    final covers = coverPathsOfSource(key);
     await _purgeSourceSidecars(key);
     await _writer!.op<void>('deleteSource', {'key': key});
+    await deleteCoverFilesOfSource(key, covers);
   }
 
   /// 删源旁路数据：缓存文件/登记行、按源 key 的设置项、该源自身的深层列表锚定。
   ///
   /// 本机删源与同步墓碑删除两条路径都必须走这里——否则这些行既查不到归属、
   /// 又不会被任何 GC 命中，成为永久孤儿（缓存白占配额、线路偏好串到同名新源）。
+  ///
+  /// 封面文件不在这里：它的路径依赖 idx_songs 行，删行顺序由调用方掌握
+  /// （见 [deleteSource] / [applySourceSnapshot]）。
   Future<void> _purgeSourceSidecars(String key) async {
     await deleteCachesOfSource(key);
     await settingsDelete(sourceLineSettingKey(key));
     await settingsDelete(sourceCreatedFoldersSettingKey(key));
+    // 源内列表的折叠/展开态（SongCollectionView 用 `source:<key>` 作为
+    // collectionKey）。不清的话行永久堆积，且同名源重建会继承上一份的形态。
+    await settingsDelete('group_collapsed_source:$key');
+    await settingsDelete('folder_expanded_source:$key');
     await deleteDeepList('source:$key');
+  }
+
+  /// 该源当前引用的封面路径（去重）。删源前调用，供 [deleteCoverFilesOfSource]。
+  List<String> coverPathsOfSource(String sourceKey) {
+    final rs = _db!.select(
+        'SELECT DISTINCT cover_path FROM idx_songs '
+        "WHERE source_key=? AND cover_path IS NOT NULL AND cover_path<>''",
+        [sourceKey]);
+    return [for (final r in rs) r['cover_path'] as String];
+  }
+
+  /// 删除一批属于 [sourceKey] 的封面文件（原图 + 派生缩略图）。
+  ///
+  /// `covers/<md5(ref)>.jpg` 按 ref 命名，**与源无关**：删掉 idx_songs 行后这些
+  /// 文件既查不到归属、也不被 cleanupInvalidCovers 命中（那个只删**无效**图），
+  /// 会永久留在磁盘上。
+  ///
+  /// 两处保护：只删自己 covers 目录下的文件（历史脏数据可能指向别处，如歌曲
+  /// 旁侧图）；其它源仍引用同一张封面时保留（同 ref 不同源会共用同一文件）。
+  /// 单张失败忽略，不阻断主流程。
+  Future<void> deleteCoverFilesOfSource(
+      String sourceKey, List<String> coverPaths) async {
+    if (coverPaths.isEmpty) return;
+    final coversDir = _dir == null ? null : p.join(_dir!, 'covers');
+    if (coversDir == null) return;
+    for (final path in coverPaths) {
+      if (!p.isWithin(coversDir, path)) continue;
+      final shared = _db!.select(
+          'SELECT 1 FROM idx_songs WHERE cover_path=? AND source_key<>? LIMIT 1',
+          [path, sourceKey]);
+      if (shared.isNotEmpty) continue;
+      try {
+        final f = File(path);
+        if (f.existsSync()) f.deleteSync();
+      } catch (_) {
+        // 单张删不掉（占用/权限）不影响其余。
+      }
+      deleteCoverThumb(path);
+    }
   }
 
   /// 删除某源的全部离线缓存（文件 + 登记行）。
@@ -250,10 +299,29 @@ class LocalIndex {
   /// 保证已索引歌曲、收藏、歌单条目在改名后仍然有效。
   Future<void> renameSource(String oldKey, String newKey) async {
     if (oldKey == newKey) return;
+    // 按源 key 存的应用设置在 SQL 里没有源表关联，只能在本 isolate 迁移
+    //（设置走内存缓存，必须同步改）。不迁的话折叠/展开态与线路偏好会变成
+    // 查不到归属的孤儿。`synced_sig` 随 sources 行一起被 SQL 带走，无需处理。
+    await settingsMigrateKey('group_collapsed_source:$oldKey',
+        'group_collapsed_source:$newKey');
+    await settingsMigrateKey('folder_expanded_source:$oldKey',
+        'folder_expanded_source:$newKey');
+    await settingsMigrateKey(sourceLineSettingKey(oldKey),
+        sourceLineSettingKey(newKey));
+    await settingsMigrateKey(sourceCreatedFoldersSettingKey(oldKey),
+        sourceCreatedFoldersSettingKey(newKey));
     await _writer!.op<void>('renameSource', {
       'oldKey': oldKey,
       'newKey': newKey,
     });
+  }
+
+  /// 把一个设置项从 [oldKey] 迁到 [newKey]（源改名用；目标已有值时不覆盖）。
+  Future<void> settingsMigrateKey(String oldKey, String newKey) async {
+    final v = settingsGet(oldKey);
+    if (v == null) return;
+    if (settingsGet(newKey) == null) settingsSet(newKey, v);
+    await settingsDelete(oldKey);
   }
 
   /// 应用服务端源快照（阶段5 源同步）：
@@ -272,9 +340,10 @@ class LocalIndex {
     required bool enabled,
     required bool deleted,
   }) async {
-    // 墓碑删除会连源行一起删，本地 key 只能删前反查；旁路数据（缓存文件/
-    // 按源 key 的设置/该源的深层列表锚定）与 [deleteSource] 同口径清理。
+    // 墓碑删除会连源行一起删，本地 key / 封面路径只能删前反查；旁路数据
+    // （缓存文件/按源 key 的设置/该源的深层列表锚定）与 [deleteSource] 同口径清理。
     final hitKey = deleted ? sourceKeyOfUuid(uuid) : null;
+    final covers = hitKey == null ? const <String>[] : coverPathsOfSource(hitKey);
     final changed = await _writer!.op<bool>('applySourceSnapshot', {
       'uuid': uuid,
       'kind': kind,
@@ -284,7 +353,10 @@ class LocalIndex {
       'enabled': enabled,
       'deleted': deleted,
     });
-    if (changed && hitKey != null) await _purgeSourceSidecars(hitKey);
+    if (changed && hitKey != null) {
+      await _purgeSourceSidecars(hitKey);
+      await deleteCoverFilesOfSource(hitKey, covers);
+    }
     // 远端快照落库即视为「本机与服务端已一致」：不刷新签名的话，合并进来的
     // 配置（同址合并/远端改名）会让下个启动的存量补推把它再推回去。
     if (changed && !deleted) {

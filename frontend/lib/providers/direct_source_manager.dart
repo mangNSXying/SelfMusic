@@ -376,21 +376,35 @@ class DirectSourceManager extends ChangeNotifier {
   }
 
   /// 关联后端接入点（同步/配对用；未配置时同步全跳）。
-  /// 关联后补发存量远端源的 source.create（仅一次：uuid 已存在的不再重发）。
   void attachApi(ApiClient api) {
     _api = api;
     unawaited(_bootstrapSourceSync());
   }
 
-  /// 存量远端类型源首次接入同步时补 uuid + source.create（补录标记：
-  /// 服务端只建行、不赢现行同址行）。
+  /// 老版本升级的存量源补 uuid + source.create（补录标记：服务端只建行、
+  /// 不赢现行同址行）。
   ///
   /// 判据是「还没有源身份」（`client_uuid` 为 NULL）——那只会出现在升级前的
   /// 老库里：添加源时就已经生成 uuid 的新源不属于这里。
   ///
   /// 这条路径**不是**通用的「补齐未上报源」：用户在配对弹窗选过「不推送」后，
   /// 新源必须真的不推，靠源菜单的「推送到服务端」显式补（[pushSourceToServer]）。
-  Future<void> _bootstrapSourceSync() async {
+  /// 若这里改按 `sourceNeedsSync` 遍历，每次冷启动都会把用户明确拒推的源
+  /// 又推上去，那个选择就形同虚设。
+  ///
+  /// 单飞：`attachApi` 是 unawaited 启动的，可能被重复调用。
+  Future<void>? _bootstrapInFlight;
+
+  Future<void> _bootstrapSourceSync() {
+    final running = _bootstrapInFlight;
+    if (running != null) return running;
+    final f = _doBootstrapSourceSync()
+        .whenComplete(() => _bootstrapInFlight = null);
+    _bootstrapInFlight = f;
+    return f;
+  }
+
+  Future<void> _doBootstrapSourceSync() async {
     if (!isServerAvailable) return;
     for (final r in index.listSources()) {
       if (!isSyncableKind(r.kind)) continue;
@@ -422,7 +436,7 @@ class DirectSourceManager extends ChangeNotifier {
     return true;
   }
 
-  /// 该源是否需要（且可以）推送到服务端——菜单项可用性用。
+  /// 该源是否需要（且可以）推送到服务端——菜单项可用性/文案用。
   bool canPushSourceToServer(String key) {
     if (!isServerAvailable) return false;
     final row = index.getSource(key);
@@ -1706,7 +1720,15 @@ class DirectSourceManager extends ChangeNotifier {
   }
 
   Future<void> removeSource(String key) async {
-    _emitSource(SyncEventTypes.sourceDelete, key);
+    // 删除事件必须在删行前发：载荷里的 client_uuid / kind / address 都读自行。
+    // 原先是不 await 的 fire-and-forget，与下面的 deleteSource 并行——行先没
+    // 了就让 ensureSourceUuid 抛 StateError，变成未捕获的异步异常。
+    try {
+      await _emitSource(SyncEventTypes.sourceDelete, key);
+    } catch (e) {
+      // 上报失败不挡本机删除：源行删掉后服务端那条只能靠对账留墓碑。
+      debugPrint('[direct] 删源同步事件入队失败（忽略）：$e');
+    }
     _scanTokens[key]?.cancel();
     final gone = _watchers.where((w) => w.key == key).toList();
     for (final w in gone) {
@@ -1716,6 +1738,8 @@ class DirectSourceManager extends ChangeNotifier {
     final removedSources = _sources.where((s) => s.key == key).toList();
     _sources.removeWhere((s) => s.key == key);
     _sourcesRevision++;
+    // 同名源重建后不该继承上一次的自动扫描冷却。
+    _autoScannedAt.remove(key);
     for (final src in removedSources) {
       unawaited(src.close());
     }
@@ -1729,6 +1753,12 @@ class DirectSourceManager extends ChangeNotifier {
     _knownSourceKeys.remove(key);
     // 队列/深层历史里的死引用由播放器收口（与「其它设备同步删除」同一出口）。
     await onSourceRemoved?.call(key);
+    // 曲库（歌曲/专辑/歌手/喜欢）靠 metaVersion / favoriteVersion 失效重查，
+    // sourcesRevision 只服务源页的分组缓存。不递增这两个版本，删源后列表仍
+    // 列着已删源的歌，点播直接抛「找不到该歌曲的播放源」。
+    weight.notifyExternalWrite();
+    _metaVersion++;
+    _favoriteVersion++;
     notifyListeners();
   }
 
