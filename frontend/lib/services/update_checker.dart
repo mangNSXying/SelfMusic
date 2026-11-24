@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../data/local/app_settings.dart';
+import '../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
+import '../platform/harmonyos/ohos_platform_bridge.dart';
 import '../utils/app_version.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/update_dialog.dart';
@@ -26,6 +28,12 @@ Future<void> openReleaseDownload(ReleaseInfo release) async {
   final target = downloadUrl ?? release.pageUrl;
   if (target.isEmpty) {
     AppToast.show('未找到可用的下载链接');
+    return;
+  }
+  // 鸿蒙：url_launcher 无平台实现，必须走原生桥的 startAbility（浏览器）。
+  if (isOhos) {
+    if (await OhosPlatformBridge.openUrl(target)) return;
+    AppToast.show('无法打开浏览器，请手动访问：$target');
     return;
   }
   final uri = Uri.tryParse(target);
