@@ -120,4 +120,4 @@ curl http://localhost:18088/api/v1/health
 ## 许可 / 源码
 
 - 许可证：MIT-0（MIT No Attribution）
-- 源码与完整文档（部署 / API / 架构 / 客户端）：https://gitea.shamiko.site/shamiko/SelfMusic
+- 源码与完整文档（部署 / API / 架构 / 客户端）：https://gitea.shamiko.site/shamiko/SelfMusic 或 https://github.com/mangNSXying/SelfMusic
