@@ -23,6 +23,7 @@ import 'services/selfmusic_audio_handler.dart';
 import 'services/playback_guard.dart';
 import 'services/sync_engine.dart';
 import 'services/artist_resolver.dart';
+import 'services/update_checker.dart';
 import 'data/local/app_settings.dart';
 import 'data/local/syncable_settings.dart';
 import 'providers/auth_provider.dart';
@@ -667,6 +668,23 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
       await player.applyNewerMirrorIfAny();
       perfLog('root.boot applyDone', '${swApply.elapsedMilliseconds}ms');
     });
+    // 启动自动检查更新（设置 → 系统 → 更新，默认开）：延后到首帧稳定后再请求，
+    // 避免与启动恢复/首拉抢网络与渲染；无更新或被延后/忽略时全程静默。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (!direct.settings.updateAutoCheck) return;
+      unawaited(_autoCheckUpdate());
+    });
+  }
+
+  /// 启动自动检查更新：命中新版本且未被延后/忽略时弹窗提醒。
+  Future<void> _autoCheckUpdate() async {
+    // 等播放页恢复动画与首拉收尾，弹窗不打断启动画面。
+    await Future<void>.delayed(const Duration(milliseconds: 1500));
+    if (!mounted) return;
+    final settings = context.read<DirectSourceManager>().settings;
+    if (!settings.updateAutoCheck) return;
+    await checkForUpdate(context, settings: settings);
   }
 
   /// 绑定桌面托盘菜单（Windows/Linux）。移动端无托盘，直接跳过。

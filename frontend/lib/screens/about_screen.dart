@@ -11,12 +11,13 @@ import '../platform/email_share.dart';
 import '../platform/harmonyos/ohos_bootstrap.dart' show isOhos;
 import '../platform/harmonyos/ohos_platform_bridge.dart';
 import '../providers/direct_source_manager.dart';
+import '../services/log_buffer.dart';
+import '../services/update_checker.dart';
 import '../utils/app_version.dart';
 import '../utils/build_stamp.dart';
 import '../widgets/app_dialog_actions.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/row_action_button.dart';
-import '../services/log_buffer.dart';
 
 /// 反馈收信人。
 const String kFeedbackEmail = 'kon@shamiko.site';
@@ -31,6 +32,8 @@ class AboutScreen extends StatelessWidget {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final logMinutes = context.select<DirectSourceManager, int>(
         (direct) => direct.settings.logExportMinutes);
+    // 更新源标签：进页时读取一次即可（本页非响应式，切换源后重进即更新）。
+    final source = context.read<DirectSourceManager>().settings.updateSource;
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 24, 16, 24),
       children: [
@@ -81,6 +84,16 @@ class AboutScreen extends StatelessWidget {
         const Divider(height: 1),
         ListTile(
           dense: true,
+          leading: const Icon(Icons.system_update_outlined),
+          title: const Text('检查更新'),
+          subtitle: Text('更新源：${source.label} · 手动检查新版本',
+              style: const TextStyle(fontSize: 11)),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _checkUpdate(context),
+        ),
+        const Divider(height: 1),
+        ListTile(
+          dense: true,
           leading: const Icon(Icons.description_outlined),
           title: const Text('收集日志'),
           subtitle: Text('导出最近 $logMinutes 分钟内的应用日志',
@@ -116,6 +129,12 @@ class AboutScreen extends StatelessWidget {
   void _copyEmail(BuildContext context) {
     Clipboard.setData(const ClipboardData(text: kFeedbackEmail));
     AppToast.show('已复制反馈邮箱', isError: false);
+  }
+
+  /// 手动检查更新：不受延后/忽略状态限制，无更新或失败均给出提示。
+  Future<void> _checkUpdate(BuildContext context) async {
+    final settings = context.read<DirectSourceManager>().settings;
+    await checkForUpdate(context, settings: settings, manual: true);
   }
 
   /// 跳转系统默认邮件软件；无可用客户端时复制邮箱并弹窗明示地址。
