@@ -123,6 +123,9 @@ class _PairingScreenState extends State<PairingScreen> {
     _tokenCtrl.clear();
     setState(() => _showPairForm = false);
     AppToast.show('配对成功', isError: false);
+    // 源配置不在这里自动补推：用户在本弹窗选「不推送」就是不推，「先加源后
+    // 配对」的源要靠源菜单里的「推送到服务端」显式推上去（见
+    // DirectSourceManager.pushSourceToServer）。
     await _askPushExisting(context, wasPaired: wasPaired);
   }
 

@@ -384,14 +384,50 @@ class DirectSourceManager extends ChangeNotifier {
 
   /// 存量远端类型源首次接入同步时补 uuid + source.create（补录标记：
   /// 服务端只建行、不赢现行同址行）。
+  ///
+  /// 判据是「还没有源身份」（`client_uuid` 为 NULL）——那只会出现在升级前的
+  /// 老库里：添加源时就已经生成 uuid 的新源不属于这里。
+  ///
+  /// 这条路径**不是**通用的「补齐未上报源」：用户在配对弹窗选过「不推送」后，
+  /// 新源必须真的不推，靠源菜单的「推送到服务端」显式补（[pushSourceToServer]）。
   Future<void> _bootstrapSourceSync() async {
     if (!isServerAvailable) return;
     for (final r in index.listSources()) {
       if (!isSyncableKind(r.kind)) continue;
+      // 已有身份 = 不是升级存量，不自动上报。
       if (index.sourceUuidOf(r.key) != null) continue;
       await index.ensureSourceUuid(r.key);
       await _emitSource(SyncEventTypes.sourceCreate, r.key, backfill: true);
     }
+  }
+
+  /// 手动推送单个源到服务端（源菜单「推送到服务端」）。
+  ///
+  /// 与自动补推刻意分开：配对弹窗里选「不推送」就是**真的不推**——源配置
+  /// 属于连接信息，用户说不要就不要。这条手动出口只做用户明确要求的推送。
+  ///
+  /// 返回是否真的入队了事件；未配对/本地源/已是最新返回 false。
+  Future<bool> pushSourceToServer(String key) async {
+    if (!isServerAvailable) return false;
+    final row = index.getSource(key);
+    if (row == null || !isSyncableKind(row.kind)) return false;
+    if (!index.sourceNeedsSync(key)) return false;
+    await index.ensureSourceUuid(key);
+    // 首次上报走补录 create（服务端只建行，不覆盖同名同址的现行行）；
+    // 已上报过又改了配置走 update（LWW，远端以本次为准）。
+    final type = index.sourceSyncedSig(key) == null
+        ? SyncEventTypes.sourceCreate
+        : SyncEventTypes.sourceUpdate;
+    await _emitSource(type, key, backfill: type == SyncEventTypes.sourceCreate);
+    return true;
+  }
+
+  /// 该源是否需要（且可以）推送到服务端——菜单项可用性用。
+  bool canPushSourceToServer(String key) {
+    if (!isServerAvailable) return false;
+    final row = index.getSource(key);
+    if (row == null || !isSyncableKind(row.kind)) return false;
+    return index.sourceNeedsSync(key);
   }
 
   /// 远端类型源的同步事件（本地文件夹源各机独立；未连服务器不发）。
@@ -400,34 +436,16 @@ class DirectSourceManager extends ChangeNotifier {
     if (!isServerAvailable) return;
     final row = index.getSource(key);
     if (row == null || !isSyncableKind(row.kind)) return;
-    final uuid = await index.ensureSourceUuid(key);
-    Map<String, dynamic> cfg = const {};
-    try {
-      cfg = jsonDecode(row.config) as Map<String, dynamic>;
-    } catch (_) {}
-    final sanitized = Map<String, dynamic>.of(cfg)
-      ..remove('password')
-      ..remove('keyPem')
-      ..remove('passphrase');
-    // 备用同步：同样去敏感（各槽位只留非敏感连接参数）。
-    final rawFbs = sanitized['fallbacks'];
-    if (rawFbs is List) {
-      sanitized['fallbacks'] = [
-        for (final e in rawFbs)
-          if (e is Map)
-            sanitizeFallbackConfig(Map<String, dynamic>.of(
-                e.map((k, v) => MapEntry(k.toString(), v))))
-      ];
-    }
+    // uuid 必须先落库，[LocalIndex.sourceSyncPayload] 才带得出 client_uuid。
+    await index.ensureSourceUuid(key);
+    final payload = index.sourceSyncPayload(key);
+    if (payload.isEmpty) return;
+    // 入队成功才记签名：失败下轮还要补（payload 与签名同源，见 sourceSyncPayload）。
     await index.enqueueOutbox(type, {
       if (backfill) 'backfill': true,
-      'client_uuid': uuid,
-      'kind': row.kind,
-      if (row.name.isNotEmpty) 'name': row.name,
-      'address': sourceAddressOf(row.kind, cfg),
-      'config': sanitized,
-      'enabled': row.enabled,
+      ...payload,
     });
+    await index.setSourceSyncedSig(key, sourceSyncSignature(payload));
   }
 
   /// 该源是否等待本机补输密码（同步到的 WebDAV 源密码不落地服务端）。

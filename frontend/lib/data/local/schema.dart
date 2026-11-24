@@ -20,7 +20,8 @@ void applySchema(Database db) {
       enabled INTEGER NOT NULL DEFAULT 1,
       status TEXT NOT NULL DEFAULT '',
       last_scan_at TEXT,
-      client_uuid TEXT
+      client_uuid TEXT,
+      synced_sig TEXT
     );
   ''');
   final sourceCols = db
@@ -29,6 +30,12 @@ void applySchema(Database db) {
       .toSet();
   if (!sourceCols.contains('client_uuid')) {
     db.execute('ALTER TABLE sources ADD COLUMN client_uuid TEXT');
+  }
+  // 上次成功入队 source.create/update 的载荷签名（null=从未上报过）。
+  // 不能用 client_uuid 是否存在判断「已上报」：uuid 在添加源时即生成，
+  // 未配对时事件根本没入队，重启后补推会把该源永久跳过。
+  if (!sourceCols.contains('synced_sig')) {
+    db.execute('ALTER TABLE sources ADD COLUMN synced_sig TEXT');
   }
   db.execute(
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_sources_uuid ON sources(client_uuid)');

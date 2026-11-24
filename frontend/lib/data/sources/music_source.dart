@@ -46,6 +46,31 @@ SourceRoute parseSourceRoute(Object? v) =>
 /// 远端类型（webdav/smb/onedrive…）默认同步。
 bool isSyncableKind(String kind) => kind.isNotEmpty && kind != 'local';
 
+/// 源上报载荷的内容签名（判断「该源当前配置是否已入队同步」）。
+///
+/// 不能用 `client_uuid` 是否存在判断「已上报」：uuid 在添加源时就生成并落库，
+/// 未配对时事件根本没入队，于是重启后的存量补推会把该源永久跳过，源只活在本机。
+///
+/// 键序规范化后再编码：config 的键顺序会随同步合并/重建变化，
+/// 顺序不同但内容相同的两份配置必须得到同一签名，否则每次启动都会重推。
+/// `backfill` 是投递方式而非内容，不参与签名（否则补推一次后签名就对不上了）。
+String sourceSyncSignature(Map<String, dynamic> payload) {
+  final clean = Map<String, dynamic>.of(payload)..remove('backfill');
+  return jsonEncode(_canonicalJson(clean));
+}
+
+Object? _canonicalJson(Object? v) {
+  if (v is Map) {
+    final entries = v.entries.toList()
+      ..sort((a, b) => a.key.toString().compareTo(b.key.toString()));
+    return {
+      for (final e in entries) e.key: _canonicalJson(e.value),
+    };
+  }
+  if (v is List) return [for (final e in v) _canonicalJson(e)];
+  return v;
+}
+
 /// 元数据 sidecar 文件名判定（在线元数据写回用）：歌词 `.lrc`（大小写）
 /// 与常见封面图后缀。纯函数，可单测。
 bool isSidecarFileName(String name) {

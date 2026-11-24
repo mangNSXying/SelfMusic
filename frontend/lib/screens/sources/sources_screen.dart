@@ -16,6 +16,7 @@ import '../../providers/playlists_provider.dart';
 import '../../theme/app_theme.dart';
 import '../../utils/collection_sort.dart';
 import '../../widgets/app_dialog_actions.dart';
+import '../../widgets/app_toast.dart';
 import '../../widgets/context_menu.dart';
 import '../../widgets/corner_add_button.dart';
 import '../../widgets/count_header.dart';
@@ -347,6 +348,10 @@ List<PopupMenuEntry<String>> _sourceMenuItems(
     String sourceKey, DirectSourceManager direct) {
   return [
     const PopupMenuItem(value: 'edit', child: Text('编辑')),
+    // 只在「配对弹窗选过不推送」时才有意义；已同步且无变化时不显示，
+    // 避免出现点了没反应的菜单项。
+    if (direct.canPushSourceToServer(sourceKey))
+      const PopupMenuItem(value: 'push', child: Text('推送到服务端')),
     ...buildSourceLineMenuItems(direct, sourceKey),
     const PopupMenuDivider(),
     const PopupMenuItem(
@@ -363,6 +368,8 @@ Future<void> _handleSourceMenuValue(BuildContext context, String sourceKey,
     case 'edit':
       showDialog<void>(
           context: context, builder: (_) => SourceDialog(editKey: sourceKey));
+    case 'push':
+      await _pushSource(context, sourceKey, direct);
     case 'delete':
       _confirmDelete(context, sourceKey, direct);
     case 'line_auto':
@@ -370,6 +377,22 @@ Future<void> _handleSourceMenuValue(BuildContext context, String sourceKey,
     case 'line_fb0':
     case 'line_fb1':
       await applySourceLineSelection(context, sourceKey, v);
+  }
+}
+
+/// 手动推送单个源（配对时选了「不推送」的补推出口）。
+///
+/// 事件进 outbox 后由 SyncEngine 下一轮上推，不立即发网络请求。
+Future<void> _pushSource(
+    BuildContext context, String sourceKey, DirectSourceManager direct) async {
+  try {
+    final queued = await direct.pushSourceToServer(sourceKey);
+    if (!context.mounted) return;
+    AppToast.show(queued ? '已加入同步队列，稍后自动上推' : '该源已是最新，无需推送',
+        isError: false);
+  } catch (e) {
+    if (!context.mounted) return;
+    AppToast.show('推送失败：$e', isError: true);
   }
 }
 

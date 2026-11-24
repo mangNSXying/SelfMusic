@@ -127,6 +127,62 @@ class LocalIndex {
     return (v == null || v.isEmpty) ? null : v;
   }
 
+  /// 上次成功入队同步事件时的载荷签名（null=从未上报过）。
+  ///
+  /// 「是否已上报」必须看它，不能看 [sourceUuidOf]：uuid 在添加源时就生成，
+  /// 未配对时事件根本没入队，用 uuid 判断会让存量补推永久跳过该源。
+  String? sourceSyncedSig(String key) {
+    final rs = _db!.select('SELECT synced_sig FROM sources WHERE key=?', [key]);
+    if (rs.isEmpty) return null;
+    final v = rs.first['synced_sig'] as String?;
+    return (v == null || v.isEmpty) ? null : v;
+  }
+
+  /// 记录某源已按 [sig] 入队同步事件（源已被删除时静默忽略）。
+  Future<void> setSourceSyncedSig(String key, String sig) {
+    return _writer!
+        .exec('UPDATE sources SET synced_sig=? WHERE key=?', [sig, key]);
+  }
+
+  /// 单源的同步载荷（敏感字段已剔除）。入队事件与「已上报签名」共用同一份，
+  /// 保证判据与实际发送内容一致；源不存在返回空 Map。
+  Map<String, dynamic> sourceSyncPayload(String key) {
+    final row = getSource(key);
+    if (row == null) return const {};
+    Map<String, dynamic> cfg = const {};
+    try {
+      cfg = jsonDecode(row.config) as Map<String, dynamic>;
+    } catch (_) {}
+    final sanitized = Map<String, dynamic>.of(cfg)
+      ..remove('password')
+      ..remove('keyPem')
+      ..remove('passphrase');
+    final rawFbs = sanitized['fallbacks'];
+    if (rawFbs is List) {
+      sanitized['fallbacks'] = [
+        for (final e in rawFbs)
+          if (e is Map)
+            sanitizeFallbackConfig(Map<String, dynamic>.of(
+                e.map((k, v) => MapEntry(k.toString(), v))))
+      ];
+    }
+    return {
+      'client_uuid': sourceUuidOf(key) ?? '',
+      'kind': row.kind,
+      if (row.name.isNotEmpty) 'name': row.name,
+      'address': sourceAddressOf(row.kind, cfg),
+      'config': sanitized,
+      'enabled': row.enabled,
+    };
+  }
+
+  /// 该源当前配置是否尚未入队同步（从未上报过，或上报后配置又变了）。
+  bool sourceNeedsSync(String key) {
+    final row = getSource(key);
+    if (row == null || !isSyncableKind(row.kind)) return false;
+    return sourceSyncSignature(sourceSyncPayload(key)) != sourceSyncedSig(key);
+  }
+
   /// 按源实例 uuid 反查本地源 key（未配置对应源返回 null）。
   String? sourceKeyOfUuid(String uuid) => sql_util.sourceKeyOfUuid(_db!, uuid);
 
@@ -229,6 +285,15 @@ class LocalIndex {
       'deleted': deleted,
     });
     if (changed && hitKey != null) await _purgeSourceSidecars(hitKey);
+    // 远端快照落库即视为「本机与服务端已一致」：不刷新签名的话，合并进来的
+    // 配置（同址合并/远端改名）会让下个启动的存量补推把它再推回去。
+    if (changed && !deleted) {
+      final localKey = sourceKeyOfUuid(uuid);
+      if (localKey != null && sourceNeedsSync(localKey)) {
+        await setSourceSyncedSig(
+            localKey, sourceSyncSignature(sourceSyncPayload(localKey)));
+      }
+    }
     return changed;
   }
 
