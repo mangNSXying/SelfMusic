@@ -64,6 +64,9 @@ export default class AvSessionBridge implements MethodCallHandler {
   private backgroundRunning: boolean = false;
   /** 当前已生效封面（保持引用防送显失败，替换完成后才 release）。 */
   private currentCover: image.PixelMap | null = null;
+  /** 无封面曲目的占位图（应用图标 icon.png，惰性解码一次并常驻；
+   *  不参与 currentCover 的替换释放）。 */
+  private placeholderCover: image.PixelMap | null = null;
   /** 上次封面路径+内容指纹（去重：同曲重复 updateMetadata 不重解码；
    *  同一路径被原地重写时指纹变化，仍会重新解码换图）。 */
   private lastCoverKey: string | null = null;
@@ -343,7 +346,7 @@ export default class AvSessionBridge implements MethodCallHandler {
    * 封面异步补推（两段式第二段）。同曲去重；快速切歌用票据竞态淘汰过期
    * 解码；任何失败仅记日志——封面不应当有能力影响卡片与播放。
    *
-   * 问题2修复：无图/解码失败必须显式清系统侧封面（二次 setAVMetadata），
+   * 问题2修复：无图/解码失败必须显式下发占位图（二次 setAVMetadata），
    * 仅靠“省略 mediaImage”系统会保留上一首；且空分支必须递增 coverJob，
    * 否则上一首在飞的解码完成后会把旧图盖到新曲上。
    */
@@ -355,18 +358,23 @@ export default class AvSessionBridge implements MethodCallHandler {
       return;
     }
     if (path == null || path === '') {
-      // 无封面曲目：作废在飞解码、释放本地引用，并显式下发无图元数据清系统侧。
-      this.coverJob++;
+      // 无封面曲目：作废在飞解码、释放旧图引用，显式下发占位图。
+      // 不能只把 mediaImage 清空——系统对无图元数据是合并语义，会沿用上一首。
+      const job = ++this.coverJob;
       this.lastCoverKey = null;
       this.releaseCover();
       try {
+        const placeholder = await this.getPlaceholderCover();
+        if (job !== this.coverJob || this.session !== session) {
+          return;
+        }
         const metadata = this.buildMetadata(call);
-        (metadata as ESObject).mediaImage = null;
+        (metadata as ESObject).mediaImage = placeholder;
         await session.setAVMetadata(metadata);
-        Log.i(TAG, '无封面已清图');
+        Log.i(TAG, placeholder != null ? '无封面已换占位图' : '无封面已清图（占位图不可用）');
       } catch (err) {
         const e = err as BusinessError;
-        Log.w(TAG, `清图失败（忽略）：${e.code} ${e.message}`);
+        Log.w(TAG, `占位图下发失败（忽略）：${e.code} ${e.message}`);
       }
       return;
     }
@@ -399,19 +407,20 @@ export default class AvSessionBridge implements MethodCallHandler {
     } catch (err) {
       const e = err as BusinessError;
       Log.w(TAG, `封面补推失败（忽略）：${e.code} ${e.message}`);
-      // 解码失败同样清图，避免残留上一首（如下一首封面文件损坏/半图残留）。
+      // 解码失败同样换占位图，避免残留上一首（如下一首封面文件损坏/半图残留）。
       this.lastCoverKey = null;
       this.releaseCover();
       try {
+        const placeholder = await this.getPlaceholderCover();
         const fallback = this.buildMetadata(call);
-        (fallback as ESObject).mediaImage = null;
+        (fallback as ESObject).mediaImage = placeholder;
         const cur = this.session;
         if (job === this.coverJob && cur === session) {
           await cur.setAVMetadata(fallback);
         }
-      } catch (clearErr) {
-        const ce = clearErr as BusinessError;
-        Log.w(TAG, `失败清图失败（忽略）：${ce.code} ${ce.message}`);
+      } catch (placeholderErr) {
+        const pe = placeholderErr as BusinessError;
+        Log.w(TAG, `失败换占位图失败（忽略）：${pe.code} ${pe.message}`);
       }
     }
   }
@@ -456,6 +465,48 @@ export default class AvSessionBridge implements MethodCallHandler {
       cover.release().catch((err: BusinessError): void => {
         Log.w(TAG, `旧封面释放失败（忽略）：${err.code} ${err.message}`);
       });
+    }
+  }
+
+  /**
+   * 无封面曲目的占位图：解码 `resources/base/media/icon.png`（应用图标）并缓存。
+   *
+   * 与 Android 侧显式下发占位图同语义：系统对「省略 mediaImage」是合并语义，
+   * 不下发新图会保留上一首封面。占位图常驻在本字段，不参与 currentCover 的
+   * 换图释放；解码时按 desiredSize 直接缩到 512px 以内（卡片渲染仅数百 px，
+   * 避免主线程解 1024² 原图）。
+   */
+  private async getPlaceholderCover(): Promise<image.PixelMap | null> {
+    if (this.placeholderCover != null) {
+      return this.placeholderCover;
+    }
+    try {
+      const data = this.context.resourceManager.getMediaContentSync($r('app.media.icon').id);
+      const source = image.createImageSource(data.buffer as ArrayBuffer);
+      try {
+        const info = await source.getImageInfo();
+        const w = info.size.width;
+        const h = info.size.height;
+        const maxEdge = Math.max(w, h);
+        const options: image.DecodingOptions = {};
+        if (maxEdge > 512) {
+          const factor = 512 / maxEdge;
+          options.desiredSize = {
+            width: Math.max(1, Math.round(w * factor)),
+            height: Math.max(1, Math.round(h * factor))
+          };
+        }
+        const pixelMap = await source.createPixelMap(options);
+        this.placeholderCover = pixelMap;
+        Log.i(TAG, '占位封面已解码');
+        return pixelMap;
+      } finally {
+        await source.release();
+      }
+    } catch (err) {
+      const e = err as BusinessError;
+      Log.w(TAG, `占位封面解码失败（忽略）：${e.code} ${e.message}`);
+      return null;
     }
   }
 
