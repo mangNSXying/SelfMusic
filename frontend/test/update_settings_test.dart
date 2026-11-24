@@ -12,8 +12,10 @@ import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/screens/about_screen.dart';
 import 'package:selfmusic/screens/settings/settings_screen.dart';
 import 'package:selfmusic/screens/settings/settings_search_index.dart';
+import 'package:selfmusic/services/update_service.dart';
 import 'package:selfmusic/shortcuts/shortcut_settings.dart';
 import 'package:selfmusic/theme/app_theme.dart';
+import 'package:selfmusic/widgets/update_dialog.dart';
 import 'package:sqlite3/open.dart';
 
 ffi.DynamicLibrary _openOnLinux() {
@@ -141,6 +143,95 @@ void main() {
     // 原有入口不受影响。
     expect(find.text('收集日志'), findsOneWidget);
     expect(find.text('反馈'), findsOneWidget);
+  });
+
+  testWidgets('窄屏下更新弹窗动作按钮折返而非每按钮一行', (tester) async {
+    // 360dp 手机：弹窗宽 280，动作区约 232；Wrap 应折成两行而不是四行。
+    tester.view.physicalSize = const Size(360, 720);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    const release = ReleaseInfo(
+      tag: '1.1.0',
+      name: 'release_1.1.0',
+      body: '修复若干问题。',
+      pageUrl: 'https://example.com/release/1.1.0',
+      assets: [],
+    );
+
+    await tester.pumpWidget(MaterialApp(
+      theme: AppTheme.build().themeData,
+      home: Scaffold(
+        body: Builder(
+          builder: (context) => Center(
+            child: TextButton(
+              onPressed: () => showUpdateDialog(
+                context,
+                release: release,
+                currentVersion: '1.0.0',
+              ),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ),
+    ));
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+
+    final rows = {
+      for (final label in ['取消', '之后提醒', '不再提醒', '更新'])
+        tester.getCenter(find.text(label)).dy,
+    };
+    expect(rows.length, lessThanOrEqualTo(2),
+        reason: '应折返成两行，而不是每枚按钮各占一行');
+    expect(tester.takeException(), isNull, reason: '不应出现溢出报错');
+
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('极窄屏下更新弹窗动作按钮折返而非溢出', (tester) async {
+    // 320dp：一行确实放不下，Wrap 应折成两行且无 RenderFlex 溢出。
+    tester.view.physicalSize = const Size(320, 720);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    const release = ReleaseInfo(
+      tag: '1.1.0',
+      name: 'release_1.1.0',
+      body: '修复若干问题。',
+      pageUrl: 'https://example.com/release/1.1.0',
+      assets: [],
+    );
+
+    await tester.pumpWidget(MaterialApp(
+      theme: AppTheme.build().themeData,
+      home: Scaffold(
+        body: Builder(
+          builder: (context) => Center(
+            child: TextButton(
+              onPressed: () => showUpdateDialog(
+                context,
+                release: release,
+                currentVersion: '1.0.0',
+              ),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ),
+    ));
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull, reason: '不应出现溢出报错');
+    for (final label in ['取消', '之后提醒', '不再提醒', '更新']) {
+      expect(find.text(label), findsOneWidget);
+    }
+
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
   });
 
   testWidgets('系统页「更新」分组：更新源可切换、自动检查开关生效', (tester) async {

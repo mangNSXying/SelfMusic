@@ -640,7 +640,7 @@ class _OnlineMetaDialogState extends State<OnlineMetaDialog>
       2 => _tagSaveButton(),
       _ => _lyricSaveButton(),
     };
-    return [appDialogCloseAction(context), save];
+    return appDialogActionGroup([appDialogCloseAction(context), save]);
   }
 
   Widget _lyricSaveButton() => FilledButton(

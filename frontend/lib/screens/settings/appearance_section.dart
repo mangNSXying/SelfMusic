@@ -15,6 +15,7 @@ import '../../services/ttc_font.dart';
 import '../../theme/app_theme.dart';
 import '../../theme/theme_provider.dart';
 import '../../utils/zh_variant.dart';
+import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/inline_spinner.dart';
 import '../../widgets/settings_layout.dart';
@@ -457,12 +458,7 @@ class _AppearanceSettingsState extends State<AppearanceSection> {
             ),
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(c).pop(),
-            child: const Text('取消'),
-          ),
-        ],
+        actions: [appDialogCloseAction(c, label: '取消')],
       ),
     );
   }

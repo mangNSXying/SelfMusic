@@ -28,6 +28,8 @@ import 'package:flutter/services.dart';
 /// - 日志导出：[saveFile]（2026-10-20）——`file_selector_ohos` 未实现
 ///   `getDirectoryPath`（pigeon 通道无处理器，调用必抛 channel-error），
 ///   改走 DocumentViewPicker 保存模式 + 原生复制。
+/// - 外部链接：[openUrl]——url_launcher 无 ohos 平台实现（「检查更新 →
+///   更新」在鸿蒙上必失败），改走 startAbility 的 viewData Want 拉起浏览器。
 ///
 /// 仅被 `isOhos` 分支调用（Android/桌面走各自实现，零回归）。
 ///
@@ -413,6 +415,28 @@ class OhosPlatformBridge {
     } on MissingPluginException catch (e) {
       if (logFailure) debugPrint('[ohos] resolvePath 桥未装配: $e');
       return null;
+    }
+  }
+
+  /// 用系统默认浏览器打开外部链接。
+  ///
+  /// url_launcher 没有 ohos 平台实现（`canLaunchUrl`/`launchUrl` 在鸿蒙上
+  /// 必抛 MissingPluginException 或返回 false），因此「检查更新 → 更新」
+  /// 在鸿蒙端需要走本桥：ArkTS 侧用 `startAbility` + `ohos.want.action.viewData`
+  /// 的 Want 拉起浏览器。返回是否成功拉起；任何异常按失败处理（调用方
+  /// 回退「手动访问」提示）。
+  static Future<bool> openUrl(String url) async {
+    if (url.isEmpty) return false;
+    try {
+      return await _channel.invokeMethod<bool>(
+              'openUrl', <String, Object?>{'url': url}) ??
+          false;
+    } on PlatformException catch (e) {
+      debugPrint('[ohos] openUrl 失败: $e');
+      return false;
+    } on MissingPluginException catch (e) {
+      debugPrint('[ohos] openUrl 桥未装配: $e');
+      return false;
     }
   }
 

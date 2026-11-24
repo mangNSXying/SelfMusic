@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../services/haptics.dart';
 import '../services/update_service.dart';
+import 'app_dialog_actions.dart';
 
 /// 更新弹窗的用户选择。
 enum UpdateDialogResult {
@@ -58,7 +59,9 @@ Future<UpdateDialogResult> showUpdateDialog(
             ),
           ],
         ),
-        actions: [
+        // 四个按钮沿用全局主题样式（合计约 328dp），窄屏动作区放不下一行；
+        // 统一经 appDialogActionGroup 的 Wrap 折返，而不是 OverflowBar 竖排。
+        actions: appDialogActionGroup([
           TextButton(
             onPressed: () {
               Haptics.fire(HapticStrength.light);
@@ -87,7 +90,7 @@ Future<UpdateDialogResult> showUpdateDialog(
             },
             child: const Text('更新'),
           ),
-        ],
+        ]),
       );
     },
   );

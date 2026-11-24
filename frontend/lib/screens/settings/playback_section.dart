@@ -649,19 +649,19 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
                     ],
                   ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => setDialog(() => working.add(
-                  const {'min_sec': 300.0, 'max_sec': null, 'factor': 0.5})),
-              child: const Text('+ 添加区间'),
-            ),
-            ...appDialogActions(
-              c,
-              confirmLabel: '保存',
-              onCancel: () => Navigator.of(c).pop(false),
-              onConfirm: () => Navigator.of(c).pop(true),
-            ),
-          ],
+          actions: appDialogActions(
+            c,
+            leading: [
+              TextButton(
+                onPressed: () => setDialog(() => working.add(
+                    const {'min_sec': 300.0, 'max_sec': null, 'factor': 0.5})),
+                child: const Text('+ 添加区间'),
+              ),
+            ],
+            confirmLabel: '保存',
+            onCancel: () => Navigator.of(c).pop(false),
+            onConfirm: () => Navigator.of(c).pop(true),
+          ),
         ),
       ),
     );

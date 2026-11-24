@@ -6,6 +6,7 @@ import '../../data/local/app_settings.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../services/sync_engine.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/app_dialog_actions.dart';
 import '../../widgets/app_toast.dart';
 import '../../widgets/inline_spinner.dart';
 import '../../widgets/settings_tile.dart';
@@ -258,12 +259,7 @@ class _SettingsSyncDialogState extends State<SettingsSyncDialog> {
           ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('完成'),
-        ),
-      ],
+      actions: [appDialogCloseAction(context, label: '完成')],
     );
   }
 }

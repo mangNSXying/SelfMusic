@@ -11,7 +11,7 @@ import { common } from '@kit.AbilityKit';
 import { picker, fileShare, fileIo, ListFileOptions, ReadOptions, WriteOptions } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { window } from '@kit.ArkUI';
-import { abilityAccessCtrl, bundleManager, Permissions } from '@kit.AbilityKit';
+import { abilityAccessCtrl, bundleManager, Permissions, Want } from '@kit.AbilityKit';
 import { connection, a2dp } from '@kit.ConnectivityKit';
 import { taskpool } from '@kit.ArkTS';
 import { ThumbDispatcher } from './ThumbDispatcher';
@@ -161,6 +161,9 @@ interface FileStat {
  *   器，调用必抛 channel-error），改用 DocumentViewPicker 保存模式选目标 +
  *   把沙箱临时日志复制到选择结果 URI。用户取消（13900042/空结果）回 null，
  *   真实失败 error 上抛，Dart 侧 toast。
+ * - openUrl {url} → bool（2026-11-24 更新跳转修复）：url_launcher 无 ohos
+ *   平台实现，改用 startAbility 的 viewData Want 拉起系统默认浏览器；返回
+ *   是否成功拉起（失败 false，Dart 回退「手动访问」提示）。
  */
 export default class PlatformBridge implements MethodCallHandler {
   private context: common.UIAbilityContext;
@@ -193,6 +196,11 @@ export default class PlatformBridge implements MethodCallHandler {
     switch (call.method) {
       case 'keepScreenOn':
         this.handleKeepScreenOn(call, result)
+          .catch((): void => {
+          });
+        break;
+      case 'openUrl':
+        this.handleOpenUrl(call, result)
           .catch((): void => {
           });
         break;
@@ -306,6 +314,40 @@ export default class PlatformBridge implements MethodCallHandler {
       const e = err as BusinessError;
       Log.e(TAG, `keepScreenOn 失败：${e.code} ${e.message}`);
       result.error(`${e.code}`, e.message, null);
+    }
+  }
+
+  // ---------- 外部链接（openUrl） ----------
+
+  /**
+   * 用系统默认浏览器打开外部链接（更新跳转修复）。
+   *
+   * url_launcher 没有 ohos 平台实现，Dart 侧在鸿蒙上的 `launchUrl` 必失败，
+   * 因此改走系统 Want：`ohos.want.action.viewData` + `entity.system.browsable`
+   * 交给系统按 uri 匹配的浏览类应用（默认浏览器）。
+   *
+   * 必须使用 UIAbilityContext（`startAbility` 是 Ability 能力）；成功 true，
+   * 参数缺失/无匹配应用等失败返回 false，由 Dart 回退「手动访问」提示。
+   */
+  private async handleOpenUrl(call: MethodCall, result: MethodResult): Promise<void> {
+    const url = PlatformBridge.argString(call, 'url');
+    if (url == null || url === '') {
+      result.error('401', '缺少 url 参数', null);
+      return;
+    }
+    try {
+      const want: Want = {
+        action: 'ohos.want.action.viewData',
+        entities: ['entity.system.browsable'],
+        uri: url
+      };
+      await this.context.startAbility(want);
+      Log.i(TAG, `openUrl：${url}`);
+      result.success(true);
+    } catch (err) {
+      const e = err as BusinessError;
+      Log.e(TAG, `openUrl 失败：${e.code} ${e.message}`);
+      result.success(false);
     }
   }
 
