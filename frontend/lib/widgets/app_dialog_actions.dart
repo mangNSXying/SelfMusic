@@ -1,5 +1,25 @@
 import 'package:flutter/material.dart';
 
+/// 对话框动作按钮组：用 [Wrap] 承载 [actions]，保持全局按钮主题样式不变。
+///
+/// `AlertDialog.actions` 默认走 `OverflowBar`：一行放不下时整体切换成竖排，
+/// 每枚按钮各占一行（窄屏上很突兀）。这里统一包一层 [Wrap]，空间不足时
+/// 按行折返成两行；单行/两枚按钮的常规弹窗视觉不变。
+///
+/// 返回 `List<Widget>` 是为了兼容既有 `actions: appDialogActions(...)` 与
+/// `...appDialogActions(...)` 两种用法。
+List<Widget> appDialogActionGroup(List<Widget> actions) {
+  if (actions.isEmpty) return const [];
+  return [
+    Wrap(
+      alignment: WrapAlignment.end,
+      spacing: 8,
+      runSpacing: 8,
+      children: actions,
+    ),
+  ];
+}
+
 /// 标准确认弹窗按钮组：左侧取消（TextButton）、右侧确认（FilledButton）。
 ///
 /// 全 App 的 `AlertDialog.actions` 统一走这里，避免出现「两个 TextButton」
@@ -16,7 +36,7 @@ List<Widget> appDialogActions(
   bool confirmEnabled = true,
 }) {
   final cs = Theme.of(context).colorScheme;
-  return [
+  return appDialogActionGroup([
     TextButton(
       onPressed: cancelEnabled ? onCancel : null,
       child: Text(cancelLabel),
@@ -31,7 +51,7 @@ List<Widget> appDialogActions(
       onPressed: confirmEnabled ? onConfirm : null,
       child: Text(confirmLabel),
     ),
-  ];
+  ]);
 }
 
 /// 单按钮信息弹窗的「关闭」动作。
