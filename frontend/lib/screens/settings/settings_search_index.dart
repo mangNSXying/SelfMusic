@@ -484,6 +484,18 @@ final List<SettingsSearchEntry> settingsSearchEntries = [
     label: '日志时长',
     aliases: ['日志', '诊断', '反馈'],
   ),
+  SettingsSearchEntry(
+    section: SettingsItem.system,
+    group: '更新',
+    label: '更新源',
+    aliases: ['检查更新', '更新', '发布源', 'github', 'gitea'],
+  ),
+  SettingsSearchEntry(
+    section: SettingsItem.system,
+    group: '更新',
+    label: '自动检查',
+    aliases: ['自动检查更新', '检查更新', '更新提醒', '新版本'],
+  ),
 ];
 
 /// 按关键词搜索：多词全部命中；精确/前缀/别名依次排序。

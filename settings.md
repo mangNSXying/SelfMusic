@@ -206,6 +206,15 @@ mode == follow_server → 有服务端镜像用镜像，无镜像回退本地自
 |--------|----|------|------|
 | 通知栏控制 / 后台播放 | `notification_controls` | `true` | **启动时生效，开关只控「按钮」，不控「后台播放」**：Android 侧 `AudioService`/`SelfMusicAudioHandler`（前台服务 + 播放期 wake lock）**恒注册**——此前关开关会一并 gate 掉前台服务与唤醒锁，息屏/Doze 下播放必被回收（已修）；鸿蒙侧 `OhosMediaSessionBridge` 同语义恒建，开关只控制建不建 AVSession（通知栏/锁屏/播控中心播控卡），`AUDIO_PLAYBACK` 长时任务恒随播放申请。**通知栏 5 键（`SelfMusicAudioHandler` 自绘，仅按钮渲染受开关控制）**：上一首 / 播放·暂停（随播放态切换）/ 下一首 / 播放模式（循环切换）/ 退出软件（落盘断点后结束进程），收起视图取前三个；图标为品牌色（`0xFF00A098`）矢量 `ic_np_*`。**后台播放语义**：返回桌面 / 切后台继续播放（Android `androidStopForegroundOnPause=false`，暂停不撤前台服务；audio_service 断言禁止与 `androidNotificationOngoing:true` 同用）；通知栏「退出软件」、划掉任务（`onTaskRemoved`）或侧边栏「退出」才**真正停止**并置空闲。改动后重启应用生效 |
 
+#### 3.6.1 系统分区 · 更新（已实现）
+
+| 设置项 | 键 | 默认 | 说明 |
+|--------|----|------|------|
+| 更新源 | `update_source` | `gitea` | 设置 → 系统 → 更新：检查新版本使用的发布站点，`gitea` = `https://gitea.shamiko.site/shamiko/SelfMusic`（默认，实际有发布）/ `github` = `https://github.com/mangNSXying/SelfMusic`。两站 releases 接口字段同名（`tag_name` / `body` / `html_url` / `assets[].browser_download_url`），由 `services/update_service.dart` 统一解析。键随设置导出/导入，不参与多设备同步 |
+| 自动检查 | `update_auto_check` | `true`（开） | 设置 → 系统 → 更新：开启软件时自动检查更新并弹窗提醒。首帧后延迟约 1.5 秒请求，避免与启动恢复/首拉抢网络；无更新、请求失败或被延后/忽略时全程静默。键随设置导出/导入，不参与多设备同步 |
+
+> 更新弹窗（`widgets/update_dialog.dart`）展示新版本号、当前版本与更新说明正文，按钮语义：**取消**=仅关闭，下次启动仍提醒；**之后提醒**=写入 `update_snooze_until_ms`（随机 3~7 天）+ `update_snooze_version`（当时提示的版本），到期前且仍是同版本时静默，期间出更高版本照常提醒；**不再提醒**=写入 `update_skip_version`（当前版本），出现更高版本照常提醒；**更新**=跳浏览器打开当前平台对应的发布资产直链（Windows zip / Android apk / Linux tar.gz / 鸿蒙 app），无平台匹配资产时回退发布页 `html_url`。`update_snooze_until_ms` / `update_snooze_version` / `update_skip_version` 是本机提醒状态，**不进 `knownKeys`**，不随设置导出/同步。「关于软件」页另有「检查更新」行：不受延后/忽略限制，无更新或失败时给出 toast 提示。
+
 ---
 
 ### 3.7 界面分区 · 已实现

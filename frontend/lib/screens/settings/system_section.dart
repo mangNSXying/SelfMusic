@@ -11,6 +11,7 @@ import '../../widgets/settings_layout.dart';
 import '../../widgets/settings_section_header.dart';
 import '../../widgets/settings_tile.dart';
 import '../../widgets/shortcut_settings_panel.dart';
+import '../../widgets/single_choice_dialog.dart';
 import '../../widgets/wheel_picker_dialog.dart';
 import 'settings_focus.dart';
 
@@ -19,7 +20,7 @@ Widget _systemAnchor(String label, Widget child) => SettingsFocusAnchor(
       child: child,
     );
 
-/// 系统：快捷键 / 桌面和后台 / 诊断。
+/// 系统：快捷键 / 桌面和后台 / 诊断 / 更新。
 class SystemSection extends StatelessWidget {
   const SystemSection();
 
@@ -31,6 +32,8 @@ class SystemSection extends StatelessWidget {
             DesktopAndBackgroundSection(),
             SettingsGroupDivider(),
             LogSection(),
+            SettingsGroupDivider(),
+            UpdateSection(),
           ],
         ),
       );
@@ -137,6 +140,60 @@ class _LogSectionState extends State<LogSection> {
             description: '反馈时附带最近该时长的日志',
             value: '$minutes 分钟',
             onTap: _pickDuration,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 更新：发布源 / 启动自动检查。
+class UpdateSection extends StatefulWidget {
+  const UpdateSection();
+
+  @override
+  State<UpdateSection> createState() => _UpdateSectionState();
+}
+
+class _UpdateSectionState extends State<UpdateSection> {
+  Future<void> _pickSource() async {
+    final settings = context.read<DirectSourceManager>().settings;
+    final current = settings.updateSource;
+    final picked = await showSingleChoiceDialog<UpdateSource>(
+      context: context,
+      title: '更新源',
+      values: UpdateSource.values,
+      current: current,
+      labelOf: (s) => s.label,
+      hintOf: (s) => s.homepage,
+    );
+    if (picked == null || picked == current || !mounted) return;
+    setState(() => settings.updateSource = picked);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = context.read<DirectSourceManager>().settings;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SettingsSectionHeader('更新'),
+        _systemAnchor(
+          '更新源',
+          SettingsTile.value(
+            title: '更新源',
+            description: '检查新版本时使用的发布站点',
+            value: settings.updateSource.label,
+            onTap: _pickSource,
+          ),
+        ),
+        _systemAnchor(
+          '自动检查',
+          SettingsTile.toggle(
+            title: '自动检查',
+            description: '开启软件时自动检查更新并弹窗提醒',
+            value: settings.updateAutoCheck,
+            onChanged: (v) => setState(() => settings.updateAutoCheck = v),
           ),
         ),
       ],
