@@ -124,6 +124,20 @@ enum WeightedDrawCooldown {
   int limitFor(double factor) => factor > 1.0 ? highLimit : lowLimit;
 }
 
+/// 检查更新的发布源（设置→系统→更新）。
+enum UpdateSource {
+  github('GitHub', 'https://github.com/mangNSXying/SelfMusic'),
+  gitea('Gitea', 'https://gitea.shamiko.site/shamiko/SelfMusic');
+
+  const UpdateSource(this.label, this.homepage);
+
+  final String label;
+  final String homepage;
+
+  static UpdateSource parse(String? v) =>
+      enumByNameOr(UpdateSource.values, v, UpdateSource.gitea);
+}
+
 /// 客户端用户设置（直连模式 app_settings 表；settings.md §3）。
 ///
 /// 已实现（settings.md §3.2/§3.3/§3.4）：
@@ -331,6 +345,26 @@ class AppSettings {
   /// 日志导出时长（设置→常规→日志，单位分钟，1~30，默认 1）。
   /// 作用于「关于软件」的收集日志与反馈附件。
   static const String kLogExportMinutes = 'log_export_minutes';
+
+  /// 检查更新的发布源（设置→系统→更新，默认 Gitea）。
+  static const String kUpdateSource = 'update_source';
+
+  /// 启动时自动检查更新（设置→系统→更新，默认开）。
+  static const String kUpdateAutoCheck = 'update_auto_check';
+
+  /// 更新提醒延后到的时刻（毫秒时间戳，`0`=无延后）：点「之后提醒」后
+  /// 写入随机 3~7 天后的时间，到期前自动检查保持静默。
+  /// 属于设备本地提醒状态，不进 [knownKeys]。
+  static const String kUpdateSnoozeUntilMs = 'update_snooze_until_ms';
+
+  /// 延后所针对的版本号：延后只对当时提示的版本生效，期间出现更高版本
+  /// 照常提醒（本仓库发版密集，避免新版本被旧版本的延后吃掉）。
+  static const String kUpdateSnoozeVersion = 'update_snooze_version';
+
+  /// 已选择「本版本不提醒」的版本号（空=未忽略）：
+  /// 自动检查命中同一版本时不再弹窗，出现更高版本照常提醒。
+  /// 设备本地提醒状态，不进 [knownKeys]。
+  static const String kUpdateSkipVersion = 'update_skip_version';
 
   /// 桌面端关闭主窗口时驻留系统托盘（设置→常规→窗口，默认开）。
   /// 手机/鸿蒙无托盘，读取该键无意义。
@@ -1147,6 +1181,48 @@ class AppSettings {
   bool get closeToTray => (index.settingsGet(kCloseToTray) ?? '1') == '1';
   set closeToTray(bool v) => index.settingsSet(kCloseToTray, v ? '1' : '0');
 
+  // ---------- 更新（settings.md §3.6） ----------
+
+  /// 检查更新的发布源（默认 Gitea）。
+  UpdateSource get updateSource =>
+      UpdateSource.parse(index.settingsGet(kUpdateSource));
+  set updateSource(UpdateSource v) => index.settingsSet(kUpdateSource, v.name);
+
+  /// 启动时自动检查更新（默认开）。
+  bool get updateAutoCheck =>
+      (index.settingsGet(kUpdateAutoCheck) ?? '1') == '1';
+  set updateAutoCheck(bool v) =>
+      index.settingsSet(kUpdateAutoCheck, v ? '1' : '0');
+
+  /// 更新提醒延后到期时刻；null=无延后。
+  DateTime? get updateSnoozeUntil {
+    final ms = int.tryParse(index.settingsGet(kUpdateSnoozeUntilMs) ?? '');
+    if (ms == null || ms <= 0) return null;
+    return DateTime.fromMillisecondsSinceEpoch(ms);
+  }
+
+  /// 写入延后到期时刻；传 null 同时清掉延后对应的版本号。
+  set updateSnoozeUntil(DateTime? v) {
+    index.settingsSet(
+      kUpdateSnoozeUntilMs,
+      v == null ? '0' : '${v.millisecondsSinceEpoch}',
+    );
+    if (v == null) index.settingsSet(kUpdateSnoozeVersion, '');
+  }
+
+  /// 延后所针对的版本号（空=无延后版本）。
+  String get updateSnoozeVersion =>
+      index.settingsGet(kUpdateSnoozeVersion) ?? '';
+
+  set updateSnoozeVersion(String v) =>
+      index.settingsSet(kUpdateSnoozeVersion, v);
+
+  /// 已忽略提醒的版本号；空=未忽略。
+  String get updateSkipVersion =>
+      index.settingsGet(kUpdateSkipVersion) ?? '';
+
+  set updateSkipVersion(String v) => index.settingsSet(kUpdateSkipVersion, v);
+
   /// 桌面端主窗口几何（空=无历史记录；编码/校验见 DesktopWindowState）。
   String get windowBounds => index.settingsGet(kWindowBounds) ?? '';
   set windowBounds(String v) => index.settingsSet(kWindowBounds, v);
@@ -1423,6 +1499,8 @@ class AppSettings {
     kLongPressCollapseGroups,
     kLogExportMinutes,
     kCloseToTray,
+    kUpdateSource,
+    kUpdateAutoCheck,
     kShortcutWindowBindings,
     kShortcutGlobalBindings,
     kTableColumnWeights,
