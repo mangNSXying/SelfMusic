@@ -13,6 +13,7 @@ import '../../utils/collection_sort.dart';
 import '../../utils/song_title_format.dart';
 import '../../utils/zh_variant.dart';
 import '../../widgets/confirm_dialog.dart';
+import '../../widgets/current_song_focus.dart';
 import '../../widgets/list_selection.dart';
 import '../../widgets/locate_current_button.dart';
 import '../../widgets/row_list.dart';
@@ -66,6 +67,12 @@ class _QueuePageState extends State<QueuePage> {
   /// 列表滚动控制器：打开即落实追焦（initialScrollOffset），重进经 tick 重定位。
   late final ScrollController _scroll;
 
+  /// 统一的定位调度：首帧未就绪/队列迟到时自动补跳（见 [CurrentSongFocusController]）。
+  late final CurrentSongFocusController _focus;
+
+  /// 上一帧队列是否非空：用于「队列晚到」时补一次定位。
+  bool _hadQueue = false;
+
   @override
   void initState() {
     super.initState();
@@ -86,7 +93,22 @@ class _QueuePageState extends State<QueuePage> {
       if (pos > 0) offset = SongListLocator.offsetForRow(pos);
     }
     _scroll = ScrollController(initialScrollOffset: offset);
+    _hadQueue = queue.isNotEmpty;
+    _focus = CurrentSongFocusController(
+      scroll: _scroll,
+      isActive: () => mounted,
+      rowIndexOfCurrent: _currentDisplayRow,
+      rowTopOf: (row) => row * kRowExtent,
+    );
     widget.focusTick?.addListener(_onFocusTick);
+  }
+
+  /// 当前曲在展示序列中的行号（-1=不在队列/未就绪）。
+  int _currentDisplayRow() {
+    final player = context.read<PlayerProvider>();
+    final queue = player.queue;
+    if (queue.isEmpty) return -1;
+    return _visible.indexOf(player.currentIndex.clamp(0, queue.length - 1));
   }
 
   @override
@@ -116,22 +138,10 @@ class _QueuePageState extends State<QueuePage> {
   }
 
   /// 重定位到当前播放歌曲（展示序可能有搜索/排序差异，按展示行位置映射）。
-  void _jumpToCurrent() {
-    if (!mounted || !_scroll.hasClients) return;
-    final player = context.read<PlayerProvider>();
-    final queue = player.queue;
-    if (queue.isEmpty) return;
-    final pos =
-        _visible.indexOf(player.currentIndex.clamp(0, queue.length - 1));
-    if (pos < 0) return;
-    SongListLocator.jumpToRow(_scroll, pos);
-  }
+  void _jumpToCurrent() => _focus.request();
 
-  /// 重进歌单页：下一帧再跳（回调可能发生在滚动/通知分发期间，frame 期间
-  /// jumpTo 会与同帧滚动位置更新打架）。
-  void _onFocusTick() {
-    WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToCurrent());
-  }
+  /// 重进歌单页：请求重新定位（controller 统一 post-frame 调度，见其文档）。
+  void _onFocusTick() => _focus.request(immediate: false);
 
   bool _matches(Song s, String q, SongTitleFormat fmt) {
     if (q.isEmpty) return true;
@@ -214,6 +224,11 @@ class _QueuePageState extends State<QueuePage> {
     if (sig != _sig) {
       _sig = sig;
       _rebuildVisible(queue, q, direct);
+    }
+    // 队列晚于页面挂载才就绪（冷启动恢复/清空后重新入队）：补一次定位。
+    if (queue.isNotEmpty != _hadQueue) {
+      _hadQueue = queue.isNotEmpty;
+      if (queue.isNotEmpty) _focus.request();
     }
 
     // 行级视图数据（R-1）：按展示序列计算派生文本/收藏态并缓存（懒求值）。
@@ -358,40 +373,47 @@ class _QueuePageState extends State<QueuePage> {
   Widget _listBody(
       PlayerProvider player, DirectSourceManager direct, List<Song> queue) {
     final wide = MediaQuery.sizeOf(context).width >= kSongTileWideInfoWidth;
-    return _visible.isEmpty
-        ? Center(child: Text(queue.isEmpty ? '队列为空' : '无匹配歌曲'))
-        : RowList(
-            controller: _scroll,
-            count: _visible.length,
-            itemBuilder: (c, i) {
-              final realIndex = _visible[i];
-              final s = queue[realIndex];
-              // 下标判高亮（展示可重排，用真实队列下标；复本仅新播行亮）。
-              final isCurrent = realIndex == player.currentIndex;
-              return QueueSongTile(
-                song: s,
-                index: i,
-                playing: isCurrent,
-                cache: _rowCache,
-                direct: direct,
-                wide: wide,
-                onEnsureMeta: () {
-                  if (!direct.weight.hasMetaCached(s)) {
-                    _ensureMetaWindow(direct, queue, i);
-                  }
-                },
-                onPlay: () => player.playAt(realIndex),
-                selectionMode: _sel.active,
-                selected: _sel.contains(realIndex),
-                onSelect: () => setState(() {
-                  _sel.active = true;
-                  _sel.toggle(realIndex);
-                }),
-                onStartSelect: () => setState(() => _sel.startWith(realIndex)),
-                showRemove: true,
-                onRemove: () => _removeOne(player, realIndex),
-              );
-            },
-          );
+    return NotificationListener<ScrollMetricsNotification>(
+      onNotification: (_) {
+        _focus.onMetricsAvailable();
+        return false;
+      },
+      child: _visible.isEmpty
+          ? Center(child: Text(queue.isEmpty ? '队列为空' : '无匹配歌曲'))
+          : RowList(
+              controller: _scroll,
+              count: _visible.length,
+              itemBuilder: (c, i) {
+                final realIndex = _visible[i];
+                final s = queue[realIndex];
+                // 下标判高亮（展示可重排，用真实队列下标；复本仅新播行亮）。
+                final isCurrent = realIndex == player.currentIndex;
+                return QueueSongTile(
+                  song: s,
+                  index: i,
+                  playing: isCurrent,
+                  cache: _rowCache,
+                  direct: direct,
+                  wide: wide,
+                  onEnsureMeta: () {
+                    if (!direct.weight.hasMetaCached(s)) {
+                      _ensureMetaWindow(direct, queue, i);
+                    }
+                  },
+                  onPlay: () => player.playAt(realIndex),
+                  selectionMode: _sel.active,
+                  selected: _sel.contains(realIndex),
+                  onSelect: () => setState(() {
+                    _sel.active = true;
+                    _sel.toggle(realIndex);
+                  }),
+                  onStartSelect: () =>
+                      setState(() => _sel.startWith(realIndex)),
+                  showRemove: true,
+                  onRemove: () => _removeOne(player, realIndex),
+                );
+              },
+            ),
+    );
   }
 }

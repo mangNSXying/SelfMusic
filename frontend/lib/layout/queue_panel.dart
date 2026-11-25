@@ -7,12 +7,12 @@ import '../providers/navigation_provider.dart';
 import '../providers/player_provider.dart';
 import '../services/haptics.dart';
 import '../widgets/count_header.dart';
+import '../widgets/current_song_focus.dart';
 import '../widgets/locate_current_button.dart';
 import 'screen_metrics.dart';
 import '../widgets/draggable_sheet.dart';
 import '../widgets/row_list.dart';
 import '../widgets/song_list.dart';
-import '../widgets/song_list_locator.dart';
 import '../widgets/queue_song_tile.dart';
 import '../widgets/song_row_view.dart';
 
@@ -105,7 +105,8 @@ class _QueueSheetContent extends StatefulWidget {
 }
 
 class _QueueSheetContentState extends State<_QueueSheetContent> {
-  bool _jumped = false;
+  /// 统一的定位调度（首帧布局未就绪时保留 pending、就绪后补跳）。
+  late final CurrentSongFocusController _focus;
 
   /// 行级视图缓存（与整页 [QueuePage] 同口径）：行数据只随队列/元数据版本
   /// 失效，滚动与开合动画不再逐行重算标题/收藏态。
@@ -114,29 +115,24 @@ class _QueueSheetContentState extends State<_QueueSheetContent> {
   @override
   void initState() {
     super.initState();
+    _focus = CurrentSongFocusController(
+      scroll: widget.scrollCtrl,
+      isActive: () => mounted,
+      rowIndexOfCurrent: () {
+        final player = context.read<PlayerProvider>();
+        final queue = player.queue;
+        if (queue.isEmpty) return -1;
+        return player.currentIndex.clamp(0, queue.length - 1);
+      },
+      // 标题栏在滚动区内：行顶边加上标题栏高度，再让出同一高度。
+      rowTopOf: (row) => AppSheetTitleBar.heightOf(context) + row * kRowExtent,
+      coveredTopOf: () => AppSheetTitleBar.heightOf(context),
+    );
     // 打开即定位到当前播放歌曲（首帧布局完成后再滚动）。
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_jumped) return;
-      _jumped = true;
-      _jumpToCurrent();
-    });
+    _focus.request();
   }
 
-  void _jumpToCurrent() {
-    if (!mounted) return;
-    final player = context.read<PlayerProvider>();
-    // 下标定位：复本只亮新播的尾一行（身份首匹配会指回旧行）。
-    final queue = player.queue;
-    if (queue.isEmpty) return;
-    final idx = player.currentIndex.clamp(0, queue.length - 1);
-    // 标题栏在滚动区内：行顶边加上标题栏高度，再让出同一高度。
-    final header = AppSheetTitleBar.heightOf(context);
-    SongListLocator.jumpTo(
-      widget.scrollCtrl,
-      rowTop: header + idx * kRowExtent,
-      coveredTop: header,
-    );
-  }
+  void _jumpToCurrent() => _focus.request();
 
   @override
   Widget build(BuildContext context) {
@@ -167,54 +163,60 @@ class _QueueSheetContentState extends State<_QueueSheetContent> {
       onWarm: () => direct.weight.warmMetaOf(queue),
     );
     // 统一窗口外层已提供 Material 祖先（悬浮层 Material），SongTile 可直接使用。
-    return CustomScrollView(
-      controller: widget.scrollCtrl,
-      slivers: [
-        // 置顶标题栏：与专辑/歌手弹层同一组件（[AppSheetTitleBar]），滚动队列
-        // 时标题与关闭按钮始终可见（仍在同一 scrollable，头部同样可拖拽窗口）。
-        AppSheetHeader(
-          height: AppSheetTitleBar.heightOf(context),
-          child: AppSheetTitleBar(
-            title: '播放队列',
-            count: queue.length,
-            scrollCtrl: widget.scrollCtrl,
-            trailing: LocateCurrentButton(
-              onPressed: queue.isEmpty ? null : _jumpToCurrent,
+    return NotificationListener<ScrollMetricsNotification>(
+      onNotification: (_) {
+        _focus.onMetricsAvailable();
+        return false;
+      },
+      child: CustomScrollView(
+        controller: widget.scrollCtrl,
+        slivers: [
+          // 置顶标题栏：与专辑/歌手弹层同一组件（[AppSheetTitleBar]），滚动队列
+          // 时标题与关闭按钮始终可见（仍在同一 scrollable，头部同样可拖拽窗口）。
+          AppSheetHeader(
+            height: AppSheetTitleBar.heightOf(context),
+            child: AppSheetTitleBar(
+              title: '播放队列',
+              count: queue.length,
+              scrollCtrl: widget.scrollCtrl,
+              trailing: LocateCurrentButton(
+                onPressed: queue.isEmpty ? null : _jumpToCurrent,
+              ),
             ),
           ),
-        ),
-        if (queue.isEmpty)
-          const SliverFillRemaining(
-            hasScrollBody: false,
-            child: Center(child: Text('队列为空')),
-          )
-        else
-          SliverRowList(
-            count: queueLength,
-            itemBuilder: (c, i) {
-              final s = queue[i];
-              // 下标判高亮：同首复本仅新播行亮。
-              return QueueSongTile(
-                song: s,
-                index: i,
-                playing: i == currentIndex,
-                cache: _rows,
-                direct: direct,
-                wide: wide,
-                onEnsureMeta: () {
-                  if (!direct.weight.hasMetaCached(s)) {
-                    direct.weight.ensureMetaOf([s]);
-                  }
-                },
-                onPlay: () => player.playAt(i),
-              );
-            },
+          if (queue.isEmpty)
+            const SliverFillRemaining(
+              hasScrollBody: false,
+              child: Center(child: Text('队列为空')),
+            )
+          else
+            SliverRowList(
+              count: queueLength,
+              itemBuilder: (c, i) {
+                final s = queue[i];
+                // 下标判高亮：同首复本仅新播行亮。
+                return QueueSongTile(
+                  song: s,
+                  index: i,
+                  playing: i == currentIndex,
+                  cache: _rows,
+                  direct: direct,
+                  wide: wide,
+                  onEnsureMeta: () {
+                    if (!direct.weight.hasMetaCached(s)) {
+                      direct.weight.ensureMetaOf([s]);
+                    }
+                  },
+                  onPlay: () => player.playAt(i),
+                );
+              },
+            ),
+          // 底部系统手势条：悬浮层顶部已让开状态栏，底部需自行让开。
+          SliverToBoxAdapter(
+            child: SizedBox(height: MediaQuery.paddingOf(context).bottom),
           ),
-        // 底部系统手势条：悬浮层顶部已让开状态栏，底部需自行让开。
-        SliverToBoxAdapter(
-          child: SizedBox(height: MediaQuery.paddingOf(context).bottom),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -244,21 +246,30 @@ class QueuePanel extends StatefulWidget {
 class _QueuePanelState extends State<QueuePanel> {
   final ScrollController _scroll = ScrollController();
 
+  /// 统一的定位调度（常驻挂载，展开/首帧就绪后补跳）。
+  late final CurrentSongFocusController _focus;
+
+  /// 上一帧队列是否非空：队列晚到这里才就绪时补一次定位。
+  bool _hadQueue = false;
+
   @override
   void initState() {
     super.initState();
-    if (widget.open) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToCurrent());
-    }
+    _focus = CurrentSongFocusController(
+      scroll: _scroll,
+      isActive: () => mounted,
+      rowIndexOfCurrent: () => _currentIndex(context.read<PlayerProvider>()),
+      rowTopOf: (row) => row * kRowExtent,
+    );
+    _hadQueue = widget.open && context.read<PlayerProvider>().queue.isNotEmpty;
+    if (widget.open) _focus.request();
   }
 
   @override
   void didUpdateWidget(QueuePanel old) {
     super.didUpdateWidget(old);
     // 常驻挂载：展开这一刻补定位（首帧布局完成后再滚动）。
-    if (widget.open && !old.open) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToCurrent());
-    }
+    if (widget.open && !old.open) _focus.request();
   }
 
   @override
@@ -267,13 +278,7 @@ class _QueuePanelState extends State<QueuePanel> {
     super.dispose();
   }
 
-  void _jumpToCurrent() {
-    if (!mounted) return;
-    final player = context.read<PlayerProvider>();
-    final idx = _currentIndex(player);
-    if (idx < 0) return;
-    SongListLocator.jumpToRow(_scroll, idx);
-  }
+  void _jumpToCurrent() => _focus.request();
 
   int _currentIndex(PlayerProvider player) {
     // 下标定位（同上）：空队 -1，否则钳在队内。
@@ -285,6 +290,11 @@ class _QueuePanelState extends State<QueuePanel> {
   Widget build(BuildContext context) {
     final player = context.watch<PlayerProvider>();
     final queue = player.queue;
+    // 队列晚到（面板常驻挂载时队列还在恢复）：补一次定位。
+    if (queue.isNotEmpty != _hadQueue) {
+      _hadQueue = queue.isNotEmpty;
+      if (queue.isNotEmpty && widget.open) _focus.request();
+    }
 
     return Container(
       width: widget.width,
@@ -330,23 +340,29 @@ class _QueuePanelState extends State<QueuePanel> {
               ),
               const Divider(height: 1),
               Expanded(
-                child: queue.isEmpty
-                    ? const Center(child: Text('队列为空'))
-                    : RowList(
-                        controller: _scroll,
-                        count: queue.length,
-                        itemBuilder: (c, i) {
-                          final s = queue[i];
-                          // 下标判高亮：同首复本仅新播行亮。
-                          final isCurrent = i == player.currentIndex;
-                          return SongTile(
-                            song: s,
-                            source: null,
-                            playing: isCurrent,
-                            onPlay: () => player.playAt(i),
-                          );
-                        },
-                      ),
+                child: NotificationListener<ScrollMetricsNotification>(
+                  onNotification: (_) {
+                    _focus.onMetricsAvailable();
+                    return false;
+                  },
+                  child: queue.isEmpty
+                      ? const Center(child: Text('队列为空'))
+                      : RowList(
+                          controller: _scroll,
+                          count: queue.length,
+                          itemBuilder: (c, i) {
+                            final s = queue[i];
+                            // 下标判高亮：同首复本仅新播行亮。
+                            final isCurrent = i == player.currentIndex;
+                            return SongTile(
+                              song: s,
+                              source: null,
+                              playing: isCurrent,
+                              onPlay: () => player.playAt(i),
+                            );
+                          },
+                        ),
+                ),
               ),
             ],
           ),
