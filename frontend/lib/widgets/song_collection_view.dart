@@ -16,13 +16,13 @@ import '../utils/source_folders.dart';
 import '../utils/toggle_cycle.dart';
 import '../utils/zh_variant.dart';
 import 'count_header.dart';
+import 'current_song_focus.dart';
 import 'list_selection.dart';
 import 'locate_current_button.dart';
 import 'row_action_button.dart';
 import 'row_list.dart';
 import 'selection_badge.dart';
 import 'selection_bar.dart';
-import 'song_list_locator.dart';
 import 'song_row_view.dart';
 import 'song_table.dart';
 import 'song_tile.dart';
@@ -98,6 +98,10 @@ class SongCollectionView extends StatefulWidget {
   /// 重进页面时重新追焦的信号（歌单页由 PageView 保活后重进）。
   final ValueListenable<int>? focusTick;
 
+  /// 当前曲在展示列表中的行号提示（重复曲时指定「正在播的那一份」）。
+  /// 仅当该行歌曲与当前曲身份一致时才采用，否则退回身份首匹配。
+  final int? currentIndexHint;
+
   /// 文件夹导航方式；仅 [FolderNavigation.recursive] 使用 [folderPaths]/[dir]。
   final FolderNavigation folderNavigation;
 
@@ -135,6 +139,7 @@ class SongCollectionView extends StatefulWidget {
     this.onRefresh,
     this.focusCurrent = false,
     this.focusTick,
+    this.currentIndexHint,
     this.folderNavigation = FolderNavigation.flat,
     this.folderPaths,
     this.extraFolders = const {},
@@ -161,9 +166,8 @@ class _SongCollectionViewState extends State<SongCollectionView> {
   Set<String> _expandedFolders = {};
   int _expandRev = 0;
 
-  /// 最近一次 build 的展示行/追焦位置（供 [focusTick] 在 build 外复用）。
+  /// 最近一次 build 的展示行（供 [focusTick] 在 build 外复用）。
   List<SongListRow> _rows = const [];
-  int _focusDisplay = -1;
 
   /// 最近一次 build 的平铺分组（定位时判断当前曲是否被折叠的组藏起）。
   List<SongGroup> _groups = const [];
@@ -221,14 +225,39 @@ class _SongCollectionViewState extends State<SongCollectionView> {
   /// 当前播放曲下标缓存（展示列表/当前曲不变时复用）。
   Object? _currentBaseRef;
   String? _currentKey;
+  int? _currentHint;
   int _currentIdx = -1;
 
-  /// 打开后只自动追焦一次（之后由 focusTick 显式触发）。
-  bool _focusDone = false;
+  /// 与展示列表同序的身份键（不含库内 id，见 [identityKey]）。
+  List<String> _identityKeys = const [];
+
+  /// 「定位当前曲」的统一调度（挂载/tick/按钮共用，见 [CurrentSongFocusController]）。
+  late final CurrentSongFocusController _focus;
+
+  /// 挂载后是否已请求过自动追焦。
+  bool _focusRequested = false;
+
+  /// 上次参与「待重试」判定的行模型/目标行/折叠版本。
+  Object? _focusRowsRef;
+  int _focusRowIdx = -1;
+  int _focusCollapseRev = -1;
 
   @override
   void initState() {
     super.initState();
+    _focus = CurrentSongFocusController(
+      scroll: _scroll,
+      isActive: () => mounted,
+      rowIndexOfCurrent: () {
+        final idx = _currentIdx;
+        if (idx < 0) return -1;
+        return _rows.indexWhere((r) => r.song == idx);
+      },
+      rowTopOf: (row) => row >= 0 && row < _rowOffsets.length
+          ? _rowOffsets[row]
+          : row * kRowExtent,
+      revealCurrent: _revealCurrentIfHidden,
+    );
     widget.focusTick?.addListener(_onFocusTick);
     TableColumnWeightsRevision.instance.addListener(_reloadColumnWeights);
   }
@@ -261,7 +290,8 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       widget.focusTick?.addListener(_onFocusTick);
     }
     if (widget.collectionKey != oldWidget.collectionKey) {
-      _focusDone = false;
+      _focusRequested = false;
+      _focus.reset();
       _sel.cancel();
       _selEpoch++;
       final s = context.read<DirectSourceManager>().settings;
@@ -453,29 +483,22 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     return null;
   }
 
-  void _onFocusTick() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      final pos = _rows.indexWhere((r) => r.song == _focusDisplay);
-      if (pos >= 0) _scrollToRow(pos);
-    });
-  }
+  /// 重进页面：请求重新定位（调度与失败重试见 [CurrentSongFocusController]）。
+  /// 当前曲/行映射可能在本帧才更新，延后到帧末再算。
+  void _onFocusTick() => _focus.request(immediate: false);
 
   /// 计数栏「定位当前曲」：滚到当前播放歌曲所在行；被折叠组藏起时先展开该组。
-  void _locateCurrent() {
+  void _locateCurrent() => _focus.request();
+
+  /// 目标行当前不在 rows 里时，先展开包含当前曲的折叠分组。
+  ///
+  /// 自动追焦与手动按钮共用这一条路径：分组模式下「进入页面不定位、点按钮才
+  /// 定位」的历史差异由此消除。
+  bool _revealCurrentIfHidden() {
     final idx = _currentIdx;
-    if (idx < 0) return;
-    final pos = _rows.indexWhere((r) => r.song == idx);
-    if (pos >= 0) {
-      _scrollToRow(pos);
-      return;
-    }
-    if (!_expandGroupOf(idx)) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      final next = _rows.indexWhere((r) => r.song == idx);
-      if (next >= 0) _scrollToRow(next);
-    });
+    if (idx < 0) return false;
+    if (_rows.any((r) => r.song == idx)) return false;
+    return _expandGroupOf(idx);
   }
 
   /// 展开包含 [songIndex] 的折叠分组；已展开或不属于任何分组时返回 false。
@@ -506,18 +529,9 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     var y = 0.0;
     for (var i = 0; i < rows.length; i++) {
       out[i] = y;
-      y += blockHeaders && rows[i].header
-          ? kSongTableHeaderHeight
-          : kRowExtent;
+      y += blockHeaders && rows[i].header ? kSongTableHeaderHeight : kRowExtent;
     }
     return _rowOffsets = out;
-  }
-
-  void _scrollToRow(int row) {
-    if (!mounted) return;
-    final base =
-        row < _rowOffsets.length ? _rowOffsets[row] : row * kRowExtent;
-    SongListLocator.jumpTo(_scroll, rowTop: base);
   }
 
   @override
@@ -545,8 +559,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     final recursive = !widget.searching &&
         widget.folderNavigation == FolderNavigation.recursive &&
         mode == SongGroupMode.folder;
-    final table =
-        SongTableLayout.fit(availableWidth, weights: _columnWeights);
+    final table = SongTableLayout.fit(availableWidth, weights: _columnWeights);
 
     /// 递归树 + 表格形态：每个文件夹的直属歌曲块重复一份表头。
     /// 列宽按 flex 权重自适应，深层块变窄也不会放不下，因此只看 800 阈值。
@@ -626,9 +639,12 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     _groups = groups;
 
     // 追焦：以当前播放歌曲在展示列表中的位置为准（递归层级不在本层则跳过）。
+    // 当前曲身份用 identityKey（sourceKey+sourceRef，与播放器 isCurrent 同口径）：
+    // 两侧库内 id 不一致时仍能高亮/定位。
     if (!identical(_keysRef, displaySongs)) {
       _keysRef = displaySongs;
       _keys = [for (final s in displaySongs) selectionKey(s)];
+      _identityKeys = [for (final s in displaySongs) identityKey(s)];
     }
     final keys = _keys;
     final selection = _buildSelectionSummary(
@@ -639,16 +655,27 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       recursive: recursive,
     );
     final cur = player.current;
-    final curKey = cur == null ? null : selectionKey(cur);
-    if (!identical(_currentBaseRef, displaySongs) || _currentKey != curKey) {
+    final curKey = cur == null ? null : identityKey(cur);
+    final hint = widget.currentIndexHint;
+    if (!identical(_currentBaseRef, displaySongs) ||
+        _currentKey != curKey ||
+        _currentHint != hint) {
       _currentBaseRef = displaySongs;
       _currentKey = curKey;
-      _currentIdx = curKey == null ? -1 : keys.indexOf(curKey);
+      _currentHint = hint;
+      var idx = curKey == null ? -1 : _identityKeys.indexOf(curKey);
+      // 重复曲（同一歌单里出现多次）：优先采用调用方给出的「正在播的那一份」。
+      if (idx >= 0 &&
+          hint != null &&
+          hint >= 0 &&
+          hint < displaySongs.length &&
+          _identityKeys[hint] == curKey) {
+        idx = hint;
+      }
+      _currentIdx = idx;
     }
     final currentIdx = _currentIdx;
-    final focusDisplay = widget.focusCurrent ? currentIdx : -1;
     _rows = rows;
-    _focusDisplay = focusDisplay;
     _rowOffsets = _offsetsOf(rows, useBlockHeaders);
 
     _rowCache.begin(
@@ -668,14 +695,20 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       onWarm: () => direct.weight.warmMetaOf(displaySongs),
     );
 
-    // 打开后自动定位到当前播放歌曲（仅一次；含组头/文件夹行偏移）。
-    if (!_focusDone && focusDisplay >= 0) {
-      final pos = rows.indexWhere((r) => r.song == focusDisplay);
-      if (pos >= 0) {
-        _focusDone = true;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _scrollToRow(pos);
-        });
+    // 打开后自动定位到当前播放歌曲（只请求一次；失败由 controller 保留 pending，
+    // 数据/布局后来就绪时重试，见 [CurrentSongFocusController]）。
+    if (widget.focusCurrent && currentIdx >= 0) {
+      if (!_focusRequested) {
+        _focusRequested = true;
+        _focus.request();
+      } else if (_focus.pending &&
+          (!identical(_focusRowsRef, rows) ||
+              _focusRowIdx != currentIdx ||
+              _focusCollapseRev != _collapseRev)) {
+        _focusRowsRef = rows;
+        _focusRowIdx = currentIdx;
+        _focusCollapseRev = _collapseRev;
+        _focus.retryIfPending();
       }
     }
 
@@ -758,22 +791,23 @@ class _SongCollectionViewState extends State<SongCollectionView> {
       }
       if (row.folder != null) {
         final f = row.folder!;
-        return _folderRow(c, direct, f, row.depth,
-            selection.folderSelected[f.path] ?? 0);
+        return _folderRow(
+            c, direct, f, row.depth, selection.folderSelected[f.path] ?? 0);
       }
       if (row.group != null) {
         final g = _groupsByName[row.group!];
         return g == null
             ? const SizedBox.shrink()
-            : _groupRow(c, direct, groups, g,
-                selection.groupSelected[g.name] ?? 0);
+            : _groupRow(
+                c, direct, groups, g, selection.groupSelected[g.name] ?? 0);
       }
       final si = row.song!;
       final s = displaySongs[si];
       final key = keys[si];
       final blockIndent = useBlockHeaders ? _treeIndent(row.depth) : 0.0;
-      return _songRow(direct, displaySongs, si, s, key, currentIdx, table,
-          row.depth, blockIndent: blockIndent);
+      return _songRow(
+          direct, displaySongs, si, s, key, currentIdx, table, row.depth,
+          blockIndent: blockIndent);
     }
 
     return Column(
@@ -812,46 +846,52 @@ class _SongCollectionViewState extends State<SongCollectionView> {
             scrollCtrl: _scroll,
           ),
         Expanded(
-          child: rows.isEmpty
-              ? (widget.emptyPlaceholder ??
-                  Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(24),
-                      child:
-                          Text(widget.emptyText, textAlign: TextAlign.center),
-                    ),
-                  ))
-              : useBlockHeaders
-                  ? VariableRowList(
-                      controller: _scroll,
-                      count: rows.length,
-                      onRefresh: widget.onRefresh,
-                      rowHeightOf: (i) => rows[i].header
-                          ? kSongTableHeaderHeight
-                          : kRowHeight,
-                      showDividerOf: (i) =>
-                          !rows[i].header && i != rows.length - 1,
-                      dividerIndentOf: (i) => rows[i].header
-                          ? 0
-                          : rows[i].folder != null
-                              ? kRowDividerIndent
-                              : _treeIndent(rows[i].depth) +
-                                  kRowDividerIndent,
-                      itemBuilder: rowAt,
-                    )
-                  : SongTableList(
-                      table: table,
-                      controller: _scroll,
-                      count: rows.length,
-                      sort: widget.sort,
-                      onSort:
-                          widget.showSort ? widget.onSortChanged : null,
-                      onWeightsChanged: _onColumnWeightsChanged,
-                      onWeightsCommitted: _onColumnWeightsCommitted,
-                      onResetWeights: _resetColumnWeights,
-                      onRefresh: widget.onRefresh,
-                      itemBuilder: rowAt,
-                    ),
+          child: NotificationListener<ScrollMetricsNotification>(
+            // 首帧布局/窗口缩放后度量才就绪：补上迟到的定位（见 controller）。
+            onNotification: (_) {
+              _focus.onMetricsAvailable();
+              return false;
+            },
+            child: rows.isEmpty
+                ? (widget.emptyPlaceholder ??
+                    Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child:
+                            Text(widget.emptyText, textAlign: TextAlign.center),
+                      ),
+                    ))
+                : useBlockHeaders
+                    ? VariableRowList(
+                        controller: _scroll,
+                        count: rows.length,
+                        onRefresh: widget.onRefresh,
+                        rowHeightOf: (i) => rows[i].header
+                            ? kSongTableHeaderHeight
+                            : kRowHeight,
+                        showDividerOf: (i) =>
+                            !rows[i].header && i != rows.length - 1,
+                        dividerIndentOf: (i) => rows[i].header
+                            ? 0
+                            : rows[i].folder != null
+                                ? kRowDividerIndent
+                                : _treeIndent(rows[i].depth) +
+                                    kRowDividerIndent,
+                        itemBuilder: rowAt,
+                      )
+                    : SongTableList(
+                        table: table,
+                        controller: _scroll,
+                        count: rows.length,
+                        sort: widget.sort,
+                        onSort: widget.showSort ? widget.onSortChanged : null,
+                        onWeightsChanged: _onColumnWeightsChanged,
+                        onWeightsCommitted: _onColumnWeightsCommitted,
+                        onResetWeights: _resetColumnWeights,
+                        onRefresh: widget.onRefresh,
+                        itemBuilder: rowAt,
+                      ),
+          ),
         ),
       ],
     );
@@ -959,8 +999,7 @@ class _SongCollectionViewState extends State<SongCollectionView> {
     final selectable = f.total > 0;
     final expanded = _expandedFolders.contains(f.path);
     return ListTile(
-      contentPadding:
-          EdgeInsets.only(left: 16 + _treeIndent(depth), right: 16),
+      contentPadding: EdgeInsets.only(left: 16 + _treeIndent(depth), right: 16),
       leading: _selectableLeading(
         _leadingIcon(Icons.folder, scheme),
         enabled: selectable,
@@ -992,8 +1031,8 @@ class _SongCollectionViewState extends State<SongCollectionView> {
                   : () {
                       final paths = widget.folderPaths ?? const <String>[];
                       final idx = indicesUnder(paths, f.path);
-                      widget.onPlayGroup(
-                          [for (final i in idx) widget.songs[i]]);
+                      widget
+                          .onPlayGroup([for (final i in idx) widget.songs[i]]);
                     },
             ),
           if (f.hasChildren)
@@ -1154,7 +1193,8 @@ class _SongCollectionViewState extends State<SongCollectionView> {
         );
       }),
       table: table,
-      titleIndent: table == null || blockIndent > 0 ? 0 : _tableTitleIndent(depth),
+      titleIndent:
+          table == null || blockIndent > 0 ? 0 : _tableTitleIndent(depth),
       playing: si == currentIdx,
       selectionMode: _sel.active,
       selected: _sel.contains(key),

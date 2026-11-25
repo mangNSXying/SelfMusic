@@ -85,6 +85,20 @@ class _SongListState extends State<SongList> {
   List<int> _visible = const [];
   List<Song> _displaySongs = const [];
 
+  /// 本歌单的稳定 uuid：用于判断播放器是否正锚定在本歌单，进而给出
+  /// 「正在播的那一份」行号提示（重复曲定位，见 [SongCollectionView.currentIndexHint]）。
+  String? _playlistUuid;
+
+  @override
+  void initState() {
+    super.initState();
+    _playlistUuid = context
+        .read<PlaylistsProvider>()
+        .store
+        .index
+        .playlistUuidOf(widget.playlistId);
+  }
+
   @override
   void dispose() {
     _searchCtrl.dispose();
@@ -98,6 +112,11 @@ class _SongListState extends State<SongList> {
     if (widget.playlistId != oldWidget.playlistId) {
       _songsRevision = -1;
       _metaVersion = -1;
+      _playlistUuid = context
+          .read<PlaylistsProvider>()
+          .store
+          .index
+          .playlistUuidOf(widget.playlistId);
     }
   }
 
@@ -266,6 +285,17 @@ class _SongListState extends State<SongList> {
     }
     final visible = _visible;
     final displaySongs = _displaySongs;
+    // 重复曲提示：本歌单正在播放时，用真实队列下标映射到展示行，避免按身份
+    // 键取到同名复本的第一份（与队列页/侧板同一口径）。
+    final currentIndexHint = context.select<PlayerProvider, int?>((p) {
+      final uuid = _playlistUuid;
+      if (uuid == null || !p.isAnchoredToPlaylist(uuid)) return null;
+      if (_songs.isEmpty || p.queueLength != _songs.length) return null;
+      final i = p.currentIndex;
+      if (i < 0 || i >= _songs.length) return null;
+      final di = visible.indexOf(i);
+      return di < 0 ? null : di;
+    });
     final groupMode = direct.settings.groupPlaylistDetail;
     final grouped = !searching && groupMode != SongGroupMode.none;
 
@@ -333,6 +363,7 @@ class _SongListState extends State<SongList> {
             sortScope: SortScope.songs,
             focusCurrent: true,
             focusTick: widget.focusTick,
+            currentIndexHint: currentIndexHint,
             sourceOf: null,
             emptyText: _songs.isEmpty ? '歌单为空' : '无匹配歌曲',
             countLabel: (n, _) => '共 $n 首歌曲',
@@ -390,8 +421,7 @@ class _SongListState extends State<SongList> {
                     provider.moveItemRow(widget.playlistId, itemRow, 1);
                   }
                 case 'row:remove':
-                  unawaited(
-                      _removeOne(provider, provider.songOf(itemRow)));
+                  unawaited(_removeOne(provider, provider.songOf(itemRow)));
               }
             },
             selectionActions: (selected, clear) => [
@@ -419,9 +449,10 @@ class _SongListState extends State<SongList> {
                       provider.store.index.playlistUuidOf(widget.playlistId);
                   if (uuid == null) return;
                   final count = provider.countOf(widget.playlistId);
-                  unawaited(context.read<PlayerProvider>().onPlaylistSongsRemoved(
-                      uuid, deleted,
-                      newPlaylistCount: count));
+                  unawaited(context
+                      .read<PlayerProvider>()
+                      .onPlaylistSongsRemoved(uuid, deleted,
+                          newPlaylistCount: count));
                 },
               ),
             ],
