@@ -748,6 +748,7 @@ abstract class MusicSource {
 - **源页文件夹树**：`source_folders.dart` 的 `SourceFolderTree` 一次构建完整目录树（`SourceFolderTreeCache` 按路径列表身份缓存），`song_groups.dart` 的 `buildSourceTreeRows` 按展开集合先序扁平成带 `depth` 的行；文件夹行右侧只保留「展开/折叠」箭头（进入目录靠行点击/面包屑），展开状态按 collectionKey 持久化；A 模式长按选中子树，B 模式长按切换该文件夹展开；搜索态仍强制平铺。
 - **桌面鼠标右键 = 三点按钮同款菜单**（指针处展开，定位统一走 `widgets/context_menu.dart` 的 `showContextMenuAt`）；菜单项与选中回调必须三点/右键共用一份；多选态、已吊销设备等「按钮不出现」的场景右键同样不响应；触摸端无 secondary tap，行为不变。覆盖：歌曲行（含队列）、歌单行/卡片、播放源行/卡片、设备行、播放页封面。
 - 视图模式：`ViewModeState` mixin + `ViewModeSlot`（`view_mode_toggle.dart`）收口歌单 / 播放源 / 专辑 / 歌手四页切换。
+- **「定位当前曲」统一入口**：几何（目标行顶置于顶下 96px、`coveredTop` 让出置顶栏）只在 `widgets/song_list_locator.dart`；触发时机 / 失败重试 / 折叠组自动展开统一走 `widgets/current_song_focus.dart` 的 `CurrentSongFocusController`（歌曲列表、播放器歌单页、队列页、队列弹层/侧板、专辑/歌手详情共用）。**一次性锁存必须在跳转真正生效后才清**：滚动视图未 attach / 尚无内容尺寸时保留 pending，由 `ScrollMetricsNotification` 或下一次重试补跳；新增列表不要再自写 `_focusDone` 布尔。自动追焦与「当前曲身份」判定用 `identityKey`（sourceKey+sourceRef，含 id 的 `selectionKey` 仍只用于多选），重复曲由 `currentIndexHint` 指定「正在播的那一份」。
 
 ### 宽列表表格模式（横屏 / 桌面）
 
