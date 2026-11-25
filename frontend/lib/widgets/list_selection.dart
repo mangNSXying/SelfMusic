@@ -3,6 +3,13 @@ import '../models/song.dart';
 /// 列表选择/定位用的稳定键（含库内 id，区别于同步身份键 `Song.uid`）。
 String selectionKey(Song s) => '${s.sourceKey}|${s.sourceRef}|${s.id}';
 
+/// 歌曲身份键（sourceKey + sourceRef，**不含库内 id**）：与播放器
+/// `PlayerProvider.isCurrent` 口径一致，仅用于「当前曲」判定。
+///
+/// 断点恢复 / 歌单快照 / 重扫换 id 等场景下同一首歌两侧 id 可能不同，
+/// 用 [selectionKey] 判定会出现「不高亮、不定位」。
+String identityKey(Song s) => '${s.sourceKey}|${s.sourceRef}';
+
 /// 通用多选状态：页面内的选择集合 + 是否处于「选择模式」。
 ///
 /// 泛型 T 通常是 `String`（歌曲稳定键）或 `int`（歌单 id）。
