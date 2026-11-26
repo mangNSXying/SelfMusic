@@ -8,6 +8,7 @@ import '../../layout/screen_metrics.dart';
 import '../../theme/app_theme.dart';
 import '../../utils/perf_log.dart';
 import '../../utils/motion.dart';
+import '../../widgets/collapsible_scroll.dart';
 import '../../widgets/content_stack.dart';
 import '../../widgets/page_transition.dart';
 import '../about_screen.dart';
@@ -49,7 +50,8 @@ class AppContent extends StatelessWidget {
           ]
         : routes;
     return ContentStack(
-      base: const SectionPager(),
+      // 基座与内联详情是顶栏收起的容器：短内容也要能被拖动，故套收起作用域。
+      base: const CollapsibleScroll(child: SectionPager()),
       routes: visible,
       builder: contentPageOf,
       transition: transition,
@@ -70,11 +72,15 @@ Widget contentPageOf(BuildContext context, ContentRoute route) {
     SettingsRoute(:final item) => _SettingsContentHost(item: item),
     LibraryInfoRoute(:final page) => LibraryInfoContent(page: page),
     AboutRoute() => const AboutScreen(),
-    PlaylistRoute(:final id) => PlaylistDetailView(playlistId: id),
-    SourceBrowseRoute(:final sourceKey, :final dir) =>
-      SourceBrowseView(sourceKey: sourceKey, dirOverride: dir),
-    AlbumDetailRoute() => detailPageOf(context, route),
-    ArtistDetailRoute() => detailPageOf(context, route),
+    // 以下整页层走可折叠顶栏，套收起作用域（设置/歌曲信息/关于不套）。
+    PlaylistRoute(:final id) =>
+      CollapsibleScroll(child: PlaylistDetailView(playlistId: id)),
+    SourceBrowseRoute(:final sourceKey, :final dir) => CollapsibleScroll(
+        child: SourceBrowseView(sourceKey: sourceKey, dirOverride: dir)),
+    AlbumDetailRoute() =>
+      CollapsibleScroll(child: detailPageOf(context, route)),
+    ArtistDetailRoute() =>
+      CollapsibleScroll(child: detailPageOf(context, route)),
   };
 }
 

@@ -150,14 +150,19 @@ class _AppShellState extends State<AppShell> {
   /// 判定口径与 [CornerFabLayer] 一致：只认纵向滚动、换向清零累计、
   /// 走满阈值才切换、停手保持。到顶继续下拉必展开——列表已在 0 位时
   /// 没有向上的滚动量，否则顶栏会一直收着无法唤回。
+  ///
+  /// 内容不足一屏时没有 `ScrollUpdate`，拖动只产生 [OverscrollNotification]：
+  /// 同样按 overscroll 的正负累计（>0 向上拖 = 收起，<0 下拉 = 展开），
+  /// 让短内容也能折叠顶栏。短内容的列表由 `CollapsibleScroll` 提供
+  /// 「纵向始终可拖动」，否则连 overscroll 都不会发出。
   void _trackTopCollapse(ScrollNotification n) {
     if (!_narrow || n.metrics.axis != Axis.vertical) return;
     if (n is ScrollStartNotification) {
       _topTravel = 0;
       return;
     }
-    if (n is OverscrollNotification && n.overscroll < 0) {
-      _setTopCollapsed(false);
+    if (n is OverscrollNotification) {
+      _accumulateTopTravel(n.overscroll);
       return;
     }
     if (n is! ScrollUpdateNotification) return;
@@ -165,7 +170,11 @@ class _AppShellState extends State<AppShell> {
       _setTopCollapsed(false);
       return;
     }
-    final delta = n.scrollDelta ?? 0;
+    _accumulateTopTravel(n.scrollDelta ?? 0);
+  }
+
+  /// 单向累计 `delta`：换向清零，走满阈值切换显隐，停手保持。
+  void _accumulateTopTravel(double delta) {
     if (delta == 0) return;
     if ((delta > 0) != (_topTravel > 0)) _topTravel = 0;
     _topTravel += delta;

@@ -11,6 +11,7 @@ import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/providers/player_provider.dart';
 import 'package:selfmusic/theme/theme_provider.dart';
+import 'package:selfmusic/widgets/collapsible_scroll.dart';
 import 'package:sqlite3/open.dart';
 
 DynamicLibrary _openOnLinux() {
@@ -41,7 +42,7 @@ Future<DirectSourceManager> _openDirect() async {
 
 const _listKey = ValueKey<String>('content-list');
 
-Widget _app(DirectSourceManager direct) => MaterialApp(
+Widget _app(DirectSourceManager direct, {Widget? content}) => MaterialApp(
       home: MultiProvider(
         providers: [
           ChangeNotifierProvider<DirectSourceManager>.value(value: direct),
@@ -54,13 +55,24 @@ Widget _app(DirectSourceManager direct) => MaterialApp(
               create: (_) => ThemeProvider(autoLoad: false)),
         ],
         child: AppShell(
-          content: ListView.builder(
-            key: _listKey,
-            itemCount: 100,
-            itemExtent: 60,
-            itemBuilder: (c, i) => Text('行$i'),
-          ),
+          content: content ??
+              ListView.builder(
+                key: _listKey,
+                itemCount: 100,
+                itemExtent: 60,
+                itemBuilder: (c, i) => Text('行$i'),
+              ),
         ),
+      ),
+    );
+
+/// 内容不足一屏：3 行 × 60 = 180，远小于窗口高度。
+Widget _shortContent() => CollapsibleScroll(
+      child: ListView.builder(
+        key: _listKey,
+        itemCount: 3,
+        itemExtent: 60,
+        itemBuilder: (c, i) => Text('行$i'),
       ),
     );
 
@@ -90,6 +102,34 @@ void main() {
     expect(tester.getSize(bar).height, closeTo(0, 0.01));
 
     // 手指下拉 = 往回看 → 展开。
+    await tester.drag(find.byKey(_listKey), const Offset(0, 200));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(bar).height, closeTo(expanded, 1));
+
+    await tester.runAsync(() async => direct.dispose());
+  });
+
+  testWidgets('窄屏：内容不足一屏也能拖动收起/展开顶栏', (tester) async {
+    late final DirectSourceManager direct;
+    await tester.runAsync(() async {
+      direct = await _openDirect();
+    });
+    tester.view.physicalSize = const Size(400, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(_app(direct, content: _shortContent()));
+    await tester.pump();
+
+    final bar = find.byType(TopBar);
+    final expanded = tester.getSize(bar).height;
+    expect(expanded, greaterThan(100));
+
+    // 短内容无滚动余量，靠 overscroll 触发：上推收起、下拉展开。
+    await tester.drag(find.byKey(_listKey), const Offset(0, -200));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(bar).height, closeTo(0, 0.01));
+
     await tester.drag(find.byKey(_listKey), const Offset(0, 200));
     await tester.pumpAndSettle();
     expect(tester.getSize(bar).height, closeTo(expanded, 1));
