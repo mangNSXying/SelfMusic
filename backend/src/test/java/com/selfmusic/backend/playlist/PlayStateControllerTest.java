@@ -60,8 +60,8 @@ class PlayStateControllerTest {
 
     @Test
     void returnsLatestPlaystateSnapshot() {
-        when(playStateRepository.findLatest())
-                .thenReturn(Optional.of(state(7, 42000)));
+        when(playStateRepository.findLatestOne())
+                .thenReturn(state(7, 42000));
         when(playlistRepository.findById(7L))
                 .thenReturn(Optional.of(playlist("pl-uuid", false)));
 
@@ -78,7 +78,7 @@ class PlayStateControllerTest {
     void returnsLastEventAtAsCompareClock() {
         PlayState st = state(7, 42000);
         st.setLastEventAt(LocalDateTime.of(2026, 10, 9, 11, 59, 30));
-        when(playStateRepository.findLatest()).thenReturn(Optional.of(st));
+        when(playStateRepository.findLatestOne()).thenReturn(st);
         when(playlistRepository.findById(7L))
                 .thenReturn(Optional.of(playlist("pl-uuid", false)));
 
@@ -90,23 +90,23 @@ class PlayStateControllerTest {
 
     @Test
     void returnsNullWhenNoRows() {
-        when(playStateRepository.findLatest())
-                .thenReturn(Optional.empty());
+        when(playStateRepository.findLatestOne())
+                .thenReturn(null);
         assertNull(latest());
     }
 
     @Test
     void returnsNullWhenPlaylistMissing() {
-        when(playStateRepository.findLatest())
-                .thenReturn(Optional.of(state(7, 42000)));
+        when(playStateRepository.findLatestOne())
+                .thenReturn(state(7, 42000));
         when(playlistRepository.findById(7L)).thenReturn(Optional.empty());
         assertNull(latest());
     }
 
     @Test
     void returnsNullWhenPlaylistDeleted() {
-        when(playStateRepository.findLatest())
-                .thenReturn(Optional.of(state(7, 42000)));
+        when(playStateRepository.findLatestOne())
+                .thenReturn(state(7, 42000));
         when(playlistRepository.findById(7L))
                 .thenReturn(Optional.of(playlist("pl-uuid", true)));
         assertNull(latest());
@@ -114,8 +114,8 @@ class PlayStateControllerTest {
 
     @Test
     void returnsNullWhenPlaylistNotSyncable() {
-        when(playStateRepository.findLatest())
-                .thenReturn(Optional.of(state(7, 42000)));
+        when(playStateRepository.findLatestOne())
+                .thenReturn(state(7, 42000));
         when(playlistRepository.findById(7L))
                 .thenReturn(Optional.of(playlist(null, false)));
         assertNull(latest());

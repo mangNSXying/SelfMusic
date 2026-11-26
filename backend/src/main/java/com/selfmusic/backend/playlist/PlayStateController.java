@@ -57,7 +57,7 @@ public class PlayStateController {
      */
     @GetMapping("/latest")
     public ApiResponse<Map<String, Object>> latest() {
-        PlayState st = playStateRepository.findLatest().orElse(null);
+        PlayState st = playStateRepository.findLatestOne();
         if (st == null) {
             log.debug("playstates.latest 无断点记录");
             return ApiResponse.ok(null);
