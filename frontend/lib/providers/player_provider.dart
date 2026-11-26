@@ -325,6 +325,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   /// 已应用的 head/history 版本；v2 快照只在版本更高时套用。
   int _appliedHeadRev = 0;
   int _appliedHistoryRev = 0;
+
+  /// 上面这组 v2 内存状态（已应用版本 + pending head + 会话）所属的歌单。
+  ///
+  /// revision 按歌单各自递增，内存只保存「当前歌单」的一份；切换歌单时必须
+  /// 同步改这里并从库重装（见 [_bindV2State]）。否则会拿上一个歌单的版本去
+  /// 比较：从高版本歌单切到低版本歌单后，远端断点因 `headRev > appliedHeadRev`
+  /// 恒不成立而被永久跳过（版本号还会经 MAX upsert 写进库，重启也不恢复）。
+  String? _v2StatePlaylistUuid;
+
   String? _v2ServerEpoch;
 
   /// 下一次断点事件的意图（由用户/播放器操作显式设置；null=自动判断）。
@@ -354,6 +363,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           // 必须等重置完成再让调用方落快照，否则旧的高 rev 会把新快照拒掉。
           await idx.resetBreakpointSyncRevs(serverEpoch);
         }
+        // 库里的状态行已全清：内存绑定同步作废，下次使用时按当前歌单重装。
+        _v2StatePlaylistUuid = null;
         perfLog('bp.epoch', 'server epoch changed -> reset revisions');
       }
     }
@@ -2685,6 +2696,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (key != null) _anchorContexts.remove(key);
       if (playlistUuid != null) _suppressAutoMirror.remove(playlistUuid);
       _syncPlaylistUuid = playlistUuid;
+      _bindV2State(playlistUuid);
       _fusedBase = null;
       _bindDeepList(key, listSize: resolved.length, reset: true);
       _fusedBase = resolved;
@@ -2732,6 +2744,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 首个列表即锚定：建立融合队列。
       if (playlistUuid != null) _suppressAutoMirror.remove(playlistUuid);
       _syncPlaylistUuid = playlistUuid;
+      _bindV2State(playlistUuid);
       _bindDeepList(key, listSize: resolved.length);
       _fusedBase = resolved;
       _queue = _fusedQueue(resolved);
@@ -2747,6 +2760,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       // 同一锚定上下文：保留深层历史，仅随列表长度更新容量后重建融合队列。
       if (playlistUuid != null) _suppressAutoMirror.remove(playlistUuid);
       _syncPlaylistUuid = playlistUuid;
+      _bindV2State(playlistUuid);
       _bindDeepList(key, listSize: resolved.length);
       _fusedBase = resolved;
       _queue = _fusedQueue(resolved);
@@ -5387,14 +5401,81 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// 已应用的 head/history 版本：当前歌单读内存，其它歌单读同步状态表。
-  int _appliedHeadRevFor(LocalIndex idx, String uuid) => uuid == _syncPlaylistUuid
-      ? _appliedHeadRev
-      : (idx.breakpointSyncStateOf(uuid)?.appliedHeadRev ?? 0);
+  ///
+  /// 必须同时校验 [_v2StatePlaylistUuid]：切歌单只改 [_syncPlaylistUuid] 而不
+  /// 重装内存时，`_appliedHeadRev` 仍属于上一个歌单，拿它比较会把低版本歌单
+  /// 的远端断点永久判为「未前进」。
+  int _appliedHeadRevFor(LocalIndex idx, String uuid) =>
+      uuid == _v2StatePlaylistUuid
+          ? _appliedHeadRev
+          : (idx.breakpointSyncStateOf(uuid)?.appliedHeadRev ?? 0);
 
   int _appliedHistoryRevFor(LocalIndex idx, String uuid) =>
-      uuid == _syncPlaylistUuid
+      uuid == _v2StatePlaylistUuid
           ? _appliedHistoryRev
           : (idx.breakpointSyncStateOf(uuid)?.appliedHistoryRev ?? 0);
+
+  /// 把内存 v2 状态（已应用版本 / pending head / 会话）切到 [uuid]。
+  ///
+  /// 切换歌单的唯一入口：从库里该歌单的同步状态行重装，没有行就归零。
+  /// 不同歌单的 revision 空间互相独立，绝不能让上一个歌单的版本溢出过来。
+  /// [reload]：同一个 uuid 也要重读（库里的行刚被重置时用）。
+  void _bindV2State(String? uuid, {bool reload = false}) {
+    if (_v2StatePlaylistUuid == uuid && !reload) return;
+    _v2StatePlaylistUuid = uuid;
+    final idx = _index;
+    if (idx == null || uuid == null) {
+      _appliedHeadRev = 0;
+      _appliedHistoryRev = 0;
+      _pendingHeadOpId = null;
+      _v2SessionId = null;
+      return;
+    }
+    final ss = idx.breakpointSyncStateOf(uuid);
+    if (ss == null) {
+      _appliedHeadRev = 0;
+      _appliedHistoryRev = 0;
+      _pendingHeadOpId = null;
+      _v2SessionId = null;
+      return;
+    }
+    _appliedHeadRev = ss.appliedHeadRev;
+    _appliedHistoryRev = ss.appliedHistoryRev;
+    _pendingHeadOpId = ss.pendingHeadOpId;
+    _v2SessionId = ss.sessionId;
+    if (ss.appliedHeadRev > 0 || ss.appliedHistoryRev > 0) {
+      _breakpointV2 = true;
+    }
+    _clampAppliedRevsToMirror(idx, uuid);
+  }
+
+  /// 已应用版本不可能超过该歌单镜像记录的版本；超过就是历史上跨歌单比较
+  /// 溢出的污染（旧版本切歌单不重装内存，且 upsert 用 MAX 写死了错误值）。
+  ///
+  /// 这种行会让 `headRev > appliedHeadRev` 恒不成立，远端断点被永久跳过，
+  /// 且重启不恢复。这里按镜像版本钳一次并写回，自愈后远端断点即可套用。
+  void _clampAppliedRevsToMirror(LocalIndex idx, String uuid) {
+    final m = idx.breakpointMirrorOf(uuid);
+    if (m == null) return;
+    final headOverflow = _appliedHeadRev > m.headRev;
+    final historyOverflow = _appliedHistoryRev > m.historyRev;
+    if (!headOverflow && !historyOverflow) return;
+    final fixedHead = headOverflow ? m.headRev : _appliedHeadRev;
+    final fixedHistory = historyOverflow ? m.historyRev : _appliedHistoryRev;
+    perfLog('bp.revPoison',
+        'uuid=$uuid 已应用版本超出镜像，钳制 head=$_appliedHeadRev/${m.headRev} history=$_appliedHistoryRev/${m.historyRev}');
+    _appliedHeadRev = fixedHead;
+    _appliedHistoryRev = fixedHistory;
+    unawaited(idx
+        .saveBreakpointSyncState(
+          playlistUuid: uuid,
+          appliedHeadRev: fixedHead,
+          appliedHistoryRev: fixedHistory,
+          serverEpoch: _v2ServerEpoch,
+          replaceRevs: true,
+        )
+        .catchError((Object _) {}));
+  }
 
   /// 仅把 v2 镜像里的历史合并进当前歌单（head 版本不变）。
   Future<void> _applyV2HistoryOnly(
@@ -5822,23 +5903,19 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
             ss.serverEpoch != knownEpoch) {
           // 网络响应先到（已知新 epoch），本机旧状态后到：按 epoch 变化
           // 先作废旧 revision，再恢复本机断点。
-          _appliedHeadRev = 0;
-          _appliedHistoryRev = 0;
-          _pendingHeadOpId = null;
-          _v2SessionId = st.sessionId;
           await idx.resetBreakpointSyncRevs(knownEpoch);
-          perfLog('bp.epoch', 'restore saw stale epoch -> reset revisions');
-        } else if (ss != null) {
-          _appliedHeadRev = ss.appliedHeadRev;
-          _appliedHistoryRev = ss.appliedHistoryRev;
-          _pendingHeadOpId = ss.pendingHeadOpId;
-          _v2SessionId = ss.sessionId ?? st.sessionId;
-          _v2ServerEpoch = ss.serverEpoch ?? knownEpoch;
-          if (ss.appliedHeadRev > 0 || ss.appliedHistoryRev > 0) {
-            _breakpointV2 = true;
-          }
-        } else {
+          // 库里的状态行已被清空，重读后自然归零，不会留下旧 revision。
+          _bindV2State(_syncPlaylistUuid, reload: true);
           _v2SessionId = st.sessionId;
+          perfLog('bp.epoch', 'restore saw stale epoch -> reset revisions');
+        } else {
+          _bindV2State(_syncPlaylistUuid);
+          if (ss != null) {
+            _v2SessionId = ss.sessionId ?? st.sessionId;
+            _v2ServerEpoch = ss.serverEpoch ?? knownEpoch;
+          } else {
+            _v2SessionId = st.sessionId;
+          }
         }
         _dropStalePendingSync(idx, _syncPlaylistUuid);
       }
@@ -5964,6 +6041,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         (_syncPlaylistUuid == m.playlistUuid) ? _fusedBase : null;
     _suppressAutoMirror.remove(m.playlistUuid);
     _syncPlaylistUuid = m.playlistUuid;
+    _bindV2State(m.playlistUuid);
     _bindDeepList(PlayerProvider.anchorForPlaylist(m.playlistUuid),
         listSize: songs.length);
     // 镜像深层列表（按身份匹配到本机歌单）→ 重建深层历史；缺失时保持本机。
@@ -6305,6 +6383,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     if (playlistUuid != null) _suppressAutoMirror.remove(playlistUuid);
     _syncPlaylistUuid = playlistUuid;
+    _bindV2State(playlistUuid);
     _bindDeepList(key, listSize: resolved.length);
     _fusedBase = resolved;
     _nextUp = cached?.nextUp;
@@ -6685,7 +6764,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _index?.deleteDeepList(key);
     }
     _suppressAutoMirror.remove(playlistUuid);
-    if (_syncPlaylistUuid == playlistUuid) _syncPlaylistUuid = null;
+    if (_syncPlaylistUuid == playlistUuid) {
+      _syncPlaylistUuid = null;
+      _bindV2State(null);
+    }
   }
 
   /// 播放源被删除（本机删除与「其它设备同步删除」共用出口）。

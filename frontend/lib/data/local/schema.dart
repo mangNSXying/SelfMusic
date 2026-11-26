@@ -348,6 +348,19 @@ void applySchema(Database db) {
     db.execute(
         'ALTER TABLE breakpoint_sync_base ADD COLUMN history_rev INTEGER NOT NULL DEFAULT 0');
   }
+  // 一次性修复：旧版本切歌单不重装内存里的已应用 revision，跨歌单比较会把
+  // 高版本歌单的 rev 经 MAX upsert 写进低版本歌单的状态行，导致该歌单的
+  // 远端断点因「版本未前进」被永久跳过（重启也不恢复）。这里清空一次版本号
+  // 由镜像重建；镜像内容保留，故本地续播不受影响。
+  const revFixKey = 'migration.breakpoint_sync_state_rev_reset_v1';
+  final revFixDone =
+      db.select('SELECT value FROM app_settings WHERE key=?', [revFixKey]);
+  if (revFixDone.isEmpty) {
+    db.execute('UPDATE breakpoint_sync_state SET '
+        'applied_head_rev=0, applied_history_rev=0');
+    db.execute('INSERT OR REPLACE INTO app_settings(key, value) VALUES(?, ?)',
+        [revFixKey, '1']);
+  }
   // 歌单跨设备全局标识 + 删除墓碑（本地删除仍硬删，墓碑只活在服务端）。
   final playlistCols = db
       .select('PRAGMA table_info(playlists)')

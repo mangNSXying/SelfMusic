@@ -2212,14 +2212,23 @@ class LocalIndex {
     bool clearPending = false,
     String? sessionId,
     String? serverEpoch,
+    bool replaceRevs = false,
   }) {
     final now = DateTime.now().toIso8601String();
+    // 默认按 MAX 单调写（乱序旧快照不倒退，且只改 pending 的调用不会把版本清零）。
+    // replaceRevs：显式校正（自愈跨歌单溢出的污染版本）时按传入值覆盖。
+    final headSql = replaceRevs
+        ? 'applied_head_rev=excluded.applied_head_rev'
+        : 'applied_head_rev=MAX(breakpoint_sync_state.applied_head_rev, excluded.applied_head_rev)';
+    final historySql = replaceRevs
+        ? 'applied_history_rev=excluded.applied_history_rev'
+        : 'applied_history_rev=MAX(breakpoint_sync_state.applied_history_rev, excluded.applied_history_rev)';
     return _writer!.exec(
         'INSERT INTO breakpoint_sync_state(playlist_uuid, applied_head_rev, '
         'applied_history_rev, pending_head_op_id, session_id, server_epoch, updated_at) '
         'VALUES(?,?,?,?,?,?,?) ON CONFLICT(playlist_uuid) DO UPDATE SET '
-        'applied_head_rev=MAX(breakpoint_sync_state.applied_head_rev, excluded.applied_head_rev), '
-        'applied_history_rev=MAX(breakpoint_sync_state.applied_history_rev, excluded.applied_history_rev), '
+        '$headSql, '
+        '$historySql, '
         'pending_head_op_id=CASE WHEN ? THEN NULL ELSE '
         'COALESCE(excluded.pending_head_op_id, breakpoint_sync_state.pending_head_op_id) END, '
         'session_id=COALESCE(excluded.session_id, breakpoint_sync_state.session_id), '

@@ -950,4 +950,163 @@ void main() {
         reason: '不同歌单取最新：更新的 P2 胜出');
     expect(player.position.inMilliseconds, 40000);
   });
+
+  test('跨歌单版本隔离：从高版本歌单切到低版本歌单后，远端断点仍可套用', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+    player.setBreakpointProtocolV2(true, serverEpoch: 'epoch-1');
+    player.attachSyncHooks(onSyncPoke: () {});
+
+    // 第二个歌单 P2（版本号独立，量级远小于 P1）。
+    final id2 = await index.createPlaylist('p2');
+    final uuid2 = index.playlistUuidOf(id2);
+    expect(uuid2, isNotNull);
+    final pl2 = uuid2!;
+    for (final r in ['/x/c.flac', '/x/d.flac']) {
+      await index.addPlaylistItem(id2,
+          sourceKey: 'webdav:test', songRef: r, title: r, source: 'webdav');
+      index.setLyrics('webdav:test', r, '[00:00.00]x');
+    }
+
+    // P1 已被应用了很高的 revision（对应现场 headRev=17805）。
+    await index.saveBreakpointSyncState(
+      playlistUuid: uuid,
+      appliedHeadRev: 17805,
+      appliedHistoryRev: 2587,
+      serverEpoch: 'epoch-1',
+    );
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+    await player.restorePreferRemote();
+    expect(player.current?.sourceRef, '/x/a.flac');
+
+    // 从 P1 切到 P2 起播（旧实现只改 _syncPlaylistUuid，不重装 revision）。
+    await player.playQueue(
+      [_song('/x/c.flac'), _song('/x/d.flac')],
+      index: 0,
+      source: _FakeSource(),
+      playlistUuid: pl2,
+      contextKey: 'playlist:$pl2',
+      switchAnchor: true,
+      resumeFromBreakpoint: false,
+    );
+    expect(player.current?.sourceRef, '/x/c.flac');
+
+    // 领播端在播时镜像按设计不打断；本用例只验证版本比较，先停底层播放器。
+    await player.player.pause();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    // 起播/暂停产生的本机 head：模拟服务端已确认并清空积压，否则远端 head 会被
+    // 「本机 head 待确认」按设计 defer，与本用例要验证的版本比较无关。
+    for (final e in await index.pendingOutbox()) {
+      if (e.type != 'breakpoint.set') continue;
+      final op = e.payload['op_id'];
+      if (op is String) await player.onBreakpointAckedOps({pl2: op});
+    }
+    await index.deleteOutbox([
+      for (final e in await index.pendingOutbox()) e.eventUuid,
+    ]);
+
+    // P2 远端断点：headRev=428（远低于 P1 的 17805，但在 P2 自己的版本空间里更新）。
+    final now = DateTime.now().toIso8601String();
+    await index.upsertBreakpointMirror(
+      playlistUuid: pl2,
+      sourceRef: '/x/d.flac',
+      source: 'webdav',
+      positionMs: 60000,
+      deepListJson: _deepListJson(['/x/c.flac', '/x/d.flac']),
+      updatedAt: now,
+      lastEventAt: now,
+      headRev: 428,
+      historyRev: 57,
+      headClock: '1795676164853-0-dev-b',
+      headOpId: 'op-remote-p2',
+      headSession: 's-remote-p2',
+      headUpdatedAt: now,
+    );
+    await player.applyNewerMirrorIfAny(viaSync: true);
+
+    expect(player.current?.sourceRef, '/x/d.flac',
+        reason: 'P2 的 428 只应与 P2 自己的已应用版本比较，不能被 P1 的 17805 挡住');
+    expect(player.position.inMilliseconds, 60000);
+    final ss = index.breakpointSyncStateOf(pl2);
+    expect(ss?.appliedHeadRev, 428, reason: '套用后 P2 的版本前进到自己的 428');
+  });
+
+  test('已应用版本被跨歌单污染时按镜像版本自愈，远端断点仍可套用', () async {
+    final (index, player, uuid) = await setup(['/x/a.flac', '/x/b.flac']);
+    addTearDown(index.close);
+    addTearDown(player.dispose);
+    player.setBreakpointProtocolV2(true, serverEpoch: 'epoch-1');
+    player.attachSyncHooks(onSyncPoke: () {});
+
+    await index.savePlayState(
+      jsonEncode([_song('/x/a.flac').toJson(), _song('/x/b.flac').toJson()]),
+      0,
+      10000,
+      playlistUuid: uuid,
+      anchorKey: 'playlist:$uuid',
+    );
+
+    // 线上已被 MAX upsert 写死的污染行：已应用 17805，而该歌单镜像只有 428。
+    final now = DateTime.now().toIso8601String();
+    await index.upsertBreakpointMirror(
+      playlistUuid: uuid,
+      sourceRef: '/x/b.flac',
+      source: 'webdav',
+      positionMs: 60000,
+      deepListJson: _deepListJson(['/x/a.flac', '/x/b.flac']),
+      updatedAt: now,
+      lastEventAt: now,
+      headRev: 428,
+      historyRev: 57,
+      headClock: '1795676164853-0-dev-b',
+      headOpId: 'op-remote',
+      headSession: 's-remote',
+      headUpdatedAt: now,
+    );
+    await index.saveBreakpointSyncState(
+      playlistUuid: uuid,
+      appliedHeadRev: 17805,
+      appliedHistoryRev: 2587,
+      serverEpoch: 'epoch-1',
+    );
+
+    // 启动恢复会装载该歌单的同步状态，此时钳到镜像版本。
+    await player.restorePreferRemote();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(index.breakpointSyncStateOf(uuid)?.appliedHeadRev, 428,
+        reason: '已应用版本不可能超过镜像版本，超出的部分就是污染，必须钳回');
+
+    // 自愈后远端断点（headRev 429）重新能被套用。
+    final later =
+        DateTime.now().add(const Duration(seconds: 1)).toIso8601String();
+    await index.upsertBreakpointMirror(
+      playlistUuid: uuid,
+      sourceRef: '/x/a.flac',
+      source: 'webdav',
+      positionMs: 70000,
+      deepListJson: _deepListJson(['/x/a.flac', '/x/b.flac']),
+      updatedAt: later,
+      lastEventAt: later,
+      headRev: 429,
+      historyRev: 57,
+      headClock: '1795676164854-0-dev-b',
+      headOpId: 'op-remote-2',
+      headSession: 's-remote',
+      headUpdatedAt: later,
+    );
+    await player.applyNewerMirrorIfAny(viaSync: true);
+
+    expect(player.current?.sourceRef, '/x/a.flac');
+    expect(player.position.inMilliseconds, 70000,
+        reason: '污染修复后版本比较恢复正常，新 head 必须被套用');
+  });
 }
