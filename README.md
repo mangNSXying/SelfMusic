@@ -242,6 +242,8 @@ sudo nginx -t && sudo nginx -s reload
 
 模板默认把 `https://<你的域名>/api/` 代理到 `127.0.0.1:18088`。若客户端通过 HTTPS 访问后端，请确保证书受信任，或在 App 的「设置 → 网络 → 网络安全」中开启「信任自签名」。
 
+模板已为 SSE 断点唤醒通道 `GET /api/v1/sync/stream` 单独配置 `proxy_buffering off`、`proxy_http_version 1.1` 和 `proxy_read_timeout 3600s`。如果你使用自定义反向代理，也必须关闭响应缓冲并放大读超时（服务端每 15s 发一次心跳）；否则会退化为 30s 轮询，功能仍可用。客户端直连 `http://IP:18088` 时不需要改 nginx。
+
 #### 6. 升级与备份
 
 ```bash
