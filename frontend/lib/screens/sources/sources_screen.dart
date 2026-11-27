@@ -12,6 +12,7 @@ import '../../navigation/detail_target.dart';
 import '../../layout/screen_metrics.dart';
 import '../../providers/direct_source_manager.dart';
 import '../../providers/navigation_provider.dart';
+import '../../providers/player_provider.dart';
 import '../../providers/playlists_provider.dart';
 import '../../theme/app_theme.dart';
 import '../../utils/collection_sort.dart';
@@ -246,6 +247,16 @@ class _SourceKindIcon extends StatelessWidget {
   }
 }
 
+/// 可选地监听 [PlayerProvider]：源卡片要在不提供播放器的测试/嵌入场景里
+/// 照常渲染；提供时订阅（`listen: true`）以便线路变化即时刷新「当前主源/备用」。
+PlayerProvider? _maybePlayer(BuildContext context) {
+  try {
+    return Provider.of<PlayerProvider>(context);
+  } on ProviderNotFoundException {
+    return null;
+  }
+}
+
 class _DirectSourceCard extends StatelessWidget {
   final String sourceKey;
 
@@ -279,6 +290,22 @@ class _DirectSourceCard extends StatelessWidget {
             : linePref == SourceLine.fb0
                 ? ' · 线路:备用1'
                 : ' · 线路:备用2';
+    // 实时线路：只有「该源正是当前播放曲的来源」且配了备用才显示——否则
+    // 卡片会写着别的源此刻走哪条线路，反而误导。取实际在用线路（curLine），
+    // 与上面的「线路:xx」偏好是两回事。
+    final player = _maybePlayer(context);
+    final cur = player?.current;
+    final playingThisSource = cur != null && cur.sourceKey == sourceKey;
+    final liveLabel = !playingThisSource || fbCount == 0 || player == null
+        ? ''
+        : player.curLine == 0
+            ? ' · 当前主源'
+            : ' · 当前备用${player.curLine}';
+    final subtitle = needsSecrets
+        ? '待配置凭据 · 点击「编辑」补输后可用'
+        : fbNeeds
+            ? '$routeLabel$fbLabel$lineLabel$liveLabel · 备用待配凭据 · 已索引 $count 首'
+            : '$routeLabel$fbLabel$lineLabel$liveLabel · 已索引 $count 首';
 
     final tile = GestureDetector(
       // 桌面右键：在指针处弹出与三点按钮相同的源设置菜单。
@@ -297,11 +324,7 @@ class _DirectSourceCard extends StatelessWidget {
                 .textTheme
                 .titleMedium
                 ?.copyWith(fontWeight: FontWeight.w600)),
-        subtitle: Text(needsSecrets
-            ? '待配置凭据 · 点击「编辑」补输后可用'
-            : fbNeeds
-                ? '$routeLabel$fbLabel$lineLabel · 备用待配凭据 · 已索引 $count 首'
-                : '$routeLabel$fbLabel$lineLabel · 已索引 $count 首'),
+        subtitle: Text(subtitle),
         trailing: _SourceMenu(sourceKey: sourceKey, direct: direct),
         onTap: () => _openSource(context, sourceKey),
       ),
@@ -310,11 +333,7 @@ class _DirectSourceCard extends StatelessWidget {
     // 卡片形态：与专辑/歌手共用方形卡片（SquareCard），菜单叠右上角。
     return SquareCard(
       title: s.name,
-      subtitle: needsSecrets
-          ? '待配置凭据 · 点击「编辑」补输后可用'
-          : fbNeeds
-              ? '$routeLabel$fbLabel$lineLabel · 备用待配凭据 · 已索引 $count 首'
-              : '$routeLabel$fbLabel$lineLabel · 已索引 $count 首',
+      subtitle: subtitle,
       fallback: _SourceKindIcon(kind: s.kind, size: 44, framed: false),
       onTap: () => _openSource(context, sourceKey),
       cornerAction: _SourceMenu(sourceKey: sourceKey, direct: direct),
