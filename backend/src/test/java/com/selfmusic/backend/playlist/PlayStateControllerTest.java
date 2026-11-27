@@ -71,6 +71,8 @@ class PlayStateControllerTest {
         assertEquals(42000, data.get("position_ms"));
         assertEquals("dav:/a.mp3", data.get("source_ref"));
         assertEquals("2026-10-09T12:00", data.get("updated_at"));
+        assertEquals(SyncService.PUSH_PROTOCOL, data.get("push_protocol"),
+                "快路径回包声明 SSE 能力");
         assertNull(data.get("last_event_at"), "旧行缺最后操作时间 → null（客户端回退 updated_at）");
     }
 

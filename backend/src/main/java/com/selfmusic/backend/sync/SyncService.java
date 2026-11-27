@@ -74,6 +74,9 @@ public class SyncService {
     public static final int PUSH_EVENT_LIMIT = 500;
     public static final int PULL_EVENT_LIMIT = 2000;
 
+    /** SSE 唤醒通道能力声明：客户端看到该字段才建立 /sync/stream 长连接。 */
+    public static final int PUSH_PROTOCOL = 1;
+
     /** 旧数据/旧客户端协议级身份的 source_id 前缀。 */
     public static final String LEGACY_PREFIX = "legacy:";
 
@@ -87,6 +90,7 @@ public class SyncService {
     private final SettingService settingService;
     private final ClientSettingRepository clientSettingRepository;
     private final ObjectMapper objectMapper;
+    private final BreakpointPushHub pushHub;
 
     public SyncService(SyncEventRepository syncEventRepository,
                        SongStateRepository songStateRepository,
@@ -97,7 +101,8 @@ public class SyncService {
                        DeviceRepository deviceRepository,
                        SettingService settingService,
                        ClientSettingRepository clientSettingRepository,
-                       ObjectMapper objectMapper) {
+                       ObjectMapper objectMapper,
+                       BreakpointPushHub pushHub) {
         this.syncEventRepository = syncEventRepository;
         this.songStateRepository = songStateRepository;
         this.syncSourceRepository = syncSourceRepository;
@@ -108,6 +113,21 @@ public class SyncService {
         this.settingService = settingService;
         this.clientSettingRepository = clientSettingRepository;
         this.objectMapper = objectMapper;
+        this.pushHub = pushHub;
+    }
+
+    /**
+     * SSE 连接建立时的握手数据：协议能力、服务端代次、时钟校准。
+     * 与 pull/push 回包同口径，客户端复用同一套协议/epoch 处理。
+     */
+    public Map<String, Object> serverHello() {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("push_protocol", PUSH_PROTOCOL);
+        out.put("breakpoint_protocol", 2);
+        out.put("server_epoch", serverEpoch());
+        out.put("server_time", serverTimeNow());
+        out.put("cursor", syncEventRepository.maxSeq());
+        return out;
     }
 
     /** 协议 v2 的服务器数据代次：DB 重建/迁移后客户端据此重置本地 revision。 */
@@ -382,6 +402,7 @@ public class SyncService {
         Map<String, Object> corrections = new LinkedHashMap<>();
         Map<String, Object> merged = new LinkedHashMap<>();
         Map<String, Object> breakpoints = new LinkedHashMap<>();
+        Map<String, BreakpointPushHub.BreakpointSignal> signals = new LinkedHashMap<>();
         if (events == null || events.isEmpty()) {
             return pushResult(syncEventRepository.maxSeq(), applied, duplicates, rejected,
                     corrections, merged, breakpoints);
@@ -439,6 +460,9 @@ public class SyncService {
                     log.info("sync.push 合并回执 device={} uuid={} type={}",
                             authClientId, ev.event_uuid(), ev.type());
                 }
+                if (outcome.breakpoint() != null) {
+                    signals.put(outcome.breakpoint().playlistUuid(), outcome.breakpoint());
+                }
             } catch (BizException be) {
                 rejected.add(reject(ev.event_uuid(), be.getMessage()));
                 log.warn("sync.push 拒绝 device={} uuid={} type={} reason={}",
@@ -446,8 +470,13 @@ public class SyncService {
             }
         }
         touchDevice(authClientId, null);
-        Map<String, Object> result = pushResult(syncEventRepository.maxSeq(), applied,
+        long cursor = syncEventRepository.maxSeq();
+        Map<String, Object> result = pushResult(cursor, applied,
                 duplicates, rejected, corrections, merged, breakpoints);
+        // 事务提交后再通知其它设备：避免对方拉到未提交快照；回滚则不发。
+        if (!signals.isEmpty()) {
+            pushHub.publishAfterCommit(authClientId, signals.values(), cursor);
+        }
         // 汇总行（与客户端 push.batch/push.ack 时间线对齐用）。
         log.info("sync.push 完成 device={} applied={} duplicates={} rejected={} corrections={} merged={} breakpoints={} cursor={}",
                 authClientId, applied.size(), duplicates.size(), rejected.size(),
@@ -472,11 +501,16 @@ public class SyncService {
         out.put(uuid, playstateSnapshot(st, uuid));
     }
 
-    /** 单事件应用结果：correction=判输快照，merged=深层列表合并后的快照。 */
-    private record ApplyOutcome(Object correction, Object merged) {
-        static ApplyOutcome none() { return new ApplyOutcome(null, null); }
-        static ApplyOutcome correction(Object snap) { return new ApplyOutcome(snap, null); }
-        static ApplyOutcome merged(Object snap) { return new ApplyOutcome(null, snap); }
+    /** 单事件应用结果：correction=判输快照，merged=深层列表合并后的快照，
+     *  breakpoint=需要通知其它设备的断点变化（只描述版本，不含权威数据）。 */
+    private record ApplyOutcome(Object correction, Object merged,
+                                BreakpointPushHub.BreakpointSignal breakpoint) {
+        static ApplyOutcome none() { return new ApplyOutcome(null, null, null); }
+        static ApplyOutcome correction(Object snap) { return new ApplyOutcome(snap, null, null); }
+        static ApplyOutcome merged(Object snap) { return new ApplyOutcome(null, snap, null); }
+        ApplyOutcome withBreakpoint(BreakpointPushHub.BreakpointSignal signal) {
+            return new ApplyOutcome(correction, merged, signal);
+        }
     }
 
     /**
@@ -497,12 +531,9 @@ public class SyncService {
             }
             case "source_meta" -> ApplyOutcome.correction(applySourceMeta(ev));
             case "playlist_meta" -> ApplyOutcome.correction(applyPlaylistMeta(ev));
-            case "playlist_item" -> {
-                applyPlaylistItem(ev);
-                yield ApplyOutcome.none();
-            }
+            case "playlist_item" -> applyPlaylistItem(ev);
             case "breakpoint" -> applyBreakpoint(ev);
-            case "setting" -> new ApplyOutcome(applyClientSetting(ev), null);
+            case "setting" -> new ApplyOutcome(applyClientSetting(ev), null, null);
             default -> throw new BizException(40001, "unknown event group: " + ev.type());
         };
     }
@@ -881,13 +912,14 @@ public class SyncService {
         }
     }
 
-    private void applyPlaylistItem(PushEvent ev) {
+    private ApplyOutcome applyPlaylistItem(PushEvent ev) {
         JsonNode p = ev.payload();
         Playlist pl = playlistOf(p);
         if (pl.isDeleted()) throw new BizException(40001, "playlist_deleted");
         String t = ev.type();
         String ref = refOf(p);
         String sid = sourceIdOf(p);
+        BreakpointPushHub.BreakpointSignal signal = null;
         if (SyncEventTypes.PLAYLIST_ITEM_REMOVE.equals(t)) {
             // 移除幂等：服务端无此条目 = 早已收敛，直接 no-op（不建行）。
             if (sid != null && ref != null && !ref.isBlank()) {
@@ -897,7 +929,7 @@ public class SyncService {
                     playlistItemRepository.deleteByPlaylistIdAndSourceIdAndSourceRef(
                             pl.getId(), LEGACY_PREFIX + protocol, ref);
                 }
-                pruneDeepListRef(pl, ref);
+                signal = pruneDeepListRef(pl, ref);
             }
         } else {
             if (sid == null || ref == null || ref.isBlank()) {
@@ -916,7 +948,7 @@ public class SyncService {
             }
             // 补录 item_add 只建行：条目已存在不覆快照（不复活已删条目、不覆新标题），
             // 直接 no-op（版本号亦不推进）。
-            if (item != null && isBackfill(p)) return;
+            if (item != null && isBackfill(p)) return ApplyOutcome.none();
             if (item == null) {
                 item = new PlaylistItem();
                 item.setPlaylist(pl);
@@ -927,6 +959,7 @@ public class SyncService {
         }
         pl.setSyncVer(nvlLong(pl.getSyncVer()) + 1);
         playlistRepository.save(pl);
+        return ApplyOutcome.none().withBreakpoint(signal);
     }
 
     /**
@@ -935,11 +968,11 @@ public class SyncService {
      * 否则服务端会一直保留幽灵引用，客户端匹配不到就静默丢条目，base/revision
      * 与其它设备长期不一致。
      */
-    private void pruneDeepListRef(Playlist pl, String ref) {
+    private BreakpointPushHub.BreakpointSignal pruneDeepListRef(Playlist pl, String ref) {
         PlayState st = playStateRepository.findById(pl.getId()).orElse(null);
-        if (st == null) return;
+        if (st == null) return null;
         List<JsonNode> list = parseDeepNodes(st.getDeepListJson());
-        if (list.isEmpty()) return;
+        if (list.isEmpty()) return null;
         List<JsonNode> out = new ArrayList<>(list.size());
         boolean changed = false;
         for (JsonNode e : list) {
@@ -949,12 +982,21 @@ public class SyncService {
             }
             out.add(e);
         }
-        if (!changed) return;
+        if (!changed) return null;
         st.setDeepListJson(deepJson(out));
         st.setHistoryRev(st.getHistoryRev() + 1);
         playStateRepository.save(st);
         log.info("sync.deepList 修剪 playlist={} ref={} before={} after={} historyRev={}",
                 pl.getClientUuid(), ref, list.size(), out.size(), st.getHistoryRev());
+        return breakpointSignal(pl, st, "history");
+    }
+
+    /** 断点变化信号：只带歌单/版本/意图，客户端据此拉最新快照。 */
+    private static BreakpointPushHub.BreakpointSignal breakpointSignal(
+            Playlist pl, PlayState st, String intent) {
+        return new BreakpointPushHub.BreakpointSignal(
+                pl.getClientUuid(), nvlLong(st.getHeadRev()), nvlLong(st.getHistoryRev()),
+                st.getHeadDevice(), intent);
     }
 
     /** 条目身份与展示快照：载荷缺省字段不覆盖已有快照。 */
@@ -1024,9 +1066,12 @@ public class SyncService {
                     pl.getClientUuid(), ev.device_client_id(), base.size(),
                     server.size(), device.size(), merged.size(), changedFromIncoming,
                     st.getLastEventAt());
+            BreakpointPushHub.BreakpointSignal signal =
+                    breakpointSignal(pl, st, "legacy");
             return changedFromIncoming
                     ? ApplyOutcome.merged(playstateSnapshot(st, pl.getClientUuid()))
-                    : ApplyOutcome.none();
+                            .withBreakpoint(signal)
+                    : ApplyOutcome.none().withBreakpoint(signal);
         }
 
         if (hasAdded) {
@@ -1059,9 +1104,12 @@ public class SyncService {
                 log.info("sync.breakpoint 位置接受 playlist={} device={} occurred={} pos={}ms deep={} histDiff={}",
                         pl.getClientUuid(), ev.device_client_id(), ev.occurred_at(),
                         incomingPos, current.size(), historyDiff);
+                BreakpointPushHub.BreakpointSignal signal =
+                        breakpointSignal(pl, st, "legacy");
                 return historyDiff
                         ? ApplyOutcome.merged(playstateSnapshot(st, pl.getClientUuid()))
-                        : ApplyOutcome.none();
+                                .withBreakpoint(signal)
+                        : ApplyOutcome.none().withBreakpoint(signal);
             }
 
             // 纯追加：服务端当前分支 + 设备新增后缀。服务端无历史时用设备全量
@@ -1084,9 +1132,12 @@ public class SyncService {
                     pl.getClientUuid(), ev.device_client_id(), server.size(),
                     added.size(), merged.size(), changedFromIncoming,
                     st.getLastEventAt());
+            BreakpointPushHub.BreakpointSignal signal =
+                    breakpointSignal(pl, st, "legacy");
             return changedFromIncoming
                     ? ApplyOutcome.merged(playstateSnapshot(st, pl.getClientUuid()))
-                    : ApplyOutcome.none();
+                            .withBreakpoint(signal)
+                    : ApplyOutcome.none().withBreakpoint(signal);
         }
 
         // 旧客户端/旧协议：无 base/added 字段，整行 LWW（保持向后兼容）。
@@ -1104,7 +1155,7 @@ public class SyncService {
         st.setDeepListJson(hasFull ? p.path("deep_list").toString() : null);
         st.setLastEventAt(ev.occurred_at());
         playStateRepository.save(st);
-        return ApplyOutcome.none();
+        return ApplyOutcome.none().withBreakpoint(breakpointSignal(pl, st, "legacy"));
     }
 
     /**
@@ -1254,7 +1305,11 @@ public class SyncService {
         log.info("sync.breakpoint v2 playlist={} device={} intent={} clock={} headChanged={} historyChanged={} headRev={} historyRev={}",
                 pl.getClientUuid(), ev.device_client_id(), intent, incomingClock.encode(),
                 headChanged, historyChanged, st.getHeadRev(), st.getHistoryRev());
-        return ApplyOutcome.none();
+        // 只有真正改变了 head/history 才通知；progress 被拒、head 判输且历史未变
+        // 都不产生信号，保持服务端“忽略旧进度”的既有语义。
+        BreakpointPushHub.BreakpointSignal signal =
+                (headChanged || historyChanged) ? breakpointSignal(pl, st, intent) : null;
+        return ApplyOutcome.none().withBreakpoint(signal);
     }
 
     private static void applyBreakpointCurrent(PlayState st, PushEvent ev, JsonNode p,
@@ -1412,6 +1467,8 @@ public class SyncService {
         out.put("settings", syncedSettings);
         // v2：客户端据此切换到「head_rev/history_rev」路径；旧服务端无此字段。
         out.put("breakpoint_protocol", 2);
+        // SSE 唤醒通道能力声明：客户端看到该字段才建立 /sync/stream。
+        out.put("push_protocol", PUSH_PROTOCOL);
         out.put("server_epoch", serverEpoch());
         // 时钟校准：客户端据此修正出队时间戳，治设备墙钟偏移导致的 LWW 误判。
         out.put("server_time", serverTimeNow());
@@ -1783,6 +1840,7 @@ public class SyncService {
         // v2：按 playlist 维度回权威 head+history；旧客户端忽略。
         out.put("breakpoints", breakpoints);
         out.put("breakpoint_protocol", 2);
+        out.put("push_protocol", PUSH_PROTOCOL);
         out.put("server_epoch", serverEpoch());
         // 时钟校准：见 pull（客户端修正出队时间戳用）。
         out.put("server_time", serverTimeNow());

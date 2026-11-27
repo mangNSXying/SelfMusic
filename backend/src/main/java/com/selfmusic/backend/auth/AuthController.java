@@ -10,6 +10,7 @@ import com.selfmusic.backend.common.BizException;
 import com.selfmusic.backend.domain.entity.Device;
 import com.selfmusic.backend.domain.repository.DeviceRepository;
 import com.selfmusic.backend.domain.repository.SettingRepository;
+import com.selfmusic.backend.sync.BreakpointPushHub;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -24,10 +25,13 @@ public class AuthController {
 
     private final DeviceRepository deviceRepository;
     private final SettingRepository settingRepository;
+    private final BreakpointPushHub pushHub;
 
-    public AuthController(DeviceRepository deviceRepository, SettingRepository settingRepository) {
+    public AuthController(DeviceRepository deviceRepository, SettingRepository settingRepository,
+                          BreakpointPushHub pushHub) {
         this.deviceRepository = deviceRepository;
         this.settingRepository = settingRepository;
+        this.pushHub = pushHub;
     }
 
     @PostMapping("/pair")
@@ -112,6 +116,7 @@ public class AuthController {
             d.setRevoked(true);
             deviceRepository.save(d);
         });
+        pushHub.disconnect(clientId);
         return ApiResponse.ok();
     }
 

@@ -4,6 +4,7 @@ import com.selfmusic.backend.common.ApiResponse;
 import com.selfmusic.backend.common.BizException;
 import com.selfmusic.backend.domain.entity.Device;
 import com.selfmusic.backend.domain.repository.DeviceRepository;
+import com.selfmusic.backend.sync.BreakpointPushHub;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -14,9 +15,12 @@ import java.util.Map;
 public class DeviceAdminController {
 
     private final DeviceRepository deviceRepository;
+    private final BreakpointPushHub pushHub;
 
-    public DeviceAdminController(DeviceRepository deviceRepository) {
+    public DeviceAdminController(DeviceRepository deviceRepository,
+                                 BreakpointPushHub pushHub) {
         this.deviceRepository = deviceRepository;
+        this.pushHub = pushHub;
     }
 
     @GetMapping
@@ -39,6 +43,8 @@ public class DeviceAdminController {
                 .orElseThrow(() -> new BizException(40401, "device not found"));
         d.setRevoked(true);
         deviceRepository.save(d);
+        // 已吊销设备不再接收断点推送。
+        pushHub.disconnect(d.getClientId());
         return ApiResponse.ok();
     }
 

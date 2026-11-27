@@ -1,5 +1,6 @@
 package com.selfmusic.backend.auth;
 
+import jakarta.servlet.DispatcherType;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -24,6 +25,10 @@ public class SecurityConfig {
             .csrf(csrf -> csrf.disable())
             .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                    // SSE(SseEmitter) 完成/超时会走 ASYNC 二次派发；初始请求仍需
+                    // Bearer 认证，这里只放行响应收尾阶段，避免 401（同
+                    // TranscodeController 的 StreamingResponseBody 已知问题）。
+                    .dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()
                     .requestMatchers("/api/v1/health", "/api/v1/auth/pair", "/api/v1/auth/refresh").permitAll()
                     .anyRequest().authenticated()
                 )

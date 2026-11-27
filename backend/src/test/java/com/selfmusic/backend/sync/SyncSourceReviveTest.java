@@ -57,7 +57,8 @@ class SyncSourceReviveTest {
         when(devices.findByClientId(any())).thenReturn(Optional.empty());
         when(syncSources.save(any(SyncSource.class))).thenAnswer(i -> i.getArgument(0));
         return new SyncService(syncEvents, songStates, syncSources, playlists,
-                items, playStates, devices, settings, clientSettings, mapper);
+                items, playStates, devices, settings, clientSettings, mapper,
+                mock(BreakpointPushHub.class));
     }
 
     private ObjectNode sourcePayload(String uuid, String name) {

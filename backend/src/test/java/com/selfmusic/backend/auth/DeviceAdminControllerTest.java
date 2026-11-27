@@ -3,6 +3,7 @@ package com.selfmusic.backend.auth;
 import com.selfmusic.backend.common.BizException;
 import com.selfmusic.backend.domain.entity.Device;
 import com.selfmusic.backend.domain.repository.DeviceRepository;
+import com.selfmusic.backend.sync.BreakpointPushHub;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
@@ -19,7 +20,7 @@ class DeviceAdminControllerTest {
     private final DeviceRepository repo = mock(DeviceRepository.class);
 
     private DeviceAdminController controller() {
-        return new DeviceAdminController(repo);
+        return new DeviceAdminController(repo, mock(BreakpointPushHub.class));
     }
 
     private static Device device(boolean revoked) {

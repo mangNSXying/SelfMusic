@@ -21,12 +21,13 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
@@ -46,13 +47,14 @@ class SyncBackfillTest {
     private final DeviceRepository devices = mock(DeviceRepository.class);
     private final SettingService settings = mock(SettingService.class);
     private final ClientSettingRepository clientSettings = mock(ClientSettingRepository.class);
+    private final BreakpointPushHub hub = mock(BreakpointPushHub.class);
 
     private SyncService service() {
         when(syncEvents.findByEventUuid(any())).thenReturn(Optional.empty());
         when(devices.findByClientId(any())).thenReturn(Optional.empty());
         when(settings.get("sync.server_epoch", "")).thenReturn("test-epoch");
         return new SyncService(syncEvents, songStates, syncSources, playlists,
-                items, playStates, devices, settings, clientSettings, mapper);
+                items, playStates, devices, settings, clientSettings, mapper, hub);
     }
 
     private static final LocalDateTime T1 = LocalDateTime.of(2026, 1, 1, 0, 0, 0);
@@ -559,6 +561,70 @@ class SyncBackfillTest {
     }
 
     @Test
+    void breakpointV2AcceptedProgressPublishesSignal() {
+        Playlist pl = playlistRow();
+        PlayState st = new PlayState();
+        st.setPlaylistId(7L);
+        st.setSourceRef("/b.mp3");
+        st.setDeviceClientId("dev-a");
+        st.setHeadDevice("dev-a");
+        st.setHeadSession("s-a");
+        st.setHeadClock("1000-0");
+        st.setHeadRev(2L);
+        st.setHistoryRev(2L);
+        st.setPositionMs(1000);
+        st.setDeepListJson(deepJson("/a.mp3", "/b.mp3"));
+        when(playlists.findByClientUuid("p-1")).thenReturn(Optional.of(pl));
+        when(playStates.findById(7L)).thenReturn(Optional.of(st));
+        when(items.countByPlaylistId(7L)).thenReturn(10L);
+        when(playStates.save(any(PlayState.class))).thenAnswer(i -> i.getArgument(0));
+
+        ObjectNode p = v2Payload("/b.mp3", "progress", "5000-0", "s-a", 5000,
+                true, deepArray("/a.mp3", "/b.mp3"),
+                deepArray("/a.mp3", "/b.mp3"));
+        service().push("dev-a",
+                List.of(event("e1", SyncEventTypes.BREAKPOINT_SET, T1, p)));
+
+        verify(hub).publishAfterCommit(eq("dev-a"),
+                argThat((Collection<BreakpointPushHub.BreakpointSignal> signals) -> {
+                    if (signals == null || signals.isEmpty()) return false;
+                    BreakpointPushHub.BreakpointSignal s = signals.iterator().next();
+                    return "p-1".equals(s.playlistUuid())
+                            && s.headRev() == 3L
+                            && s.historyRev() == 2L
+                            && "progress".equals(s.intent());
+                }), anyLong());
+    }
+
+    @Test
+    void breakpointV2RejectedProgressDoesNotPublishSignal() {
+        Playlist pl = playlistRow();
+        PlayState st = new PlayState();
+        st.setPlaylistId(7L);
+        st.setSourceRef("/b.mp3");
+        st.setDeviceClientId("dev-b");
+        st.setHeadDevice("dev-b");
+        st.setHeadSession("s-b");
+        st.setHeadClock("1000-0");
+        st.setHeadRev(2L);
+        st.setHistoryRev(2L);
+        st.setDeepListJson(deepJson("/a.mp3", "/b.mp3"));
+        when(playlists.findByClientUuid("p-1")).thenReturn(Optional.of(pl));
+        when(playStates.findById(7L)).thenReturn(Optional.of(st));
+        when(items.countByPlaylistId(7L)).thenReturn(10L);
+        when(playStates.save(any(PlayState.class))).thenAnswer(i -> i.getArgument(0));
+
+        // 非 head 设备的 progress：服务端忽略，不应通知其它设备。
+        ObjectNode p = v2Payload("/b.mp3", "progress", "9999-0", "s-b", 8000,
+                true, deepArray("/a.mp3", "/b.mp3"),
+                deepArray("/a.mp3", "/b.mp3"));
+        service().push("dev-a",
+                List.of(event("e1", SyncEventTypes.BREAKPOINT_SET, T1, p)));
+
+        verify(hub, never()).publishAfterCommit(any(), any(), anyLong());
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void breakpointV2ProgressDoesNotAdvanceHeadClock() {
         Playlist pl = playlistRow();
@@ -657,12 +723,25 @@ class SyncBackfillTest {
         Map<String, Object> pushOut =
                 service().push("dev-a", List.of());
         assertServerTime(pushOut);
+        assertEquals(SyncService.PUSH_PROTOCOL, pushOut.get("push_protocol"));
 
         when(syncEvents.findTop2000BySeqGreaterThanOrderBySeqAsc(any()))
                 .thenReturn(List.of());
         when(devices.minActivePullCursor()).thenReturn(null);
         Map<String, Object> pullOut = service().pull("dev-a", 0L);
         assertServerTime(pullOut);
+        assertEquals(SyncService.PUSH_PROTOCOL, pullOut.get("push_protocol"));
+    }
+
+    @Test
+    void serverHelloCarriesProtocolAndEpoch() {
+        when(syncEvents.maxSeq()).thenReturn(7L);
+        Map<String, Object> hello = service().serverHello();
+        assertServerTime(hello);
+        assertEquals(SyncService.PUSH_PROTOCOL, hello.get("push_protocol"));
+        assertEquals(2, hello.get("breakpoint_protocol"));
+        assertEquals("test-epoch", hello.get("server_epoch"));
+        assertEquals(7L, hello.get("cursor"));
     }
 
     private static void assertServerTime(Map<String, Object> out) {

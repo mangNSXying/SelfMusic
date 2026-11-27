@@ -79,6 +79,7 @@ public class PlayStateController {
                 st.getHistoryRev(), st.getUpdatedAt());
         Map<String, Object> snapshot = SyncService.playstateSnapshot(st, uuid);
         snapshot.put("breakpoint_protocol", 2);
+        snapshot.put("push_protocol", SyncService.PUSH_PROTOCOL);
         snapshot.put("server_epoch", syncService.serverEpoch());
         return ApiResponse.ok(snapshot);
     }
