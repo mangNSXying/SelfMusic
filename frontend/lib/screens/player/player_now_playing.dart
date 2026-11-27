@@ -269,6 +269,15 @@ class MetaLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = song;
+    // 线路信息只在「该源配了备用」时出现：单线路源的「主源」是废话。
+    // 取值是实际在用的线路（player.curLine），不是持久化的偏好。
+    // [MetaLine] 的所有调用点传的都是当前曲，不需要再校验归属。
+    final hasFallback = direct.fallbackCountOf(s.sourceKey) > 0;
+    final lineText = !hasFallback
+        ? null
+        : player.curLine == 0
+            ? '主源'
+            : '备用${player.curLine}';
     return Wrap(
       alignment: WrapAlignment.center,
       crossAxisAlignment: WrapCrossAlignment.center,
@@ -289,6 +298,44 @@ class MetaLine extends StatelessWidget {
                   ),
               scale),
         ),
+        if (lineText != null)
+          Tooltip(
+            message: '当前播放线路（主源失败会自动切到备用）',
+            child: Container(
+              padding: EdgeInsets.symmetric(
+                  horizontal: 8 * scale, vertical: 2 * scale),
+              decoration: BoxDecoration(
+                color: (player.curLine == 0 ? cs.surfaceContainerHighest : cs.tertiary)
+                    .withValues(alpha: player.curLine == 0 ? 0.7 : 0.16),
+                borderRadius: BorderRadius.circular(8 * scale),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    player.curLine == 0
+                        ? Icons.check_circle_outline
+                        : Icons.swap_horiz,
+                    size: 12 * scale,
+                    color: player.curLine == 0
+                        ? cs.onSurface.withValues(alpha: 0.6)
+                        : cs.tertiary,
+                  ),
+                  SizedBox(width: 4 * scale),
+                  Text(
+                    lineText,
+                    style: _scaleTextStyle(
+                        Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: player.curLine == 0
+                                  ? cs.onSurface.withValues(alpha: 0.6)
+                                  : cs.tertiary,
+                            ),
+                        scale),
+                  ),
+                ],
+              ),
+            ),
+          ),
         if (direct.settings.playerShowWeight)
           InkWell(
             borderRadius: BorderRadius.circular(8 * scale),
