@@ -303,6 +303,21 @@ class ApiClient {
     return resp.data['data'] as Map<String, dynamic>?;
   }
 
+  /// SSE 长连接（服务端 -> 客户端断点唤醒）。
+  ///
+  /// 单请求覆盖 receiveTimeout=0：默认 30s 会把长连接掐断。初始请求仍走
+  /// 现有拦截器（Bearer / 401 续签重放）；流建立后的掉线由 SyncEngine 重连。
+  Future<Response<ResponseBody>> openEventStream(String path) {
+    return dio.get<ResponseBody>(
+      path,
+      options: Options(
+        responseType: ResponseType.stream,
+        receiveTimeout: Duration.zero,
+        headers: {'Accept': 'text/event-stream'},
+      ),
+    );
+  }
+
   /// 断点快路径：直接取服务端全局最新断点快照（1 RTT，不受 pull 的
   /// cursor backlog 分页影响）。data 为空/歌单不可同步 → null；
   /// 旧服务端无此端点（404）→ null，调用方回退到 pull 路径。

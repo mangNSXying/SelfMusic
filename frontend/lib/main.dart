@@ -737,6 +737,7 @@ class _RootState extends State<Root> with TickerProviderStateMixin {
     DesktopTray.instance.clearActions();
     _nav.removeListener(_syncPlayerSheet);
     _nav.playerProgress.removeListener(_onPlayerProgress);
+    _syncEngine.stop();
     _syncEngine.onPlaylistsApplied = null;
     _syncEngine.onBreakpointsApplied = null;
     _syncEngine.onBreakpointMerged = null;

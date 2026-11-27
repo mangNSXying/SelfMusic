@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 import '../data/local/app_settings.dart';
@@ -12,6 +13,7 @@ import '../utils/backoff.dart';
 import '../utils/log_throttle.dart';
 import '../utils/perf_log.dart';
 import 'api_client.dart';
+import 'sse_parser.dart';
 
 /// 阶段5 多设备状态同步引擎·客户端（DEVELOPER.md「播放算法与同步协议」，字段级合并）。
 ///
@@ -35,6 +37,12 @@ class SyncEngine {
   static const _maxBackoff = Duration(seconds: 30);
   static const _maxPullPages = 10;
 
+  /// SSE 唤醒通道参数：服务端 15s 心跳，45s 无任何字节即认为连接假死。
+  static const _sseIdleTimeout = Duration(seconds: 45);
+  static const _sseSignalDebounce = Duration(milliseconds: 250);
+  static const _sseFullPullDebounce = Duration(milliseconds: 800);
+  static const _sseNormalReconnect = Duration(seconds: 1);
+
   final ApiClient api;
   final LocalIndex index;
   final AppSettings settings;
@@ -45,6 +53,27 @@ class SyncEngine {
   DateTime? _lastPullAt;
   DateTime? _lastFailAt;
   int _failCount = 0;
+
+  /// 服务端声明支持 SSE 唤醒（pull/push/latest 回包里的 push_protocol>=1）。
+  bool _pushSupported = false;
+
+  /// 404/405/401 后本会话不再尝试 SSE；重启或 start() 时重置。
+  bool _sseUnsupported = false;
+  StreamSubscription<SseEvent>? _sseSub;
+  bool _sseConnecting = false;
+  int _sseConnectingGeneration = -1;
+  bool _sseGotReady = false;
+  DateTime? _sseOpenedAt;
+  int _sseFailCount = 0;
+
+  /// 连接代次：stop()/重连时递增，迟到的响应/回调据此丢弃。
+  int _sseGeneration = 0;
+  Timer? _sseRetryTimer;
+  Timer? _sseIdleTimer;
+  Timer? _sseFetchTimer;
+  Timer? _sseFullPullTimer;
+  final Set<String> _sseSignaledPlaylists = {};
+  bool _sseSignalUnknown = false;
 
   /// 早退类日志（未启用/未配对/退避中）节流：最多每 60s 一条，
   /// 避免 2s tick 反复打同一行（tick 会不断重试）。
@@ -127,6 +156,244 @@ class SyncEngine {
     if (cb != null) await cb(v2, epoch is String ? epoch : null);
   }
 
+  /// 服务端能力协商：只有见到 push_protocol>=1 才建立 SSE。
+  /// 字段缺失不降级（旧服务端无该字段，保持 false 即可）。
+  void _notePushProtocol(Object? data) {
+    if (data is! Map || _sseUnsupported) return;
+    final v = (data['push_protocol'] as num?)?.toInt() ?? 0;
+    if (v < 1) return;
+    _pushSupported = true;
+    // 连接可能因服务端重启/解绑后重配而断开：每次看到能力声明都补一次
+    // 连接尝试（_maybeStartSse 自带单飞，已连上时是空操作）。
+    unawaited(_maybeStartSse());
+  }
+
+  /// SSE `ready` 帧入口：协议/epoch/时钟校准与 pull/push 回包同口径。
+  void noteServerHello(Object? data) {
+    if (data is! Map) return;
+    _noteServerTime(data['server_time']);
+    unawaited(_noteBreakpointProtocol(data));
+    _notePushProtocol(data);
+  }
+
+  // ---------- SSE 唤醒通道（仅唤醒，不改变任何仲裁/套用逻辑） ----------
+
+  bool _sseWanted(int generation) =>
+      generation == _sseGeneration &&
+      _pushSupported &&
+      !_sseUnsupported &&
+      settings.syncEnabled &&
+      !_stopped &&
+      api.baseUrl.isNotEmpty &&
+      (_appForeground || _playing);
+
+  Future<void> _maybeStartSse() async {
+    if (!_sseWanted(_sseGeneration) || _sseConnecting || _sseSub != null) {
+      return;
+    }
+    _sseConnecting = true;
+    final generation = _sseGeneration;
+    _sseConnectingGeneration = generation;
+    final sw = Stopwatch()..start();
+    try {
+      final clientId = await api.getClientId();
+      if (clientId == null || clientId.isEmpty) return;
+      if (!_sseWanted(generation)) return;
+      final resp = await api.openEventStream('/api/v1/sync/stream');
+      if (!_sseWanted(generation)) {
+        // 请求期间退后台/同步被关：取消响应流，立刻关闭连接。
+        final body = resp.data?.stream;
+        if (body != null) {
+          unawaited(body.listen((_) {}).cancel());
+        }
+        return;
+      }
+      _sseGotReady = false;
+      _sseOpenedAt = DateTime.now();
+      _sseSub = parseSse(resp.data!.stream).listen(
+        (event) => _onSseEvent(event, generation),
+        onError: (Object e, StackTrace st) => _onSseError(generation, e),
+        onDone: () => _onSseDone(generation),
+        cancelOnError: true,
+      );
+      perfLog('sse.connect', '${sw.elapsedMilliseconds}ms');
+      _resetSseIdle(generation);
+    } catch (e) {
+      _onSseError(generation, e);
+    } finally {
+      // 只清自己这一代的标志：stop()/重连后新一代可能已在飞行中。
+      if (_sseConnectingGeneration == generation) {
+        _sseConnecting = false;
+        _sseConnectingGeneration = -1;
+      }
+    }
+  }
+
+  void _onSseEvent(SseEvent event, int generation) {
+    if (generation != _sseGeneration) return;
+    _resetSseIdle(generation);
+    switch (event.event) {
+      case 'ready':
+        final data = _decodeSseJson(event.data);
+        if (data == null) return;
+        noteServerHello(data);
+        _sseGotReady = true;
+        _sseFailCount = 0;
+        perfLog('sse.ready',
+            'push=${data['push_protocol']} epoch=${data['server_epoch']} cursor=${data['cursor']}');
+      case 'breakpoint':
+        final data = _decodeSseJson(event.data);
+        if (data == null) return;
+        _noteServerTime(data['server_time']);
+        final uuid = data['playlist_uuid'];
+        final playlist = uuid is String && uuid.isNotEmpty ? uuid : null;
+        _onBreakpointSignal(playlist);
+        perfLog('sse.event',
+            'breakpoint playlist=${playlist ?? '-'} head=${data['head_rev']} history=${data['history_rev']} intent=${data['intent']}');
+      default:
+        break;
+    }
+  }
+
+  Map<String, dynamic>? _decodeSseJson(String raw) {
+    if (raw.isEmpty) return null;
+    try {
+      final v = jsonDecode(raw);
+      return v is Map ? v.cast<String, dynamic>() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _onBreakpointSignal(String? uuid) {
+    if (uuid == null) {
+      _sseSignalUnknown = true;
+    } else {
+      _sseSignaledPlaylists.add(uuid);
+    }
+    _sseFetchTimer ??= Timer(_sseSignalDebounce, () {
+      _sseFetchTimer = null;
+      unawaited(_flushSseSignal());
+    });
+  }
+
+  /// 断点信号 -> 现有 1 RTT 快路径。若变更歌单不是全局最新（或快路径失败），
+  /// 再补一次全量 pull，保证非最新歌单的历史/断点变化也不被漏掉。
+  Future<void> _flushSseSignal() async {
+    if (!_sseWanted(_sseGeneration)) return;
+    if (_sseSignaledPlaylists.isEmpty && !_sseSignalUnknown) return;
+    final signaled = Set<String>.of(_sseSignaledPlaylists);
+    final unknown = _sseSignalUnknown;
+    _sseSignaledPlaylists.clear();
+    _sseSignalUnknown = false;
+
+    final latest = await pullLatestBreakpoint();
+    if (!_sseWanted(_sseGeneration)) return;
+    final covered = !unknown &&
+        latest != null &&
+        signaled.length == 1 &&
+        signaled.contains(latest);
+    if (!covered) _scheduleSseFullPull();
+  }
+
+  void _scheduleSseFullPull() {
+    _sseFullPullTimer ??= Timer(_sseFullPullDebounce, () {
+      _sseFullPullTimer = null;
+      if (!_sseWanted(_sseGeneration)) return;
+      unawaited(syncNow(pullOnly: true));
+    });
+  }
+
+  void _resetSseIdle(int generation) {
+    _sseIdleTimer?.cancel();
+    _sseIdleTimer = Timer(_sseIdleTimeout, () {
+      if (generation != _sseGeneration) return;
+      perfLog('sse.idle', '${_sseIdleTimeout.inSeconds}s 无数据，重连');
+      _stopSse();
+      _scheduleSseReconnect();
+    });
+  }
+
+  void _onSseError(int generation, Object error) {
+    if (generation != _sseGeneration) return;
+    _sseSub = null;
+    _sseIdleTimer?.cancel();
+    _sseIdleTimer = null;
+
+    final status = error is DioException ? error.response?.statusCode : null;
+    if (status == 404 || status == 405) {
+      _pushSupported = false;
+      _sseUnsupported = true;
+      perfLog('sse.stop', '服务端不支持 SSE（$status）');
+      return;
+    }
+    if (status == 401) {
+      // 续签失败/设备被吊销：先停推，等下一次 pull 重新声明能力/重新配对。
+      // 不标记 _sseUnsupported：重配同一服务端后无需重启即可恢复 SSE。
+      _pushSupported = false;
+      perfLog('sse.stop', '认证失败（401）');
+      return;
+    }
+    perfLog('sse.error', error.toString());
+    _scheduleSseReconnect();
+  }
+
+  void _onSseDone(int generation) {
+    if (generation != _sseGeneration) return;
+    _sseSub = null;
+    _sseIdleTimer?.cancel();
+    _sseIdleTimer = null;
+    final openedAt = _sseOpenedAt;
+    final stable = _sseGotReady &&
+        openedAt != null &&
+        DateTime.now().difference(openedAt) > const Duration(seconds: 5);
+    if (stable) {
+      // 服务端 30 分钟到期正常关闭：短暂延迟后重连，不计失败。
+      _sseFailCount = 0;
+      _sseRetryTimer?.cancel();
+      _sseRetryTimer = Timer(_sseNormalReconnect, () {
+        _sseRetryTimer = null;
+        unawaited(_maybeStartSse());
+      });
+    } else {
+      // 刚建连就被关：当失败退避，避免 1s 一次的重连风暴。
+      _scheduleSseReconnect();
+    }
+  }
+
+  void _scheduleSseReconnect() {
+    if (!_sseWanted(_sseGeneration)) return;
+    _sseRetryTimer?.cancel();
+    final delay = exponentialBackoff(_sseFailCount, cap: _maxBackoff);
+    _sseFailCount++;
+    _sseRetryTimer = Timer(delay, () {
+      _sseRetryTimer = null;
+      unawaited(_maybeStartSse());
+    });
+    perfLog('sse.reconnect', 'in=${delay.inMilliseconds}ms');
+  }
+
+  void _stopSse() {
+    _sseGeneration++;
+    _sseRetryTimer?.cancel();
+    _sseRetryTimer = null;
+    _sseIdleTimer?.cancel();
+    _sseIdleTimer = null;
+    _sseFetchTimer?.cancel();
+    _sseFetchTimer = null;
+    _sseFullPullTimer?.cancel();
+    _sseFullPullTimer = null;
+    _sseSignaledPlaylists.clear();
+    _sseSignalUnknown = false;
+    _sseGotReady = false;
+    _sseOpenedAt = null;
+    _sseConnecting = false;
+    _sseConnectingGeneration = -1;
+    final sub = _sseSub;
+    _sseSub = null;
+    if (sub != null) unawaited(sub.cancel());
+  }
+
   SyncEngine({required this.api, required this.index, required this.settings});
 
   /// 本地设置变更（AppSettings 注入口）：按类目过滤后入队并防抖触发同步。
@@ -172,6 +439,10 @@ class SyncEngine {
   /// （见 [_playing] 门控，四端一致、不做平台判断）。
   bool _appForeground = true;
 
+  /// stop() 后不再自动恢复 SSE；start() 会清掉。防止退出流程里迟到的
+  /// pull 回包又把长连接建起来。
+  bool _stopped = false;
+
   /// 是否在发声（PlayerProvider 经 [setPlaying] 注入实际引擎态）。
   bool _playing = false;
 
@@ -180,6 +451,11 @@ class SyncEngine {
     if (_playing == playing) return;
     _playing = playing;
     _updatePolling();
+    if (_appForeground || _playing) {
+      unawaited(_maybeStartSse());
+    } else {
+      _stopSse();
+    }
   }
 
   /// 关键操作后的即时同步（播放/暂停/切歌）：单飞合并，已在飞行只记待办；
@@ -206,6 +482,9 @@ class SyncEngine {
     _settingsPokeTimer?.cancel();
     _settingsPokeTimer = null;
     _updatePolling();
+    // 后台未播放：断开 SSE，避免无前台服务时被系统反复掐断后重连烧电。
+    // 后台播放中保持连接（与 2s tick 同一门控）。
+    if (!_playing) _stopSse();
   }
 
   /// 回前台：重新起表；快路径先取最新断点；若积压了 outbox 或已过拉取间隔，立刻补一轮。
@@ -213,14 +492,20 @@ class SyncEngine {
     if (_appForeground) return;
     _appForeground = true;
     _updatePolling();
+    unawaited(_maybeStartSse());
     unawaited(pullLatestBreakpoint());
     unawaited(_onTick());
   }
 
   void start() {
     stop();
-    if (!_appForeground && !_playing)
+    // 新会话重新做能力协商：等首个 pull/push/latest 回包里的 push_protocol。
+    _stopped = false;
+    _pushSupported = false;
+    _sseUnsupported = false;
+    if (!_appForeground && !_playing) {
       return; // 后台且未播放：等 resume()/setPlaying(true)
+    }
     _tick = Timer.periodic(tickFast, (_) => unawaited(_onTick()));
     // 快路径先行：最新断点 1 RTT 到手，不受全量 pull 分页 backlog 拖累
     // （旧服务端 404 → 静默回退，全量 pull 仍是兜底）。
@@ -231,31 +516,35 @@ class SyncEngine {
     unawaited(syncNow(pullOnly: true));
   }
 
-  /// 断点快路径（启动/回前台触发）：`GET /playstates/latest` 直取服务端最新
-  /// 断点并落镜像+通知，1 个 RTT，不随 pull cursor backlog 分页。
+  /// 断点快路径（启动/回前台/SSE 唤醒触发）：`GET /playstates/latest` 直取
+  /// 服务端最新断点并落镜像+通知，1 个 RTT，不随 pull cursor backlog 分页。
   /// 失败只记日志、不进退避——它是全量 pull 的加速器而非替代。
   /// 每个静默返回分支都记 skip 日志（排查「断点为什么没同步过来」）。
-  Future<void> pullLatestBreakpoint() async {
-    if (!settings.syncEnabled) return;
-    if (api.baseUrl.isEmpty) return;
+  ///
+  /// 返回快照的 playlist uuid（即使自写回声/镜像未落也返回），供 SSE 判断
+  /// “变更歌单是否就是全局最新”；未拿到快照返回 null。
+  Future<String?> pullLatestBreakpoint() async {
+    if (!settings.syncEnabled) return null;
+    if (api.baseUrl.isEmpty) return null;
     final sw = Stopwatch()..start();
     try {
       final clientId = await api.getClientId();
       if (clientId == null || clientId.isEmpty) {
         perfLog('fastPath.skip', '未配对');
-        return;
+        return null;
       }
       final snap = await api.fetchLatestBreakpoint();
       if (snap == null) {
         perfLog('fastPath.skip', '${sw.elapsedMilliseconds}ms 服务端无断点/端点不可用');
-        return;
+        return null;
       }
       final uuid = snap['client_uuid'];
       if (uuid is! String || uuid.isEmpty) {
         perfLog('fastPath.skip', '快照缺 client_uuid');
-        return;
+        return null;
       }
       await _noteBreakpointProtocol(snap);
+      _notePushProtocol(snap);
       final v2 = (snap['breakpoint_protocol'] as num?)?.toInt() == 2;
       // F2 自写回声过滤：本设备推上去的断点再被拉回来时，本机运行时状态必然
       // 不旧于它；落镜像/通知套用只会把旧快照盖回本机（毒化回路的一环）。
@@ -264,21 +553,23 @@ class SyncEngine {
       if (!v2 && device is String && device == clientId) {
         perfLog('fastPath.skip',
             '${sw.elapsedMilliseconds}ms 自写回声（本设备 device=$device）uuid=$uuid pos=${snap['position_ms']}');
-        return;
+        return uuid;
       }
       await index.applyPlaystateMirror(snap);
       // 歌单未同步/已删时镜像未落（applyPlaystateMirror 会丢弃），无从套用就不通知。
       if (index.breakpointMirrorOf(uuid) == null) {
         perfLog('fastPath.skip',
             '镜像未落（歌单未同步/已删）uuid=$uuid device=${snap['device_client_id']}');
-        return;
+        return uuid;
       }
       _breakpointsDirty = true;
       perfLog('fastPath mirrorApplied',
           '${sw.elapsedMilliseconds}ms uuid=$uuid device=${snap['device_client_id']} pos=${snap['position_ms']} updated=${snap['updated_at']}');
       _flushBreakpoints();
+      return uuid;
     } catch (e) {
       debugPrint('SyncEngine 断点快路径失败（回退全量 pull）：$e');
+      return null;
     }
   }
 
@@ -287,10 +578,12 @@ class SyncEngine {
   bool get isPolling => _tick != null;
 
   void stop() {
+    _stopped = true;
     _tick?.cancel();
     _tick = null;
     _settingsPokeTimer?.cancel();
     _settingsPokeTimer = null;
+    _stopSse();
   }
 
   /// 外部请求同步（手动按钮/回前台）。[force] 跳过退避。
@@ -332,6 +625,12 @@ class SyncEngine {
   }
 
   Future<void> _onTick() async {
+    if (!settings.syncEnabled) {
+      if (_sseSub != null || _sseConnecting || _sseRetryTimer != null) {
+        _stopSse();
+      }
+      return;
+    }
     if (!_appForeground && !_playing) return;
     if (_inflight != null) return;
     final now = DateTime.now();
@@ -520,6 +819,7 @@ class SyncEngine {
     if (data == null) throw Exception('push 无响应');
     _noteServerTime(data['server_time']);
     await _noteBreakpointProtocol(data);
+    _notePushProtocol(data);
     final breakpointProtocol =
         (data['breakpoint_protocol'] as num?)?.toInt() == 2;
     final applied = _strList(data['applied']);
@@ -778,6 +1078,7 @@ class SyncEngine {
       if (data == null) throw Exception('pull 无响应');
       _noteServerTime(data['server_time']);
       await _noteBreakpointProtocol(data);
+      _notePushProtocol(data);
       final pullV2 = (data['breakpoint_protocol'] as num?)?.toInt() == 2;
       final rawSongs =
           data['songs'] is List ? (data['songs'] as List).length : 0;
