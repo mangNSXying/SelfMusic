@@ -81,6 +81,18 @@ typedef SourceResolver = MusicSource? Function(String sourceKey);
 typedef LineCandidatesResolver = List<(MusicSource, int)> Function(
     String sourceKey);
 
+/// 一次装载的实际结果：实际使用的源、线路槽位、是否发生故障转移
+/// （主源失败后落到备用），以及本次候选链是否为自动线路。
+///
+/// `auto == false` 表示用户锁定了某条线路——此时落到备用是用户自选结果，
+/// 不是故障转移，也不该再弹线路提示（锁定动作本身已有 toast）。
+typedef LineLoadResult = ({
+  MusicSource source,
+  int line,
+  bool failover,
+  bool auto,
+});
+
 /// 播放模式（stage2.md §3）。
 enum PlayMode { sequence, loopList, loopOne, weighted }
 
@@ -1667,7 +1679,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 测试入口：只跑装载重试（不碰队列/UI）。
   @visibleForTesting
-  Future<(MusicSource, int)> debugLoadDirect(Song s, MusicSource src,
+  Future<LineLoadResult> debugLoadDirect(Song s, MusicSource src,
           {required bool Function() alive}) =>
       _playDirect(s, src, alive: alive);
 
@@ -1854,11 +1866,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     try {
       // 保位置：把绝对位置当作转码偏移透给装载（命中变体则本地 seek，
       // 命中转码流则服务端 start_sec；直连/字节流装载后仍需原生 seek）。
-      final (used, line) = await _playDirectTracked(cur, fresh,
+      final r = await _playDirectTracked(cur, fresh,
           alive: alive, token: token, startSec: pos.inMilliseconds / 1000.0);
       if (!alive()) return false;
-      _curSource = used;
-      _curLine = line;
+      _curSource = r.source;
+      _curLine = r.line;
+      // 重载同样可能落到备用（自动线路下主源已不可用）：用户刚点了「切到自动
+      // 线路」或改了链路设置，需要知道实际走的是哪条。
+      _announceLineChange(cur, r);
       _loadFailStreak = 0;
       _sourceInvalid = false;
       // 本次重载已把目标曲装好：启动期遗留的延迟恢复不再需要，继续挂着会
@@ -3150,18 +3165,18 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           await player.pause();
         } catch (_) {}
       }
-      final (used, line) = await _playDirectTracked(cur, src,
+      final r = await _playDirectTracked(cur, src,
           alive: alive,
           token: token,
           startSec: (startAt?.inMilliseconds ?? 0) / 1000.0,
           preloadOnly: preloadOnly);
       if (!alive()) return false; // 已被更新的切歌接管
       // Failover 成功：后续缓存/补读/歌词/预热一律走实际线路。
-      _curSource = used;
-      _curLine = line;
-      if (line != 0) {
-        AppToast.show('主源不可用，已切换到备用$line', isError: false);
-      }
+      _curSource = r.source;
+      _curLine = r.line;
+      // 用户可感知的起播才提示线路变化：启动预载（preloadOnly）/静默装载
+      // （play=false，如睡眠曲末预切）不该在用户没操作时弹 toast。
+      if (!preloadOnly && play) _announceLineChange(cur, r);
       _loadFailStreak = 0;
       var targetPos = startAt;
       if (targetPos != null && _hasDeferredRestore) {
@@ -3281,7 +3296,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// [_playDirect] 的令牌包装：装载期间置 [_loadingToken]，让播放错误/完成
   /// 事件知道当前有音源正在切换，不得在此时发起恢复或自动切歌。
-  Future<(MusicSource, int)> _playDirectTracked(Song s, MusicSource src,
+  Future<LineLoadResult> _playDirectTracked(Song s, MusicSource src,
       {required bool Function() alive,
       required int token,
       double startSec = 0,
@@ -3295,14 +3310,41 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// 每个源上一次实际使用的线路：用于「与上次不同才提示」的去重。
+  final Map<String, int> _lastLineOf = {};
+
+  /// 线路变化提示（只在用户可感知的播放路径调用；预载/静默装载不提示）。
+  ///
+  /// 规则：
+  /// - 锁定线路（`auto == false`）不提示：落到备用是用户自选，锁定动作本身
+  ///   已有 toast，这里再来一条只会误报「主源不可用」；
+  /// - 与上一次**同线路** → 静默，网络故障期间不逐首刷；
+  /// - 故障转移（自动线路主源失败落到备用）→ 提示；
+  /// - 从备用回到主源 → 提示。
+  void _announceLineChange(Song s, LineLoadResult r) {
+    final key = s.sourceKey;
+    final prev = _lastLineOf[key];
+    _lastLineOf[key] = r.line;
+    if (!r.auto || prev == r.line) return;
+    if (r.failover) {
+      AppToast.show('主源不可用，已切换到备用${r.line}', isError: false);
+      return;
+    }
+    // 只有「之前确实走过备用」才算切回主源（首次起播 prev 为 null）。
+    if (r.line == 0 && prev != null) {
+      AppToast.show('已切回主源', isError: false);
+    }
+  }
+
   /// 直连源装载（带退避重试 + 备用 Failover）：「切后台后还能播一两首、
   /// 播完静默停住」的主因是后台网络被回收/连接超时，失败后没有重试也没有
   /// 下一首兜底。重试会重建连接；主源耗尽后按线路候选自动试备用（同
   /// `sourceRef` 相对路径对应，跨类型亦可）；锁定线路时只走该路。
   /// [alive] 为假（已被更新的切歌接管）或正在退出时立即放弃，不再触碰播放器。
-  /// 成功返回实际使用的 `(source, line)`，调用方据此更新 [_curSource]/[_curLine]。
+  /// 成功返回实际使用的源/线路（[LineLoadResult]），调用方据此更新
+  /// [_curSource]/[_curLine] 并决定是否提示线路变化。
   /// [startSec] 透传 [_loadOnce]（保位置重载用；首播/重试为 0）。
-  Future<(MusicSource, int)> _playDirect(Song s, MusicSource src,
+  Future<LineLoadResult> _playDirect(Song s, MusicSource src,
       {required bool Function() alive,
       double startSec = 0,
       bool preloadOnly = false}) async {
@@ -3313,6 +3355,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       cands = [(src, 0)];
     }
     if (cands.isEmpty) cands = [(src, 0)];
+    // 多候选 = 自动线路（主→备故障转移）；锁定线路只有单个候选，落到备用是
+    // 用户自选结果，不能当成 failover 提示。
+    final auto = cands.length > 1;
+    LineLoadResult done(MusicSource source, int line, int c) =>
+        (source: source, line: line, failover: c > 0, auto: auto);
     Object? last;
     for (var c = 0; c < cands.length; c++) {
       final (cand, line) = cands[c];
@@ -3323,12 +3370,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       final attempts = cands.length > 1 ? 1 : loadBackoff.length + 1;
       var probeUsable = true;
       for (var i = 0; i < attempts; i++) {
-        if (!alive() || _shuttingDown) return (cand, line);
+        // 已被更新的切歌接管/正在退出：装载未完成，结果只用于收尾，不提示。
+        if (!alive() || _shuttingDown) return done(cand, line, c);
         if (i > 0) {
           final wait = loadBackoff[i - 1];
           debugPrint('[play] ${wait.inSeconds}s 后重试装载《${s.title}》');
           await Future.delayed(wait);
-          if (!alive() || _shuttingDown) return (cand, line);
+          if (!alive() || _shuttingDown) return done(cand, line, c);
         }
         try {
           final injected = loadOverride;
@@ -3349,10 +3397,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           if (c > 0) {
             final label = line == 0 ? '主源' : '备用$line';
             debugPrint('[play] 主源不可用，已切换到$label《${s.title}》');
-            // toast 交给调用方（有 context 的是 _play 的 catch，这里只记日志；
-            // 成功切换的提示在 _play 成功路径统一弹，避免 _loadOnce 内重复）。
+            // 用户提示由调用方统一处理（[_play]/[reloadCurrentForPlaybackRoute]
+            // 只在用户可感知的播放路径提示，预载/静默装载不打扰）。
           }
-          return (cand, line);
+          return done(cand, line, c);
         } catch (e) {
           // 只有「装载已被更新的切歌接管」（令牌过期/退出）才终止整条候选链。
           // 平台层的 Loading interrupted（网络中断、底层请求被取消）必须继续
@@ -3389,7 +3437,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           }
         }
       }
-      if (!alive() || _shuttingDown) return (cand, line);
+      if (!alive() || _shuttingDown) return done(cand, line, c);
       if (!isLast) {
         debugPrint('[play] 线路${c == 0 ? '主源' : '备用$c'}失败，试下一线路《${s.title}》: $last');
       }

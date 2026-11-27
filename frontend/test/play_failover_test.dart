@@ -163,10 +163,10 @@ void main() {
       backupLoads++;
     };
 
-    final (used, line) = await p.debugLoadDirect(_song(), primary,
-        alive: () => true);
-    expect(used.key, backup.key, reason: '中断类失败不得终止整条候选链');
-    expect(line, 1);
+    final r = await p.debugLoadDirect(_song(), primary, alive: () => true);
+    expect(r.source.key, backup.key, reason: '中断类失败不得终止整条候选链');
+    expect(r.line, 1);
+    expect(r.failover, isTrue, reason: '自动线路下落到备用即为故障转移');
     expect(primaryLoads, 1, reason: '有备用线路时主源不做退避重试');
     expect(backupLoads, 1);
   });
@@ -186,10 +186,10 @@ void main() {
       backupLoads++;
     };
 
-    final (used, line) = await p.debugLoadDirect(_song(), primary,
-        alive: () => true);
-    expect(used.key, backup.key);
-    expect(line, 1);
+    final r = await p.debugLoadDirect(_song(), primary, alive: () => true);
+    expect(r.source.key, backup.key);
+    expect(r.line, 1);
+    expect(r.failover, isTrue);
     expect(backupLoads, 1);
   });
 
