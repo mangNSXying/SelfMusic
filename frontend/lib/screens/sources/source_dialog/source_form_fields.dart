@@ -143,8 +143,7 @@ List<SourceSectionSpec> sourceSectionsOf(
             SourceFieldId.baseUrl,
             label: '地址',
             hint: 'https://192.168.1.10/dav/music',
-            helper: '未填协议时自动补 https://；需明文请显式写 http://',
-            note: '自动补 https://',
+            note: '自动补 https://，可手写指定 http://',
           )),
           SourceTextFieldRow(SourceFieldSpec(
             SourceFieldId.username,
@@ -178,7 +177,7 @@ List<SourceSectionSpec> sourceSectionsOf(
             SourceFieldId.share,
             label: '路径',
             hint: 'music 或 music/flac',
-            helper: '首个「/」前为共享名，其余为共享内目录',
+            note: '格式：共享名/目录',
           )),
           SourceTextFieldRow(SourceFieldSpec(
             SourceFieldId.username,
