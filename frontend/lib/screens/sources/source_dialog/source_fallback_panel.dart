@@ -195,6 +195,7 @@ class SourceFallbackPanel extends StatelessWidget {
                   SingleChoiceGroup<SourceKind>(
                     options: remoteKindOptions,
                     value: slot.form.kind,
+                    expanded: true,
                     onChanged: enabled
                         ? (v) {
                             slot.form.changeKind(v);

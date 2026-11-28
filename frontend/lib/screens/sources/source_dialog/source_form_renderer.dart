@@ -174,19 +174,6 @@ class SourceFormBuilder extends StatelessWidget {
             out.add(w);
             out.add(const SizedBox(height: 12));
           }
-        case SourceAuthMethodRow():
-          flushPair();
-          out.add(SingleChoiceGroup<SftpAuthMethod>(
-            options: sftpAuthOptions,
-            value: model.authMethod,
-            onChanged: enabled
-                ? (v) {
-                    model.authMethod = v;
-                    _changed();
-                  }
-                : null,
-          ));
-          out.add(const SizedBox(height: 12));
         case SourceKeyImportRow():
           flushPair();
           out.add(_keyImport(context));
@@ -226,6 +213,7 @@ class SourceFormBuilder extends StatelessWidget {
 
   Widget _textField(SourceFieldSpec spec) {
     final error = errors[spec.id];
+    final inline = spec.inline == null ? null : _inlineControl(spec.inline!);
     if (spec.secret) {
       return SourceSecretField(
         controller: model[spec.id],
@@ -235,6 +223,7 @@ class SourceFormBuilder extends StatelessWidget {
         helper: spec.helper,
         error: error,
         enabled: enabled,
+        trailing: inline,
         onChanged: (_) => _changed(),
       );
     }
@@ -258,8 +247,23 @@ class SourceFormBuilder extends StatelessWidget {
               tooltip: '选择文件夹',
               onPressed: enabled ? onPickDirectory : null,
             )
-          : null,
+          : inline,
     );
+  }
+
+  /// 字段旁的内联控件。目前只有 SFTP 认证方式一个。
+  Widget? _inlineControl(SourceInlineControl control) {
+    switch (control) {
+      case SourceInlineControl.sftpAuthMethod:
+        return _InlineSftpAuth(
+          value: model.authMethod,
+          enabled: enabled,
+          onChanged: (v) {
+            model.authMethod = v;
+            _changed();
+          },
+        );
+    }
   }
 
   Widget _keyImport(BuildContext context) {
@@ -420,6 +424,122 @@ class SourceFormBuilder extends StatelessWidget {
               ?.copyWith(color: cs.onSurfaceVariant),
         ),
       ],
+    );
+  }
+}
+
+/// SFTP 认证方式的内联切换：密码 / 密钥。
+///
+/// 认证方式描述的是「这个密码框里填的是什么」，所以贴在密码/密钥字段的
+/// 输入框右侧，而不是自己单开一行。
+class _InlineSftpAuth extends StatelessWidget {
+  const _InlineSftpAuth({
+    required this.value,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final SftpAuthMethod value;
+  final bool enabled;
+  final ValueChanged<SftpAuthMethod> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    // 紧凑版：与输入框同高（44 → 34），放在 suffixIcon 位置不撑高文本框。
+    return Padding(
+      padding: const EdgeInsets.only(right: 4),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final option in sftpAuthOptions) ...[
+            if (option.value != sftpAuthOptions.first.value)
+              const SizedBox(width: 4),
+            _InlineChoiceButton(
+              label: option.label,
+              selected: option.value == value,
+              enabled: enabled,
+              onTap: () => onChanged(option.value),
+              accent: cs.primary,
+              onAccent: cs.onPrimaryContainer,
+              idleBg: cs.surfaceContainerHighest,
+              idleFg: cs.onSurfaceVariant,
+              idleBorder: cs.outlineVariant,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// 内联小号单选按钮：视觉与 [SingleChoiceGroup] 同族（填充选中 + 主色描边），
+/// 只是更紧凑，用于贴合输入框的高度。
+class _InlineChoiceButton extends StatelessWidget {
+  const _InlineChoiceButton({
+    required this.label,
+    required this.selected,
+    required this.enabled,
+    required this.onTap,
+    required this.accent,
+    required this.onAccent,
+    required this.idleBg,
+    required this.idleFg,
+    required this.idleBorder,
+  });
+
+  final String label;
+  final bool selected;
+  final bool enabled;
+  final VoidCallback onTap;
+  final Color accent;
+  final Color onAccent;
+  final Color idleBg;
+  final Color idleFg;
+  final Color idleBorder;
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = !enabled
+        ? idleFg.withValues(alpha: 0.38)
+        : selected
+            ? onAccent
+            : idleFg;
+    final shape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(9),
+      side: BorderSide(
+        color: selected
+            ? accent.withValues(alpha: enabled ? 1 : 0.4)
+            : idleBorder,
+      ),
+    );
+    return Semantics(
+      selected: selected,
+      inMutuallyExclusiveGroup: true,
+      child: Material(
+        color: selected
+            ? accent.withValues(alpha: 0.14)
+            : enabled
+                ? idleBg
+                : idleBg.withValues(alpha: 0.5),
+        shape: shape,
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          customBorder: shape,
+          onTap: enabled ? onTap : null,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+            child: Text(
+              label,
+              style: TextStyle(
+                color: fg,
+                fontSize: 12,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

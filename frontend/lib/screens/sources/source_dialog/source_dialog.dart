@@ -403,7 +403,23 @@ class _SourceDialogState extends State<SourceDialog> {
         // content 里不能放 `LayoutBuilder` 或 shrink-wrap 不了的 viewport；
         // 用定宽而不是外层 `constraints` 撑开，窄屏由系统钳制。
         insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-        title: Text(_isEdit ? '编辑播放源' : '添加播放源'),
+        // 编辑态的类型是既定事实（updateSource 无类型迁移），放在标题右侧
+        // 做注解，不再单占一段「类型」分组。
+        title: Row(
+          children: [
+            Flexible(
+              child: Text(
+                _isEdit ? '编辑播放源' : '添加播放源',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            if (_isEdit) ...[
+              const SizedBox(width: 10),
+              _KindChip(kind: _form.kind),
+            ],
+          ],
+        ),
         content: SizedBox(
           width: 512,
           child: SingleChildScrollView(
@@ -411,23 +427,19 @@ class _SourceDialogState extends State<SourceDialog> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // 类型：新增时可切换；编辑态灰显只读（updateSource 无类型迁移）。
-                SourceFormSection(
-                  title: '类型',
-                  children: [
-                    if (_isEdit)
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: _KindChip(kind: _form.kind),
-                      )
-                    else
+                // 类型：仅新增态可选（编辑态已在标题里）。
+                if (!_isEdit)
+                  SourceFormSection(
+                    title: '类型',
+                    children: [
                       SingleChoiceGroup<SourceKind>(
                         options: sourceKindOptions,
                         value: _form.kind,
+                        expanded: true,
                         onChanged: _saving ? null : _onKindChanged,
                       ),
-                  ],
-                ),
+                    ],
+                  ),
                 SourceFormBuilder(
                   model: _form,
                   isFallback: false,
@@ -490,7 +502,10 @@ class _SourceDialogState extends State<SourceDialog> {
   }
 }
 
-/// 编辑态的类型展示：灰底只读（`updateSource` 没有类型迁移能力）。
+/// 编辑态的类型徽标：放在标题右侧做注解。
+///
+/// 排版上比标题小一号、主色描边 + 主色浅底，与全站「选中态」同一套视觉语言，
+/// 但不带交互（类型在编辑态不可改）。
 class _KindChip extends StatelessWidget {
   const _KindChip({required this.kind});
 
@@ -505,11 +520,32 @@ class _KindChip extends StatelessWidget {
       SourceKind.webdav => (Icons.cloud_outlined, 'WebDAV'),
       SourceKind.sftp => (Icons.storage_outlined, 'SFTP'),
     };
-    return Chip(
-      avatar: Icon(icon, size: 18),
-      label: Text(label),
-      backgroundColor: cs.surfaceContainerHighest,
-      side: BorderSide.none,
+    final shape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(20),
+      side: BorderSide(color: cs.primary.withValues(alpha: 0.35)),
+    );
+    return Material(
+      color: cs.primaryContainer.withValues(alpha: 0.55),
+      shape: shape,
+      clipBehavior: Clip.antiAlias,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: cs.onPrimaryContainer),
+            const SizedBox(width: 5),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: cs.onPrimaryContainer,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

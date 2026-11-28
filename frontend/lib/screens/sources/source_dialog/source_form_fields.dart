@@ -39,6 +39,11 @@ class SourceFieldSpec {
   final bool digitsOnly;
   final SourceFieldSpan span;
 
+  /// 字段旁的内联控件（渲染在输入框右侧的同一行）。
+  ///
+  /// SFTP 的「密码 / 密钥」切换用它：认证方式是密码字段的修饰，不该单开一行。
+  final SourceInlineControl? inline;
+
   const SourceFieldSpec(
     this.id, {
     required this.label,
@@ -48,6 +53,7 @@ class SourceFieldSpec {
     this.secret = false,
     this.digitsOnly = false,
     this.span = SourceFieldSpan.full,
+    this.inline,
   });
 
   TextInputType? get keyboardType {
@@ -55,6 +61,12 @@ class SourceFieldSpec {
     if (id == SourceFieldId.baseUrl) return TextInputType.url;
     return null;
   }
+}
+
+/// 字段旁的内联控件类型。
+enum SourceInlineControl {
+  /// SFTP 认证方式（密码 / 密钥）。
+  sftpAuthMethod,
 }
 
 /// 表单里的一行：文本字段或某种选择控件。
@@ -65,11 +77,6 @@ sealed class SourceRowSpec {
 class SourceTextFieldRow extends SourceRowSpec {
   final SourceFieldSpec spec;
   const SourceTextFieldRow(this.spec);
-}
-
-/// SFTP 认证方式单选（密码 / 密钥）。
-class SourceAuthMethodRow extends SourceRowSpec {
-  const SourceAuthMethodRow();
 }
 
 /// SFTP 密钥导入块（导入按钮 + 状态文字 + 清除）。
@@ -219,12 +226,13 @@ List<SourceSectionSpec> sourceSectionsOf(
             label: '用户名',
             span: SourceFieldSpan.half,
           )),
-          const SourceAuthMethodRow(),
+          // 认证方式是密码 / 密钥字段的修饰，内联在输入框右侧，不单开一行。
           if (authMethod == SftpAuthMethod.password)
             const SourceTextFieldRow(SourceFieldSpec(
               SourceFieldId.password,
               label: '密码',
               secret: true,
+              inline: SourceInlineControl.sftpAuthMethod,
             ))
           else ...[
             const SourceKeyImportRow(),
@@ -233,6 +241,7 @@ List<SourceSectionSpec> sourceSectionsOf(
               label: '私钥口令',
               note: '无则空',
               secret: true,
+              inline: SourceInlineControl.sftpAuthMethod,
             )),
           ],
           const SourceTextFieldRow(SourceFieldSpec(

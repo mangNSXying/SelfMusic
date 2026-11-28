@@ -7,11 +7,13 @@ import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:provider/provider.dart';
+import 'package:selfmusic/data/sources/music_source.dart';
 import 'package:selfmusic/providers/direct_source_manager.dart';
 import 'package:selfmusic/providers/navigation_provider.dart';
 import 'package:selfmusic/screens/sources/source_dialog/source_dialog.dart';
 import 'package:selfmusic/screens/sources/source_dialog/source_form_widgets.dart';
 import 'package:selfmusic/theme/app_theme.dart';
+import 'package:selfmusic/widgets/single_choice_group.dart';
 import 'package:sqlite3/open.dart';
 
 DynamicLibrary _openOnLinux() {
@@ -188,7 +190,7 @@ void main() {
     expect(find.text('添加备用源'), findsOneWidget);
   });
 
-  testWidgets('编辑态类型灰显只读，不出现类型选择器', (tester) async {
+  testWidgets('编辑态类型只读展示在标题右侧', (tester) async {
     await setUpManager(tester);
     tearDownManager();
     await tester.runAsync(() async {
@@ -199,9 +201,17 @@ void main() {
     await pumpDialog(tester, direct, editKey: 'local:本地源');
 
     expect(find.text('编辑播放源'), findsOneWidget);
-    // 类型以只读 Chip 呈现，不是可点的单选组。
-    expect(find.byType(Chip), findsWidgets);
+    // 类型以只读徽标出现在标题行，不是可点的单选组。
     expect(find.text('本地'), findsOneWidget);
+    // 编辑态不再有独立的「类型」分组。
+    expect(find.text('类型'), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.byType(SingleChoiceGroup<SourceKind>),
+      ),
+      findsNothing,
+    );
   });
 
   testWidgets('密码框可切换显隐', (tester) async {
@@ -216,6 +226,29 @@ void main() {
     await tester.tap(find.byTooltip('显示密码'));
     await tester.pumpAndSettle();
     expect(find.byTooltip('隐藏密码'), findsOneWidget);
+  });
+
+  testWidgets('SFTP 认证方式是密码框的内联控件，不单独成行', (tester) async {
+    await setUpManager(tester);
+    tearDownManager();
+    await pumpDialog(tester, direct);
+
+    await tester.tap(find.text('SFTP'));
+    await tester.pumpAndSettle();
+
+    // 「密码 / 密钥」两个内联选项都在密码输入框的同一行里。
+    final pwdField = find.ancestor(
+      of: find.text('密码'),
+      matching: find.byType(Column),
+    );
+    expect(pwdField, findsWidgets);
+    // 认证选项与密码框同高（内联），不是 40px 的独立分组按钮。
+    expect(find.text('密钥'), findsOneWidget);
+    // 切到密钥认证后，密码框让位给密钥导入行。
+    await tester.tap(find.text('密钥'));
+    await tester.pumpAndSettle();
+    expect(find.text('导入密钥文件'), findsOneWidget);
+    expect(find.text('私钥口令'), findsOneWidget);
   });
 }
 

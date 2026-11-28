@@ -2,7 +2,6 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-import '../../../data/sources/local_file_direct_source.dart';
 import '../../../platform/harmonyos/ohos_bootstrap.dart';
 import '../../../platform/harmonyos/ohos_platform_bridge.dart';
 import '../../../widgets/app_toast.dart';

@@ -69,25 +69,32 @@ class SourceFieldLabel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final style = Theme.of(context).textTheme.bodySmall;
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Expanded(
             child: Text(
               label,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: cs.onSurfaceVariant,
-                  ),
+              style: style?.copyWith(color: cs.onSurfaceVariant),
             ),
           ),
-          if (note != null)
-            Text(
-              note!,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: cs.onSurface.withValues(alpha: 0.45),
-                  ),
+          if (note != null) ...[
+            const SizedBox(width: 8),
+            // 窄屏下 note 可能比 label 还长（如「或改为选择音频文件」）：
+            // 用 Flexible + 右对齐让它自己折行，而不是把整行撑溢出。
+            Flexible(
+              child: Text(
+                note!,
+                textAlign: TextAlign.right,
+                style: style?.copyWith(
+                  color: cs.onSurface.withValues(alpha: 0.45),
+                ),
+              ),
             ),
+          ],
         ],
       ),
     );
@@ -109,6 +116,7 @@ class SourceSecretField extends StatefulWidget {
     this.error,
     this.onChanged,
     this.enabled = true,
+    this.trailing,
   });
 
   final TextEditingController controller;
@@ -119,6 +127,9 @@ class SourceSecretField extends StatefulWidget {
   final String? error;
   final ValueChanged<String>? onChanged;
   final bool enabled;
+
+  /// 显隐按钮左侧的额外控件（如 SFTP 认证方式切换）。
+  final Widget? trailing;
 
   @override
   State<SourceSecretField> createState() => _SourceSecretFieldState();
@@ -147,17 +158,37 @@ class _SourceSecretFieldState extends State<SourceSecretField> {
             helperMaxLines: 2,
             errorText: widget.error,
             errorMaxLines: 2,
-            suffixIcon: IconButton(
-              icon: Icon(
-                _obscure
-                    ? Icons.visibility_outlined
-                    : Icons.visibility_off_outlined,
-                size: 20,
-              ),
-              tooltip: _obscure ? '显示密码' : '隐藏密码',
-              onPressed:
-                  widget.enabled ? () => setState(() => _obscure = !_obscure) : null,
-            ),
+            suffixIcon: widget.trailing == null
+                ? IconButton(
+                    icon: Icon(
+                      _obscure
+                          ? Icons.visibility_outlined
+                          : Icons.visibility_off_outlined,
+                      size: 20,
+                    ),
+                    tooltip: _obscure ? '显示密码' : '隐藏密码',
+                    onPressed: widget.enabled
+                        ? () => setState(() => _obscure = !_obscure)
+                        : null,
+                  )
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      widget.trailing!,
+                      IconButton(
+                        icon: Icon(
+                          _obscure
+                              ? Icons.visibility_outlined
+                              : Icons.visibility_off_outlined,
+                          size: 20,
+                        ),
+                        tooltip: _obscure ? '显示密码' : '隐藏密码',
+                        onPressed: widget.enabled
+                            ? () => setState(() => _obscure = !_obscure)
+                            : null,
+                      ),
+                    ],
+                  ),
           ),
         ),
       ],
