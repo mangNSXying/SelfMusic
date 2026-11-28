@@ -18,6 +18,7 @@ import '../../widgets/eq_curve_editor.dart';
 import '../../widgets/settings_layout.dart';
 import '../../widgets/settings_section_header.dart';
 import '../../widgets/settings_tile.dart';
+import '../../widgets/single_choice_group.dart';
 import '../../widgets/single_choice_dialog.dart';
 import '../../widgets/wheel_picker_dialog.dart';
 import 'keep_awake_device_dialog.dart';
@@ -391,24 +392,23 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
             ],
           ),
         ),
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Row(
-            children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+          // 预设与全站其它单选组同一套控件（填充选中），不再用横向滚动的
+          // ChoiceChip——两者视觉不同族且滚动区在小窗口里容易误触。
+          child: SingleChoiceGroup<String>(
+            options: [
               for (final p in kEqPresets)
-                Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: ChoiceChip(
-                    label: Text(p.name),
-                    selected: preset?.name == p.name,
-                    onSelected: (_) {
-                      player.setEqPreset(p.gains);
-                      setState(() {});
-                    },
-                  ),
-                ),
+                SingleChoiceOption(value: p.name, label: p.name),
             ],
+            // 手调后没有任何预设匹配时为 null：全部不选中。
+            value: preset?.name,
+            expanded: true,
+            onChanged: (name) {
+              final p = kEqPresets.firstWhere((e) => e.name == name);
+              player.setEqPreset(p.gains);
+              setState(() {});
+            },
           ),
         ),
         const SizedBox(height: 8),
