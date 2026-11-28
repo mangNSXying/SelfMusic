@@ -535,5 +535,5 @@ class SourceCollapsibleHeader extends StatelessWidget {
 
 /// 播放链路单选的说明文字（主源/备用源共用同一句）。
 String playbackRouteNote(SourceRoute route) => route == SourceRoute.direct
-    ? '直连走原生地址（代理设置不生效）；代理经服务端，开关开时转码'
-    : '代理经服务端；直连走原生地址（代理设置不生效）';
+    ? '强制走原生直连'
+    : '设置开代理后才生效';
