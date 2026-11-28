@@ -403,7 +403,6 @@ class _PlaybackSettingsState extends State<PlaybackSection> {
             ],
             // 手调后没有任何预设匹配时为 null：全部不选中。
             value: preset?.name,
-            expanded: true,
             onChanged: (name) {
               final p = kEqPresets.firstWhere((e) => e.name == name);
               player.setEqPreset(p.gains);

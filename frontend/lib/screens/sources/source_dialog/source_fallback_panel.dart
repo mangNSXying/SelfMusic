@@ -195,7 +195,6 @@ class SourceFallbackPanel extends StatelessWidget {
                   SingleChoiceGroup<SourceKind>(
                     options: remoteKindOptions,
                     value: slot.form.kind,
-                    expanded: true,
                     onChanged: enabled
                         ? (v) {
                             slot.form.changeKind(v);
@@ -226,13 +225,16 @@ class SourceFallbackPanel extends StatelessWidget {
                       slot.form.keyFileName = null;
                       onChanged();
                     },
-                  ),
-                  ConnectionTestRow(
-                    status: slot.testStatus,
-                    onTest: () => _test(context, i),
-                    testLabel: '测试连接',
-                    result: slot.testResult,
-                    enabled: enabled,
+                    sectionTrailing: (title) {
+                      if (title != '连接') return null;
+                      return ConnectionTestRow(
+                        status: slot.testStatus,
+                        onTest: () => _test(context, i),
+                        testLabel: '测试',
+                        result: slot.testResult,
+                        enabled: enabled,
+                      );
+                    },
                   ),
                 ],
               ),

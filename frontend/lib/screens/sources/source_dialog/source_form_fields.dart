@@ -95,10 +95,15 @@ class SourceRouteRow extends SourceRowSpec {
 }
 
 /// 一个分组（视觉上的小节）。
+///
+/// [trailing] 标记该分组的组头是否承载「连接测试」——目前只有「连接」组用它，
+/// 把测试按钮与连接状态从表单底部挪到组头，省一整行。
 class SourceSectionSpec {
   final String title;
   final List<SourceRowSpec> rows;
-  const SourceSectionSpec(this.title, this.rows);
+  final bool trailing;
+
+  const SourceSectionSpec(this.title, this.rows, {this.trailing = false});
 }
 
 const _nameField = SourceTextFieldRow(
@@ -150,7 +155,7 @@ List<SourceSectionSpec> sourceSectionsOf(
             SourceFieldId.baseUrl,
             label: '地址',
             hint: 'https://192.168.1.10/dav/music',
-            note: '自动补 https://，可手写指定 http://',
+            note: '智能补写 https://',
           )),
           SourceTextFieldRow(SourceFieldSpec(
             SourceFieldId.username,
@@ -165,8 +170,8 @@ List<SourceSectionSpec> sourceSectionsOf(
             secret: true,
             span: SourceFieldSpan.half,
           )),
-        ]),
-        const SourceSectionSpec('播放链路', [SourceRouteRow()]),
+        ], trailing: true),
+        const SourceSectionSpec('', [SourceRouteRow()]),
       ];
 
     case SourceKind.smb:
@@ -199,8 +204,8 @@ List<SourceSectionSpec> sourceSectionsOf(
             secret: true,
             span: SourceFieldSpan.half,
           )),
-        ]),
-        const SourceSectionSpec('播放链路', [SourceRouteRow()]),
+        ], trailing: true),
+        const SourceSectionSpec('', [SourceRouteRow()]),
       ];
 
     case SourceKind.sftp:
@@ -250,8 +255,8 @@ List<SourceSectionSpec> sourceSectionsOf(
             note: '空 = 登录目录',
             hint: '/music',
           )),
-        ]),
-        const SourceSectionSpec('播放链路', [SourceRouteRow()]),
+        ], trailing: true),
+        const SourceSectionSpec('', [SourceRouteRow()]),
       ];
   }
 }

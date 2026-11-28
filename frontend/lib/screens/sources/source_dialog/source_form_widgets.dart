@@ -33,11 +33,18 @@ class SourceFormSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    // 标题为空 = 这一组不需要组头（行内自带标题，如播放链路设置行）。
+    if (title.isEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: children,
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.only(top: 12, bottom: 6),
+          padding: const EdgeInsets.only(top: 14, bottom: 8),
           child: Row(
             children: [
               Expanded(
@@ -82,7 +89,7 @@ class SourceFieldLabel extends StatelessWidget {
         );
     final noteText = note;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
+      padding: const EdgeInsets.only(bottom: 6),
       child: Row(
         children: [
           Expanded(
@@ -161,9 +168,6 @@ class _SourceSecretFieldState extends State<SourceSecretField> {
           enableSuggestions: false,
           onChanged: widget.onChanged,
           decoration: InputDecoration(
-            isDense: true,
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
             hintText: widget.hint,
             helperText: widget.helper,
             helperMaxLines: 2,
@@ -258,9 +262,6 @@ class SourceTextField extends StatelessWidget {
           inputFormatters:
               digitsOnly ? [FilteringTextInputFormatter.digitsOnly] : null,
           decoration: InputDecoration(
-            isDense: true,
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
             hintText: hint,
             helperText: helper,
             helperMaxLines: 2,
@@ -312,13 +313,65 @@ class SourceFieldRow extends StatelessWidget {
   }
 }
 
+/// 设置行：左「标题 + 说明」，右侧是当前值控件。
+///
+/// 用于播放链路这类「一个标题 + 一组按钮」的配置：说明紧贴标题，
+/// 不再单占一行，也不再用独立的小节标题，整块从 3 行压到 1 行。
+class SourceSettingRow extends StatelessWidget {
+  const SourceSettingRow({
+    super.key,
+    required this.title,
+    this.description,
+    required this.trailing,
+  });
+
+  final String title;
+  final String? description;
+  final Widget trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                title,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+              if (description != null) ...[
+                const SizedBox(height: 2),
+                Text(
+                  description!,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: cs.onSurface.withValues(alpha: 0.6),
+                      ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(width: 12),
+        trailing,
+      ],
+    );
+  }
+}
+
 /// 连接状态（决定状态芯片的样式与文案）。
 enum ConnectionStatus { idle, testing, ok, failed }
 
-/// 测试连接行：按钮 + 状态芯片。
+/// 测试连接控件：按钮 + 状态芯片。
 ///
-/// 原实现点了只弹一个 toast，结果一闪而过；这里把「待测 / 测试中 / 成功
-/// （含耗时）/ 失败（含原因）」固定显示在按钮旁边。
+/// 放在「连接」分组的组头右侧（[SourceSectionSpec.trailing]），因此用
+/// 紧凑尺寸：小按钮 + 单行状态，整体高度与组标题一致，不撑高标题行。
 class ConnectionTestRow extends StatelessWidget {
   const ConnectionTestRow({
     super.key,
@@ -338,30 +391,36 @@ class ConnectionTestRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final busy = status == ConnectionStatus.testing;
-    return Padding(
-      padding: const EdgeInsets.only(top: 4),
-      child: Wrap(
-        spacing: 12,
-        runSpacing: 8,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          OutlinedButton.icon(
-            onPressed: (!enabled || busy) ? null : onTest,
-            icon: busy
-                ? const InlineSpinner(size: 16)
-                : const Icon(Icons.verified_outlined, size: 18),
-            label: Text(busy ? '测试中…' : testLabel),
-          ),
-          if (status != ConnectionStatus.idle) _statusChip(context),
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (status != ConnectionStatus.idle) ...[
+          _statusChip(context),
+          const SizedBox(width: 8),
         ],
-      ),
+        TextButton.icon(
+          onPressed: (!enabled || busy) ? null : onTest,
+          style: TextButton.styleFrom(
+            minimumSize: const Size(0, 30),
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            textStyle: Theme.of(context)
+                .textTheme
+                .labelMedium
+                ?.copyWith(fontWeight: FontWeight.w600),
+          ),
+          icon: busy
+              ? const InlineSpinner(size: 13)
+              : const Icon(Icons.verified_outlined, size: 15),
+          label: Text(busy ? '测试中' : testLabel),
+        ),
+      ],
     );
   }
 
   Widget _statusChip(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final (Color bg, Color fg, IconData icon, String text) =
-        switch (status) {
+    final (Color bg, Color fg, IconData icon, String text) = switch (status) {
       ConnectionStatus.testing => (
           cs.surfaceContainerHighest,
           cs.onSurfaceVariant,
@@ -372,18 +431,18 @@ class ConnectionTestRow extends StatelessWidget {
           cs.primary.withValues(alpha: 0.10),
           cs.primary,
           Icons.check_circle,
-          result == null ? '连接成功' : '连接成功 · ${result!.elapsedMs} ms',
+          result == null ? '成功' : '成功 ${result!.elapsedMs}ms',
         ),
       _ => (
           cs.error.withValues(alpha: 0.10),
           cs.error,
           Icons.error_outline,
-          result?.message ?? '连接失败',
+          result?.message ?? '失败',
         ),
     };
     return Container(
-      constraints: const BoxConstraints(maxWidth: 320),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      constraints: const BoxConstraints(maxWidth: 168),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(20),
@@ -391,12 +450,12 @@ class ConnectionTestRow extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 14, color: fg),
-          const SizedBox(width: 6),
+          Icon(icon, size: 12, color: fg),
+          const SizedBox(width: 4),
           Flexible(
             child: Text(
               text,
-              maxLines: 2,
+              maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
                     color: fg,

@@ -112,6 +112,7 @@ void main() {
     expect(find.text('类型'), findsOneWidget);
     expect(find.text('基本信息'), findsOneWidget);
     expect(find.text('连接'), findsOneWidget);
+    // 播放链路的标题由行内自带（SourceSettingRow），不再单独占一个组头。
     expect(find.text('播放链路'), findsOneWidget);
     expect(find.text('备用源'), findsOneWidget);
   });
@@ -247,7 +248,7 @@ void main() {
     // 切到密钥认证后，密码框让位给密钥导入行。
     await tester.tap(find.text('密钥'));
     await tester.pumpAndSettle();
-    expect(find.text('导入密钥文件'), findsOneWidget);
+    expect(find.text('导入'), findsOneWidget);
     expect(find.text('私钥口令'), findsOneWidget);
   });
 

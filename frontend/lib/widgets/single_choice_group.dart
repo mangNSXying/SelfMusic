@@ -21,66 +21,44 @@ class SingleChoiceOption<T> {
 ///
 /// 视觉上与全局按钮体系一致：12px 圆角、40px 最小高度。选中态用
 /// `primaryContainer` 底 + `primary` 边框，弱于实心主操作按钮。
-///
-/// [expanded] 为 true 时选项等分整行（4 个类型、EQ 预设这类定长选项组
-/// 用它消除右侧空档）；等分后不再换行，容器过窄时由外层负责折行。
 class SingleChoiceGroup<T> extends StatelessWidget {
   final List<SingleChoiceOption<T>> options;
 
-  /// 当前选中值；传 null 表示「全部未选中」（如 EQ 手调后不匹配任何预设）。
+  /// 当前选中值；传 null 表示「全部未选中」
+  /// （EQ 手调后不匹配任何预设时用这个状态）。
   final T? value;
   final ValueChanged<T>? onChanged;
-  final bool expanded;
 
   const SingleChoiceGroup({
     super.key,
     required this.options,
     required this.value,
     required this.onChanged,
-    this.expanded = false,
   });
 
   @override
   Widget build(BuildContext context) {
     // Align 撑满可用宽度，Wrap 自身保持内容宽度；选项始终从左侧开始，
     // 不因父级 Column 的居中对齐而整组居中。
-    final buttons = [
-      for (final option in options)
-        _SingleChoiceButton<T>(
-          key: ValueKey(option.value),
-          option: option,
-          selected: option.value == value,
-          onTap: onChanged == null
-              ? null
-              : () {
-                  Haptics.fire(HapticStrength.selection);
-                  onChanged!(option.value);
-                },
-        ),
-    ];
-    if (expanded) {
-      // 等分整行。但容器过窄时不能硬挤（4 个协议在 320 宽下会各自被压到
-      // 放不下文字），此时退回内容宽度的自然换行，与 expanded=false 一致。
-      // 用 MediaQuery 而不是 LayoutBuilder：AlertDialog 内容在 IntrinsicWidth
-      // 里，LayoutBuilder 不支持 intrinsic 计算。
-      final perItem = MediaQuery.sizeOf(context).width / options.length;
-      if (perItem >= 84) {
-        return Row(
-          children: [
-            for (var i = 0; i < buttons.length; i++) ...[
-              if (i > 0) const SizedBox(width: 8),
-              Expanded(child: buttons[i]),
-            ],
-          ],
-        );
-      }
-    }
     return Align(
       alignment: Alignment.centerLeft,
       child: Wrap(
         spacing: 8,
         runSpacing: 8,
-        children: buttons,
+        children: [
+          for (final option in options)
+            _SingleChoiceButton<T>(
+              key: ValueKey(option.value),
+              option: option,
+              selected: option.value == value,
+              onTap: onChanged == null
+                  ? null
+                  : () {
+                      Haptics.fire(HapticStrength.selection);
+                      onChanged!(option.value);
+                    },
+            ),
+        ],
       ),
     );
   }
@@ -140,21 +118,16 @@ class _SingleChoiceButton<T> extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
-                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   if (option.icon != null) ...[
                     Icon(option.icon, size: 18, color: fg),
                     const SizedBox(width: 6),
                   ],
-                  Flexible(
-                    child: Text(
-                      option.label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: fg,
-                        fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                      ),
+                  Text(
+                    option.label,
+                    style: TextStyle(
+                      color: fg,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                     ),
                   ),
                 ],

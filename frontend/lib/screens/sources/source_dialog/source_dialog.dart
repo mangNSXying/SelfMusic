@@ -435,7 +435,6 @@ class _SourceDialogState extends State<SourceDialog> {
                       SingleChoiceGroup<SourceKind>(
                         options: sourceKindOptions,
                         value: _form.kind,
-                        expanded: true,
                         onChanged: _saving ? null : _onKindChanged,
                       ),
                     ],
@@ -463,16 +462,18 @@ class _SourceDialogState extends State<SourceDialog> {
                     _form.keyFileName = null;
                     _onFormChanged();
                   }),
+                  // 测试连接进「连接」组头：本地源没有远端可测。
+                  sectionTrailing: (title) {
+                    if (title != '连接' || isLocal) return null;
+                    return ConnectionTestRow(
+                      status: _testStatus,
+                      onTest: _test,
+                      testLabel: '测试',
+                      result: _testResult,
+                      enabled: !_saving,
+                    );
+                  },
                 ),
-                // 连接测试：本地源没有远端可测。
-                if (!isLocal)
-                  ConnectionTestRow(
-                    status: _testStatus,
-                    onTest: _test,
-                    testLabel: '测试连接',
-                    result: _testResult,
-                    enabled: !_saving,
-                  ),
                 SourceFallbackPanel(
                   slots: _fallbacks,
                   enabled: !_saving,

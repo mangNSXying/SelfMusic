@@ -89,6 +89,7 @@ class SourceFormBuilder extends StatelessWidget {
     this.onClearKey,
     this.localFilesExpanded = false,
     this.showLocalFilesToggle = true,
+    this.sectionTrailing,
   });
 
   final SourceFormModel model;
@@ -113,6 +114,11 @@ class SourceFormBuilder extends StatelessWidget {
   final bool localFilesExpanded;
   final bool showLocalFilesToggle;
 
+  /// 分组组头右侧的控件：按分组标题取。
+  ///
+  /// 「连接」组用它放测试按钮 + 连接状态，从而省掉底部那一整行。
+  final Widget? Function(String sectionTitle)? sectionTrailing;
+
   void _changed() => onChanged();
 
   /// 窄容器阈值：低于此宽度时并排字段改成上下排列。
@@ -136,6 +142,9 @@ class SourceFormBuilder extends StatelessWidget {
         for (final section in sections)
           SourceFormSection(
             title: section.title,
+            trailing: section.trailing
+                ? sectionTrailing?.call(section.title)
+                : null,
             children: _buildRows(context, section.rows),
           ),
       ],
@@ -184,25 +193,20 @@ class SourceFormBuilder extends StatelessWidget {
           out.add(const SizedBox(height: 12));
         case SourceRouteRow():
           flushPair();
-          out.add(SingleChoiceGroup<SourceRoute>(
-            options: sourceRouteOptions,
-            value: model.route,
-            onChanged: enabled
-                ? (v) {
-                    model.route = v;
-                    _changed();
-                  }
-                : null,
-          ));
-          out.add(const SizedBox(height: 6));
-          out.add(Text(
-            playbackRouteNote(model.route),
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context)
-                      .colorScheme
-                      .onSurface
-                      .withValues(alpha: 0.6),
-                ),
+          // 行化：左「标题 + 说明」/ 右「当前值按钮组」，省掉独占一行的小节标题。
+          out.add(SourceSettingRow(
+            title: '播放链路',
+            description: playbackRouteNote(model.route),
+            trailing: SingleChoiceGroup<SourceRoute>(
+              options: sourceRouteOptions,
+              value: model.route,
+              onChanged: enabled
+                  ? (v) {
+                      model.route = v;
+                      _changed();
+                    }
+                  : null,
+            ),
           ));
           out.add(const SizedBox(height: 12));
       }
@@ -266,51 +270,89 @@ class SourceFormBuilder extends StatelessWidget {
     }
   }
 
+  /// 私钥导入：单行文件条。
+  ///
+  /// 未导入时整行是一个虚线边框的「导入密钥文件」入口；已导入时显示
+  /// 「文件名 · 大小」+ 更换 / 清除，不再另起一行写状态文字。
   Widget _keyImport(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final hasKey = model.raw(SourceFieldId.keyPem).isNotEmpty;
-    final status = !hasKey
-        ? '未导入（支持 OpenSSH / PKCS8 私钥）'
-        : model.keyFileName != null
-            ? '已导入 ${model.keyFileName}（${model.raw(SourceFieldId.keyPem).length} 字符）'
-            : '已保存密钥（${model.raw(SourceFieldId.keyPem).length} 字符）';
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: enabled ? onImportKeyFile : null,
-                icon: const Icon(Icons.key_outlined, size: 18),
-                label: const Text('导入密钥文件'),
+    final pem = model.raw(SourceFieldId.keyPem);
+    final hasKey = pem.isNotEmpty;
+    final fileName = model.keyFileName;
+    final summary = !hasKey
+        ? '未导入（支持 OpenSSH / PKCS8）'
+        : fileName != null
+            ? '$fileName · ${pem.length} 字符'
+            : '已保存密钥 · ${pem.length} 字符';
+
+    final shape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(12),
+      side: BorderSide(
+        color: hasKey ? cs.outlineVariant : cs.outlineVariant.withValues(alpha: 0.7),
+      ),
+    );
+    return Material(
+      color: hasKey ? cs.surface : cs.surfaceContainerHighest.withValues(alpha: 0.35),
+      shape: shape,
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        customBorder: shape,
+        onTap: enabled ? onImportKeyFile : null,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 6, 10),
+          child: Row(
+            children: [
+              Icon(Icons.key_outlined,
+                  size: 16,
+                  color: hasKey ? cs.primary : cs.onSurfaceVariant),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  summary,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: hasKey ? cs.onSurface : cs.onSurfaceVariant,
+                      ),
+                ),
               ),
-            ),
-            if (hasKey) ...[
-              const SizedBox(width: 4),
-              IconButton(
-                icon: const Icon(Icons.clear, size: 18),
-                tooltip: '清除已导入密钥',
-                onPressed: enabled
-                    ? () {
-                        model[SourceFieldId.keyPem].clear();
-                        model.keyFileName = null;
-                        _changed();
-                      }
-                    : null,
-              ),
+              if (hasKey)
+                TextButton(
+                  onPressed: enabled ? onImportKeyFile : null,
+                  style: TextButton.styleFrom(
+                    minimumSize: const Size(0, 32),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: const Text('更换'),
+                )
+              else
+                TextButton(
+                  onPressed: enabled ? onImportKeyFile : null,
+                  style: TextButton.styleFrom(
+                    minimumSize: const Size(0, 32),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: const Text('导入'),
+                ),
+              if (hasKey)
+                IconButton(
+                  icon: const Icon(Icons.close, size: 18),
+                  tooltip: '清除已导入密钥',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: enabled
+                      ? () {
+                          model[SourceFieldId.keyPem].clear();
+                          model.keyFileName = null;
+                          _changed();
+                        }
+                      : null,
+                ),
             ],
-          ],
+          ),
         ),
-        const SizedBox(height: 4),
-        Text(
-          status,
-          style: Theme.of(context)
-              .textTheme
-              .bodySmall
-              ?.copyWith(color: cs.onSurfaceVariant),
-        ),
-      ],
+      ),
     );
   }
 
