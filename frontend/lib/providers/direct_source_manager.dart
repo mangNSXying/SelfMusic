@@ -1719,6 +1719,116 @@ class DirectSourceManager extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 统一保存入口（弹窗使用）：按 [kind] 与是否编辑分发到既有 add*/update。
+  ///
+  /// 只是一层分发，**不改任何落库语义**——SecretStore 收敛、改名 key 迁移、
+  /// 备用槽位持久化仍由下面这些方法各自负责。弹窗侧因此不必再写 8 个
+  /// `_isEdit × 协议` 的参数分支。
+  ///
+  /// [raw] 是表单的原始 Map（可含密码/密钥明文），字段口径与
+  /// `SourceFormModel.toRawMap()` 一致。
+  Future<void> saveSource({
+    String? editKey,
+    required SourceKind kind,
+    required Map<String, dynamic> raw,
+    required List<Map<String, dynamic>> fallbacks,
+  }) async {
+    String str(String k) => (raw[k] as String? ?? '').toString();
+    int port() => (raw['port'] as num?)?.toInt() ?? 22;
+    final route = parseSourceRoute(raw['route']);
+    final authMethod = parseSftpAuthMethod(raw['authMethod']);
+    final password = str('password');
+    final keyPem = str('keyPem');
+    final passphrase = str('passphrase');
+
+    if (editKey != null) {
+      // 编辑：name 用于改名迁移；各协议只传自己关心的字段（与旧弹窗一致）。
+      final name = str('name');
+      switch (kind) {
+        case SourceKind.local:
+          if (str('path').isNotEmpty) {
+            await updateSource(editKey, name: name, path: str('path'),
+                fallbacks: fallbacks);
+          } else {
+            await updateSource(editKey, name: name,
+                localFiles: parseLocalFileEntries(raw), fallbacks: fallbacks);
+          }
+        case SourceKind.webdav:
+          await updateSource(editKey,
+              name: name,
+              baseUrl: str('baseUrl'),
+              username: str('username'),
+              password: password,
+              route: route,
+              fallbacks: fallbacks);
+        case SourceKind.smb:
+          await updateSource(editKey,
+              name: name,
+              host: str('host'),
+              share: str('share'),
+              username: str('username'),
+              password: password,
+              path: str('path'),
+              route: route,
+              fallbacks: fallbacks);
+        case SourceKind.sftp:
+          await updateSource(editKey,
+              name: name,
+              host: str('host'),
+              port: port(),
+              username: str('username'),
+              authMethod: authMethod,
+              password: authMethod == SftpAuthMethod.password ? password : '',
+              keyPem: authMethod == SftpAuthMethod.key ? keyPem : '',
+              passphrase: authMethod == SftpAuthMethod.key ? passphrase : '',
+              path: str('path'),
+              route: route,
+              fallbacks: fallbacks);
+      }
+      return;
+    }
+
+    // 新增：名称用于派生 key（重名会抛 StateError，与旧行为一致）。
+    final name = str('name');
+    switch (kind) {
+      case SourceKind.local:
+        if (str('path').isNotEmpty) {
+          await addLocal(name: name, path: str('path'), fallbacks: fallbacks);
+        } else {
+          await addLocalFiles(name: name,
+              files: parseLocalFileEntries(raw), fallbacks: fallbacks);
+        }
+      case SourceKind.webdav:
+        await addWebdav(name: name,
+            baseUrl: str('baseUrl'),
+            username: str('username'),
+            password: password,
+            route: route,
+            fallbacks: fallbacks);
+      case SourceKind.smb:
+        await addSmb(name: name,
+            host: str('host'),
+            share: str('share'),
+            username: str('username'),
+            password: password,
+            rootPath: str('path'),
+            route: route,
+            fallbacks: fallbacks);
+      case SourceKind.sftp:
+        await addSftp(name: name,
+            host: str('host'),
+            port: port(),
+            username: str('username'),
+            authMethod: authMethod,
+            password: authMethod == SftpAuthMethod.password ? password : '',
+            keyPem: authMethod == SftpAuthMethod.key ? keyPem : '',
+            passphrase: authMethod == SftpAuthMethod.key ? passphrase : '',
+            rootPath: str('path'),
+            route: route,
+            fallbacks: fallbacks);
+    }
+  }
+
   Future<void> removeSource(String key) async {
     // 删除事件必须在删行前发：载荷里的 client_uuid / kind / address 都读自行。
     // 原先是不 await 的 fire-and-forget，与下面的 deleteSource 并行——行先没
