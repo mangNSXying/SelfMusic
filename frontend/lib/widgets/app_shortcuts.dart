@@ -375,7 +375,17 @@ class _AppShortcutsState extends State<AppShortcuts> {
         _toggleFavorite(player);
       case ShortcutAction.toggleSidebar:
         nav.requestSidebarToggle();
-      case ShortcutAction.openSettings:
+      case ShortcutAction.openSettingsAppearance:
+        nav.openSettings(SettingsItem.appearance);
+      case ShortcutAction.openSettingsPlayback:
+        nav.openSettings(SettingsItem.playback);
+      case ShortcutAction.openSettingsSongs:
+        nav.openSettings(SettingsItem.songs);
+      case ShortcutAction.openSettingsStorage:
+        nav.openSettings(SettingsItem.storage);
+      case ShortcutAction.openSettingsNetwork:
+        nav.openSettings(SettingsItem.network);
+      case ShortcutAction.openSettingsSystem:
         nav.openSettings(SettingsItem.system);
       case ShortcutAction.sleepTimer:
         // 窗口可能已隐藏到托盘：先恢复窗口，否则弹窗开在看不见的地方。

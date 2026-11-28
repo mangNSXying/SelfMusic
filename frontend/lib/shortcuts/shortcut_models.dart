@@ -32,7 +32,12 @@ enum ShortcutAction {
   cyclePlayMode('切换播放模式'),
   toggleFavorite('喜欢/取消喜欢'),
   toggleSidebar('伸缩侧栏'),
-  openSettings('打开设置'),
+  openSettingsAppearance('界面设置'),
+  openSettingsPlayback('播放设置'),
+  openSettingsSongs('歌曲设置'),
+  openSettingsStorage('存储设置'),
+  openSettingsNetwork('网络设置'),
+  openSettingsSystem('系统设置'),
   sleepTimer('睡眠定时'),
   cycleTheme('切换主题'),
   quit('退出应用'),
@@ -67,7 +72,12 @@ enum ShortcutAction {
         queue ||
         player ||
         toggleSidebar ||
-        openSettings =>
+        openSettingsAppearance ||
+        openSettingsPlayback ||
+        openSettingsSongs ||
+        openSettingsStorage ||
+        openSettingsNetwork ||
+        openSettingsSystem =>
           ShortcutGroup.navigation,
         cycleTheme || quit || help || removeFromQueue => ShortcutGroup.system,
       };
@@ -266,7 +276,30 @@ Map<ShortcutAction, ShortcutBinding?> defaultWindowBindings({
     ShortcutAction.cyclePlayMode: _binding(LogicalKeyboardKey.keyR),
     ShortcutAction.toggleFavorite: _binding(LogicalKeyboardKey.keyL),
     ShortcutAction.toggleSidebar: p(LogicalKeyboardKey.keyB),
-    ShortcutAction.openSettings: p(LogicalKeyboardKey.comma),
+    ShortcutAction.openSettingsAppearance: _binding(
+      LogicalKeyboardKey.digit1,
+      alt: true,
+    ),
+    ShortcutAction.openSettingsPlayback: _binding(
+      LogicalKeyboardKey.digit2,
+      alt: true,
+    ),
+    ShortcutAction.openSettingsSongs: _binding(
+      LogicalKeyboardKey.digit3,
+      alt: true,
+    ),
+    ShortcutAction.openSettingsStorage: _binding(
+      LogicalKeyboardKey.digit4,
+      alt: true,
+    ),
+    ShortcutAction.openSettingsNetwork: _binding(
+      LogicalKeyboardKey.digit5,
+      alt: true,
+    ),
+    ShortcutAction.openSettingsSystem: _binding(
+      LogicalKeyboardKey.digit6,
+      alt: true,
+    ),
     ShortcutAction.sleepTimer: _binding(LogicalKeyboardKey.keyT),
     ShortcutAction.cycleTheme: p(LogicalKeyboardKey.keyT, shift: true),
     ShortcutAction.quit: p(LogicalKeyboardKey.keyQ),

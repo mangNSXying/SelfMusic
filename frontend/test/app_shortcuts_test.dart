@@ -17,7 +17,16 @@ void main() {
       expect(window[ShortcutAction.volumeDown]!.describe(), 'Ctrl + ↓');
       expect(window[ShortcutAction.search]!.describe(), 'Ctrl + F');
       expect(window[ShortcutAction.sectionArtists]!.describe(), 'Ctrl + 6');
-      expect(window[ShortcutAction.openSettings]!.describe(), 'Ctrl + ,');
+      expect(window[ShortcutAction.openSettingsAppearance]!.describe(),
+          'Alt + 1');
+      expect(
+          window[ShortcutAction.openSettingsPlayback]!.describe(), 'Alt + 2');
+      expect(window[ShortcutAction.openSettingsSongs]!.describe(), 'Alt + 3');
+      expect(
+          window[ShortcutAction.openSettingsStorage]!.describe(), 'Alt + 4');
+      expect(
+          window[ShortcutAction.openSettingsNetwork]!.describe(), 'Alt + 5');
+      expect(window[ShortcutAction.openSettingsSystem]!.describe(), 'Alt + 6');
       expect(window[ShortcutAction.cycleTheme]!.describe(), 'Ctrl + Shift + T');
       expect(window[ShortcutAction.quit]!.describe(), 'Ctrl + Q');
       expect(window[ShortcutAction.help]!.describe(), 'F1');
