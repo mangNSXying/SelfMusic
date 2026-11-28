@@ -250,6 +250,64 @@ void main() {
     expect(find.text('导入密钥文件'), findsOneWidget);
     expect(find.text('私钥口令'), findsOneWidget);
   });
+
+  /// 校验字段说明：单行、且贴在该行的右边缘。
+  ///
+  /// 「贴右」用说明自己所在那一行（label 的父 Row）的右边缘来比，
+  /// 而不是拿 label 文本的右边缘——半宽字段里 label 很短，
+  /// 它到行尾的距离本来就远。
+  void expectNoteRightAndSingleLine(
+    WidgetTester tester,
+    Size viewport, {
+    required String anchorLabel,
+    required String note,
+  }) {
+    final noteFinder = find.text(note);
+    expect(noteFinder, findsWidgets, reason: '$viewport: 找不到 "$note"');
+    final noteRect = tester.getRect(noteFinder.first);
+    final fontSize =
+        tester.widget<Text>(noteFinder.first).style?.fontSize ?? 12;
+
+    // 折行会让高度变成两倍行高以上。
+    expect(noteRect.height, lessThanOrEqualTo(fontSize * 1.8),
+        reason: '$viewport: "$note" 折行了（高度 ${noteRect.height}）');
+
+    // 贴右：说明的右边缘应贴近它所在 Row 的右边缘（容差 1px）。
+    final labelFinder = find.text(anchorLabel);
+    expect(labelFinder, findsWidgets, reason: '$viewport: 找不到 "$anchorLabel"');
+    final rowRect = tester.getRect(
+      find.ancestor(of: labelFinder.first, matching: find.byType(Row)).first,
+    );
+    expect(rowRect.right - noteRect.right, lessThanOrEqualTo(1.0),
+        reason: '$viewport: "$note" 没有贴右'
+            '（离行尾 ${rowRect.right - noteRect.right}px）');
+  }
+
+  testWidgets('字段说明贴右且不折行（宽屏）', (tester) async {
+    await setUpManager(tester);
+    tearDownManager();
+    await pumpDialog(tester, direct, size: const Size(1024, 900));
+
+    await tester.tap(find.text('WebDAV'));
+    await tester.pumpAndSettle();
+
+    expectNoteRightAndSingleLine(tester, const Size(1024, 900),
+        anchorLabel: '地址', note: '智能补写 https://');
+    expectNoteRightAndSingleLine(tester, const Size(1024, 900),
+        anchorLabel: '用户名', note: '可空');
+  });
+
+  testWidgets('字段说明贴右且不折行（窄屏 360）', (tester) async {
+    await setUpManager(tester);
+    tearDownManager();
+    await pumpDialog(tester, direct, size: const Size(360, 900));
+
+    await tester.tap(find.text('WebDAV'));
+    await tester.pumpAndSettle();
+
+    expectNoteRightAndSingleLine(tester, const Size(360, 900),
+        anchorLabel: '地址', note: '智能补写 https://');
+  });
 }
 
 /// 测试用 PathProvider 安装（避免 λ 写太长）。

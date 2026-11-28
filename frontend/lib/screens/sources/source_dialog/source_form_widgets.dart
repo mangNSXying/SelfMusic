@@ -37,7 +37,7 @@ class SourceFormSection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.only(top: 14, bottom: 8),
+          padding: const EdgeInsets.only(top: 12, bottom: 6),
           child: Row(
             children: [
               Expanded(
@@ -60,6 +60,11 @@ class SourceFormSection extends StatelessWidget {
 }
 
 /// 字段标签行：左 label，右侧浅色说明（「可空」「默认 22」等）。
+///
+/// label 用 [Expanded] 吃掉剩余宽度，note 按内容自然宽度贴在右边缘。
+/// 这是唯一正确的组合：给 note 加 [Flexible] 反而会把它自己缩窄、提前折行。
+///
+/// note 单行不换行——标签行折行会让高度翻倍，把输入框整体挤下去。
 class SourceFieldLabel extends StatelessWidget {
   const SourceFieldLabel(this.label, {super.key, this.note});
 
@@ -69,30 +74,33 @@ class SourceFieldLabel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final style = Theme.of(context).textTheme.bodySmall;
+    final labelStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
+          color: cs.onSurfaceVariant,
+        );
+    final noteStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
+          color: cs.onSurface.withValues(alpha: 0.45),
+        );
+    final noteText = note;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.only(bottom: 4),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Expanded(
             child: Text(
               label,
-              style: style?.copyWith(color: cs.onSurfaceVariant),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: labelStyle,
             ),
           ),
-          if (note != null) ...[
-            const SizedBox(width: 8),
-            // 窄屏下 note 可能比 label 还长（如「或改为选择音频文件」）：
-            // 用 Flexible + 右对齐让它自己折行，而不是把整行撑溢出。
-            Flexible(
-              child: Text(
-                note!,
-                textAlign: TextAlign.right,
-                style: style?.copyWith(
-                  color: cs.onSurface.withValues(alpha: 0.45),
-                ),
-              ),
+          if (noteText != null) ...[
+            const SizedBox(width: 12),
+            Text(
+              noteText,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.right,
+              style: noteStyle,
             ),
           ],
         ],
@@ -153,6 +161,9 @@ class _SourceSecretFieldState extends State<SourceSecretField> {
           enableSuggestions: false,
           onChanged: widget.onChanged,
           decoration: InputDecoration(
+            isDense: true,
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
             hintText: widget.hint,
             helperText: widget.helper,
             helperMaxLines: 2,
@@ -247,6 +258,9 @@ class SourceTextField extends StatelessWidget {
           inputFormatters:
               digitsOnly ? [FilteringTextInputFormatter.digitsOnly] : null,
           decoration: InputDecoration(
+            isDense: true,
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
             hintText: hint,
             helperText: helper,
             helperMaxLines: 2,
